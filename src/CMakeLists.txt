@@ -28,6 +28,8 @@ add_library(bioshockvr SHARED
     game/igame_adapter.h
     game/bioshock1r/bioshock1r_adapter.cpp
     game/bioshock1r/bioshock1r_adapter.h
+    game/bioshock1r/camera.cpp
+    game/bioshock1r/camera.h
     game/bioshock1r/patterns.cpp
     game/bioshock1r/patterns.h
 )
