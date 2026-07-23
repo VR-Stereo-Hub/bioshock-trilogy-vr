@@ -1,0 +1,9 @@
+[submodule "third_party/minhook"]
+	path = third_party/minhook
+	url = https://github.com/TsudaKageyu/minhook
+[submodule "third_party/imgui"]
+	path = third_party/imgui
+	url = https://github.com/ocornut/imgui
+[submodule "third_party/OpenXR-SDK"]
+	path = third_party/OpenXR-SDK
+	url = https://github.com/KhronosGroup/OpenXR-SDK
