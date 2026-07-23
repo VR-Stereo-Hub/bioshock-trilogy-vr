@@ -116,14 +116,21 @@ void scan_region_for_u32(uintptr_t base, uintptr_t end, uint32_t pattern,
 }
 
 // Collect 4-aligned dwords P in [base, end) with lo <= P <= hi (pointer-range
-// sweep for ptr_scan).
+// sweep for ptr_scan). Captures location AND value at sweep time - the heap
+// churns while we walk it, so a later re-read can show garbage (seen live:
+// freed-fill 0xFEFEFEFE where plausible pointers stood milliseconds earlier).
+struct PtrHit {
+    uintptr_t location;
+    uint32_t value;
+};
+
 void scan_region_for_range(uintptr_t base, uintptr_t end, uint32_t lo, uint32_t hi,
-                           std::vector<uintptr_t>* out, size_t cap) {
+                           std::vector<PtrHit>* out, size_t cap) {
     __try {
         for (uintptr_t p = (base + 3) & ~uintptr_t{3}; p + 4 <= end; p += 4) {
             uint32_t v = *reinterpret_cast<const uint32_t*>(p);
             if (v >= lo && v <= hi) {
-                out->push_back(p);
+                out->push_back({p, v});
                 if (out->size() >= cap) return;
             }
         }
@@ -161,10 +168,7 @@ uint32_t float_to_bits(float f) {
     return bits;
 }
 
-} // namespace
-
-size_t scan_f32(float value) {
-    uint32_t pattern = float_to_bits(value);
+size_t scan_bits(uint32_t pattern, const char* what) {
     std::vector<uintptr_t> hits;
     for_each_writable_region([&](uintptr_t base, uintptr_t end) {
         if (hits.size() < kMaxCandidates) scan_region_for_u32(base, end, pattern, &hits);
@@ -181,14 +185,13 @@ size_t scan_f32(float value) {
 
     g_candidates = std::move(cleaned);
     g_poked.clear();
-    BVR_LOG("[vscan] scan f32 %.4f (0x%08X): %u candidates%s", value, pattern,
+    BVR_LOG("[vscan] scan %s (0x%08X): %u candidates%s", what, pattern,
             static_cast<unsigned>(g_candidates.size()),
             g_candidates.size() >= kMaxCandidates ? " (CAP HIT - value too common)" : "");
     return g_candidates.size();
 }
 
-size_t rescan_f32(float value) {
-    uint32_t pattern = float_to_bits(value);
+size_t rescan_bits(uint32_t pattern, const char* what) {
     std::vector<uintptr_t> kept;
     kept.reserve(g_candidates.size());
     for (uintptr_t addr : g_candidates) {
@@ -197,9 +200,63 @@ size_t rescan_f32(float value) {
     }
     size_t before = g_candidates.size();
     g_candidates = std::move(kept);
-    BVR_LOG("[vscan] rescan f32 %.4f: %u -> %u candidates", value,
-            static_cast<unsigned>(before), static_cast<unsigned>(g_candidates.size()));
+    BVR_LOG("[vscan] rescan %s: %u -> %u candidates", what, static_cast<unsigned>(before),
+            static_cast<unsigned>(g_candidates.size()));
     return g_candidates.size();
+}
+
+bool poke_bits(size_t idx, uint32_t bits, const char* what) {
+    if (idx >= g_candidates.size()) {
+        BVR_LOG("[vscan] poke %u: out of range (%u candidates)", static_cast<unsigned>(idx),
+                static_cast<unsigned>(g_candidates.size()));
+        return false;
+    }
+    uintptr_t addr = g_candidates[idx];
+    uint32_t original = 0;
+    if (!safe_read_u32(addr, &original)) {
+        BVR_LOG("[vscan] poke %u @ 0x%08X: unreadable", static_cast<unsigned>(idx),
+                static_cast<unsigned>(addr));
+        return false;
+    }
+    if (!safe_write_u32(addr, bits)) {
+        BVR_LOG("[vscan] poke %u @ 0x%08X: write failed", static_cast<unsigned>(idx),
+                static_cast<unsigned>(addr));
+        return false;
+    }
+    g_poked.push_back({addr, original ^ kObfuscation});
+    BVR_LOG("[vscan] poke %u @ 0x%08X: 0x%08X -> %s", static_cast<unsigned>(idx),
+            static_cast<unsigned>(addr), original, what);
+    return true;
+}
+
+char g_valueDesc[48];
+
+const char* describe_f32(float v) {
+    sprintf_s(g_valueDesc, "f32 %.4f", v);
+    return g_valueDesc;
+}
+
+const char* describe_u32(uint32_t v) {
+    sprintf_s(g_valueDesc, "u32 %u", v);
+    return g_valueDesc;
+}
+
+} // namespace
+
+size_t scan_f32(float value) {
+    return scan_bits(float_to_bits(value), describe_f32(value));
+}
+
+size_t scan_u32(uint32_t value) {
+    return scan_bits(value, describe_u32(value));
+}
+
+size_t rescan_f32(float value) {
+    return rescan_bits(float_to_bits(value), describe_f32(value));
+}
+
+size_t rescan_u32(uint32_t value) {
+    return rescan_bits(value, describe_u32(value));
 }
 
 size_t count() {
@@ -213,9 +270,9 @@ void list(size_t n) {
     for (size_t i = 0; i < shown; ++i) {
         uintptr_t addr = g_candidates[i];
         uint32_t cur = 0;
-        char value[32];
+        char value[64];
         if (safe_read_u32(addr, &cur))
-            sprintf_s(value, "%.4f", bits_to_float(cur));
+            sprintf_s(value, "0x%08X (f32 %.4f / u32 %u)", cur, bits_to_float(cur), cur);
         else
             strcpy_s(value, "<unreadable>");
         char where[MAX_PATH + 16];
@@ -238,37 +295,23 @@ float read_at(size_t idx) {
     }
     float f = bits_to_float(cur);
     char where[MAX_PATH + 16];
-    BVR_LOG("[vscan] read %u @ 0x%08X (%s) = %.4f (0x%08X)", static_cast<unsigned>(idx),
-            static_cast<unsigned>(g_candidates[idx]),
-            describe(g_candidates[idx], where, sizeof(where)), f, cur);
+    BVR_LOG("[vscan] read %u @ 0x%08X (%s) = 0x%08X (f32 %.4f / u32 %u)",
+            static_cast<unsigned>(idx), static_cast<unsigned>(g_candidates[idx]),
+            describe(g_candidates[idx], where, sizeof(where)), cur, f, cur);
     return f;
 }
 
 bool poke(size_t idx, float value) {
-    if (idx >= g_candidates.size()) {
-        BVR_LOG("[vscan] poke %u: out of range (%u candidates)", static_cast<unsigned>(idx),
-                static_cast<unsigned>(g_candidates.size()));
-        return false;
-    }
-    uintptr_t addr = g_candidates[idx];
-    uint32_t original = 0;
-    if (!safe_read_u32(addr, &original)) {
-        BVR_LOG("[vscan] poke %u @ 0x%08X: unreadable", static_cast<unsigned>(idx),
-                static_cast<unsigned>(addr));
-        return false;
-    }
-    if (!safe_write_u32(addr, float_to_bits(value))) {
-        BVR_LOG("[vscan] poke %u @ 0x%08X: write failed", static_cast<unsigned>(idx),
-                static_cast<unsigned>(addr));
-        return false;
-    }
-    g_poked.push_back({addr, original ^ kObfuscation});
-    BVR_LOG("[vscan] poke %u @ 0x%08X: %.4f -> %.4f", static_cast<unsigned>(idx),
-            static_cast<unsigned>(addr), bits_to_float(original), value);
-    return true;
+    return poke_bits(idx, float_to_bits(value), describe_f32(value));
 }
 
-size_t poke_range(size_t lo, size_t hi, float value) {
+bool poke_u32(size_t idx, uint32_t value) {
+    return poke_bits(idx, value, describe_u32(value));
+}
+
+namespace {
+
+size_t poke_range_bits(size_t lo, size_t hi, uint32_t bits, const char* what) {
     if (lo > hi || lo >= g_candidates.size()) {
         BVR_LOG("[vscan] poke range %u-%u: out of range (%u candidates)",
                 static_cast<unsigned>(lo), static_cast<unsigned>(hi),
@@ -281,13 +324,23 @@ size_t poke_range(size_t lo, size_t hi, float value) {
         uintptr_t addr = g_candidates[i];
         uint32_t original = 0;
         if (!safe_read_u32(addr, &original)) continue;
-        if (!safe_write_u32(addr, float_to_bits(value))) continue;
+        if (!safe_write_u32(addr, bits)) continue;
         g_poked.push_back({addr, original ^ kObfuscation});
         ++written;
     }
-    BVR_LOG("[vscan] poke range %u-%u = %.4f: %u written", static_cast<unsigned>(lo),
-            static_cast<unsigned>(hi), value, static_cast<unsigned>(written));
+    BVR_LOG("[vscan] poke range %u-%u = %s: %u written", static_cast<unsigned>(lo),
+            static_cast<unsigned>(hi), what, static_cast<unsigned>(written));
     return written;
+}
+
+} // namespace
+
+size_t poke_range(size_t lo, size_t hi, float value) {
+    return poke_range_bits(lo, hi, float_to_bits(value), describe_f32(value));
+}
+
+size_t poke_range_u32(size_t lo, size_t hi, uint32_t value) {
+    return poke_range_bits(lo, hi, value, describe_u32(value));
 }
 
 size_t restore_all() {
@@ -304,22 +357,34 @@ size_t restore_all() {
     return restored;
 }
 
-bool poke_addr(uintptr_t addr, float value) {
+namespace {
+
+bool poke_addr_bits(uintptr_t addr, uint32_t bits, const char* what) {
     uint32_t original = 0;
     if (!pattern_scan::is_memory_valid(reinterpret_cast<void*>(addr), 4) ||
         !safe_read_u32(addr, &original)) {
         BVR_LOG("[vscan] pokeaddr 0x%08X: unreadable", static_cast<unsigned>(addr));
         return false;
     }
-    if (!safe_write_u32(addr, float_to_bits(value))) {
+    if (!safe_write_u32(addr, bits)) {
         BVR_LOG("[vscan] pokeaddr 0x%08X: write failed", static_cast<unsigned>(addr));
         return false;
     }
     g_poked.push_back({addr, original ^ kObfuscation});
     char where[MAX_PATH + 16];
-    BVR_LOG("[vscan] pokeaddr 0x%08X (%s): %.4f -> %.4f", static_cast<unsigned>(addr),
-            describe(addr, where, sizeof(where)), bits_to_float(original), value);
+    BVR_LOG("[vscan] pokeaddr 0x%08X (%s): 0x%08X -> %s", static_cast<unsigned>(addr),
+            describe(addr, where, sizeof(where)), original, what);
     return true;
+}
+
+} // namespace
+
+bool poke_addr(uintptr_t addr, float value) {
+    return poke_addr_bits(addr, float_to_bits(value), describe_f32(value));
+}
+
+bool poke_addr_u32(uintptr_t addr, uint32_t value) {
+    return poke_addr_bits(addr, value, describe_u32(value));
 }
 
 void hexdump(uintptr_t addr, size_t len) {
@@ -366,7 +431,7 @@ size_t ptr_scan(size_t idx, uint32_t maxDelta) {
 
     // Main module first (readable spans incl. .data/.rdata - a singleton
     // pointer usually lives there), then the writable heap for 2-level chains.
-    std::vector<uintptr_t> hits;
+    std::vector<PtrHit> hits;
     pattern_scan::ProcessImage img{};
     if (pattern_scan::capture_main_module(img)) {
         scan_region_for_range(reinterpret_cast<uintptr_t>(img.base),
@@ -386,22 +451,22 @@ size_t ptr_scan(size_t idx, uint32_t maxDelta) {
     uintptr_t candLo = reinterpret_cast<uintptr_t>(g_candidates.data());
     uintptr_t candHi = candLo + g_candidates.capacity() * sizeof(uintptr_t);
     uintptr_t hitLo = reinterpret_cast<uintptr_t>(hits.data());
-    uintptr_t hitHi = hitLo + hits.capacity() * sizeof(uintptr_t);
+    uintptr_t hitHi = hitLo + hits.capacity() * sizeof(PtrHit);
 
     BVR_LOG("[vscan] ptrscan %u (target 0x%08X, delta <= 0x%X): %u hits (%u in module)%s",
             static_cast<unsigned>(idx), static_cast<unsigned>(target), maxDelta,
             static_cast<unsigned>(hits.size()), static_cast<unsigned>(moduleHits),
             hits.size() >= kCap ? " (CAP HIT)" : "");
     size_t logged = 0;
-    for (uintptr_t h : hits) {
-        if ((h >= candLo && h < candHi) || (h >= hitLo && h < hitHi)) continue;
+    for (const PtrHit& h : hits) {
+        if ((h.location >= candLo && h.location < candHi) ||
+            (h.location >= hitLo && h.location < hitHi))
+            continue;
         if (logged++ >= kLogCap) break;
-        uint32_t p = 0;
-        if (!safe_read_u32(h, &p)) continue;
         char where[MAX_PATH + 16];
         BVR_LOG("[vscan]   ptr at 0x%08X (%s): base 0x%08X -> field +0x%X",
-                static_cast<unsigned>(h), describe(h, where, sizeof(where)), p,
-                static_cast<unsigned>(target - p));
+                static_cast<unsigned>(h.location), describe(h.location, where, sizeof(where)),
+                h.value, static_cast<unsigned>(target - h.value));
     }
     return hits.size();
 }

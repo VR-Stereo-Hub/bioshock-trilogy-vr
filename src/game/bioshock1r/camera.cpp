@@ -98,8 +98,10 @@ float* fov_ptr(void* pc) {
 // Camera commands: "fov <deg>", "fov off", "offset <x> <y> <z>", "recenter".
 // Discovery commands (route to core/debug/value_scan; game thread only):
 //   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
-//   mempoke <idx> <f>  mempoke <lo>-<hi> <f>  memrestore
-//   memptr <idx> [maxDeltaHex]  pokeaddr <hex> <f>  hexdump <hex> <len>
+//   memscani <u>  memrescani <u>   (integer-typed variants)
+//   mempoke <idx> <f>  mempoke <lo>-<hi> <f>  mempokei ...same with <u>
+//   memrestore  memptr <idx> [maxDeltaHex]
+//   pokeaddr <hex> <f>  pokeaddri <hex> <u>  hexdump <hex> <len>
 //   strscan <text>  membases
 uint64_t g_lastCmdPollMs = 0;
 FILETIME g_lastCmdWrite{};
@@ -135,6 +137,10 @@ void apply_command(const char* cmd, const char* args) {
         if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::scan_f32(v);
     } else if (strcmp(cmd, "memrescan") == 0) {
         if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::rescan_f32(v);
+    } else if (strcmp(cmd, "memscani") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::scan_u32(n);
+    } else if (strcmp(cmd, "memrescani") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::rescan_u32(n);
     } else if (strcmp(cmd, "memlist") == 0) {
         bvr::value_scan::list(sscanf_s(args, "%u", &n) == 1 ? n : 32);
     } else if (strcmp(cmd, "memread") == 0) {
@@ -144,6 +150,12 @@ void apply_command(const char* cmd, const char* args) {
             bvr::value_scan::poke_range(lo, hi, v);
         else if (sscanf_s(args, "%u %f", &n, &v) == 2)
             bvr::value_scan::poke(n, v);
+    } else if (strcmp(cmd, "mempokei") == 0) {
+        unsigned iv = 0;
+        if (sscanf_s(args, "%u-%u %u", &lo, &hi, &iv) == 3)
+            bvr::value_scan::poke_range_u32(lo, hi, iv);
+        else if (sscanf_s(args, "%u %u", &n, &iv) == 2)
+            bvr::value_scan::poke_u32(n, iv);
     } else if (strcmp(cmd, "memrestore") == 0) {
         bvr::value_scan::restore_all();
     } else if (strcmp(cmd, "memptr") == 0) {
@@ -153,6 +165,10 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "pokeaddr") == 0) {
         if (sscanf_s(args, "%x %f", &addr, &v) == 2)
             bvr::value_scan::poke_addr(addr, v);
+    } else if (strcmp(cmd, "pokeaddri") == 0) {
+        unsigned iv = 0;
+        if (sscanf_s(args, "%x %u", &addr, &iv) == 2)
+            bvr::value_scan::poke_addr_u32(addr, iv);
     } else if (strcmp(cmd, "hexdump") == 0) {
         if (sscanf_s(args, "%x %u", &addr, &len) >= 1)
             bvr::value_scan::hexdump(addr, len ? len : 64);
