@@ -41,10 +41,12 @@ std::atomic<bool> g_sessionBegun{false}; // read from the game thread via vr_cam
 bool g_frameOpen = false;
 XrFrameState g_frameState{XR_TYPE_FRAME_STATE};
 
-XrSwapchain g_quadSwapchain = XR_NULL_HANDLE;
-std::vector<XrSwapchainImageD3D11KHR> g_quadImages;
-uint32_t g_quadW = 0, g_quadH = 0;
-int64_t g_quadFormat = 0;
+// Two identical backbuffer-sized swapchains: index 0 serves the quad screen
+// and mono projection (and the left eye under AlternateEye), index 1 exists
+// only for the AlternateEye right eye. Both live and die together.
+XrSwapchain g_swapchains[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+std::vector<XrSwapchainImageD3D11KHR> g_images[2];
+uint32_t g_swapW = 0, g_swapH = 0;
 
 ID3D11Device* g_device = nullptr;          // game device, AddRef'd
 ID3D11DeviceContext* g_context = nullptr;  // immediate context, AddRef'd
@@ -75,7 +77,20 @@ std::atomic<float> g_renderedHfov{0.0f}; // fov the game actually rendered (adap
 std::atomic<bool> g_projectionReady{false};
 int g_lastLayer = 0; // 0 none, 1 quad, 2 projection (render thread only)
 std::atomic<bool> g_loggedFirstProjection{false};
+std::atomic<bool> g_loggedFirstStereo{false};
 uint64_t g_lastProjBlockedLogMs = 0;
+
+// M4 rung 1: AlternateEye stereo (AER). The render thread owns everything here
+// except g_aerEyeSign, which CalcView on the game thread reads through
+// current_eye_sign() to pick the per-frame eye offset. The sign also encodes
+// which offset is baked into the NEXT backbuffer we will see: it is published
+// at Present-tail and consumed by the following game frame's CalcView.
+std::atomic<bool> g_aerEnabled{false};   // overlay checkbox
+std::atomic<bool> g_aerSwapEyes{false};  // diagnostic: negate the sign (inverted-depth test)
+std::atomic<int> g_aerEyeSign{0};        // -1 left, +1 right, 0 = AER off
+int g_currentEye = 0;                    // eye slot the next captured frame belongs to
+XrPosef g_eyePose[2] = {};               // pose claimed for each eye's held image
+bool g_eyeValid[2] = {false, false};     // eye slot holds a released image + pose
 
 const char* res_str(XrResult r) {
     static char buf[XR_MAX_RESULT_STRING_SIZE];
@@ -99,18 +114,27 @@ const char* state_str(XrSessionState s) {
     }
 }
 
-void destroy_quad_swapchain() {
-    if (g_quadSwapchain != XR_NULL_HANDLE) {
-        xrDestroySwapchain(g_quadSwapchain);
-        g_quadSwapchain = XR_NULL_HANDLE;
+void reset_aer() {
+    g_eyeValid[0] = g_eyeValid[1] = false;
+    g_currentEye = 0;
+    g_aerEyeSign.store(0, std::memory_order_relaxed);
+}
+
+void destroy_swapchains() {
+    for (int i = 0; i < 2; ++i) {
+        if (g_swapchains[i] != XR_NULL_HANDLE) {
+            xrDestroySwapchain(g_swapchains[i]);
+            g_swapchains[i] = XR_NULL_HANDLE;
+        }
+        g_images[i].clear();
     }
-    g_quadImages.clear();
-    g_quadW = g_quadH = 0;
+    g_swapW = g_swapH = 0;
+    reset_aer(); // the held eye images died with the swapchains
 }
 
 void teardown_session(const char* why) {
     BVR_LOG("xr: session teardown (%s)", why);
-    destroy_quad_swapchain();
+    destroy_swapchains();
     {
         std::lock_guard<std::mutex> lock(g_poseMutex);
         g_poseValid = false;
@@ -131,7 +155,7 @@ void teardown_session(const char* why) {
     g_nextRetryMs = GetTickCount64() + 5000; // cooldown before the next attempt
 }
 
-bool create_quad_swapchain(IDXGISwapChain* swapchain) {
+bool create_swapchains(IDXGISwapChain* swapchain) {
     DXGI_SWAP_CHAIN_DESC desc{};
     if (FAILED(swapchain->GetDesc(&desc))) return false;
 
@@ -163,29 +187,30 @@ bool create_quad_swapchain(IDXGISwapChain* swapchain) {
     sci.faceCount = 1;
     sci.arraySize = 1;
     sci.mipCount = 1;
-    XrResult r = xrCreateSwapchain(g_session, &sci, &g_quadSwapchain);
-    if (XR_FAILED(r)) {
-        BVR_LOG("xr: xrCreateSwapchain failed: %s", res_str(r));
-        g_quadSwapchain = XR_NULL_HANDLE;
-        return false;
-    }
-
     uint32_t imageCount = 0;
-    xrEnumerateSwapchainImages(g_quadSwapchain, 0, &imageCount, nullptr);
-    g_quadImages.assign(imageCount, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-    r = xrEnumerateSwapchainImages(
-        g_quadSwapchain, imageCount, &imageCount,
-        reinterpret_cast<XrSwapchainImageBaseHeader*>(g_quadImages.data()));
-    if (XR_FAILED(r)) {
-        BVR_LOG("xr: xrEnumerateSwapchainImages failed: %s", res_str(r));
-        destroy_quad_swapchain();
-        return false;
+    for (int i = 0; i < 2; ++i) {
+        XrResult r = xrCreateSwapchain(g_session, &sci, &g_swapchains[i]);
+        if (XR_FAILED(r)) {
+            BVR_LOG("xr: xrCreateSwapchain failed: %s", res_str(r));
+            g_swapchains[i] = XR_NULL_HANDLE;
+            destroy_swapchains();
+            return false;
+        }
+        xrEnumerateSwapchainImages(g_swapchains[i], 0, &imageCount, nullptr);
+        g_images[i].assign(imageCount, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        r = xrEnumerateSwapchainImages(
+            g_swapchains[i], imageCount, &imageCount,
+            reinterpret_cast<XrSwapchainImageBaseHeader*>(g_images[i].data()));
+        if (XR_FAILED(r)) {
+            BVR_LOG("xr: xrEnumerateSwapchainImages failed: %s", res_str(r));
+            destroy_swapchains();
+            return false;
+        }
     }
 
-    g_quadW = desc.BufferDesc.Width;
-    g_quadH = desc.BufferDesc.Height;
-    g_quadFormat = pick;
-    BVR_LOG("xr: quad swapchain %ux%u format %lld (%u images)", g_quadW, g_quadH,
+    g_swapW = desc.BufferDesc.Width;
+    g_swapH = desc.BufferDesc.Height;
+    BVR_LOG("xr: swapchain pair %ux%u format %lld (%u images each)", g_swapW, g_swapH,
             static_cast<long long>(pick), imageCount);
     return true;
 }
@@ -268,7 +293,7 @@ void try_bring_up(IDXGISwapChain* swapchain) {
         return;
     }
 
-    if (!create_quad_swapchain(swapchain)) {
+    if (!create_swapchains(swapchain)) {
         teardown_session("swapchain failed");
         return;
     }
@@ -379,11 +404,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     pump_events();
     if (g_session == XR_NULL_HANDLE || !g_sessionBegun) return;
 
-    // A mid-session ResizeBuffers destroys the swapchain; recreate it at the
-    // new backbuffer size (and recompute the fov, which depends on aspect).
-    if (g_quadSwapchain == XR_NULL_HANDLE) {
+    // A mid-session ResizeBuffers destroys the swapchains; recreate them at
+    // the new backbuffer size (and recompute the fov, which depends on aspect).
+    if (g_swapchains[0] == XR_NULL_HANDLE) {
         g_hfovDeg.store(0.0f, std::memory_order_relaxed);
-        if (!create_quad_swapchain(swapchain)) {
+        if (!create_swapchains(swapchain)) {
             g_projectionReady.store(false, std::memory_order_relaxed);
             return;
         }
@@ -438,13 +463,13 @@ void on_present_begin(IDXGISwapChain* swapchain) {
 
     // Circumscribed symmetric FOV for the game render, computed once per
     // session (needs the backbuffer aspect from the quad swapchain).
-    if (g_viewsValid && g_hfovDeg.load(std::memory_order_relaxed) == 0.0f && g_quadW != 0) {
+    if (g_viewsValid && g_hfovDeg.load(std::memory_order_relaxed) == 0.0f && g_swapW != 0) {
         float maxHalfH = 0.0f, maxHalfV = 0.0f;
         for (const XrView& v : g_views) {
             maxHalfH = fmaxf(maxHalfH, fmaxf(-v.fov.angleLeft, v.fov.angleRight));
             maxHalfV = fmaxf(maxHalfV, fmaxf(-v.fov.angleDown, v.fov.angleUp));
         }
-        float aspect = static_cast<float>(g_quadW) / static_cast<float>(g_quadH);
+        float aspect = static_cast<float>(g_swapW) / static_cast<float>(g_swapH);
         float halfH = fmaxf(maxHalfH, atanf(tanf(maxHalfV) * aspect));
         float deg = fminf(halfH * 2.0f * 57.29578f, 160.0f);
         g_hfovDeg.store(deg, std::memory_order_relaxed);
@@ -456,7 +481,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // Single readiness gate for projection mode (and, through vr_camera_mode,
     // for the camera drive): never let a head-driven camera show on the quad.
     bool ready = g_viewsValid && g_hfovDeg.load(std::memory_order_relaxed) > 0.0f &&
-                 g_quadSwapchain != XR_NULL_HANDLE;
+                 g_swapchains[0] != XR_NULL_HANDLE;
     g_projectionReady.store(ready, std::memory_order_relaxed);
     if (!ready && g_cameraMode.load(std::memory_order_relaxed)) {
         uint64_t now = GetTickCount64();
@@ -465,7 +490,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             BVR_LOG("xr: camera mode requested but projection not ready "
                     "(views %d, hfov %.1f, swapchain %d)",
                     g_viewsValid ? 1 : 0, g_hfovDeg.load(std::memory_order_relaxed),
-                    g_quadSwapchain != XR_NULL_HANDLE ? 1 : 0);
+                    g_swapchains[0] != XR_NULL_HANDLE ? 1 : 0);
         }
     }
 }
@@ -489,38 +514,69 @@ void on_present_end(IDXGISwapChain* swapchain) {
     bool projectionMode = g_cameraMode.load(std::memory_order_relaxed) &&
                           g_projectionReady.load(std::memory_order_relaxed) && hfovDeg > 0.0f;
 
-    if (g_frameState.shouldRender && g_quadSwapchain != XR_NULL_HANDLE) {
+    // AlternateEye bookkeeping. imageSign is the eye offset baked into THIS
+    // backbuffer: the sign was published at the tail of the previous Present
+    // and consumed by the game frame that produced the current image. Only a
+    // frame carrying the current eye's offset is captured into that eye's
+    // swapchain; anything else (mono, or the un-offset frame right after
+    // enabling) flows through index 0 like M3.
+    bool aerActive = projectionMode && g_aerEnabled.load(std::memory_order_relaxed);
+    if (!aerActive) reset_aer();
+    int imageSign = g_aerEyeSign.load(std::memory_order_relaxed);
+    int eyeFlip = g_aerSwapEyes.load(std::memory_order_relaxed) ? -1 : 1;
+    int currentEyeSign = (g_currentEye == 0 ? -1 : 1) * eyeFlip;
+    bool eyeCaptured = false;
+
+    if (g_frameState.shouldRender && g_swapchains[0] != XR_NULL_HANDLE) {
         ID3D11Texture2D* backbuffer = nullptr;
         if (SUCCEEDED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)))) {
+            int target = (aerActive && imageSign == currentEyeSign) ? g_currentEye : 0;
             uint32_t index = 0;
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-            if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_quadSwapchain, &ai, &index))) {
+            if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_swapchains[target], &ai, &index))) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
-                if (XR_SUCCEEDED(xrWaitSwapchainImage(g_quadSwapchain, &wi))) {
+                if (XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi))) {
                     // Same size + same typeless family (guaranteed at creation),
                     // so a straight GPU copy carries the frame - overlay included.
-                    g_context->CopyResource(g_quadImages[index].texture, backbuffer);
+                    g_context->CopyResource(g_images[target][index].texture, backbuffer);
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-                xrReleaseSwapchainImage(g_quadSwapchain, &ri);
+                xrReleaseSwapchainImage(g_swapchains[target], &ri);
+
+                if (aerActive && target == g_currentEye && imageSign == currentEyeSign) {
+                    g_eyePose[g_currentEye] = g_views[g_currentEye].pose;
+                    g_eyeValid[g_currentEye] = true;
+                    eyeCaptured = true;
+                }
 
                 XrSwapchainSubImage sub{};
-                sub.swapchain = g_quadSwapchain;
+                sub.swapchain = g_swapchains[target];
                 sub.imageRect = {{0, 0},
-                                 {static_cast<int32_t>(g_quadW), static_cast<int32_t>(g_quadH)}};
+                                 {static_cast<int32_t>(g_swapW), static_cast<int32_t>(g_swapH)}};
 
                 if (projectionMode) {
-                    // M3 MonoTracked: one image, both eyes. Per-eye poses from
-                    // xrLocateViews; fov = the symmetric fov the game rendered
-                    // with (hfov written by the adapter, vfov via aspect).
+                    // fov = the symmetric fov the game rendered with (hfov
+                    // written by the adapter, vfov via aspect).
                     float halfH = hfovDeg * 0.5f / 57.29578f;
-                    float halfV = atanf(tanf(halfH) * static_cast<float>(g_quadH) /
-                                        static_cast<float>(g_quadW));
+                    float halfV = atanf(tanf(halfH) * static_cast<float>(g_swapH) /
+                                        static_cast<float>(g_swapW));
+                    // AER: each eye shows its swapchain's most recently
+                    // released image with the pose stored at its capture (the
+                    // compositor reprojects the stale eye). Until both eyes
+                    // hold an offset image: M3 mono - fresh image to both eyes
+                    // with the per-eye located poses. Converges in 2 frames.
+                    bool stereo = aerActive && g_eyeValid[0] && g_eyeValid[1];
                     for (int eye = 0; eye < 2; ++eye) {
-                        projViews[eye].pose = g_views[eye].pose;
+                        if (stereo) {
+                            projViews[eye].pose = g_eyePose[eye];
+                            projViews[eye].subImage = sub;
+                            projViews[eye].subImage.swapchain = g_swapchains[eye];
+                        } else {
+                            projViews[eye].pose = g_views[eye].pose;
+                            projViews[eye].subImage = sub;
+                        }
                         projViews[eye].fov = {-halfH, halfH, halfV, -halfV};
-                        projViews[eye].subImage = sub;
                     }
                     proj.space = g_space;
                     proj.viewCount = 2;
@@ -530,6 +586,8 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     if (!g_loggedFirstProjection.exchange(true))
                         BVR_LOG("xr: first projection-layer frame (claimed hfov %.1f deg)",
                                 hfovDeg);
+                    if (stereo && !g_loggedFirstStereo.exchange(true))
+                        BVR_LOG("xr: alternate-eye stereo live (both eyes hold offset images)");
                 } else {
                     float width = g_screenWidthM.load(std::memory_order_relaxed);
                     quad.space = g_space;
@@ -538,8 +596,8 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     quad.pose.orientation.w = 1.0f;
                     quad.pose.position = {0.0f, 0.0f,
                                           -g_screenDistM.load(std::memory_order_relaxed)};
-                    quad.size = {width, width * static_cast<float>(g_quadH) /
-                                            static_cast<float>(g_quadW)};
+                    quad.size = {width, width * static_cast<float>(g_swapH) /
+                                            static_cast<float>(g_swapW)};
                     layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
                     g_lastLayer = 1;
                 }
@@ -561,12 +619,21 @@ void on_present_end(IDXGISwapChain* swapchain) {
         return;
     }
     if (layerCount && ++g_framesSubmitted == 1)
-        BVR_LOG("xr: first frame submitted to the headset (%ux%u quad)", g_quadW, g_quadH);
+        BVR_LOG("xr: first frame submitted to the headset (%ux%u quad)", g_swapW, g_swapH);
+
+    // AER sign publish, AFTER submit: eye flip only once an offset frame was
+    // actually captured, so CalcView for the next game frame simulates exactly
+    // the eye the next Present's copy will feed (design: STATUS.md session 2).
+    if (aerActive) {
+        if (eyeCaptured) g_currentEye ^= 1;
+        g_aerEyeSign.store((g_currentEye == 0 ? -1 : 1) * eyeFlip,
+                           std::memory_order_relaxed);
+    }
 }
 
 void on_resize() {
     // Recreated at the new backbuffer size on the next frame.
-    destroy_quad_swapchain();
+    destroy_swapchains();
 }
 
 void draw_debug_ui() {
@@ -588,9 +655,22 @@ void draw_debug_ui() {
     bool camMode = g_cameraMode.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("VR camera mode (6DOF head drive)", &camMode))
         g_cameraMode.store(camMode, std::memory_order_relaxed);
+    if (camMode) {
+        bool aer = g_aerEnabled.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("AlternateEye stereo test (judders)", &aer))
+            g_aerEnabled.store(aer, std::memory_order_relaxed);
+        if (aer) {
+            ImGui::SameLine();
+            bool swap = g_aerSwapEyes.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Swap eyes (inverted-depth test)", &swap))
+                g_aerSwapEyes.store(swap, std::memory_order_relaxed);
+        }
+    }
     const char* layerName = g_lastLayer == 2 ? "projection" : g_lastLayer == 1 ? "quad" : "none";
-    ImGui::Text("layer: %s | target hfov %.1f | game fov readback %.1f",
-                layerName, g_hfovDeg.load(std::memory_order_relaxed),
+    int eyeSign = g_aerEyeSign.load(std::memory_order_relaxed);
+    ImGui::Text("layer: %s%s | target hfov %.1f | game fov readback %.1f",
+                layerName, eyeSign == 0 ? "" : eyeSign < 0 ? " (AER eye L)" : " (AER eye R)",
+                g_hfovDeg.load(std::memory_order_relaxed),
                 g_renderedHfov.load(std::memory_order_relaxed));
     if (camMode && !g_projectionReady.load(std::memory_order_relaxed))
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
@@ -627,6 +707,10 @@ void set_rendered_hfov(float hfovDeg) {
     g_renderedHfov.store(hfovDeg, std::memory_order_relaxed);
 }
 
+int current_eye_sign() {
+    return g_aerEyeSign.load(std::memory_order_relaxed);
+}
+
 } // namespace bvr::vr
 
 #else // !BVR_WITH_OPENXR
@@ -643,6 +727,8 @@ void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
 bool vr_camera_mode() { return false; }
 float suggested_hfov_deg() { return 0.0f; }
+void set_rendered_hfov(float) {}
+int current_eye_sign() { return 0; }
 
 } // namespace bvr::vr
 
