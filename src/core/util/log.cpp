@@ -27,7 +27,9 @@ void init() {
 
     wchar_t path[MAX_PATH];
     swprintf_s(path, L"%s\\bioshockvr.log", g_dataDir);
-    _wfopen_s(&g_file, path, L"w");
+    // _SH_DENYNO so tools/tail-log.ps1 can follow the file while the game runs
+    // (fopen_s-style opens deny all sharing).
+    g_file = _wfsopen(path, L"w", _SH_DENYNO);
 }
 
 const wchar_t* data_dir() {

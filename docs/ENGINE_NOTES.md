@@ -10,10 +10,13 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 ## Process / module layout
 
-- 32-bit x86, PE32, sections `.text .rdata .data .rsrc .reloc`. LAA flag: **unverified — run
-  `tools/check-laa.ps1` (DR-2)**.
-- Both `D3DDrv.D3DRenderDevice` (D3D9) and `D3DDrv11.D3DRenderDevice11` (D3D11) exist;
-  ShaderCache.pcs11 shipped ⇒ D3D11 expected active. Runtime confirmation pending (DR-2).
+- 32-bit x86, PE32, sections `.text .rdata .data .rsrc .reloc`.
+  **LAA flag: YES** (Characteristics 0x0122 — verified 2026-07-23 via `tools/check-laa.ps1`).
+  4 GB address space available for stereo render targets.
+- **D3D11 renderer confirmed live at runtime** (2026-07-23, first Present hook log):
+  feature level 0xB000 (11_0), backbuffer DXGI format 28 (R8G8B8A8_UNORM), 2560×1440,
+  `windowed=0` — the game defaults to **exclusive fullscreen** (relevant to DR-7: borderless
+  test still pending). D3D9 fallback path exists in the binary but is not the default.
 - Renderer single-threaded by default (`UseMultithreadedRendering=False` in Default.ini).
 - UI = Flash .swf via embedded gameswf (source path `...\d3ddrv\src\gameswf` in exe strings).
 - Havok 2012.2.0 r1 static; FMOD Ex via fmodex.dll; Bink 2 via bink2w32.dll.
@@ -58,8 +61,9 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   newest builds — verify (see STATUS blockers).
 - `[Engine.RenderConfig]` `HorizontalFOVLock=True` — FOV control likely needs the live memory
   write (PC+0xE0) or `SetFOV` console command; there is no user FOV ini.
-- User config appears at `%AppData%\Roaming\BioshockHD\Bioshock\` after first launch
-  (path unverified on this machine — game never launched yet).
+- User config path **confirmed** (2026-07-23, generated on first launch):
+  `%AppData%\Roaming\BioshockHD\Bioshock\` — `Bioshock.ini` (live engine ini, 25 KB),
+  `User.ini` (bindings, 99 KB), `MEMORY\CurrentGame` (save data).
 - `.debug` files in `ContentBaked\pc\System` are plaintext console scripts (useful command
   vocabulary: `testAddAvailablePlasmid ElectricBolt`, `toggleplayerinvisible`, `stopmovie HUD`,
   `setres`, `STAT FPS`).

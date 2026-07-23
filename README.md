@@ -22,7 +22,7 @@ session. No game files are modified and no game assets are distributed.
 ## Build
 
 ```powershell
-git clone --recursive https://github.com/OWNER/bioshock-vr
+git clone --recursive https://github.com/mohamad-balouza/bioshock-vr
 cd bioshock-vr
 .\tools\build.ps1            # Debug build (finds the VS-bundled CMake automatically)
 .\tools\build.ps1 -Release   # Release build

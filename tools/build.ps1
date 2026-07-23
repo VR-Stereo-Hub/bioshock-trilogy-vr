@@ -29,3 +29,7 @@ try {
 finally {
     Pop-Location
 }
+
+if ($Install) {
+    & (Join-Path $PSScriptRoot "install.ps1") -Release:$Release
+}
