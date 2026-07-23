@@ -53,4 +53,11 @@ bool vr_camera_mode();
 // mode. 0 until the first views are located.
 float suggested_hfov_deg();
 
+// The adapter reports the horizontal FOV the game is actually rendering with
+// (read back from the engine every frame). Projection-layer submission claims
+// this value, so claimed fov matches the rendered image even when an engine
+// FOV write is clamped or ignored - mismatch there shows up as fisheye or
+// binocular-scope distortion in the headset.
+void set_rendered_hfov(float hfovDeg);
+
 } // namespace bvr::vr
