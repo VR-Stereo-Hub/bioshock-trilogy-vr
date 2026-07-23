@@ -19,18 +19,32 @@ that turns the world-scale question into a number. Flat path re-verified live th
 (scan RVA 0x1BE7A0, hook + heartbeat, VDXR instance, quiet no-headset retry, clean exit).
 **In-headset AER test pending - checklist below.**
 
-Installed build in the game folder == HEAD.
+**First AER in-headset test (2026-07-23, at 1024x768): mechanics work, geometry blocked by the
+M3 distortion.** `layer: projection` confirmed, the AER eye L/R tag tracks per frame, depth is
+NOT inverted (swap-eyes not needed so the 1-frame sign attribution holds), IPD is not the
+cause. But the M3 distortion persists - an object at screen center is stretched and relaxes as
+it slides toward the periphery on a slow head turn - which blocks any parallax/immersion/scale
+judgment. Diagnosis: claimed-vs-rendered fov mismatch; the readback echoes our own PC+0xE0
+write, so it cannot see how the RENDERER interprets the value (vfov? 4:3-referenced hfov?
+clamped downstream?). Landed in response: **"Manual claimed FOV" calibration override** - a
+slider that sets the projection layer's claimed hfov directly; the world stops warping exactly
+when the claim matches the truly rendered fov, so the locked value MEASURES the engine's real
+fov. Layer line now shows target/readback/claimed. Installed build in the game folder == HEAD.
 
-**User checklist (M4 rung 1 in-headset test, in this order):**
-1. **Raise the game resolution above 1024x768 first** (headset sharpness - carried over).
-2. VD connected, "VR camera mode" on: overlay `layer:` line must read **"projection"**.
-3. Enable "AlternateEye stereo test (judders)". PASS = wrench/railings/doorframes show real
-   parallax (close one eye at a time: views differ). Judder at half-rate per eye is EXPECTED.
-   If depth feels inside-out: toggle "Swap eyes" and note which setting felt right.
-4. Calibrate IPD (55-75 mm) and World scale - the "head offset" UU line shows the number live.
-5. Now re-judge the M3 deferred items with true stereo: immersion, distortion (Force headset
-   FOV on vs off), world-scale slider feel. M3 geometry sign-off folds into this test.
-6. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
+**User checklist (FOV calibration - do this before any other judgment):**
+1. **Set the game resolution to the one you will play at first** (16:9 recommended, e.g.
+   1920x1080) - fov semantics can be aspect-dependent, so calibrate at final aspect.
+2. Camera mode ON, AlternateEye OFF (mono is cleaner), "Force headset FOV" ON.
+3. Note the layer line numbers: target / readback / claimed. If readback != target, the engine
+   is fighting the write - report that alone.
+4. Enable "Manual claimed FOV". Face a doorframe/straight edge, turn the head slowly, drag
+   "Claimed hfov" until objects stop growing/shrinking/warping as they cross center -> edge.
+   Record the pair (readback, locked claim).
+5. "Force headset FOV" OFF, repeat step 4. Record the second pair.
+6. Note whether any residual warp is vertical-only (means we need a second claimed-vfov axis).
+7. If the swim locks out: keep the locked claim, calibrate World scale (head-offset UU line),
+   then AlternateEye ON -> judge parallax (wrench/railings), then IPD, then immersion.
+8. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
    repeat the M2 checklist.
 
 ## Previous state (2026-07-23, session 2)
@@ -58,19 +72,23 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **In-headset M4 rung 1 test** (user checklist above). Outcomes feed directly into: AER box
-   tick in ROADMAP, IPD/world-scale defaults, and whether the 1-frame sign attribution holds
-   (if "Swap eyes" is the setting that felt right, the pipeline buffers deeper than one frame -
-   record it and make the corrected sign the default).
-2. After AER proves geometry: DR-3 (RenderDoc frame map) + DR-5 (double scene draw) unlock
+1. **FOV swim calibration in-headset** (user checklist above; procedure also in TESTING.md).
+   From the two (readback, locked claim) pairs, derive the engine fov mapping and bake it into
+   the adapter: engine-value -> true hfov for `set_rendered_hfov()` claims, and the inverse for
+   the forced write (headset hfov -> engine value). Candidate mappings to test the pairs
+   against: identity (then the swim has another cause), value-is-vfov
+   (hfov = 2*atan(tan(v/2)*aspect)), value-is-hfov-at-4:3 (hor+ scaling), constant clamp.
+2. **Then re-run the M4 rung 1 parallax test** (AER on, IPD + world scale) - AER mechanics
+   already verified: eye tag tracks, depth not inverted (sign attribution holds), no crash.
+3. After AER proves geometry: DR-3 (RenderDoc frame map) + DR-5 (double scene draw) unlock
    SequentialReentry - the real M4 bet (full-rate true stereo).
-3. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+4. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-4. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
-5. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
+5. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
+6. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
    game currently runs windowed 1024x768 after the user's change).
-6. DR-6: instrument DINPUT8/window messages during menu use (which input path do menus read?).
-7. Optional anytime: rerun xr_hello32 with SteamVR as active OpenXR runtime (Steam Link path).
+7. DR-6: instrument DINPUT8/window messages during menu use (which input path do menus read?).
+8. Optional anytime: rerun xr_hello32 with SteamVR as active OpenXR runtime (Steam Link path).
 
 ## Open questions / blockers
 
@@ -102,6 +120,15 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   log shape identical to session 2 - scan 1 candidate at RVA 0x1BE7A0, hook + heartbeat at
   menu, VDXR instance up, quiet no-headset retry, graceful exit. In-headset AER test = user's
   next step (procedure in TESTING.md, checklist in Current state).
+- **First AER in-headset test (still 1024x768)**: AER mechanics verified - `layer: projection`,
+  eye L/R tag tracks per frame, depth NOT inverted (1-frame sign attribution holds, swap-eyes
+  not needed), no crash. BUT the M3 distortion persists (center-stretch relaxing toward the
+  periphery on slow head turns) and blocks parallax/immersion/scale judgment; IPD ruled out as
+  the cause. Diagnosis: claimed-vs-rendered fov mismatch that the self-echoing readback cannot
+  correct. Landed **"Manual claimed FOV" calibration slider** (claims an arbitrary hfov in the
+  projection layer; swim stops when claim == truly rendered fov -> the locked value measures
+  the engine's real fov); layer line now shows target/readback/claimed. Calibration procedure
+  written into TESTING.md; deriving + baking the engine fov mapping = next step.
 
 ### 2026-07-23 - Session 2
 
