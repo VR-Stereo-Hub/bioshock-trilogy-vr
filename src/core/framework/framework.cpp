@@ -4,6 +4,7 @@
 #include "core/ui/overlay.h"
 #include "core/util/crash.h"
 #include "core/util/log.h"
+#include "game/igame_adapter.h"
 
 #include <windows.h>
 #include <MinHook.h>
@@ -22,14 +23,16 @@ void init() {
 
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK) {
-        BVR_LOG("MH_Initialize failed: %s — mod disabled, game runs flat",
+        BVR_LOG("MH_Initialize failed: %s - mod disabled, game runs flat",
                 MH_StatusToString(status));
         return;
     }
     BVR_LOG("MinHook initialized");
 
+    game::init_adapter(); // fail-soft: scan/hook failure is logged, game runs flat
+
     if (!d3d11_hook::install()) {
-        BVR_LOG("D3D11 hook install failed — mod disabled, game runs flat");
+        BVR_LOG("D3D11 hook install failed - mod disabled, game runs flat");
         return;
     }
 

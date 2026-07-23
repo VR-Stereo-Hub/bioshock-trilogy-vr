@@ -25,6 +25,11 @@ add_library(bioshockvr SHARED
     core/util/log.h
     core/util/crash.cpp
     core/util/crash.h
+    game/igame_adapter.h
+    game/bioshock1r/bioshock1r_adapter.cpp
+    game/bioshock1r/bioshock1r_adapter.h
+    game/bioshock1r/patterns.cpp
+    game/bioshock1r/patterns.h
 )
 set_target_properties(bioshockvr PROPERTIES PREFIX "")
 target_include_directories(bioshockvr PRIVATE .)
