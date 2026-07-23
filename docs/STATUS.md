@@ -40,15 +40,16 @@ turns it off). Installed build in the game folder == HEAD.
 1. ~~M2 in-headset test~~ - PASSED 2026-07-23 (big screen, gamma OK, sliders, clean fallback).
 2. ~~DR-4 camera controls in-game~~ - PASSED 2026-07-23 (ALL sliders incl. roll confirmed).
 3. ~~Stability~~ - PASSED 2026-07-23 (no stutter, crash, or input weirdness).
-4. **M3 in-headset test**: load a save, connect VD, tick "VR camera mode (6DOF head drive)"
-   in the VR section, click Recenter while looking straight ahead. Check, in order:
-   (a) looking around moves the game view with your head (pitch/yaw/roll all correct
-   direction); (b) leaning left/right/forward moves the camera the right way; (c) world scale
-   feels right - adjust the slider until leaning ~30 cm feels like ~30 cm in-world (if
-   leaning feels too strong, LOWER the scale); (d) mouse/gamepad turning still works on top;
-   (e) FOV looks natural, no fisheye/tunnel; (f) unticking camera mode returns to the big
-   screen cleanly. Report which direction anything moves if it moves wrongly - sign fixes
-   are one-liners.
+4. **M3 in-headset RETEST** (first attempt 2026-07-23: 6DOF drive itself PASSED - rotation,
+   leaning, turning, recenter all correct - but the image showed wide-angle distortion, felt
+   like a close screen with no depth, and world scale seemed inert; fixes + diagnostics
+   landed same session). Retest procedure: load a save, connect VD, tick VR camera mode,
+   Recenter, then read the **layer:** line in the VR section - it must say **projection**
+   (if it says quad, the red line + log say which prerequisite failed; report it). Then:
+   (a) distortion gone? Also try unticking Force headset FOV - undistorted-but-narrower
+   confirms an engine FOV clamp; (b) NOW re-judge the world-scale slider (10 vs 200 should
+   be unmissable); (c) note that same-image-both-eyes = no binocular depth is EXPECTED until
+   M4 stereo - judge geometry, not depth.
 5. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
    repeat the M2 checklist.
 
