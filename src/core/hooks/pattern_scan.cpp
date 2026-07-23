@@ -102,6 +102,12 @@ std::vector<const uint8_t*> find_wide_string(const ProcessImage& img, const char
     return out;
 }
 
+std::vector<const uint8_t*> find_ascii_string(const ProcessImage& img, const char* ascii) {
+    std::vector<const uint8_t*> out;
+    find_all(img, reinterpret_cast<const uint8_t*>(ascii), strlen(ascii), out);
+    return out;
+}
+
 std::vector<const uint8_t*> find_references(const ProcessImage& img, const void* target) {
     uint32_t value = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target));
     uint8_t needle[4];

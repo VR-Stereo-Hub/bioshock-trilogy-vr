@@ -15,6 +15,8 @@ add_library(bioshockvr SHARED
     core/framework/dllmain.cpp
     core/framework/framework.cpp
     core/framework/framework.h
+    core/debug/value_scan.cpp
+    core/debug/value_scan.h
     core/hooks/d3d11_hook.cpp
     core/hooks/d3d11_hook.h
     core/hooks/pattern_scan.cpp
