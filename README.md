@@ -1,14 +1,14 @@
 # bioshock-vr
 
 A native VR mod for **BioShock Remastered** (PC, Steam): stereoscopic rendering, 6DOF head
-tracking, and motion controllers — weapons in one hand, plasmids in the other — targeting
+tracking, and motion controllers - weapons in one hand, plasmids in the other - targeting
 Quest 3 via Virtual Desktop (VDXR/OpenXR) or Steam Link (SteamVR), and any other OpenXR headset.
 
 The mod is a DLL injected into the game's process. It hooks the game's DirectX 11 renderer and
 the Vengeance engine (Unreal Engine 2.5 lineage) camera path, and drives them from an OpenXR
 session. No game files are modified and no game assets are distributed.
 
-> **Status:** early development — project scaffolding and injection skeleton.
+> **Status:** early development - project scaffolding and injection skeleton.
 > See [docs/STATUS.md](docs/STATUS.md) for the current state and [docs/ROADMAP.md](docs/ROADMAP.md)
 > for the milestone plan (stereo rendering, motion controls, hands, selection wheels, VR menus,
 > BioShock 2 support).
@@ -42,15 +42,15 @@ Then launch the game normally through Steam. The mod writes a log to
 
 This project is not affiliated with, endorsed by, or connected to 2K Games, Take-Two
 Interactive, or any of their subsidiaries. It distributes no game assets, no decompiled game
-code, and no copyrighted material — only original injection code. A legitimately owned copy of
+code, and no copyrighted material - only original injection code. A legitimately owned copy of
 BioShock Remastered is required. Free and open source, forever.
 
 ## Credits
 
 - [itsloopyo/bioshock-remastered-headtracking](https://github.com/itsloopyo/bioshock-remastered-headtracking)
-  (MIT) — pioneered the `xinput1_3.dll` injection vector and the `PlayerCalcView` camera hook
+  (MIT) - pioneered the `xinput1_3.dll` injection vector and the `PlayerCalcView` camera hook
   technique on this exact game; this project ports and extends those techniques.
-- [praydog/REFramework](https://github.com/praydog/REFramework) (MIT) — reference implementation
+- [praydog/REFramework](https://github.com/praydog/REFramework) (MIT) - reference implementation
   for OpenXR/D3D11 VR integration in a closed-source engine.
 - Third-party libraries: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 

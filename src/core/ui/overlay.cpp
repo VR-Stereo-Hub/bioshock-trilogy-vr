@@ -60,14 +60,14 @@ bool Init(IDXGISwapChain* swapchain) {
     g_originalWndProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(WndProc)));
 
-    BVR_LOG("overlay initialized (hwnd=%p) - Insert toggles it", g_window);
+    BVR_LOG("overlay initialized (hwnd=%p) - F10 toggles it", g_window);
     return true;
 }
 
 void DrawUi() {
     ImGui::SetNextWindowSize(ImVec2(380, 160), ImGuiCond_FirstUseEver);
     ImGui::Begin("BioShock VR " BVR_VERSION);
-    ImGui::Text("Skeleton build — milestone M0");
+    ImGui::Text("Skeleton build - milestone M0");
     ImGui::Text("%.1f fps (%.2f ms)", ImGui::GetIO().Framerate,
                 1000.0f / ImGui::GetIO().Framerate);
     ImGui::Separator();
@@ -86,9 +86,10 @@ void on_present(IDXGISwapChain* swapchain) {
     }
     if (!g_rtv && !CreateRenderTarget(swapchain)) return;
 
-    // Insert key, edge-triggered
+    // F10, edge-triggered (Insert was the original choice, but not every
+    // keyboard has it)
     static bool wasDown = false;
-    bool isDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+    bool isDown = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
     if (isDown && !wasDown) {
         g_visible = !g_visible;
         ImGui::GetIO().MouseDrawCursor = g_visible;
