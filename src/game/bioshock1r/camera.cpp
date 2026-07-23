@@ -44,8 +44,13 @@ std::atomic<bool>  g_logCamera{true};
 std::atomic<float> g_worldScale{50.0f};        // Unreal units per meter
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
-std::atomic<bool>  g_forceHeadsetFov{true};    // off = keep the game's own FOV (undistorted,
-                                               // narrower visual cone; distortion escape hatch)
+std::atomic<bool>  g_forceHeadsetFov{false};   // 2026-07-24 default OFF: the renderer pins
+                                               // hfov to the ini HorizontalFOV lock (~100), so
+                                               // forcing 137 only poisons the fov claim (the
+                                               // readback echoes our own write) - measured via
+                                               // in-headset swim calibration. Re-enable once
+                                               // the lock is defeated and the write truly
+                                               // reaches the projection.
 
 // M4 rung 1: AlternateEye. Half-IPD camera shift per eye, eye picked by
 // vr::current_eye_sign() (0 while AER is off).

@@ -30,7 +30,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | Name | Pattern / method | Module | Build | Found by | Status | Date |
 |---|---|---|---|---|---|---|
 | `APlayerController::eventPlayerCalcView` | FName-chain: find wide string `"PlayerCalcView"` → its FName-init xref → `89 0D` (`MOV [imm32], ECX`) store of the FName index → walk xrefs back to MSVC prologue `CC CC CC 55 8B EC` | BioshockHD.exe | 2022-04-13 | ported from itsloopyo/bioshock-remastered-headtracking `src/memory.rs` (MIT); C++ port: `core/hooks/pattern_scan.cpp` used by `game/bioshock1r/patterns.cpp` | **RESOLVED live: RVA 0x1BE7A0** (scan: 1 wide-string match, 1 string xref, FName global +3 xrefs, exactly 1 candidate past the init-site filter). Exe loads rebased (ASLR observed, base 0x0FB20000) - RVA is the stable identifier; the live-memory scan is relocation-transparent. | 2026-07-23 |
-| PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET`; `kFovLiveOffset` in `patterns.h` | **verified both ways**: read 100.0 live; per-frame write user-confirmed visually in-game (override widens view instantly, restore on toggle-off works) | 2026-07-23 |
+| PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET`; `kFovLiveOffset` in `patterns.h` | **verified both ways, but renderer-capped**: read 100.0 live; per-frame write user-confirmed visually in-game (override widens view instantly, restore on toggle-off works). 2026-07-24 in-headset swim calibration (TESTING.md procedure) at 1920x1080: field written 137 -> ACTUALLY RENDERED hfov ~100; field 100 -> ~100. The live ini pins `HorizontalFOV=100` under `HorizontalFOVLock=True` - the write is real but the projection obeys the config lock above ~100. Reading this field back therefore echoes the write, NOT the rendered fov, whenever the lock clamps. | 2026-07-24 |
 
 (Add one row per symbol as they land in `src/game/bioshock1r/patterns.cpp`.)
 
@@ -68,8 +68,15 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 - `[Engine.Console]` `ConsoleKey=9` (Tab). Launch option `-allowconsole`. Mixed reports on
   newest builds - verify (see STATUS blockers).
-- `[Engine.RenderConfig]` `HorizontalFOVLock=True` - FOV control likely needs the live memory
-  write (PC+0xE0) or `SetFOV` console command; there is no user FOV ini.
+- **FOV lock (2026-07-24, live user ini)**: `[Engine.RenderConfig]` has
+  `HorizontalFOVLock=True;` (note the shipped trailing semicolon - preserve it when editing)
+  plus `...PS4`/`...XB1` variants, and the remaster settings section (the one ending in
+  `SettingVersion=2`) has `bHorizontalFOVLock=True` and **`HorizontalFOV=100`** - which matches
+  the measured ~100 rendered-hfov cap exactly (see the FOV row above). Experiment in flight:
+  both PC lock flags flipped to False (backup at `Bioshock.ini.bvr-bak-fovlock` next to the
+  ini) to see if the PC+0xE0 write then reaches the projection past 100. Plan B if not:
+  set `HorizontalFOV=137` directly. Plan C: FName-chain scan for the live settings object and
+  write `HorizontalFOV` in memory.
 - User config path **confirmed** (2026-07-23, generated on first launch):
   `%AppData%\Roaming\BioshockHD\Bioshock\` - `Bioshock.ini` (live engine ini, 25 KB),
   `User.ini` (bindings, 99 KB), `MEMORY\CurrentGame` (save data).
