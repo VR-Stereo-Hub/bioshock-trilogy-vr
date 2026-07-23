@@ -60,4 +60,13 @@ float suggested_hfov_deg();
 // binocular-scope distortion in the headset.
 void set_rendered_hfov(float hfovDeg);
 
+// --- M4 rung 1: AlternateEye stereo -----------------------------------------
+// Which eye the NEXT game frame should render for: -1 left, +1 right, 0 =
+// AlternateEye off (render centered, exactly the M3 behavior). The adapter's
+// CalcView drive shifts the camera by sign * IPD/2 along view-right. The
+// render thread flips the sign after each submitted frame, matching the eye
+// whose swapchain the next Present's backbuffer copy will feed; each eye's
+// last image + pose is held for the compositor to reproject on its off frame.
+int current_eye_sign();
+
 } // namespace bvr::vr
