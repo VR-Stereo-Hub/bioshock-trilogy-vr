@@ -2,49 +2,52 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-23, session 1 continued)
+## Current state (2026-07-23, session 2)
 
-**M0 complete and user-verified** (F10 overlay confirmed visually in-game). **DR-1 fully
-retired**: xr_hello32 (32-bit) ran a complete OpenXR session - 60 frames on VDXR 1.0.10 with the
-Quest 3 connected, D3D11 device on the RTX 4060. DR-2 done earlier (LAA yes, D3D11 confirmed).
-The path to M2 (game frame on a big screen in the headset) is fully unblocked: same device type,
-same runtime, proven from a 32-bit process. Remaining M1 items: DR-3 (RenderDoc frame map),
-DR-4 (CalcView hook port), DR-5/6/7. Toggle key is F10. Em dashes are banned repo-wide (they
-broke PowerShell 5.1 parsing and mojibaked logs/ImGui).
-
-## Previous state (session 1, first half)
-
-M0 (skeleton) is functionally complete and **verified in-game**: the xinput1_3 proxy + bioshockvr.dll
-load into BioshockHD.exe, MinHook initializes, the D3D11 Present/ResizeBuffers hooks fire, and the
-log confirms the game runs the **D3D11 renderer** (feature level 11_0, 2560×1440, exclusive
-fullscreen) on an RTX 4060. The ImGui overlay is **visually confirmed by the user** (main menu,
-500 fps, windowed mode); the toggle key is **F10** (changed from Insert - user's keyboard lacks it). LAA flag confirmed YES (4 GB address space). The game's first launch generated
-the user config at `%AppData%\Roaming\BioshockHD\Bioshock\`. Repo is public at
-https://github.com/mohamad-balouza/bioshock-vr with Debug + Release builds working.
+**DR-4 retired (code-verified live; user visual pass pending)**. The FName-chain scan is ported
+to C++ (`core/hooks/pattern_scan.cpp`, generic + parameterized; attributed to itsloopyo MIT) and
+resolves `eventPlayerCalcView` at **RVA 0x1BE7A0** on the first try (1 wide-string match, 1
+xref, exactly 1 candidate). The MinHook detour is live: fires every frame (heartbeat 400-7800
+calls/s - **call rate can exceed fps**, and it **fires at the main menu**), telemetry + camera
+offset/wobble/FOV-override controls are in the F10 overlay via the new `IGameAdapter` seam
+(`game/igame_adapter.h`, minimal: capabilities/init/setFov/drawDebugUi). The exe loads rebased
+(ASLR, observed base 0x0FB20000) - the live-memory scan is relocation-transparent; RVA is the
+stable identifier. The 1 Hz camera heartbeat is **default ON** during bring-up (overlay checkbox
+turns it off). Installed build in the game folder == HEAD.
 
 **User checklist:**
-1. ~~Press F10, confirm the overlay toggles~~ - confirmed by user 2026-07-23.
-2. Play a few minutes - any input weirdness, stutter, or crash with the mod installed?
-3. Optional: run `.\tools\tail-log.ps1` in a terminal while playing (works live).
+1. F10 in-game -> "Camera debug": toggle **Wobble test** (vertical bob), drag **Offset Z**,
+   **Yaw offset**, and **FOV override** - confirm each visibly changes the view (best in a
+   loaded save, not the menu).
+2. Report any stutter/crash with the hook installed (Debug build, ~7k calls/s at menu is fine).
+
+## Previous state (2026-07-23, session 1)
+
+M0 complete and user-verified (F10 overlay, D3D11 FL 11_0 confirmed, LAA yes). DR-1 fully
+retired: xr_hello32 (32-bit) ran a complete OpenXR session on VDXR 1.0.10 with the Quest 3
+(60 frames, RTX 4060 LUID match) - M2 is unblocked. DR-2 done. Repo public at
+https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **DR-4: port the PlayerCalcView FName-chain scan to C++** (`src/game/bioshock1r/patterns.cpp`),
-   hook it, add ImGui debug sliders for camera offset + per-frame FOV write (PC+0xE0), wobble test.
-   This is the gateway to M3 (6DOF camera).
-2. **M2 (now unblocked): OpenXR session inside the game** - port the xr_hello32 flow into
-   core/vr, pace frames from the Present hook, put the game frame on a quad layer. First
-   in-headset gameplay moment.
-3. DR-3: RenderDoc x86 capture with the proxy loaded → frame map into ENGINE_NOTES.md.
-4. DR-7: force borderless/windowed via ini (game defaults to exclusive fullscreen) and check
-   overlay/capture stability.
+1. **M2: OpenXR session inside the game** - port the xr_hello32 flow into `core/vr`
+   (instance/session on the game's ID3D11Device), pace frames from the Present hook, game frame
+   on a quad layer. First in-headset gameplay moment (Quest 3 + Virtual Desktop, user tests).
+2. **M3 groundwork is now trivial**: drive CalcView from the HMD pose (the hook + FOV write are
+   proven; add `onCalcView` to the seam when core/vr can supply poses).
+3. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
+4. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
+   game currently runs windowed 1024x768 after the user's change).
 5. DR-6: instrument DINPUT8/window messages during menu use (which input path do menus read?).
 6. Optional anytime: rerun xr_hello32 with SteamVR as active OpenXR runtime (Steam Link path).
 
 ## Open questions / blockers
 
-- **DR-1**: 32-bit OpenXR runtime support in VDXR is unverified (SteamVR fallback → 64-bit
-  companion compositor if both fail).
+- Does the game recompute PC+0xE0 FOV itself anywhere (level load, cutscenes)? We restore the
+  saved value when the override toggles off; watch for stale-FOV edge cases.
+- CalcView call rate >> fps at the uncapped menu - before M3, determine whether extra calls are
+  benign re-entries (same frame) or distinct view queries; affects where per-frame XR pose
+  sampling should live.
 - Console availability in the current Steam build unverified - test Tab with `-allowconsole`.
 - Adapter VRAM logs as "3072 MB" - DXGI_ADAPTER_DESC.DedicatedVideoMemory is a 32-bit SIZE_T in
   our process, so values ≥4 GB truncate. Cosmetic; ignore.
@@ -52,6 +55,25 @@ https://github.com/mohamad-balouza/bioshock-vr with Debug + Release builds worki
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-23 - Session 2
+
+- **DR-4 landed**: studied itsloopyo's `memory.rs`/`engine_hook.rs` (MIT), ported the FName-chain
+  scan as generic `core/hooks/pattern_scan.{h,cpp}` (module capture, wide-string/imm32 sweeps
+  via VirtualQuery region walk, E8 -> 89 0D global extraction, CC CC CC 55 8B EC prologue walk,
+  200-byte init-site filter), consumed from the new `game/bioshock1r/patterns.cpp`.
+- Created the `IGameAdapter` seam (minimal, grows per milestone) + `Bioshock1RAdapter`;
+  framework wires `game::init_adapter()` between MinHook init and the D3D11 hooks; every
+  failure path fail-soft.
+- Hook detour (`__fastcall` dummy-EDX): original first, relaxed-atomic telemetry, offset/wobble/
+  FOV-override application, one-shot first-fire log + 1 Hz heartbeat (default on). Overlay draws
+  the adapter section through the seam.
+- **Smoke-tested live twice** (game closed/relaunched via Steam with user's standing permission):
+  scan resolved RVA 0x1BE7A0 both runs (rebased base 0x0FB20000 - ASLR active, scan
+  relocation-transparent), hook fired at menu, heartbeat 400-7800 calls/s. Recorded in
+  ENGINE_NOTES: fires at main menu, call rate >> fps, `AActor**` signature correction, FOV 100.0
+  read live.
+- 4 code commits + this docs commit pushed incrementally to main.
 
 ### 2026-07-23 - Session 1 (continued)
 

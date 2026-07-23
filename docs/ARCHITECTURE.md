@@ -158,6 +158,19 @@ runtime.
   in history. Guard in third_party/CMakeLists.txt explains `git submodule update --init`.
 - **2026-07-23 · Hand-rolled logger, no spdlog** - one less dependency; needs are trivial
   (timestamped lines to one file).
+- **2026-07-23 · IGameAdapter introduced incrementally.** DR-4 ships `capabilities`/`init`/
+  `setFov`/`drawDebugUi` only; `onCalcView`, `execConsole`, aim/hands/re-entry land with the
+  milestone that consumes them (M3+). Each deferred method needs type design (`CameraOverride`,
+  `Pose`, `GameState`, ...) that the consuming milestone should inform - stubbing them now would
+  be speculation. The interface is in-process only, so growing it later is a one-line change
+  per adapter. The full target shape stays documented above.
+- **2026-07-23 · Adapter-drawn debug UI through the seam** (`IGameAdapter::drawDebugUi`). The
+  overlay calls it via the interface; all engine-semantic UI (Unreal units, FRotator degrees,
+  FOV offsets) stays inside `game/bioshock1r/`, next to the hook state it displays - which also
+  keeps the atomics' thread-safety surface in one file. `core/ui` includes only the seam header
+  (no addresses, no engine knowledge), so the layering rule holds. Rejected: a shared POD debug
+  struct in core (leaks engine semantics) and overlay including bioshock1r headers directly
+  (rule violation).
 - **2026-07-23 · Static CRT (/MT)** - no VC redist dependency inside the game process.
 - **2026-07-23 · MIT license** - compatible with every dependency (BSD-2, MIT, Apache-2.0);
   matches the free-open-injector legal posture for 2K-game mods.

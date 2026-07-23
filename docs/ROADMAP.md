@@ -38,8 +38,11 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       *2026-07-23: LAA = YES (0x0122); D3D11 confirmed live (FL 11_0, exclusive fullscreen).*
 - [ ] DR-3: RenderDoc frame map - pass order, scene color/depth RTs + formats, gameswf HUD draw
       fingerprint, view/proj constant-buffer slot, scene-draw callstack
-- [ ] DR-4: port PlayerCalcView FName-chain scan to C++; hook it; wobble-test camera + per-frame
+- [x] DR-4: port PlayerCalcView FName-chain scan to C++; hook it; wobble-test camera + per-frame
       FOV write (PC+0xE0)
+      *2026-07-23: scan resolves live (RVA 0x1BE7A0, exactly 1 candidate), hook fires every
+      frame (heartbeat: 400-7800 calls/s; fires at main menu too), offsets/wobble/FOV override
+      wired with ImGui controls. Pending: user visual confirm of wobble/offset/FOV in-game.*
 - [ ] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability +
       RenderDoc; 10-min play test
 - [ ] DR-6: instrument DINPUT8/window messages/XInput during menu use - which input path do
