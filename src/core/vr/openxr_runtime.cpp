@@ -71,6 +71,14 @@ XrView g_views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 bool g_viewsValid = false;
 std::atomic<float> g_hfovDeg{0.0f};      // circumscribed symmetric hfov, read cross-thread
 std::atomic<float> g_renderedHfov{0.0f}; // fov the game actually rendered (adapter readback)
+// Distortion calibration: the readback reads the same engine address we write,
+// so under forcing it echoes our own value and cannot see how the RENDERER
+// interprets it (vfov? 4:3-referenced? clamped downstream?). This manual
+// override claims an arbitrary hfov instead; in-headset, the world stops
+// warping on head rotation exactly when the claim matches what the engine
+// truly rendered - the locked slider value measures the real fov.
+std::atomic<bool> g_claimFovManual{false};
+std::atomic<float> g_claimFovDeg{100.0f};
 // True only when everything the projection layer needs is in place (views
 // located, fov known, swapchain alive). The camera drive is gated on this so
 // a head-driven camera can never appear on the flat quad screen.
@@ -509,8 +517,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
 
     // Claim the fov the game actually rendered with (adapter readback);
     // fall back to the circumscribed target before the first readback lands.
+    // The manual calibration override beats both (see its declaration).
     float hfovDeg = g_renderedHfov.load(std::memory_order_relaxed);
     if (hfovDeg <= 0.0f) hfovDeg = g_hfovDeg.load(std::memory_order_relaxed);
+    if (g_claimFovManual.load(std::memory_order_relaxed))
+        hfovDeg = g_claimFovDeg.load(std::memory_order_relaxed);
     bool projectionMode = g_cameraMode.load(std::memory_order_relaxed) &&
                           g_projectionReady.load(std::memory_order_relaxed) && hfovDeg > 0.0f;
 
@@ -665,13 +676,32 @@ void draw_debug_ui() {
             if (ImGui::Checkbox("Swap eyes (inverted-depth test)", &swap))
                 g_aerSwapEyes.store(swap, std::memory_order_relaxed);
         }
+        bool manualFov = g_claimFovManual.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Manual claimed FOV (distortion calibration)", &manualFov)) {
+            g_claimFovManual.store(manualFov, std::memory_order_relaxed);
+            if (manualFov) {
+                // Snap the slider to the current effective claim as a start point.
+                float cur = g_renderedHfov.load(std::memory_order_relaxed);
+                if (cur <= 0.0f) cur = g_hfovDeg.load(std::memory_order_relaxed);
+                if (cur > 0.0f) g_claimFovDeg.store(cur, std::memory_order_relaxed);
+            }
+        }
+        if (manualFov) {
+            float v = g_claimFovDeg.load(std::memory_order_relaxed);
+            if (ImGui::SliderFloat("Claimed hfov (deg) - stop the swim", &v, 40.0f, 160.0f))
+                g_claimFovDeg.store(v, std::memory_order_relaxed);
+        }
     }
     const char* layerName = g_lastLayer == 2 ? "projection" : g_lastLayer == 1 ? "quad" : "none";
     int eyeSign = g_aerEyeSign.load(std::memory_order_relaxed);
-    ImGui::Text("layer: %s%s | target hfov %.1f | game fov readback %.1f",
+    float readback = g_renderedHfov.load(std::memory_order_relaxed);
+    float claimed = g_claimFovManual.load(std::memory_order_relaxed)
+                        ? g_claimFovDeg.load(std::memory_order_relaxed)
+                        : (readback > 0.0f ? readback
+                                           : g_hfovDeg.load(std::memory_order_relaxed));
+    ImGui::Text("layer: %s%s | target %.1f | readback %.1f | claimed %.1f",
                 layerName, eyeSign == 0 ? "" : eyeSign < 0 ? " (AER eye L)" : " (AER eye R)",
-                g_hfovDeg.load(std::memory_order_relaxed),
-                g_renderedHfov.load(std::memory_order_relaxed));
+                g_hfovDeg.load(std::memory_order_relaxed), readback, claimed);
     if (camMode && !g_projectionReady.load(std::memory_order_relaxed))
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                            "projection NOT ready - drive is held off (see log)");
