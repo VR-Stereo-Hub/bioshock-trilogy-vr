@@ -1,0 +1,29 @@
+# Build output
+build/
+out/
+.vs/
+.vscode/
+CMakeUserPresets.json
+
+# Logs and runtime artifacts
+*.log
+imgui.ini
+
+# RenderDoc captures (large, and may contain game content)
+*.rdc
+captures/
+
+# Decompiled UnrealScript / extracted game content — 2K copyright, never commit
+tools/uscript/*
+!tools/uscript/README.md
+*.u
+*.upk
+*.blk
+*.lbf
+*.bsm
+*.fsb
+*.bik
+
+# OS noise
+Thumbs.db
+desktop.ini
