@@ -18,14 +18,16 @@ add_library(imgui STATIC
 )
 target_include_directories(imgui PUBLIC imgui imgui/backends)
 
-# --- OpenXR loader (Apache-2.0) — wired on demand -----------------------------
-# The loader is only needed from M2 (headset bring-up) onward. Enable with
-# -DBIOSHOCKVR_WITH_OPENXR=ON once tools/xr-hello32 (DR-1) has validated 32-bit
-# runtime support.
-option(BIOSHOCKVR_WITH_OPENXR "Build the OpenXR loader" OFF)
+# --- OpenXR loader (Apache-2.0) -----------------------------------------------
+# Statically linked (DYNAMIC_LOADER off) so we ship no extra loader DLL.
+option(BIOSHOCKVR_WITH_OPENXR "Build the OpenXR loader" ON)
 if(BIOSHOCKVR_WITH_OPENXR)
-    set(DYNAMIC_LOADER ON CACHE BOOL "" FORCE)
+    set(DYNAMIC_LOADER OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
     add_subdirectory(OpenXR-SDK)
+    # Upstream forces dynamic CRT for static-lib builds; match our /MT so the
+    # loader links into the mod DLL and test exes without CRT mismatch.
+    set_target_properties(openxr_loader PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
