@@ -180,3 +180,17 @@ runtime.
 - **2026-07-23 · Static CRT (/MT)** - no VC redist dependency inside the game process.
 - **2026-07-23 · MIT license** - compatible with every dependency (BSD-2, MIT, Apache-2.0);
   matches the free-open-injector legal posture for 2K-game mods.
+- **2026-07-23 · AlternateEye via held stale images, not blanking.** Each eye gets its own
+  backbuffer-sized swapchain; a frame is copied into the CURRENT eye's swapchain and that eye's
+  located pose is stored with it. Submission always references both swapchains' most recently
+  released images (spec-legal without re-acquiring) with their STORED poses, so the compositor
+  reprojects the half-rate-stale eye instead of it going black - judder, not flicker. The eye
+  sign for the game's camera shift is published at Present-tail AFTER submit and only flips once
+  a frame carrying the current eye's offset was actually captured (the sign itself is the
+  attribution: the value CalcView consumed is the offset baked into the next backbuffer we see).
+  The un-offset frame right after enabling therefore flows through the mono path instead of
+  being mislabeled as a left-eye image. A "Swap eyes" diagnostic checkbox negates the sign to
+  disambiguate inverted depth (i.e. deeper pipeline buffering than the 1-frame assumption) from
+  other geometry errors in-headset. Rejected: blanking the stale eye (flicker), acquiring both
+  swapchains every frame (pointless copies), per-eye fov storage (fov only changes on user
+  toggles; one-frame mismatch invisible).
