@@ -66,31 +66,32 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M3 - 6DOF head camera (~1–2 sessions)
 
-- [ ] CalcView hook drives camera from predicted HMD pose (position + full FRotator incl. roll)
-      *2026-07-23: code landed - adapter pulls the predicted pose from core/vr in the detour;
-      pitch/roll absolute, yaw additive (mouse turning intact), position recenter-relative and
-      yaw-frame-rotated. Pending in-headset verification.*
-- [ ] FOV forced to headset FOV; projection layer (same image both eyes)
-      *2026-07-23: code landed - circumscribed symmetric FOV computed per session and forced
-      per frame while driving; projection layer with per-eye poses replaces the quad in camera
-      mode. Pending in-headset verification.*
-- [ ] World-scale calibration + recenter in ImGui
-      *2026-07-23: code landed - World scale slider (10-200 UU/m, default 50) + Recenter
-      button. Calibration itself happens in-headset.*
-- [ ] **Done when:** you can physically lean around a corner in Rapture; no drift; head roll
+- [x] CalcView hook drives camera from predicted HMD pose (position + full FRotator incl. roll)
+      *2026-07-23: USER-VERIFIED in-headset - rotation, leaning, turning, recenter all work.*
+- [x] FOV forced to headset FOV; projection layer (same image both eyes)
+      *2026-07-24: design CORRECTED and verified - the engine's fov is set via the remaster's
+      FOV video option (max 130; the memory field is telemetry-only, see ENGINE_NOTES), and
+      the projection layer claims the matching value (manual claimed-fov slider until the
+      settings object is scanned). Projection layer verified across M3/M4 tests.*
+- [x] World-scale calibration + recenter in ImGui
+      *2026-07-23: landed (World scale slider + Recenter + head-offset telemetry). Fine
+      calibration continues alongside the M4 IPD follow-up.*
+- [x] **Done when:** you can physically lean around a corner in Rapture; no drift; head roll
       correct; comfortable latency.
+      *2026-07-23/24: verified across sessions 2-3 - 6DOF drive solid, geometry solid after
+      the fov fix ("everything is very good").*
 
 ## M4 - Stereo (~3–5 sessions - the risk milestone)
 
-- [ ] AlternateEye policy: camera alternates ±IPD/2 per game frame → proves geometric stereo
+- [x] AlternateEye policy: camera alternates ±IPD/2 per game frame → proves geometric stereo
       (IPD scale, convergence, culling) cheaply
-      *2026-07-23: code landed - per-eye swapchains, held stale image + stored pose (compositor
-      reprojects the off eye), sign flip after submit, IPD slider + swap-eyes diagnostic +
-      head-offset telemetry. Flat path re-verified live. First in-headset test: AER mechanics
-      run (eye L/R tag tracks per frame, depth not inverted), but the M3 distortion persists
-      (center-stretch relaxing toward the periphery on head turn) and blocks any parallax
-      judgment - claimed-vs-rendered fov mismatch suspected; manual claimed-fov calibration
-      slider added (procedure in TESTING.md). Parallax verdict pending calibration.*
+      *2026-07-24: USER-VERIFIED - "parallax and other stuff are very nice" with the game FOV
+      option at 130 + manual claimed fov 130 (the fov-mismatch distortion that blocked the
+      first test is fully resolved; see ENGINE_NOTES). Implementation: per-eye swapchains, held
+      stale image + stored pose (compositor reprojects the off eye), sign flip after submit,
+      swap-eyes diagnostic (not needed - depth correct), head-offset telemetry. Open follow-up:
+      the IPD slider's effect is in doubt (user unsure it changes anything) - verify when
+      revisiting calibration.*
 - [ ] **SequentialReentry** (primary bet): hook scene-draw entry (from DR-3/DR-5), render twice
       per frame with per-eye cameras, CopyResource each eye out; HUD off in stereo + own reticle
 - [ ] Z3D depth-reproject fallback policy selectable in ImGui

@@ -17,33 +17,28 @@ decision log). New controls: IPD slider (55-75 mm, default 63), "Swap eyes" inve
 diagnostic, `(AER eye L/R)` tag on the layer line, and a "head offset (UU)" telemetry readout
 that turns the world-scale question into a number. Flat path re-verified live this session
 (scan RVA 0x1BE7A0, hook + heartbeat, VDXR instance, quiet no-headset retry, clean exit).
-**In-headset AER test pending - checklist below.**
 
-**FOV mystery FULLY RESOLVED (2026-07-24).** The swim calibration measured the true render at
-~100 deg; automated flat A/B testing (new command-file seam + window screenshots, see
-TESTING.md) then proved the PC+0xE0 field is **telemetry-only - the renderer never reads it**
-(writes 60-140 leave frames pixel-identical in gameplay and menu attract, under both ini lock
-states; DR-4's "override works" was a VR claim-side artifact, retracted in ENGINE_NOTES). The
-REAL control, found by the user: the remaster's **"FOV" video option (range 75-130)**, stored
-as `HorizontalFOV` in the settings ini section - applying it visibly changes the render. The
-field does NOT mirror the option, so the mod's auto-readback claim lies whenever the option is
-not 100: **for now the user must set the manual claimed-FOV slider to the same value as the
-video option.** Ini FOV locks restored to stock True (the False experiment made the field
-inert without enabling anything; 137 direct in the ini did nothing - out of UI range). The
-bottom black band = honest uncovered headset fov; at option max 130 @ 16:9 the render covers
-~130x101 deg vs the headset's ~110x110 - horizontal fully covered, only thin top/bottom bands
-remain (a 4:3 resolution at fov 130 would cover vertically too, at a sharpness cost).
-Installed build in the game folder == HEAD.
+**M4 rung 1 USER-VERIFIED (2026-07-24): "parallax and other stuff are very nice."** The
+winning configuration: the remaster's **FOV video option at 130** (its max) + the overlay's
+**manual claimed-FOV slider at 130** (matching), VR camera mode + AlternateEye on. The user's
+verdict: "everything is very good" - solid geometry, real parallax, depth not inverted. M3 is
+now fully ticked too (6DOF verified session 2, geometry verified today). The whole fov saga is
+resolved and recorded in ENGINE_NOTES: the PC+0xE0 field is telemetry-only (renderer never
+reads it - proven by automated A/B screenshot sweeps via the new command-file seam +
+tools/game-shot.ps1), the video option is the only real control, and the claim must match it
+by hand until the settings object is scanned. Ini FOV locks back at stock True.
 
-**User checklist (the payoff run - stereo judgment on solid geometry):**
-1. Flat: set the game's video **FOV option to 130** (its max) and apply.
-2. In-headset: "VR camera mode" ON ("Force headset FOV" stays OFF - it is now default OFF),
-   "Manual claimed FOV" ON, slider to **130** (match the option exactly). Expect: solid world,
-   much smaller black band than before. Fine-tune the slider by the swim test if needed.
-3. AlternateEye ON -> judge parallax (wrench/railings/doorframes, one eye at a time), then
-   IPD, world scale (head-offset UU line), immersion - the M3 deferred judgments.
-4. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
-   repeat the M2 checklist.
+**Open item from the verification**: the user suspects the **IPD slider may not be doing
+anything perceptible** - deferred by their choice. Note for that investigation: at world scale
+50 UU/m, the 55-75 mm range only moves each eye by ~0.5 UU total, and perceived depth scale is
+driven by the worldScale-to-IPD ratio - so a worldScale miscalibration would mask the slider.
+Verify with an exaggerated test value (e.g. temporarily widen the slider range) before
+concluding it is broken.
+
+**User checklist (optional, any session):**
+1. Steam Link cross-check - set SteamVR as active OpenXR runtime and repeat the M2 checklist.
+2. If the thin top/bottom black bands bother: try the highest 4:3 resolution at FOV 130
+   (vertical coverage becomes complete at a sharpness cost).
 
 ## Previous state (2026-07-23, session 2)
 
@@ -70,33 +65,32 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **The payoff run** (user checklist above): video FOV option 130 + manual claim 130 + AER ->
-   first real parallax/IPD/world-scale/immersion judgment on solid geometry.
-2. **Settings-object scan**: locate the live remaster settings object holding `HorizontalFOV`
+1. **Settings-object scan**: locate the live remaster settings object holding `HorizontalFOV`
    (string/FName scan, or xref from the options-apply path). Read it -> auto-truth for the
    claim (kills the manual-slider requirement); write it -> try exceeding the 130 UI cap
    toward the 137 headset target. Candidate follow-up: find where the projection matrix is
    built from it (DR-3 RenderDoc work helps).
-3. **Then re-run the M4 rung 1 parallax test** (AER on, IPD + world scale) - AER mechanics
-   already verified: eye tag tracks, depth not inverted (sign attribution holds), no crash.
-3. After AER proves geometry: DR-3 (RenderDoc frame map) + DR-5 (double scene draw) unlock
-   SequentialReentry - the real M4 bet (full-rate true stereo).
+2. **IPD slider verification** (deferred by user): see the note in Current state - test with
+   an exaggerated offset before concluding anything; also calibrate world scale first since
+   perceived depth scale is the worldScale/IPD ratio.
+3. **SequentialReentry groundwork - the real M4 bet**: DR-3 (RenderDoc frame map: scene RTs,
+   view/proj constant buffers, scene-draw callstack) + DR-5 (double scene draw with yaw
+   delta). AER judder makes full-rate stereo the next quality jump.
 4. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-5. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
-6. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
-   game currently runs windowed 1024x768 after the user's change).
-7. DR-6: instrument DINPUT8/window messages during menu use (which input path do menus read?).
-8. Optional anytime: rerun xr_hello32 with SteamVR as active OpenXR runtime (Steam Link path).
+5. DR-7: borderless/windowed stability; DR-6: menu input path (note: tools/game-click.ps1
+   synthetic clicks DO work on gameswf menus - partial DR-6 answer already).
+6. Optional anytime: Steam Link / SteamVR cross-check.
 
 ## Open questions / blockers
 
-- Does the game recompute PC+0xE0 FOV itself anywhere (level load, cutscenes)? We restore the
-  saved value when the override toggles off; watch for stale-FOV edge cases.
-- CalcView call rate >> fps at the uncapped menu - before M3, determine whether extra calls are
-  benign re-entries (same frame) or distinct view queries; affects where per-frame XR pose
-  sampling should live.
+- ~~PC+0xE0 FOV recompute~~ - moot: the field is telemetry-only (2026-07-24, ENGINE_NOTES);
+  the engine re-stamps it to 100 on scene/controller changes, which is harmless to us.
+- CalcView call rate >> fps at the uncapped menu - determine whether extra calls are benign
+  re-entries (same frame) or distinct view queries; affects where per-frame XR pose sampling
+  should live (matters more for SequentialReentry).
 - Console availability in the current Steam build unverified - test Tab with `-allowconsole`.
+  (Less urgent now: the synthetic-click path works for menus.)
 - Adapter VRAM logs as "3072 MB" - DXGI_ADAPTER_DESC.DedicatedVideoMemory is a 32-bit SIZE_T in
   our process, so values ≥4 GB truncate. Cosmetic; ignore.
 - itsloopyo's headtracking mod also installs as `xinput1_3.dll` - mutually exclusive with ours
@@ -138,6 +132,13 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   force-headset-fov **default OFF** (truthful auto-claim = solid world out of the box), manual
   claim slider kept per user request. **Flipped both PC FOV-lock ini flags to False** (backup
   `Bioshock.ini.bvr-bak-fovlock`) - unlock verdict is the user's next flat-screen test.
+- **(07-24, later still) M4 RUNG 1 USER-VERIFIED.** With the video FOV option at 130 + manual
+  claimed fov at 130: "everything is now perfect... the parallax and other stuff are very
+  nice." M3 done-when ticked as well (6DOF verified session 2 + geometry verified today).
+  Depth not inverted (swap-eyes never needed - the 1-frame sign attribution holds). Open
+  follow-up parked by the user: whether the IPD slider has a perceptible effect (note in
+  Current state: at 50 UU/m the 55-75 mm range is a ~0.5 UU change - verify with an
+  exaggerated value before concluding). Session wrapped here.
 - **(07-24, later) FOV endgame - field retired, real control found.** User reported the FOV
   override slider dead on flat with locks off. Built an automated harness in response: 1 Hz
   `command.txt` seam in the detour (`fov`/`offset`/`recenter`) + `tools/game-shot.ps1`
