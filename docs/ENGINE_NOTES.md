@@ -1,0 +1,75 @@
+# Engine notes — reverse-engineering knowledge base
+
+Single source of truth for everything we know about BioshockHD.exe internals. Every signature,
+offset, and hook point used in code is documented here **with its derivation method**, so it can
+be re-derived after a game patch. Never paste decompiled UnrealScript or game code here —
+summaries and struct layouts only.
+
+Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-04-13
+(Steam buildid 8552765, depot 409711). Update this line when Steam ships a new build.
+
+## Process / module layout
+
+- 32-bit x86, PE32, sections `.text .rdata .data .rsrc .reloc`. LAA flag: **unverified — run
+  `tools/check-laa.ps1` (DR-2)**.
+- Both `D3DDrv.D3DRenderDevice` (D3D9) and `D3DDrv11.D3DRenderDevice11` (D3D11) exist;
+  ShaderCache.pcs11 shipped ⇒ D3D11 expected active. Runtime confirmation pending (DR-2).
+- Renderer single-threaded by default (`UseMultithreadedRendering=False` in Default.ini).
+- UI = Flash .swf via embedded gameswf (source path `...\d3ddrv\src\gameswf` in exe strings).
+- Havok 2012.2.0 r1 static; FMOD Ex via fmodex.dll; Bink 2 via bink2w32.dll.
+
+## Signature / symbol table
+
+| Name | Pattern / method | Module | Build | Found by | Status | Date |
+|---|---|---|---|---|---|---|
+| `APlayerController::eventPlayerCalcView` | FName-chain: find wide string `"PlayerCalcView"` → its FName-init xref → `89 0D` (`MOV [imm32], ECX`) store of the FName index → walk xrefs back to MSVC prologue `CC CC CC 55 8B EC` | BioshockHD.exe | 2022-04-13 | ported from itsloopyo/bioshock-remastered-headtracking `src/memory.rs` (MIT) | **documented, not yet ported** (DR-4) | 2026-07-23 |
+| PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET` | documented, not yet verified | 2026-07-23 |
+
+(Add one row per symbol as they land in `src/game/bioshock1r/patterns.cpp`.)
+
+## Known structures & conventions
+
+- **FRotator** = 3×i32 `{Pitch, Yaw, Roll}`, 65536 units per full turn. Roll is
+  clockwise-positive. UE convention: forward = +X, right = +Y, up = +Z.
+- **FVector** = 3×float, Unreal units. World scale unknown — assume ~50 UU/m until calibrated
+  in M3 (config `worldScale`).
+- `eventPlayerCalcView` hook signature (thiscall):
+  `(APlayerController* this, AActor* view_actor, FVector* camera_location, FRotator* camera_rotation)`
+  — fires per frame before the view is built; location/rotation are writable.
+- RTTI class names observed in exe: `AVengeanceGameInfo`, `AShockPlayer`,
+  `AShockPlayerController`, `APlayerController`, `APawn`, `AShockHUD`, `AHands`, `AWeapon`.
+
+## Hook points (planned / active)
+
+| Hook | Purpose | Status |
+|---|---|---|
+| `IDXGISwapChain::Present` (vtable, kiero-style dummy-device discovery) | frame boundary: XR pacing, overlay, mirror | skeleton in M0 |
+| `IDXGISwapChain::ResizeBuffers` | RT cache invalidation | skeleton in M0 |
+| `eventPlayerCalcView` | camera override (HMD pose, per-eye offsets) | M1/DR-4 |
+| Scene-draw entry (unknown — find via RenderDoc callstack, DR-3) | SequentialReentry stereo | M4 |
+| GetPlayerViewPoint-equivalent used by fire traces (unknown) | decoupled controller aim | M6 |
+| Console-command dispatcher (unknown — FName-chain on command strings) | execConsole one-liners | M5/M6 |
+| XInputGetState (we ARE the proxy — no hook needed) | synthetic gamepad | M0 shim |
+| DINPUT8 / WM_* (DR-6 decides) | virtual mouse for gameswf menus | M5 |
+
+## Config / ini facts
+
+- `[Engine.Console]` `ConsoleKey=9` (Tab). Launch option `-allowconsole`. Mixed reports on
+  newest builds — verify (see STATUS blockers).
+- `[Engine.RenderConfig]` `HorizontalFOVLock=True` — FOV control likely needs the live memory
+  write (PC+0xE0) or `SetFOV` console command; there is no user FOV ini.
+- User config appears at `%AppData%\Roaming\BioshockHD\Bioshock\` after first launch
+  (path unverified on this machine — game never launched yet).
+- `.debug` files in `ContentBaked\pc\System` are plaintext console scripts (useful command
+  vocabulary: `testAddAvailablePlasmid ElectricBolt`, `toggleplayerinvisible`, `stopmovie HUD`,
+  `setres`, `STAT FPS`).
+
+## RenderDoc frame map
+
+_(DR-3 — to be filled: pass order, scene color/depth RTs + formats, gameswf HUD draw
+fingerprint, view/proj constant-buffer slot + layout, scene-draw callstack.)_
+
+## UnrealScript findings
+
+_(Summaries only — never paste decompiled code. Tooling: UE Explorer/UELib on
+`Build\Final\BakedScripts\pc\*.u`, workspace in `tools/uscript/` (gitignored).)_
