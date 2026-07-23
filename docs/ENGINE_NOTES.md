@@ -68,6 +68,16 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   vocabulary: `testAddAvailablePlasmid ElectricBolt`, `toggleplayerinvisible`, `stopmovie HUD`,
   `setres`, `STAT FPS`).
 
+## OpenXR runtime facts (this machine)
+
+- 64-bit ActiveRuntime: `C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`
+- 32-bit ActiveRuntime (WOW6432Node): `...\virtualdesktop-openxr-32.json` pointing at
+  `virtualdesktop-openxr-32.dll` (verified PE machine 0x014C = x86).
+- xr_hello32 (2026-07-23): runtime "VirtualDesktopXR" 1.0.10, 31 extensions,
+  XR_KHR_D3D11_enable present, 32-bit xrCreateInstance OK.
+- OpenXR loader build note: with `DYNAMIC_LOADER=OFF` upstream forces dynamic CRT; we override
+  `MSVC_RUNTIME_LIBRARY` back to static in `third_party/CMakeLists.txt` (CRT mismatch otherwise).
+
 ## RenderDoc frame map
 
 _(DR-3 - to be filled: pass order, scene color/depth RTs + formats, gameswf HUD draw

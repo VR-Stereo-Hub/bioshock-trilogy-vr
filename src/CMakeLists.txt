@@ -32,3 +32,11 @@ target_link_libraries(bioshockvr PRIVATE
     d3d11
     dbghelp
 )
+
+# --- xr_hello32 - DR-1 test client --------------------------------------------
+# Standalone 32-bit console app that proves (or disproves) that this machine's
+# OpenXR runtimes accept a 32-bit D3D11 client. Not shipped with the mod.
+if(BIOSHOCKVR_WITH_OPENXR)
+    add_executable(xr_hello32 tools/xr_hello32/main.cpp)
+    target_link_libraries(xr_hello32 PRIVATE openxr_loader d3d11 dxgi)
+endif()
