@@ -1,8 +1,8 @@
-# Engine notes — reverse-engineering knowledge base
+# Engine notes - reverse-engineering knowledge base
 
 Single source of truth for everything we know about BioshockHD.exe internals. Every signature,
 offset, and hook point used in code is documented here **with its derivation method**, so it can
-be re-derived after a game patch. Never paste decompiled UnrealScript or game code here —
+be re-derived after a game patch. Never paste decompiled UnrealScript or game code here -
 summaries and struct layouts only.
 
 Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-04-13
@@ -11,11 +11,11 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 ## Process / module layout
 
 - 32-bit x86, PE32, sections `.text .rdata .data .rsrc .reloc`.
-  **LAA flag: YES** (Characteristics 0x0122 — verified 2026-07-23 via `tools/check-laa.ps1`).
+  **LAA flag: YES** (Characteristics 0x0122 - verified 2026-07-23 via `tools/check-laa.ps1`).
   4 GB address space available for stereo render targets.
 - **D3D11 renderer confirmed live at runtime** (2026-07-23, first Present hook log):
   feature level 0xB000 (11_0), backbuffer DXGI format 28 (R8G8B8A8_UNORM), 2560×1440,
-  `windowed=0` — the game defaults to **exclusive fullscreen** (relevant to DR-7: borderless
+  `windowed=0` - the game defaults to **exclusive fullscreen** (relevant to DR-7: borderless
   test still pending). D3D9 fallback path exists in the binary but is not the default.
 - Renderer single-threaded by default (`UseMultithreadedRendering=False` in Default.ini).
 - UI = Flash .swf via embedded gameswf (source path `...\d3ddrv\src\gameswf` in exe strings).
@@ -34,11 +34,11 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 - **FRotator** = 3×i32 `{Pitch, Yaw, Roll}`, 65536 units per full turn. Roll is
   clockwise-positive. UE convention: forward = +X, right = +Y, up = +Z.
-- **FVector** = 3×float, Unreal units. World scale unknown — assume ~50 UU/m until calibrated
+- **FVector** = 3×float, Unreal units. World scale unknown - assume ~50 UU/m until calibrated
   in M3 (config `worldScale`).
 - `eventPlayerCalcView` hook signature (thiscall):
   `(APlayerController* this, AActor* view_actor, FVector* camera_location, FRotator* camera_rotation)`
-  — fires per frame before the view is built; location/rotation are writable.
+  - fires per frame before the view is built; location/rotation are writable.
 - RTTI class names observed in exe: `AVengeanceGameInfo`, `AShockPlayer`,
   `AShockPlayerController`, `APlayerController`, `APawn`, `AShockHUD`, `AHands`, `AWeapon`.
 
@@ -49,20 +49,20 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | `IDXGISwapChain::Present` (vtable, kiero-style dummy-device discovery) | frame boundary: XR pacing, overlay, mirror | skeleton in M0 |
 | `IDXGISwapChain::ResizeBuffers` | RT cache invalidation | skeleton in M0 |
 | `eventPlayerCalcView` | camera override (HMD pose, per-eye offsets) | M1/DR-4 |
-| Scene-draw entry (unknown — find via RenderDoc callstack, DR-3) | SequentialReentry stereo | M4 |
+| Scene-draw entry (unknown - find via RenderDoc callstack, DR-3) | SequentialReentry stereo | M4 |
 | GetPlayerViewPoint-equivalent used by fire traces (unknown) | decoupled controller aim | M6 |
-| Console-command dispatcher (unknown — FName-chain on command strings) | execConsole one-liners | M5/M6 |
-| XInputGetState (we ARE the proxy — no hook needed) | synthetic gamepad | M0 shim |
+| Console-command dispatcher (unknown - FName-chain on command strings) | execConsole one-liners | M5/M6 |
+| XInputGetState (we ARE the proxy - no hook needed) | synthetic gamepad | M0 shim |
 | DINPUT8 / WM_* (DR-6 decides) | virtual mouse for gameswf menus | M5 |
 
 ## Config / ini facts
 
 - `[Engine.Console]` `ConsoleKey=9` (Tab). Launch option `-allowconsole`. Mixed reports on
-  newest builds — verify (see STATUS blockers).
-- `[Engine.RenderConfig]` `HorizontalFOVLock=True` — FOV control likely needs the live memory
+  newest builds - verify (see STATUS blockers).
+- `[Engine.RenderConfig]` `HorizontalFOVLock=True` - FOV control likely needs the live memory
   write (PC+0xE0) or `SetFOV` console command; there is no user FOV ini.
 - User config path **confirmed** (2026-07-23, generated on first launch):
-  `%AppData%\Roaming\BioshockHD\Bioshock\` — `Bioshock.ini` (live engine ini, 25 KB),
+  `%AppData%\Roaming\BioshockHD\Bioshock\` - `Bioshock.ini` (live engine ini, 25 KB),
   `User.ini` (bindings, 99 KB), `MEMORY\CurrentGame` (save data).
 - `.debug` files in `ContentBaked\pc\System` are plaintext console scripts (useful command
   vocabulary: `testAddAvailablePlasmid ElectricBolt`, `toggleplayerinvisible`, `stopmovie HUD`,
@@ -70,10 +70,10 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 ## RenderDoc frame map
 
-_(DR-3 — to be filled: pass order, scene color/depth RTs + formats, gameswf HUD draw
+_(DR-3 - to be filled: pass order, scene color/depth RTs + formats, gameswf HUD draw
 fingerprint, view/proj constant-buffer slot + layout, scene-draw callstack.)_
 
 ## UnrealScript findings
 
-_(Summaries only — never paste decompiled code. Tooling: UE Explorer/UELib on
+_(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
 `Build\Final\BakedScripts\pc\*.u`, workspace in `tools/uscript/` (gitignored).)_

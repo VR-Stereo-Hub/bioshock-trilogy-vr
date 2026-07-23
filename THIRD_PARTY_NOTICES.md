@@ -11,9 +11,9 @@ its own license file in its submodule.
 
 Reference code (not vendored, not linked):
 
-- **REFramework** (MIT, https://github.com/praydog/REFramework) — portions of the VR/D3D11
+- **REFramework** (MIT, https://github.com/praydog/REFramework) - portions of the VR/D3D11
   integration may be adapted; adapted files carry an attribution comment.
 - **bioshock-remastered-headtracking** (MIT, https://github.com/itsloopyo/bioshock-remastered-headtracking)
-  — the `PlayerCalcView` FName-chain scan and camera hook technique are ported from this project.
-- **UEVR** (all rights reserved, https://github.com/praydog/UEVR) — studied for concepts only.
+  - the `PlayerCalcView` FName-chain scan and camera hook technique are ported from this project.
+- **UEVR** (all rights reserved, https://github.com/praydog/UEVR) - studied for concepts only.
   No code is or may be copied from it.

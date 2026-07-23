@@ -4,7 +4,7 @@ Milestones ordered so something new is visible in the headset as early and often
 Each has a "done when" acceptance test. Effort in sessions (one focused working session each).
 Tick boxes as work lands; move surprises into STATUS.md.
 
-## M0 — Skeleton: inject, log, overlay (~2 sessions)
+## M0 - Skeleton: inject, log, overlay (~2 sessions)
 
 Goal: our code runs inside BioshockHD.exe with logging and an in-game overlay; repo on GitHub.
 
@@ -13,16 +13,15 @@ Goal: our code runs inside BioshockHD.exe with logging and an in-game overlay; r
 - [x] `xinput1_3.dll` proxy shim (export forwarding + loads `bioshockvr.dll`)
 - [x] Mod DLL: deferred init thread, file logger, minidump handler, MinHook init
 - [x] D3D11 Present/ResizeBuffers hook (kiero-style vtable discovery); log device/swapchain info
-- [x] ImGui overlay on hotkey (Insert)
+- [x] ImGui overlay on hotkey (F10; was Insert - changed, user's keyboard lacks the key)
 - [x] Tools: build/install/uninstall/tail-log/check-laa scripts
 - [x] GitHub repo pushed
 - [x] **Done when:** launch game → `bioshockvr.log` shows init + device info, ImGui overlay
       toggles in-game, game plays normally otherwise.
-      *2026-07-23: verified in-game except the Insert-toggle keypress (needs a human at the
-      keyboard — first item of the user checklist in STATUS.md). Log showed full init chain,
-      D3D11 device info, overlay initialized.*
+      *2026-07-23: fully verified in-game - user confirmed the overlay visually (screenshot:
+      500 fps at the main menu, windowed mode). Log showed full init chain + D3D11 device info.*
 
-## M1 — De-risk battery (~1–2 sessions)
+## M1 - De-risk battery (~1–2 sessions)
 
 Goal: retire the project-level risks before building on them. Findings → ENGINE_NOTES.md.
 
@@ -31,24 +30,24 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [x] DR-2: LAA flag check (`tools/check-laa.ps1`); confirm game creates a D3D11 device at runtime
       (not the D3D9 fallback path)
       *2026-07-23: LAA = YES (0x0122); D3D11 confirmed live (FL 11_0, exclusive fullscreen).*
-- [ ] DR-3: RenderDoc frame map — pass order, scene color/depth RTs + formats, gameswf HUD draw
+- [ ] DR-3: RenderDoc frame map - pass order, scene color/depth RTs + formats, gameswf HUD draw
       fingerprint, view/proj constant-buffer slot, scene-draw callstack
 - [ ] DR-4: port PlayerCalcView FName-chain scan to C++; hook it; wobble-test camera + per-frame
       FOV write (PC+0xE0)
 - [ ] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability +
       RenderDoc; 10-min play test
-- [ ] DR-6: instrument DINPUT8/window messages/XInput during menu use — which input path do
+- [ ] DR-6: instrument DINPUT8/window messages/XInput during menu use - which input path do
       gameswf menus read?
 - [ ] DR-7: borderless-window mode stability (vs exclusive fullscreen) for overlay + capture
 
-## M2 — Headset bring-up: mono big screen (~1–2 sessions)
+## M2 - Headset bring-up: mono big screen (~1–2 sessions)
 
 - [ ] OpenXR session on the game's ID3D11Device (XR_KHR_D3D11_enable), frame pacing in Present hook
 - [ ] Game frame on a quad layer ("cinema screen"), desktop mirror intact
 - [ ] **Done when:** Quest 3 via Virtual Desktop shows the game on a giant head-tracked screen;
       verified via Steam Link too.
 
-## M3 — 6DOF head camera (~1–2 sessions)
+## M3 - 6DOF head camera (~1–2 sessions)
 
 - [ ] CalcView hook drives camera from predicted HMD pose (position + full FRotator incl. roll)
 - [ ] FOV forced to headset FOV; projection layer (same image both eyes)
@@ -56,7 +55,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [ ] **Done when:** you can physically lean around a corner in Rapture; no drift; head roll
       correct; comfortable latency.
 
-## M4 — Stereo (~3–5 sessions — the risk milestone)
+## M4 - Stereo (~3–5 sessions - the risk milestone)
 
 - [ ] AlternateEye policy: camera alternates ±IPD/2 per game frame → proves geometric stereo
       (IPD scale, convergence, culling) cheaply
@@ -66,44 +65,44 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [ ] **Done when:** true geometric stereo (wrench/railings show correct parallax), 72 fps at
       default renderScale, 30-min session without visual state corruption.
 
-## M5 — Motion controllers + menu interaction (~2 sessions)
+## M5 - Motion controllers + menu interaction (~2 sessions)
 
 - [ ] OpenXR action sets; synthetic-XInput lane (motion controllers as gamepad → full playability)
 - [ ] Menu mode: whole frame on a quad when paused/in menu; controller laser → virtual mouse
       (path chosen by DR-6); trigger = click
-- [ ] **Done when:** from the headset only — boot to main menu, start New Game, play through the
+- [ ] **Done when:** from the headset only - boot to main menu, start New Game, play through the
       plane crash intro entirely with motion controllers.
 
-## M6 — Decoupled aim (~2–3 sessions)
+## M6 - Decoupled aim (~2–3 sessions)
 
 - [ ] Decompile ShockGame.u (UE Explorer) → fire-flow + class findings into ENGINE_NOTES.md
       (summaries only, never code)
 - [ ] Aim-substitution hook at the GetPlayerViewPoint-equivalent (seed: itsloopyo decouple)
 - [ ] Right hand aims weapons; left hand aims plasmids; reticle at aim ray
-- [ ] **Done when:** look left while shooting right — impacts land where the controller points.
+- [ ] **Done when:** look left while shooting right - impacts land where the controller points.
 
-## M7 — Visible hands + weapons (~2–3 sessions)
+## M7 - Visible hands + weapons (~2–3 sessions)
 
 - [ ] Locate live AHands actor via UObject iteration; pin to grip pose each frame
 - [ ] Per-weapon offset tuning (live ImGui sliders, persisted config)
 - [ ] **Done when:** hands + current weapon track the controller convincingly; wrench melee
       feels aimed. (Full IK arms = post-v1.)
 
-## M8 — Selection wheels (~1–2 sessions)
+## M8 - Selection wheels (~1–2 sessions)
 
 - [ ] Controller-anchored quad wheels: weapons (right grip), plasmids (left grip)
 - [ ] Inventory via adapter queryState (interim: static list); select → console exec / synthetic
       input; haptic tick
-- [ ] **Done when:** HL:Alyx-style — hold, flick, release to switch weapon and plasmid.
+- [ ] **Done when:** HL:Alyx-style - hold, flick, release to switch weapon and plasmid.
 
-## M9 — HUD capture + comfort + release polish (~2–3 sessions)
+## M9 - HUD capture + comfort + release polish (~2–3 sessions)
 
 - [ ] gameswf HUD draws redirected to offscreen RT → floating quad during stereo gameplay
 - [ ] Snap turn, height/seated recenter, optional vignette
 - [ ] Config surface cleanup; README install guide; GitHub release zip
 - [ ] **Done when:** a non-developer installs from the release zip and plays with full HUD.
 
-## M10 — BioShock 2 Remastered adapter (~2–4 sessions)
+## M10 - BioShock 2 Remastered adapter (~2–4 sessions)
 
 - [ ] `src/game/bioshock2r/` adapter: new patterns.cpp; expectation is near-total core reuse
 - [ ] **Done when:** M3-level (6DOF mono) within one session of scan work; M4-level stereo within

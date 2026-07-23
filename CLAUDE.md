@@ -1,4 +1,4 @@
-# bioshock-vr — Claude session guide
+# bioshock-vr - Claude session guide
 
 Native VR mod for BioShock Remastered: a 32-bit DLL injected via an `xinput1_3.dll` proxy shim,
 hooking the game's D3D11 renderer and Vengeance-engine (UE2.5) camera/aim paths, driven by an
@@ -13,7 +13,7 @@ game-agnostic VR core plus per-game adapters so BioShock 2 Remastered (same engi
 - **Commit messages**: plain conventional commits (`feat:`/`fix:`/`docs:`/`build:`/`tools:`/`chore:`),
   imperative, subject ≤72 chars. No trailers.
 - **32-bit (Win32) only.** The game is x86. The CMake guard will stop you; don't fight it.
-- **No code from UEVR** (all-rights-reserved — concepts only). REFramework (MIT) may be adapted
+- **No code from UEVR** (all-rights-reserved - concepts only). REFramework (MIT) may be adapted
   with an attribution comment in the file.
 - Engine addresses/signatures live ONLY in `src/game/bioshock1r/patterns.cpp` (per-game), and every
   one is documented in `docs/ENGINE_NOTES.md` with its derivation method.
@@ -33,7 +33,7 @@ game-agnostic VR core plus per-game adapters so BioShock 2 Remastered (same engi
 ## Build / install / test
 
 ```powershell
-.\tools\build.ps1            # Debug build. CMake is NOT on PATH — script finds the VS-bundled one via vswhere
+.\tools\build.ps1            # Debug build. CMake is NOT on PATH - script finds the VS-bundled one via vswhere
 .\tools\build.ps1 -Release
 .\tools\build.ps1 -Install   # build + copy DLLs to the game folder
 .\tools\install.ps1          # copy already-built DLLs to the game folder
@@ -48,12 +48,12 @@ game-agnostic VR core plus per-game adapters so BioShock 2 Remastered (same engi
 
 ## Repo map
 
-- `src/proxy/` — thin xinput1_3 forwarding shim that loads the real mod DLL
-- `src/core/` — game-agnostic VR core (framework, hooks, gfx, vr, stereo, input, ui, util)
-- `src/game/` — `igame_adapter.h` + per-game adapters (`bioshock1r/` first)
-- `third_party/` — pinned submodules: minhook, imgui, OpenXR-SDK
-- `tools/` — build/install/uninstall/log scripts, `uscript/` decompile workspace (gitignored)
-- `docs/` — the project's brain; see index below
+- `src/proxy/` - thin xinput1_3 forwarding shim that loads the real mod DLL
+- `src/core/` - game-agnostic VR core (framework, hooks, gfx, vr, stereo, input, ui, util)
+- `src/game/` - `igame_adapter.h` + per-game adapters (`bioshock1r/` first)
+- `third_party/` - pinned submodules: minhook, imgui, OpenXR-SDK
+- `tools/` - build/install/uninstall/log scripts, `uscript/` decompile workspace (gitignored)
+- `docs/` - the project's brain; see index below
 
 ## Docs index
 

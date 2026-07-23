@@ -28,7 +28,7 @@ BioshockHD.exe (32-bit, D3D11)
 ## The core/adapter contract
 
 `src/game/igame_adapter.h` is the load-bearing seam. Capability-based so partial adapters still
-run (progressive enhancement — this is how the BioShock 2 port stays cheap and how an Infinite
+run (progressive enhancement - this is how the BioShock 2 port stays cheap and how an Infinite
 adapter could start tiny):
 
 ```cpp
@@ -51,7 +51,7 @@ Rules that keep the seam clean:
 
 - **No raw addresses outside `game/<title>/patterns.cpp`.** Every resolved address flows through
   a named symbol table, logged at startup and mirrored in ENGINE_NOTES.md.
-- Core never touches UObject/FName — core speaks poses, meters, and D3D11. Adapters own all
+- Core never touches UObject/FName - core speaks poses, meters, and D3D11. Adapters own all
   engine semantics, including units (meters ↔ Unreal units, FRotator 65536/turn ↔ radians;
   `worldScale` config-overridable).
 
@@ -72,23 +72,23 @@ The game owns its loop; VR pacing is grafted on (REFramework-style):
 
 Every rung is shippable; each de-risks the next.
 
-1. **MonoScreen** — game frame on a quad ("cinema screen"). Validates all OpenXR plumbing with
+1. **MonoScreen** - game frame on a quad ("cinema screen"). Validates all OpenXR plumbing with
    zero engine knowledge.
-2. **MonoTracked** — same image to both eyes of a projection layer, camera driven by HMD 6DOF
+2. **MonoTracked** - same image to both eyes of a projection layer, camera driven by HMD 6DOF
    via CalcView, FOV forced to headset FOV. Already a big experience win; validates camera math,
    world scale, prediction timing.
-3. **AlternateEye** — camera alternates ±IPD/2 per game frame, each frame submitted to one eye
+3. **AlternateEye** - camera alternates ±IPD/2 per game frame, each frame submitted to one eye
    (stale image held for the other). Judders; not shippable; proves geometric stereo correctness
    in ~a day of code before the big bet.
-4. **SequentialReentry (primary bet)** — hook the scene-draw entry (found via RenderDoc callstack
+4. **SequentialReentry (primary bet)** - hook the scene-draw entry (found via RenderDoc callstack
    on a world draw call), then per frame: set left camera+FOV → call original → copy backbuffer →
    set right camera → call original → copy. The engine computes every view-dependent effect
    natively per eye, so the per-shader fix long tail mostly evaporates. The renderer is
-   single-threaded by default (`UseMultithreadedRendering=False`) — one linear call graph.
-5. **DepthReproject (fallback)** — vorpX-Z3D-style synthesis of the second eye from color+depth.
+   single-threaded by default (`UseMultithreadedRendering=False`) - one linear call graph.
+5. **DepthReproject (fallback)** - vorpX-Z3D-style synthesis of the second eye from color+depth.
    Full framerate, edge artifacts, flat-ish. Ships if re-entry hits an intractable wall.
 
-Rejected as primary: 3Dmigoto-style draw-call duplication + vertex-shader stereo displacement —
+Rejected as primary: 3Dmigoto-style draw-call duplication + vertex-shader stereo displacement -
 confirmed long tail of per-shader fixes (shadows/fog/reflections/post) maintained by hand, and
 almost zero carry-over to BioShock 2. (HelixMod veterans report the remaster's shaders are
 unfixed and nobody has invested the effort; geo-11 is closed-source.)
@@ -110,14 +110,14 @@ Known hard parts of re-entry and their mitigations:
 
 ## Input
 
-- **Lane 1 — synthetic XInput** (early, permanent fallback): OpenXR actions composed into
+- **Lane 1 - synthetic XInput** (early, permanent fallback): OpenXR actions composed into
   XINPUT_STATE inside our proxy. Sticks = locomotion, trigger = fire. Zero engine hooks; full
   playability and menu navigation from M5.
-- **Lane 2 — engine-level**: console-exec dispatcher for discrete actions (weapon/plasmid
-  switch, ToggleHUD, SetFOV — one high-value hook makes dozens of features one-liners); direct
+- **Lane 2 - engine-level**: console-exec dispatcher for discrete actions (weapon/plasmid
+  switch, ToggleHUD, SetFOV - one high-value hook makes dozens of features one-liners); direct
   hooks for continuous aim.
 - **Decoupled aim**: UE2.5 fire traces derive from player view rotation, so camera hooks aren't
-  enough — hook the GetPlayerViewPoint-equivalent used by fire logic and return the controller
+  enough - hook the GetPlayerViewPoint-equivalent used by fire logic and return the controller
   aim pose there while CalcView keeps returning the HMD pose. Right hand = weapons, left hand =
   plasmids (verify plasmid routing in decompiled ShockGame.u).
 - **Menus (gameswf Flash)**: menu mode = whole frame on a quad + controller laser → virtual
@@ -126,11 +126,11 @@ Known hard parts of re-entry and their mitigations:
 
 ## VR runtime
 
-OpenXR-only (`XR_KHR_D3D11_enable`), session created on the game's own device — serves VDXR
+OpenXR-only (`XR_KHR_D3D11_enable`), session created on the game's own device - serves VDXR
 (Virtual Desktop) and SteamVR (Steam Link) with one backend. The `IVrRuntime` interface leaves
 room for: an OpenVR backend (if ever needed) and the **DR-1 fallback**: a 64-bit companion
 compositor process owning the OpenXR session, fed eye textures via D3D11 shared handles and
-poses via shared memory — only built if 32-bit OpenXR clients turn out unsupported by a needed
+poses via shared memory - only built if 32-bit OpenXR clients turn out unsupported by a needed
 runtime.
 
 ## Decision log
@@ -156,8 +156,8 @@ runtime.
 - **2026-07-23 · Git submodules pinned to release tags** (not FetchContent, not vendoring):
   offline-safe rebuilds for future sessions, upstream LICENSE files stay in-tree, pins visible
   in history. Guard in third_party/CMakeLists.txt explains `git submodule update --init`.
-- **2026-07-23 · Hand-rolled logger, no spdlog** — one less dependency; needs are trivial
+- **2026-07-23 · Hand-rolled logger, no spdlog** - one less dependency; needs are trivial
   (timestamped lines to one file).
-- **2026-07-23 · Static CRT (/MT)** — no VC redist dependency inside the game process.
-- **2026-07-23 · MIT license** — compatible with every dependency (BSD-2, MIT, Apache-2.0);
+- **2026-07-23 · Static CRT (/MT)** - no VC redist dependency inside the game process.
+- **2026-07-23 · MIT license** - compatible with every dependency (BSD-2, MIT, Apache-2.0);
   matches the free-open-injector legal posture for 2K-game mods.
