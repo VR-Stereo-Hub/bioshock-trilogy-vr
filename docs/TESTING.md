@@ -26,6 +26,16 @@
   move/resize it. Expect game fps clamped to the headset refresh while the session runs; the
   "VR enabled" checkbox drops back to flat/uncapped.
 - **M3**: lean around a corner; no drift after 10 min; roll matches head tilt.
+- **FOV swim calibration (M3/M4 distortion)**: center-stretch that relaxes toward the periphery
+  while turning the head = claimed-vs-rendered fov mismatch (the readback echoes our own write
+  to PC+0xE0, so it cannot see renderer-side reinterpretation - vfov? 4:3-referenced? clamped
+  downstream?). Procedure: set the game resolution to the one you play at FIRST (fov semantics
+  can be aspect-dependent). Camera mode on, AlternateEye OFF, "Force headset FOV" ON. Enable
+  "Manual claimed FOV", face a doorframe, rotate the head slowly and adjust "Claimed hfov"
+  until objects stop growing/shrinking/warping as they cross from center to edge. Record the
+  (readback, locked claim) pair from the layer line. Toggle "Force headset FOV" OFF and repeat
+  for a second pair. The two pairs determine the engine fov mapping to bake into the adapter.
+  Note whether any residual warp is vertical-only (would need a second claimed-vfov axis).
 - **M4 rung 1 (AlternateEye)**: BEFORE anything else raise the game resolution above 1024x768
   (headset sharpness). Connect VD, enable "VR camera mode", confirm the overlay `layer:` line
   reads "projection". Enable "AlternateEye stereo test (judders)" - the layer line gains an

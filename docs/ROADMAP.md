@@ -86,7 +86,11 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       (IPD scale, convergence, culling) cheaply
       *2026-07-23: code landed - per-eye swapchains, held stale image + stored pose (compositor
       reprojects the off eye), sign flip after submit, IPD slider + swap-eyes diagnostic +
-      head-offset telemetry. Flat path re-verified live. Pending in-headset verification.*
+      head-offset telemetry. Flat path re-verified live. First in-headset test: AER mechanics
+      run (eye L/R tag tracks per frame, depth not inverted), but the M3 distortion persists
+      (center-stretch relaxing toward the periphery on head turn) and blocks any parallax
+      judgment - claimed-vs-rendered fov mismatch suspected; manual claimed-fov calibration
+      slider added (procedure in TESTING.md). Parallax verdict pending calibration.*
 - [ ] **SequentialReentry** (primary bet): hook scene-draw entry (from DR-3/DR-5), render twice
       per frame with per-eye cameras, CopyResource each eye out; HUD off in stereo + own reticle
 - [ ] Z3D depth-reproject fallback policy selectable in ImGui
