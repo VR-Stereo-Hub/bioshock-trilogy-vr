@@ -2,6 +2,7 @@
 
 #include "core/framework/framework.h"
 #include "core/util/log.h"
+#include "game/igame_adapter.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -65,15 +66,16 @@ bool Init(IDXGISwapChain* swapchain) {
 }
 
 void DrawUi() {
-    ImGui::SetNextWindowSize(ImVec2(380, 160), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 420), ImGuiCond_FirstUseEver);
     ImGui::Begin("BioShock VR " BVR_VERSION);
-    ImGui::Text("Skeleton build - milestone M0");
     ImGui::Text("%.1f fps (%.2f ms)", ImGui::GetIO().Framerate,
                 1000.0f / ImGui::GetIO().Framerate);
+    if (auto* adapter = game::adapter()) {
+        ImGui::Separator();
+        adapter->drawDebugUi();
+    }
     ImGui::Separator();
-    ImGui::TextWrapped(
-        "Log: %%LOCALAPPDATA%%\\BioshockVR\\bioshockvr.log\n"
-        "Next: M1 de-risk battery (OpenXR 32-bit, CalcView hook, RenderDoc).");
+    ImGui::TextWrapped("Log: %%LOCALAPPDATA%%\\BioshockVR\\bioshockvr.log");
     ImGui::End();
 }
 
