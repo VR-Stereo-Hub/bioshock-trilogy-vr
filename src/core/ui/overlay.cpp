@@ -60,7 +60,7 @@ bool Init(IDXGISwapChain* swapchain) {
     g_originalWndProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(WndProc)));
 
-    BVR_LOG("overlay initialized (hwnd=%p) — Insert toggles it", g_window);
+    BVR_LOG("overlay initialized (hwnd=%p) - Insert toggles it", g_window);
     return true;
 }
 

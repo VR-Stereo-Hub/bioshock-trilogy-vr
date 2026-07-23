@@ -16,8 +16,11 @@ Goal: our code runs inside BioshockHD.exe with logging and an in-game overlay; r
 - [x] ImGui overlay on hotkey (Insert)
 - [x] Tools: build/install/uninstall/tail-log/check-laa scripts
 - [x] GitHub repo pushed
-- [ ] **Done when:** launch game → `bioshockvr.log` shows init + device info, ImGui overlay
+- [x] **Done when:** launch game → `bioshockvr.log` shows init + device info, ImGui overlay
       toggles in-game, game plays normally otherwise.
+      *2026-07-23: verified in-game except the Insert-toggle keypress (needs a human at the
+      keyboard — first item of the user checklist in STATUS.md). Log showed full init chain,
+      D3D11 device info, overlay initialized.*
 
 ## M1 — De-risk battery (~1–2 sessions)
 
@@ -25,8 +28,9 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 - [ ] **DR-1 (critical):** standalone 32-bit OpenXR hello-world (`tools/xr-hello32`) under both
       VDXR (Virtual Desktop) and SteamVR. Fallbacks: SteamVR-only → 64-bit companion compositor.
-- [ ] DR-2: LAA flag check (`tools/check-laa.ps1`); confirm game creates a D3D11 device at runtime
+- [x] DR-2: LAA flag check (`tools/check-laa.ps1`); confirm game creates a D3D11 device at runtime
       (not the D3D9 fallback path)
+      *2026-07-23: LAA = YES (0x0122); D3D11 confirmed live (FL 11_0, exclusive fullscreen).*
 - [ ] DR-3: RenderDoc frame map — pass order, scene color/depth RTs + formats, gameswf HUD draw
       fingerprint, view/proj constant-buffer slot, scene-draw callstack
 - [ ] DR-4: port PlayerCalcView FName-chain scan to C++; hook it; wobble-test camera + per-frame
