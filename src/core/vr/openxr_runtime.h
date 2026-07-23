@@ -30,4 +30,27 @@ void on_resize();
 // Status + controls section for the overlay.
 void draw_debug_ui();
 
+// --- M3: head pose for the camera drive ------------------------------------
+// Core speaks meters + quaternions (XR convention); the game adapter owns the
+// conversion to engine units.
+
+struct HeadPose {
+    float px, py, pz;     // meters, XR LOCAL space (right +X, up +Y, fwd -Z)
+    float qx, qy, qz, qw; // orientation quaternion
+};
+
+// Latest predicted head pose (located at Present-head for the upcoming
+// display time). False while not tracking.
+bool get_head_pose(HeadPose& out);
+
+// True when the user enabled VR camera mode AND a session is running; the
+// adapter drives the game camera from the HMD only while this holds. Frame
+// submission switches from the quad to a projection layer at the same time.
+bool vr_camera_mode();
+
+// Symmetric horizontal FOV (degrees) circumscribing the headset's per-eye
+// FOV at the backbuffer aspect - what the game should render with in camera
+// mode. 0 until the first views are located.
+float suggested_hfov_deg();
+
 } // namespace bvr::vr
