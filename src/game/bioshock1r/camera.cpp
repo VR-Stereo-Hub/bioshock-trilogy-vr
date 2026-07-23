@@ -5,6 +5,7 @@
 #include "game/bioshock1r/camera.h"
 
 #include "core/debug/value_scan.h"
+#include "core/gfx/frame_inspector.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/patterns.h"
@@ -48,13 +49,17 @@ std::atomic<bool>  g_logCamera{true};
 std::atomic<float> g_worldScale{50.0f};        // Unreal units per meter
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
-std::atomic<bool>  g_forceHeadsetFov{false};   // 2026-07-24 default OFF: the renderer pins
-                                               // hfov to the ini HorizontalFOV lock (~100), so
-                                               // forcing 137 only poisons the fov claim (the
-                                               // readback echoes our own write) - measured via
-                                               // in-headset swim calibration. Re-enable once
-                                               // the lock is defeated and the write truly
-                                               // reaches the projection.
+std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
+                                               // UShockUserSettings HorizontalFOV int that the
+                                               // renderer consumes per frame, no 130 cap) when
+                                               // it is resolved. Still default OFF: widening
+                                               // is the user's in-headset call.
+
+// Session 4: direct game-FOV write through the settings object (the video
+// option's storage). Distinct from the dead PC+0xE0 override above.
+std::atomic<bool>  g_gameFovWrite{false};
+std::atomic<float> g_gameFovDeg{130.0f};
+std::atomic<int32_t> g_lastOptionFov{0};       // telemetry: what the option holds now
 
 // M4 rung 1: AlternateEye. Half-IPD camera shift per eye, eye picked by
 // vr::current_eye_sign() (0 while AER is off).
@@ -82,6 +87,8 @@ std::atomic<bool> g_loggedFirstFire{false};
 // Game-thread-only bookkeeping (never touched by the overlay).
 bool g_wasOverridingFov = false;
 float g_savedFov = 0.0f;
+bool g_wasWritingGameFov = false;
+int32_t g_savedGameFov = 0;
 uint64_t g_lastHeartbeatMs = 0;
 uint32_t g_heartbeatBaseCount = 0;
 bool g_haveRecenter = false;
@@ -95,14 +102,15 @@ float* fov_ptr(void* pc) {
 // Automated-test seam: %LOCALAPPDATA%\BioshockVR\command.txt is polled at 1 Hz
 // on the game thread; when its write time changes, every line is applied and
 // logged. Lets a test harness drive the debug controls without the overlay.
-// Camera commands: "fov <deg>", "fov off", "offset <x> <y> <z>", "recenter".
+// Camera commands: "fov <deg>", "fov off", "gfov <deg>", "gfov off",
+// "offset <x> <y> <z>", "recenter".
 // Discovery commands (route to core/debug/value_scan; game thread only):
 //   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
 //   memscani <u>  memrescani <u>   (integer-typed variants)
 //   mempoke <idx> <f>  mempoke <lo>-<hi> <f>  mempokei ...same with <u>
 //   memrestore  memptr <idx> [maxDeltaHex]
 //   pokeaddr <hex> <f>  pokeaddri <hex> <u>  hexdump <hex> <len>
-//   strscan <text>  membases
+//   strscan <text>  membases  dumpframe [full]
 uint64_t g_lastCmdPollMs = 0;
 FILETIME g_lastCmdWrite{};
 
@@ -122,6 +130,15 @@ void apply_command(const char* cmd, const char* args) {
             g_fovDeg.store(v, std::memory_order_relaxed);
             g_fovOverride.store(true, std::memory_order_relaxed);
             BVR_LOG("[b1r] command: fov %.1f", v);
+        }
+    } else if (strcmp(cmd, "gfov") == 0) {
+        if (strncmp(args, "off", 3) == 0) {
+            g_gameFovWrite.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: gfov off");
+        } else if (sscanf_s(args, "%f", &v) == 1) {
+            g_gameFovDeg.store(v, std::memory_order_relaxed);
+            g_gameFovWrite.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: gfov %.1f", v);
         }
     } else if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
@@ -178,6 +195,8 @@ void apply_command(const char* cmd, const char* args) {
             bvr::value_scan::log_string_scan(text);
     } else if (strcmp(cmd, "membases") == 0) {
         bvr::value_scan::log_module_bases();
+    } else if (strcmp(cmd, "dumpframe") == 0) {
+        bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
     }
 }
 
@@ -266,10 +285,16 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
 
     float gameFov = *fov_ptr(self);
     g_lastFov.store(gameFov, std::memory_order_relaxed);
-    // Report what the engine is actually rendering with so the projection
-    // layer claims a matching fov (fisheye guard even if our write is
-    // clamped). In steady state under forcing this reads back our own value.
-    bvr::vr::set_rendered_hfov(gameFov);
+    // Auto-claim (session 4): the UShockUserSettings HorizontalFOV int is
+    // what the renderer truly consumes each frame, so claiming it keeps the
+    // projection layer honest with zero manual matching. While we WRITE the
+    // option (VR force / gfov) the readback echoes our write - which is
+    // correct, because the renderer really renders it (no cap, ENGINE_NOTES).
+    // Fallback while the settings object is not alive yet: the old PC+0xE0
+    // telemetry field, better than claiming nothing.
+    int32_t* optionFov = patterns::hfov_option_ptr();
+    g_lastOptionFov.store(optionFov ? *optionFov : 0, std::memory_order_relaxed);
+    bvr::vr::set_rendered_hfov(optionFov ? static_cast<float>(*optionFov) : gameFov);
     if (loc) {
         g_lastLocX.store(loc->x, std::memory_order_relaxed);
         g_lastLocY.store(loc->y, std::memory_order_relaxed);
@@ -368,6 +393,28 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                     ? bvr::vr::suggested_hfov_deg()
                     : 0.0f; // 0 = leave the game's own FOV in place
         vrDrove = true;
+    }
+
+    // Game-FOV write via the settings object (the renderer's real per-frame
+    // source). Precedence: VR forced headset fov > manual gfov. One-shot
+    // save/restore so the user's option value returns untouched.
+    if (optionFov) {
+        bool wantVr = vrDrove && vrFov > 0.0f;
+        bool wantManual = g_gameFovWrite.load(std::memory_order_relaxed);
+        if (wantVr || wantManual) {
+            if (!g_wasWritingGameFov) {
+                g_savedGameFov = *optionFov;
+                g_wasWritingGameFov = true;
+                BVR_LOG("[b1r] game fov write ON (saved option %d)", g_savedGameFov);
+            }
+            float want = wantVr ? vrFov : g_gameFovDeg.load(std::memory_order_relaxed);
+            int32_t wantInt = static_cast<int32_t>(want + 0.5f);
+            if (*optionFov != wantInt) *optionFov = wantInt;
+        } else if (g_wasWritingGameFov) {
+            *optionFov = g_savedGameFov;
+            g_wasWritingGameFov = false;
+            BVR_LOG("[b1r] game fov write OFF (restored option %d)", g_savedGameFov);
+        }
     }
     g_vrDriving.store(vrDrove, std::memory_order_relaxed);
     if (!vrDrove) {
@@ -491,6 +538,12 @@ void draw_debug_ui() {
                 pitch / kRotUnitsPerDegree, yaw / kRotUnitsPerDegree,
                 roll / kRotUnitsPerDegree);
     ImGui::Text("fov: %.1f deg", g_lastFov.load(std::memory_order_relaxed));
+    int32_t optFov = g_lastOptionFov.load(std::memory_order_relaxed);
+    if (optFov > 0)
+        ImGui::Text("option hfov: %d deg (UShockUserSettings, auto-claimed)", optFov);
+    else
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
+                           "option hfov: settings object not resolved");
 
     if (ImGui::CollapsingHeader("VR camera (M3/M4)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text(g_vrDriving.load(std::memory_order_relaxed)
@@ -522,8 +575,13 @@ void draw_debug_ui() {
             g_wobble.store(wobble, std::memory_order_relaxed);
         atomic_slider("Wobble amplitude (UU)", g_wobbleAmp, 0.0f, 50.0f);
 
+        bool gfov = g_gameFovWrite.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Game FOV write (settings object, real control)", &gfov))
+            g_gameFovWrite.store(gfov, std::memory_order_relaxed);
+        atomic_slider("Game FOV (deg)", g_gameFovDeg, 75.0f, 150.0f);
+
         bool fov = g_fovOverride.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("FOV override (game value restored when off)", &fov))
+        if (ImGui::Checkbox("FOV override (PC+0xE0, dead field - diagnostics)", &fov))
             g_fovOverride.store(fov, std::memory_order_relaxed);
         atomic_slider("FOV (deg)", g_fovDeg, 40.0f, 140.0f);
 

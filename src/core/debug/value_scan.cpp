@@ -138,6 +138,10 @@ void scan_region_for_range(uintptr_t base, uintptr_t end, uint32_t lo, uint32_t 
     }
 }
 
+// _snprintf_s + _TRUNCATE everywhere below: this tool formats arbitrary heap
+// bytes as floats, and %g/%f of a garbage dword can be long. sprintf_s ASSERTS
+// on overflow in debug (a modal that hangs the render thread); _TRUNCATE just
+// truncates. Learned the hard way, 2026-07-24.
 const char* describe(uintptr_t addr, char* buf, size_t bufSize) {
     HMODULE mod = nullptr;
     if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -148,10 +152,10 @@ const char* describe(uintptr_t addr, char* buf, size_t bufSize) {
         GetModuleFileNameA(mod, name, MAX_PATH);
         const char* base = strrchr(name, '\\');
         base = base ? base + 1 : name;
-        sprintf_s(buf, bufSize, "%s+0x%X", base,
-                  static_cast<unsigned>(addr - reinterpret_cast<uintptr_t>(mod)));
+        _snprintf_s(buf, bufSize, _TRUNCATE, "%s+0x%X", base,
+                    static_cast<unsigned>(addr - reinterpret_cast<uintptr_t>(mod)));
     } else {
-        sprintf_s(buf, bufSize, "heap");
+        _snprintf_s(buf, bufSize, _TRUNCATE, "heap");
     }
     return buf;
 }
@@ -232,12 +236,12 @@ bool poke_bits(size_t idx, uint32_t bits, const char* what) {
 char g_valueDesc[48];
 
 const char* describe_f32(float v) {
-    sprintf_s(g_valueDesc, "f32 %.4f", v);
+    _snprintf_s(g_valueDesc, _TRUNCATE, "f32 %.4g", v);
     return g_valueDesc;
 }
 
 const char* describe_u32(uint32_t v) {
-    sprintf_s(g_valueDesc, "u32 %u", v);
+    _snprintf_s(g_valueDesc, _TRUNCATE, "u32 %u", v);
     return g_valueDesc;
 }
 
@@ -270,9 +274,10 @@ void list(size_t n) {
     for (size_t i = 0; i < shown; ++i) {
         uintptr_t addr = g_candidates[i];
         uint32_t cur = 0;
-        char value[64];
+        char value[96];
         if (safe_read_u32(addr, &cur))
-            sprintf_s(value, "0x%08X (f32 %.4f / u32 %u)", cur, bits_to_float(cur), cur);
+            _snprintf_s(value, _TRUNCATE, "0x%08X (f32 %.4g / u32 %u)", cur, bits_to_float(cur),
+                        cur);
         else
             strcpy_s(value, "<unreadable>");
         char where[MAX_PATH + 16];
@@ -295,7 +300,7 @@ float read_at(size_t idx) {
     }
     float f = bits_to_float(cur);
     char where[MAX_PATH + 16];
-    BVR_LOG("[vscan] read %u @ 0x%08X (%s) = 0x%08X (f32 %.4f / u32 %u)",
+    BVR_LOG("[vscan] read %u @ 0x%08X (%s) = 0x%08X (f32 %.4g / u32 %u)",
             static_cast<unsigned>(idx), static_cast<unsigned>(g_candidates[idx]),
             describe(g_candidates[idx], where, sizeof(where)), cur, f, cur);
     return f;

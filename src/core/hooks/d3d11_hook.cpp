@@ -1,5 +1,6 @@
 #include "d3d11_hook.h"
 
+#include "core/gfx/frame_inspector.h"
 #include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -53,6 +54,10 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
     if (!g_loggedFirstPresent.exchange(true)) {
         LogSwapchainInfo(swapchain); // DR-2: confirms the D3D11 path is live
     }
+    // Frame boundary first: finalize any armed dump, then suppress our own
+    // overlay/VR draws for the rest of the detour so they never enter a dump.
+    frame_inspector::on_present(swapchain);
+    frame_inspector::ScopedSuppress suppress;
     vr::on_present_begin(swapchain); // xrWaitFrame paces the game while a session runs
     overlay::on_present(swapchain);
     vr::on_present_end(swapchain);   // copies the finished frame (incl. overlay) to the quad
@@ -70,7 +75,10 @@ HRESULT WINAPI ResizeBuffersDetour(IDXGISwapChain* swapchain, UINT bufferCount,
 }
 
 // kiero technique: make a throwaway device + swapchain purely to read the
-// shared vtable, then hook its Present/ResizeBuffers slots.
+// shared vtable, then hook its Present/ResizeBuffers slots. Also harvests the
+// immediate-context vtable (same shared-vtable trick) for the frame inspector.
+void** g_contextVtable = nullptr;
+
 bool FindVTable(void** outPresent, void** outResizeBuffers) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -109,6 +117,7 @@ bool FindVTable(void** outPresent, void** outResizeBuffers) {
         void** vtable = *reinterpret_cast<void***>(swapchain);
         *outPresent = vtable[8];         // IDXGISwapChain::Present
         *outResizeBuffers = vtable[13];  // IDXGISwapChain::ResizeBuffers
+        if (context) g_contextVtable = *reinterpret_cast<void***>(context);
         ok = true;
     } else {
         BVR_LOG("dummy swapchain creation failed: hr=0x%08X", hr);
@@ -136,6 +145,15 @@ bool install() {
         BVR_LOG("MH_CreateHook failed for swapchain hooks");
         return false;
     }
+    // Frame inspector (fail-soft: a failure here must not disable VR/overlay).
+    // Create its hooks BEFORE the single MH_EnableHook(MH_ALL_HOOKS) below so
+    // they arm in the same pass; they no-op until armed.
+    if (g_contextVtable) {
+        frame_inspector::install(g_contextVtable);
+    } else {
+        BVR_LOG("[gfx] no context vtable harvested - frame inspector disabled");
+    }
+
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         BVR_LOG("MH_EnableHook failed");
         return false;
