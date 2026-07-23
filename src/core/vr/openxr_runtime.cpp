@@ -22,7 +22,9 @@
 #include <imgui.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 namespace bvr::vr {
@@ -33,8 +35,9 @@ char g_runtimeName[XR_MAX_RUNTIME_NAME_SIZE] = "none";
 XrSystemId g_system = XR_NULL_SYSTEM_ID;
 XrSession g_session = XR_NULL_HANDLE;
 XrSpace g_space = XR_NULL_HANDLE;
+XrSpace g_viewSpace = XR_NULL_HANDLE;
 XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
-bool g_sessionBegun = false;
+std::atomic<bool> g_sessionBegun{false}; // read from the game thread via vr_camera_mode()
 bool g_frameOpen = false;
 XrFrameState g_frameState{XR_TYPE_FRAME_STATE};
 
@@ -50,11 +53,21 @@ ID3D11DeviceContext* g_context = nullptr;  // immediate context, AddRef'd
 std::atomic<bool> g_enabled{true};        // kill switch: tears the session down
 std::atomic<float> g_screenDistM{1.75f};  // quad distance in meters
 std::atomic<float> g_screenWidthM{2.4f};  // quad width in meters
+std::atomic<bool> g_cameraMode{false};    // M3: drive the game camera from the HMD
 
 // Bring-up retry (render thread only).
 uint64_t g_nextRetryMs = 0;
 bool g_loggedNoHmd = false;
 uint32_t g_framesSubmitted = 0;
+
+// M3 pose plumbing. The head pose crosses to the game thread (mutex); the
+// per-eye views are only used on the render thread for layer submission.
+std::mutex g_poseMutex;
+HeadPose g_headPose{};
+bool g_poseValid = false;
+XrView g_views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+bool g_viewsValid = false;
+std::atomic<float> g_hfovDeg{0.0f}; // circumscribed symmetric hfov, read cross-thread
 
 const char* res_str(XrResult r) {
     static char buf[XR_MAX_RESULT_STRING_SIZE];
@@ -90,6 +103,13 @@ void destroy_quad_swapchain() {
 void teardown_session(const char* why) {
     BVR_LOG("xr: session teardown (%s)", why);
     destroy_quad_swapchain();
+    {
+        std::lock_guard<std::mutex> lock(g_poseMutex);
+        g_poseValid = false;
+    }
+    g_viewsValid = false;
+    g_hfovDeg.store(0.0f, std::memory_order_relaxed);
+    if (g_viewSpace != XR_NULL_HANDLE) { xrDestroySpace(g_viewSpace); g_viewSpace = XR_NULL_HANDLE; }
     if (g_space != XR_NULL_HANDLE) { xrDestroySpace(g_space); g_space = XR_NULL_HANDLE; }
     if (g_session != XR_NULL_HANDLE) { xrDestroySession(g_session); g_session = XR_NULL_HANDLE; }
     if (g_context) { g_context->Release(); g_context = nullptr; }
@@ -231,6 +251,13 @@ void try_bring_up(IDXGISwapChain* swapchain) {
         teardown_session("space failed");
         return;
     }
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW; // head pose via xrLocateSpace
+    r = xrCreateReferenceSpace(g_session, &rsci, &g_viewSpace);
+    if (XR_FAILED(r)) {
+        BVR_LOG("xr: xrCreateReferenceSpace(VIEW) failed: %s", res_str(r));
+        teardown_session("view space failed");
+        return;
+    }
 
     if (!create_quad_swapchain(swapchain)) {
         teardown_session("swapchain failed");
@@ -359,6 +386,53 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         return;
     }
     g_frameOpen = true;
+
+    // M3: locate the head pose + per-eye views for the predicted display time.
+    // The head pose feeds the CalcView camera drive on the game thread; the
+    // views feed projection-layer submission at Present-tail.
+    XrSpaceLocation sl{XR_TYPE_SPACE_LOCATION};
+    bool poseOk =
+        XR_SUCCEEDED(xrLocateSpace(g_viewSpace, g_space, g_frameState.predictedDisplayTime, &sl)) &&
+        (sl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+        (sl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+    {
+        std::lock_guard<std::mutex> lock(g_poseMutex);
+        g_poseValid = poseOk;
+        if (poseOk) {
+            g_headPose = {sl.pose.position.x, sl.pose.position.y, sl.pose.position.z,
+                          sl.pose.orientation.x, sl.pose.orientation.y,
+                          sl.pose.orientation.z, sl.pose.orientation.w};
+        }
+    }
+
+    XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
+    vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    vli.displayTime = g_frameState.predictedDisplayTime;
+    vli.space = g_space;
+    XrViewState vs{XR_TYPE_VIEW_STATE};
+    uint32_t viewCount = 0;
+    g_views[0] = {XR_TYPE_VIEW};
+    g_views[1] = {XR_TYPE_VIEW};
+    g_viewsValid =
+        XR_SUCCEEDED(xrLocateViews(g_session, &vli, &vs, 2, &viewCount, g_views)) &&
+        viewCount == 2 && (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+
+    // Circumscribed symmetric FOV for the game render, computed once per
+    // session (needs the backbuffer aspect from the quad swapchain).
+    if (g_viewsValid && g_hfovDeg.load(std::memory_order_relaxed) == 0.0f && g_quadW != 0) {
+        float maxHalfH = 0.0f, maxHalfV = 0.0f;
+        for (const XrView& v : g_views) {
+            maxHalfH = fmaxf(maxHalfH, fmaxf(-v.fov.angleLeft, v.fov.angleRight));
+            maxHalfV = fmaxf(maxHalfV, fmaxf(-v.fov.angleDown, v.fov.angleUp));
+        }
+        float aspect = static_cast<float>(g_quadW) / static_cast<float>(g_quadH);
+        float halfH = fmaxf(maxHalfH, atanf(tanf(maxHalfV) * aspect));
+        float deg = fminf(halfH * 2.0f * 57.29578f, 160.0f);
+        g_hfovDeg.store(deg, std::memory_order_relaxed);
+        BVR_LOG("xr: headset fov half-angles h=%.1f v=%.1f deg -> game hfov %.1f deg "
+                "(aspect %.3f)",
+                maxHalfH * 57.29578f, maxHalfV * 57.29578f, deg, aspect);
+    }
 }
 
 void on_present_end(IDXGISwapChain* swapchain) {
@@ -366,9 +440,16 @@ void on_present_end(IDXGISwapChain* swapchain) {
     g_frameOpen = false;
 
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    const XrCompositionLayerBaseHeader* layers[] = {
-        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad)};
+    XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    XrCompositionLayerProjectionView projViews[2] = {
+        {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+        {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+    const XrCompositionLayerBaseHeader* layers[1] = {};
     uint32_t layerCount = 0;
+
+    float hfovDeg = g_hfovDeg.load(std::memory_order_relaxed);
+    bool projectionMode =
+        g_cameraMode.load(std::memory_order_relaxed) && g_viewsValid && hfovDeg > 0.0f;
 
     if (g_frameState.shouldRender && g_quadSwapchain != XR_NULL_HANDLE) {
         ID3D11Texture2D* backbuffer = nullptr;
@@ -386,18 +467,39 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_quadSwapchain, &ri);
 
-                float width = g_screenWidthM.load(std::memory_order_relaxed);
-                quad.space = g_space;
-                quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-                quad.subImage.swapchain = g_quadSwapchain;
-                quad.subImage.imageRect = {{0, 0},
-                                           {static_cast<int32_t>(g_quadW),
-                                            static_cast<int32_t>(g_quadH)}};
-                quad.pose.orientation.w = 1.0f;
-                quad.pose.position = {0.0f, 0.0f,
-                                      -g_screenDistM.load(std::memory_order_relaxed)};
-                quad.size = {width, width * static_cast<float>(g_quadH) /
-                                        static_cast<float>(g_quadW)};
+                XrSwapchainSubImage sub{};
+                sub.swapchain = g_quadSwapchain;
+                sub.imageRect = {{0, 0},
+                                 {static_cast<int32_t>(g_quadW), static_cast<int32_t>(g_quadH)}};
+
+                if (projectionMode) {
+                    // M3 MonoTracked: one image, both eyes. Per-eye poses from
+                    // xrLocateViews; fov = the symmetric fov the game rendered
+                    // with (hfov written by the adapter, vfov via aspect).
+                    float halfH = hfovDeg * 0.5f / 57.29578f;
+                    float halfV = atanf(tanf(halfH) * static_cast<float>(g_quadH) /
+                                        static_cast<float>(g_quadW));
+                    for (int eye = 0; eye < 2; ++eye) {
+                        projViews[eye].pose = g_views[eye].pose;
+                        projViews[eye].fov = {-halfH, halfH, halfV, -halfV};
+                        projViews[eye].subImage = sub;
+                    }
+                    proj.space = g_space;
+                    proj.viewCount = 2;
+                    proj.views = projViews;
+                    layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
+                } else {
+                    float width = g_screenWidthM.load(std::memory_order_relaxed);
+                    quad.space = g_space;
+                    quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                    quad.subImage = sub;
+                    quad.pose.orientation.w = 1.0f;
+                    quad.pose.position = {0.0f, 0.0f,
+                                          -g_screenDistM.load(std::memory_order_relaxed)};
+                    quad.size = {width, width * static_cast<float>(g_quadH) /
+                                            static_cast<float>(g_quadW)};
+                    layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+                }
                 layerCount = 1;
             }
             backbuffer->Release();
@@ -440,12 +542,36 @@ void draw_debug_ui() {
     if (ImGui::Checkbox("VR enabled (paces game to headset)", &enabled))
         g_enabled.store(enabled, std::memory_order_relaxed);
 
-    float dist = g_screenDistM.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("Screen distance (m)", &dist, 0.5f, 5.0f))
-        g_screenDistM.store(dist, std::memory_order_relaxed);
-    float width = g_screenWidthM.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("Screen width (m)", &width, 0.5f, 6.0f))
-        g_screenWidthM.store(width, std::memory_order_relaxed);
+    bool camMode = g_cameraMode.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("VR camera mode (6DOF head drive)", &camMode))
+        g_cameraMode.store(camMode, std::memory_order_relaxed);
+    float hfov = g_hfovDeg.load(std::memory_order_relaxed);
+    if (hfov > 0.0f) ImGui::Text("headset hfov for game: %.1f deg", hfov);
+
+    if (!camMode) {
+        float dist = g_screenDistM.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("Screen distance (m)", &dist, 0.5f, 5.0f))
+            g_screenDistM.store(dist, std::memory_order_relaxed);
+        float width = g_screenWidthM.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("Screen width (m)", &width, 0.5f, 6.0f))
+            g_screenWidthM.store(width, std::memory_order_relaxed);
+    }
+}
+
+bool get_head_pose(HeadPose& out) {
+    std::lock_guard<std::mutex> lock(g_poseMutex);
+    if (!g_poseValid) return false;
+    out = g_headPose;
+    return true;
+}
+
+bool vr_camera_mode() {
+    return g_cameraMode.load(std::memory_order_relaxed) &&
+           g_sessionBegun.load(std::memory_order_relaxed);
+}
+
+float suggested_hfov_deg() {
+    return g_hfovDeg.load(std::memory_order_relaxed);
 }
 
 } // namespace bvr::vr
@@ -461,6 +587,9 @@ void on_present_begin(IDXGISwapChain*) {}
 void on_present_end(IDXGISwapChain*) {}
 void on_resize() {}
 void draw_debug_ui() {}
+bool get_head_pose(HeadPose&) { return false; }
+bool vr_camera_mode() { return false; }
+float suggested_hfov_deg() { return 0.0f; }
 
 } // namespace bvr::vr
 
