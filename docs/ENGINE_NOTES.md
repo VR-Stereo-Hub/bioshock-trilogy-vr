@@ -26,7 +26,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | Name | Pattern / method | Module | Build | Found by | Status | Date |
 |---|---|---|---|---|---|---|
 | `APlayerController::eventPlayerCalcView` | FName-chain: find wide string `"PlayerCalcView"` → its FName-init xref → `89 0D` (`MOV [imm32], ECX`) store of the FName index → walk xrefs back to MSVC prologue `CC CC CC 55 8B EC` | BioshockHD.exe | 2022-04-13 | ported from itsloopyo/bioshock-remastered-headtracking `src/memory.rs` (MIT); C++ port: `core/hooks/pattern_scan.cpp` used by `game/bioshock1r/patterns.cpp` | **RESOLVED live: RVA 0x1BE7A0** (scan: 1 wide-string match, 1 string xref, FName global +3 xrefs, exactly 1 candidate past the init-site filter). Exe loads rebased (ASLR observed, base 0x0FB20000) - RVA is the stable identifier; the live-memory scan is relocation-transparent. | 2026-07-23 |
-| PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET` | documented, not yet verified | 2026-07-23 |
+| PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET`; `kFovLiveOffset` in `patterns.h` | read verified live (100.0 at main menu); per-frame write wired, visual confirm pending | 2026-07-23 |
 
 (Add one row per symbol as they land in `src/game/bioshock1r/patterns.cpp`.)
 
@@ -37,8 +37,13 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 - **FVector** = 3×float, Unreal units. World scale unknown - assume ~50 UU/m until calibrated
   in M3 (config `worldScale`).
 - `eventPlayerCalcView` hook signature (thiscall):
-  `(APlayerController* this, AActor* view_actor, FVector* camera_location, FRotator* camera_rotation)`
-  - fires per frame before the view is built; location/rotation are writable.
+  `(APlayerController* this, AActor** view_actor, FVector* camera_location, FRotator* camera_rotation)`
+  - view_actor is an out-param (pointer to actor pointer; corrected 2026-07-23 from `AActor*`
+    against the Rust source). Fires before the view is built; location/rotation are writable.
+  - **Fires at the main menu too** (menu scene has a live PlayerController; `*view_actor == this`
+    there). Observed call rate can far exceed display fps at the uncapped menu (up to ~7800/s
+    vs ~500 fps) - do not assume exactly one call per frame.
+  - Detour convention: `__fastcall` with a dummy EDX slot (register/stack-identical to thiscall).
 - RTTI class names observed in exe: `AVengeanceGameInfo`, `AShockPlayer`,
   `AShockPlayerController`, `APlayerController`, `APawn`, `AShockHUD`, `AHands`, `AWeapon`.
 
@@ -48,7 +53,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 |---|---|---|
 | `IDXGISwapChain::Present` (vtable, kiero-style dummy-device discovery) | frame boundary: XR pacing, overlay, mirror | skeleton in M0 |
 | `IDXGISwapChain::ResizeBuffers` | RT cache invalidation | skeleton in M0 |
-| `eventPlayerCalcView` | camera override (HMD pose, per-eye offsets) | M1/DR-4 |
+| `eventPlayerCalcView` | camera override (HMD pose, per-eye offsets) | **active** (DR-4: `game/bioshock1r/camera.cpp`, self-enabling MinHook) |
 | Scene-draw entry (unknown - find via RenderDoc callstack, DR-3) | SequentialReentry stereo | M4 |
 | GetPlayerViewPoint-equivalent used by fire traces (unknown) | decoupled controller aim | M6 |
 | Console-command dispatcher (unknown - FName-chain on command strings) | execConsole one-liners | M5/M6 |

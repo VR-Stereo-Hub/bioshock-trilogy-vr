@@ -1,26 +1,29 @@
 #include "game/bioshock1r/bioshock1r_adapter.h"
 
 #include "core/util/log.h"
+#include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/patterns.h"
-
-#include <imgui.h>
 
 namespace bvr::b1r {
 
 uint32_t Bioshock1RAdapter::capabilities() const {
-    return 0u; // camera/FOV caps land with the calcview hook
+    return camera::hook_live() ? (game::CAP_CAMERA_OVERRIDE | game::CAP_FOV_WRITE) : 0u;
 }
 
 bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     patterns::Symbols symbols{};
     if (!patterns::resolve(image, symbols)) return false; // resolve() logged why
+    if (!camera::install(symbols.eventPlayerCalcView)) return false;
+    BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }
 
-void Bioshock1RAdapter::setFov(float) {}
+void Bioshock1RAdapter::setFov(float hfovDeg) {
+    camera::set_fov_override(hfovDeg);
+}
 
 void Bioshock1RAdapter::drawDebugUi() {
-    ImGui::Text("bioshock1r: scan-only build");
+    camera::draw_debug_ui();
 }
 
 } // namespace bvr::b1r
