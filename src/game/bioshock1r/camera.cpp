@@ -94,7 +94,7 @@ float* fov_ptr(void* pc) {
 // Automated-test seam: %LOCALAPPDATA%\BioshockVR\command.txt is polled at 1 Hz
 // on the game thread; when its write time changes, every line is applied and
 // logged. Lets a test harness drive the debug controls without the overlay.
-// Commands: "fov <deg>", "fov off", "recenter".
+// Commands: "fov <deg>", "fov off", "offset <x> <y> <z>", "recenter".
 uint64_t g_lastCmdPollMs = 0;
 FILETIME g_lastCmdWrite{};
 
@@ -126,6 +126,14 @@ void poll_command_file(uint64_t now) {
         } else if (strncmp(line, "recenter", 8) == 0) {
             g_recenterRequested.store(true, std::memory_order_relaxed);
             BVR_LOG("[b1r] command: recenter");
+        } else {
+            float x, y, z;
+            if (sscanf_s(line, "offset %f %f %f", &x, &y, &z) == 3) {
+                g_offsetX.store(x, std::memory_order_relaxed);
+                g_offsetY.store(y, std::memory_order_relaxed);
+                g_offsetZ.store(z, std::memory_order_relaxed);
+                BVR_LOG("[b1r] command: offset %.1f %.1f %.1f", x, y, z);
+            }
         }
     }
     fclose(f);
