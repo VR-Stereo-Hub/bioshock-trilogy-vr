@@ -47,6 +47,13 @@ std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{true};    // off = keep the game's own FOV (undistorted,
                                                // narrower visual cone; distortion escape hatch)
 
+// M4 rung 1: AlternateEye. Half-IPD camera shift per eye, eye picked by
+// vr::current_eye_sign() (0 while AER is off).
+std::atomic<float> g_ipdMm{63.0f};
+// Head-offset telemetry: the recenter-relative offset applied to loc this
+// frame, in UU - makes the world-scale slider's effect a number on screen.
+std::atomic<float> g_headOffX{0.0f}, g_headOffY{0.0f}, g_headOffZ{0.0f};
+
 // Telemetry: game thread writes, overlay thread reads.
 std::atomic<uint32_t> g_callCount{0};
 std::atomic<float>    g_lastLocX{0.0f}, g_lastLocY{0.0f}, g_lastLocZ{0.0f};
@@ -207,9 +214,28 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         float lx = d[0] * c - d[1] * s;
         float ly = d[0] * s + d[1] * c;
         float cg = cosf(gameYawRad), sg = sinf(gameYawRad);
-        loc->x += (lx * cg - ly * sg) * scale;
-        loc->y += (lx * sg + ly * cg) * scale;
-        loc->z += d[2] * scale;
+        float ox = (lx * cg - ly * sg) * scale;
+        float oy = (lx * sg + ly * cg) * scale;
+        float oz = d[2] * scale;
+        loc->x += ox;
+        loc->y += oy;
+        loc->z += oz;
+        g_headOffX.store(ox, std::memory_order_relaxed);
+        g_headOffY.store(oy, std::memory_order_relaxed);
+        g_headOffZ.store(oz, std::memory_order_relaxed);
+
+        // AlternateEye (M4 rung 1): shift the camera half an IPD along
+        // view-right; core flips the sign after each submitted frame so
+        // successive game frames render alternating eyes.
+        int eyeSign = bvr::vr::current_eye_sign();
+        if (eyeSign != 0) {
+            float finalYawRad = static_cast<float>(rot->yaw) / kRotUnitsPerRadian;
+            float halfIpdUu =
+                static_cast<float>(eyeSign) *
+                (g_ipdMm.load(std::memory_order_relaxed) / 2000.0f) * scale;
+            loc->x += -sinf(finalYawRad) * halfIpdUu;
+            loc->y += cosf(finalYawRad) * halfIpdUu;
+        }
 
         vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
                     ? bvr::vr::suggested_hfov_deg()
@@ -217,6 +243,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         vrDrove = true;
     }
     g_vrDriving.store(vrDrove, std::memory_order_relaxed);
+    if (!vrDrove) {
+        g_headOffX.store(0.0f, std::memory_order_relaxed);
+        g_headOffY.store(0.0f, std::memory_order_relaxed);
+        g_headOffZ.store(0.0f, std::memory_order_relaxed);
+    }
 
     if (loc) {
         loc->x += g_offsetX.load(std::memory_order_relaxed);
@@ -334,11 +365,16 @@ void draw_debug_ui() {
                 roll / kRotUnitsPerDegree);
     ImGui::Text("fov: %.1f deg", g_lastFov.load(std::memory_order_relaxed));
 
-    if (ImGui::CollapsingHeader("VR camera (M3)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("VR camera (M3/M4)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text(g_vrDriving.load(std::memory_order_relaxed)
                         ? "camera: driven by HMD pose"
                         : "camera: game (enable VR camera mode in the VR section)");
+        ImGui::Text("head offset: (%.1f %.1f %.1f) UU",
+                    g_headOffX.load(std::memory_order_relaxed),
+                    g_headOffY.load(std::memory_order_relaxed),
+                    g_headOffZ.load(std::memory_order_relaxed));
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
+        atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
         bool forceFov = g_forceHeadsetFov.load(std::memory_order_relaxed);
