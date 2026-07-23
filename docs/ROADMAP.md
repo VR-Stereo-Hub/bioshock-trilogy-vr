@@ -27,11 +27,12 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 - [x] **DR-1 (critical):** standalone 32-bit OpenXR hello-world (`src/tools/xr_hello32`) under both
       VDXR (Virtual Desktop) and SteamVR. Fallbacks: SteamVR-only → 64-bit companion compositor.
-      *2026-07-23: RISK RETIRED. VDXR ships a 32-bit runtime (virtualdesktop-openxr-32.dll,
-      registered under WOW6432Node as ActiveRuntime). xr_hello32 (32-bit) created an instance on
-      "VirtualDesktopXR 1.0.10" with XR_KHR_D3D11_enable available. Full session test pending a
-      connected headset; SteamVR run also pending. The 64-bit companion-compositor fallback will
-      almost certainly not be needed.*
+      *2026-07-23: RISK RETIRED - FULL PASS on VDXR. VDXR ships a 32-bit runtime
+      (virtualdesktop-openxr-32.dll, WOW6432Node ActiveRuntime). xr_hello32 with the Quest 3
+      connected: system "Meta Quest 3" found, D3D11 requirements min FL 11_0, adapter LUID
+      matched to the RTX 4060, session created and ran 60 frames on "VirtualDesktopXR 1.0.10".
+      SteamVR run still untested (optional check, any session). The 64-bit companion-compositor
+      fallback is NOT needed.*
 - [x] DR-2: LAA flag check (`tools/check-laa.ps1`); confirm game creates a D3D11 device at runtime
       (not the D3D9 fallback path)
       *2026-07-23: LAA = YES (0x0122); D3D11 confirmed live (FL 11_0, exclusive fullscreen).*
