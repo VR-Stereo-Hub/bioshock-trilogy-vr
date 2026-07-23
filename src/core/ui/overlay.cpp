@@ -1,6 +1,7 @@
 #include "overlay.h"
 
 #include "core/framework/framework.h"
+#include "core/gfx/frame_inspector.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/igame_adapter.h"
@@ -77,6 +78,8 @@ void DrawUi() {
         ImGui::Separator();
         adapter->drawDebugUi();
     }
+    ImGui::Separator();
+    frame_inspector::draw_debug_ui();
     ImGui::Separator();
     ImGui::TextWrapped("Log: %%LOCALAPPDATA%%\\BioshockVR\\bioshockvr.log");
     ImGui::End();
