@@ -31,6 +31,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 |---|---|---|---|---|---|---|
 | `APlayerController::eventPlayerCalcView` | FName-chain: find wide string `"PlayerCalcView"` → its FName-init xref → `89 0D` (`MOV [imm32], ECX`) store of the FName index → walk xrefs back to MSVC prologue `CC CC CC 55 8B EC` | BioshockHD.exe | 2022-04-13 | ported from itsloopyo/bioshock-remastered-headtracking `src/memory.rs` (MIT); C++ port: `core/hooks/pattern_scan.cpp` used by `game/bioshock1r/patterns.cpp` | **RESOLVED live: RVA 0x1BE7A0** (scan: 1 wide-string match, 1 string xref, FName global +3 xrefs, exactly 1 candidate past the init-site filter). Exe loads rebased (ASLR observed, base 0x0FB20000) - RVA is the stable identifier; the live-memory scan is relocation-transparent. | 2026-07-23 |
 | PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET`; `kFovLiveOffset` in `patterns.h` | **readable, but NOT consumed by the renderer.** Reads 100.0 by default. 2026-07-24 automated flat A/B (command-file seam + window screenshots): writes of 60/137/140 leave the rendered frame pixel-identical, in real gameplay AND the menu attract scene, under BOTH `HorizontalFOVLock` states. The earlier "override widens view" (DR-4) was observed only through the VR projection layer, where the fov CLAIM follows the written value - a claim-side artifact, retracted. The field also does not mirror the video-option FOV (option applied while field kept reading 100). In-headset swim calibration measured the true render at ~100 = the settings value. Treat this field as telemetry-only; the real control is the video option (see Config/ini facts). | 2026-07-24 |
+| `UShockUserSettings*` global | static pointer at **RVA 0x136AFA0** (`.data`); the object's **`+0x8C` = HorizontalFOV (int32, degrees)** | BioshockHD.exe | 2022-04-13 | runtime value-scan narrowing via the command seam (`memscani 130` -> user changed the video option to 100 then 117 through the in-game UI -> `memrescani` collapsed 662 candidates to 4 stable copies -> per-copy poke + screenshot img-diff found the consumed one -> `memptr` found the static root -> RTTI walk `vtable -> COL -> TypeDescriptor` read `.?AVUShockUserSettings@@`) | **RESOLVED + CONSUMED PER FRAME.** The renderer reads this field live: poking it mid-game changes the render immediately, no options APPLY needed. **NO code clamp past the UI cap: 145 renders wider than 130** (monotonic img-diff 117->130->145). Integrity check for resolution: the object's vtable == exe base + **0xDA3878**. NOTE the field is an **int32** - an ini float would serialize as `130.000000`, the bare `130` gave the type away; float scans cannot see it. `UD3DRenderDevice11` (vtable RVA 0xE38E7C) keeps a passive copy at `+0x74` - poking that changes nothing; two further copies (one heap-rooted, one at `[0x136A370]+0xCC`) are also passive. | 2026-07-24 |
 
 (Add one row per symbol as they land in `src/game/bioshock1r/patterns.cpp`.)
 
@@ -77,10 +78,15 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   option. `[Engine.RenderConfig] HorizontalFOVLock=True;` (trailing semicolon is shipped -
   preserve) + `bHorizontalFOVLock=True` are back at their stock True after the 07-24 unlock
   experiment (False made the PC+0xE0 field fully inert without enabling anything; backup
-  `Bioshock.ini.bvr-bak-fovlock` remains next to the ini). VR consequence: claimed fov must be
+  `Bioshock.ini.bvr-bak-fovlock` remains next to the ini). ~~VR consequence: claimed fov must be
   set to the option's value by hand (manual claimed-FOV slider) until we can read the live
-  settings object. NEXT: string/FName scan for the settings object holding `HorizontalFOV` -
-  read it to auto-claim the truth, write it to try exceeding the 130 UI cap.
+  settings object.~~ **RESOLVED 2026-07-24 (session 4): the live settings object is found**
+  (`UShockUserSettings`, static root RVA 0x136AFA0, int32 HorizontalFOV at +0x8C - see the
+  symbol table). The renderer consumes it per frame and accepts values beyond the 130 UI cap.
+  Extra facts from the discovery: `HorizontalFOV` is an int property (bare `130` in the ini);
+  the string "HorizontalFOV" appears NOWHERE in the exe image (property names live in script
+  packages/heap); the options MENU keeps its own transient copies that die on screen close
+  (freed-heap fill 0xFEFEFEFE observed mid-scan).
 - **Menu attract scene (2026-07-24)**: the main-menu backdrop is the live lighthouse level with
   a flying camera whose loc IS CalcView-driven (our offset command visibly moved it) but whose
   fov ignores the field. `bHasSaves` in the ini is stale/unreliable (read False while a

@@ -12,11 +12,16 @@ namespace bvr::value_scan {
 
 // Fresh sweep of all committed writable private/image memory (our own DLL
 // excluded) for the exact 32-bit pattern of `value` at 4-byte alignment.
-// Replaces the candidate set. Returns the candidate count.
+// Replaces the candidate set. Returns the candidate count. The _u32 variants
+// scan for integer-typed values (UE2.5 int config properties - an ini line
+// like "HorizontalFOV=130" with no decimals is an int property, invisible to
+// a float scan).
 size_t scan_f32(float value);
+size_t scan_u32(uint32_t value);
 
 // Keep only candidates whose current value equals `value` exactly.
 size_t rescan_f32(float value);
+size_t rescan_u32(uint32_t value);
 
 size_t count();
 
@@ -30,13 +35,16 @@ float read_at(size_t idx);
 // bits are remembered (obfuscated so they never match a later scan) for
 // restore_all. Returns success / number written.
 bool poke(size_t idx, float value);
+bool poke_u32(size_t idx, uint32_t value);
 size_t poke_range(size_t lo, size_t hi, float value);
+size_t poke_range_u32(size_t lo, size_t hi, uint32_t value);
 
 // Restore every poked address to its remembered bits. Returns count restored.
 size_t restore_all();
 
 // Write to an arbitrary address (validated + SEH-guarded).
 bool poke_addr(uintptr_t addr, float value);
+bool poke_addr_u32(uintptr_t addr, uint32_t value);
 
 // Log a hex+ascii dump of [addr, addr+len), len capped at 1024.
 void hexdump(uintptr_t addr, size_t len);
