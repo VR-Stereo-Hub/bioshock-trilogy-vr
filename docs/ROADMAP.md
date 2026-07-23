@@ -132,6 +132,9 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 - [ ] gameswf HUD draws redirected to offscreen RT → floating quad during stereo gameplay
 - [ ] Snap turn, height/seated recenter, optional vignette
+- [ ] IPD slider verification + calibration (parked here 2026-07-24 from M4 rung 1 by user
+      choice - user could not tell if it does anything; test with an exaggerated offset,
+      calibrate world scale first since perceived depth scale is the worldScale/IPD ratio)
 - [ ] Config surface cleanup; README install guide; GitHub release zip
 - [ ] **Done when:** a non-developer installs from the release zip and plays with full HUD.
 

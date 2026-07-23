@@ -70,17 +70,18 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    claim (kills the manual-slider requirement); write it -> try exceeding the 130 UI cap
    toward the 137 headset target. Candidate follow-up: find where the projection matrix is
    built from it (DR-3 RenderDoc work helps).
-2. **IPD slider verification** (deferred by user): see the note in Current state - test with
-   an exaggerated offset before concluding anything; also calibrate world scale first since
-   perceived depth scale is the worldScale/IPD ratio.
-3. **SequentialReentry groundwork - the real M4 bet**: DR-3 (RenderDoc frame map: scene RTs,
-   view/proj constant buffers, scene-draw callstack) + DR-5 (double scene draw with yaw
-   delta). AER judder makes full-rate stereo the next quality jump.
-4. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+2. **SequentialReentry groundwork - the real M4 bet and the next session's main focus**:
+   DR-3 (RenderDoc frame map: scene RTs, view/proj constant buffers, scene-draw callstack) +
+   DR-5 (double scene draw with yaw delta). AER judder makes full-rate stereo the next
+   quality jump.
+3. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-5. DR-7: borderless/windowed stability; DR-6: menu input path (note: tools/game-click.ps1
+4. DR-7: borderless/windowed stability; DR-6: menu input path (note: tools/game-click.ps1
    synthetic clicks DO work on gameswf menus - partial DR-6 answer already).
-6. Optional anytime: Steam Link / SteamVR cross-check.
+5. Optional anytime: Steam Link / SteamVR cross-check.
+6. **Parked until end-of-project polish (user's call, 2026-07-24): IPD slider verification**
+   (moved to M9 in ROADMAP) - see the note in Current state: exaggerated-offset test first,
+   world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
 
 ## Open questions / blockers
 
