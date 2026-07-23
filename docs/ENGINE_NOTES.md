@@ -30,7 +30,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | Name | Pattern / method | Module | Build | Found by | Status | Date |
 |---|---|---|---|---|---|---|
 | `APlayerController::eventPlayerCalcView` | FName-chain: find wide string `"PlayerCalcView"` → its FName-init xref → `89 0D` (`MOV [imm32], ECX`) store of the FName index → walk xrefs back to MSVC prologue `CC CC CC 55 8B EC` | BioshockHD.exe | 2022-04-13 | ported from itsloopyo/bioshock-remastered-headtracking `src/memory.rs` (MIT); C++ port: `core/hooks/pattern_scan.cpp` used by `game/bioshock1r/patterns.cpp` | **RESOLVED live: RVA 0x1BE7A0** (scan: 1 wide-string match, 1 string xref, FName global +3 xrefs, exactly 1 candidate past the init-site filter). Exe loads rebased (ASLR observed, base 0x0FB20000) - RVA is the stable identifier; the live-memory scan is relocation-transparent. | 2026-07-23 |
-| PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET`; `kFovLiveOffset` in `patterns.h` | **verified both ways, but renderer-capped**: read 100.0 live; per-frame write user-confirmed visually in-game (override widens view instantly, restore on toggle-off works). 2026-07-24 in-headset swim calibration (TESTING.md procedure) at 1920x1080: field written 137 -> ACTUALLY RENDERED hfov ~100; field 100 -> ~100. The live ini pins `HorizontalFOV=100` under `HorizontalFOVLock=True` - the write is real but the projection obeys the config lock above ~100. Reading this field back therefore echoes the write, NOT the rendered fov, whenever the lock clamps. | 2026-07-24 |
+| PlayerController FOV (live) | `PlayerController + 0xE0` (float, degrees) | BioshockHD.exe | 2022-04-13 | itsloopyo `FOV_LIVE_OFFSET`; `kFovLiveOffset` in `patterns.h` | **readable, but NOT consumed by the renderer.** Reads 100.0 by default. 2026-07-24 automated flat A/B (command-file seam + window screenshots): writes of 60/137/140 leave the rendered frame pixel-identical, in real gameplay AND the menu attract scene, under BOTH `HorizontalFOVLock` states. The earlier "override widens view" (DR-4) was observed only through the VR projection layer, where the fov CLAIM follows the written value - a claim-side artifact, retracted. The field also does not mirror the video-option FOV (option applied while field kept reading 100). In-headset swim calibration measured the true render at ~100 = the settings value. Treat this field as telemetry-only; the real control is the video option (see Config/ini facts). | 2026-07-24 |
 
 (Add one row per symbol as they land in `src/game/bioshock1r/patterns.cpp`.)
 
@@ -68,15 +68,24 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 - `[Engine.Console]` `ConsoleKey=9` (Tab). Launch option `-allowconsole`. Mixed reports on
   newest builds - verify (see STATUS blockers).
-- **FOV lock (2026-07-24, live user ini)**: `[Engine.RenderConfig]` has
-  `HorizontalFOVLock=True;` (note the shipped trailing semicolon - preserve it when editing)
-  plus `...PS4`/`...XB1` variants, and the remaster settings section (the one ending in
-  `SettingVersion=2`) has `bHorizontalFOVLock=True` and **`HorizontalFOV=100`** - which matches
-  the measured ~100 rendered-hfov cap exactly (see the FOV row above). Experiment in flight:
-  both PC lock flags flipped to False (backup at `Bioshock.ini.bvr-bak-fovlock` next to the
-  ini) to see if the PC+0xE0 write then reaches the projection past 100. Plan B if not:
-  set `HorizontalFOV=137` directly. Plan C: FName-chain scan for the live settings object and
-  write `HorizontalFOV` in memory.
+- **FOV control - RESOLVED (2026-07-24): the remaster's "FOV" video option is the only real
+  control.** Range **75-130** in the options UI; user-verified that applying it visibly changes
+  the flat render. It is stored as **`HorizontalFOV`** in the ini's remaster settings section
+  (the one ending in `SettingVersion=2`, alongside mouse/subtitle options), i.e. rendered hfov
+  == that option, which is why everything measured ~100 (the stored value). Editing the ini
+  value directly to 137 (out of UI range) neither rendered nor propagated - use the in-game
+  option. `[Engine.RenderConfig] HorizontalFOVLock=True;` (trailing semicolon is shipped -
+  preserve) + `bHorizontalFOVLock=True` are back at their stock True after the 07-24 unlock
+  experiment (False made the PC+0xE0 field fully inert without enabling anything; backup
+  `Bioshock.ini.bvr-bak-fovlock` remains next to the ini). VR consequence: claimed fov must be
+  set to the option's value by hand (manual claimed-FOV slider) until we can read the live
+  settings object. NEXT: string/FName scan for the settings object holding `HorizontalFOV` -
+  read it to auto-claim the truth, write it to try exceeding the 130 UI cap.
+- **Menu attract scene (2026-07-24)**: the main-menu backdrop is the live lighthouse level with
+  a flying camera whose loc IS CalcView-driven (our offset command visibly moved it) but whose
+  fov ignores the field. `bHasSaves` in the ini is stale/unreliable (read False while a
+  loadable save existed). Save-spawn is deterministic - loading the same save reproduces the
+  same viewpoint, good for A/B screenshot comparisons.
 - User config path **confirmed** (2026-07-23, generated on first launch):
   `%AppData%\Roaming\BioshockHD\Bioshock\` - `Bioshock.ini` (live engine ini, 25 KB),
   `User.ini` (bindings, 99 KB), `MEMORY\CurrentGame` (save data).

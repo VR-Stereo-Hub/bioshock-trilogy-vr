@@ -51,6 +51,21 @@
 - **M6**: aim decouple - look left, shoot right, impacts follow the controller.
 - **M7/M8/M9**: hands track convincingly; wheels switch weapon+plasmid; HUD quad visible in stereo.
 
+## Automated in-game testing (no human in the loop)
+
+- **Command seam**: the mod polls `%LOCALAPPDATA%\BioshockVR\command.txt` at 1 Hz on the game
+  thread and applies each line, logging what it applied. Commands: `fov <deg>`, `fov off`,
+  `offset <x> <y> <z>`, `recenter`. Write the file, wait ~2 s, confirm via the log.
+- **Window screenshots**: `.\tools\game-shot.ps1 -Out shot.png` captures the game WINDOW
+  (PrintWindow, D3D content included), foregrounding it first - the game pauses its boot and
+  its presenting while unfocused.
+- **Menu clicks**: `.\tools\game-click.ps1 -X <px> -Y <py>` clicks at window coordinates
+  (read positions off a game-shot capture; gameswf menus accept the synthetic click).
+- Loading the same save reproduces the same spawn viewpoint - good for A/B render comparisons.
+- Caveat: the main-menu backdrop is a live level with a flying attract camera that LOOKS like
+  gameplay (no HUD) - do not draw render conclusions there; its fov path differs (see
+  ENGINE_NOTES).
+
 ## Quest 3 / Virtual Desktop setup
 
 1. Quest 3: install Virtual Desktop (paid) from the Meta store; PC: Virtual Desktop Streamer.
