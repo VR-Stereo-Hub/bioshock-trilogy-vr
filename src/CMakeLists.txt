@@ -21,6 +21,8 @@ add_library(bioshockvr SHARED
     core/hooks/pattern_scan.h
     core/ui/overlay.cpp
     core/ui/overlay.h
+    core/vr/openxr_runtime.cpp
+    core/vr/openxr_runtime.h
     core/util/log.cpp
     core/util/log.h
     core/util/crash.cpp
@@ -41,6 +43,11 @@ target_link_libraries(bioshockvr PRIVATE
     d3d11
     dbghelp
 )
+if(BIOSHOCKVR_WITH_OPENXR)
+    # Static loader linked straight into the mod DLL (no extra DLL shipped).
+    target_link_libraries(bioshockvr PRIVATE openxr_loader)
+    target_compile_definitions(bioshockvr PRIVATE BVR_WITH_OPENXR)
+endif()
 
 # --- xr_hello32 - DR-1 test client --------------------------------------------
 # Standalone 32-bit console app that proves (or disproves) that this machine's

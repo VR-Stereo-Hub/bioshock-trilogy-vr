@@ -2,6 +2,7 @@
 
 #include "core/ui/overlay.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -52,13 +53,16 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
     if (!g_loggedFirstPresent.exchange(true)) {
         LogSwapchainInfo(swapchain); // DR-2: confirms the D3D11 path is live
     }
+    vr::on_present_begin(swapchain); // xrWaitFrame paces the game while a session runs
     overlay::on_present(swapchain);
+    vr::on_present_end(swapchain);   // copies the finished frame (incl. overlay) to the quad
     return g_origPresent(swapchain, syncInterval, flags);
 }
 
 HRESULT WINAPI ResizeBuffersDetour(IDXGISwapChain* swapchain, UINT bufferCount,
                                    UINT width, UINT height, DXGI_FORMAT format,
                                    UINT swapchainFlags) {
+    vr::on_resize();
     overlay::on_resize();
     HRESULT hr = g_origResizeBuffers(swapchain, bufferCount, width, height, format, swapchainFlags);
     BVR_LOG("ResizeBuffers: %ux%u format %u -> hr=0x%08X", width, height, format, hr);

@@ -4,6 +4,7 @@
 #include "core/ui/overlay.h"
 #include "core/util/crash.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 #include "game/igame_adapter.h"
 
 #include <windows.h>
@@ -30,6 +31,8 @@ void init() {
     BVR_LOG("MinHook initialized");
 
     game::init_adapter(); // fail-soft: scan/hook failure is logged, game runs flat
+
+    vr::init_instance(); // fail-soft: no runtime just means flat mode
 
     if (!d3d11_hook::install()) {
         BVR_LOG("D3D11 hook install failed - mod disabled, game runs flat");

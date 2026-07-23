@@ -2,6 +2,7 @@
 
 #include "core/framework/framework.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 #include "game/igame_adapter.h"
 
 #include <windows.h>
@@ -70,6 +71,8 @@ void DrawUi() {
     ImGui::Begin("BioShock VR " BVR_VERSION);
     ImGui::Text("%.1f fps (%.2f ms)", ImGui::GetIO().Framerate,
                 1000.0f / ImGui::GetIO().Framerate);
+    ImGui::Separator();
+    vr::draw_debug_ui();
     if (auto* adapter = game::adapter()) {
         ImGui::Separator();
         adapter->drawDebugUi();
