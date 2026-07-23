@@ -67,8 +67,16 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 ## M3 - 6DOF head camera (~1–2 sessions)
 
 - [ ] CalcView hook drives camera from predicted HMD pose (position + full FRotator incl. roll)
+      *2026-07-23: code landed - adapter pulls the predicted pose from core/vr in the detour;
+      pitch/roll absolute, yaw additive (mouse turning intact), position recenter-relative and
+      yaw-frame-rotated. Pending in-headset verification.*
 - [ ] FOV forced to headset FOV; projection layer (same image both eyes)
+      *2026-07-23: code landed - circumscribed symmetric FOV computed per session and forced
+      per frame while driving; projection layer with per-eye poses replaces the quad in camera
+      mode. Pending in-headset verification.*
 - [ ] World-scale calibration + recenter in ImGui
+      *2026-07-23: code landed - World scale slider (10-200 UU/m, default 50) + Recenter
+      button. Calibration itself happens in-headset.*
 - [ ] **Done when:** you can physically lean around a corner in Rapture; no drift; head roll
       correct; comfortable latency.
 
