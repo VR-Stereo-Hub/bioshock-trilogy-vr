@@ -29,6 +29,10 @@ bool is_memory_valid(const void* addr, size_t size);
 // All occurrences of `ascii` encoded as UTF-16LE inside the image.
 std::vector<const uint8_t*> find_wide_string(const ProcessImage& img, const char* ascii);
 
+// All occurrences of `ascii` as a raw byte string (no terminator) inside the
+// image - for ANSI/UTF-8 string tables (e.g. ini key names).
+std::vector<const uint8_t*> find_ascii_string(const ProcessImage& img, const char* ascii);
+
 // All occurrences of the 32-bit little-endian value of `target` - i.e. every
 // imm32/disp32 in the image that references that address.
 std::vector<const uint8_t*> find_references(const ProcessImage& img, const void* target);

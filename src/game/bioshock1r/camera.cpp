@@ -4,6 +4,7 @@
 
 #include "game/bioshock1r/camera.h"
 
+#include "core/debug/value_scan.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/patterns.h"
@@ -94,9 +95,75 @@ float* fov_ptr(void* pc) {
 // Automated-test seam: %LOCALAPPDATA%\BioshockVR\command.txt is polled at 1 Hz
 // on the game thread; when its write time changes, every line is applied and
 // logged. Lets a test harness drive the debug controls without the overlay.
-// Commands: "fov <deg>", "fov off", "offset <x> <y> <z>", "recenter".
+// Camera commands: "fov <deg>", "fov off", "offset <x> <y> <z>", "recenter".
+// Discovery commands (route to core/debug/value_scan; game thread only):
+//   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
+//   mempoke <idx> <f>  mempoke <lo>-<hi> <f>  memrestore
+//   memptr <idx> [maxDeltaHex]  pokeaddr <hex> <f>  hexdump <hex> <len>
+//   strscan <text>  membases
 uint64_t g_lastCmdPollMs = 0;
 FILETIME g_lastCmdWrite{};
+
+// Dispatch one command line. `cmd` is the first whitespace-delimited token;
+// `args` is the remainder of the line (may be empty). Tokenizing on the first
+// word first means no command can be shadowed by another's prefix.
+void apply_command(const char* cmd, const char* args) {
+    float v = 0.0f, x = 0.0f, y = 0.0f, z = 0.0f;
+    unsigned lo = 0, hi = 0, n = 0;
+    unsigned addr = 0, len = 0;
+
+    if (strcmp(cmd, "fov") == 0) {
+        if (strncmp(args, "off", 3) == 0) {
+            g_fovOverride.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: fov off");
+        } else if (sscanf_s(args, "%f", &v) == 1) {
+            g_fovDeg.store(v, std::memory_order_relaxed);
+            g_fovOverride.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: fov %.1f", v);
+        }
+    } else if (strcmp(cmd, "recenter") == 0) {
+        g_recenterRequested.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b1r] command: recenter");
+    } else if (strcmp(cmd, "offset") == 0) {
+        if (sscanf_s(args, "%f %f %f", &x, &y, &z) == 3) {
+            g_offsetX.store(x, std::memory_order_relaxed);
+            g_offsetY.store(y, std::memory_order_relaxed);
+            g_offsetZ.store(z, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: offset %.1f %.1f %.1f", x, y, z);
+        }
+    } else if (strcmp(cmd, "memscan") == 0) {
+        if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::scan_f32(v);
+    } else if (strcmp(cmd, "memrescan") == 0) {
+        if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::rescan_f32(v);
+    } else if (strcmp(cmd, "memlist") == 0) {
+        bvr::value_scan::list(sscanf_s(args, "%u", &n) == 1 ? n : 32);
+    } else if (strcmp(cmd, "memread") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::read_at(n);
+    } else if (strcmp(cmd, "mempoke") == 0) {
+        if (sscanf_s(args, "%u-%u %f", &lo, &hi, &v) == 3)
+            bvr::value_scan::poke_range(lo, hi, v);
+        else if (sscanf_s(args, "%u %f", &n, &v) == 2)
+            bvr::value_scan::poke(n, v);
+    } else if (strcmp(cmd, "memrestore") == 0) {
+        bvr::value_scan::restore_all();
+    } else if (strcmp(cmd, "memptr") == 0) {
+        unsigned maxDelta = 0x400;
+        if (sscanf_s(args, "%u %x", &n, &maxDelta) >= 1)
+            bvr::value_scan::ptr_scan(n, maxDelta);
+    } else if (strcmp(cmd, "pokeaddr") == 0) {
+        if (sscanf_s(args, "%x %f", &addr, &v) == 2)
+            bvr::value_scan::poke_addr(addr, v);
+    } else if (strcmp(cmd, "hexdump") == 0) {
+        if (sscanf_s(args, "%x %u", &addr, &len) >= 1)
+            bvr::value_scan::hexdump(addr, len ? len : 64);
+    } else if (strcmp(cmd, "strscan") == 0) {
+        char text[96];
+        if (sscanf_s(args, "%95s", text, static_cast<unsigned>(sizeof text)) == 1)
+            bvr::value_scan::log_string_scan(text);
+    } else if (strcmp(cmd, "membases") == 0) {
+        bvr::value_scan::log_module_bases();
+    }
+}
 
 void poll_command_file(uint64_t now) {
     if (now - g_lastCmdPollMs < 1000) return;
@@ -113,28 +180,15 @@ void poll_command_file(uint64_t now) {
     g_lastCmdWrite = fad.ftLastWriteTime;
     FILE* f = _wfsopen(path, L"rt", _SH_DENYNO);
     if (!f) return;
-    char line[128];
+    char line[256];
     while (fgets(line, sizeof line, f)) {
-        float v = 0.0f;
-        if (strncmp(line, "fov off", 7) == 0) {
-            g_fovOverride.store(false, std::memory_order_relaxed);
-            BVR_LOG("[b1r] command: fov off");
-        } else if (sscanf_s(line, "fov %f", &v) == 1) {
-            g_fovDeg.store(v, std::memory_order_relaxed);
-            g_fovOverride.store(true, std::memory_order_relaxed);
-            BVR_LOG("[b1r] command: fov %.1f", v);
-        } else if (strncmp(line, "recenter", 8) == 0) {
-            g_recenterRequested.store(true, std::memory_order_relaxed);
-            BVR_LOG("[b1r] command: recenter");
-        } else {
-            float x, y, z;
-            if (sscanf_s(line, "offset %f %f %f", &x, &y, &z) == 3) {
-                g_offsetX.store(x, std::memory_order_relaxed);
-                g_offsetY.store(y, std::memory_order_relaxed);
-                g_offsetZ.store(z, std::memory_order_relaxed);
-                BVR_LOG("[b1r] command: offset %.1f %.1f %.1f", x, y, z);
-            }
-        }
+        char cmd[32];
+        int consumed = 0;
+        if (sscanf_s(line, "%31s%n", cmd, static_cast<unsigned>(sizeof cmd), &consumed) != 1)
+            continue;
+        const char* args = line + consumed;
+        while (*args == ' ' || *args == '\t') ++args;
+        apply_command(cmd, args);
     }
     fclose(f);
 }
