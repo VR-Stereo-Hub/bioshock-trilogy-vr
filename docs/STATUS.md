@@ -40,16 +40,12 @@ turns it off). Installed build in the game folder == HEAD.
 1. ~~M2 in-headset test~~ - PASSED 2026-07-23 (big screen, gamma OK, sliders, clean fallback).
 2. ~~DR-4 camera controls in-game~~ - PASSED 2026-07-23 (ALL sliders incl. roll confirmed).
 3. ~~Stability~~ - PASSED 2026-07-23 (no stutter, crash, or input weirdness).
-4. **M3 in-headset RETEST** (first attempt 2026-07-23: 6DOF drive itself PASSED - rotation,
-   leaning, turning, recenter all correct - but the image showed wide-angle distortion, felt
-   like a close screen with no depth, and world scale seemed inert; fixes + diagnostics
-   landed same session). Retest procedure: load a save, connect VD, tick VR camera mode,
-   Recenter, then read the **layer:** line in the VR section - it must say **projection**
-   (if it says quad, the red line + log say which prerequisite failed; report it). Then:
-   (a) distortion gone? Also try unticking Force headset FOV - undistorted-but-narrower
-   confirms an engine FOV clamp; (b) NOW re-judge the world-scale slider (10 vs 200 should
-   be unmissable); (c) note that same-image-both-eyes = no binocular depth is EXPECTED until
-   M4 stereo - judge geometry, not depth.
+4. **M3 second test done (2026-07-23, after the readiness/readback fixes)**: 6DOF drive
+   confirmed working (rotation, leaning, turning, recenter). "Force headset FOV" produced a
+   visible change ("worked but a bit different"). User's verdict: cannot meaningfully judge
+   immersion or world scale until both eyes get distinct images - i.e. M4 stereo. World-scale
+   slider still reported feeling inert; deliberately DEFERRED until stereo makes depth/scale
+   judgeable. M3 geometry sign-off is folded into the M4 AlternateEye test.
 5. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
    repeat the M2 checklist.
 
@@ -62,12 +58,29 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **User in-headset M3 test** (checklist above), then world-scale calibration and any sign
-   fixes it surfaces. Watch for drift over 10 min and cutscene/camera-actor weirdness (VR
-   drive overrides cutscene cameras too - may need a "driving only when viewactor == pc"
-   guard; note what the user reports).
-2. **M4 prep once M3 verified**: DR-5 (call scene draw twice with a yaw delta) and DR-3
-   (RenderDoc frame map) unlock the SequentialReentry stereo bet.
+1. **M4 rung 1: AlternateEye stereo** - the next session's goal; design already worked out:
+   - `core/vr`: replace the single swapchain with `g_swapchains[2]` (+ per-eye image vectors);
+     index 0 keeps serving quad/mono. AER state: `g_currentEye` (render thread), per-eye held
+     `XrPosef g_eyePose[2]` + `g_eyeValid[2]`, `std::atomic<int> g_aerEyeSign` (-1 left /
+     +1 right / 0 off) exposed as `vr::current_eye_sign()`. Each frame: copy backbuffer into
+     the CURRENT eye's swapchain, store that eye's `g_views[eye].pose`; submit the projection
+     layer with each eye's LATEST image and its stored pose (compositor reprojects the stale
+     eye - reduces judder); until both eyes valid, submit the fresh image to both (mono
+     fallback, converges in 2 frames). Flip `g_currentEye` and restore the sign AFTER submit
+     so CalcView for the next game frame simulates the eye the next Present will feed.
+     UI: "AlternateEye stereo test (judders)" checkbox, only when camera mode is on.
+   - `camera.cpp`: after the 6DOF drive, if `current_eye_sign() != 0`, offset
+     `loc` by `sign * (ipdMm/2000) * worldScale` along the view-right vector
+     `(-sinf(finalYawRad), cosf(finalYawRad), 0)`. IPD slider (55-75 mm, default 63).
+   - Also add head-offset telemetry (3 atomics + one UI line showing the applied offset in
+     UU) so the "world scale slider does nothing" question becomes a number on screen.
+   - Acceptance: wrench/railings show real parallax; IPD/world-scale now calibratable (wrong
+     world scale = wrong perceived depth scale). Judder at half-rate per eye is EXPECTED.
+2. After AER proves geometry: DR-3 (RenderDoc frame map) + DR-5 (double scene draw) unlock
+   SequentialReentry - the real M4 bet (full-rate true stereo).
+3. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+   guard); world-scale calibration once depth is judgeable; user should raise the game
+   resolution above 1024x768 for headset sharpness.
 3. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
 4. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
    game currently runs windowed 1024x768 after the user's change).
@@ -91,6 +104,16 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ### 2026-07-23 - Session 2
 
+- **M3 second in-headset test**: 6DOF drive solid; Force-headset-FOV visibly changed the
+  image; user cannot judge immersion/world-scale without per-eye stereo -> M4 AlternateEye
+  promoted to next session's goal (full design in Next steps). A started AER refactor was
+  reverted cleanly (session wrap; HEAD == installed build). Session totals: 13 commits -
+  DR-4 complete + user-verified, M2 complete + user-verified (VD path), M3 code landed with
+  diagnostics, M1 down to DR-3/5/6/7.
+- **M3 first in-headset test + fix round**: drive worked; distortion/no-depth/scale reports
+  led to: projection-readiness gate (mixed quad+drive state now impossible), rendered-fov
+  readback claims (fisheye self-correction), resize-swapchain-recreate fix, layer/fov
+  diagnostics in overlay + log, Force-headset-FOV escape hatch.
 - **M3 code landed (same session, after the M2 pass)**: core/vr locates head pose + per-eye
   views at Present-head (VIEW-space xrLocateSpace + xrLocateViews), computes the circumscribed
   headset FOV, and swaps quad -> projection layer in camera mode. camera.cpp converts XR
