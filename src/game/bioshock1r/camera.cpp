@@ -44,6 +44,8 @@ std::atomic<bool>  g_logCamera{true};
 std::atomic<float> g_worldScale{50.0f};        // Unreal units per meter
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
+std::atomic<bool>  g_forceHeadsetFov{true};    // off = keep the game's own FOV (undistorted,
+                                               // narrower visual cone; distortion escape hatch)
 
 // Telemetry: game thread writes, overlay thread reads.
 std::atomic<uint32_t> g_callCount{0};
@@ -131,6 +133,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
 
     float gameFov = *fov_ptr(self);
     g_lastFov.store(gameFov, std::memory_order_relaxed);
+    // Report what the engine is actually rendering with so the projection
+    // layer claims a matching fov (fisheye guard even if our write is
+    // clamped). In steady state under forcing this reads back our own value.
+    bvr::vr::set_rendered_hfov(gameFov);
     if (loc) {
         g_lastLocX.store(loc->x, std::memory_order_relaxed);
         g_lastLocY.store(loc->y, std::memory_order_relaxed);
@@ -205,7 +211,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         loc->y += (lx * sg + ly * cg) * scale;
         loc->z += d[2] * scale;
 
-        vrFov = bvr::vr::suggested_hfov_deg();
+        vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
+                    ? bvr::vr::suggested_hfov_deg()
+                    : 0.0f; // 0 = leave the game's own FOV in place
         vrDrove = true;
     }
     g_vrDriving.store(vrDrove, std::memory_order_relaxed);
@@ -333,6 +341,9 @@ void draw_debug_ui() {
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
+        bool forceFov = g_forceHeadsetFov.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Force headset FOV (off = game FOV, narrower)", &forceFov))
+            g_forceHeadsetFov.store(forceFov, std::memory_order_relaxed);
     }
 
     if (ImGui::CollapsingHeader("Camera debug", ImGuiTreeNodeFlags_DefaultOpen)) {
