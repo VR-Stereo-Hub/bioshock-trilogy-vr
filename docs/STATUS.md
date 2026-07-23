@@ -4,6 +4,16 @@
 
 ## Current state (2026-07-23, session 2)
 
+**M2 code landed on top of DR-4** (both stretch goals of the session hit). `core/vr/
+openxr_runtime.cpp` runs the whole xr_hello32 flow in-process: VDXR 1.0.10 instance created
+inside BioshockHD.exe (verified live), session bring-up is lazy from the Present hook with a
+5 s retry - **connect Virtual Desktop mid-game and the session comes up without restarting**.
+Per frame: xrWaitFrame pacing at Present head, backbuffer (overlay included) copied into an
+sRGB quad-layer swapchain + xrEndFrame at Present tail. Overlay has a VR section (status, kill
+switch, screen distance/width). Flat path fully verified in-game (no headset was connected);
+**in-headset run pending - that is the M2 acceptance test**. Also found: the game pauses its
+boot sequence while unfocused (see ENGINE_NOTES) - foreground the window in automated tests.
+
 **DR-4 retired (code-verified live; user visual pass pending)**. The FName-chain scan is ported
 to C++ (`core/hooks/pattern_scan.cpp`, generic + parameterized; attributed to itsloopyo MIT) and
 resolves `eventPlayerCalcView` at **RVA 0x1BE7A0** on the first try (1 wide-string match, 1
@@ -16,10 +26,15 @@ stable identifier. The 1 Hz camera heartbeat is **default ON** during bring-up (
 turns it off). Installed build in the game folder == HEAD.
 
 **User checklist:**
-1. F10 in-game -> "Camera debug": toggle **Wobble test** (vertical bob), drag **Offset Z**,
+1. **M2 in-headset test**: put on the Quest 3, connect in Virtual Desktop (game can already be
+   running), watch for the game screen on a big fixed quad. Log should show
+   `xr: session state READY` -> `xr: session running` -> `xr: first frame submitted`.
+   Check: head-tracked screen, overlay readable in-headset, distance/width sliders work,
+   "VR enabled" checkbox cleanly drops back to flat, gamma looks right (not washed out/dark).
+2. F10 in-game -> "Camera debug": toggle **Wobble test** (vertical bob), drag **Offset Z**,
    **Yaw offset**, and **FOV override** - confirm each visibly changes the view (best in a
    loaded save, not the menu).
-2. Report any stutter/crash with the hook installed (Debug build, ~7k calls/s at menu is fine).
+3. Report any stutter/crash with the hook installed (Debug build, ~7k calls/s at menu is fine).
 
 ## Previous state (2026-07-23, session 1)
 
@@ -30,11 +45,12 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **M2: OpenXR session inside the game** - port the xr_hello32 flow into `core/vr`
-   (instance/session on the game's ID3D11Device), pace frames from the Present hook, game frame
-   on a quad layer. First in-headset gameplay moment (Quest 3 + Virtual Desktop, user tests).
-2. **M3 groundwork is now trivial**: drive CalcView from the HMD pose (the hook + FOV write are
-   proven; add `onCalcView` to the seam when core/vr can supply poses).
+1. **User in-headset M2 test** (checklist above). If the screen shows, M2 is done except the
+   optional Steam Link cross-check; likely follow-ups: gamma choice, screen defaults, VD
+   capture vs exclusive fullscreen (DR-7).
+2. **M3: 6DOF head camera** - `xrLocateViews` at Present head, publish the pose, add
+   `onCalcView` to the adapter seam, drive loc/rot from the HMD (hook + FOV write proven).
+   Needs world-scale calibration (`worldScale`, ~50 UU/m starting guess) + recenter button.
 3. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
 4. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
    game currently runs windowed 1024x768 after the user's change).
@@ -58,6 +74,13 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ### 2026-07-23 - Session 2
 
+- **M2 stretch landed after DR-4**: `core/vr/openxr_runtime.{h,cpp}` ports the xr_hello32 flow
+  in-process (instance at init; lazy session on the game device with 5 s retry; event pump;
+  quad swapchain sRGB-preferred; Present head = waitFrame/beginFrame, tail = CopyResource +
+  endFrame; kill switch + screen sliders in the overlay). Verified live: instance on VDXR
+  1.0.10 inside the game, quiet no-headset retry, DR-4 hook and game unaffected. In-headset
+  test = user's next step (TESTING.md M2 procedure written).
+- Found + recorded: game boot pauses while the window is unfocused (foreground it in tests).
 - **DR-4 landed**: studied itsloopyo's `memory.rs`/`engine_hook.rs` (MIT), ported the FName-chain
   scan as generic `core/hooks/pattern_scan.{h,cpp}` (module capture, wide-string/imm32 sweeps
   via VirtualQuery region walk, E8 -> 89 0D global extraction, CC CC CC 55 8B EC prologue walk,
