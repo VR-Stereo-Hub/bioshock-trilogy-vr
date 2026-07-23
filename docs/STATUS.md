@@ -2,52 +2,52 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-23, session 2, end)
+## Current state (2026-07-23, session 3)
 
-**M3 code is in on top of the verified DR-4 + M2.** VR camera mode (checkbox in the overlay's
-VR section) switches the headset from the quad screen to a projection layer and drives the
-game camera from the predicted HMD pose: pitch/roll absolute, yaw additive (mouse turning
-intact), position = recenter-relative head offset x world scale (slider, default 50 UU/m,
-calibrate in-headset), FOV forced to the circumscribed headset FOV while driving. Flat path
-re-verified in-game after the change (scan/hook/heartbeat/XR retry identical). **In-headset
-M3 test pending - checklist below.** User confirmed ALL camera sliders including roll, so the
-FRotator sign conventions are pre-validated.
+**M4 rung 1 (AlternateEye) code is in on top of the verified M3 drive.** `core/vr` now owns a
+PAIR of backbuffer-sized swapchains (index 0 still serves quad + mono projection). With camera
+mode on, the "AlternateEye stereo test (judders)" checkbox alternates which eye each game frame
+renders: CalcView shifts the camera by `sign * IPD/2 * worldScale` along view-right
+(`vr::current_eye_sign()`), Present-tail copies the backbuffer into that eye's swapchain and
+stores that eye's located pose, and submission gives each eye its LATEST held image + stored
+pose so the compositor reprojects the half-rate-stale eye (judder, not flicker; mono fallback
+until both eyes hold an offset image). The sign is published AFTER submit and only flips when an
+offset frame was captured, so the un-offset enable frame is never mislabeled (see ARCHITECTURE
+decision log). New controls: IPD slider (55-75 mm, default 63), "Swap eyes" inverted-depth
+diagnostic, `(AER eye L/R)` tag on the layer line, and a "head offset (UU)" telemetry readout
+that turns the world-scale question into a number. Flat path re-verified live this session
+(scan RVA 0x1BE7A0, hook + heartbeat, VDXR instance, quiet no-headset retry, clean exit).
+**In-headset AER test pending - checklist below.**
 
-**DR-4 fully retired and M2 user-verified on the Virtual Desktop path - both in one session.**
-The user confirmed in-headset: big head-tracked screen on the Quest 3, gamma OK (the sRGB
-swapchain pick is correct), distance/width sliders work, "VR enabled" checkbox falls back to
-flat cleanly; and in-game: wobble, Z/X/Y offsets, yaw and the FOV override all visibly work,
-with **no stutter, crashes, or input weirdness**. M2's only remaining box is the optional
-Steam Link/SteamVR cross-check. The first-ever in-headset BioShock moment of this project
-happened today.
+Installed build in the game folder == HEAD.
 
-`core/vr/openxr_runtime.cpp` runs the whole xr_hello32 flow in-process: instance at init,
-lazy session on the game device with a 5 s retry (**connect Virtual Desktop mid-game and it
-comes up without restarting**), xrWaitFrame pacing at Present head, backbuffer (overlay
-included) copied to the quad layer at Present tail. The game pauses its boot sequence while
-unfocused (see ENGINE_NOTES) - foreground the window in automated tests. The FName-chain scan is ported
-to C++ (`core/hooks/pattern_scan.cpp`, generic + parameterized; attributed to itsloopyo MIT) and
-resolves `eventPlayerCalcView` at **RVA 0x1BE7A0** on the first try (1 wide-string match, 1
-xref, exactly 1 candidate). The MinHook detour is live: fires every frame (heartbeat 400-7800
-calls/s - **call rate can exceed fps**, and it **fires at the main menu**), telemetry + camera
-offset/wobble/FOV-override controls are in the F10 overlay via the new `IGameAdapter` seam
-(`game/igame_adapter.h`, minimal: capabilities/init/setFov/drawDebugUi). The exe loads rebased
-(ASLR, observed base 0x0FB20000) - the live-memory scan is relocation-transparent; RVA is the
-stable identifier. The 1 Hz camera heartbeat is **default ON** during bring-up (overlay checkbox
-turns it off). Installed build in the game folder == HEAD.
-
-**User checklist:**
-1. ~~M2 in-headset test~~ - PASSED 2026-07-23 (big screen, gamma OK, sliders, clean fallback).
-2. ~~DR-4 camera controls in-game~~ - PASSED 2026-07-23 (ALL sliders incl. roll confirmed).
-3. ~~Stability~~ - PASSED 2026-07-23 (no stutter, crash, or input weirdness).
-4. **M3 second test done (2026-07-23, after the readiness/readback fixes)**: 6DOF drive
-   confirmed working (rotation, leaning, turning, recenter). "Force headset FOV" produced a
-   visible change ("worked but a bit different"). User's verdict: cannot meaningfully judge
-   immersion or world scale until both eyes get distinct images - i.e. M4 stereo. World-scale
-   slider still reported feeling inert; deliberately DEFERRED until stereo makes depth/scale
-   judgeable. M3 geometry sign-off is folded into the M4 AlternateEye test.
-5. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
+**User checklist (M4 rung 1 in-headset test, in this order):**
+1. **Raise the game resolution above 1024x768 first** (headset sharpness - carried over).
+2. VD connected, "VR camera mode" on: overlay `layer:` line must read **"projection"**.
+3. Enable "AlternateEye stereo test (judders)". PASS = wrench/railings/doorframes show real
+   parallax (close one eye at a time: views differ). Judder at half-rate per eye is EXPECTED.
+   If depth feels inside-out: toggle "Swap eyes" and note which setting felt right.
+4. Calibrate IPD (55-75 mm) and World scale - the "head offset" UU line shows the number live.
+5. Now re-judge the M3 deferred items with true stereo: immersion, distortion (Force headset
+   FOV on vs off), world-scale slider feel. M3 geometry sign-off folds into this test.
+6. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
    repeat the M2 checklist.
+
+## Previous state (2026-07-23, session 2)
+
+**DR-4 fully retired and M2 user-verified on the Virtual Desktop path.** In-headset: big
+head-tracked screen, gamma OK (sRGB pick correct), sliders work, clean flat fallback. In-game:
+wobble, offsets, yaw, FOV override all visible; no stutter, crashes, or input weirdness. M3
+landed the same session and its 6DOF drive was user-verified (rotation, lean, turn, recenter);
+immersion/world-scale judgment deferred to M4 stereo. `core/vr/openxr_runtime.cpp` runs the
+whole xr_hello32 flow in-process: instance at init, lazy session on the game device with a 5 s
+retry (**connect Virtual Desktop mid-game and it comes up without restarting**), xrWaitFrame
+pacing at Present head, backbuffer copy at Present tail. The game pauses its boot sequence
+while unfocused (see ENGINE_NOTES) - foreground the window in automated tests. The FName-chain
+scan (`core/hooks/pattern_scan.cpp`, itsloopyo MIT attribution) resolves `eventPlayerCalcView`
+at **RVA 0x1BE7A0** (exe rebased under ASLR; RVA is the stable identifier). The detour fires
+every frame incl. main menu, call rate can exceed fps (heartbeat 400-7800 calls/s, default ON
+during bring-up). Adapter UI flows through the `IGameAdapter` seam.
 
 ## Previous state (2026-07-23, session 1)
 
@@ -58,34 +58,19 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **M4 rung 1: AlternateEye stereo** - the next session's goal; design already worked out:
-   - `core/vr`: replace the single swapchain with `g_swapchains[2]` (+ per-eye image vectors);
-     index 0 keeps serving quad/mono. AER state: `g_currentEye` (render thread), per-eye held
-     `XrPosef g_eyePose[2]` + `g_eyeValid[2]`, `std::atomic<int> g_aerEyeSign` (-1 left /
-     +1 right / 0 off) exposed as `vr::current_eye_sign()`. Each frame: copy backbuffer into
-     the CURRENT eye's swapchain, store that eye's `g_views[eye].pose`; submit the projection
-     layer with each eye's LATEST image and its stored pose (compositor reprojects the stale
-     eye - reduces judder); until both eyes valid, submit the fresh image to both (mono
-     fallback, converges in 2 frames). Flip `g_currentEye` and restore the sign AFTER submit
-     so CalcView for the next game frame simulates the eye the next Present will feed.
-     UI: "AlternateEye stereo test (judders)" checkbox, only when camera mode is on.
-   - `camera.cpp`: after the 6DOF drive, if `current_eye_sign() != 0`, offset
-     `loc` by `sign * (ipdMm/2000) * worldScale` along the view-right vector
-     `(-sinf(finalYawRad), cosf(finalYawRad), 0)`. IPD slider (55-75 mm, default 63).
-   - Also add head-offset telemetry (3 atomics + one UI line showing the applied offset in
-     UU) so the "world scale slider does nothing" question becomes a number on screen.
-   - Acceptance: wrench/railings show real parallax; IPD/world-scale now calibratable (wrong
-     world scale = wrong perceived depth scale). Judder at half-rate per eye is EXPECTED.
+1. **In-headset M4 rung 1 test** (user checklist above). Outcomes feed directly into: AER box
+   tick in ROADMAP, IPD/world-scale defaults, and whether the 1-frame sign attribution holds
+   (if "Swap eyes" is the setting that felt right, the pipeline buffers deeper than one frame -
+   record it and make the corrected sign the default).
 2. After AER proves geometry: DR-3 (RenderDoc frame map) + DR-5 (double scene draw) unlock
    SequentialReentry - the real M4 bet (full-rate true stereo).
 3. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
-   guard); world-scale calibration once depth is judgeable; user should raise the game
-   resolution above 1024x768 for headset sharpness.
-3. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
-4. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
+   guard).
+4. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
+5. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
    game currently runs windowed 1024x768 after the user's change).
-5. DR-6: instrument DINPUT8/window messages during menu use (which input path do menus read?).
-6. Optional anytime: rerun xr_hello32 with SteamVR as active OpenXR runtime (Steam Link path).
+6. DR-6: instrument DINPUT8/window messages during menu use (which input path do menus read?).
+7. Optional anytime: rerun xr_hello32 with SteamVR as active OpenXR runtime (Steam Link path).
 
 ## Open questions / blockers
 
@@ -101,6 +86,22 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-23 - Session 3
+
+- **M4 rung 1 (AlternateEye) landed** per the session-2 design handoff: per-eye swapchain pair
+  in `core/vr` (index 0 still serves quad/mono), held stale image + stored per-eye pose with
+  compositor reprojection, eye sign published after submit with capture-gated flip (the sign
+  doubles as image attribution - the un-offset enable frame stays mono instead of being
+  mislabeled), `vr::current_eye_sign()` consumed by the CalcView drive for the half-IPD
+  view-right shift. New overlay controls: AER checkbox (camera mode only), Swap-eyes
+  inverted-depth diagnostic, `(AER eye L/R)` layer tag, IPD slider, head-offset UU telemetry.
+  Also fixed in passing: the no-OpenXR stub block was missing `set_rendered_hfov` (latent link
+  error).
+- **Flat smoke test PASSED live** (game launched/closed via Steam under standing permission):
+  log shape identical to session 2 - scan 1 candidate at RVA 0x1BE7A0, hook + heartbeat at
+  menu, VDXR instance up, quiet no-headset retry, graceful exit. In-headset AER test = user's
+  next step (procedure in TESTING.md, checklist in Current state).
 
 ### 2026-07-23 - Session 2
 

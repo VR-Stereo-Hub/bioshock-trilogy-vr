@@ -26,8 +26,17 @@
   move/resize it. Expect game fps clamped to the headset refresh while the session runs; the
   "VR enabled" checkbox drops back to flat/uncapped.
 - **M3**: lean around a corner; no drift after 10 min; roll matches head tilt.
-- **M4**: close-range parallax on the wrench; 30 min without visual corruption; fps ≥ 72 at
-  default renderScale.
+- **M4 rung 1 (AlternateEye)**: BEFORE anything else raise the game resolution above 1024x768
+  (headset sharpness). Connect VD, enable "VR camera mode", confirm the overlay `layer:` line
+  reads "projection". Enable "AlternateEye stereo test (judders)" - the layer line gains an
+  `(AER eye L/R)` tag flickering per frame. Acceptance: wrench/railings/doorframes show REAL
+  parallax (close one eye at a time: the two views differ). Half-refresh judder per eye is
+  EXPECTED - this rung proves geometry, not comfort. If depth feels inside-out, toggle "Swap
+  eyes (inverted-depth test)" and report which way felt right. Then calibrate: IPD slider
+  (55-75 mm) until scale feels natural at arm's length, World scale until room-scale head
+  movement matches the world (the "head offset" UU readout now shows the applied number live).
+- **M4 (full)**: close-range parallax on the wrench; 30 min without visual corruption; fps ≥ 72
+  at default renderScale.
 - **M5**: full intro (plane crash → Rapture arrival) playable from the headset only.
 - **M6**: aim decouple - look left, shoot right, impacts follow the controller.
 - **M7/M8/M9**: hands track convincingly; wheels switch weapon+plasmid; HUD quad visible in stereo.
