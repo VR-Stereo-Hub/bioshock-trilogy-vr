@@ -16,6 +16,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <share.h>
 
 namespace bvr::b1r::camera {
 namespace {
@@ -86,6 +89,46 @@ float g_recenterYawRad = 0.0f;
 
 float* fov_ptr(void* pc) {
     return reinterpret_cast<float*>(static_cast<uint8_t*>(pc) + patterns::kFovLiveOffset);
+}
+
+// Automated-test seam: %LOCALAPPDATA%\BioshockVR\command.txt is polled at 1 Hz
+// on the game thread; when its write time changes, every line is applied and
+// logged. Lets a test harness drive the debug controls without the overlay.
+// Commands: "fov <deg>", "fov off", "recenter".
+uint64_t g_lastCmdPollMs = 0;
+FILETIME g_lastCmdWrite{};
+
+void poll_command_file(uint64_t now) {
+    if (now - g_lastCmdPollMs < 1000) return;
+    g_lastCmdPollMs = now;
+    static wchar_t path[MAX_PATH];
+    if (!path[0]) {
+        wchar_t base[MAX_PATH];
+        if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return;
+        swprintf_s(path, L"%s\\BioshockVR\\command.txt", base);
+    }
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &fad)) return;
+    if (CompareFileTime(&fad.ftLastWriteTime, &g_lastCmdWrite) == 0) return;
+    g_lastCmdWrite = fad.ftLastWriteTime;
+    FILE* f = _wfsopen(path, L"rt", _SH_DENYNO);
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        float v = 0.0f;
+        if (strncmp(line, "fov off", 7) == 0) {
+            g_fovOverride.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: fov off");
+        } else if (sscanf_s(line, "fov %f", &v) == 1) {
+            g_fovDeg.store(v, std::memory_order_relaxed);
+            g_fovOverride.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: fov %.1f", v);
+        } else if (strncmp(line, "recenter", 8) == 0) {
+            g_recenterRequested.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: recenter");
+        }
+    }
+    fclose(f);
 }
 
 // ---- XR -> Unreal conversion (adapter owns all unit/axis semantics) --------
@@ -169,6 +212,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     }
 
     uint64_t now = GetTickCount64();
+    poll_command_file(now);
     if (g_logCamera.load(std::memory_order_relaxed)) {
         if (g_lastHeartbeatMs == 0) {
             g_lastHeartbeatMs = now;
