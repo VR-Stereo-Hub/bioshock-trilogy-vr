@@ -19,6 +19,12 @@
 - **M1**: each DR row in ROADMAP.md has a written answer in ENGINE_NOTES.md/STATUS.md.
   DR-4 check: camera visibly wobbles when the test toggle is on.
 - **M2**: in-headset "big screen" with head tracking; desktop mirror still works.
+  Procedure: connect the Quest 3 in Virtual Desktop (before or after launching the game - the
+  mod retries every 5 s), then watch the log for `xr: session state READY` ->
+  `xr: session running` -> `xr: first frame submitted`. In the headset: game screen on a fixed
+  quad (look around it), F10 overlay visible on the screen, "Screen distance/width" sliders
+  move/resize it. Expect game fps clamped to the headset refresh while the session runs; the
+  "VR enabled" checkbox drops back to flat/uncapped.
 - **M3**: lean around a corner; no drift after 10 min; roll matches head tilt.
 - **M4**: close-range parallax on the wrench; 30 min without visual corruption; fps ≥ 72 at
   default renderScale.

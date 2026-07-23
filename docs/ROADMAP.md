@@ -52,7 +52,12 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 ## M2 - Headset bring-up: mono big screen (~1–2 sessions)
 
 - [ ] OpenXR session on the game's ID3D11Device (XR_KHR_D3D11_enable), frame pacing in Present hook
+      *2026-07-23: code landed (`core/vr/openxr_runtime.cpp`) and flat path verified in-game
+      (VDXR instance created in-process, quiet no-headset retry). Session bring-up itself
+      pending an in-headset run.*
 - [ ] Game frame on a quad layer ("cinema screen"), desktop mirror intact
+      *2026-07-23: implemented (sRGB-preferred swapchain, backbuffer CopyResource incl.
+      overlay, distance/width sliders); pending in-headset verification.*
 - [ ] **Done when:** Quest 3 via Virtual Desktop shows the game on a giant head-tracked screen;
       verified via Steam Link too.
 

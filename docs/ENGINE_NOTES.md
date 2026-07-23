@@ -18,6 +18,10 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   `windowed=0` - the game defaults to **exclusive fullscreen** (relevant to DR-7: borderless
   test still pending). D3D9 fallback path exists in the binary but is not the default.
 - Renderer single-threaded by default (`UseMultithreadedRendering=False` in Default.ini).
+- **Boot sequence pauses while the window is unfocused** (observed 2026-07-23: launched in the
+  background, the game rendered frames but never advanced past the intros - no PlayerController,
+  no CalcView calls - until the window was foregrounded). Automated tests must foreground the
+  window (`SetForegroundWindow`) before expecting gameplay-side hooks to fire.
 - UI = Flash .swf via embedded gameswf (source path `...\d3ddrv\src\gameswf` in exe strings).
 - Havok 2012.2.0 r1 static; FMOD Ex via fmodex.dll; Bink 2 via bink2w32.dll.
 
@@ -85,6 +89,11 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   adapter LUID matched RTX 4060, 32-bit D3D11 session created and ran 60 frames.
 - OpenXR loader build note: with `DYNAMIC_LOADER=OFF` upstream forces dynamic CRT; we override
   `MSVC_RUNTIME_LIBRARY` back to static in `third_party/CMakeLists.txt` (CRT mismatch otherwise).
+- **In-process instance creation verified** (2026-07-23, M2): `core/vr/openxr_runtime.cpp`
+  creates the XrInstance inside BioshockHD.exe on VDXR 1.0.10 (~15 ms on the init thread).
+  With no headset connected, `xrGetSystem` returns FORM_FACTOR_UNAVAILABLE and the runtime
+  retries on a 5 s cooldown from the Present hook - so connecting Virtual Desktop mid-game
+  brings the session up without restarting the game.
 
 ## RenderDoc frame map
 
