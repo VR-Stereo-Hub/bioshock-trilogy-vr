@@ -42,7 +42,8 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       FOV write (PC+0xE0)
       *2026-07-23: scan resolves live (RVA 0x1BE7A0, exactly 1 candidate), hook fires every
       frame (heartbeat: 400-7800 calls/s; fires at main menu too), offsets/wobble/FOV override
-      wired with ImGui controls. Pending: user visual confirm of wobble/offset/FOV in-game.*
+      wired with ImGui controls. USER-VERIFIED in-game same day: wobble, offsets, yaw and FOV
+      all visibly work; no stutter, crash, or input weirdness. DR-4 fully retired.*
 - [ ] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability +
       RenderDoc; 10-min play test
 - [ ] DR-6: instrument DINPUT8/window messages/XInput during menu use - which input path do
@@ -51,15 +52,17 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M2 - Headset bring-up: mono big screen (~1–2 sessions)
 
-- [ ] OpenXR session on the game's ID3D11Device (XR_KHR_D3D11_enable), frame pacing in Present hook
-      *2026-07-23: code landed (`core/vr/openxr_runtime.cpp`) and flat path verified in-game
-      (VDXR instance created in-process, quiet no-headset retry). Session bring-up itself
-      pending an in-headset run.*
-- [ ] Game frame on a quad layer ("cinema screen"), desktop mirror intact
-      *2026-07-23: implemented (sRGB-preferred swapchain, backbuffer CopyResource incl.
-      overlay, distance/width sliders); pending in-headset verification.*
+- [x] OpenXR session on the game's ID3D11Device (XR_KHR_D3D11_enable), frame pacing in Present hook
+      *2026-07-23: USER-VERIFIED in-headset - session comes up mid-game via the 5 s retry,
+      pacing clamps the game to headset refresh, "VR enabled" checkbox falls back to flat
+      cleanly.*
+- [x] Game frame on a quad layer ("cinema screen"), desktop mirror intact
+      *2026-07-23: USER-VERIFIED - big head-tracked screen on the Quest 3 via Virtual Desktop,
+      gamma OK (sRGB pick correct), distance/width sliders work, desktop mirror intact.*
 - [ ] **Done when:** Quest 3 via Virtual Desktop shows the game on a giant head-tracked screen;
       verified via Steam Link too.
+      *2026-07-23: Virtual Desktop path DONE. Remaining: the Steam Link/SteamVR cross-check
+      (any session; switch the active OpenXR runtime to SteamVR and repeat the checklist).*
 
 ## M3 - 6DOF head camera (~1–2 sessions)
 

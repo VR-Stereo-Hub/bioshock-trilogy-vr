@@ -2,19 +2,21 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-23, session 2)
+## Current state (2026-07-23, session 2, end)
 
-**M2 code landed on top of DR-4** (both stretch goals of the session hit). `core/vr/
-openxr_runtime.cpp` runs the whole xr_hello32 flow in-process: VDXR 1.0.10 instance created
-inside BioshockHD.exe (verified live), session bring-up is lazy from the Present hook with a
-5 s retry - **connect Virtual Desktop mid-game and the session comes up without restarting**.
-Per frame: xrWaitFrame pacing at Present head, backbuffer (overlay included) copied into an
-sRGB quad-layer swapchain + xrEndFrame at Present tail. Overlay has a VR section (status, kill
-switch, screen distance/width). Flat path fully verified in-game (no headset was connected);
-**in-headset run pending - that is the M2 acceptance test**. Also found: the game pauses its
-boot sequence while unfocused (see ENGINE_NOTES) - foreground the window in automated tests.
+**DR-4 fully retired and M2 user-verified on the Virtual Desktop path - both in one session.**
+The user confirmed in-headset: big head-tracked screen on the Quest 3, gamma OK (the sRGB
+swapchain pick is correct), distance/width sliders work, "VR enabled" checkbox falls back to
+flat cleanly; and in-game: wobble, Z/X/Y offsets, yaw and the FOV override all visibly work,
+with **no stutter, crashes, or input weirdness**. M2's only remaining box is the optional
+Steam Link/SteamVR cross-check. The first-ever in-headset BioShock moment of this project
+happened today.
 
-**DR-4 retired (code-verified live; user visual pass pending)**. The FName-chain scan is ported
+`core/vr/openxr_runtime.cpp` runs the whole xr_hello32 flow in-process: instance at init,
+lazy session on the game device with a 5 s retry (**connect Virtual Desktop mid-game and it
+comes up without restarting**), xrWaitFrame pacing at Present head, backbuffer (overlay
+included) copied to the quad layer at Present tail. The game pauses its boot sequence while
+unfocused (see ENGINE_NOTES) - foreground the window in automated tests. The FName-chain scan is ported
 to C++ (`core/hooks/pattern_scan.cpp`, generic + parameterized; attributed to itsloopyo MIT) and
 resolves `eventPlayerCalcView` at **RVA 0x1BE7A0** on the first try (1 wide-string match, 1
 xref, exactly 1 candidate). The MinHook detour is live: fires every frame (heartbeat 400-7800
@@ -26,15 +28,13 @@ stable identifier. The 1 Hz camera heartbeat is **default ON** during bring-up (
 turns it off). Installed build in the game folder == HEAD.
 
 **User checklist:**
-1. **M2 in-headset test**: put on the Quest 3, connect in Virtual Desktop (game can already be
-   running), watch for the game screen on a big fixed quad. Log should show
-   `xr: session state READY` -> `xr: session running` -> `xr: first frame submitted`.
-   Check: head-tracked screen, overlay readable in-headset, distance/width sliders work,
-   "VR enabled" checkbox cleanly drops back to flat, gamma looks right (not washed out/dark).
-2. F10 in-game -> "Camera debug": toggle **Wobble test** (vertical bob), drag **Offset Z**,
-   **Yaw offset**, and **FOV override** - confirm each visibly changes the view (best in a
-   loaded save, not the menu).
-3. Report any stutter/crash with the hook installed (Debug build, ~7k calls/s at menu is fine).
+1. ~~M2 in-headset test~~ - PASSED 2026-07-23 (big screen, gamma OK, sliders, clean fallback).
+2. ~~DR-4 camera controls in-game~~ - PASSED 2026-07-23 (wobble/offsets/yaw/FOV all visible).
+3. ~~Stability~~ - PASSED 2026-07-23 (no stutter, crash, or input weirdness).
+4. Open item (any time): note whether **Roll offset** visibly tilts the horizon in-game - the
+   one control not explicitly reported; it de-risks M3 head-roll.
+5. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
+   repeat the M2 checklist.
 
 ## Previous state (2026-07-23, session 1)
 
@@ -45,12 +45,11 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **User in-headset M2 test** (checklist above). If the screen shows, M2 is done except the
-   optional Steam Link cross-check; likely follow-ups: gamma choice, screen defaults, VD
-   capture vs exclusive fullscreen (DR-7).
-2. **M3: 6DOF head camera** - `xrLocateViews` at Present head, publish the pose, add
-   `onCalcView` to the adapter seam, drive loc/rot from the HMD (hook + FOV write proven).
-   Needs world-scale calibration (`worldScale`, ~50 UU/m starting guess) + recenter button.
+1. **M3: 6DOF head camera** - everything it needs is now proven: `xrLocateViews` at Present
+   head, publish the predicted pose, add `onCalcView` to the adapter seam, drive loc/rot
+   (incl. roll) from the HMD, force FOV to headset FOV, switch quad -> projection layer
+   (same image both eyes first). Needs world-scale calibration (`worldScale`, ~50 UU/m
+   starting guess) + recenter button in the overlay.
 3. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
 4. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
    game currently runs windowed 1024x768 after the user's change).
@@ -74,6 +73,10 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ### 2026-07-23 - Session 2
 
+- **User verification pass (end of session): M2 VD path + DR-4 both PASSED.** In-headset: big
+  screen appeared, gamma OK, sliders work, clean flat fallback. In-game: wobble, offsets, yaw,
+  FOV override all visible. No stutter/crash/input issues. M2 lacks only the optional Steam
+  Link cross-check; roll-offset visual check noted as a small open item for M3.
 - **M2 stretch landed after DR-4**: `core/vr/openxr_runtime.{h,cpp}` ports the xr_hello32 flow
   in-process (instance at init; lazy session on the game device with 5 s retry; event pump;
   quad swapchain sRGB-preferred; Present head = waitFrame/beginFrame, tail = CopyResource +
