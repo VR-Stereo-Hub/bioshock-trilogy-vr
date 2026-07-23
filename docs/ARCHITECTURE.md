@@ -164,6 +164,12 @@ runtime.
   `Pose`, `GameState`, ...) that the consuming milestone should inform - stubbing them now would
   be speculation. The interface is in-process only, so growing it later is a one-line change
   per adapter. The full target shape stays documented above.
+- **2026-07-23 · M3 pose access is pull-based, not push.** The adapter's CalcView detour calls
+  `vr::get_head_pose()` / `vr::vr_camera_mode()` (game -> core calls are allowed; core still
+  knows nothing about the game). The ARCHITECTURE `onCalcView` push seam is deferred until
+  core actually needs to sequence the call (e.g. per-eye offsets in M4); pulling avoids a
+  pose-plumbing layer while there is exactly one consumer. Conversion conventions (XR right/
+  up/-fwd meters -> UE fwd/right/up UU, FRotator signs) live in `camera.cpp` next to the math.
 - **2026-07-23 · Adapter-drawn debug UI through the seam** (`IGameAdapter::drawDebugUi`). The
   overlay calls it via the interface; all engine-semantic UI (Unreal units, FRotator degrees,
   FOV offsets) stays inside `game/bioshock1r/`, next to the hook state it displays - which also

@@ -4,6 +4,15 @@
 
 ## Current state (2026-07-23, session 2, end)
 
+**M3 code is in on top of the verified DR-4 + M2.** VR camera mode (checkbox in the overlay's
+VR section) switches the headset from the quad screen to a projection layer and drives the
+game camera from the predicted HMD pose: pitch/roll absolute, yaw additive (mouse turning
+intact), position = recenter-relative head offset x world scale (slider, default 50 UU/m,
+calibrate in-headset), FOV forced to the circumscribed headset FOV while driving. Flat path
+re-verified in-game after the change (scan/hook/heartbeat/XR retry identical). **In-headset
+M3 test pending - checklist below.** User confirmed ALL camera sliders including roll, so the
+FRotator sign conventions are pre-validated.
+
 **DR-4 fully retired and M2 user-verified on the Virtual Desktop path - both in one session.**
 The user confirmed in-headset: big head-tracked screen on the Quest 3, gamma OK (the sRGB
 swapchain pick is correct), distance/width sliders work, "VR enabled" checkbox falls back to
@@ -29,10 +38,17 @@ turns it off). Installed build in the game folder == HEAD.
 
 **User checklist:**
 1. ~~M2 in-headset test~~ - PASSED 2026-07-23 (big screen, gamma OK, sliders, clean fallback).
-2. ~~DR-4 camera controls in-game~~ - PASSED 2026-07-23 (wobble/offsets/yaw/FOV all visible).
+2. ~~DR-4 camera controls in-game~~ - PASSED 2026-07-23 (ALL sliders incl. roll confirmed).
 3. ~~Stability~~ - PASSED 2026-07-23 (no stutter, crash, or input weirdness).
-4. Open item (any time): note whether **Roll offset** visibly tilts the horizon in-game - the
-   one control not explicitly reported; it de-risks M3 head-roll.
+4. **M3 in-headset test**: load a save, connect VD, tick "VR camera mode (6DOF head drive)"
+   in the VR section, click Recenter while looking straight ahead. Check, in order:
+   (a) looking around moves the game view with your head (pitch/yaw/roll all correct
+   direction); (b) leaning left/right/forward moves the camera the right way; (c) world scale
+   feels right - adjust the slider until leaning ~30 cm feels like ~30 cm in-world (if
+   leaning feels too strong, LOWER the scale); (d) mouse/gamepad turning still works on top;
+   (e) FOV looks natural, no fisheye/tunnel; (f) unticking camera mode returns to the big
+   screen cleanly. Report which direction anything moves if it moves wrongly - sign fixes
+   are one-liners.
 5. Optional (any session): Steam Link cross-check - set SteamVR as active OpenXR runtime and
    repeat the M2 checklist.
 
@@ -45,11 +61,12 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **M3: 6DOF head camera** - everything it needs is now proven: `xrLocateViews` at Present
-   head, publish the predicted pose, add `onCalcView` to the adapter seam, drive loc/rot
-   (incl. roll) from the HMD, force FOV to headset FOV, switch quad -> projection layer
-   (same image both eyes first). Needs world-scale calibration (`worldScale`, ~50 UU/m
-   starting guess) + recenter button in the overlay.
+1. **User in-headset M3 test** (checklist above), then world-scale calibration and any sign
+   fixes it surfaces. Watch for drift over 10 min and cutscene/camera-actor weirdness (VR
+   drive overrides cutscene cameras too - may need a "driving only when viewactor == pc"
+   guard; note what the user reports).
+2. **M4 prep once M3 verified**: DR-5 (call scene draw twice with a yaw delta) and DR-3
+   (RenderDoc frame map) unlock the SequentialReentry stereo bet.
 3. DR-3: RenderDoc x86 capture with the proxy loaded -> frame map into ENGINE_NOTES.md.
 4. DR-7: force borderless/windowed via ini and check overlay/capture stability (relevant to M2:
    game currently runs windowed 1024x768 after the user's change).
@@ -73,6 +90,15 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ### 2026-07-23 - Session 2
 
+- **M3 code landed (same session, after the M2 pass)**: core/vr locates head pose + per-eye
+  views at Present-head (VIEW-space xrLocateSpace + xrLocateViews), computes the circumscribed
+  headset FOV, and swaps quad -> projection layer in camera mode. camera.cpp converts XR
+  meters/quat -> UU/FRotator (conventions documented in-file, roll sign pre-validated by the
+  user's slider test), drives loc/rot/FOV in the detour, adds World scale + Recenter. Pose
+  crosses threads under a mutex; pull-based access (see ARCHITECTURE decision log). Flat path
+  re-verified live. In-headset M3 test = next session's first item.
+- PowerShell 5.1 gotcha hit: double quotes inside git commit -m here-strings mangle argument
+  passing - use a message file + git commit -F for multi-line messages with quotes.
 - **User verification pass (end of session): M2 VD path + DR-4 both PASSED.** In-headset: big
   screen appeared, gamma OK, sliders work, clean flat fallback. In-game: wobble, offsets, yaw,
   FOV override all visible. No stutter/crash/input issues. M2 lacks only the optional Steam
