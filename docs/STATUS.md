@@ -2,7 +2,17 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-23, end of session 1)
+## Current state (2026-07-23, session 1 continued)
+
+**M0 complete and user-verified** (F10 overlay confirmed visually in-game). **DR-1 fully
+retired**: xr_hello32 (32-bit) ran a complete OpenXR session - 60 frames on VDXR 1.0.10 with the
+Quest 3 connected, D3D11 device on the RTX 4060. DR-2 done earlier (LAA yes, D3D11 confirmed).
+The path to M2 (game frame on a big screen in the headset) is fully unblocked: same device type,
+same runtime, proven from a 32-bit process. Remaining M1 items: DR-3 (RenderDoc frame map),
+DR-4 (CalcView hook port), DR-5/6/7. Toggle key is F10. Em dashes are banned repo-wide (they
+broke PowerShell 5.1 parsing and mojibaked logs/ImGui).
+
+## Previous state (session 1, first half)
 
 M0 (skeleton) is functionally complete and **verified in-game**: the xinput1_3 proxy + bioshockvr.dll
 load into BioshockHD.exe, MinHook initializes, the D3D11 Present/ResizeBuffers hooks fire, and the
@@ -19,16 +29,17 @@ https://github.com/mohamad-balouza/bioshock-vr with Debug + Release builds worki
 
 ## Next steps
 
-1. **DR-1 (critical, next session's headline):** standalone 32-bit OpenXR hello-world
-   (`tools/xr-hello32`): enable `BIOSHOCKVR_WITH_OPENXR=ON`, build the 32-bit loader, create an
-   instance/session, log runtime name. Test under **VDXR** (Virtual Desktop) and **SteamVR**.
-   This decides the whole M2+ integration path (fallbacks designed in ARCHITECTURE.md).
-2. DR-4: port the PlayerCalcView FName-chain scan to C++ (`src/game/bioshock1r/patterns.cpp`),
+1. **DR-4: port the PlayerCalcView FName-chain scan to C++** (`src/game/bioshock1r/patterns.cpp`),
    hook it, add ImGui debug sliders for camera offset + per-frame FOV write (PC+0xE0), wobble test.
+   This is the gateway to M3 (6DOF camera).
+2. **M2 (now unblocked): OpenXR session inside the game** - port the xr_hello32 flow into
+   core/vr, pace frames from the Present hook, put the game frame on a quad layer. First
+   in-headset gameplay moment.
 3. DR-3: RenderDoc x86 capture with the proxy loaded → frame map into ENGINE_NOTES.md.
 4. DR-7: force borderless/windowed via ini (game defaults to exclusive fullscreen) and check
    overlay/capture stability.
 5. DR-6: instrument DINPUT8/window messages during menu use (which input path do menus read?).
+6. Optional anytime: rerun xr_hello32 with SteamVR as active OpenXR runtime (Steam Link path).
 
 ## Open questions / blockers
 
@@ -41,6 +52,17 @@ https://github.com/mohamad-balouza/bioshock-vr with Debug + Release builds worki
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-23 - Session 1 (continued)
+
+- User confirmed the overlay visually (screenshot: main menu, 500 fps). Toggle key changed
+  Insert -> F10 (user's keyboard lacks Insert). Verified live by the user.
+- Em-dash ban added (global user preference): they broke PowerShell 5.1 parsing (BOM-less
+  UTF-8 read as ANSI) and mojibaked the log and ImGui text. Repo swept to ASCII hyphens.
+- **DR-1 retired with a FULL PASS**: wired the OpenXR loader (static, CRT override needed -
+  see ENGINE_NOTES), built xr_hello32 (32-bit), found VDXR ships a 32-bit runtime, and with
+  the Quest 3 connected ran a complete session: Meta Quest 3 system, FL 11_0, RTX 4060 LUID
+  match, 60 frames pumped. VDXR path proven; 64-bit companion fallback not needed.
 
 ### 2026-07-23 - Session 1
 

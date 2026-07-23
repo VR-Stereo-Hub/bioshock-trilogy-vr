@@ -75,6 +75,9 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   `virtualdesktop-openxr-32.dll` (verified PE machine 0x014C = x86).
 - xr_hello32 (2026-07-23): runtime "VirtualDesktopXR" 1.0.10, 31 extensions,
   XR_KHR_D3D11_enable present, 32-bit xrCreateInstance OK.
+- **FULL PASS with Quest 3 connected** (2026-07-23): system "Meta Quest 3" (max 16 layers,
+  max swapchain 16384x16384), required min feature level 0xB000 (11_0 - same as the game),
+  adapter LUID matched RTX 4060, 32-bit D3D11 session created and ran 60 frames.
 - OpenXR loader build note: with `DYNAMIC_LOADER=OFF` upstream forces dynamic CRT; we override
   `MSVC_RUNTIME_LIBRARY` back to static in `third_party/CMakeLists.txt` (CRT mismatch otherwise).
 
