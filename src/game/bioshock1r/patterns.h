@@ -94,6 +94,15 @@ inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
                                                    0xEC, 0x08, 0x83, 0xE4,
                                                    0xF0};
 
+// Submitted-frame owner dword (.data global, first field of the block at
+// [0x13AF7E8..] - see the submit row in ENGINE_NOTES). Holds the pending
+// frame's id while the render thread owns it; the wait path in the submit
+// head spins until it reads -1 (consumed/free). The double-render waits on
+// this BEFORE its second build call: the engine's spin was designed for one
+// frame in flight, and entering it with two wedges permanently if the pump
+// pauses inside the window (two live hangs, 2026-07-24 session 6).
+inline constexpr uint32_t kFrameOwnerRva = 0x13AF7E8;
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

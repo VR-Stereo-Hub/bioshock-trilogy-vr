@@ -69,4 +69,16 @@ void set_rendered_hfov(float hfovDeg);
 // last image + pose is held for the compositor to reproject on its off frame.
 int current_eye_sign();
 
+// --- M4 rung 2: SequentialReentry stereo ------------------------------------
+// The game adapter double-calls the engine's scene build, rendering two
+// frames per game tick (left eye then right - DR-5). Because every submitted
+// frame Presents exactly once, eye attribution rides a tiny SPSC tag ring:
+// the GAME thread pushes the eye sign of each frame at its engine submit
+// (strictly before that frame's Present), and the render thread pops one tag
+// per Present at the tail, capturing the backbuffer into that eye's
+// swapchain (same pair as AER). Presents without a tag take the mono/AER
+// path unchanged. If the ring depth ever exceeds one pair the render thread
+// clears it and logs (self-heal after a mode-boundary skew).
+void sr_push_eye(int eyeSign); // game thread, at submit; -1 left, +1 right
+
 } // namespace bvr::vr

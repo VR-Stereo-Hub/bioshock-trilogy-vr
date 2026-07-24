@@ -14,6 +14,7 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -76,6 +77,11 @@ std::atomic<bool>  g_latchClear{false}; // zero [queue+0x58] before 2nd call
 std::atomic<uint32_t> g_arg3Filter{0};  // double only submits whose arg3 low
                                         // dword matches; 0 = any call
 std::atomic<int>   g_dumpRemaining{0};  // per-call submit dump lines left
+// M4 rung 2: SequentialReentry stereo. While on, every build is doubled
+// (pass 1 = left eye, pass 2 = right - camera.cpp applies the offsets) and
+// each nested submit pushes its eye tag to core/vr for per-Present capture.
+std::atomic<bool>  g_stereo{false};
+std::atomic<uint32_t> g_stereoSkips{0}; // second calls skipped (render stalled)
 std::atomic<bool>  g_poisoned{false};
 std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
@@ -108,6 +114,11 @@ uint64_t g_beatPresents = 0;
 // Submit (game) thread only: present count at the previous submit entry, for
 // the submits-per-present instrument in the dump lines.
 uint32_t g_lastSubmitPresentLow = 0;
+// Build (game) thread only: present count at the previous build entry. The
+// double-call is skipped while presents are stalled (unfocused window /
+// hitching render thread) - doubling has no value then and the stall is the
+// prime suspect in the one observed continuous-mode hang (TESTING.md).
+uint32_t g_lastBuildPresentLow = 0;
 
 // SetEvent kick sampler (game-thread build/kick discovery). Table of
 // distinct (tid, caller-rva) pairs with counts; dumped on "kick off".
@@ -403,11 +414,12 @@ void maybe_second_submit(void* ecx, void* edx, FVec3* loc, FRot3* rot,
 // the yaw enters via CalcViewDetour's second-pass path (g_secondPassTid).
 // Runs at depth 0 only, game thread.
 void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
-                        void* a4, uint32_t tid) {
+                        void* a4, uint32_t tid, uint32_t presentDelta) {
     if (g_poisoned.load(std::memory_order_relaxed)) return;
+    bool stereo = g_stereo.load(std::memory_order_relaxed);
     bool want = false;
     bool isPulse = false;
-    if (g_doubleCall.load(std::memory_order_relaxed)) {
+    if (g_doubleCall.load(std::memory_order_relaxed) || stereo) {
         want = true;
     } else {
         int pulses = g_pulseCount.load(std::memory_order_relaxed);
@@ -417,6 +429,40 @@ void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
         if (pulses > 0) { want = true; isPulse = true; }
     }
     if (!want) return;
+
+    // Stall guard 1 (reactive): no present since the previous build means the
+    // render thread is paused (unfocused) or wedged - do not stack a second
+    // frame onto a stalled pipeline.
+    if (presentDelta == 0) {
+        g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // Stall guard 2 (predictive, the real hang fix - session 6, two live
+    // hangs): the engine's submit head spin-waits UNBOUNDED for the pending
+    // frame to be consumed, a protocol designed for one frame in flight. Our
+    // second call always enters with two, and if the pump pauses inside that
+    // window the game thread strands forever. So wait HERE, bounded, until
+    // the frame-owner global reads -1 (pass-1 frame consumed - the same
+    // condition the engine's own wait path checks), and skip the pass on
+    // timeout. The engine spin then never sees two frames in flight.
+    const volatile int32_t* owner = reinterpret_cast<const volatile int32_t*>(
+        g_imageBase + patterns::kFrameOwnerRva);
+    LARGE_INTEGER w0, w1;
+    QueryPerformanceCounter(&w0);
+    bool consumed = false;
+    for (;;) {
+        if (*owner == -1) { consumed = true; break; }
+        QueryPerformanceCounter(&w1);
+        if (qpc_us(w0, w1) > 20000) break; // 20 ms: pump is stalled
+        YieldProcessor();
+    }
+    if (!consumed) {
+        g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        if (isPulse)
+            BVR_LOG("[reentry] pulse skipped: pass-1 frame never consumed "
+                    "(render stalled)");
+        return;
+    }
 
     uint32_t presentsBefore =
         static_cast<uint32_t>(bvr::d3d11_hook::present_count());
@@ -466,6 +512,11 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
         BVR_LOG("[reentry] build fired #%u (tid %u, caller 0x%X, ecx %p, a1 %p)",
                 n, tid, to_rva(_ReturnAddress()), ecx, a1);
 
+    uint32_t presentLow =
+        static_cast<uint32_t>(bvr::d3d11_hook::present_count());
+    uint32_t presentDelta = presentLow - g_lastBuildPresentLow;
+    g_lastBuildPresentLow = presentLow;
+
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     reinterpret_cast<BuildFn>(g_build.original)(ecx, edx, a1, a2, a3,
@@ -473,7 +524,8 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     QueryPerformanceCounter(&t1);
     g_call1Us.store(qpc_us(t0, t1), std::memory_order_relaxed);
 
-    if (depth == 0) maybe_second_build(ecx, edx, a1, a2, a3, a4, tid);
+    if (depth == 0)
+        maybe_second_build(ecx, edx, a1, a2, a3, a4, tid, presentDelta);
 
     if (!g_drain.enabled.load(std::memory_order_relaxed) &&
         !g_flush.enabled.load(std::memory_order_relaxed))
@@ -486,8 +538,17 @@ void __fastcall SubmitDetour(void* ecx, void* edx, FVec3* loc, FRot3* rot,
                              void* arg3) {
     uint32_t tid = GetCurrentThreadId();
     int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
-    if (depth == 0) g_activeTid.store(tid, std::memory_order_relaxed);
-    else g_submitNested.fetch_add(1, std::memory_order_relaxed);
+    if (depth == 0) {
+        g_activeTid.store(tid, std::memory_order_relaxed);
+    } else {
+        g_submitNested.fetch_add(1, std::memory_order_relaxed);
+        // Stereo eye tag: this submit's frame will Present exactly once;
+        // tell core/vr which eye it carries (pass 2 = right).
+        if (g_stereo.load(std::memory_order_relaxed)) {
+            bool pass2 = g_secondPassTid.load(std::memory_order_relaxed) == tid;
+            bvr::vr::sr_push_eye(pass2 ? +1 : -1);
+        }
+    }
     g_submitEntries.fetch_add(1, std::memory_order_relaxed);
     note_caller(to_rva(_ReturnAddress()));
 
@@ -722,8 +783,8 @@ void handle_command(const char* args) {
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
         BVR_LOG("[reentry] command needs a verb: hook [build|submit|drain|flush]|"
-                "unhook|on|off|pulse|yaw|dump|arg3|latchclear|reset|status|"
-                "kick|calcstack");
+                "stereo on|off|unhook|on|off|pulse|yaw|dump|arg3|latchclear|"
+                "reset|status|kick|calcstack");
         return;
     }
     const char* rest = args + consumed;
@@ -758,6 +819,7 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "unhook") == 0) {
         g_doubleCall.store(false, std::memory_order_relaxed);
         g_pulseCount.store(0, std::memory_order_relaxed);
+        g_stereo.store(false, std::memory_order_relaxed);
         disable_slot(g_drain);
         disable_slot(g_flush);
         disable_slot(g_submit);
@@ -791,6 +853,26 @@ void handle_command(const char* args) {
         if (sscanf_s(rest, "%f", &deg) == 1) {
             g_secondYawDeg.store(deg, std::memory_order_relaxed);
             BVR_LOG("[reentry] second-pass yaw = %.1f deg", deg);
+        }
+    } else if (strcmp(verb, "stereo") == 0) {
+        if (strncmp(rest, "on", 2) == 0) {
+            if (g_poisoned.load(std::memory_order_relaxed)) {
+                BVR_LOG("[reentry] stereo refused: POISONED ('reentry reset' to clear)");
+            } else if (install_slot(g_build, patterns::kSceneBuildRva,
+                                    reinterpret_cast<void*>(&BuildDetour),
+                                    patterns::kSceneBuildPrologue,
+                                    sizeof patterns::kSceneBuildPrologue) &&
+                       install_slot(g_submit, patterns::kFrameSubmitRva,
+                                    reinterpret_cast<void*>(&SubmitDetour),
+                                    patterns::kFrameSubmitPrologue,
+                                    sizeof patterns::kFrameSubmitPrologue)) {
+                g_stereo.store(true, std::memory_order_relaxed);
+                BVR_LOG("[reentry] STEREO ON: every build doubled L/R, submits "
+                        "tagged for per-present eye capture");
+            }
+        } else {
+            g_stereo.store(false, std::memory_order_relaxed);
+            BVR_LOG("[reentry] stereo off (hooks stay; 'reentry unhook' to drop)");
         }
     } else if (strcmp(verb, "dump") == 0) {
         int n = 0;
@@ -828,10 +910,12 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: build=%s submit=%s drain=%s flush=%s double=%d "
-                "pulse=%d yaw=%.1f dump=%d arg3=%08X latchclear=%d poisoned=%d "
-                "kick=%d builds=%u submits=%u drains=%u flushes=%u seconds=%u "
-                "draws2=%u",
+        BVR_LOG("[reentry] status: stereo=%d(skips=%u) build=%s submit=%s drain=%s "
+                "flush=%s double=%d pulse=%d yaw=%.1f dump=%d arg3=%08X "
+                "latchclear=%d poisoned=%d kick=%d builds=%u submits=%u drains=%u "
+                "flushes=%u seconds=%u draws2=%u",
+                g_stereo.load(std::memory_order_relaxed) ? 1 : 0,
+                g_stereoSkips.load(std::memory_order_relaxed),
                 g_build.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_submit.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "on" : "off",
@@ -863,6 +947,12 @@ bool second_pass_for_current_thread(float* yawDegOut) {
     return true;
 }
 
+bool stereo_active() {
+    return g_stereo.load(std::memory_order_relaxed) &&
+           g_build.enabled.load(std::memory_order_relaxed) &&
+           !g_poisoned.load(std::memory_order_relaxed);
+}
+
 void note_calcview() {
     uint32_t tid = GetCurrentThreadId();
     g_lastCalcTid.store(tid, std::memory_order_relaxed);
@@ -884,11 +974,12 @@ bool hook_live() {
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Reentry probe (DR-5)")) return;
-    ImGui::Text("hooks: build %s, submit %s, drain %s, flush %s%s",
+    ImGui::Text("hooks: build %s, submit %s, drain %s, flush %s%s%s",
                 g_build.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_submit.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_flush.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_stereo.load(std::memory_order_relaxed) ? "  STEREO" : "",
                 g_poisoned.load(std::memory_order_relaxed) ? "  POISONED" : "");
     ImGui::Text("double-call %s  yaw %.1f  arg3 %08X  2nd calls %u  draws2 %u",
                 g_doubleCall.load(std::memory_order_relaxed) ? "ON" : "off",

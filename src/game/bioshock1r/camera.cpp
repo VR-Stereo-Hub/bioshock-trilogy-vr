@@ -96,8 +96,28 @@ bool g_haveRecenter = false;
 bvr::vr::HeadPose g_recenterPose{};
 float g_recenterYawRad = 0.0f;
 
+// M4 rung 2 (SequentialReentry): pass-1 caches the fully-driven camera here
+// (post head drive + debug offsets, PRE eye offset) so pass 2 replays the
+// exact same base with the opposite eye - both eyes share one head sample
+// even though a Present lands between the two CalcView calls. Game thread
+// only; pass 2 always immediately follows its pass 1.
+bool g_srBaseValid = false;
+FVector g_srBaseLoc{};
+FRotator g_srBaseRot{};
+
 float* fov_ptr(void* pc) {
     return reinterpret_cast<float*>(static_cast<uint8_t*>(pc) + patterns::kFovLiveOffset);
+}
+
+// Half-IPD shift along view-right of `rot`, sign -1 = left eye. Same math the
+// AER path uses, shared by both SequentialReentry passes.
+void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
+    float yawRad = static_cast<float>(rot.yaw) / kRotUnitsPerRadian;
+    float halfIpdUu = static_cast<float>(sign) *
+                      (g_ipdMm.load(std::memory_order_relaxed) / 2000.0f) *
+                      g_worldScale.load(std::memory_order_relaxed);
+    loc->x += -sinf(yawRad) * halfIpdUu;
+    loc->y += cosf(yawRad) * halfIpdUu;
 }
 
 // Automated-test seam: %LOCALAPPDATA%\BioshockVR\command.txt is polled at 1 Hz
@@ -115,6 +135,7 @@ float* fov_ptr(void* pc) {
 // DR-5 reentry probe (routes to game/bioshock1r/scenedraw; command-gated -
 // nothing is hooked without these):
 //   reentry hook [build|submit|drain|flush] (default build - the DR-5 seam)
+//   reentry stereo on|off (M4 rung 2: L/R double-render + eye-tagged capture)
 //   reentry unhook  reentry on|off  reentry pulse  reentry yaw <deg>
 //   reentry dump <n> (per-call submit arg telemetry)
 //   reentry arg3 <hex|off> (double-submit call-site filter)
@@ -290,16 +311,22 @@ UeAngles hmd_angles(const bvr::vr::HeadPose& hp) {
 // register/stack/cleanup-identical and works as a plain free function.
 void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                                FVector* loc, FRotator* rot) {
-    // DR-5 second pass: while the reentry probe is inside its SECOND
-    // frame-root call, run only the original plus the probe's yaw delta. The
+    // DR-5/M4 second pass: while the reentry probe is inside its SECOND
+    // build call, run only the original plus the second-pass camera - the
     // full body below must not run twice per frame (it would eat recenter
     // requests, double-poll the command file, and re-run the fov
-    // save/restore state machines).
+    // save/restore state machines). Stereo replays pass-1's cached base with
+    // the RIGHT eye offset; the probe's yaw delta is the non-stereo fallback.
     float reentryYawDeg = 0.0f;
     if (scenedraw::second_pass_for_current_thread(&reentryYawDeg)) {
         g_original(self, edx, viewActor, loc, rot);
-        if (rot)
+        if (scenedraw::stereo_active() && g_srBaseValid && loc && rot) {
+            *loc = g_srBaseLoc;
+            *rot = g_srBaseRot;
+            apply_eye_offset(loc, *rot, +1);
+        } else if (rot) {
             rot->yaw += static_cast<int32_t>(reentryYawDeg * kRotUnitsPerDegree);
+        }
         return;
     }
     g_original(self, edx, viewActor, loc, rot);
@@ -403,8 +430,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
 
         // AlternateEye (M4 rung 1): shift the camera half an IPD along
         // view-right; core flips the sign after each submitted frame so
-        // successive game frames render alternating eyes.
-        int eyeSign = bvr::vr::current_eye_sign();
+        // successive game frames render alternating eyes. Suppressed under
+        // SequentialReentry stereo (rung 2), which applies both eye offsets
+        // itself at the end of this body.
+        int eyeSign = scenedraw::stereo_active() ? 0 : bvr::vr::current_eye_sign();
         if (eyeSign != 0) {
             float finalYawRad = static_cast<float>(rot->yaw) / kRotUnitsPerRadian;
             float halfIpdUu =
@@ -463,6 +492,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         rot->pitch += static_cast<int32_t>(g_pitchDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
         rot->yaw   += static_cast<int32_t>(g_yawDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
         rot->roll  += static_cast<int32_t>(g_rollDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
+    }
+
+    // SequentialReentry stereo (M4 rung 2): this normal pass is the LEFT eye.
+    // Cache the final un-eyed camera for pass 2's replay, then offset. Works
+    // with or without the VR drive (flat A/B testing uses the game camera).
+    if (loc && rot && scenedraw::stereo_active()) {
+        g_srBaseLoc = *loc;
+        g_srBaseRot = *rot;
+        g_srBaseValid = true;
+        apply_eye_offset(loc, *rot, -1);
+    } else {
+        g_srBaseValid = false;
     }
 
     // FOV: the VR drive wins over the manual override; both share the same

@@ -100,6 +100,37 @@ int g_currentEye = 0;                    // eye slot the next captured frame bel
 XrPosef g_eyePose[2] = {};               // pose claimed for each eye's held image
 bool g_eyeValid[2] = {false, false};     // eye slot holds a released image + pose
 
+// M4 rung 2 (SequentialReentry): SPSC eye-tag ring, game thread pushes at
+// engine submit, render thread pops at Present-tail (see header). Normal
+// depth is <= 2 (one L/R pair in flight); deeper means a skew - the consumer
+// clears it. Ring slots hold the eye sign; indices are monotonic.
+constexpr uint32_t kSrRingSize = 8; // power of two
+std::atomic<uint32_t> g_srHead{0};  // push cursor (game thread)
+std::atomic<uint32_t> g_srTail{0};  // pop cursor (render thread)
+std::atomic<int8_t> g_srRing[kSrRingSize] = {};
+std::atomic<uint32_t> g_srPushed{0}, g_srPopped{0}, g_srDropped{0},
+    g_srCleared{0};
+std::atomic<bool> g_loggedFirstSr{false};
+
+// Pop one tag; 0 = none pending (mono/AER frame).
+int sr_pop_eye() {
+    uint32_t tail = g_srTail.load(std::memory_order_relaxed);
+    uint32_t head = g_srHead.load(std::memory_order_acquire);
+    if (tail == head) return 0;
+    if (head - tail > 2) {
+        // More than a pair in flight: submit/present pairing skewed (mode
+        // boundary). Drop everything and resync from mono.
+        g_srTail.store(head, std::memory_order_relaxed);
+        g_srCleared.fetch_add(1, std::memory_order_relaxed);
+        BVR_LOG("xr: sr tag ring skewed (depth %u) - cleared", head - tail);
+        return 0;
+    }
+    int sign = g_srRing[tail & (kSrRingSize - 1)].load(std::memory_order_relaxed);
+    g_srTail.store(tail + 1, std::memory_order_release);
+    g_srPopped.fetch_add(1, std::memory_order_relaxed);
+    return sign;
+}
+
 const char* res_str(XrResult r) {
     static char buf[XR_MAX_RESULT_STRING_SIZE];
     if (g_instance != XR_NULL_HANDLE && xrResultToString(g_instance, r, buf) == XR_SUCCESS)
@@ -525,14 +556,22 @@ void on_present_end(IDXGISwapChain* swapchain) {
     bool projectionMode = g_cameraMode.load(std::memory_order_relaxed) &&
                           g_projectionReady.load(std::memory_order_relaxed) && hfovDeg > 0.0f;
 
+    // SequentialReentry (rung 2): one tag pop per Present, ALWAYS - the ring
+    // must drain even in quad mode so a mode change cannot leave stale tags.
+    // A tagged present carries a known eye (game thread pushed the sign at
+    // this frame's engine submit); sign -1 = left = eye index 0, same
+    // convention AER validated in-headset (depth not inverted).
+    int srSign = sr_pop_eye();
+    bool srFrame = projectionMode && srSign != 0;
+
     // AlternateEye bookkeeping. imageSign is the eye offset baked into THIS
     // backbuffer: the sign was published at the tail of the previous Present
     // and consumed by the game frame that produced the current image. Only a
     // frame carrying the current eye's offset is captured into that eye's
     // swapchain; anything else (mono, or the un-offset frame right after
-    // enabling) flows through index 0 like M3.
+    // enabling) flows through index 0 like M3. SR frames bypass all of it.
     bool aerActive = projectionMode && g_aerEnabled.load(std::memory_order_relaxed);
-    if (!aerActive) reset_aer();
+    if (!aerActive && !srFrame) reset_aer();
     int imageSign = g_aerEyeSign.load(std::memory_order_relaxed);
     int eyeFlip = g_aerSwapEyes.load(std::memory_order_relaxed) ? -1 : 1;
     int currentEyeSign = (g_currentEye == 0 ? -1 : 1) * eyeFlip;
@@ -541,7 +580,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
     if (g_frameState.shouldRender && g_swapchains[0] != XR_NULL_HANDLE) {
         ID3D11Texture2D* backbuffer = nullptr;
         if (SUCCEEDED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)))) {
-            int target = (aerActive && imageSign == currentEyeSign) ? g_currentEye : 0;
+            int srEye = srSign < 0 ? 0 : 1;
+            int target = srFrame ? srEye
+                         : (aerActive && imageSign == currentEyeSign) ? g_currentEye
+                                                                      : 0;
             uint32_t index = 0;
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_swapchains[target], &ai, &index))) {
@@ -555,7 +597,14 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_swapchains[target], &ri);
 
-                if (aerActive && target == g_currentEye && imageSign == currentEyeSign) {
+                if (srFrame) {
+                    g_eyePose[srEye] = g_views[srEye].pose;
+                    g_eyeValid[srEye] = true;
+                    if (!g_loggedFirstSr.exchange(true))
+                        BVR_LOG("xr: first SequentialReentry eye frame captured "
+                                "(eye %c)", srEye == 0 ? 'L' : 'R');
+                } else if (aerActive && target == g_currentEye &&
+                           imageSign == currentEyeSign) {
                     g_eyePose[g_currentEye] = g_views[g_currentEye].pose;
                     g_eyeValid[g_currentEye] = true;
                     eyeCaptured = true;
@@ -577,7 +626,8 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     // compositor reprojects the stale eye). Until both eyes
                     // hold an offset image: M3 mono - fresh image to both eyes
                     // with the per-eye located poses. Converges in 2 frames.
-                    bool stereo = aerActive && g_eyeValid[0] && g_eyeValid[1];
+                    bool stereo = (aerActive || srFrame) && g_eyeValid[0] &&
+                                  g_eyeValid[1];
                     for (int eye = 0; eye < 2; ++eye) {
                         if (stereo) {
                             projViews[eye].pose = g_eyePose[eye];
@@ -702,6 +752,13 @@ void draw_debug_ui() {
     ImGui::Text("layer: %s%s | target %.1f | readback %.1f | claimed %.1f",
                 layerName, eyeSign == 0 ? "" : eyeSign < 0 ? " (AER eye L)" : " (AER eye R)",
                 g_hfovDeg.load(std::memory_order_relaxed), readback, claimed);
+    uint32_t srPushed = g_srPushed.load(std::memory_order_relaxed);
+    if (srPushed)
+        ImGui::Text("SR tags: pushed %u popped %u dropped %u cleared %u  eyes %d/%d",
+                    srPushed, g_srPopped.load(std::memory_order_relaxed),
+                    g_srDropped.load(std::memory_order_relaxed),
+                    g_srCleared.load(std::memory_order_relaxed),
+                    g_eyeValid[0] ? 1 : 0, g_eyeValid[1] ? 1 : 0);
     if (camMode && !g_projectionReady.load(std::memory_order_relaxed))
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                            "projection NOT ready - drive is held off (see log)");
@@ -741,6 +798,20 @@ int current_eye_sign() {
     return g_aerEyeSign.load(std::memory_order_relaxed);
 }
 
+void sr_push_eye(int eyeSign) {
+    uint32_t head = g_srHead.load(std::memory_order_relaxed);
+    uint32_t tail = g_srTail.load(std::memory_order_acquire);
+    if (head - tail >= kSrRingSize) {
+        // No consumer (no XR session) or consumer stalled: drop, count it.
+        g_srDropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_srRing[head & (kSrRingSize - 1)].store(static_cast<int8_t>(eyeSign),
+                                             std::memory_order_relaxed);
+    g_srHead.store(head + 1, std::memory_order_release);
+    g_srPushed.fetch_add(1, std::memory_order_relaxed);
+}
+
 } // namespace bvr::vr
 
 #else // !BVR_WITH_OPENXR
@@ -759,6 +830,7 @@ bool vr_camera_mode() { return false; }
 float suggested_hfov_deg() { return 0.0f; }
 void set_rendered_hfov(float) {}
 int current_eye_sign() { return 0; }
+void sr_push_eye(int) {}
 
 } // namespace bvr::vr
 
