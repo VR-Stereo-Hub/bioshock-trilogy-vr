@@ -1,6 +1,7 @@
 #include "framework.h"
 
 #include "core/hooks/d3d11_hook.h"
+#include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
 #include "core/util/crash.h"
 #include "core/util/log.h"
@@ -29,6 +30,8 @@ void init() {
         return;
     }
     BVR_LOG("MinHook initialized");
+
+    input::init(); // fail-soft: missing proxy seam just disables synthetic input
 
     game::init_adapter(); // fail-soft: scan/hook failure is logged, game runs flat
 

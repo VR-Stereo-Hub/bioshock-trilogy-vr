@@ -6,6 +6,7 @@
 
 #include "core/debug/value_scan.h"
 #include "core/gfx/frame_inspector.h"
+#include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/patterns.h"
@@ -135,6 +136,12 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 // VR one-toggle (session 8): "vrstereo on|off" - sequences structural 1t +
 // VR camera mode + SequentialReentry stereo; sticky across loads. Also
 // reachable as "reentry vrstereo on|off" and as the overlay checkbox.
+// Synthetic gamepad (M5, routes to core/input/xinput_bridge):
+//   vrinput on|off|status  vrinput test stick l|r <x> <y> [holdMs]
+//   vrinput test trig l|r <0..255> [holdMs]
+//   vrinput test press <A|B|X|Y|LB|RB|START|BACK|LS|RS|DU|DD|DL|DR> [holdMs]
+//   vrinput test clear   (test holds self-expire; slots only feed the game
+//   while vrinput is on)
 // DR-5 reentry probe (routes to game/bioshock1r/scenedraw; command-gated -
 // nothing is hooked without these):
 //   reentry hook [build|submit|drain|flush] (default build - the DR-5 seam)
@@ -233,6 +240,8 @@ void apply_command(const char* cmd, const char* args) {
         bvr::value_scan::log_module_bases();
     } else if (strcmp(cmd, "dumpframe") == 0) {
         bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
+    } else if (strcmp(cmd, "vrinput") == 0) {
+        input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
     } else if (strcmp(cmd, "vrstereo") == 0) {
         // One-toggle VR stereo (session 8): "vrstereo on|off" at top level
         // == "reentry vrstereo ..." - the streamlined in-headset flow.
