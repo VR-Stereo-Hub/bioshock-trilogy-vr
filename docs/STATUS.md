@@ -35,8 +35,34 @@ build slot owns the double-call controls while enabled). Capstone-based scratchp
 disasm workflow replaced hand byte-walking (findings summarized in ENGINE_NOTES, dumps
 never committed).
 
-**Nothing reached headset-testable state this session** (flat probe work only; the
-per-eye split is where DR-5's primitive becomes headset-visible).
+**Session 6 part 2 - SequentialReentry STEREO built end to end; blocked on ONE
+reproducible engine deadlock.** `reentry stereo on` (M4 rung 2) is fully wired and
+flat-verified mechanically: every build doubled L-then-R (pass 1 caches the driven
+camera + applies -IPD/2; pass 2 replays the cached base + IPD/2 - one head sample per
+pair), each nested submit pushes its eye tag through the new `vr::sr_push_eye` SPSC
+ring, and Present-tail pops one tag per present, capturing into the existing AER eye
+swapchains (mono/AER paths untouched; presents without tags flow as before). Flat
+proof: eye-offset frame renders (img-diff 2.0 mean vs 0.33 floor) and consecutive
+captures are phase-consistent (0.35 - same eye every time). Design rationale in the
+ARCHITECTURE decision log.
+
+**The blocker**: continuous doubling deadlocks the engine's command-queue event
+protocol - five runs, survival 16 s to 3.5 min, then the game thread strands in
+`WaitForSingleObject(INFINITE)` at exe+0x61D38E ("render done" flag+event wait inside
+the build) while the render thread waits inside the drain for more work. Diagnosed
+from OUTSIDE with a new scratchpad thread-dump tool (Wow64GetThreadContext) on two
+live hang specimens - identical signature both times. Start-state gating is
+falsified: a frame-id-consumed gate and a queue-counters-idle gate both ran at full
+doubled rate (260 pairs/s, 520 presents/s) and both still hung - the lost-wakeup race
+lives inside the concurrent window of the second frame. The wait site is now fully
+decoded (ENGINE_NOTES "Render-done wait decoded") including a single-threaded
+inline-drain fallback path in the same function - three concrete fix candidates are
+queued in Next steps. Stereo stays command-gated and experimental; NOT safe for a
+headset session yet (hangs would strand the user mid-play).
+
+**Nothing reached headset-testable state this session** (the stereo pipeline is
+mechanically proven flat but deadlock-blocked; AER remains the working in-headset
+stereo).
 
 ## Previous state (2026-07-24, session 5)
 
@@ -173,35 +199,37 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **Per-eye split on the DR-5 primitive (next session's goal - M4 SequentialReentry
-   rung)**: turn the double-build into true full-rate stereo.
-   - Camera: in the CalcViewDetour, first (normal) pass shifts -IPD/2 along view-right,
-     second pass (already routed via `second_pass_for_current_thread`) shifts +IPD/2
-     (replace the probe's yaw with the eye offset; reuse `camera.cpp`'s view-right math
-     from AER).
-   - Capture: each build pair ends in TWO ordered presents; capture each present into
-     its eye's swapchain via the existing `core/vr` AER pair + `current_eye_sign` infra.
-     Eye attribution: publish a pair-phase from the build detour consumed at
-     Present-tail; session-6 observation says present order within a pair is
-     deterministic (flat captures consistently caught the SECOND present). Cross-thread
-     handoff needs care (game thread publishes, render thread consumes - the submit's
-     frame-number globals can arbitrate).
-   - Pacing/stability hardening: ONE hang in ~124k doubled frames (during a focus
-     cycle). Candidates: wait on the render-done event between paired builds; gate the
-     second build on the submit head's frame-consumed state; pause doubling while the
-     window is unfocused (presenting stops unfocused - doubling has no value there).
-   - Performance envelope: this scene ran 450 presents/s doubled; VR needs 144/s for
-     72 Hz per eye. Profile a heavy scene before committing.
-   - Then: 10-min PLAY test under doubling (movement/combat; the deferred DR-5 bar),
-     HUD-in-stereo decision (second pass renders HUD too - fine short-term).
-2. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
+1. **Break the stereo deadlock (next session's opener - the ONLY blocker between the
+   in-tree `reentry stereo` and headset-testable full-rate stereo).** The wait site is
+   fully decoded (ENGINE_NOTES "Render-done wait decoded": flush-point fn ~0x61D340,
+   `if ([queue+8]==0) WaitForSingleObject([queue+0x10]+4, INFINITE)` - INFINITE +
+   auto-reset + flag-then-wait = event theft under two frames/tick). Candidates, in
+   recommended order:
+   a. MinHook the flush-point function while stereo is on; reimplement it as a
+      bounded-wait + flag-repoll loop (immune to theft; behavior identical otherwise).
+   b. Watchdog thread in our DLL: detect the double-wait signature (game thread parked
+      at that RVA > 100 ms while stereo active) and SetEvent `[queue+0x10]+4` to
+      unstick - recovery rather than prevention, good as a belt-and-braces layer.
+   c. Investigate the single-threaded fallback in the same function (it calls the
+      drain INLINE on the game thread when `[mgr+0x50]` says non-threaded): forcing
+      that mode during stereo removes the cross-thread protocol entirely - likely a
+      perf hit, possibly the most robust path. Measure.
+   Then: the 5-min soak that kept failing, the 10-min PLAY test, and the first
+   in-headset stereo checklist (VD + camera mode + `reentry stereo on`).
+2. **Stereo pipeline polish once stable**: xr-frame-per-pair pacing (currently every
+   present does a full xrWaitFrame cycle - halves game tick under a headset; wait once
+   per pair instead), HUD-in-stereo decision, world-scale/IPD calibration pass
+   (ties into the parked M9 IPD item).
+3. Performance envelope: the stairs scene ran 520 presents/s doubled; VR needs 144/s
+   for 72 Hz per eye. Profile a heavy scene (combat, effects) before committing.
+4. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
    recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
-3. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+5. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-4. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
+6. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
    clicks sometimes only highlight a gameswf item - VK_RETURN activates it, TESTING.md).
-5. Optional anytime: Steam Link / SteamVR cross-check.
-6. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
+7. Optional anytime: Steam Link / SteamVR cross-check.
+8. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
    test first, world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
 
 ## Open questions / blockers
@@ -250,6 +278,25 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   eye attribution for the split.
 - Session ends with the game closed (killed post-hang), DLLs current in the game
   folder, no headset items this session.
+- **(part 2, same day) SequentialReentry STEREO wired end to end** on user go-ahead:
+  `reentry stereo on` = doubled builds with L/R eye offsets (pass-1 cached-base +
+  pass-2 replay - one head sample per pair), SPSC eye-tag ring game->render
+  (`vr::sr_push_eye`), per-present eye capture into the AER swapchain pair,
+  mono/AER paths untouched. Flat-verified: offset frame renders (diff 2.0 vs 0.33
+  floor), captures phase-consistent (0.35). ARCHITECTURE decision-log entry written.
+- **(part 2) The deadlock hunt**: five continuous runs hung (16 s - 3.5 min).
+  Built hangdump.py (outside-process Wow64 thread dump) - two specimens show the
+  IDENTICAL signature: game thread in WaitForSingleObject(INFINITE) at exe+0x61D38E
+  (render-done flag+event wait in the build) vs render thread waiting inside the
+  drain. Decoded the frame-id completion-bit pair (0x13AF7E8/+0x10, high bit =
+  consumed; a wait-for-minus-one first guess throttled to 48 fps and was corrected),
+  the queue ring pointers (+0x118/+0x11C, unequal at idle) vs seg counters
+  (+0x128/+0x12C, equal at idle), and the flush-point wait function itself
+  (~0x61D340: flag-then-INFINITE-wait, same event class as the pump kick, plus a
+  single-threaded inline-drain fallback). Start-state gating falsified twice at
+  full doubled rate; the pass-2 gate (frame-ids + counters, bounded, skip-on-
+  timeout) is kept as the graceful unfocused degrade. Three concrete deadlock fixes
+  queued in Next steps; stereo stays command-gated experimental, not headset-safe.
 
 ### 2026-07-24 - Session 5
 
