@@ -844,6 +844,14 @@ bool vr_camera_mode() {
            g_projectionReady.load(std::memory_order_relaxed);
 }
 
+void set_camera_mode(bool on) {
+    bool was = g_cameraMode.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: camera mode %s (request; drive engages when the session "
+                "and projection are ready)",
+                on ? "ON" : "off");
+}
+
 float suggested_hfov_deg() {
     return g_hfovDeg.load(std::memory_order_relaxed);
 }
@@ -885,6 +893,7 @@ void on_resize() {}
 void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
 bool vr_camera_mode() { return false; }
+void set_camera_mode(bool) {}
 float suggested_hfov_deg() { return 0.0f; }
 void set_rendered_hfov(float) {}
 int current_eye_sign() { return 0; }

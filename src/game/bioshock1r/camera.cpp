@@ -132,10 +132,15 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   memrestore  memptr <idx> [maxDeltaHex]
 //   pokeaddr <hex> <f>  pokeaddri <hex> <u>  hexdump <hex> <len>
 //   strscan <text>  membases  dumpframe [full]
+// VR one-toggle (session 8): "vrstereo on|off" - sequences structural 1t +
+// VR camera mode + SequentialReentry stereo; sticky across loads. Also
+// reachable as "reentry vrstereo on|off" and as the overlay checkbox.
 // DR-5 reentry probe (routes to game/bioshock1r/scenedraw; command-gated -
 // nothing is hooked without these):
 //   reentry hook [build|submit|drain|flush] (default build - the DR-5 seam)
 //   reentry stereo on|off (M4 rung 2: L/R double-render + eye-tagged capture)
+//   reentry 1t on|off (structural single-threaded render - flush-point hook,
+//   load-safe)  reentry 1tpoke on|off (legacy hw-thread poke - NOT load-safe)
 //   reentry unhook  reentry on|off  reentry pulse  reentry yaw <deg>
 //   reentry dump <n> (per-call submit arg telemetry)
 //   reentry arg3 <hex|off> (double-submit call-site filter)
@@ -228,6 +233,12 @@ void apply_command(const char* cmd, const char* args) {
         bvr::value_scan::log_module_bases();
     } else if (strcmp(cmd, "dumpframe") == 0) {
         bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
+    } else if (strcmp(cmd, "vrstereo") == 0) {
+        // One-toggle VR stereo (session 8): "vrstereo on|off" at top level
+        // == "reentry vrstereo ..." - the streamlined in-headset flow.
+        char line[32];
+        _snprintf_s(line, sizeof line, _TRUNCATE, "vrstereo %s", args);
+        scenedraw::handle_command(line);
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args); // DR-5 probe; logs its own echoes
     }

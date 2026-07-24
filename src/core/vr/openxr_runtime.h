@@ -48,6 +48,12 @@ bool get_head_pose(HeadPose& out);
 // submission switches from the quad to a projection layer at the same time.
 bool vr_camera_mode();
 
+// Programmatic camera-mode request (same flag the overlay checkbox writes).
+// The drive still engages only once the session + projection are ready -
+// this just records intent, so it is safe to call any time (adapter
+// one-toggle flows use it).
+void set_camera_mode(bool on);
+
 // Symmetric horizontal FOV (degrees) circumscribing the headset's per-eye
 // FOV at the backbuffer aspect - what the game should render with in camera
 // mode. 0 until the first views are located.

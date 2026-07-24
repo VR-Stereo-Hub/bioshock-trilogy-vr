@@ -46,6 +46,11 @@ bool hook_live();
 // base, +IPD/2) instead of the probe's yaw delta.
 bool stereo_active();
 
+// One-toggle "VR stereo" request (session 8): posts the on/off intent; the
+// game thread applies 1t + camera mode + stereo outside any hooked call.
+// Safe from any thread (the overlay checkbox draws on the render thread).
+void request_vrstereo(bool on);
+
 // Read-only telemetry section for the overlay (control is commands-only).
 void draw_debug_ui();
 
