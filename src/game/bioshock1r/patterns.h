@@ -63,7 +63,10 @@ inline constexpr uint8_t kDrainPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 // prologue walk. ret 0xC = 3 stack args: arg1 FVector* camLoc, arg3 a
 // viewport/scene object; stores the camera into the submitted-frame globals
 // and SetEvents the render pump. Double-calling THIS with a modified rot is
-// the true second-render primitive. Not hooked yet - next session.
+// the true second-render primitive (scenedraw.cpp SubmitDetour). Session-6
+// disk-image byte walk confirmed: arg2 IS the FRotator* (3 dwords copied to
+// the frame block +0x14), ECX is dead at entry (`push ecx` = stack alloc),
+// literal `C2 0C 00` ret, SetEvent call site 0x585C62 / ret RVA 0x585C68.
 inline constexpr uint32_t kFrameSubmitRva = 0x585AC0;
 inline constexpr uint8_t kFrameSubmitPrologue[10] = {0x55, 0x8B, 0xEC, 0x51,
                                                      0x64, 0xA1, 0x2C, 0x00,

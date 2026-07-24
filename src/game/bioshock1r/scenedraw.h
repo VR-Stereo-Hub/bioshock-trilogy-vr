@@ -1,13 +1,15 @@
 #pragma once
 // DR-5 / SequentialReentry probe: command-gated MinHook detours on the
-// renderer's frame root (and optionally the drain loop) - see ENGINE_NOTES
-// "Scene-draw architecture". NOTHING is hooked by default: the hooks exist
-// only after an explicit "reentry hook" seam command, so default runs stay
-// byte-identical to an unhooked game. Escalation ladder (each rung gated on
-// the previous one's telemetry): pass-through soak -> CalcView-inside-root
-// count -> one-shot/continuous double-call with a yaw delta on the second
-// pass (a yaw-shifted final image proves the root rebuilds the command
-// queue - the SequentialReentry seam).
+// game-thread frame SUBMIT (the seam - default target) plus the render-side
+// drain/flush instruments - see ENGINE_NOTES "Scene-draw architecture".
+// NOTHING is hooked by default: the hooks exist only after an explicit
+// "reentry hook" seam command, so default runs stay byte-identical to an
+// unhooked game. Escalation ladder (each rung gated on the previous one's
+// telemetry): pass-through soak with per-call arg dumps -> one-shot pulse
+// double-submit (copied loc/rot args, yaw delta on the rot copy) ->
+// continuous double-submit (a yaw-shifted final image proves the engine
+// renders a second full frame per game tick - the SequentialReentry
+// primitive).
 
 #include "core/hooks/pattern_scan.h"
 
@@ -23,13 +25,16 @@ void init(const bvr::pattern_scan::ProcessImage& image);
 void handle_command(const char* args);
 
 // CalcViewDetour head check: true when the current thread is executing the
-// SECOND (re-entry) frame-root call. The caller must then run ONLY the
-// original and add *yawDegOut to rot->yaw - none of its normal body (which
-// would eat recenter requests and re-run per-frame state machines twice).
+// SECOND (re-entry) call of any hooked target. The caller must then run ONLY
+// the original and add *yawDegOut to rot->yaw - none of its normal body
+// (which would eat recenter requests and re-run per-frame state machines
+// twice). For the submit seam the yaw already rides on the copied rot arg,
+// so a hit here also tells us the engine re-enters CalcView inside the
+// submit (watch for double-applied yaw if it ever fires).
 bool second_pass_for_current_thread(float* yawDegOut);
 
 // CalcViewDetour telemetry tap: attributes the call as inside/outside the
-// frame-root call on this thread. Cheap (two relaxed atomics).
+// hooked call on this thread. Cheap (two relaxed atomics).
 void note_calcview();
 
 // True while any reentry hook is created AND enabled.
