@@ -91,12 +91,17 @@
   1 Hz `[reentry]` heartbeat lines carry entries/s, presents/s, tids, call durations.
   WARNING learned 2026-07-24: a drain double-call faults (caught) but then WEDGES the
   render event protocol - the game hangs and needs a kill. Pulse only, expect to relaunch.
-  WARNING 2026-07-24 session 6: continuous BUILD double-call (`reentry on`, the working
-  double-render) ran clean for ~3.5 min (~124k doubled frames) then hung the same way
-  (game thread never polled again; kill + relaunch). The hang struck during a
-  SetForegroundWindow focus cycle (game-shot) - focus transitions pause presenting and
-  may race the doubled event protocol; unproven, could also be a rare stochastic lost
-  wakeup. Keep continuous windows short, prefer pulses, expect an occasional relaunch.
+  WARNING 2026-07-24 session 6: continuous BUILD double-call (`reentry on` or
+  `reentry stereo on`) DEADLOCKS the engine's command-queue event protocol
+  stochastically - observed survival times 16 s to 3.5 min across five runs. Thread
+  dumps (scratchpad hangdump.py, Wow64GetThreadContext from outside) show the same
+  signature every time: game thread in WaitForSingleObject(INFINITE) at exe+0x61D38E
+  (flag+event "render done" wait, called from build site 0x4CDCD7) while the render
+  thread waits inside the drain at +0x30 - a lost-wakeup/event-theft deadlock that
+  doubling provokes. Start-state gating does NOT fix it (frame-id gate, ring-counter
+  gate both live-falsified - the race is inside the concurrent window). Pulses and
+  short windows are safe-ish; kill + relaunch on hang; the game process is otherwise
+  unharmed and saves are untouched. Fix directions in STATUS next steps.
 - **Menu clicks**: `.\tools\game-click.ps1 -X <px> -Y <py>` clicks at window coordinates
   (read positions off a game-shot capture; gameswf menus accept the synthetic click).
   If a click highlights but does not activate a menu item (stale gameswf hover state),

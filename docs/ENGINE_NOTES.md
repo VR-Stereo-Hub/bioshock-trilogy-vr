@@ -203,24 +203,40 @@ end-to-end:**
   across captures), then ONE hang (~124k doubled frames in; game thread stopped, kill
   required); a second hang followed ~1 min into the first stereo run.
 
-**Frame-pacing protocol decoded + the hang fixed (same day, later).** The submitted-
-frame block holds TWO frame-id dwords - `[0x13AF7E8]` and `[0x13AF7F8]` (+0x10), one
-per double-buffered frame slot - whose HIGH BIT is the completion flag (live dump in
-steady state: `0x8000043B` / `0x8000043C`, consecutive frame numbers, both consumed;
-loc floats at +4, rot ints at +0x14 of the same block mirror the live camera exactly).
-The submit head's `jg` guards are SIGNED compares, so a set high bit (negative value)
-never triggers the engine's wait; the wait path's `-1` compare is an init sentinel
-only (a first-guess wait-for-minus-one poll never released and throttled the game to
-the 20 ms timeout - 48 fps - before this was understood). The engine's own wait is
-event-based and has a lost-wakeup race - that race, engaged ~50% of the time by the
-doubled submit (call2 ~1.7 ms = the wait; pass-through submit ~60 us), is the hang
-mechanism. Fix (scenedraw `maybe_second_build`): before the second build call, POLL
-both frame ids until both high bits are set (pipeline fully drained, zero frames in
-flight - the racy engine waiter then never engages), bounded at 20 ms, skip the pass
-on timeout (also the graceful unfocused path: presents stop, doubling degrades to
-mono). A poll cannot lose a wakeup. Constants: patterns.h `kFrameIdPairRva` /
-`kFrameIdSecondOffset`. Throughput with the poll: ~266 pairs/s = 533 presents/s,
-unchanged from before the fix.
+**Render-done wait decoded (the deadlock site, session 6 late).** The game-thread wait
+where every hang strands is at 0x61D38E, inside a "kick render and wait" flush-point
+function (~0x61D340 area, `ret 8`) called from build site 0x4CDCD7: it stamps
+`[mgr+0x50]` = multithreaded?, `[mgr+0x54]` = 1, and EITHER calls the drain (0x61CAE0)
+INLINE on the game thread (single-threaded render mode - a potential stereo escape
+hatch: no cross-thread protocol at all) OR takes queue = `[mgr+4]` and does the
+classic racy pair: `if ([queue+8] == 0) WaitForSingleObject([queue+0x10]+4, INFINITE)`
+then clears the flag - the event object is the same vtable-0xE2D584 class as the
+submit's kick event, `[queue+0xC]` holds a second event. INFINITE + auto-reset +
+flag-check-then-wait = event theft under two frames per tick. All three observed
+hangs: game thread parked exactly here while the render thread waits inside the drain
+at +0x30. Fix candidates (next session): MinHook THIS function when stereo is on and
+replace the wait with a bounded flag-repoll; or a watchdog thread that detects the
+double-wait state and SetEvents `[queue+0x10]+4`; or force the single-threaded inline
+path during stereo.
+
+**Frame-pacing protocol decoded; start-state gating falsified (same day, later).** The
+submitted-frame block holds TWO frame-id dwords - `[0x13AF7E8]` and `[0x13AF7F8]`
+(+0x10), one per double-buffered frame slot - whose HIGH BIT is the completion flag
+(live dump in steady state: `0x8000043B` / `0x8000043C`, consecutive frame numbers,
+both consumed; loc floats at +4, rot ints at +0x14 of the same block mirror the live
+camera exactly). The submit head's `jg` guards are SIGNED compares, so a set high bit
+(negative value) never triggers the engine's wait; the wait path's `-1` compare is an
+init sentinel only (a first-guess wait-for-minus-one poll never released and throttled
+the game to its 20 ms timeout - 48 fps - before this was understood). The queue
+object's `+0x118/+0x11C` are ring POINTERS (unequal even at idle - the submit
+call-site gate reads as "commands written", not empty; polling equality also throttles
+to 48 fps), while `+0x128/+0x12C` are twin seg counters (equal at idle). scenedraw's
+pass-2 gate now polls frame-id bits + counter equality (bounded 20 ms, skip on
+timeout) - full doubled throughput (~260 pairs/s = 520 presents/s) and a graceful
+unfocused degrade, but it does NOT prevent the deadlock above: the race lives inside
+the concurrent produce/consume window of the second frame, not in a dirty start
+state (live-falsified twice). Constants: patterns.h `kFrameIdPairRva`,
+`kFrameIdSecondOffset`, `kQueueSegProdOffset`, `kQueueSegConsOffset`.
 - Phase note: PrintWindow captures consistently caught the SECOND (yawed) present of
   each pair - the pair's present order appears deterministic, which is promising for
   per-present eye attribution in the per-eye split.
