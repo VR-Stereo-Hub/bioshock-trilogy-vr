@@ -4,6 +4,12 @@
 
 ## Current state (2026-07-24, session 8)
 
+**M4 IS DONE (user call at the session-8 wrap: "M4 is done - it's good for now and
+the transitions are good").** Full-rate SequentialReentry stereo, comfortable,
+load-safe, one toggle. The combat-scene check is deliberately deferred: the user
+will test combat once MOTION CONTROLLERS (M5) are in, with a cheat/test-loadout
+capability queued in that session for exactly that. **Next milestone: M5.**
+
 **The 1t LOAD HAZARD is CLOSED and stereo is now one sticky toggle - the last sharp
 edge from session 7 is gone (all flat-verified).** Single-threading is STRUCTURAL:
 `reentry 1t on` MinHooks the flush-point (0x61D260, every byte re-confirmed by a
@@ -288,23 +294,38 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    instead of doing commands" - the vrstereo ON flow is user-verified in-headset.
    One NON-BLOCKING bug found and PARKED to M9 by the user's choice (off/re-arm
    state interaction with the top "VR enabled" toggle - details in the M9 list).
-   Still open from the done-when: a 30-MIN continuous session and a combat-scene
-   feel/perf check - both fall out naturally from the user just playing with
-   vrstereo on.
-2. **Combat-scene perf check**: session-8 flat perf was measured in spawn/arrival
-   scenes (~81-225 pairs/s, both > 72). Get a combat save and confirm pairs/s stays
-   over 72 under effects (the only untested M4 perf case).
-3. **Remaining stereo polish**: HUD-in-stereo decision (renders in both eyes; verify
+   **M4 ticked DONE at the wrap (user call); combat check deferred to the M5 era.**
+2. **M5 session 1 - synthetic XInput lane**: OpenXR action sets (controller poses,
+   sticks, buttons, triggers) feeding a synthetic XINPUT_STATE served by OUR OWN
+   xinput1_3 proxy (we are the DLL the game imports - no hook needed; see
+   ENGINE_NOTES hook table + src/proxy). Real-pad passthrough must keep working;
+   synthetic state merges/overrides when VR input is on. Flat-verifiable: assert
+   the game reacts (menu nav, in-game movement) with no physical pad connected.
+3. **M5 support piece - test-loadout capability (user request)**: a way to grant
+   weapons + plasmids for controller testing (single-player dev work - cheats are
+   fine). Order of attack: (a) `-allowconsole` + Tab console (ConsoleKey=9,
+   unverified in this Steam build - ENGINE_NOTES Config/ini facts; the shipped
+   `.debug` scripts show the vocabulary: `testAddAvailablePlasmid ElectricBolt`
+   etc., classic BioShock also has `givebioshockweapons`, `God`); (b) if Tab is
+   dead, find the console-command DISPATCHER (FName-chain on command strings -
+   already a planned hook point in ENGINE_NOTES) and wire `exec <cmd>` through
+   the command.txt seam so the harness can grant loadouts directly; (c) last
+   resorts: external trainer or a downloaded save with a stocked loadout.
+4. **Combat check (deferred by user to the M5 era)**: once motion controllers +
+   test loadouts exist, verify combat feel and that pairs/s stays over 72 under
+   effects (the one perf case never measured flat).
+5. **Remaining stereo polish**: HUD-in-stereo decision (renders in both eyes; verify
    on a HUD-bearing spawn, M9 ties in), world-scale/IPD calibration pass (parked M9).
-4. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
+6. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
    recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
-5. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+7. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-6. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
+8. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
    clicks sometimes only highlight a gameswf item - VK_RETURN activates it, TESTING.md).
-7. Optional anytime: Steam Link / SteamVR cross-check.
-8. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
-   test first, world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
+9. Optional anytime: Steam Link / SteamVR cross-check.
+10. **Parked in M9 (user's call, 2026-07-24)**: IPD slider verification (exaggerated-offset
+    test first, world scale before IPD), small head-motion bobbing, and the vrstereo
+    off/re-arm state bug (details in the M9 list).
 
 ## Open questions / blockers
 

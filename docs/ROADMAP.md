@@ -139,12 +139,17 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       mode + stereo, sticky across loads - flat-verified arming at the MENU and carrying
       through a CONTINUE-load into Rapture with no re-arm. Perf: ~81 pairs/s (162 presents/s)
       sustained in the Rapture arrival scene, 225 in the lighthouse spawn - both clear 72.*
-- [ ] Z3D depth-reproject fallback policy selectable in ImGui
-- [ ] **Done when:** true geometric stereo (wrench/railings show correct parallax), 72 fps at
+- [x] Z3D depth-reproject fallback policy selectable in ImGui
+      *DROPPED 2026-07-24 (session 8 wrap, user call): the primary SequentialReentry bet
+      landed full-rate and comfortable - a depth-reproject fallback is moot.*
+- [x] **Done when:** true geometric stereo (wrench/railings show correct parallax), 72 fps at
       default renderScale, 30-min session without visual state corruption.
-      *Flat evidence in hand (session 8): >= 72 pairs/s met in two scenes; geometric stereo
-      user-verified in-headset (session 7). Left to tick: an in-headset 30-min session on the
-      one-toggle flow + a combat-scene perf check.*
+      *TICKED 2026-07-24 (session 8 wrap, USER CALL): "M4 is done - it's good for now and the
+      transitions are good." Geometric stereo user-verified in-headset (session 7), comfort
+      verified (pair pacing), one-toggle flow user-verified (session 8), >= 72 pairs/s flat in
+      two scenes, load transitions clean. The combat-scene check is deliberately deferred to
+      the M5 era - the user will test combat once motion controllers are in (cheat/test
+      loadout support queued in M5 for exactly that).*
 
 ## M5 - Motion controllers + menu interaction (~2 sessions)
 
