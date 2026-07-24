@@ -109,16 +109,18 @@ inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
 inline constexpr uint32_t kFrameIdPairRva = 0x13AF7E8;
 inline constexpr uint32_t kFrameIdSecondOffset = 0x10;
 
-// Command-ring producer/consumer cursors on the scene-build's `this` (the
-// queue object): the build's submit call site gates on
-// `[this+0x118] != [this+0x11C]` (ring non-empty -> submit). Equal = ring
-// idle. Session-6 hang thread-dump showed the engine's ring full/empty event
-// waits deadlocking under the double-render (game thread at exe+0x61D38E in
-// the build vs render thread inside the drain), so the second build call
-// additionally waits for cursor equality - an idle ring keeps those waits
-// from engaging.
-inline constexpr uint32_t kQueueRingProdOffset = 0x118;
-inline constexpr uint32_t kQueueRingConsOffset = 0x11C;
+// Command-queue state on the scene-build's `this` (the queue object), live
+// dump 2026-07-24 at idle: +0x118/+0x11C are ring POINTERS (unequal at idle
+// - the submit call-site gate `[+0x118] != [+0x11C]` reads as "commands
+// written this frame", not empty/full), while +0x128/+0x12C are twin
+// produced/consumed COUNTERS (equal at idle - value 9/9 live). Session-6
+// hang thread-dump showed the engine's ring full/empty event waits
+// deadlocking under the double-render (game thread waiting at exe+0x61D38E
+// inside the build vs render thread waiting inside the drain at +0x30), so
+// the second build call waits for counter equality first - an idle queue
+// keeps those racy waits from engaging.
+inline constexpr uint32_t kQueueSegProdOffset = 0x128;
+inline constexpr uint32_t kQueueSegConsOffset = 0x12C;
 
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,

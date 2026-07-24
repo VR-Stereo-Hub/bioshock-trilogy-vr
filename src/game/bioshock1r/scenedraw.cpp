@@ -454,9 +454,9 @@ void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
     const volatile int32_t* frameB = reinterpret_cast<const volatile int32_t*>(
         g_imageBase + patterns::kFrameIdPairRva + patterns::kFrameIdSecondOffset);
     const volatile uint32_t* ringProd = reinterpret_cast<const volatile uint32_t*>(
-        static_cast<const uint8_t*>(ecx) + patterns::kQueueRingProdOffset);
+        static_cast<const uint8_t*>(ecx) + patterns::kQueueSegProdOffset);
     const volatile uint32_t* ringCons = reinterpret_cast<const volatile uint32_t*>(
-        static_cast<const uint8_t*>(ecx) + patterns::kQueueRingConsOffset);
+        static_cast<const uint8_t*>(ecx) + patterns::kQueueSegConsOffset);
     LARGE_INTEGER w0, w1;
     QueryPerformanceCounter(&w0);
     bool drained = false;
