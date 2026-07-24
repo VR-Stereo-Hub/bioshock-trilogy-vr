@@ -37,6 +37,11 @@ std::atomic<bool> g_recording{false};
 int g_mode = 0;                      // mode of the recording in progress
 thread_local int t_suppress = 0;
 
+// Lifetime call census per hooked slot (diagnostic): are the detours even
+// being called? Indexed by EventKind order below.
+std::atomic<uint32_t> g_callCensus[7]{};
+enum CensusIdx { CxDrawIndexed, CxDraw, CxDrawIdxInst, CxDrawInst, CxSetRT, CxClearRtv, CxClearDsv };
+
 constexpr size_t kMaxEvents = 20000;
 constexpr size_t kMaxStack = 12;
 constexpr size_t kCbFloats = 64;     // full mode: first 256 bytes of a CB
@@ -276,6 +281,7 @@ Event& push_event(EventKind kind, const void* retAddr, void* espHint) {
 
 void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCount,
                                          UINT startIndex, INT baseVertex) {
+    g_callCensus[CxDrawIndexed].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress; // our own Get* calls must not recurse into recording
         Event& ev = push_event(EventKind::DrawIndexed, _ReturnAddress(),
@@ -289,6 +295,7 @@ void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCou
 }
 
 void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UINT startVertex) {
+    g_callCensus[CxDraw].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::Draw, _ReturnAddress(), _AddressOfReturnAddress());
@@ -303,6 +310,7 @@ void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UI
 void STDMETHODCALLTYPE DrawIndexedInstancedDetour(ID3D11DeviceContext* ctx, UINT indexCount,
                                                   UINT instances, UINT startIndex, INT baseVertex,
                                                   UINT startInstance) {
+    g_callCensus[CxDrawIdxInst].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::DrawIndexedInstanced, _ReturnAddress(),
@@ -317,6 +325,7 @@ void STDMETHODCALLTYPE DrawIndexedInstancedDetour(ID3D11DeviceContext* ctx, UINT
 
 void STDMETHODCALLTYPE DrawInstancedDetour(ID3D11DeviceContext* ctx, UINT vertexCount,
                                            UINT instances, UINT startVertex, UINT startInstance) {
+    g_callCensus[CxDrawInst].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::DrawInstanced, _ReturnAddress(),
@@ -332,6 +341,7 @@ void STDMETHODCALLTYPE DrawInstancedDetour(ID3D11DeviceContext* ctx, UINT vertex
 void STDMETHODCALLTYPE OMSetRenderTargetsDetour(ID3D11DeviceContext* ctx, UINT numViews,
                                                 ID3D11RenderTargetView* const* rtvs,
                                                 ID3D11DepthStencilView* dsv) {
+    g_callCensus[CxSetRT].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::SetRenderTargets, _ReturnAddress(),
@@ -346,6 +356,7 @@ void STDMETHODCALLTYPE OMSetRenderTargetsDetour(ID3D11DeviceContext* ctx, UINT n
 
 void STDMETHODCALLTYPE ClearRtvDetour(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv,
                                       const FLOAT color[4]) {
+    g_callCensus[CxClearRtv].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::ClearRtv, _ReturnAddress(), _AddressOfReturnAddress());
@@ -358,6 +369,7 @@ void STDMETHODCALLTYPE ClearRtvDetour(ID3D11DeviceContext* ctx, ID3D11RenderTarg
 
 void STDMETHODCALLTYPE ClearDsvDetour(ID3D11DeviceContext* ctx, ID3D11DepthStencilView* dsv,
                                       UINT flags, FLOAT depth, UINT8 stencil) {
+    g_callCensus[CxClearDsv].fetch_add(1, std::memory_order_relaxed);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::ClearDsv, _ReturnAddress(), _AddressOfReturnAddress());
@@ -403,9 +415,21 @@ void write_dump() {
         return;
     }
 
-    fprintf(f, "frame dump: %u events, mode=%s, exe base 0x%08X\n\n",
+    fprintf(f, "frame dump: %u events, mode=%s, exe base 0x%08X\n",
             static_cast<unsigned>(g_events.size()), g_mode == 2 ? "full" : "lite",
             static_cast<unsigned>(g_exeBase));
+    fprintf(f, "lifetime call census: DrawIndexed=%u Draw=%u DrawIdxInst=%u DrawInst=%u "
+               "SetRT=%u ClearRTV=%u ClearDSV=%u\n\n",
+            g_callCensus[CxDrawIndexed].load(), g_callCensus[CxDraw].load(),
+            g_callCensus[CxDrawIdxInst].load(), g_callCensus[CxDrawInst].load(),
+            g_callCensus[CxSetRT].load(), g_callCensus[CxClearRtv].load(),
+            g_callCensus[CxClearDsv].load());
+    BVR_LOG("[gfx] census: DrawIndexed=%u Draw=%u DrawIdxInst=%u DrawInst=%u SetRT=%u "
+            "ClearRTV=%u ClearDSV=%u",
+            g_callCensus[CxDrawIndexed].load(), g_callCensus[CxDraw].load(),
+            g_callCensus[CxDrawIdxInst].load(), g_callCensus[CxDrawInst].load(),
+            g_callCensus[CxSetRT].load(), g_callCensus[CxClearRtv].load(),
+            g_callCensus[CxClearDsv].load());
 
     // Resource table.
     fprintf(f, "== resources ==\n");

@@ -36,6 +36,24 @@ bool region_scannable(const MEMORY_BASIC_INFORMATION& mbi) {
     }
 }
 
+// SEH-guarded scan of one region for the vtable dword. A region can decommit
+// between VirtualQuery and the read (the game heap churns on other threads),
+// so the raw walk must not fault the game. No C++ objects in this frame.
+void scan_region(uintptr_t base, uintptr_t end, uintptr_t wantVtable, uint32_t hfovOffset,
+                 void** outChosen, int* outMatches) {
+    __try {
+        for (uintptr_t a = base; a + hfovOffset + 4 <= end; a += 4) {
+            if (*reinterpret_cast<const uintptr_t*>(a) != wantVtable) continue;
+            ++*outMatches;
+            int32_t fov = *reinterpret_cast<const int32_t*>(a + hfovOffset);
+            BVR_LOG("[b1r] UShockUserSettings vtable match @ 0x%08X HorizontalFOV=%d",
+                    static_cast<unsigned>(a), fov);
+            if (!*outChosen && fov >= 40 && fov <= 170) *outChosen = reinterpret_cast<void*>(a);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 // Scan committed private memory for an object whose first dword is the
 // UShockUserSettings vtable. Returns the first instance whose HorizontalFOV
 // reads as a plausible degree value; logs every vtable match so a wrong pick
@@ -54,17 +72,8 @@ void* scan_for_user_settings() {
         uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
         uintptr_t end = base + mbi.RegionSize;
         if (end <= base) break;
-        if (region_scannable(mbi)) {
-            for (uintptr_t a = base; a + kUserSettingsHfovOffset + 4 <= end; a += 4) {
-                if (*reinterpret_cast<const uintptr_t*>(a) != wantVtable) continue;
-                ++matches;
-                int32_t fov = *reinterpret_cast<const int32_t*>(a + kUserSettingsHfovOffset);
-                BVR_LOG("[b1r] UShockUserSettings vtable match @ 0x%08X HorizontalFOV=%d",
-                        static_cast<unsigned>(a), fov);
-                if (!firstPlausible && fov >= 40 && fov <= 170)
-                    firstPlausible = reinterpret_cast<void*>(a);
-            }
-        }
+        if (region_scannable(mbi))
+            scan_region(base, end, wantVtable, kUserSettingsHfovOffset, &firstPlausible, &matches);
         p = end;
     }
     BVR_LOG("[b1r] UShockUserSettings scan: %d vtable match(es), chosen=%p", matches,
