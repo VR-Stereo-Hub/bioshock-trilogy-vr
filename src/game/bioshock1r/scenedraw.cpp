@@ -94,6 +94,11 @@ std::atomic<uint32_t> g_stereoSkips{0}; // second calls skipped (render stalled)
 HANDLE g_watchdogThread = nullptr;      // created on first 'stereo on', kept
 std::atomic<bool> g_watchdogExit{false};
 std::atomic<uint32_t> g_watchdogKicks{0};
+// Event re-kicks are OPT-IN ('reentry wdkick on'): live results 2026-07-24
+// were detection ALWAYS correct, but kicking a desynced protocol crashed
+// the drain (threaded mode) - waking a waiter whose peer is still stuck
+// consumes corrupted state. Detection+log is the safe default.
+std::atomic<bool> g_wdKickEnabled{false};
 std::atomic<bool>  g_poisoned{false};
 std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
@@ -270,18 +275,21 @@ DWORD WINAPI WatchdogMain(void*) {
             continue;
         }
         ++stallTicks;
+        bool kick = g_wdKickEnabled.load(std::memory_order_relaxed);
         if (stallTicks == 3) {
             // 300 ms stuck inside a hooked call, nothing moving: the
-            // deadlock. Missing wakeup is most likely the render side's
-            // work event - the pump kick.
+            // deadlock signature.
             g_watchdogKicks.fetch_add(1, std::memory_order_relaxed);
             BVR_LOG("[reentry] watchdog: deadlock state detected (300 ms, "
-                    "depth>0, builds/presents frozen) - kicking pump event");
-            uint32_t evObj = 0;
-            if (read_u32_guarded(g_imageBase + patterns::kPumpKickEventPtrRva,
-                                 &evObj))
-                kick_engine_event(evObj, "pump-kick");
-        } else if (stallTicks == 6) {
+                    "depth>0, builds/presents frozen)%s",
+                    kick ? " - kicking pump event" : " (kicks off - log only)");
+            if (kick) {
+                uint32_t evObj = 0;
+                if (read_u32_guarded(g_imageBase + patterns::kPumpKickEventPtrRva,
+                                     &evObj))
+                    kick_engine_event(evObj, "pump-kick");
+            }
+        } else if (stallTicks == 6 && kick) {
             // Render side did not move: kick the queue's flush events (the
             // game thread's flush-point waits on [queue+0x10]).
             BVR_LOG("[reentry] watchdog: still stalled - kicking queue events");
@@ -993,6 +1001,12 @@ void handle_command(const char* args) {
             g_stereo.store(false, std::memory_order_relaxed);
             BVR_LOG("[reentry] stereo off (hooks stay; 'reentry unhook' to drop)");
         }
+    } else if (strcmp(verb, "wdkick") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_wdKickEnabled.store(on, std::memory_order_relaxed);
+        BVR_LOG("[reentry] watchdog kicks %s (recovery kicks crashed a desynced "
+                "protocol live - detect-only is the safe default)",
+                on ? "ON" : "off");
     } else if (strcmp(verb, "dump") == 0) {
         int n = 0;
         if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 8;
