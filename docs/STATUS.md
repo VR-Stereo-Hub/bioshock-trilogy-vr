@@ -6,11 +6,13 @@
 
 **M4 rung 2 (SequentialReentry stereo) had its FIRST IN-HEADSET TEST and PASSED the
 core criteria: real per-eye parallax at full rate, depth correct, world scale good
-(user: "pretty good and working as intended").** Two follow-ups from the test: (a)
-eyes feel weird on head movement -> xr-frame-per-pair pacing implemented + committed
-this session (flat-regression-clean; the comfort improvement is the NEXT headset
-check); (b) HUD-in-both-eyes not observed (that spawn has no HUD) - still an open
-M9 item. Also hardened a load-path crash found while iterating (see below).
+(user: "pretty good and working as intended").** Follow-up (a), head-motion eye
+weirdness, was fixed the same evening by xr-frame-per-pair pacing and **USER-VERIFIED
+in a second headset session: "a looot better... comfortable now and not weird on the
+eyes."** Remaining from that session: a SMALL head-motion bobbing (user: "nothing
+major, not that noticeable") - parked BY THE USER'S CHOICE for the end-of-project
+polish phase (recorded in M9). (b) HUD-in-both-eyes still unobserved (spawn has no
+HUD) - open M9 item. Also hardened a load-path crash found while iterating (below).
 
 **The session-6 blocker dissolved under forensics.** The minidump work (hand-parsed
 MiniDumpNormal parser + capstone drain-head disasm, scratchpad) proved the
@@ -260,13 +262,9 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **USER: second in-headset stereo test - does pair pacing fix the head-motion
-   eye weirdness?** Same setup as the first (checklist below), pair pacing is ON by
-   default (overlay "SR pair pacing" checkbox toggles it live for A/B). Report
-   whether head movement feels right now, and whether the game tick feels less
-   halved. IMPORTANT new ordering rule: run `reentry 1t off` BEFORE loading a save
-   or crossing a level (a load with 1t active crashes the loader - now refused at
-   the menu and guarded, but off-before-load is the clean path).
+1. ~~USER: second in-headset stereo test~~ - DONE 2026-07-24, pair pacing
+   user-verified ("a looot better, comfortable now"). Small head-motion bobbing
+   noted and parked by the user for end-of-project polish (M9).
 2. **Structural 1t fix (replaces the global poke)**: MinHook the flush-point
    0x61D260 and force its decoded inline branch ourselves (copy args to mgr, stamp
    mode, call drain) so loaders see the true core count and loads need no
