@@ -438,28 +438,29 @@ void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
         return;
     }
     // Stall guard 2 (predictive, the real hang fix - session 6, two live
-    // hangs): the engine's submit head spin-waits UNBOUNDED for the pending
-    // frame to be consumed, a protocol designed for one frame in flight. Our
-    // second call always enters with two, and if the pump pauses inside that
-    // window the game thread strands forever. So wait HERE, bounded, until
-    // the frame-owner global reads -1 (pass-1 frame consumed - the same
-    // condition the engine's own wait path checks), and skip the pass on
-    // timeout. The engine spin then never sees two frames in flight.
-    const volatile int32_t* owner = reinterpret_cast<const volatile int32_t*>(
-        g_imageBase + patterns::kFrameOwnerRva);
+    // hangs): the engine's submit-head wait is event-based with a
+    // lost-wakeup race that strands the game thread when it engages. Drain
+    // the pipeline OURSELVES before the second call: poll both frame-id
+    // slots until their completion high bits are set (zero frames in flight
+    // - the engine waiter then never engages), bounded, skip on timeout
+    // (render thread paused/stalled). A poll cannot lose a wakeup.
+    const volatile int32_t* frameA = reinterpret_cast<const volatile int32_t*>(
+        g_imageBase + patterns::kFrameIdPairRva);
+    const volatile int32_t* frameB = reinterpret_cast<const volatile int32_t*>(
+        g_imageBase + patterns::kFrameIdPairRva + patterns::kFrameIdSecondOffset);
     LARGE_INTEGER w0, w1;
     QueryPerformanceCounter(&w0);
-    bool consumed = false;
+    bool drained = false;
     for (;;) {
-        if (*owner == -1) { consumed = true; break; }
+        if (*frameA < 0 && *frameB < 0) { drained = true; break; }
         QueryPerformanceCounter(&w1);
         if (qpc_us(w0, w1) > 20000) break; // 20 ms: pump is stalled
         YieldProcessor();
     }
-    if (!consumed) {
+    if (!drained) {
         g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
         if (isPulse)
-            BVR_LOG("[reentry] pulse skipped: pass-1 frame never consumed "
+            BVR_LOG("[reentry] pulse skipped: pipeline never drained "
                     "(render stalled)");
         return;
     }

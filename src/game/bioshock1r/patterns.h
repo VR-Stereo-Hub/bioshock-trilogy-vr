@@ -94,14 +94,20 @@ inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
                                                    0xEC, 0x08, 0x83, 0xE4,
                                                    0xF0};
 
-// Submitted-frame owner dword (.data global, first field of the block at
-// [0x13AF7E8..] - see the submit row in ENGINE_NOTES). Holds the pending
-// frame's id while the render thread owns it; the wait path in the submit
-// head spins until it reads -1 (consumed/free). The double-render waits on
-// this BEFORE its second build call: the engine's spin was designed for one
-// frame in flight, and entering it with two wedges permanently if the pump
-// pauses inside the window (two live hangs, 2026-07-24 session 6).
-inline constexpr uint32_t kFrameOwnerRva = 0x13AF7E8;
+// Submitted-frame id pair (.data globals, block at [0x13AF7E8..] - see the
+// submit row in ENGINE_NOTES). Two slots (double-buffered frames): dword at
+// +0 and dword at +0x10, each holding a frame id whose HIGH BIT is the
+// completion flag (live dump 2026-07-24: 0x8000043B / 0x8000043C in steady
+// state - consecutive frames, both consumed). The submit head's `jg` checks
+// are SIGNED, so a set high bit (negative) never triggers the engine's wait;
+// the wait path's -1 compare is an init sentinel only. The double-render
+// waits BEFORE its second build call until BOTH slots read negative (both
+// buffers consumed, zero frames in flight): the engine's own event-based
+// wait has a lost-wakeup race (two live hangs, 2026-07-24 session 6), and a
+// bounded poll on these flags cannot lose a wakeup - and with the pipeline
+// drained the racy engine waiter never engages at all.
+inline constexpr uint32_t kFrameIdPairRva = 0x13AF7E8;
+inline constexpr uint32_t kFrameIdSecondOffset = 0x10;
 
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
