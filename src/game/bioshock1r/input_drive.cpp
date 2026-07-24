@@ -180,6 +180,14 @@ void on_frame(uint64_t nowMs) {
     }
 }
 
+bool resolve_engine_objects(void** client, void** viewport) {
+    Objects obj;
+    if (!resolve(obj)) return false;
+    *client = obj.client;
+    *viewport = obj.viewport;
+    return true;
+}
+
 void draw_debug_ui() {
     ImGui::Text("pad drive: %s | drives %u (%u/s)",
                 g_poisoned.load(std::memory_order_relaxed) ? "POISONED"

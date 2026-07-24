@@ -8,6 +8,7 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
+#include "game/bioshock1r/console_exec.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
@@ -143,6 +144,9 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   vrinput test press <A|B|X|Y|LB|RB|START|BACK|LS|RS|DU|DD|DL|DR> [holdMs]
 //   vrinput test clear   (test holds self-expire; slots only feed the game
 //   while vrinput is on)
+// Engine console commands without the dead Tab console (console_exec):
+//   exec <command>   (enters at UWindowsViewport::Exec)
+//   execc <command>  (enters at UWindowsClient::Exec)
 // DR-5 reentry probe (routes to game/bioshock1r/scenedraw; command-gated -
 // nothing is hooked without these):
 //   reentry hook [build|submit|drain|flush] (default build - the DR-5 seam)
@@ -243,6 +247,12 @@ void apply_command(const char* cmd, const char* args) {
         bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
     } else if (strcmp(cmd, "vrinput") == 0) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
+    } else if (strcmp(cmd, "exec") == 0) {
+        console_exec::run_viewport(args); // engine console command, viewport chain
+    } else if (strcmp(cmd, "execc") == 0) {
+        console_exec::run_client(args); // same, entering at UWindowsClient::Exec
+    } else if (strcmp(cmd, "exece") == 0) {
+        console_exec::run_engine(args); // same, entering at UGameEngine::Exec
     } else if (strcmp(cmd, "vrstereo") == 0) {
         // One-toggle VR stereo (session 8): "vrstereo on|off" at top level
         // == "reentry vrstereo ..." - the streamlined in-headset flow.
