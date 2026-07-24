@@ -46,19 +46,24 @@ proof: eye-offset frame renders (img-diff 2.0 mean vs 0.33 floor) and consecutiv
 captures are phase-consistent (0.35 - same eye every time). Design rationale in the
 ARCHITECTURE decision log.
 
-**The blocker**: continuous doubling deadlocks the engine's command-queue event
-protocol - five runs, survival 16 s to 3.5 min, then the game thread strands in
-`WaitForSingleObject(INFINITE)` at exe+0x61D38E ("render done" flag+event wait inside
-the build) while the render thread waits inside the drain for more work. Diagnosed
-from OUTSIDE with a new scratchpad thread-dump tool (Wow64GetThreadContext) on two
-live hang specimens - identical signature both times. Start-state gating is
-falsified: a frame-id-consumed gate and a queue-counters-idle gate both ran at full
-doubled rate (260 pairs/s, 520 presents/s) and both still hung - the lost-wakeup race
-lives inside the concurrent window of the second frame. The wait site is now fully
-decoded (ENGINE_NOTES "Render-done wait decoded") including a single-threaded
-inline-drain fallback path in the same function - three concrete fix candidates are
-queued in Next steps. Stereo stays command-gated and experimental; NOT safe for a
-headset session yet (hangs would strand the user mid-play).
+**The blocker, run to ground across the whole evening**: continuous doubling
+deadlocks the THREADED renderer's event protocol (five runs, 16 s - 3.5 min, always
+the same thread-dump signature: game thread in an INFINITE "render done" wait at
+exe+0x61D38E vs render thread waiting inside the drain). Everything tried and its
+verdict, all live: start-state gating (frame-id gate, ring-counter gate) - runs full
+rate, does not prevent the hang; watchdog event re-kicks - detection is reliable but
+kicking a desynced protocol CRASHES the drain (now detect-only by default, `reentry
+wdkick on` to re-arm); poking the flush-point's first mode check `[0x1375BD4]` - it
+is a 500-reference GIsEditor-class global, not a render toggle, crashed the next
+load (dead end, recorded). **The breakthrough: `-onethread`** (Steam launch arg,
+rides the steam://run URL) boots the engine's NATIVE single-threaded renderer - no
+pump, no queue thread, no events, deadlock class structurally gone, and FASTER than
+threaded in the test scene (630-710 fps vs ~530). Stereo on that substrate ran clean
+at 194 pairs/s for ~23k pairs, then hit the ONE remaining defect: a rare crash at
+drain+0x33 (fault addr 0x40 - a null object's +0x40 field, the recurring session-5
+signature). Minidumps preserved in `%LOCALAPPDATA%\BioshockVR\crash\`
+(bvr_20260724_181619.dmp is the onethread-stereo specimen). Stereo stays
+command-gated experimental; NOT headset-safe until the null-deref is fixed.
 
 **Nothing reached headset-testable state this session** (the stereo pipeline is
 mechanically proven flat but deadlock-blocked; AER remains the working in-headset
@@ -199,23 +204,19 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **Break the stereo deadlock (next session's opener - the ONLY blocker between the
-   in-tree `reentry stereo` and headset-testable full-rate stereo).** The wait site is
-   fully decoded (ENGINE_NOTES "Render-done wait decoded": flush-point fn ~0x61D340,
-   `if ([queue+8]==0) WaitForSingleObject([queue+0x10]+4, INFINITE)` - INFINITE +
-   auto-reset + flag-then-wait = event theft under two frames/tick). Candidates, in
-   recommended order:
-   a. MinHook the flush-point function while stereo is on; reimplement it as a
-      bounded-wait + flag-repoll loop (immune to theft; behavior identical otherwise).
-   b. Watchdog thread in our DLL: detect the double-wait signature (game thread parked
-      at that RVA > 100 ms while stereo active) and SetEvent `[queue+0x10]+4` to
-      unstick - recovery rather than prevention, good as a belt-and-braces layer.
-   c. Investigate the single-threaded fallback in the same function (it calls the
-      drain INLINE on the game thread when `[mgr+0x50]` says non-threaded): forcing
-      that mode during stereo removes the cross-thread protocol entirely - likely a
-      perf hit, possibly the most robust path. Measure.
-   Then: the 5-min soak that kept failing, the 10-min PLAY test, and the first
-   in-headset stereo checklist (VD + camera mode + `reentry stereo on`).
+1. **Fix the onethread-stereo null-deref (next session's opener - the LAST blocker
+   before headset-testable full-rate stereo).** Open
+   `%LOCALAPPDATA%\BioshockVR\crash\bvr_20260724_181619.dmp` (cdb/windbg or python
+   minidump lib) against the Debug PDB + game exe: the faulting instruction at
+   BioshockHD.exe+0x61CB13 (drain+0x33) with registers names the object that was
+   NULL (its +0x40 field faulted). Then either guard/skip that state in the second
+   pass, or null-check-hook the drain head, or find what transient engine state
+   (streaming? RT swap?) leaves the null and gate pass 2 on it. Substrate is
+   `-onethread` (TESTING.md recipe; deadlock class gone, faster than threaded, tags
+   and capture already mode-agnostic). Watchdog stays detect-only. Then: 5-min soak,
+   10-min PLAY test, and the first in-headset stereo checklist (VD + camera mode +
+   `reentry stereo on`). Threaded-mode deadlock work is PARKED - onethread makes it
+   moot unless a reason to return appears.
 2. **Stereo pipeline polish once stable**: xr-frame-per-pair pacing (currently every
    present does a full xrWaitFrame cycle - halves game tick under a headset; wait once
    per pair instead), HUD-in-stereo decision, world-scale/IPD calibration pass
@@ -284,6 +285,18 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (`vr::sr_push_eye`), per-present eye capture into the AER swapchain pair,
   mono/AER paths untouched. Flat-verified: offset frame renders (diff 2.0 vs 0.33
   floor), captures phase-consistent (0.35). ARCHITECTURE decision-log entry written.
+- **(part 3, user go-ahead "let's do it") The fix hunt, every step live-tested**:
+  watchdog built (depth-gated stall detection + engine event re-kicks) - detection
+  perfect, recovery kicks CRASH desynced state (demoted to detect-only, `wdkick`
+  opt-in); flush-point head fully disassembled -> its first mode check `[0x1375BD4]`
+  turned out to be a 500-ref GIsEditor-class global (poke = load crash, dead end
+  recorded); then the win - **`-onethread` launch arg boots the native
+  single-threaded renderer**: deadlock class structurally gone, FASTER than
+  threaded (630-710 fps), stereo doubles cleanly on top (194 pairs/s)... until a
+  rare drain+0x33 null-deref crash (~1 per 23k pairs, the recurring 0x40-fault
+  signature). Minidump preserved - next session symbolizes it. Eye tags moved to
+  the build detour (mode-agnostic ordering). Session truly wrapped here: game
+  closed, 5 code commits + docs pushed.
 - **(part 2) The deadlock hunt**: five continuous runs hung (16 s - 3.5 min).
   Built hangdump.py (outside-process Wow64 thread dump) - two specimens show the
   IDENTICAL signature: game thread in WaitForSingleObject(INFINITE) at exe+0x61D38E
