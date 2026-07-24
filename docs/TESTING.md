@@ -51,6 +51,44 @@
 - **M6**: aim decouple - look left, shoot right, impacts follow the controller.
 - **M7/M8/M9**: hands track convincingly; wheels switch weapon+plasmid; HUD quad visible in stereo.
 
+## Synthetic gamepad (M5 `vrinput`) - flat verification
+
+The synthetic pad has two producers (OpenXR actions when a headset session is
+FOCUSED, and self-expiring seam test slots) composed over whatever the real
+XInput chain reports. Commands: `vrinput on|off|status`,
+`vrinput test stick l|r <x> <y> [holdMs]` (raw -32768..32767),
+`vrinput test trig l|r <0..255> [holdMs]`,
+`vrinput test press <A|B|X|Y|LB|RB|START|BACK|LS|RS|DU|DD|DL|DR> [holdMs]`,
+`vrinput test clear`. Holds self-expire inside the DLL (the seam polls at
+1 Hz); test slots only feed the game while `vrinput` is ON. The enable is
+STICKY across boots (marker file `%LOCALAPPDATA%\BioshockVR\vrinput.on`)
+because the game's one-shot boot probe runs before the first seam poll.
+Mid-session `vrinput on` works (the drive re-arms UseController and the
+UpdateInput pump immediately); the marker just also covers the boot probe.
+
+Verified flat procedure (2026-07-25, no physical pad connected):
+1. Game closed -> `.\tools\build.ps1 -Install` (BOTH DLLs are locked while
+   the game runs). Clear a stale `command.txt` before a controlled boot.
+2. Launch flat. Log must show `input: bridge registered with proxy seam`,
+   and on the first `vrinput on` frame
+   `input: game import slot ... hijacked` + `[b1r] input drive: armed`.
+3. Menu nav: `game-cmd "vrinput test press DD 150"` + game-shot - the
+   gameswf highlight moves (a 400 ms hold auto-repeats ~2 steps; use ~150 ms
+   for single steps). `press A` activates (CONTINUE loads the save), `press
+   B` backs out. The menu also flips to Xbox prompt icons (UseController).
+4. Gameplay: `vrinput test stick r 24000 0 1500` - the camera-loc heartbeat
+   yaw changes during the hold and stops when it expires.
+   `test stick l 0 32000 2000` - loc moves (NOT inside the bathysphere or
+   other scripted vehicles - movement is locked there by design).
+5. Passthrough: `vrinput off`, inject a stick - heartbeat must stay frozen,
+   `vrinput status` shows the packet counter frozen and the real result
+   (1167 = no pad) flowing again. `vrinput on` re-arms cleanly.
+6. `vrinput status` lane counters tell you WHERE input flows: `iat` is the
+   game's per-tick reads (healthy: ~2x present rate while armed), `proxy`
+   stays at the ~6 boot-probe calls (the Steam overlay eats that lane -
+   ENGINE_NOTES "Gamepad architecture"), xi14/xi13 are diagnostic hooks on
+   the system DLLs.
+
 ## Automated in-game testing (no human in the loop)
 
 - **Command seam**: the mod polls `%LOCALAPPDATA%\BioshockVR\command.txt` at 1 Hz on the game
