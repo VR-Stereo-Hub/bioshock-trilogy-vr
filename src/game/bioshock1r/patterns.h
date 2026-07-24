@@ -135,6 +135,27 @@ inline constexpr uint32_t kEventVtableRva = 0xE2D584;
 inline constexpr uint32_t kQueueEventAOffset = 0xC;
 inline constexpr uint32_t kQueueEventBOffset = 0x10;
 
+// Render-thread OBJECT global, sibling of the pump kick event above: the
+// scene build's tail gates its submit call on this being non-null
+// (ENGINE_NOTES scene-draw table, session 6). Under -onethread BOTH globals
+// stay NULL (the pump/queue thread is never created) - so "either non-null"
+// is the live THREADED-renderer detector (session 7: used to refuse stereo
+// on the deadlock/crash-prone threaded substrate, and for the mode tag in
+// the reentry heartbeat).
+inline constexpr uint32_t kRenderThreadObjRva = 0x13566CC;
+
+// Drain-head layout (session-7 minidump forensics + disk disasm of the head
+// at kDrainRva): after EnterCriticalSection([this+8]+4) the drain loads the
+// submitted-frame context from [this+0xC] (drain+0x30) and immediately
+// dereferences its +0x40 viewport member (drain+0x33; virtual call through
+// [+0x40] at vtbl+0xEC follows). All three 2026-07-24 drain+0x33 crash dumps
+// show the SAME state: faulting thread = the render PUMP (ret 0x61D21E),
+// ESI = [this+0xC] = NULL, fault addr 0x40 - a pump woken with NO pending
+// frame (watchdog kick or desynced-protocol stray wake; THREADED mode only).
+// The guard: while doubling, a drain entered with the slot empty is skipped
+// outright - with no frame there is nothing to consume.
+inline constexpr uint32_t kQueueFrameCtxOffset = 0xC;
+
 // Render-mode override: the flush-point function (entry 0x61D260, `ret 8`;
 // full head disasm 2026-07-24) picks threaded vs single-threaded rendering
 // per call through a decision chain whose FIRST check is this static global

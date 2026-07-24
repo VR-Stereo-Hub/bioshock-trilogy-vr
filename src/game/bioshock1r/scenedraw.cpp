@@ -82,6 +82,9 @@ std::atomic<int>   g_dumpRemaining{0};  // per-call submit dump lines left
 // each nested submit pushes its eye tag to core/vr for per-Present capture.
 std::atomic<bool>  g_stereo{false};
 std::atomic<uint32_t> g_stereoSkips{0}; // second calls skipped (render stalled)
+// Drains skipped by the empty-slot guard (session-7 forensics: entering the
+// drain with [this+0xC] == NULL is the recurring drain+0x33 crash).
+std::atomic<uint32_t> g_drainGuardSkips{0};
 // Deadlock watchdog (session 6): the doubled render strands the engine's
 // command-queue event protocol - game thread parked mid-build waiting for
 // "render done" while the render thread waits for more work; a lost wakeup
@@ -242,6 +245,22 @@ bool read_u32_guarded(const void* addr, uint32_t* out) {
     }
 }
 
+// Live render-mode detector (session-7 forensics). The threaded renderer's
+// pump kick event and render-thread object globals are both created at boot
+// and stay NULL under -onethread - either non-null means the pump/queue
+// protocol (the deadlock class AND the empty-wake drain crash class) is
+// live. All three 2026-07-24 drain+0x33 minidumps were threaded-mode pump
+// crashes, including the run mislabeled "onethread" (the launch arg had not
+// taken; the pump thread is in the dump) - so stereo now refuses this
+// substrate by default and the heartbeat tags the mode, making a silent
+// mislaunch impossible to miss.
+bool render_is_threaded() {
+    uint32_t ev = 0, obj = 0;
+    read_u32_guarded(g_imageBase + patterns::kPumpKickEventPtrRva, &ev);
+    read_u32_guarded(g_imageBase + patterns::kRenderThreadObjRva, &obj);
+    return ev != 0 || obj != 0;
+}
+
 // SetEvent on an engine event OBJECT (vtable-checked; HANDLE at obj+4).
 // Returns true if a handle was actually signaled.
 bool kick_engine_event(uint32_t objAddr, const char* name) {
@@ -376,10 +395,11 @@ void heartbeat(uint32_t beatTid) {
     uint32_t calcIn = g_calcInside.load(std::memory_order_relaxed);
     uint32_t calcOut = g_calcOutside.load(std::memory_order_relaxed);
     uint64_t presents = bvr::d3d11_hook::present_count();
-    BVR_LOG("[reentry] drain=%u/s flush=%u/s build=%u/s submit=%u/s "
+    BVR_LOG("[reentry] mode=%s drain=%u/s flush=%u/s build=%u/s submit=%u/s "
             "(nested=%u) 2nd=%u/s presents=%u/s "
             "calcview in=%u out=%u/s call1=%uus call2=%uus beatTid=%u "
-            "calcTid=%u callers=%X,%X,%X,%X%s",
+            "calcTid=%u guardskips=%u callers=%X,%X,%X,%X%s",
+            render_is_threaded() ? "MT" : "1T",
             drains - g_beatDrain, flushes - g_beatFlush,
             builds - g_beatBuild, submits - g_beatSubmit,
             g_submitNested.load(std::memory_order_relaxed),
@@ -389,6 +409,7 @@ void heartbeat(uint32_t beatTid) {
             g_call1Us.load(std::memory_order_relaxed),
             g_call2Us.load(std::memory_order_relaxed), beatTid,
             g_lastCalcTid.load(std::memory_order_relaxed),
+            g_drainGuardSkips.load(std::memory_order_relaxed),
             g_callerRvas[0].load(std::memory_order_relaxed),
             g_callerRvas[1].load(std::memory_order_relaxed),
             g_callerRvas[2].load(std::memory_order_relaxed),
@@ -721,6 +742,31 @@ void __fastcall SubmitDetour(void* ecx, void* edx, FVec3* loc, FRot3* rot,
 
 void __fastcall DrainDetour(void* self, void* edx) {
     uint32_t tid = GetCurrentThreadId();
+    // Empty-slot guard (session-7 minidump forensics): the drain head loads
+    // the submitted-frame context from [this+0xC] and walks its +0x40 member
+    // three instructions in - entering with the slot NULL is the recurring
+    // drain+0x33 crash (a pump woken with no pending frame). While doubling
+    // is active, skip such a drain outright: no frame, nothing to consume.
+    // Skipped entries get their own counter and do NOT count as drains.
+    // Threaded-mode caveat (force-armed stereo only): the null read races the
+    // game thread's slot write, so a skip can eat an auto-reset wake - a
+    // possible stall, strictly better than the crash it replaces.
+    if (g_stereo.load(std::memory_order_relaxed) ||
+        g_doubleCall.load(std::memory_order_relaxed)) {
+        uint32_t frameCtx = 0;
+        if (read_u32_guarded(static_cast<const uint8_t*>(self) +
+                                 patterns::kQueueFrameCtxOffset,
+                             &frameCtx) &&
+            frameCtx == 0) {
+            uint32_t n =
+                g_drainGuardSkips.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (n <= 3)
+                BVR_LOG("[reentry] drain-guard: skipped empty-slot drain #%u "
+                        "(tid %u, [this+0xC]=0 - the drain+0x33 crash state)",
+                        n, tid);
+            return;
+        }
+    }
     int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
     if (depth == 0) g_activeTid.store(tid, std::memory_order_relaxed);
     g_drainEntries.fetch_add(1, std::memory_order_relaxed);
@@ -909,7 +955,7 @@ void handle_command(const char* args) {
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
         BVR_LOG("[reentry] command needs a verb: hook [build|submit|drain|flush]|"
-                "stereo on|off|unhook|on|off|pulse|yaw|dump|arg3|latchclear|"
+                "stereo on|force|off|unhook|on|off|pulse|yaw|dump|arg3|latchclear|"
                 "reset|status|kick|calcstack");
         return;
     }
@@ -981,9 +1027,20 @@ void handle_command(const char* args) {
             BVR_LOG("[reentry] second-pass yaw = %.1f deg", deg);
         }
     } else if (strcmp(verb, "stereo") == 0) {
-        if (strncmp(rest, "on", 2) == 0) {
+        bool force = strncmp(rest, "force", 5) == 0;
+        if (strncmp(rest, "on", 2) == 0 || force) {
             if (g_poisoned.load(std::memory_order_relaxed)) {
                 BVR_LOG("[reentry] stereo refused: POISONED ('reentry reset' to clear)");
+            } else if (!force && render_is_threaded()) {
+                // Session-7 forensics: every stereo deadlock AND every
+                // drain+0x33 crash specimen was the threaded pump protocol;
+                // the "onethread" crash run was a mislaunch (pump thread in
+                // the dump). Refuse the substrate instead of re-proving it.
+                BVR_LOG("[reentry] stereo refused: THREADED renderer live "
+                        "(pump globals non-null) - the deadlock + empty-wake "
+                        "crash substrate. Relaunch with -onethread (verify: "
+                        "hexdump base+13566C4 = zeros), or 'reentry stereo "
+                        "force' for experiments");
             } else if (install_slot(g_build, patterns::kSceneBuildRva,
                                     reinterpret_cast<void*>(&BuildDetour),
                                     patterns::kSceneBuildPrologue,
@@ -992,10 +1049,21 @@ void handle_command(const char* args) {
                                     reinterpret_cast<void*>(&SubmitDetour),
                                     patterns::kFrameSubmitPrologue,
                                     sizeof patterns::kFrameSubmitPrologue)) {
+                // Drain empty-slot guard: insurance, not a gate - stereo
+                // still arms if this install fails.
+                if (!install_slot(g_drain, patterns::kDrainRva,
+                                  reinterpret_cast<void*>(&DrainDetour),
+                                  patterns::kDrainPrologue,
+                                  sizeof patterns::kDrainPrologue))
+                    BVR_LOG("[reentry] drain-guard install FAILED - stereo "
+                            "continues unguarded");
                 ensure_watchdog();
                 g_stereo.store(true, std::memory_order_relaxed);
-                BVR_LOG("[reentry] STEREO ON: every build doubled L/R, submits "
-                        "tagged for per-present eye capture (watchdog armed)");
+                BVR_LOG("[reentry] STEREO ON (%s render): every build doubled "
+                        "L/R, submits tagged for per-present eye capture "
+                        "(watchdog + drain-guard armed)",
+                        render_is_threaded() ? "THREADED - forced, crash-prone"
+                                             : "single-threaded");
             }
         } else {
             g_stereo.store(false, std::memory_order_relaxed);
@@ -1043,13 +1111,16 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: stereo=%d(skips=%u,wdkicks=%u) build=%s submit=%s drain=%s "
+        BVR_LOG("[reentry] status: mode=%s stereo=%d(skips=%u,wdkicks=%u,"
+                "guardskips=%u) build=%s submit=%s drain=%s "
                 "flush=%s double=%d pulse=%d yaw=%.1f dump=%d arg3=%08X "
                 "latchclear=%d poisoned=%d kick=%d builds=%u submits=%u drains=%u "
                 "flushes=%u seconds=%u draws2=%u",
+                render_is_threaded() ? "MT" : "1T",
                 g_stereo.load(std::memory_order_relaxed) ? 1 : 0,
                 g_stereoSkips.load(std::memory_order_relaxed),
                 g_watchdogKicks.load(std::memory_order_relaxed),
+                g_drainGuardSkips.load(std::memory_order_relaxed),
                 g_build.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_submit.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "on" : "off",
@@ -1108,7 +1179,8 @@ bool hook_live() {
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Reentry probe (DR-5)")) return;
-    ImGui::Text("hooks: build %s, submit %s, drain %s, flush %s%s%s",
+    ImGui::Text("render %s  hooks: build %s, submit %s, drain %s, flush %s%s%s",
+                render_is_threaded() ? "MT" : "1T",
                 g_build.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_submit.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
