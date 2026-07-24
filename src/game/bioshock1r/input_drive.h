@@ -23,4 +23,9 @@ void on_frame(uint64_t nowMs);
 // One status line for the adapter overlay section.
 void draw_debug_ui();
 
+// Resolve the live UWindowsClient / first UWindowsViewport (vtable-identity
+// checked, SEH-safe reads; heap objects - never cache). False while the
+// engine is not up. Game thread only. Shared with console_exec.
+bool resolve_engine_objects(void** client, void** viewport);
+
 } // namespace bvr::b1r::input_drive
