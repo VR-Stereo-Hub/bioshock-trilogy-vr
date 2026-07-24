@@ -201,6 +201,31 @@ inline constexpr uint32_t kForceNonThreadedRenderRva = 0x1375BD4;
 inline constexpr uint32_t kNumHwThreadsRva = 0x11B69FC;
 inline constexpr uint32_t kThreadDivisorRva = 0x11B7A00;
 
+// The flush-point FUNCTION itself (session-7 decision-chain decode; every
+// byte re-confirmed by a capstone disk walk 2026-07-24 session 8): entry
+// 0x61D260, `ret 8` = 2 stack args (arg1 = scene object, arg2 = 16-dword
+// view group), ECX DEAD at entry (the prologue's `8B 4D 0C` loads arg2 into
+// it). Body: mgr = [kRenderMgrGlobalRva]; arg1 -> [mgr+0xC]; arg2's 16
+// dwords -> [mgr+0x10..0x4C]; decision chain -> eax; [mgr+0x50] = eax;
+// [mgr+0x54] = 1; eax==0 -> `call drain(ECX=mgr)` then STRAIGHT to the
+// epilogue (no post-drain work - verified), else the queue hand-off (the
+// 0x61D38E deadlock wait). The structural `reentry 1t`: MinHook this entry
+// and force the inline branch in the detour - the hw-thread numerator is
+// never touched, so its OTHER quotient-family consumers (load-path site
+// 0x4D0E24 - the 19:54 loader crash) see the true core count, and the
+// inline behavior is confined to exactly the per-frame scene flush.
+inline constexpr uint32_t kFlushPointRva = 0x61D260;
+inline constexpr uint8_t kFlushPointPrologue[7] = {0x55, 0x8B, 0xEC, 0x51,
+                                                   0x8B, 0x4D, 0x0C};
+// Render-manager fields the flush-point writes (mgr is also the drain's
+// `this` - kMgrSceneSlotOffset IS kQueueFrameCtxOffset, the slot the drain
+// guard null-checks).
+inline constexpr uint32_t kMgrSceneSlotOffset = 0xC;    // arg1 stored here
+inline constexpr uint32_t kMgrViewGroupOffset = 0x10;   // arg2 copy 0x10..0x4C
+inline constexpr uint32_t kMgrViewGroupDwords = 16;
+inline constexpr uint32_t kMgrThreadedFlagOffset = 0x50; // 0 = inline drain
+inline constexpr uint32_t kMgrFlushSeenOffset = 0x54;    // stamped 1 per flush
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)
