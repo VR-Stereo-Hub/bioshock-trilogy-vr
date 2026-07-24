@@ -293,12 +293,69 @@ discrete; no mid-map streaming transitions observed). Mitigations shipped: `1t o
 refuses while the pump globals are still null (menu = the next thing is a load),
 its ON log warns to `1t off` before any save load / level transition, and pass 2
 doubles ONLY builds arriving from the gameplay caller (kSceneBuildGameplayRetRva
-0x850EF0) so no doubling can ever run inside a load path. STRUCTURAL FIX QUEUED
-(next session): MinHook the flush-point 0x61D260 and force its fully-decoded
-inline branch ourselves (copy args to mgr, stamp mode, call the drain) - the
-numerator stays untouched, loaders see the true core count, and the inline
-behavior is confined to exactly the per-frame scene flush. Needs load-crossing
-soak tests before it replaces the poke.
+0x850EF0) so no doubling can ever run inside a load path. STRUCTURAL FIX SHIPPED (session 8 -
+see below); the poke is retained as `reentry 1tpoke` (NOT load-safe, kept
+as a fallback/diagnostic only).
+
+**Structural 1t SHIPPED and the LOAD HAZARD CLOSED (session 8) - the
+flush-point hook.** The flush-point (0x61D260) is now MinHooked; the detour
+`FlushPointDetour` reproduces the byte-confirmed INLINE branch itself and the
+hw-thread numerator is never touched, so the quotient family's load-path
+consumers (0x4D0E24 etc.) always see the true core count. Full disk disasm
+(capstone, 2026-07-24 session 8) confirmed the branch exactly:
+- prologue `55 8B EC 51 8B 4D 0C` (push ebp; mov ebp,esp; push ecx; mov
+  ecx,[ebp+0xC]=arg2), then `mov eax,[ebp+8]=arg1`, `mov esi,[0x1356590]`=mgr;
+- `[mgr+0xC]=arg1`; sixteen `mov` pairs copy arg2's 16 dwords to
+  `[mgr+0x10..0x4C]`;
+- the decision chain writes eax (0=inline); `[mgr+0x50]=eax`, `[mgr+0x54]=1`;
+- `test eax,eax; jne threaded`: inline path is `mov ecx,esi; call 0x61CAE0`
+  (drain, ret site 0x61D367) then the epilogue `pop esi; mov esp,ebp; pop
+  ebp; ret 8` - NOTHING after the drain, so forcing inline drops no work;
+- the threaded path (eax!=0) is `mov esi,[esi+4]`=queue then the racy
+  flag-then-INFINITE-wait at 0x61D371/0x61D38E (the deadlock site).
+The detour: when `g_forceInline` is armed and `mgr=[0x1356590]` is non-null,
+it does exactly the inline block above (`[mgr+0xC]=scene`; copy 16 dwords;
+`[mgr+0x50]=0`; `[mgr+0x54]=1`; call the drain THROUGH its hooked target
+address so the empty-slot guard + telemetry stay in the path) and returns;
+mgr null (pre-world) or a fault falls through to / disarms cleanly (SEH,
+poison on fault). Constants: patterns.h `kFlushPointRva`,
+`kFlushPointPrologue`, `kMgr{SceneSlot,ViewGroup,ThreadedFlag,FlushSeen}Offset`.
+Expected + confirmed: the drain's heartbeat caller RVA reads inside
+bioshockvr.dll (the detour's call site) instead of 0x61D367 - not a bug.
+
+**Load-crossing soak - PASSED, hazard closed (session 8, flat).** With
+`reentry 1t on` (hook) and `reentry stereo on` armed, ALL of these ran clean,
+zero crashes / zero new dumps / guardskips 0 throughout: (1) in-game save
+load via LOAD; (2) quit-to-main-menu teardown (a full level unload - camera
+returns to the attract cam); (3) new-game load (Bink intro -> in-water
+intro); (4) the bathysphere DESCENT into Rapture (a real multi-map streaming
+transition - loc crossed +75000 UU with 1t forced the whole way); stereo
+re-engaged on arrival. The session-7 poke crashed a loader thread on step 1;
+the hook survives every transition because the numerator global is untouched.
+Because of this, `reentry 1t on` (hook mode) no longer refuses at the menu -
+pre-world arming is inert (the detour falls through while mgr is null) and
+menu arming is proven. The menu refusal + off-before-load warnings now live
+only on `reentry 1tpoke` (the legacy poke).
+
+**Stereo performance envelope (session 8, focused flat):** lighthouse spawn
+225 pairs/s; Welcome-to-Rapture arrival (heavier indoor geometry) ~81 pairs/s
+= 162 presents/s sustained (79-83 typ, one transient dip to 62), eye-offset
+img-diff 6.5 vs a 0.28 phase-consistent floor. Both scenes clear M4's 72
+pairs/s (144 presents/s) target. A dedicated COMBAT profile is still open
+(needs a combat save; queued).
+
+**One-toggle "VR stereo" (session 8).** `vrstereo on|off` (top-level command,
+`reentry vrstereo ...`, and the overlay "VR stereo" checkbox) sequences
+structural 1t -> `vr::set_camera_mode(true)` -> stereo on, reversing on off;
+sticky across loads (nothing disarms on a transition; the pass-2
+gameplay-caller gate idles doubling through load-path builds and stereo
+re-engages when gameplay builds resume). The overlay checkbox posts a
+request that the game thread applies from `note_calcview`, OUTSIDE any hooked
+call (MinHook installs must not run mid-build/mid-drain). Flat-verified: one
+`vrstereo on` at the MAIN MENU armed all three (log: `VRSTEREO READY`), a
+CONTINUE-load carried straight into Rapture with stereo doubling live and no
+re-arm, and `vrstereo off` restored mode=MT / build==presents / drain back on
+the render thread.
 
 **Session-7 fixes (scenedraw.cpp / patterns.h):** (1) `render_is_threaded()`
 mirrors the chain's static config (pump infra exists AND editor global clear AND

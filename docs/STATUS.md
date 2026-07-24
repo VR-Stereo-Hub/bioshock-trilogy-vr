@@ -2,17 +2,38 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-24, session 7)
+## Current state (2026-07-24, session 8)
 
-**M4 rung 2 (SequentialReentry stereo) had its FIRST IN-HEADSET TEST and PASSED the
-core criteria: real per-eye parallax at full rate, depth correct, world scale good
-(user: "pretty good and working as intended").** Follow-up (a), head-motion eye
-weirdness, was fixed the same evening by xr-frame-per-pair pacing and **USER-VERIFIED
-in a second headset session: "a looot better... comfortable now and not weird on the
-eyes."** Remaining from that session: a SMALL head-motion bobbing (user: "nothing
-major, not that noticeable") - parked BY THE USER'S CHOICE for the end-of-project
-polish phase (recorded in M9). (b) HUD-in-both-eyes still unobserved (spawn has no
-HUD) - open M9 item. Also hardened a load-path crash found while iterating (below).
+**The 1t LOAD HAZARD is CLOSED and stereo is now one sticky toggle - the last sharp
+edge from session 7 is gone (all flat-verified).** Single-threading is STRUCTURAL:
+`reentry 1t on` MinHooks the flush-point (0x61D260, every byte re-confirmed by a
+capstone disk disasm) and reproduces its decoded INLINE branch in the detour (copy
+args to the render manager, stamp mode, call the drain through its guarded target),
+leaving the hw-thread numerator global UNTOUCHED so its load-path consumers see the
+true core count. **Load-crossing soak PASSED** with `1t` + `stereo` both armed: an
+in-game save load, a quit-to-main-menu teardown, a new-game load, AND the bathysphere
+DESCENT into Rapture (a real multi-map streaming transition) - zero crashes, zero new
+dumps, guardskips 0 throughout, stereo re-engaging on arrival. The session-7 poke
+crashed a loader on the first of those; the hook survives all four. Because of that,
+`1t on` (hook mode) no longer refuses at the menu, and the off-before-load warnings
+now live only on the legacy `reentry 1tpoke` (the poke, kept as a fallback).
+
+**Everything folds into `vrstereo on|off`** - a top-level seam command, `reentry
+vrstereo ...`, and an overlay "VR stereo" checkbox - that sequences structural 1t +
+VR camera mode + stereo (reversing on off) and is STICKY across loads. Flat-proven:
+one `vrstereo on` at the MAIN MENU armed all three (`VRSTEREO READY`), a CONTINUE-load
+carried straight into Rapture with stereo doubling live and NO re-arm, and `vrstereo
+off` restored mode=MT / build==presents / drain back on the render thread. Perf in the
+Rapture arrival scene (heavier indoor geometry): ~81 pairs/s = 162 presents/s sustained
+(eye-offset img-diff 6.5 vs 0.28 phase-consistent floor); lighthouse spawn 225 pairs/s
+- both clear M4's 72-pairs/s bar.
+
+**Session 7 (still current where not superseded):** M4 rung 2 had its FIRST IN-HEADSET
+TEST and PASSED - real per-eye parallax at full rate, depth correct, world scale good
+("pretty good and working as intended"). Head-motion eye weirdness was fixed by
+xr-frame-per-pair pacing and USER-VERIFIED ("a looot better... comfortable now"). A
+SMALL head-motion bobbing is PARKED to M9 by the user's choice. HUD-in-both-eyes still
+unobserved (spawns have no HUD) - open M9 item.
 
 **The session-6 blocker dissolved under forensics.** The minidump work (hand-parsed
 MiniDumpNormal parser + capstone drain-head disasm, scratchpad) proved the
@@ -262,28 +283,23 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. ~~USER: second in-headset stereo test~~ - DONE 2026-07-24, pair pacing
-   user-verified ("a looot better, comfortable now"). Small head-motion bobbing
-   noted and parked by the user for end-of-project polish (M9).
-2. **Structural 1t fix (replaces the global poke)**: MinHook the flush-point
-   0x61D260 and force its decoded inline branch ourselves (copy args to mgr, stamp
-   mode, call drain) so loaders see the true core count and loads need no
-   off/on dance. Load-crossing soak required. (ENGINE_NOTES "1t load hazard".)
-3. **Remaining stereo polish**: HUD-in-stereo decision (renders in both eyes;
-   verify on a HUD-bearing spawn, M9 ties in), world-scale/IPD calibration pass
-   (parked M9 IPD item). Consider a single "VR stereo" overlay toggle wrapping
-   1t + stereo.
-4. Performance envelope: 168-471 pairs/s across save-spawn scenes on the inline
-   substrate; VR needs 144/s for 72 Hz per eye. Profile a heavy scene (combat,
-   effects) before committing.
-5. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
+1. **USER: in-headset test of the one-toggle flow** - checklist at the bottom of the
+   session-8 log. Load a save, `vrstereo on` (or the overlay checkbox) once, headset
+   on; loads no longer need any off/on dance. Confirm stereo/comfort match session 7
+   and that a mid-play save load stays stereo. This is the M4 30-min done-when run.
+2. **Combat-scene perf check**: session-8 flat perf was measured in spawn/arrival
+   scenes (~81-225 pairs/s, both > 72). Get a combat save and confirm pairs/s stays
+   over 72 under effects (the only untested M4 perf case).
+3. **Remaining stereo polish**: HUD-in-stereo decision (renders in both eyes; verify
+   on a HUD-bearing spawn, M9 ties in), world-scale/IPD calibration pass (parked M9).
+4. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
    recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
-6. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+5. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-7. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
+6. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
    clicks sometimes only highlight a gameswf item - VK_RETURN activates it, TESTING.md).
-8. Optional anytime: Steam Link / SteamVR cross-check.
-9. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
+7. Optional anytime: Steam Link / SteamVR cross-check.
+8. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
    test first, world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
 
 ## Open questions / blockers
@@ -301,6 +317,78 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-24 - Session 8
+
+- **Step 0 - flush-point disk disasm (capstone, scratchpad).** Re-walked
+  0x61D260..0x61D400 from the exe: prologue `55 8B EC 51 8B 4D 0C`, `ret 8`,
+  and the INLINE branch confirmed exactly (arg1 -> [mgr+0xC]; arg2's 16 dwords
+  -> [mgr+0x10..0x4C]; decision chain -> eax; [mgr+0x50]=eax, [mgr+0x54]=1;
+  eax==0 -> `mov ecx,esi; call 0x61CAE0` then straight to the epilogue - no
+  post-drain work). Matched the session-7 decode byte for byte.
+- **Structural 1t SHIPPED (commit f27a0d0).** `FlushPointDetour` reproduces
+  that inline block itself when `g_forceInline` is armed and mgr is non-null,
+  calling the drain THROUGH its hooked target (guard + telemetry stay live),
+  SEH-guarded (poison + auto-disarm on fault), falls through to the original
+  when mgr is null (pre-world). `reentry 1t` repointed at it (no poke); legacy
+  poke moved to `reentry 1tpoke`. render_is_threaded() honors the override;
+  heartbeat gains `forced/s`, status/overlay gain `1t=hook|poke|off`. Constants
+  in patterns.h (kFlushPointRva/prologue/kMgr* offsets), full derivation in
+  ENGINE_NOTES "Structural 1t".
+- **Flat verification - baseline + soak PASSED.** In gameplay: `1t on` (hook)
+  -> mode=1T, drain caller RVA inside bioshockvr.dll (expected), presents
+  continue, numerator still 12. `stereo on` -> 239 pairs/s = 478 presents/s all
+  on the game thread, guardskips 0, eye-offset img-diff 1.96 vs 0.40 floor,
+  phase-consistent 0.40; ~3-min stationary soak (200 heartbeats, 0 anomalies).
+- **LOAD-CROSSING - THE HAZARD IS CLOSED.** With 1t + stereo armed end to end:
+  (1) in-game save load via LOAD; (2) quit-to-main-menu teardown; (3) new-game
+  load (Bink intro -> in-water intro); (4) the bathysphere DESCENT into Rapture
+  (real multi-map streaming transition, loc crossed +75000 UU with 1t forced
+  the whole way). Zero crashes, zero new dumps, guardskips 0, stereo re-engaged
+  on arrival. The session-7 poke crashed a loader on step 1; the hook survives
+  all four because the numerator global is untouched.
+- **One-toggle `vrstereo on|off` SHIPPED (commit 1a821a0)** - top-level command,
+  `reentry vrstereo`, and overlay "VR stereo" checkbox; sequences 1t -> camera
+  mode -> stereo, reverses on off, sticky across loads. Overlay checkbox posts a
+  request the game thread applies from note_calcview (outside hooked calls - MH
+  installs must not run mid-build). New core setter `vr::set_camera_mode`. The
+  1t menu refusal was DROPPED (load-proven; pre-world arming is inert).
+  Flat-verified: `vrstereo on` at the MENU armed all three (`VRSTEREO READY`),
+  a CONTINUE-load carried into Rapture with stereo doubling live and no re-arm,
+  `vrstereo off` restored mode=MT / build==presents / drain on the render thread.
+- **Perf profile:** Rapture arrival scene ~81 pairs/s = 162 presents/s sustained
+  (79-83 typ, one dip to 62), eye-offset 6.5; lighthouse spawn 225 pairs/s. Both
+  clear the 72-pairs/s (144 presents/s) M4 target. Combat scene still untested
+  (needs a combat save).
+- Harness notes: PowerShell `mouse_event` dx/dy must be signed `int` (negative
+  turns threw UInt32 cast errors); reused game-hover.ps1 (real WM_MOUSEMOVE for
+  gameswf highlight) + game-move.ps1 (relative turn + held key) in scratchpad.
+  The user drove the game to the lighthouse/Rapture at points to save time.
+- Session ends: game closed, command.txt cleared, DLLs current, all commits
+  pushed. New streamlined in-headset checklist below.
+
+**In-headset stereo checklist (session 8 - the ONE-TOGGLE flow; loads no
+longer need any off/on dance):**
+1. Quest 3 on, Virtual Desktop connected (VDXR runtime), Streamer running.
+2. Launch BioShock Remastered flat from Steam (no launch args). If the
+   "failed to properly shutdown... revert Options?" dialog appears, click No.
+3. `.\tools\game-cmd.ps1 "vrstereo on"` (or tick "VR stereo" in the F10
+   overlay's Reentry section). The log must say `VRSTEREO READY (1t=1
+   stereo=1)`. You can do this at the MENU or in gameplay - either is fine now.
+4. Load your save via CONTINUE (or LOAD). Stereo stays armed across the load and
+   re-engages automatically in-game - no commands needed. (At the static menu
+   there is no doubling; it starts once gameplay builds run.)
+5. Headset on. Verify: real per-eye parallax at full rate, depth correct, world
+   solid on head turns, comfort as in session 7 (pair pacing is on; toggle "SR
+   pair pacing" in the overlay for a live A/B).
+6. Loads are now safe with it armed - load another save or cross a level
+   transition freely; stereo persists. EXPECTED (not failures): HUD in both eyes
+   on a HUD-bearing spawn, IPD/world-scale not yet calibrated.
+7. Bail-out any time: `.\tools\game-cmd.ps1 "vrstereo off"` (full recovery to
+   flat threaded) or just kill the game - saves are safe. NOTE: command.txt
+   re-applies at boot; the session cleared it, but if you send `vrstereo on`
+   and then quit, clear it (or send `vrstereo off`) before the next launch so
+   it does not re-arm at the menu.
 
 ### 2026-07-24 - Session 7
 

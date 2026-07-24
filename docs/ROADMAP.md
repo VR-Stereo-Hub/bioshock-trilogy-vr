@@ -129,10 +129,22 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       depth correct, world scale good. Head-motion eye weirdness fixed by xr-frame-per-pair
       pacing, USER-VERIFIED same day ("a looot better... comfortable now"). HUD still renders
       in both eyes (HUD-off + reticle = M9 tie-in); small head-motion bobbing parked to M9
-      polish by user choice.*
+      polish by user choice.
+      2026-07-24 (session 8): 1t LOAD HAZARD CLOSED - single-threading is now STRUCTURAL (the
+      flush-point 0x61D260 is hooked and its inline branch forced in the detour; hw-thread
+      global untouched, so loaders see the true core count). Load-crossing soak PASSED with
+      1t + stereo armed: save load, quit-to-menu, new game, and the bathysphere descent into
+      Rapture - zero crashes, guardskips 0, stereo auto-re-engaged. Collapsed into a single
+      `vrstereo on|off` toggle (top-level command + overlay checkbox) sequencing 1t + camera
+      mode + stereo, sticky across loads - flat-verified arming at the MENU and carrying
+      through a CONTINUE-load into Rapture with no re-arm. Perf: ~81 pairs/s (162 presents/s)
+      sustained in the Rapture arrival scene, 225 in the lighthouse spawn - both clear 72.*
 - [ ] Z3D depth-reproject fallback policy selectable in ImGui
 - [ ] **Done when:** true geometric stereo (wrench/railings show correct parallax), 72 fps at
       default renderScale, 30-min session without visual state corruption.
+      *Flat evidence in hand (session 8): >= 72 pairs/s met in two scenes; geometric stereo
+      user-verified in-headset (session 7). Left to tick: an in-headset 30-min session on the
+      one-toggle flow + a combat-scene perf check.*
 
 ## M5 - Motion controllers + menu interaction (~2 sessions)
 
