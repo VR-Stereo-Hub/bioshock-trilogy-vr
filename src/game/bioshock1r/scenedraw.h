@@ -40,6 +40,12 @@ void note_calcview();
 // True while any reentry hook is created AND enabled.
 bool hook_live();
 
+// M4 rung 2: true while SequentialReentry stereo is on (build hook live, not
+// poisoned). CalcViewDetour then renders pass 1 as the LEFT eye (cache the
+// driven camera, apply -IPD/2) and pass 2 as the RIGHT (replay the cached
+// base, +IPD/2) instead of the probe's yaw delta.
+bool stereo_active();
+
 // Read-only telemetry section for the overlay (control is commands-only).
 void draw_debug_ui();
 
