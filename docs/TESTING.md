@@ -118,6 +118,12 @@
   144 presents/s VR needs. SUPERSEDES the session-6 `-onethread` launch arg, which
   the remaster does not parse at all (menu-time verification artifact - the pump
   globals are always zero until the first world load).
+  **ORDERING RULE (session-7 19:54 loader crash): arm `1t on` only AFTER loading
+  into gameplay, and run `reentry 1t off` BEFORE loading another save or crossing
+  a level transition** - the hw-thread global has load-path consumers and a load
+  with the poke active crashed the loader thread. `1t on` now refuses at the
+  menu; pass 2 additionally never doubles load-path builds (gameplay-caller
+  gate). Structural fix (flush-point hook, no global poke) queued.
 - **Stereo substrate gate (session 7)**: `reentry stereo on` REFUSES to arm while
   the threaded renderer is live (deadlock + empty-wake crash substrate - all three
   2026-07-24 crash dumps). Run `reentry 1t on` first; `reentry stereo force`

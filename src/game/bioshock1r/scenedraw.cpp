@@ -571,8 +571,16 @@ void maybe_second_submit(void* ecx, void* edx, FVec3* loc, FRot3* rot,
 // the yaw enters via CalcViewDetour's second-pass path (g_secondPassTid).
 // Runs at depth 0 only, game thread.
 void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
-                        void* a4, uint32_t tid, uint32_t presentDelta) {
+                        void* a4, uint32_t tid, uint32_t presentDelta,
+                        uint32_t callerRva) {
     if (g_poisoned.load(std::memory_order_relaxed)) return;
+    // Gameplay-caller gate (session 7, 19:54 load crash): loads/transitions
+    // run the build from other call sites against half-built world state -
+    // never double those. Steady-state gameplay is the only doubling target.
+    if (callerRva != patterns::kSceneBuildGameplayRetRva) {
+        g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     bool stereo = g_stereo.load(std::memory_order_relaxed);
     bool want = false;
     bool isPulse = false;
@@ -678,10 +686,11 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
     if (depth == 0) g_activeTid.store(tid, std::memory_order_relaxed);
     uint32_t n = g_buildEntries.fetch_add(1, std::memory_order_relaxed) + 1;
-    note_caller(to_rva(_ReturnAddress()));
+    uint32_t callerRva = to_rva(_ReturnAddress());
+    note_caller(callerRva);
     if (n <= 2)
         BVR_LOG("[reentry] build fired #%u (tid %u, caller 0x%X, ecx %p, a1 %p)",
-                n, tid, to_rva(_ReturnAddress()), ecx, a1);
+                n, tid, callerRva, ecx, a1);
 
     uint32_t presentLow =
         static_cast<uint32_t>(bvr::d3d11_hook::present_count());
@@ -704,7 +713,8 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     g_call1Us.store(qpc_us(t0, t1), std::memory_order_relaxed);
 
     if (depth == 0)
-        maybe_second_build(ecx, edx, a1, a2, a3, a4, tid, presentDelta);
+        maybe_second_build(ecx, edx, a1, a2, a3, a4, tid, presentDelta,
+                           callerRva);
 
     if (!g_drain.enabled.load(std::memory_order_relaxed) &&
         !g_flush.enabled.load(std::memory_order_relaxed))
@@ -1101,9 +1111,20 @@ void handle_command(const char* args) {
         uint8_t* numAddr = const_cast<uint8_t*>(g_imageBase) +
                            patterns::kNumHwThreadsRva;
         if (strncmp(rest, "on", 2) == 0) {
+            uint32_t pumpEv = 0, pumpObj = 0;
+            read_u32_guarded(g_imageBase + patterns::kPumpKickEventPtrRva, &pumpEv);
+            read_u32_guarded(g_imageBase + patterns::kRenderThreadObjRva, &pumpObj);
             uint32_t cur = 0;
             if (g_savedNumHwThreads.load(std::memory_order_relaxed) != 0) {
                 BVR_LOG("[reentry] 1t already on");
+            } else if (pumpEv == 0 && pumpObj == 0) {
+                // Session-7 19:54 loader-thread crash: the hw-thread global
+                // has LOAD-PATH consumers - flipping it before/during a level
+                // load crashes the loader. Menu = the world does not exist
+                // yet = the next thing is a load. Arm only in gameplay.
+                BVR_LOG("[reentry] 1t refused: no world loaded yet - load into "
+                        "gameplay first (1t across a level load crashes the "
+                        "loader; 'reentry 1t off' before loading saves)");
             } else if (!install_slot(g_drain, patterns::kDrainRva,
                                      reinterpret_cast<void*>(&DrainDetour),
                                      patterns::kDrainPrologue,
@@ -1120,7 +1141,9 @@ void handle_command(const char* args) {
                 g_savedNumHwThreads.store(cur, std::memory_order_relaxed);
                 BVR_LOG("[reentry] 1t ON: hw-thread count %u -> 1, scene "
                         "flushes now drain INLINE on the game thread "
-                        "(drain-guard eats the pump's empty wakes)", cur);
+                        "(drain-guard eats the pump's empty wakes). WARNING: "
+                        "'reentry 1t off' BEFORE loading a save or crossing a "
+                        "level transition (load-path crash, session 7)", cur);
             }
         } else {
             uint32_t saved =
