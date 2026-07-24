@@ -278,22 +278,18 @@ inline constexpr uint32_t kViewportExecRva = 0x8525C0;
 inline constexpr uint32_t kClientExecRva = 0x850DE0;
 // UGameEngine::Exec (start via SEH-prologue walk from the SERVERTRAVEL /
 // SAVEGAME / GETMAXTICKRATE ParseCommand cluster 0x4C5D75..0x4C6324; common
-// epilogue 0x4C71C7, `ret 8`). Its unhandled-command tail forwards to the
-// master chain walker 0x3528C0 (engine, cmd, Ar) which reaches the player /
-// script-exec path - the entry that runs UnrealScript cheats.
-// UGameEngine::Exec expects `this` to be the FExec SUBOBJECT at engine+0x40
-// (the RTTI COL at offset 0x40; its body does `lea eax,[this-0x40]` to get
-// the real object, and both observed faults came from calling it with the
-// plain engine pointer). Its unhandled-command tail forwards to the chain
-// walker 0x3528C0 which reaches player/actor ScriptConsoleExec - the path
-// that runs UnrealScript cheats (givebioshockweapons etc).
+// epilogue 0x4C71C7, `ret 8`). Expects `this` to be the FExec SUBOBJECT at
+// engine+0x40 (the RTTI COL at offset 0x40; its body does `lea eax,[this-0x40]`
+// to reach the real object - calling it with the plain engine pointer faulted).
+// Its unhandled-command tail forwards to the chain walker 0x3528C0
+// (engine, cmd, Ar) which reaches the player/actor ScriptConsoleExec path.
 inline constexpr uint32_t kEngineExecRva = 0x4C5970;
 inline constexpr uint32_t kEngineExecThisOffset = 0x40; // FExec subobject
 // UObject::Exec is vtable slot 65 == byte offset 0x104 (verified on
 // UWindowsClient/UWindowsViewport/UGameEngine). The player-object entry that
-// would run script cheats (God/givebioshockweapons) needs its exact signature
-// reversed before it can be called safely - a naive slot-65 call unbalanced
-// the stack (session 9). Parked; external trainer used for test loadouts.
+// runs UnrealScript exec commands needs its exact signature reversed before it
+// can be called safely - a naive slot-65 call unbalanced the stack (session 9).
+// Parked M6 groundwork.
 inline constexpr uint32_t kEngineVtableRva = 0xE0DFF4; // RTTI .?AVUGameEngine@@ (offset 0)
 // FOutputDevice contract (from the Logf helper 0x6E7AC0): vtbl+0x10 is a
 // 2-arg log-filter (return 0 = suppress -> the helper skips formatting and

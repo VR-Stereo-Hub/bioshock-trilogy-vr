@@ -33,7 +33,7 @@ Verified on disk (this machine):
   **HorizontalFOVLock=True**, `UseMultithreadedRendering=False` (single render thread by
   default); no player-FOV ini setting exists. Input runs through Unreal axis aliases
   (aBaseX/aLookUp) in DefUser.ini. `.debug` files in `ContentBaked\pc\System` are plaintext
-  console-command scripts (cheat/test commands demonstrably supported).
+  console-command scripts - a reference for the engine's command vocabulary.
 - Content: 12 compressed UnrealScript `.U` packages (`Build\Final\BakedScripts\pc`, Unreal
   signature 0x9E2A83C1, package version 142, licensee 56; ShockGame.u = 92 MB), 161 `.bsm` maps,
   `.blk` bulk textures, FSB5 sound banks, `ConfigINI.IBF` bundle (contains Weapons.ini,
@@ -81,10 +81,10 @@ No native VR mod (stereo + motion controls) exists for any BioShock game. UEVR d
   Installer ([method article](https://www.nexusmods.com/bioshock/articles/1)) - property/texture
   patch injection (full repack impossible). Not needed for the VR mod's core but useful for
   experiments.
-- **Console**: `-allowconsole` launch option, Tab in game; `SetFOV`, `FreeCamera`, `ToggleHUD`,
-  `God`, `SloMo`… ([command guide](https://steamcommunity.com/sharedfiles/filedetails/?id=842210214)).
-  Mixed community reports that some newer builds disable it - verify on first launch; fallback
-  is User.ini binds at `%AppData%\Roaming\BioshockHD\Bioshock`.
+- **Console**: legacy `-allowconsole` + Tab, plus engine commands like `SetFOV`, `ToggleHUD`.
+  RESOLVED session 9: the in-game console is compiled out of this Steam build and key-bound
+  commands are inert (verified live), so the mod issues engine commands by calling the
+  engine's own Exec dispatchers directly (`exec` seam - ENGINE_NOTES "Gamepad architecture").
 - Community: BioShock Modding Discord; Nexus Mods bioshock section.
 
 ## VR delivery (Quest 3)
