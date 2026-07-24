@@ -53,6 +53,20 @@ void LogSwapchainInfo(IDXGISwapChain* swapchain) {
 HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags) {
     if (!g_loggedFirstPresent.exchange(true)) {
         LogSwapchainInfo(swapchain); // DR-2: confirms the D3D11 path is live
+        // Frame inspector hooks onto the GAME's immediate context (fail-soft;
+        // one attempt). Its vtable is the one real draws dispatch through -
+        // the throwaway device's context vtable is neither shared nor
+        // outlives its device (see FindVTable note).
+        ID3D11Device* device = nullptr;
+        if (SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&device))) && device) {
+            ID3D11DeviceContext* context = nullptr;
+            device->GetImmediateContext(&context);
+            if (context) {
+                frame_inspector::install(*reinterpret_cast<void***>(context));
+                context->Release();
+            }
+            device->Release();
+        }
     }
     // Frame boundary first: finalize any armed dump, then suppress our own
     // overlay/VR draws for the rest of the detour so they never enter a dump.
@@ -75,9 +89,13 @@ HRESULT WINAPI ResizeBuffersDetour(IDXGISwapChain* swapchain, UINT bufferCount,
 }
 
 // kiero technique: make a throwaway device + swapchain purely to read the
-// shared vtable, then hook its Present/ResizeBuffers slots. Also harvests the
-// immediate-context vtable (same shared-vtable trick) for the frame inspector.
-void** g_contextVtable = nullptr;
+// shared vtable, then hook its Present/ResizeBuffers slots.
+// NOTE: the frame inspector does NOT take the throwaway context's vtable -
+// context vtables are not shared across devices the way the swapchain's is
+// (releasing the dummy freed the vtable we captured -> install-time AV at
+// bioshockvr.dll+0x30BE5, and its Draw slots never matched the game's
+// context, which is why dumps had SetRT events but zero draws). The game's
+// REAL immediate context is grabbed at first Present instead.
 
 bool FindVTable(void** outPresent, void** outResizeBuffers) {
     WNDCLASSEXW wc{};
@@ -117,7 +135,6 @@ bool FindVTable(void** outPresent, void** outResizeBuffers) {
         void** vtable = *reinterpret_cast<void***>(swapchain);
         *outPresent = vtable[8];         // IDXGISwapChain::Present
         *outResizeBuffers = vtable[13];  // IDXGISwapChain::ResizeBuffers
-        if (context) g_contextVtable = *reinterpret_cast<void***>(context);
         ok = true;
     } else {
         BVR_LOG("dummy swapchain creation failed: hr=0x%08X", hr);
@@ -145,15 +162,6 @@ bool install() {
         BVR_LOG("MH_CreateHook failed for swapchain hooks");
         return false;
     }
-    // Frame inspector (fail-soft: a failure here must not disable VR/overlay).
-    // Create its hooks BEFORE the single MH_EnableHook(MH_ALL_HOOKS) below so
-    // they arm in the same pass; they no-op until armed.
-    if (g_contextVtable) {
-        frame_inspector::install(g_contextVtable);
-    } else {
-        BVR_LOG("[gfx] no context vtable harvested - frame inspector disabled");
-    }
-
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         BVR_LOG("MH_EnableHook failed");
         return false;
