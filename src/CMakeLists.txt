@@ -23,6 +23,8 @@ add_library(bioshockvr SHARED
     core/hooks/d3d11_hook.h
     core/hooks/pattern_scan.cpp
     core/hooks/pattern_scan.h
+    core/input/xinput_bridge.cpp
+    core/input/xinput_bridge.h
     core/ui/overlay.cpp
     core/ui/overlay.h
     core/vr/openxr_runtime.cpp

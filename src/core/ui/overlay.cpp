@@ -2,6 +2,7 @@
 
 #include "core/framework/framework.h"
 #include "core/gfx/frame_inspector.h"
+#include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/igame_adapter.h"
@@ -74,6 +75,8 @@ void DrawUi() {
                 1000.0f / ImGui::GetIO().Framerate);
     ImGui::Separator();
     vr::draw_debug_ui();
+    ImGui::Separator();
+    input::draw_debug_ui();
     if (auto* adapter = game::adapter()) {
         ImGui::Separator();
         adapter->drawDebugUi();
