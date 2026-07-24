@@ -209,3 +209,19 @@ runtime.
   timeout) - the engine's own event wait has a live-proven lost-wakeup race (two hangs); a poll
   cannot lose a wakeup, and with zero frames in flight the racy waiter never engages. The timeout
   doubles as the unfocused path: presents stop, doubling degrades to mono instead of stalling.
+- **2026-07-24 - Single-threaded substrate by hw-thread-count poke, not launch arg, flush
+  reimplementation, or client-bool poke.** The stereo double-render needs the renderer inline on
+  the game thread (the threaded pump protocol deadlocks under doubling and crashes on empty
+  wakes - session 6/7 evidence). Chosen: `reentry 1t on` pokes the engine's hardware-thread
+  numerator (patterns.h kNumHwThreadsRva) to 1 AFTER arming the drain empty-slot guard - the
+  flush-point's decision chain then selects its own native inline branch every frame, on the
+  engine's own code path. Rejected: the `-onethread` launch arg (not parsed by the remaster -
+  proven by string absence + a live pump thread with the arg on the command line); MinHook
+  reimplementation of the flush-point's inline branch (faithful-copy risk, and the submit's pump
+  kick would race our inline drain); poking the per-client "use render thread" bool at
+  [[scene+0x3DC]]+0x4C (heap object, must be re-found per boot; the static numerator is a
+  10-reference single-purpose pair consumed by seven copies of one test); poking the GIsEditor-
+  class global 0x1375BD4 (500+ refs, crashed loads - recorded dead end). The runtime poke leaves
+  the pump thread parked (submit stops firing in inline mono, so it is never kicked; any stray
+  wake hits the guard) - a boot-time poke that prevents pump creation entirely is queued as
+  polish, not correctness.

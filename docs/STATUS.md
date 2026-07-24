@@ -2,7 +2,59 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-24, session 6)
+## Current state (2026-07-24, session 7)
+
+**M4 rung 2 (SequentialReentry stereo) is FLAT-COMPLETE at full rate on a
+structurally deadlock-free substrate - READY FOR ITS FIRST IN-HEADSET TEST (the
+checklist is in the session-7 log entry and was handed to the user).**
+
+**The session-6 blocker dissolved under forensics.** The minidump work (hand-parsed
+MiniDumpNormal parser + capstone drain-head disasm, scratchpad) proved the
+drain+0x33 null-deref is the render PUMP thread entering the drain with the
+submitted-frame slot `[this+0xC]` NULL (fault addr 0x40 = its +0x40 viewport
+member; registers cross-check in all specimens) - and that ALL three evening
+crashes were THREADED-mode processes. The bigger surprise: **`-onethread` is not
+parsed by the remaster at all** (string absent from the image; the pump thread ran
+with the arg on the command line; the pump globals session 6 hexdumped are zero at
+the menu in EVERY mode - they are created at first world load). The "onethread
+substrate" never existed.
+
+**The real single-threaded switch was found and shipped.** Full decode of the
+flush-point decision chain (0x61D260, ENGINE_NOTES): every veto selects the INLINE
+drain; the ONLY route to the threaded pump hand-off is
+`[kNumHwThreadsRva]/[kThreadDivisorRva] > 1` (live 12/1 - a tight 10-reference
+pair, written once at startup, consumed by seven inlined copies of the same test).
+`reentry 1t on` arms the drain empty-slot guard, then pokes the numerator to 1:
+every scene flush drains INLINE on the game thread. Live-verified: heartbeat
+`mode=1T`, beatTid == calcTid, drain caller ret 0x61D367 (the inline call site),
+submit stops firing in mono, pump sleeps forever. Mono cost ~20% (413 vs 530
+presents/s) - irrelevant against the 144/s VR needs.
+
+**Stereo on that substrate, flat-verified end to end (all session 7):**
+`reentry 1t on` + `reentry stereo on` = every build doubled L/R at 168-471 pairs/s
+(scene-dependent; ~225 typical in the save spawn), presents EXACTLY 2x builds, all
+on the game thread, guardskips 0, no waits that can deadlock. Eye-offset render
+diff 2.03 mean vs 0.33 floor; consecutive captures phase-consistent (0.43). **5-min
+stationary soak + ~6.5 min of synthetic PLAY (13 clean WASD/mouse cycles navigating
+up the lighthouse stairs; the second pass was cut short by the session wrap, not by
+any defect) - zero faults, zero new dumps, zero watchdog events** (previous best
+under threaded stereo: 16 s-3.5 min to deadlock/crash). User's call 2026-07-24: no
+further flat passes needed - "everything looks good and the game was running
+smooth".
+
+**Defenses shipped so the threaded trap cannot recur silently:** `reentry stereo
+on` REFUSES a threaded substrate (`stereo force` for experiments);
+`render_is_threaded()` mirrors the engine's own decision chain; heartbeat/status/
+overlay carry a `mode=MT|1T` tag; the drain hook (auto-installed by `1t on` and
+`stereo on`) skips any empty-slot drain - the crash state - with a `guardskips`
+counter. Watchdog stays detect-only.
+
+**Known expected imperfections for the first headset test** (not failures):
+per-present xrWaitFrame pacing halves game tick under a headset (xr-frame-per-pair
+queued as polish), HUD renders in both eyes (M9 tie-in), IPD/world-scale not yet
+calibrated.
+
+## Previous state (2026-07-24, session 6)
 
 **DR-5 is DONE - the engine renders a second full frame per game tick under our control,
 flat-verified end to end.** The session-5 submit hypothesis was half right: hooking the
@@ -204,33 +256,28 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **Fix the onethread-stereo null-deref (next session's opener - the LAST blocker
-   before headset-testable full-rate stereo).** Open
-   `%LOCALAPPDATA%\BioshockVR\crash\bvr_20260724_181619.dmp` (cdb/windbg or python
-   minidump lib) against the Debug PDB + game exe: the faulting instruction at
-   BioshockHD.exe+0x61CB13 (drain+0x33) with registers names the object that was
-   NULL (its +0x40 field faulted). Then either guard/skip that state in the second
-   pass, or null-check-hook the drain head, or find what transient engine state
-   (streaming? RT swap?) leaves the null and gate pass 2 on it. Substrate is
-   `-onethread` (TESTING.md recipe; deadlock class gone, faster than threaded, tags
-   and capture already mode-agnostic). Watchdog stays detect-only. Then: 5-min soak,
-   10-min PLAY test, and the first in-headset stereo checklist (VD + camera mode +
-   `reentry stereo on`). Threaded-mode deadlock work is PARKED - onethread makes it
-   moot unless a reason to return appears.
-2. **Stereo pipeline polish once stable**: xr-frame-per-pair pacing (currently every
-   present does a full xrWaitFrame cycle - halves game tick under a headset; wait once
-   per pair instead), HUD-in-stereo decision, world-scale/IPD calibration pass
-   (ties into the parked M9 IPD item).
-3. Performance envelope: the stairs scene ran 520 presents/s doubled; VR needs 144/s
-   for 72 Hz per eye. Profile a heavy scene (combat, effects) before committing.
-4. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
+1. **USER: first in-headset full-rate stereo test** (checklist in the session-7 log
+   below). Report: parallax quality vs AER, depth direction, comfort, and whether
+   the halved game tick is tolerable. This gates everything downstream.
+2. **Stereo pipeline polish (based on headset verdict)**: xr-frame-per-pair pacing
+   (currently every present does a full xrWaitFrame cycle - halves game tick under a
+   headset; wait once per pair instead), HUD-in-stereo decision (renders in both
+   eyes today; M9 ties in), world-scale/IPD calibration pass (parked M9 IPD item).
+3. **1t hardening (optional)**: consider poking the hw-thread numerator at BOOT
+   (before renderer init) so the pump thread is never created at all - today's
+   runtime poke leaves it parked (harmless, guard-covered). Also consider wiring
+   `1t on` + `stereo on` into a single "VR stereo" toggle for the user.
+4. Performance envelope: 168-471 pairs/s across save-spawn scenes on the inline
+   substrate; VR needs 144/s for 72 Hz per eye. Profile a heavy scene (combat,
+   effects) before committing.
+5. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
    recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
-5. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+6. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-6. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
+7. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
    clicks sometimes only highlight a gameswf item - VK_RETURN activates it, TESTING.md).
-7. Optional anytime: Steam Link / SteamVR cross-check.
-8. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
+8. Optional anytime: Steam Link / SteamVR cross-check.
+9. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
    test first, world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
 
 ## Open questions / blockers
@@ -248,6 +295,73 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-24 - Session 7
+
+- **Minidump forensics closed the null-deref in one pass** (scratchpad mdparse.py -
+  hand-parsed MiniDumpNormal: streams, x86 contexts, module list, EBP walk +
+  ret-scan with module attribution; pdbsym.py - dbghelp symbolization of our DLL
+  frames; disasm.py - capstone disk walks). All three 2026-07-24 evening dumps
+  decoded: two drain+0x33 specimens fault on the render PUMP thread entering the
+  drain with `[this+0xC]` (submitted-frame slot) NULL; the third is the recorded
+  0x1375BD4-poke load crash at 0x741D7F. The "onethread" crash specimen had a live
+  pump thread + game thread parked in the deadlock wait inside a hooked build +
+  watchdog kick frames - a threaded-mode deadlock-then-kick crash, not an
+  onethread defect.
+- **Session-6's onethread substrate falsified live**: the arg rode the command
+  line into the process (WMI-verified) while the drain ran on a hot pump thread
+  (96 s CPU), and "onethread" is not in the exe's strings - never parsed. The
+  session-6 hexdump verification was a menu-time artifact: the pump globals are
+  zero before the first world load in EVERY mode (watched them flip 1T -> MT at
+  the save load, same boot).
+- **Fix #1 (commit bc1f575)**: drain empty-slot guard (skip `[this+0xC]==0`
+  drains - the crash state), stereo substrate gate (`stereo on` refuses threaded;
+  `force` overrides), `mode=MT|1T` heartbeat tag, forensic constants in
+  patterns.h. The gate proved itself the same session: it refused the first
+  post-load stereo attempt (mode had silently flipped to MT).
+- **The real single-threaded switch (commit 503a695)**: full flush-point decision
+  chain decode -> the hw-thread quotient pair (12/1, 10 refs total, 7 identical
+  inlined tests) is the only path to the threaded hand-off. `reentry 1t on` =
+  guard first, then poke numerator -> 1. Verified same boot: mode=1T,
+  beatTid==calcTid, drain caller 0x61D367 (inline site), submits stop in mono,
+  pump never kicked, guardskips 0. Presents 413/s mono (~20% under threaded).
+- **Stereo flat verification on the inline substrate - ALL PASSED**: 225 pairs/s
+  = 450 presents/s (range 141-532 across scenes), presents exactly 2x builds,
+  eye-offset diff 2.03 vs 0.33 floor, phase-consistent captures (0.43), 5-min
+  stationary soak (15/15 clean) + ~6.5 min synthetic PLAY in two passes (10 + 3
+  clean cycles; WASD/mouse navigation, camera climbed the lighthouse stairs,
+  21-35 mean img-diffs between cycles; pass 2 ended by the session wrap, not a
+  defect - user waved off further passes) - zero faults, zero new dumps, zero
+  watchdog detections. `stereo off` recovery instant (2nd=0, builds 1:1 with
+  presents, still inline). Previous best on the threaded substrate was
+  16 s-3.5 min to a hang or crash.
+- Harness lesson recorded: a stale `command.txt` re-applies at boot (the poller
+  saw session-6's "reentry stereo on" and armed everything at the menu) - clear
+  it or overwrite before launching for controlled runs.
+- Session ends with the first in-headset stereo checklist handed to the user
+  (also mirrored below), game closed, all commits pushed.
+
+**First in-headset full-rate stereo checklist (mirror of the session-7 handoff):**
+1. Quest 3 on, Virtual Desktop connected (VDXR runtime), Streamer running.
+2. Launch BioShock Remastered flat from Steam (no launch args needed).
+3. Load the save via CONTINUE; confirm the F10 overlay works.
+4. In PowerShell (repo root): `.\tools\game-cmd.ps1 "reentry 1t on"` - then check
+   the overlay/log shows `mode=1T` (or `render 1T` in the overlay reentry line).
+5. Enable "VR camera mode" in the overlay; confirm the layer line reads
+   `projection`.
+6. `.\tools\game-cmd.ps1 "reentry stereo on"` - the log must say
+   "STEREO ON (single-threaded render)". Put the headset on.
+7. Verify: real per-eye parallax at FULL rate (close one eye at a time - views
+   differ; no AER half-rate judder), depth not inverted, world solid on head
+   turns.
+8. EXPECTED imperfections (not failures): game tick roughly halves (xrWaitFrame
+   per present - polish queued), HUD visible in both eyes, IPD/world-scale not
+   calibrated.
+9. Bail-out: `.\tools\game-cmd.ps1 "reentry stereo off"` recovers instantly;
+   worst case kill the game - saves are safe. NOTE: command.txt re-applies at
+   boot - run `reentry stereo off` (or delete
+   `%LOCALAPPDATA%\BioshockVR\command.txt`) before quitting if you do not want
+   stereo to re-arm next launch.
 
 ### 2026-07-24 - Session 6
 
