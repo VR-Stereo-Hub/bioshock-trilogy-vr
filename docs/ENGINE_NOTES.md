@@ -117,10 +117,48 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
   retries on a 5 s cooldown from the Present hook - so connecting Virtual Desktop mid-game
   brings the session up without restarting the game.
 
-## RenderDoc frame map
+## D3D11 frame map (DR-3 - in-tree frame inspector; RenderDoc fallback unused)
 
-_(DR-3 - to be filled: pass order, scene color/depth RTs + formats, gameswf HUD draw
-fingerprint, view/proj constant-buffer slot + layout, scene-draw callstack.)_
+Captured 2026-07-24 with `core/gfx/frame_inspector` (one-shot full dumps via the
+`dumpframe full` seam command; lighthouse save spawn, 1920x1080, option fov 117 and a
+second dump with `gfov 137`). Dumps live in `%LOCALAPPDATA%\BioshockVR\framedump_*.txt`
+(game-derived - never committed). All RVAs are for build 2022-04-13.
+
+**Render targets (steady-state gameplay frame):**
+
+| RT | Size | DXGI format | Role (evidence) |
+|---|---|---|---|
+| T2 | 1920x1080 | 26 R11G11B10_FLOAT (RTV+SRV) | **main HDR scene color** - 86 draws, all depth-tested |
+| T1 | 1920x1080 | 45 D24_UNORM_S8_UINT (DSV) | **main depth/stencil** (T34 = its 44 R24X8 SRV view) |
+| T3/T4 | 960x540 | 26 / 45 | half-res HDR pass + own depth - MOST draws (108): particles/effects/water |
+| T0 | 1920x1080 | 28 R8G8B8A8_UNORM (RTV+SRV) | post-tonemap LDR; 71 draws incl. depth-tested forward bits |
+| T31/T32 | 1024x1024 | 40 D32_FLOAT / 41 R32_FLOAT | shadow map depth + color |
+| T37-T40 | 480x270 | 26 | quarter-res chains (bloom/downsample), no DSV |
+
+Census sanity (lifetime counters in the dump header): DrawIndexed/Draw both fire at
+hundreds-of-thousands scale; the game issues NO instanced draws at this spot.
+
+**View-projection constant buffer:** VS **b0**, combined world/view-projection matrix at
+**float offset 32-47 (bytes 128-191)** of the captured 256-byte window. Verified by fov
+A/B: cells 36/40/44 scale EXACTLY by `tan(117/2)/tan(137/2) = 0.6428` between the two
+dumps (proj m00 factor through a combined matrix; camera held still). This is the
+independent ground truth that rendered hfov == the UShockUserSettings option value, and
+the future patch point for asymmetric per-eye projections (post-v1 backlog).
+
+**Scene-draw entry (SequentialReentry candidate, DR-5):** function entry
+**RVA 0x61C600** (`55 8B EC` after `CC` padding, found by hexdump prologue walk-back).
+Evidence: its interior call-site cluster (return RVAs 0x61C931..0x61CA87 - the per-pass
+call sequence) appears in **84/86** main-scene draw stacks and in menu draw stacks.
+Callers: site 0x61CD0D (parent frame function) -> site 0x61D21E (root; also terminal in
+every menu-dump stack). Per-draw leaf helpers: 0x7661C7, 0x5D0131, 0x77DC1E.
+NOT yet hooked - typing/convention analysis (RET imm16) and the double-call probe are
+next-session work; derivation recipe if the build changes: dump a frame, histogram stack
+RVAs over the biggest depth-tested RT's draws, prologue-walk the cluster's lowest site.
+
+**HUD fingerprint (partial):** menu frames are pure gameswf - only SetRT ping-pong
+between T0-like LDR targets and NO depth-tested draws; in-game HUD draws land on the
+LDR target after the scene passes with no DSV bound. Good enough to segregate scene vs
+HUD for M9; exact shader/SRV fingerprint deferred until the HUD-capture milestone.
 
 ## UnrealScript findings
 
