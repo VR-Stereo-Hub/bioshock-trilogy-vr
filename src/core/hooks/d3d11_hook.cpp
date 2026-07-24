@@ -21,6 +21,7 @@ using ResizeBuffersFn = HRESULT(WINAPI*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI
 PresentFn g_origPresent = nullptr;
 ResizeBuffersFn g_origResizeBuffers = nullptr;
 std::atomic<bool> g_loggedFirstPresent{false};
+std::atomic<uint64_t> g_presentCount{0};
 
 void LogSwapchainInfo(IDXGISwapChain* swapchain) {
     DXGI_SWAP_CHAIN_DESC desc{};
@@ -51,6 +52,7 @@ void LogSwapchainInfo(IDXGISwapChain* swapchain) {
 }
 
 HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags) {
+    g_presentCount.fetch_add(1, std::memory_order_relaxed);
     if (!g_loggedFirstPresent.exchange(true)) {
         LogSwapchainInfo(swapchain); // DR-2: confirms the D3D11 path is live
         // Frame inspector hooks onto the GAME's immediate context (fail-soft;
@@ -169,6 +171,10 @@ bool install() {
     BVR_LOG("D3D11 swapchain hooks installed (Present @ %p, ResizeBuffers @ %p)",
             present, resizeBuffers);
     return true;
+}
+
+uint64_t present_count() {
+    return g_presentCount.load(std::memory_order_relaxed);
 }
 
 } // namespace bvr::d3d11_hook

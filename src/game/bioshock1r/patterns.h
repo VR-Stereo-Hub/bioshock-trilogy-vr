@@ -29,6 +29,26 @@ inline constexpr uint32_t kFovLiveOffset = 0xE0;
 inline constexpr uint32_t kUserSettingsVtableRva = 0xDA3878;  // .?AVUShockUserSettings@@
 inline constexpr uint32_t kUserSettingsHfovOffset = 0x8C;     // int32, degrees
 
+// Render command-queue functions (DR-5 / SequentialReentry). Derivation
+// (ENGINE_NOTES "Scene-draw architecture"): draw-callstack RVA histogram from
+// the frame inspector + byte-level prologue/RET walk via the hexdump seam
+// (2026-07-24, re-verified live session 5: vtable cmp imm == base+0xE2D584,
+// drain call rel32 at frameroot+0x129). Both are void __thiscall with ZERO
+// stack args (frame-root exits ret C3 at +0x151/+0x161; the drain's only
+// call site passes ecx with no pushes and no stack fixup). The frame root
+// never reads its ECX - all state comes from the static manager global.
+inline constexpr uint32_t kFrameRootRva = 0x61D0F0;
+inline constexpr uint32_t kDrainRva = 0x61CAE0;
+// Static render-manager global (frame-root prologue: A1 <va>; session-5
+// walk): [mgr+4] = command-queue object; [mgr+0x58] is stamped 1 at
+// frame-root entry; [queue+0x58] != 0 makes the root SKIP the drain call
+// (the latch the reentry probe can clear between double calls).
+inline constexpr uint32_t kRenderMgrGlobalRva = 0x1356590;
+inline constexpr uint32_t kQueueDrainGuardOffset = 0x58;
+// Expected first bytes (build-identity check before patching a prologue).
+inline constexpr uint8_t kFrameRootPrologue[5] = {0x55, 0x8B, 0xEC, 0x51, 0xA1};
+inline constexpr uint8_t kDrainPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

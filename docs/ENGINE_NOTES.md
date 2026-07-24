@@ -59,7 +59,7 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | `IDXGISwapChain::Present` (vtable, kiero-style dummy-device discovery) | frame boundary: XR pacing, overlay, mirror | skeleton in M0 |
 | `IDXGISwapChain::ResizeBuffers` | RT cache invalidation | skeleton in M0 |
 | `eventPlayerCalcView` | camera override (HMD pose, per-eye offsets) | **active** (DR-4: `game/bioshock1r/camera.cpp`, self-enabling MinHook) |
-| Scene-draw entry (unknown - find via RenderDoc callstack, DR-3) | SequentialReentry stereo | M4 |
+| Frame root RVA 0x61D0F0 (+ drain 0x61CAE0 fallback) | DR-5 reentry probe -> SequentialReentry stereo | **command-gated** (session 5: `game/bioshock1r/scenedraw.cpp`; exists only after a `reentry hook` seam command - default runs stay unhooked) |
 | GetPlayerViewPoint-equivalent used by fire traces (unknown) | decoupled controller aim | M6 |
 | Console-command dispatcher (unknown - FName-chain on command strings) | execConsole one-liners | M5/M6 |
 | XInputGetState (we ARE the proxy - no hook needed) | synthetic gamepad | M0 shim |
@@ -162,6 +162,37 @@ call. Next probe: command-gated hook on 0x61D0F0 - count CalcView invocations in
 (answers where view sampling happens), then locate the build-vs-drain boundary. Neither
 function is hooked yet. Derivation recipe if the build changes: `dumpframe full`,
 histogram stack RVAs over the biggest depth-tested RT's draws, prologue-walk the cluster.
+
+**Frame-root convention + structure (session 5, live hexdump walk; constants in
+`patterns.h`):**
+
+- Prologue `55 8B EC 51 A1 90 65 6D 11` - standard, first patchable boundary at 9 bytes
+  of complete position-independent instructions; hookable, and byte 0 was clean (no
+  foreign hook). Build identity re-verified: the class-check `cmp eax, imm32` immediate ==
+  base+0xE2D584, drain call `E8 C2 F8 FF FF` at +0x129 (0x61D219).
+- **Zero stack args, two exits, both plain `C3`** (epilogue `5E 8B E5 5D C3` at +0x14D and
+  +0x15D) -> the dummy-EDX `__fastcall(self, edx)` detour shape is exact. The next
+  function (0x61D260) is unrelated (2 args, `ret 8`).
+- **The root never reads ECX.** All state comes from a static render-manager global at
+  RVA **0x1356590**: `mgr = [global]`, queue object = `[mgr+4]`; the prologue stamps
+  `[mgr+0x58] = 1`; the drain call is guarded by `cmp [queue+0x58], 0` (skip-drain
+  latch - the reentry probe's `latchclear` target).
+- The drain call is bracketed by `push -1; push [obj+4]; call [IAT 0xBCF130]` pairs -
+  resolved live to **kernel32!WaitForSingleObject** (INFINITE waits on event handles held
+  by class-checked objects of the same vtable). Smells like cross-thread queue handoff
+  (double-buffered build/drain); the probe's thread-id telemetry decides.
+- Drain 0x61CAE0: SEH-frame prologue `55 8B EC 6A FF 68 ...` (`mov ebx, ecx` = __thiscall),
+  zero stack args by call-site evidence (`mov ecx, esi; call` with no pushes and no stack
+  fixup after). Hookable; used by the probe as a pass-through entry counter / crash
+  fallback only.
+
+**DR-5 probe tooling (session 5):** `game/bioshock1r/scenedraw.{h,cpp}`, all
+command-gated via the seam (`reentry hook|unhook|on|off|pulse|yaw <deg>|latchclear
+on|off|reset|status`). Detour telemetry at 1 Hz: root entries/s, presents-per-root,
+CalcView-inside-root vs outside (tid-attributed), both original-call durations (a ~0 us
+second call = the [queue+0x58] early-out), draw-census delta of the second call, distinct
+caller RVAs, drain entries. Second original call is SEH-guarded with a poison latch;
+CalcViewDetour runs only original+yaw-delta during the second pass.
 
 **HUD fingerprint (partial):** menu frames are pure gameswf - only SetRT ping-pong
 between T0-like LDR targets and NO depth-tested draws; in-game HUD draws land on the

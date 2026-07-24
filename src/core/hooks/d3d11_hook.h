@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace bvr::d3d11_hook {
 
 // Discovers the game's IDXGISwapChain vtable via a throwaway device/swapchain
@@ -9,5 +11,8 @@ namespace bvr::d3d11_hook {
 // If the game is running its D3D9 renderer instead, Present simply never
 // fires — the log will show "installed" but no "first Present" line.
 bool install();
+
+// Lifetime Present count (telemetry: presents-per-frame-root ratios etc.).
+uint64_t present_count();
 
 } // namespace bvr::d3d11_hook

@@ -605,4 +605,11 @@ void draw_debug_ui() {
     if (ImGui::Button("Dump next frame (full)")) arm(2);
 }
 
+uint64_t draw_call_census() {
+    return static_cast<uint64_t>(g_callCensus[CxDrawIndexed].load(std::memory_order_relaxed)) +
+           g_callCensus[CxDraw].load(std::memory_order_relaxed) +
+           g_callCensus[CxDrawIdxInst].load(std::memory_order_relaxed) +
+           g_callCensus[CxDrawInst].load(std::memory_order_relaxed);
+}
+
 } // namespace bvr::frame_inspector
