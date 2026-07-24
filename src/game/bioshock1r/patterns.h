@@ -32,21 +32,29 @@ inline constexpr uint32_t kUserSettingsHfovOffset = 0x8C;     // int32, degrees
 // Render command-queue functions (DR-5 / SequentialReentry). Derivation
 // (ENGINE_NOTES "Scene-draw architecture"): draw-callstack RVA histogram from
 // the frame inspector + byte-level prologue/RET walk via the hexdump seam
-// (2026-07-24, re-verified live session 5: vtable cmp imm == base+0xE2D584,
-// drain call rel32 at frameroot+0x129). Both are void __thiscall with ZERO
-// stack args (frame-root exits ret C3 at +0x151/+0x161; the drain's only
-// call site passes ecx with no pushes and no stack fixup). The frame root
-// never reads its ECX - all state comes from the static manager global.
-inline constexpr uint32_t kFrameRootRva = 0x61D0F0;
-inline constexpr uint32_t kDrainRva = 0x61CAE0;
-// Static render-manager global (frame-root prologue: A1 <va>; session-5
-// walk): [mgr+4] = command-queue object; [mgr+0x58] is stamped 1 at
-// frame-root entry; [queue+0x58] != 0 makes the root SKIP the drain call
-// (the latch the reentry probe can clear between double calls).
+// (2026-07-24), CORRECTED live in session 5: the function session 4 called
+// "frame root" (0x61D0F0) is a render-thread FLUSH/JOIN that never runs in
+// steady-state gameplay (pass-through hook: 0 entries over 70 s of play).
+// The real per-frame render entry is the DRAIN, entered exactly once per
+// Present (573/s == presents/s live) from the render-thread PUMP LOOP at
+// 0x61D1D0 (frameless `push esi` prologue - session 4's CC-55-8B-EC
+// prologue walk overshot it into 0x61D0F0). All void __thiscall, zero stack
+// args; the flush never reads its ECX.
+inline constexpr uint32_t kRenderFlushRva = 0x61D0F0; // flush/join, NOT per-frame
+inline constexpr uint32_t kDrainRva = 0x61CAE0;       // per-frame render entry
+inline constexpr uint32_t kPumpLoopRva = 0x61D1D0;    // render-thread main loop
+// Pump-loop internals (session-5 byte walk + live import resolution): it
+// registers GetCurrentThreadId() into the global below, then loops
+// WaitForSingleObject(INFINITE) -> drain -> SetEvent. [queue+0x58] != 0 is
+// the pump-loop EXIT condition (not a per-frame latch).
+inline constexpr uint32_t kRenderTidGlobalRva = 0x13784E4;
+// Static render-manager global (loaded via A1 in the flush prologue):
+// [mgr+4] = command-queue object (queue vtable RVA 0xE0DFD0, mgr vtable
+// 0xE1CF14, both live session 5); the flush stamps [mgr+0x58] = 1.
 inline constexpr uint32_t kRenderMgrGlobalRva = 0x1356590;
-inline constexpr uint32_t kQueueDrainGuardOffset = 0x58;
+inline constexpr uint32_t kQueueDrainGuardOffset = 0x58; // pump exit flag
 // Expected first bytes (build-identity check before patching a prologue).
-inline constexpr uint8_t kFrameRootPrologue[5] = {0x55, 0x8B, 0xEC, 0x51, 0xA1};
+inline constexpr uint8_t kRenderFlushPrologue[5] = {0x55, 0x8B, 0xEC, 0x51, 0xA1};
 inline constexpr uint8_t kDrainPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 
 struct Symbols {
