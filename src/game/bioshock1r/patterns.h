@@ -109,6 +109,17 @@ inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
 inline constexpr uint32_t kFrameIdPairRva = 0x13AF7E8;
 inline constexpr uint32_t kFrameIdSecondOffset = 0x10;
 
+// Command-ring producer/consumer cursors on the scene-build's `this` (the
+// queue object): the build's submit call site gates on
+// `[this+0x118] != [this+0x11C]` (ring non-empty -> submit). Equal = ring
+// idle. Session-6 hang thread-dump showed the engine's ring full/empty event
+// waits deadlocking under the double-render (game thread at exe+0x61D38E in
+// the build vs render thread inside the drain), so the second build call
+// additionally waits for cursor equality - an idle ring keeps those waits
+// from engaging.
+inline constexpr uint32_t kQueueRingProdOffset = 0x118;
+inline constexpr uint32_t kQueueRingConsOffset = 0x11C;
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

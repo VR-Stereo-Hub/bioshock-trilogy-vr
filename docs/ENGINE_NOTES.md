@@ -201,19 +201,35 @@ end-to-end:**
   enters frame; img-diff mean 7.7-7.9 vs 0.33 noise floor). `reentry off` recovers to
   1:1 instantly. Stability: ~3.5 min continuous clean (no faults, no visual drift
   across captures), then ONE hang (~124k doubled frames in; game thread stopped, kill
-  required). It struck during a SetForegroundWindow cycle - focus transitions pause
-  presenting and may race the doubled event protocol (unproven; alternatively a rare
-  stochastic lost wakeup). Production per-eye pacing must harden this: candidates are
-  waiting on the render-done event between the paired builds, or gating the second
-  build on the submit head's frame-consumed state instead of racing it.
+  required); a second hang followed ~1 min into the first stereo run.
+
+**Frame-pacing protocol decoded + the hang fixed (same day, later).** The submitted-
+frame block holds TWO frame-id dwords - `[0x13AF7E8]` and `[0x13AF7F8]` (+0x10), one
+per double-buffered frame slot - whose HIGH BIT is the completion flag (live dump in
+steady state: `0x8000043B` / `0x8000043C`, consecutive frame numbers, both consumed;
+loc floats at +4, rot ints at +0x14 of the same block mirror the live camera exactly).
+The submit head's `jg` guards are SIGNED compares, so a set high bit (negative value)
+never triggers the engine's wait; the wait path's `-1` compare is an init sentinel
+only (a first-guess wait-for-minus-one poll never released and throttled the game to
+the 20 ms timeout - 48 fps - before this was understood). The engine's own wait is
+event-based and has a lost-wakeup race - that race, engaged ~50% of the time by the
+doubled submit (call2 ~1.7 ms = the wait; pass-through submit ~60 us), is the hang
+mechanism. Fix (scenedraw `maybe_second_build`): before the second build call, POLL
+both frame ids until both high bits are set (pipeline fully drained, zero frames in
+flight - the racy engine waiter then never engages), bounded at 20 ms, skip the pass
+on timeout (also the graceful unfocused path: presents stop, doubling degrades to
+mono). A poll cannot lose a wakeup. Constants: patterns.h `kFrameIdPairRva` /
+`kFrameIdSecondOffset`. Throughput with the poll: ~266 pairs/s = 533 presents/s,
+unchanged from before the fix.
 - Phase note: PrintWindow captures consistently caught the SECOND (yawed) present of
   each pair - the pair's present order appears deterministic, which is promising for
   per-present eye attribution in the per-eye split.
 
 **DR-5 probe tooling (sessions 5-6):** `game/bioshock1r/scenedraw.{h,cpp}`, all
-command-gated via the seam (`reentry hook [build|submit|drain|flush]|unhook|on|off|
-pulse|yaw <deg>|dump <n>|arg3 <hex|off>|latchclear on|off|reset|status|kick on|off|
-calcstack`; default hook target = build). 1 Hz heartbeat: build/submit/drain/flush
+command-gated via the seam (`reentry hook [build|submit|drain|flush]|stereo on|off|
+unhook|on|off|pulse|yaw <deg>|dump <n>|arg3 <hex|off>|latchclear on|off|reset|status|
+kick on|off|calcstack`; default hook target = build; `stereo on` = the M4 rung-2 L/R
+double-render with eye-tagged capture, see ARCHITECTURE decision log). 1 Hz heartbeat: build/submit/drain/flush
 entries/s, submit-nested-in-build count, presents/s, CalcView in/out (tid-attributed),
 call durations, beat/calc tids, distinct caller RVAs. `dump <n>` logs per-submit-call
 arg telemetry (loc/rot raw+degrees, arg3 ptr + vtable RVA, presents-delta). Second
