@@ -45,6 +45,14 @@ constexpr float kSubmitRotUnitsPerDeg = 65536.0f / 360.0f;
 using SubmitFn = void(__fastcall*)(void* ecx, void* edx, FVec3* loc,
                                    FRot3* rot, void* arg3);
 
+// The scene BUILD root (kSceneBuildRva) is `ret 0x10` with a live ECX this
+// and 4 stack args; same fastcall-passthrough trick, 4 stack params. The
+// second call passes the ORIGINAL args through unchanged - the camera enters
+// via CalcView re-running inside the build (CalcViewDetour applies the yaw
+// during our second pass; see second_pass_for_current_thread).
+using BuildFn = void(__fastcall*)(void* ecx, void* edx, void* a1, void* a2,
+                                  void* a3, void* a4);
+
 const uint8_t* g_imageBase = nullptr;
 size_t g_imageSize = 0;
 
@@ -58,6 +66,7 @@ struct HookSlot {
 HookSlot g_drain{"drain"};
 HookSlot g_flush{"flush"};
 HookSlot g_submit{"submit"};
+HookSlot g_build{"build"};
 
 // Controls: command poller (game thread) writes, detour threads read.
 std::atomic<bool>  g_doubleCall{false};
@@ -76,6 +85,8 @@ std::atomic<uint32_t> g_lastExcRva{0};
 std::atomic<uint32_t> g_drainEntries{0};
 std::atomic<uint32_t> g_flushEntries{0};
 std::atomic<uint32_t> g_submitEntries{0};
+std::atomic<uint32_t> g_buildEntries{0};
+std::atomic<uint32_t> g_submitNested{0}; // submits seen at depth>0 (in build)
 std::atomic<uint32_t> g_secondCalls{0};
 std::atomic<uint32_t> g_activeTid{0};
 std::atomic<int>      g_activeDepth{0};
@@ -90,8 +101,8 @@ std::atomic<uint32_t> g_callerRvas[4]{};
 
 // Heartbeat bookkeeping - beat thread only (whichever detour beats).
 uint64_t g_lastBeatMs = 0;
-uint32_t g_beatDrain = 0, g_beatFlush = 0, g_beatSubmit = 0, g_beatSecond = 0,
-         g_beatCalcIn = 0, g_beatCalcOut = 0;
+uint32_t g_beatDrain = 0, g_beatFlush = 0, g_beatSubmit = 0, g_beatBuild = 0,
+         g_beatSecond = 0, g_beatCalcIn = 0, g_beatCalcOut = 0;
 uint64_t g_beatPresents = 0;
 
 // Submit (game) thread only: present count at the previous submit entry, for
@@ -162,6 +173,16 @@ bool call_submit_guarded(SubmitFn fn, void* ecx, void* edx, FVec3* loc,
     }
 }
 
+bool call_build_guarded(BuildFn fn, void* ecx, void* edx, void* a1, void* a2,
+                        void* a3, void* a4) {
+    __try {
+        fn(ecx, edx, a1, a2, a3, a4);
+        return true;
+    } __except (reentry_filter(GetExceptionCode(), GetExceptionInformation())) {
+        return false;
+    }
+}
+
 // Guarded arg snapshot (dump + double-submit): the pointers come straight
 // from game code - never trust them.
 bool copy_submit_args(const FVec3* loc, const FRot3* rot, FVec3* locOut,
@@ -216,6 +237,7 @@ void heartbeat(uint32_t beatTid) {
         g_beatDrain = g_drainEntries.load(std::memory_order_relaxed);
         g_beatFlush = g_flushEntries.load(std::memory_order_relaxed);
         g_beatSubmit = g_submitEntries.load(std::memory_order_relaxed);
+        g_beatBuild = g_buildEntries.load(std::memory_order_relaxed);
         g_beatSecond = g_secondCalls.load(std::memory_order_relaxed);
         g_beatCalcIn = g_calcInside.load(std::memory_order_relaxed);
         g_beatCalcOut = g_calcOutside.load(std::memory_order_relaxed);
@@ -228,15 +250,19 @@ void heartbeat(uint32_t beatTid) {
     uint32_t drains = g_drainEntries.load(std::memory_order_relaxed);
     uint32_t flushes = g_flushEntries.load(std::memory_order_relaxed);
     uint32_t submits = g_submitEntries.load(std::memory_order_relaxed);
+    uint32_t builds = g_buildEntries.load(std::memory_order_relaxed);
     uint32_t seconds = g_secondCalls.load(std::memory_order_relaxed);
     uint32_t calcIn = g_calcInside.load(std::memory_order_relaxed);
     uint32_t calcOut = g_calcOutside.load(std::memory_order_relaxed);
     uint64_t presents = bvr::d3d11_hook::present_count();
-    BVR_LOG("[reentry] drain=%u/s flush=%u/s submit=%u/s 2nd=%u/s presents=%u/s "
+    BVR_LOG("[reentry] drain=%u/s flush=%u/s build=%u/s submit=%u/s "
+            "(nested=%u) 2nd=%u/s presents=%u/s "
             "calcview in=%u out=%u/s call1=%uus call2=%uus beatTid=%u "
             "calcTid=%u callers=%X,%X,%X,%X%s",
             drains - g_beatDrain, flushes - g_beatFlush,
-            submits - g_beatSubmit, seconds - g_beatSecond,
+            builds - g_beatBuild, submits - g_beatSubmit,
+            g_submitNested.load(std::memory_order_relaxed),
+            seconds - g_beatSecond,
             static_cast<uint32_t>(presents - g_beatPresents),
             calcIn - g_beatCalcIn, calcOut - g_beatCalcOut,
             g_call1Us.load(std::memory_order_relaxed),
@@ -250,6 +276,7 @@ void heartbeat(uint32_t beatTid) {
     g_beatDrain = drains;
     g_beatFlush = flushes;
     g_beatSubmit = submits;
+    g_beatBuild = builds;
     g_beatSecond = seconds;
     g_beatCalcIn = calcIn;
     g_beatCalcOut = calcOut;
@@ -312,6 +339,10 @@ void maybe_second_call(HookSlot& slot, void* self, void* edx, uint32_t tid) {
 void maybe_second_submit(void* ecx, void* edx, FVec3* loc, FRot3* rot,
                          void* arg3, uint32_t tid) {
     if (g_poisoned.load(std::memory_order_relaxed)) return;
+    // The build slot owns the double-call controls while it is enabled
+    // (submit-alone double-calls are absorbed by the engine - live-verified
+    // 2026-07-24: presents did not double, the yawed camera never rendered).
+    if (g_build.enabled.load(std::memory_order_relaxed)) return;
     uint32_t filter = g_arg3Filter.load(std::memory_order_relaxed);
     if (filter &&
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg3)) != filter)
@@ -368,11 +399,95 @@ void maybe_second_submit(void* ecx, void* edx, FVec3* loc, FRot3* rot,
     }
 }
 
+// Second call of the scene build: original args passed through unchanged;
+// the yaw enters via CalcViewDetour's second-pass path (g_secondPassTid).
+// Runs at depth 0 only, game thread.
+void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
+                        void* a4, uint32_t tid) {
+    if (g_poisoned.load(std::memory_order_relaxed)) return;
+    bool want = false;
+    bool isPulse = false;
+    if (g_doubleCall.load(std::memory_order_relaxed)) {
+        want = true;
+    } else {
+        int pulses = g_pulseCount.load(std::memory_order_relaxed);
+        while (pulses > 0 &&
+               !g_pulseCount.compare_exchange_weak(pulses, pulses - 1,
+                                                   std::memory_order_relaxed)) {}
+        if (pulses > 0) { want = true; isPulse = true; }
+    }
+    if (!want) return;
+
+    uint32_t presentsBefore =
+        static_cast<uint32_t>(bvr::d3d11_hook::present_count());
+    uint32_t submitsBefore = g_submitEntries.load(std::memory_order_relaxed);
+    LARGE_INTEGER t2, t3;
+    QueryPerformanceCounter(&t2);
+    g_secondPassTid.store(tid, std::memory_order_relaxed);
+    bool ok = call_build_guarded(reinterpret_cast<BuildFn>(g_build.original),
+                                 ecx, edx, a1, a2, a3, a4);
+    g_secondPassTid.store(0, std::memory_order_relaxed); // also on fault path
+    QueryPerformanceCounter(&t3);
+    uint32_t call2Us = qpc_us(t2, t3);
+    g_call2Us.store(call2Us, std::memory_order_relaxed);
+    g_secondCalls.fetch_add(1, std::memory_order_relaxed);
+    if (!ok) {
+        g_poisoned.store(true, std::memory_order_relaxed);
+        g_doubleCall.store(false, std::memory_order_relaxed);
+        g_pulseCount.store(0, std::memory_order_relaxed);
+        BVR_LOG("[reentry] build second call FAULTED code=0x%08X rva=0x%X - "
+                "POISONED (hook stays pass-through; 'reentry reset' to clear)",
+                g_lastExcCode.load(std::memory_order_relaxed),
+                g_lastExcRva.load(std::memory_order_relaxed));
+    } else if (isPulse) {
+        // submitsD > 0 proves the second build re-submitted; presentsD needs
+        // a beat for the render thread to catch up - the auto-armed dump
+        // lines show it.
+        g_dumpRemaining.store(4, std::memory_order_relaxed);
+        BVR_LOG("[reentry] build pulse ok: call1=%uus call2=%uus yaw=%.1f "
+                "submitsD=%u presentsD=%u 2nd-pass calc hits=%u",
+                g_call1Us.load(std::memory_order_relaxed), call2Us,
+                g_secondYawDeg.load(std::memory_order_relaxed),
+                g_submitEntries.load(std::memory_order_relaxed) - submitsBefore,
+                static_cast<uint32_t>(bvr::d3d11_hook::present_count()) -
+                    presentsBefore,
+                g_secondPassHits.load(std::memory_order_relaxed));
+    }
+}
+
+void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
+                            void* a4) {
+    uint32_t tid = GetCurrentThreadId();
+    int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
+    if (depth == 0) g_activeTid.store(tid, std::memory_order_relaxed);
+    uint32_t n = g_buildEntries.fetch_add(1, std::memory_order_relaxed) + 1;
+    note_caller(to_rva(_ReturnAddress()));
+    if (n <= 2)
+        BVR_LOG("[reentry] build fired #%u (tid %u, caller 0x%X, ecx %p, a1 %p)",
+                n, tid, to_rva(_ReturnAddress()), ecx, a1);
+
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    reinterpret_cast<BuildFn>(g_build.original)(ecx, edx, a1, a2, a3,
+                                                a4); // never guarded
+    QueryPerformanceCounter(&t1);
+    g_call1Us.store(qpc_us(t0, t1), std::memory_order_relaxed);
+
+    if (depth == 0) maybe_second_build(ecx, edx, a1, a2, a3, a4, tid);
+
+    if (!g_drain.enabled.load(std::memory_order_relaxed) &&
+        !g_flush.enabled.load(std::memory_order_relaxed))
+        heartbeat(tid);
+    if (g_activeDepth.fetch_sub(1, std::memory_order_relaxed) == 1)
+        g_activeTid.store(0, std::memory_order_relaxed);
+}
+
 void __fastcall SubmitDetour(void* ecx, void* edx, FVec3* loc, FRot3* rot,
                              void* arg3) {
     uint32_t tid = GetCurrentThreadId();
     int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
     if (depth == 0) g_activeTid.store(tid, std::memory_order_relaxed);
+    else g_submitNested.fetch_add(1, std::memory_order_relaxed);
     g_submitEntries.fetch_add(1, std::memory_order_relaxed);
     note_caller(to_rva(_ReturnAddress()));
 
@@ -606,7 +721,7 @@ void handle_command(const char* args) {
     char verb[16] = {};
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
-        BVR_LOG("[reentry] command needs a verb: hook [submit|drain|flush]|"
+        BVR_LOG("[reentry] command needs a verb: hook [build|submit|drain|flush]|"
                 "unhook|on|off|pulse|yaw|dump|arg3|latchclear|reset|status|"
                 "kick|calcstack");
         return;
@@ -616,7 +731,8 @@ void handle_command(const char* args) {
 
     bool anyHook = g_drain.enabled.load(std::memory_order_relaxed) ||
                    g_flush.enabled.load(std::memory_order_relaxed) ||
-                   g_submit.enabled.load(std::memory_order_relaxed);
+                   g_submit.enabled.load(std::memory_order_relaxed) ||
+                   g_build.enabled.load(std::memory_order_relaxed);
 
     if (strcmp(verb, "hook") == 0) {
         if (strncmp(rest, "flush", 5) == 0) {
@@ -628,11 +744,16 @@ void handle_command(const char* args) {
             install_slot(g_drain, patterns::kDrainRva,
                          reinterpret_cast<void*>(&DrainDetour),
                          patterns::kDrainPrologue, sizeof patterns::kDrainPrologue);
-        } else { // default: the game-thread frame submit (the DR-5 seam)
+        } else if (strncmp(rest, "submit", 6) == 0) {
             install_slot(g_submit, patterns::kFrameSubmitRva,
                          reinterpret_cast<void*>(&SubmitDetour),
                          patterns::kFrameSubmitPrologue,
                          sizeof patterns::kFrameSubmitPrologue);
+        } else { // default: the scene BUILD root (the DR-5 seam)
+            install_slot(g_build, patterns::kSceneBuildRva,
+                         reinterpret_cast<void*>(&BuildDetour),
+                         patterns::kSceneBuildPrologue,
+                         sizeof patterns::kSceneBuildPrologue);
         }
     } else if (strcmp(verb, "unhook") == 0) {
         g_doubleCall.store(false, std::memory_order_relaxed);
@@ -640,6 +761,7 @@ void handle_command(const char* args) {
         disable_slot(g_drain);
         disable_slot(g_flush);
         disable_slot(g_submit);
+        disable_slot(g_build);
     } else if (strcmp(verb, "on") == 0) {
         if (!anyHook) {
             BVR_LOG("[reentry] on refused: no hook enabled");
@@ -706,9 +828,11 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: submit=%s drain=%s flush=%s double=%d pulse=%d "
-                "yaw=%.1f dump=%d arg3=%08X latchclear=%d poisoned=%d kick=%d "
-                "submits=%u drains=%u flushes=%u seconds=%u draws2=%u",
+        BVR_LOG("[reentry] status: build=%s submit=%s drain=%s flush=%s double=%d "
+                "pulse=%d yaw=%.1f dump=%d arg3=%08X latchclear=%d poisoned=%d "
+                "kick=%d builds=%u submits=%u drains=%u flushes=%u seconds=%u "
+                "draws2=%u",
+                g_build.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_submit.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_flush.enabled.load(std::memory_order_relaxed) ? "on" : "off",
@@ -720,6 +844,7 @@ void handle_command(const char* args) {
                 g_latchClear.load(std::memory_order_relaxed) ? 1 : 0,
                 g_poisoned.load(std::memory_order_relaxed) ? 1 : 0,
                 g_kickSampling.load(std::memory_order_relaxed) ? 1 : 0,
+                g_buildEntries.load(std::memory_order_relaxed),
                 g_submitEntries.load(std::memory_order_relaxed),
                 g_drainEntries.load(std::memory_order_relaxed),
                 g_flushEntries.load(std::memory_order_relaxed),
@@ -753,12 +878,14 @@ void note_calcview() {
 bool hook_live() {
     return g_drain.enabled.load(std::memory_order_relaxed) ||
            g_flush.enabled.load(std::memory_order_relaxed) ||
-           g_submit.enabled.load(std::memory_order_relaxed);
+           g_submit.enabled.load(std::memory_order_relaxed) ||
+           g_build.enabled.load(std::memory_order_relaxed);
 }
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Reentry probe (DR-5)")) return;
-    ImGui::Text("hooks: submit %s, drain %s, flush %s%s",
+    ImGui::Text("hooks: build %s, submit %s, drain %s, flush %s%s",
+                g_build.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_submit.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_flush.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
@@ -769,8 +896,9 @@ void draw_debug_ui() {
                 g_arg3Filter.load(std::memory_order_relaxed),
                 g_secondCalls.load(std::memory_order_relaxed),
                 g_lastSecondDraws.load(std::memory_order_relaxed));
-    ImGui::Text("submits %u  drains %u  flushes %u  calcview in/out %u/%u  "
-                "2nd-pass hits %u",
+    ImGui::Text("builds %u  submits %u  drains %u  flushes %u  calcview in/out "
+                "%u/%u  2nd-pass hits %u",
+                g_buildEntries.load(std::memory_order_relaxed),
                 g_submitEntries.load(std::memory_order_relaxed),
                 g_drainEntries.load(std::memory_order_relaxed),
                 g_flushEntries.load(std::memory_order_relaxed),

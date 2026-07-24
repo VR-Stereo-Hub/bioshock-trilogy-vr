@@ -72,6 +72,28 @@ inline constexpr uint8_t kFrameSubmitPrologue[10] = {0x55, 0x8B, 0xEC, 0x51,
                                                      0x64, 0xA1, 0x2C, 0x00,
                                                      0x00, 0x00};
 
+// Game-thread scene BUILD root - the function that builds the render command
+// queue and (at its tail, site 0x4CDD85) calls the frame submit above.
+// Derivation (2026-07-24 session 6): the live submit hook logged gameplay
+// caller ret RVA 0x4CDD8A; disk-image disassembly (capstone) walked backwards
+// to the enclosing entry - past a decoy SEH function at 0x4CCD20 that a
+// CC-preceded 55-8B-EC scan finds first; the real boundary is the 11-byte CC
+// padding run ending at 0x4CCE6F (the session-5 "frameless prologue" lesson
+// again: this entry starts `push ebx`, not `push ebp`). Aligned-stack MSVC
+// prologue (`push ebx; mov ebx,esp; sub esp,8; and esp,-0x10`), then an SEH
+// frame; `ret 0x10` = 4 stack args ([ebx+8..0x14]); ECX = live this (stored
+// to [ebp-0x80]; its +0x118/+0x11C ring positions gate the submit call);
+// stack arg1 = object whose +0x48 the tail reads. EDX not read before the
+// first write observed - fastcall passthrough detour covers either way.
+// Discovered AFTER live evidence that double-calling the SUBMIT alone is
+// absorbed (presents did not double, yawed camera never rendered): the view
+// data is baked into the queue during THIS function, so SequentialReentry
+// must re-enter here.
+inline constexpr uint32_t kSceneBuildRva = 0x4CCE70;
+inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
+                                                   0xEC, 0x08, 0x83, 0xE4,
+                                                   0xF0};
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

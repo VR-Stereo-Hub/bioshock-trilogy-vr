@@ -114,7 +114,7 @@ float* fov_ptr(void* pc) {
 //   strscan <text>  membases  dumpframe [full]
 // DR-5 reentry probe (routes to game/bioshock1r/scenedraw; command-gated -
 // nothing is hooked without these):
-//   reentry hook [submit|drain|flush] (default submit - the DR-5 seam)
+//   reentry hook [build|submit|drain|flush] (default build - the DR-5 seam)
 //   reentry unhook  reentry on|off  reentry pulse  reentry yaw <deg>
 //   reentry dump <n> (per-call submit arg telemetry)
 //   reentry arg3 <hex|off> (double-submit call-site filter)
