@@ -189,7 +189,12 @@ inline constexpr uint32_t kForceNonThreadedRenderRva = 0x1375BD4;
 // wait, deadlock class structurally unreachable. The pump thread stays
 // alive and gets kicked by the submit each frame; it wakes into an empty
 // frame slot, which the drain-hook empty-slot guard turns into a logged
-// skip (this is why `reentry 1t on` arms the drain hook BEFORE poking).
+// skip (this is why `reentry 1tpoke on` arms the drain hook BEFORE poking).
+// SUPERSEDED (session 8) by the flush-point hook (kFlushPointRva) as the
+// default `reentry 1t`: hooking the flush and forcing its inline branch
+// leaves THIS numerator untouched, so the pair's load-path consumers
+// (0x4D0E24) see the true core count - the poke's load hazard is gone.
+// This poke is retained only as the `reentry 1tpoke` fallback/diagnostic.
 // Session-6 postscript: the `-onethread` launch arg this pair replaces is
 // NOT PARSED by the remaster at all (no such string in the image) - the
 // "onethread substrate" was a menu-time artifact; this poke is the real

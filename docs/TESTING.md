@@ -106,24 +106,33 @@
   gate both live-falsified - the race is inside the concurrent window). Pulses and
   short windows are safe-ish; kill + relaunch on hang; the game process is otherwise
   unharmed and saves are untouched. Fix directions in STATUS next steps.
-- **Single-threaded render mode (`reentry 1t on`, session 7 - THE stereo
-  substrate)**: pokes the engine's hardware-thread count global to 1 (see
-  ENGINE_NOTES "Flush-point decision chain") so every scene flush drains INLINE on
-  the game thread - no pump hand-off, no INFINITE render-done wait, the whole
-  deadlock class structurally unreachable. The command arms the drain-hook
-  empty-slot guard first (mandatory ordering - the guard eats any pump wake into
-  consumed state, the old drain+0x33 crash). Verify with the heartbeat: `mode=1T`
-  and beatTid == calcTid. `reentry 1t off` restores the original count. Costs
-  ~20% mono fps (413/s vs 530/s in the save-spawn scene) - irrelevant next to the
-  144 presents/s VR needs. SUPERSEDES the session-6 `-onethread` launch arg, which
-  the remaster does not parse at all (menu-time verification artifact - the pump
-  globals are always zero until the first world load).
-  **ORDERING RULE (session-7 19:54 loader crash): arm `1t on` only AFTER loading
-  into gameplay, and run `reentry 1t off` BEFORE loading another save or crossing
-  a level transition** - the hw-thread global has load-path consumers and a load
-  with the poke active crashed the loader thread. `1t on` now refuses at the
-  menu; pass 2 additionally never doubles load-path builds (gameplay-caller
-  gate). Structural fix (flush-point hook, no global poke) queued.
+- **VR stereo one-toggle (`vrstereo on|off`, session 8 - the streamlined
+  flow)**: sequences structural 1t + VR camera mode + SequentialReentry stereo,
+  reversing on off. Sticky across loads. Reachable three ways: the top-level
+  seam command `vrstereo on`, `reentry vrstereo on`, and the overlay "VR stereo"
+  checkbox. Verify with `VRSTEREO READY` in the log and heartbeat `mode=1T` +
+  `2nd=<pairs>/s`. This is what the in-headset checklist uses; the individual
+  `reentry ...` commands below stay for debugging.
+- **Structural single-threaded render (`reentry 1t on`, session 8 - THE stereo
+  substrate, LOAD-SAFE)**: MinHooks the flush-point (0x61D260) and forces its
+  decoded INLINE branch in the detour (see ENGINE_NOTES "Structural 1t") so
+  every scene flush drains on the game thread - no pump hand-off, no INFINITE
+  render-done wait, the deadlock class structurally unreachable - WITHOUT
+  touching the hw-thread global, so loaders see the true core count. The command
+  arms the drain-hook empty-slot guard first, then installs the flush-point
+  hook. Verify with the heartbeat: `mode=1T`, `forced=<n>/s` climbing, and
+  beatTid == calcTid. `reentry 1t off` returns the flush-point to the engine's
+  own decision (hook stays installed, passive). **Load-safe and menu-safe
+  (session-8 soaks: save load, quit-to-menu, new game, and the bathysphere
+  descent all clean with 1t + stereo armed) - no off/on dance needed.**
+  SUPERSEDES both the session-6 `-onethread` arg (not parsed) and the session-7
+  numerator poke.
+- **Legacy poke (`reentry 1tpoke on|off`, session 7 - NOT load-safe)**: pokes
+  the hw-thread count global to 1. Kept as a fallback/diagnostic only. The
+  global has load-path consumers, so the poke crashes the loader across a save
+  load / level transition (session-7 19:54 dump): `1tpoke on` refuses at the
+  menu and warns to `1tpoke off` before any load. Prefer `reentry 1t` (the
+  load-safe hook).
 - **Stereo substrate gate (session 7)**: `reentry stereo on` REFUSES to arm while
   the threaded renderer is live (deadlock + empty-wake crash substrate - all three
   2026-07-24 crash dumps). Run `reentry 1t on` first; `reentry stereo force`
