@@ -2,6 +2,7 @@
 
 #include "core/util/log.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
 
@@ -28,6 +29,7 @@ void Bioshock1RAdapter::setFov(float hfovDeg) {
 
 void Bioshock1RAdapter::drawDebugUi() {
     camera::draw_debug_ui();
+    input_drive::draw_debug_ui();
     scenedraw::draw_debug_ui();
 }
 

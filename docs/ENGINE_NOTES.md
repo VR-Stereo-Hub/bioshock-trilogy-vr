@@ -63,7 +63,8 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | Game-thread frame submit RVA 0x585AC0 | SequentialReentry stereo (double-submit with per-eye rot) | **next session's hook** - located via SetEvent caller sampler, byte-walked, unhooked |
 | GetPlayerViewPoint-equivalent used by fire traces (unknown) | decoupled controller aim | M6 |
 | Console-command dispatcher (unknown - FName-chain on command strings) | execConsole one-liners | M5/M6 |
-| XInputGetState (we ARE the proxy - no hook needed) | synthetic gamepad | M0 shim |
+| XInputGetState (we ARE the proxy - but the STEAM OVERLAY code-hooks the export thunk and eats calls, so the real seam is the game's IAT slot RVA 0xBCF8E0 -> bridge wrapper) | synthetic gamepad | **active** (M5: core/input/xinput_bridge + game IAT hijack; see "Gamepad architecture") |
+| UWindowsViewport::UpdateInput RVA 0x853D20 (driven, not hooked - nothing calls it in windowed mode) | engine consumes the synthetic pad | **active** (M5: game/bioshock1r/input_drive.cpp calls it per present) |
 | DINPUT8 / WM_* (DR-6 decides) | virtual mouse for gameswf menus | M5 |
 
 ## Config / ini facts
@@ -453,6 +454,70 @@ comfort improvement is an in-headset judgment (queued for the user).
 between T0-like LDR targets and NO depth-tested draws; in-game HUD draws land on the
 LDR target after the scene passes with no DSV bound. Good enough to segregate scene vs
 HUD for M9; exact shader/SRV fingerprint deferred until the HUD-capture milestone.
+
+## Gamepad architecture (M5 session 9, 2026-07-25)
+
+All derivations: XINPUT1_3 import-thunk walk of the disk image (capstone
+scratchpad scripts), RTTI on the vtables, and live pokes/hexdumps through the
+seam. RVAs against the preferred base 0x10900000 (subtract it from the static
+VAs in the disasm; ASLR rebases at runtime).
+
+**The remaster reads the pad in exactly one place**:
+`UWindowsViewport::UpdateInput` (RVA **0x853D20**, vtable slot 70 = byte
+offset +0x118 of the UWindowsViewport vtable RVA 0xE4E448, thiscall
+`(BOOL reset, FLOAT dt)` / `ret 8`). Its body: WM mouse-capture block
+(skipped when [vp+0x214]==0), DI keyboard block (self-skips when the global
+DI keyboard device [RVA 0x1380DEC] is null or its viewport flag is off),
+then the PAD BLOCK - `XInputGetState(0)` EVERY call (branch A processes
+state while the connected global is set and re-stamps it on failure; branch
+B at +0x854D01 is the reconnect probe that sets the global on success).
+There is provably no path through the function that skips the pad block
+(full branch-target scan of 0x853D20..0x8541C9).
+
+**Nothing calls UpdateInput in windowed mode.** The game probes GetState ~6x
+during client init (site RVA 0x8507BB refines `client+0xDC` after the
+constructor defaults it to 1) and never again - no WM_DEVICECHANGE handling,
+no re-probe interval (verified live over minutes, all flags forced). The
+`[WinDrv.WindowsClient] UseJoystick/UseController` ini keys are dead (set
+True, `client+0xDC` still boots 0). The pad path is fullscreen-era code the
+remaster left orphaned for windowed - hence "no controller support in
+windowed" behavior on stock installs.
+
+**Key objects/globals** (constants in patterns.h):
+- `[RVA 0x1375368]` -> UGameEngine; `+0x4C` -> UWindowsClient (vtable RVA
+  0xE4DBE0, RTTI-confirmed). `client+0x44/+0x4C` = TArray<UViewport*>;
+  first element is the live UWindowsViewport (vtable RVA 0xE4E448).
+- `client+0xDC` = UseController (BOOL). Client vtable slot 70 (+0x118) =
+  `SetUseController(BOOL)` (RVA 0x8509B0): writes +0xDC, updates the
+  UI-prompt global byte [VA 0x11C80D50], SaveConfig, notifies gameswf
+  (menu prompts flip to Xbox icons). Slot 71 = ToggleUseController; the
+  UWindowsClient::Exec handler at RVA 0x850DE0 exposes it as the console
+  command **"ToggleUseController"** (wide string RVA 0xE4DABC).
+- `[RVA 0x11B7A10]` = pad-connected global, written only by UpdateInput's
+  pad block; game code gates pad UI/behavior on `client+0xDC && global`.
+
+**The Steam overlay eats XInput**: gameoverlayrenderer.dll code-hooks the
+export thunk of whatever xinput1_3.dll is loaded - our PROXY included (live:
+proxy export +0x2E5F starts with an E9 jmp into the overlay). Calls through
+the game's IAT then die inside Steam Input (returns DEVICE_NOT_CONNECTED
+with no physical pad) WITHOUT ever running the proxy body or its post-hook.
+The proxy post-hook therefore only sees pre-overlay boot calls. Fix shipped:
+the bridge re-points the game's IAT slot for XINPUT1_3 ordinal 2 (slot RVA
+**0xBCF8E0**; ordinal 3/SetState is 0xBCF8DC, untouched until M7 haptics) at
+its own wrapper - previous target kept as passthrough so Steam-served real
+pads still work, composed synthetic state injected on the return path.
+xinput1_4.dll in-process is the overlay's own load (absent at our init).
+
+**How M5 makes the pad work** (input_drive.cpp): on `vrinput on` the adapter
+calls `SetUseController(TRUE)` through the engine's own setter and then
+drives `viewport->UpdateInput(0, dt)` once per present from the CalcView
+detour (game thread, SEH-guarded, self-throttled). UpdateInput's own pad
+block then consumes the bridge-composed GetState: full menu navigation +
+gameplay look/move from synthetic state, flat-verified 2026-07-25 (menu
+highlight moved on dpad, CONTINUE activated by A, RS yawed the live camera,
+passthrough byte-identical with vrinput off). Boot probes are covered by a
+persisted marker (`%LOCALAPPDATA%\BioshockVR\vrinput.on`) read at DLL attach
+so the client-init probe already sees a connected pad.
 
 ## UnrealScript findings
 
