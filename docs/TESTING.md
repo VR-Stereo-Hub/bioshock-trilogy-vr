@@ -78,8 +78,21 @@
   `%LOCALAPPDATA%\BioshockVR\framedump_HHMMSS.txt` for the next full Present-to-Present
   frame: per-draw RTs/formats, viewports, VS b0 readback (full mode), callstack RVAs, and
   a draws-per-RT + stack-histogram summary. Never commit dumps (game-derived).
+- **Reentry probe (DR-5)**: `reentry hook [drain|flush]` / `reentry unhook` (MinHook the
+  render-thread drain or the flush - command-gated, default runs stay unhooked),
+  `reentry on|off` / `reentry pulse` (double-call the hooked original every frame / once;
+  SEH-guarded with a poison latch - `reentry reset` clears after a caught fault),
+  `reentry yaw <deg>` (second-pass CalcView yaw delta), `reentry status`,
+  `reentry kick on|off` (process-wide SetEvent caller sampler - this is what located the
+  game-thread frame submit), `reentry calcstack` (one-shot game-thread stack scan).
+  1 Hz `[reentry]` heartbeat lines carry entries/s, presents/s, tids, call durations.
+  WARNING learned 2026-07-24: a drain double-call faults (caught) but then WEDGES the
+  render event protocol - the game hangs and needs a kill. Pulse only, expect to relaunch.
 - **Menu clicks**: `.\tools\game-click.ps1 -X <px> -Y <py>` clicks at window coordinates
   (read positions off a game-shot capture; gameswf menus accept the synthetic click).
+  If a click highlights but does not activate a menu item (stale gameswf hover state),
+  send Enter with `keybd_event` instead - the highlighted item activates on VK_RETURN
+  (worked for CONTINUE both times it was needed, 2026-07-24).
 - Loading the same save reproduces the same spawn viewpoint - good for A/B render comparisons.
 - Caveat: the main-menu backdrop is a live level with a flying attract camera that LOOKS like
   gameplay (no HUD) - do not draw render conclusions there; its fov path differs (see

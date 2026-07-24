@@ -2,7 +2,36 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-24, session 4)
+## Current state (2026-07-24, session 5)
+
+**DR-5's question is answered; the double-render seam is FOUND but not yet double-called.**
+The session-4 command-queue model was corrected by live hooks (all command-gated - default
+runs stay unhooked): the renderer is TWO-threaded. The game thread builds the frame and
+SUBMITS it (camera loc/rot stored to globals, SetEvent kick); a dedicated render thread
+sits in a pump loop (0x61D1D0, entered once - which is why hooking session 4's "frame
+root" 0x61D0F0 caught zero calls: that function is a flush/join). The DRAIN (0x61CAE0) is
+the real per-frame render entry - drain/s == presents/s exactly (517-525 live, 40 s soak,
+~1.6 ms/frame), sole caller the pump. CalcView runs entirely on the game thread (0 calls
+inside the drain) - so render-side re-entry can never re-sample the camera, and a drain
+double-call pulse faulted at drain+0x33 (SEH-caught, poison latch worked as designed) then
+wedged the pump's event protocol (hang, killed). **The SequentialReentry seam is the
+game-thread frame SUBMIT at RVA 0x585AC0**: ret 0xC, camera loc by pointer in arg1, rot
+copied to the submitted-frame block, TryEnter/Leave CS buffer sync, SetEvent at +0x1A2
+(found via the probe's process-wide SetEvent caller sampler; fires ~3.7x per present at
+the menu - per-arg telemetry needed before double-calling). Full corrected map + all RVAs
+in ENGINE_NOTES "Scene-draw architecture"; constants in patterns.h (kFrameSubmitRva).
+
+**Probe tooling shipped** (`game/bioshock1r/scenedraw.{h,cpp}`, seam commands `reentry
+...`): command-gated MinHook slots (drain/flush), SEH-guarded double-call with poison
+latch, 1 Hz heartbeat (entries/s, presents/s, tids, durations, caller RVAs), SetEvent
+caller sampler (`reentry kick`), one-shot game-thread stack scan (`reentry calcstack`).
+Supporting core additions: `d3d11_hook::present_count()`, `frame_inspector::
+draw_call_census()`. Two clean soaks passed; the only crash was the intentional
+drain-pulse probe (caught + logged exactly as designed).
+
+**Nothing reached headset-testable state this session** (flat probe work only).
+
+## Previous state (2026-07-24, session 4)
 
 **The FOV problem is fully closed, flat-verified end to end.** The live settings object
 (`UShockUserSettings`) is located at runtime by scanning the heap for its fixed-RVA vtable
@@ -108,19 +137,24 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. ~~In-headset checklist~~ - DONE same day, both items passed.
-2. **DR-5 hook probe - next session's main focus**: command-gated hook on the frame root
-   (RVA 0x61D0F0; command-queue architecture in ENGINE_NOTES). First just pass-through +
-   soak, then count CalcView calls inside it (answers the per-frame-vs-per-view question),
-   then find the command BUILD seam (what to re-enter for a true second scene render -
-   re-entering the drain redraws nothing). Yaw-delta double-render once the build seam is
-   identified.
+1. **Submit-hook probe (DR-5 endgame, next session's opener)**: command-gated hook on the
+   game-thread frame submit RVA 0x585AC0 (`reentry` infrastructure + kFrameSubmitRva/
+   kFrameSubmitPrologue already in tree; detour shape differs: `ret 0xC`, 3 stack args -
+   use a __cdecl-wrapping __declspec(naked) or a __fastcall detour with 3 stack params +
+   matching ret). Phase A: pass-through + per-call arg telemetry (loc/rot values, arg3
+   identity, calls per present - the site fired ~3.7x/present at the MENU; find the
+   main-scene call in gameplay). Phase B: pulse a double-submit with a copied rot arg +
+   yaw delta - flat screenshot A/B for the second render. Phase C if stable: soak,
+   then design the per-eye split (each submit ends in its own Present, so per-present
+   eye capture via the existing AER swapchain infra should slot in).
+2. If the drain-wedge hang pattern shows up in ANY future probe: it is recoverable data,
+   not a blocker - pulse-only probes, expect a relaunch (TESTING.md warning).
 3. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
    recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
 4. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-5. DR-7: borderless/windowed stability; DR-6: menu input path (note: tools/game-click.ps1
-   synthetic clicks DO work on gameswf menus - partial DR-6 answer already).
+5. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
+   clicks sometimes only highlight a gameswf item - VK_RETURN activates it, TESTING.md).
 6. Optional anytime: Steam Link / SteamVR cross-check.
 7. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
    test first, world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
@@ -140,6 +174,35 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-24 - Session 5
+
+- **DR-5 probe ran its full arc in one session**: hook the presumed frame root ->
+  discover it never fires -> re-aim at the drain -> map the real two-thread architecture
+  -> refute render-side re-entry -> locate the game-thread submit seam. Every step
+  flat-harness-verified; two clean 40 s+ soaks; the one crash was the intentional
+  SEH-guarded drain pulse (poison latch worked; the subsequent event-protocol wedge and
+  hang is recorded in TESTING.md as expected probe cost).
+- **Corrected architecture (ENGINE_NOTES rewritten)**: game thread builds + submits
+  (camera by pointer into globals, SetEvent kick at submit+0x1A2); render thread pump
+  loop 0x61D1D0 (thread main, registers its tid in a global) drains once per Present
+  (drain/s == presents/s exactly); 0x61D0F0 is a flush/join, not a frame function.
+  Session-4's prologue walk overshot the pump's frameless `push esi` entry - lesson:
+  the CC-55-8B-EC heuristic misses frameless functions.
+- **New instruments that cracked it**: process-wide SetEvent caller sampler
+  (`reentry kick on|off`) - one 8 s sample separated the game-thread kick (0x585C68)
+  from a 3-worker job pool (0x583FDB); one-shot game-thread stack scan
+  (`reentry calcstack`); per-boot import resolution via shared system-DLL bases
+  (WaitForSingleObject/SetEvent/GetCurrentThreadId/ReleaseSemaphore/
+  RtlTryEnter+LeaveCriticalSection all pinned to IAT slots).
+- **Submit function byte-walked** (entry 0x585AC0, ret 0xC, camera loc/rot through
+  args/globals, CS-guarded buffer swap) - constants + prologue bytes staged in
+  patterns.h for next session's hook. Double-submit with a yaw delta = the remaining
+  DR-5 experiment.
+- Probe v1 (frame-root) and v2 (drain + kick/calcstack) both committed and pushed
+  incrementally; core gained `present_count()` and `draw_call_census()` accessors.
+- Harness notes: gameswf CONTINUE needed VK_RETURN (clicks only highlighted - recorded
+  in TESTING.md); today's standing-still noise floor measured 0.21-0.40 mean.
 
 ### 2026-07-24 - Session 4
 

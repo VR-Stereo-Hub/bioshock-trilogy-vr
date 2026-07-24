@@ -59,7 +59,8 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | `IDXGISwapChain::Present` (vtable, kiero-style dummy-device discovery) | frame boundary: XR pacing, overlay, mirror | skeleton in M0 |
 | `IDXGISwapChain::ResizeBuffers` | RT cache invalidation | skeleton in M0 |
 | `eventPlayerCalcView` | camera override (HMD pose, per-eye offsets) | **active** (DR-4: `game/bioshock1r/camera.cpp`, self-enabling MinHook) |
-| Frame root RVA 0x61D0F0 (+ drain 0x61CAE0 fallback) | DR-5 reentry probe -> SequentialReentry stereo | **command-gated** (session 5: `game/bioshock1r/scenedraw.cpp`; exists only after a `reentry hook` seam command - default runs stay unhooked) |
+| Drain RVA 0x61CAE0 (+ flush 0x61D0F0) | DR-5 reentry probe telemetry | **command-gated** (session 5: `game/bioshock1r/scenedraw.cpp`; exists only after a `reentry hook` seam command - default runs stay unhooked). Drain re-entry refuted - see Scene-draw architecture. |
+| Game-thread frame submit RVA 0x585AC0 | SequentialReentry stereo (double-submit with per-eye rot) | **next session's hook** - located via SetEvent caller sampler, byte-walked, unhooked |
 | GetPlayerViewPoint-equivalent used by fire traces (unknown) | decoupled controller aim | M6 |
 | Console-command dispatcher (unknown - FName-chain on command strings) | execConsole one-liners | M5/M6 |
 | XInputGetState (we ARE the proxy - no hook needed) | synthetic gamepad | M0 shim |
@@ -145,54 +146,52 @@ dumps (proj m00 factor through a combined matrix; camera held still). This is th
 independent ground truth that rendered hfov == the UShockUserSettings option value, and
 the future patch point for asymmetric per-eye projections (post-v1 backlog).
 
-**Scene-draw architecture (DR-5 groundwork) - the renderer is a COMMAND QUEUE:**
-byte-level walk (hexdump seam, prologue + RET analysis, 2026-07-24) of the functions
-behind the draw stacks:
+**Scene-draw architecture (DR-5) - TWO-THREAD render command queue.** Session-4 model
+(byte walk 2026-07-24) CORRECTED by session-5 live hooks: what session 4 called the
+"frame root" (0x61D0F0) never runs in gameplay (pass-through hook: 0 entries / 70 s of
+play); the per-frame render entry is the DRAIN. Full corrected map (all live-verified
+2026-07-24 session 5, base that day 0x10380000):
 
 | RVA | Role | Evidence |
 |---|---|---|
-| **0x61C8E0** | render-command **executor**: `void __thiscall`, zero stack args (plain `C3` ret at 0x61CAA4); reads a command type id at `this+0xC` (an observed `cmp ecx,6` dispatch), virtual-calls per type. Its dispatch call-site cluster (ret RVAs 0x61C931..0x61CA87) appears in **84/86** main-scene draw stacks and in menu stacks. | first-1024-bytes disasm-by-hand |
-| **0x61CAE0** | command-queue **drain loop**; its `call 0x61C8E0` site returns to **0x61CD0D** (84/86 stacks) | prologue walk + stack histogram |
-| **0x61D0F0** | **frame root**: class check (vtable VA cmp -> RVA 0xE2D584), `[obj+0x58]==0` guard, then `call 0x61CAE0` at 0x61D219 returning to **0x61D21E** (terminal frame of every stack, menu + gameplay) | raw bytes: `E8 C2 F8 FF FF` rel32 == exactly 0x61CAE0 |
+| **0x61C8E0** | render-command **executor**: `void __thiscall`, zero stack args; command type id at `this+0xC`, virtual-calls per type. Call-site cluster in 84/86 draw stacks. | session-4 disasm-by-hand |
+| **0x61CAE0** | **drain** - the per-frame render entry: entered EXACTLY once per Present (drain/s == presents/s == 517-525 live, 40 s soak), ~1.6 ms per call, on the render thread. SEH-frame prologue `55 8B EC 6A FF 68`, __thiscall, zero stack args. Sole caller: 0x61D21E (pump loop). | live pass-through hook heartbeat |
+| **0x61D1D0** | render-thread **pump loop** (thread main): frameless `push esi` prologue (session 4's CC-55-8B-EC prologue walk overshot it), registers `GetCurrentThreadId()` into `[RVA 0x13784E4]` (live: held the render tid), then loops `WaitForSingleObject(INFINITE)` -> drain -> `SetEvent`. Entered ONCE - hooks on anything above the drain never fire per frame. | byte walk + import resolution + live tid global |
+| **0x61D0F0** | render **flush/join** (not a frame function): stamps `[mgr+0x58]=1`, waits; `[queue+0x58] != 0` is the PUMP EXIT flag. 0 entries during menu + gameplay. | live hook, 0 entries |
+| **0x585AC0** | **game-thread frame SUBMIT/KICK - the SequentialReentry seam.** `ret 0xC` (3 stack args; arg1 = FVector* camera loc, arg3 = viewport/scene object with +0x378/+0x3DC reads). Stores camera loc into `[0x13865B0..]` (3 floats) and the submitted-frame block `[0x13AF7E8..]` (frame/owner dword, float3 loc at +4, int3 rot at +0x14), TryEnter/LeaveCriticalSection on the two buffer objects held in globals `[0x13A5FBC]`/`[0x13A5FC0]` (CS at obj+4), then `SetEvent([[0x13566C4]]+4)` at 0x585C62 to wake the pump. Prologue `55 8B EC 51 64 A1 2C 00 00 00` (TLS read - hookable, first boundary 4+6 bytes). | SetEvent caller sampler (tid == game thread, ret RVA 0x585C68) + byte walk |
+| 0x583FDB | job-system WORKER completion SetEvent (3 worker threads, ReleaseSemaphore wake + job virtual call). Not a stereo seam. | sampler + byte walk |
 
-**Implication for SequentialReentry:** double-calling the drain (or executor) re-renders
-NOTHING - the queue is already consumed. The re-entry seam must be the command BUILD
-(scene traversal / camera consumption) upstream of or inside 0x61D0F0 before the drain
-call. Next probe: command-gated hook on 0x61D0F0 - count CalcView invocations inside it
-(answers where view sampling happens), then locate the build-vs-drain boundary. Neither
-function is hooked yet. Derivation recipe if the build changes: `dumpframe full`,
-histogram stack RVAs over the biggest depth-tested RT's draws, prologue-walk the cluster.
+Thread topology (live): game thread runs CalcView (~2 calls/frame, 1030-1170/s) and the
+submit; render thread (distinct tid every boot) runs pump -> drain -> Present
+(presents/s == drain/s; Present is issued inside the drain). CalcView-inside-drain = 0
+over the whole soak: **camera sampling is entirely upstream on the game thread.**
+Unfocused, presenting stops but the pump spins ~3000/s.
 
-**Frame-root convention + structure (session 5, live hexdump walk; constants in
-`patterns.h`):**
+**Drain re-entry REFUTED (the decisive DR-5 negative):** a second drain call from the
+detour (SEH-guarded pulse) faults 0xC0000005 at **0x61CB13** (drain+0x33) - the queue is
+consumed/swapped and re-draining dereferences dead state. The poison latch caught it and
+the hook stayed pass-through, but the pump's event protocol wedged afterward (game hung
+- kill it; this is why the double-call probe is a PULSE, not a soak, and why the drain
+is not the seam). SetEvent-rate note: the submit site fires ~3.7x per present at the
+menu (multiple viewports/passes per frame?) - instrument per-arg telemetry before
+double-calling.
 
-- Prologue `55 8B EC 51 A1 90 65 6D 11` - standard, first patchable boundary at 9 bytes
-  of complete position-independent instructions; hookable, and byte 0 was clean (no
-  foreign hook). Build identity re-verified: the class-check `cmp eax, imm32` immediate ==
-  base+0xE2D584, drain call `E8 C2 F8 FF FF` at +0x129 (0x61D219).
-- **Zero stack args, two exits, both plain `C3`** (epilogue `5E 8B E5 5D C3` at +0x14D and
-  +0x15D) -> the dummy-EDX `__fastcall(self, edx)` detour shape is exact. The next
-  function (0x61D260) is unrelated (2 args, `ret 8`).
-- **The root never reads ECX.** All state comes from a static render-manager global at
-  RVA **0x1356590**: `mgr = [global]`, queue object = `[mgr+4]`; the prologue stamps
-  `[mgr+0x58] = 1`; the drain call is guarded by `cmp [queue+0x58], 0` (skip-drain
-  latch - the reentry probe's `latchclear` target).
-- The drain call is bracketed by `push -1; push [obj+4]; call [IAT 0xBCF130]` pairs -
-  resolved live to **kernel32!WaitForSingleObject** (INFINITE waits on event handles held
-  by class-checked objects of the same vtable). Smells like cross-thread queue handoff
-  (double-buffered build/drain); the probe's thread-id telemetry decides.
-- Drain 0x61CAE0: SEH-frame prologue `55 8B EC 6A FF 68 ...` (`mov ebx, ecx` = __thiscall),
-  zero stack args by call-site evidence (`mov ecx, esi; call` with no pushes and no stack
-  fixup after). Hookable; used by the probe as a pass-through entry counter / crash
-  fallback only.
+**Consequence for SequentialReentry:** re-enter the GAME-THREAD submit (0x585AC0) -
+double-call with a modified rot arg (args are by-pointer) = a second full frame with a
+shifted camera, paced by the engine's own buffer sync; each submit ends in its own
+Present, so per-eye capture can key off presents (AER swapchain infra reuses as-is).
+Next probe: command-gated hook on 0x585AC0, per-call arg telemetry (loc/rot/arg3
+identity per present), then pulse a double-submit with a yaw delta on the copied rot.
 
 **DR-5 probe tooling (session 5):** `game/bioshock1r/scenedraw.{h,cpp}`, all
-command-gated via the seam (`reentry hook|unhook|on|off|pulse|yaw <deg>|latchclear
-on|off|reset|status`). Detour telemetry at 1 Hz: root entries/s, presents-per-root,
-CalcView-inside-root vs outside (tid-attributed), both original-call durations (a ~0 us
-second call = the [queue+0x58] early-out), draw-census delta of the second call, distinct
-caller RVAs, drain entries. Second original call is SEH-guarded with a poison latch;
-CalcViewDetour runs only original+yaw-delta during the second pass.
+command-gated via the seam (`reentry hook [drain|flush]|unhook|on|off|pulse|yaw
+<deg>|latchclear on|off|reset|status|kick on|off|calcstack`). 1 Hz heartbeat: drain+flush
+entries/s, presents/s, CalcView in/out (tid-attributed), call durations, beat/calc tids,
+distinct caller RVAs. Second original call SEH-guarded (C++ throws pass through) with a
+poison latch; CalcViewDetour runs only original+yaw during a second pass. `kick` =
+process-wide SetEvent-caller sampler (found the submit); `calcstack` = one-shot
+game-thread stack scan (script-VM frames 0x679067/0x67AF88 dominate; upstream candidates
+0x491C86/0x7327DA/0x55A4A2).
 
 **HUD fingerprint (partial):** menu frames are pure gameswf - only SetRT ping-pong
 between T0-like LDR targets and NO depth-tested draws; in-game HUD draws land on the
