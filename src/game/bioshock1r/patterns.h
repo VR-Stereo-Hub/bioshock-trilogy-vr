@@ -122,6 +122,19 @@ inline constexpr uint32_t kFrameIdSecondOffset = 0x10;
 inline constexpr uint32_t kQueueSegProdOffset = 0x128;
 inline constexpr uint32_t kQueueSegConsOffset = 0x12C;
 
+// Engine event objects (all instances of the vtable-0xE2D584 event class;
+// HANDLE at obj+4) used by the stereo deadlock watchdog. The pump kick event
+// pointer lives in the static global below (the submit SetEvents it at
+// 0x585C62); the flush-point wait function (~0x61D340) waits on the queue's
+// event at [queue+0x10], with a sibling event at [queue+0xC]
+// (queue = [[kRenderMgrGlobalRva]]+4). Re-SetEvent-ing these is exactly the
+// wakeup the deadlocked protocol lost; the watchdog verifies the vtable
+// before touching a handle.
+inline constexpr uint32_t kPumpKickEventPtrRva = 0x13566C4;
+inline constexpr uint32_t kEventVtableRva = 0xE2D584;
+inline constexpr uint32_t kQueueEventAOffset = 0xC;
+inline constexpr uint32_t kQueueEventBOffset = 0x10;
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)
