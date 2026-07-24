@@ -148,8 +148,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       transitions are good." Geometric stereo user-verified in-headset (session 7), comfort
       verified (pair pacing), one-toggle flow user-verified (session 8), >= 72 pairs/s flat in
       two scenes, load transitions clean. The combat-scene check is deliberately deferred to
-      the M5 era - the user will test combat once motion controllers are in (cheat/test
-      loadout support queued in M5 for exactly that).*
+      the M5 era - the user will test combat once motion controllers are in.*
 
 ## M5 - Motion controllers + menu interaction (~2 sessions)
 
@@ -163,10 +162,14 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       wrapper) + core/vr/openxr_input (one "gameplay" action set, Quest 3 Touch bindings) +
       game/bioshock1r/input_drive (drives UWindowsViewport::UpdateInput + the engine's own
       SetUseController). Mapping table in ARCHITECTURE; full RE in ENGINE_NOTES "Gamepad
-      architecture". In-HEADSET controller feel is the user's next check.
-      Bonus this session: a console-exec seam (exec/execc/exece) that calls the engine's own
-      Exec dispatchers - reaches native handlers but not script cheats; test loadouts use an
-      external trainer (console compiled out, ini binds inert - ENGINE_NOTES).*
+      architecture".
+      IN-HEADSET USER-VERIFIED 2026-07-25: "controllers are working perfectly as expected."
+      Some rebinds wanted later (parked to M9 fine-tuning by user choice). Aiming note: fire
+      follows the RIGHT STICK while the crosshair tracks the head - expected in the current
+      head-additive-yaw drive; M6 decoupled aim replaces it with controller aim.
+      Groundwork this session: a console-command seam (exec/execc/exece) that calls the
+      engine's own Exec dispatchers directly - reaches native engine commands; the script
+      command path is parked M6 material (RVAs in ENGINE_NOTES).*
 - [ ] Menu mode: whole frame on a quad when paused/in menu; controller laser → virtual mouse
       (path chosen by DR-6); trigger = click
 - [ ] **Done when:** from the headset only - boot to main menu, start New Game, play through the

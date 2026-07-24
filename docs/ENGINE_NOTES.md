@@ -97,9 +97,9 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 - User config path **confirmed** (2026-07-23, generated on first launch):
   `%AppData%\Roaming\BioshockHD\Bioshock\` - `Bioshock.ini` (live engine ini, 25 KB),
   `User.ini` (bindings, 99 KB), `MEMORY\CurrentGame` (save data).
-- `.debug` files in `ContentBaked\pc\System` are plaintext console scripts (useful command
-  vocabulary: `testAddAvailablePlasmid ElectricBolt`, `toggleplayerinvisible`, `stopmovie HUD`,
-  `setres`, `STAT FPS`).
+- `.debug` files in `ContentBaked\pc\System` are plaintext console scripts - a useful
+  reference for the engine's command vocabulary (e.g. `stopmovie HUD`, `setres`, `STAT FPS`)
+  that the console-command seam can target.
 
 ## OpenXR runtime facts (this machine)
 
