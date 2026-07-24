@@ -153,7 +153,20 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M5 - Motion controllers + menu interaction (~2 sessions)
 
-- [ ] OpenXR action sets; synthetic-XInput lane (motion controllers as gamepad → full playability)
+- [x] OpenXR action sets; synthetic-XInput lane (motion controllers as gamepad → full playability)
+      *2026-07-25 (session 9): FLAT-VERIFIED end to end with NO physical pad - synthetic dpad
+      moved the menu highlight, synthetic A activated CONTINUE (loaded the save), right-stick
+      yawed and left-stick moved the live in-game camera, and `vrinput off` restored
+      byte-identical passthrough. The path is more than the planned proxy post-hook: the Steam
+      overlay code-hooks the proxy export and the remaster never calls its own pad-read in
+      windowed mode, so the shipped shape is core/input/xinput_bridge (compose/merge + game-IAT
+      wrapper) + core/vr/openxr_input (one "gameplay" action set, Quest 3 Touch bindings) +
+      game/bioshock1r/input_drive (drives UWindowsViewport::UpdateInput + the engine's own
+      SetUseController). Mapping table in ARCHITECTURE; full RE in ENGINE_NOTES "Gamepad
+      architecture". In-HEADSET controller feel is the user's next check.
+      Bonus this session: a console-exec seam (exec/execc/exece) that calls the engine's own
+      Exec dispatchers - reaches native handlers but not script cheats; test loadouts use an
+      external trainer (console compiled out, ini binds inert - ENGINE_NOTES).*
 - [ ] Menu mode: whole frame on a quad when paused/in menu; controller laser → virtual mouse
       (path chosen by DR-6); trigger = click
 - [ ] **Done when:** from the headset only - boot to main menu, start New Game, play through the
