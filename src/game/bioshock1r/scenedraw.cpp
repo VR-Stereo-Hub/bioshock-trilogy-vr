@@ -82,6 +82,18 @@ std::atomic<int>   g_dumpRemaining{0};  // per-call submit dump lines left
 // each nested submit pushes its eye tag to core/vr for per-Present capture.
 std::atomic<bool>  g_stereo{false};
 std::atomic<uint32_t> g_stereoSkips{0}; // second calls skipped (render stalled)
+// Deadlock watchdog (session 6): the doubled render strands the engine's
+// command-queue event protocol - game thread parked mid-build waiting for
+// "render done" while the render thread waits for more work; a lost wakeup
+// on the engine's own auto-reset events. This thread re-fires those events
+// when the EXACT deadlock state is detected: the game thread stuck INSIDE a
+// hooked call (g_activeDepth > 0) with builds AND presents frozen. The depth
+// gate matters - a normal unfocused pause also freezes both counters, but
+// with the game thread parked OUTSIDE our detours; kicking the pump then
+// would drain a stale queue (the session-5 crash mode).
+HANDLE g_watchdogThread = nullptr;      // created on first 'stereo on', kept
+std::atomic<bool> g_watchdogExit{false};
+std::atomic<uint32_t> g_watchdogKicks{0};
 std::atomic<bool>  g_poisoned{false};
 std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
@@ -214,6 +226,96 @@ uint32_t read_arg3_vtable_rva(void* arg3) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0xFFFFFFFFu;
     }
+}
+
+bool read_u32_guarded(const void* addr, uint32_t* out) {
+    __try {
+        *out = *static_cast<const volatile uint32_t*>(addr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// SetEvent on an engine event OBJECT (vtable-checked; HANDLE at obj+4).
+// Returns true if a handle was actually signaled.
+bool kick_engine_event(uint32_t objAddr, const char* name) {
+    uint32_t vt = 0, h = 0;
+    if (!objAddr) return false;
+    if (!read_u32_guarded(reinterpret_cast<void*>(objAddr), &vt) ||
+        vt != reinterpret_cast<uintptr_t>(g_imageBase) + patterns::kEventVtableRva)
+        return false;
+    if (!read_u32_guarded(reinterpret_cast<void*>(objAddr + 4), &h) || !h)
+        return false;
+    BOOL ok = SetEvent(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(h)));
+    BVR_LOG("[reentry] watchdog: SetEvent(%s) -> %d", name, ok ? 1 : 0);
+    return ok != 0;
+}
+
+DWORD WINAPI WatchdogMain(void*) {
+    uint32_t lastBuilds = 0;
+    uint64_t lastPresents = 0;
+    int stallTicks = 0;
+    for (;;) {
+        Sleep(100);
+        if (g_watchdogExit.load(std::memory_order_relaxed)) return 0;
+        if (!g_stereo.load(std::memory_order_relaxed)) { stallTicks = 0; continue; }
+        uint32_t builds = g_buildEntries.load(std::memory_order_relaxed);
+        uint64_t presents = bvr::d3d11_hook::present_count();
+        bool inside = g_activeDepth.load(std::memory_order_relaxed) > 0;
+        if (builds != lastBuilds || presents != lastPresents || !inside) {
+            stallTicks = 0;
+            lastBuilds = builds;
+            lastPresents = presents;
+            continue;
+        }
+        ++stallTicks;
+        if (stallTicks == 3) {
+            // 300 ms stuck inside a hooked call, nothing moving: the
+            // deadlock. Missing wakeup is most likely the render side's
+            // work event - the pump kick.
+            g_watchdogKicks.fetch_add(1, std::memory_order_relaxed);
+            BVR_LOG("[reentry] watchdog: deadlock state detected (300 ms, "
+                    "depth>0, builds/presents frozen) - kicking pump event");
+            uint32_t evObj = 0;
+            if (read_u32_guarded(g_imageBase + patterns::kPumpKickEventPtrRva,
+                                 &evObj))
+                kick_engine_event(evObj, "pump-kick");
+        } else if (stallTicks == 6) {
+            // Render side did not move: kick the queue's flush events (the
+            // game thread's flush-point waits on [queue+0x10]).
+            BVR_LOG("[reentry] watchdog: still stalled - kicking queue events");
+            uint32_t mgr = 0, queue = 0, evObj = 0;
+            if (read_u32_guarded(g_imageBase + patterns::kRenderMgrGlobalRva,
+                                 &mgr) &&
+                mgr && read_u32_guarded(reinterpret_cast<void*>(mgr + 4), &queue) &&
+                queue) {
+                if (read_u32_guarded(
+                        reinterpret_cast<void*>(queue + patterns::kQueueEventBOffset),
+                        &evObj))
+                    kick_engine_event(evObj, "queue-flush-B");
+                if (read_u32_guarded(
+                        reinterpret_cast<void*>(queue + patterns::kQueueEventAOffset),
+                        &evObj))
+                    kick_engine_event(evObj, "queue-flush-A");
+            }
+        } else if (stallTicks >= 12) {
+            // 1.2 s and still wedged: recovery failed, stop doubling so the
+            // game (if it ever unsticks) is not immediately re-wedged.
+            BVR_LOG("[reentry] watchdog: recovery FAILED - stereo auto-off "
+                    "(game likely needs a kill)");
+            g_stereo.store(false, std::memory_order_relaxed);
+            g_doubleCall.store(false, std::memory_order_relaxed);
+            stallTicks = 0;
+        }
+    }
+}
+
+void ensure_watchdog() {
+    if (g_watchdogThread) return;
+    g_watchdogThread = CreateThread(nullptr, 0, &WatchdogMain, nullptr, 0, nullptr);
+    BVR_LOG("[reentry] deadlock watchdog thread %s",
+            g_watchdogThread ? "started" : "FAILED to start");
 }
 
 // Zero [queue+0x58] (queue = [mgr+4]). Session-5 correction: that field is
@@ -879,9 +981,10 @@ void handle_command(const char* args) {
                                     reinterpret_cast<void*>(&SubmitDetour),
                                     patterns::kFrameSubmitPrologue,
                                     sizeof patterns::kFrameSubmitPrologue)) {
+                ensure_watchdog();
                 g_stereo.store(true, std::memory_order_relaxed);
                 BVR_LOG("[reentry] STEREO ON: every build doubled L/R, submits "
-                        "tagged for per-present eye capture");
+                        "tagged for per-present eye capture (watchdog armed)");
             }
         } else {
             g_stereo.store(false, std::memory_order_relaxed);
@@ -923,12 +1026,13 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: stereo=%d(skips=%u) build=%s submit=%s drain=%s "
+        BVR_LOG("[reentry] status: stereo=%d(skips=%u,wdkicks=%u) build=%s submit=%s drain=%s "
                 "flush=%s double=%d pulse=%d yaw=%.1f dump=%d arg3=%08X "
                 "latchclear=%d poisoned=%d kick=%d builds=%u submits=%u drains=%u "
                 "flushes=%u seconds=%u draws2=%u",
                 g_stereo.load(std::memory_order_relaxed) ? 1 : 0,
                 g_stereoSkips.load(std::memory_order_relaxed),
+                g_watchdogKicks.load(std::memory_order_relaxed),
                 g_build.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_submit.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "on" : "off",
