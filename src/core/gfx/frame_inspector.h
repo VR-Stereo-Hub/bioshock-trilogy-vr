@@ -35,4 +35,9 @@ struct ScopedSuppress {
 // Overlay section: dump buttons + last-dump status.
 void draw_debug_ui();
 
+// Lifetime draw-call census across all four draw slots. The reentry probe
+// (DR-5) snapshots this around a re-entered frame-root call: a second-call
+// delta comparable to a full frame's draws proves a real second scene render.
+uint64_t draw_call_census();
+
 } // namespace bvr::frame_inspector

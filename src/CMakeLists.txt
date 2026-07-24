@@ -38,6 +38,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/camera.h
     game/bioshock1r/patterns.cpp
     game/bioshock1r/patterns.h
+    game/bioshock1r/scenedraw.cpp
+    game/bioshock1r/scenedraw.h
 )
 set_target_properties(bioshockvr PROPERTIES PREFIX "")
 target_include_directories(bioshockvr PRIVATE .)

@@ -9,6 +9,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/scenedraw.h"
 
 #include <windows.h>
 #include <MinHook.h>
@@ -111,6 +112,10 @@ float* fov_ptr(void* pc) {
 //   memrestore  memptr <idx> [maxDeltaHex]
 //   pokeaddr <hex> <f>  pokeaddri <hex> <u>  hexdump <hex> <len>
 //   strscan <text>  membases  dumpframe [full]
+// DR-5 reentry probe (routes to game/bioshock1r/scenedraw; command-gated -
+// nothing is hooked without these):
+//   reentry hook [root|drain]  reentry unhook  reentry on|off  reentry pulse
+//   reentry yaw <deg>  reentry latchclear on|off  reentry reset  reentry status
 uint64_t g_lastCmdPollMs = 0;
 FILETIME g_lastCmdWrite{};
 
@@ -197,6 +202,8 @@ void apply_command(const char* cmd, const char* args) {
         bvr::value_scan::log_module_bases();
     } else if (strcmp(cmd, "dumpframe") == 0) {
         bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
+    } else if (strcmp(cmd, "reentry") == 0) {
+        scenedraw::handle_command(args); // DR-5 probe; logs its own echoes
     }
 }
 
@@ -278,7 +285,20 @@ UeAngles hmd_angles(const bvr::vr::HeadPose& hp) {
 // register/stack/cleanup-identical and works as a plain free function.
 void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                                FVector* loc, FRotator* rot) {
+    // DR-5 second pass: while the reentry probe is inside its SECOND
+    // frame-root call, run only the original plus the probe's yaw delta. The
+    // full body below must not run twice per frame (it would eat recenter
+    // requests, double-poll the command file, and re-run the fov
+    // save/restore state machines).
+    float reentryYawDeg = 0.0f;
+    if (scenedraw::second_pass_for_current_thread(&reentryYawDeg)) {
+        g_original(self, edx, viewActor, loc, rot);
+        if (rot)
+            rot->yaw += static_cast<int32_t>(reentryYawDeg * kRotUnitsPerDegree);
+        return;
+    }
     g_original(self, edx, viewActor, loc, rot);
+    scenedraw::note_calcview();
 
     g_playerController.store(self, std::memory_order_relaxed);
     uint32_t count = g_callCount.fetch_add(1, std::memory_order_relaxed) + 1;

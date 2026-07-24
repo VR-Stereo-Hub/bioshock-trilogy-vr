@@ -3,17 +3,21 @@
 #include "core/util/log.h"
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/scenedraw.h"
 
 namespace bvr::b1r {
 
 uint32_t Bioshock1RAdapter::capabilities() const {
-    return camera::hook_live() ? (game::CAP_CAMERA_OVERRIDE | game::CAP_FOV_WRITE) : 0u;
+    uint32_t caps = camera::hook_live() ? (game::CAP_CAMERA_OVERRIDE | game::CAP_FOV_WRITE) : 0u;
+    if (scenedraw::hook_live()) caps |= game::CAP_SCENE_REENTRY;
+    return caps;
 }
 
 bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     patterns::Symbols symbols{};
     if (!patterns::resolve(image, symbols)) return false; // resolve() logged why
     if (!camera::install(symbols.eventPlayerCalcView)) return false;
+    scenedraw::init(image); // stashes the image only - hooks are command-gated
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }
@@ -24,6 +28,7 @@ void Bioshock1RAdapter::setFov(float hfovDeg) {
 
 void Bioshock1RAdapter::drawDebugUi() {
     camera::draw_debug_ui();
+    scenedraw::draw_debug_ui();
 }
 
 } // namespace bvr::b1r
