@@ -582,6 +582,7 @@ void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
     uint32_t presentsBefore =
         static_cast<uint32_t>(bvr::d3d11_hook::present_count());
     uint32_t submitsBefore = g_submitEntries.load(std::memory_order_relaxed);
+    if (stereo) bvr::vr::sr_push_eye(+1); // pass 2 = RIGHT eye (see BuildDetour)
     LARGE_INTEGER t2, t3;
     QueryPerformanceCounter(&t2);
     g_secondPassTid.store(tid, std::memory_order_relaxed);
@@ -632,6 +633,14 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     uint32_t presentDelta = presentLow - g_lastBuildPresentLow;
     g_lastBuildPresentLow = presentLow;
 
+    // Stereo eye tag for pass 1 (LEFT), pushed BEFORE the original: the
+    // pass's Present strictly follows (async via the pump in threaded mode,
+    // inline inside this very call in single-threaded mode), so the tag is
+    // in the ring by the time Present-tail pops it. Pass 2's tag is pushed
+    // in maybe_second_build the same way.
+    if (depth == 0 && g_stereo.load(std::memory_order_relaxed))
+        bvr::vr::sr_push_eye(-1);
+
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     reinterpret_cast<BuildFn>(g_build.original)(ecx, edx, a1, a2, a3,
@@ -657,12 +666,6 @@ void __fastcall SubmitDetour(void* ecx, void* edx, FVec3* loc, FRot3* rot,
         g_activeTid.store(tid, std::memory_order_relaxed);
     } else {
         g_submitNested.fetch_add(1, std::memory_order_relaxed);
-        // Stereo eye tag: this submit's frame will Present exactly once;
-        // tell core/vr which eye it carries (pass 2 = right).
-        if (g_stereo.load(std::memory_order_relaxed)) {
-            bool pass2 = g_secondPassTid.load(std::memory_order_relaxed) == tid;
-            bvr::vr::sr_push_eye(pass2 ? +1 : -1);
-        }
     }
     g_submitEntries.fetch_add(1, std::memory_order_relaxed);
     note_caller(to_rva(_ReturnAddress()));

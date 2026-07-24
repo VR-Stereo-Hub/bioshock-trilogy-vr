@@ -135,6 +135,16 @@ inline constexpr uint32_t kEventVtableRva = 0xE2D584;
 inline constexpr uint32_t kQueueEventAOffset = 0xC;
 inline constexpr uint32_t kQueueEventBOffset = 0x10;
 
+// Render-mode override: the flush-point function (entry 0x61D260, `ret 8`;
+// full head disasm 2026-07-24) picks threaded vs single-threaded rendering
+// per call through a decision chain whose FIRST check is this static global
+// - nonzero forces the single-threaded path: the game thread calls the
+// drain INLINE and the entire two-thread queue protocol (submit SetEvent,
+// pump, flush waits - the whole deadlock class) is bypassed. Discovered
+// while chasing the stereo double-render deadlock; poking it to 1 at
+// runtime is the candidate stereo-safe mode.
+inline constexpr uint32_t kForceNonThreadedRenderRva = 0x1375BD4;
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)
