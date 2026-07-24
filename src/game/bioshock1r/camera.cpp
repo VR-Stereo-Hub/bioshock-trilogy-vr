@@ -114,8 +114,10 @@ float* fov_ptr(void* pc) {
 //   strscan <text>  membases  dumpframe [full]
 // DR-5 reentry probe (routes to game/bioshock1r/scenedraw; command-gated -
 // nothing is hooked without these):
-//   reentry hook [root|drain]  reentry unhook  reentry on|off  reentry pulse
+//   reentry hook [drain|flush]  reentry unhook  reentry on|off  reentry pulse
 //   reentry yaw <deg>  reentry latchclear on|off  reentry reset  reentry status
+//   reentry kick on|off (SetEvent caller sampler)  reentry calcstack (one-shot
+//   game-thread stack scan)
 uint64_t g_lastCmdPollMs = 0;
 FILETIME g_lastCmdWrite{};
 

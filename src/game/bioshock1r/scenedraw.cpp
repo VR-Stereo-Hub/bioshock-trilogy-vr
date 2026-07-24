@@ -1,10 +1,12 @@
-// DR-5 probe (SequentialReentry groundwork). The frame root ignores its ECX
-// and reads all state from the static render-manager global (session-5
-// prologue walk, ENGINE_NOTES "Scene-draw architecture"), so the detour's
-// only job is telemetry + optionally calling the original a second time.
-// Hook lifecycle is command-gated end to end; the second original call is
-// SEH-guarded with a poison latch (a faulted re-entry never re-arms without
-// an explicit "reentry reset").
+// DR-5 probe (SequentialReentry groundwork), v2 after the session-5 live
+// correction: the per-frame render entry is the DRAIN (0x61CAE0), entered
+// once per Present by the render-thread pump loop (0x61D1D0); 0x61D0F0 is a
+// flush/join that never runs in steady-state play (ENGINE_NOTES "Scene-draw
+// architecture"). The probe therefore targets the drain by default, and two
+// discovery instruments hunt the GAME-thread build/kick seam: a SetEvent
+// caller sampler (the pump is signaled per frame) and a one-shot CalcView
+// stack scan. Hook lifecycle stays command-gated end to end; second original
+// calls are SEH-guarded with a poison latch.
 
 #include "game/bioshock1r/scenedraw.h"
 
@@ -26,10 +28,9 @@
 namespace bvr::b1r::scenedraw {
 namespace {
 
-// Both targets are void __thiscall with zero stack args (both frame-root
-// exits ret C3; the drain's only call site passes ecx with no pushes and no
-// stack fixup after). __fastcall with a dummy EDX slot is register/stack/
-// cleanup-identical - same trick as CalcViewDetour.
+// All hooked targets are void __thiscall with zero stack args; __fastcall
+// with a dummy EDX slot is register/stack/cleanup-identical - same trick as
+// CalcViewDetour.
 using RenderFn = void(__fastcall*)(void* self, void* edx);
 
 const uint8_t* g_imageBase = nullptr;
@@ -42,10 +43,10 @@ struct HookSlot {
     bool created = false;             // game thread only
     std::atomic<bool> enabled{false};
 };
-HookSlot g_root{"root"};
 HookSlot g_drain{"drain"};
+HookSlot g_flush{"flush"};
 
-// Controls: command poller (game thread) writes, detour thread reads.
+// Controls: command poller (game thread) writes, detour threads read.
 std::atomic<bool>  g_doubleCall{false};
 std::atomic<int>   g_pulseCount{0};     // pending one-shot double calls
 std::atomic<float> g_secondYawDeg{0.0f};
@@ -54,28 +55,45 @@ std::atomic<bool>  g_poisoned{false};
 std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
 
-// Telemetry. g_rootTid is nonzero exactly while a depth-0 root call is in
-// flight on that thread; g_secondPassTid likewise for the re-entry call.
-std::atomic<uint32_t> g_rootEntries{0};
+// Telemetry. g_activeTid is nonzero exactly while a depth-0 hooked call is
+// in flight on that thread; g_secondPassTid likewise for the re-entry call.
+std::atomic<uint32_t> g_drainEntries{0};
+std::atomic<uint32_t> g_flushEntries{0};
 std::atomic<uint32_t> g_secondCalls{0};
-std::atomic<uint32_t> g_rootTid{0};
-std::atomic<int>      g_rootDepth{0};
+std::atomic<uint32_t> g_activeTid{0};
+std::atomic<int>      g_activeDepth{0};
 std::atomic<uint32_t> g_secondPassTid{0};
-std::atomic<uint32_t> g_calcInRoot{0};
+std::atomic<uint32_t> g_calcInside{0};
 std::atomic<uint32_t> g_calcOutside{0};
 std::atomic<uint32_t> g_secondPassHits{0};
 std::atomic<uint32_t> g_lastCalcTid{0};
 std::atomic<uint32_t> g_call1Us{0}, g_call2Us{0};
 std::atomic<uint32_t> g_lastSecondDraws{0};
-std::atomic<uint32_t> g_drainEntries{0};
-std::atomic<uint32_t> g_concurrentEntries{0};
 std::atomic<uint32_t> g_callerRvas[4]{};
 
-// Heartbeat bookkeeping - detour thread only.
+// Heartbeat bookkeeping - beat thread only (whichever detour beats).
 uint64_t g_lastBeatMs = 0;
-uint32_t g_beatRoot = 0, g_beatSecond = 0, g_beatCalcIn = 0, g_beatCalcOut = 0,
-         g_beatDrain = 0;
-uint64_t g_beatPresents = 0, g_beatDraws = 0;
+uint32_t g_beatDrain = 0, g_beatFlush = 0, g_beatSecond = 0, g_beatCalcIn = 0,
+         g_beatCalcOut = 0;
+uint64_t g_beatPresents = 0;
+
+// SetEvent kick sampler (game-thread build/kick discovery). Table of
+// distinct (tid, caller-rva) pairs with counts; dumped on "kick off".
+using SetEventFn = BOOL(WINAPI*)(HANDLE);
+SetEventFn g_origSetEvent = nullptr;
+void* g_setEventTarget = nullptr;
+bool g_kickCreated = false;           // game thread only
+std::atomic<bool> g_kickSampling{false};
+struct KickSlot {
+    std::atomic<uint32_t> key{0};
+    std::atomic<uint32_t> tid{0};
+    std::atomic<uint32_t> rva{0};
+    std::atomic<uint32_t> count{0};
+};
+KickSlot g_kickSlots[10];
+
+// One-shot CalcView stack scan request.
+std::atomic<int> g_calcstackPending{0};
 
 uint32_t to_rva(const void* p) {
     uintptr_t d = reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(g_imageBase);
@@ -113,8 +131,9 @@ bool call_original_guarded(RenderFn fn, void* self, void* edx) {
     }
 }
 
-// Zero the drain-skip guard [queue+0x58] (queue = [mgr+4], mgr from the
-// static global) so a re-entry drains again if the first call latched it.
+// Zero [queue+0x58] (queue = [mgr+4]). Session-5 correction: that field is
+// the PUMP EXIT flag, not a per-frame latch - kept only as an experiment
+// lever, default off.
 bool clear_drain_latch() {
     __try {
         const uint8_t* mgr =
@@ -135,115 +154,180 @@ uint32_t qpc_us(const LARGE_INTEGER& a, const LARGE_INTEGER& b) {
     return static_cast<uint32_t>((b.QuadPart - a.QuadPart) * 1000000 / freq.QuadPart);
 }
 
-void heartbeat() {
+void heartbeat(uint32_t beatTid) {
     uint64_t now = GetTickCount64();
-    if (g_lastBeatMs == 0) { g_lastBeatMs = now; }
+    if (g_lastBeatMs == 0) {
+        // Seed every base on the first beat so the first printed line is a
+        // true 1 s delta (not counters-since-boot).
+        g_lastBeatMs = now;
+        g_beatDrain = g_drainEntries.load(std::memory_order_relaxed);
+        g_beatFlush = g_flushEntries.load(std::memory_order_relaxed);
+        g_beatSecond = g_secondCalls.load(std::memory_order_relaxed);
+        g_beatCalcIn = g_calcInside.load(std::memory_order_relaxed);
+        g_beatCalcOut = g_calcOutside.load(std::memory_order_relaxed);
+        g_beatPresents = bvr::d3d11_hook::present_count();
+        return;
+    }
     if (now - g_lastBeatMs < 1000) return;
     g_lastBeatMs = now;
 
-    uint32_t roots = g_rootEntries.load(std::memory_order_relaxed);
-    uint32_t seconds = g_secondCalls.load(std::memory_order_relaxed);
-    uint32_t calcIn = g_calcInRoot.load(std::memory_order_relaxed);
-    uint32_t calcOut = g_calcOutside.load(std::memory_order_relaxed);
     uint32_t drains = g_drainEntries.load(std::memory_order_relaxed);
+    uint32_t flushes = g_flushEntries.load(std::memory_order_relaxed);
+    uint32_t seconds = g_secondCalls.load(std::memory_order_relaxed);
+    uint32_t calcIn = g_calcInside.load(std::memory_order_relaxed);
+    uint32_t calcOut = g_calcOutside.load(std::memory_order_relaxed);
     uint64_t presents = bvr::d3d11_hook::present_count();
-    uint32_t dRoot = roots - g_beatRoot;
-    uint32_t dCalcIn = calcIn - g_beatCalcIn;
-    uint32_t dDrain = drains - g_beatDrain;
-    uint64_t dPresent = presents - g_beatPresents;
-    BVR_LOG("[reentry] root=%u/s 2nd=%u/s presents=%u/s calcview in=%u out=%u/s "
-            "drain=%u/s call1=%uus call2=%uus tid root=%u calc=%u "
-            "callers=%X,%X,%X,%X%s",
-            dRoot, seconds - g_beatSecond, static_cast<uint32_t>(dPresent),
-            dCalcIn, calcOut - g_beatCalcOut, dDrain,
+    BVR_LOG("[reentry] drain=%u/s flush=%u/s 2nd=%u/s presents=%u/s "
+            "calcview in=%u out=%u/s call1=%uus call2=%uus beatTid=%u "
+            "calcTid=%u callers=%X,%X,%X,%X%s",
+            drains - g_beatDrain, flushes - g_beatFlush, seconds - g_beatSecond,
+            static_cast<uint32_t>(presents - g_beatPresents),
+            calcIn - g_beatCalcIn, calcOut - g_beatCalcOut,
             g_call1Us.load(std::memory_order_relaxed),
-            g_call2Us.load(std::memory_order_relaxed),
-            g_rootTid.load(std::memory_order_relaxed),
+            g_call2Us.load(std::memory_order_relaxed), beatTid,
             g_lastCalcTid.load(std::memory_order_relaxed),
             g_callerRvas[0].load(std::memory_order_relaxed),
             g_callerRvas[1].load(std::memory_order_relaxed),
             g_callerRvas[2].load(std::memory_order_relaxed),
             g_callerRvas[3].load(std::memory_order_relaxed),
             g_poisoned.load(std::memory_order_relaxed) ? " POISONED" : "");
-    g_beatRoot = roots;
+    g_beatDrain = drains;
+    g_beatFlush = flushes;
     g_beatSecond = seconds;
     g_beatCalcIn = calcIn;
     g_beatCalcOut = calcOut;
-    g_beatDrain = drains;
     g_beatPresents = presents;
 }
 
-void __fastcall FrameRootDetour(void* self, void* edx) {
+// Second-call machinery, shared by both detours (runs at depth 0 only).
+void maybe_second_call(HookSlot& slot, void* self, void* edx, uint32_t tid) {
+    bool want = false;
+    bool isPulse = false;
+    if (g_poisoned.load(std::memory_order_relaxed)) return;
+    if (g_doubleCall.load(std::memory_order_relaxed)) {
+        want = true;
+    } else {
+        int pulses = g_pulseCount.load(std::memory_order_relaxed);
+        while (pulses > 0 &&
+               !g_pulseCount.compare_exchange_weak(pulses, pulses - 1,
+                                                   std::memory_order_relaxed)) {}
+        if (pulses > 0) { want = true; isPulse = true; }
+    }
+    if (!want) return;
+
+    uint64_t drawsBefore = bvr::frame_inspector::draw_call_census();
+    if (g_latchClear.load(std::memory_order_relaxed)) clear_drain_latch();
+    LARGE_INTEGER t2, t3;
+    QueryPerformanceCounter(&t2);
+    g_secondPassTid.store(tid, std::memory_order_relaxed);
+    bool ok = call_original_guarded(slot.original, self, edx);
+    g_secondPassTid.store(0, std::memory_order_relaxed); // also on fault path
+    QueryPerformanceCounter(&t3);
+    uint32_t call2Us = qpc_us(t2, t3);
+    uint32_t draws2 =
+        static_cast<uint32_t>(bvr::frame_inspector::draw_call_census() - drawsBefore);
+    g_call2Us.store(call2Us, std::memory_order_relaxed);
+    g_lastSecondDraws.store(draws2, std::memory_order_relaxed);
+    g_secondCalls.fetch_add(1, std::memory_order_relaxed);
+    if (!ok) {
+        g_poisoned.store(true, std::memory_order_relaxed);
+        g_doubleCall.store(false, std::memory_order_relaxed);
+        g_pulseCount.store(0, std::memory_order_relaxed);
+        BVR_LOG("[reentry] %s second call FAULTED code=0x%08X rva=0x%X - POISONED "
+                "(hook stays pass-through; 'reentry reset' to clear)",
+                slot.name, g_lastExcCode.load(std::memory_order_relaxed),
+                g_lastExcRva.load(std::memory_order_relaxed));
+    } else if (isPulse) {
+        BVR_LOG("[reentry] %s pulse ok: call1=%uus call2=%uus draws2=%u yaw=%.1f "
+                "latchclear=%d",
+                slot.name, g_call1Us.load(std::memory_order_relaxed), call2Us,
+                draws2, g_secondYawDeg.load(std::memory_order_relaxed),
+                g_latchClear.load(std::memory_order_relaxed) ? 1 : 0);
+    }
+}
+
+void __fastcall DrainDetour(void* self, void* edx) {
     uint32_t tid = GetCurrentThreadId();
-    uint32_t prevTid = g_rootTid.load(std::memory_order_relaxed);
-    if (prevTid != 0 && prevTid != tid)
-        g_concurrentEntries.fetch_add(1, std::memory_order_relaxed);
-    int depth = g_rootDepth.fetch_add(1, std::memory_order_relaxed);
-    if (depth == 0) g_rootTid.store(tid, std::memory_order_relaxed);
-    g_rootEntries.fetch_add(1, std::memory_order_relaxed);
+    int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
+    if (depth == 0) g_activeTid.store(tid, std::memory_order_relaxed);
+    g_drainEntries.fetch_add(1, std::memory_order_relaxed);
     note_caller(to_rva(_ReturnAddress()));
 
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
-    g_root.original(self, edx); // vanilla path: never guarded
+    g_drain.original(self, edx); // vanilla path: never guarded
     QueryPerformanceCounter(&t1);
     g_call1Us.store(qpc_us(t0, t1), std::memory_order_relaxed);
 
-    bool wantSecond = false;
-    bool isPulse = false;
-    if (depth == 0 && !g_poisoned.load(std::memory_order_relaxed)) {
-        if (g_doubleCall.load(std::memory_order_relaxed)) {
-            wantSecond = true;
-        } else {
-            int pulses = g_pulseCount.load(std::memory_order_relaxed);
-            while (pulses > 0 &&
-                   !g_pulseCount.compare_exchange_weak(pulses, pulses - 1,
-                                                       std::memory_order_relaxed)) {}
-            if (pulses > 0) { wantSecond = true; isPulse = true; }
-        }
-    }
-    if (wantSecond) {
-        uint64_t drawsBefore = bvr::frame_inspector::draw_call_census();
-        if (g_latchClear.load(std::memory_order_relaxed)) clear_drain_latch();
-        LARGE_INTEGER t2, t3;
-        QueryPerformanceCounter(&t2);
-        g_secondPassTid.store(tid, std::memory_order_relaxed);
-        bool ok = call_original_guarded(g_root.original, self, edx);
-        g_secondPassTid.store(0, std::memory_order_relaxed); // also on fault path
-        QueryPerformanceCounter(&t3);
-        uint32_t call2Us = qpc_us(t2, t3);
-        uint32_t draws2 =
-            static_cast<uint32_t>(bvr::frame_inspector::draw_call_census() - drawsBefore);
-        g_call2Us.store(call2Us, std::memory_order_relaxed);
-        g_lastSecondDraws.store(draws2, std::memory_order_relaxed);
-        g_secondCalls.fetch_add(1, std::memory_order_relaxed);
-        if (!ok) {
-            g_poisoned.store(true, std::memory_order_relaxed);
-            g_doubleCall.store(false, std::memory_order_relaxed);
-            g_pulseCount.store(0, std::memory_order_relaxed);
-            BVR_LOG("[reentry] second call FAULTED code=0x%08X rva=0x%X - POISONED "
-                    "(hook stays pass-through; 'reentry reset' to clear)",
-                    g_lastExcCode.load(std::memory_order_relaxed),
-                    g_lastExcRva.load(std::memory_order_relaxed));
-        } else if (isPulse) {
-            BVR_LOG("[reentry] pulse ok: call1=%uus call2=%uus draws2=%u yaw=%.1f "
-                    "latchclear=%d",
-                    g_call1Us.load(std::memory_order_relaxed), call2Us, draws2,
-                    g_secondYawDeg.load(std::memory_order_relaxed),
-                    g_latchClear.load(std::memory_order_relaxed) ? 1 : 0);
-        }
-    }
+    if (depth == 0) maybe_second_call(g_drain, self, edx, tid);
 
-    heartbeat();
-    if (g_rootDepth.fetch_sub(1, std::memory_order_relaxed) == 1)
-        g_rootTid.store(0, std::memory_order_relaxed);
+    heartbeat(tid);
+    if (g_activeDepth.fetch_sub(1, std::memory_order_relaxed) == 1)
+        g_activeTid.store(0, std::memory_order_relaxed);
 }
 
-void __fastcall DrainDetour(void* self, void* edx) {
-    g_drainEntries.fetch_add(1, std::memory_order_relaxed);
-    g_drain.original(self, edx);
-    // Fallback telemetry when only the drain is hooked (root hook rejected).
-    if (!g_root.enabled.load(std::memory_order_relaxed)) heartbeat();
+void __fastcall FlushDetour(void* self, void* edx) {
+    uint32_t tid = GetCurrentThreadId();
+    g_flushEntries.fetch_add(1, std::memory_order_relaxed);
+    note_caller(to_rva(_ReturnAddress()));
+    g_flush.original(self, edx);
+    // A flush firing at all is news - log the first few immediately.
+    uint32_t n = g_flushEntries.load(std::memory_order_relaxed);
+    if (n <= 3)
+        BVR_LOG("[reentry] flush fired #%u (tid %u, caller 0x%X)", n, tid,
+                to_rva(_ReturnAddress()));
+    if (!g_drain.enabled.load(std::memory_order_relaxed)) heartbeat(tid);
+}
+
+BOOL WINAPI SetEventDetour(HANDLE h) {
+    if (g_kickSampling.load(std::memory_order_relaxed)) {
+        uint32_t tid = GetCurrentThreadId();
+        uint32_t rva = to_rva(_ReturnAddress());
+        uint32_t key = (tid * 2654435761u) ^ rva;
+        if (key == 0) key = 1;
+        for (auto& s : g_kickSlots) {
+            uint32_t k = s.key.load(std::memory_order_relaxed);
+            if (k == key) { s.count.fetch_add(1, std::memory_order_relaxed); break; }
+            if (k == 0) {
+                if (s.key.compare_exchange_strong(k, key, std::memory_order_relaxed)) {
+                    s.tid.store(tid, std::memory_order_relaxed);
+                    s.rva.store(rva, std::memory_order_relaxed);
+                    s.count.store(1, std::memory_order_relaxed);
+                    break;
+                }
+            }
+        }
+    }
+    return g_origSetEvent(h);
+}
+
+// Conservative one-shot stack scan on the game thread (from inside the
+// CalcView detour): log every stack dword that points into the exe image AND
+// is preceded by a plausible CALL encoding. Same heuristic family as
+// frame_inspector's capture. One log line; game thread only.
+void log_game_stack() {
+    void** sp = reinterpret_cast<void**>(_AddressOfReturnAddress());
+    char line[512];
+    int pos = 0;
+    int found = 0;
+    for (int i = 0; i < 2048 && found < 24 && pos < 480; ++i) {
+        if (!bvr::pattern_scan::is_memory_valid(&sp[i], sizeof(void*))) break;
+        const uint8_t* p = static_cast<const uint8_t*>(sp[i]);
+        uint32_t rva = to_rva(p);
+        if (rva == 0xFFFFFFFFu) continue;
+        if (!bvr::pattern_scan::is_memory_valid(p - 6, 6)) continue;
+        bool call = p[-5] == 0xE8 ||                                  // call rel32
+                    (p[-6] == 0xFF && p[-5] == 0x15) ||               // call [m32]
+                    (p[-6] == 0xFF && p[-5] >= 0x90 && p[-5] <= 0x97) || // call [reg+d32]
+                    (p[-2] == 0xFF && p[-1] >= 0xD0 && p[-1] <= 0xD7) || // call reg
+                    (p[-2] == 0xFF && p[-1] >= 0x10 && p[-1] <= 0x17) || // call [reg]
+                    (p[-3] == 0xFF && p[-2] >= 0x50 && p[-2] <= 0x57);   // call [reg+d8]
+        if (!call) continue;
+        pos += _snprintf_s(line + pos, sizeof(line) - pos, _TRUNCATE, " %X", rva);
+        ++found;
+    }
+    line[pos] = '\0';
+    BVR_LOG("[reentry] calcstack (game tid %u):%s", GetCurrentThreadId(), line);
 }
 
 bool prologue_matches(const void* target, const uint8_t* expect, size_t n) {
@@ -281,6 +365,7 @@ bool install_slot(HookSlot& slot, uint32_t rva, void* detour,
         BVR_LOG("[reentry] MH_EnableHook(%s) failed: %s", slot.name, MH_StatusToString(st));
         return false;
     }
+    g_lastBeatMs = 0; // reseed heartbeat bases on next beat
     slot.enabled.store(true, std::memory_order_relaxed);
     BVR_LOG("[reentry] %s hook ENABLED (target %p, rva 0x%X)", slot.name, slot.target, rva);
     return true;
@@ -296,6 +381,49 @@ void disable_slot(HookSlot& slot) {
     BVR_LOG("[reentry] %s hook disabled (%s)", slot.name, MH_StatusToString(st));
 }
 
+void kick_sampler(bool on) {
+    if (on) {
+        if (!g_kickCreated) {
+            HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+            g_setEventTarget =
+                k32 ? reinterpret_cast<void*>(GetProcAddress(k32, "SetEvent")) : nullptr;
+            if (!g_setEventTarget) { BVR_LOG("[reentry] kick: SetEvent not resolved"); return; }
+            MH_STATUS st = MH_CreateHook(g_setEventTarget,
+                                         reinterpret_cast<void*>(&SetEventDetour),
+                                         reinterpret_cast<void**>(&g_origSetEvent));
+            if (st != MH_OK) {
+                BVR_LOG("[reentry] kick: MH_CreateHook(SetEvent) failed: %s",
+                        MH_StatusToString(st));
+                return;
+            }
+            g_kickCreated = true;
+        }
+        for (auto& s : g_kickSlots) {
+            s.key.store(0, std::memory_order_relaxed);
+            s.count.store(0, std::memory_order_relaxed);
+        }
+        MH_STATUS st = MH_EnableHook(g_setEventTarget);
+        if (st != MH_OK) {
+            BVR_LOG("[reentry] kick: MH_EnableHook failed: %s", MH_StatusToString(st));
+            return;
+        }
+        g_kickSampling.store(true, std::memory_order_relaxed);
+        BVR_LOG("[reentry] kick sampler ON (process-wide SetEvent hook)");
+    } else {
+        g_kickSampling.store(false, std::memory_order_relaxed);
+        if (g_kickCreated) MH_DisableHook(g_setEventTarget);
+        BVR_LOG("[reentry] kick sampler OFF; distinct SetEvent callers:");
+        for (auto& s : g_kickSlots) {
+            if (s.key.load(std::memory_order_relaxed) == 0) continue;
+            uint32_t rva = s.rva.load(std::memory_order_relaxed);
+            BVR_LOG("[reentry]   tid=%u caller=%s0x%X count=%u",
+                    s.tid.load(std::memory_order_relaxed),
+                    rva == 0xFFFFFFFFu ? "(non-exe) " : "exe+",
+                    rva, s.count.load(std::memory_order_relaxed));
+        }
+    }
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -307,30 +435,35 @@ void handle_command(const char* args) {
     char verb[16] = {};
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
-        BVR_LOG("[reentry] command needs a verb: hook|unhook|on|off|pulse|yaw|latchclear|reset|status");
+        BVR_LOG("[reentry] command needs a verb: "
+                "hook|unhook|on|off|pulse|yaw|latchclear|reset|status|kick|calcstack");
         return;
     }
     const char* rest = args + consumed;
     while (*rest == ' ' || *rest == '\t') ++rest;
 
+    bool anyHook = g_drain.enabled.load(std::memory_order_relaxed) ||
+                   g_flush.enabled.load(std::memory_order_relaxed);
+
     if (strcmp(verb, "hook") == 0) {
-        if (strncmp(rest, "drain", 5) == 0) {
+        if (strncmp(rest, "flush", 5) == 0) {
+            install_slot(g_flush, patterns::kRenderFlushRva,
+                         reinterpret_cast<void*>(&FlushDetour),
+                         patterns::kRenderFlushPrologue,
+                         sizeof patterns::kRenderFlushPrologue);
+        } else { // default: the per-frame drain
             install_slot(g_drain, patterns::kDrainRva,
                          reinterpret_cast<void*>(&DrainDetour),
                          patterns::kDrainPrologue, sizeof patterns::kDrainPrologue);
-        } else {
-            install_slot(g_root, patterns::kFrameRootRva,
-                         reinterpret_cast<void*>(&FrameRootDetour),
-                         patterns::kFrameRootPrologue, sizeof patterns::kFrameRootPrologue);
         }
     } else if (strcmp(verb, "unhook") == 0) {
         g_doubleCall.store(false, std::memory_order_relaxed);
         g_pulseCount.store(0, std::memory_order_relaxed);
-        disable_slot(g_root);
         disable_slot(g_drain);
+        disable_slot(g_flush);
     } else if (strcmp(verb, "on") == 0) {
-        if (!g_root.enabled.load(std::memory_order_relaxed)) {
-            BVR_LOG("[reentry] on refused: root hook not enabled");
+        if (!anyHook) {
+            BVR_LOG("[reentry] on refused: no hook enabled");
         } else if (g_poisoned.load(std::memory_order_relaxed)) {
             BVR_LOG("[reentry] on refused: POISONED ('reentry reset' to clear)");
         } else {
@@ -343,8 +476,8 @@ void handle_command(const char* args) {
         g_pulseCount.store(0, std::memory_order_relaxed);
         BVR_LOG("[reentry] double-call off");
     } else if (strcmp(verb, "pulse") == 0) {
-        if (!g_root.enabled.load(std::memory_order_relaxed)) {
-            BVR_LOG("[reentry] pulse refused: root hook not enabled");
+        if (!anyHook) {
+            BVR_LOG("[reentry] pulse refused: no hook enabled");
         } else if (g_poisoned.load(std::memory_order_relaxed)) {
             BVR_LOG("[reentry] pulse refused: POISONED ('reentry reset' to clear)");
         } else {
@@ -361,26 +494,33 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "latchclear") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_latchClear.store(on, std::memory_order_relaxed);
-        BVR_LOG("[reentry] latchclear %s", on ? "on" : "off");
+        BVR_LOG("[reentry] latchclear %s (note: [queue+0x58] is the pump EXIT flag)",
+                on ? "on" : "off");
     } else if (strcmp(verb, "reset") == 0) {
         g_poisoned.store(false, std::memory_order_relaxed);
         BVR_LOG("[reentry] poison cleared (last fault code=0x%08X rva=0x%X)",
                 g_lastExcCode.load(std::memory_order_relaxed),
                 g_lastExcRva.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "kick") == 0) {
+        kick_sampler(strncmp(rest, "on", 2) == 0);
+    } else if (strcmp(verb, "calcstack") == 0) {
+        g_calcstackPending.store(1, std::memory_order_relaxed);
+        BVR_LOG("[reentry] calcstack armed (next CalcView logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: root=%s drain=%s double=%d pulse=%d yaw=%.1f "
-                "latchclear=%d poisoned=%d entries=%u seconds=%u concurrent=%u "
+        BVR_LOG("[reentry] status: drain=%s flush=%s double=%d pulse=%d yaw=%.1f "
+                "latchclear=%d poisoned=%d kick=%d drains=%u flushes=%u seconds=%u "
                 "draws2=%u",
-                g_root.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "on" : "off",
+                g_flush.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_doubleCall.load(std::memory_order_relaxed) ? 1 : 0,
                 g_pulseCount.load(std::memory_order_relaxed),
                 g_secondYawDeg.load(std::memory_order_relaxed),
                 g_latchClear.load(std::memory_order_relaxed) ? 1 : 0,
                 g_poisoned.load(std::memory_order_relaxed) ? 1 : 0,
-                g_rootEntries.load(std::memory_order_relaxed),
+                g_kickSampling.load(std::memory_order_relaxed) ? 1 : 0,
+                g_drainEntries.load(std::memory_order_relaxed),
+                g_flushEntries.load(std::memory_order_relaxed),
                 g_secondCalls.load(std::memory_order_relaxed),
-                g_concurrentEntries.load(std::memory_order_relaxed),
                 g_lastSecondDraws.load(std::memory_order_relaxed));
     } else {
         BVR_LOG("[reentry] unknown verb '%s'", verb);
@@ -398,34 +538,38 @@ bool second_pass_for_current_thread(float* yawDegOut) {
 void note_calcview() {
     uint32_t tid = GetCurrentThreadId();
     g_lastCalcTid.store(tid, std::memory_order_relaxed);
-    if (g_rootTid.load(std::memory_order_relaxed) == tid)
-        g_calcInRoot.fetch_add(1, std::memory_order_relaxed);
+    if (g_activeTid.load(std::memory_order_relaxed) == tid)
+        g_calcInside.fetch_add(1, std::memory_order_relaxed);
     else
         g_calcOutside.fetch_add(1, std::memory_order_relaxed);
+    if (g_calcstackPending.load(std::memory_order_relaxed) > 0 &&
+        g_calcstackPending.exchange(0, std::memory_order_relaxed) > 0)
+        log_game_stack();
 }
 
 bool hook_live() {
-    return g_root.enabled.load(std::memory_order_relaxed) ||
-           g_drain.enabled.load(std::memory_order_relaxed);
+    return g_drain.enabled.load(std::memory_order_relaxed) ||
+           g_flush.enabled.load(std::memory_order_relaxed);
 }
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Reentry probe (DR-5)")) return;
-    ImGui::Text("hooks: root %s, drain %s%s",
-                g_root.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
+    ImGui::Text("hooks: drain %s, flush %s%s",
                 g_drain.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_flush.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_poisoned.load(std::memory_order_relaxed) ? "  POISONED" : "");
     ImGui::Text("double-call %s  yaw %.1f  2nd calls %u  draws2 %u",
                 g_doubleCall.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_secondYawDeg.load(std::memory_order_relaxed),
                 g_secondCalls.load(std::memory_order_relaxed),
                 g_lastSecondDraws.load(std::memory_order_relaxed));
-    ImGui::Text("root entries %u  calcview in/out %u/%u  2nd-pass hits %u",
-                g_rootEntries.load(std::memory_order_relaxed),
-                g_calcInRoot.load(std::memory_order_relaxed),
+    ImGui::Text("drains %u  flushes %u  calcview in/out %u/%u  2nd-pass hits %u",
+                g_drainEntries.load(std::memory_order_relaxed),
+                g_flushEntries.load(std::memory_order_relaxed),
+                g_calcInside.load(std::memory_order_relaxed),
                 g_calcOutside.load(std::memory_order_relaxed),
                 g_secondPassHits.load(std::memory_order_relaxed));
-    ImGui::TextDisabled("control via seam: reentry hook|unhook|on|off|pulse|yaw <deg>");
+    ImGui::TextDisabled("control via seam: reentry hook|unhook|on|off|pulse|yaw|kick|calcstack");
 }
 
 } // namespace bvr::b1r::scenedraw
