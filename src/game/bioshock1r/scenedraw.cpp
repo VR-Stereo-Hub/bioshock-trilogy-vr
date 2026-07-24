@@ -1447,10 +1447,13 @@ void note_calcview() {
         g_calcOutside.fetch_add(1, std::memory_order_relaxed);
         // Overlay-posted vrstereo request: apply on the game thread OUTSIDE
         // any hooked call (hook installs must not run mid-build/mid-drain).
-        int pending = g_vrstereoPending.load(std::memory_order_relaxed);
-        if (pending >= 0 &&
-            g_vrstereoPending.exchange(-1, std::memory_order_relaxed) >= 0)
-            apply_vrstereo(pending == 1);
+        // Act on the EXCHANGED value, not a pre-read - a request posted
+        // between load and exchange must not be swallowed.
+        if (g_vrstereoPending.load(std::memory_order_relaxed) >= 0) {
+            int pending =
+                g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
+            if (pending >= 0) apply_vrstereo(pending == 1);
+        }
     }
     if (g_calcstackPending.load(std::memory_order_relaxed) > 0 &&
         g_calcstackPending.exchange(0, std::memory_order_relaxed) > 0)
