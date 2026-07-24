@@ -19,6 +19,8 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include "core/vr/openxr_input.h"
+
 #include <imgui.h>
 
 #include <atomic>
@@ -189,6 +191,7 @@ void destroy_swapchains() {
 
 void teardown_session(const char* why) {
     BVR_LOG("xr: session teardown (%s)", why);
+    input_on_session_teardown(); // action spaces are session children
     destroy_swapchains();
     {
         std::lock_guard<std::mutex> lock(g_poseMutex);
@@ -354,6 +357,10 @@ void try_bring_up(IDXGISwapChain* swapchain) {
         return;
     }
 
+    // M5: grip action spaces + attach (once per session; attach failure only
+    // costs controller input, never the display).
+    input_on_session_created(g_session, g_space);
+
     BVR_LOG("xr: session created on the game device - waiting for READY");
 }
 
@@ -441,6 +448,8 @@ void init_instance() {
     BVR_LOG("xr: instance created on runtime '%s' %u.%u.%u", ip.runtimeName,
             XR_VERSION_MAJOR(ip.runtimeVersion), XR_VERSION_MINOR(ip.runtimeVersion),
             XR_VERSION_PATCH(ip.runtimeVersion));
+
+    input_create(g_instance); // M5: action set + touch bindings (fail-soft)
 }
 
 void on_present_begin(IDXGISwapChain* swapchain) {
@@ -538,6 +547,10 @@ void on_present_begin(IDXGISwapChain* swapchain) {
                 "(aspect %.3f)",
                 maxHalfH * 57.29578f, maxHalfV * 57.29578f, deg, aspect);
     }
+
+    // M5: one action sync per XR frame (with pair pacing that is once per eye
+    // pair == once per game tick). Composes and publishes the synthetic pad.
+    input_sync(g_session, g_frameState.predictedDisplayTime);
 
     // Single readiness gate for projection mode (and, through vr_camera_mode,
     // for the camera drive): never let a head-driven camera show on the quad.
@@ -820,6 +833,8 @@ void draw_debug_ui() {
     if (camMode && !g_projectionReady.load(std::memory_order_relaxed))
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                            "projection NOT ready - drive is held off (see log)");
+
+    input_draw_debug_ui(); // M5 action-layer status line
 
     if (!camMode) {
         float dist = g_screenDistM.load(std::memory_order_relaxed);

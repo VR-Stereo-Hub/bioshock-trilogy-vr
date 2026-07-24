@@ -113,6 +113,29 @@ Known hard parts of re-entry and their mitigations:
 - **Lane 1 - synthetic XInput** (early, permanent fallback): OpenXR actions composed into
   XINPUT_STATE inside our proxy. Sticks = locomotion, trigger = fire. Zero engine hooks; full
   playability and menu navigation from M5.
+  *As-built (M5 session 9): the "zero hooks" premise half-survived contact with reality - we
+  still never hook the game, but the Steam overlay eats calls routed through the proxy export
+  and the remaster never calls its own pad-read path in windowed mode, so the shipped shape is
+  core/input/xinput_bridge (compose + merge + game-IAT wrapper) + core/vr/openxr_input (action
+  set) + game/bioshock1r/input_drive (drives UWindowsViewport::UpdateInput and the engine's own
+  SetUseController). Details: ENGINE_NOTES "Gamepad architecture".*
+
+### Controller mapping (Quest 3 Touch -> Xbox 360 pad, M5)
+
+| Touch input | XInput output | BioShock meaning |
+|---|---|---|
+| Left thumbstick | LS | move |
+| Right thumbstick | RS | look |
+| Right trigger | RT | fire weapon |
+| Left trigger | LT | fire plasmid |
+| Right grip (squeeze, 0.70/0.55 hysteresis) | RB | next weapon |
+| Left grip (same) | LB | next plasmid |
+| A / B (right) | A / B | use / jump (game layout) |
+| X / Y (left) | X / Y | reload / EVE (game layout) |
+| Stick clicks | LS / RS click | crouch / zoom (game layout) |
+| Left menu, short press (<500 ms, pulsed on release) | START | pause menu |
+| Left menu, hold (>=500 ms) | BACK | map/objectives |
+| (unmapped - no spare inputs) | dpad | quick-select; test-only via `vrinput test press DU/DD/DL/DR`; real selection belongs to the M8 radial wheels |
 - **Lane 2 - engine-level**: console-exec dispatcher for discrete actions (weapon/plasmid
   switch, ToggleHUD, SetFOV - one high-value hook makes dozens of features one-liners); direct
   hooks for continuous aim.
@@ -225,3 +248,22 @@ runtime.
   the pump thread parked (submit stops firing in inline mono, so it is never kicked; any stray
   wake hits the guard) - a boot-time poke that prevents pump creation entirely is queued as
   polish, not correctness.
+- **2026-07-25 - Synthetic gamepad: last-hop IAT injection + driving the engine's own pad
+  path.** The proxy post-hook seam alone was insufficient twice over: the Steam overlay
+  code-hooks the export thunk of every loaded xinput DLL (calls die inside Steam Input before
+  the proxy body runs), and the remaster never calls UWindowsViewport::UpdateInput - the only
+  pad-read in the image - in windowed mode (boot-time GetState probe only, no re-probe ever).
+  Shipped shape: (1) core/input/xinput_bridge composes synthetic state (XR slot + self-expiring
+  seam test slots, buttons OR / triggers max / larger-magnitude axes, bridge-owned packet
+  counter) and re-points the game's IAT ord-2 slot at its wrapper, keeping the previous target
+  as passthrough so Steam-served real pads keep working; (2) game/bioshock1r/input_drive arms
+  the engine's own UWindowsClient::SetUseController(TRUE) (UI prompts + game-level gates flip
+  properly) and calls viewport->UpdateInput(0, dt) once per present from the CalcView detour,
+  SEH-guarded, so the STOCK pad pipeline consumes the composed state; (3) core/vr/openxr_input
+  is a sibling .cpp fed handles at five runtime lifecycle points (no globals exposed, runtime
+  file stays display-only). vrinput enable persists via a marker file read at DLL attach
+  because the client-init probe runs before the command seam's first poll. Rejected: always-on
+  connected reporting (violates passthrough-when-off), WM_DEVICECHANGE nudging and the
+  UseJoystick/UseController ini keys (all provably ignored), MinHooking UpdateInput (nothing
+  calls it - there is nothing to hook), and dpad chords on Touch (hidden state; the M8 radial
+  wheels own discrete selection).
