@@ -437,22 +437,34 @@ void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
         g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    // Stall guard 2 (predictive, the real hang fix - session 6, two live
-    // hangs): the engine's submit-head wait is event-based with a
-    // lost-wakeup race that strands the game thread when it engages. Drain
-    // the pipeline OURSELVES before the second call: poll both frame-id
-    // slots until their completion high bits are set (zero frames in flight
-    // - the engine waiter then never engages), bounded, skip on timeout
-    // (render thread paused/stalled). A poll cannot lose a wakeup.
+    // Stall guard 2 (predictive - session 6, THREE live hangs): the engine's
+    // command-ring event protocol has a lost-wakeup race between "ring full"
+    // (game thread, build) and "ring empty" (render thread, drain) waits -
+    // hang thread-dump: game thread waiting at exe+0x61D38E from build site
+    // 0x4CDCD7, render thread waiting inside the drain at +0x30, both
+    // stranded. Drain the pipeline OURSELVES before the second call: poll
+    // until both frame-id completion bits are set AND the command ring's
+    // producer/consumer cursors are equal (ecx = the build's queue object;
+    // +0x118/+0x11C is the same cursor pair the submit call-site gate
+    // checks). Starting pass 2 against a truly idle ring keeps the engine's
+    // racy full/empty waits from engaging. Bounded, skip on timeout (render
+    // paused/stalled). A poll cannot lose a wakeup.
     const volatile int32_t* frameA = reinterpret_cast<const volatile int32_t*>(
         g_imageBase + patterns::kFrameIdPairRva);
     const volatile int32_t* frameB = reinterpret_cast<const volatile int32_t*>(
         g_imageBase + patterns::kFrameIdPairRva + patterns::kFrameIdSecondOffset);
+    const volatile uint32_t* ringProd = reinterpret_cast<const volatile uint32_t*>(
+        static_cast<const uint8_t*>(ecx) + patterns::kQueueRingProdOffset);
+    const volatile uint32_t* ringCons = reinterpret_cast<const volatile uint32_t*>(
+        static_cast<const uint8_t*>(ecx) + patterns::kQueueRingConsOffset);
     LARGE_INTEGER w0, w1;
     QueryPerformanceCounter(&w0);
     bool drained = false;
     for (;;) {
-        if (*frameA < 0 && *frameB < 0) { drained = true; break; }
+        if (*frameA < 0 && *frameB < 0 && *ringProd == *ringCons) {
+            drained = true;
+            break;
+        }
         QueryPerformanceCounter(&w1);
         if (qpc_us(w0, w1) > 20000) break; // 20 ms: pump is stalled
         YieldProcessor();

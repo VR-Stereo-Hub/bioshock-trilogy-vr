@@ -194,3 +194,18 @@ runtime.
   other geometry errors in-headset. Rejected: blanking the stale eye (flicker), acquiring both
   swapchains every frame (pointless copies), per-eye fov storage (fov only changes on user
   toggles; one-frame mismatch invisible).
+- **2026-07-24 - SequentialReentry stereo (M4 rung 2): eye pair per game tick via the scene-build
+  double-call.** Three coupled choices. (1) *Coherent pair by replay*: pass 1 (LEFT) runs the full
+  CalcView drive, caches the final un-eyed camera (game-thread-local, no locks), applies -IPD/2;
+  pass 2 (RIGHT) replays the cached base + IPD/2 instead of re-sampling the head pose - a Present
+  lands between the two passes, so re-sampling would skew the pair (vertical disparity). (2) *Eye
+  attribution by SPSC tag ring* (`vr::sr_push_eye`): the game thread pushes the eye sign at each
+  nested engine submit; Present-tail pops one per Present - valid because submits:presents are
+  exactly 1:1 in gameplay (live-verified); depth > 2 self-clears (mode-boundary skew); presents
+  without tags flow mono, so AER/mono paths are untouched. Rejected: presenting-thread inference
+  from present parity (breaks on any dropped present) and cross-thread mutex handoff (a lock in
+  the present path). (3) *Pacing by drain-poll, not the engine's waiter*: before pass 2, poll the
+  frame-id pair's completion high bits until the pipeline is empty (bounded 20 ms, skip on
+  timeout) - the engine's own event wait has a live-proven lost-wakeup race (two hangs); a poll
+  cannot lose a wakeup, and with zero frames in flight the racy waiter never engages. The timeout
+  doubles as the unfocused path: presents stop, doubling degrades to mono instead of stalling.
