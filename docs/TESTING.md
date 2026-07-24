@@ -61,6 +61,10 @@
   game first and retries past the poller's transient file lock. IMPORTANT: the poller runs
   inside the CalcView hook, which the engine pauses while the window is unfocused - after
   game-cmd, run a game-shot (it holds focus ~2.5 s) so the poll actually fires.
+- **Stale command.txt re-applies at boot** (learned 2026-07-24 session 7: a leftover
+  "reentry stereo on" armed hooks at the menu on a fresh launch). Delete
+  `%LOCALAPPDATA%\BioshockVR\command.txt` (or overwrite it) before a launch that must
+  start clean.
 - **Window screenshots**: `.\tools\game-shot.ps1 -Out shot.png` captures the game WINDOW
   (PrintWindow, D3D content included), foregrounding it first - the game pauses its boot and
   its presenting while unfocused.

@@ -119,8 +119,14 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       swap-eyes diagnostic (not needed - depth correct), head-offset telemetry. Open follow-up:
       the IPD slider's effect is in doubt (user unsure it changes anything) - verify when
       revisiting calibration.*
-- [ ] **SequentialReentry** (primary bet): hook scene-draw entry (from DR-3/DR-5), render twice
+- [x] **SequentialReentry** (primary bet): hook scene-draw entry (from DR-3/DR-5), render twice
       per frame with per-eye cameras, CopyResource each eye out; HUD off in stereo + own reticle
+      *2026-07-24 (sessions 6-7): FLAT-PROVEN full-rate - `reentry 1t on` (real single-threaded
+      render switch) + `reentry stereo on` doubles every scene build L/R at 225 pairs/s = 450
+      presents/s on the game thread, eye-tagged capture into the AER swapchain pair, 5-min
+      stationary + ~6.5-min synthetic play soaks clean, zero faults (user waved off longer).
+      First in-headset test = the session-7 checklist. HUD still renders in both eyes (HUD-off
+      + reticle = M9 tie-in); per-pair xrWaitFrame pacing queued as polish.*
 - [ ] Z3D depth-reproject fallback policy selectable in ImGui
 - [ ] **Done when:** true geometric stereo (wrench/railings show correct parallax), 72 fps at
       default renderScale, 30-min session without visual state corruption.
