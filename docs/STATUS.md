@@ -283,10 +283,14 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **USER: in-headset test of the one-toggle flow** - checklist at the bottom of the
-   session-8 log. Load a save, `vrstereo on` (or the overlay checkbox) once, headset
-   on; loads no longer need any off/on dance. Confirm stereo/comfort match session 7
-   and that a mid-play save load stays stereo. This is the M4 30-min done-when run.
+1. ~~USER: in-headset test of the one-toggle flow~~ - DONE 2026-07-24 same evening:
+   "Alright looks good... I just care that it's turning on with a simple toggle
+   instead of doing commands" - the vrstereo ON flow is user-verified in-headset.
+   One NON-BLOCKING bug found and PARKED to M9 by the user's choice (off/re-arm
+   state interaction with the top "VR enabled" toggle - details in the M9 list).
+   Still open from the done-when: a 30-MIN continuous session and a combat-scene
+   feel/perf check - both fall out naturally from the user just playing with
+   vrstereo on.
 2. **Combat-scene perf check**: session-8 flat perf was measured in spawn/arrival
    scenes (~81-225 pairs/s, both > 72). Get a combat save and confirm pairs/s stays
    over 72 under effects (the only untested M4 perf case).
@@ -320,6 +324,18 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ### 2026-07-24 - Session 8
 
+- **(late addendum) IN-HEADSET USER VERIFICATION of the one-toggle flow -
+  PASSED**: "Alright looks good... I just care that it's turning on with a
+  simple toggle instead of doing commands. What we have now is good." One
+  non-blocking bug found and parked to M9 at the user's request: in-game
+  `vrstereo off` alone does not fully disengage (needs the top "VR enabled"
+  checkbox off too), and after that, re-arming in-game only re-engages after a
+  quit-to-menu round trip. Recorded in the M9 polish list with debugging leads.
+- **(late addendum) Model-switch code audit**: re-verified the flush-point
+  detour against the disasm, all format strings, and the calling conventions;
+  found + fixed ONE bug (commit 3ce7f3b - the overlay checkbox's pending
+  request could swallow a second toggle posted in the same frame), and
+  live-verified the checkbox path end to end (was command-path-only before).
 - **Step 0 - flush-point disk disasm (capstone, scratchpad).** Re-walked
   0x61D260..0x61D400 from the exe: prologue `55 8B EC 51 8B 4D 0C`, `ret 8`,
   and the INLINE branch confirmed exactly (arg1 -> [mgr+0xC]; arg2's 16 dwords

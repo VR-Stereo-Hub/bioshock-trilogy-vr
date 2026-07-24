@@ -187,6 +187,13 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       rung-2 verification by user choice - "nothing major, not that noticeable"; candidates
       to check when tuning: pose-claim timing vs capture, worldScale/IPD interaction, the
       game's own view bob)
+- [ ] vrstereo off/re-arm state bug (parked here 2026-07-24 session 8 by user choice - the
+      ON path is what matters and works): in-game `vrstereo off` alone does not fully
+      disengage (user needed the top "VR enabled" checkbox off too), and after disengaging
+      via "VR enabled", re-arming vrstereo in-game does not re-engage until a quit-to-menu
+      round trip. Likely state interaction between the vr::enabled/session pacing flag and
+      the stereo capture path (sr tag ring / pair pacing holding stale state, or camera-mode
+      request vs g_enabled) - map the three toggles' state machine when fixing.
 - [ ] Config surface cleanup; README install guide; GitHub release zip
 - [ ] **Done when:** a non-developer installs from the release zip and plays with full HUD.
 
