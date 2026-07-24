@@ -2,6 +2,45 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Current state (2026-07-25, session 9)
+
+**M5 rung 1 - the synthetic-XInput lane - is BUILT and FLAT-VERIFIED end to
+end.** With NO physical gamepad connected, the game is fully driven from
+synthetic controller state: a synthetic dpad moved the main-menu highlight, a
+synthetic A activated CONTINUE and loaded the save, right-stick yawed and
+left-stick moved the live in-game camera (heartbeat loc/rot deltas), and
+`vrinput off` restored byte-identical passthrough. The OpenXR action layer
+(one "gameplay" action set, 15 actions, Quest 3 Touch bindings) boots clean
+and feeds the same bridge; in-HEADSET controller feel is the user's next check.
+
+**The lane is NOT the originally-planned "proxy post-hook only" shape - two
+surprises forced a bigger build (all in ENGINE_NOTES "Gamepad architecture"):**
+(1) the **Steam overlay code-hooks our proxy's export thunk** and swallows
+XInputGetState before the proxy body runs, so composed state must enter via
+the game's own IAT slot instead (bridge re-points ord-2 at a wrapper; Steam
+chain kept as passthrough so real pads still work); (2) the remaster **only
+reads the pad inside `UWindowsViewport::UpdateInput` (RVA 0x853D20), which
+nothing calls in windowed mode** - the game probes once at boot and never
+re-polls (ini `UseJoystick`/`UseController` are dead). So the adapter drives
+UpdateInput itself once per present and flips the engine's own
+`SetUseController`. Shipped modules: `core/input/xinput_bridge` (compose +
+merge + game-IAT wrapper + self-expiring seam test slots), `core/vr/openxr_input`
+(action set), `game/bioshock1r/input_drive` (the UpdateInput pump). A marker
+file (`%LOCALAPPDATA%\BioshockVR\vrinput.on`) read at DLL attach covers the
+boot probe so a sticky opt-in survives relaunches.
+
+**Test loadouts: use an EXTERNAL TRAINER (user's call, working).** The Tab
+console is compiled out of this Steam build (verified `-allowconsole` on the
+live command line, still dead) and User.ini `[Default]` command binds are
+inert. A native console-exec seam was built as the fallback (`exec`/`execc`/
+`exece` call the engine's own Exec dispatchers with a stub FOutputDevice) and
+reaches native handlers (`ToggleUseController`, `GETMAXTICKRATE` = HANDLED),
+but the UnrealScript cheat path (`givebioshockweapons`/`God`) falls off the
+links reachable safely; the player-object entry that runs them unbalanced the
+stack (CRT check abort - REMOVED). The trainer gives wrench + pistol + a
+plasmid + unlimited ammo/money, enough for the combat feel check. The exec
+seam stays as parked M6 groundwork (real dispatcher RVAs, no crash).
+
 ## Current state (2026-07-24, session 8)
 
 **M4 IS DONE (user call at the session-8 wrap: "M4 is done - it's good for now and
@@ -289,31 +328,26 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. ~~USER: in-headset test of the one-toggle flow~~ - DONE 2026-07-24 same evening:
-   "Alright looks good... I just care that it's turning on with a simple toggle
-   instead of doing commands" - the vrstereo ON flow is user-verified in-headset.
-   One NON-BLOCKING bug found and PARKED to M9 by the user's choice (off/re-arm
-   state interaction with the top "VR enabled" toggle - details in the M9 list).
-   **M4 ticked DONE at the wrap (user call); combat check deferred to the M5 era.**
-2. **M5 session 1 - synthetic XInput lane**: OpenXR action sets (controller poses,
-   sticks, buttons, triggers) feeding a synthetic XINPUT_STATE served by OUR OWN
-   xinput1_3 proxy (we are the DLL the game imports - no hook needed; see
-   ENGINE_NOTES hook table + src/proxy). Real-pad passthrough must keep working;
-   synthetic state merges/overrides when VR input is on. Flat-verifiable: assert
-   the game reacts (menu nav, in-game movement) with no physical pad connected.
-3. **M5 support piece - test-loadout capability (user request)**: a way to grant
-   weapons + plasmids for controller testing (single-player dev work - cheats are
-   fine). Order of attack: (a) `-allowconsole` + Tab console (ConsoleKey=9,
-   unverified in this Steam build - ENGINE_NOTES Config/ini facts; the shipped
-   `.debug` scripts show the vocabulary: `testAddAvailablePlasmid ElectricBolt`
-   etc., classic BioShock also has `givebioshockweapons`, `God`); (b) if Tab is
-   dead, find the console-command DISPATCHER (FName-chain on command strings -
-   already a planned hook point in ENGINE_NOTES) and wire `exec <cmd>` through
-   the command.txt seam so the harness can grant loadouts directly; (c) last
-   resorts: external trainer or a downloaded save with a stocked loadout.
-4. **Combat check (deferred by user to the M5 era)**: once motion controllers +
-   test loadouts exist, verify combat feel and that pairs/s stays over 72 under
-   effects (the one perf case never measured flat).
+1. **USER: in-headset controller + first-combat test** (checklist at the bottom
+   of this session's log). Put the headset on with the trainer active and verify
+   the Quest 3 Touch mapping feels right (move/look/fire/plasmid/grips/buttons/
+   START), then the deferred COMBAT FEEL check: fire the pistol + a plasmid, and
+   confirm stereo pairs/s stays over 72 during effects (the one perf case never
+   measured). Report back; mapping tweaks are cheap (all in openxr_input.cpp).
+2. **M5 rung 2 - menu mode (next session)**: whole frame on a quad when paused/
+   in-menu; controller laser -> virtual mouse (DR-6 decides synthetic Win32 mouse
+   vs DirectInput; we now have GetState-lane telemetry to probe which path the
+   gameswf menus read). Note: menu NAV already works via the synthetic dpad/stick/
+   A through the gamepad lane - the quad + laser is the immersion piece.
+3. **Controller polish surfaced by the headset test** (likely): deadzone tuning
+   (overlay slider live), stick response curve, the menu long-press START/BACK
+   timing, and whether grips-as-bumpers for weapon/plasmid cycling feels right vs.
+   needs the M8 radial wheels sooner.
+4. **Test loadouts = external trainer (DONE, user's call).** The native
+   console-exec seam (`exec`/`execc`/`exece`) is parked M6 groundwork - if a
+   future session wants in-DLL script exec, the missing piece is the exact
+   signature of the player-object Exec entry (slot 65 unbalanced the stack;
+   ENGINE_NOTES). Do NOT re-enable a player-vtable call without reversing that.
 5. **Remaining stereo polish**: HUD-in-stereo decision (renders in both eyes; verify
    on a HUD-bearing spawn, M9 ties in), world-scale/IPD calibration pass (parked M9).
 6. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
@@ -342,6 +376,86 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-25 - Session 9
+
+- **Synthetic-XInput lane BUILT + FLAT-VERIFIED (3 commits).** commit 1
+  `core/input/xinput_bridge`: composes an XINPUT_GAMEPAD from an XR slot +
+  self-expiring seam test slots, merges over the real pad (buttons OR /
+  triggers max / larger-magnitude axis / bridge-owned packet counter),
+  registers the proxy `@200` post-hook and a `vrinput on|off|status` +
+  `vrinput test ...` command grammar. commit 2 `core/vr/openxr_input`: one
+  "gameplay" action set (move/look/fire/plasmid sticks+triggers, grips w/
+  hysteresis -> bumpers, A/B/X/Y, stick clicks, menu short/long START/BACK,
+  grip poses for M6), oculus/touch_controller bindings + khr/simple fallback,
+  attached per session, synced once per eye pair from Present-head, published
+  to the bridge. Mapping table + decision log in ARCHITECTURE.
+- **Two blockers discovered live and worked around (ENGINE_NOTES "Gamepad
+  architecture").** (a) The game reads the pad ONLY in
+  `UWindowsViewport::UpdateInput` (RVA 0x853D20, found via XINPUT1_3 import-
+  thunk walk + RTTI), which NOTHING calls in windowed mode - the game probes
+  GetState ~6x at boot and never re-polls (WM_DEVICECHANGE, ini
+  UseJoystick/UseController, pad-connected global all inert until UpdateInput
+  runs). (b) The **Steam overlay code-hooks our proxy's export thunk** and
+  eats GetState before the proxy body/post-hook runs. Fix: `game/bioshock1r/
+  input_drive` drives UpdateInput once per present + flips the engine's own
+  `UWindowsClient::SetUseController`, and the bridge re-points the game's IAT
+  ord-2 slot at a composing wrapper (Steam chain kept as passthrough). Sticky
+  opt-in via a marker file read at DLL attach (covers the boot probe).
+- **Flat proof (no physical pad):** menu highlight moved on synthetic dpad;
+  synthetic A activated CONTINUE and loaded the save; right-stick yawed and
+  left-stick moved the live camera (heartbeat deltas > 50 UU); `vrinput off`
+  froze it and restored the real DEVICE_NOT_CONNECTED result + frozen packet.
+  `vrinput status` lane counters: `iat` climbs at ~2x present rate while armed,
+  `proxy` stuck at the 6 boot-probe calls (Steam eats that lane).
+- **Test loadouts: Tab console + ini binds proven DEAD**, native console-exec
+  seam built as fallback (`exec`/`execc`/`exece` - real UWindowsViewport/
+  UWindowsClient/UGameEngine Exec dispatchers, stub FOutputDevice; native
+  handlers HANDLED, script cheats fall off). A player-vtable-slot-65 call to
+  reach the script cheats **unbalanced the stack (CRT check-fail modal)** and
+  was REMOVED. **User installed an external trainer** (wrench + pistol +
+  plasmid + unlimited ammo/money) - the pragmatic fast path, exec seam parked
+  as M6 groundwork. 3rd commit: exec seam + crash-lane removal.
+- Harness/tooling: scratchpad capstone scripts for the import-thunk walk,
+  RTTI vtable resolution, vtable-slot indexing, SEH-prologue function-start
+  finder, and an SEH fault-address capture in console_exec that pinned the
+  engine-Exec `this`-offset bug (needs the FExec subobject at engine+0x40).
+- Session ends: fixed DLL built (crash lane gone); it installs on the next
+  game-closed launch. Game currently running the pre-fix DLL WITH the trainer
+  - the popup will NOT recur (nothing sends the removed `execp`). Checklist below.
+
+**In-headset checklist (session 9 - CONTROLLERS + first combat; the trainer
+is already granting a starter loadout):**
+1. Close the game if open (so the fixed DLL installs), then in a repo-root
+   PowerShell: `.\tools\install.ps1` (or it auto-installs on the next
+   `build.ps1 -Install`). Quest 3 on, Virtual Desktop connected (VDXR),
+   Streamer running. Clear a stale command.txt if you armed anything.
+2. Launch BioShock from Steam. Re-activate the trainer once in-game.
+3. Load your post-cutscene save (the one with the starter loadout). You can
+   do this with the mouse/keyboard or, once vrinput is on, the controller.
+4. Turn on the synthetic gamepad: tick **"VR input (motion controllers as
+   gamepad)"** in the F10 overlay's Input section, or
+   `.\tools\game-cmd.ps1 "vrinput on"`. The log shows `input drive: armed` and
+   the on-screen button prompts flip to Xbox icons. (It is sticky across
+   boots once on - a marker file re-arms it; send `vrinput off` to clear.)
+5. Optionally arm stereo too: `.\tools\game-cmd.ps1 "vrstereo on"` (or the
+   overlay checkbox) - the full VR combat view. Headset on.
+6. **Controller feel** - verify the Quest 3 Touch mapping (documented in
+   ARCHITECTURE "Controller mapping"): LEFT stick moves, RIGHT stick looks,
+   RIGHT trigger fires the weapon, LEFT trigger fires the plasmid, grips cycle
+   weapon (R) / plasmid (L), A/B/X/Y and stick-clicks pass through, LEFT menu
+   short-press = START (pause), hold = BACK. Note anything that feels off -
+   deadzone (overlay slider is live), stick sensitivity, or the grip/bumper
+   choice.
+7. **First combat feel check** (the M4-era deferral): with the trainer's
+   pistol + plasmid, fire at a splicer or the training dummy area - does aiming
+   with the stick + firing feel coherent in stereo? Watch comfort and whether
+   stereo pairs/s holds over 72 during muzzle flashes / plasmid effects
+   (overlay shows pairs/s; this is the one perf case never measured flat).
+8. EXPECTED (not failures): aim is still HEAD-driven, not controller-driven
+   (decoupled aim is M6); HUD renders in both eyes; hands/weapon are not yet
+   visible (M7). Bail-out: `vrinput off` + `vrstereo off`, or just close the
+   game - saves are safe.
 
 ### 2026-07-24 - Session 8
 
