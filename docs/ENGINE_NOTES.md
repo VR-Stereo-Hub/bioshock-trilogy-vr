@@ -211,13 +211,47 @@ renderer single-threaded: `[0x13566C4]` (pump kick event) and `[0x13566CC]`
 created, the flush-point (0x61D260) drains INLINE on the game thread, and the whole
 two-thread event protocol (the entire deadlock class) is structurally absent. In this
 scene it is also FASTER: 630-710 fps vs ~530 threaded; build == submit == presents
-1:1:1 all on the game thread. Stereo doubling on top ran clean at 194 pairs/s
-(388 presents/s) for ~1 min / ~23k pairs, then CRASHED (not hung) at the recurring
-signature: **drain+0x33 (0x61CB13), fault addr 0x40 = null object's +0x40 field** -
-the same site as session-5's forced drain pulse. So on the onethread substrate the
-one remaining defect is a rare null-deref inside the doubled drain; minidumps are
-preserved (`%LOCALAPPDATA%\BioshockVR\crash\bvr_20260724_181619.dmp` is the specimen;
-never commit dumps) and symbolizing the faulting object is next session's opener.
+1:1:1 all on the game thread. WARNING (session-7 lesson): the steam://run arg can
+silently fail to take on a relaunch - ALWAYS verify (hexdump of the two globals = all
+zeros, or the reentry heartbeat's `mode=1T` tag, added session 7).
+
+**The "onethread stereo crash" was a MISATTRIBUTION - session-7 minidump forensics
+(all three 2026-07-24 evening dumps, hand-parsed MiniDumpNormal: exception context +
+thread stacks + module list, cross-checked against a capstone disk disasm of the
+drain head).** The findings, each register-verified:
+- **Drain head decode (0x61CAE0..)**: after `EnterCriticalSection([this+8]+4)` the
+  drain loads ESI = `[this+0xC]` (drain+0x30) - the SUBMITTED-FRAME CONTEXT slot -
+  then dereferences `[ESI+0x40]` at drain+0x33 (the frame's viewport object; a
+  virtual call through its vtable +0xEC follows, then +0x80..+0x98 viewport params
+  are copied out). With the slot EMPTY (no submitted frame pending) ESI == 0 and the
+  read faults at addr 0x40. That is the entire crash: **a drain entered with
+  `[this+0xC]` NULL.**
+- **Both drain+0x33 specimens (18:05:54 and 18:16:19) fault on the render PUMP
+  thread** (shallow dedicated stack: BaseThreadInitThunk -> pump loop -> drain, ret
+  0x61D21E, EBX=ECX=this, ESI=0) - i.e. THREADED mode. The 18:16 process ("the
+  onethread stereo run") had a live pump thread, its game thread parked in the known
+  deadlock wait INSIDE a hooked build (BuildDetour frames on its stack, stereo
+  active), and the watchdog thread's stack carries kick_engine_event frames: the
+  classic sequence is deadlock -> pump woken into consumed state (wdkick or the
+  desynced protocol's stray kick) -> drain walks the empty slot -> crash. The
+  -onethread arg had NOT taken on that relaunch.
+- The 18:11:16 dump is the recorded `[0x1375BD4]`-poke dead end: game-thread fault
+  at exe+0x741D7F in a load-path callstack (0x4CB40A/0x4CCB19/0x4D4821...), exactly
+  as logged live.
+- **Consequence: there are ZERO observed crashes on a VERIFIED onethread substrate.**
+  The drain null-deref is a threaded-mode empty-wake defect (same state as
+  session-5's forced re-drain pulse, which faulted at the same +0x33).
+
+**Session-7 fixes (scenedraw.cpp / patterns.h):** (1) `render_is_threaded()` reads
+the two pump globals - `reentry stereo on` now REFUSES the threaded substrate
+(`reentry stereo force` overrides for experiments), the heartbeat/status/overlay
+carry a `mode=MT|1T` tag, and STEREO ON logs the live mode, so a silent mislaunch
+cannot recur; (2) while doubling is active, DrainDetour (auto-installed with stereo)
+SKIPS a drain entered with `[this+0xC] == 0` (`kQueueFrameCtxOffset`) - with no
+frame there is nothing to consume; skips get their own `guardskips` counter. In
+threaded force-mode the null check races the producer (a skip can eat an auto-reset
+wake = possible stall, strictly better than the crash); under onethread it is
+same-thread and exact.
 
 **Dead ends recorded (do not retry):** (1) `[0x1375BD4]`, the first check in the
 flush-point's threaded-vs-inline chain, is NOT a render toggle - it has 500+ code
