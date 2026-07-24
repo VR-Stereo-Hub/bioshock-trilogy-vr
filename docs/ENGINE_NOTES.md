@@ -158,7 +158,8 @@ play); the per-frame render entry is the DRAIN. Full corrected map (all live-ver
 | **0x61CAE0** | **drain** - the per-frame render entry: entered EXACTLY once per Present (drain/s == presents/s == 517-525 live, 40 s soak), ~1.6 ms per call, on the render thread. SEH-frame prologue `55 8B EC 6A FF 68`, __thiscall, zero stack args. Sole caller: 0x61D21E (pump loop). | live pass-through hook heartbeat |
 | **0x61D1D0** | render-thread **pump loop** (thread main): frameless `push esi` prologue (session 4's CC-55-8B-EC prologue walk overshot it), registers `GetCurrentThreadId()` into `[RVA 0x13784E4]` (live: held the render tid), then loops `WaitForSingleObject(INFINITE)` -> drain -> `SetEvent`. Entered ONCE - hooks on anything above the drain never fire per frame. | byte walk + import resolution + live tid global |
 | **0x61D0F0** | render **flush/join** (not a frame function): stamps `[mgr+0x58]=1`, waits; `[queue+0x58] != 0` is the PUMP EXIT flag. 0 entries during menu + gameplay. | live hook, 0 entries |
-| **0x585AC0** | **game-thread frame SUBMIT/KICK - the SequentialReentry seam.** `ret 0xC` (3 stack args; arg1 = FVector* camera loc, arg3 = viewport/scene object with +0x378/+0x3DC reads). Stores camera loc into `[0x13865B0..]` (3 floats) and the submitted-frame block `[0x13AF7E8..]` (frame/owner dword, float3 loc at +4, int3 rot at +0x14), TryEnter/LeaveCriticalSection on the two buffer objects held in globals `[0x13A5FBC]`/`[0x13A5FC0]` (CS at obj+4), then `SetEvent([[0x13566C4]]+4)` at 0x585C62 to wake the pump. Prologue `55 8B EC 51 64 A1 2C 00 00 00` (TLS read - hookable, first boundary 4+6 bytes). | SetEvent caller sampler (tid == game thread, ret RVA 0x585C68) + byte walk |
+| **0x585AC0** | **game-thread frame SUBMIT/KICK - hand-off only, NOT the reentry seam** (see session-6 refutation below). `ret 0xC` literal (`C2 0C 00`; 3 stack args; arg1 = FVector* camera loc, arg2 = FRotator* - CONFIRMED session 6: 3 dwords copied to block +0x14/+0x18/+0x1C, arg3 = viewport/scene object with +0x378/+0x3DC reads). ECX dead at entry (`push ecx` is stack alloc; first ECX use loads arg3). Head spin-waits on frame-number globals `[0x13AF7E8]`/`[0x13AF7F8]` vs a TLS frame id. Stores camera loc into `[0x13865B0..]` (3 floats) and the submitted-frame block `[0x13AF7E8..]` (frame/owner dword, float3 loc at +4, int3 rot at +0x14), TryEnter/LeaveCriticalSection on the two buffer objects held in globals `[0x13A5FBC]`/`[0x13A5FC0]` (CS at obj+4), then `SetEvent([[0x13566C4]]+4)` at 0x585C62 (event object vtable-checked against RVA 0xE2D584; handle at obj+4). Prologue `55 8B EC 51 64 A1 2C 00 00 00`. In GAMEPLAY it fires exactly 1:1 with presents from one call site (ret RVA 0x4CDD8A, inside the scene build); during save-LOAD from ret 0x4CC6C8 (a second, load-path build); at the static main menu it fires ZERO times (menu present path not via this submit). | disk-image capstone disasm + live submit hook (session 6) |
+| **0x4CCE70** | **game-thread scene BUILD root - THE SequentialReentry seam.** Builds the render command queue (CalcView runs EXACTLY once inside every call - live: calcview-in == build/s == presents/s) and at its tail (site 0x4CDD85, gated on render-thread obj `[0x13566CC]` non-null and queue ring `this+0x118 != this+0x11C`) calls the submit. Aligned-stack MSVC prologue `53 8B DC 83 EC 08 83 E4 F0` (push ebx; mov ebx,esp; and esp,-16 - NOT 55 8B EC: the 55-8B-EC backwards scan lands on a DECOY SEH function at 0x4CCD20 ("MyCheckpointData" scope); the real boundary is the 11-byte CC run ending 0x4CCE6F), then an SEH frame. `ret 0x10` = 4 stack args; ECX = live `this` (stored to [ebp-0x80]; the queue-ring object), stack arg1 -> edi (+0x48 read at tail). Static call sites 0x4CA9A4 / 0x4D2F68; live gameplay caller ret RVA 0x850EF0. ~50-80 us pass-through. | live submit-hook caller RVA -> disk-image capstone walk -> live build hook (session 6) |
 | 0x583FDB | job-system WORKER completion SetEvent (3 worker threads, ReleaseSemaphore wake + job virtual call). Not a stereo seam. | sampler + byte walk |
 
 Thread topology (live): game thread runs CalcView (~2 calls/frame, 1030-1170/s) and the
@@ -172,26 +173,55 @@ detour (SEH-guarded pulse) faults 0xC0000005 at **0x61CB13** (drain+0x33) - the 
 consumed/swapped and re-draining dereferences dead state. The poison latch caught it and
 the hook stayed pass-through, but the pump's event protocol wedged afterward (game hung
 - kill it; this is why the double-call probe is a PULSE, not a soak, and why the drain
-is not the seam). SetEvent-rate note: the submit site fires ~3.7x per present at the
-menu (multiple viewports/passes per frame?) - instrument per-arg telemetry before
-double-calling.
+is not the seam). Session-5's "submit fires ~3.7x per present at the menu" kick-sample
+figure did NOT reproduce in session 6: at the static main menu the hooked submit fires
+ZERO times (the sampler likely caught a transient boot/attract state); in gameplay it is
+exactly 1:1 with presents.
 
-**Consequence for SequentialReentry:** re-enter the GAME-THREAD submit (0x585AC0) -
-double-call with a modified rot arg (args are by-pointer) = a second full frame with a
-shifted camera, paced by the engine's own buffer sync; each submit ends in its own
-Present, so per-eye capture can key off presents (AER swapchain infra reuses as-is).
-Next probe: command-gated hook on 0x585AC0, per-call arg telemetry (loc/rot/arg3
-identity per present), then pulse a double-submit with a yaw delta on the copied rot.
+**Submit re-entry REFUTED, build re-entry PROVEN (2026-07-24 session 6, all
+flat-verified).** Double-calling the SUBMIT with a yawed rot copy is ABSORBED: thousands
+of doubled submits (pulse + continuous), zero faults, but presents never doubled and the
+yawed camera never rendered (all continuous-window screenshots at the 0.33 noise floor).
+The view data the renderer consumes is baked into the command queue during the BUILD -
+the submit's camera-global stores do not feed the already-built queue (consistent with
+DR-3: view-proj rides in per-draw VS b0). The caller's own locals are what the submit
+receives (call site pushes `lea [ebp-0x6C]/[ebp-0x7C]`).
 
-**DR-5 probe tooling (session 5):** `game/bioshock1r/scenedraw.{h,cpp}`, all
-command-gated via the seam (`reentry hook [drain|flush]|unhook|on|off|pulse|yaw
-<deg>|latchclear on|off|reset|status|kick on|off|calcstack`). 1 Hz heartbeat: drain+flush
-entries/s, presents/s, CalcView in/out (tid-attributed), call durations, beat/calc tids,
-distinct caller RVAs. Second original call SEH-guarded (C++ throws pass through) with a
-poison latch; CalcViewDetour runs only original+yaw during a second pass. `kick` =
-process-wide SetEvent-caller sampler (found the submit); `calcstack` = one-shot
-game-thread stack scan (script-VM frames 0x679067/0x67AF88 dominate; upstream candidates
-0x491C86/0x7327DA/0x55A4A2).
+**Double-calling the BUILD (0x4CCE70) is the SequentialReentry primitive, proven
+end-to-end:**
+- Pulse: second call does real work (call2 ~1.9-2.3 ms vs ~50-80 us pass-through),
+  re-submits (submitsD=1), an extra present lands DURING the second call (engine's own
+  buffer sync paces it), and CalcView re-enters once (the CalcViewDetour second-pass
+  applied the yaw). No fault, no wedge - unlike the drain, the build tolerates immediate
+  re-entry (it spin-waits in the submit head until the render thread consumed frame 1).
+- Continuous (`reentry on`, yaw 30): build 225/s, every call doubled, submit 450/s ==
+  presents 450/s - EXACTLY two engine-paced presents per game frame; game tick halves
+  (CalcView-out 1050 -> 460/s: real-time delta grows, UE2 delta-time absorbs it).
+  Screenshots show the world yawed 30 deg (stairs swing left, off-screen burning wreck
+  enters frame; img-diff mean 7.7-7.9 vs 0.33 noise floor). `reentry off` recovers to
+  1:1 instantly. Stability: ~3.5 min continuous clean (no faults, no visual drift
+  across captures), then ONE hang (~124k doubled frames in; game thread stopped, kill
+  required). It struck during a SetForegroundWindow cycle - focus transitions pause
+  presenting and may race the doubled event protocol (unproven; alternatively a rare
+  stochastic lost wakeup). Production per-eye pacing must harden this: candidates are
+  waiting on the render-done event between the paired builds, or gating the second
+  build on the submit head's frame-consumed state instead of racing it.
+- Phase note: PrintWindow captures consistently caught the SECOND (yawed) present of
+  each pair - the pair's present order appears deterministic, which is promising for
+  per-present eye attribution in the per-eye split.
+
+**DR-5 probe tooling (sessions 5-6):** `game/bioshock1r/scenedraw.{h,cpp}`, all
+command-gated via the seam (`reentry hook [build|submit|drain|flush]|unhook|on|off|
+pulse|yaw <deg>|dump <n>|arg3 <hex|off>|latchclear on|off|reset|status|kick on|off|
+calcstack`; default hook target = build). 1 Hz heartbeat: build/submit/drain/flush
+entries/s, submit-nested-in-build count, presents/s, CalcView in/out (tid-attributed),
+call durations, beat/calc tids, distinct caller RVAs. `dump <n>` logs per-submit-call
+arg telemetry (loc/rot raw+degrees, arg3 ptr + vtable RVA, presents-delta). Second
+original calls SEH-guarded (C++ throws pass through) with a poison latch; the submit
+slot doubles with COPIED loc/rot args (yaw on the copy), the build slot passes original
+args through and yaws via CalcViewDetour's second-pass path. `kick` = process-wide
+SetEvent-caller sampler; `calcstack` = one-shot game-thread stack scan (script-VM frames
+0x679067/0x67AF88 dominate; upstream candidates 0x491C86/0x7327DA/0x55A4A2).
 
 **HUD fingerprint (partial):** menu frames are pure gameswf - only SetRT ping-pong
 between T0-like LDR targets and NO depth-tested draws; in-game HUD draws land on the

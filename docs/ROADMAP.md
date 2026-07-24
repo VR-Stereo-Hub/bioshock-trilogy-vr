@@ -49,7 +49,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       frame (heartbeat: 400-7800 calls/s; fires at main menu too), offsets/wobble/FOV override
       wired with ImGui controls. USER-VERIFIED in-game same day: wobble, offsets, yaw and FOV
       all visibly work; no stutter, crash, or input weirdness. DR-4 fully retired.*
-- [ ] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability;
+- [x] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability;
       10-min play test
       *2026-07-24 groundwork: the renderer is a command queue (executor 0x61C8E0, drain
       0x61CAE0, frame root 0x61D0F0 - ENGINE_NOTES).*
@@ -61,6 +61,15 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       RVA 0x585AC0 (takes camera loc/rot by pointer, SetEvents the pump) - located via
       the probe's SetEvent caller sampler and byte-walked. Next: command-gated hook on
       the submit, per-call arg telemetry, then the yaw-delta double-submit.*
+      *2026-07-24 session 6 - DONE (flat-verified, yaw 30 > the 2-deg bar): submit
+      double-call is ABSORBED (not the seam); the real seam is the scene BUILD root
+      RVA 0x4CCE70 (CalcView runs once inside every call). Double-calling it renders a
+      complete second frame per game tick - build 225/s doubled, submit==presents==
+      450/s (two engine-paced presents/frame), yaw-30 world visible in captures, off
+      recovers instantly. Stability: ~3.5 min continuous clean (no faults, no visual
+      drift), then ONE hang (recoverable kill+relaunch; struck during a focus cycle -
+      see TESTING warning). Standing-still soak only; the 10-min PLAY test + the hang
+      hardening fold into the per-eye split session (movement/combat load).*
 - [ ] DR-6: instrument DINPUT8/window messages/XInput during menu use - which input path do
       gameswf menus read?
 - [ ] DR-7: borderless-window mode stability (vs exclusive fullscreen) for overlay + capture

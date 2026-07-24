@@ -2,7 +2,43 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-24, session 5)
+## Current state (2026-07-24, session 6)
+
+**DR-5 is DONE - the engine renders a second full frame per game tick under our control,
+flat-verified end to end.** The session-5 submit hypothesis was half right: hooking the
+submit (0x585AC0) worked perfectly (gameplay telemetry: exactly 1 submit per present,
+single call site, loc/rot == CalcView's camera), but DOUBLE-calling it is ABSORBED -
+thousands of doubled submits, zero faults, zero extra presents, the yawed camera never
+rendered. The view data is baked into the command queue during the game-thread BUILD
+(consistent with DR-3's per-draw VS b0 finding). Following the submit's live caller RVA
+into the disk image (capstone, installed this session) found the real seam: the **scene
+BUILD root at RVA 0x4CCE70** (aligned-stack `push ebx` prologue - the 55-8B-EC scan hits
+a decoy SEH function at 0x4CCD20; the boundary is a CC-padding run). CalcView runs
+exactly ONCE inside every build call (live: calcview-in == build/s == presents/s).
+
+**Double-calling the BUILD is the SequentialReentry primitive, proven:** pulse = second
+call does real work (~2 ms vs ~60 us pass-through), re-submits, lands an extra present
+during the call, CalcView re-enters and takes the second-pass yaw. Continuous (`reentry
+on`, yaw 30): build 225/s all doubled, submit == presents == 450/s (TWO engine-paced
+presents per game frame), game tick halves gracefully, and captures show the world yawed
+30 degrees (img-diff 7.8 mean vs 0.33 noise floor). `off` recovers instantly. Stability:
+~3.5 min continuous clean, then ONE hang (~124k doubled frames; struck during a focus
+cycle - kill + relaunch, TESTING warning updated; hardening folds into the per-eye work).
+DR-5 ticked in ROADMAP (yaw 30 > the 2-deg bar; 10-min PLAY test deferred to the per-eye
+session). All constants in patterns.h (kSceneBuildRva/kSceneBuildPrologue), full map +
+derivations in ENGINE_NOTES "Scene-draw architecture".
+
+**Probe tooling extended** (`reentry hook [build|submit|drain|flush]`, `reentry dump
+<n>` per-call submit arg telemetry, `reentry arg3` call-site filter; submit doubles with
+copied loc/rot args, build doubles with original args + CalcView second-pass yaw; the
+build slot owns the double-call controls while enabled). Capstone-based scratchpad
+disasm workflow replaced hand byte-walking (findings summarized in ENGINE_NOTES, dumps
+never committed).
+
+**Nothing reached headset-testable state this session** (flat probe work only; the
+per-eye split is where DR-5's primitive becomes headset-visible).
+
+## Previous state (2026-07-24, session 5)
 
 **DR-5's question is answered; the double-render seam is FOUND but not yet double-called.**
 The session-4 command-queue model was corrected by live hooks (all command-gated - default
@@ -137,26 +173,35 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **Submit-hook probe (DR-5 endgame, next session's opener)**: command-gated hook on the
-   game-thread frame submit RVA 0x585AC0 (`reentry` infrastructure + kFrameSubmitRva/
-   kFrameSubmitPrologue already in tree; detour shape differs: `ret 0xC`, 3 stack args -
-   use a __cdecl-wrapping __declspec(naked) or a __fastcall detour with 3 stack params +
-   matching ret). Phase A: pass-through + per-call arg telemetry (loc/rot values, arg3
-   identity, calls per present - the site fired ~3.7x/present at the MENU; find the
-   main-scene call in gameplay). Phase B: pulse a double-submit with a copied rot arg +
-   yaw delta - flat screenshot A/B for the second render. Phase C if stable: soak,
-   then design the per-eye split (each submit ends in its own Present, so per-present
-   eye capture via the existing AER swapchain infra should slot in).
-2. If the drain-wedge hang pattern shows up in ANY future probe: it is recoverable data,
-   not a blocker - pulse-only probes, expect a relaunch (TESTING.md warning).
-3. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
+1. **Per-eye split on the DR-5 primitive (next session's goal - M4 SequentialReentry
+   rung)**: turn the double-build into true full-rate stereo.
+   - Camera: in the CalcViewDetour, first (normal) pass shifts -IPD/2 along view-right,
+     second pass (already routed via `second_pass_for_current_thread`) shifts +IPD/2
+     (replace the probe's yaw with the eye offset; reuse `camera.cpp`'s view-right math
+     from AER).
+   - Capture: each build pair ends in TWO ordered presents; capture each present into
+     its eye's swapchain via the existing `core/vr` AER pair + `current_eye_sign` infra.
+     Eye attribution: publish a pair-phase from the build detour consumed at
+     Present-tail; session-6 observation says present order within a pair is
+     deterministic (flat captures consistently caught the SECOND present). Cross-thread
+     handoff needs care (game thread publishes, render thread consumes - the submit's
+     frame-number globals can arbitrate).
+   - Pacing/stability hardening: ONE hang in ~124k doubled frames (during a focus
+     cycle). Candidates: wait on the render-done event between paired builds; gate the
+     second build on the submit head's frame-consumed state; pause doubling while the
+     window is unfocused (presenting stops unfocused - doubling has no value there).
+   - Performance envelope: this scene ran 450 presents/s doubled; VR needs 144/s for
+     72 Hz per eye. Profile a heavy scene before committing.
+   - Then: 10-min PLAY test under doubling (movement/combat; the deferred DR-5 bar),
+     HUD-in-stereo decision (second pass renders HUD too - fine short-term).
+2. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
    recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
-4. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+3. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-5. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
+4. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
    clicks sometimes only highlight a gameswf item - VK_RETURN activates it, TESTING.md).
-6. Optional anytime: Steam Link / SteamVR cross-check.
-7. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
+5. Optional anytime: Steam Link / SteamVR cross-check.
+6. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
    test first, world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
 
 ## Open questions / blockers
@@ -174,6 +219,37 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-24 - Session 6
+
+- **DR-5 CLOSED with the full arc in one session**: hook the submit -> prove the
+  double-submit is absorbed (presents never double, yawed camera never renders - the
+  session-5 seam hypothesis refuted by its own probe) -> follow the submit's live
+  caller RVA into the disk image -> find the scene BUILD root 0x4CCE70 -> double-call
+  it -> a complete second engine-paced frame per game tick with our camera on it,
+  yaw-30 visible in flat captures. Every step flat-harness-verified.
+- **Tooling upgrade that cracked it**: installed capstone (pip) + scratchpad PE/disasm
+  scripts - the disk-image walk found the submit's true statics (arg2 IS the FRotator*,
+  ECX dead, literal ret 0xC, SetEvent site/event object), the decoy 55-8B-EC function
+  at 0x4CCD20, the CC-run boundary, and the build's aligned-stack prologue in minutes.
+  Hand byte-walking is retired for anything bigger than a spot check.
+- **scenedraw extended**: build + submit hook slots (fastcall-passthrough detours for
+  `ret 0x10`/`ret 0xC` targets), `dump <n>` per-call arg telemetry with presents-delta,
+  `arg3` filter, submit-nested-in-build counter, build-slot priority on the double-call
+  controls. Two incremental code commits pushed before the docs wrap.
+- **Live numbers (gameplay, save spawn)**: submit 1:1 with presents (single site
+  0x4CDD8A; load path uses 0x4CC6C8; static menu: zero - session-5's "3.7x at menu"
+  kick figure did not reproduce). Build pass-through ~60 us; doubled second call
+  ~2 ms. Continuous doubling: 225 build/s -> 450 presents/s, tick halves, off recovers
+  instantly. Noise floor 0.33-0.37; yawed-frame diff 7.7-7.9 mean.
+- **Honest stability record**: ~3.5 min continuous doubling clean, then one hang
+  (~124k doubled frames, during a game-shot focus cycle; kill + relaunch). Recorded in
+  TESTING with hardening candidates queued into the per-eye design.
+- **Curious + useful**: flat captures phase-lock to the SECOND present of each doubled
+  pair - present order within a pair looks deterministic, which simplifies per-present
+  eye attribution for the split.
+- Session ends with the game closed (killed post-hang), DLLs current in the game
+  folder, no headset items this session.
 
 ### 2026-07-24 - Session 5
 
