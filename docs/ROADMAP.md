@@ -124,9 +124,11 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       *2026-07-24 (sessions 6-7): FLAT-PROVEN full-rate - `reentry 1t on` (real single-threaded
       render switch) + `reentry stereo on` doubles every scene build L/R at 225 pairs/s = 450
       presents/s on the game thread, eye-tagged capture into the AER swapchain pair, 5-min
-      stationary + ~6.5-min synthetic play soaks clean, zero faults (user waved off longer).
-      First in-headset test = the session-7 checklist. HUD still renders in both eyes (HUD-off
-      + reticle = M9 tie-in); per-pair xrWaitFrame pacing queued as polish.*
+      stationary + ~6.5-min synthetic play soaks clean, zero faults. IN-HEADSET USER-VERIFIED
+      same day: "pretty good and working as intended" - real per-eye parallax at full rate,
+      depth correct, world scale good. Follow-ups: head-motion eye weirdness -> xr-frame-per-pair
+      pacing landed (comfort recheck pending); HUD still renders in both eyes (HUD-off +
+      reticle = M9 tie-in).*
 - [ ] Z3D depth-reproject fallback policy selectable in ImGui
 - [ ] **Done when:** true geometric stereo (wrench/railings show correct parallax), 72 fps at
       default renderScale, 30-min session without visual state corruption.

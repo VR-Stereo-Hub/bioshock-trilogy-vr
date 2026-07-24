@@ -4,9 +4,13 @@
 
 ## Current state (2026-07-24, session 7)
 
-**M4 rung 2 (SequentialReentry stereo) is FLAT-COMPLETE at full rate on a
-structurally deadlock-free substrate - READY FOR ITS FIRST IN-HEADSET TEST (the
-checklist is in the session-7 log entry and was handed to the user).**
+**M4 rung 2 (SequentialReentry stereo) had its FIRST IN-HEADSET TEST and PASSED the
+core criteria: real per-eye parallax at full rate, depth correct, world scale good
+(user: "pretty good and working as intended").** Two follow-ups from the test: (a)
+eyes feel weird on head movement -> xr-frame-per-pair pacing implemented + committed
+this session (flat-regression-clean; the comfort improvement is the NEXT headset
+check); (b) HUD-in-both-eyes not observed (that spawn has no HUD) - still an open
+M9 item. Also hardened a load-path crash found while iterating (see below).
 
 **The session-6 blocker dissolved under forensics.** The minidump work (hand-parsed
 MiniDumpNormal parser + capstone drain-head disasm, scratchpad) proved the
@@ -256,17 +260,21 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **USER: first in-headset full-rate stereo test** (checklist in the session-7 log
-   below). Report: parallax quality vs AER, depth direction, comfort, and whether
-   the halved game tick is tolerable. This gates everything downstream.
-2. **Stereo pipeline polish (based on headset verdict)**: xr-frame-per-pair pacing
-   (currently every present does a full xrWaitFrame cycle - halves game tick under a
-   headset; wait once per pair instead), HUD-in-stereo decision (renders in both
-   eyes today; M9 ties in), world-scale/IPD calibration pass (parked M9 IPD item).
-3. **1t hardening (optional)**: consider poking the hw-thread numerator at BOOT
-   (before renderer init) so the pump thread is never created at all - today's
-   runtime poke leaves it parked (harmless, guard-covered). Also consider wiring
-   `1t on` + `stereo on` into a single "VR stereo" toggle for the user.
+1. **USER: second in-headset stereo test - does pair pacing fix the head-motion
+   eye weirdness?** Same setup as the first (checklist below), pair pacing is ON by
+   default (overlay "SR pair pacing" checkbox toggles it live for A/B). Report
+   whether head movement feels right now, and whether the game tick feels less
+   halved. IMPORTANT new ordering rule: run `reentry 1t off` BEFORE loading a save
+   or crossing a level (a load with 1t active crashes the loader - now refused at
+   the menu and guarded, but off-before-load is the clean path).
+2. **Structural 1t fix (replaces the global poke)**: MinHook the flush-point
+   0x61D260 and force its decoded inline branch ourselves (copy args to mgr, stamp
+   mode, call drain) so loaders see the true core count and loads need no
+   off/on dance. Load-crossing soak required. (ENGINE_NOTES "1t load hazard".)
+3. **Remaining stereo polish**: HUD-in-stereo decision (renders in both eyes;
+   verify on a HUD-bearing spawn, M9 ties in), world-scale/IPD calibration pass
+   (parked M9 IPD item). Consider a single "VR stereo" overlay toggle wrapping
+   1t + stereo.
 4. Performance envelope: 168-471 pairs/s across save-spawn scenes on the inline
    substrate; VR needs 144/s for 72 Hz per eye. Profile a heavy scene (combat,
    effects) before committing.
@@ -338,30 +346,53 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 - Harness lesson recorded: a stale `command.txt` re-applies at boot (the poller
   saw session-6's "reentry stereo on" and armed everything at the menu) - clear
   it or overwrite before launching for controlled runs.
-- Session ends with the first in-headset stereo checklist handed to the user
-  (also mirrored below), game closed, all commits pushed.
+- **FIRST IN-HEADSET FULL-RATE STEREO TEST - PASSED** (user drove it): real
+  per-eye parallax at full rate, depth correct, world scale good - "pretty good
+  and working as intended, we can continue". Two follow-ups: (a) eyes feel weird
+  on head movement; (b) HUD not seen (that spawn has no HUD).
+- **xr-frame-per-pair pacing built for (a)** (commit e90765c): per-present
+  xrWaitFrame located each eye of a pair at a different predicted time while both
+  images came from one head sample -> motion-dependent reprojection shear + halved
+  tick. Now a LEFT present holds the XR frame open and the RIGHT completes it: one
+  waitFrame/locate/prediction per pair. Default on, overlay toggle for live A/B.
+  Flat regression clean; comfort is the next headset check.
+- **Load-path crash found + guarded (same commit)**: arming 1t (or doubling)
+  across a save load crashed a loader thread (ntdll EnterCriticalSection null CS,
+  load-path stack, no mod frames) - the hw-thread global + the doubled build have
+  load-path consumers. Guards: `1t on` refuses at the menu (verified live: the
+  refusal fired), warns to off-before-load, and pass 2 doubles ONLY gameplay-caller
+  builds. Regression: menu refusal OK, in-gameplay arm clean, 3-min stereo soak
+  clean, stereo-off then 1t-off restored threaded mode. The 19:54 dump is that
+  crash (recorded, not committed).
+- Session ends with the updated (order-corrected) headset checklist below, game
+  closed, all commits pushed.
 
-**First in-headset full-rate stereo checklist (mirror of the session-7 handoff):**
+**In-headset stereo checklist (updated session 7 - ORDER MATTERS: load first,
+THEN arm 1t):**
 1. Quest 3 on, Virtual Desktop connected (VDXR runtime), Streamer running.
-2. Launch BioShock Remastered flat from Steam (no launch args needed).
-3. Load the save via CONTINUE; confirm the F10 overlay works.
-4. In PowerShell (repo root): `.\tools\game-cmd.ps1 "reentry 1t on"` - then check
-   the overlay/log shows `mode=1T` (or `render 1T` in the overlay reentry line).
+2. Launch BioShock Remastered flat from Steam (no launch args - `-onethread`
+   does nothing; remove it if set).
+3. **Load the save via CONTINUE FIRST** (before arming anything - a load with 1t
+   active crashes the loader). Confirm the F10 overlay works.
+4. In PowerShell (repo root): `.\tools\game-cmd.ps1 "reentry 1t on"` - overlay/log
+   shows `mode=1T` (or `render 1T` in the overlay reentry line). If it says
+   "1t refused: no world loaded yet", you are still at the menu - load first.
 5. Enable "VR camera mode" in the overlay; confirm the layer line reads
    `projection`.
 6. `.\tools\game-cmd.ps1 "reentry stereo on"` - the log must say
    "STEREO ON (single-threaded render)". Put the headset on.
-7. Verify: real per-eye parallax at FULL rate (close one eye at a time - views
-   differ; no AER half-rate judder), depth not inverted, world solid on head
-   turns.
-8. EXPECTED imperfections (not failures): game tick roughly halves (xrWaitFrame
-   per present - polish queued), HUD visible in both eyes, IPD/world-scale not
-   calibrated.
-9. Bail-out: `.\tools\game-cmd.ps1 "reentry stereo off"` recovers instantly;
-   worst case kill the game - saves are safe. NOTE: command.txt re-applies at
-   boot - run `reentry stereo off` (or delete
-   `%LOCALAPPDATA%\BioshockVR\command.txt`) before quitting if you do not want
-   stereo to re-arm next launch.
+7. Verify: real per-eye parallax at FULL rate, depth correct, world solid on
+   head turns - and THIS TIME whether head movement feels right (pair pacing is
+   on; toggle "SR pair pacing" in the overlay for a live A/B if it still feels
+   off).
+8. EXPECTED imperfections (not failures): HUD visible in both eyes (on a
+   HUD-bearing spawn), IPD/world-scale not yet calibrated. Game tick should feel
+   less halved than before pair pacing.
+9. **Before loading another save / changing level**: `.\tools\game-cmd.ps1
+   "reentry 1t off"` first (then you may `stereo off` too). Bail-out any time:
+   `reentry stereo off` recovers instantly; worst case kill the game - saves are
+   safe. NOTE: command.txt re-applies at boot - clear it or send the off commands
+   before quitting so stereo/1t do not re-arm at the next menu.
 
 ### 2026-07-24 - Session 6
 
