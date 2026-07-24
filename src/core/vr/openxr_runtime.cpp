@@ -112,6 +112,22 @@ std::atomic<uint32_t> g_srPushed{0}, g_srPopped{0}, g_srDropped{0},
     g_srCleared{0};
 std::atomic<bool> g_loggedFirstSr{false};
 
+// M4 rung 2 polish (session 7, after the first in-headset stereo test):
+// xr-frame-per-pair pacing. Per-present xrWaitFrame gave the two presents of
+// one stereo pair SEPARATE predicted display times (~one compositor period
+// apart), so the pair was submitted with poses located at two different
+// times while both images were rendered from ONE head sample - under head
+// motion the compositor reprojected the eyes inconsistently (user report:
+// eyes feel weird on head movement), and the second blocking wait halved the
+// game tick. With pair pacing, a LEFT-tagged present leaves the XR frame
+// OPEN (captures its eye, no submit/end) and the RIGHT-tagged present
+// completes it: one waitFrame, one locate, one consistent pose pair, one
+// blocking wait per game tick. Kill switch in the overlay for live A/B.
+std::atomic<bool> g_srPairPacing{true};
+bool g_srPairOpen = false; // present thread only
+std::atomic<uint32_t> g_srPairs{0}, g_srPairAborts{0};
+std::atomic<bool> g_loggedFirstPair{false};
+
 // Pop one tag; 0 = none pending (mono/AER frame).
 int sr_pop_eye() {
     uint32_t tail = g_srTail.load(std::memory_order_relaxed);
@@ -188,6 +204,7 @@ void teardown_session(const char* why) {
     if (g_device) { g_device->Release(); g_device = nullptr; }
     g_sessionBegun = false;
     g_frameOpen = false;
+    g_srPairOpen = false;
     g_system = XR_NULL_SYSTEM_ID;
     g_state = XR_SESSION_STATE_UNKNOWN;
     g_framesSubmitted = 0;
@@ -434,6 +451,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         return;
     }
 
+    // Pair pacing: the previous (LEFT-tagged) present left the XR frame open;
+    // this present completes the pair at its tail. No second waitFrame, no
+    // re-locate - the pair shares one prediction and one pose set.
+    if (g_srPairOpen) return;
+
     if (g_session == XR_NULL_HANDLE) {
         if (GetTickCount64() < g_nextRetryMs) return;
         try_bring_up(swapchain);
@@ -536,7 +558,9 @@ void on_present_begin(IDXGISwapChain* swapchain) {
 
 void on_present_end(IDXGISwapChain* swapchain) {
     if (!g_frameOpen) return;
-    g_frameOpen = false;
+    bool pairSecond = g_srPairOpen; // this present completes an open pair
+    g_srPairOpen = false;
+    g_frameOpen = false; // the pair-hold path below re-arms both
 
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
@@ -563,6 +587,20 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // convention AER validated in-headset (depth not inverted).
     int srSign = sr_pop_eye();
     bool srFrame = projectionMode && srSign != 0;
+
+    // Pair-pacing bookkeeping and the hold decision. A LEFT-tagged present
+    // holds the frame open for its RIGHT sibling; anything unexpected on the
+    // completing present (mode boundary, stereo toggled mid-pair) falls
+    // through to the normal single-present submission and resyncs.
+    if (pairSecond) {
+        if (srSign == +1)
+            g_srPairs.fetch_add(1, std::memory_order_relaxed);
+        else
+            g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+    }
+    bool pairHold = srFrame && srSign < 0 && !pairSecond &&
+                    g_srPairPacing.load(std::memory_order_relaxed) &&
+                    g_frameState.shouldRender && g_swapchains[0] != XR_NULL_HANDLE;
 
     // AlternateEye bookkeeping. imageSign is the eye offset baked into THIS
     // backbuffer: the sign was published at the tail of the previous Present
@@ -608,6 +646,20 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     g_eyePose[g_currentEye] = g_views[g_currentEye].pose;
                     g_eyeValid[g_currentEye] = true;
                     eyeCaptured = true;
+                }
+
+                if (pairHold) {
+                    // Left eye captured; submission happens when the RIGHT
+                    // present completes this XR frame. Both eye poses come
+                    // from this frame's single locate (g_views is untouched
+                    // until the next waitFrame).
+                    g_srPairOpen = true;
+                    g_frameOpen = true;
+                    if (!g_loggedFirstPair.exchange(true))
+                        BVR_LOG("xr: pair pacing live (one waitFrame per eye "
+                                "pair)");
+                    backbuffer->Release();
+                    return;
                 }
 
                 XrSwapchainSubImage sub{};
@@ -720,6 +772,9 @@ void draw_debug_ui() {
         bool aer = g_aerEnabled.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("AlternateEye stereo test (judders)", &aer))
             g_aerEnabled.store(aer, std::memory_order_relaxed);
+        bool pair = g_srPairPacing.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("SR pair pacing (one waitFrame per eye pair)", &pair))
+            g_srPairPacing.store(pair, std::memory_order_relaxed);
         if (aer) {
             ImGui::SameLine();
             bool swap = g_aerSwapEyes.load(std::memory_order_relaxed);
@@ -754,11 +809,14 @@ void draw_debug_ui() {
                 g_hfovDeg.load(std::memory_order_relaxed), readback, claimed);
     uint32_t srPushed = g_srPushed.load(std::memory_order_relaxed);
     if (srPushed)
-        ImGui::Text("SR tags: pushed %u popped %u dropped %u cleared %u  eyes %d/%d",
+        ImGui::Text("SR tags: pushed %u popped %u dropped %u cleared %u  eyes %d/%d"
+                    "  pairs %u aborts %u",
                     srPushed, g_srPopped.load(std::memory_order_relaxed),
                     g_srDropped.load(std::memory_order_relaxed),
                     g_srCleared.load(std::memory_order_relaxed),
-                    g_eyeValid[0] ? 1 : 0, g_eyeValid[1] ? 1 : 0);
+                    g_eyeValid[0] ? 1 : 0, g_eyeValid[1] ? 1 : 0,
+                    g_srPairs.load(std::memory_order_relaxed),
+                    g_srPairAborts.load(std::memory_order_relaxed));
     if (camMode && !g_projectionReady.load(std::memory_order_relaxed))
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                            "projection NOT ready - drive is held off (see log)");

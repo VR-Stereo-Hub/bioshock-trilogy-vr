@@ -90,6 +90,12 @@ inline constexpr uint8_t kFrameSubmitPrologue[10] = {0x55, 0x8B, 0xEC, 0x51,
 // data is baked into the queue during THIS function, so SequentialReentry
 // must re-enter here.
 inline constexpr uint32_t kSceneBuildRva = 0x4CCE70;
+// The STEADY-STATE GAMEPLAY caller's return RVA for the scene build (live
+// hook telemetry, sessions 6-7). Loads/transitions call the build from other
+// sites; pass 2 doubles ONLY gameplay-caller builds - doubling (or any 1t
+// inline-forcing) during a level load is the 2026-07-24 19:54 loader-thread
+// crash (ENGINE_NOTES "1t load hazard").
+inline constexpr uint32_t kSceneBuildGameplayRetRva = 0x850EF0;
 inline constexpr uint8_t kSceneBuildPrologue[9] = {0x53, 0x8B, 0xDC, 0x83,
                                                    0xEC, 0x08, 0x83, 0xE4,
                                                    0xF0};

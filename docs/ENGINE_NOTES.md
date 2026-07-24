@@ -279,6 +279,27 @@ guardskips 0, eye-offset img-diff 2.03 vs 0.33 floor, consecutive captures
 phase-consistent (0.43), 5-min stationary soak + 10-min synthetic play soak clean
 - faster AND structurally deadlock-free where threaded stereo survived 16 s-3.5 min.
 
+**1t LOAD HAZARD (session 7, 19:54 crash - do not arm 1t across a level load).**
+With the numerator poked to 1 AND stereo armed at the MAIN MENU, clicking CONTINUE
+crashed ~7 s into the save load: 0xC0000005 in ntdll (EnterCriticalSection, ECX=8 -
+null/dead CS) on an engine LOADER thread (FThread trampoline 0x94DF2E; load-path
+frames 0x4D01F6/0x53DE8B/0x3A09ED/0x488219/0x467DFF; ZERO bioshockvr frames on the
+stack). Control experiment from the same evening: an 18:58 CONTINUE load with
+stereo armed but the numerator UNTOUCHED survived - so the load fragility comes
+from the hw-thread global's OTHER consumers (the quotient family includes
+load-path site 0x4D0E24), same dead-end class as the GIsEditor poke but confined
+to loads. In-map gameplay with the poke is soak-proven fine (BioShock levels are
+discrete; no mid-map streaming transitions observed). Mitigations shipped: `1t on`
+refuses while the pump globals are still null (menu = the next thing is a load),
+its ON log warns to `1t off` before any save load / level transition, and pass 2
+doubles ONLY builds arriving from the gameplay caller (kSceneBuildGameplayRetRva
+0x850EF0) so no doubling can ever run inside a load path. STRUCTURAL FIX QUEUED
+(next session): MinHook the flush-point 0x61D260 and force its fully-decoded
+inline branch ourselves (copy args to mgr, stamp mode, call the drain) - the
+numerator stays untouched, loaders see the true core count, and the inline
+behavior is confined to exactly the per-frame scene flush. Needs load-crossing
+soak tests before it replaces the poke.
+
 **Session-7 fixes (scenedraw.cpp / patterns.h):** (1) `render_is_threaded()`
 mirrors the chain's static config (pump infra exists AND editor global clear AND
 quotient > 1) - `reentry stereo on` REFUSES a threaded substrate (`reentry stereo
@@ -349,6 +370,27 @@ slot doubles with COPIED loc/rot args (yaw on the copy), the build slot passes o
 args through and yaws via CalcViewDetour's second-pass path. `kick` = process-wide
 SetEvent-caller sampler; `calcstack` = one-shot game-thread stack scan (script-VM frames
 0x679067/0x67AF88 dominate; upstream candidates 0x491C86/0x7327DA/0x55A4A2).
+
+**xr-frame-per-pair pacing (session 7 polish, after the first in-headset stereo
+test - flat-regression-clean, headset verdict pending).** First-test user report:
+stereo correct and world scale good, but "eyes feel weird" on head movement. Root
+cause: the SR pipeline runs the full xrWaitFrame/Begin/LocateViews/EndFrame cycle on
+EVERY Present, so the two presents of one L/R pair got predictedDisplayTimes about
+one compositor period apart and located their eye poses at those two different times,
+while both eye images were rendered from ONE game-thread head sample - so the
+compositor reprojected the pair with mismatched poses (motion-dependent shear), and
+the second blocking wait halved the game tick. Fix (`core/vr/openxr_runtime.cpp`,
+`g_srPairPacing`, default ON, overlay checkbox "SR pair pacing"): a LEFT-tagged
+present captures its eye and RETURNS with the XR frame held open (`g_srPairOpen`,
+skips submit/end and the next present's waitFrame/begin/locate); the RIGHT-tagged
+present completes the same frame, submitting BOTH eyes with poses from the pair's
+single locate. One waitFrame, one locate, one prediction per game tick - consistent
+pose pair and the game tick is no longer double-waited. Robustness: the completing
+present falls through to normal single-present submission if the pair is broken
+(mode boundary, stereo toggled mid-pair); `g_srPairOpen` clears on teardown; the tag
+ring's existing depth>2 resync still covers skew. Telemetry: overlay `pairs`/`aborts`
+counters. Flat regression clean (231 pairs/s, no dumps, recovery clean); the actual
+comfort improvement is an in-headset judgment (queued for the user).
 
 **HUD fingerprint (partial):** menu frames are pure gameswf - only SetRT ping-pong
 between T0-like LDR targets and NO depth-tested draws; in-game HUD draws land on the
