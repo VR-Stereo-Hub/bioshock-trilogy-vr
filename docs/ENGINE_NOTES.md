@@ -203,6 +203,31 @@ end-to-end:**
   across captures), then ONE hang (~124k doubled frames in; game thread stopped, kill
   required); a second hang followed ~1 min into the first stereo run.
 
+**`-onethread` WORKS - the engine's native single-threaded render mode (session 6,
+last finding, the per-eye substrate going forward).** Launching with
+`steam://run/409710//-onethread/` (or `-onethread` in Steam launch options) boots the
+renderer single-threaded: `[0x13566C4]` (pump kick event) and `[0x13566CC]`
+(render-thread object) both NULL - the pump/queue thread infrastructure is never
+created, the flush-point (0x61D260) drains INLINE on the game thread, and the whole
+two-thread event protocol (the entire deadlock class) is structurally absent. In this
+scene it is also FASTER: 630-710 fps vs ~530 threaded; build == submit == presents
+1:1:1 all on the game thread. Stereo doubling on top ran clean at 194 pairs/s
+(388 presents/s) for ~1 min / ~23k pairs, then CRASHED (not hung) at the recurring
+signature: **drain+0x33 (0x61CB13), fault addr 0x40 = null object's +0x40 field** -
+the same site as session-5's forced drain pulse. So on the onethread substrate the
+one remaining defect is a rare null-deref inside the doubled drain; minidumps are
+preserved (`%LOCALAPPDATA%\BioshockVR\crash\bvr_20260724_181619.dmp` is the specimen;
+never commit dumps) and symbolizing the faulting object is next session's opener.
+
+**Dead ends recorded (do not retry):** (1) `[0x1375BD4]`, the first check in the
+flush-point's threaded-vs-inline chain, is NOT a render toggle - it has 500+ code
+references engine-wide (a GIsEditor/commandlet-class mode global); poking it to 1
+mid-run crashed the next level load at 0x741D7F. (2) Watchdog EVENT RE-KICKS on a
+detected deadlock: detection (game thread depth>0 + builds/presents frozen 300 ms) is
+reliable, but SetEvent-ing the engine's own events resumed threads into desynced
+queue state and crashed the drain (threaded-mode live test) - the watchdog is now
+detect-and-log by default (`reentry wdkick on` re-arms kicks for experiments only).
+
 **Render-done wait decoded (the deadlock site, session 6 late).** The game-thread wait
 where every hang strands is at 0x61D38E, inside a "kick render and wait" flush-point
 function (~0x61D340 area, `ret 8`) called from build site 0x4CDCD7: it stamps

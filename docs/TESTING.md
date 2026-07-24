@@ -102,6 +102,19 @@
   gate both live-falsified - the race is inside the concurrent window). Pulses and
   short windows are safe-ish; kill + relaunch on hang; the game process is otherwise
   unharmed and saves are untouched. Fix directions in STATUS next steps.
+- **`-onethread` mode (session 6, the stereo substrate)**: launch via
+  `steam://run/409710//-onethread/` (arguments ride the run URL) or put `-onethread`
+  in Steam launch options. Boots the renderer single-threaded (no pump/queue thread -
+  verify: `hexdump <base+13566C4> 16` shows 16 zero bytes), which removes the
+  deadlock class entirely and measured FASTER than threaded in the save-spawn scene
+  (630-710 fps vs ~530). Stereo doubling on top still has a rare CRASH (drain+0x33,
+  fault 0x40, ~1 per tens of thousands of pairs) - minidumps land in
+  `%LOCALAPPDATA%\BioshockVR\crash\` (never commit them; symbolize against the game
+  + build PDB).
+- **Watchdog**: `reentry stereo on` arms a detect-only deadlock watchdog (logs when
+  the game thread is stuck >300 ms inside a hooked call with builds/presents frozen).
+  `reentry wdkick on` additionally re-SetEvents engine events on detection - known to
+  CRASH a desynced protocol (live 2026-07-24); experiments only.
 - **Menu clicks**: `.\tools\game-click.ps1 -X <px> -Y <py>` clicks at window coordinates
   (read positions off a game-shot capture; gameswf menus accept the synthetic click).
   If a click highlights but does not activate a menu item (stale gameswf hover state),
