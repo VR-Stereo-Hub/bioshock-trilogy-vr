@@ -126,9 +126,10 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       presents/s on the game thread, eye-tagged capture into the AER swapchain pair, 5-min
       stationary + ~6.5-min synthetic play soaks clean, zero faults. IN-HEADSET USER-VERIFIED
       same day: "pretty good and working as intended" - real per-eye parallax at full rate,
-      depth correct, world scale good. Follow-ups: head-motion eye weirdness -> xr-frame-per-pair
-      pacing landed (comfort recheck pending); HUD still renders in both eyes (HUD-off +
-      reticle = M9 tie-in).*
+      depth correct, world scale good. Head-motion eye weirdness fixed by xr-frame-per-pair
+      pacing, USER-VERIFIED same day ("a looot better... comfortable now"). HUD still renders
+      in both eyes (HUD-off + reticle = M9 tie-in); small head-motion bobbing parked to M9
+      polish by user choice.*
 - [ ] Z3D depth-reproject fallback policy selectable in ImGui
 - [ ] **Done when:** true geometric stereo (wrench/railings show correct parallax), 72 fps at
       default renderScale, 30-min session without visual state corruption.
@@ -170,6 +171,10 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [ ] IPD slider verification + calibration (parked here 2026-07-24 from M4 rung 1 by user
       choice - user could not tell if it does anything; test with an exaggerated offset,
       calibrate world scale first since perceived depth scale is the worldScale/IPD ratio)
+- [ ] Small head-motion bobbing in full-rate stereo (parked here 2026-07-24 from the M4
+      rung-2 verification by user choice - "nothing major, not that noticeable"; candidates
+      to check when tuning: pose-claim timing vs capture, worldScale/IPD interaction, the
+      game's own view bob)
 - [ ] Config surface cleanup; README install guide; GitHub release zip
 - [ ] **Done when:** a non-developer installs from the release zip and plays with full HUD.
 
