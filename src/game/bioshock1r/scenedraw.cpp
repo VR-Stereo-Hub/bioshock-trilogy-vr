@@ -105,6 +105,14 @@ std::atomic<uint32_t> g_forcedInline{0};
 // quotient check picks inline. Kept as a fallback/diagnostic - NOT load-safe
 // (off before any save load / level transition).
 std::atomic<uint32_t> g_savedNumHwThreads{0};
+// One-toggle "VR stereo" (session 8): vrstereo on = structural 1t + VR
+// camera mode + stereo, in that order; off reverses it. No sequencing waits
+// needed - load-crossing soaks proved 1t/stereo are safe to arm any time
+// (menu included) and sticky across loads; camera mode is a request the
+// core engages when the XR session is ready. The overlay checkbox cannot
+// install hooks from the render thread, so it posts a request here and the
+// game thread applies it from note_calcview (outside any hooked call).
+std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
 // Deadlock watchdog (session 6): the doubled render strands the engine's
 // command-queue event protocol - game thread parked mid-build waiting for
 // "render done" while the render thread waits for more work; a lost wakeup
@@ -1071,6 +1079,34 @@ void kick_sampler(bool on) {
     }
 }
 
+// The one-toggle compound (game thread only, outside hooked calls). Order
+// matters ON: 1t first so stereo's substrate gate sees 1T; camera mode is
+// just a request the core engages at session-ready. OFF reverses.
+void apply_vrstereo(bool on) {
+    if (on) {
+        BVR_LOG("[reentry] VRSTEREO ON: sequencing 1t -> camera mode -> stereo");
+        if (!g_forceInline.load(std::memory_order_relaxed))
+            handle_command("1t on");
+        bvr::vr::set_camera_mode(true);
+        if (!g_stereo.load(std::memory_order_relaxed))
+            handle_command("stereo on");
+        bool ok = g_forceInline.load(std::memory_order_relaxed) &&
+                  g_stereo.load(std::memory_order_relaxed);
+        BVR_LOG("[reentry] VRSTEREO %s (1t=%d stereo=%d; sticky across loads; "
+                "'vrstereo off' reverses)",
+                ok ? "READY" : "INCOMPLETE - see refusals above",
+                g_forceInline.load(std::memory_order_relaxed) ? 1 : 0,
+                g_stereo.load(std::memory_order_relaxed) ? 1 : 0);
+    } else {
+        BVR_LOG("[reentry] VRSTEREO OFF: stereo -> camera mode -> 1t");
+        if (g_stereo.load(std::memory_order_relaxed))
+            handle_command("stereo off");
+        bvr::vr::set_camera_mode(false);
+        if (g_forceInline.load(std::memory_order_relaxed))
+            handle_command("1t off");
+    }
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -1082,7 +1118,8 @@ void handle_command(const char* args) {
     char verb[16] = {};
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
-        BVR_LOG("[reentry] command needs a verb: hook [build|submit|drain|flush]|"
+        BVR_LOG("[reentry] command needs a verb: vrstereo on|off|"
+                "hook [build|submit|drain|flush]|"
                 "stereo on|force|off|1t on|off|1tpoke on|off|unhook|on|off|pulse|"
                 "yaw|dump|arg3|latchclear|reset|status|kick|calcstack");
         return;
@@ -1200,23 +1237,16 @@ void handle_command(const char* args) {
         }
     } else if (strcmp(verb, "1t") == 0) {
         // STRUCTURAL single-threading (session 8): flush-point hook forces
-        // the inline branch; numerator global untouched.
+        // the inline branch; numerator global untouched. Load-safe and
+        // menu-safe (session-8 soaks: save load, quit-to-menu, new game,
+        // bathysphere transition - all clean with this armed); pre-world
+        // arming is inert until the render manager exists (detour falls
+        // through to the original while mgr is null).
         if (strncmp(rest, "on", 2) == 0) {
-            uint32_t pumpEv = 0, pumpObj = 0;
-            read_u32_guarded(g_imageBase + patterns::kPumpKickEventPtrRva, &pumpEv);
-            read_u32_guarded(g_imageBase + patterns::kRenderThreadObjRva, &pumpObj);
             if (g_forceInline.load(std::memory_order_relaxed)) {
                 BVR_LOG("[reentry] 1t already on");
             } else if (g_poisoned.load(std::memory_order_relaxed)) {
                 BVR_LOG("[reentry] 1t refused: POISONED ('reentry reset' to clear)");
-            } else if (pumpEv == 0 && pumpObj == 0) {
-                // Conservative until the load-crossing soak passes: the hook
-                // approach should be load-safe (numerator untouched), but
-                // arming before the FIRST world load is exactly the state
-                // that crashed the poke - prove it before relaxing this.
-                BVR_LOG("[reentry] 1t refused: no world loaded yet - load into "
-                        "gameplay first (menu arming unverified for the hook "
-                        "mode; pending the load-crossing soak)");
             } else if (!install_slot(g_drain, patterns::kDrainRva,
                                      reinterpret_cast<void*>(&DrainDetour),
                                      patterns::kDrainPrologue,
@@ -1306,6 +1336,8 @@ void handle_command(const char* args) {
                         "unwritable?)");
             }
         }
+    } else if (strcmp(verb, "vrstereo") == 0) {
+        apply_vrstereo(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "wdkick") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_wdKickEnabled.store(on, std::memory_order_relaxed);
@@ -1402,13 +1434,24 @@ bool stereo_active() {
            !g_poisoned.load(std::memory_order_relaxed);
 }
 
+void request_vrstereo(bool on) {
+    g_vrstereoPending.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
 void note_calcview() {
     uint32_t tid = GetCurrentThreadId();
     g_lastCalcTid.store(tid, std::memory_order_relaxed);
-    if (g_activeTid.load(std::memory_order_relaxed) == tid)
+    if (g_activeTid.load(std::memory_order_relaxed) == tid) {
         g_calcInside.fetch_add(1, std::memory_order_relaxed);
-    else
+    } else {
         g_calcOutside.fetch_add(1, std::memory_order_relaxed);
+        // Overlay-posted vrstereo request: apply on the game thread OUTSIDE
+        // any hooked call (hook installs must not run mid-build/mid-drain).
+        int pending = g_vrstereoPending.load(std::memory_order_relaxed);
+        if (pending >= 0 &&
+            g_vrstereoPending.exchange(-1, std::memory_order_relaxed) >= 0)
+            apply_vrstereo(pending == 1);
+    }
     if (g_calcstackPending.load(std::memory_order_relaxed) > 0 &&
         g_calcstackPending.exchange(0, std::memory_order_relaxed) > 0)
         log_game_stack();
@@ -1423,6 +1466,15 @@ bool hook_live() {
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Reentry probe (DR-5)")) return;
+    // The one-toggle: sequences 1t + camera mode + stereo (sticky across
+    // loads). Applied on the game thread via the pending request - the
+    // overlay may be drawing on the render thread.
+    bool vrOn = g_forceInline.load(std::memory_order_relaxed) &&
+                g_stereo.load(std::memory_order_relaxed);
+    bool vrToggle = vrOn;
+    if (ImGui::Checkbox("VR stereo (1t + camera mode + stereo)", &vrToggle) &&
+        vrToggle != vrOn)
+        request_vrstereo(vrToggle);
     bool hook1t = g_forceInline.load(std::memory_order_relaxed);
     bool poke1t = g_savedNumHwThreads.load(std::memory_order_relaxed) != 0;
     ImGui::Text("render %s  1t %s  hooks: build %s, submit %s, drain %s, "
