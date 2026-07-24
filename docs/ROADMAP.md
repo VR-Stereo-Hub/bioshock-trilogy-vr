@@ -36,16 +36,25 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [x] DR-2: LAA flag check (`tools/check-laa.ps1`); confirm game creates a D3D11 device at runtime
       (not the D3D9 fallback path)
       *2026-07-23: LAA = YES (0x0122); D3D11 confirmed live (FL 11_0, exclusive fullscreen).*
-- [ ] DR-3: RenderDoc frame map - pass order, scene color/depth RTs + formats, gameswf HUD draw
+- [x] DR-3: frame map - pass order, scene color/depth RTs + formats, gameswf HUD draw
       fingerprint, view/proj constant-buffer slot, scene-draw callstack
+      *2026-07-24: done WITHOUT RenderDoc via the new in-tree D3D11 frame inspector
+      (core/gfx, `dumpframe` seam command). ENGINE_NOTES "D3D11 frame map": RT/pass table
+      (HDR R11G11B10 main + half-res pass + shadow pair), view-proj in VS b0 bytes 128-191
+      (fov-scaling verified), and the command-queue render architecture with executor /
+      drain / frame-root RVAs. HUD fingerprint partial (enough to segregate scene vs HUD).*
 - [x] DR-4: port PlayerCalcView FName-chain scan to C++; hook it; wobble-test camera + per-frame
       FOV write (PC+0xE0)
       *2026-07-23: scan resolves live (RVA 0x1BE7A0, exactly 1 candidate), hook fires every
       frame (heartbeat: 400-7800 calls/s; fires at main menu too), offsets/wobble/FOV override
       wired with ImGui controls. USER-VERIFIED in-game same day: wobble, offsets, yaw and FOV
       all visibly work; no stutter, crash, or input weirdness. DR-4 fully retired.*
-- [ ] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability +
-      RenderDoc; 10-min play test
+- [ ] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability;
+      10-min play test
+      *2026-07-24 groundwork: the renderer is a command queue (executor 0x61C8E0, drain
+      0x61CAE0, frame root 0x61D0F0 - ENGINE_NOTES). Re-entering the DRAIN would redraw
+      nothing; the probe must re-enter the command BUILD upstream. Hook attempt = next
+      session, starting from the frame root.*
 - [ ] DR-6: instrument DINPUT8/window messages/XInput during menu use - which input path do
       gameswf menus read?
 - [ ] DR-7: borderless-window mode stability (vs exclusive fullscreen) for overlay + capture
@@ -71,8 +80,10 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [x] FOV forced to headset FOV; projection layer (same image both eyes)
       *2026-07-24: design CORRECTED and verified - the engine's fov is set via the remaster's
       FOV video option (max 130; the memory field is telemetry-only, see ENGINE_NOTES), and
-      the projection layer claims the matching value (manual claimed-fov slider until the
-      settings object is scanned). Projection layer verified across M3/M4 tests.*
+      the projection layer claims the matching value. LATER SAME DAY (session 4): the live
+      settings object was found and the claim is now AUTOMATIC (read per frame), plus the
+      option is writable past the UI cap (gfov, flat-verified at 137). Manual claim slider
+      kept as an override. In-headset confirmation of auto-claim = next user checklist.*
 - [x] World-scale calibration + recenter in ImGui
       *2026-07-23: landed (World scale slider + Recenter + head-offset telemetry). Fine
       calibration continues alongside the M4 IPD follow-up.*

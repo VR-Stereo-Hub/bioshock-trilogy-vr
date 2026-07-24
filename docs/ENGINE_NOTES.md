@@ -145,15 +145,23 @@ dumps (proj m00 factor through a combined matrix; camera held still). This is th
 independent ground truth that rendered hfov == the UShockUserSettings option value, and
 the future patch point for asymmetric per-eye projections (post-v1 backlog).
 
-**Scene-draw entry (SequentialReentry candidate, DR-5):** function entry
-**RVA 0x61C600** (`55 8B EC` after `CC` padding, found by hexdump prologue walk-back).
-Evidence: its interior call-site cluster (return RVAs 0x61C931..0x61CA87 - the per-pass
-call sequence) appears in **84/86** main-scene draw stacks and in menu draw stacks.
-Callers: site 0x61CD0D (parent frame function) -> site 0x61D21E (root; also terminal in
-every menu-dump stack). Per-draw leaf helpers: 0x7661C7, 0x5D0131, 0x77DC1E.
-NOT yet hooked - typing/convention analysis (RET imm16) and the double-call probe are
-next-session work; derivation recipe if the build changes: dump a frame, histogram stack
-RVAs over the biggest depth-tested RT's draws, prologue-walk the cluster's lowest site.
+**Scene-draw architecture (DR-5 groundwork) - the renderer is a COMMAND QUEUE:**
+byte-level walk (hexdump seam, prologue + RET analysis, 2026-07-24) of the functions
+behind the draw stacks:
+
+| RVA | Role | Evidence |
+|---|---|---|
+| **0x61C8E0** | render-command **executor**: `void __thiscall`, zero stack args (plain `C3` ret at 0x61CAA4); reads a command type id at `this+0xC` (an observed `cmp ecx,6` dispatch), virtual-calls per type. Its dispatch call-site cluster (ret RVAs 0x61C931..0x61CA87) appears in **84/86** main-scene draw stacks and in menu stacks. | first-1024-bytes disasm-by-hand |
+| **0x61CAE0** | command-queue **drain loop**; its `call 0x61C8E0` site returns to **0x61CD0D** (84/86 stacks) | prologue walk + stack histogram |
+| **0x61D0F0** | **frame root**: class check (vtable VA cmp -> RVA 0xE2D584), `[obj+0x58]==0` guard, then `call 0x61CAE0` at 0x61D219 returning to **0x61D21E** (terminal frame of every stack, menu + gameplay) | raw bytes: `E8 C2 F8 FF FF` rel32 == exactly 0x61CAE0 |
+
+**Implication for SequentialReentry:** double-calling the drain (or executor) re-renders
+NOTHING - the queue is already consumed. The re-entry seam must be the command BUILD
+(scene traversal / camera consumption) upstream of or inside 0x61D0F0 before the drain
+call. Next probe: command-gated hook on 0x61D0F0 - count CalcView invocations inside it
+(answers where view sampling happens), then locate the build-vs-drain boundary. Neither
+function is hooked yet. Derivation recipe if the build changes: `dumpframe full`,
+histogram stack RVAs over the biggest depth-tested RT's draws, prologue-walk the cluster.
 
 **HUD fingerprint (partial):** menu frames are pure gameswf - only SetRT ping-pong
 between T0-like LDR targets and NO depth-tested draws; in-game HUD draws land on the
