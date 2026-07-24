@@ -83,7 +83,8 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       the projection layer claims the matching value. LATER SAME DAY (session 4): the live
       settings object was found and the claim is now AUTOMATIC (read per frame), plus the
       option is writable past the UI cap (gfov, flat-verified at 137). Manual claim slider
-      kept as an override. In-headset confirmation of auto-claim = next user checklist.*
+      kept as an override. IN-HEADSET USER-VERIFIED same day: auto-claim solid hands-off,
+      137 "very good".*
 - [x] World-scale calibration + recenter in ImGui
       *2026-07-23: landed (World scale slider + Recenter + head-offset telemetry). Fine
       calibration continues alongside the M4 IPD follow-up.*

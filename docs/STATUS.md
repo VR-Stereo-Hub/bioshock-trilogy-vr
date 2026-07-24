@@ -13,7 +13,10 @@ what the renderer consumes EVERY FRAME, and:
 - **Write past the cap**: `gfov <deg>` (command/overlay slider) writes it per frame with
   save/restore; **flat-verified rendering at 137** (the options UI's 130 is UI-only, no
   code clamp; monotonic img-diff 117 -> 130 -> 145). "Force headset FOV" now writes this
-  real control when VR-driving. IN-HEADSET VERIFICATION PENDING (user checklist below).
+  real control when VR-driving.
+- **USER-VERIFIED IN-HEADSET (2026-07-24, same day)**: auto-claim solid with the manual
+  slider untouched, and game-FOV write at 137 "very good" (lands on the ~137 headset
+  target). Both checklist items passed on the first try.
 
 **DR-3 done in-tree** (RenderDoc never needed): new `core/gfx/frame_inspector` hooks the
 context vtable's draw/clear slots; `dumpframe full` writes a one-shot frame dump (RT descs,
@@ -36,15 +39,11 @@ use _snprintf_s/_TRUNCATE for untrusted bytes (froze the game once).
 has not recurred since). If it recurs, the crash filter now logs module+RVA + fault addr -
 symbolize against the build PDB.
 
-**User checklist for the next in-headset session (numbered - report per item):**
-1. **Auto-claim check**: launch, VR camera mode + AlternateEye as usual, but DO NOT touch
-   the manual claimed-FOV slider. The world should be solid (no swim) with the layer line
-   showing the option value as the claim. This is the "no more matching two sliders" win.
-2. **FOV 137 in-headset**: tick "Game FOV write (settings object, real control)" and set the
-   Game FOV slider to 137 (or write `gfov 137` in command.txt). Expect: wider view, and the
-   honest bottom black band should SHRINK vs 130. Check the world stays solid (the claim
-   follows the write automatically). Report band size + comfort + any distortion.
-3. Optional as always: Steam Link cross-check; 4:3 resolution experiment (see session-3 notes).
+**User checklist - COMPLETED 2026-07-24 (both items passed, see Current state):**
+1. ~~Auto-claim check~~ - solid with the manual slider untouched.
+2. ~~FOV 137 in-headset~~ - "very good".
+3. Still optional any session: Steam Link cross-check; 4:3 resolution experiment
+   (see session-3 notes).
 
 ## Previous state (2026-07-23/24, session 3)
 
@@ -109,8 +108,7 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **In-headset checklist above** (auto-claim + gfov 137) - the user-visible payoff of
-   session 4; report per item.
+1. ~~In-headset checklist~~ - DONE same day, both items passed.
 2. **DR-5 hook probe - next session's main focus**: command-gated hook on the frame root
    (RVA 0x61D0F0; command-queue architecture in ENGINE_NOTES). First just pass-through +
    soak, then count CalcView calls inside it (answers the per-frame-vs-per-view question),
@@ -145,6 +143,9 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ### 2026-07-24 - Session 4
 
+- **(end of session) IN-HEADSET VERIFICATION PASSED**: auto-claim solid with the manual
+  slider untouched; gfov 137 "very good" in the headset. The session-4 FOV work is fully
+  user-verified; session closed with DR-5's hook probe as the next opener.
 - **FOV endgame closed.** Built the value-scanner seam (memscan/mempoke/memptr/hexdump/
   strscan + int variants) and img-diff.ps1; narrowed 662 int candidates to 4 by having the
   user change the FOV option through the game UI between rescans; poke + screenshot A/B
