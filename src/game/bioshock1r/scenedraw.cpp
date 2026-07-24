@@ -85,6 +85,11 @@ std::atomic<uint32_t> g_stereoSkips{0}; // second calls skipped (render stalled)
 // Drains skipped by the empty-slot guard (session-7 forensics: entering the
 // drain with [this+0xC] == NULL is the recurring drain+0x33 crash).
 std::atomic<uint32_t> g_drainGuardSkips{0};
+// `reentry 1t on` saved hardware-thread count (0 = not poked). Poking
+// [kNumHwThreadsRva] to 1 flips the flush-point's quotient check so every
+// scene flush drains INLINE on the game thread - the REAL single-threaded
+// render switch (session 7; the -onethread launch arg is not parsed).
+std::atomic<uint32_t> g_savedNumHwThreads{0};
 // Deadlock watchdog (session 6): the doubled render strands the engine's
 // command-queue event protocol - game thread parked mid-build waiting for
 // "render done" while the render thread waits for more work; a lost wakeup
@@ -245,20 +250,41 @@ bool read_u32_guarded(const void* addr, uint32_t* out) {
     }
 }
 
-// Live render-mode detector (session-7 forensics). The threaded renderer's
-// pump kick event and render-thread object globals are both created at boot
-// and stay NULL under -onethread - either non-null means the pump/queue
-// protocol (the deadlock class AND the empty-wake drain crash class) is
-// live. All three 2026-07-24 drain+0x33 minidumps were threaded-mode pump
-// crashes, including the run mislabeled "onethread" (the launch arg had not
-// taken; the pump thread is in the dump) - so stereo now refuses this
-// substrate by default and the heartbeat tags the mode, making a silent
-// mislaunch impossible to miss.
+bool write_u32_guarded(void* addr, uint32_t value) {
+    __try {
+        *static_cast<volatile uint32_t*>(addr) = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Live render-mode detector (session-7 forensics, corrected same session).
+// Mirrors the static config checks of the flush-point's own decision chain
+// (0x61D260, fully decoded in ENGINE_NOTES): the next scene flush hands off
+// to the pump thread only if the pump infrastructure exists (the two
+// globals; created at first world load, NULL at the menu), the editor-class
+// force-inline global is clear, and the hardware-thread quotient exceeds 1.
+// The chain's remaining checks are per-frame scene vetoes we cannot (and
+// need not) predict. Session-6 correction: `-onethread` is NOT PARSED by
+// the remaster (no such string in the image) - all three 2026-07-24
+// drain+0x33 minidumps were threaded-mode pump crashes, including the run
+// mislabeled "onethread". The quotient check makes this detector honest
+// under `reentry 1t on` (the real single-threading switch).
 bool render_is_threaded() {
     uint32_t ev = 0, obj = 0;
     read_u32_guarded(g_imageBase + patterns::kPumpKickEventPtrRva, &ev);
     read_u32_guarded(g_imageBase + patterns::kRenderThreadObjRva, &obj);
-    return ev != 0 || obj != 0;
+    if (ev == 0 && obj == 0) return false; // pump infra never created
+    uint32_t forceInline = 0;
+    read_u32_guarded(g_imageBase + patterns::kForceNonThreadedRenderRva,
+                     &forceInline);
+    if (forceInline != 0) return false;
+    uint32_t num = 0, div = 0;
+    read_u32_guarded(g_imageBase + patterns::kNumHwThreadsRva, &num);
+    read_u32_guarded(g_imageBase + patterns::kThreadDivisorRva, &div);
+    if (div != 0 && num / div <= 1) return false; // inline path selected
+    return true;
 }
 
 // SetEvent on an engine event OBJECT (vtable-checked; HANDLE at obj+4).
@@ -744,15 +770,17 @@ void __fastcall DrainDetour(void* self, void* edx) {
     uint32_t tid = GetCurrentThreadId();
     // Empty-slot guard (session-7 minidump forensics): the drain head loads
     // the submitted-frame context from [this+0xC] and walks its +0x40 member
-    // three instructions in - entering with the slot NULL is the recurring
-    // drain+0x33 crash (a pump woken with no pending frame). While doubling
-    // is active, skip such a drain outright: no frame, nothing to consume.
-    // Skipped entries get their own counter and do NOT count as drains.
-    // Threaded-mode caveat (force-armed stereo only): the null read races the
-    // game thread's slot write, so a skip can eat an auto-reset wake - a
-    // possible stall, strictly better than the crash it replaces.
-    if (g_stereo.load(std::memory_order_relaxed) ||
-        g_doubleCall.load(std::memory_order_relaxed)) {
+    // three instructions in, with NO null check - entering with the slot
+    // NULL is the recurring drain+0x33 crash (a pump woken with no pending
+    // frame: watchdog kick, desynced-protocol stray wake, or - under
+    // `reentry 1t on` - the submit's kick landing after the inline drain
+    // already consumed the frame). A null slot can never be drained, so the
+    // skip is universally safe and the guard runs whenever this hook is
+    // installed. Skips get their own counter and do NOT count as drains.
+    // Threaded-mode caveat: the null read races the producer, so a skip can
+    // eat an auto-reset wake - a possible stall, strictly better than the
+    // crash it replaces.
+    {
         uint32_t frameCtx = 0;
         if (read_u32_guarded(static_cast<const uint8_t*>(self) +
                                  patterns::kQueueFrameCtxOffset,
@@ -955,8 +983,8 @@ void handle_command(const char* args) {
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
         BVR_LOG("[reentry] command needs a verb: hook [build|submit|drain|flush]|"
-                "stereo on|force|off|unhook|on|off|pulse|yaw|dump|arg3|latchclear|"
-                "reset|status|kick|calcstack");
+                "stereo on|force|off|1t on|off|unhook|on|off|pulse|yaw|dump|arg3|"
+                "latchclear|reset|status|kick|calcstack");
         return;
     }
     const char* rest = args + consumed;
@@ -1069,6 +1097,48 @@ void handle_command(const char* args) {
             g_stereo.store(false, std::memory_order_relaxed);
             BVR_LOG("[reentry] stereo off (hooks stay; 'reentry unhook' to drop)");
         }
+    } else if (strcmp(verb, "1t") == 0) {
+        uint8_t* numAddr = const_cast<uint8_t*>(g_imageBase) +
+                           patterns::kNumHwThreadsRva;
+        if (strncmp(rest, "on", 2) == 0) {
+            uint32_t cur = 0;
+            if (g_savedNumHwThreads.load(std::memory_order_relaxed) != 0) {
+                BVR_LOG("[reentry] 1t already on");
+            } else if (!install_slot(g_drain, patterns::kDrainRva,
+                                     reinterpret_cast<void*>(&DrainDetour),
+                                     patterns::kDrainPrologue,
+                                     sizeof patterns::kDrainPrologue)) {
+                // Once the flush inlines, the submit's pump kick wakes the
+                // pump into an EMPTY frame slot every frame - only the
+                // drain-hook guard stands between that and drain+0x33.
+                BVR_LOG("[reentry] 1t refused: drain-guard install failed");
+            } else if (!read_u32_guarded(numAddr, &cur) || cur == 0) {
+                BVR_LOG("[reentry] 1t refused: hw-thread global unreadable");
+            } else if (!write_u32_guarded(numAddr, 1)) {
+                BVR_LOG("[reentry] 1t refused: hw-thread global unwritable");
+            } else {
+                g_savedNumHwThreads.store(cur, std::memory_order_relaxed);
+                BVR_LOG("[reentry] 1t ON: hw-thread count %u -> 1, scene "
+                        "flushes now drain INLINE on the game thread "
+                        "(drain-guard eats the pump's empty wakes)", cur);
+            }
+        } else {
+            uint32_t saved =
+                g_savedNumHwThreads.exchange(0, std::memory_order_relaxed);
+            if (saved == 0) {
+                BVR_LOG("[reentry] 1t was not on");
+            } else if (write_u32_guarded(numAddr, saved)) {
+                BVR_LOG("[reentry] 1t off: hw-thread count restored to %u%s",
+                        saved,
+                        g_stereo.load(std::memory_order_relaxed)
+                            ? " (WARNING: stereo still on - now on the "
+                              "THREADED substrate)"
+                            : "");
+            } else {
+                BVR_LOG("[reentry] 1t off FAILED to restore (global "
+                        "unwritable?)");
+            }
+        }
     } else if (strcmp(verb, "wdkick") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_wdKickEnabled.store(on, std::memory_order_relaxed);
@@ -1111,12 +1181,13 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: mode=%s stereo=%d(skips=%u,wdkicks=%u,"
+        BVR_LOG("[reentry] status: mode=%s 1t=%d stereo=%d(skips=%u,wdkicks=%u,"
                 "guardskips=%u) build=%s submit=%s drain=%s "
                 "flush=%s double=%d pulse=%d yaw=%.1f dump=%d arg3=%08X "
                 "latchclear=%d poisoned=%d kick=%d builds=%u submits=%u drains=%u "
                 "flushes=%u seconds=%u draws2=%u",
                 render_is_threaded() ? "MT" : "1T",
+                g_savedNumHwThreads.load(std::memory_order_relaxed) ? 1 : 0,
                 g_stereo.load(std::memory_order_relaxed) ? 1 : 0,
                 g_stereoSkips.load(std::memory_order_relaxed),
                 g_watchdogKicks.load(std::memory_order_relaxed),

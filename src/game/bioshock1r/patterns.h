@@ -164,7 +164,36 @@ inline constexpr uint32_t kQueueFrameCtxOffset = 0xC;
 // pump, flush waits - the whole deadlock class) is bypassed. Discovered
 // while chasing the stereo double-render deadlock; poking it to 1 at
 // runtime is the candidate stereo-safe mode.
+// DEAD END (session 6): 500+ references engine-wide (GIsEditor-class);
+// poking it crashed the next level load. Kept for the decision-chain doc.
 inline constexpr uint32_t kForceNonThreadedRenderRva = 0x1375BD4;
+
+// THE render-mode selector pair (session-7 full decode of the flush-point
+// decision chain at 0x61D260; ENGINE_NOTES has the complete chain). The
+// LAST check - reached when no veto fired - is
+//   threaded = ([kNumHwThreadsRva] / [kThreadDivisorRva]) > 1
+// i.e. "got more than one hardware thread?". Live values: 12 / 1. The pair
+// is written once at startup (writers RVA ~0x756ED2 numerator, ~0x6F26E0
+// region denominator) and consumed by SEVEN inlined copies of the same
+// quotient test (RVAs 0x43BD90, 0x4D0E24, 0x58413B, 0x604641, 0x61D1AC,
+// 0x61D33B = the flush-point, 0x7814F6) plus a cmp-1 at ~0x6F26EE - a
+// tight, single-purpose family (unlike the 500-ref editor global above).
+// Poking the numerator to 1 makes every subsequent flush take the INLINE
+// single-threaded drain path: no pump hand-off, no INFINITE render-done
+// wait, deadlock class structurally unreachable. The pump thread stays
+// alive and gets kicked by the submit each frame; it wakes into an empty
+// frame slot, which the drain-hook empty-slot guard turns into a logged
+// skip (this is why `reentry 1t on` arms the drain hook BEFORE poking).
+// Session-6 postscript: the `-onethread` launch arg this pair replaces is
+// NOT PARSED by the remaster at all (no such string in the image) - the
+// "onethread substrate" was a menu-time artifact; this poke is the real
+// single-threaded switch.
+// Alternative (documented, unused): the chain's check #2 reads
+// [[sceneObj+0x3DC]]+0x4C (live: scene vtable 0xE1846C, client obj vtable
+// 0xE127CC, +0x4C == 1) - a per-client "use render thread" bool; zeroing
+// it flips only the render chain but lives in heap object memory.
+inline constexpr uint32_t kNumHwThreadsRva = 0x11B69FC;
+inline constexpr uint32_t kThreadDivisorRva = 0x11B7A00;
 
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,

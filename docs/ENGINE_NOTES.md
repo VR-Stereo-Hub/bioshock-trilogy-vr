@@ -203,22 +203,22 @@ end-to-end:**
   across captures), then ONE hang (~124k doubled frames in; game thread stopped, kill
   required); a second hang followed ~1 min into the first stereo run.
 
-**`-onethread` WORKS - the engine's native single-threaded render mode (session 6,
-last finding, the per-eye substrate going forward).** Launching with
-`steam://run/409710//-onethread/` (or `-onethread` in Steam launch options) boots the
-renderer single-threaded: `[0x13566C4]` (pump kick event) and `[0x13566CC]`
-(render-thread object) both NULL - the pump/queue thread infrastructure is never
-created, the flush-point (0x61D260) drains INLINE on the game thread, and the whole
-two-thread event protocol (the entire deadlock class) is structurally absent. In this
-scene it is also FASTER: 630-710 fps vs ~530 threaded; build == submit == presents
-1:1:1 all on the game thread. WARNING (session-7 lesson): the steam://run arg can
-silently fail to take on a relaunch - ALWAYS verify (hexdump of the two globals = all
-zeros, or the reentry heartbeat's `mode=1T` tag, added session 7).
+**`-onethread` is a NO-OP - session-6's "native single-threaded mode" was a
+measurement artifact (session-7 correction, live-proven).** The string "onethread"
+does not exist in the image in any casing or encoding - the remaster never parses
+it. Session 6's verification hexdumped `[0x13566C4]`/`[0x13566CC]` at the MAIN MENU,
+where they are ALWAYS zero: the pump kick event + render-thread object globals are
+created at first WORLD LOAD, in every mode (live session 7: mode flips 1T -> MT at
+the save load with the arg on the command line; the pump thread runs from boot -
+96 s of CPU on the drain thread with `-onethread` present; the 18:16 crash dump has
+the pump thread with the arg live). The fps difference (630-710 vs ~530) was scene/
+timing coincidence. The REAL single-threaded switch is the hw-thread quotient poke
+below (`reentry 1t on`).
 
-**The "onethread stereo crash" was a MISATTRIBUTION - session-7 minidump forensics
-(all three 2026-07-24 evening dumps, hand-parsed MiniDumpNormal: exception context +
-thread stacks + module list, cross-checked against a capstone disk disasm of the
-drain head).** The findings, each register-verified:
+**The "onethread stereo crash" was a THREADED-mode crash - session-7 minidump
+forensics (all three 2026-07-24 evening dumps, hand-parsed MiniDumpNormal: exception
+context + thread stacks + module list, cross-checked against a capstone disk disasm
+of the drain head).** The findings, each register-verified:
 - **Drain head decode (0x61CAE0..)**: after `EnterCriticalSection([this+8]+4)` the
   drain loads ESI = `[this+0xC]` (drain+0x30) - the SUBMITTED-FRAME CONTEXT slot -
   then dereferences `[ESI+0x40]` at drain+0x33 (the frame's viewport object; a
@@ -228,30 +228,66 @@ drain head).** The findings, each register-verified:
   `[this+0xC]` NULL.**
 - **Both drain+0x33 specimens (18:05:54 and 18:16:19) fault on the render PUMP
   thread** (shallow dedicated stack: BaseThreadInitThunk -> pump loop -> drain, ret
-  0x61D21E, EBX=ECX=this, ESI=0) - i.e. THREADED mode. The 18:16 process ("the
-  onethread stereo run") had a live pump thread, its game thread parked in the known
-  deadlock wait INSIDE a hooked build (BuildDetour frames on its stack, stereo
-  active), and the watchdog thread's stack carries kick_engine_event frames: the
-  classic sequence is deadlock -> pump woken into consumed state (wdkick or the
-  desynced protocol's stray kick) -> drain walks the empty slot -> crash. The
-  -onethread arg had NOT taken on that relaunch.
+  0x61D21E, EBX=ECX=this, ESI=0). The 18:16 process ("the onethread stereo run") had
+  a live pump thread, its game thread parked in the known deadlock wait INSIDE a
+  hooked build (BuildDetour frames on its stack, stereo active), and the watchdog
+  thread's stack carries kick_engine_event frames: the classic sequence is deadlock
+  -> pump woken into consumed state (wdkick or the desynced protocol's stray kick)
+  -> drain walks the empty slot -> crash.
 - The 18:11:16 dump is the recorded `[0x1375BD4]`-poke dead end: game-thread fault
   at exe+0x741D7F in a load-path callstack (0x4CB40A/0x4CCB19/0x4D4821...), exactly
   as logged live.
-- **Consequence: there are ZERO observed crashes on a VERIFIED onethread substrate.**
-  The drain null-deref is a threaded-mode empty-wake defect (same state as
-  session-5's forced re-drain pulse, which faulted at the same +0x33).
+- **Consequence: the drain null-deref is a threaded-mode empty-wake defect** (same
+  state as session-5's forced re-drain pulse, which faulted at the same +0x33); no
+  crash has ever been observed with the renderer actually inline.
 
-**Session-7 fixes (scenedraw.cpp / patterns.h):** (1) `render_is_threaded()` reads
-the two pump globals - `reentry stereo on` now REFUSES the threaded substrate
-(`reentry stereo force` overrides for experiments), the heartbeat/status/overlay
-carry a `mode=MT|1T` tag, and STEREO ON logs the live mode, so a silent mislaunch
-cannot recur; (2) while doubling is active, DrainDetour (auto-installed with stereo)
-SKIPS a drain entered with `[this+0xC] == 0` (`kQueueFrameCtxOffset`) - with no
-frame there is nothing to consume; skips get their own `guardskips` counter. In
-threaded force-mode the null check races the producer (a skip can eat an auto-reset
-wake = possible stall, strictly better than the crash); under onethread it is
-same-thread and exact.
+**Flush-point decision chain FULLY DECODED (0x61D260, session 7) - and the real
+single-threaded switch found.** Per flush call, after copying arg1 (the scene
+object) to `[mgr+0xC]` and arg2's 16 dwords to `[mgr+0x10..0x4C]`, the chain picks
+`threaded` (eax) as follows - every veto selects INLINE, only the final quotient can
+select threaded:
+1. `[0x1375BD4] != 0` -> inline (the 500-ref GIsEditor-class global; dead end).
+2. `[[scene+0x3DC]]+0x4C == 0` -> inline (per-client "use render thread" bool; live:
+   scene vtable RVA 0xE1846C, client object vtable RVA 0xE127CC, value 1 - the
+   documented alternative poke, unused).
+3. Scene-state vetoes: `+0x13C`/`+0x14C` pair, `+0x68`, `+0x64`, flag bit 0x20000 in
+   `+0x114`, `+0x110 != 5` -> inline.
+4. **`[0x11B69FC] / [0x11B7A00] > 1` -> threaded** (live: 12 / 1 - hardware threads
+   vs divisor; patterns.h `kNumHwThreadsRva`/`kThreadDivisorRva`). The pair is
+   written once at startup (~0x756ED2 / ~0x6F26E0) and consumed by SEVEN inlined
+   copies of this exact test (0x43BD90, 0x4D0E24, 0x58413B, 0x604641, 0x61D1AC,
+   0x61D33B = this flush, 0x7814F6) + a cmp-1 at ~0x6F26EE - a tight single-purpose
+   family, nothing like the GIsEditor global.
+Then `[mgr+0x50] = threaded`, `[mgr+0x54] = 1`; INLINE branch = `drain(ECX=mgr)`
+directly on the game thread (drain call ret 0x61D367); THREADED branch = the
+queue = `[mgr+4]` flag-then-INFINITE-wait protocol (the 0x61D38E deadlock wait
+lives here). The pump-loop entry 0x61D1D0 is a VIRTUAL (mgr vtable 0xE1CF14 slot) -
+no simple boot-time creation site to intercept.
+
+**`reentry 1t on` - the live single-threading switch (session 7, flat-proven).**
+Pokes `[kNumHwThreadsRva]` 12 -> 1 (saved/restored by `1t off`): every subsequent
+flush takes the inline branch. Live effects, all observed: heartbeat `mode=1T`,
+beatTid == calcTid (drain on the game thread), drain caller ret flips to 0x61D367,
+presents continue (~413/s mono vs ~530 threaded, ~20% cost), and the SUBMIT stops
+firing entirely in mono (the inline drain consumes the ring before the submit
+call-site gate, so no camera hand-off, no pump kicks, pump sleeps forever). The
+poke must follow the drain-guard install (the `1t` command does both, in order):
+any pump wake after the flip finds `[mgr+0xC]` already consumed - exactly the
+drain+0x33 state - and the guard skips it. STEREO ON TOP (flat, session 7):
+225 pairs/s = 450 presents/s all on the game thread, submits fire nested-in-build,
+guardskips 0, eye-offset img-diff 2.03 vs 0.33 floor, consecutive captures
+phase-consistent (0.43), 5-min stationary soak + 10-min synthetic play soak clean
+- faster AND structurally deadlock-free where threaded stereo survived 16 s-3.5 min.
+
+**Session-7 fixes (scenedraw.cpp / patterns.h):** (1) `render_is_threaded()`
+mirrors the chain's static config (pump infra exists AND editor global clear AND
+quotient > 1) - `reentry stereo on` REFUSES a threaded substrate (`reentry stereo
+force` overrides), heartbeat/status/overlay carry `mode=MT|1T`; (2) DrainDetour
+(auto-installed by both `stereo on` and `1t on`) SKIPS any drain entered with
+`[this+0xC] == 0` (`kQueueFrameCtxOffset`) - a null slot can never be drained, so
+the skip is universally safe; skips get their own `guardskips` counter. In threaded
+mode the null check races the producer (a skip can eat an auto-reset wake =
+possible stall, strictly better than the crash); inline it is same-thread exact.
 
 **Dead ends recorded (do not retry):** (1) `[0x1375BD4]`, the first check in the
 flush-point's threaded-vs-inline chain, is NOT a render toggle - it has 500+ code
