@@ -78,16 +78,25 @@
   `%LOCALAPPDATA%\BioshockVR\framedump_HHMMSS.txt` for the next full Present-to-Present
   frame: per-draw RTs/formats, viewports, VS b0 readback (full mode), callstack RVAs, and
   a draws-per-RT + stack-histogram summary. Never commit dumps (game-derived).
-- **Reentry probe (DR-5)**: `reentry hook [drain|flush]` / `reentry unhook` (MinHook the
-  render-thread drain or the flush - command-gated, default runs stay unhooked),
-  `reentry on|off` / `reentry pulse` (double-call the hooked original every frame / once;
-  SEH-guarded with a poison latch - `reentry reset` clears after a caught fault),
-  `reentry yaw <deg>` (second-pass CalcView yaw delta), `reentry status`,
-  `reentry kick on|off` (process-wide SetEvent caller sampler - this is what located the
-  game-thread frame submit), `reentry calcstack` (one-shot game-thread stack scan).
+- **Reentry probe (DR-5)**: `reentry hook [build|submit|drain|flush]` / `reentry unhook`
+  (MinHook the game-thread scene BUILD root (default - the SequentialReentry seam), the
+  frame submit, the render-thread drain, or the flush - command-gated, default runs stay
+  unhooked), `reentry on|off` / `reentry pulse` (double-call the hooked original every
+  frame / once; SEH-guarded with a poison latch - `reentry reset` clears after a caught
+  fault), `reentry yaw <deg>` (yaw delta for the second pass: the build slot applies it
+  via CalcView's second-pass path, the submit slot on a copied rot arg),
+  `reentry dump <n>` (per-call submit arg telemetry), `reentry arg3 <hex|off>`
+  (double-submit call-site filter), `reentry status`, `reentry kick on|off` (process-wide
+  SetEvent caller sampler), `reentry calcstack` (one-shot game-thread stack scan).
   1 Hz `[reentry]` heartbeat lines carry entries/s, presents/s, tids, call durations.
   WARNING learned 2026-07-24: a drain double-call faults (caught) but then WEDGES the
   render event protocol - the game hangs and needs a kill. Pulse only, expect to relaunch.
+  WARNING 2026-07-24 session 6: continuous BUILD double-call (`reentry on`, the working
+  double-render) ran clean for ~3.5 min (~124k doubled frames) then hung the same way
+  (game thread never polled again; kill + relaunch). The hang struck during a
+  SetForegroundWindow focus cycle (game-shot) - focus transitions pause presenting and
+  may race the doubled event protocol; unproven, could also be a rare stochastic lost
+  wakeup. Keep continuous windows short, prefer pulses, expect an occasional relaunch.
 - **Menu clicks**: `.\tools\game-click.ps1 -X <px> -Y <py>` clicks at window coordinates
   (read positions off a game-shot capture; gameswf menus accept the synthetic click).
   If a click highlights but does not activate a menu item (stale gameswf hover state),
