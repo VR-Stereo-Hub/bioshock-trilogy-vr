@@ -2,7 +2,51 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-23/24, session 3)
+## Current state (2026-07-24, session 4)
+
+**The FOV problem is fully closed, flat-verified end to end.** The live settings object
+(`UShockUserSettings`) is located at runtime by scanning the heap for its fixed-RVA vtable
+(no stable static pointer exists - ENGINE_NOTES), its int32 `HorizontalFOV` at +0x8C is
+what the renderer consumes EVERY FRAME, and:
+- **Auto-claim**: the CalcView detour reads it per frame and feeds the projection claim -
+  the manual claimed-FOV slider is no longer required (kept as an override).
+- **Write past the cap**: `gfov <deg>` (command/overlay slider) writes it per frame with
+  save/restore; **flat-verified rendering at 137** (the options UI's 130 is UI-only, no
+  code clamp; monotonic img-diff 117 -> 130 -> 145). "Force headset FOV" now writes this
+  real control when VR-driving. IN-HEADSET VERIFICATION PENDING (user checklist below).
+
+**DR-3 done in-tree** (RenderDoc never needed): new `core/gfx/frame_inspector` hooks the
+context vtable's draw/clear slots; `dumpframe full` writes a one-shot frame dump (RT descs,
+VS b0 readback, callstack RVAs, auto-summary + lifetime call census). Findings in
+ENGINE_NOTES "D3D11 frame map": HDR R11G11B10 main pass + D24S8, half-res effects pass,
+shadow pair, view-proj matrix in VS b0 bytes 128-191 (fov-scaling cross-check EXACT), and -
+the headline - **the renderer is a command queue** (executor 0x61C8E0 / drain 0x61CAE0 /
+frame root 0x61D0F0, all byte-verified). SequentialReentry must therefore re-enter the
+command BUILD, not the drain - that redefines the DR-5 probe (next session, frame root
+first).
+
+**New tooling this session** (TESTING.md has workflows): value scanner + poke/ptr/hexdump/
+strscan commands behind the command seam (found the settings object via option-change
+narrowing + poke A/B), `game-cmd.ps1` (focus-safe command writes), `img-diff.ps1`
+(automated A/B verdicts). Debug-CRT gotcha recorded: sprintf_s asserts modally on overflow -
+use _snprintf_s/_TRUNCATE for untrusted bytes (froze the game once).
+
+**Known flake (unresolved, low-rate)**: one boot crashed 0xC0000005 at
+`bioshockvr.dll+0x30BE5` during init (before the SEH guards landed on the vtable sweep;
+has not recurred since). If it recurs, the crash filter now logs module+RVA + fault addr -
+symbolize against the build PDB.
+
+**User checklist for the next in-headset session (numbered - report per item):**
+1. **Auto-claim check**: launch, VR camera mode + AlternateEye as usual, but DO NOT touch
+   the manual claimed-FOV slider. The world should be solid (no swim) with the layer line
+   showing the option value as the claim. This is the "no more matching two sliders" win.
+2. **FOV 137 in-headset**: tick "Game FOV write (settings object, real control)" and set the
+   Game FOV slider to 137 (or write `gfov 137` in command.txt). Expect: wider view, and the
+   honest bottom black band should SHRINK vs 130. Check the world stays solid (the claim
+   follows the write automatically). Report band size + comfort + any distortion.
+3. Optional as always: Steam Link cross-check; 4:3 resolution experiment (see session-3 notes).
+
+## Previous state (2026-07-23/24, session 3)
 
 **M4 rung 1 (AlternateEye) code is in on top of the verified M3 drive.** `core/vr` now owns a
 PAIR of backbuffer-sized swapchains (index 0 still serves quad + mono projection). With camera
@@ -65,23 +109,23 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **Settings-object scan**: locate the live remaster settings object holding `HorizontalFOV`
-   (string/FName scan, or xref from the options-apply path). Read it -> auto-truth for the
-   claim (kills the manual-slider requirement); write it -> try exceeding the 130 UI cap
-   toward the 137 headset target. Candidate follow-up: find where the projection matrix is
-   built from it (DR-3 RenderDoc work helps).
-2. **SequentialReentry groundwork - the real M4 bet and the next session's main focus**:
-   DR-3 (RenderDoc frame map: scene RTs, view/proj constant buffers, scene-draw callstack) +
-   DR-5 (double scene draw with yaw delta). AER judder makes full-rate stereo the next
-   quality jump.
-3. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
+1. **In-headset checklist above** (auto-claim + gfov 137) - the user-visible payoff of
+   session 4; report per item.
+2. **DR-5 hook probe - next session's main focus**: command-gated hook on the frame root
+   (RVA 0x61D0F0; command-queue architecture in ENGINE_NOTES). First just pass-through +
+   soak, then count CalcView calls inside it (answers the per-frame-vs-per-view question),
+   then find the command BUILD seam (what to re-enter for a true second scene render -
+   re-entering the drain redraws nothing). Yaw-delta double-render once the build seam is
+   identified.
+3. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
+   recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
+4. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
    guard).
-4. DR-7: borderless/windowed stability; DR-6: menu input path (note: tools/game-click.ps1
+5. DR-7: borderless/windowed stability; DR-6: menu input path (note: tools/game-click.ps1
    synthetic clicks DO work on gameswf menus - partial DR-6 answer already).
-5. Optional anytime: Steam Link / SteamVR cross-check.
-6. **Parked until end-of-project polish (user's call, 2026-07-24): IPD slider verification**
-   (moved to M9 in ROADMAP) - see the note in Current state: exaggerated-offset test first,
-   world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
+6. Optional anytime: Steam Link / SteamVR cross-check.
+7. **Parked in M9 (user's call, 2026-07-24): IPD slider verification** - exaggerated-offset
+   test first, world scale before IPD (perceived depth scale is the worldScale/IPD ratio).
 
 ## Open questions / blockers
 
@@ -98,6 +142,37 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-24 - Session 4
+
+- **FOV endgame closed.** Built the value-scanner seam (memscan/mempoke/memptr/hexdump/
+  strscan + int variants) and img-diff.ps1; narrowed 662 int candidates to 4 by having the
+  user change the FOV option through the game UI between rescans; poke + screenshot A/B
+  found the consumed copy; RTTI walk named it `UShockUserSettings` (+0x8C int32). Two traps
+  documented: the ini value is an INT (float scans blind), and the one .data "static root"
+  was a coincidental range hit later overwritten by floats - resolution is now a heap scan
+  for the fixed-RVA vtable (cached, revalidated per call, SEH-guarded after one boot crash
+  from unguarded reads during heap churn).
+- **Auto-claim + gfov landed**: CalcView reads the option per frame into the projection
+  claim (manual slider demoted to override); `gfov` writes it per frame with save/restore;
+  Force-headset-FOV now writes the real control. Flat A/B: 137 renders wider than 130
+  (UI cap is UI-only), restore returns to noise floor. In-headset check = user checklist.
+- **DR-3 via in-tree frame inspector** (new core/gfx module; RenderDoc never installed):
+  context-vtable hooks on draw/clear/SetRT slots, one-shot lite/full dumps with RT descs,
+  VS b0 readback, triple-source callstack RVAs, auto-summary + lifetime census. Frame map
+  in ENGINE_NOTES: HDR main pass, half-res effects pass, shadow pair, view-proj in VS b0
+  bytes 128-191 (m00 scaled EXACTLY as 1/tan(hfov/2) between 117/137 dumps - independent
+  proof the option IS the rendered fov).
+- **DR-5 groundwork - architecture finding**: byte-walk of the draw-stack functions shows a
+  render COMMAND QUEUE: executor 0x61C8E0 (`void __thiscall`, type id at this+0xC), drain
+  loop 0x61CAE0 (site 0x61CD0D), frame root 0x61D0F0 (site 0x61D21E; its call rel32
+  byte-verified to the drain). Consequence: SequentialReentry must re-enter the command
+  BUILD, not the drain. Hook probe deferred to next session (fresh session; this one had
+  two unrelated PC power cuts - user's electricity, not the mod).
+- Debug-CRT lesson recorded in TESTING: sprintf_s asserts with a MODAL on overflow (froze
+  the game mid-scan); value_scan switched to _snprintf_s/_TRUNCATE. Crash filter upgraded
+  to log module+RVA + fault address. tools/game-cmd.ps1 added (focus-safe seam writes -
+  the poller only runs while the game window is focused).
 
 ### 2026-07-23/24 - Session 3
 

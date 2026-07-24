@@ -54,17 +54,39 @@
 ## Automated in-game testing (no human in the loop)
 
 - **Command seam**: the mod polls `%LOCALAPPDATA%\BioshockVR\command.txt` at 1 Hz on the game
-  thread and applies each line, logging what it applied. Commands: `fov <deg>`, `fov off`,
-  `offset <x> <y> <z>`, `recenter`. Write the file, wait ~2 s, confirm via the log.
+  thread and applies each line, logging what it applied. Camera commands: `fov <deg>`,
+  `fov off`, `gfov <deg>` / `gfov off` (REAL game fov via the settings object - works past
+  the options UI's 130 cap), `offset <x> <y> <z>`, `recenter`.
+- **Write commands with** `.\tools\game-cmd.ps1 "<cmd>" ["<cmd2>" ...]` - it foregrounds the
+  game first and retries past the poller's transient file lock. IMPORTANT: the poller runs
+  inside the CalcView hook, which the engine pauses while the window is unfocused - after
+  game-cmd, run a game-shot (it holds focus ~2.5 s) so the poll actually fires.
 - **Window screenshots**: `.\tools\game-shot.ps1 -Out shot.png` captures the game WINDOW
   (PrintWindow, D3D content included), foregrounding it first - the game pauses its boot and
   its presenting while unfocused.
+- **Pixel-diff A/B**: `.\tools\img-diff.ps1 -A a.png -B b.png` prints mean-abs-diff / max /
+  pct-changed. Standing-still gameplay noise floor is ~0.4 mean; a real fov change reads 4-7.
+  The menu attract scene moves constantly (mean ~3.8 across 5 s) - do A/B in a loaded save.
+- **Memory discovery** (CheatEngine-style, all via the seam; results in the log):
+  `memscan <f>` / `memscani <u>` full sweep, `memrescan`/`memrescani` narrow,
+  `memlist [n]`, `memread <i>`, `mempoke <i>|<lo>-<hi> <v>` / `mempokei ...`, `memrestore`,
+  `memptr <i> [maxDeltaHex]` (owning-pointer sweep), `pokeaddr`/`pokeaddri <hex> <v>`,
+  `hexdump <hex> <len>`, `strscan <text>`, `membases`. The proven narrowing recipe: scan,
+  have the value changed through the game's own UI, rescan, poke each survivor + screenshot
+  + img-diff to find the consumed copy (see the HorizontalFOV row in ENGINE_NOTES).
+- **Frame dumps (DR-3)**: `dumpframe` / `dumpframe full` (or the overlay buttons) writes
+  `%LOCALAPPDATA%\BioshockVR\framedump_HHMMSS.txt` for the next full Present-to-Present
+  frame: per-draw RTs/formats, viewports, VS b0 readback (full mode), callstack RVAs, and
+  a draws-per-RT + stack-histogram summary. Never commit dumps (game-derived).
 - **Menu clicks**: `.\tools\game-click.ps1 -X <px> -Y <py>` clicks at window coordinates
   (read positions off a game-shot capture; gameswf menus accept the synthetic click).
 - Loading the same save reproduces the same spawn viewpoint - good for A/B render comparisons.
 - Caveat: the main-menu backdrop is a live level with a flying attract camera that LOOKS like
   gameplay (no HUD) - do not draw render conclusions there; its fov path differs (see
   ENGINE_NOTES).
+- Debug-build gotcha: `sprintf_s` ASSERTS on buffer overflow with a MODAL dialog that freezes
+  the game (hit 2026-07-24 formatting arbitrary heap floats). Use `_snprintf_s` + `_TRUNCATE`
+  in any code that formats untrusted bytes.
 
 ## Quest 3 / Virtual Desktop setup
 
@@ -75,12 +97,14 @@
 4. Steam Link alternative: SteamVR must be the active OpenXR runtime
    (SteamVR → Settings → OpenXR → "Set SteamVR as OpenXR runtime").
 
-## RenderDoc workflow (DR-3, M4)
+## RenderDoc workflow (FALLBACK only - DR-3 was done with the in-tree frame inspector)
 
+- Only reach for RenderDoc if a question exceeds the in-tree `dumpframe` data (e.g. full
+  shader disassembly). RenderDoc is NOT currently installed.
 - RenderDoc x86 build (32-bit game!) → Launch Application → `BioshockHD.exe` with working dir
   `Build\Final` - verify our proxy still loads (log line) under RenderDoc.
 - Captures go to `captures/` (gitignored - they contain game content; never commit).
-- Deliverable of any capture session = updated "RenderDoc frame map" section in ENGINE_NOTES.md.
+- Deliverable of any capture session = updated "D3D11 frame map" section in ENGINE_NOTES.md.
 
 ## Crash triage
 
