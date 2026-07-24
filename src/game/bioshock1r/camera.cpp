@@ -9,6 +9,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
 
@@ -388,6 +389,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
 
     uint64_t now = GetTickCount64();
     poll_command_file(now);
+    // M5: pump the engine's own pad pipeline against the synthetic gamepad
+    // (self-throttles to once per present; no-op while vrinput is off).
+    input_drive::on_frame(now);
     if (g_logCamera.load(std::memory_order_relaxed)) {
         if (g_lastHeartbeatMs == 0) {
             g_lastHeartbeatMs = now;

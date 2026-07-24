@@ -1,11 +1,13 @@
 #include "core/input/xinput_bridge.h"
 
+#include "core/hooks/pattern_scan.h"
 #include "core/util/log.h"
 
 #include <windows.h>
 #include <Xinput.h> // layout only (XINPUT_STATE); no XInput functions are called
 
 #include <imgui.h>
+#include <MinHook.h>
 
 #include <atomic>
 #include <cstdio>
@@ -71,6 +73,39 @@ int bit_index(uint16_t bit) {
     return 0;
 }
 
+// The game probes XInput exactly ONCE at boot (6 GetState calls for index 0,
+// 1 each for 1-3) and never re-polls a slot that reported disconnected - not
+// on WM_DEVICECHANGE, not on an interval (verified live 2026-07-24). So the
+// enable flag must already be set when that probe runs, which is before the
+// command seam's first poll. A marker file persisted across boots and read at
+// DLL attach closes the gap: once the user opts in, every later boot reports
+// a connected pad to the probe and the game polls at frame rate from then on.
+// Mid-session "vrinput on" after a disconnected boot probe needs a relaunch.
+bool marker_path(wchar_t out[MAX_PATH]) {
+    wchar_t base[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return false;
+    swprintf_s(out, MAX_PATH, L"%s\\BioshockVR\\vrinput.on", base);
+    return true;
+}
+
+void persist_enabled(bool on) {
+    wchar_t path[MAX_PATH];
+    if (!marker_path(path)) return;
+    if (on) {
+        HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    } else {
+        DeleteFileW(path);
+    }
+}
+
+bool read_persisted_enabled() {
+    wchar_t path[MAX_PATH];
+    if (!marker_path(path)) return false;
+    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
 // Merge b over a: buttons OR, triggers max, stick axes per-axis larger
 // magnitude wins with ties going to `a` - deterministic and order-free.
 int16_t merge_axis(int16_t a, int16_t b) {
@@ -107,16 +142,15 @@ Gamepad compose_synthetic(uint64_t now) {
     return merge(syn, test);
 }
 
-// The proxy seam. May run on any thread; no allocation, no logging except the
-// one-shot first-compose line. userIndex 0 is the only slot the game plays on;
-// other indices pass through untouched (counted for telemetry).
-void WINAPI PostGetState(DWORD userIndex, void* state, DWORD* result) {
-    if (userIndex < 4) g_calls[userIndex].fetch_add(1, std::memory_order_relaxed);
+// Compose synthetic state over a completed GetState-shaped call. May run on
+// any thread; no allocation, no logging except the one-shot first-compose
+// line. userIndex 0 is the only slot the game plays on; other indices pass
+// through untouched.
+void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     if (userIndex != 0) return;
     g_lastRealResult.store(*result, std::memory_order_relaxed);
     if (!g_enabled.load(std::memory_order_relaxed)) return;
 
-    auto* xs = static_cast<XINPUT_STATE*>(state);
     Gamepad real{};
     if (*result == ERROR_SUCCESS) {
         memcpy(&real, &xs->Gamepad, sizeof real);
@@ -139,6 +173,141 @@ void WINAPI PostGetState(DWORD userIndex, void* state, DWORD* result) {
 
     if (!g_loggedFirstCompose.exchange(true, std::memory_order_relaxed))
         BVR_LOG("input: first synthetic compose served (packet %u)", g_packet);
+}
+
+// The proxy seam (import lane: the game's static xinput1_3 ordinals).
+void WINAPI PostGetState(DWORD userIndex, void* state, DWORD* result) {
+    if (userIndex < 4) g_calls[userIndex].fetch_add(1, std::memory_order_relaxed);
+    compose_over(userIndex, static_cast<XINPUT_STATE*>(state), result);
+}
+
+// ---- direct system-DLL hooks -----------------------------------------------
+// The proxy only sees the game's static xinput1_3 imports (ordinals 2/3).
+// Detection does not have to flow through them: xinput1_4.dll is loaded
+// in-process, and XInputGetCapabilities can be bound dynamically against
+// either system DLL. MinHook the real DLLs so detection AND polling see the
+// synthetic pad no matter which lane the game (or a middleware layer) uses;
+// per-lane counters tell us which lane is live (record in ENGINE_NOTES).
+
+using XiGetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
+using XiGetCapsFn = DWORD(WINAPI*)(DWORD, DWORD, XINPUT_CAPABILITIES*);
+
+XiGetStateFn g_orig14GetState = nullptr;
+XiGetStateFn g_orig14GetStateEx = nullptr;
+XiGetCapsFn g_orig14GetCaps = nullptr;
+XiGetCapsFn g_orig13GetCaps = nullptr;
+std::atomic<uint32_t> g_calls14State{0}, g_calls14Caps{0}, g_calls13Caps{0};
+std::atomic<bool> g_dllHooksTried{false};
+
+void fill_caps(XINPUT_CAPABILITIES* caps) {
+    memset(caps, 0, sizeof *caps);
+    caps->Type = XINPUT_DEVTYPE_GAMEPAD;
+    caps->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
+    caps->Gamepad.wButtons = 0xF3FF; // every standard-gamepad button bit
+    caps->Gamepad.bLeftTrigger = 0xFF;
+    caps->Gamepad.bRightTrigger = 0xFF;
+    caps->Gamepad.sThumbLX = 0x7FFF;
+    caps->Gamepad.sThumbLY = 0x7FFF;
+    caps->Gamepad.sThumbRX = 0x7FFF;
+    caps->Gamepad.sThumbRY = 0x7FFF;
+    caps->Vibration.wLeftMotorSpeed = 0xFFFF;
+    caps->Vibration.wRightMotorSpeed = 0xFFFF;
+}
+
+DWORD WINAPI Hook14GetState(DWORD userIndex, XINPUT_STATE* state) {
+    g_calls14State.fetch_add(1, std::memory_order_relaxed);
+    DWORD r = g_orig14GetState ? g_orig14GetState(userIndex, state)
+                               : ERROR_DEVICE_NOT_CONNECTED;
+    compose_over(userIndex, state, &r);
+    return r;
+}
+
+DWORD WINAPI Hook14GetStateEx(DWORD userIndex, XINPUT_STATE* state) {
+    g_calls14State.fetch_add(1, std::memory_order_relaxed);
+    DWORD r = g_orig14GetStateEx ? g_orig14GetStateEx(userIndex, state)
+                                 : ERROR_DEVICE_NOT_CONNECTED;
+    compose_over(userIndex, state, &r);
+    return r;
+}
+
+DWORD serve_caps(DWORD userIndex, XINPUT_CAPABILITIES* caps, DWORD realResult) {
+    if (userIndex != 0 || !g_enabled.load(std::memory_order_relaxed))
+        return realResult;
+    fill_caps(caps);
+    return ERROR_SUCCESS;
+}
+
+DWORD WINAPI Hook14GetCaps(DWORD userIndex, DWORD flags, XINPUT_CAPABILITIES* caps) {
+    g_calls14Caps.fetch_add(1, std::memory_order_relaxed);
+    DWORD r = g_orig14GetCaps ? g_orig14GetCaps(userIndex, flags, caps)
+                              : ERROR_DEVICE_NOT_CONNECTED;
+    return serve_caps(userIndex, caps, r);
+}
+
+DWORD WINAPI Hook13GetCaps(DWORD userIndex, DWORD flags, XINPUT_CAPABILITIES* caps) {
+    g_calls13Caps.fetch_add(1, std::memory_order_relaxed);
+    DWORD r = g_orig13GetCaps ? g_orig13GetCaps(userIndex, flags, caps)
+                              : ERROR_DEVICE_NOT_CONNECTED;
+    return serve_caps(userIndex, caps, r);
+}
+
+// ---- game-IAT wrapper -------------------------------------------------------
+// The game calls XInputGetState through its IAT. The Steam overlay E9-hooks
+// the export THUNK our proxy exposes, so calls die inside Steam Input before
+// the proxy body (and its post-hook) ever runs. Re-pointing the IAT slot at
+// this wrapper keeps whatever chain the slot held (Steam included - real pads
+// keep working through it) and composes synthetic state on the way out.
+XiGetStateFn g_iatOriginal = nullptr;
+std::atomic<uint32_t> g_callsIat{0};
+
+DWORD WINAPI IatGetState(DWORD userIndex, XINPUT_STATE* state) {
+    g_callsIat.fetch_add(1, std::memory_order_relaxed);
+    DWORD r = g_iatOriginal ? g_iatOriginal(userIndex, state)
+                            : ERROR_DEVICE_NOT_CONNECTED;
+    compose_over(userIndex, state, &r);
+    return r;
+}
+
+template <typename Fn>
+bool hook_export(HMODULE mod, const char* name, void* detour, Fn* orig) {
+    if (!mod || *orig) return false;
+    void* target = name ? reinterpret_cast<void*>(GetProcAddress(mod, name))
+                        : nullptr;
+    if (!target) return false;
+    if (MH_CreateHook(target, detour, reinterpret_cast<void**>(orig)) != MH_OK)
+        return false;
+    if (MH_EnableHook(target) != MH_OK) {
+        MH_RemoveHook(target);
+        *orig = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void install_dll_hooks() {
+    if (g_dllHooksTried.load(std::memory_order_relaxed)) return;
+
+    HMODULE h14 = GetModuleHandleW(L"xinput1_4.dll");
+    // Real xinput1_3 by explicit system-dir path (WOW64-redirected for us) -
+    // the basename resolves to our own proxy in the game folder.
+    wchar_t sysPath[MAX_PATH];
+    HMODULE h13 = nullptr;
+    UINT len = GetSystemDirectoryW(sysPath, MAX_PATH);
+    if (len > 0 && len < MAX_PATH - 16) {
+        lstrcatW(sysPath, L"\\xinput1_3.dll");
+        h13 = GetModuleHandleW(sysPath);
+    }
+    if (!h14 && !h13) return; // neither loaded yet - retry from the next command
+
+    g_dllHooksTried.store(true, std::memory_order_relaxed);
+    int hooked = 0;
+    if (hook_export(h14, "XInputGetState", &Hook14GetState, &g_orig14GetState)) ++hooked;
+    if (hook_export(h14, reinterpret_cast<const char*>(MAKEINTRESOURCEA(100)),
+                    &Hook14GetStateEx, &g_orig14GetStateEx)) ++hooked;
+    if (hook_export(h14, "XInputGetCapabilities", &Hook14GetCaps, &g_orig14GetCaps)) ++hooked;
+    if (hook_export(h13, "XInputGetCapabilities", &Hook13GetCaps, &g_orig13GetCaps)) ++hooked;
+    BVR_LOG("input: system-DLL hooks installed (%d: xinput1_4 %p, real xinput1_3 %p)",
+            hooked, h14, h13);
 }
 
 // Test-slot bookkeeping shared by handle_command. Caller holds g_mutex.
@@ -180,16 +349,20 @@ void log_status() {
         xrFresh = g_xrActive && now - g_xrLastMs <= kXrStaleMs;
         packet = g_packet;
     }
-    BVR_LOG("input: status - %s, seam %s, xr %s, getstate[0] %u total (%u/s since "
-            "last status, idx1-3 %u/%u/%u), last real result %u, packet %u, "
-            "test slots live %d",
+    BVR_LOG("input: status - %s, seam %s, xr %s, iat %u, getstate[0] %u total "
+            "(%u/s since last status, idx1-3 %u/%u/%u), xi14 state %u caps %u, "
+            "xi13 caps %u, last real result %u, packet %u, test slots live %d",
             g_enabled.load(std::memory_order_relaxed) ? "ENABLED" : "disabled",
             g_registered.load(std::memory_order_relaxed) ? "registered" : "MISSING",
             xrFresh ? "active" : "idle",
+            g_callsIat.load(std::memory_order_relaxed),
             calls0, rate,
             g_calls[1].load(std::memory_order_relaxed),
             g_calls[2].load(std::memory_order_relaxed),
             g_calls[3].load(std::memory_order_relaxed),
+            g_calls14State.load(std::memory_order_relaxed),
+            g_calls14Caps.load(std::memory_order_relaxed),
+            g_calls13Caps.load(std::memory_order_relaxed),
             g_lastRealResult.load(std::memory_order_relaxed), packet, live);
 }
 
@@ -223,6 +396,32 @@ void init() {
     setter(&PostGetState);
     g_registered.store(true, std::memory_order_relaxed);
     BVR_LOG("input: bridge registered with proxy seam (module %p)", proxy);
+
+    install_dll_hooks(); // retried lazily from commands if the DLLs load later
+
+    if (read_persisted_enabled()) {
+        g_enabled.store(true, std::memory_order_relaxed);
+        BVR_LOG("input: vrinput pre-armed from marker - boot probe will see a "
+                "connected pad");
+    }
+}
+
+bool hijack_import_slot(void** slot) {
+    if (!slot || !bvr::pattern_scan::is_memory_valid(slot, sizeof(void*)))
+        return false;
+    if (*slot == reinterpret_cast<void*>(&IatGetState)) return true;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        BVR_LOG("input: import-slot hijack failed (VirtualProtect err %u)",
+                GetLastError());
+        return false;
+    }
+    g_iatOriginal = reinterpret_cast<XiGetStateFn>(*slot);
+    *slot = reinterpret_cast<void*>(&IatGetState);
+    VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+    BVR_LOG("input: game import slot %p hijacked (original %p -> bridge wrapper)",
+            slot, g_iatOriginal);
+    return true;
 }
 
 void set_enabled(bool on) {
@@ -233,6 +432,7 @@ void set_enabled(bool on) {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_packetBump = true;
     }
+    persist_enabled(on); // sticky across boots - see the boot-probe note above
     BVR_LOG("input: vrinput %s", on ? "ON (synthetic gamepad live)" : "off (passthrough)");
 }
 
@@ -248,6 +448,8 @@ void publish_xr_state(const Gamepad& pad, bool active) {
 float stick_deadzone() { return g_deadzone.load(std::memory_order_relaxed); }
 
 void handle_command(const char* args) {
+    install_dll_hooks(); // lazy retry in case xinput1_4 loaded after init
+
     char verb[16] = {};
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1)
@@ -366,6 +568,12 @@ void draw_debug_ui() {
     ImGui::Text("seam %s | xr %s | getstate %u/s | packet %u | test slots %d",
                 g_registered.load(std::memory_order_relaxed) ? "ok" : "MISSING",
                 xrFresh ? "active" : "idle", rate, packet, live);
+    ImGui::Text("lanes: iat %u | proxy %u | xi14 state %u caps %u | xi13 caps %u",
+                g_callsIat.load(std::memory_order_relaxed),
+                g_calls[0].load(std::memory_order_relaxed),
+                g_calls14State.load(std::memory_order_relaxed),
+                g_calls14Caps.load(std::memory_order_relaxed),
+                g_calls13Caps.load(std::memory_order_relaxed));
     ImGui::Text("last real result: %u%s",
                 g_lastRealResult.load(std::memory_order_relaxed),
                 g_lastRealResult.load(std::memory_order_relaxed) ==

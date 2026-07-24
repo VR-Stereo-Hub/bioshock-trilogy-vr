@@ -231,6 +231,44 @@ inline constexpr uint32_t kMgrViewGroupDwords = 16;
 inline constexpr uint32_t kMgrThreadedFlagOffset = 0x50; // 0 = inline drain
 inline constexpr uint32_t kMgrFlushSeenOffset = 0x54;    // stamped 1 per flush
 
+// ---- Gamepad / UWindowsClient facts (session 9, from the XINPUT1_3
+// import-thunk walk + RTTI; full derivation in ENGINE_NOTES "Gamepad
+// architecture") -------------------------------------------------------------
+// The remaster reads the pad ONLY inside UWindowsViewport::UpdateInput
+// (RVA 0x853D20, `ret 8` = thiscall(BOOL reset, FLOAT dt)), which NOBODY
+// calls in windowed mode - the game probes XInputGetState ~6x at boot
+// (client init, RVA 0x8507BB) and never again; WM_DEVICECHANGE, ini
+// UseJoystick/UseController and the pad-connected global are all ignored
+// until UpdateInput runs. The adapter therefore drives UpdateInput itself
+// once per present (input_drive.cpp) and flips UseController through the
+// engine's own setter so game-level checks (`client+0xDC && connected
+// global`) light up. UWindowsClient::Exec also handles a
+// "ToggleUseController" console command that calls the same setter.
+inline constexpr uint32_t kGameEnginePtrRva = 0x1375368;  // [.]->UGameEngine, +0x4C = Client
+inline constexpr uint32_t kEngineClientOffset = 0x4C;
+inline constexpr uint32_t kClientVtableRva = 0xE4DBE0;    // RTTI .?AVUWindowsClient@@
+inline constexpr uint32_t kViewportVtableRva = 0xE4E448;  // RTTI .?AVUWindowsViewport@@
+inline constexpr uint32_t kClientViewportsDataOffset = 0x44; // TArray<UViewport*> data
+inline constexpr uint32_t kClientViewportsCountOffset = 0x4C;
+inline constexpr uint32_t kClientUseControllerOffset = 0xDC; // BOOL, ini UseController is dead
+// Shared vtable byte offset 0x118 (slot 70): on UWindowsClient it is
+// SetUseController(BOOL) (RVA 0x8509B0 - writes +0xDC, updates the UI-prompt
+// global, SaveConfig, notifies gameswf); on UWindowsViewport it is
+// UpdateInput(BOOL reset, FLOAT dt) (RVA 0x853D20 - DI keyboard block
+// self-skips when no DI device, then XInputGetState(0) every call: connected
+// -> processes pad into engine input, else retries and re-stamps the
+// connected global at kPadConnectedFlagRva).
+inline constexpr uint32_t kVtblSlot70Offset = 0x118;
+inline constexpr uint32_t kPadConnectedFlagRva = 0x11B7A10; // written by UpdateInput
+// The game's IAT slots for its XINPUT1_3 ordinal imports (from the PE import
+// directory). The STEAM OVERLAY code-hooks the proxy's export thunk (E9 jmp
+// into gameoverlayrenderer, observed live 2026-07-25) and swallows GetState
+// before the proxy body runs - so the bridge re-points the ord-2 IAT slot at
+// its own wrapper (previous target kept as passthrough; Steam-served real
+// pads still work). Ord-3 (SetState/vibration) is untouched until M7 haptics.
+inline constexpr uint32_t kXInputGetStateIatRva = 0xBCF8E0;
+inline constexpr uint32_t kXInputSetStateIatRva = 0xBCF8DC;
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)
