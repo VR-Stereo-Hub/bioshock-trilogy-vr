@@ -57,6 +57,18 @@ inline constexpr uint32_t kQueueDrainGuardOffset = 0x58; // pump exit flag
 inline constexpr uint8_t kRenderFlushPrologue[5] = {0x55, 0x8B, 0xEC, 0x51, 0xA1};
 inline constexpr uint8_t kDrainPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 
+// Game-thread frame SUBMIT/KICK - the SequentialReentry seam (session 5;
+// ENGINE_NOTES "Scene-draw architecture"). Located by the reentry probe's
+// SetEvent caller sampler (game-thread SetEvent ret RVA 0x585C68), entry by
+// prologue walk. ret 0xC = 3 stack args: arg1 FVector* camLoc, arg3 a
+// viewport/scene object; stores the camera into the submitted-frame globals
+// and SetEvents the render pump. Double-calling THIS with a modified rot is
+// the true second-render primitive. Not hooked yet - next session.
+inline constexpr uint32_t kFrameSubmitRva = 0x585AC0;
+inline constexpr uint8_t kFrameSubmitPrologue[10] = {0x55, 0x8B, 0xEC, 0x51,
+                                                     0x64, 0xA1, 0x2C, 0x00,
+                                                     0x00, 0x00};
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

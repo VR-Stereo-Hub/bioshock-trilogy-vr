@@ -52,9 +52,15 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [ ] DR-5: call the scene-draw entry twice per frame with a 2° yaw delta; check stability;
       10-min play test
       *2026-07-24 groundwork: the renderer is a command queue (executor 0x61C8E0, drain
-      0x61CAE0, frame root 0x61D0F0 - ENGINE_NOTES). Re-entering the DRAIN would redraw
-      nothing; the probe must re-enter the command BUILD upstream. Hook attempt = next
-      session, starting from the frame root.*
+      0x61CAE0, frame root 0x61D0F0 - ENGINE_NOTES).*
+      *2026-07-24 session 5 - seam FOUND, double-call pending: two-thread architecture
+      mapped live (game thread builds+submits, render thread pump 0x61D1D0 drains once
+      per Present). Render-side re-entry REFUTED both ways: 0x61D0F0 is a flush that
+      never runs in play; a drain double-call faults (SEH-caught, poison latch worked)
+      and wedges the event protocol. The true seam is the game-thread frame SUBMIT at
+      RVA 0x585AC0 (takes camera loc/rot by pointer, SetEvents the pump) - located via
+      the probe's SetEvent caller sampler and byte-walked. Next: command-gated hook on
+      the submit, per-call arg telemetry, then the yaw-delta double-submit.*
 - [ ] DR-6: instrument DINPUT8/window messages/XInput during menu use - which input path do
       gameswf menus read?
 - [ ] DR-7: borderless-window mode stability (vs exclusive fullscreen) for overlay + capture
