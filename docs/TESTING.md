@@ -102,15 +102,25 @@
   gate both live-falsified - the race is inside the concurrent window). Pulses and
   short windows are safe-ish; kill + relaunch on hang; the game process is otherwise
   unharmed and saves are untouched. Fix directions in STATUS next steps.
-- **`-onethread` mode (session 6, the stereo substrate)**: launch via
-  `steam://run/409710//-onethread/` (arguments ride the run URL) or put `-onethread`
-  in Steam launch options. Boots the renderer single-threaded (no pump/queue thread -
-  verify: `hexdump <base+13566C4> 16` shows 16 zero bytes), which removes the
-  deadlock class entirely and measured FASTER than threaded in the save-spawn scene
-  (630-710 fps vs ~530). Stereo doubling on top still has a rare CRASH (drain+0x33,
-  fault 0x40, ~1 per tens of thousands of pairs) - minidumps land in
-  `%LOCALAPPDATA%\BioshockVR\crash\` (never commit them; symbolize against the game
-  + build PDB).
+- **Single-threaded render mode (`reentry 1t on`, session 7 - THE stereo
+  substrate)**: pokes the engine's hardware-thread count global to 1 (see
+  ENGINE_NOTES "Flush-point decision chain") so every scene flush drains INLINE on
+  the game thread - no pump hand-off, no INFINITE render-done wait, the whole
+  deadlock class structurally unreachable. The command arms the drain-hook
+  empty-slot guard first (mandatory ordering - the guard eats any pump wake into
+  consumed state, the old drain+0x33 crash). Verify with the heartbeat: `mode=1T`
+  and beatTid == calcTid. `reentry 1t off` restores the original count. Costs
+  ~20% mono fps (413/s vs 530/s in the save-spawn scene) - irrelevant next to the
+  144 presents/s VR needs. SUPERSEDES the session-6 `-onethread` launch arg, which
+  the remaster does not parse at all (menu-time verification artifact - the pump
+  globals are always zero until the first world load).
+- **Stereo substrate gate (session 7)**: `reentry stereo on` REFUSES to arm while
+  the threaded renderer is live (deadlock + empty-wake crash substrate - all three
+  2026-07-24 crash dumps). Run `reentry 1t on` first; `reentry stereo force`
+  overrides for experiments only. Crash dumps land in
+  `%LOCALAPPDATA%\BioshockVR\crash\` (never commit them; symbolize with the
+  scratchpad minidump parser against the game + build PDB - method in STATUS
+  session-7 log).
 - **Watchdog**: `reentry stereo on` arms a detect-only deadlock watchdog (logs when
   the game thread is stuck >300 ms inside a hooked call with builds/presents frozen).
   `reentry wdkick on` additionally re-SetEvents engine events on detection - known to
