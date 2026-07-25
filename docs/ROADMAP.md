@@ -213,11 +213,33 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       the runtime's AIM pose with pitch/yaw trim sliders (in-headset check pending). RETICLE still
       not started: the user asked specifically for a visible laser from the hand - design in
       STATUS "Next steps".*
-- [ ] **Done when:** look left while shooting right - impacts land where the controller points.
+- [x] **Done when:** look left while shooting right - impacts land where the controller points.
+      *TICKED 2026-07-25 (session 10), USER-VERIFIED IN-HEADSET: "it's pretty good... the plasmids
+      are working and it's based on the left hand which is very good", and after the aim-pose fix
+      "now it's pretty good - and the default at 0.00 for now is pretty good". Flat proof at a wall
+      first (decals 12 deg right, 12 deg left, 10 deg down, 8/8 up-right of a stationary
+      crosshair; `vraim off` restores it). Aim trim defaults stay 0/0 by the user's call.
+      RETICLE/LASER moved to M7 by the user's call: "we can do the laser thing when we do the guns
+      and hands since that way it's better and it's in the same idea" - a laser should emit from
+      the visible muzzle, and the user can judge aim calibration far better once the gun is
+      visible. Remaining M6 loose end (small): confirm WHAT steers the plasmid - its fire-start
+      rotator out-param reads all-zero, so the hand-origin substitution may be doing the visible
+      work; verify across a trace plasmid (Electro Bolt) and a projectile one (Incinerate).*
 
 ## M7 - Visible hands + weapons (~2–3 sessions)
 
 - [ ] Locate live AHands actor via UObject iteration; pin to grip pose each frame
+      *Assets already in hand from M6: the AHands vtable (RVA 0xD8A28C, RTTI-derived) for a
+      heap scan in the style of the UShockUserSettings lookup, the AHands natives in the engine's
+      own native table (`CanExecuteAction`, `SetCurrentTransitionSequence`,
+      `InterruptAnimNotifiesForAnimation`), the GRIP poses already located every frame beside the
+      aim poses (grip is the right pose for placing a model), the AActor field layout (+0x1D8
+      Location, +0x1E4 FRotator Rotation, +0x550 eye height) and the CalcView frame context the
+      aim ray already rides.*
+- [ ] Laser / aim reticle emitting from the weapon (moved here from M6 by the user, 2026-07-25):
+      small D3D11 swapchain holding a soft dot, submitted as several XR quad layers spaced along
+      the aim ray plus one at the aim point, each facing the head - all in XR space, so it is
+      per-eye correct with no game-space projection. Doubles as the aim-calibration tool.
 - [ ] Per-weapon offset tuning (live ImGui sliders, persisted config)
 - [ ] **Done when:** hands + current weapon track the controller convincingly; wrench melee
       feels aimed. (Full IK arms = post-v1.)
