@@ -2,6 +2,62 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Current state (2026-07-25, session 10)
+
+**M6 is UNDER WAY: the fire flow is mapped, the aim seam is shipped and
+command-gated, and the plasmid seam is live-confirmed - but the aim is NOT yet
+decoupled end to end.** What changed today, in the order it matters:
+
+**1. The fire flow is no longer a mystery** (full map + every address in
+ENGINE_NOTES "Fire flow / aim"). Attacks in this engine are ABILITIES: trigger
+-> `Weapon.BeginFiring` -> the `Firing` state -> an ANIM NOTIFY -> the ability's
+`UseAbility` -> native `InitiateDamage` -> **`GetPerfectFireStart`** -> a damage
+factory that runs the trace. Guns/melee go through `AWeapon`, plasmids through
+`UAttackAbility`; the wrench damages through a **Havok collision phantom** and
+never traces at all (so melee aim is an M7 hands matter, not an aim vector).
+
+**2. Two discoveries made the search fast, and both are reusable.** (a) The
+engine ships a readable **symbol table for name-based natives** (registration
+string `int<Class>exec<Func>` -> a 12-byte `.data` entry -> the impl pointer);
+`pattern_scan::find_native_function` now resolves natives with no hardcoded
+addresses, and dumping that table offline (1822 entries) is the first stop for
+any future engine question - M7's `AHands` natives are already visible in it.
+(b) **UnrealScript `exec` thunks are not hookable seams**: hooking all four aim
+thunks caught ZERO calls while shooting, because native callers go straight to
+the C++ implementation. The shipped seams hook implementations (weapon side via
+the RTTI-derived vtable slot, ability side via a prologue-checked RVA).
+
+**3. The aim module is shipped, gated, and half-proven.**
+`game/bioshock1r/aim.cpp` + `vraim ...` commands: per-hand rays built in the
+CalcView frame from the XR grip poses (now located at the frame's predicted
+display time in `core/vr/openxr_input`), self-expiring `vraim test l|r <yaw>
+<pitch>` synthetic aim for headset-free testing, ownership gates that use the
+same instigator check the engine makes itself, and value-driven substitution so
+the engine's own spread (`ApplyAimError`) still applies on top. Live-verified:
+the ability seam fires on an Electro Bolt cast, the hand map learns from the
+trigger ("learned LEFT-hand (plasmid) object"), and ORIGIN substitution lands
+(`SUB(L)` with our numbers).
+
+**4. What is NOT done - the direction.** `GetPerfectFireStart` fills POSITIONS
+only (live: out-params were the player location, a zero, and location+lean); the
+trace DIRECTION is produced one layer deeper in the damage factory. Ruled out
+live: `APawn::GetViewDirection` and `AShockPlayer::GetViewPoint` (never called
+during a shot). The next probe target is the factory virtual at `+0xEC`
+(ENGINE_NOTES has the address). Also unverified: the WEAPON path end to end -
+the only save in the tree spawns with wrench + Electro Bolt, and the wrench
+never traces, so a ranged weapon is needed (see "Next steps" #1).
+
+**5. Tooling that will keep paying off.** Headless UELib decompiling
+(`tools/uscript/dump.ps1`, package loads in <1 s), `vraim scan <Class> <Func>`
+(hook any name-based native read-only) and `vraim scanimpl <rva> <args>` (hook
+any C++ implementation) - so "does this function run when X happens" is a
+command, not a rebuild. Harness gotcha worth remembering: the FIRST trigger pull
+only switches hands (`SwitchAndFireWeapon`/`SwitchAndFireAbility`), so a single
+synthetic pull looks like nothing happened.
+
+Branch: **`m6-decoupled-aim`** (this phase is being reviewed by PR rather than
+pushed to main).
+
 ## Current state (2026-07-25, session 9)
 
 **M5 rung 1 - the synthetic-XInput lane - is BUILT, FLAT-VERIFIED, and
@@ -332,40 +388,39 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. ~~USER: in-headset controller test~~ - DONE 2026-07-25: "controllers are
-   working perfectly as expected." Combat feel with a starter loadout was good;
-   rebinds wanted later (parked to M9). Aiming is right-stick / head-crosshair
-   as expected (M6 decoupled aim replaces it). Mapping tweaks are cheap (all in
-   openxr_input.cpp).
-2. **M5 rung 2 - menu mode (next session)**: whole frame on a quad when paused/
-   in-menu; controller laser -> virtual mouse (DR-6 decides synthetic Win32 mouse
-   vs DirectInput; we now have GetState-lane telemetry to probe which path the
-   gameswf menus read). Note: menu NAV already works via the synthetic dpad/stick/
-   A through the gamepad lane - the quad + laser is the immersion piece.
-3. **M6 - decoupled aim (the aiming fix the user flagged)**: hook the
-   GetPlayerViewPoint-equivalent used by fire traces so the weapon aims where
-   the RIGHT CONTROLLER points while the camera keeps the head pose. This is
-   what makes shooting feel VR-native rather than stick-aimed.
-4. **Controller polish surfaced by the headset test**: deadzone tuning (overlay
-   slider live), stick response curve, menu long-press START/BACK timing, and
-   whether grips-as-bumpers for weapon/plasmid cycling holds up vs. wanting the
-   M8 radial wheels sooner. Rebinds parked to M9 by user choice.
-5. **Console-command seam (M6 groundwork)**: the `exec`/`execc`/`exece` lanes
-   reach native engine handlers; the script-command path needs the player-object
-   Exec signature reversed (slot 65 unbalanced the stack; ENGINE_NOTES). Do NOT
-   re-enable a player-vtable Exec call without reversing that first.
-6. **Remaining stereo polish**: HUD-in-stereo decision (renders in both eyes; verify
-   on a HUD-bearing spawn, M9 ties in), world-scale/IPD calibration pass (parked M9).
-6. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence, pre-SEH-guards)
-   recurs: the crash log now prints module+RVA - symbolize against the PDB and fix.
-7. Still open from M3: cutscene cameras are head-driven too (may need a viewactor == pc
-   guard).
-8. DR-7: borderless/windowed stability; DR-6: menu input path (session-5 note: synthetic
-   clicks sometimes only highlight a gameswf item - VK_RETURN activates it, TESTING.md).
-9. Optional anytime: Steam Link / SteamVR cross-check.
-10. **Parked in M9 (user's call, 2026-07-24)**: IPD slider verification (exaggerated-offset
-    test first, world scale before IPD), small head-motion bobbing, and the vrstereo
-    off/re-arm state bug (details in the M9 list).
+1. **USER, flat, ~2 minutes: give the player a ranged weapon and fire it.** This
+   is the one thing blocking the weapon half of M6. Run the external trainer for
+   a loadout (a pistol or tommy gun with ammo is enough), stand facing a wall a
+   few metres away, then: `.\tools\game-cmd.ps1 "vraim probe on" "vraim dump 40"`
+   and fire ~5 shots (mouse or pad) plus a couple of plasmid casts. The log lines
+   `[aim] weapon this=... A=(...) B=(...) C=(...)` then say whether the weapon
+   path carries a DIRECTION out-param (the disassembly says its out-param B
+   should) - if it does, the right hand is one line of gating away from done.
+2. **Find the plasmid trace direction** (the last unknown in the fire flow):
+   `vraim scanimpl` the damage-factory virtual at factory vtbl `+0xEC` (factory
+   fetched by 0x231E70, called from `UAttackAbility::InitiateDamage` 0x1BBD80),
+   then substitute the direction there. ENGINE_NOTES "Fire flow / aim" has the
+   whole chain and the ruled-out candidates.
+3. **Reticle at the aim ray** (M6 rung 2, not started): XR quad-layer dot along
+   the ray at the hit distance (fallback fixed distance, overlay slider) plus a
+   flat ImGui crosshair at the projected point for harness proof. The user also
+   asked to try hiding the game's head-centred crosshair if it is cheap through
+   the `exec` seam; if it turns exploratory it drops to the M9 HUD work.
+4. **Then the M6 acceptance run**: `vraim test r/l` + fire, assert impacts follow
+   the injected hand aim and not the camera (img-diff + seam telemetry), both
+   hands independent, `vraim off` restores view-aim, and one soak with
+   `vrstereo on` + `vraim on`.
+5. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
+   Controller polish (deadzone/curve/menu timing) and rebinds stay parked in M9.
+6. Still open from M3: cutscene cameras are head-driven. The aim path already
+   guards on the view actor's vtable (AShockPlayer) - reuse that predicate for
+   the camera when it is addressed.
+7. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
+   guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
+8. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
+   Link / SteamVR cross-check any time.
+9. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
+   head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
 ## Open questions / blockers
 
@@ -384,6 +439,71 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-25 - Session 10 (M6 part 1, branch `m6-decoupled-aim`)
+
+- **Investigation first, and it paid off.** Parsed ShockGame.U's name table
+  directly (UTF-16 names with a positive char count, 8-byte flags on this
+  licensee build), which surfaced `LastTraceFireStart`, `ApplyAimError`,
+  `GetPerfectFireStart`, `AutoAim`... Then found the engine's **native-function
+  symbol table**: every name-based native has a `.data` entry
+  `{ "int<Class>exec<Func>", impl, 0 }`. Enumerated all 1822 entries offline
+  (scratchpad `natives.py`/`nativemap.py`) and shipped
+  `pattern_scan::find_native_function` so the mod resolves natives with zero
+  hardcoded addresses. All five session-10 lookups hit their documented RVAs on
+  the first boot.
+- **Headless decompiling now works**: UE Explorer's portable build ships
+  `Eliot.UELib.dll`, driven from PowerShell by `tools/uscript/dump.ps1` (<1 s to
+  load ShockGame.U; lists classes/functions/states, decompiles by name). Two
+  quirks recorded in ENGINE_NOTES (name encoding, and ~40% of UFunctions failing
+  to deserialize on this build - the rest are plenty).
+- **The fire flow, mapped end to end** (ENGINE_NOTES "Fire flow / aim"):
+  trigger -> `Weapon.BeginFiring` -> `Firing` state -> anim notify ->
+  `AttackAbility.UseAbility` -> native `InitiateDamage` (AWeapon 0x226050 /
+  UAttackAbility 0x1BBD80) -> `GetPerfectFireStart` (0x226840 / 0x1BC220) ->
+  damage factory. Plus the AActor field layout (+0x1D8 Location, +0x1E4
+  FRotator Rotation, +0x550 eye height) cross-checked against a live pawn
+  hexdump, and the RTTI vtables for AShockPlayer/APlayerWeapon/UAttackAbility/
+  AHands.
+- **Dead end recorded honestly: the exec thunks.** The first build hooked all
+  four aim `exec*` thunks; a full live session of swinging, casting and clicking
+  produced ZERO calls, because native callers reach the C++ implementation
+  directly. Rebuilt against the implementations (weapon side by reading the
+  RTTI-derived vtable slot +0x304, ability side by a prologue-checked RVA) and
+  the ability seam fired on the very next cast.
+- **`game/bioshock1r/aim.cpp` shipped** (command-gated `vraim on|off|probe|dump|
+  origin|seam|test|scan|scanimpl|scanoff|status`): per-hand rays built inside the
+  CalcView frame from XR grip poses, `ue_math.h` extracted so the camera and the
+  aim ray can never drift apart, ownership gates using the engine's own
+  instigator check, value-driven out-param substitution (positions get the
+  hand's origin, directions get the hand's direction, zeros untouched) so
+  `ApplyAimError` still applies the weapon's spread on top, and self-expiring
+  `vraim test l|r <yaw> <pitch>` synthetic aim for headset-free testing.
+- **Core plumbing**: `core/vr/openxr_input` locates the (already existing)
+  grip-pose action spaces at the frame's predicted display time - the same
+  instant as the head pose - and `vr::get_hand_pose` exposes them with the same
+  mutex/no-XR-stub shape as `get_head_pose`. `xinput_bridge` publishes the last
+  composed triggers, which is what seeds hand attribution.
+- **Live results**: ability seam fires on Electro Bolt (`this` vtable =
+  UAttackAbility), hand map learns from the trigger ("learned LEFT-hand
+  (plasmid) object"), ORIGIN substitution proven (`SUB(L)` with our values).
+  `GetPerfectFireStart` turns out to fill POSITIONS only - so the trace
+  DIRECTION lives one layer deeper, in the damage factory. `APawn::
+  GetViewDirection` and `AShockPlayer::GetViewPoint` implementations were probed
+  and are never called during a shot (ruled out).
+- **Two harness lessons** (now in TESTING): the FIRST trigger pull only switches
+  hands (`XENON_LT/RT = SwitchAndFireAbility/Weapon`), so single synthetic pulls
+  look inert; and the wrench never traces (Havok collision phantom), so it is
+  useless as a fire-path control - the weapon seam needs a ranged weapon, which
+  the only available save does not have.
+- New investigation tools that remove rebuild cycles: `vraim scan <Class>
+  <Func>` (any name-based native, read-only) and `vraim scanimpl <rva>
+  <stackArgs>` (any C++ implementation, one detour family per arity so the
+  callee-pop stays correct).
+- Session ends: game closed, DLLs installed, branch `m6-decoupled-aim` pushed,
+  PR opened for review. No crashes and no new dumps across ~6 boots of hooking
+  engine internals.
+
 
 ### 2026-07-25 - Session 9
 
