@@ -45,6 +45,8 @@ void on_calcview(const FrameContext& ctx);
 //   test clear
 //   pose aim|grip           the runtime's pointing ray (default) vs the grip axis
 //   cal <pitchDeg> [yawDeg] aim trim, degrees; +pitch aims higher
+//   laser on|off            visible dots along this ray (M7; XR quad layers)
+//   laser <dots> <nearM> <farM> <sizeDeg>   laser shape
 //   origin on|off           hand origin (default) vs the engine's own origin
 //   seam <weapon|ability> on|off
 //   scan <Class> <Func> [n] / scanoff   hook ANY name-based native read-only

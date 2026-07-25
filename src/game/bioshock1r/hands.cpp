@@ -165,21 +165,6 @@ void* find_object(const FrameContext& ctx, bool probeOnly) {
 
 // ---- which hand ------------------------------------------------------------
 
-// BioShock holds ONE thing at a time (the trigger that fires also switches
-// hands - XENON_RT/LT), so the viewmodel belongs to whichever hand last fired.
-// Seeded from the triggers the bridge itself composes, exactly like aim.cpp's
-// object map.
-int active_hand() {
-    int mode = g_handMode.load(std::memory_order_relaxed);
-    if (mode == 0 || mode == 1) return mode;
-
-    uint8_t lt = 0, rt = 0;
-    bvr::input::last_composed_triggers(&lt, &rt);
-    if (rt >= 64 && lt < 64) g_autoHand.store(1, std::memory_order_relaxed);
-    else if (lt >= 64 && rt < 64) g_autoHand.store(0, std::memory_order_relaxed);
-    return g_autoHand.load(std::memory_order_relaxed);
-}
-
 void load_config();
 void save_config();
 
@@ -266,6 +251,22 @@ void load_config() {
 }
 
 } // namespace
+
+// BioShock holds ONE thing at a time (the trigger that fires also switches
+// hands - XENON_RT/LT), so the viewmodel belongs to whichever hand last fired.
+// Seeded from the triggers the bridge itself composes, exactly like aim.cpp's
+// object map. Shared with the aim laser so the beam leaves the hand that is
+// actually holding the weapon.
+int active_hand() {
+    int mode = g_handMode.load(std::memory_order_relaxed);
+    if (mode == 0 || mode == 1) return mode;
+
+    uint8_t lt = 0, rt = 0;
+    bvr::input::last_composed_triggers(&lt, &rt);
+    if (rt >= 64 && lt < 64) g_autoHand.store(1, std::memory_order_relaxed);
+    else if (lt >= 64 && rt < 64) g_autoHand.store(0, std::memory_order_relaxed);
+    return g_autoHand.load(std::memory_order_relaxed);
+}
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;

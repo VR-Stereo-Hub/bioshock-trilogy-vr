@@ -228,19 +228,29 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M7 - Visible hands + weapons (~2–3 sessions)
 
-- [ ] Locate live AHands actor via UObject iteration; pin to grip pose each frame
-      *Assets already in hand from M6: the AHands vtable (RVA 0xD8A28C, RTTI-derived) for a
-      heap scan in the style of the UShockUserSettings lookup, the AHands natives in the engine's
-      own native table (`CanExecuteAction`, `SetCurrentTransitionSequence`,
-      `InterruptAnimNotifiesForAnimation`), the GRIP poses already located every frame beside the
-      aim poses (grip is the right pose for placing a model), the AActor field layout (+0x1D8
-      Location, +0x1E4 FRotator Rotation, +0x550 eye height) and the CalcView frame context the
-      aim ray already rides.*
-- [ ] Laser / aim reticle emitting from the weapon (moved here from M6 by the user, 2026-07-25):
-      small D3D11 swapchain holding a soft dot, submitted as several XR quad layers spaced along
-      the aim ray plus one at the aim point, each facing the head - all in XR space, so it is
-      per-eye correct with no game-space projection. Doubles as the aim-calibration tool.
-- [ ] Per-weapon offset tuning (live ImGui sliders, persisted config)
+- [x] Locate live AHands actor; pin to grip pose each frame
+      *DONE + FLAT-VERIFIED 2026-07-25 (session 11). The heap scan by class vtable (0xD8A28C)
+      finds exactly ONE live instance; its Location/Rotation are an exact per-tick copy of the
+      camera, and writing them from the CalcView detour wins - the expected ordering fight
+      never happened, because CalcView runs after the engine's own tick placement. Screenshot
+      proof: a 60 UU push moved the visible pistol into the centre, +30/-30 deg of injected yaw
+      swung it right and left. Firing still works with the write active. Derivations and the
+      mesh-stretch caveat in ENGINE_NOTES "Viewmodel / AHands". IN-HEADSET CHECK PENDING.*
+- [x] Laser / aim reticle emitting from the weapon (moved here from M6 by the user, 2026-07-25)
+      *BUILT 2026-07-25 (session 11), IN-HEADSET CHECK PENDING - and it cannot be checked any
+      other way: a 64x64 swapchain holds a CPU-generated soft dot, submitted as up to 8 XR quad
+      layers spaced geometrically along the aim ray, each billboarded at the head, at constant
+      angular size so the beam reads evenly. All XR space, so it is per-eye correct with no
+      game-space projection. Takes the aim pose and the SAME pitch/yaw trim the fire ray uses,
+      so the beam and the bullet are one ray - which is what makes it the calibration tool.
+      Deferred by the user's call: a true dot at the IMPACT point needs a per-frame engine
+      line-check that has not been located (the engine only traces when a shot fires).*
+- [x] Per-weapon offset tuning (live ImGui sliders, persisted config)
+      *DONE 2026-07-25 (session 11), pending the user's eye: position offsets in cm in the
+      grip's own frame + rotation trim in degrees, as overlay sliders, persisted to
+      `%LOCALAPPDATA%\BioshockVR\hands.ini`. Keyed `default` for now - PER-WEAPON keys still
+      want the live weapon's class name, which means resolving the UObject class/name offsets
+      on this build (the only save carries pistol + wrench, so one profile covers it).*
 - [ ] **Done when:** hands + current weapon track the controller convincingly; wrench melee
       feels aimed. (Full IK arms = post-v1.)
       *Note (user, 2026-07-25): the `AHands` viewmodel is a single mesh (hands + a short

@@ -149,6 +149,41 @@ Firing the game from the harness - the gotchas that cost a session:
    window can also report a 0x0 rect for a few seconds after it appears -
    retry `game-shot.ps1` instead of treating that as an error.
 
+## Visible hands + weapon (M7) - flat verification
+
+The viewmodel is one `AHands` actor whose Location/Rotation the engine copies
+from the camera every tick; the mod finds it by vtable and overwrites those
+fields from the CalcView detour (ENGINE_NOTES "Viewmodel / AHands").
+
+- `vrhands probe [n]` - list every `AHands` instance found, choose none. In a
+  loaded world expect **3 matches, exactly one live**: the live one reports
+  `distToCam=0.0` and a location matching the camera heartbeat, the other two
+  are stack debris whose fields read `-107374176.0` / `-858993460`
+  (`0xCCCCCCCC` debug fill). If the live one is missing, no world is loaded.
+- `vrhands on|off`, `vrhands status`, `vrhands hand l|r|auto`.
+- `vrhands pos <fwdCm> <rightCm> <upCm>` / `vrhands rot <pitch> <yaw> <roll>` -
+  model offsets, also live overlay sliders. `vrhands save` writes
+  `%LOCALAPPDATA%\BioshockVR\hands.ini`, `vrhands reload` re-reads it.
+- **The flat lane is `vrhands test <yawDeg> <pitchDeg> [distUU] [holdMs]`** -
+  without a headset there is no controller pose, so the real path idles; the
+  test lane places the model relative to the CAMERA instead and proves the
+  write lands. Verified this way (session 11): `vrhands on` +
+  `vrhands test 0 0 60` moved the visible pistol from the lower right into the
+  centre, `test 30 0 60` swung it out of frame to the right and `test -30 0 60`
+  to the left. `vrhands testclear` drops it.
+- **Then fire with the write active** (the fire test above): four pulls, ammo
+  decrements, decals land where the aim seam asks, no new dumps. The actor
+  transform and the animation state are independent, but confirm it rather than
+  assume it.
+
+**What flat testing CANNOT check: the aim laser.** `vraim laser on` builds XR
+quad layers, which exist only inside the compositor - they never appear in a
+window screenshot, and with no headset there is no session, so the laser
+swapchain is never even created. Flat, the most that can be asserted is "the
+command is accepted and nothing crashes"; the overlay's `laser: ready | N dot
+layer(s) submitted` line and the log's `xr: aim laser live` are the real
+evidence, and both need a headset.
+
 ## Automated in-game testing (no human in the loop)
 
 - **Command seam**: the mod polls `%LOCALAPPDATA%\BioshockVR\command.txt` at 1 Hz on the game

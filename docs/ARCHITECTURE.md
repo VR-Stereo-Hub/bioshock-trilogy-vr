@@ -293,6 +293,25 @@ runtime.
   fire keeps its own aim. Rejected: writing the pawn/controller Rotation field (it also drives
   movement direction and pawn facing, and cannot give the two hands independent aim), and
   hooking `APawn::GetViewDirection` (live-proven never called during a shot).
+- **2026-07-25 - M7 viewmodel: write the actor's transform from the CalcView detour, and
+  put the laser in the compositor rather than the scene.** Two choices worth recording.
+  (1) The hands were expected to need a placement hook - the engine positions the viewmodel
+  every tick, so the plan budgeted for finding that code and landing after it. It turned out
+  the plain field write already wins: CalcView runs after the engine's tick placement, so
+  `hands::on_calcview` is the last writer of the frame. The rejected alternatives (hooking
+  the AHands Tick vtable slot, or disassembling the writers of actor+0x1D8) stay unbuilt
+  because a simpler thing works; if a future engine change breaks the ordering, they are the
+  fallback. The write uses the GRIP pose while the fire ray keeps the AIM pose - grip is
+  where the hand physically is, which is what a model wants, and aim is the runtime's own
+  pointing ray, which is what a bullet wants. (2) The laser is XR quad layers, not geometry
+  injected into the game scene: layers are per-eye correct for free, need no engine hook, no
+  render-state interaction and nothing the game's renderer can clip or depth-test away. The
+  cost is that it is invisible to flat testing - quad layers exist only inside the
+  compositor - which is a real verification gap, accepted because the alternative trades it
+  for engine coupling in the hottest path we have. The dots take their trim from aim.cpp
+  rather than owning a copy, so the beam and the bullet cannot drift; a laser that disagrees
+  with the shot is worse than no laser. Deferred by the user: a dot at the true IMPACT point,
+  which needs a callable per-frame line-check that the engine only ever runs mid-shot.
 - **2026-07-25 - M6/M7 split stays as planned.** M6 is the aim vector only. The wrench turned
   out to damage through a Havok collision phantom rather than a trace, so "melee feels aimed" is
   purely a hands-rendering matter and belongs to M7 with the visible weapon; articulated IK arms

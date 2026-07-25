@@ -2,7 +2,75 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-25, session 10)
+## Current state (2026-07-25, session 11)
+
+**M7's mechanism WORKS and is flat-verified: the visible hands and weapon now
+follow the controller, and there was no ordering fight to lose.** The
+first-person viewmodel is one `AHands` actor whose Location/Rotation the engine
+copies from the camera every tick; `game/bioshock1r/hands.cpp` finds that actor
+by its class vtable and overwrites those two fields from the CalcView detour,
+which runs AFTER the engine's own tick placement - so ours is simply the last
+write of the frame. Screenshot proof at the wall save: a 60 UU push moved the
+pistol from the lower right into the centre of the view, +30 deg of injected yaw
+swung it out of frame to the right and -30 deg swung it to the left, and firing
+still works with the write active (4 pulls, ammo decremented, decals where the
+aim seam asked, no dumps).
+
+**Everything M7 asked for is built; what remains is the user's eye.** Three
+things are in and none of them have been in a headset yet:
+1. **Hands pinned to the GRIP pose** (grip, not aim - grip is where the hand
+   physically is, which is what a model wants; the aim pose stays with the fire
+   ray). `vrhands on|off|probe|hand|pos|rot|save|reload|test|status`.
+2. **Per-weapon offset tuning**: position offsets in cm in the grip's own frame
+   plus rotation trim in degrees, as live overlay sliders, persisted to
+   `%LOCALAPPDATA%\BioshockVR\hands.ini`. Keyed `default` for now (the save
+   carries pistol + wrench, so one profile covers it) - real per-weapon keys
+   need the live weapon's class name, which means resolving this build's UObject
+   class/name offsets.
+3. **The aim laser** (moved here from M6 by the user): a 64x64 swapchain holding
+   a CPU-generated soft dot, submitted as up to 8 XR quad layers spaced
+   geometrically along the aim ray, each billboarded at the head at constant
+   angular size. Pure XR space, so it is per-eye correct with no game-space
+   projection. It reads the aim pose and the SAME pitch/yaw trim the fire ray
+   uses, so the beam and the bullet are one ray - which is exactly what makes it
+   the calibration tool. `vraim laser on|off` + overlay sliders.
+
+**Be honest about the laser's verification status: it CANNOT be checked flat.**
+XR quad layers exist only inside the compositor - they never appear in a window
+screenshot - and with no headset there is no session, so the laser swapchain is
+never even created. Flat, all that was asserted is "arms without crashing and
+the fire test still passes". The first person to see the laser will be the user.
+
+**M6's last loose end is CLOSED, and the answer overturns a session-10 note.**
+The plasmid IS steered by the rotator out-param, not by the hand-origin
+substitution. Session 10 recorded that the ability path's fire-start rotator
+read all-zero; under a real Electro Bolt cast it carries the camera's own
+FRotator exactly like the weapon path (all three agree at `(144 116 0)`, which
+is a real rotation - the player spawns facing near +X and level). Proven by the
+A/B that separates the two mechanisms, camera stationary: origin substitution ON
+with +20 deg injected left-hand yaw put the bolt's scorch right of the
+crosshair; origin substitution OFF (so only the rotator is written) with -25 deg
+injected put it LEFT. So the damage-factory virtual never needs touching, and
+step 5 of last session's plan is dead. Still unverified: a PROJECTILE plasmid
+(Incinerate) - only a trace plasmid was available.
+
+**Known cosmetic caveat found while testing**, worth knowing before tuning: at
+LARGE displacements part of the mesh stretches - the forearm/sleeve geometry
+appears anchored near the view while the hand follows the actor, so a 60 UU push
+produces a visibly stretched arm. Realistic offsets (the few centimetres the
+tuning sliders cover) stay well inside the range where this is invisible, but if
+the user wants the gun held far from the face it will show.
+
+Also shipped: `frame_context.h` now owns the FrameContext and the
+XR-pose-to-game-space mapping, shared by the aim ray and the hand model, for the
+same reason `ue_math.h` exists - a gun drawn with one transform and a bullet
+fired with another is the exact mismatch M6/M7 exist to remove. And the
+UShockUserSettings heap scan is generalized into
+`patterns::scan_for_vtable_object`, which is how the AHands actor is found.
+
+Branch: **main** (pushed directly this session, by the user's call).
+
+## Previous state (2026-07-25, session 10)
 
 **M6 IS WORKING AND USER-VERIFIED IN-HEADSET (2026-07-25): "I tested it and
 it's pretty good... the plasmids are working and it's based on the left hand
@@ -425,59 +493,93 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **Load-crossing check - 20 seconds for the USER, in game (the last M6 gap).**
-   PR #1 is merged. The stale-pointer risk it was meant to catch is now handled
-   in code instead: the learned weapon/plasmid hand map is cleared whenever the
-   PlayerController changes (world change), so a recycled heap address can never
-   be mistaken for the old weapon. What still wants a human 20 seconds: with
-   `vrstereo on` + Controller aim ticked, Esc -> LOAD -> newest save -> YES, then
-   fire both hands after the load and confirm they still aim correctly and no dump
-   lands in `%LOCALAPPDATA%\BioshockVR\crash\`. (Claude drove this flat as far as
-   the confirm dialog; gameswf dialogs do not take synthetic keys reliably, and
-   the earlier boots did cross a load with the seams armed without incident.)
-2. **M7 - visible hands + weapons (the user's next milestone).** Locate the live
-   `AHands` actor and pin it to the GRIP pose each frame; then per-weapon offset
-   sliders. Everything needed is already in the tree: the AHands vtable RVA
-   0xD8A28C for a heap scan (same technique as the settings object), its natives
-   in the engine's native table, grip poses located every frame beside the aim
-   poses, the AActor Location/Rotation/eye-height offsets, and the CalcView frame
-   context. Expect the fight to be about ORDER: the engine places the viewmodel
-   itself every tick, so our write has to land after its update (the CalcView
-   detour is the candidate moment) - and about not breaking the firing anims.
-3. **Laser / aim reticle - now part of M7** (user's call: it belongs with the
-   visible gun, and it doubles as the calibration tool). Design unchanged: a soft
-   dot in a small swapchain, several XR quad layers along the aim ray plus one at
-   the aim point, each facing the head - XR space only, per-eye correct for free.
-4. **Confirm what actually steers the plasmid** (small M6 loose end): its
-   fire-start rotator out-param reads all-zero, yet the left hand aims it in the
-   headset - so the hand-origin substitution may be doing the visible work. Probe
-   the ability slots during a real cast, and test a TRACE plasmid (Electro Bolt)
-   against a PROJECTILE one (Incinerate) before calling the ability path fully
-   controlled.
-5. **Only if #4 shows the direction is NOT under control**, chase the damage
-   factory:
-   `vraim scanimpl` the damage-factory virtual at factory vtbl `+0xEC` (factory
-   fetched by 0x231E70, called from `UAttackAbility::InitiateDamage` 0x1BBD80),
-   then substitute the direction there. ENGINE_NOTES "Fire flow / aim" has the
-   whole chain and the ruled-out candidates.
-6. **Hide the game's head-centred crosshair** once the laser lands (it will
-   disagree with the aim ray). Cheap attempts first through the `exec` seam; if it
-   turns exploratory it drops to the M9 HUD work.
-4. **Then the M6 acceptance run**: `vraim test r/l` + fire, assert impacts follow
-   the injected hand aim and not the camera (img-diff + seam telemetry), both
-   hands independent, `vraim off` restores view-aim, and one soak with
-   `vrstereo on` + `vraim on`.
-5. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
+1. **THE IN-HEADSET RUN IS THE WHOLE NEXT SESSION'S FIRST JOB - the numbered
+   checklist is at the bottom of this section.** Everything M7 needs is built and
+   flat-verified as far as flat can go; nothing has been seen by a human, and the
+   laser cannot be seen any other way. The user judges hand/gun alignment far
+   better than any number, so get the headset on early and tune from their
+   reaction. Whatever offsets and aim trim they settle on, bake into the defaults
+   (`hands.ini` for the model, `aim.cpp`'s trim for the ray).
+2. **Per-weapon offset profiles** (the one piece of M7 shipped only as
+   `default`): key the saved offsets by the live weapon's CLASS NAME so the
+   pistol, the machine gun and the wrench each keep their own fit. Needs this
+   build's UObject class/name offsets - hexdump the weapon object aim.cpp already
+   learns (`vraim status` prints it), follow the class pointer, and resolve the
+   FName through the same name machinery `pattern_scan` already uses. Hot-switch
+   on the weapon change aim.cpp detects for free.
+3. **A true dot at the IMPACT point** (deferred by the user's call this session,
+   the laser ships with fixed-distance dots): needs a per-frame engine line-check,
+   which has not been located because the engine only traces when a shot fires.
+   Start inside the damage factory's trace (factory fetched by 0x231E70 in
+   `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl `+0xEC`) and
+   look for a callable `Trace`-style entry, then call it read-only per frame.
+4. **Verify a PROJECTILE plasmid** (the one part of the plasmid question still
+   open): Incinerate, cast with an offset left hand - does the projectile follow?
+   Needs the user to supply the plasmid, so it is on the checklist below.
+5. **Hide the game's head-centred crosshair** now that the laser exists (they
+   will disagree, and the laser is the honest one). Cheap attempts first through
+   the `exec` seam; if it turns exploratory it drops to the M9 HUD work.
+6. **Load-crossing check - 20 seconds for the USER, still not done.** The
+   stale-pointer risk is handled in code (both the aim hand map and the hands
+   actor cache clear when the PlayerController changes), but a human should still
+   do it once: with `vrstereo on` + aim + hands armed, Esc -> LOAD -> newest save
+   -> YES, then fire both hands and confirm no dump lands in
+   `%LOCALAPPDATA%\BioshockVR\crash\`. On the checklist below.
+8. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
    Controller polish (deadzone/curve/menu timing) and rebinds stay parked in M9.
-6. Still open from M3: cutscene cameras are head-driven. The aim path already
+9. Still open from M3: cutscene cameras are head-driven. The aim path already
    guards on the view actor's vtable (AShockPlayer) - reuse that predicate for
    the camera when it is addressed.
-7. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
-   guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
-8. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
-   Link / SteamVR cross-check any time.
-9. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
-   head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
+10. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
+    guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
+11. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
+    Link / SteamVR cross-check any time.
+12. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
+    head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
+
+### IN-HEADSET CHECKLIST - M7 (session 11 build)
+
+Setup: Quest 3 on, Virtual Desktop connected (VDXR), Streamer running. Launch
+BioShock from Steam, load the newest save (spawns with the pistol facing the
+marble wall). `vrinput` re-arms itself from its marker file. Then tick **VR
+stereo** in the F10 overlay (or `vrstereo on`), and in the overlay's
+**"Hands + weapon (M7)"** section tick **"Viewmodel follows the controller"**.
+Everything below is a slider or a checkbox in that overlay - no commands needed.
+
+1. **Do the hands track?** With a weapon out, does the gun follow your RIGHT
+   controller? Move your hand around: the model should go where your hand goes.
+   (If nothing moves, say so - that means the pose is not reaching the write,
+   not that the placement is wrong; the flat test proved the write itself lands.)
+2. **Does the plasmid hand work?** Pull the LEFT trigger once to switch to
+   plasmids. The viewmodel should hand over to your LEFT controller (the hand
+   choice follows whichever trigger last fired; the radio buttons force it).
+3. **Make it fit.** This is the part only you can do - the sliders are
+   "offset forward / right / up" in centimetres and "trim pitch / yaw / roll" in
+   degrees. Get the gun sitting in your hand the way it should, then press
+   **Save offsets**. Tell me the numbers you landed on and I will make them the
+   defaults.
+4. **The laser.** Tick **"Aim laser (dots along the ray)"** in the "Decoupled aim
+   (M6)" section. You should see a line of red dots leaving your hand. Sliders
+   for dot count, reach and dot size are right below it. Nobody has ever seen
+   this - if it is invisible, inside-out, or in the wrong place, that is useful
+   information, so describe what you actually see.
+5. **Now re-judge the aim trim with the gun visible** - this is why the laser was
+   moved into M7. Fire at the wall and compare where the dots point with where
+   the bullets land. Adjust "Aim pitch trim" / "Aim yaw trim" until they agree,
+   and tell me the values - they are still at the 0/0 you chose last session, and
+   I will bake in whatever you pick.
+6. **Load-crossing (20 seconds, still owed from M6).** With stereo + aim + hands
+   all armed: Esc -> LOAD -> newest save -> YES. After it loads, fire both hands.
+   They should still aim correctly, the hands should still track, and no new file
+   should appear in `%LOCALAPPDATA%\BioshockVR\crash\`.
+7. **Only if the trainer is handy** - the last open plasmid question. Grab
+   **Incinerate** (a PROJECTILE plasmid; Electro Bolt is a trace one and is
+   already confirmed). Cast it with your hand pointed well away from where you
+   are looking: does the fireball follow your HAND or your head?
+
+Expected and not failures: the game's crosshair stays head-centred and will
+disagree with the laser (hiding it is next session's job); the HUD still renders
+in both eyes; at extreme model offsets the sleeve stretches.
 
 ## Open questions / blockers
 
@@ -496,6 +598,62 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-25 - Session 11 (M7 hands + weapons + laser, on `main`)
+
+- **The M6 loose end went first, while the game was already up, and it
+  overturned a session-10 finding.** The plasmid is steered by the ROTATOR
+  out-param, not by the hand-origin substitution. Under a real Electro Bolt cast
+  the ability path's B carries the camera's own FRotator, exactly like the weapon
+  path - session 10's "all-zero" reading was a one-off. The decisive A/B was to
+  turn origin substitution OFF (so only the rotator is written) and flip the sign
+  of the injected yaw: with +20 deg and origin on the bolt's scorch landed right
+  of the crosshair, with -25 deg and origin off it landed left. That kills
+  planned step 5 (chasing the damage factory at factory vtbl +0xEC) outright.
+- **M7's central question answered in one probe: the viewmodel is ONE actor and
+  its transform fields are the placement.** `vrhands probe` reports 3 vtable
+  matches - one live `AHands` whose Location/Rotation are an exact per-tick copy
+  of the camera (distToCam 0.0), plus two stack false positives full of
+  `0xCCCCCCCC` debug fill, which distance-to-camera rejects cleanly.
+- **The expected ordering fight never happened.** The plan budgeted for a
+  hunt-the-placement-code fallback (AHands natives, disassembling the writers of
+  actor+0x1D8, hooking the Tick slot). None was needed: the engine places the
+  viewmodel during its own tick and the CalcView detour runs afterwards, so the
+  plain field write from `hands::on_calcview` is simply the last one of the
+  frame. Flat proof by screenshot - a 60 UU push moved the pistol from the lower
+  right into the centre, +30/-30 deg of injected yaw swung it out of frame right
+  and left.
+- **`game/bioshock1r/hands.cpp` shipped** (`vrhands on|off|probe|hand|pos|rot|
+  writerot|save|reload|test|testclear|status`): lazy vtable lookup with cache
+  revalidation and a world-change clear, the same cutscene guard the aim ray
+  uses, SEH-guarded writes that drop the cached pointer if one ever faults, and a
+  `vrhands test <yaw> <pitch> [distUU]` synthetic lane so the write can be
+  verified with no headset at all. Offsets are overlay sliders (position in cm in
+  the grip's own frame, rotation trim in degrees) persisted to `hands.ini`.
+- **The laser is built and is the one thing flat testing cannot touch.** Up to 8
+  XR quad layers along the aim ray, geometrically spaced, each billboarded at the
+  head at constant angular size, fed by a 64x64 CPU-generated soft dot with
+  premultiplied alpha. It takes the aim pose and the SAME trim the fire ray uses,
+  so the beam and the bullet are one ray by construction. Quad layers live only
+  in the compositor and no session exists without a headset, so "arms without
+  crashing" is the honest limit of what was proven.
+- **Refactors that paid for themselves immediately**: `frame_context.h` now owns
+  FrameContext and the XR-pose-to-game-space mapping (aim.cpp and hands.cpp share
+  one transform - the whole point of M6/M7), and the UShockUserSettings heap scan
+  generalized into `patterns::scan_for_vtable_object`, which is what finds
+  AHands.
+- **Flat verification, run three times (baseline, hands build, laser build)**:
+  the mandatory fire test passed every time - game alive, 0 new crash dumps (the
+  count stayed at its pre-existing 8 all session), 4/4 substitutions, decal off
+  the crosshair where the injected aim asked. The final battery had aim + hands +
+  laser armed together, then `vrstereo on` for a soak at ~170 pairs/s with
+  guardskips 0.
+- Harness note: `firetest.ps1`'s `LClick` (raw `mouse_event`) fired nothing this
+  session - `calls=0`. The reliable path is the documented synthetic trigger,
+  `vrinput test trig r 255 400`, remembering that the FIRST pull only switches
+  hands. New scratchpad `trigfire.ps1` wraps it.
+- Nothing user-facing has been in a headset yet; the checklist above is the
+  handoff.
 
 ### 2026-07-25 - Session 10 (M6 part 1, branch `m6-decoupled-aim`)
 

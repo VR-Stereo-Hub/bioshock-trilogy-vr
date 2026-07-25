@@ -45,6 +45,11 @@ void on_calcview(const FrameContext& ctx);
 //                           headset-free verification that the write lands
 void handle_command(const char* args);
 
+// Which controller currently owns the viewmodel (0 left, 1 right): the hand
+// whose trigger last fired, or the forced choice. Shared with the aim laser so
+// the beam leaves the hand that is actually holding the weapon.
+int active_hand();
+
 // Overlay section (render thread).
 void draw_debug_ui();
 

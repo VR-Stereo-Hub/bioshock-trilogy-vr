@@ -97,4 +97,28 @@ int current_eye_sign();
 // clears it and logs (self-heal after a mode-boundary skew).
 void sr_push_eye(int eyeSign); // game thread, at submit; -1 left, +1 right
 
+// --- M7: the aim laser ------------------------------------------------------
+// A row of soft dots along the hand's aim ray, submitted as extra XR quad
+// layers. Doing it as compositor layers rather than as geometry in the game
+// scene means it lives purely in XR space: correct in both eyes for free, with
+// no game-space projection, no engine hook and nothing the renderer can clip.
+//
+// It also doubles as the aim CALIBRATION tool - the dots follow the same aim
+// pose and the same pitch/yaw trim the fire ray uses, so where they point is
+// where the shot goes.
+struct LaserConfig {
+    bool enabled = false;
+    int hand = 1;              // 0 left, 1 right
+    float pitchTrimDeg = 0.0f; // must match the fire ray's trim
+    float yawTrimDeg = 0.0f;
+    int dots = 6;              // clamped to the layer budget
+    float nearM = 0.30f;       // first dot, meters from the controller
+    float farM = 6.0f;         // last dot
+    float sizeDeg = 0.7f;      // angular diameter, so the beam reads evenly
+};
+
+// Publish the laser state (game thread, once per frame). The render thread
+// builds the layers from it at submit time.
+void set_laser(const LaserConfig& cfg);
+
 } // namespace bvr::vr

@@ -16,6 +16,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/ue_math.h"
 
 #include <windows.h>
@@ -53,6 +54,12 @@ std::atomic<int> g_pendingEnable{-1}; // -1 none, 0 off, 1 on
 std::atomic<bool> g_useAimPose{true};
 std::atomic<float> g_pitchOffsetDeg{0.0f};
 std::atomic<float> g_yawOffsetDeg{0.0f};
+// M7 laser: the visible form of this same ray, published to core every frame.
+// It lives here rather than with the hands so it cannot drift from the trim
+// above - a laser that disagrees with the bullet is worse than no laser.
+std::atomic<bool> g_laser{false};
+std::atomic<int> g_laserDots{6};
+std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
 std::atomic<int32_t> g_dumpBudget{0}; // per-seam detailed log budget
 
 // Per-frame aim rays, game thread only (built in on_calcview, read in the
@@ -806,6 +813,20 @@ void on_calcview(const FrameContext& ctx) {
         out.rot.roll = 0; // aim carries no roll; the camera owns roll
         out.valid = true;
     }
+
+    // Publish the laser for the render thread. It reads the aim pose itself at
+    // submit time (later than this, so the dots are as fresh as the frame), and
+    // takes the trim from here so the beam and the bullet are one ray.
+    bvr::vr::LaserConfig lc{};
+    lc.enabled = g_laser.load(std::memory_order_relaxed) && ctx.vrDriving && g_gameplayView;
+    lc.hand = hands::active_hand();
+    lc.pitchTrimDeg = g_pitchOffsetDeg.load(std::memory_order_relaxed);
+    lc.yawTrimDeg = g_yawOffsetDeg.load(std::memory_order_relaxed);
+    lc.dots = g_laserDots.load(std::memory_order_relaxed);
+    lc.nearM = g_laserNearM.load(std::memory_order_relaxed);
+    lc.farM = g_laserFarM.load(std::memory_order_relaxed);
+    lc.sizeDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
+    bvr::vr::set_laser(lc);
 }
 
 void handle_command(const char* args) {
@@ -875,6 +896,23 @@ void handle_command(const char* args) {
             BVR_LOG("[aim] calibration offset: pitch %+.1f yaw %+.1f deg", pitch, yaw);
         } else {
             BVR_LOG("[aim] usage: vraim cal <pitchDeg> [yawDeg]  (+pitch aims higher)");
+        }
+    } else if (strcmp(verb, "laser") == 0) {
+        // "laser on|off" or "laser <dots> <nearM> <farM> <sizeDeg>"
+        float nearM = 0.0f, farM = 0.0f, size = 0.0f;
+        int dots = 0;
+        if (sscanf_s(rest, "%d %f %f %f", &dots, &nearM, &farM, &size) == 4) {
+            g_laserDots.store(dots, std::memory_order_relaxed);
+            g_laserNearM.store(nearM, std::memory_order_relaxed);
+            g_laserFarM.store(farM, std::memory_order_relaxed);
+            g_laserSizeDeg.store(size, std::memory_order_relaxed);
+            BVR_LOG("[aim] laser shape: %d dots, %.2f..%.2f m, %.2f deg", dots, nearM, farM,
+                    size);
+        } else {
+            bool on = strncmp(rest, "on", 2) == 0;
+            g_laser.store(on, std::memory_order_relaxed);
+            BVR_LOG("[aim] laser %s (dots along the aim ray, XR quad layers)",
+                    on ? "ON" : "off");
         }
     } else if (strcmp(verb, "origin") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
@@ -960,6 +998,21 @@ void draw_debug_ui() {
     if (ImGui::Checkbox("Ray starts at the hand (off = engine origin, direction only)",
                         &handOrigin))
         g_handOrigin.store(handOrigin, std::memory_order_relaxed);
+
+    // The laser is this same ray made visible, so it lives in this section and
+    // shares the trim sliders above - use it to judge the trim by eye.
+    bool laser = g_laser.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Aim laser (dots along the ray)", &laser))
+        g_laser.store(laser, std::memory_order_relaxed);
+    int dots = g_laserDots.load(std::memory_order_relaxed);
+    if (ImGui::SliderInt("laser dots", &dots, 1, 8))
+        g_laserDots.store(dots, std::memory_order_relaxed);
+    float farM = g_laserFarM.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("laser reach (m)", &farM, 1.0f, 20.0f))
+        g_laserFarM.store(farM, std::memory_order_relaxed);
+    float sizeDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("laser dot size (deg)", &sizeDeg, 0.1f, 3.0f))
+        g_laserSizeDeg.store(sizeDeg, std::memory_order_relaxed);
 
     ImGui::Text("fire seams (subs/calls): weapon %u/%u  plasmid %u/%u",
                 g_weaponFire.subs.load(std::memory_order_relaxed),

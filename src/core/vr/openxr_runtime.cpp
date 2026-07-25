@@ -53,6 +53,22 @@ uint32_t g_swapW = 0, g_swapH = 0;
 ID3D11Device* g_device = nullptr;          // game device, AddRef'd
 ID3D11DeviceContext* g_context = nullptr;  // immediate context, AddRef'd
 
+// M7 aim laser. One tiny swapchain holding a soft dot, drawn as several quad
+// layers along the aim ray. Runtimes are only required to accept 16 layers, so
+// the dot count is capped well under that with the game's own layer included.
+constexpr int kMaxLaserDots = 8;
+constexpr uint32_t kLaserTexSize = 64;
+XrSwapchain g_laserSwapchain = XR_NULL_HANDLE;
+std::vector<XrSwapchainImageD3D11KHR> g_laserImages;
+ID3D11Texture2D* g_laserDot = nullptr; // CPU-generated source, copied in per frame
+std::atomic<bool> g_laserOn{false};
+std::atomic<int> g_laserHand{1};
+std::atomic<float> g_laserPitchTrim{0.0f}, g_laserYawTrim{0.0f};
+std::atomic<int> g_laserDots{6};
+std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
+std::atomic<uint32_t> g_laserLayersSubmitted{0};
+std::atomic<bool> g_loggedFirstLaser{false};
+
 // Controls (overlay writes, render thread reads).
 std::atomic<bool> g_enabled{true};        // kill switch: tears the session down
 std::atomic<float> g_screenDistM{1.75f};  // quad distance in meters
@@ -177,6 +193,18 @@ void reset_aer() {
     g_aerEyeSign.store(0, std::memory_order_relaxed);
 }
 
+void destroy_laser() {
+    if (g_laserSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(g_laserSwapchain);
+        g_laserSwapchain = XR_NULL_HANDLE;
+    }
+    g_laserImages.clear();
+    if (g_laserDot) {
+        g_laserDot->Release();
+        g_laserDot = nullptr;
+    }
+}
+
 void destroy_swapchains() {
     for (int i = 0; i < 2; ++i) {
         if (g_swapchains[i] != XR_NULL_HANDLE) {
@@ -185,6 +213,7 @@ void destroy_swapchains() {
         }
         g_images[i].clear();
     }
+    destroy_laser();
     g_swapW = g_swapH = 0;
     reset_aer(); // the held eye images died with the swapchains
 }
@@ -212,6 +241,75 @@ void teardown_session(const char* why) {
     g_state = XR_SESSION_STATE_UNKNOWN;
     g_framesSubmitted = 0;
     g_nextRetryMs = GetTickCount64() + 5000; // cooldown before the next attempt
+}
+
+// A soft round dot with a solid core, premultiplied so the compositor can
+// blend it with plain source-alpha. Generated on the CPU once per session -
+// this is a handful of kilobytes and needs no shader, no render target and no
+// interaction with the game's own D3D state.
+void create_laser(int64_t format) {
+    uint32_t px[kLaserTexSize * kLaserTexSize];
+    for (uint32_t y = 0; y < kLaserTexSize; ++y) {
+        for (uint32_t x = 0; x < kLaserTexSize; ++x) {
+            float dx = (x + 0.5f) / kLaserTexSize * 2.0f - 1.0f;
+            float dy = (y + 0.5f) / kLaserTexSize * 2.0f - 1.0f;
+            float r = sqrtf(dx * dx + dy * dy);
+            float a = r >= 1.0f ? 0.0f : powf(1.0f - r, 1.5f);
+            if (r < 0.25f) a = 1.0f; // bright core, so the beam stays readable
+            // Red laser, premultiplied (rgb already scaled by alpha).
+            uint8_t rr = static_cast<uint8_t>(255.0f * a);
+            uint8_t gg = static_cast<uint8_t>(60.0f * a);
+            uint8_t bb = static_cast<uint8_t>(40.0f * a);
+            uint8_t aa = static_cast<uint8_t>(255.0f * a);
+            px[y * kLaserTexSize + x] = (static_cast<uint32_t>(aa) << 24) |
+                                        (static_cast<uint32_t>(bb) << 16) |
+                                        (static_cast<uint32_t>(gg) << 8) | rr;
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = kLaserTexSize;
+    td.Height = kLaserTexSize;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = static_cast<DXGI_FORMAT>(format);
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA init{px, kLaserTexSize * 4, 0};
+    if (FAILED(g_device->CreateTexture2D(&td, &init, &g_laserDot))) {
+        BVR_LOG("xr: laser dot texture creation failed - aim laser unavailable");
+        g_laserDot = nullptr;
+        return;
+    }
+
+    XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    sci.format = format;
+    sci.sampleCount = 1;
+    sci.width = kLaserTexSize;
+    sci.height = kLaserTexSize;
+    sci.faceCount = 1;
+    sci.arraySize = 1;
+    sci.mipCount = 1;
+    XrResult r = xrCreateSwapchain(g_session, &sci, &g_laserSwapchain);
+    if (XR_FAILED(r)) {
+        BVR_LOG("xr: laser swapchain creation failed: %s", res_str(r));
+        g_laserSwapchain = XR_NULL_HANDLE;
+        destroy_laser();
+        return;
+    }
+    uint32_t count = 0;
+    xrEnumerateSwapchainImages(g_laserSwapchain, 0, &count, nullptr);
+    g_laserImages.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+    if (XR_FAILED(xrEnumerateSwapchainImages(
+            g_laserSwapchain, count, &count,
+            reinterpret_cast<XrSwapchainImageBaseHeader*>(g_laserImages.data())))) {
+        BVR_LOG("xr: laser swapchain image enumeration failed");
+        destroy_laser();
+        return;
+    }
+    BVR_LOG("xr: aim laser ready (%ux%u dot, %u images)", kLaserTexSize, kLaserTexSize, count);
 }
 
 bool create_swapchains(IDXGISwapChain* swapchain) {
@@ -271,6 +369,8 @@ bool create_swapchains(IDXGISwapChain* swapchain) {
     g_swapH = desc.BufferDesc.Height;
     BVR_LOG("xr: swapchain pair %ux%u format %lld (%u images each)", g_swapW, g_swapH,
             static_cast<long long>(pick), imageCount);
+
+    create_laser(pick); // fail-soft: no laser just means no dots
     return true;
 }
 
@@ -569,6 +669,154 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     }
 }
 
+// Quaternion whose +Z axis points along `f` - the direction a quad layer's
+// face looks toward, so billboarding a dot at the head is "aim +Z at the eyes".
+XrQuaternionf quat_facing(const float f[3]) {
+    // Zero-roll frame: right = normalize(up x f), then up' = f x right.
+    float up[3] = {0.0f, 1.0f, 0.0f};
+    if (fabsf(f[1]) > 0.999f) { up[0] = 1.0f; up[1] = 0.0f; } // f is vertical
+    float rx = up[1] * f[2] - up[2] * f[1];
+    float ry = up[2] * f[0] - up[0] * f[2];
+    float rz = up[0] * f[1] - up[1] * f[0];
+    float rl = sqrtf(rx * rx + ry * ry + rz * rz);
+    if (rl < 1e-6f) rl = 1.0f;
+    rx /= rl; ry /= rl; rz /= rl;
+    float ux = f[1] * rz - f[2] * ry;
+    float uy = f[2] * rx - f[0] * rz;
+    float uz = f[0] * ry - f[1] * rx;
+
+    // Rotation matrix with columns (right, up', f) -> quaternion.
+    float m00 = rx, m01 = ux, m02 = f[0];
+    float m10 = ry, m11 = uy, m12 = f[1];
+    float m20 = rz, m21 = uz, m22 = f[2];
+    XrQuaternionf q{};
+    float tr = m00 + m11 + m22;
+    if (tr > 0.0f) {
+        float s = sqrtf(tr + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        float s = sqrtf(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (m21 - m12) / s;
+        q.x = 0.25f * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        float s = sqrtf(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25f * s;
+        q.z = (m12 + m21) / s;
+    } else {
+        float s = sqrtf(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25f * s;
+    }
+    return q;
+}
+
+// Fill `quads` with the dots along the aim ray and return how many were built.
+// Render thread, inside on_present_end, only in projection mode.
+uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
+    if (!g_laserOn.load(std::memory_order_relaxed)) return 0;
+    if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
+
+    int hand = g_laserHand.load(std::memory_order_relaxed);
+    float pos[3], quat[4];
+    if (!input_get_hand_pose(hand, true, pos, quat)) return 0; // AIM pose = the fire ray
+
+    // Controller forward (-Z in XR), then the SAME pitch/yaw trim the fire ray
+    // applies, expressed the same way: yaw about world up, pitch about the
+    // horizon. If these two ever disagree the laser stops being a calibration
+    // tool and becomes a lie.
+    const float fwd[3] = {0.0f, 0.0f, -1.0f};
+    float d[3];
+    {
+        float qx = quat[0], qy = quat[1], qz = quat[2], qw = quat[3];
+        float t[3] = {2.0f * (qy * fwd[2] - qz * fwd[1]), 2.0f * (qz * fwd[0] - qx * fwd[2]),
+                      2.0f * (qx * fwd[1] - qy * fwd[0])};
+        d[0] = fwd[0] + qw * t[0] + (qy * t[2] - qz * t[1]);
+        d[1] = fwd[1] + qw * t[1] + (qz * t[0] - qx * t[2]);
+        d[2] = fwd[2] + qw * t[2] + (qx * t[1] - qy * t[0]);
+    }
+    constexpr float kDegToRad = 3.14159265f / 180.0f;
+    float yaw = atan2f(d[0], -d[2]) + g_laserYawTrim.load(std::memory_order_relaxed) * kDegToRad;
+    float pitch = asinf(fmaxf(-1.0f, fminf(1.0f, d[1]))) +
+                  g_laserPitchTrim.load(std::memory_order_relaxed) * kDegToRad;
+    float cp = cosf(pitch);
+    d[0] = cp * sinf(yaw);
+    d[1] = sinf(pitch);
+    d[2] = -cp * cosf(yaw);
+
+    // Billboard against the head (midpoint of the two eyes).
+    float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
+                     (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
+                     (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
+
+    int n = g_laserDots.load(std::memory_order_relaxed);
+    if (n < 1) n = 1;
+    if (n > kMaxLaserDots) n = kMaxLaserDots;
+    float nearM = g_laserNearM.load(std::memory_order_relaxed);
+    float farM = g_laserFarM.load(std::memory_order_relaxed);
+    if (nearM < 0.05f) nearM = 0.05f;
+    if (farM < nearM * 1.01f) farM = nearM * 1.01f;
+    float sizeRad = g_laserSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+
+    XrSwapchainSubImage sub{};
+    sub.swapchain = g_laserSwapchain;
+    sub.imageRect = {{0, 0},
+                     {static_cast<int32_t>(kLaserTexSize), static_cast<int32_t>(kLaserTexSize)}};
+
+    uint32_t built = 0;
+    for (int i = 0; i < n; ++i) {
+        // Geometric spacing, so the dots read as a beam receding into the
+        // distance instead of bunching up at the far end.
+        float t = n == 1 ? 0.0f : static_cast<float>(i) / static_cast<float>(n - 1);
+        float dist = nearM * powf(farM / nearM, t);
+        float p[3] = {pos[0] + d[0] * dist, pos[1] + d[1] * dist, pos[2] + d[2] * dist};
+
+        float toHead[3] = {head[0] - p[0], head[1] - p[1], head[2] - p[2]};
+        float len = sqrtf(toHead[0] * toHead[0] + toHead[1] * toHead[1] + toHead[2] * toHead[2]);
+        if (len < 0.02f) continue; // dot is inside the head; skip it
+        toHead[0] /= len; toHead[1] /= len; toHead[2] /= len;
+
+        XrCompositionLayerQuad& q = quads[built];
+        q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+        // Premultiplied alpha, so plain source-alpha blending is correct.
+        q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        q.space = g_space;
+        q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        q.subImage = sub;
+        q.pose.position = {p[0], p[1], p[2]};
+        q.pose.orientation = quat_facing(toHead);
+        // Constant ANGULAR size as seen from the head: an even-width beam.
+        float side = 2.0f * len * tanf(sizeRad * 0.5f);
+        q.size = {side, side};
+        ++built;
+    }
+
+    if (built) {
+        // One acquire/copy/release per frame feeds every dot layer: they all
+        // reference this swapchain's most recently released image.
+        uint32_t index = 0;
+        XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        if (XR_FAILED(xrAcquireSwapchainImage(g_laserSwapchain, &ai, &index))) return 0;
+        XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        wi.timeout = XR_INFINITE_DURATION;
+        if (XR_SUCCEEDED(xrWaitSwapchainImage(g_laserSwapchain, &wi)))
+            g_context->CopyResource(g_laserImages[index].texture, g_laserDot);
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        xrReleaseSwapchainImage(g_laserSwapchain, &ri);
+        if (!g_loggedFirstLaser.exchange(true))
+            BVR_LOG("xr: aim laser live (%u dot layers, hand %c)", built, hand ? 'R' : 'L');
+    }
+    return built;
+}
+
 void on_present_end(IDXGISwapChain* swapchain) {
     if (!g_frameOpen) return;
     bool pairSecond = g_srPairOpen; // this present completes an open pair
@@ -580,7 +828,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
     XrCompositionLayerProjectionView projViews[2] = {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
-    const XrCompositionLayerBaseHeader* layers[1] = {};
+    XrCompositionLayerQuad laserQuads[kMaxLaserDots] = {};
+    // The game frame is layer 0; the aim laser adds one quad per dot on top.
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -733,6 +983,18 @@ void on_present_end(IDXGISwapChain* swapchain) {
         }
     }
 
+    // Aim laser on top of the game frame - projection mode only, since in quad
+    // ("cinema screen") mode there is no world for it to point into.
+    if (layerCount && projectionMode) {
+        uint32_t dots = build_laser_layers(laserQuads);
+        for (uint32_t i = 0; i < dots; ++i)
+            layers[layerCount++] =
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&laserQuads[i]);
+        g_laserLayersSubmitted.store(dots, std::memory_order_relaxed);
+    } else {
+        g_laserLayersSubmitted.store(0, std::memory_order_relaxed);
+    }
+
     XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
     fei.displayTime = g_frameState.predictedDisplayTime;
     fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -820,6 +1082,9 @@ void draw_debug_ui() {
     ImGui::Text("layer: %s%s | target %.1f | readback %.1f | claimed %.1f",
                 layerName, eyeSign == 0 ? "" : eyeSign < 0 ? " (AER eye L)" : " (AER eye R)",
                 g_hfovDeg.load(std::memory_order_relaxed), readback, claimed);
+    ImGui::Text("laser: %s | %u dot layer(s) submitted",
+                g_laserSwapchain != XR_NULL_HANDLE ? "ready" : "unavailable",
+                g_laserLayersSubmitted.load(std::memory_order_relaxed));
     uint32_t srPushed = g_srPushed.load(std::memory_order_relaxed);
     if (srPushed)
         ImGui::Text("SR tags: pushed %u popped %u dropped %u cleared %u  eyes %d/%d"
@@ -886,6 +1151,17 @@ int current_eye_sign() {
     return g_aerEyeSign.load(std::memory_order_relaxed);
 }
 
+void set_laser(const LaserConfig& cfg) {
+    g_laserOn.store(cfg.enabled, std::memory_order_relaxed);
+    g_laserHand.store(cfg.hand ? 1 : 0, std::memory_order_relaxed);
+    g_laserPitchTrim.store(cfg.pitchTrimDeg, std::memory_order_relaxed);
+    g_laserYawTrim.store(cfg.yawTrimDeg, std::memory_order_relaxed);
+    g_laserDots.store(cfg.dots, std::memory_order_relaxed);
+    g_laserNearM.store(cfg.nearM, std::memory_order_relaxed);
+    g_laserFarM.store(cfg.farM, std::memory_order_relaxed);
+    g_laserSizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
+}
+
 void sr_push_eye(int eyeSign) {
     uint32_t head = g_srHead.load(std::memory_order_relaxed);
     uint32_t tail = g_srTail.load(std::memory_order_acquire);
@@ -921,6 +1197,7 @@ float suggested_hfov_deg() { return 0.0f; }
 void set_rendered_hfov(float) {}
 int current_eye_sign() { return 0; }
 void sr_push_eye(int) {}
+void set_laser(const LaserConfig&) {}
 
 } // namespace bvr::vr
 
