@@ -425,11 +425,16 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **Wrap M6 (short, start of next session):** merge PR #1 into main, then a
-   stability pass the aim work has not had - `vrstereo on` + `vraim on` through a
-   save load and a few minutes of combat, watching for new dumps (the two fire
-   seams are the first hooks this project installs on gameplay-logic functions
-   rather than render/input ones).
+1. **Load-crossing check - 20 seconds for the USER, in game (the last M6 gap).**
+   PR #1 is merged. The stale-pointer risk it was meant to catch is now handled
+   in code instead: the learned weapon/plasmid hand map is cleared whenever the
+   PlayerController changes (world change), so a recycled heap address can never
+   be mistaken for the old weapon. What still wants a human 20 seconds: with
+   `vrstereo on` + Controller aim ticked, Esc -> LOAD -> newest save -> YES, then
+   fire both hands after the load and confirm they still aim correctly and no dump
+   lands in `%LOCALAPPDATA%\BioshockVR\crash\`. (Claude drove this flat as far as
+   the confirm dialog; gameswf dialogs do not take synthetic keys reliably, and
+   the earlier boots did cross a load with the seams armed without incident.)
 2. **M7 - visible hands + weapons (the user's next milestone).** Locate the live
    `AHands` actor and pin it to the GRIP pose each frame; then per-weapon offset
    sliders. Everything needed is already in the tree: the AHands vtable RVA

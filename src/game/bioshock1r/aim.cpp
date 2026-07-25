@@ -84,6 +84,7 @@ TestAim g_test[2];
 // free when the player switches weapon or plasmid.
 void* g_objRight = nullptr;
 void* g_objLeft = nullptr;
+void* g_lastPc = nullptr; // PlayerController identity, to spot a world change
 std::atomic<uint32_t> g_learnEvents{0};
 
 struct Slot {
@@ -739,6 +740,19 @@ void on_calcview(const FrameContext& ctx) {
         g_enabled.store(false, std::memory_order_relaxed);
         if (!g_probe.load(std::memory_order_relaxed)) disable_all();
         BVR_LOG("[aim] OFF (overlay) - engine aim restored");
+    }
+
+    // World change (save load, level transition): the PlayerController is
+    // rebuilt, and every weapon/ability object we learned a hand for died with
+    // the old world. Drop the map rather than risk a recycled heap address
+    // being mistaken for the old weapon and aiming a plasmid with the right
+    // hand. Comparing stale pointers is safe, but this makes it moot.
+    if (ctx.pc != g_lastPc) {
+        if (g_lastPc && (g_objRight || g_objLeft))
+            BVR_LOG("[aim] world changed (pc %p -> %p) - hand map cleared", g_lastPc, ctx.pc);
+        g_lastPc = ctx.pc;
+        g_objRight = nullptr;
+        g_objLeft = nullptr;
     }
 
     // Cutscene guard (the open M3 item): the view actor during normal play is
