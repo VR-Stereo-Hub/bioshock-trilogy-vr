@@ -560,9 +560,20 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   check; (b) the user wants a visible laser from the hand, which is the rung-2
   reticle work (design in Next steps). Hands still do not track the controllers -
   expected, that is M7.
+- **(late, same session) A crash the user hit, and the process lesson.** The
+  aim-pose build crashed on the first shot in the headset. Root cause found from
+  the dump in one pass (EBP walk + our-DLL disassembly, no PDB needed): an
+  unbounded string replace in a patch script had injected the new overlay
+  widgets into `substitute()` as well as `draw_debug_ui()` - the anchor line
+  appeared in both - so firing called `ImGui::Checkbox` from the GAME thread with
+  no current window (`GetCurrentWindow()` null deref, fault address 0xBE).
+  Fixed by removing the stray block; the ImGui-only-in-draw_debug_ui rule and a
+  mandatory pre-handoff FIRE TEST are now in TESTING. The rebuilt version is
+  flat-verified: overlay opens clean, 6 shots with substitution active, 0 new
+  dumps, decal lands off-crosshair where the injected aim asked.
 - Session ends: game closed, DLLs installed, branch `m6-decoupled-aim` pushed,
-  PR opened for review. No crashes and no new dumps across ~8 boots of hooking
-  engine internals.
+  PR opened for review. Of ~10 boots, one crash - the ImGui-on-game-thread bug
+  above, caught, diagnosed and fixed the same session.
 
 
 ### 2026-07-25 - Session 9
