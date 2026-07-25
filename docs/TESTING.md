@@ -110,6 +110,24 @@ Commands (all through the seam, so they work with no headset):
   hooks any C++ implementation (arg count MUST match the target's `ret <n>`);
   `vraim scanoff` disables both. No rebuild per candidate.
 
+**Before handing ANY build to the user, run the flat fire test.** A build that
+compiles and boots can still crash on the first shot (it did, session 10): load
+the save, open the F10 overlay once (exercises the ImGui path), then
+`vraim on` + `vraim test r 14 0 60000` and fire 3+ shots with
+`vrinput test trig r 255 400` (two pulls if the weapon hand is not active),
+finally assert (a) the game is still running, (b) NO new dump in
+`%LOCALAPPDATA%\BioshockVR\crash\`, (c) `vraim status` shows subs > 0, and
+(d) a screenshot puts the fresh decal off the crosshair. Scratchpad
+`firetest.ps1`/`fire5.ps1` do exactly this.
+
+**ImGui rule:** widgets may ONLY be called from `draw_debug_ui()` (render
+thread, inside the overlay's Begin/End). An ImGui call anywhere the game thread
+reaches - a hooked engine function, the command handler, the CalcView path -
+faults on a null current window (`GetCurrentWindow()` -> `window->WriteAccessed`,
+crash at bioshockvr.dll+... with fault address 0xBE). Session 10 hit this by
+letting an unbounded string replace inject overlay widgets into the fire-path
+substitution function.
+
 Firing the game from the harness - the gotchas that cost a session:
 
 1. **The first trigger pull only SWITCHES HANDS.** `XENON_RT =

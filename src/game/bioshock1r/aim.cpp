@@ -301,16 +301,6 @@ bool substitute(Slot& slot, Hand h, float* const* out, int count) {
     float dir[3];
     ue_rot_to_dir(r, dir);
     float pos[3] = {o.x, o.y, o.z};
-    bool useAim = g_useAimPose.load(std::memory_order_relaxed);
-    if (ImGui::Checkbox("Use the runtime AIM pose (off = grip pose)", &useAim))
-        g_useAimPose.store(useAim, std::memory_order_relaxed);
-    float pitchCal = g_pitchOffsetDeg.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("Aim pitch trim (deg)", &pitchCal, -30.0f, 30.0f))
-        g_pitchOffsetDeg.store(pitchCal, std::memory_order_relaxed);
-    float yawCal = g_yawOffsetDeg.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("Aim yaw trim (deg)", &yawCal, -30.0f, 30.0f))
-        g_yawOffsetDeg.store(yawCal, std::memory_order_relaxed);
-
     bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
 
     // An FRotator carries the engine's roll through untouched: aim owns pitch
