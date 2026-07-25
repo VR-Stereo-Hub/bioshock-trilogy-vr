@@ -296,14 +296,60 @@ inline constexpr uint32_t kEngineVtableRva = 0xE0DFF4; // RTTI .?AVUGameEngine@@
 // Serialize entirely); vtbl+0x4 is Serialize(text, event), 2 args. The seam's
 // stub device returns 0 from every slot with callee-pop-8.
 
+// ---- M6 aim natives (session 10) -------------------------------------------
+// Resolved at runtime through the engine's own native-function lookup table
+// (pattern_scan::find_native_function - registration string
+// "int<Class>exec<Func>" -> its .data table entry -> impl pointer), so no
+// address below is hardcoded; the RVAs are recorded only as the expected
+// values for this build (2022-04-13) and as the cross-check the log prints.
+// Full derivation + the fire flow in ENGINE_NOTES "Fire flow / aim".
+//
+// All four are UnrealScript native thunks:
+//   void __thiscall execFoo(FFrame& Stack, void* Result)
+// FFrame layout used by the probe: +4 Node (UStruct* = the calling script
+// function), +8 Object (UObject* = the script object executing), +0xC Code.
+inline constexpr uint32_t kExpectedWeaponFireStartRva = 0x225B20; // AWeapon::GetPerfectFireStart
+inline constexpr uint32_t kExpectedWeaponAimErrorRva = 0x226A00;  // AWeapon::ApplyAimError
+inline constexpr uint32_t kExpectedPawnViewPointRva = 0x3CB990;   // APawn::GetViewPoint
+inline constexpr uint32_t kExpectedPawnViewDirRva = 0x3CB9D0;     // APawn::GetViewDirection
+inline constexpr uint32_t kExpectedActorTraceRva = 0x547BD0;      // AActor::Trace
+// APawn::GetViewPoint/GetViewDirection are thin exec wrappers around virtual
+// slots on the pawn vtable (byte offsets, from the disassembly of the thunks):
+// +0x360 returns the view point FVector*, +0x35C the view direction FVector*.
+inline constexpr uint32_t kPawnViewPointVtblOffset = 0x360;
+inline constexpr uint32_t kPawnViewDirVtblOffset = 0x35C;
+// FFrame field offsets (UE2 FFrame : FOutputDevice).
+inline constexpr uint32_t kFFrameNodeOffset = 0x4;
+inline constexpr uint32_t kFFrameObjectOffset = 0x8;
+inline constexpr uint32_t kFFrameCodeOffset = 0xC;
+// Class vtables (MSVC RTTI walk on the disk image: TypeDescriptor
+// `.?AV<name>@@` -> CompleteObjectLocator -> vtable). AShockPlayer is the
+// player's own pawn, which is what CalcView reports as the view actor during
+// normal gameplay - the cutscene guard is "view actor still has this vtable".
+inline constexpr uint32_t kShockPlayerVtableRva = 0xD82BB8;   // .?AVAShockPlayer@@
+inline constexpr uint32_t kPlayerWeaponVtableRva = 0xD8FF58;  // .?AVAPlayerWeapon@@
+inline constexpr uint32_t kHandsVtableRva = 0xD8A28C;         // .?AVAHands@@ (M7)
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)
     void* eventPlayerCalcView = nullptr;
+
+    // M6 aim seam natives; individually nullable (fail-soft: the aim probe
+    // just reports which ones resolved).
+    void* execWeaponFireStart = nullptr;
+    void* execWeaponAimError = nullptr;
+    void* execPawnViewPoint = nullptr;
+    void* execPawnViewDir = nullptr;
+    void* execActorTrace = nullptr;
 };
 
 // Runs all scans, logging each stage. False if anything failed to resolve.
 bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out);
+
+// The M6 aim natives only (called by resolve; separate so a rescan is cheap).
+// Fail-soft per symbol - each miss is logged and leaves its slot null.
+void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& out);
 
 // The live HorizontalFOV field of the UShockUserSettings singleton, or null.
 // Lazy by design: the object exists only after engine init, so this validates

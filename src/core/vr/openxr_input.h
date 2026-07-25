@@ -36,4 +36,11 @@ void input_sync(XrSession session, XrTime predictedDisplayTime);
 // One status line inside vr::draw_debug_ui().
 void input_draw_debug_ui();
 
+// M6: latest predicted GRIP pose of a hand (0 = left, 1 = right), located in
+// input_sync against the app space at the same predicted display time as the
+// head pose. False while that hand is not tracked. Position in meters,
+// orientation as a quaternion - XR convention, exactly like HeadPose; the game
+// adapter owns the conversion to Unreal units.
+bool input_get_hand_pose(int hand, float* pos3, float* quat4);
+
 } // namespace bvr::vr

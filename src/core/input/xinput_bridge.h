@@ -35,6 +35,11 @@ void publish_xr_state(const Gamepad& pad, bool active);
 // Radial stick deadzone (fraction 0..0.5) applied by the XR composer.
 float stick_deadzone();
 
+// Last composed trigger pair (0..255). The M6 aim path uses it to tell which
+// hand a fire event belongs to: we compose this state ourselves, so "which
+// trigger is the player pulling" is information the mod already owns.
+void last_composed_triggers(uint8_t* lt, uint8_t* rt);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping
