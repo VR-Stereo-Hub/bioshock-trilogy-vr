@@ -177,10 +177,30 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M6 - Decoupled aim (~2–3 sessions)
 
-- [ ] Decompile ShockGame.u (UE Explorer) → fire-flow + class findings into ENGINE_NOTES.md
+- [x] Decompile ShockGame.u (UE Explorer) → fire-flow + class findings into ENGINE_NOTES.md
       (summaries only, never code)
-- [ ] Aim-substitution hook at the GetPlayerViewPoint-equivalent (seed: itsloopyo decouple)
-- [ ] Right hand aims weapons; left hand aims plasmids; reticle at aim ray
+      *2026-07-25 (session 10): headless UELib via `tools/uscript/dump.ps1` (loads the package in
+      <1 s, lists classes/functions/states, decompiles by name). Mapped the whole chain: trigger →
+      `Weapon.BeginFiring` → `Firing` state → anim notify → `AttackAbility.UseAbility` → native
+      `InitiateDamage` → `GetPerfectFireStart` → damage factory. Attacks are ABILITIES, plasmids
+      included; the wrench damages through a Havok collision phantom and never traces. Also found
+      the engine's own native-function symbol table (registration string → .data entry → impl
+      pointer), which is now the standard way this project resolves natives.*
+- [~] Aim-substitution hook at the fire-start seam (seed: itsloopyo decouple)
+      *2026-07-25 (session 10): SHIPPED and command-gated (`vraim`), hooking the two C++
+      implementations - `AWeapon::GetPerfectFireStart` (vtable slot, impl 0x226840) and
+      `UAttackAbility::GetPerfectFireStart` (0x1BC220). The exec thunks were a dead end (native
+      callers bypass them - zero calls live). Ability seam LIVE-CONFIRMED firing on an Electro
+      Bolt cast with correct ownership gating, and ORIGIN substitution proven (`SUB(L)` with our
+      values). Remaining: the plasmid path's trace DIRECTION comes from the damage factory, one
+      layer deeper (ENGINE_NOTES "Fire flow / aim" has the address to probe), and the weapon path
+      needs a ranged weapon to confirm end to end - the only save spawns with wrench + plasmid.*
+- [~] Right hand aims weapons; left hand aims plasmids; reticle at aim ray
+      *Hand attribution shipped and verified live (object identity seeded by the trigger the
+      bridge composes - "learned LEFT-hand (plasmid) object" on the first cast). XR grip poses
+      are plumbed through to the adapter (located at the frame's predicted display time, converted
+      in the camera's own frame). Reticle not started - deferred to the next session with the
+      direction piece.*
 - [ ] **Done when:** look left while shooting right - impacts land where the controller points.
 
 ## M7 - Visible hands + weapons (~2–3 sessions)
