@@ -2,21 +2,20 @@
 // M6 decoupled aim: the fire ray follows the CONTROLLERS while the camera
 // keeps following the HMD.
 //
-// The engine's fire path asks four UnrealScript natives for the numbers that
-// become a shot (ENGINE_NOTES "Fire flow / aim"):
-//   AWeapon::GetPerfectFireStart  -> trace origin
-//   AWeapon::ApplyAimError        -> trace direction (perfect dir in, spread dir out)
-//   APawn::GetViewPoint           -> eye position (the generic view query)
-//   APawn::GetViewDirection       -> view direction
-// Each is a `void __thiscall execFoo(FFrame& Stack, void* Result)` thunk, so
-// this module hooks them, calls the original, and rewrites `Result` with the
-// hand's ray - the same "call the original, adjust the out-params" shape the
-// CalcView camera hook uses. AActor::Trace is hooked read-only, as the
-// hit-point telemetry that makes flat verification objective.
+// Every shot in this engine starts by asking ONE function where it begins and
+// where it points (ENGINE_NOTES "Fire flow / aim"):
+//   AWeapon::GetPerfectFireStart        - guns and the wrench (right hand)
+//   UAttackAbility::GetPerfectFireStart - plasmids and abilities (left hand)
+// Both are C++ implementations called by the matching native InitiateDamage,
+// and both fill out-params that the engine THEN puts its own spread on - so
+// this module hooks them, lets the original run, and rewrites the out-params
+// with the hand's ray. Per-weapon accuracy still applies on top, and the shape
+// is the same "call the original, adjust the out-params" the CalcView camera
+// hook uses.
 //
-// Everything is command-gated (`vraim ...`) and fail-soft: unresolved natives,
-// no hand pose, a scripted (cutscene) camera, or the master switch off all
-// leave the engine's own values untouched.
+// Everything is command-gated (`vraim ...`) and fail-soft: unresolved symbols,
+// no hand pose, a scripted (cutscene) camera, an AI's weapon, or the master
+// switch off all leave the engine's own values untouched.
 
 #include "core/hooks/pattern_scan.h"
 #include "game/bioshock1r/patterns.h"
@@ -55,7 +54,9 @@ void on_calcview(const FrameContext& ctx);
 //   test l|r <yawDeg> <pitchDeg> [holdMs]   synthetic hand aim (view-relative)
 //   test clear
 //   origin on|off           hand origin (default) vs the engine's own origin
-//   seam <firestart|aimerror|viewpoint|viewdir> on|off
+//   seam <weapon|ability> on|off
+//   scan <Class> <Func> [n] / scanoff   hook ANY name-based native read-only
+//                           (fire-flow investigation without a rebuild)
 void handle_command(const char* args);
 
 // Overlay section (render thread).

@@ -296,6 +296,51 @@ inline constexpr uint32_t kEngineVtableRva = 0xE0DFF4; // RTTI .?AVUGameEngine@@
 // Serialize entirely); vtbl+0x4 is Serialize(text, event), 2 args. The seam's
 // stub device returns 0 from every slot with callee-pop-8.
 
+// ---- M6 fire-flow seams (session 10) ---------------------------------------
+// THE aim seam. Both fire paths ask one function for "where does this shot
+// start and where does it point", and both are C++ implementations reached
+// through the class vtable / a direct call - NOT through the UnrealScript
+// exec thunks (native callers bypass those, which is why hooking the thunks
+// caught nothing). Derivation chain, all in ENGINE_NOTES "Fire flow / aim":
+//   script Ability.UseAbility -> native InitiateDamage (virtual)
+//     AWeapon::InitiateDamage      RVA 0x226050 -> calls [weaponVtbl+0x304]
+//     UAttackAbility::InitiateDamage RVA 0x1BBD80 -> calls 0x1BC220 directly
+//   ...each of which fills the out-params below, and THEN the engine applies
+//   its own spread (AWeapon::ApplyAimError impl 0x226AA0), so substituting
+//   here keeps per-weapon accuracy/spread intact.
+//
+// AWeapon::GetPerfectFireStart, __thiscall, ret 0xC:
+//   (FVector* outA, FVector* outB, FVector* outC)
+//   outA <- ownerPawn+0x1D8 (location-family field), outB <- [pawn+0x450]+0x1E4
+//   (direction-family field, the one ApplyAimError then perturbs).
+// UAttackAbility::GetPerfectFireStart, __thiscall, ret 0x10:
+//   (void* instigator, FVector* outA, FVector* outB, void* outC)
+//   same two sources, one slot over; the probe logs both so the labels are
+//   confirmed live rather than assumed.
+inline constexpr uint32_t kAttackAbilityVtableRva = 0xD7E9D4;   // .?AVUAttackAbility@@
+inline constexpr uint32_t kWeaponFireStartVtblOffset = 0x304;    // AWeapon vtable slot
+inline constexpr uint32_t kExpectedWeaponFireStartImplRva = 0x226840;
+inline constexpr uint32_t kAbilityFireStartImplRva = 0x1BC220;   // direct call target
+inline constexpr uint8_t kAbilityFireStartPrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8};
+inline constexpr uint32_t kWeaponOwnerOffset = 0x454;      // AWeapon -> owning pawn
+inline constexpr uint32_t kAbilityInstigatorOffset = 0xF0; // UAttackAbility -> instigator
+// AActor field offsets used by the fire path (from the APawn::GetViewPoint /
+// GetViewDirection implementations, vtable slots +0x360 / +0x35C):
+//   +0x1D8 location-family FVector, +0x1E4 direction-family FVector,
+//   +0x550 eye height (GetViewPoint = location + eyeHeight on Z).
+inline constexpr uint32_t kActorLocOffset = 0x1D8;
+inline constexpr uint32_t kActorViewDirOffset = 0x1E4;
+// The two InitiateDamage implementations that CALL the fire-start functions
+// above (weapon = AWeapon vtable slot +0x2FC, ability = the direct call target
+// of UAttackAbility::execInitiateDamage). Both `ret 8` - thiscall taking an
+// FName by value. Hooked read-only in `vraim probe` as the "a shot happened,
+// and it came from this family" signal, which is how the flat verification
+// tells a gun shot from a plasmid cast from a Havok melee swing.
+inline constexpr uint32_t kWeaponInitDamageVtblOffset = 0x2FC;
+inline constexpr uint32_t kExpectedWeaponInitDamageRva = 0x226050;
+inline constexpr uint32_t kAbilityInitDamageRva = 0x1BBD80;
+inline constexpr uint8_t kAbilityInitDamagePrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8};
+
 // ---- M6 aim natives (session 10) -------------------------------------------
 // Resolved at runtime through the engine's own native-function lookup table
 // (pattern_scan::find_native_function - registration string
@@ -335,13 +380,12 @@ struct Symbols {
     //                 FVector* camLoc, FRotator* camRot)
     void* eventPlayerCalcView = nullptr;
 
-    // M6 aim seam natives; individually nullable (fail-soft: the aim probe
-    // just reports which ones resolved).
-    void* execWeaponFireStart = nullptr;
-    void* execWeaponAimError = nullptr;
-    void* execPawnViewPoint = nullptr;
-    void* execPawnViewDir = nullptr;
-    void* execActorTrace = nullptr;
+    // M6 fire-flow seams; individually nullable (fail-soft - aim just reports
+    // which ones resolved and stays off for the rest).
+    void* weaponFireStart = nullptr;  // AWeapon::GetPerfectFireStart impl
+    void* abilityFireStart = nullptr; // UAttackAbility::GetPerfectFireStart impl
+    void* weaponInitDamage = nullptr;  // AWeapon::InitiateDamage impl (telemetry)
+    void* abilityInitDamage = nullptr; // UAttackAbility::InitiateDamage impl (telemetry)
 };
 
 // Runs all scans, logging each stage. False if anything failed to resolve.

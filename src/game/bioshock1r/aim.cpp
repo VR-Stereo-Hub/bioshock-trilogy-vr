@@ -38,13 +38,11 @@ const uint8_t* g_imageBase = nullptr;
 // controlled because which native actually decides a shot is a live question
 // per weapon type (see the probe): flipping these needs no rebuild.
 std::atomic<bool> g_enabled{false};
-std::atomic<bool> g_subFireStart{true};
-std::atomic<bool> g_subAimError{true};
-std::atomic<bool> g_subViewPoint{false};
-std::atomic<bool> g_subViewDir{true};
-std::atomic<bool> g_handOrigin{true};   // hand origin + direction (user's choice)
-std::atomic<bool> g_probe{false};       // telemetry mode
-std::atomic<int32_t> g_dumpBudget{0};   // per-seam detailed log budget
+std::atomic<bool> g_subWeapon{true};  // right hand aims weapons
+std::atomic<bool> g_subAbility{true}; // left hand aims plasmids
+std::atomic<bool> g_handOrigin{true}; // hand origin + direction (user's choice)
+std::atomic<bool> g_probe{false};     // telemetry mode
+std::atomic<int32_t> g_dumpBudget{0}; // per-seam detailed log budget
 
 // Per-frame aim rays, game thread only (built in on_calcview, read in the
 // detours - all on the game thread, so no locking).
@@ -87,13 +85,9 @@ struct Slot {
     std::atomic<uint32_t> subs{0};
     std::atomic<uint32_t> skips{0}; // ran, but not ours to touch (AI, no ray)
     int32_t dumpLeft = 0;
-    int resultType = 0; // ResultType, learned from the engine's own values
 };
-Slot g_fireStart{"firestart"};
-Slot g_aimError{"aimerror"};
-Slot g_viewPoint{"viewpoint"};
-Slot g_viewDir{"viewdir"};
-Slot g_trace{"trace"};
+Slot g_weaponFire{"weapon"};  // AWeapon::GetPerfectFireStart impl
+Slot g_abilityFire{"ability"}; // UAttackAbility::GetPerfectFireStart impl
 
 // Last substituted values, for the overlay + the flat-test assertions.
 std::atomic<float> g_lastSubX{0.0f}, g_lastSubY{0.0f}, g_lastSubZ{0.0f};
@@ -149,12 +143,19 @@ bool has_vtable(void* obj, uint32_t wantRva) {
     return to_rva(vtbl) == wantRva;
 }
 
-bool is_player_weapon(void* obj) {
-    return has_vtable(obj, patterns::kPlayerWeaponVtableRva);
-}
-
 bool is_player_pawn(void* obj) {
     return has_vtable(obj, patterns::kShockPlayerVtableRva);
+}
+
+// A weapon's owning pawn sits at [weapon+0x454] (the fire-start implementation
+// reads it), so "is this the player's gun" is one dereference plus the pawn
+// vtable check - and an AI's weapon fails it.
+bool owner_is_player_pawn(void* weapon) {
+    if (!weapon) return false;
+    void* owner = nullptr;
+    if (!read_ptr(static_cast<const uint8_t*>(weapon) + patterns::kWeaponOwnerOffset, &owner))
+        return false;
+    return is_player_pawn(owner);
 }
 
 // ---- hand selection --------------------------------------------------------
@@ -165,12 +166,14 @@ bool trigger_held(bool right) {
     return (right ? rt : lt) >= 64; // ~25% pull, same ballpark as the game's own
 }
 
-Hand hand_for_object(void* obj) {
+// `fallback` is the hand this seam belongs to when there is no trigger
+// evidence yet (weapons right, abilities left).
+Hand hand_for_object(void* obj, Hand fallback) {
     if (obj && obj == g_objRight) return Hand::Right;
     if (obj && obj == g_objLeft) return Hand::Left;
 
     bool r = trigger_held(true), l = trigger_held(false);
-    if (obj && is_player_weapon(obj)) {
+    if (obj) {
         // Exactly one trigger -> that hand owns this object. Both triggers with
         // one slot already known -> the other hand owns it by elimination.
         bool takeRight = false, takeLeft = false;
@@ -193,9 +196,7 @@ Hand hand_for_object(void* obj) {
             return Hand::Left;
         }
     }
-    // Unknown and no usable trigger evidence: the right hand is the weapon
-    // hand, which is the safer default for a stray query.
-    return Hand::Right;
+    return fallback; // no trigger evidence yet
 }
 
 // ---- the ray ---------------------------------------------------------------
@@ -222,193 +223,233 @@ void note_substitution(Hand h, const FVector& o, const FRotator& r) {
     g_lastSubHand.store(h == Hand::Right ? 1u : 0u, std::memory_order_relaxed);
 }
 
-// A 12-byte engine "direction" result is either an FVector (unit-ish floats)
-// or an FRotator (65536-per-turn int32s), and which one depends on the script
-// signature we never see. Classify from what the ORIGINAL produced: rotator
-// components are small integers, whose float reinterpretation is a denormal,
-// while float components are ordinary floats whose int reinterpretation is
-// enormous. All-zero is ambiguous, so the verdict is cached per seam from the
-// first confident call and only then does that seam substitute.
-enum ResultType { kUnknown = 0, kVector = 1, kRotator = 2 };
-
-ResultType classify(const float raw[3]) {
-    int32_t v[3];
-    memcpy(v, raw, sizeof v);
-    bool allZero = (v[0] == 0 && v[1] == 0 && v[2] == 0);
-    if (allZero) return kUnknown;
-    for (int i = 0; i < 3; ++i) {
-        int32_t a = v[i] < 0 ? -v[i] : v[i];
-        if (a > (1 << 21)) return kVector; // 2 million rotation units is nonsense
-    }
-    return kRotator;
-}
-
-void write_direction(void* result, const FRotator& rot, ResultType type, int32_t rollIn) {
-    if (type == kRotator) {
-        int32_t v[3] = {rot.pitch, rot.yaw, rollIn};
-        float packed[3];
-        memcpy(packed, v, sizeof packed);
-        write12(result, packed);
-        return;
-    }
-    float dir[3];
-    ue_rot_to_dir(rot, dir);
-    write12(result, dir);
-}
-
 // ---- detours ---------------------------------------------------------------
-// Every thunk is `void __thiscall execFoo(FFrame& Stack, void* Result)`, which
-// is register/stack-identical to __fastcall with a dummy EDX slot.
+// Both seams are __thiscall C++ methods, which is register/stack-identical to
+// __fastcall with a dummy EDX slot. Substitution happens AFTER the original
+// ran, so the engine's own numbers are what we log and what we fall back to.
 
-void log_call(Slot& slot, void* self, void* stack, const float raw[3], const char* note) {
+void log_call(Slot& slot, void* self, const float* a, const float* b, const float* c,
+              const char* note) {
     if (slot.dumpLeft <= 0) return;
     --slot.dumpLeft;
+    void* vtbl = nullptr;
+    read_ptr(self, &vtbl);
+    BVR_LOG("[aim] %s this=%p vtbl=0x%X A=(%.1f %.1f %.1f) B=(%.3f %.3f %.3f) "
+            "C=(%.3f %.3f %.3f) %s",
+            slot.name, self, to_rva(vtbl), a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2],
+            note);
+}
+
+// The two out-params are a POSITION (thousands of Unreal units) and a unit
+// DIRECTION, and which slot holds which differs between the weapon and the
+// ability signature. Rather than trust the disassembly's labels, decide per
+// call from the magnitudes - a direction is never longer than ~1.
+bool looks_like_direction(const float v[3]) {
+    float len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    return len2 < 4.0f;
+}
+
+bool is_zero(const float v[3]) {
+    return v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f;
+}
+
+// Write our ray into the out-params: every slot the engine filled with a
+// POSITION gets the hand's origin, every slot it filled with a DIRECTION gets
+// the hand's direction. Which index is which differs between the two
+// signatures (and an unused slot reads as zero), so this stays value-driven
+// rather than trusting a fixed index. True if anything was written.
+bool substitute(Slot& slot, Hand h, float* const* out, int count) {
+    FVector o{};
+    FRotator r{};
+    if (!ray_for(h, &o, &r)) {
+        slot.skips.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    float dir[3];
+    ue_rot_to_dir(r, dir);
+    float pos[3] = {o.x, o.y, o.z};
+    bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
+
+    bool wrote = false;
+    for (int i = 0; i < count; ++i) {
+        if (!out[i]) continue;
+        float cur[3];
+        if (!read12(out[i], cur)) continue;
+        if (is_zero(cur)) continue; // engine left this one alone; so do we
+        if (looks_like_direction(cur)) {
+            wrote |= write12(out[i], dir);
+        } else if (handOrigin) {
+            wrote |= write12(out[i], pos);
+        }
+    }
+    if (!wrote) return false;
+    slot.subs.fetch_add(1, std::memory_order_relaxed);
+    note_substitution(h, o, r);
+    return true;
+}
+
+// AWeapon::GetPerfectFireStart(FVector* outA, FVector* outB, void* outC).
+// `this` is the weapon; [this+0x454] is the pawn holding it, which is how a
+// player shot is told from a splicer's.
+void __fastcall WeaponFireDetour(void* self, void* edx, float* outA, float* outB, float* outC) {
+    using WeaponFireFn = void(__fastcall*)(void*, void*, float*, float*, float*);
+    reinterpret_cast<WeaponFireFn>(g_weaponFire.original)(self, edx, outA, outB, outC);
+    g_weaponFire.calls.fetch_add(1, std::memory_order_relaxed);
+
+    float a[3] = {0, 0, 0}, b[3] = {0, 0, 0}, c[3] = {0, 0, 0};
+    read12(outA, a);
+    read12(outB, b);
+    read12(outC, c);
+
+    const char* note = "";
+    if (g_subWeapon.load(std::memory_order_relaxed) && owner_is_player_pawn(self)) {
+        Hand h = hand_for_object(self, Hand::Right);
+        float* outs[3] = {outA, outB, outC};
+        if (substitute(g_weaponFire, h, outs, 3))
+            note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
+    }
+    log_call(g_weaponFire, self, a, b, c, note);
+}
+
+// UAttackAbility::GetPerfectFireStart(void* instigator, FVector* outA,
+//                                    FVector* outB, void* outC).
+// The instigator argument IS the ownership check the engine itself does here.
+void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float* outA,
+                                  float* outB, float* outC) {
+    using AbilityFireFn = void(__fastcall*)(void*, void*, void*, float*, float*, float*);
+    reinterpret_cast<AbilityFireFn>(g_abilityFire.original)(self, edx, instigator, outA, outB,
+                                                           outC);
+    g_abilityFire.calls.fetch_add(1, std::memory_order_relaxed);
+
+    float a[3] = {0, 0, 0}, b[3] = {0, 0, 0}, c[3] = {0, 0, 0};
+    read12(outA, a);
+    read12(outB, b);
+    read12(outC, c);
+
+    const char* note = "";
+    if (g_subAbility.load(std::memory_order_relaxed) && is_player_pawn(instigator)) {
+        // Plasmids are the left hand; the wrench's melee ability also lands
+        // here, and the trigger-keyed map moves it back to the right hand the
+        // first time it swings.
+        Hand h = hand_for_object(self, Hand::Left);
+        float* outs[3] = {outA, outB, outC};
+        if (substitute(g_abilityFire, h, outs, 3))
+            note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
+    }
+    log_call(g_abilityFire, self, a, b, c, note);
+}
+
+// ---- generic native probe --------------------------------------------------
+// `vraim scan <Class> <Func>` resolves ANY name-based native through the
+// engine's lookup table and hooks it read-only. The whole fire flow is a
+// question of which natives run when a trigger is pulled, and answering it
+// from the command file beats a rebuild per guess. Eight slots is plenty for
+// one investigation; template instantiation gives each its own detour address.
+
+constexpr int kProbeSlots = 8;
+
+struct ProbeSlot {
+    char name[64] = {};
+    void* target = nullptr;
+    void* original = nullptr;
+    bool created = false;
+    std::atomic<bool> enabled{false};
+    std::atomic<uint32_t> calls{0};
+    int32_t dumpLeft = 0;
+};
+ProbeSlot g_probes[kProbeSlots];
+
+void probe_note(int n, void* self, void* stack, void* result) {
+    ProbeSlot& p = g_probes[n];
+    p.calls.fetch_add(1, std::memory_order_relaxed);
+    if (p.dumpLeft <= 0) return;
+    --p.dumpLeft;
+    float raw[3] = {0, 0, 0};
+    read12(result, raw);
+    int32_t asInt[3];
+    memcpy(asInt, raw, sizeof asInt);
     void* obj = nullptr;
     void* node = nullptr;
     if (stack) {
         read_ptr(static_cast<const uint8_t*>(stack) + patterns::kFFrameObjectOffset, &obj);
         read_ptr(static_cast<const uint8_t*>(stack) + patterns::kFFrameNodeOffset, &node);
     }
-    int32_t asInt[3];
-    memcpy(asInt, raw, sizeof asInt);
-    BVR_LOG("[aim] %s this=%p vtbl=0x%X obj=%p node=%p result f=(%.2f %.2f %.2f) "
-            "i=(%d %d %d) %s",
-            slot.name, self, self ? to_rva(*static_cast<void**>(self)) : 0, obj, node,
-            raw[0], raw[1], raw[2], asInt[0], asInt[1], asInt[2], note);
+    void* vtbl = nullptr;
+    read_ptr(self, &vtbl);
+    BVR_LOG("[aim] scan %s this=%p vtbl=0x%X obj=%p node=%p res f=(%.2f %.2f %.2f) "
+            "i=(%d %d %d)", p.name, self, to_rva(vtbl), obj, node, raw[0], raw[1], raw[2],
+            asInt[0], asInt[1], asInt[2]);
 }
 
-// Learn (and remember) what type this seam's 12-byte result is.
-ResultType learn_type(Slot& slot, const float raw[3]) {
-    ResultType t = classify(raw);
-    if (t != kUnknown && slot.resultType == kUnknown) {
-        slot.resultType = t;
-        BVR_LOG("[aim] %s result type = %s", slot.name, t == kRotator ? "FRotator" : "FVector");
+template <int N>
+void __fastcall GenericProbeDetour(void* self, void* edx, void* stack, void* result) {
+    reinterpret_cast<ExecFn>(g_probes[N].original)(self, edx, stack, result);
+    probe_note(N, self, stack, result);
+}
+
+void* const kProbeDetours[kProbeSlots] = {
+    reinterpret_cast<void*>(&GenericProbeDetour<0>),
+    reinterpret_cast<void*>(&GenericProbeDetour<1>),
+    reinterpret_cast<void*>(&GenericProbeDetour<2>),
+    reinterpret_cast<void*>(&GenericProbeDetour<3>),
+    reinterpret_cast<void*>(&GenericProbeDetour<4>),
+    reinterpret_cast<void*>(&GenericProbeDetour<5>),
+    reinterpret_cast<void*>(&GenericProbeDetour<6>),
+    reinterpret_cast<void*>(&GenericProbeDetour<7>),
+};
+
+bvr::pattern_scan::ProcessImage g_image{};
+
+void scan_and_hook(const char* cls, const char* fn, int32_t dump) {
+    bvr::pattern_scan::NativeScanResult scan{};
+    if (!bvr::pattern_scan::find_native_function(g_image, cls, fn, scan)) {
+        BVR_LOG("[aim] scan %s::%s NOT FOUND (%zu string match(es), %zu table ref(s))", cls, fn,
+                scan.stringMatches, scan.tableRefs);
+        return;
     }
-    return static_cast<ResultType>(slot.resultType);
-}
-
-void __fastcall FireStartDetour(void* self, void* edx, void* stack, void* result) {
-    reinterpret_cast<ExecFn>(g_fireStart.original)(self, edx, stack, result);
-    g_fireStart.calls.fetch_add(1, std::memory_order_relaxed);
-
-    float raw[3] = {0, 0, 0};
-    if (!read12(result, raw)) return;
-
-    const char* note = "";
-    if (g_subFireStart.load(std::memory_order_relaxed) &&
-        g_handOrigin.load(std::memory_order_relaxed) && is_player_weapon(self)) {
-        Hand h = hand_for_object(self);
-        FVector o{};
-        FRotator r{};
-        if (ray_for(h, &o, &r)) {
-            float v[3] = {o.x, o.y, o.z};
-            if (write12(result, v)) {
-                g_fireStart.subs.fetch_add(1, std::memory_order_relaxed);
-                note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
-                note_substitution(h, o, r);
-            }
-        } else {
-            g_fireStart.skips.fetch_add(1, std::memory_order_relaxed);
+    for (int i = 0; i < kProbeSlots; ++i) {
+        ProbeSlot& p = g_probes[i];
+        if (p.target == scan.function) { // re-arm an existing slot
+            p.dumpLeft = dump;
+            BVR_LOG("[aim] scan %s re-armed (%d lines)", p.name, dump);
+            return;
         }
     }
-    log_call(g_fireStart, self, stack, raw, note);
-}
-
-void __fastcall AimErrorDetour(void* self, void* edx, void* stack, void* result) {
-    reinterpret_cast<ExecFn>(g_aimError.original)(self, edx, stack, result);
-    g_aimError.calls.fetch_add(1, std::memory_order_relaxed);
-
-    float raw[3] = {0, 0, 0};
-    if (!read12(result, raw)) return;
-    ResultType type = learn_type(g_aimError, raw);
-
-    const char* note = "";
-    if (g_subAimError.load(std::memory_order_relaxed) && type != kUnknown &&
-        is_player_weapon(self)) {
-        Hand h = hand_for_object(self);
-        FVector o{};
-        FRotator r{};
-        if (ray_for(h, &o, &r)) {
-            int32_t rollIn = 0;
-            if (type == kRotator) {
-                int32_t asInt[3];
-                memcpy(asInt, raw, sizeof asInt);
-                rollIn = asInt[2]; // keep the engine's roll
-            }
-            write_direction(result, r, type, rollIn);
-            g_aimError.subs.fetch_add(1, std::memory_order_relaxed);
-            note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
-            note_substitution(h, o, r);
-        } else {
-            g_aimError.skips.fetch_add(1, std::memory_order_relaxed);
+    for (int i = 0; i < kProbeSlots; ++i) {
+        ProbeSlot& p = g_probes[i];
+        if (p.created) continue;
+        _snprintf_s(p.name, sizeof p.name, _TRUNCATE, "%s::%s", cls, fn);
+        p.target = scan.function;
+        p.dumpLeft = dump;
+        MH_STATUS st = MH_CreateHook(p.target, kProbeDetours[i], &p.original);
+        if (st != MH_OK) {
+            BVR_LOG("[aim] scan %s: MH_CreateHook failed: %s", p.name, MH_StatusToString(st));
+            p.target = nullptr;
+            p.name[0] = 0;
+            return;
         }
-    }
-    log_call(g_aimError, self, stack, raw, note);
-}
-
-void __fastcall ViewPointDetour(void* self, void* edx, void* stack, void* result) {
-    reinterpret_cast<ExecFn>(g_viewPoint.original)(self, edx, stack, result);
-    g_viewPoint.calls.fetch_add(1, std::memory_order_relaxed);
-
-    float raw[3] = {0, 0, 0};
-    if (!read12(result, raw)) return;
-
-    const char* note = "";
-    if (g_subViewPoint.load(std::memory_order_relaxed) &&
-        g_handOrigin.load(std::memory_order_relaxed) && is_player_pawn(self)) {
-        // The pawn's view point has no weapon object to key on; the hand that
-        // is actually firing owns it (right hand when both or neither).
-        Hand h = trigger_held(false) && !trigger_held(true) ? Hand::Left : Hand::Right;
-        FVector o{};
-        if (ray_for(h, &o, nullptr)) {
-            float v[3] = {o.x, o.y, o.z};
-            if (write12(result, v)) {
-                g_viewPoint.subs.fetch_add(1, std::memory_order_relaxed);
-                note = "SUB";
-            }
-        } else {
-            g_viewPoint.skips.fetch_add(1, std::memory_order_relaxed);
+        p.created = true;
+        st = MH_EnableHook(p.target);
+        if (st != MH_OK) {
+            BVR_LOG("[aim] scan %s: MH_EnableHook failed: %s", p.name, MH_StatusToString(st));
+            return;
         }
+        p.enabled.store(true, std::memory_order_relaxed);
+        BVR_LOG("[aim] scan %s hooked at %p (rva 0x%X), %d dump lines", p.name, p.target,
+                to_rva(p.target), dump);
+        return;
     }
-    log_call(g_viewPoint, self, stack, raw, note);
+    BVR_LOG("[aim] scan: all %d probe slots in use (`vraim scanoff` first)", kProbeSlots);
 }
 
-void __fastcall ViewDirDetour(void* self, void* edx, void* stack, void* result) {
-    reinterpret_cast<ExecFn>(g_viewDir.original)(self, edx, stack, result);
-    g_viewDir.calls.fetch_add(1, std::memory_order_relaxed);
-
-    float raw[3] = {0, 0, 0};
-    if (!read12(result, raw)) return;
-    ResultType type = learn_type(g_viewDir, raw);
-
-    const char* note = "";
-    if (g_subViewDir.load(std::memory_order_relaxed) && type != kUnknown &&
-        is_player_pawn(self)) {
-        Hand h = trigger_held(false) && !trigger_held(true) ? Hand::Left : Hand::Right;
-        FVector o{};
-        FRotator r{};
-        if (ray_for(h, &o, &r)) {
-            write_direction(result, r, type, 0);
-            g_viewDir.subs.fetch_add(1, std::memory_order_relaxed);
-            note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
-            note_substitution(h, o, r);
-        } else {
-            g_viewDir.skips.fetch_add(1, std::memory_order_relaxed);
-        }
+void scan_off() {
+    for (ProbeSlot& p : g_probes) {
+        if (!p.enabled.load(std::memory_order_relaxed)) continue;
+        MH_DisableHook(p.target);
+        p.enabled.store(false, std::memory_order_relaxed);
+        BVR_LOG("[aim] scan %s disabled (calls %u)", p.name,
+                p.calls.load(std::memory_order_relaxed));
     }
-    log_call(g_viewDir, self, stack, raw, note);
-}
-
-// Read-only: AActor::Trace is the hitscan primitive, so its result IS the
-// impact point - the objective number the flat verification asserts on. Hot
-// path (AI line-of-sight uses it too), so it only ever logs from a dump budget.
-void __fastcall TraceDetour(void* self, void* edx, void* stack, void* result) {
-    reinterpret_cast<ExecFn>(g_trace.original)(self, edx, stack, result);
-    g_trace.calls.fetch_add(1, std::memory_order_relaxed);
-    if (g_trace.dumpLeft <= 0) return;
-    float raw[3] = {0, 0, 0};
-    if (!read12(result, raw)) return;
-    log_call(g_trace, self, stack, raw, "hitactor");
 }
 
 // ---- hook lifecycle --------------------------------------------------------
@@ -451,70 +492,44 @@ patterns::Symbols g_syms{};
 
 bool install_all() {
     bool any = false;
-    any |= install_slot(g_fireStart, g_syms.execWeaponFireStart,
-                        reinterpret_cast<void*>(&FireStartDetour));
-    any |= install_slot(g_aimError, g_syms.execWeaponAimError,
-                        reinterpret_cast<void*>(&AimErrorDetour));
-    any |= install_slot(g_viewPoint, g_syms.execPawnViewPoint,
-                        reinterpret_cast<void*>(&ViewPointDetour));
-    any |= install_slot(g_viewDir, g_syms.execPawnViewDir,
-                        reinterpret_cast<void*>(&ViewDirDetour));
-    any |= install_slot(g_trace, g_syms.execActorTrace,
-                        reinterpret_cast<void*>(&TraceDetour));
+    any |= install_slot(g_weaponFire, g_syms.weaponFireStart,
+                        reinterpret_cast<void*>(&WeaponFireDetour));
+    any |= install_slot(g_abilityFire, g_syms.abilityFireStart,
+                        reinterpret_cast<void*>(&AbilityFireDetour));
     return any;
 }
 
 void disable_all() {
-    disable_slot(g_fireStart);
-    disable_slot(g_aimError);
-    disable_slot(g_viewPoint);
-    disable_slot(g_viewDir);
-    disable_slot(g_trace);
+    disable_slot(g_weaponFire);
+    disable_slot(g_abilityFire);
 }
 
 void set_dump(int32_t n) {
     g_dumpBudget.store(n, std::memory_order_relaxed);
-    g_fireStart.dumpLeft = n;
-    g_aimError.dumpLeft = n;
-    g_viewPoint.dumpLeft = n;
-    g_viewDir.dumpLeft = n;
-    g_trace.dumpLeft = n;
-}
-
-Slot* slot_by_name(const char* name) {
-    if (strcmp(name, "firestart") == 0) return &g_fireStart;
-    if (strcmp(name, "aimerror") == 0) return &g_aimError;
-    if (strcmp(name, "viewpoint") == 0) return &g_viewPoint;
-    if (strcmp(name, "viewdir") == 0) return &g_viewDir;
-    if (strcmp(name, "trace") == 0) return &g_trace;
-    return nullptr;
+    g_weaponFire.dumpLeft = n;
+    g_abilityFire.dumpLeft = n;
 }
 
 std::atomic<bool>* sub_flag_by_name(const char* name) {
-    if (strcmp(name, "firestart") == 0) return &g_subFireStart;
-    if (strcmp(name, "aimerror") == 0) return &g_subAimError;
-    if (strcmp(name, "viewpoint") == 0) return &g_subViewPoint;
-    if (strcmp(name, "viewdir") == 0) return &g_subViewDir;
+    if (strcmp(name, "weapon") == 0) return &g_subWeapon;
+    if (strcmp(name, "ability") == 0) return &g_subAbility;
     return nullptr;
 }
 
 void log_status() {
-    BVR_LOG("[aim] status: %s | seams fs=%d ae=%d vp=%d vd=%d | handOrigin=%d probe=%d",
+    BVR_LOG("[aim] status: %s | seams weapon=%d ability=%d | handOrigin=%d probe=%d",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
-            g_subFireStart.load(std::memory_order_relaxed),
-            g_subAimError.load(std::memory_order_relaxed),
-            g_subViewPoint.load(std::memory_order_relaxed),
-            g_subViewDir.load(std::memory_order_relaxed),
+            g_subWeapon.load(std::memory_order_relaxed) ? 1 : 0,
+            g_subAbility.load(std::memory_order_relaxed) ? 1 : 0,
             g_handOrigin.load(std::memory_order_relaxed) ? 1 : 0,
             g_probe.load(std::memory_order_relaxed) ? 1 : 0);
-    Slot* all[] = {&g_fireStart, &g_aimError, &g_viewPoint, &g_viewDir, &g_trace};
+    Slot* all[] = {&g_weaponFire, &g_abilityFire};
     for (Slot* s : all) {
-        BVR_LOG("[aim]   %-9s hook=%s calls=%u subs=%u skips=%u type=%s", s->name,
+        BVR_LOG("[aim]   %-8s hook=%s calls=%u subs=%u skips=%u", s->name,
                 s->enabled.load(std::memory_order_relaxed) ? "on " : "off",
                 s->calls.load(std::memory_order_relaxed),
                 s->subs.load(std::memory_order_relaxed),
-                s->skips.load(std::memory_order_relaxed),
-                s->resultType == kRotator ? "rot" : s->resultType == kVector ? "vec" : "?");
+                s->skips.load(std::memory_order_relaxed));
     }
     uint64_t now = GetTickCount64();
     for (int i = 0; i < 2; ++i) {
@@ -533,10 +548,10 @@ void log_status() {
 
 void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols& symbols) {
     g_imageBase = image.base;
+    g_image = image;
     g_syms = symbols;
-    BVR_LOG("[aim] init: firestart=%p aimerror=%p viewpoint=%p viewdir=%p trace=%p",
-            g_syms.execWeaponFireStart, g_syms.execWeaponAimError, g_syms.execPawnViewPoint,
-            g_syms.execPawnViewDir, g_syms.execActorTrace);
+    BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
+            g_syms.abilityFireStart);
 }
 
 void on_calcview(const FrameContext& ctx) {
@@ -622,6 +637,15 @@ void handle_command(const char* args) {
         g_enabled.store(false, std::memory_order_relaxed);
         if (!g_probe.load(std::memory_order_relaxed)) disable_all();
         BVR_LOG("[aim] OFF - engine aim restored");
+    } else if (strcmp(verb, "scan") == 0) {
+        char cls[48] = {}, fn[48] = {};
+        int dump = 8;
+        int n = sscanf_s(rest, "%47s %47s %d", cls, static_cast<unsigned>(sizeof cls), fn,
+                         static_cast<unsigned>(sizeof fn), &dump);
+        if (n >= 2) scan_and_hook(cls, fn, dump > 0 ? dump : 8);
+        else BVR_LOG("[aim] usage: vraim scan <Class> <Func> [dumpLines]");
+    } else if (strcmp(verb, "scanoff") == 0) {
+        scan_off();
     } else if (strcmp(verb, "probe") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_probe.store(on, std::memory_order_relaxed);
@@ -688,15 +712,14 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "status") == 0) {
         log_status();
     } else {
-        BVR_LOG("[aim] unknown command '%s' (on|off|probe|dump|origin|seam|test|status)", verb);
+        BVR_LOG("[aim] unknown command '%s' "
+                "(on|off|probe|dump|origin|seam|test|scan|scanoff|status)", verb);
     }
 }
 
 bool hook_live() {
-    return g_fireStart.enabled.load(std::memory_order_relaxed) ||
-           g_aimError.enabled.load(std::memory_order_relaxed) ||
-           g_viewPoint.enabled.load(std::memory_order_relaxed) ||
-           g_viewDir.enabled.load(std::memory_order_relaxed);
+    return g_weaponFire.enabled.load(std::memory_order_relaxed) ||
+           g_abilityFire.enabled.load(std::memory_order_relaxed);
 }
 
 bool active() {
@@ -720,15 +743,11 @@ void draw_debug_ui() {
                         &handOrigin))
         g_handOrigin.store(handOrigin, std::memory_order_relaxed);
 
-    ImGui::Text("seam calls: fs %u/%u  ae %u/%u  vp %u/%u  vd %u/%u  (subs/calls)",
-                g_fireStart.subs.load(std::memory_order_relaxed),
-                g_fireStart.calls.load(std::memory_order_relaxed),
-                g_aimError.subs.load(std::memory_order_relaxed),
-                g_aimError.calls.load(std::memory_order_relaxed),
-                g_viewPoint.subs.load(std::memory_order_relaxed),
-                g_viewPoint.calls.load(std::memory_order_relaxed),
-                g_viewDir.subs.load(std::memory_order_relaxed),
-                g_viewDir.calls.load(std::memory_order_relaxed));
+    ImGui::Text("fire seams (subs/calls): weapon %u/%u  plasmid %u/%u",
+                g_weaponFire.subs.load(std::memory_order_relaxed),
+                g_weaponFire.calls.load(std::memory_order_relaxed),
+                g_abilityFire.subs.load(std::memory_order_relaxed),
+                g_abilityFire.calls.load(std::memory_order_relaxed));
     ImGui::Text("last sub: %s origin (%.0f %.0f %.0f) yaw %d pitch %d",
                 g_lastSubHand.load(std::memory_order_relaxed) ? "RIGHT" : "LEFT",
                 g_lastSubX.load(std::memory_order_relaxed),
