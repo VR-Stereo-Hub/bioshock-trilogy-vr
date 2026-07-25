@@ -189,6 +189,11 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 - [ ] Per-weapon offset tuning (live ImGui sliders, persisted config)
 - [ ] **Done when:** hands + current weapon track the controller convincingly; wrench melee
       feels aimed. (Full IK arms = post-v1.)
+      *Note (user, 2026-07-25): the `AHands` viewmodel is a single mesh (hands + a short
+      forearm/sleeve stub), so in M7 the visible arm portion moves RIGIDLY with the weapon/
+      controller - good enough for the short FP forearm. Making the ELBOW articulate as the
+      hand moves is IK arms (post-v1 below) - the user wants this captured as a post-polish
+      focus item.*
 
 ## M8 - Selection wheels (~1–2 sessions)
 
@@ -228,6 +233,12 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 - Asymmetric per-eye projection matrices (reclaim wasted pixels)
 - Wrist-anchored HUD elements (health/EVE)
-- Hand IK arms; two-handed weapons; physical melee swings
+- **Hand IK arms** (user-requested post-polish focus, 2026-07-25): articulated forearm/elbow
+  that bends based on the controller hand position, instead of M7's rigid hands+stub. Two-bone
+  IK (anchor a shoulder, hand at the grip pose, solve the elbow); the game provides no full arm
+  rig so this means fabricating/grafting one. TRADEOFF to weigh first: a slightly-wrong IK arm
+  (elbow poking the wrong way, body clipping) reads worse than M7's floating hands+weapon, so
+  this is opt-in polish - only ship it if it actually looks right. Pairs with two-handed
+  weapons + physical melee swings.
 - BioShock Infinite (UE3 build 6829) adapter feasibility study
 - OpenVR backend (if some runtime needs it)
