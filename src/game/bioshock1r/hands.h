@@ -35,14 +35,26 @@ void on_calcview(const FrameContext& ctx);
 
 // Seam command handler: args after the "vrhands" verb (game thread).
 //   on | off | status
-//   probe [n]               log every AHands instance found, choose none
+//   mode hands|gun          hands (default) drives the AHands rig; gun drives
+//                           the weapon actor - EXPERIMENTAL, the renderer
+//                           ignores an attached weapon's actor fields
+//   pose aim|grip           aim = the ray the laser and bullets use (default),
+//                           so the barrel agrees with them by construction
+//   scale <f>               NOT WIRED YET - no confirmed DrawScale field on
+//                           this build; gun size is an open item
+//   probe [n]               log every AHands + player-weapon instance, choose none
 //   hand l|r|auto           which controller drives the model (auto = the hand
 //                           whose trigger was last pulled; default)
-//   pos <fwd> <right> <up>  model offset in cm, in the grip's own frame
-//   rot <pitch> <yaw> <roll>  model rotation trim, degrees
+//   pos <fwd> <right> <up>  model offset in cm, in the model's final frame
+//   rot <pitch> <yaw> <roll>  mesh-alignment trim in degrees, composed in the
+//                           controller's LOCAL frame (holds at any orientation)
 //   save | reload           persist / re-read the offsets
-//   test <dYaw> <dPitch> [holdMs]   synthetic offset from the camera, for
-//                           headset-free verification that the write lands
+//   test <dYaw> <dPitch> [distUU] [holdMs]   camera-relative placement (proves
+//                           the write lands; no pose math)
+//   simpose <yaw> <pitch> <roll> [holdMs]    synthetic XR controller pose fed
+//                           through the REAL mapping path (headset-free check
+//                           of the whole transform chain)
+//   testclear
 void handle_command(const char* args);
 
 // Which controller currently owns the viewmodel (0 left, 1 right): the hand

@@ -59,6 +59,17 @@ void draw_debug_ui();
 // True while any seam hook is installed and enabled.
 bool hook_live();
 
+// The weapon object the trigger-keyed hand map currently attributes to the
+// RIGHT hand - i.e. the equipped gun, once it has fired at least once. Null
+// until then, and cleared on world change. Game thread only. The M7 viewmodel
+// uses it to drive the gun's own actor.
+void* learned_weapon_object();
+
+// The live aim trim (degrees), shared so the laser, the fire ray and the M7
+// viewmodel stay one ray.
+float trim_pitch_deg();
+float trim_yaw_deg();
+
 // True while substitution is armed (master switch + a usable hand ray).
 bool active();
 

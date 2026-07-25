@@ -330,6 +330,18 @@ inline constexpr uint32_t kAbilityInstigatorOffset = 0xF0; // UAttackAbility -> 
 //   +0x550 eye height (GetViewPoint = location + eyeHeight on Z).
 inline constexpr uint32_t kActorLocOffset = 0x1D8;
 inline constexpr uint32_t kActorViewDirOffset = 0x1E4;
+// M7 session-11 actor-field probes, recorded honestly: a TRUE DrawScale has
+// NOT been located on this build. +0x16C (default 0.0) HIDES the mesh at small
+// values (0.5/0.8 both vanished the pistol - cull-distance-like semantics, and
+// an early "0.8 shrank it" reading was a misread); +0x168 (default 1.0, right
+// after the mesh pointer at +0x164) looked like DrawScale but poking 0.5
+// changed nothing visible. Gun-size control is still an open item. Also
+// learned here: the weapon's attach BASE pointer (-> the AHands actor) is at
+// +0x450, adjacent to Owner at +0x454 - the classic UE2 Owner/Base pair - and
+// the renderer draws attached actors from the attach matrix, ignoring their
+// own Location/Rotation fields.
+inline constexpr uint32_t kActorHideDistOffset = 0x16C; // small value = mesh hidden
+inline constexpr uint32_t kActorBaseOffset = 0x450;     // attach parent (AActor*)
 // The two InitiateDamage implementations that CALL the fire-start functions
 // above (weapon = AWeapon vtable slot +0x2FC, ability = the direct call target
 // of UAttackAbility::execInitiateDamage). Both `ret 8` - thiscall taking an

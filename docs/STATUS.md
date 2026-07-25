@@ -2,7 +2,58 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-25, session 11)
+## Current state (2026-07-25, session 11 - evening update after the first
+## in-headset M7 run)
+
+**The user tested in-headset: LASER = "awesome, keep it as is"; hands/weapons
+FOLLOW both controllers; but the MODEL placement was unusable** - "a slight
+pivot or rotation that completely breaks everything... the laser moves
+perfectly in tune with the controller but the viewmodel goes crazy", plus the
+gun reads much too big next to real hands. The evening session diagnosed all of
+it (three compounding defects) and shipped fixes for the two fixable ones:
+
+1. **The model used the GRIP pose while the laser/bullets use the AIM pose** -
+   a constant ~40-60 deg tilt between barrel and beam. FIXED: the model aligns
+   to the AIM ray by default (`vrhands pose aim|grip`), plus the same aim trim,
+   so barrel, laser and bullet are one ray by construction.
+2. **The rotation trim was euler-adds after conversion**, which only behaves at
+   one controller orientation - at any other orientation a large trim IS the
+   "pivot that breaks everything". FIXED: trim is now a quaternion composed in
+   the controller's LOCAL frame (`ue_math.h` quat helpers), correct at every
+   orientation.
+3. **The mesh's gun hangs ~50 UU (a meter-plus) from the AHands origin** (the
+   eye anchor - `Hands.UpdateLocation` decompiled, ENGINE_NOTES), so rotations
+   swing it on that lever. PARTIALLY ADDRESSABLE ONLY: sliders now reach
+   +/-120 cm, but the full pivot correction puts the actor origin behind the
+   camera and the engine CULLS the whole rig by origin (live-proven). Forward
+   pull is bounded by how far out the hand is held; where to sit in that
+   trade-off is the user's in-headset call. Defaults stay 0/0/0.
+
+**The user's "just use the gun model" idea was pursued and is the right
+direction, but the cheap version is dead**: the weapon IS its own actor sitting
+exactly at the visible gun (ideal pivot), yet the renderer draws ATTACHED
+actors from the attach matrix and ignores their transform fields - full-rate
+writes to the live pistol moved nothing. The real version of the idea is the
+DETACH experiment: the weapon's Base pointer (-> AHands) was located at
+`+0x450` (Owner/Base adjacent pair), so nulling/re-pointing it is the next
+concrete step toward a free gun-only viewmodel. `vrhands mode gun` exists but
+is inert and says so.
+
+**Also still open: gun size.** The morning's "DrawScale at +0x16C" was wrong -
+that field HIDES the mesh at small values (a possible future hide-the-hands
+lever!), and the other candidate (+0x168) is visually inert. No confirmed
+scale field yet; the `vrhands scale` command explains this instead of writing.
+
+**Verification state**: the shipped configuration (hands mode, aim pose, quat
+trim, zero defaults) is flat-verified end to end on a clean boot - `simpose`
+series places and rotates the rig sanely through the REAL mapping path, and
+the mandatory fire test passed with the drive live (4/4 substitutions, 0 new
+dumps). The evening's exploratory boots were heavily poked and produced two
+red-herring "bugs" (a stuck lowered pose and a poke-desynced attach state)
+that cost real time - the clean-boot discipline in TESTING exists for a
+reason.
+
+## Current state (2026-07-25, session 11 - morning, superseded above)
 
 **M7's mechanism WORKS and is flat-verified: the visible hands and weapon now
 follow the controller, and there was no ordering fight to lose.** The
@@ -493,38 +544,34 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **THE IN-HEADSET RUN IS THE WHOLE NEXT SESSION'S FIRST JOB - the numbered
-   checklist is at the bottom of this section.** Everything M7 needs is built and
-   flat-verified as far as flat can go; nothing has been seen by a human, and the
-   laser cannot be seen any other way. The user judges hand/gun alignment far
-   better than any number, so get the headset on early and tune from their
-   reaction. Whatever offsets and aim trim they settle on, bake into the defaults
-   (`hands.ini` for the model, `aim.cpp`'s trim for the ray).
-2. **Per-weapon offset profiles** (the one piece of M7 shipped only as
-   `default`): key the saved offsets by the live weapon's CLASS NAME so the
-   pistol, the machine gun and the wrench each keep their own fit. Needs this
-   build's UObject class/name offsets - hexdump the weapon object aim.cpp already
-   learns (`vraim status` prints it), follow the class pointer, and resolve the
-   FName through the same name machinery `pattern_scan` already uses. Hot-switch
-   on the weapon change aim.cpp detects for free.
-3. **A true dot at the IMPACT point** (deferred by the user's call this session,
-   the laser ships with fixed-distance dots): needs a per-frame engine line-check,
-   which has not been located because the engine only traces when a shot fires.
-   Start inside the damage factory's trace (factory fetched by 0x231E70 in
-   `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl `+0xEC`) and
-   look for a callable `Trace`-style entry, then call it read-only per frame.
-4. **Verify a PROJECTILE plasmid** (the one part of the plasmid question still
-   open): Incinerate, cast with an offset left hand - does the projectile follow?
-   Needs the user to supply the plasmid, so it is on the checklist below.
-5. **Hide the game's head-centred crosshair** now that the laser exists (they
-   will disagree, and the laser is the honest one). Cheap attempts first through
-   the `exec` seam; if it turns exploratory it drops to the M9 HUD work.
-6. **Load-crossing check - 20 seconds for the USER, still not done.** The
-   stale-pointer risk is handled in code (both the aim hand map and the hands
-   actor cache clear when the PlayerController changes), but a human should still
-   do it once: with `vrstereo on` + aim + hands armed, Esc -> LOAD -> newest save
-   -> YES, then fire both hands and confirm no dump lands in
-   `%LOCALAPPDATA%\BioshockVR\crash\`. On the checklist below.
+1. **RE-TEST IN-HEADSET with the evening build - checklist at the bottom of
+   this section.** The three placement defects from the first run are fixed or
+   bounded (aim-pose alignment, local-frame quat trim, wide offsets with the
+   culling bound); the user's verdict decides what M7 still needs. Whatever
+   offsets/trim they settle on, bake into the defaults.
+2. **The DETACH experiment - the real version of the user's gun-only idea.**
+   The weapon actor sits exactly at the visible gun (perfect pivot) but renders
+   through its attachment. Its Base pointer (-> AHands) is at weapon `+0x450`
+   (ENGINE_NOTES). Null/re-point it in a controlled probe: if the weapon starts
+   honoring its own transform, `vrhands mode gun` comes alive - gun pinned to
+   the controller with a short lever, arms parked elsewhere. Watch for attach
+   bookkeeping crashes on weapon switch (the Base's Attached list desyncs).
+3. **Gun size**: find the real DrawScale (the two probed candidates are a
+   hide/cull-style field at +0x16C - itself useful for hiding meshes later -
+   and an inert 1.0 at +0x168). Next candidates: walk more of the actor block
+   (+0x100..+0x160), or find the render path's scale consumption by disasm.
+4. **Per-weapon offset profiles**: key the saved offsets by the live weapon's
+   CLASS NAME (UObject class/name offsets still wanted - hexdump the learned
+   weapon object, follow the class pointer, resolve the FName via the
+   `pattern_scan` name machinery).
+5. **A true dot at the IMPACT point** (laser ships with fixed-distance dots by
+   the user's call): needs a per-frame engine line-check - start inside the
+   damage factory's trace (factory fetched by 0x231E70 in
+   `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl `+0xEC`).
+6. **Verify a PROJECTILE plasmid** (Incinerate) and **hide the head-centred
+   crosshair** (exec-seam attempts first) - unchanged from the morning list.
+7. **Load-crossing check - 20 seconds for the USER, still not done** (both
+   actor caches clear on world change in code; a human pass is still owed).
 8. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
    Controller polish (deadzone/curve/menu timing) and rebinds stay parked in M9.
 9. Still open from M3: cutscene cameras are head-driven. The aim path already
@@ -537,49 +584,44 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 12. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7 (session 11 build)
+### IN-HEADSET CHECKLIST - M7 second run (session 11 EVENING build)
 
-Setup: Quest 3 on, Virtual Desktop connected (VDXR), Streamer running. Launch
-BioShock from Steam, load the newest save (spawns with the pistol facing the
-marble wall). `vrinput` re-arms itself from its marker file. Then tick **VR
-stereo** in the F10 overlay (or `vrstereo on`), and in the overlay's
-**"Hands + weapon (M7)"** section tick **"Viewmodel follows the controller"**.
-Everything below is a slider or a checkbox in that overlay - no commands needed.
+Setup unchanged: Quest 3 + Virtual Desktop, launch from Steam, load the newest
+save, tick **VR stereo**, then tick **"Viewmodel follows the controller"** in
+the "Hands + weapon (M7)" overlay section. The laser you liked is untouched.
+What changed since your first run: the model now aligns to the SAME ray as the
+laser and the bullets (no more built-in tilt), the trim sliders now behave at
+every controller orientation (the old ones only worked in one pose - that was
+a real bug, not your tuning), offsets reach +/-120 cm, and the junk defaults
+were cleared.
 
-1. **Do the hands track?** With a weapon out, does the gun follow your RIGHT
-   controller? Move your hand around: the model should go where your hand goes.
-   (If nothing moves, say so - that means the pose is not reaching the write,
-   not that the placement is wrong; the flat test proved the write itself lands.)
-2. **Does the plasmid hand work?** Pull the LEFT trigger once to switch to
-   plasmids. The viewmodel should hand over to your LEFT controller (the hand
-   choice follows whichever trigger last fired; the radio buttons force it).
-3. **Make it fit.** This is the part only you can do - the sliders are
-   "offset forward / right / up" in centimetres and "trim pitch / yaw / roll" in
-   degrees. Get the gun sitting in your hand the way it should, then press
-   **Save offsets**. Tell me the numbers you landed on and I will make them the
-   defaults.
-4. **The laser.** Tick **"Aim laser (dots along the ray)"** in the "Decoupled aim
-   (M6)" section. You should see a line of red dots leaving your hand. Sliders
-   for dot count, reach and dot size are right below it. Nobody has ever seen
-   this - if it is invisible, inside-out, or in the wrong place, that is useful
-   information, so describe what you actually see.
-5. **Now re-judge the aim trim with the gun visible** - this is why the laser was
-   moved into M7. Fire at the wall and compare where the dots point with where
-   the bullets land. Adjust "Aim pitch trim" / "Aim yaw trim" until they agree,
-   and tell me the values - they are still at the 0/0 you chose last session, and
-   I will bake in whatever you pick.
-6. **Load-crossing (20 seconds, still owed from M6).** With stereo + aim + hands
-   all armed: Esc -> LOAD -> newest save -> YES. After it loads, fire both hands.
-   They should still aim correctly, the hands should still track, and no new file
-   should appear in `%LOCALAPPDATA%\BioshockVR\crash\`.
-7. **Only if the trainer is handy** - the last open plasmid question. Grab
-   **Incinerate** (a PROJECTILE plasmid; Electro Bolt is a trace one and is
-   already confirmed). Cast it with your hand pointed well away from where you
-   are looking: does the fireball follow your HAND or your head?
+1. **Pull the right trigger twice first** (raises the weapon from the lowered
+   pose), then move and rotate the controller: the gun should point where the
+   laser points, and ROTATING the controller should no longer make the model
+   fly around - rotation error now stays constant instead of swinging.
+2. **The known remaining flaw, please judge HOW bad**: the gun still ORBITS a
+   pivot behind it (at your head's eye anchor) instead of rotating in your
+   palm. Pulling "offset forward" NEGATIVE moves the pivot toward the gun -
+   but past roughly your hand's own distance from your face the whole model
+   VANISHES (engine culls it; known, next session removes the limit via the
+   detach work). Find the most tolerable point and tell me the numbers.
+3. **Size check**: the gun is still oversized - a scale control needs one more
+   reverse-engineering find (in progress). Say how much it bothers you at the
+   offsets you settle on; that sets the priority.
+4. **Plasmid hand**: left trigger once - the viewmodel should hand over to the
+   left controller, same alignment rules.
+5. **Aim trim re-judge with the laser + gun together** (unchanged ask from the
+   first run): fire at the wall, adjust "Aim pitch/yaw trim" until dots and
+   decals agree, tell me the values.
+6. **Load-crossing (20 seconds, still owed)**: with everything armed, Esc ->
+   LOAD -> newest save -> YES, fire both hands, confirm no crash dump.
+7. **Optional, trainer**: Incinerate cast with the hand pointed away from your
+   gaze - does the fireball follow the HAND? (Closes the projectile-plasmid
+   question.)
 
-Expected and not failures: the game's crosshair stays head-centred and will
-disagree with the laser (hiding it is next session's job); the HUD still renders
-in both eyes; at extreme model offsets the sleeve stretches.
+Expected and not failures: crosshair still head-centred and disagreeing with
+the laser; HUD in both eyes; sleeve stretch at big offsets; `vrhands mode gun`
+prints "inert" by design.
 
 ## Open questions / blockers
 
@@ -598,6 +640,46 @@ in both eyes; at extreme model offsets the sleeve stretches.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-25 - Session 11 part 2 (evening: first M7 headset run + the fixes)
+
+- **User verdict on the morning build**: laser "awesome, keep as is"; both
+  hands track their controllers; but the model placement "goes crazy" on
+  controller rotation and no slider could fix it, and the gun is far too big.
+  Mid-session the user proposed the right architectural idea themselves: stop
+  fighting the flat-screen viewmodel, drive the gun MODEL directly.
+- **Diagnosis, all confirmed live**: (1) model on GRIP pose vs laser on AIM
+  pose = constant large tilt; (2) euler-add trim only valid at one controller
+  orientation - the "pivot that breaks everything"; (3) mesh gun ~1.2 m from
+  the AHands origin (the eye anchor, per the Hands.UpdateLocation decompile) =
+  huge rotation lever, and the user's slider caps (30 cm) could not reach the
+  correction (their saved attempt sat pinned at -30/-30/-36.5).
+- **Shipped fixes**: model aligns to the AIM ray + aim trim (one ray for
+  barrel, laser, bullet), local-frame quaternion trim (`ue_math.h` quat_mul /
+  axis-angle / xr_local_trim_quat), offsets to +/-120 cm, `vrhands simpose`
+  (synthetic XR pose through the REAL mapping path - the flat lane that found
+  half of tonight's bugs), config gains mode/pose keys.
+- **Dead ends recorded honestly**: driving the WEAPON actor (perfect pivot,
+  sits exactly at the visible gun) does nothing - the renderer draws attached
+  actors from the attach matrix; `vrhands mode gun` is inert-by-design until
+  the DETACH experiment (weapon Base pointer -> AHands found at +0x450). Full
+  pivot correction via offsets is impossible - the engine culls the rig once
+  its origin passes behind the camera. The morning's "DrawScale +0x16C" claim
+  was WRONG (it is a hide/cull-style field; +0x168 is visually inert; no scale
+  field confirmed yet) - the scale command now says so instead of writing.
+- **Two red herrings that ate the evening, now in ENGINE_NOTES/TESTING**: the
+  lowered/equip pose (until the first trigger pull the pistol idles pulled-in
+  and centered - looks exactly like a placement bug) and poked-state
+  contamination (a boot that has taken live-field pokes stops being evidence -
+  clean-boot before judging).
+- **Final build flat-verified on a clean boot**: simpose series places and
+  rotates the rig sanely, fire test with the drive live passed (4/4 subs, 0
+  new dumps, crash count 8 all session). Pushed to main. Game left running at
+  the save for the user's second headset run.
+- Session hygiene note: the evening's first probes ran inside the user's OWN
+  running session before that was noticed (their overlay tuning state made it
+  obvious in hindsight) - a few pistol rounds and pokes happened in it, then
+  it was cleanly replaced by fresh boots. No saves were written.
 
 ### 2026-07-25 - Session 11 (M7 hands + weapons + laser, on `main`)
 

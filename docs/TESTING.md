@@ -164,13 +164,24 @@ fields from the CalcView detour (ENGINE_NOTES "Viewmodel / AHands").
 - `vrhands pos <fwdCm> <rightCm> <upCm>` / `vrhands rot <pitch> <yaw> <roll>` -
   model offsets, also live overlay sliders. `vrhands save` writes
   `%LOCALAPPDATA%\BioshockVR\hands.ini`, `vrhands reload` re-reads it.
-- **The flat lane is `vrhands test <yawDeg> <pitchDeg> [distUU] [holdMs]`** -
-  without a headset there is no controller pose, so the real path idles; the
-  test lane places the model relative to the CAMERA instead and proves the
-  write lands. Verified this way (session 11): `vrhands on` +
-  `vrhands test 0 0 60` moved the visible pistol from the lower right into the
-  centre, `test 30 0 60` swung it out of frame to the right and `test -30 0 60`
-  to the left. `vrhands testclear` drops it.
+- **Two flat lanes** (no headset = no controller pose, so the real path idles):
+  `vrhands test <yawDeg> <pitchDeg> [distUU] [holdMs]` places the model
+  relative to the CAMERA - proves the WRITE lands, no pose math. `vrhands
+  simpose <yaw> <pitch> <roll> [holdMs]` feeds a synthetic XR controller pose
+  through the REAL mapping path (local-frame quat trim, xr_pose_to_game,
+  offsets) - proves the TRANSFORM CHAIN, and is what exposed the euler-trim
+  and culling bugs. `vrhands testclear` drops both.
+- **Pull the trigger twice before judging any viewmodel screenshot.** Until
+  the first pull raises the weapon, the rig idles in the LOWERED/equip pose -
+  pistol pulled in near the camera axis, reads as a giant centered gun, looks
+  exactly like a placement bug and is not one.
+- **A poked boot stops being evidence.** After live-field pokes (scale/hide
+  candidates, transform experiments) the attach/anim state can be desynced in
+  ways that mimic real bugs - the session-11 evening lost time to exactly
+  this. Reload the save or reboot the game before drawing conclusions.
+- **Culling bound**: writing the AHands origin behind the camera vanishes the
+  whole rig (engine culls by actor origin) - a "model disappeared" report
+  with a large negative forward offset is this, not a crash.
 - **Then fire with the write active** (the fire test above): four pulls, ammo
   decrements, decals land where the aim seam asks, no new dumps. The actor
   transform and the animation state are independent, but confirm it rather than

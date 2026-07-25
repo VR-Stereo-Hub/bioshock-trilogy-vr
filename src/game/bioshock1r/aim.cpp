@@ -974,6 +974,18 @@ bool hook_live() {
            g_abilityFire.enabled.load(std::memory_order_relaxed);
 }
 
+void* learned_weapon_object() {
+    return g_objRight;
+}
+
+float trim_pitch_deg() {
+    return g_pitchOffsetDeg.load(std::memory_order_relaxed);
+}
+
+float trim_yaw_deg() {
+    return g_yawOffsetDeg.load(std::memory_order_relaxed);
+}
+
 bool active() {
     return g_enabled.load(std::memory_order_relaxed) && hook_live();
 }

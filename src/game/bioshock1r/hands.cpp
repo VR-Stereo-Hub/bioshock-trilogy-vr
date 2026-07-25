@@ -1,11 +1,32 @@
 // M7 visible hands + weapons. See hands.h for the design; ENGINE_NOTES
 // "Viewmodel / AHands" for the derivations.
+//
+// Two drivable targets, learned from the first in-headset test (2026-07-25):
+//
+//   HANDS mode (default): drive the AHands actor - the one whose transform the
+//   renderer actually honors. Its origin is the EYE anchor (Hands.UpdateLocation
+//   places it at PawnOwner.Location + EyeHeight + PlayerViewOffset, rotated by
+//   the view rotation - decompile, summarized in ENGINE_NOTES), so the mesh's
+//   gun hangs ~50 UU in front of the pivot and rotations swing it on that
+//   lever. The full pivot correction (pull the origin ~-100 cm so the gun sits
+//   at the controller) is CULLED - the engine drops the rig once the origin
+//   goes behind the camera - so how much correction is affordable is a
+//   headset-side tuning question, bounded by how far out the hand is held.
+//
+//   GUN mode (experimental, inert): drive the WEAPON actor, whose origin sits
+//   AT the visible gun. Would be the ideal pivot - but live-proven ineffective:
+//   the renderer draws an ATTACHED weapon from its attachment matrix and
+//   ignores the actor fields (full-rate writes to the live pistol moved
+//   nothing). Kept only as the anchor for a future detach experiment - the
+//   weapon's Base pointer (its attach parent, = the AHands actor) sits at
+//   +0x450, adjacent to Owner at +0x454, the classic UE2 pair.
 
 #include "game/bioshock1r/hands.h"
 
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -23,40 +44,56 @@ const uint8_t* g_imageBase = nullptr;
 
 std::atomic<bool> g_enabled{false};
 std::atomic<int> g_pendingEnable{-1}; // overlay -> game thread (see aim.cpp)
+std::atomic<int> g_mode{1};           // 0 = gun (weapon actor), 1 = hands (AHands)
+std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
 std::atomic<int> g_handMode{2};       // 0 left, 1 right, 2 auto
 std::atomic<int> g_autoHand{1};       // the latched auto choice
 
-// Model offsets. Position is in CENTIMETRES in the grip's own frame (forward /
-// right / up), so the numbers stay meaningful whatever the world scale; the
-// rotation trim is degrees.
+// Model offsets. Position is in CENTIMETRES in the model's final (trimmed)
+// frame; the rotation trim is degrees, applied in the CONTROLLER'S LOCAL frame
+// as a quaternion compose - euler adds after conversion only behave at one
+// controller orientation (the first headset test's "pivot" bug).
+// Defaults are ZERO on purpose. The ideal pivot correction (pull the mesh's gun
+// to the controller, ~-100 cm forward) is CULLED: the engine drops the whole
+// rig the moment the actor origin goes behind the camera (live-proven - the
+// rig vanished with the origin 32 UU back). Forward pull is therefore limited
+// to roughly the controller's own distance from the face, and where that line
+// sits is the user's in-headset call, not a default.
 std::atomic<float> g_posFwdCm{0.0f}, g_posRightCm{0.0f}, g_posUpCm{0.0f};
 std::atomic<float> g_rotPitchDeg{0.0f}, g_rotYawDeg{0.0f}, g_rotRollDeg{0.0f};
 
 std::atomic<bool> g_writeRot{true}; // rotation write can be disabled on its own
-std::atomic<bool> g_probe{false};
 int32_t g_probeLeft = 0;
 
-// The live actor, revalidated by vtable on every use (aim.cpp's hand map and
-// the settings lookup take the same approach: a cached heap pointer is only
-// ever trusted after its vtable still reads right).
-void* g_object = nullptr;
-uint64_t g_lastScanMs = 0;
+// Cached actors, revalidated by vtable on every use.
+void* g_handsActor = nullptr;
+void* g_weaponActor = nullptr;
+uint64_t g_lastHandsScanMs = 0;
+uint64_t g_lastWeaponScanMs = 0;
 void* g_lastPc = nullptr;
 std::atomic<uint32_t> g_writes{0};
-std::atomic<uint32_t> g_scans{0};
 std::atomic<int32_t> g_lastMatches{0};
 
-// Self-expiring synthetic offset, mirroring `vraim test`: the command file is
-// polled at 1 Hz, so a hold has to outlive its command inside the DLL. This is
-// the no-headset lane - it proves our write is what places the model.
+// Self-expiring synthetic lanes (the command file polls at 1 Hz, so holds
+// outlive their command inside the DLL):
+//   test    - camera-relative placement; proves the WRITE lands, no pose math.
+//   simpose - a synthetic XR controller pose fed through the REAL mapping path
+//             (trim quat, xr_pose_to_game, offsets), so the transform chain is
+//             testable with no headset.
 struct TestOffset {
     float yawDeg = 0.0f, pitchDeg = 0.0f;
-    float distUu = 60.0f; // push the model this far along the test direction
+    float distUu = 60.0f;
     uint64_t deadline = 0;
 };
 TestOffset g_test;
 
-// Last values written, for the overlay and the flat assertions.
+struct SimPose {
+    float yawDeg = 0.0f, pitchDeg = 0.0f, rollDeg = 0.0f;
+    uint64_t deadline = 0;
+};
+SimPose g_sim;
+
+// Last values written, for the overlay + the flat-test assertions.
 std::atomic<float> g_lastX{0.0f}, g_lastY{0.0f}, g_lastZ{0.0f};
 std::atomic<int32_t> g_lastPitch{0}, g_lastYaw{0}, g_lastRoll{0};
 
@@ -94,7 +131,14 @@ bool read_ptr(const void* src, void** out) {
     }
 }
 
-// ---- finding the actor -----------------------------------------------------
+bool has_vtable(void* obj, uint32_t wantRva) {
+    if (!obj) return false;
+    void* vtbl = nullptr;
+    if (!read_ptr(obj, &vtbl)) return false;
+    return to_rva(vtbl) == wantRva;
+}
+
+// ---- finding the actors ------------------------------------------------------
 
 struct ScanCtx {
     float camX, camY, camZ;
@@ -102,11 +146,10 @@ struct ScanCtx {
     bool chooseAny; // probe: choose nothing, so the whole list gets logged
 };
 
-// Runs inside the scan's SEH guard (patterns.cpp), so plain reads are safe.
+// Both accept callbacks run inside the scan's SEH guard (patterns.cpp).
 // A UClass default object carries the same vtable as a live actor but sits at
-// the origin with zeroed fields, so proximity to the camera is the test that
-// separates the real viewmodel from it: the hands are held by the player and
-// are therefore always within arm's reach of the view.
+// the origin with zeroed fields; proximity to the camera separates the live
+// viewmodel from it (and from `0xCCCCCCCC` stack debris).
 bool accept_hands(void* obj, void* user) {
     ScanCtx* c = static_cast<ScanCtx*>(user);
     const uint8_t* p = static_cast<const uint8_t*>(obj);
@@ -122,62 +165,122 @@ bool accept_hands(void* obj, void* user) {
                 "distToCam=%.1f UU",
                 obj, loc[0], loc[1], loc[2], rot[0], rot[1], rot[2], dist);
     if (!c->chooseAny) return false;
-    // Generous radius: the viewmodel may be anchored at the pawn's feet rather
-    // than at the eye, and world scale varies. Anything this close to the
-    // camera and not at the world origin is the live one.
     return dist < 2000.0f && (loc[0] != 0.0f || loc[1] != 0.0f || loc[2] != 0.0f);
 }
 
-bool object_valid(void* obj) {
-    if (!obj) return false;
-    void* vtbl = nullptr;
-    if (!read_ptr(obj, &vtbl)) return false;
-    return to_rva(vtbl) == patterns::kHandsVtableRva;
+// The player's weapon: an APlayerWeapon whose owning pawn ([w+0x454]) is the
+// player. Both carried weapons pass that (BioShock keeps the stowed one as a
+// live actor too, parked at the pawn - live: nearest-to-CAMERA picked the
+// stowed wrench, 28 UU below the eye, over the pistol 60 UU ahead of it). So
+// the anchor is the EXPECTED GUN SPOT, ~50 UU along the view, which only the
+// equipped weapon hovers near. The aim map's learned object, which is the
+// weapon that actually FIRES, takes priority over this scan entirely.
+struct WeaponScanCtx {
+    float camX, camY, camZ;
+    const uint8_t* imageBase;
+    void* best;
+    float bestDist;
+    bool logEvery;
+};
+
+bool accept_weapon(void* obj, void* user) {
+    WeaponScanCtx* c = static_cast<WeaponScanCtx*>(user);
+    const uint8_t* p = static_cast<const uint8_t*>(obj);
+
+    void* owner = *reinterpret_cast<void* const*>(p + patterns::kWeaponOwnerOffset);
+    if (!owner) return false;
+    void* ownerVtbl = *reinterpret_cast<void* const*>(owner);
+    uint32_t ownerRva = static_cast<uint32_t>(static_cast<const uint8_t*>(ownerVtbl) -
+                                              c->imageBase);
+    if (ownerRva != patterns::kShockPlayerVtableRva) return false;
+
+    float loc[3];
+    memcpy(loc, p + patterns::kActorLocOffset, sizeof loc);
+    float dx = loc[0] - c->camX, dy = loc[1] - c->camY, dz = loc[2] - c->camZ;
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (c->logEvery)
+        BVR_LOG("[hands] player weapon match @ %p loc=(%.1f %.1f %.1f) distToGunSpot=%.1f UU",
+                obj, loc[0], loc[1], loc[2], dist);
+    if (dist < 120.0f && dist < c->bestDist) {
+        c->best = obj;
+        c->bestDist = dist;
+    }
+    return false; // never "accept" - the nearest wins after the walk
 }
 
-// Cached lookup with the same shape as patterns::hfov_option_ptr(): revalidate
-// the cache, and rate-limit rescans so a not-yet-created actor does not scan
-// the whole address space every frame.
-// `probeOnly` lists every instance and chooses none, leaving the cache alone -
-// it is a diagnostic, not a lookup.
-void* find_object(const FrameContext& ctx, bool probeOnly) {
-    if (!probeOnly) {
-        if (object_valid(g_object)) return g_object;
-        g_object = nullptr;
-        // Rate-limit rescans so a not-yet-created actor does not walk the whole
-        // address space every frame.
-        uint64_t now = GetTickCount64();
-        if (now - g_lastScanMs < 2000) return nullptr;
-        g_lastScanMs = now;
-    }
+bool weapon_valid(void* w) {
+    if (!has_vtable(w, patterns::kPlayerWeaponVtableRva)) return false;
+    void* owner = nullptr;
+    if (!read_ptr(static_cast<const uint8_t*>(w) + patterns::kWeaponOwnerOffset, &owner))
+        return false;
+    return has_vtable(owner, patterns::kShockPlayerVtableRva);
+}
 
+void* find_hands_actor(const FrameContext& ctx, bool probeOnly) {
+    if (!probeOnly) {
+        if (has_vtable(g_handsActor, patterns::kHandsVtableRva)) return g_handsActor;
+        g_handsActor = nullptr;
+        uint64_t now = GetTickCount64();
+        if (now - g_lastHandsScanMs < 2000) return nullptr;
+        g_lastHandsScanMs = now;
+    }
     ScanCtx sc{ctx.camX, ctx.camY, ctx.camZ, probeOnly, !probeOnly};
     int matches = 0;
     void* found = patterns::scan_for_vtable_object(
         patterns::kHandsVtableRva, patterns::kActorViewDirOffset + 12, &accept_hands, &sc,
         "AHands", &matches);
-    g_scans.fetch_add(1, std::memory_order_relaxed);
     g_lastMatches.store(matches, std::memory_order_relaxed);
     if (probeOnly) return nullptr;
-    g_object = found;
-    return g_object;
+    g_handsActor = found;
+    return g_handsActor;
 }
 
-// ---- which hand ------------------------------------------------------------
+void* find_weapon_actor(const FrameContext& ctx, bool probeOnly) {
+    // The object the aim seam learned from the trigger IS the equipped gun.
+    void* learned = bvr::b1r::aim::learned_weapon_object();
+    if (!probeOnly && weapon_valid(learned)) {
+        g_weaponActor = learned;
+        return learned;
+    }
+    if (!probeOnly) {
+        if (weapon_valid(g_weaponActor)) return g_weaponActor;
+        g_weaponActor = nullptr;
+        uint64_t now = GetTickCount64();
+        if (now - g_lastWeaponScanMs < 2000) return nullptr;
+        g_lastWeaponScanMs = now;
+    }
+    // Anchor at the expected gun spot: 50 UU along the current view.
+    float dir[3];
+    FRotator viewRot{ctx.camPitch, ctx.camYaw, 0};
+    ue_rot_to_dir(viewRot, dir);
+    WeaponScanCtx wc{ctx.camX + dir[0] * 50.0f, ctx.camY + dir[1] * 50.0f,
+                     ctx.camZ + dir[2] * 50.0f, g_imageBase, nullptr, 1e9f, probeOnly};
+    int matches = 0;
+    patterns::scan_for_vtable_object(patterns::kPlayerWeaponVtableRva,
+                                     patterns::kWeaponOwnerOffset + sizeof(void*),
+                                     &accept_weapon, &wc, "APlayerWeapon", &matches);
+    g_lastMatches.store(matches, std::memory_order_relaxed);
+    if (probeOnly) return nullptr;
+    g_weaponActor = wc.best;
+    return g_weaponActor;
+}
 
 void load_config();
 void save_config();
 
 void log_status() {
-    BVR_LOG("[hands] status: %s | actor=%p (matches %d, scans %u) | hand=%s | writes=%u",
-            g_enabled.load(std::memory_order_relaxed) ? "ON" : "off", g_object,
-            g_lastMatches.load(std::memory_order_relaxed),
-            g_scans.load(std::memory_order_relaxed),
+    BVR_LOG("[hands] status: %s | mode=%s pose=%s | hand=%s | writes=%u",
+            g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
+            g_mode.load(std::memory_order_relaxed) == 0 ? "GUN" : "HANDS",
+            g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
             g_handMode.load(std::memory_order_relaxed) == 0   ? "LEFT"
             : g_handMode.load(std::memory_order_relaxed) == 1 ? "RIGHT"
                                                               : "auto",
             g_writes.load(std::memory_order_relaxed));
-    BVR_LOG("[hands]   offset pos fwd%+.1f right%+.1f up%+.1f cm | rot pitch%+.1f yaw%+.1f "
+    BVR_LOG("[hands]   weapon actor=%p (learned %p) | hands actor=%p (matches %d)",
+            g_weaponActor, bvr::b1r::aim::learned_weapon_object(), g_handsActor,
+            g_lastMatches.load(std::memory_order_relaxed));
+    BVR_LOG("[hands]   offset pos fwd%+.1f right%+.1f up%+.1f cm | trim pitch%+.1f yaw%+.1f "
             "roll%+.1f deg | writeRot=%d",
             g_posFwdCm.load(std::memory_order_relaxed),
             g_posRightCm.load(std::memory_order_relaxed),
@@ -187,13 +290,15 @@ void log_status() {
             g_rotRollDeg.load(std::memory_order_relaxed),
             g_writeRot.load(std::memory_order_relaxed) ? 1 : 0);
     uint64_t now = GetTickCount64();
-    BVR_LOG("[hands]   last write loc=(%.1f %.1f %.1f) rot=(%d %d %d) testHold=%dms",
+    BVR_LOG("[hands]   last write loc=(%.1f %.1f %.1f) rot=(%d %d %d) testHold=%dms "
+            "simHold=%dms",
             g_lastX.load(std::memory_order_relaxed), g_lastY.load(std::memory_order_relaxed),
             g_lastZ.load(std::memory_order_relaxed),
             g_lastPitch.load(std::memory_order_relaxed),
             g_lastYaw.load(std::memory_order_relaxed),
             g_lastRoll.load(std::memory_order_relaxed),
-            g_test.deadline > now ? static_cast<int>(g_test.deadline - now) : 0);
+            g_test.deadline > now ? static_cast<int>(g_test.deadline - now) : 0,
+            g_sim.deadline > now ? static_cast<int>(g_sim.deadline - now) : 0);
 }
 
 // ---- persistence -----------------------------------------------------------
@@ -214,7 +319,9 @@ void save_config() {
         BVR_LOG("[hands] could not write hands.ini");
         return;
     }
-    fprintf(f, "# BioShock VR - M7 viewmodel offsets (cm / degrees, grip-local frame)\n");
+    fprintf(f, "# BioShock VR - M7 viewmodel offsets (cm / degrees, model-local frame)\n");
+    fprintf(f, "mode=%d\n", g_mode.load(std::memory_order_relaxed));
+    fprintf(f, "aimPose=%d\n", g_useAimPose.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "posFwdCm=%.2f\n", g_posFwdCm.load(std::memory_order_relaxed));
     fprintf(f, "posRightCm=%.2f\n", g_posRightCm.load(std::memory_order_relaxed));
     fprintf(f, "posUpCm=%.2f\n", g_posUpCm.load(std::memory_order_relaxed));
@@ -238,7 +345,9 @@ void load_config() {
         if (sscanf_s(line, "%63[^=]=%f", key, static_cast<unsigned>(sizeof key), &v) != 2)
             continue;
         ++n;
-        if (strcmp(key, "posFwdCm") == 0) g_posFwdCm.store(v, std::memory_order_relaxed);
+        if (strcmp(key, "mode") == 0) g_mode.store(v != 0.0f ? 1 : 0, std::memory_order_relaxed);
+        else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "posFwdCm") == 0) g_posFwdCm.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "posRightCm") == 0) g_posRightCm.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "posUpCm") == 0) g_posUpCm.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "rotPitchDeg") == 0) g_rotPitchDeg.store(v, std::memory_order_relaxed);
@@ -247,7 +356,7 @@ void load_config() {
         else --n;
     }
     fclose(f);
-    if (n) BVR_LOG("[hands] loaded %d offset value(s) from hands.ini", n);
+    if (n) BVR_LOG("[hands] loaded %d value(s) from hands.ini", n);
 }
 
 } // namespace
@@ -271,8 +380,9 @@ int active_hand() {
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     load_config();
-    BVR_LOG("[hands] init: AHands vtable RVA 0x%X (actor located lazily)",
-            patterns::kHandsVtableRva);
+    BVR_LOG("[hands] init: mode=%s (AHands vtable 0x%X, APlayerWeapon vtable 0x%X)",
+            g_mode.load(std::memory_order_relaxed) == 0 ? "GUN" : "HANDS",
+            patterns::kHandsVtableRva, patterns::kPlayerWeaponVtableRva);
 }
 
 void on_calcview(const FrameContext& ctx) {
@@ -287,19 +397,24 @@ void on_calcview(const FrameContext& ctx) {
         BVR_LOG("[hands] OFF (overlay) - engine placement restored");
     }
 
-    // World change: the old actor died with the old world, and a recycled heap
-    // address must never be written to.
+    // World change: the old actors died with the old world, and recycled heap
+    // addresses must never be written to. The scale bookkeeping is dropped, not
+    // restored - restore would write into a stranger.
     if (ctx.pc != g_lastPc) {
-        if (g_lastPc && g_object) BVR_LOG("[hands] world changed - actor cache cleared");
+        if (g_lastPc && (g_handsActor || g_weaponActor))
+            BVR_LOG("[hands] world changed - actor caches cleared");
         g_lastPc = ctx.pc;
-        g_object = nullptr;
-        g_lastScanMs = 0;
+        g_handsActor = nullptr;
+        g_weaponActor = nullptr;
+        g_lastHandsScanMs = 0;
+        g_lastWeaponScanMs = 0;
     }
 
-    // One-shot probe: describe every instance, choose none.
+    // One-shot probe: describe every instance of both classes, choose none.
     if (g_probeLeft > 0) {
         --g_probeLeft;
-        find_object(ctx, true);
+        find_hands_actor(ctx, true);
+        find_weapon_actor(ctx, true);
     }
 
     if (!g_enabled.load(std::memory_order_relaxed)) return;
@@ -315,16 +430,29 @@ void on_calcview(const FrameContext& ctx) {
     }
     if (!gameplayView) return;
 
-    void* obj = find_object(ctx, false);
-    if (!obj) return;
+    bool gunMode = g_mode.load(std::memory_order_relaxed) == 0;
+    if (gunMode) {
+        // Live-proven dead end kept only as a future detach experiment: the
+        // renderer draws an ATTACHED weapon from its attachment matrix, so
+        // writing the weapon actor's own transform changes nothing (and the
+        // 2026-07-25 evening session suggests it can desync the attach state).
+        // Refuse rather than write.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            BVR_LOG("[hands] gun mode is inert on this engine (attached weapons render "
+                    "from the attach matrix) - use mode hands");
+        }
+        return;
+    }
+    void* target = find_hands_actor(ctx, false);
+    if (!target) return;
 
     // Where the model goes.
     GamePose gp{};
     uint64_t now = GetTickCount64();
     if (now < g_test.deadline) {
-        // Synthetic lane, the no-headset test: put the model a fixed distance
-        // in front of the camera along a direction the test picks. If the
-        // visible gun moves when the yaw changes, our write is what places it.
+        // Camera-relative lane: proves the write lands, no pose math involved.
         gp.rot.yaw = ctx.camYaw + static_cast<int32_t>(g_test.yawDeg * kRotUnitsPerDegree);
         gp.rot.pitch = ctx.camPitch + static_cast<int32_t>(g_test.pitchDeg * kRotUnitsPerDegree);
         gp.rot.roll = 0;
@@ -333,23 +461,51 @@ void on_calcview(const FrameContext& ctx) {
         gp.loc = {ctx.camX + dir[0] * g_test.distUu, ctx.camY + dir[1] * g_test.distUu,
                   ctx.camZ + dir[2] * g_test.distUu};
     } else {
-        bvr::vr::HeadPose hp{};
-        // GRIP pose - where the hand is, which is what a model wants.
-        if (!ctx.vrDriving || !bvr::vr::get_hand_pose(active_hand(), false, hp)) return;
-        const float pos[3] = {hp.px, hp.py, hp.pz};
-        const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
-        gp = xr_pose_to_game(ctx, pos, quat);
+        float pos[3], quat[4];
+        FrameContext mapCtx = ctx;
+        if (now < g_sim.deadline) {
+            // Synthetic XR pose through the REAL mapping path: a fixed spot a
+            // hand would occupy, oriented by the sim angles, recenter identity.
+            pos[0] = 0.15f;  // meters right of the recenter origin
+            pos[1] = -0.20f; // below it
+            pos[2] = -0.35f; // in front (XR forward is -Z)
+            xr_local_trim_quat(g_sim.pitchDeg / kRadToDeg, g_sim.yawDeg / kRadToDeg,
+                               g_sim.rollDeg / kRadToDeg, quat);
+            mapCtx.recenterYawRad = 0.0f;
+            mapCtx.recenterPx = mapCtx.recenterPy = mapCtx.recenterPz = 0.0f;
+        } else {
+            bvr::vr::HeadPose hp{};
+            bool aimPose = g_useAimPose.load(std::memory_order_relaxed);
+            if (!ctx.vrDriving || !bvr::vr::get_hand_pose(active_hand(), aimPose, hp)) return;
+            pos[0] = hp.px;
+            pos[1] = hp.py;
+            pos[2] = hp.pz;
+            quat[0] = hp.qx;
+            quat[1] = hp.qy;
+            quat[2] = hp.qz;
+            quat[3] = hp.qw;
+        }
+
+        // Mesh-alignment trim, composed in the controller's local frame so it
+        // holds at EVERY controller orientation.
+        float trim[4], q2[4];
+        xr_local_trim_quat(g_rotPitchDeg.load(std::memory_order_relaxed) / kRadToDeg,
+                           g_rotYawDeg.load(std::memory_order_relaxed) / kRadToDeg,
+                           g_rotRollDeg.load(std::memory_order_relaxed) / kRadToDeg, trim);
+        quat_mul(quat, trim, q2);
+
+        gp = xr_pose_to_game(mapCtx, pos, q2);
+
+        // The aim calibration trim, applied exactly the way the fire ray and
+        // the laser apply it, so the barrel and the bullet stay one ray.
+        gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg() *
+                                             kRotUnitsPerDegree);
+        gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg() *
+                                           kRotUnitsPerDegree);
     }
 
-    // Rotation trim first: the position offset rides the TRIMMED frame, so
-    // "2 cm forward" means forward along the barrel as finally oriented.
-    gp.rot.pitch += static_cast<int32_t>(g_rotPitchDeg.load(std::memory_order_relaxed) *
-                                         kRotUnitsPerDegree);
-    gp.rot.yaw += static_cast<int32_t>(g_rotYawDeg.load(std::memory_order_relaxed) *
-                                       kRotUnitsPerDegree);
-    gp.rot.roll += static_cast<int32_t>(g_rotRollDeg.load(std::memory_order_relaxed) *
-                                        kRotUnitsPerDegree);
-
+    // Position offset rides the final (trimmed) frame: "2 cm forward" means
+    // along the barrel as finally oriented.
     float fwd[3], right[3], up[3];
     ue_rot_basis(gp.rot, fwd, right, up);
     float uuPerCm = ctx.worldScale / 100.0f;
@@ -360,14 +516,14 @@ void on_calcview(const FrameContext& ctx) {
                     gp.loc.y + fwd[1] * of + right[1] * orr + up[1] * ou,
                     gp.loc.z + fwd[2] * of + right[2] * orr + up[2] * ou};
 
-    uint8_t* p = static_cast<uint8_t*>(obj);
+    uint8_t* p = static_cast<uint8_t*>(target);
     bool wrote = write12(p + patterns::kActorLocOffset, loc);
     if (g_writeRot.load(std::memory_order_relaxed)) {
         int32_t rot[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
         wrote = write12(p + patterns::kActorViewDirOffset, rot) || wrote;
     }
     if (!wrote) {
-        g_object = nullptr; // the write faulted - stop trusting this pointer
+        g_handsActor = nullptr; // the write faulted - stop trusting this pointer
         return;
     }
     g_writes.fetch_add(1, std::memory_order_relaxed);
@@ -396,12 +552,27 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "off") == 0) {
         g_enabled.store(false, std::memory_order_relaxed);
         BVR_LOG("[hands] OFF - engine placement restored");
+    } else if (strcmp(verb, "mode") == 0) {
+        bool gun = strncmp(rest, "gun", 3) == 0;
+        g_mode.store(gun ? 0 : 1, std::memory_order_relaxed);
+        BVR_LOG("[hands] mode = %s",
+                gun ? "GUN (drive the weapon actor - EXPERIMENTAL, renderer ignores it)"
+                    : "HANDS (drive the AHands rig)");
+    } else if (strcmp(verb, "pose") == 0) {
+        bool aim = strncmp(rest, "aim", 3) == 0;
+        g_useAimPose.store(aim, std::memory_order_relaxed);
+        BVR_LOG("[hands] pose source = %s", aim ? "AIM (matches laser + bullets)"
+                                                : "GRIP (physical hand axis)");
+    } else if (strcmp(verb, "scale") == 0) {
+        BVR_LOG("[hands] scale is not wired yet: no CONFIRMED DrawScale field on this "
+                "build (the two candidates probed 2026-07-25 were a hide/cull-style "
+                "field and an inert 1.0) - gun size stays a next-session item");
     } else if (strcmp(verb, "probe") == 0) {
         int n = 1;
         if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 1;
         if (n > 30) n = 30;
         g_probeLeft = n;
-        BVR_LOG("[hands] probe armed for %d frame(s) - listing every AHands instance", n);
+        BVR_LOG("[hands] probe armed for %d frame(s) - listing AHands + player weapons", n);
     } else if (strcmp(verb, "hand") == 0) {
         int mode = rest[0] == 'l' ? 0 : rest[0] == 'r' ? 1 : 2;
         g_handMode.store(mode, std::memory_order_relaxed);
@@ -452,20 +623,39 @@ void handle_command(const char* args) {
         g_test.deadline = GetTickCount64() + static_cast<uint64_t>(hold);
         BVR_LOG("[hands] test placement: yaw %+.1f pitch %+.1f dist %.0f UU for %d ms", yaw,
                 pitch, dist, hold);
+    } else if (strcmp(verb, "simpose") == 0) {
+        float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
+        int hold = 0;
+        int n = sscanf_s(rest, "%f %f %f %d", &yaw, &pitch, &roll, &hold);
+        if (n < 3) {
+            BVR_LOG("[hands] usage: vrhands simpose <yawDeg> <pitchDeg> <rollDeg> [holdMs]");
+            return;
+        }
+        if (hold <= 0) hold = 30000;
+        if (hold > 120000) hold = 120000;
+        g_sim.yawDeg = yaw;
+        g_sim.pitchDeg = pitch;
+        g_sim.rollDeg = roll;
+        g_sim.deadline = GetTickCount64() + static_cast<uint64_t>(hold);
+        BVR_LOG("[hands] sim pose: yaw %+.1f pitch %+.1f roll %+.1f for %d ms (real mapping "
+                "path, synthetic controller)",
+                yaw, pitch, roll, hold);
     } else if (strcmp(verb, "testclear") == 0) {
         g_test.deadline = 0;
-        BVR_LOG("[hands] test placement cleared");
+        g_sim.deadline = 0;
+        BVR_LOG("[hands] test + sim placements cleared");
     } else if (strcmp(verb, "status") == 0) {
         log_status();
     } else {
-        BVR_LOG("[hands] unknown command '%s' "
-                "(on|off|probe|hand|pos|rot|writerot|save|reload|test|status)",
+        BVR_LOG("[hands] unknown command '%s' (on|off|mode gun|hands|pose aim|grip|scale|"
+                "probe|hand|pos|rot|writerot|save|reload|test|simpose|testclear|status)",
                 verb);
     }
 }
 
 bool active() {
-    return g_enabled.load(std::memory_order_relaxed) && g_object != nullptr;
+    return g_enabled.load(std::memory_order_relaxed) &&
+           (g_weaponActor != nullptr || g_handsActor != nullptr);
 }
 
 void draw_debug_ui() {
@@ -475,21 +665,25 @@ void draw_debug_ui() {
     if (ImGui::Checkbox("Viewmodel follows the controller", &on))
         g_pendingEnable.store(on ? 1 : 0, std::memory_order_relaxed);
 
-    int mode = g_handMode.load(std::memory_order_relaxed);
-    if (ImGui::RadioButton("left", &mode, 0)) g_handMode.store(0, std::memory_order_relaxed);
+    bool aimPose = g_useAimPose.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Align to the AIM ray (matches laser; off = grip pose)", &aimPose))
+        g_useAimPose.store(aimPose, std::memory_order_relaxed);
+
+    int hand = g_handMode.load(std::memory_order_relaxed);
+    if (ImGui::RadioButton("left", &hand, 0)) g_handMode.store(0, std::memory_order_relaxed);
     ImGui::SameLine();
-    if (ImGui::RadioButton("right", &mode, 1)) g_handMode.store(1, std::memory_order_relaxed);
+    if (ImGui::RadioButton("right", &hand, 1)) g_handMode.store(1, std::memory_order_relaxed);
     ImGui::SameLine();
-    if (ImGui::RadioButton("auto", &mode, 2)) g_handMode.store(2, std::memory_order_relaxed);
+    if (ImGui::RadioButton("auto", &hand, 2)) g_handMode.store(2, std::memory_order_relaxed);
 
     float f = g_posFwdCm.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("offset forward (cm)", &f, -30.0f, 30.0f))
+    if (ImGui::SliderFloat("offset forward (cm)", &f, -120.0f, 120.0f))
         g_posFwdCm.store(f, std::memory_order_relaxed);
     float r = g_posRightCm.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("offset right (cm)", &r, -30.0f, 30.0f))
+    if (ImGui::SliderFloat("offset right (cm)", &r, -120.0f, 120.0f))
         g_posRightCm.store(r, std::memory_order_relaxed);
     float u = g_posUpCm.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("offset up (cm)", &u, -30.0f, 30.0f))
+    if (ImGui::SliderFloat("offset up (cm)", &u, -120.0f, 120.0f))
         g_posUpCm.store(u, std::memory_order_relaxed);
 
     float rp = g_rotPitchDeg.load(std::memory_order_relaxed);
@@ -499,15 +693,14 @@ void draw_debug_ui() {
     if (ImGui::SliderFloat("trim yaw (deg)", &ry, -90.0f, 90.0f))
         g_rotYawDeg.store(ry, std::memory_order_relaxed);
     float rr = g_rotRollDeg.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("trim roll (deg)", &rr, -90.0f, 90.0f))
+    if (ImGui::SliderFloat("trim roll (deg)", &rr, -180.0f, 180.0f))
         g_rotRollDeg.store(rr, std::memory_order_relaxed);
 
     if (ImGui::Button("Save offsets")) save_config();
     ImGui::SameLine();
     if (ImGui::Button("Reload")) load_config();
 
-    ImGui::Text("actor %p (matches %d) | writes %u", g_object,
-                g_lastMatches.load(std::memory_order_relaxed),
+    ImGui::Text("weapon %p | hands %p | writes %u", g_weaponActor, g_handsActor,
                 g_writes.load(std::memory_order_relaxed));
     ImGui::Text("last loc (%.0f %.0f %.0f) rot (%d %d %d)",
                 g_lastX.load(std::memory_order_relaxed),

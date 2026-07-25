@@ -689,6 +689,47 @@ fight to lose.
   Realistic offsets (a few centimetres, which is what the tuning sliders cover)
   stay well inside the range where this is invisible.
 
+**Session-11 evening addendum - the first in-headset run failed, and chasing it
+rewrote much of the mechanism knowledge (each item live-proven):**
+
+- **The engine's own placement, decompiled** (`Hands.UpdateLocation`, summary
+  only): `NewRotation = PawnOwner.GetViewRotation(); offset = (widescreen ?
+  PlayerViewOffsetWidescreen : PlayerViewOffset) >> NewRotation; offset.Z +=
+  EyeHeight; SetLocation(Pawn.Location + offset + ViewLocationOffset());
+  SetRotation(NewRotation)` - via the INDEXED natives (SetLocation = 267,
+  SetRotation = 299), i.e. script-driven per tick. The AHands origin is the EYE
+  ANCHOR, and the whole visible mesh hangs off it.
+- **The eye->gun offset, measured live**: the equipped pistol's actor sits at
+  ~(+49 fwd, +27 right, -20 down) UU from the camera, with its own slightly
+  canted rotation. That is the LEVER ARM: rotating the AHands actor swings the
+  visible gun on a ~1.2 m radius, which is exactly the "slight pivot that
+  breaks everything" the headset test reported. (It also says the viewmodel is
+  authored pushed-out and oversized - the flat-screen weapon-FOV trick - which
+  is why the gun reads huge in VR.)
+- **The weapon is its own actor ATTACHED to AHands, and the renderer draws
+  attached actors from the attach matrix, IGNORING their Location/Rotation
+  fields.** Full-frame-rate writes to the live pistol actor's transform moved
+  nothing on screen. The attachment linkage: weapon `+0x450` = Base -> the
+  AHands actor (adjacent to Owner at `+0x454`, the classic UE2 Owner/Base
+  pair; another AHands backref sits at `+0xB0`). A detach experiment (null the
+  Base) is the open path to a free-flying gun-only viewmodel.
+- **Frustum culling kills the pivot-correction shortcut**: writing the AHands
+  origin behind the camera (the placement that would put the mesh's GUN at the
+  controller) makes the ENTIRE rig vanish - the engine culls by actor origin.
+  Forward offset is therefore bounded by roughly the controller's distance
+  from the face.
+- **Actor-field corrections** (the session-11 morning "DrawScale +0x16C" claim
+  was WRONG): `+0x16C` (default 0.0) is a hide/cull-style field - 0.5 AND 0.8
+  both make the mesh vanish (the "0.8 shrank it" reading was a misread);
+  `+0x168` (default 1.0, right after the mesh pointer at `+0x164`) looked like
+  DrawScale but poking 0.5 changed nothing visible. A true DrawScale has NOT
+  been located; gun-size control is open.
+- **Harness gotcha: the lowered/equip pose.** After a save load, until the
+  first trigger pull raises the weapon (`SwitchAndFire*`), the rig idles in a
+  lowered pose with the pistol pulled in near the camera axis - which reads as
+  a "giant centered gun" in screenshots and is easy to mistake for a bug. Pull
+  the trigger twice before judging any viewmodel screenshot.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on

@@ -312,6 +312,19 @@ runtime.
   rather than owning a copy, so the beam and the bullet cannot drift; a laser that disagrees
   with the shot is worse than no laser. Deferred by the user: a dot at the true IMPACT point,
   which needs a callable per-frame line-check that the engine only ever runs mid-shot.
+- **2026-07-25 (evening) - M7 placement: one ray, local-frame trim, and the two walls we
+  hit.** The first in-headset run failed on three compounding defects; the fixes define the
+  contract going forward. (1) ONE RAY: the model aligns to the AIM pose plus the same trim
+  the fire ray and laser use - grip pose demoted to an option. Anything visible that claims
+  to point where shots go must be derived from the identical ray, never a sibling copy.
+  (2) Rotation offsets are quaternions composed in the controller's local frame; euler adds
+  after conversion are banned (only correct at one orientation - live-proven "goes crazy").
+  (3) Two hard engine walls, both live-proven and recorded in ENGINE_NOTES: the renderer
+  draws ATTACHED actors from the attach matrix (so driving the weapon actor directly is
+  inert until a Base-detach experiment), and actors cull by ORIGIN (so pivot correction via
+  position offset is bounded by the hand's distance from the face). Rejected along the way:
+  shipping the measured pivot correction as defaults (-100 cm forward = origin behind the
+  camera = invisible rig).
 - **2026-07-25 - M6/M7 split stays as planned.** M6 is the aim vector only. The wrench turned
   out to damage through a Havok collision phantom rather than a trace, so "melee feels aimed" is
   purely a hands-rendering matter and belongs to M7 with the visible weapon; articulated IK arms
