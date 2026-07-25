@@ -140,7 +140,40 @@ bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     BVR_LOG("[b1r] eventPlayerCalcView = %p (RVA 0x%X)", scan.function,
             static_cast<unsigned>(reinterpret_cast<uintptr_t>(scan.function) -
                                   reinterpret_cast<uintptr_t>(image.base)));
+
+    resolve_aim_natives(image, out); // fail-soft, logs each
     return true;
+}
+
+void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
+    using namespace bvr::pattern_scan;
+
+    struct Want {
+        const char* cls;
+        const char* fn;
+        void** slot;
+        uint32_t expectedRva;
+    } wants[] = {
+        {"AWeapon", "GetPerfectFireStart", &out.execWeaponFireStart, kExpectedWeaponFireStartRva},
+        {"AWeapon", "ApplyAimError", &out.execWeaponAimError, kExpectedWeaponAimErrorRva},
+        {"APawn", "GetViewPoint", &out.execPawnViewPoint, kExpectedPawnViewPointRva},
+        {"APawn", "GetViewDirection", &out.execPawnViewDir, kExpectedPawnViewDirRva},
+        {"AActor", "Trace", &out.execActorTrace, kExpectedActorTraceRva},
+    };
+
+    for (const Want& w : wants) {
+        NativeScanResult scan{};
+        if (!find_native_function(image, w.cls, w.fn, scan)) {
+            BVR_LOG("[b1r] native %s::%s NOT resolved (%zu string match(es), %zu table ref(s))",
+                    w.cls, w.fn, scan.stringMatches, scan.tableRefs);
+            continue;
+        }
+        *w.slot = scan.function;
+        uint32_t rva = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(scan.function) -
+                                            reinterpret_cast<uintptr_t>(image.base));
+        BVR_LOG("[b1r] native %s::%s = %p (RVA 0x%X%s)", w.cls, w.fn, scan.function, rva,
+                rva == w.expectedRva ? "" : " - DIFFERS from the documented build");
+    }
 }
 
 } // namespace bvr::b1r::patterns

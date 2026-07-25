@@ -63,4 +63,27 @@ struct EventScanResult {
 // wins. Returns true and fills out.function on success.
 bool find_event_function(const ProcessImage& img, const char* eventName, EventScanResult& out);
 
+// Stage-by-stage diagnostics of find_native_function.
+struct NativeScanResult {
+    size_t stringMatches = 0;  // occurrences of the registration name
+    size_t tableRefs = 0;      // dword references to it (candidate table entries)
+    const void* tableEntry = nullptr;
+    void* function = nullptr;  // resolved execFoo implementation
+};
+
+// UE2 native-function lookup: every `native` UnrealScript function implemented
+// in C++ is registered through a 12-byte table entry
+// `{ const TCHAR* name; Native impl; 0 }` whose name is the wide string
+// "int<Class>exec<Function>" (e.g. "intAWeaponexecApplyAimError") in .rdata.
+// The impl pointer is written into the entry by static initialization, so at
+// runtime the entry IS the symbol table: find the name string, find the dword
+// that references it, and read the next dword.
+//
+// Derived 2026-07-25 (M6) by dumping the registration strings out of the exe's
+// .rdata and following their .data references (docs/ENGINE_NOTES.md "Native
+// function table"). Nothing here is game-specific - it is how the engine
+// registers name-based natives, so BioShock 2 will resolve the same way.
+bool find_native_function(const ProcessImage& img, const char* className,
+                          const char* funcName, NativeScanResult& out);
+
 } // namespace bvr::pattern_scan

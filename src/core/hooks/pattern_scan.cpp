@@ -16,6 +16,7 @@
 #define PSAPI_VERSION 2 // K32GetModuleInformation from kernel32; no psapi.lib
 #include <psapi.h>
 
+#include <cstdio>
 #include <cstring>
 
 namespace bvr::pattern_scan {
@@ -190,6 +191,43 @@ bool find_event_function(const ProcessImage& img, const char* eventName, EventSc
                     return true;
                 }
             }
+        }
+    }
+    return false;
+}
+
+bool find_native_function(const ProcessImage& img, const char* className,
+                          const char* funcName, NativeScanResult& out) {
+    out = {};
+
+    char name[160];
+    if (_snprintf_s(name, sizeof name, _TRUNCATE, "int%sexec%s", className, funcName) < 0)
+        return false;
+
+    std::vector<const uint8_t*> strings = find_wide_string(img, name);
+    out.stringMatches = strings.size();
+
+    for (const uint8_t* ws : strings) {
+        // A shorter registration name can be a SUFFIX of a longer one (the
+        // linker pools wide strings by suffix), so only an occurrence whose
+        // own terminator follows the last character is the real entry.
+        size_t len = strlen(name);
+        const uint8_t* term = ws + 2 * len;
+        if (!is_memory_valid(term, 2) || term[0] != 0 || term[1] != 0) continue;
+
+        std::vector<const uint8_t*> refs = find_references(img, ws);
+        out.tableRefs += refs.size();
+
+        for (const uint8_t* entry : refs) {
+            if (!is_memory_valid(entry, 12)) continue;
+            uint32_t impl;
+            memcpy(&impl, entry + 4, sizeof(impl));
+            const uint8_t* fn = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(impl));
+            if (fn < img.base || fn >= img.base + img.size) continue; // not code in this image
+            if (!is_memory_valid(fn, 16)) continue;
+            out.tableEntry = entry;
+            out.function = const_cast<uint8_t*>(fn);
+            return true;
         }
     }
     return false;

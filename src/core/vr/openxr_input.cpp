@@ -47,6 +47,7 @@ XrAction g_poseR = XR_NULL_HANDLE;
 
 XrSpace g_gripSpaceL = XR_NULL_HANDLE; // session children
 XrSpace g_gripSpaceR = XR_NULL_HANDLE;
+XrSpace g_baseSpace = XR_NULL_HANDLE;  // app space, owned by the runtime
 bool g_attached = false;
 bool g_created = false;
 bool g_loggedAttachFail = false;
@@ -56,6 +57,17 @@ bool g_gripLatchedL = false;
 bool g_gripLatchedR = false;
 uint64_t g_menuDownMs = 0;
 uint64_t g_startPulseUntilMs = 0;
+
+// M6 hand poses. Located on the render thread in input_sync; read from the
+// GAME thread by the adapter's aim path, so publish through atomics-guarded
+// snapshots (relaxed is fine: a group torn by one frame is invisible at
+// 90 Hz, and the valid flag is what gates use of the numbers).
+struct HandSlot {
+    std::atomic<bool> valid{false};
+    float px = 0.0f, py = 0.0f, pz = 0.0f;
+    float qx = 0.0f, qy = 0.0f, qz = 0.0f, qw = 1.0f;
+};
+HandSlot g_hands[2]; // 0 = left, 1 = right
 
 // Telemetry for the overlay (render thread writes, overlay reads same thread).
 std::atomic<uint32_t> g_syncOk{0};
@@ -120,6 +132,41 @@ bool read_bool(XrSession session, XrAction action) {
     if (XR_FAILED(xrGetActionStateBoolean(session, &gi, &st)) || !st.isActive)
         return false;
     return st.currentState == XR_TRUE;
+}
+
+// Locate one grip space against the app space at the frame's predicted display
+// time - the same instant the head pose is located, so hand and head belong to
+// the same moment and the aim ray cannot lag the camera.
+void locate_hand(XrSession session, XrAction poseAction, XrSpace space, XrTime when,
+                 HandSlot& slot) {
+    if (space == XR_NULL_HANDLE || g_baseSpace == XR_NULL_HANDLE) {
+        slot.valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    // The action must be active (controller present + bound) before its space
+    // is meaningful.
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = poseAction;
+    XrActionStatePose ps{XR_TYPE_ACTION_STATE_POSE};
+    if (XR_FAILED(xrGetActionStatePose(session, &gi, &ps)) || !ps.isActive) {
+        slot.valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    XrSpaceLocation sl{XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(xrLocateSpace(space, g_baseSpace, when, &sl)) ||
+        !(sl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
+        !(sl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+        slot.valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+    slot.px = sl.pose.position.x;
+    slot.py = sl.pose.position.y;
+    slot.pz = sl.pose.position.z;
+    slot.qx = sl.pose.orientation.x;
+    slot.qy = sl.pose.orientation.y;
+    slot.qz = sl.pose.orientation.z;
+    slot.qw = sl.pose.orientation.w;
+    slot.valid.store(true, std::memory_order_relaxed);
 }
 
 bool read_vec2(XrSession session, XrAction action, float* x, float* y) {
@@ -212,8 +259,9 @@ void input_create(XrInstance instance) {
             "suggested)", made);
 }
 
-void input_on_session_created(XrSession session, XrSpace /*baseSpace*/) {
+void input_on_session_created(XrSession session, XrSpace baseSpace) {
     if (!g_created) return;
+    g_baseSpace = baseSpace; // M6: hand poses locate against the app space
 
     XrActionSpaceCreateInfo asci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
     asci.poseInActionSpace.orientation.w = 1.0f;
@@ -244,6 +292,9 @@ void input_on_session_created(XrSession session, XrSpace /*baseSpace*/) {
 void input_on_session_teardown() {
     if (g_gripSpaceL != XR_NULL_HANDLE) { xrDestroySpace(g_gripSpaceL); g_gripSpaceL = XR_NULL_HANDLE; }
     if (g_gripSpaceR != XR_NULL_HANDLE) { xrDestroySpace(g_gripSpaceR); g_gripSpaceR = XR_NULL_HANDLE; }
+    g_baseSpace = XR_NULL_HANDLE;
+    g_hands[0].valid.store(false, std::memory_order_relaxed);
+    g_hands[1].valid.store(false, std::memory_order_relaxed);
     g_attached = false;
     g_gripLatchedL = g_gripLatchedR = false;
     g_menuDownMs = 0;
@@ -251,7 +302,7 @@ void input_on_session_teardown() {
     bvr::input::publish_xr_state({}, false);
 }
 
-void input_sync(XrSession session, XrTime /*predictedDisplayTime*/) {
+void input_sync(XrSession session, XrTime predictedDisplayTime) {
     if (!g_attached) return;
 
     XrActiveActionSet active{g_actionSet, XR_NULL_PATH};
@@ -262,6 +313,8 @@ void input_sync(XrSession session, XrTime /*predictedDisplayTime*/) {
     if (r == XR_SESSION_NOT_FOCUSED) {
         g_syncNotFocused.fetch_add(1, std::memory_order_relaxed);
         g_lastActive.store(false, std::memory_order_relaxed);
+        g_hands[0].valid.store(false, std::memory_order_relaxed);
+        g_hands[1].valid.store(false, std::memory_order_relaxed);
         bvr::input::publish_xr_state({}, false);
         return;
     }
@@ -269,10 +322,17 @@ void input_sync(XrSession session, XrTime /*predictedDisplayTime*/) {
         // Never tear the session down from the input path - display first.
         g_syncFailed.fetch_add(1, std::memory_order_relaxed);
         g_lastActive.store(false, std::memory_order_relaxed);
+        g_hands[0].valid.store(false, std::memory_order_relaxed);
+        g_hands[1].valid.store(false, std::memory_order_relaxed);
         bvr::input::publish_xr_state({}, false);
         return;
     }
     g_syncOk.fetch_add(1, std::memory_order_relaxed);
+
+    // M6: hand grip poses for the aim ray (never fatal - a hand that fails to
+    // locate just leaves its slot invalid and the aim falls back to the view).
+    locate_hand(session, g_poseL, g_gripSpaceL, predictedDisplayTime, g_hands[0]);
+    locate_hand(session, g_poseR, g_gripSpaceR, predictedDisplayTime, g_hands[1]);
 
     bvr::input::Gamepad pad{};
 
@@ -323,7 +383,19 @@ void input_sync(XrSession session, XrTime /*predictedDisplayTime*/) {
     bvr::input::publish_xr_state(pad, true);
 }
 
+bool input_get_hand_pose(int hand, float* pos3, float* quat4) {
+    if (hand < 0 || hand > 1 || !pos3 || !quat4) return false;
+    const HandSlot& s = g_hands[hand];
+    if (!s.valid.load(std::memory_order_relaxed)) return false;
+    pos3[0] = s.px; pos3[1] = s.py; pos3[2] = s.pz;
+    quat4[0] = s.qx; quat4[1] = s.qy; quat4[2] = s.qz; quat4[3] = s.qw;
+    return true;
+}
+
 void input_draw_debug_ui() {
+    ImGui::Text("xr hands: L %s R %s",
+                g_hands[0].valid.load(std::memory_order_relaxed) ? "tracked" : "-",
+                g_hands[1].valid.load(std::memory_order_relaxed) ? "tracked" : "-");
     ImGui::Text("xr actions: %s | sync ok %u nf %u fail %u | %s",
                 g_attached ? "attached" : (g_created ? "created" : "off"),
                 g_syncOk.load(std::memory_order_relaxed),
