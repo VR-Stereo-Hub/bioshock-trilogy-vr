@@ -53,6 +53,8 @@ void on_calcview(const FrameContext& ctx);
 //   dump <n>                log the next n calls per seam in full detail
 //   test l|r <yawDeg> <pitchDeg> [holdMs]   synthetic hand aim (view-relative)
 //   test clear
+//   pose aim|grip           the runtime's pointing ray (default) vs the grip axis
+//   cal <pitchDeg> [yawDeg] aim trim, degrees; +pitch aims higher
 //   origin on|off           hand origin (default) vs the engine's own origin
 //   seam <weapon|ability> on|off
 //   scan <Class> <Func> [n] / scanoff   hook ANY name-based native read-only

@@ -46,6 +46,13 @@ std::atomic<bool> g_probe{false};     // telemetry mode
 // (same rule as scenedraw's vrstereo checkbox): it posts a request here and the
 // game thread applies it from on_calcview, outside any hooked engine call.
 std::atomic<int> g_pendingEnable{-1}; // -1 none, 0 off, 1 on
+// Pose source + calibration. The runtime's AIM pose is the pointing ray and is
+// the default; the offsets are there because "where it points" is still a matter
+// of taste (grip angle, wrist posture) - the user's first in-headset run wanted
+// the ray a little lower than the raw pose gave.
+std::atomic<bool> g_useAimPose{true};
+std::atomic<float> g_pitchOffsetDeg{0.0f};
+std::atomic<float> g_yawOffsetDeg{0.0f};
 std::atomic<int32_t> g_dumpBudget{0}; // per-seam detailed log budget
 
 // Per-frame aim rays, game thread only (built in on_calcview, read in the
@@ -294,6 +301,16 @@ bool substitute(Slot& slot, Hand h, float* const* out, int count) {
     float dir[3];
     ue_rot_to_dir(r, dir);
     float pos[3] = {o.x, o.y, o.z};
+    bool useAim = g_useAimPose.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Use the runtime AIM pose (off = grip pose)", &useAim))
+        g_useAimPose.store(useAim, std::memory_order_relaxed);
+    float pitchCal = g_pitchOffsetDeg.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Aim pitch trim (deg)", &pitchCal, -30.0f, 30.0f))
+        g_pitchOffsetDeg.store(pitchCal, std::memory_order_relaxed);
+    float yawCal = g_yawOffsetDeg.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Aim yaw trim (deg)", &yawCal, -30.0f, 30.0f))
+        g_yawOffsetDeg.store(yawCal, std::memory_order_relaxed);
+
     bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
 
     // An FRotator carries the engine's roll through untouched: aim owns pitch
@@ -674,6 +691,10 @@ std::atomic<bool>* sub_flag_by_name(const char* name) {
 }
 
 void log_status() {
+    BVR_LOG("[aim] pose=%s cal pitch%+.1f yaw%+.1f deg",
+            g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
+            g_pitchOffsetDeg.load(std::memory_order_relaxed),
+            g_yawOffsetDeg.load(std::memory_order_relaxed));
     BVR_LOG("[aim] status: %s | seams weapon=%d ability=%d | handOrigin=%d probe=%d",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
             g_subWeapon.load(std::memory_order_relaxed) ? 1 : 0,
@@ -765,12 +786,17 @@ void on_calcview(const FrameContext& ctx) {
         // 2) The real thing: the hand's grip pose, mapped through EXACTLY the
         //    transform the camera drive used this frame.
         bvr::vr::HeadPose hp{};
-        if (!ctx.vrDriving || !bvr::vr::get_hand_pose(i, hp)) continue;
+        bool useAim = g_useAimPose.load(std::memory_order_relaxed);
+        if (!ctx.vrDriving || !bvr::vr::get_hand_pose(i, useAim, hp)) continue;
 
         UeAngles a = ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
         out.rot.yaw = static_cast<int32_t>((gameYawRad + (a.yawRad - ctx.recenterYawRad)) *
-                                          kRotUnitsPerRadian);
-        out.rot.pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian);
+                                          kRotUnitsPerRadian) +
+                      static_cast<int32_t>(g_yawOffsetDeg.load(std::memory_order_relaxed) *
+                                           kRotUnitsPerDegree);
+        out.rot.pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian) +
+                        static_cast<int32_t>(g_pitchOffsetDeg.load(std::memory_order_relaxed) *
+                                             kRotUnitsPerDegree);
         out.rot.roll = 0; // aim carries no roll; the camera owns roll
 
         float dxr[3] = {hp.px - ctx.recenterPx, hp.py - ctx.recenterPy, hp.pz - ctx.recenterPz};
@@ -842,6 +868,19 @@ void handle_command(const char* args) {
             set_dump(n);
             BVR_LOG("[aim] dump budget %d per seam", n);
         }
+    } else if (strcmp(verb, "pose") == 0) {
+        bool aim = strncmp(rest, "aim", 3) == 0;
+        g_useAimPose.store(aim, std::memory_order_relaxed);
+        BVR_LOG("[aim] pose source = %s", aim ? "AIM (pointing ray)" : "GRIP (handle axis)");
+    } else if (strcmp(verb, "cal") == 0) {
+        float pitch = 0.0f, yaw = 0.0f;
+        if (sscanf_s(rest, "%f %f", &pitch, &yaw) >= 1) {
+            g_pitchOffsetDeg.store(pitch, std::memory_order_relaxed);
+            g_yawOffsetDeg.store(yaw, std::memory_order_relaxed);
+            BVR_LOG("[aim] calibration offset: pitch %+.1f yaw %+.1f deg", pitch, yaw);
+        } else {
+            BVR_LOG("[aim] usage: vraim cal <pitchDeg> [yawDeg]  (+pitch aims higher)");
+        }
     } else if (strcmp(verb, "origin") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_handOrigin.store(on, std::memory_order_relaxed);
@@ -912,6 +951,16 @@ void draw_debug_ui() {
     bool on = g_enabled.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Controller aim (right = weapon, left = plasmid)", &on))
         g_pendingEnable.store(on ? 1 : 0, std::memory_order_relaxed);
+    bool useAim = g_useAimPose.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Use the runtime AIM pose (off = grip pose)", &useAim))
+        g_useAimPose.store(useAim, std::memory_order_relaxed);
+    float pitchCal = g_pitchOffsetDeg.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Aim pitch trim (deg)", &pitchCal, -30.0f, 30.0f))
+        g_pitchOffsetDeg.store(pitchCal, std::memory_order_relaxed);
+    float yawCal = g_yawOffsetDeg.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Aim yaw trim (deg)", &yawCal, -30.0f, 30.0f))
+        g_yawOffsetDeg.store(yawCal, std::memory_order_relaxed);
+
     bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Ray starts at the hand (off = engine origin, direction only)",
                         &handOrigin))
