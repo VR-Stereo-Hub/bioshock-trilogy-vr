@@ -4,12 +4,31 @@
 
 ## Current state (2026-07-25, session 10)
 
-**M6: WEAPON AIM IS DECOUPLED AND FLAT-VERIFIED. The right controller now aims
-the gun; plasmids (left hand) still need one more seam.** Proof, at a flat wall
-with a pistol: injected hand aim put the bullet decals 12 deg right, 12 deg left,
-10 deg down and 8/8 up-right of the crosshair **while the camera never moved**,
-and `vraim off` put the next round back on the crosshair. What changed today, in
-the order it matters:
+**M6 IS WORKING AND USER-VERIFIED IN-HEADSET (2026-07-25): "I tested it and
+it's pretty good... the plasmids are working and it's based on the left hand
+which is very good."** The right controller aims weapons, the left controller
+aims plasmids, and the camera stays on the HMD. Flat proof first (wall test with
+a pistol: injected hand aim put the bullet decals 12 deg right, 12 deg left, 10
+deg down and 8/8 up-right of the crosshair **while the camera never moved**, and
+`vraim off` put the next round back on the crosshair), then the user confirmed
+both hands in the headset.
+
+**One real complaint from that run, and it is fixed in the shipped build:**
+aiming needed the wrist held lower than it should. Cause: the ray came from the
+OpenXR **grip** pose, whose forward axis runs along the handle, tens of degrees
+below where the controller visually points. The build now uses the runtime's
+**aim pose** (its own pointing ray) with pitch/yaw **trim sliders** in the
+overlay for taste - unverified in-headset as of this writing, so it is the first
+thing to check next session. The user also asked for a **visible laser from the
+hand**, which is the M6 rung-2 reticle work (not started - design in Next steps).
+
+**Surprise worth chasing:** the plasmid path works in-headset even though its
+fire-start rotator out-param read ALL-ZERO in the flat probe. Most likely the
+hand-origin substitution alone moves the bolt convincingly (the plasmid spawns
+from the hand), possibly plus a non-zero rotator under real play. Confirm with a
+probe before assuming the ability path is fully controlled.
+
+What changed today, in the order it matters:
 
 **1. The fire flow is no longer a mystery** (full map + every address in
 ENGINE_NOTES "Fire flow / aim"). Attacks in this engine are ABILITIES: trigger
@@ -51,11 +70,13 @@ writes the matching type - and the bullets follow. Ruled out along the way:
 `APawn::GetViewDirection` and `AShockPlayer::GetViewPoint` (probed live, never
 called during a shot).
 
-**5. What is NOT done - the PLASMID direction.** The ability path's rotator
-out-param is all-zero, so its direction is produced downstream in the damage
-factory: probe the factory virtual at vtbl `+0xEC` (ENGINE_NOTES has the chain).
-The left hand therefore still shoots where the view points. Also not started:
-the reticle at the aim ray (M6 rung 2).
+**5. What is NOT fully pinned down - the PLASMID direction.** The ability path's
+rotator out-param read all-zero in the flat probe, yet the left hand demonstrably
+aims plasmids in the headset. Either the origin substitution is doing the visible
+work, or that slot carries a rotation under conditions the flat test did not hit.
+Probe it (log the ability slots during a real cast) before touching the damage
+factory virtual at vtbl `+0xEC`. Also not started: the reticle/laser at the aim
+ray (M6 rung 2).
 
 **6. Tooling that will keep paying off.** Headless UELib decompiling
 (`tools/uscript/dump.ps1`, package loads in <1 s), `vraim scan <Class> <Func>`
@@ -398,20 +419,26 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **USER, in headset: does controller-aimed shooting feel right?** The flat
-   proof is done, but the XR grip-pose path has never run against a real
-   controller. Checklist at the end of this session's log entry. `vraim off`
-   reverts to stock aim instantly if it feels wrong.
-2. **Find the plasmid trace direction** (the last unknown in the fire flow):
+1. **USER, in headset: is the aim-pose calibration right now?** Tick "Controller
+   aim", fire at a wall, and if the impacts sit off where you point, drag "Aim
+   pitch trim" / "Aim yaw trim" in the overlay (or `vraim cal <pitch> [yaw]`,
+   +pitch aims higher) until they line up - then tell me the numbers and they
+   become the defaults. `vraim pose grip` falls back to the old behaviour.
+2. **Laser/reticle from the hand (the user's explicit ask, M6 rung 2).** Design:
+   a small D3D11 swapchain holding a soft dot, submitted as SEVERAL small XR quad
+   layers spaced along the aim ray (a dotted laser) plus one at the aim point,
+   each oriented to face the head - all in XR space from the hand pose core
+   already has, so no game-space projection is needed and it is per-eye correct
+   for free. `layers[1]` in openxr_runtime.cpp becomes `layers[N]`.
+3. **Confirm what actually steers the plasmid** (probe the ability slots during a
+   real cast), and only then chase the damage-factory direction:
    `vraim scanimpl` the damage-factory virtual at factory vtbl `+0xEC` (factory
    fetched by 0x231E70, called from `UAttackAbility::InitiateDamage` 0x1BBD80),
    then substitute the direction there. ENGINE_NOTES "Fire flow / aim" has the
    whole chain and the ruled-out candidates.
-3. **Reticle at the aim ray** (M6 rung 2, not started): XR quad-layer dot along
-   the ray at the hit distance (fallback fixed distance, overlay slider) plus a
-   flat ImGui crosshair at the projected point for harness proof. The user also
-   asked to try hiding the game's head-centred crosshair if it is cheap through
-   the `exec` seam; if it turns exploratory it drops to the M9 HUD work.
+4. **Hide the game's head-centred crosshair** once the laser lands (it will
+   disagree with the aim ray). Cheap attempts first through the `exec` seam; if it
+   turns exploratory it drops to the M9 HUD work.
 4. **Then the M6 acceptance run**: `vraim test r/l` + fire, assert impacts follow
    the injected hand aim and not the camera (img-diff + seam telemetry), both
    hands independent, `vraim off` restores view-aim, and one soak with
@@ -524,6 +551,15 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   writes via `File::WriteAllText`, no BOM). Also: with `vrinput` off, synthetic
   pad presses are inert - drive menus with a real `VK_RETURN` on the highlighted
   item instead.
+- **(late, same session) IN-HEADSET USER-VERIFIED: "it's pretty good... the
+  plasmids are working and it's based on the left hand which is very good."**
+  Both hands aim their own fire while the camera stays on the HMD - M6's core
+  goal, confirmed by a human. Two follow-ups from that run: (a) calibration sat
+  low, because the ray used the OpenXR GRIP pose (handle axis) - the build now
+  uses the runtime's AIM pose plus pitch/yaw trim sliders, pending an in-headset
+  check; (b) the user wants a visible laser from the hand, which is the rung-2
+  reticle work (design in Next steps). Hands still do not track the controllers -
+  expected, that is M7.
 - Session ends: game closed, DLLs installed, branch `m6-decoupled-aim` pushed,
   PR opened for review. No crashes and no new dumps across ~8 boots of hooking
   engine internals.

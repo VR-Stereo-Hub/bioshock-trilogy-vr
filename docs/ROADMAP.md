@@ -206,8 +206,13 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       *Hand attribution shipped and verified live (object identity seeded by the trigger the
       bridge composes - "learned LEFT-hand (plasmid) object" on the first cast). XR grip poses
       are plumbed through to the adapter (located at the frame's predicted display time, converted
-      in the camera's own frame). Reticle not started - deferred to the next session with the
-      direction piece.*
+      in the camera's own frame).
+      IN-HEADSET USER-VERIFIED 2026-07-25: "it's pretty good... the plasmids are working and it's
+      based on the left hand which is very good" - both hands aim their own fire with the camera on
+      the HMD. Calibration ran low because the ray used the OpenXR GRIP pose; the build now uses
+      the runtime's AIM pose with pitch/yaw trim sliders (in-headset check pending). RETICLE still
+      not started: the user asked specifically for a visible laser from the hand - design in
+      STATUS "Next steps".*
 - [ ] **Done when:** look left while shooting right - impacts land where the controller points.
 
 ## M7 - Visible hands + weapons (~2–3 sessions)

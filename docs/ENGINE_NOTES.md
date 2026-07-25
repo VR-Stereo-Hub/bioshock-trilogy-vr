@@ -105,6 +105,15 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 
 ## OpenXR runtime facts (this machine)
 
+- **Grip pose vs aim pose (M6, 2026-07-25).** The first in-headset aim test read
+  low: the wrist had to be held below where the shot went. The ray was built from
+  `/user/hand/*/input/grip/pose`, whose forward axis runs along the controller
+  HANDLE, not along the pointing direction - on Touch that is tens of degrees
+  apart. `/user/hand/*/input/aim/pose` is the runtime's own pointing ray and is
+  what aiming should use; grip stays the right choice for placing a hand/weapon
+  MODEL (M7). Both are located every frame now, and the aim path keeps pitch/yaw
+  trim offsets on top for personal taste.
+
 - 64-bit ActiveRuntime: `C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`
 - 32-bit ActiveRuntime (WOW6432Node): `...\virtualdesktop-openxr-32.json` pointing at
   `virtualdesktop-openxr-32.dll` (verified PE machine 0x014C = x86).
