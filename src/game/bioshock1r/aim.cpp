@@ -400,6 +400,121 @@ void* const kProbeDetours[kProbeSlots] = {
 
 bvr::pattern_scan::ProcessImage g_image{};
 
+// ---- arbitrary-implementation probe ----------------------------------------
+// `vraim scanimpl <rva> <stackArgs>` hooks any C++ method read-only. The fire
+// flow runs through virtuals and direct calls that no name lookup can reach, so
+// answering "does THIS function run when a shot happens" has to be possible
+// from the command file - a rebuild per candidate is how a session evaporates.
+// The stack-arg count must match the target's `ret <n>`, hence one detour
+// family per arity.
+
+constexpr int kImplSlotsPerArity = 2;
+
+struct ImplSlot {
+    uint32_t rva = 0;
+    void* target = nullptr;
+    void* original = nullptr;
+    bool created = false;
+    std::atomic<bool> enabled{false};
+    std::atomic<uint32_t> calls{0};
+    int32_t dumpLeft = 0;
+};
+ImplSlot g_impl[3][kImplSlotsPerArity]; // [arity-1][slot]
+
+void impl_note(ImplSlot& p, void* self, void* a1, void* a2, void* a3) {
+    p.calls.fetch_add(1, std::memory_order_relaxed);
+    if (p.dumpLeft <= 0) return;
+    --p.dumpLeft;
+    void* vtbl = nullptr;
+    read_ptr(self, &vtbl);
+    float v1[3] = {0, 0, 0};
+    read12(a1, v1);
+    BVR_LOG("[aim] impl 0x%X this=%p vtbl=0x%X a1=%p(%.2f %.2f %.2f) a2=%p a3=%p", p.rva, self,
+            to_rva(vtbl), a1, v1[0], v1[1], v1[2], a2, a3);
+}
+
+template <int N>
+void* __fastcall Impl1Detour(void* self, void* edx, void* a1) {
+    using Fn = void*(__fastcall*)(void*, void*, void*);
+    void* r = reinterpret_cast<Fn>(g_impl[0][N].original)(self, edx, a1);
+    impl_note(g_impl[0][N], self, a1, nullptr, nullptr);
+    return r;
+}
+
+template <int N>
+void* __fastcall Impl2Detour(void* self, void* edx, void* a1, void* a2) {
+    using Fn = void*(__fastcall*)(void*, void*, void*, void*);
+    void* r = reinterpret_cast<Fn>(g_impl[1][N].original)(self, edx, a1, a2);
+    impl_note(g_impl[1][N], self, a1, a2, nullptr);
+    return r;
+}
+
+template <int N>
+void* __fastcall Impl3Detour(void* self, void* edx, void* a1, void* a2, void* a3) {
+    using Fn = void*(__fastcall*)(void*, void*, void*, void*, void*);
+    void* r = reinterpret_cast<Fn>(g_impl[2][N].original)(self, edx, a1, a2, a3);
+    impl_note(g_impl[2][N], self, a1, a2, a3);
+    return r;
+}
+
+void* const kImplDetours[3][kImplSlotsPerArity] = {
+    {reinterpret_cast<void*>(&Impl1Detour<0>), reinterpret_cast<void*>(&Impl1Detour<1>)},
+    {reinterpret_cast<void*>(&Impl2Detour<0>), reinterpret_cast<void*>(&Impl2Detour<1>)},
+    {reinterpret_cast<void*>(&Impl3Detour<0>), reinterpret_cast<void*>(&Impl3Detour<1>)},
+};
+
+void scan_impl(uint32_t rva, int args, int32_t dump) {
+    if (args < 1 || args > 3) {
+        BVR_LOG("[aim] scanimpl: stackArgs must be 1..3 (must match the target's ret size)");
+        return;
+    }
+    if (!g_imageBase) return;
+    void* target = const_cast<uint8_t*>(g_imageBase) + rva;
+    for (int i = 0; i < kImplSlotsPerArity; ++i) {
+        ImplSlot& p = g_impl[args - 1][i];
+        if (p.target == target) {
+            p.dumpLeft = dump;
+            BVR_LOG("[aim] impl 0x%X re-armed (%d lines)", rva, dump);
+            return;
+        }
+    }
+    for (int i = 0; i < kImplSlotsPerArity; ++i) {
+        ImplSlot& p = g_impl[args - 1][i];
+        if (p.created) continue;
+        p.rva = rva;
+        p.target = target;
+        p.dumpLeft = dump;
+        MH_STATUS st = MH_CreateHook(target, kImplDetours[args - 1][i], &p.original);
+        if (st != MH_OK) {
+            BVR_LOG("[aim] scanimpl 0x%X: MH_CreateHook failed: %s", rva, MH_StatusToString(st));
+            p.target = nullptr;
+            return;
+        }
+        p.created = true;
+        st = MH_EnableHook(target);
+        if (st != MH_OK) {
+            BVR_LOG("[aim] scanimpl 0x%X: MH_EnableHook failed: %s", rva, MH_StatusToString(st));
+            return;
+        }
+        p.enabled.store(true, std::memory_order_relaxed);
+        BVR_LOG("[aim] scanimpl 0x%X hooked (%d stack args, %d dump lines)", rva, args, dump);
+        return;
+    }
+    BVR_LOG("[aim] scanimpl: no free %d-arg slot (`vraim scanoff` first)", args);
+}
+
+void impl_scan_off() {
+    for (auto& arity : g_impl) {
+        for (ImplSlot& p : arity) {
+            if (!p.enabled.load(std::memory_order_relaxed)) continue;
+            MH_DisableHook(p.target);
+            p.enabled.store(false, std::memory_order_relaxed);
+            BVR_LOG("[aim] impl 0x%X disabled (calls %u)", p.rva,
+                    p.calls.load(std::memory_order_relaxed));
+        }
+    }
+}
+
 void scan_and_hook(const char* cls, const char* fn, int32_t dump) {
     bvr::pattern_scan::NativeScanResult scan{};
     if (!bvr::pattern_scan::find_native_function(g_image, cls, fn, scan)) {
@@ -644,8 +759,15 @@ void handle_command(const char* args) {
                          static_cast<unsigned>(sizeof fn), &dump);
         if (n >= 2) scan_and_hook(cls, fn, dump > 0 ? dump : 8);
         else BVR_LOG("[aim] usage: vraim scan <Class> <Func> [dumpLines]");
+    } else if (strcmp(verb, "scanimpl") == 0) {
+        unsigned rva = 0;
+        int args = 0, dump = 8;
+        int n = sscanf_s(rest, "%x %d %d", &rva, &args, &dump);
+        if (n >= 2) scan_impl(rva, args, dump > 0 ? dump : 8);
+        else BVR_LOG("[aim] usage: vraim scanimpl <rvaHex> <stackArgs 1..3> [dumpLines]");
     } else if (strcmp(verb, "scanoff") == 0) {
         scan_off();
+        impl_scan_off();
     } else if (strcmp(verb, "probe") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_probe.store(on, std::memory_order_relaxed);
@@ -713,7 +835,8 @@ void handle_command(const char* args) {
         log_status();
     } else {
         BVR_LOG("[aim] unknown command '%s' "
-                "(on|off|probe|dump|origin|seam|test|scan|scanoff|status)", verb);
+                "(on|off|probe|dump|origin|seam|test|scan|scanimpl|scanoff|status)",
+                verb);
     }
 }
 
