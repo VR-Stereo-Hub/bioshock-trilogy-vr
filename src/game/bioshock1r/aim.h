@@ -18,6 +18,7 @@
 // switch off all leave the engine's own values untouched.
 
 #include "core/hooks/pattern_scan.h"
+#include "game/bioshock1r/frame_context.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <cstdint>
@@ -29,22 +30,11 @@ enum class Hand { Left = 0, Right = 1 };
 // Resolve-time wiring. Nothing is hooked here (see `vraim probe`/`vraim on`).
 void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols& symbols);
 
-// Published once per frame by the CalcView drive, on the game thread, AFTER it
-// has produced the final camera. The hand rays are built in exactly this
-// frame - same recenter pose, same game yaw, same world scale - so the aim ray
-// and the camera can never disagree about where the player is standing.
-struct FrameContext {
-    bool vrDriving = false;   // HMD is driving the camera this frame
-    float camX = 0.0f, camY = 0.0f, camZ = 0.0f;   // final camera loc, UU (incl. head offset)
-    float baseX = 0.0f, baseY = 0.0f, baseZ = 0.0f; // camera loc BEFORE the head offset
-    int32_t camPitch = 0, camYaw = 0, camRoll = 0;  // final camera rot, 65536 units/turn
-    float driveYawOffsetRad = 0.0f; // yaw the head drive added on top of the game yaw
-    float recenterYawRad = 0.0f;    // XR yaw at recenter
-    float recenterPx = 0.0f, recenterPy = 0.0f, recenterPz = 0.0f; // XR meters at recenter
-    float worldScale = 50.0f;       // UU per meter
-    void* viewActor = nullptr;      // *view_actor out-param (cutscene guard)
-    void* pc = nullptr;             // the PlayerController the hook fired on
-};
+// Called once per frame by the CalcView drive, on the game thread, AFTER it has
+// produced the final camera, with the frame context it just published
+// (frame_context.h). The hand rays are built in exactly this frame - same
+// recenter pose, same game yaw, same world scale - so the aim ray and the
+// camera can never disagree about where the player is standing.
 void on_calcview(const FrameContext& ctx);
 
 // Seam command handler: args after the "vraim" verb (game thread).

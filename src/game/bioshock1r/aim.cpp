@@ -768,8 +768,6 @@ void on_calcview(const FrameContext& ctx) {
             g_gameplayView = true; // menu attract scene views through the PC itself
     }
 
-    float gameYawRad = static_cast<float>(ctx.camYaw) / kRotUnitsPerRadian - ctx.driveYawOffsetRad;
-
     for (int i = 0; i < 2; ++i) {
         Ray& out = g_ray[i];
         out = {};
@@ -787,32 +785,25 @@ void on_calcview(const FrameContext& ctx) {
             continue;
         }
 
-        // 2) The real thing: the hand's grip pose, mapped through EXACTLY the
-        //    transform the camera drive used this frame.
+        // 2) The real thing: the hand's pose, mapped through EXACTLY the
+        //    transform the camera drive used this frame (frame_context.h -
+        //    shared with the M7 hand viewmodel so the two cannot drift).
         bvr::vr::HeadPose hp{};
         bool useAim = g_useAimPose.load(std::memory_order_relaxed);
         if (!ctx.vrDriving || !bvr::vr::get_hand_pose(i, useAim, hp)) continue;
 
-        UeAngles a = ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
-        out.rot.yaw = static_cast<int32_t>((gameYawRad + (a.yawRad - ctx.recenterYawRad)) *
-                                          kRotUnitsPerRadian) +
-                      static_cast<int32_t>(g_yawOffsetDeg.load(std::memory_order_relaxed) *
-                                           kRotUnitsPerDegree);
-        out.rot.pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian) +
-                        static_cast<int32_t>(g_pitchOffsetDeg.load(std::memory_order_relaxed) *
-                                             kRotUnitsPerDegree);
-        out.rot.roll = 0; // aim carries no roll; the camera owns roll
+        const float pos[3] = {hp.px, hp.py, hp.pz};
+        const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+        GamePose gp = xr_pose_to_game(ctx, pos, quat);
 
-        float dxr[3] = {hp.px - ctx.recenterPx, hp.py - ctx.recenterPy, hp.pz - ctx.recenterPz};
-        float d[3];
-        xr_to_ue(dxr, d);
-        float c = cosf(-ctx.recenterYawRad), s = sinf(-ctx.recenterYawRad);
-        float lx = d[0] * c - d[1] * s;
-        float ly = d[0] * s + d[1] * c;
-        float cg = cosf(gameYawRad), sg = sinf(gameYawRad);
-        out.origin.x = ctx.baseX + (lx * cg - ly * sg) * ctx.worldScale;
-        out.origin.y = ctx.baseY + (lx * sg + ly * cg) * ctx.worldScale;
-        out.origin.z = ctx.baseZ + d[2] * ctx.worldScale;
+        out.origin = gp.loc;
+        out.rot.yaw = gp.rot.yaw + static_cast<int32_t>(
+                                       g_yawOffsetDeg.load(std::memory_order_relaxed) *
+                                       kRotUnitsPerDegree);
+        out.rot.pitch = gp.rot.pitch + static_cast<int32_t>(
+                                           g_pitchOffsetDeg.load(std::memory_order_relaxed) *
+                                           kRotUnitsPerDegree);
+        out.rot.roll = 0; // aim carries no roll; the camera owns roll
         out.valid = true;
     }
 }

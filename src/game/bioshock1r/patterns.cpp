@@ -41,30 +41,46 @@ bool region_scannable(const MEMORY_BASIC_INFORMATION& mbi) {
 // SEH-guarded scan of one region for the vtable dword. A region can decommit
 // between VirtualQuery and the read (the game heap churns on other threads),
 // so the raw walk must not fault the game. No C++ objects in this frame.
-void scan_region(uintptr_t base, uintptr_t end, uintptr_t wantVtable, uint32_t hfovOffset,
-                 void** outChosen, int* outMatches) {
+void scan_region(uintptr_t base, uintptr_t end, uintptr_t wantVtable, uint32_t needBytes,
+                 ObjectAccept accept, void* user, void** outChosen, int* outMatches) {
     __try {
-        for (uintptr_t a = base; a + hfovOffset + 4 <= end; a += 4) {
+        for (uintptr_t a = base; a + needBytes <= end; a += 4) {
             if (*reinterpret_cast<const uintptr_t*>(a) != wantVtable) continue;
             ++*outMatches;
-            int32_t fov = *reinterpret_cast<const int32_t*>(a + hfovOffset);
-            BVR_LOG("[b1r] UShockUserSettings vtable match @ 0x%08X HorizontalFOV=%d",
-                    static_cast<unsigned>(a), fov);
-            if (!*outChosen && fov >= 40 && fov <= 170) *outChosen = reinterpret_cast<void*>(a);
+            void* obj = reinterpret_cast<void*>(a);
+            if (!*outChosen && accept(obj, user)) *outChosen = obj;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
 
-// Scan committed private memory for an object whose first dword is the
-// UShockUserSettings vtable. Returns the first instance whose HorizontalFOV
-// reads as a plausible degree value; logs every vtable match so a wrong pick
-// (e.g. a class default object) is diagnosable. One-shot per session in
-// practice - the object exists by the time CalcView first fires.
+// Accept the first UShockUserSettings whose HorizontalFOV reads as a plausible
+// degree value, logging every candidate so a wrong pick (e.g. a class default
+// object) is diagnosable.
+bool accept_user_settings(void* obj, void*) {
+    int32_t fov = *reinterpret_cast<const int32_t*>(static_cast<uint8_t*>(obj) +
+                                                    kUserSettingsHfovOffset);
+    BVR_LOG("[b1r] UShockUserSettings vtable match @ %p HorizontalFOV=%d", obj, fov);
+    return fov >= 40 && fov <= 170;
+}
+
+// One-shot per session in practice - the object exists by the time CalcView
+// first fires.
 void* scan_for_user_settings() {
-    const uintptr_t wantVtable =
-        reinterpret_cast<uintptr_t>(g_imageBase) + kUserSettingsVtableRva;
-    void* firstPlausible = nullptr;
+    int matches = 0;
+    return scan_for_vtable_object(kUserSettingsVtableRva,
+                                  kUserSettingsHfovOffset + sizeof(int32_t),
+                                  &accept_user_settings, nullptr, "UShockUserSettings",
+                                  &matches);
+}
+
+} // namespace
+
+void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccept accept,
+                             void* user, const char* what, int* outMatches) {
+    if (!g_imageBase || !accept) return nullptr;
+    const uintptr_t wantVtable = reinterpret_cast<uintptr_t>(g_imageBase) + vtableRva;
+    void* chosen = nullptr;
     int matches = 0;
 
     uintptr_t p = 0x10000;
@@ -75,15 +91,13 @@ void* scan_for_user_settings() {
         uintptr_t end = base + mbi.RegionSize;
         if (end <= base) break;
         if (region_scannable(mbi))
-            scan_region(base, end, wantVtable, kUserSettingsHfovOffset, &firstPlausible, &matches);
+            scan_region(base, end, wantVtable, needBytes, accept, user, &chosen, &matches);
         p = end;
     }
-    BVR_LOG("[b1r] UShockUserSettings scan: %d vtable match(es), chosen=%p", matches,
-            firstPlausible);
-    return firstPlausible;
+    BVR_LOG("[b1r] %s scan: %d vtable match(es), chosen=%p", what, matches, chosen);
+    if (outMatches) *outMatches = matches;
+    return chosen;
 }
-
-} // namespace
 
 int32_t* hfov_option_ptr() {
     using namespace bvr::pattern_scan;

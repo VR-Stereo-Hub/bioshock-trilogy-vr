@@ -629,21 +629,65 @@ cross-checked against a live hexdump of the player pawn):**
   rotation lives on the PlayerController, not the pawn.
 - `+0x550` float **eye height** (`GetViewPoint` = Location + eyeHeight on Z)
 
-**Open (next session): the PLASMID direction only.** The weapon path is done.
-For abilities, `GetPerfectFireStart`'s rotator out-param is all-zero, so the
-direction is produced downstream - probe the damage-factory virtual at factory
-vtbl `+0xEC` (factory fetched by 0x231E70 inside `UAttackAbility::InitiateDamage`
-0x1BBD80) with `vraim scanimpl`. Note what the weapon side revealed about where
-a view rotation lives: the weapon's B comes from the `[pawn+0x450]` chain's
-`+0x1E4`, and it carries the PITCHED view rotation - i.e. that chain reaches the
-PlayerController, not the pawn (whose own Rotation keeps pitch 0). The same
-field is the prime suspect for the ability path.
+**CLOSED (M7 session 11, 2026-07-25): the PLASMID direction is under our
+control too, through the same rotator out-param.** Session 10's "all-zero
+rotator" reading was a one-off, not the truth: under a real Electro Bolt cast
+the ability path's out-param B carries the camera's own FRotator, exactly like
+the weapon path (live: ability `B[rot]=(144 116 0)` == weapon `B[rot]=(144 116
+0)` == camera heartbeat `rot=(144 116 0)` - the player spawns facing near +X and
+level, so the small numbers are real rotation units, not a zeroed slot).
+
+Proven by an A/B that separates the two candidate mechanisms, camera stationary
+throughout: with hand-ORIGIN substitution ON and +20 deg injected left-hand yaw,
+the bolt's scorch landed right of the crosshair; with origin substitution OFF
+(so only the rotator is written) and -25 deg injected, it landed LEFT of the
+crosshair. Direction follows the rotator, not the origin - so the damage-factory
+virtual at factory vtbl `+0xEC` never needs to be touched. (A PROJECTILE plasmid
+such as Incinerate is still unverified; only a trace plasmid was available.)
 
 **Class vtables (MSVC RTTI walk: TypeDescriptor `.?AV<name>@@` ->
 CompleteObjectLocator -> vtable; scratchpad `rtti.py`):** AShockPlayer
 **0xD82BB8**, AShockPlayerController 0xD81C84, APlayerWeapon **0xD8FF58**,
 AWeapon 0xD90268, UAttackAbility **0xD7E9D4**, AHands **0xD8A28C** (M7), APawn
 0xD82824.
+
+## Viewmodel / AHands (M7 session 11, 2026-07-25)
+
+**The first-person hands + weapon are ONE actor whose Location/Rotation the
+engine copies from the camera every tick, and writing those fields from the
+CalcView detour wins.** That is the whole M7 mechanism; there was no ordering
+fight to lose.
+
+- **Finding the actor**: heap scan for the fixed-RVA `AHands` vtable
+  (**0xD8A28C**), the same technique as the `UShockUserSettings` lookup and now
+  a shared helper (`patterns::scan_for_vtable_object`). In a loaded world the
+  scan reports **3 vtable matches: exactly ONE live actor**, plus two false
+  positives in a stack region whose fields are all `0xCCCCCCCC` (MSVC debug
+  fill - they print as loc `-107374176.0` and rot `-858993460`). The
+  plausibility filter that separates them is distance to the camera: the live
+  viewmodel is always within arm's reach of the view, the debris is ~1.9e8 UU
+  away. One instance confirms the user's description - a single mesh carrying
+  both hands plus a short forearm stub, so the visible arm moves rigidly with
+  the weapon (articulated arms are the post-v1 IK item).
+- **The fields are the placement.** The live actor reads
+  `+0x1D8` Location == camera location and `+0x1E4` Rotation == camera rotation,
+  exactly, every frame (live: loc `(-6729.6 2188.7 2627.3)` / rot `(144 116 0)`
+  against an identical camera heartbeat, distance to camera 0.0 UU).
+- **Our write lands, flat-verified by screenshot.** Pushing the actor 60 UU
+  along the view moved the visible pistol from the lower right into the centre
+  and enlarged it; injected yaw of +30 deg swung the gun out of frame to the
+  right and -30 deg swung it to the left. The engine places the viewmodel during
+  its own tick and the CalcView detour runs afterwards, so the last write of the
+  frame is ours - no placement hook was needed.
+- **Firing is unaffected.** With the write active, four synthetic trigger pulls
+  fired normally (ammo decremented, bullet decals landed where the M6 aim seam
+  asked), no faults, no dumps. The transform and the animation state are
+  independent.
+- **Caveat worth knowing when tuning**: at LARGE displacements part of the mesh
+  stretches - the forearm/sleeve geometry appears anchored near the view while
+  the hand follows the actor, so a 60 UU push produces a visibly stretched arm.
+  Realistic offsets (a few centimetres, which is what the tuning sliders cover)
+  stay well inside the range where this is invisible.
 
 ## UnrealScript findings
 

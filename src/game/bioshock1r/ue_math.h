@@ -75,6 +75,30 @@ inline void ue_rot_to_dir(const FRotator& r, float out[3]) {
     out[2] = sinf(pitch);
 }
 
+// Orthonormal basis of an FRotator (UE's own FRotationMatrix rows): X forward,
+// Y right, Z up. Used to place a model-space offset - "2 cm forward, 1 cm up of
+// the grip" - in world space without the offset swinging as the wrist rolls.
+inline void ue_rot_basis(const FRotator& r, float fwd[3], float right[3], float up[3]) {
+    float pitch = static_cast<float>(r.pitch) / kRotUnitsPerRadian;
+    float yaw = static_cast<float>(r.yaw) / kRotUnitsPerRadian;
+    float roll = static_cast<float>(r.roll) / kRotUnitsPerRadian;
+    float cp = cosf(pitch), sp = sinf(pitch);
+    float cy = cosf(yaw), sy = sinf(yaw);
+    float cr = cosf(roll), sr = sinf(roll);
+
+    fwd[0] = cp * cy;
+    fwd[1] = cp * sy;
+    fwd[2] = sp;
+
+    right[0] = sr * sp * cy - cr * sy;
+    right[1] = sr * sp * sy + cr * cy;
+    right[2] = -sr * cp;
+
+    up[0] = -(cr * sp * cy + sr * sy);
+    up[1] = cy * sr - cr * sp * sy;
+    up[2] = cr * cp;
+}
+
 // FRotator (pitch/yaw, roll 0) of a UE-space direction vector.
 inline FRotator ue_dir_to_rot(const float d[3]) {
     FRotator r{};

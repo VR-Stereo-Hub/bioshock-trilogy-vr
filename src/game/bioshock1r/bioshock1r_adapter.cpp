@@ -3,6 +3,7 @@
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
@@ -22,6 +23,7 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     if (!camera::install(symbols.eventPlayerCalcView)) return false;
     scenedraw::init(image); // stashes the image only - hooks are command-gated
     aim::init(image, symbols); // same: M6 seam hooks are command-gated
+    hands::init(image);        // M7 viewmodel; the actor is located lazily
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }
@@ -33,6 +35,7 @@ void Bioshock1RAdapter::setFov(float hfovDeg) {
 void Bioshock1RAdapter::drawDebugUi() {
     camera::draw_debug_ui();
     aim::draw_debug_ui();
+    hands::draw_debug_ui();
     input_drive::draw_debug_ui();
     scenedraw::draw_debug_ui();
 }

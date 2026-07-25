@@ -401,4 +401,20 @@ void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& 
 // instead of caching at resolve() time. Game thread only.
 int32_t* hfov_option_ptr();
 
+// Find a live object by its class vtable. There is no static pointer to most
+// engine singletons, so we scan committed private memory for the fixed-RVA
+// vtable dword - the technique that found UShockUserSettings, reused for the
+// M7 AHands viewmodel.
+//
+// `accept` is called for every object whose first dword is that vtable and
+// decides whether this instance is the one wanted: every UClass also has a
+// default object carrying the same vtable, so a plausibility test on the
+// object's own fields is mandatory. It runs inside the scan's SEH guard, may
+// read up to `needBytes` from the object, and must not throw. The first
+// accepted instance wins; `outMatches` reports how many vtable hits were seen
+// (0 = the class is not instantiated yet, many = the filter is doing real work).
+using ObjectAccept = bool (*)(void* obj, void* user);
+void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccept accept,
+                             void* user, const char* what, int* outMatches);
+
 } // namespace bvr::b1r::patterns

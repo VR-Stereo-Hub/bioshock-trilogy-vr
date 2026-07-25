@@ -11,6 +11,7 @@
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/console_exec.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
@@ -251,6 +252,8 @@ void apply_command(const char* cmd, const char* args) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
     } else if (strcmp(cmd, "vraim") == 0) {
         aim::handle_command(args); // M6 decoupled aim; logs its own echoes
+    } else if (strcmp(cmd, "vrhands") == 0) {
+        hands::handle_command(args); // M7 viewmodel; logs its own echoes
     } else if (strcmp(cmd, "exec") == 0) {
         console_exec::run_viewport(args); // engine console command, viewport chain
     } else if (strcmp(cmd, "execc") == 0) {
@@ -496,11 +499,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         rot->roll  += static_cast<int32_t>(g_rollDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
     }
 
-    // M6: publish the frame the camera just produced so the aim path can put
-    // both hands in exactly this frame (pre eye-offset - the eye shift belongs
-    // to the render, not to where the player is standing).
+    // M6/M7: publish the frame the camera just produced so the aim ray and the
+    // hand viewmodel both land in exactly this frame (pre eye-offset - the eye
+    // shift belongs to the render, not to where the player is standing).
     {
-        aim::FrameContext fc{};
+        FrameContext fc{};
         fc.vrDriving = vrDrove;
         if (loc) {
             fc.camX = loc->x;
@@ -524,6 +527,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.viewActor = viewActor ? *viewActor : nullptr;
         fc.pc = self;
         aim::on_calcview(fc);
+        // The viewmodel write goes LAST in the frame: the engine placed the
+        // hands during its own tick, so ours has to be the one that survives.
+        hands::on_calcview(fc);
     }
 
     // SequentialReentry stereo (M4 rung 2): this normal pass is the LEFT eye.
