@@ -223,6 +223,34 @@ void note_substitution(Hand h, const FVector& o, const FRotator& r) {
     g_lastSubHand.store(h == Hand::Right ? 1u : 0u, std::memory_order_relaxed);
 }
 
+// What did the engine just put in this 12-byte out-param? Decide from the
+// value, because the fire-start functions hand back a mix and the order differs
+// between the weapon and the ability signature:
+//   FRotator - three rotation-unit int32s (65536 per turn). Their FLOAT
+//              reinterpretation is a denormal, which is why a rotator prints as
+//              "0.000 0.000 0.000" - the trap that cost session 10 a detour.
+//   FVector direction - ordinary floats, length ~1.
+//   FVector position  - ordinary floats, thousands of Unreal units.
+enum SlotKind { kUnused, kRotator, kDirection, kPosition };
+
+SlotKind classify_slot(const float v[3]) {
+    int32_t i[3];
+    memcpy(i, v, sizeof i);
+    if (i[0] == 0 && i[1] == 0 && i[2] == 0) return kUnused;
+    bool allSmallInts = true;
+    for (int k = 0; k < 3; ++k) {
+        int32_t a = i[k] < 0 ? -i[k] : i[k];
+        if (a > (1 << 21)) allSmallInts = false; // 2 million rot units is nonsense
+    }
+    if (allSmallInts) return kRotator;
+    float len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    return len2 < 4.0f ? kDirection : kPosition;
+}
+
+const char* slot_kind_name(SlotKind k) {
+    return k == kRotator ? "rot" : k == kDirection ? "dir" : k == kPosition ? "pos" : "-";
+}
+
 // ---- detours ---------------------------------------------------------------
 // Both seams are __thiscall C++ methods, which is register/stack-identical to
 // __fastcall with a dummy EDX slot. Substitution happens AFTER the original
@@ -234,25 +262,19 @@ void log_call(Slot& slot, void* self, const float* a, const float* b, const floa
     --slot.dumpLeft;
     void* vtbl = nullptr;
     read_ptr(self, &vtbl);
-    BVR_LOG("[aim] %s this=%p vtbl=0x%X A=(%.1f %.1f %.1f) B=(%.3f %.3f %.3f) "
-            "C=(%.3f %.3f %.3f) %s",
-            slot.name, self, to_rva(vtbl), a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2],
-            note);
+    int32_t bi[3];
+    memcpy(bi, b, sizeof bi);
+    BVR_LOG("[aim] %s this=%p vtbl=0x%X A[%s]=(%.1f %.1f %.1f) B[%s]=(%d %d %d) "
+            "C[%s]=(%.1f %.1f %.1f) %s",
+            slot.name, self, to_rva(vtbl), slot_kind_name(classify_slot(a)), a[0], a[1], a[2],
+            slot_kind_name(classify_slot(b)), bi[0], bi[1], bi[2],
+            slot_kind_name(classify_slot(c)), c[0], c[1], c[2], note);
 }
 
 // The two out-params are a POSITION (thousands of Unreal units) and a unit
 // DIRECTION, and which slot holds which differs between the weapon and the
 // ability signature. Rather than trust the disassembly's labels, decide per
 // call from the magnitudes - a direction is never longer than ~1.
-bool looks_like_direction(const float v[3]) {
-    float len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-    return len2 < 4.0f;
-}
-
-bool is_zero(const float v[3]) {
-    return v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f;
-}
-
 // Write our ray into the out-params: every slot the engine filled with a
 // POSITION gets the hand's origin, every slot it filled with a DIRECTION gets
 // the hand's direction. Which index is which differs between the two
@@ -270,16 +292,32 @@ bool substitute(Slot& slot, Hand h, float* const* out, int count) {
     float pos[3] = {o.x, o.y, o.z};
     bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
 
+    // An FRotator carries the engine's roll through untouched: aim owns pitch
+    // and yaw, the weapon's own roll is none of our business.
     bool wrote = false;
     for (int i = 0; i < count; ++i) {
         if (!out[i]) continue;
         float cur[3];
         if (!read12(out[i], cur)) continue;
-        if (is_zero(cur)) continue; // engine left this one alone; so do we
-        if (looks_like_direction(cur)) {
-            wrote |= write12(out[i], dir);
-        } else if (handOrigin) {
-            wrote |= write12(out[i], pos);
+        switch (classify_slot(cur)) {
+            case kRotator: {
+                int32_t curInt[3];
+                memcpy(curInt, cur, sizeof curInt);
+                int32_t rot[3] = {r.pitch, r.yaw, curInt[2]};
+                float packed[3];
+                memcpy(packed, rot, sizeof packed);
+                wrote |= write12(out[i], packed);
+                break;
+            }
+            case kDirection:
+                wrote |= write12(out[i], dir);
+                break;
+            case kPosition:
+                if (handOrigin) wrote |= write12(out[i], pos);
+                break;
+            case kUnused:
+            default:
+                break; // engine left it alone; so do we
         }
     }
     if (!wrote) return false;

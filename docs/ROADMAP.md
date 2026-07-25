@@ -186,7 +186,7 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       included; the wrench damages through a Havok collision phantom and never traces. Also found
       the engine's own native-function symbol table (registration string → .data entry → impl
       pointer), which is now the standard way this project resolves natives.*
-- [~] Aim-substitution hook at the fire-start seam (seed: itsloopyo decouple)
+- [x] Aim-substitution hook at the fire-start seam (seed: itsloopyo decouple)
       *2026-07-25 (session 10): SHIPPED and command-gated (`vraim`), hooking the two C++
       implementations - `AWeapon::GetPerfectFireStart` (vtable slot, impl 0x226840) and
       `UAttackAbility::GetPerfectFireStart` (0x1BC220). The exec thunks were a dead end (native
@@ -194,7 +194,14 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       Bolt cast with correct ownership gating, and ORIGIN substitution proven (`SUB(L)` with our
       values). Remaining: the plasmid path's trace DIRECTION comes from the damage factory, one
       layer deeper (ENGINE_NOTES "Fire flow / aim" has the address to probe), and the weapon path
-      needs a ranged weapon to confirm end to end - the only save spawns with wrench + plasmid.*
+      needs a ranged weapon to confirm end to end - the only save spawns with wrench + plasmid.
+      TICKED same session after the user supplied a pistol: out-param B turned out to be an
+      FRotator (rotation-unit int32s, which print as near-zero floats - the trap that hid it), and
+      substituting it MOVES THE BULLETS. Flat-proven at a wall: decals landed 12 deg right, 12 deg
+      left, 10 deg down and 8/8 up-right of the crosshair with the camera stationary, and
+      `vraim off` put the next round back on the crosshair. Weapon (right hand) aim is DONE;
+      the plasmid path's direction is produced downstream in the damage factory and is the
+      remaining piece.*
 - [~] Right hand aims weapons; left hand aims plasmids; reticle at aim ray
       *Hand attribution shipped and verified live (object identity seeded by the trigger the
       bridge composes - "learned LEFT-hand (plasmid) object" on the first cast). XR grip poses
