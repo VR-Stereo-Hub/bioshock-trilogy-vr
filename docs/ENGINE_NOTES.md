@@ -61,7 +61,9 @@ Game build reference: `BioshockHD.exe`, 21,214,720 bytes, linker timestamp 2022-
 | `eventPlayerCalcView` | camera override (HMD pose, per-eye offsets) | **active** (DR-4: `game/bioshock1r/camera.cpp`, self-enabling MinHook) |
 | Drain RVA 0x61CAE0 (+ flush 0x61D0F0) | DR-5 reentry probe telemetry | **command-gated** (session 5: `game/bioshock1r/scenedraw.cpp`; exists only after a `reentry hook` seam command - default runs stay unhooked). Drain re-entry refuted - see Scene-draw architecture. |
 | Game-thread frame submit RVA 0x585AC0 | SequentialReentry stereo (double-submit with per-eye rot) | **next session's hook** - located via SetEvent caller sampler, byte-walked, unhooked |
-| GetPlayerViewPoint-equivalent used by fire traces (unknown) | decoupled controller aim | M6 |
+| `AWeapon::GetPerfectFireStart` impl RVA 0x226840 (weapon vtable +0x304) and `UAttackAbility::GetPerfectFireStart` impl RVA 0x1BC220 | decoupled controller aim: the shot's origin (and, on the weapon path, the direction the engine then applies spread to) | **active, command-gated** (M6: `game/bioshock1r/aim.cpp`, `vraim on`; ability seam live-confirmed firing, origin substitution proven) |
+| Damage-factory trace virtual (factory vtbl +0xEC, factory from 0x231E70) | the plasmid/trace DIRECTION - the one open piece of the fire flow | M6 next session (probe with `vraim scanimpl`) |
+| `APawn::GetViewDirection` impl 0x3CBA10 / `AShockPlayer::GetViewPoint` impl 0x1E5E50 | candidate aim sources - RULED OUT live (never called during a shot) | investigated, not hooked |
 | Console-command dispatcher (unknown - FName-chain on command strings) | execConsole one-liners | M5/M6 |
 | XInputGetState (we ARE the proxy - but the STEAM OVERLAY code-hooks the export thunk and eats calls, so the real seam is the game's IAT slot RVA 0xBCF8E0 -> bridge wrapper) | synthetic gamepad | **active** (M5: core/input/xinput_bridge + game IAT hijack; see "Gamepad architecture") |
 | UWindowsViewport::UpdateInput RVA 0x853D20 (driven, not hooked - nothing calls it in windowed mode) | engine consumes the synthetic pad | **active** (M5: game/bioshock1r/input_drive.cpp calls it per present) |
@@ -519,7 +521,125 @@ passthrough byte-identical with vrinput off). Boot probes are covered by a
 persisted marker (`%LOCALAPPDATA%\BioshockVR\vrinput.on`) read at DLL attach
 so the client-init probe already sees a connected pad.
 
+## Native function table (M6 session 10, 2026-07-25)
+
+**The engine ships its own symbol table for every name-based native, and it is
+trivially readable.** Each `native` UnrealScript function implemented in C++ is
+registered through a 12-byte `.data` entry `{ const TCHAR* name; Native impl;
+0 }`, where the name is the wide string **`"int<Class>exec<Function>"`** in
+`.rdata` (e.g. `intAWeaponexecApplyAimError`) and the impl pointer is written by
+static initialization (`C7 05 <entry+4> <imm32>`). 1822 such entries exist.
+
+- **Runtime resolution** (shipped, `pattern_scan::find_native_function`): find
+  the name string, find the dword that references it, read the next dword. No
+  hardcoded address, no prologue scan, and it reads the same way on a patched
+  build. Verified live: all five session-10 lookups resolved on the first try
+  at their documented RVAs.
+- **Offline enumeration** (scratchpad `natives.py` / `nativemap.py`): dumping
+  the whole table gives a per-class native inventory - this is how the aim seam
+  was found in minutes instead of by fire-path guesswork, and it is the fastest
+  first stop for any future engine question (M7 hands: `AHands` has
+  `CanExecuteAction`, `SetCurrentTransitionSequence`,
+  `InterruptAnimNotifiesForAnimation`).
+- **Caveat that cost time**: the linker pools wide strings by SUFFIX, so
+  `AimError` is literally the tail of `ApplyAimError`. A substring match proves
+  nothing; require the null terminator at the expected end (the shipped scan
+  does).
+- **`exec` thunks are NOT the seam.** They are the script->C++ entry only:
+  `execFoo(FFrame& Stack, void* Result)` parses params off the bytecode and
+  then calls the real C++ method (virtual or direct). Native callers skip them
+  entirely - hooking all four aim thunks caught ZERO calls across a live
+  session of shooting. Hook implementations, not thunks.
+- FFrame layout used by the probe: `+4` Node (calling UStruct), `+8` Object,
+  `+0xC` Code.
+
+## Fire flow / aim (M6 session 10, 2026-07-25)
+
+Chain, script -> native, derived from UELib decompiles of ShockGame.U (summaries
+only) plus capstone walks of the implementations:
+
+1. Trigger -> `Weapon.BeginFiring` -> `GotoState('Firing')`; the state plays the
+   firing animation and an **anim notify** (`AnimNotify_UseAbility`) is what
+   actually fires. Attacks are ABILITIES: `Ability -> AttackAbility ->
+   TraceAttackAbility / ProjectileAttackAbility / MeleeAttackAbility`, and
+   plasmids are the same machinery (`ElectricBoltAbility : TraceAttackAbility`).
+   Player weapons are `Pistol/Wrench/... : PlayerWeapon : Weapon : Holdable`.
+2. `AttackAbility.UseAbility` -> native `InitiateDamage(name)`:
+   - `AWeapon::InitiateDamage` **RVA 0x226050** (weapon vtable slot +0x2FC)
+   - `UAttackAbility::InitiateDamage` **RVA 0x1BBD80** (`ret 8`, FName by value)
+3. Each InitiateDamage first asks for the shot's start:
+   - `AWeapon::GetPerfectFireStart` **impl RVA 0x226840**, weapon vtable slot
+     **+0x304**, `__thiscall(FVector* outA, FVector* outB, FVector* outC)`.
+     outA <- ownerPawn+0x1D8 (Location), outB <- `[pawn+0x450]+0x1E4`.
+   - `UAttackAbility::GetPerfectFireStart` **impl RVA 0x1BC220** (direct call
+     target of its exec thunk), `__thiscall(void* instigator, FVector* outA,
+     FVector* outB, FVector* outC)`, `ret 0x10`. Same two sources one slot over,
+     plus a lean offset added to the position.
+   - The weapon path then applies its own spread: `AWeapon::ApplyAimError` impl
+     **RVA 0x226AA0** with a magnitude from **0x229DE0** - so substituting at
+     GetPerfectFireStart keeps per-weapon accuracy intact.
+4. Damage/trace is handed to a damage-factory object (`0x231E70` fetches it,
+   then a virtual at factory vtbl+0xEC) - **this is where the trace direction is
+   produced, and it is the one piece not yet pinned down** (see below).
+
+**Live findings (probe, 2026-07-25):**
+- `UAttackAbility::GetPerfectFireStart` FIRES on a plasmid cast (Electro Bolt),
+  `this` vtable = `UAttackAbility` 0xD7E9D4, and the out-params read
+  outA = the player's Location, outB = (0,0,0), outC = Location + a small lean
+  offset. **All positions, no direction** - matching the function's name.
+  Origin substitution therefore works today (logged `SUB(L)` with our values).
+- `APawn::GetViewDirection` impl (**0x3CBA10**, pawn vtable +0x35C) and
+  `AShockPlayer::GetViewPoint` impl (**0x1E5E50**, +0x360) are NOT called during
+  a cast (scanimpl, zero calls) - so the factory does not ask the pawn.
+- The **wrench does not trace at all**: `Wrench.CreateCollisionPhantom` - melee
+  damage is a Havok phantom, so no aim seam exists for it (M7's "wrench melee
+  feels aimed" is a hands-rendering matter, not an aim-vector one).
+- AI ownership is separable at every seam: the weapon's owning pawn is
+  `[weapon+0x454]`, the ability's instigator is `[ability+0xF0]`, and the engine
+  itself compares that instigator against the AShockPlayer vtable at 0x1BC2D0.
+
+**AActor field layout (from the GetViewPoint/GetViewDirection implementations,
+cross-checked against a live hexdump of the player pawn):**
+- `+0x1D8` FVector **Location** (feet; live -7210.96 / 1106.66 / 2567.15)
+- `+0x1E4` FRotator **Rotation** (live pitch 0 / yaw 55599 / roll 0 - the yaw
+  matched the camera heartbeat exactly). `GetViewDirection` = `Rotation.Vector()`
+  via the helper at **0x1BC870**; pawns keep pitch 0, so the pitched view
+  rotation lives on the PlayerController, not the pawn.
+- `+0x550` float **eye height** (`GetViewPoint` = Location + eyeHeight on Z)
+
+**Open (next session):** find where the damage factory turns rotation into the
+trace direction - either the factory virtual at `+0xEC` (hook it with
+`vraim scanimpl`) or the PlayerController Rotation field it presumably reads. A
+ranged weapon is needed to confirm the weapon path end to end: the only save
+available has just the wrench + Electro Bolt, and the wrench never traces.
+
+**Class vtables (MSVC RTTI walk: TypeDescriptor `.?AV<name>@@` ->
+CompleteObjectLocator -> vtable; scratchpad `rtti.py`):** AShockPlayer
+**0xD82BB8**, AShockPlayerController 0xD81C84, APlayerWeapon **0xD8FF58**,
+AWeapon 0xD90268, UAttackAbility **0xD7E9D4**, AHands **0xD8A28C** (M7), APawn
+0xD82824.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
 `Build\Final\BakedScripts\pc\*.u`, workspace in `tools/uscript/` (gitignored).)_
+
+**Headless decompiling works and is fast** (session 10): the UE Explorer
+portable build ships `Eliot.UELib.dll`, which UELib exposes to PowerShell -
+`tools/uscript/dump.ps1` loads a package in <1 s and lists classes, functions
+and states or decompiles one by name. Package: version 142 / licensee 56, build
+"BioShock" (UELib auto-detects it). Two build quirks worth knowing: name-table
+entries are UTF-16 with a POSITIVE char count and 8-byte flags, and UFunction
+deserialization fails for ~40% of objects on this licensee build (the ones that
+load are plenty - class/state bodies decompiled fine).
+
+Findings so far: the attack/ability hierarchy and the trigger -> Firing state ->
+anim-notify -> UseAbility -> InitiateDamage chain above; `Weapon.Firing` state
+body is just animations plus `GotoState('None')`; `AttackAbility.UseAbility` is
+two lines (`Damager = Instigator; InitiateDamage('None')`).
+
+**Input bindings that matter for automated tests** (`User.ini`, session 10):
+`XENON_RT = SwitchAndFireWeapon`, `XENON_LT = SwitchAndFireAbility` - the FIRST
+trigger pull only switches hands ("SwitchToWeapons"/"SwitchToPlasmids"), the
+second one fires. A single synthetic pull therefore looks like it did nothing.
+`LeftMouse = Fire` (active hand), `RightMouse = SwitchWeaponsOrPlasmids`.
