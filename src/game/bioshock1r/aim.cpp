@@ -42,6 +42,10 @@ std::atomic<bool> g_subWeapon{true};  // right hand aims weapons
 std::atomic<bool> g_subAbility{true}; // left hand aims plasmids
 std::atomic<bool> g_handOrigin{true}; // hand origin + direction (user's choice)
 std::atomic<bool> g_probe{false};     // telemetry mode
+// The overlay runs on the RENDER thread and must never install a MinHook itself
+// (same rule as scenedraw's vrstereo checkbox): it posts a request here and the
+// game thread applies it from on_calcview, outside any hooked engine call.
+std::atomic<int> g_pendingEnable{-1}; // -1 none, 0 off, 1 on
 std::atomic<int32_t> g_dumpBudget{0}; // per-seam detailed log budget
 
 // Per-frame aim rays, game thread only (built in on_calcview, read in the
@@ -711,6 +715,21 @@ void on_calcview(const FrameContext& ctx) {
     uint64_t now = GetTickCount64();
     g_rayStampMs = now;
 
+    // Apply an overlay request from THIS thread (see g_pendingEnable).
+    int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
+    if (pending == 1) {
+        if (install_all()) {
+            g_enabled.store(true, std::memory_order_relaxed);
+            BVR_LOG("[aim] ON (overlay) - controller aim substitutes the view aim");
+        } else {
+            BVR_LOG("[aim] overlay enable REFUSED: no aim seam hooked");
+        }
+    } else if (pending == 0) {
+        g_enabled.store(false, std::memory_order_relaxed);
+        if (!g_probe.load(std::memory_order_relaxed)) disable_all();
+        BVR_LOG("[aim] OFF (overlay) - engine aim restored");
+    }
+
     // Cutscene guard (the open M3 item): the view actor during normal play is
     // the player's own pawn - an AShockPlayer. A scripted camera swaps the
     // view target for some other actor, and then nothing about the player's
@@ -891,14 +910,8 @@ void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Decoupled aim (M6)", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     bool on = g_enabled.load(std::memory_order_relaxed);
-    if (ImGui::Checkbox("Controller aim (right = weapon, left = plasmid)", &on)) {
-        if (on) {
-            if (install_all()) g_enabled.store(true, std::memory_order_relaxed);
-        } else {
-            g_enabled.store(false, std::memory_order_relaxed);
-            if (!g_probe.load(std::memory_order_relaxed)) disable_all();
-        }
-    }
+    if (ImGui::Checkbox("Controller aim (right = weapon, left = plasmid)", &on))
+        g_pendingEnable.store(on ? 1 : 0, std::memory_order_relaxed);
     bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Ray starts at the hand (off = engine origin, direction only)",
                         &handOrigin))
