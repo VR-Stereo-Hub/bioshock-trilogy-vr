@@ -36,4 +36,14 @@ void input_sync(XrSession session, XrTime predictedDisplayTime);
 // One status line inside vr::draw_debug_ui().
 void input_draw_debug_ui();
 
+// M6: latest predicted pose of a hand (0 = left, 1 = right), located in
+// input_sync against the app space at the same predicted display time as the
+// head pose. `aimPose` picks the runtime's AIM pose - "where this controller
+// points", which is what aiming wants - over the GRIP pose, which runs along the
+// handle and reads tens of degrees low as a pointing ray (hand rendering wants
+// grip). False while that hand is not tracked. Position in meters, orientation
+// as a quaternion - XR convention, like HeadPose; the adapter converts to
+// Unreal units.
+bool input_get_hand_pose(int hand, bool aimPose, float* pos3, float* quat4);
+
 } // namespace bvr::vr

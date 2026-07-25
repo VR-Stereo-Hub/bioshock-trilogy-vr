@@ -8,11 +8,13 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
+#include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/console_exec.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
+#include "game/bioshock1r/ue_math.h"
 
 #include <windows.h>
 #include <MinHook.h>
@@ -29,12 +31,8 @@
 namespace bvr::b1r::camera {
 namespace {
 
-struct FVector { float x, y, z; };             // Unreal units
-struct FRotator { int32_t pitch, yaw, roll; }; // 65536 units per full turn
-
-constexpr float kPi = 3.14159265f;
-constexpr float kRotUnitsPerDegree = 65536.0f / 360.0f;
-constexpr float kRotUnitsPerRadian = 65536.0f / (2.0f * kPi);
+// FVector/FRotator, the rotation-unit constants and the XR->UE conversion all
+// live in ue_math.h so aim.cpp shares this file's exact conventions.
 
 // Controls: overlay thread writes, game thread reads. All relaxed - x86
 // lock-free, and a field arriving one frame late (or a torn group, e.g. new X
@@ -144,6 +142,10 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   vrinput test press <A|B|X|Y|LB|RB|START|BACK|LS|RS|DU|DD|DL|DR> [holdMs]
 //   vrinput test clear   (test holds self-expire; slots only feed the game
 //   while vrinput is on)
+// Decoupled aim (M6, routes to game/bioshock1r/aim):
+//   vraim on|off|status  vraim probe on|off  vraim dump <n>
+//   vraim origin on|off  vraim seam <firestart|aimerror|viewpoint|viewdir> on|off
+//   vraim test l|r <yawDeg> <pitchDeg> [holdMs]   vraim test clear
 // Engine console commands without the dead Tab console (console_exec):
 //   exec <command>   (enters at UWindowsViewport::Exec)
 //   execc <command>  (enters at UWindowsClient::Exec)
@@ -247,6 +249,8 @@ void apply_command(const char* cmd, const char* args) {
         bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
     } else if (strcmp(cmd, "vrinput") == 0) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
+    } else if (strcmp(cmd, "vraim") == 0) {
+        aim::handle_command(args); // M6 decoupled aim; logs its own echoes
     } else if (strcmp(cmd, "exec") == 0) {
         console_exec::run_viewport(args); // engine console command, viewport chain
     } else if (strcmp(cmd, "execc") == 0) {
@@ -292,50 +296,9 @@ void poll_command_file(uint64_t now) {
     fclose(f);
 }
 
-// ---- XR -> Unreal conversion (adapter owns all unit/axis semantics) --------
-// XR LOCAL space: right +X, up +Y, forward -Z, meters, right-handed.
-// UE2.5: forward +X, right +Y, up +Z; FRotator 65536 units/turn, positive yaw
-// turns toward +Y (right), positive pitch looks up, positive roll tilts
-// clockwise (right).
-
-void quat_rotate(float qx, float qy, float qz, float qw, const float v[3], float out[3]) {
-    float t[3] = {2.0f * (qy * v[2] - qz * v[1]), 2.0f * (qz * v[0] - qx * v[2]),
-                  2.0f * (qx * v[1] - qy * v[0])};
-    out[0] = v[0] + qw * t[0] + (qy * t[2] - qz * t[1]);
-    out[1] = v[1] + qw * t[1] + (qz * t[0] - qx * t[2]);
-    out[2] = v[2] + qw * t[2] + (qx * t[1] - qy * t[0]);
-}
-
-void xr_to_ue(const float v[3], float out[3]) {
-    out[0] = -v[2]; // XR -Z (forward) -> UE +X
-    out[1] = v[0];  // XR +X (right)   -> UE +Y
-    out[2] = v[1];  // XR +Y (up)      -> UE +Z
-}
-
-struct UeAngles { float yawRad, pitchRad, rollRad; };
-
+// XR -> Unreal conversion lives in ue_math.h (shared with the aim ray).
 UeAngles hmd_angles(const bvr::vr::HeadPose& hp) {
-    const float kFwd[3] = {0.0f, 0.0f, -1.0f};
-    const float kUp[3] = {0.0f, 1.0f, 0.0f};
-    float fxr[3], uxr[3], f[3], u[3];
-    quat_rotate(hp.qx, hp.qy, hp.qz, hp.qw, kFwd, fxr);
-    quat_rotate(hp.qx, hp.qy, hp.qz, hp.qw, kUp, uxr);
-    xr_to_ue(fxr, f);
-    xr_to_ue(uxr, u);
-
-    UeAngles a{};
-    a.yawRad = atan2f(f[1], f[0]);
-    float len2d = sqrtf(f[0] * f[0] + f[1] * f[1]);
-    a.pitchRad = atan2f(f[2], len2d);
-    if (len2d > 0.001f) { // gimbal guard: keep roll 0 when looking straight up/down
-        // Zero-roll frame from the forward vector, then measure the actual up
-        // vector against it. rn = normalize(cross(worldUp, f)), un = cross(f, rn).
-        float rn[3] = {-f[1] / len2d, f[0] / len2d, 0.0f};
-        float un[3] = {-f[2] * rn[1], f[2] * rn[0], f[0] * rn[1] - f[1] * rn[0]};
-        a.rollRad = atan2f(u[0] * rn[0] + u[1] * rn[1],
-                           u[0] * un[0] + u[1] * un[1] + u[2] * un[2]);
-    }
-    return a;
+    return ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
 }
 
 // eventPlayerCalcView is __thiscall; __fastcall with a dummy EDX slot is
@@ -424,6 +387,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // into the game yaw frame and scaled UU-per-meter.
     bool vrDrove = false;
     float vrFov = 0.0f;
+    // M6: the aim ray must be built in the SAME frame as the camera, so keep
+    // the pre-head-offset camera loc and the yaw the drive added.
+    FVector baseLoc = loc ? *loc : FVector{};
+    float driveYawOffsetRad = 0.0f;
     bvr::vr::HeadPose hp{};
     if (loc && rot && bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
         UeAngles a = hmd_angles(hp);
@@ -438,6 +405,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         float gameYawRad = static_cast<float>(gameYawUnits) / kRotUnitsPerRadian;
         rot->pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian);
         rot->roll = static_cast<int32_t>(a.rollRad * kRotUnitsPerRadian);
+        driveYawOffsetRad = a.yawRad - g_recenterYawRad;
         rot->yaw = gameYawUnits +
                    static_cast<int32_t>((a.yawRad - g_recenterYawRad) * kRotUnitsPerRadian);
 
@@ -526,6 +494,36 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         rot->pitch += static_cast<int32_t>(g_pitchDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
         rot->yaw   += static_cast<int32_t>(g_yawDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
         rot->roll  += static_cast<int32_t>(g_rollDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
+    }
+
+    // M6: publish the frame the camera just produced so the aim path can put
+    // both hands in exactly this frame (pre eye-offset - the eye shift belongs
+    // to the render, not to where the player is standing).
+    {
+        aim::FrameContext fc{};
+        fc.vrDriving = vrDrove;
+        if (loc) {
+            fc.camX = loc->x;
+            fc.camY = loc->y;
+            fc.camZ = loc->z;
+        }
+        fc.baseX = baseLoc.x;
+        fc.baseY = baseLoc.y;
+        fc.baseZ = baseLoc.z;
+        if (rot) {
+            fc.camPitch = rot->pitch;
+            fc.camYaw = rot->yaw;
+            fc.camRoll = rot->roll;
+        }
+        fc.driveYawOffsetRad = driveYawOffsetRad;
+        fc.recenterYawRad = g_recenterYawRad;
+        fc.recenterPx = g_recenterPose.px;
+        fc.recenterPy = g_recenterPose.py;
+        fc.recenterPz = g_recenterPose.pz;
+        fc.worldScale = g_worldScale.load(std::memory_order_relaxed);
+        fc.viewActor = viewActor ? *viewActor : nullptr;
+        fc.pc = self;
+        aim::on_calcview(fc);
     }
 
     // SequentialReentry stereo (M4 rung 2): this normal pass is the LEFT eye.

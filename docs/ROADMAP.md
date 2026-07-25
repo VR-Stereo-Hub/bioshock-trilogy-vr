@@ -177,15 +177,69 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M6 - Decoupled aim (~2–3 sessions)
 
-- [ ] Decompile ShockGame.u (UE Explorer) → fire-flow + class findings into ENGINE_NOTES.md
+- [x] Decompile ShockGame.u (UE Explorer) → fire-flow + class findings into ENGINE_NOTES.md
       (summaries only, never code)
-- [ ] Aim-substitution hook at the GetPlayerViewPoint-equivalent (seed: itsloopyo decouple)
-- [ ] Right hand aims weapons; left hand aims plasmids; reticle at aim ray
-- [ ] **Done when:** look left while shooting right - impacts land where the controller points.
+      *2026-07-25 (session 10): headless UELib via `tools/uscript/dump.ps1` (loads the package in
+      <1 s, lists classes/functions/states, decompiles by name). Mapped the whole chain: trigger →
+      `Weapon.BeginFiring` → `Firing` state → anim notify → `AttackAbility.UseAbility` → native
+      `InitiateDamage` → `GetPerfectFireStart` → damage factory. Attacks are ABILITIES, plasmids
+      included; the wrench damages through a Havok collision phantom and never traces. Also found
+      the engine's own native-function symbol table (registration string → .data entry → impl
+      pointer), which is now the standard way this project resolves natives.*
+- [x] Aim-substitution hook at the fire-start seam (seed: itsloopyo decouple)
+      *2026-07-25 (session 10): SHIPPED and command-gated (`vraim`), hooking the two C++
+      implementations - `AWeapon::GetPerfectFireStart` (vtable slot, impl 0x226840) and
+      `UAttackAbility::GetPerfectFireStart` (0x1BC220). The exec thunks were a dead end (native
+      callers bypass them - zero calls live). Ability seam LIVE-CONFIRMED firing on an Electro
+      Bolt cast with correct ownership gating, and ORIGIN substitution proven (`SUB(L)` with our
+      values). Remaining: the plasmid path's trace DIRECTION comes from the damage factory, one
+      layer deeper (ENGINE_NOTES "Fire flow / aim" has the address to probe), and the weapon path
+      needs a ranged weapon to confirm end to end - the only save spawns with wrench + plasmid.
+      TICKED same session after the user supplied a pistol: out-param B turned out to be an
+      FRotator (rotation-unit int32s, which print as near-zero floats - the trap that hid it), and
+      substituting it MOVES THE BULLETS. Flat-proven at a wall: decals landed 12 deg right, 12 deg
+      left, 10 deg down and 8/8 up-right of the crosshair with the camera stationary, and
+      `vraim off` put the next round back on the crosshair. Weapon (right hand) aim is DONE;
+      the plasmid path's direction is produced downstream in the damage factory and is the
+      remaining piece.*
+- [~] Right hand aims weapons; left hand aims plasmids; reticle at aim ray
+      *Hand attribution shipped and verified live (object identity seeded by the trigger the
+      bridge composes - "learned LEFT-hand (plasmid) object" on the first cast). XR grip poses
+      are plumbed through to the adapter (located at the frame's predicted display time, converted
+      in the camera's own frame).
+      IN-HEADSET USER-VERIFIED 2026-07-25: "it's pretty good... the plasmids are working and it's
+      based on the left hand which is very good" - both hands aim their own fire with the camera on
+      the HMD. Calibration ran low because the ray used the OpenXR GRIP pose; the build now uses
+      the runtime's AIM pose with pitch/yaw trim sliders (in-headset check pending). RETICLE still
+      not started: the user asked specifically for a visible laser from the hand - design in
+      STATUS "Next steps".*
+- [x] **Done when:** look left while shooting right - impacts land where the controller points.
+      *TICKED 2026-07-25 (session 10), USER-VERIFIED IN-HEADSET: "it's pretty good... the plasmids
+      are working and it's based on the left hand which is very good", and after the aim-pose fix
+      "now it's pretty good - and the default at 0.00 for now is pretty good". Flat proof at a wall
+      first (decals 12 deg right, 12 deg left, 10 deg down, 8/8 up-right of a stationary
+      crosshair; `vraim off` restores it). Aim trim defaults stay 0/0 by the user's call.
+      RETICLE/LASER moved to M7 by the user's call: "we can do the laser thing when we do the guns
+      and hands since that way it's better and it's in the same idea" - a laser should emit from
+      the visible muzzle, and the user can judge aim calibration far better once the gun is
+      visible. Remaining M6 loose end (small): confirm WHAT steers the plasmid - its fire-start
+      rotator out-param reads all-zero, so the hand-origin substitution may be doing the visible
+      work; verify across a trace plasmid (Electro Bolt) and a projectile one (Incinerate).*
 
 ## M7 - Visible hands + weapons (~2–3 sessions)
 
 - [ ] Locate live AHands actor via UObject iteration; pin to grip pose each frame
+      *Assets already in hand from M6: the AHands vtable (RVA 0xD8A28C, RTTI-derived) for a
+      heap scan in the style of the UShockUserSettings lookup, the AHands natives in the engine's
+      own native table (`CanExecuteAction`, `SetCurrentTransitionSequence`,
+      `InterruptAnimNotifiesForAnimation`), the GRIP poses already located every frame beside the
+      aim poses (grip is the right pose for placing a model), the AActor field layout (+0x1D8
+      Location, +0x1E4 FRotator Rotation, +0x550 eye height) and the CalcView frame context the
+      aim ray already rides.*
+- [ ] Laser / aim reticle emitting from the weapon (moved here from M6 by the user, 2026-07-25):
+      small D3D11 swapchain holding a soft dot, submitted as several XR quad layers spaced along
+      the aim ray plus one at the aim point, each facing the head - all in XR space, so it is
+      per-eye correct with no game-space projection. Doubles as the aim-calibration tool.
 - [ ] Per-weapon offset tuning (live ImGui sliders, persisted config)
 - [ ] **Done when:** hands + current weapon track the controller convincingly; wrench melee
       feels aimed. (Full IK arms = post-v1.)

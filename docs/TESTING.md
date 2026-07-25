@@ -89,6 +89,66 @@ Verified flat procedure (2026-07-25, no physical pad connected):
    ENGINE_NOTES "Gamepad architecture"), xi14/xi13 are diagnostic hooks on
    the system DLLs.
 
+## Decoupled aim (M6 `vraim`) - flat verification
+
+Commands (all through the seam, so they work with no headset):
+
+- `vraim probe on|off` - install the fire seams in telemetry mode;
+  `vraim dump <n>` gives each seam n detailed log lines
+  (`this`/vtable/out-params).
+- `vraim on|off` - arm substitution (right hand aims weapons, left hand aims
+  plasmids); `vraim status` prints seam counters, both rays and the learned
+  object->hand map.
+- `vraim test l|r <yawDeg> <pitchDeg> [holdMs]` - synthetic hand aim as an
+  OFFSET from the current view rotation, feeding the exact slot the XR grip
+  pose will. `vraim test clear` drops it. Holds self-expire inside the DLL.
+- `vraim origin on|off` - hand origin + direction (default) vs direction only.
+- `vraim seam weapon|ability on|off` - per-family substitution.
+- **Investigation tools** (these are how the fire flow was mapped, keep them):
+  `vraim scan <Class> <Func> [n]` hooks ANY name-based native read-only via the
+  engine's own native table; `vraim scanimpl <rvaHex> <stackArgs 1..3> [n]`
+  hooks any C++ implementation (arg count MUST match the target's `ret <n>`);
+  `vraim scanoff` disables both. No rebuild per candidate.
+
+**Before handing ANY build to the user, run the flat fire test.** A build that
+compiles and boots can still crash on the first shot (it did, session 10): load
+the save, open the F10 overlay once (exercises the ImGui path), then
+`vraim on` + `vraim test r 14 0 60000` and fire 3+ shots with
+`vrinput test trig r 255 400` (two pulls if the weapon hand is not active),
+finally assert (a) the game is still running, (b) NO new dump in
+`%LOCALAPPDATA%\BioshockVR\crash\`, (c) `vraim status` shows subs > 0, and
+(d) a screenshot puts the fresh decal off the crosshair. Scratchpad
+`firetest.ps1`/`fire5.ps1` do exactly this.
+
+**ImGui rule:** widgets may ONLY be called from `draw_debug_ui()` (render
+thread, inside the overlay's Begin/End). An ImGui call anywhere the game thread
+reaches - a hooked engine function, the command handler, the CalcView path -
+faults on a null current window (`GetCurrentWindow()` -> `window->WriteAccessed`,
+crash at bioshockvr.dll+... with fault address 0xBE). Session 10 hit this by
+letting an unbounded string replace inject overlay widgets into the fire-path
+substitution function.
+
+Firing the game from the harness - the gotchas that cost a session:
+
+1. **The first trigger pull only SWITCHES HANDS.** `XENON_RT =
+   SwitchAndFireWeapon`, `XENON_LT = SwitchAndFireAbility` (ENGINE_NOTES
+   "UnrealScript findings"), so a single `vrinput test trig l 255 400` looks
+   like nothing happened. Send two pulls ~2 s apart (the seam polls at 1 Hz):
+   the second one fires. Right mouse = switch hands, left mouse = fire the
+   active hand.
+2. **The wrench never traces** (Havok collision phantom), so no aim seam fires
+   for melee no matter how it connects - not a bug, and not a useful control.
+   The only save in the tree spawns with wrench + Electro Bolt; testing the
+   WEAPON seam needs a ranged weapon (external trainer loadout).
+3. Aim at something within range. A cast into open air still runs the ability
+   fire-start seam; damage-side natives (`CanHit`, `InitiateDamage` on the
+   weapon) only run on a hit.
+4. After a force-kill the game shows a **"revert Options?" dialog** on the next
+   launch and its window title is `Message`, not `Bioshock`; answer No by
+   `BM_CLICK`-ing the `&No` button (scratchpad `boot2.ps1` does this). The game
+   window can also report a 0x0 rect for a few seconds after it appears -
+   retry `game-shot.ps1` instead of treating that as an error.
+
 ## Automated in-game testing (no human in the loop)
 
 - **Command seam**: the mod polls `%LOCALAPPDATA%\BioshockVR\command.txt` at 1 Hz on the game

@@ -853,6 +853,13 @@ bool get_head_pose(HeadPose& out) {
     return true;
 }
 
+bool get_hand_pose(int hand, bool aimPose, HeadPose& out) {
+    float p[3], q[4];
+    if (!input_get_hand_pose(hand, aimPose, p, q)) return false;
+    out = {p[0], p[1], p[2], q[0], q[1], q[2], q[3]};
+    return true;
+}
+
 bool vr_camera_mode() {
     return g_cameraMode.load(std::memory_order_relaxed) &&
            g_sessionBegun.load(std::memory_order_relaxed) &&
@@ -907,6 +914,7 @@ void on_present_end(IDXGISwapChain*) {}
 void on_resize() {}
 void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
+bool get_hand_pose(int, bool, HeadPose&) { return false; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
 float suggested_hfov_deg() { return 0.0f; }

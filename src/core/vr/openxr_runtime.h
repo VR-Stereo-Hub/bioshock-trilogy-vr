@@ -43,6 +43,16 @@ struct HeadPose {
 // display time). False while not tracking.
 bool get_head_pose(HeadPose& out);
 
+// --- M6: controller poses for decoupled aim ---------------------------------
+// Latest predicted GRIP pose of a hand (0 = left, 1 = right), located at the
+// SAME predicted display time as the head pose above, so an aim ray built from
+// it belongs to the same instant as the camera. False while that hand is not
+// tracked (no session, unfocused, controller asleep) - callers must then fall
+// back to the game's own aim rather than freezing on a stale pose.
+// `aimPose` true = the runtime's pointing ray (aiming), false = the grip pose
+// (hand/weapon placement).
+bool get_hand_pose(int hand, bool aimPose, HeadPose& out);
+
 // True when the user enabled VR camera mode AND a session is running; the
 // adapter drives the game camera from the HMD only while this holds. Frame
 // submission switches from the quad to a projection layer at the same time.

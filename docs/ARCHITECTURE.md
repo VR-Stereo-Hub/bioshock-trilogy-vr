@@ -140,9 +140,17 @@ Known hard parts of re-entry and their mitigations:
   switch, ToggleHUD, SetFOV - one high-value hook makes dozens of features one-liners); direct
   hooks for continuous aim.
 - **Decoupled aim**: UE2.5 fire traces derive from player view rotation, so camera hooks aren't
-  enough - hook the GetPlayerViewPoint-equivalent used by fire logic and return the controller
-  aim pose there while CalcView keeps returning the HMD pose. Right hand = weapons, left hand =
-  plasmids (verify plasmid routing in decompiled ShockGame.u).
+  enough - hook the aim source used by fire logic and return the controller aim there while
+  CalcView keeps returning the HMD pose. Right hand = weapons, left hand = plasmids.
+  *As-built (M6 session 10): there is no single "GetPlayerViewPoint". Attacks are ABILITIES, and
+  each fire path asks its own `GetPerfectFireStart` (AWeapon for guns and melee, UAttackAbility
+  for plasmids) for where the shot starts, after which the engine applies its own spread. Those
+  two C++ implementations are the seam (`game/bioshock1r/aim.cpp`, command-gated `vraim`) -
+  hooked at the implementation, not the UnrealScript exec thunk, because native callers bypass
+  thunks entirely. Hand attribution is object identity seeded by the trigger the bridge itself
+  composes, so switching weapon or plasmid re-learns for free. The plasmid path's trace
+  DIRECTION lives one layer deeper (the damage factory) and is the open piece; addresses and
+  live findings in ENGINE_NOTES "Fire flow / aim".*
 - **Menus (gameswf Flash)**: menu mode = whole frame on a quad + controller laser → virtual
   mouse into whichever input path the menus actually read (DR-6 determines: DirectInput vs
   window messages vs cursor pos). In-game HUD later via draw-call capture → floating quad (M9).
@@ -267,3 +275,25 @@ runtime.
   UseJoystick/UseController ini keys (all provably ignored), MinHooking UpdateInput (nothing
   calls it - there is nothing to hook), and dpad chords on Touch (hidden state; the M8 radial
   wheels own discrete selection).
+- **2026-07-25 - Aim seam: hook implementations, and let the engine keep its spread.** Three
+  findings shaped M6. (1) The engine ships a readable symbol table for name-based natives
+  (registration string `int<Class>exec<Func>` -> `.data` entry -> impl pointer), so
+  `pattern_scan::find_native_function` resolves aim symbols with no hardcoded addresses and no
+  prologue scanning - and dumping that table offline is now the first stop for any engine
+  question. (2) Those `exec` thunks are script-entry only: hooking all four aim thunks caught
+  ZERO calls while shooting, because C++ callers go straight to the implementation. The shipped
+  seams are therefore the implementations, resolved via the RTTI-derived vtable slot (weapon) or
+  a prologue-checked RVA (ability). (3) Substituting at `GetPerfectFireStart` rather than at the
+  spread function keeps per-weapon accuracy: the engine applies `ApplyAimError` to our direction
+  afterwards, so a shotgun still spreads. Substitution is value-driven (each out-param the
+  engine filled with a position gets the hand's origin, each direction gets the hand's
+  direction, zeros are left alone) because the same function's out-param order differs between
+  the two signatures. Ownership gates read the weapon's owning pawn / the ability's instigator
+  and compare against the AShockPlayer vtable - the same check the engine makes itself - so AI
+  fire keeps its own aim. Rejected: writing the pawn/controller Rotation field (it also drives
+  movement direction and pawn facing, and cannot give the two hands independent aim), and
+  hooking `APawn::GetViewDirection` (live-proven never called during a shot).
+- **2026-07-25 - M6/M7 split stays as planned.** M6 is the aim vector only. The wrench turned
+  out to damage through a Havok collision phantom rather than a trace, so "melee feels aimed" is
+  purely a hands-rendering matter and belongs to M7 with the visible weapon; articulated IK arms
+  remain post-v1.

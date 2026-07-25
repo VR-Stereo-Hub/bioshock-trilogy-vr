@@ -10,6 +10,8 @@
 
 #include <windows.h>
 
+#include <cstring>
+
 namespace bvr::b1r::patterns {
 namespace {
 
@@ -140,7 +142,67 @@ bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     BVR_LOG("[b1r] eventPlayerCalcView = %p (RVA 0x%X)", scan.function,
             static_cast<unsigned>(reinterpret_cast<uintptr_t>(scan.function) -
                                   reinterpret_cast<uintptr_t>(image.base)));
+
+    resolve_aim_natives(image, out); // fail-soft, logs each
     return true;
+}
+
+void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
+    using namespace bvr::pattern_scan;
+
+    // Weapon side: read the implementation straight out of the class vtable
+    // (RTTI-derived vtable RVA + the slot the InitiateDamage call site uses).
+    // A vtable read survives a rebuild that moves the function; the expected
+    // RVA is only a cross-check.
+    const void** weaponVtbl =
+        reinterpret_cast<const void**>(const_cast<uint8_t*>(image.base) + kPlayerWeaponVtableRva);
+    if (is_memory_valid(weaponVtbl, kWeaponFireStartVtblOffset + sizeof(void*))) {
+        const uint8_t* impl = *reinterpret_cast<const uint8_t* const*>(
+            reinterpret_cast<const uint8_t*>(weaponVtbl) + kWeaponFireStartVtblOffset);
+        if (impl >= image.base && impl < image.base + image.size) {
+            out.weaponFireStart = const_cast<uint8_t*>(impl);
+            uint32_t rva = static_cast<uint32_t>(impl - image.base);
+            BVR_LOG("[b1r] AWeapon::GetPerfectFireStart impl = %p (RVA 0x%X%s)", impl, rva,
+                    rva == kExpectedWeaponFireStartImplRva
+                        ? ""
+                        : " - DIFFERS from the documented build");
+        }
+    }
+    if (!out.weaponFireStart)
+        BVR_LOG("[b1r] AWeapon::GetPerfectFireStart impl NOT resolved (vtable read failed)");
+
+    // Same two functions one level up, for the probe's "a shot happened" line.
+    if (is_memory_valid(weaponVtbl, kWeaponInitDamageVtblOffset + sizeof(void*))) {
+        const uint8_t* impl = *reinterpret_cast<const uint8_t* const*>(
+            reinterpret_cast<const uint8_t*>(weaponVtbl) + kWeaponInitDamageVtblOffset);
+        if (impl >= image.base && impl < image.base + image.size) {
+            out.weaponInitDamage = const_cast<uint8_t*>(impl);
+            uint32_t rva = static_cast<uint32_t>(impl - image.base);
+            BVR_LOG("[b1r] AWeapon::InitiateDamage impl = %p (RVA 0x%X%s)", impl, rva,
+                    rva == kExpectedWeaponInitDamageRva ? "" : " - DIFFERS from the documented build");
+        }
+    }
+    const uint8_t* abilityInit = image.base + kAbilityInitDamageRva;
+    if (is_memory_valid(abilityInit, sizeof kAbilityInitDamagePrologue) &&
+        memcmp(abilityInit, kAbilityInitDamagePrologue, sizeof kAbilityInitDamagePrologue) == 0) {
+        out.abilityInitDamage = const_cast<uint8_t*>(abilityInit);
+        BVR_LOG("[b1r] UAttackAbility::InitiateDamage impl = %p (RVA 0x%X)", abilityInit,
+                kAbilityInitDamageRva);
+    }
+
+    // Ability side: the InitiateDamage call site calls it directly, so there is
+    // no slot to read - use the documented RVA, gated on a prologue match so a
+    // patched build refuses rather than hooking a stranger.
+    const uint8_t* ability = image.base + kAbilityFireStartImplRva;
+    if (is_memory_valid(ability, sizeof kAbilityFireStartPrologue) &&
+        memcmp(ability, kAbilityFireStartPrologue, sizeof kAbilityFireStartPrologue) == 0) {
+        out.abilityFireStart = const_cast<uint8_t*>(ability);
+        BVR_LOG("[b1r] UAttackAbility::GetPerfectFireStart impl = %p (RVA 0x%X)", ability,
+                kAbilityFireStartImplRva);
+    } else {
+        BVR_LOG("[b1r] UAttackAbility::GetPerfectFireStart impl prologue mismatch at RVA 0x%X"
+                " - plasmid aim unavailable", kAbilityFireStartImplRva);
+    }
 }
 
 } // namespace bvr::b1r::patterns

@@ -48,6 +48,10 @@ TimedTrig  g_testTrigL, g_testTrigR;
 uint64_t g_testBtnDeadline[16] = {}; // per XINPUT button bit index
 
 Gamepad g_lastComposed{};
+// Last composed triggers (lt low byte, rt high byte) for the M6 aim path -
+// an atomic rather than a peek at g_lastComposed so a hooked engine native on
+// the game thread never has to take g_mutex.
+std::atomic<uint16_t> g_lastTriggers{0};
 uint32_t g_packet = 0;            // bridge-owned monotonic dwPacketNumber
 bool g_packetBump = false;        // forced bump on enable/disable edges
 
@@ -149,7 +153,17 @@ Gamepad compose_synthetic(uint64_t now) {
 void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     if (userIndex != 0) return;
     g_lastRealResult.store(*result, std::memory_order_relaxed);
-    if (!g_enabled.load(std::memory_order_relaxed)) return;
+    if (!g_enabled.load(std::memory_order_relaxed)) {
+        // Publish the real pad's triggers anyway: the M6 aim path reads them to
+        // tell weapon fire from plasmid fire, and that has to work for a player
+        // on a physical pad too.
+        uint16_t t = 0;
+        if (*result == ERROR_SUCCESS)
+            t = static_cast<uint16_t>(xs->Gamepad.bLeftTrigger) |
+                static_cast<uint16_t>(static_cast<uint16_t>(xs->Gamepad.bRightTrigger) << 8);
+        g_lastTriggers.store(t, std::memory_order_relaxed);
+        return;
+    }
 
     Gamepad real{};
     if (*result == ERROR_SUCCESS) {
@@ -170,6 +184,9 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     memcpy(&xs->Gamepad, &out, sizeof out);
     xs->dwPacketNumber = g_packet;
     *result = ERROR_SUCCESS;
+    g_lastTriggers.store(static_cast<uint16_t>(out.lt) |
+                             static_cast<uint16_t>(static_cast<uint16_t>(out.rt) << 8),
+                         std::memory_order_relaxed);
 
     if (!g_loggedFirstCompose.exchange(true, std::memory_order_relaxed))
         BVR_LOG("input: first synthetic compose served (packet %u)", g_packet);
@@ -446,6 +463,12 @@ void publish_xr_state(const Gamepad& pad, bool active) {
 }
 
 float stick_deadzone() { return g_deadzone.load(std::memory_order_relaxed); }
+
+void last_composed_triggers(uint8_t* lt, uint8_t* rt) {
+    uint16_t t = g_lastTriggers.load(std::memory_order_relaxed);
+    if (lt) *lt = static_cast<uint8_t>(t & 0xFF);
+    if (rt) *rt = static_cast<uint8_t>(t >> 8);
+}
 
 void handle_command(const char* args) {
     install_dll_hooks(); // lazy retry in case xinput1_4 loaded after init
