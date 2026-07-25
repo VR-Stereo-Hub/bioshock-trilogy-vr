@@ -13,7 +13,13 @@ deg down and 8/8 up-right of the crosshair **while the camera never moved**, and
 `vraim off` put the next round back on the crosshair), then the user confirmed
 both hands in the headset.
 
-**One real complaint from that run, and it is fixed in the shipped build:**
+**M6 IS DONE (user's call, 2026-07-25).** After the aim-pose fix the user
+re-tested: "now it's pretty good - and the default at 0.00 for now is pretty
+good." Aim trim stays at 0/0. The RETICLE/LASER moves to M7 by their call ("we
+can do the laser thing when we do the guns and hands... it's the same idea"),
+and they expect to judge aim calibration much better once the gun is visible.
+
+**The complaint from the first in-headset run, and how it was fixed:**
 aiming needed the wrist held lower than it should. Cause: the ray came from the
 OpenXR **grip** pose, whose forward axis runs along the handle, tens of degrees
 below where the controller visually points. The build now uses the runtime's
@@ -419,24 +425,37 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **USER, in headset: is the aim-pose calibration right now?** Tick "Controller
-   aim", fire at a wall, and if the impacts sit off where you point, drag "Aim
-   pitch trim" / "Aim yaw trim" in the overlay (or `vraim cal <pitch> [yaw]`,
-   +pitch aims higher) until they line up - then tell me the numbers and they
-   become the defaults. `vraim pose grip` falls back to the old behaviour.
-2. **Laser/reticle from the hand (the user's explicit ask, M6 rung 2).** Design:
-   a small D3D11 swapchain holding a soft dot, submitted as SEVERAL small XR quad
-   layers spaced along the aim ray (a dotted laser) plus one at the aim point,
-   each oriented to face the head - all in XR space from the hand pose core
-   already has, so no game-space projection is needed and it is per-eye correct
-   for free. `layers[1]` in openxr_runtime.cpp becomes `layers[N]`.
-3. **Confirm what actually steers the plasmid** (probe the ability slots during a
-   real cast), and only then chase the damage-factory direction:
+1. **Wrap M6 (short, start of next session):** merge PR #1 into main, then a
+   stability pass the aim work has not had - `vrstereo on` + `vraim on` through a
+   save load and a few minutes of combat, watching for new dumps (the two fire
+   seams are the first hooks this project installs on gameplay-logic functions
+   rather than render/input ones).
+2. **M7 - visible hands + weapons (the user's next milestone).** Locate the live
+   `AHands` actor and pin it to the GRIP pose each frame; then per-weapon offset
+   sliders. Everything needed is already in the tree: the AHands vtable RVA
+   0xD8A28C for a heap scan (same technique as the settings object), its natives
+   in the engine's native table, grip poses located every frame beside the aim
+   poses, the AActor Location/Rotation/eye-height offsets, and the CalcView frame
+   context. Expect the fight to be about ORDER: the engine places the viewmodel
+   itself every tick, so our write has to land after its update (the CalcView
+   detour is the candidate moment) - and about not breaking the firing anims.
+3. **Laser / aim reticle - now part of M7** (user's call: it belongs with the
+   visible gun, and it doubles as the calibration tool). Design unchanged: a soft
+   dot in a small swapchain, several XR quad layers along the aim ray plus one at
+   the aim point, each facing the head - XR space only, per-eye correct for free.
+4. **Confirm what actually steers the plasmid** (small M6 loose end): its
+   fire-start rotator out-param reads all-zero, yet the left hand aims it in the
+   headset - so the hand-origin substitution may be doing the visible work. Probe
+   the ability slots during a real cast, and test a TRACE plasmid (Electro Bolt)
+   against a PROJECTILE one (Incinerate) before calling the ability path fully
+   controlled.
+5. **Only if #4 shows the direction is NOT under control**, chase the damage
+   factory:
    `vraim scanimpl` the damage-factory virtual at factory vtbl `+0xEC` (factory
    fetched by 0x231E70, called from `UAttackAbility::InitiateDamage` 0x1BBD80),
    then substitute the direction there. ENGINE_NOTES "Fire flow / aim" has the
    whole chain and the ruled-out candidates.
-4. **Hide the game's head-centred crosshair** once the laser lands (it will
+6. **Hide the game's head-centred crosshair** once the laser lands (it will
    disagree with the aim ray). Cheap attempts first through the `exec` seam; if it
    turns exploratory it drops to the M9 HUD work.
 4. **Then the M6 acceptance run**: `vraim test r/l` + fire, assert impacts follow
