@@ -4,9 +4,12 @@
 
 ## Current state (2026-07-25, session 10)
 
-**M6 is UNDER WAY: the fire flow is mapped, the aim seam is shipped and
-command-gated, and the plasmid seam is live-confirmed - but the aim is NOT yet
-decoupled end to end.** What changed today, in the order it matters:
+**M6: WEAPON AIM IS DECOUPLED AND FLAT-VERIFIED. The right controller now aims
+the gun; plasmids (left hand) still need one more seam.** Proof, at a flat wall
+with a pistol: injected hand aim put the bullet decals 12 deg right, 12 deg left,
+10 deg down and 8/8 up-right of the crosshair **while the camera never moved**,
+and `vraim off` put the next round back on the crosshair. What changed today, in
+the order it matters:
 
 **1. The fire flow is no longer a mystery** (full map + every address in
 ENGINE_NOTES "Fire flow / aim"). Attacks in this engine are ABILITIES: trigger
@@ -38,16 +41,23 @@ the ability seam fires on an Electro Bolt cast, the hand map learns from the
 trigger ("learned LEFT-hand (plasmid) object"), and ORIGIN substitution lands
 (`SUB(L)` with our numbers).
 
-**4. What is NOT done - the direction.** `GetPerfectFireStart` fills POSITIONS
-only (live: out-params were the player location, a zero, and location+lean); the
-trace DIRECTION is produced one layer deeper in the damage factory. Ruled out
-live: `APawn::GetViewDirection` and `AShockPlayer::GetViewPoint` (never called
-during a shot). The next probe target is the factory virtual at `+0xEC`
-(ENGINE_NOTES has the address). Also unverified: the WEAPON path end to end -
-the only save in the tree spawns with wrench + Electro Bolt, and the wrench
-never traces, so a ranged weapon is needed (see "Next steps" #1).
+**4. The direction WAS there - hiding in plain sight as a denormal.** The
+weapon's out-param B is an **FRotator**, whose rotation-unit int32s reinterpret
+as float denormals and therefore print as `(0.000 0.000 0.000)`. Its live values
+matched the camera rotation exactly once printed as ints (`B[rot]=(132 116 0)` vs
+heartbeat `rot=(144 116 0)`). `aim.cpp` now classifies every out-param by value
+(small int32s = rotator, unit floats = direction, thousands = position) and
+writes the matching type - and the bullets follow. Ruled out along the way:
+`APawn::GetViewDirection` and `AShockPlayer::GetViewPoint` (probed live, never
+called during a shot).
 
-**5. Tooling that will keep paying off.** Headless UELib decompiling
+**5. What is NOT done - the PLASMID direction.** The ability path's rotator
+out-param is all-zero, so its direction is produced downstream in the damage
+factory: probe the factory virtual at vtbl `+0xEC` (ENGINE_NOTES has the chain).
+The left hand therefore still shoots where the view points. Also not started:
+the reticle at the aim ray (M6 rung 2).
+
+**6. Tooling that will keep paying off.** Headless UELib decompiling
 (`tools/uscript/dump.ps1`, package loads in <1 s), `vraim scan <Class> <Func>`
 (hook any name-based native read-only) and `vraim scanimpl <rva> <args>` (hook
 any C++ implementation) - so "does this function run when X happens" is a
@@ -388,14 +398,10 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **USER, flat, ~2 minutes: give the player a ranged weapon and fire it.** This
-   is the one thing blocking the weapon half of M6. Run the external trainer for
-   a loadout (a pistol or tommy gun with ammo is enough), stand facing a wall a
-   few metres away, then: `.\tools\game-cmd.ps1 "vraim probe on" "vraim dump 40"`
-   and fire ~5 shots (mouse or pad) plus a couple of plasmid casts. The log lines
-   `[aim] weapon this=... A=(...) B=(...) C=(...)` then say whether the weapon
-   path carries a DIRECTION out-param (the disassembly says its out-param B
-   should) - if it does, the right hand is one line of gating away from done.
+1. **USER, in headset: does controller-aimed shooting feel right?** The flat
+   proof is done, but the XR grip-pose path has never run against a real
+   controller. Checklist at the end of this session's log entry. `vraim off`
+   reverts to stock aim instantly if it feels wrong.
 2. **Find the plasmid trace direction** (the last unknown in the fire flow):
    `vraim scanimpl` the damage-factory virtual at factory vtbl `+0xEC` (factory
    fetched by 0x231E70, called from `UAttackAbility::InitiateDamage` 0x1BBD80),
@@ -500,8 +506,26 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
   <Func>` (any name-based native, read-only) and `vraim scanimpl <rva>
   <stackArgs>` (any C++ implementation, one detour family per arity so the
   callee-pop stays correct).
+- **(late, same session) THE WEAPON AIM IS DECOUPLED - flat-verified.** The user
+  supplied a pistol via the trainer and saved the game with it (so future
+  sessions can iterate solo). With the probe logging out-params as ints, B
+  revealed itself as an **FRotator** matching the camera rotation - rotation
+  units reinterpret as float denormals, which is why it had been printing as
+  `(0.000 0.000 0.000)`. Substitution now classifies each out-param by value and
+  writes the matching type. Wall test, camera stationary throughout: injected
+  hand aim of +12 deg yaw, -12 deg yaw, -10 deg pitch and +8/+8 each put the
+  bullet decals exactly where asked, and `vraim off` put the next round back on
+  the crosshair. Seam counters: 9 calls / 9 substitutions / 0 skips.
+  Left-hand plasmids are unchanged (their rotator out-param is all-zero - the
+  ability direction comes from the damage factory, next session's target).
+- Harness note: a `command.txt` written with PowerShell's
+  `Set-Content -Encoding utf8` gets a **BOM**, which corrupts the first command
+  token and is silently ignored by the poller. Use `tools/game-cmd.ps1` (it
+  writes via `File::WriteAllText`, no BOM). Also: with `vrinput` off, synthetic
+  pad presses are inert - drive menus with a real `VK_RETURN` on the highlighted
+  item instead.
 - Session ends: game closed, DLLs installed, branch `m6-decoupled-aim` pushed,
-  PR opened for review. No crashes and no new dumps across ~6 boots of hooking
+  PR opened for review. No crashes and no new dumps across ~8 boots of hooking
   engine internals.
 
 

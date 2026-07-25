@@ -583,11 +583,24 @@ only) plus capstone walks of the implementations:
    produced, and it is the one piece not yet pinned down** (see below).
 
 **Live findings (probe, 2026-07-25):**
+- **The weapon path's out-param B is an FRotator, and it IS the fire direction -
+  CONFIRMED by substitution.** Live values `B[rot]=(132 116 0)` matched the
+  camera's own rotation exactly (heartbeat `rot=(144 116 0)`), and writing our
+  own pitch/yaw there moves the bullets: firing at a flat wall with an injected
+  hand aim put the decals 12 deg right, 12 deg left, 10 deg down and 8/8 up-right
+  of the crosshair while the CAMERA never moved, and `vraim off` put the next
+  round back on the crosshair. That is M6's acceptance criterion, flat.
+- **A rotator reads as three near-zero floats.** Rotation units are int32s whose
+  float reinterpretation is a denormal, so an FRotator out-param prints as
+  `(0.000 0.000 0.000)` - which cost this session a long detour chasing a
+  "missing" direction. `aim.cpp` now classifies each out-param by value (small
+  int32s = FRotator, unit-length floats = direction vector, thousands = position)
+  and writes the matching type; the probe log tags each slot `[rot]/[dir]/[pos]`.
 - `UAttackAbility::GetPerfectFireStart` FIRES on a plasmid cast (Electro Bolt),
-  `this` vtable = `UAttackAbility` 0xD7E9D4, and the out-params read
-  outA = the player's Location, outB = (0,0,0), outC = Location + a small lean
-  offset. **All positions, no direction** - matching the function's name.
-  Origin substitution therefore works today (logged `SUB(L)` with our values).
+  `this` vtable = `UAttackAbility` 0xD7E9D4, and its out-params read
+  outA = the player's Location, outB = an ALL-ZERO rotator, outC = Location + a
+  small lean offset. So the ability path gives a start but no usable rotation:
+  the plasmid's direction still comes from somewhere else (see Open below).
 - `APawn::GetViewDirection` impl (**0x3CBA10**, pawn vtable +0x35C) and
   `AShockPlayer::GetViewPoint` impl (**0x1E5E50**, +0x360) are NOT called during
   a cast (scanimpl, zero calls) - so the factory does not ask the pawn.
@@ -607,11 +620,15 @@ cross-checked against a live hexdump of the player pawn):**
   rotation lives on the PlayerController, not the pawn.
 - `+0x550` float **eye height** (`GetViewPoint` = Location + eyeHeight on Z)
 
-**Open (next session):** find where the damage factory turns rotation into the
-trace direction - either the factory virtual at `+0xEC` (hook it with
-`vraim scanimpl`) or the PlayerController Rotation field it presumably reads. A
-ranged weapon is needed to confirm the weapon path end to end: the only save
-available has just the wrench + Electro Bolt, and the wrench never traces.
+**Open (next session): the PLASMID direction only.** The weapon path is done.
+For abilities, `GetPerfectFireStart`'s rotator out-param is all-zero, so the
+direction is produced downstream - probe the damage-factory virtual at factory
+vtbl `+0xEC` (factory fetched by 0x231E70 inside `UAttackAbility::InitiateDamage`
+0x1BBD80) with `vraim scanimpl`. Note what the weapon side revealed about where
+a view rotation lives: the weapon's B comes from the `[pawn+0x450]` chain's
+`+0x1E4`, and it carries the PITCHED view rotation - i.e. that chain reaches the
+PlayerController, not the pawn (whose own Rotation keeps pitch 0). The same
+field is the prime suspect for the ability path.
 
 **Class vtables (MSVC RTTI walk: TypeDescriptor `.?AV<name>@@` ->
 CompleteObjectLocator -> vtable; scratchpad `rtti.py`):** AShockPlayer
