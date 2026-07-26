@@ -721,48 +721,56 @@ things the mono harness cannot see. USER DIRECTIVE going forward: test in
 STEREO ONLY (the mod is stereo-only in use; mono-flat "passes" have misled
 two sessions), investigate before changing anything.
 
-**The new prime suspect, consistent with every report since session 11:
-the foreground rig renders with WRONG/ZERO STEREO GEOMETRY.**
-(a) DISPARITY: the fg view's eye sits at a fixed ACTOR-space offset (E,
-    dump-proven) - if camera TRANSLATION (which is what per-eye offsets are)
-    never reaches the fg eye, both SR eyes render identical rig pixels =
-    zero disparity = the brain glues a big object to the face exactly like
-    a HUD. All 12 model dumps had camLoc == actorLoc, so they CANNOT
-    distinguish actor-anchored from camera-anchored - untested, decisive.
-(b) DEPTH RESPONSE: the fg depth-hack renders the rig in a compressed depth
-    band, so hand-distance changes barely change apparent distance ("very
-    little increments") - and the render lock's keep-natural-depth choice
-    PINS it further. Size ("huge") is the same lens.
-(c) The residual direction coupling they still feel = (a)+(b) percept plus
-    reprojection: the compositor timewarps by the submitted pose against a
-    rig whose rendered geometry contradicts its perceived depth.
+**THE ISSUE IS NOW CONFIRMED AND QUANTIFIED (session 13 part 3, flat, stereo
+on, lock off, no code changes) - it is the foreground scene's DEPTH GEOMETRY,
+one mechanism explaining every symptom:**
+- **Camera-translation A/B (`offset 0 +-10 0`, hand world-parked)**: the wall
+  shifted ~70 px, the GUN shifted ~425 px - the rig parallaxes like an object
+  **~14 UU (~28 cm) from the face** while the hand's true distance is ~20 UU,
+  and it over-responds to camera translation ~1.35x vs world-correct
+  (~310 px). So: the fg eye FOLLOWS camera translation (disparity exists -
+  matches the user seeing real 3D; the earlier zero-disparity guess is dead,
+  and the model's "E anchored in ACTOR space" is wrong for translation - E
+  rides the CAMERA), and the depth-hack geometry (eye pulled back ~30 UU +
+  narrow lens) makes the STEREO disparity of the rig correspond to
+  ~(trueDepth + 30)/2.1 - a depth bubble that pins the gun 25-40 cm from the
+  eyes for ANY realistic hand position. "Super close to the camera": measured.
+- **Hand-distance A/B (`vrhands pos 40 0 0` = hand 40 cm further)**: doubling
+  the hand's true distance shrank the gun only 0.62x (world-correct: 0.5x),
+  and through the +30 depth offset the perceived distance moves 27 -> ~38 cm
+  when the real hand moved 35 -> 75 cm. "Moves away in very little
+  increments": measured.
+- Every head translation (lean, the neck offset in every head turn, the
+  per-eye offsets themselves) slides the rig 1.35x against the world, and the
+  laser (compositor-space, world-correct) moves at 1.0x - "same direction,
+  different speeds": measured.
 
-1. **Decisive flat STEREO experiment first (no code, one boot)**: hand
-   parked, `vrbones lock off`, camera `offset 0 10 0` (10 UU lateral = ~6
-   eye-widths), A/B screenshots DURING GAMEPLAY: if the gun parallaxes like
-   a ~20-UU-away world object, the fg eye follows camera translation (then
-   per-eye disparity exists and the suspect dies); if it barely moves, the
-   fg eye is actor-locked -> ZERO per-eye disparity proven. (Session 13
-   attempted this; the game was paused - redo at gameplay.) Follow with the
-   pixel-level version: a consecutive-present pair dumper in frame_inspector
-   (small) to diff L/R eye images of the rig directly under flat SR.
-2. **If confirmed, the fix design (the real change, plan before building)**:
-   per-eye render lock - the SR second-pass branch re-SOLVES the anchor
-   against the right-eye camera (pass 1 uses the left-eye camera) instead of
-   replaying pass-1 bones, giving the anchor TRUE interocular disparity; plus
-   depth-matching - drop the keep-natural-depth choice and set the fg depth
-   to k*trueDistance (k = tan(worldFov/2)/0.7698) so apparent SIZE tracks the
-   world (kills "huge" AND the attenuated hand-distance response). Both are
-   bones-side (FX parity preserved). Risks to check: fg near/far planes, the
-   rigid-section rebake gain under per-eye deltas, cluster distortion at the
-   deeper fg depth.
-3. **Fallback if bones-side per-eye solving disappoints**: the vm_draw
-   render-side lane (Map/Unmap patch, fully designed session 12) - substitute
-   the fg transform in the 576-tier cb with a true per-eye world transform.
-   FX parity must be re-proven on that path (its known limitation).
-4. **After geometry is right**: kill the hand sway at source (UpdateHandValues
-   bob params) and revisit `lockgain` (the rigid-rebake doubling) - polish,
-   not blockers, until the stereo geometry lands.
+**NEXT SESSION IS THE FIX, fully specified - and it is one constraint change,
+not a radical rebuild:** in `render_lock_delta` (bones.cpp), replace the
+keep-natural-depth constraint (third solve equation, currently w = wNat) with
+**w* = k * trueDistance**, k = tan(worldFov/2)/0.7698 (the lens ratio,
+computed per frame from the option FOV). Because apparent size, stereo
+disparity, and translation-parallax are all the SAME (1/w)*k geometry, that
+one constraint makes all three world-correct simultaneously - the gun takes
+its true size, its true stereo depth, moves 1:1 with the hand, and stops
+sliding under head translation. The ndc-position solve (the session-13
+rotation model) stays as is.
+Verify while building (all flat, all stereo):
+1. Acceptance = repeat the camera-offset A/B: the gun must shift ~310 px
+   (like a 20-UU object), not 425. Repeat the hand-distance A/B: doubling
+   distance halves the size. Numeric, no headset, no mono.
+2. Check the fg near/far clip band tolerates w up to ~140 (extended arm at
+   FOV 137); check cluster proportions at the deeper depth (the rigid
+   cluster translates as one - intra-rig distortion should stay second
+   order); re-measure the rigid-rebake gain (lockgain) under the new
+   constraint.
+3. Then the in-headset run: expect the gun AT the hand's distance, correct
+   size (this also likely retires the DrawScale item), 1:1 hand motion.
+Fallback if the depth band clips or distorts: the vm_draw render-side lane
+(substitute the fg transform per eye in the 576-tier cb - designed session
+12; FX parity must be re-proven there).
+After geometry lands: sway kill at source (UpdateHandValues bob params) as
+polish.
 2. **Model scale, now probably cheap**: test the REAL DrawScale live - write
    actor +0x2AC through the dirty protocol (or call AActor::SetDrawScale
    0x375830 directly) on the AHands actor and the weapon actor; if the
@@ -849,6 +857,26 @@ retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-26 - Session 13 part 3 (the depth geometry confirmed flat, fix specified)
+
+- User correction: the rig IS 3D in the headset - just pinned near the face
+  and under-responsive to hand distance. That killed the zero-disparity
+  variant and focused the depth-geometry one.
+- Confirmed flat under stereo with two no-code A/Bs (details in Next steps):
+  camera-offset parallax puts the rig's stereo depth at ~14 UU (~28 cm) vs
+  the hand's true ~20 UU, with 1.35x over-response to camera translation;
+  hand-distance doubling shrinks the gun 0.62x vs the correct 0.5x. The fg
+  eye follows camera TRANSLATION (the session-13 model's actor-anchored E is
+  wrong for translation - E rides the camera; the 12 mono dumps could not
+  distinguish because camLoc == actorLoc in all of them).
+- Fix specified for next session: one constraint change in the existing
+  solve (fg depth w* = k * trueDistance instead of keep-natural) makes size,
+  stereo depth, and parallax world-correct at once. Flat stereo acceptance
+  numbers defined (gun parallax 425 -> ~310 px; size halves with distance).
+- The user's offered in-headset protocol (periodic screenshots + telemetry
+  while they move on a script) stays in reserve in case the flat acceptance
+  and the headset ever disagree again.
 
 ### 2026-07-26 - Session 13 part 2 (headset verdict: no change felt - the suspect moves to stereo depth)
 
