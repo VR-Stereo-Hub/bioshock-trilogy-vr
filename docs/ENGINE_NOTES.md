@@ -1000,6 +1000,67 @@ fixed projection, and that is the whole "camera-coupled rig term" of session
   composition moves between builds - re-localize the gun (crop + look)
   before trusting any cross-build A/B.
 
+### Session 15 (2026-07-27) - THE FOREGROUND FOV FIELD, and the dolly that guards it
+
+**The strategy pivot (user's call): stop countering the fg pipeline from
+outside - patch its inputs at the source.** Outcome: half of the pipeline
+(the LENS) fell to a single field write; the other half (the fov-coupled eye
+dolly) is located behaviorally but its source survives the night.
+
+- **THE REAL FOREGROUND FOV: a float on the PLAYERCONTROLLER at +0x460
+  (patterns.h kPcForegroundFovOffset), consumed by the renderer EVERY
+  FRAME.** Found by float-sweeping the live PC (fsweep, new command) after
+  every scan for the derived tan constants came up empty (they are computed
+  per frame - zero disk hits, zero stable memory copies in any
+  representation; the one 0.4330127 hit is the engine's trig lookup TABLE
+  entry the computation itself samples). Live poke: the whole rig re-lenses
+  THE SAME FRAME. Dump-proven: at the world-equivalent value every vm draw
+  (576 tier AND the 832/1088 lighting tiers) joins the world's projection
+  cluster - one field feeds all passes; the multi-builder risk never
+  existed. The value is a 4:3 spec: world-match = 2*atan(tan(worldFov/2)*
+  3/4) = 101.5 at option 117 - the exact number session 13 computed and
+  held at the WRONG address (pawn+0x558, which is EYE HEIGHT - the
+  session-11 identification was right and the session-13 property mapping
+  wrong; the 60.0/36.0 there are stand/crouch eye heights).
+- **Shipped as `vrfgfov on|off`** (camera.cpp): per-frame write of the
+  world-equivalent spec from the live FOV option, post-tick so nothing
+  fights it (a poke held for minutes; no lerp-back), with save/restore.
+  Through it the rig renders with the world lens: correct internal
+  perspective, the arm+sweater composition visible, size plausible - the
+  telephoto-pasted-into-wide-angle ceiling of every bone-space counter is
+  GONE while it is on.
+- **The remaining defect: the fg eye DOLLIES BACK by a fov-coupled amount.**
+  Measured by offset-parallax with the VANILLA rig (drive off): rendered
+  depth = df + pull, pull ~13 UU at the 60-deg lens (matches session 14's
+  calibration) and ~65 UU at the matched lens - a tan^2-like growth. The
+  dolly preserves the authored framing under fov changes (that is WHY the
+  lens field alone does not finish the job).
+- **The dolly's source was NOT found tonight**: no stored 13/65/38.5-ish
+  field on the PC; the promising 22.0 pair at PC+0x2FC/+0x300 and the 75.0
+  at +0x45C poked inert (live + re-equip). Next instrument (built, unused):
+  `fgstack` logs the cb writer's callstack - frames 0x7C3044 (uploader,
+  from a shadow buffer at [obj+0x480]) <- 0x789D92/DF7 (commit) <-
+  0x7661B3 <- 0x77DC1E <- 0x60ECCA <- per-section 0x3DBF7C/0x3EDCBF -
+  disassembling the transform build upstream of the commit is the bounded
+  session-16 route to the eye computation.
+- **HARD CONSTRAINT, flat-proven: the dolly cannot be countered through
+  BONES at the matched lens.** Pulling the anchor 65 UU toward the camera
+  places the cluster behind the WORLD camera and the engine's visibility
+  system culls the entire rig (blank hand). Session 14's counter only
+  worked because the narrow lens demanded pushes AWAY from the camera.
+  Corollary: the depth term must die at its source, or the lens must stay
+  unmatched while bones push outward (the session-14 configuration).
+- **Vanilla vs driven path render DIFFERENT pulls.** With the drive on at
+  the matched lens the parked fist rendered huge (near), not 65-deep -
+  the rigid rebake path's eye/translation behavior differs from the
+  vanilla path's, and the session-15 lockpull calibration (65, vanilla)
+  does not transfer. The drive-on pull at the matched lens is UNCALIBRATED;
+  measuring it with the standard offset/size harness is session 16's first
+  hour. Until then `vrfgfov` DEFAULTS OFF and the shipping behavior is
+  byte-for-byte session 14's verified configuration (the matched-lens lock
+  plumbing - live invTan scales, k=1 collapse, `vrbones lockpull` - is all
+  in place behind the toggle).
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on

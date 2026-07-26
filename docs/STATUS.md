@@ -2,7 +2,42 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-27, session 14 - THE DEPTH FIX: SIZE, STEREO DEPTH, PARALLAX WORLD-CORRECT FLAT)
+## Current state (2026-07-27, session 15 - STRATEGY PIVOT: THE FG FOV FIELD FOUND; THE DOLLY IS THE LAST WALL)
+
+**The user called the counter-modeling approach dead after three sessions and
+pivoted to patching the foreground pipeline at its source. The pivot paid
+half-out immediately: the fg pass's FOV is a live PLAYERCONTROLLER FIELD
+(+0x460), consumed by the renderer every frame - one write re-lenses the
+whole rig to the WORLD lens, dump-proven across every cb tier.** Shipped as
+`vrfgfov on|off` (per-frame write of the world-equivalent 4:3 spec,
+2*atan(tan(worldFov/2)*3/4) - 101.5 at option 117, the exact value session
+13 held at the wrong address: pawn+0x558 is EYE HEIGHT, not fg fov). Through
+the honest lens the rig shows correct internal perspective and the full
+arm+sweater composition - the telephoto ceiling of every bone-space counter
+is gone while it is on.
+
+**What stopped the full completion tonight, both flat-proven (ENGINE_NOTES
+session 15):** (1) the fg eye DOLLIES BACK by a fov-coupled amount (~13 UU
+at the 60-deg lens = session 14's calibration; ~65 UU at the matched lens,
+vanilla path) whose source field was not found (every stored representation
+scanned; the promising candidates poked inert); (2) bones CANNOT counter the
+dolly at the matched lens - the correction places the cluster behind the
+world camera and the engine culls the whole rig; (3) the DRIVEN rigid path
+renders a different pull than the vanilla path (the parked fist rendered
+near/huge where vanilla math said 65-deep) - the drive-on pull at the
+matched lens is UNCALIBRATED.
+
+**Shipped defaults are SAFE: `vrfgfov` is OFF, and the default build is
+regression-verified byte-identical in behavior to session 14's fully
+acceptance-passed configuration** (tlm reproduces k=2.12 wNat=30.4 w*=36.8
+depth=+6.43 under vrstereo; fire test clean; dumps 8). All the matched-lens
+plumbing (live invTan scales, k=1 collapse, `vrbones lockpull`) sits behind
+the toggle, plus new instruments: `fgstack` (cb writer callstacks - already
+harvested: 0x7C3044 <- 0x789D92/DF7 <- 0x7661B3 <- 0x77DC1E <- 0x60ECCA <-
+0x3DBF7C/0x3EDCBF), `fsweep` (live float-field sweep), `fginfo` (PC/pawn
+pointers).
+
+## Previous state (2026-07-27, session 14 - THE DEPTH FIX: SIZE, STEREO DEPTH, PARALLAX WORLD-CORRECT FLAT)
 
 **Session 13's depth-geometry defect (the "hands are a HUD on my face, but a
 bit 3d" percept) is fixed and flat-verified IN STEREO with numeric acceptance;
@@ -744,12 +779,23 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **THE IN-HEADSET RUN on the session-14 build (the only open gate for the
-   depth work)** - checklist below. Flat says the gun now sits at the hand's
-   true distance at the true size and moves 1:1; only the user's eye closes
-   it. Live knobs if anything reads off: `vrbones lockdgain <0..2>` (depth,
-   default 0.9), `vrbones lockgain <0..2>` (lateral, default 0.9),
-   `vrbones lock abs|diff|off`.
+0. **SESSION 16, FIRST HOUR - calibrate the DRIVE-ON pull at the matched
+   lens** (the one number that decides how Option 2 completes): vrfgfov on,
+   drive on, parked hand, lock abs with `lockpull 0`, run the standard
+   offset-parallax + size A/Bs (cal.ps1 pattern from the session-15
+   scratchpad). Three outcomes: (a) pull_driveOn is small -> set lockpull to
+   it, re-run the session-14 acceptance ladder at k=1, DONE - Option 2
+   complete; (b) pull_driveOn is large positive -> bones cannot counter it
+   (behind-camera culling, flat-proven) -> hunt the dolly source: disasm the
+   transform build upstream of the cb commit (writer RVAs harvested, xdis.py
+   ready) - timebox ONE session; (c) the source stays unfound -> the vm_draw
+   replay lane (the user's original proposal) with everything learned.
+1. **The in-headset A/B the user can run ANY TIME on this build**: the
+   default is session 14's acceptance-passed configuration (checklist below
+   still valid). Optionally `vrfgfov on` + `vrbones lock off` for a LOOK at
+   the honest lens (correct perspective and composition; depth reads beyond
+   the hand - known, uncalibrated) - impressions welcome, pass/fail not
+   expected yet.
 2. **Model scale - CHECK IN-HEADSET BEFORE SPENDING TIME**: the session-14 fix
    makes apparent size track distance world-correctly, which likely retires
    the "gun huge" complaint entirely. The DrawScale lever (actor +0x2AC via
@@ -847,6 +893,36 @@ design; `vrhands mode hands` is the retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 15 (pivot to source-patching: the fg FOV field found live; the dolly wall mapped)
+
+- User verdict opened the session: three sessions of counter-modeling with
+  no felt progress - approach retired. Discussion settled on "patch the fg
+  pipeline at its source" (one timeboxed shot) with the draw-replay lane as
+  the committed fallback.
+- Discovery chain, all instruments now in-tree: derived tan constants have
+  NO stored form anywhere (computed per frame; the only scan hit was the
+  engine's own trig lookup table) -> cb writer callstacks harvested via the
+  new fgstack -> pivoted to property hunting on the live objects via the
+  new fginfo/fsweep -> PC+0x460 poked -> the rig re-lensed the same frame.
+  Dump: every vm draw across all cb tiers joined the world projection
+  cluster. `vrfgfov` ships the write per frame.
+- Session-13 errata closed: pawn+0x550/558 is EYE HEIGHT (60/36 stand/
+  crouch) - session 11 had it right; the fg fov property lives on the
+  PLAYERCONTROLLER; and 101.5 (the value session 13 held at the wrong
+  address) is exactly the world-match spec at option 117.
+- The wall, mapped precisely: the fg eye dollies back fov-coupled (13 UU at
+  60 deg -> ~65 UU matched, vanilla path); no stored field found (22.0 pair
+  and 75.0 neighbors poked inert); bones cannot counter it at the matched
+  lens (cluster lands behind the world camera -> engine culls the rig -
+  the session-14 counter only ever worked because the narrow lens pushed
+  AWAY); and the driven rigid path renders a DIFFERENT pull than vanilla
+  (parked fist rendered near/huge at lockpull 0) - drive-on calibration is
+  the session-16 opener.
+- Shipped safe: vrfgfov default OFF; regression smoke reproduced session
+  14's exact tlm numbers under vrstereo (k=2.12 wNat=30.4 w*=36.8
+  depth=+6.43), fire clean, dumps 8. The matched-lens lock plumbing
+  (parametrized invTan, k=1 collapse, lockpull knob) is behind the toggle.
 
 ### 2026-07-27 - Session 14 (the depth fix: w* = k*d, flat-stereo acceptance PASSED)
 

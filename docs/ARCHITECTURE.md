@@ -347,4 +347,16 @@ runtime.
 - **2026-07-25 - M6/M7 split stays as planned.** M6 is the aim vector only. The wrench turned
   out to damage through a Havok collision phantom rather than a trace, so "melee feels aimed" is
   purely a hands-rendering matter and belongs to M7 with the visible weapon; articulated IK arms
-  remain post-v1.
+  remain post-v1.- **2026-07-27 - Viewmodel strategy pivot: patch the foreground pipeline's INPUTS, stop
+  countering its outputs (user's call after three sessions of counter-modeling).** The
+  render-lock lane (model the fg transform, move bones so wrong math lands right) kept
+  passing flat acceptance while the in-headset percept did not move; every session
+  surfaced one more unmodeled term. Session 15 replaced it: the fg pass's FOV is a live
+  PlayerController field (consumed per frame - ENGINE_NOTES session 15) and `vrfgfov`
+  writes the world-equivalent spec, making the rig render through the WORLD lens with no
+  model at all. Two constraints found the same night bound the remaining work: the fg
+  eye dollies back by a fov-coupled amount whose source is still unfound, and bones can
+  never counter it at the matched lens because the engine culls content behind the world
+  camera. Fallback ladder if the dolly source stays unfound: (a) accept the offset with
+  matched lens + exact laterals; (b) the vm_draw replay lane (render the rig ourselves at
+  the controller, engine rig hidden - the user's original proposal, still on the table).
