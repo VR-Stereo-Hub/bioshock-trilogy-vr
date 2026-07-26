@@ -441,6 +441,59 @@ inline constexpr int kBoneLClusterLast = 21;
 inline constexpr int kBoneLWrist = 6;
 inline constexpr int kBoneLSleeve[] = {3, 4, 5, 22, 23};
 
+// ---- Foreground (viewmodel) scene (session 13, 2026-07-26) ------------------
+// The renderer draws the first-person rig as a separate FOREGROUND scene with
+// its own projection, fixed at a 60-deg 4:3 spec regardless of the world FOV
+// (frame-dump proof: vm draws carry tanH = tan(30)*4/3 = 0.7698 / tanV =
+// tan(30)*3/4 = 0.4330 at world FOV 110 AND 137, while world draws track the
+// option exactly), through a VIEW whose eye is depth-pushed ~32 UU behind the
+// rig origin IN ACTOR SPACE and which carries the engine's hand sway. The
+// composite is self-consistent at view center but displaces the rendered rig
+// laterally as soon as the camera splits from the actor rotation - the M7
+// "camera-coupled rig term" (10-15 deg at 30 deg of HMD head-yaw). Fix:
+// bones.cpp captures the vm draws' component->clip transform from cb0 every
+// frame (fingerprint below, frame_inspector::set_cb_watch) and solves the
+// anchor target so the renderer's own math lands it world-correct.
+// Dead end recorded: the pawn (AShockPlayer) carries a foreground-FOV property
+// group at +0x550 (default 60.0) / +0x554 (36.0, zoom?) / +0x558 (lerped
+// current; script names ForegroundFovAngle/DefaultForegroundFOV exist in
+// Engine.U/ShockGame.U) - but holding +0x558 at another value per frame does
+// NOT change the render (dump-proven): the renderer's constants are built
+// elsewhere; the property is upstream state only.
+inline constexpr uint32_t kPawnForegroundFovOffset = 0x558; // research; not a render lever
+// cb0 fingerprint: floats 12..18 of every foreground draw hold the constant
+// screen-ray block (2*tanH, 0, -tanH, 0, 0, -2*tanV, tanV) of the fixed
+// projection; the capture spans floats 36..59 (viewport block, then the
+// component->clip rows x,y,z,w, then an aux row).
+inline constexpr float kFgCbFingerprint[7] = {1.5396008f, 0.0f,        -0.7698004f, 0.0f,
+                                              0.0f,       -0.8660254f, 0.4330127f};
+inline constexpr uint32_t kFgCbFingerprintFirst = 12;
+inline constexpr uint32_t kFgCbTransformFirst = 36;
+inline constexpr uint32_t kFgCbTransformCount = 24;
+// The 576-byte tier only: the 832/1088 lighting-pass tiers carry the SAME
+// fingerprint with a DIFFERENT transform at these offsets (same row norms,
+// zero w translation - a light/other-space variant that must never feed the
+// render-lock solve).
+inline constexpr uint32_t kFgCbBytes = 576;
+// Structural model of the foreground view (dump-derived, session 13; the
+// render-lock SOLVE uses this instead of live captures - with the bone drive
+// active the engine switches mesh sections to a baked bone-in-matrix rigid
+// path, so a captured matrix embeds our own write and solving against it
+// feeds back). Static decomposition, verified against the h0 AND h30 dumps
+// to 3 decimals: M = rows scaled (1/tanH, 1/tanV, 1, 1) of [R | -R*E], where
+// R = (actor-inverse x camera) rotation in the rig's component frame plus the
+// engine's idle hand sway (~+-3 deg, unmodeled residual), and E = the
+// foreground eye parked in COMPONENT space behind the rig origin:
+inline constexpr float kFgEyeComp[3] = {-32.1f, -5.6f, -0.9f}; // mean of 12 dumps, +-0.5
+inline constexpr float kFgInvTanH = 1.2990381f; // 1/0.7698004
+inline constexpr float kFgInvTanV = 2.3094011f; // 1/0.4330127
+// The fg view rotation = R_delta composed with a small composition bias whose
+// mean measured (+1.7 yaw, +1.1 pitch) deg across the dump set; the +-1.7 deg
+// wobble around it is the hand sway itself (x2.12 lens gain on screen =
+// vanilla's visible hand liveliness, the model's residual floor).
+inline constexpr float kFgViewYawBiasDeg = 1.7f;
+inline constexpr float kFgViewPitchBiasDeg = 1.1f;
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

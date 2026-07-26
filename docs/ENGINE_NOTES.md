@@ -859,6 +859,88 @@ so the engine restores itself. Freeze (+0x20) is kept as a diagnostic lever,
 not used by the drive - it also stops the rig's own animations, and whether it
 starves the anim notifies that drive firing is UNTESTED.
 
+## Foreground scene FOV (session 13, 2026-07-26 - the camera-coupled rig term)
+
+**The renderer draws the first-person rig as a separate FOREGROUND scene with a
+fixed projection, and that is the whole "camera-coupled rig term" of session
+12 part 4.** Evidence chain, all reproducible flat:
+
+- **2-shot discriminator**: hand world-parked via bones (`vrhands simpose`),
+  camera untouched, `gfov 100` vs `gfov 137`: the world rescales, the rendered
+  gun HOLDS its screen position/size. The rig is not projected with the world's
+  projection.
+- **Frame-dump proof** (`dumpframe full` at gfov 110 vs 137, draws classified
+  by which cb0 floats respond): world draws carry proj scale m00 = 1/tan(w/2)
+  exactly (0.7002 -> 0.3939) plus a screen-ray helper block at floats 12-14 of
+  the form (2*tanH, 0, -tanH); the VIEWMODEL draws (the first draws of the main
+  pass - index counts 7704/14595/26178 at the wall save, repeated per light
+  pass) carry the same structures with CONSTANT values tanH 0.7698 / tanV
+  0.4330 at BOTH world FOVs. Those decode exactly as a **60-deg 4:3 spec**:
+  tanV = tan(30)*3/4, tanH = tanV*16/9 = tan(30)*4/3. Implied 16:9 horizontal
+  FOV 75.2 deg.
+- **Geometry of the defect**: the rig is placed by the real view transform
+  (world-correct orientation) but projected through the narrow lens, so a
+  world-fixed hand at view angle theta renders at atan(k*tan(theta)), k =
+  tan(worldFov/2)/0.7698 (~2.1 at option 117). Camera == rig anchor in flat
+  play, so theta ~ 0 and nothing shows; under HMD head-look theta = the head
+  offset and the position over-pans 10-20 deg. Also explains the oversized gun
+  (narrow FOV renders larger) and "FOV slider does not rescale the hands".
+- **Script-side names** (BakedScripts name tables): `Engine.Controller.
+  ForegroundFovAngle`, `Engine.PlayerController.DefaultForegroundFOV`,
+  `ShockGame.PlayerWeapon.ZoomedForegroundFOVAngle`, FadeFOV actions with
+  Start/StopForegroundFOV.
+- **Dead end, recorded so nobody re-walks it**: the view PAWN (AShockPlayer)
+  carries a foreground-FOV property group at +0x550 (60.0 default) / +0x554
+  (36.0, zoom spec?) / **+0x558** (lerped current - the engine steers it back
+  to 60 within ~2-3 s of a poke). A one-shot poke of +0x558 appeared to
+  rescale the gun, but HOLDING it at another value per frame (write in the
+  CalcView detour, 1700 Hz) changed NOTHING in the render - dump-proven: the
+  vm draws kept tanH 0.7698 while +0x558 held 101.5. The renderer's
+  foreground constants are built elsewhere; the pawn property is upstream
+  script state only. (The world option int, by contrast, IS consumed per
+  frame.)
+- **The foreground VIEW is not the world view either** (matrix decode of the
+  vm draws' cb0 across a simhead series): the rig transform maps COMPONENT
+  space directly to clip; its eye sits ~32 UU behind the rig origin at a
+  roughly FIXED point in ACTOR space while its ORIENTATION follows the render
+  camera, and the whole thing carries the engine's idle hand sway (~+-3 deg,
+  time-varying). Composite effect: self-consistent at view center (anchor
+  renders within 0.5 deg of world-correct at head 0), but under camera-vs-
+  actor split the rear-pivot lever translates the rig laterally: ~14 deg of
+  anchor error at 30 deg head-yaw, plus a standing ~10 deg vertical lift at
+  rest (the authored "raised toward the eye" composition).
+- **The fix that works (bones.cpp "render lock", session 13 final)**: an
+  ANALYTIC model of the foreground transform - rows x/y/w of [R | -R*E]
+  scaled by (1/tanH_fg, 1/tanV_fg, 1) - solved as a 3x3 so the anchor lands
+  on the world-correct pixel (natural fg depth kept, so size/perspective are
+  untouched). R = (actor-inverse x camera) rotation in the rig's component
+  frame composed with a constant composition bias (+1.7 yaw / +1.1 pitch
+  deg); E = (-32.1, -5.6, -0.9) component UU (mean of 12 dump-recovered
+  values, spread +-0.5). The correction is applied at **GAIN 0.5**: with the
+  drive writing bones every frame the engine switches rig sections to a
+  rigid path whose per-section matrices REBUILD from the driven bones, so a
+  bone move lands on screen roughly TWICE - flat-measured (gain 1.0 turned a
+  14-deg cancel into ~25 deg of effect; 0.5 holds the anchor within 2-4 deg
+  of world-true through +-30 yaw / +-20 pitch simhead sweeps). Two modes:
+  `vrbones lock abs` (default - anchor to the TRUE world position, which
+  also drops the authored raised/too-close composition onto the real
+  controller spot) and `lock diff` (cancel only the head-split term, keep
+  the authored composition); `lockgain` tunes the feedback compensation.
+- **Residual floor**: the hand sway wobbles the fg view +-1.7 deg and the
+  narrow lens amplifies screen error by k = tan(worldFov/2)/0.7698 (~2.1), so
+  the rig breathes ~+-3.5 deg - the same liveliness vanilla shows. To go
+  lower, kill the sway at its source (the UpdateHandValues bob parameters) -
+  queued, not done.
+- **Capture dead-ends, recorded so nobody re-walks them**: frame_inspector
+  gained a generic cb watch (Map/Unmap hook - CPU-side, free per-frame
+  capture of any fingerprinted constant buffer), and it works mechanically -
+  but captured vm matrices CANNOT feed the solve: (a) with the drive live the
+  per-section matrices embed the very bones we write (solving against them is
+  a feedback loop - it settles at a wrong fixed point or oscillates); (b) the
+  832/1088-byte cb tiers and the 480x270 postprocess pass carry the SAME
+  f12 fingerprint with foreign transform content. The watch stays in core as
+  a diagnostic instrument.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
