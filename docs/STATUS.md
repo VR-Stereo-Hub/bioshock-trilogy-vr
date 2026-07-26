@@ -670,11 +670,32 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **The in-headset M7-v2 verdict** (checklist below) - the mechanics are
-   flat-proven; what remains is the user's eye on grip alignment, wrist roll,
-   size, and the plasmid hand. Tuning levers already in place: the trim/offset
-   sliders (same semantics as before, now applied to the bone target) and
-   `vrbones anchor <idx>` if the grip point itself needs to move.
+1. **KILL THE RENDERER'S CAMERA-COUPLED RIG TERM - the last blocker, now
+   reproducible flat** (session 12 part 4). With bone memory PROVEN constant,
+   the rendered rig over-pans the world ~10-15 deg under `simhead 30` (mono +
+   stereo). Attack in order:
+   (a) Parametric measurement: simhead yaw series (-30/-15/0/+15/+30) and a
+       pitch series, one screenshot each (RE-ARM `vrhands simpose` BEFORE
+       EVERY SHOT - its hold silently caps at 120 s), measure the grip pixel
+       position precisely, fit the extra displacement vs theta (linear? tan?
+       pivot at actor origin or camera?). Note from the 30-deg run: the gun's
+       ORIENTATION stayed world-correct; the POSITION over-panned - fit a
+       translation-about-a-pivot model first.
+   (b) Find the term's SOURCE render-side: prime suspects are the engine's
+       own CalcView-internal viewmodel handling (CalcView runs ~2x/frame in
+       mono - probe whether the ACTOR rot/loc fields change between our
+       detour's g_original return and the build's consumption; hook
+       Hands.UpdateLocation's SetLocation/SetRotation inputs via the known
+       native impls at head 0 vs 30) and a dedicated view-weapon transform in
+       the rig's draw path (the vm_draw render-side design in the session-12
+       plan file has the CB-identification machinery if it comes to that).
+   (c) Fix: at the source if found; otherwise compose a measured counter-term
+       into bones::drive from ctx.driveYawOffsetRad (+ pitch analog from
+       ctx.camPitch vs actor pitch) - fully verifiable flat via the same
+       sweep before any headset time.
+2. **After the term dies**: repeat the simhead yaw/pitch/roll sweeps as the
+   flat acceptance test (gun glued to the world through all of them), run the
+   fire test, THEN hand the user the in-headset checklist below.
 2. **Model scale, now probably cheap**: test the REAL DrawScale live - write
    actor +0x2AC through the dirty protocol (or call AActor::SetDrawScale
    0x375830 directly) on the AHands actor and the weapon actor; if the
