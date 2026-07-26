@@ -707,26 +707,62 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **IN-HEADSET VERDICT on the render lock** (checklist below). The flat
-   sweep holds within the sway floor; the user's eye decides whether abs or
-   diff mode reads better and whether the residual breathing matters. The
-   in-headset tuning knobs all work live: `vrbones lock abs|diff|off`,
-   `vrbones lockgain <0..2>` (0.5 default - raise toward 0.65 if the gun
-   still trails the head slightly, lower toward 0.4 if it overshoots
-   against it), plus the existing trim/offset sliders.
-2. **Kill the hand sway at its source** (the remaining +-3.5 deg breathing):
-   the fg view wobble comes from UpdateHandValues' bob parameters on the
-   pawn/hands - find the fields (property-name scan like the fov group),
-   zero them per frame while the drive runs. This turns the render lock
-   near-exact and is the head-coupling endgame if the user still feels
-   residual motion.
-3. **If lockgain tuning ever feels scene-dependent**: the 0.5 gain models the
-   rigid-section rebake (bone move applied ~2x). The precise route is
-   understanding the renderer's section-transform build (the drive-on dump
-   showed per-section matrices: 7704 w-d 32.7 / 14595 w-d 17.5 / 26178
-   zeroed) - capstone on the fg section builder, or simply solve the
-   fixed-point equation exactly (apply M_model against bones moved by
-   delta): closed-form gain = 1/(1+lever-ratio) per axis.
+**HEADSET VERDICT ON THE RENDER LOCK: NO CHANGE FELT (2026-07-26, session 13
+part 2), and the post-mortem points somewhere new - STEREO DEPTH.** The user's
+words: the gun still counter-moves under head-look, gun and laser move "in the
+same direction but at different speeds", the gun is "almost glued to the
+camera... huge", and hand-distance changes render as "very little increments"
+- "like the hands are part of the HUD on my face, but a bit 3d". Post-mortem
+evidence: the overlay after their run showed lock |delta| = 1.7 UU (vs 6-11
+in the flat sweeps) - IN-HEADSET YOU LOOK AT YOUR HAND, so it sits at view
+CENTER where the position term the lock corrects is tiny. The flat harness
+measured mono screen position off-center; the user's percept is dominated by
+things the mono harness cannot see. USER DIRECTIVE going forward: test in
+STEREO ONLY (the mod is stereo-only in use; mono-flat "passes" have misled
+two sessions), investigate before changing anything.
+
+**The new prime suspect, consistent with every report since session 11:
+the foreground rig renders with WRONG/ZERO STEREO GEOMETRY.**
+(a) DISPARITY: the fg view's eye sits at a fixed ACTOR-space offset (E,
+    dump-proven) - if camera TRANSLATION (which is what per-eye offsets are)
+    never reaches the fg eye, both SR eyes render identical rig pixels =
+    zero disparity = the brain glues a big object to the face exactly like
+    a HUD. All 12 model dumps had camLoc == actorLoc, so they CANNOT
+    distinguish actor-anchored from camera-anchored - untested, decisive.
+(b) DEPTH RESPONSE: the fg depth-hack renders the rig in a compressed depth
+    band, so hand-distance changes barely change apparent distance ("very
+    little increments") - and the render lock's keep-natural-depth choice
+    PINS it further. Size ("huge") is the same lens.
+(c) The residual direction coupling they still feel = (a)+(b) percept plus
+    reprojection: the compositor timewarps by the submitted pose against a
+    rig whose rendered geometry contradicts its perceived depth.
+
+1. **Decisive flat STEREO experiment first (no code, one boot)**: hand
+   parked, `vrbones lock off`, camera `offset 0 10 0` (10 UU lateral = ~6
+   eye-widths), A/B screenshots DURING GAMEPLAY: if the gun parallaxes like
+   a ~20-UU-away world object, the fg eye follows camera translation (then
+   per-eye disparity exists and the suspect dies); if it barely moves, the
+   fg eye is actor-locked -> ZERO per-eye disparity proven. (Session 13
+   attempted this; the game was paused - redo at gameplay.) Follow with the
+   pixel-level version: a consecutive-present pair dumper in frame_inspector
+   (small) to diff L/R eye images of the rig directly under flat SR.
+2. **If confirmed, the fix design (the real change, plan before building)**:
+   per-eye render lock - the SR second-pass branch re-SOLVES the anchor
+   against the right-eye camera (pass 1 uses the left-eye camera) instead of
+   replaying pass-1 bones, giving the anchor TRUE interocular disparity; plus
+   depth-matching - drop the keep-natural-depth choice and set the fg depth
+   to k*trueDistance (k = tan(worldFov/2)/0.7698) so apparent SIZE tracks the
+   world (kills "huge" AND the attenuated hand-distance response). Both are
+   bones-side (FX parity preserved). Risks to check: fg near/far planes, the
+   rigid-section rebake gain under per-eye deltas, cluster distortion at the
+   deeper fg depth.
+3. **Fallback if bones-side per-eye solving disappoints**: the vm_draw
+   render-side lane (Map/Unmap patch, fully designed session 12) - substitute
+   the fg transform in the 576-tier cb with a true per-eye world transform.
+   FX parity must be re-proven on that path (its known limitation).
+4. **After geometry is right**: kill the hand sway at source (UpdateHandValues
+   bob params) and revisit `lockgain` (the rigid-rebake doubling) - polish,
+   not blockers, until the stereo geometry lands.
 2. **Model scale, now probably cheap**: test the REAL DrawScale live - write
    actor +0x2AC through the dirty protocol (or call AActor::SetDrawScale
    0x375830 directly) on the AHands actor and the weapon actor; if the
@@ -813,6 +849,32 @@ retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-26 - Session 13 part 2 (headset verdict: no change felt - the suspect moves to stereo depth)
+
+- **In-headset result of the render lock: none felt.** Head-look still
+  counter-moves the gun, gun/laser same direction different speeds, gun huge
+  and near the face, hand-distance motion attenuated to "very little
+  increments"; the user's framing: "like the hands are part of the HUD on my
+  face, but a bit 3d". User calls for deeper investigation before more
+  changes, and STEREO-ONLY testing from now on.
+- **Why the flat pass and the headset disagree, with data**: the overlay
+  after their run read lock |delta| 1.7 UU (flat sweeps ran 6-11) - the
+  position term the lock corrects is proportional to the hand's OFF-CENTER
+  angle, and in the headset you look AT your hand. The flat harness measured
+  exactly the term that vanishes in real use. Meanwhile mono screenshots
+  cannot show disparity, perceived depth, or reprojection behavior at all -
+  which is where every remaining symptom lives.
+- **New hypothesis set (Next steps above)**: zero per-eye disparity (fg eye
+  anchored in ACTOR space -> camera translation, and therefore the per-eye
+  offset, never reaches it), compressed/pinned fg depth response, and the
+  size lens - one geometric story matching every report since session 11.
+  The 12 model dumps all had camLoc == actorLoc so they cannot answer the
+  anchor question; the camera-offset discriminator (attempted, blocked by
+  the game being paused) answers it with two screenshots at gameplay.
+- No code changed in part 2 (the eye-phase capture experiment showed the
+  1 Hz screenshot lane cannot resolve eye phase past the hand sway; a
+  consecutive-present pair dumper is the right instrument, queued).
 
 ### 2026-07-26 - Session 13 (the camera-coupled rig term: root-caused flat, countered, fire-tested)
 
