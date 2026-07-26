@@ -781,6 +781,22 @@ retired actor-pinning kept only for A/B.
   command that does not exist in the seam - it echoed nothing, did nothing,
   and its "result" was misread as evidence. Command echoes are now a
   mandatory check before trusting any A/B.
+- **Second headset report ("still moves with my head, REVERSED") led to the
+  real remaining defect: a STEREO EYE MISMATCH.** Under SR stereo the second
+  CalcView pass runs the engine's view update (re-evaluating the skeleton
+  over the pass-1 bone write) but skips the drive body by design - so the
+  right eye baked the ENGINE pose while the left baked ours. Flat-proven on
+  a clean boot (bone array read back the engine idle pose every frame while
+  the drive wrote; the driven gun vanished from the stereo present). Mono
+  never showed it: the drive runs on EVERY CalcView call there and the last
+  write wins. Fix: drive() caches its writes, the second-pass branch calls
+  `bones::reapply()` (100 ms freshness gate). Flat-stereo verified clean
+  boot + stereo fire test passed. The "reversed" motion reads as binocular
+  rivalry between the two mismatched guns; third headset run pending.
+- Mono flat A/Bs on the fixed build also settled the frame questions
+  properly: camera-position offset -> the hand parallaxes like a world
+  object (position anchored right), camrot pitch/yaw -> world-anchored
+  hand with the fc.cam composition (rotation frame right).
 - Two PC power cuts (electricity, unrelated) punctuated the session; no work
   lost either time (recon results and commits were already on disk/pushed).
 
