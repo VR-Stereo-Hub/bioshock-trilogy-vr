@@ -312,6 +312,25 @@ runtime.
   rather than owning a copy, so the beam and the bullet cannot drift; a laser that disagrees
   with the shot is worse than no laser. Deferred by the user: a dot at the true IMPACT point,
   which needs a callable per-frame line-check that the engine only ever runs mid-shot.
+- **2026-07-26 - M7 rebuild: drive the viewmodel at the BONE level, not the actor.** After
+  the first two in-headset runs the actor-pinning approach is retired as a dead end, by the
+  user's design review. It cannot deliver the goal ("weapon and plasmid hand each one with
+  its own controller") for three structural reasons, all live-proven: the actor's pivot is
+  the eye anchor with the mesh a metre out, so every rotation swings on a lever; both arms
+  are ONE skinned mesh on ONE actor, so a single transform can never decouple left from
+  right; and the equipped weapon renders from its attachment matrix, ignoring its own actor
+  fields. The replacement is a two-level scheme: (1) identify the viewmodel's draw calls,
+  which also reveals whether the sleeve and hand are separate material sections - if they
+  are, hiding an arm is a draw-call skip and costs nothing; (2) reach the skeleton's bone
+  matrices and write the hand bones directly from the controllers, collapsing the forearm
+  bones to hide them. Writing bones rather than patching render matrices is a deliberate
+  choice, not a convenience: the engine recomputes attachments from bones, so the plasmid's
+  hand FX and the weapon's muzzle effects follow for free, whereas a render-time matrix
+  patch would leave them floating at the old position. Render-side patching is reserved for
+  what has no engine-side handle - model scale (no DrawScale field has been found) and the
+  viewmodel's separate projection. Explicitly OUT of scope by the user's call: elbow IK,
+  arm bending, two-handed grips, and BioShock 1 dual-wield (the engine equips one hand at a
+  time; that fight belongs to the BioShock 2 adapter).
 - **2026-07-25 (evening) - M7 placement: one ray, local-frame trim, and the two walls we
   hit.** The first in-headset run failed on three compounding defects; the fixes define the
   contract going forward. (1) ONE RAY: the model aligns to the AIM pose plus the same trim

@@ -228,6 +228,11 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
 
 ## M7 - Visible hands + weapons (~2–3 sessions)
 
+> **M7 REPLANNED 2026-07-26 after two in-headset runs.** Actor pinning (below) is retired:
+> it works mechanically but cannot reach the goal. The rebuild drives the viewmodel at the
+> DRAW and BONE level - see the M7-v2 block under the ticked items, and the ARCHITECTURE
+> decision log entry of the same date for why.
+
 - [x] Locate live AHands actor; pin to grip pose each frame
       *DONE + FLAT-VERIFIED 2026-07-25 (session 11). The heap scan by class vtable (0xD8A28C)
       finds exactly ONE live instance; its Location/Rotation are an exact per-tick copy of the
@@ -251,8 +256,37 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       `%LOCALAPPDATA%\BioshockVR\hands.ini`. Keyed `default` for now - PER-WEAPON keys still
       want the live weapon's class name, which means resolving the UObject class/name offsets
       on this build (the only save carries pistol + wrench, so one profile covers it).*
-- [ ] **Done when:** hands + current weapon track the controller convincingly; wrench melee
-      feels aimed. (Full IK arms = post-v1.)
+### M7-v2 - the rebuild (planned 2026-07-26 with the user)
+
+Goal in the user's words: the weapon and the plasmid hand each move as ONE with their own
+controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK, dual-wield.
+"I don't need it to be perfect - I just want it in sync with the controller."
+
+- [ ] **Step 1 - find the viewmodel's draw calls.** Contained experiment with a clear yes/no.
+      Fingerprint: we write the rig's transform ourselves, so the viewmodel is the draw whose
+      world matrix matches what we just wrote. Also answers whether the sleeve and the hand
+      are separate material SECTIONS - if they are, hiding an arm is a draw-call skip and
+      needs no bone work at all.
+- [ ] **Step 2 - prove render-side control**: skip a draw (hide a part) and substitute a
+      matrix (move/scale a part). Scale lands here since no DrawScale field was ever found.
+- [ ] **Step 3 - reach the bone matrices** (constant-buffer palette if GPU-skinned, the mesh
+      instance if CPU-skinned - unverified, check before promising). This is the load-bearing
+      capability: bones are ENGINE-side, so attachments and effects follow automatically.
+- [ ] **Step 4 - drive the hands from the bones**: right hand/weapon from the right
+      controller, left hand from the left, forearm bones collapsed to hide the arms. No IK -
+      the hand bone is written directly, which is why dropping arm articulation makes this
+      dramatically cheaper.
+- [ ] **THE EARLY RISK TEST, do it in step 1-2, not at the end: do the plasmid's hand FX
+      follow?** The electricity is a particle system and it is unknown whether it rides the
+      hand bone or is drawn independently. If it does not follow a render-side move, plasmids
+      MUST go the bone route. The user's hard requirement: no shipping a working weapon with a
+      broken plasmid hand - they are one deliverable.
+- [ ] **Done when:** the weapon is one with the right controller and the plasmid hand is one
+      with the left, each inspectable from any angle, at a believable size, with their effects
+      attached. (Arms hidden is a valid and expected answer.)
+
+- [ ] ~~Done when: hands + current weapon track the controller convincingly~~ (superseded by
+      M7-v2 above; wrench melee rides the weapon path for free)
       *Note (user, 2026-07-25): the `AHands` viewmodel is a single mesh (hands + a short
       forearm/sleeve stub), so in M7 the visible arm portion moves RIGIDLY with the weapon/
       controller - good enough for the short FP forearm. Making the ELBOW articulate as the

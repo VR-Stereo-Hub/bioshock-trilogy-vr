@@ -2,8 +2,66 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-25, session 11 - evening update after the first
-## in-headset M7 run)
+## Current state (2026-07-26, session 11 close - M7 REPLANNED with the user)
+
+**Two in-headset runs and a long design review retired the actor-pinning
+approach. M7 restarts at the draw/bone level next session.** The shipped build
+works mechanically and is stable, but it cannot reach the goal, and the user's
+verdict after the second run was blunt and correct: "still wrong... the model is
+going faster than the aim", and pulling the offsets "doesn't matter... instead
+it creates other problems".
+
+**What the user actually wants (their words, this is the spec):** the weapon and
+the plasmid hand each move as ONE with their own controller, like a native VR
+game. Right controller = weapon (hide the arm, hand optional). Left controller =
+plasmid hand (keep the hand, arm can go). Wrist roll must match a real wrist.
+Explicitly NOT wanted: bent arms, elbows, IK, two-handed grips. "I don't need it
+to be perfect - I just want it in sync with the controller." And a hard
+requirement: **no shipping a working weapon with a broken plasmid hand** - they
+are one deliverable.
+
+**Why actor pinning cannot get there** (three structural walls, all live-proven,
+details in ENGINE_NOTES "Viewmodel / AHands"):
+1. The actor's pivot is the EYE anchor with the mesh a metre out, so every
+   rotation swings the gun on a lever. Correcting it with position offsets is
+   impossible - the engine culls the rig once the origin passes behind the
+   camera.
+2. **Both arms are ONE skinned mesh on ONE actor**, so a single transform can
+   never decouple left from right - which the user's spec requires.
+3. The equipped weapon renders from its ATTACHMENT matrix and ignores its own
+   actor fields, so the ideal pivot (the weapon actor sits exactly at the gun)
+   is unreachable that way.
+
+**What today's inspection tests established, and they are all encouraging:**
+- The rig renders as a normal WORLD-SPACE object - the camera orbits it and it
+  holds still, so nothing structural blocks inspecting it from any angle.
+- **The geometry is complete on every side** - full right side, muzzle,
+  cylinder, correctly gripping hand. The art will survive close VR inspection.
+- Both arms are always in the mesh; BioShock 1 just shows one at a time.
+- Dual-wield is a state-machine change, not a rendering one. **The user dropped
+  it** - it moves to the BioShock 2 adapter (M10), which supports it natively.
+
+**The load-bearing design principle for the rebuild - where you write decides
+whether effects follow.** Engine-side writes (actor, bones) are read by the
+engine, so attachments and particle effects are recomputed and follow for free.
+Render-side writes (patching a matrix at draw time) are invisible to the engine,
+so separately-drawn effects stay behind. That is why the plan prefers BONE
+writes and reserves render-side patching for what has no engine handle (scale -
+no DrawScale field was ever found - and the viewmodel's projection).
+
+**The plan, four steps, in ROADMAP "M7-v2"**: find the viewmodel's draw calls
+(the fingerprint is that we write the rig's transform ourselves) -> prove we can
+skip a draw and substitute a matrix -> reach the bone matrices -> write the hand
+bones from the controllers with the forearm bones collapsed. Because the user
+dropped arm articulation, step 4 is a direct bone write with **no IK solver at
+all**, which is what makes this tractable.
+
+**THE test to run early, not late: do the plasmid's hand FX follow?** Unknown
+whether the electricity rides the hand bone or is drawn independently. It
+decides whether plasmids can use the cheap render-side path or must go
+bone-level. Given the parity requirement, find out in step 1-2.
+
+## Current state (2026-07-25, session 11 - evening, superseded by the replan above)
 
 **The user tested in-headset: LASER = "awesome, keep it as is"; hands/weapons
 FOLLOW both controllers; but the MODEL placement was unusable** - "a slight
@@ -544,34 +602,40 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **RE-TEST IN-HEADSET with the evening build - checklist at the bottom of
-   this section.** The three placement defects from the first run are fixed or
-   bounded (aim-pose alignment, local-frame quat trim, wide offsets with the
-   culling bound); the user's verdict decides what M7 still needs. Whatever
-   offsets/trim they settle on, bake into the defaults.
-2. **The DETACH experiment - the real version of the user's gun-only idea.**
-   The weapon actor sits exactly at the visible gun (perfect pivot) but renders
-   through its attachment. Its Base pointer (-> AHands) is at weapon `+0x450`
-   (ENGINE_NOTES). Null/re-point it in a controlled probe: if the weapon starts
-   honoring its own transform, `vrhands mode gun` comes alive - gun pinned to
-   the controller with a short lever, arms parked elsewhere. Watch for attach
-   bookkeeping crashes on weapon switch (the Base's Attached list desyncs).
-3. **Gun size**: find the real DrawScale (the two probed candidates are a
-   hide/cull-style field at +0x16C - itself useful for hiding meshes later -
-   and an inert 1.0 at +0x168). Next candidates: walk more of the actor block
-   (+0x100..+0x160), or find the render path's scale consumption by disasm.
-4. **Per-weapon offset profiles**: key the saved offsets by the live weapon's
-   CLASS NAME (UObject class/name offsets still wanted - hexdump the learned
-   weapon object, follow the class pointer, resolve the FName via the
-   `pattern_scan` name machinery).
-5. **A true dot at the IMPACT point** (laser ships with fixed-distance dots by
-   the user's call): needs a per-frame engine line-check - start inside the
-   damage factory's trace (factory fetched by 0x231E70 in
-   `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl `+0xEC`).
-6. **Verify a PROJECTILE plasmid** (Incinerate) and **hide the head-centred
-   crosshair** (exec-seam attempts first) - unchanged from the morning list.
-7. **Load-crossing check - 20 seconds for the USER, still not done** (both
-   actor caches clear on world change in code; a human pass is still owed).
+1. **M7-v2 STEP 1 - find the viewmodel's draw calls.** The whole next session
+   hangs off this one contained experiment, and it has a clear yes/no. Use
+   `core/gfx/frame_inspector` (already hooks the context vtable's draw slots)
+   plus `dumpframe full`. The fingerprint: we write the rig's transform
+   ourselves via `vrhands`, so the viewmodel is the draw whose world matrix
+   matches what we just wrote - park the rig somewhere unmistakable with
+   `vrhands test`/`simpose` and look for the matching matrix. DR-3 already
+   found the view-proj matrix in VS b0 bytes 128-191. Answer two things:
+   (a) which draws are the gun vs the arms, and (b) whether the sleeve and the
+   hand are separate MATERIAL SECTIONS - if they are, hiding an arm is a
+   draw-call skip and needs no bone work at all.
+2. **STEP 2 - prove render-side control**: no-op a draw (part disappears) and
+   substitute a matrix (part moves/scales). Model SCALE lands here, since no
+   DrawScale field was ever found engine-side.
+3. **THE EARLY RISK TEST - do the plasmid's hand FX follow a render-side
+   move?** Cast Electro Bolt, move the hand's draws, watch the electricity. If
+   it stays behind, plasmids must go bone-level. Do this in step 1-2, NOT at
+   the end: the user requires weapon and plasmid parity in one deliverable.
+4. **STEP 3 - reach the bone matrices.** Constant-buffer palette if the build
+   skins on the GPU, the mesh instance if CPU-skinned. UNVERIFIED - check
+   before promising anything, per the session-11 lesson about assuming.
+5. **STEP 4 - drive the hands from the bones**: right hand/weapon from the
+   right controller, left hand from the left, forearm bones collapsed to hide
+   the arms. Direct bone writes, **no IK solver** - the user dropped arm
+   articulation, which is what makes this tractable.
+6. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
+   engine line-check - start at the damage factory, factory fetched by 0x231E70
+   in `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl
+   `+0xEC`); verify a PROJECTILE plasmid (Incinerate); hide the head-centred
+   crosshair; per-weapon offset profiles keyed by weapon class name; and the
+   20-second load-crossing check the user still owes.
+7. **Dropped from M7 by the user's call**: dual-wield (BioShock 1 equips one
+   hand at a time - it moves to the M10 BioShock 2 adapter, which supports it
+   natively), elbow IK, arm bending, two-handed grips.
 8. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
    Controller polish (deadzone/curve/menu timing) and rebinds stay parked in M9.
 9. Still open from M3: cutscene cameras are head-driven. The aim path already
@@ -640,6 +704,42 @@ prints "inert" by design.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-26 - Session 11 part 3 (second headset run + the M7 replan)
+
+- **Second in-headset verdict: still wrong.** "The model is going faster than
+  the aim" - rotating the hand right sent the gun right faster than the laser -
+  and crucially "doesn't matter if I change the offset forward at all, instead
+  it creates other problems and the other problem stays the same". That killed
+  the lever-arm correction as a fix and, with it, the whole actor-pinning
+  approach.
+- **Inspection tests, all with a new trick worth keeping**: pin the rig with
+  `vrhands simpose`, then fly the CAMERA around it with the `offset` command -
+  the frame context publishes the pre-offset camera, so the rig holds still in
+  the world and we get a free orbit rig. Established: the viewmodel renders in
+  world space (camera orbits it, it stays put), **the geometry is complete on
+  every side** (spun 0/90/180/270 - full right side, muzzle, cylinder, properly
+  gripping hand, no deleted faces), both arms are always in the mesh, and a
+  90 deg roll about the eye anchor throws both forearms horizontal while the
+  gun and its gripping hand stay correct relative to each other.
+- **Confirmed BioShock 1 shows ONE hand at a time** (own captures: Electro Bolt
+  frames contain no gun). The user dropped dual-wield to the BioShock 2 adapter
+  on hearing it.
+- **The user's spec, now the M7 definition of done**: weapon one with the right
+  controller, plasmid hand one with the left, wrist roll matching a real wrist,
+  arms hidden if that helps, and no shipping a working weapon with a broken
+  plasmid hand. Explicitly not wanted: bent arms, elbows, IK, two-handed grips.
+- **Replanned M7 to the draw/bone level** (ROADMAP "M7-v2", rationale in the
+  ARCHITECTURE decision log): find the viewmodel draws -> prove skip + matrix
+  substitution -> reach the bone matrices -> write hand bones from the
+  controllers with forearms collapsed. Dropping arm articulation removes the IK
+  solver entirely, which is what makes it tractable.
+- **The principle that decided the architecture**: engine-side writes (actor,
+  bones) let attachments and effects follow for free; render-side matrix
+  patches do not, so separately-drawn FX stay behind. Hence bones for anything
+  with attachments, render-side only for scale and projection.
+- No code changed in this part - design only. Tree is at the session-11
+  evening commit; game restored and left at the save.
 
 ### 2026-07-25 - Session 11 part 2 (evening: first M7 headset run + the fixes)
 

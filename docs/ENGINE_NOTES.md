@@ -730,6 +730,46 @@ rewrote much of the mechanism knowledge (each item live-proven):**
   a "giant centered gun" in screenshots and is easy to mistake for a bug. Pull
   the trigger twice before judging any viewmodel screenshot.
 
+**Viewmodel inspection results (2026-07-25/26, camera-orbit + rig-spin tests).**
+Method: pin the rig with `vrhands simpose` (fixed synthetic pose), then move the
+CAMERA around it with the `offset` command. This works because the camera drive
+publishes the pre-offset camera into the frame context, so the rig stays put in
+the world while the camera flies - a free orbit rig for inspecting anything we
+place. Findings:
+
+- **The rig renders as a normal WORLD-SPACE object.** The camera orbits it and
+  it holds still. It is not screen-pasted, so it can be inspected from any
+  angle in principle - which means "cannot see the far side of the gun" is a
+  reachability problem, not a rendering lock.
+- **The geometry is COMPLETE on every side.** Spun through 0/90/180/270 the
+  pistol shows a full right side, muzzle, cylinder, frame and a hand correctly
+  wrapped on the grip. No deleted hidden faces, no hollow shell. Whatever
+  viewmodel scheme we build, the art will hold up to close inspection.
+- **Both arms are always present in the mesh** (two sleeves visible at every
+  spin angle), even while only one is on screen.
+- **BioShock 1 shows ONE hand at a time**: gun = right hand only, plasmid =
+  left hand only, never both (own captures: Electro Bolt frames contain no gun
+  at all). Dual-wield is a state-machine change, not a rendering one - and,
+  usefully, it means a single matrix applied to the whole rig only ever has one
+  visible arm to move.
+- **Rigid roll is the visible failure mode**: rolling the rig 90 deg about the
+  eye anchor throws BOTH forearms out horizontal. The gun and the hand gripping
+  it stay correct RELATIVE to each other; everything from the wrist back breaks.
+  Pivot choice is what governs how bad this looks.
+
+**The load-bearing principle for the next approach - WHERE you write decides
+whether attachments follow:**
+- **Engine-side writes** (actor transform, bone matrices) are read by the
+  engine itself, so attached objects and effects are recomputed from them and
+  follow for free.
+- **Render-side writes** (patching a world matrix in a constant buffer at draw
+  time) are invisible to the engine, so anything drawn as a SEPARATE object -
+  the plasmid's hand FX above all - stays behind at the old position.
+
+This is the single biggest design input for M7's rebuild: prefer engine-side
+(bone) writes for anything with attachments, and reserve render-side patching
+for what has no engine-side handle (scale, projection).
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
