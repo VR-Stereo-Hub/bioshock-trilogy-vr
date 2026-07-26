@@ -813,6 +813,25 @@ retired actor-pinning kept only for A/B.
   detour traced back to misreading one flat screenshot (g3: the hand HAD
   panned with the world = actor-frame evidence, read as its opposite).
   Flat-stereo re-verified + fire test passed; fourth headset run pending.
+- **Part 4 - the bug is REPRODUCED FLAT, no headset needed (user's idea).**
+  Fourth headset run unchanged, so a synthetic HMD lane was built: `simhead
+  <yaw> <pitch> <roll>` drives the whole camera path (recenter, additive
+  yaw, stereo passes) exactly like a headset, flat. Result: with the hand
+  parked and the bone array PROVEN byte-identical between head 0 and head
+  30 (telemetry), the rendered gun still over-pans the world by ~10-15 deg
+  - in MONO too. So the RENDERER applies a camera-coupled term to the
+  first-person rig that the actor fields do not carry; the memory-side
+  chain (target, composition, eye consistency, layer poses) is fully
+  exonerated - those fixes were real but sat downstream of the symptom.
+  This also likely explains session 11's actor-pinning "model going faster
+  than the aim". Eliminated: eye offsets (mono repro), pair pacing (no
+  session flat), bone values (constant), actor fields (constant), the
+  compositor (flat repro!). Also caught: the earlier "mono is clean"
+  reading was an invalid test - the simpose hold's silent 120 s cap had
+  expired the drive. Next: parametric simhead yaw/pitch sweeps to fit the
+  term's functional form (linear-in-yaw? tan? which pivot?), then a
+  principled fix at its source, or a calibrated counter-term composed into
+  the drive using dyaw - all iterable flat now, no headset time needed.
 - Two PC power cuts (electricity, unrelated) punctuated the session; no work
   lost either time (recon results and commits were already on disk/pushed).
 
