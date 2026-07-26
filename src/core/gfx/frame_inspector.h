@@ -32,6 +32,26 @@ struct ScopedSuppress {
     ~ScopedSuppress();
 };
 
+// Always-on constant-buffer watch (session 13): hooks Map/Unmap and, on every
+// WRITE-mapped buffer unmap, matches `pattern` (patCount floats compared at
+// float offset patFirst with tolerance) against the staged bytes; on a match
+// the floats [capFirst, capFirst+capCount) are copied into a seqlocked slot.
+// Cost per unmap on a miss is one float compare. Built for the BioShock
+// foreground-scene transform capture (the vm draws' cb0 carries a constant
+// tan-block fingerprint), but game-agnostic: the adapter supplies the floats.
+// capCount is capped at 32.
+// requiredBytes: exact buffer ByteWidth to accept (0 = any) - constant-buffer
+// tiers reuse layouts, so the same fingerprint can select different content.
+void set_cb_watch(const float* pattern, uint32_t patFirst, uint32_t patCount,
+                  uint32_t capFirst, uint32_t capCount, uint32_t requiredBytes);
+
+// Copy the latest watch capture into `out` (capCount floats). Returns false
+// if nothing was captured yet. `ageMs` (optional) gets the capture age.
+bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs);
+
+// Lifetime accepted-capture count (diagnostic: is the watch firing at all?).
+uint32_t cb_watch_hits();
+
 // Overlay section: dump buttons + last-dump status.
 void draw_debug_ui();
 

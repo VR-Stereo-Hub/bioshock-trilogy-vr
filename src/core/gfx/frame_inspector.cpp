@@ -111,6 +111,58 @@ OMSetRenderTargetsFn g_origOMSetRenderTargets = nullptr;
 ClearRtvFn g_origClearRtv = nullptr;
 ClearDsvFn g_origClearDsv = nullptr;
 
+using MapFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT,
+                                          D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE*);
+using UnmapFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT);
+MapFn g_origMap = nullptr;
+UnmapFn g_origUnmap = nullptr;
+
+// ---- cb watch (session 13) --------------------------------------------------
+// The engine uploads per-draw constants through Map(WRITE_DISCARD)/memcpy/
+// Unmap on the render thread; inspecting the staged bytes at Unmap time is
+// free (no GPU readback). One pattern, one capture slot, seqlocked for the
+// game-thread reader.
+constexpr uint32_t kWatchMaxPat = 8;
+constexpr uint32_t kWatchMaxCap = 32;
+std::atomic<bool> g_watchArmed{false};
+float g_watchPat[kWatchMaxPat] = {};
+uint32_t g_watchPatFirst = 0, g_watchPatCount = 0;
+uint32_t g_watchCapFirst = 0, g_watchCapCount = 0;
+uint32_t g_watchBytes = 0; // exact ByteWidth filter (0 = any)
+std::atomic<uint32_t> g_watchSeq{0}; // even = stable
+float g_watchData[kWatchMaxCap] = {};
+std::atomic<uint64_t> g_watchTickMs{0};
+std::atomic<uint32_t> g_watchHits{0};
+
+// Per-thread last WRITE-mapped buffer (the engine's pattern is a tight
+// Map/copy/Unmap per draw, so depth-1 tracking is enough; a nested map just
+// drops the outer capture for that draw).
+thread_local ID3D11Resource* t_mappedRes = nullptr;
+thread_local void* t_mappedPtr = nullptr;
+thread_local uint32_t t_mappedBytes = 0;
+
+void watch_inspect(ID3D11Resource* res) {
+    if (!g_watchArmed.load(std::memory_order_relaxed)) return;
+    if (!t_mappedPtr || res != t_mappedRes) return;
+    if (g_watchBytes && t_mappedBytes != g_watchBytes) return;
+    uint32_t needBytes = (g_watchCapFirst + g_watchCapCount) * 4;
+    uint32_t patEnd = (g_watchPatFirst + g_watchPatCount) * 4;
+    if (patEnd > needBytes) needBytes = patEnd;
+    if (t_mappedBytes < needBytes) return;
+    const float* f = static_cast<const float*>(t_mappedPtr);
+    // Fingerprint match, tolerant to last-ULP recomputation drift.
+    for (uint32_t i = 0; i < g_watchPatCount; ++i) {
+        float d = f[g_watchPatFirst + i] - g_watchPat[i];
+        if (d > 1e-3f || d < -1e-3f) return;
+    }
+    uint32_t seq = g_watchSeq.load(std::memory_order_relaxed);
+    g_watchSeq.store(seq + 1, std::memory_order_release);
+    memcpy(g_watchData, f + g_watchCapFirst, g_watchCapCount * 4);
+    g_watchSeq.store(seq + 2, std::memory_order_release);
+    g_watchTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+    g_watchHits.fetch_add(1, std::memory_order_relaxed);
+}
+
 // ---- helpers ----------------------------------------------------------------
 
 void capture_exe_range() {
@@ -263,6 +315,38 @@ void capture_draw_state(ID3D11DeviceContext* ctx, Event& ev) {
     ctx->PSGetShaderResources(0, 1, &srv);
     ev.srv0 = register_resource(srv);
     if (srv) srv->Release();
+}
+
+HRESULT STDMETHODCALLTYPE MapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* res,
+                                    UINT sub, D3D11_MAP mapType, UINT flags,
+                                    D3D11_MAPPED_SUBRESOURCE* mapped) {
+    HRESULT hr = g_origMap(ctx, res, sub, mapType, flags, mapped);
+    if (g_watchArmed.load(std::memory_order_relaxed) && SUCCEEDED(hr) && mapped &&
+        mapped->pData && sub == 0 &&
+        (mapType == D3D11_MAP_WRITE_DISCARD || mapType == D3D11_MAP_WRITE ||
+         mapType == D3D11_MAP_WRITE_NO_OVERWRITE)) {
+        ID3D11Buffer* buf = nullptr;
+        if (res && SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Buffer),
+                                                 reinterpret_cast<void**>(&buf)))) {
+            D3D11_BUFFER_DESC bd{};
+            buf->GetDesc(&bd);
+            buf->Release();
+            t_mappedRes = res;
+            t_mappedPtr = mapped->pData;
+            t_mappedBytes = bd.ByteWidth;
+        }
+    }
+    return hr;
+}
+
+void STDMETHODCALLTYPE UnmapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* res, UINT sub) {
+    if (sub == 0 && res == t_mappedRes) {
+        watch_inspect(res);
+        t_mappedRes = nullptr;
+        t_mappedPtr = nullptr;
+        t_mappedBytes = 0;
+    }
+    g_origUnmap(ctx, res, sub);
 }
 
 bool should_record() {
@@ -551,6 +635,9 @@ bool install(void** ctxVtable) {
          "ClearRenderTargetView"},
         {53, reinterpret_cast<void*>(&ClearDsvDetour), reinterpret_cast<void**>(&g_origClearDsv),
          "ClearDepthStencilView"},
+        {14, reinterpret_cast<void*>(&MapDetour), reinterpret_cast<void**>(&g_origMap), "Map"},
+        {15, reinterpret_cast<void*>(&UnmapDetour), reinterpret_cast<void**>(&g_origUnmap),
+         "Unmap"},
     };
 
     int hooked = 0;
@@ -563,8 +650,49 @@ bool install(void** ctxVtable) {
             BVR_LOG("[gfx] inspector hook %s FAILED: %s", s.name, MH_StatusToString(status));
         }
     }
-    BVR_LOG("[gfx] frame inspector: %d/7 context slots hooked", hooked);
-    return hooked == 7;
+    BVR_LOG("[gfx] frame inspector: %d/9 context slots hooked", hooked);
+    return hooked == 9;
+}
+
+void set_cb_watch(const float* pattern, uint32_t patFirst, uint32_t patCount,
+                  uint32_t capFirst, uint32_t capCount, uint32_t requiredBytes) {
+    g_watchArmed.store(false, std::memory_order_relaxed);
+    if (!pattern || patCount == 0 || patCount > kWatchMaxPat || capCount == 0 ||
+        capCount > kWatchMaxCap) {
+        BVR_LOG("[gfx] cb watch cleared");
+        return;
+    }
+    memcpy(g_watchPat, pattern, patCount * 4);
+    g_watchPatFirst = patFirst;
+    g_watchPatCount = patCount;
+    g_watchCapFirst = capFirst;
+    g_watchCapCount = capCount;
+    g_watchBytes = requiredBytes;
+    g_watchArmed.store(true, std::memory_order_release);
+    BVR_LOG("[gfx] cb watch armed: %u pattern floats @ f%u -> capture f%u..f%u (bytes=%u)",
+            patCount, patFirst, capFirst, capFirst + capCount - 1, requiredBytes);
+}
+
+uint32_t cb_watch_hits() {
+    return g_watchHits.load(std::memory_order_relaxed);
+}
+
+bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs) {
+    if (!out || count > kWatchMaxCap) return false;
+    uint64_t tick = g_watchTickMs.load(std::memory_order_relaxed);
+    if (!tick) return false;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        uint32_t s0 = g_watchSeq.load(std::memory_order_acquire);
+        if (s0 & 1) continue;
+        float tmp[kWatchMaxCap];
+        memcpy(tmp, g_watchData, count * 4);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (g_watchSeq.load(std::memory_order_relaxed) != s0) continue;
+        memcpy(out, tmp, count * 4);
+        if (ageMs) *ageMs = GetTickCount64() - tick;
+        return true;
+    }
+    return false;
 }
 
 void arm(int mode) {
@@ -601,6 +729,8 @@ ScopedSuppress::~ScopedSuppress() {
 
 void draw_debug_ui() {
     ImGui::Text("Frame inspector: %s", g_status);
+    if (g_watchArmed.load(std::memory_order_relaxed))
+        ImGui::Text("cb watch: %u hits", g_watchHits.load(std::memory_order_relaxed));
     if (g_lastDumpPath[0]) ImGui::TextWrapped("last: %s", g_lastDumpPath);
     if (ImGui::Button("Dump next frame (lite)")) arm(1);
     ImGui::SameLine();
