@@ -797,6 +797,22 @@ retired actor-pinning kept only for A/B.
   properly: camera-position offset -> the hand parallaxes like a world
   object (position anchored right), camrot pitch/yaw -> world-anchored
   hand with the fc.cam composition (rotation frame right).
+- **Part 3 - telemetry ended the composition-frame saga with data.** Third
+  headset report: still coupled, REVERSED. Built `vrbones log` (5 Hz [tlm]
+  samples of the whole chain: raw head + controller XR poses, recenter,
+  camera, actor, world target, bone state); the user ran a scripted movement
+  protocol (still / yaw / pitch / roll / lean / controller-only). Verdict
+  from the data: the world TARGET is perfectly head-decoupled (2 deg wobble
+  during an 80 deg head sweep) and the ACTOR rotation NEVER carries head-look
+  (constant 1.4 deg through the sweep). So the renderer's rig frame is the
+  ACTOR, the ORIGINAL composition was right all along, and the fc.cam "fix"
+  was the reversal the user felt. Reverted to actor-frame composition (bone
+  values now head-independent end to end); the reapply/eye-consistency fix
+  stays - it was the REAL cause of the first run's "follows my head, close
+  to my eyes" (one eye engine pose, one eye ours = rivalry). The fc.cam
+  detour traced back to misreading one flat screenshot (g3: the hand HAD
+  panned with the world = actor-frame evidence, read as its opposite).
+  Flat-stereo re-verified + fire test passed; fourth headset run pending.
 - Two PC power cuts (electricity, unrelated) punctuated the session; no work
   lost either time (recon results and commits were already on disk/pushed).
 
