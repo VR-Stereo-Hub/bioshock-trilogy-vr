@@ -44,7 +44,9 @@ enum CensusIdx { CxDrawIndexed, CxDraw, CxDrawIdxInst, CxDrawInst, CxSetRT, CxCl
 
 constexpr size_t kMaxEvents = 20000;
 constexpr size_t kMaxStack = 12;
-constexpr size_t kCbFloats = 64;     // full mode: first 256 bytes of a CB
+constexpr size_t kCbFloats = 336;    // full mode: first 1344 bytes of a CB - the largest
+                                     // b0 tier seen live (64 + k*256, k<=5), so a bone
+                                     // palette in the tail is captured, not truncated
 
 struct ResourceInfo {
     int id = 0;
