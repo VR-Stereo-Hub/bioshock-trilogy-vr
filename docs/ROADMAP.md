@@ -287,10 +287,18 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       snapped back to the engine pose. A live cast fired through the anim-notify chain
       with the drive running (ability InitiateDamage called, EVE consumed, wall scorch).
       The render-side path was never used, so its FX limitation never applied.*
+- [x] **The camera-coupled rig term (the "follows my head" defect), root-caused and
+      countered.** *2026-07-26 session 13: the renderer draws the rig in a FOREGROUND scene
+      (fixed 60-deg 4:3 projection + view eye parked ~32 UU behind the rig in ACTOR space +
+      hand sway + rigid-section rebake from our own driven bones). bones.cpp "render lock"
+      inverts an analytic model of it per frame at gain 0.5; flat simhead sweeps hold the
+      anchor within 2-4 deg of world-true through +-30 yaw / +-20 pitch (was 15-25 deg of
+      coupling). ENGINE_NOTES "Foreground scene FOV" has the whole chain.*
 - [ ] **Done when:** the weapon is one with the right controller and the plasmid hand is one
       with the left, each inspectable from any angle, at a believable size, with their effects
       attached. (Arms hidden is a valid and expected answer.) *Mechanics flat-verified
-      2026-07-26; awaiting the user's in-headset verdict (checklist in STATUS).*
+      2026-07-26 incl. the head-coupling counter; awaiting the user's in-headset verdict
+      (checklist in STATUS).*
 
 - [ ] ~~Done when: hands + current weapon track the controller convincingly~~ (superseded by
       M7-v2 above; wrench melee rides the weapon path for free)

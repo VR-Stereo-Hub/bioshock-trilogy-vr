@@ -2,7 +2,44 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-26, session 12 - M7-v2 BONE DRIVE BUILT + FLAT-VERIFIED)
+## Current state (2026-07-26, session 13 - THE CAMERA-COUPLED RIG TERM: ROOT-CAUSED AND COUNTERED FLAT)
+
+**Session 12's single blocker is identified end to end and countered; the flat
+simhead sweep now holds the gun on the world within a few degrees through
++-30 deg of head yaw and +-20 of pitch (was 15-25 deg of coupling), and the
+fire test + stereo smoke passed on the shipped build.** The renderer draws the
+first-person rig as a separate FOREGROUND scene: fixed 60-deg 4:3 projection
+(tanH 0.7698 at 16:9 - dump-proven constant while the world tracks the FOV
+option exactly), a view whose eye is parked ~32 UU BEHIND the rig origin in
+ACTOR space (the "translation-about-a-pivot" the user predicted), the engine's
+hand sway on top, and - found the hard way - a rigid per-section path that
+REBUILDS section matrices from the very bones our drive writes. Full chain in
+ENGINE_NOTES "Foreground scene FOV"; every constant in patterns.h.
+
+**The counter (bones.cpp "render lock", default ON)**: an analytic model of
+that foreground transform, solved per frame as a 3x3 so the anchor renders at
+the world-correct pixel, applied at gain 0.5 (the rigid-section rebake doubles
+any bone move on screen - flat-measured). `vrbones lock abs|diff|off` +
+`lockgain <f>`: abs (default) also drops the authored raised/too-close
+composition onto the true controller spot; diff cancels only the head-split
+term. Residual floor = the vanilla hand sway (~+-3.5 deg breathing, x2.1 lens
+gain) - killing it at its source (UpdateHandValues bob params) is queued.
+The pawn's ForegroundFovAngle property group (+0x550/554/558) was found and
+proven a NON-lever (the renderer ignores per-frame writes to it; the engine
+lerps it back - dead end recorded). frame_inspector gained a generic
+Map/Unmap cb watch (kept as a diagnostic; captures cannot feed the solve -
+feedback). Gun SIZE is unchanged (still narrow-lens large) - the DrawScale
+lever stays queued.
+
+**Flat evidence (all in the session scratchpad)**: 2-shot FOV discriminator
+(world rescales with gfov 100->137, gun holds - the projection split), dump
+matrix decode at h0/h30 (world-correct at center, 14-deg anchor error at 30
+head-yaw), 12-dump eye-offset recovery E=(-32.1,-5.6,-0.9)+-0.5, gain sweep
+(1.0 doubles, 0.5 lands), final g5 series: anchor within 2-4 deg of world-true
+at simhead -30/0/+30 yaw and -20 pitch, fire test 57->54 ammo with fresh decal
+and dumps 8->8, vrstereo on smoke + fire clean.
+
+## Previous state (2026-07-26, session 12 - M7-v2 BONE DRIVE BUILT + FLAT-VERIFIED)
 
 **The viewmodel now follows the controller at the BONE level, and every flat
 check passed on the first build: the gun rotates about the GRIP on all three
@@ -670,32 +707,26 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **KILL THE RENDERER'S CAMERA-COUPLED RIG TERM - the last blocker, now
-   reproducible flat** (session 12 part 4). With bone memory PROVEN constant,
-   the rendered rig over-pans the world ~10-15 deg under `simhead 30` (mono +
-   stereo). Attack in order:
-   (a) Parametric measurement: simhead yaw series (-30/-15/0/+15/+30) and a
-       pitch series, one screenshot each (RE-ARM `vrhands simpose` BEFORE
-       EVERY SHOT - its hold silently caps at 120 s), measure the grip pixel
-       position precisely, fit the extra displacement vs theta (linear? tan?
-       pivot at actor origin or camera?). Note from the 30-deg run: the gun's
-       ORIENTATION stayed world-correct; the POSITION over-panned - fit a
-       translation-about-a-pivot model first.
-   (b) Find the term's SOURCE render-side: prime suspects are the engine's
-       own CalcView-internal viewmodel handling (CalcView runs ~2x/frame in
-       mono - probe whether the ACTOR rot/loc fields change between our
-       detour's g_original return and the build's consumption; hook
-       Hands.UpdateLocation's SetLocation/SetRotation inputs via the known
-       native impls at head 0 vs 30) and a dedicated view-weapon transform in
-       the rig's draw path (the vm_draw render-side design in the session-12
-       plan file has the CB-identification machinery if it comes to that).
-   (c) Fix: at the source if found; otherwise compose a measured counter-term
-       into bones::drive from ctx.driveYawOffsetRad (+ pitch analog from
-       ctx.camPitch vs actor pitch) - fully verifiable flat via the same
-       sweep before any headset time.
-2. **After the term dies**: repeat the simhead yaw/pitch/roll sweeps as the
-   flat acceptance test (gun glued to the world through all of them), run the
-   fire test, THEN hand the user the in-headset checklist below.
+1. **IN-HEADSET VERDICT on the render lock** (checklist below). The flat
+   sweep holds within the sway floor; the user's eye decides whether abs or
+   diff mode reads better and whether the residual breathing matters. The
+   in-headset tuning knobs all work live: `vrbones lock abs|diff|off`,
+   `vrbones lockgain <0..2>` (0.5 default - raise toward 0.65 if the gun
+   still trails the head slightly, lower toward 0.4 if it overshoots
+   against it), plus the existing trim/offset sliders.
+2. **Kill the hand sway at its source** (the remaining +-3.5 deg breathing):
+   the fg view wobble comes from UpdateHandValues' bob parameters on the
+   pawn/hands - find the fields (property-name scan like the fov group),
+   zero them per frame while the drive runs. This turns the render lock
+   near-exact and is the head-coupling endgame if the user still feels
+   residual motion.
+3. **If lockgain tuning ever feels scene-dependent**: the 0.5 gain models the
+   rigid-section rebake (bone move applied ~2x). The precise route is
+   understanding the renderer's section-transform build (the drive-on dump
+   showed per-section matrices: 7704 w-d 32.7 / 14595 w-d 17.5 / 26178
+   zeroed) - capstone on the fg section builder, or simply solve the
+   fixed-point equation exactly (apply M_model against bones moved by
+   delta): closed-form gain = 1/(1+lever-ratio) per axis.
 2. **Model scale, now probably cheap**: test the REAL DrawScale live - write
    actor +0x2AC through the dirty protocol (or call AActor::SetDrawScale
    0x375830 directly) on the AHands actor and the weapon actor; if the
@@ -725,38 +756,39 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 12. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7-v2 first run (session 12 BONE-DRIVE build)
+### IN-HEADSET CHECKLIST - M7-v2 render-lock run (session 13 build)
 
 Setup unchanged: Quest 3 + Virtual Desktop, launch from Steam, load the newest
-save, tick **VR stereo**, then tick **"Viewmodel follows the controller"** in
-the "Hands + weapon (M7)" overlay section. The laser you liked is untouched.
-What changed since your last run: the model is now driven at the BONE level -
-the gun+fist move as one rigid piece anchored AT the grip (no more eye-anchor
-lever, no culling wall, no offset fights), the arm/sleeve is hidden by
-default, and the plasmid hand + its electricity are driven the same way.
+save, tick **VR stereo**, then **"Viewmodel follows the controller"**. What
+changed since your last run: the head-coupling is countered (the renderer's
+foreground pipeline is modeled and inverted - "render lock", ON by default).
+Live knobs if anything reads off: `vrbones lock abs|diff|off`, `vrbones
+lockgain <0..2>` (default 0.5).
 
-1. **Pull the right trigger twice** (first pull only raises the weapon), then
-   move and ROTATE the controller slowly on each axis: the gun should rotate
-   in your palm - yaw, pitch, AND wrist roll - staying glued to the laser ray.
-   This is the "model goes faster than the aim" test: they should now move as
-   one. If a constant misalignment remains, tune the trim/offset sliders (they
-   act on the bone target now) and tell me the values.
-2. **Size + distance check**: with the gun finally AT your hand, judge the
-   size honestly - a scale lever (the real DrawScale field) is queued if it
-   still reads oversized.
-3. **Arm hiding verdict**: the sleeve/arm collapses by default. If you see a
-   skin blob near the elbow/shoulder or anything smeared, say where; the
-   overlay checkbox "Hide the driven arm" A/Bs it live.
-4. **Plasmid hand**: left trigger once - the LEFT controller takes over with
-   the electric hand. Same rotation checks as the gun, plus: does the idle
-   electricity stay wrapped on the hand everywhere you move it?
-5. **Cast check**: cast Electro Bolt at the wall with the hand pointed away
-   from your gaze - bolt + scorch should follow the HAND's aim (the laser
-   shows the ray), and the cast flare should stay on the hand.
+1. **THE headline test - park your hand, move your head.** Hold the right
+   controller still (rest it on something if you can), then yaw/pitch/roll
+   your HEAD slowly and widely. The gun should stay planted in the world -
+   no sliding with or against your head. A slow small breathing (~the width
+   of the gun sight) is the engine's own hand sway - tell me if it bothers
+   you (killing it at the source is queued). If the gun still trails or
+   overshoots your head turn SYSTEMATICALLY, say which direction: lockgain
+   0.65 (trailing) or 0.4 (overshooting) is the live A/B.
+2. **abs vs diff, your call**: `vrbones lock abs` (default) puts the gun at
+   the controller's TRUE position - likely lower and further out than you're
+   used to, laser starting at the barrel. `vrbones lock diff` keeps the
+   classic raised composition and only cancels head-coupling. Try both for a
+   minute each and pick.
+3. **Tracking recheck**: rotate the controller on each axis (yaw, pitch,
+   wrist roll) - gun rotates about the grip, glued to the laser, same as the
+   run you called "a metric ton better".
+4. **Fire + plasmid parity**: two right-trigger pulls, shoot the wall; left
+   trigger, Electro Bolt cast - electricity on the driven hand, bolt following
+   the hand's aim.
+5. **Size verdict** (unchanged this session): the gun still renders through
+   the narrow foreground lens, so it reads large; the DrawScale lever is the
+   queued fix - confirm it still bothers you before we spend the time.
 6. **Load-crossing (20 seconds, still owed)**: with everything armed, Esc ->
    LOAD -> newest save -> YES, fire both hands, confirm no crash dump.
-7. **Optional, trainer**: Incinerate cast - does the fireball follow the HAND?
-   (Closes the projectile-plasmid question.)
 
 Expected and not failures: crosshair still head-centred and disagreeing with
 the laser; HUD in both eyes; the rig's idle/fire animations may look muted or
@@ -781,6 +813,52 @@ retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-26 - Session 13 (the camera-coupled rig term: root-caused flat, countered, fire-tested)
+
+- **The 2-shot discriminator opened the case in ten minutes**: hand
+  world-parked via bones, camera still, `gfov 100` vs `gfov 137` - the world
+  rescaled, the gun HELD. The rig renders through its own projection. Frame
+  dumps then gave the exact constants: every foreground draw carries a
+  screen-ray block (2tanH, 0, -tanH | -2tanV, tanV) = tanH 0.7698 / tanV
+  0.4330 at BOTH world FOVs - a hard 60-deg 4:3 spec (tanV = tan(30)*3/4),
+  while world draws track the option exactly (0.7002 -> 0.3939).
+- **The property hunt found ForegroundFovAngle and proved it a NON-lever**:
+  BakedScripts name tables show Engine.Controller.ForegroundFovAngle /
+  PlayerController.DefaultForegroundFOV / PlayerWeapon.
+  ZoomedForegroundFOVAngle; the live group sits on the PAWN at +0x550
+  (60.0 default) / +0x554 (36.0) / +0x558 (lerped current). A poke seemed to
+  rescale the gun, but holding +0x558 at 101.5 per frame changed NOTHING in
+  the render (dump-proven) - the engine lerps the property back and the
+  renderer's constants are built elsewhere. Recorded in patterns.h so the
+  alley stays closed.
+- **Matrix decode nailed the full pipeline**: the vm draws' cb0 carries the
+  rig transform; decoding it at simhead 0 vs 30 showed the foreground VIEW's
+  eye parked at a FIXED point in ACTOR space ~32 UU behind the rig origin
+  (E recovered from 12 dumps: (-32.1, -5.6, -0.9) +- 0.5) with orientation
+  following the camera plus the hand sway (+-1.7 deg wobble around a +1.7/
+  +1.1 deg bias). Self-consistent at view center; under head-split the rear
+  pivot translates the rig - the user's "translation-about-a-pivot" call was
+  exactly right.
+- **Two capture-based fix attempts failed for a REASON worth keeping**: a
+  generic Map/Unmap cb watch (new in frame_inspector, kept as a diagnostic)
+  captures the live vm matrix - but with the drive writing bones the engine
+  switches rig sections to a rigid path whose per-section matrices REBUILD
+  from OUR driven bones. Solving against a captured matrix is a feedback
+  loop (monster-fist fixed point, frame-alternating oscillation - both
+  observed). Same rebake also means any bone correction lands on screen
+  roughly TWICE.
+- **The shipped counter**: bones.cpp "render lock" - the analytic foreground
+  model solved as a 3x3 per frame (anchor onto the world-correct pixel,
+  natural fg depth kept), applied at gain 0.5 for the rebake doubling.
+  Verified flat: anchor within 2-4 deg of world-true at simhead -30/0/+30
+  yaw and -20 pitch, mono; the 15-25 deg coupling is gone. Modes abs/diff +
+  lockgain for in-headset taste. Fire test 57->54 with a fresh decal, dumps
+  8->8; vrstereo on smoke + fire clean.
+- **Harness note for the record**: the g5 acceptance series burned three
+  builds' worth of false starts on capture variants - the boot loop
+  (launch -> A-presses -> save check -> double trigger) is now fully
+  scripted and each cycle costs ~4 min.
 
 ### 2026-07-26 - Session 12 part 2 (first headset run of the bone drive + the head-coupling fix)
 
