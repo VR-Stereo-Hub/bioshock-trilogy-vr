@@ -99,6 +99,19 @@ bool g_haveRecenter = false;
 bvr::vr::HeadPose g_recenterPose{};
 float g_recenterYawRad = 0.0f;
 
+// Synthetic HMD lane (session 12 part 4): `simhead <yaw> <pitch> <roll>
+// [holdMs]` feeds a scripted head pose through the REAL camera drive -
+// recenter, additive yaw, head offset, stereo passes, bone drive - so the
+// full in-headset pipeline runs flat, headset-free. The simpose hand lane's
+// twin: park the hand, sweep the head, screenshot - the head-coupling
+// reports become reproducible (or provably game-clean) without a user in
+// the loop. Self-expiring like every synthetic lane.
+struct SimHead {
+    float yawDeg = 0.0f, pitchDeg = 0.0f, rollDeg = 0.0f;
+    uint64_t deadline = 0;
+};
+SimHead g_simHead;
+
 // M4 rung 2 (SequentialReentry): pass-1 caches the fully-driven camera here
 // (post head drive + debug offsets, PRE eye offset) so pass 2 replays the
 // exact same base with the opposite eye - both eyes share one head sample
@@ -203,6 +216,31 @@ void apply_command(const char* cmd, const char* args) {
             g_offsetY.store(y, std::memory_order_relaxed);
             g_offsetZ.store(z, std::memory_order_relaxed);
             BVR_LOG("[b1r] command: offset %.1f %.1f %.1f", x, y, z);
+        }
+    } else if (strcmp(cmd, "simhead") == 0) {
+        // Synthetic HMD (see SimHead above). Arming from idle recenters onto
+        // the sim's first pose - start at `simhead 0 0 0`, then change angles
+        // to "turn the head" without touching the recenter.
+        if (strncmp(args, "off", 3) == 0) {
+            g_simHead.deadline = 0;
+            BVR_LOG("[b1r] command: simhead off");
+        } else {
+            int hold = 0;
+            int n = sscanf_s(args, "%f %f %f %d", &x, &y, &z, &hold);
+            if (n >= 3) {
+                bool wasIdle = GetTickCount64() >= g_simHead.deadline;
+                g_simHead.yawDeg = x;
+                g_simHead.pitchDeg = y;
+                g_simHead.rollDeg = z;
+                if (hold <= 0) hold = 120000;
+                g_simHead.deadline = GetTickCount64() + static_cast<uint64_t>(hold);
+                if (wasIdle) g_recenterRequested.store(true, std::memory_order_relaxed);
+                BVR_LOG("[b1r] command: simhead yaw %.1f pitch %.1f roll %.1f for %d ms%s",
+                        x, y, z, hold, wasIdle ? " (recentering onto first sim pose)" : "");
+            } else {
+                BVR_LOG("[b1r] usage: simhead <yawDeg> <pitchDeg> <rollDeg> [holdMs] | "
+                        "simhead off");
+            }
         }
     } else if (strcmp(cmd, "camrot") == 0) {
         // Render-camera-only rotation offset (degrees), the seam twin of the
@@ -416,7 +454,22 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     FVector baseLoc = loc ? *loc : FVector{};
     float driveYawOffsetRad = 0.0f;
     bvr::vr::HeadPose hp{};
-    if (loc && rot && bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
+    bool simHead = now < g_simHead.deadline;
+    if (simHead) {
+        // Synthetic head pose, XR convention (same quat builder simpose uses
+        // for the hand). Position stays at the recenter origin - rotation is
+        // what every head-coupling report has been about.
+        float q[4];
+        xr_local_trim_quat(g_simHead.pitchDeg / kRadToDeg, g_simHead.yawDeg / kRadToDeg,
+                           g_simHead.rollDeg / kRadToDeg, q);
+        hp = {};
+        hp.qx = q[0];
+        hp.qy = q[1];
+        hp.qz = q[2];
+        hp.qw = q[3];
+    }
+    if (loc && rot &&
+        (simHead || (bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)))) {
         UeAngles a = hmd_angles(hp);
         if (g_recenterRequested.exchange(false, std::memory_order_relaxed) || !g_haveRecenter) {
             g_recenterPose = hp;
