@@ -12,6 +12,25 @@ rides the driven hand.** `vrhands mode bones` is the new default; the actor is
 no longer written (it stays engine-placed at the eye anchor - no culling risk,
 sane FX anchoring). Awaiting the user's in-headset verdict (checklist below).
 
+**FIRST HEADSET RUN + THE FIX (same day, session 12 part 2).** The user's
+verdict: a metric ton better - the model rotates and moves correctly with the
+controllers - but it still FOLLOWED THE HEAD and sat too close to the eyes.
+Root cause found flat and fixed: **the renderer orients the first-person rig
+by the RENDER CAMERA's rotation, not the actor's rotation field**. Flat those
+are the same value, so every flat test passed while the HMD head-look was
+exactly the split between them, leaking head rotation into the hand placement.
+The composition now inverts the FINAL camera rotation from the frame context
+(anchored at the actor's location field, which camera-position moves proved
+the renderer does use). Proven with the new `camrot <p> <y> <r>` seam command
+(render-camera-only rotation offset = the flat stand-in for head-look; it
+splits camera from pawn exactly like a headset does): camera-only pitch moves
+the world while the hand stays world-anchored, camera-only yaw keeps the hand
+on its target instead of panning away. Fire test re-passed on the fixed build.
+Lesson recorded the hard way: an earlier "discriminator" used a `rot` command
+THAT DOES NOT EXIST - no echo, no effect, and the conclusion drawn from it was
+noise. Always check the command echo before trusting an A/B. Second in-headset
+verdict pending.
+
 **How it works** (bones.cpp + ENGINE_NOTES "Skeleton / bone internals", all
 offsets in patterns.h): the AHands actor carries a `SkeletonInstance` at +0x3FC
 whose bone array is 47 component-space hkQsTransforms (pos+quat+scale, 48 B).
@@ -741,6 +760,29 @@ retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-26 - Session 12 part 2 (first headset run of the bone drive + the head-coupling fix)
+
+- **User verdict on the first bone-drive headset run**: controller tracking
+  and rotation correct ("a metric ton better"), but the model still followed
+  the HEAD and sat too close to the eyes; gun therefore not yet 1:1 with the
+  laser.
+- **Root cause, isolated FLAT with a new tool**: `camrot <p> <y> <r>` rotates
+  the render camera only (CalcView out-params + frame context, never the
+  pawn) - the flat equivalent of head-look. It showed the renderer orients
+  the first-person rig by the RENDER CAMERA rotation, not the actor rotation
+  field the drive had been composing against; the two only differ under
+  head-look, which is why every flat test had passed.
+- **Fix**: bones.cpp composes the target against the frame context's final
+  camera rotation, anchored at the actor's location field. Camera-pitch and
+  camera-yaw A/Bs both land on the correct-frame prediction; fire test
+  re-passed (subs=2, dumps 8->8).
+- **Method lesson recorded**: the first "discriminator" run used a `rot`
+  command that does not exist in the seam - it echoed nothing, did nothing,
+  and its "result" was misread as evidence. Command echoes are now a
+  mandatory check before trusting any A/B.
+- Two PC power cuts (electricity, unrelated) punctuated the session; no work
+  lost either time (recon results and commits were already on disk/pushed).
 
 ### 2026-07-26 - Session 12 (M7-v2: the bone drive, built and flat-verified in one day)
 
