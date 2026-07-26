@@ -473,6 +473,20 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                     ? bvr::vr::suggested_hfov_deg()
                     : 0.0f; // 0 = leave the game's own FOV in place
         vrDrove = true;
+
+        // In-headset telemetry (vrbones log on): the RAW head sample this
+        // frame's camera was driven from, plus the recenter reference.
+        if (bones::telemetry_on()) {
+            static uint64_t lastTlm = 0;
+            if (now - lastTlm >= 200) {
+                lastTlm = now;
+                BVR_LOG("[tlm] head xr p=(%.3f %.3f %.3f) yaw=%.1f pitch=%.1f roll=%.1f | "
+                        "recenter yaw=%.1f p=(%.3f %.3f %.3f) | headOff=(%.1f %.1f %.1f)",
+                        hp.px, hp.py, hp.pz, a.yawRad * 57.29578f, a.pitchRad * 57.29578f,
+                        a.rollRad * 57.29578f, g_recenterYawRad * 57.29578f, g_recenterPose.px,
+                        g_recenterPose.py, g_recenterPose.pz, ox, oy, oz);
+            }
+        }
     }
 
     // Game-FOV write via the settings object (the renderer's real per-frame

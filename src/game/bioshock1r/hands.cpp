@@ -492,6 +492,16 @@ void on_calcview(const FrameContext& ctx) {
             quat[1] = hp.qy;
             quat[2] = hp.qz;
             quat[3] = hp.qw;
+            if (bvr::b1r::bones::telemetry_on()) {
+                static uint64_t lastTlm = 0;
+                if (now - lastTlm >= 200) {
+                    lastTlm = now;
+                    BVR_LOG("[tlm] ctrl%d xr p=(%.3f %.3f %.3f) q=(%.3f %.3f %.3f %.3f) "
+                            "pose=%s",
+                            active_hand(), hp.px, hp.py, hp.pz, hp.qx, hp.qy, hp.qz, hp.qw,
+                            aimPose ? "aim" : "grip");
+                }
+            }
         }
 
         // Mesh-alignment trim, composed in the controller's local frame so it

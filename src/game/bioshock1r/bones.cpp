@@ -81,8 +81,17 @@ std::atomic<int> g_rAnchorOverride{-1};
 
 std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
 std::atomic<uint32_t> g_writes{0};
+std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
 char g_status[160] = "idle";
+
+// In-headset telemetry (vrbones log on): ~5 Hz shared sample window. The
+// headset cannot be watched from outside, so the log carries every frame of
+// the chain - raw XR poses (camera.cpp / hands.cpp lines), the camera, the
+// actor, the world target, and what the bone array held before the write.
+std::atomic<bool> g_telemetry{false};
+uint64_t g_lastTlmMs = 0;
+bool g_tlmWindowOpen = false;
 
 // ---- guarded memory (no C++ objects inside SEH frames) ----------------------
 
@@ -193,7 +202,21 @@ void on_world_change() {
     g_cacheMs = 0;
 }
 
+bool telemetry_on() {
+    return g_telemetry.load(std::memory_order_relaxed);
+}
+
 bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
+    // Telemetry window: opened here (the once-per-frame pass-1 path) so every
+    // module's lines for one sample land together in the log.
+    if (g_telemetry.load(std::memory_order_relaxed)) {
+        uint64_t now = GetTickCount64();
+        g_tlmWindowOpen = (now - g_lastTlmMs >= 200);
+        if (g_tlmWindowOpen) g_lastTlmMs = now;
+    } else {
+        g_tlmWindowOpen = false;
+    }
+
     if (!handsActor || !locate(handsActor)) return false;
 
     int first = 0, last = 0, anchor = 0;
@@ -253,6 +276,24 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                     sqrtf(ptc[0] * ptc[0] + ptc[1] * ptc[1] + ptc[2] * ptc[2]));
         }
         return false;
+    }
+
+    if (g_tlmWindowOpen) {
+        int32_t actorRot[3] = {0, 0, 0};
+        read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorViewDirOffset, actorRot, 12);
+        BVR_LOG("[tlm] cam loc=(%.1f %.1f %.1f) rot=(%d %d %d) base=(%.1f %.1f %.1f) "
+                "dyaw=%.2f",
+                ctx.camX, ctx.camY, ctx.camZ, ctx.camPitch, ctx.camYaw, ctx.camRoll, ctx.baseX,
+                ctx.baseY, ctx.baseZ, ctx.driveYawOffsetRad * kRadToDeg);
+        BVR_LOG("[tlm] actor loc=(%.1f %.1f %.1f) rot=(%d %d %d) | target loc=(%.1f %.1f "
+                "%.1f) rot=(%d %d %d) hand=%d",
+                actorLoc[0], actorLoc[1], actorLoc[2], actorRot[0], actorRot[1], actorRot[2],
+                gp.loc.x, gp.loc.y, gp.loc.z, gp.rot.pitch, gp.rot.yaw, gp.rot.roll, hand);
+        BVR_LOG("[tlm] comp p=(%.2f %.2f %.2f) q=(%.3f %.3f %.3f %.3f) | anchorBefore "
+                "p=(%.2f %.2f %.2f) engineEval=%d reapplies=%u",
+                ptc[0], ptc[1], ptc[2], qtc[0], qtc[1], qtc[2], qtc[3], cur.p[0], cur.p[1],
+                cur.p[2], engineEvaluated ? 1 : 0,
+                g_reapplies.load(std::memory_order_relaxed));
     }
 
     // Rigid move: rotate the reference cluster by qtc about the reference
@@ -329,6 +370,7 @@ void reapply() {
     // cache must never keep painting an old pose after the drive stops.
     if (!g_cacheSkelInst || g_cacheSkelInst != g_skelInst || !g_bones) return;
     if (GetTickCount64() - g_cacheMs > 100) return;
+    g_reapplies.fetch_add(1, std::memory_order_relaxed);
     for (int k = 0; k < g_cacheCount; ++k) {
         const CachedBone& cb = g_cache[k];
         if (cb.idx >= g_boneCount) continue;
@@ -427,6 +469,11 @@ void handle_command(const char* args) {
         g_rAnchorOverride.store(idx, std::memory_order_relaxed);
         BVR_LOG("[bones] right anchor override = %d (-1 = default %d)", idx,
                 patterns::kBoneWeaponAttach);
+    } else if (strcmp(verb, "log") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_telemetry.store(on, std::memory_order_relaxed);
+        BVR_LOG("[bones] telemetry %s%s", on ? "ON" : "off",
+                on ? " - [tlm] lines at ~5 Hz (head/ctrl/cam/actor/target/bones)" : "");
     } else if (strcmp(verb, "lcluster") == 0) {
         int lo = -1, hi = -1, an = -1;
         if (sscanf_s(rest, "%d %d %d", &lo, &hi, &an) == 3) {

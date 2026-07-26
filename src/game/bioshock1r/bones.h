@@ -48,8 +48,15 @@ void reapply();
 void on_world_change();
 
 // Seam commands (game thread): status | list [n] | poke <idx> <dUU> |
-// freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor>
+// freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor> |
+// log on|off (in-headset telemetry: head/controller/camera/actor/target/bone
+// samples at ~5 Hz so a headset session can be diagnosed from the log)
 void handle_command(const char* args);
+
+// True while `vrbones log on` - camera.cpp and hands.cpp contribute their
+// raw-pose lines to the same telemetry stream (each site throttles itself to
+// ~5 Hz; the log timestamps correlate the lines of one sample).
+bool telemetry_on();
 
 // Overlay section (render thread only).
 void draw_debug_ui();
