@@ -52,6 +52,10 @@ bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs);
 // Lifetime accepted-capture count (diagnostic: is the watch firing at all?).
 uint32_t cb_watch_hits();
 
+// Log the Unmap-time callstack (game-exe RVAs) for the next n fingerprint
+// matches - the discovery instrument for whoever BUILDS the watched values.
+void cb_watch_log_stacks(int n);
+
 // Overlay section: dump buttons + last-dump status.
 void draw_debug_ui();
 

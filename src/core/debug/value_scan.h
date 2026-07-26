@@ -49,6 +49,10 @@ bool poke_addr_u32(uintptr_t addr, uint32_t value);
 // Log a hex+ascii dump of [addr, addr+len), len capped at 1024.
 void hexdump(uintptr_t addr, size_t len);
 
+// Log every 4-aligned float field in [addr, addr+len) whose value lies in
+// [lo, hi] (offset + value). Property hunting on live objects; len capped 4K.
+void float_sweep(uintptr_t addr, size_t len, float lo, float hi);
+
 // For candidate idx, sweep the main module and writable heap for 32-bit
 // values P with 0 <= candidate - P <= maxDelta (plausible owning-object base
 // pointers). Logs each hit's location and the implied field offset.

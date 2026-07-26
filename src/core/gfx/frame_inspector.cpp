@@ -133,6 +133,9 @@ std::atomic<uint32_t> g_watchSeq{0}; // even = stable
 float g_watchData[kWatchMaxCap] = {};
 std::atomic<uint64_t> g_watchTickMs{0};
 std::atomic<uint32_t> g_watchHits{0};
+// Pending "log the writer" shots: on a fingerprint match, capture and log the
+// Unmap callstack (exe RVAs) - the road to whoever BUILDS the watched values.
+std::atomic<int> g_watchStackShots{0};
 
 // Per-thread last WRITE-mapped buffer (the engine's pattern is a tight
 // Map/copy/Unmap per draw, so depth-1 tracking is enough; a nested map just
@@ -141,7 +144,9 @@ thread_local ID3D11Resource* t_mappedRes = nullptr;
 thread_local void* t_mappedPtr = nullptr;
 thread_local uint32_t t_mappedBytes = 0;
 
-void watch_inspect(ID3D11Resource* res) {
+size_t collect_stack(void* espHint, uint32_t* out, size_t maxOut); // fwd
+
+void watch_inspect(ID3D11Resource* res, void* espHint) {
     if (!g_watchArmed.load(std::memory_order_relaxed)) return;
     if (!t_mappedPtr || res != t_mappedRes) return;
     if (g_watchBytes && t_mappedBytes != g_watchBytes) return;
@@ -161,6 +166,19 @@ void watch_inspect(ID3D11Resource* res) {
     g_watchSeq.store(seq + 2, std::memory_order_release);
     g_watchTickMs.store(GetTickCount64(), std::memory_order_relaxed);
     g_watchHits.fetch_add(1, std::memory_order_relaxed);
+    int shots = g_watchStackShots.load(std::memory_order_relaxed);
+    if (shots > 0 &&
+        g_watchStackShots.compare_exchange_strong(shots, shots - 1,
+                                                  std::memory_order_relaxed)) {
+        uint32_t rvas[10] = {};
+        size_t n = collect_stack(espHint, rvas, 10);
+        char line[256];
+        int len = _snprintf_s(line, sizeof line, _TRUNCATE,
+                              "[gfx] cbwatch writer stack (%u B cb):", t_mappedBytes);
+        for (size_t i = 0; i < n && len > 0 && len < 230; ++i)
+            len += _snprintf_s(line + len, sizeof line - len, _TRUNCATE, " 0x%X", rvas[i]);
+        BVR_LOG("%s", line);
+    }
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -211,20 +229,22 @@ int register_resource(ID3D11View* view) {
 
 // Best-effort callstack: RtlCaptureStackBackTrace first, then a heuristic
 // scan up the stack for exe .text return addresses preceded by a CALL.
-void capture_stack(Event& ev, void* espHint) {
+// Only game-exe frames are kept (to_exe_rva filters ours), so the exact
+// skip depth between call sites is non-critical.
+size_t collect_stack(void* espHint, uint32_t* out, size_t maxOut) {
     void* frames[16] = {};
     USHORT n = RtlCaptureStackBackTrace(2, 16, frames, nullptr);
-    size_t out = 0;
-    for (USHORT i = 0; i < n && out < kMaxStack; ++i) {
+    size_t cnt = 0;
+    for (USHORT i = 0; i < n && cnt < maxOut; ++i) {
         uint32_t rva = to_exe_rva(frames[i]);
-        if (rva) ev.stack[out++] = rva;
+        if (rva) out[cnt++] = rva;
     }
-    if (out >= 4) return; // EBP walk was healthy enough
+    if (cnt >= 4) return cnt; // EBP walk was healthy enough
 
     // Heuristic ESP scan (FPO-resistant): any dword on the stack that points
     // into the exe image right after a plausible CALL encoding.
     const uintptr_t esp = reinterpret_cast<uintptr_t>(espHint);
-    for (uintptr_t p = esp; p < esp + 2048 && out < kMaxStack; p += 4) {
+    for (uintptr_t p = esp; p < esp + 2048 && cnt < maxOut; p += 4) {
         uint32_t candidate = 0;
         __try {
             candidate = *reinterpret_cast<const uint32_t*>(p);
@@ -243,10 +263,16 @@ void capture_stack(Event& ev, void* espHint) {
         }
         if (!looksLikeCall) continue;
         bool dup = false;
-        for (size_t i = 0; i < out; ++i)
-            if (ev.stack[i] == rva) dup = true;
-        if (!dup) ev.stack[out++] = rva;
+        for (size_t i = 0; i < cnt; ++i)
+            if (out[i] == rva) dup = true;
+        if (!dup) out[cnt++] = rva;
     }
+    return cnt;
+}
+
+void capture_stack(Event& ev, void* espHint) {
+    size_t n = collect_stack(espHint, ev.stack, kMaxStack);
+    (void)n;
 }
 
 // Query pipeline state around a draw. Expensive, but only runs while
@@ -341,7 +367,7 @@ HRESULT STDMETHODCALLTYPE MapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* re
 
 void STDMETHODCALLTYPE UnmapDetour(ID3D11DeviceContext* ctx, ID3D11Resource* res, UINT sub) {
     if (sub == 0 && res == t_mappedRes) {
-        watch_inspect(res);
+        watch_inspect(res, &sub);
         t_mappedRes = nullptr;
         t_mappedPtr = nullptr;
         t_mappedBytes = 0;
@@ -675,6 +701,10 @@ void set_cb_watch(const float* pattern, uint32_t patFirst, uint32_t patCount,
 
 uint32_t cb_watch_hits() {
     return g_watchHits.load(std::memory_order_relaxed);
+}
+
+void cb_watch_log_stacks(int n) {
+    g_watchStackShots.store(n, std::memory_order_relaxed);
 }
 
 bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs) {

@@ -19,6 +19,7 @@
 
 #include "core/gfx/frame_inspector.h"
 #include "core/util/log.h"
+#include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -101,6 +102,11 @@ std::atomic<int> g_renderLock{1};         // 0 off, 1 abs (true position), 2 dif
 // instruments (simhead sweeps vs size/parallax A/Bs).
 std::atomic<float> g_lockGain{0.9f};      // lateral
 std::atomic<float> g_lockDepthGain{0.9f}; // along the fg forward
+// Fg-eye pull-back behind the camera at the MATCHED lens (session 15: the
+// lens is honest via vrfgfov, but the fg eye still dollies back by a
+// fov-coupled amount; ~65 UU measured at option 117 via offset parallax).
+// Runtime-tunable (vrbones lockpull) because the flat A/Bs calibrate it.
+std::atomic<float> g_lockPull{65.0f};
 std::atomic<float> g_lockDeltaMag{0.0f};  // telemetry: |delta| UU last frame
 std::atomic<uint32_t> g_lockSolves{0};
 std::atomic<uint32_t> g_lockSkips{0};
@@ -194,20 +200,21 @@ void qts_rotate(const float q[4], const float v[3], float out[3]) {
 // position. The eye is a PARAMETER because it rides the camera (session 13
 // part 3): eye = camera position in component space + the measured pull-back
 // expressed in the fg view's own frame.
-void build_fg_model(const float qd[4], const float E[3], float M[12]) {
+void build_fg_model(const float qd[4], const float E[3], float invTanH, float invTanV,
+                    float M[12]) {
     float fgF[3], fgR[3], fgU[3];
     static const float kX[3] = {1.0f, 0.0f, 0.0f}, kY[3] = {0.0f, 1.0f, 0.0f},
                        kZ[3] = {0.0f, 0.0f, 1.0f};
     quat_rotate(qd[0], qd[1], qd[2], qd[3], kX, fgF);
     quat_rotate(qd[0], qd[1], qd[2], qd[3], kY, fgR);
     quat_rotate(qd[0], qd[1], qd[2], qd[3], kZ, fgU);
-    M[0] = patterns::kFgInvTanH * fgR[0];
-    M[1] = patterns::kFgInvTanH * fgR[1];
-    M[2] = patterns::kFgInvTanH * fgR[2];
+    M[0] = invTanH * fgR[0];
+    M[1] = invTanH * fgR[1];
+    M[2] = invTanH * fgR[2];
     M[3] = -(M[0] * E[0] + M[1] * E[1] + M[2] * E[2]);
-    M[4] = patterns::kFgInvTanV * fgU[0];
-    M[5] = patterns::kFgInvTanV * fgU[1];
-    M[6] = patterns::kFgInvTanV * fgU[2];
+    M[4] = invTanV * fgU[0];
+    M[5] = invTanV * fgU[1];
+    M[6] = invTanV * fgU[2];
     M[7] = -(M[4] * E[0] + M[5] * E[1] + M[6] * E[2]);
     M[8] = fgF[0];
     M[9] = fgF[1];
@@ -302,17 +309,15 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
     float ndcX, ndcY, df;
     if (!world_ndc(ctx, gp, camRot, tanH, &ndcX, &ndcY, &df)) return false;
 
-    // World-equivalent fg depth. kFgInvTanH = 1/tan(fgFov/2), so the lens
-    // ratio k = tan(worldFov/2)/tan(fgFov/2) = tanH * kFgInvTanH (~2.1 at
-    // option 117, ~3.3 at 137). The solve places the anchor at w* = k*df:
-    // apparent size, stereo disparity, and translation parallax are all the
-    // same (1/w)*k geometry, so one constraint makes all three world-correct
-    // at once - PROVIDED the model's absolute depth scale is the REAL one.
-    // That is why the eye below uses the parallax-calibrated pull-back: with
-    // the dump-mean kFgEyeComp forward (-32.1, section-frame-contaminated)
-    // the lateral solve renders ~1.6x weaker through the real lens than the
-    // model believes (session 14, offset A/B flat-measured).
-    float k = tanH * patterns::kFgInvTanH;
+    // Fg lens: with the session-15 lens match armed (vrfgfov, default on)
+    // the rig renders through the WORLD lens - invTan scales come from the
+    // live world tanH and the lens ratio k collapses to 1, so the depth
+    // constraint w* = k*df becomes simply the true distance. Without the
+    // match, the legacy 60-deg constants apply (kept for A/B).
+    bool matched = camera::fg_fov_match_active();
+    float invTanHFg = matched ? 1.0f / tanH : patterns::kFgInvTanH;
+    float invTanVFg = matched ? 1.0f / (tanH * (9.0f / 16.0f)) : patterns::kFgInvTanV;
+    float k = tanH * invTanHFg;
     float wStar = k * df;
     if (wStar < 4.0f) return false; // hand at/behind the face: no stable solve
 
@@ -338,15 +343,16 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
     float dCam[3] = {ctx.camX - actorLoc[0], ctx.camY - actorLoc[1], ctx.camZ - actorLoc[2]};
     float camComp[3], ePulled[3], eyeEff[3];
     qts_rotate(qaInv, dCam, camComp);
-    const float eTrue[3] = {-patterns::kFgEyeFwdBehindCam, patterns::kFgEyeComp[1],
-                            patterns::kFgEyeComp[2]};
+    float pull = matched ? g_lockPull.load(std::memory_order_relaxed)
+                         : patterns::kFgEyeFwdBehindCam;
+    const float eTrue[3] = {-pull, patterns::kFgEyeComp[1], patterns::kFgEyeComp[2]};
     quat_rotate(qd[0], qd[1], qd[2], qd[3], eTrue, ePulled);
     eyeEff[0] = camComp[0] + ePulled[0];
     eyeEff[1] = camComp[1] + ePulled[1];
     eyeEff[2] = camComp[2] + ePulled[2];
 
     float M1[12];
-    build_fg_model(qd, eyeEff, M1);
+    build_fg_model(qd, eyeEff, invTanHFg, invTanVFg, M1);
     float wNat = fg_natural_w(M1, ptc);
     float p1[3];
     if (!solve_fg(M1, ndcX, ndcY, wStar, p1)) return false;
@@ -361,7 +367,7 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
         float e0[3];
         quat_rotate(s_qBias[0], s_qBias[1], s_qBias[2], s_qBias[3], eTrue, e0);
         float M0[12], p0[3];
-        build_fg_model(s_qBias, e0, M0); // zero split still carries the bias
+        build_fg_model(s_qBias, e0, invTanHFg, invTanVFg, M0); // bias kept at zero split
         if (!solve_fg(M0, ndcX0, ndcY0, fg_natural_w(M0, ptc), p0)) return false;
         delta[0] = p1[0] - p0[0];
         delta[1] = p1[1] - p0[1];
@@ -758,6 +764,15 @@ void handle_command(const char* args) {
         } else {
             BVR_LOG("[bones] usage: vrbones lockgain <0..2> (current %.2f)",
                     g_lockGain.load(std::memory_order_relaxed));
+        }
+    } else if (strcmp(verb, "lockpull") == 0) {
+        float p = 65.0f;
+        if (sscanf_s(rest, "%f", &p) == 1 && p >= 0.0f && p <= 200.0f) {
+            g_lockPull.store(p, std::memory_order_relaxed);
+            BVR_LOG("[bones] fg eye pull-back (matched lens) = %.1f UU", p);
+        } else {
+            BVR_LOG("[bones] usage: vrbones lockpull <0..200> (current %.1f)",
+                    g_lockPull.load(std::memory_order_relaxed));
         }
     } else if (strcmp(verb, "lockdgain") == 0) {
         float g = 0.5f;

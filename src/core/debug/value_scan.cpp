@@ -423,6 +423,26 @@ void hexdump(uintptr_t addr, size_t len) {
     }
 }
 
+void float_sweep(uintptr_t addr, size_t len, float lo, float hi) {
+    if (len > 4096) len = 4096;
+    char where[MAX_PATH + 16];
+    BVR_LOG("[vscan] fsweep 0x%08X (%s) len %u for [%.2f, %.2f]:",
+            static_cast<unsigned>(addr), describe(addr, where, sizeof(where)),
+            static_cast<unsigned>(len), lo, hi);
+    int found = 0;
+    for (size_t off = 0; off + 4 <= len; off += 4) {
+        uint32_t dw = 0;
+        if (!safe_read_u32(addr + off, &dw)) continue;
+        float f;
+        memcpy(&f, &dw, 4);
+        if (f >= lo && f <= hi) {
+            BVR_LOG("[vscan]   +0x%03X = %.4f", static_cast<unsigned>(off), f);
+            ++found;
+        }
+    }
+    BVR_LOG("[vscan] fsweep: %d fields in range", found);
+}
+
 size_t ptr_scan(size_t idx, uint32_t maxDelta) {
     if (idx >= g_candidates.size()) {
         BVR_LOG("[vscan] ptrscan %u: out of range", static_cast<unsigned>(idx));

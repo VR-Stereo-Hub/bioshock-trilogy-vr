@@ -9,6 +9,11 @@ bool install(void* eventPlayerCalcView);
 
 bool hook_live();
 
+// True while the foreground lens match is armed AND writing (session 15):
+// the rig renders through the WORLD lens, so the render-lock solve must use
+// the world tan scales and k = 1.
+bool fg_fov_match_active();
+
 void set_fov_override(float hfovDeg); // <= 0 disables; game value restored
 
 // Full ImGui section: hook status, telemetry, and all debug controls.

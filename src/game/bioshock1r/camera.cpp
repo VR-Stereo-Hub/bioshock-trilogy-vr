@@ -80,6 +80,20 @@ std::atomic<float>    g_lastFov{0.0f};
 // Display only. The overlay never dereferences this - all game-memory access
 // happens on the game thread inside the detour, where `this` is alive.
 std::atomic<void*>    g_playerController{nullptr};
+std::atomic<void*>    g_lastViewActor{nullptr}; // *view_actor out-param (the pawn)
+
+// Foreground lens match (session 15): the renderer consumes the PC's
+// ForegroundFovAngle (patterns.h kPcForegroundFovOffset) EVERY FRAME; writing
+// the world-equivalent 4:3 spec re-lenses the whole rig to the WORLD lens
+// (dump-proven: every vm draw joins the world projection cluster, lighting
+// tiers included). Default OFF until the drive-on interaction is calibrated:
+// the fg eye's fov-coupled dolly measured +65 UU (vanilla path, matched
+// lens) but the driven rigid path renders a DIFFERENT pull, and countering
+// via bones dies on the engine's behind-camera culling - the calibration is
+// session 16's first task (vrfgfov on + vrbones lockpull are the knobs).
+std::atomic<bool>  g_fgFovMatch{false};
+std::atomic<float> g_fgFovSaved{0.0f};   // engine value to restore on disable
+std::atomic<float> g_fgFovWritten{0.0f}; // telemetry: what we wrote last
 
 using CalcViewFn = void(__fastcall*)(void* self, void* edx, void** viewActor,
                                      FVector* loc, FRotator* rot);
@@ -254,6 +268,32 @@ void apply_command(const char* cmd, const char* args) {
             g_rollDeg.store(z, std::memory_order_relaxed);
             BVR_LOG("[b1r] command: camrot %.1f %.1f %.1f", x, y, z);
         }
+    } else if (strcmp(cmd, "fgstack") == 0) {
+        unsigned shots = 3;
+        sscanf_s(args, "%u", &shots);
+        bvr::frame_inspector::set_cb_watch(
+            patterns::kFgCbFingerprint, patterns::kFgCbFingerprintFirst,
+            _countof(patterns::kFgCbFingerprint), patterns::kFgCbTransformFirst,
+            patterns::kFgCbTransformCount, patterns::kFgCbBytes);
+        bvr::frame_inspector::cb_watch_log_stacks(static_cast<int>(shots));
+        BVR_LOG("[b1r] fgstack: cb watch armed on the fg fingerprint, logging %u writer "
+                "callstacks",
+                shots);
+    } else if (strcmp(cmd, "vrfgfov") == 0) {
+        bool on = strncmp(args, "off", 3) != 0;
+        g_fgFovMatch.store(on, std::memory_order_relaxed);
+        BVR_LOG("[b1r] fg lens match %s (last written %.1f)", on ? "ON" : "off",
+                g_fgFovWritten.load(std::memory_order_relaxed));
+    } else if (strcmp(cmd, "fginfo") == 0) {
+        BVR_LOG("[b1r] fginfo: pc=%p viewActor=%p (fsweep them for the fg fov property)",
+                g_playerController.load(std::memory_order_relaxed),
+                g_lastViewActor.load(std::memory_order_relaxed));
+    } else if (strcmp(cmd, "fsweep") == 0) {
+        float lo = 0.0f, hi = 0.0f;
+        if (sscanf_s(args, "%x %u %f %f", &addr, &len, &lo, &hi) == 4)
+            bvr::value_scan::float_sweep(addr, len, lo, hi);
+        else
+            BVR_LOG("[b1r] usage: fsweep <hexaddr> <len> <lo> <hi>");
     } else if (strcmp(cmd, "memscan") == 0) {
         if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::scan_f32(v);
     } else if (strcmp(cmd, "memrescan") == 0) {
@@ -614,10 +654,36 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.worldScale = g_worldScale.load(std::memory_order_relaxed);
         fc.viewActor = viewActor ? *viewActor : nullptr;
         fc.pc = self;
+        g_lastViewActor.store(fc.viewActor, std::memory_order_relaxed);
         aim::on_calcview(fc);
         // The viewmodel write goes LAST in the frame: the engine placed the
         // hands during its own tick, so ours has to be the one that survives.
         hands::on_calcview(fc);
+    }
+
+    // Foreground lens match: post-tick, pre-render, every frame - nothing
+    // engine-side fights the write (flat-proven: a poke held for minutes).
+    {
+        float* fgFov = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) +
+                                                patterns::kPcForegroundFovOffset);
+        int32_t* opt = patterns::hfov_option_ptr();
+        if (g_fgFovMatch.load(std::memory_order_relaxed)) {
+            if (fgFov && opt && *opt > 0) {
+                if (g_fgFovSaved.load(std::memory_order_relaxed) == 0.0f)
+                    g_fgFovSaved.store(*fgFov, std::memory_order_relaxed);
+                float tanW = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
+                float fg = 2.0f * atanf(tanW * 0.75f) * kRadToDeg;
+                *fgFov = fg;
+                g_fgFovWritten.store(fg, std::memory_order_relaxed);
+            }
+        } else {
+            float saved = g_fgFovSaved.load(std::memory_order_relaxed);
+            if (saved != 0.0f && fgFov) {
+                *fgFov = saved;
+                g_fgFovSaved.store(0.0f, std::memory_order_relaxed);
+                g_fgFovWritten.store(0.0f, std::memory_order_relaxed);
+            }
+        }
     }
 
     // SequentialReentry stereo (M4 rung 2): this normal pass is the LEFT eye.
@@ -677,6 +743,11 @@ bool install(void* eventPlayerCalcView) {
     g_hookLive.store(true, std::memory_order_relaxed);
     BVR_LOG("[b1r] calcview hook installed (target %p)", eventPlayerCalcView);
     return true;
+}
+
+bool fg_fov_match_active() {
+    return g_fgFovMatch.load(std::memory_order_relaxed) &&
+           g_fgFovWritten.load(std::memory_order_relaxed) > 0.0f;
 }
 
 bool hook_live() {

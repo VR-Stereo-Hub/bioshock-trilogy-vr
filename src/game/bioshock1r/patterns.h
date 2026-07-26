@@ -461,6 +461,16 @@ inline constexpr int kBoneLSleeve[] = {3, 4, 5, 22, 23};
 // NOT change the render (dump-proven): the renderer's constants are built
 // elsewhere; the property is upstream state only.
 inline constexpr uint32_t kPawnForegroundFovOffset = 0x558; // research; not a render lever
+// THE REAL FOREGROUND FOV (session 15): a float on the PLAYERCONTROLLER,
+// consumed by the renderer EVERY FRAME - poking it re-lenses the whole rig
+// the same frame, and a dump shows every vm draw (576 + 832/1088 lighting
+// tiers) joining the world's projection cluster. Found by fsweep of the live
+// PC (60.0 next to a 75.0 default at +0x45C) + live poke A/B. The value is a
+// 4:3 spec: matching the world lens means 2*atan(tan(worldFov/2)*3/4) - at
+// option 117 that is 101.5, the exact number session 13 held at the WRONG
+// address (the pawn's eye height). The session-13 "+0x558 non-lever" verdict
+// stands; this is its correction.
+inline constexpr uint32_t kPcForegroundFovOffset = 0x460;
 // cb0 fingerprint: floats 12..18 of every foreground draw hold the constant
 // screen-ray block (2*tanH, 0, -tanH, 0, 0, -2*tanV, tanV) of the fixed
 // projection; the capture spans floats 36..59 (viewport block, then the
