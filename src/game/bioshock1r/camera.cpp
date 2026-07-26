@@ -341,6 +341,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         } else if (rot) {
             rot->yaw += static_cast<int32_t>(reentryYawDeg * kRotUnitsPerDegree);
         }
+        // The engine's CalcView above re-evaluated the skeleton over the bone
+        // drive's pass-1 write; without this the RIGHT eye bakes the engine
+        // pose while the left bakes ours (live-proven under flat stereo).
+        bones::reapply();
         return;
     }
     g_original(self, edx, viewActor, loc, rot);

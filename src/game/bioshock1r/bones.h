@@ -34,6 +34,16 @@ void init(const bvr::pattern_scan::ProcessImage& image);
 // skeleton could not be reached this frame (caller may fall back).
 bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand);
 
+// Re-write the values the last drive() produced. The stereo second pass runs
+// the ENGINE's CalcView again (which re-evaluates the skeleton over our
+// write) but deliberately skips the drive body - without this, the right eye
+// bakes the engine pose while the left bakes ours (live-proven: under flat
+// stereo the bone array read back the engine idle pose every frame despite
+// the drive writing). Called from the CalcView detour's second-pass branch,
+// after the original returns. Cheap (cached memcpy), safe when nothing was
+// written this frame.
+void reapply();
+
 // The old actors died with the old world; drop every cached pointer.
 void on_world_change();
 

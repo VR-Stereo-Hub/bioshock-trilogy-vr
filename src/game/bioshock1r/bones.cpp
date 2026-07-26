@@ -55,6 +55,24 @@ bool g_refValid = false;
 Qts g_lastWrittenAnchor[2]; // per hand
 bool g_hasWritten[2] = {false, false};
 
+// Everything the last drive() wrote, for reapply() (the stereo second pass).
+struct CachedBone {
+    int idx;
+    float p[3];
+    float q[4];
+};
+CachedBone g_cache[kMaxBones];
+int g_cacheCount = 0;
+struct CachedSleeve {
+    int idx;
+    float p[3];
+    float s[3];
+};
+CachedSleeve g_cacheSleeve[8];
+int g_cacheSleeveCount = 0;
+void* g_cacheSkelInst = nullptr;
+uint64_t g_cacheMs = 0;
+
 // Both clusters are baked (patterns.h) after live measurement; the lcluster
 // command stays as a runtime override for future rig experiments.
 std::atomic<int> g_lFirst{patterns::kBoneLClusterFirst}, g_lLast{patterns::kBoneLClusterLast},
@@ -171,6 +189,8 @@ void on_world_change() {
     g_boneCount = 0;
     g_refValid = false;
     g_hasWritten[0] = g_hasWritten[1] = false;
+    g_cacheSkelInst = nullptr;
+    g_cacheMs = 0;
 }
 
 bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
@@ -236,7 +256,11 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     }
 
     // Rigid move: rotate the reference cluster by qtc about the reference
-    // anchor point, then put the anchor point at the target.
+    // anchor point, then put the anchor point at the target. Every write is
+    // also cached for reapply() - the stereo second pass must be able to
+    // restore this exact set after the engine re-evaluates over it.
+    g_cacheCount = 0;
+    g_cacheSleeveCount = 0;
     const float* pa = g_ref[anchor].p;
     for (int i = first; i <= last; ++i) {
         float rel[3] = {g_ref[i].p[0] - pa[0], g_ref[i].p[1] - pa[1], g_ref[i].p[2] - pa[2]};
@@ -247,8 +271,13 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         quat_mul(qtc, g_ref[i].q, q);
         if (!write_n(g_bones[i].p, p, 12) || !write_n(g_bones[i].q, q, 16)) {
             g_skelInst = nullptr; // faulted mid-write: revalidate next frame
+            g_cacheMs = 0;
             return false;
         }
+        CachedBone& cb = g_cache[g_cacheCount++];
+        cb.idx = i;
+        memcpy(cb.p, p, 12);
+        memcpy(cb.q, q, 16);
     }
 
     // Sleeve collapse: zero scale hides the geometry; pinning the position at
@@ -268,6 +297,12 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             if (idx >= g_boneCount) continue;
             write_n(g_bones[idx].p, ptc, 12);
             write_n(g_bones[idx].s, kZero, 12);
+            if (g_cacheSleeveCount < static_cast<int>(_countof(g_cacheSleeve))) {
+                CachedSleeve& cs = g_cacheSleeve[g_cacheSleeveCount++];
+                cs.idx = idx;
+                memcpy(cs.p, ptc, 12);
+                memcpy(cs.s, kZero, 12);
+            }
         }
     } else if (s_wasCollapsed) {
         for (size_t k = 0; k < sleeveCount; ++k) {
@@ -282,9 +317,33 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     if (!read_n(&g_bones[anchor], &g_lastWrittenAnchor[hand], sizeof(Qts))) return false;
     g_hasWritten[hand] = true;
     set_dirty(0); // render-side evaluate-if-dirty must not rebuild over us
+    g_cacheSkelInst = g_skelInst;
+    g_cacheMs = GetTickCount64();
     g_writes.fetch_add(1, std::memory_order_relaxed);
     g_lastHand.store(hand, std::memory_order_relaxed);
     return true;
+}
+
+void reapply() {
+    // Only replay a FRESH write (the paired first pass of this frame). A stale
+    // cache must never keep painting an old pose after the drive stops.
+    if (!g_cacheSkelInst || g_cacheSkelInst != g_skelInst || !g_bones) return;
+    if (GetTickCount64() - g_cacheMs > 100) return;
+    for (int k = 0; k < g_cacheCount; ++k) {
+        const CachedBone& cb = g_cache[k];
+        if (cb.idx >= g_boneCount) continue;
+        if (!write_n(g_bones[cb.idx].p, cb.p, 12) || !write_n(g_bones[cb.idx].q, cb.q, 16)) {
+            g_skelInst = nullptr;
+            return;
+        }
+    }
+    for (int k = 0; k < g_cacheSleeveCount; ++k) {
+        const CachedSleeve& cs = g_cacheSleeve[k];
+        if (cs.idx >= g_boneCount) continue;
+        write_n(g_bones[cs.idx].p, cs.p, 12);
+        write_n(g_bones[cs.idx].s, cs.s, 12);
+    }
+    set_dirty(0);
 }
 
 void handle_command(const char* args) {
