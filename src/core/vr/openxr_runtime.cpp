@@ -86,6 +86,10 @@ std::mutex g_poseMutex;
 HeadPose g_headPose{};
 bool g_poseValid = false;
 XrView g_views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+// The previous locate's views = the generation the CURRENTLY-presented game
+// content was rendered from (see the copy in on_present_begin).
+XrView g_viewsContent[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+bool g_viewsContentValid = false;
 bool g_viewsValid = false;
 std::atomic<float> g_hfovDeg{0.0f};      // circumscribed symmetric hfov, read cross-thread
 std::atomic<float> g_renderedHfov{0.0f}; // fov the game actually rendered (adapter readback)
@@ -227,6 +231,7 @@ void teardown_session(const char* why) {
         g_poseValid = false;
     }
     g_viewsValid = false;
+    g_viewsContentValid = false;
     g_projectionReady.store(false, std::memory_order_relaxed);
     g_hfovDeg.store(0.0f, std::memory_order_relaxed);
     if (g_viewSpace != XR_NULL_HANDLE) { xrDestroySpace(g_viewSpace); g_viewSpace = XR_NULL_HANDLE; }
@@ -619,6 +624,17 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         }
     }
 
+    // The backbuffer this present carries was rendered by the game from the
+    // PREVIOUS locate's head sample (lockstep: locate N feeds the tick that
+    // presents at N+1). Keep that generation around - captured content must
+    // be submitted with the pose it was RENDERED from, or the whole game
+    // layer slides against head motion by one cycle of rotation (the M4-era
+    // "head bobbing", glaring once a hand-anchored gun sat next to the
+    // zero-latency laser).
+    g_viewsContent[0] = g_views[0];
+    g_viewsContent[1] = g_views[1];
+    g_viewsContentValid = g_viewsValid;
+
     XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
     vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     vli.displayTime = g_frameState.predictedDisplayTime;
@@ -630,6 +646,13 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     g_viewsValid =
         XR_SUCCEEDED(xrLocateViews(g_session, &vli, &vs, 2, &viewCount, g_views)) &&
         viewCount == 2 && (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+    if (!g_viewsContentValid && g_viewsValid) {
+        // Session start: no previous generation yet - better a one-frame
+        // fresh-pose attribution than none.
+        g_viewsContent[0] = g_views[0];
+        g_viewsContent[1] = g_views[1];
+        g_viewsContentValid = true;
+    }
 
     // Circumscribed symmetric FOV for the game render, computed once per
     // session (needs the backbuffer aspect from the quad swapchain).
@@ -898,15 +921,18 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_swapchains[target], &ri);
 
+                // Captured content is attributed to the locate generation it
+                // was RENDERED from (g_viewsContent), never the fresh one -
+                // the compositor reprojects from there to display time.
                 if (srFrame) {
-                    g_eyePose[srEye] = g_views[srEye].pose;
+                    g_eyePose[srEye] = g_viewsContent[srEye].pose;
                     g_eyeValid[srEye] = true;
                     if (!g_loggedFirstSr.exchange(true))
                         BVR_LOG("xr: first SequentialReentry eye frame captured "
                                 "(eye %c)", srEye == 0 ? 'L' : 'R');
                 } else if (aerActive && target == g_currentEye &&
                            imageSign == currentEyeSign) {
-                    g_eyePose[g_currentEye] = g_views[g_currentEye].pose;
+                    g_eyePose[g_currentEye] = g_viewsContent[g_currentEye].pose;
                     g_eyeValid[g_currentEye] = true;
                     eyeCaptured = true;
                 }
@@ -949,7 +975,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
                             projViews[eye].subImage = sub;
                             projViews[eye].subImage.swapchain = g_swapchains[eye];
                         } else {
-                            projViews[eye].pose = g_views[eye].pose;
+                            projViews[eye].pose = g_viewsContent[eye].pose;
                             projViews[eye].subImage = sub;
                         }
                         projViews[eye].fov = {-halfH, halfH, halfV, -halfV};
