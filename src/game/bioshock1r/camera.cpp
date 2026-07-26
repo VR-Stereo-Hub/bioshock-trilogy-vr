@@ -9,6 +9,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
+#include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/hands.h"
@@ -254,6 +255,8 @@ void apply_command(const char* cmd, const char* args) {
         aim::handle_command(args); // M6 decoupled aim; logs its own echoes
     } else if (strcmp(cmd, "vrhands") == 0) {
         hands::handle_command(args); // M7 viewmodel; logs its own echoes
+    } else if (strcmp(cmd, "vrbones") == 0) {
+        bones::handle_command(args); // M7-v2 skeleton probes; logs its own echoes
     } else if (strcmp(cmd, "exec") == 0) {
         console_exec::run_viewport(args); // engine console command, viewport chain
     } else if (strcmp(cmd, "execc") == 0) {

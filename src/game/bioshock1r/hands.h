@@ -35,9 +35,12 @@ void on_calcview(const FrameContext& ctx);
 
 // Seam command handler: args after the "vrhands" verb (game thread).
 //   on | off | status
-//   mode hands|gun          hands (default) drives the AHands rig; gun drives
-//                           the weapon actor - EXPERIMENTAL, the renderer
-//                           ignores an attached weapon's actor fields
+//   mode bones|hands|gun    bones (default, M7-v2) drives the hand-cluster
+//                           BONES so the attached weapon follows engine-side
+//                           (see bones.h); hands pins the AHands actor
+//                           (retired - eye-anchor pivot lever); gun is inert
+//                           (the renderer ignores an attached weapon's actor
+//                           fields)
 //   pose aim|grip           aim = the ray the laser and bullets use (default),
 //                           so the barrel agrees with them by construction
 //   scale <f>               NOT WIRED YET - no confirmed DrawScale field on

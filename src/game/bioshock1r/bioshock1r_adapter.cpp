@@ -2,6 +2,7 @@
 
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
+#include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
@@ -24,6 +25,7 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     scenedraw::init(image); // stashes the image only - hooks are command-gated
     aim::init(image, symbols); // same: M6 seam hooks are command-gated
     hands::init(image);        // M7 viewmodel; the actor is located lazily
+    bones::init(image);        // M7-v2 skeleton drive; located lazily off the actor
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }

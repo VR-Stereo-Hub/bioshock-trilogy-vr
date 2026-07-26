@@ -52,6 +52,13 @@ inline void quat_axis_angle(float ax, float ay, float az, float rad, float out[4
     out[3] = cosf(rad * 0.5f);
 }
 
+inline void quat_conj(const float q[4], float out[4]) {
+    out[0] = -q[0];
+    out[1] = -q[1];
+    out[2] = -q[2];
+    out[3] = q[3];
+}
+
 // Local-frame trim quaternion from user-facing angles, XR axes, signs chosen
 // to match the UE conventions the sliders claim: +pitch tilts up, +yaw turns
 // right, +roll tilts clockwise (right). Applied as pose (x) trim.
@@ -130,6 +137,45 @@ inline void ue_rot_basis(const FRotator& r, float fwd[3], float right[3], float 
     up[0] = -(cr * sp * cy + sr * sy);
     up[1] = cy * sr - cr * sp * sy;
     up[2] = cr * cp;
+}
+
+// Quaternion of an FRotator, in the same convention the engine's skeleton
+// quats use (column vectors: q (x) v_local = v_parent, axes = UE X fwd /
+// Y right / Z up). Built from the FRotationMatrix basis so it can never
+// disagree with ue_rot_basis.
+inline void ue_rot_to_quat(const FRotator& r, float out[4]) {
+    float f[3], ri[3], u[3];
+    ue_rot_basis(r, f, ri, u);
+    // Columns of the local->world matrix are the axis images: m*0=f, m*1=ri, m*2=u.
+    float m00 = f[0], m01 = ri[0], m02 = u[0];
+    float m10 = f[1], m11 = ri[1], m12 = u[1];
+    float m20 = f[2], m21 = ri[2], m22 = u[2];
+    float tr = m00 + m11 + m22;
+    if (tr > 0.0f) {
+        float s = sqrtf(tr + 1.0f) * 2.0f;
+        out[3] = 0.25f * s;
+        out[0] = (m21 - m12) / s;
+        out[1] = (m02 - m20) / s;
+        out[2] = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        float s = sqrtf(1.0f + m00 - m11 - m22) * 2.0f;
+        out[3] = (m21 - m12) / s;
+        out[0] = 0.25f * s;
+        out[1] = (m01 + m10) / s;
+        out[2] = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        float s = sqrtf(1.0f + m11 - m00 - m22) * 2.0f;
+        out[3] = (m02 - m20) / s;
+        out[0] = (m01 + m10) / s;
+        out[1] = 0.25f * s;
+        out[2] = (m12 + m21) / s;
+    } else {
+        float s = sqrtf(1.0f + m22 - m00 - m11) * 2.0f;
+        out[3] = (m10 - m01) / s;
+        out[0] = (m02 + m20) / s;
+        out[1] = (m12 + m21) / s;
+        out[2] = 0.25f * s;
+    }
 }
 
 // FRotator (pitch/yaw, roll 0) of a UE-space direction vector.

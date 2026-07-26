@@ -1,0 +1,47 @@
+#pragma once
+// M7-v2 bone drive: place the viewmodel's HAND CLUSTER at the controller by
+// writing the engine's own evaluated skeleton, so everything the engine
+// derives from bones - the attached weapon's render transform above all -
+// follows for free (the where-you-write principle, ENGINE_NOTES).
+//
+// Mechanism (all offsets in patterns.h, derivations in ENGINE_NOTES):
+// the AHands actor carries a `SkeletonInstance` at +0x3FC whose bone array is
+// component-space hkQsTransforms. The engine re-evaluates it lazily behind a
+// dirty flag; our write lands from the CalcView detour - after the engine's
+// tick, before the render build - and was live-proven to be what that frame
+// renders. The whole hand cluster (wrist + fingers + weapon-attach bone) is
+// moved RIGIDLY: rotate the reference pose about the anchor bone's reference
+// point, then translate the anchor point onto the target. No IK, by design -
+// the user dropped arm articulation, which is exactly what makes this shape
+// of drive sufficient.
+//
+// This module owns the skeleton MECHANISM only. Pose POLICY (which XR pose,
+// trims, offsets, enable state, hand choice) stays in hands.cpp, which calls
+// drive() with the finished game-space target - the same GamePose the actor
+// pinning used, so `vrhands test`/`simpose` flat lanes exercise this path
+// unchanged.
+
+#include "core/hooks/pattern_scan.h"
+#include "game/bioshock1r/frame_context.h"
+
+namespace bvr::b1r::bones {
+
+void init(const bvr::pattern_scan::ProcessImage& image);
+
+// Move `hand`'s cluster (0 left, 1 right) so its anchor bone sits at `gp`.
+// `handsActor` is the live AHands actor (validated by the caller). Game
+// thread, once per frame from hands::on_calcview. Returns false if the
+// skeleton could not be reached this frame (caller may fall back).
+bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand);
+
+// The old actors died with the old world; drop every cached pointer.
+void on_world_change();
+
+// Seam commands (game thread): status | list [n] | poke <idx> <dUU> |
+// freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor>
+void handle_command(const char* args);
+
+// Overlay section (render thread only).
+void draw_debug_ui();
+
+} // namespace bvr::b1r::bones

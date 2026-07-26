@@ -387,6 +387,52 @@ inline constexpr uint32_t kShockPlayerVtableRva = 0xD82BB8;   // .?AVAShockPlaye
 inline constexpr uint32_t kPlayerWeaponVtableRva = 0xD8FF58;  // .?AVAPlayerWeapon@@
 inline constexpr uint32_t kHandsVtableRva = 0xD8A28C;         // .?AVAHands@@ (M7)
 
+// ---- M7-v2 skeleton internals (session 12, 2026-07-26) ----------------------
+// Derivations in ENGINE_NOTES "Skeleton / bone internals": native impl walks
+// (execGetBoneCoords 0x545090 -> inner 0x544FA0, execGetBoneLocation 0x5414D0,
+// execAttachToBone -> AActor::AttachToBone 0x379EF0, SkeletonInstanceFreeze
+// 0x542AD0, AActor::SetDrawScale 0x375830) plus a live hexdump/poke session.
+//
+// The evaluated skeleton lives in a per-actor `SkeletonInstance` (RTTI name,
+// 0x9C bytes) at actor +0x3FC. Bones are Havok hkQsTransform (48 bytes:
+// pos float3+pad, quat xyzw, scale float3+pad) in COMPONENT space - poking a
+// bone's pos moved that mesh part on screen the same frame, and the equipped
+// WEAPON rendered at the poked transform of the attach bone (engine-side
+// attachment follows the array). Two arrays: A (+0x48/+0x4C) feeds the by-index
+// path and the renderer; B (+0x54/+0x58) is the lazily-filled by-name path.
+inline constexpr uint32_t kSkeletonInstanceVtableRva = 0xE19ACC; // .?AVSkeletonInstance@@
+inline constexpr uint32_t kActorMeshInstOffset = 0x128;  // AActor -> USkeletalMeshInstance*
+inline constexpr uint32_t kActorSkelInstOffset = 0x3FC;  // AActor -> SkeletonInstance*
+inline constexpr uint32_t kSkelInstActorOffset = 0x04;   // backref to the actor
+inline constexpr uint32_t kSkelInstFreezeOffset = 0x20;  // int; SkeletonInstanceFreeze = 1
+inline constexpr uint32_t kSkelInstBonesOffset = 0x48;      // hkQsTransform* array A
+inline constexpr uint32_t kSkelInstBoneCountOffset = 0x4C;  // int (AHands rig: 47)
+inline constexpr uint32_t kSkelInstBonesBOffset = 0x54;     // hkQsTransform* array B
+inline constexpr uint32_t kSkelInstBoneCountBOffset = 0x58;
+inline constexpr uint32_t kSkelInstDirtyOffset = 0x88;   // evaluate-if-dirty flag (byte)
+// The attach bone FName is stored ON the attached actor (weapon +0xF0/+0xF4)
+// by AActor::AttachToBone; attachment itself is bone-name + SetBase (actor
+// vtable +0x1A0). Equip-time only - nothing re-asserts it per tick.
+inline constexpr uint32_t kActorAttachBoneNameOffset = 0xF0;
+// The REAL DrawScale (the +0x168/+0x16C probes were wrong fields): float at
+// +0x2AC, written by AActor::SetDrawScale (0x375830) together with the dirty
+// protocol below - a raw field poke without the protocol is invisible.
+inline constexpr uint32_t kActorDrawScaleOffset = 0x2AC;
+inline constexpr uint32_t kActorDirtyFlagsOffset = 0xD0;  // |= 0x10 on transform-ish change
+inline constexpr uint32_t kActorRenderRevOffset = 0x3F4;  // ++ (UpdateRenderRevision)
+inline constexpr uint32_t kActorDirtyByteOffset = 0x3E4;  // = 0
+// AHands rig bone indices (47-bone skeleton, measured live at the wall save,
+// pistol raised): right hand cluster is CONTIGUOUS - 27 wrist, 28-42 thumb +
+// finger chains, 43 weapon-attach helper (poking its pos moved the whole gun),
+// 44 muzzle-ish tip. Right sleeve (collapse targets): 24 clavicle, 25 upperarm,
+// 26 elbow, 45/46 forearm twist helpers. Left arm hangs in 4-23 (wrist/finger
+// split still to be measured with a plasmid equipped - see vrbones lcluster).
+inline constexpr int kHandsRigBoneCount = 47;
+inline constexpr int kBoneRClusterFirst = 27;
+inline constexpr int kBoneRClusterLast = 44;
+inline constexpr int kBoneWeaponAttach = 43;
+inline constexpr int kBoneRSleeve[] = {24, 25, 26, 45, 46};
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

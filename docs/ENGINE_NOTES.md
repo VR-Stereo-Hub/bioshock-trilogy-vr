@@ -770,6 +770,95 @@ This is the single biggest design input for M7's rebuild: prefer engine-side
 (bone) writes for anything with attachments, and reserve render-side patching
 for what has no engine-side handle (scale, projection).
 
+## Skeleton / bone internals (M7-v2 session 12, 2026-07-26)
+
+**The evaluated skeleton is directly writable, component-space, per-bone, and
+the equipped weapon renders from it - all live-proven at the wall save.**
+Derivation: native-table impl walks (capstone on the disk image; entry points
+resolved exactly like the M6 aim natives) + one hexdump/poke session. All
+constants in `patterns.h` under "M7-v2 skeleton internals".
+
+**The native table has the full bone API** (`nativemap.py` scratchpad tool:
+registration string -> 12-byte .data entry -> the `mov [entry+4], imm32`
+static-init write). Kept from stock UE2: `AActor::execGetBoneCoords` 0x545090,
+`execGetBoneLocation` 0x5414D0, `execGetBoneRotation` 0x541580,
+`execAttachToBone` 0x541650, `execDetachFromBone` 0x541A20, `execSetBase`
+0x545410, `execUpdateAttachmentLocations` 0x541A70, `execLinkMesh` 0x540C60.
+Vengeance-specific: `execGetLow/HighBone{IndexFromName,NameFromIndex,Parent,
+Descendants}` (dual LOW/HIGH skeleton sets - Havok Animation underneath:
+hkaSkeleton/hkaSkeletonMapper RTTI present), `execSkeletonInstanceFreeze`
+0x542AD0 / `Unfreeze` 0x542B00 / `IsFrozen` 0x542B30. REMOVED vs UT2004: no
+SetBoneScale/SetBoneRotation/SetBoneDirection - direct array writes are the
+only bone mechanism. Bonus: `execSetDrawScale` 0x5454B0 -> AActor::SetDrawScale
+0x375830 (see DrawScale below).
+
+**Object chain** (walks of exec impls; class names via MSVC RTTI):
+- `actor +0x128` -> `USkeletalMeshInstance` (map at +0xE8 FName->script index
+  via 0x1FA700, remap array at +0xF4 8-byte stride, validity object at +0x30).
+- `instance +0x29C` -> `SharedSkeletonData` (vtable RVA 0xE1B8A8; the
+  RefSkeleton equivalent; map at +0xAC = FName -> SkeletonInstance array index,
+  lookup fn 0x5F6500).
+- `actor +0x3FC` -> **`SkeletonInstance`** (vtable RVA 0xE19ACC, 0x9C bytes,
+  factory 0x595750, ctor 0x595820): +0x04 actor backref, +0x08
+  SharedSkeletonData, **+0x20 freeze flag** (int; Freeze native sets 1),
+  **+0x48 bone array A ptr / +0x4C count** (by-index reads via virtual +0xB8;
+  what the renderer + the weapon attachment consume - proven by poke), **+0x54
+  array B ptr / +0x58 count** (the lazily-filled by-NAME path, virtual +0xBC;
+  all zeros until someone asks by name), +0x80/+0x84 per-array
+  time-of-last-evaluate floats (freeze only holds once > epsilon), **+0x88
+  evaluate-if-dirty flag** (byte; gate virtual +0xA0, real evaluator virtual
+  +0x9C), refresher for array B 0x598970 (thread-checked against the game/
+  render tid globals 0x13784E0/0x13784E4).
+- `actor +0x164` is NOT the UMesh - it is a wrapper synced from the instance
+  (helper 0x371EF0: creates via 0x700500, links wrapper+0x44=instance,
+  +0x48=actor).
+
+**Bone format: Havok hkQsTransform, 48 bytes** - pos float3 + w (engine-owned
+junk/aux - one live bone held 35.02 there; DO NOT write it), quat xyzw, scale
+float3 + w. COMPONENT space (actor-local): the AHands rig live-dumped as a
+coherent skeleton around the eye-anchor origin. Live pokes (freeze on):
+- bone pos +30 UU on the wrist -> the hand mesh moved the same frame and the
+  pose HELD (freeze blocks re-evaluation); fingers did NOT follow (per-bone
+  independence - component space, no child recompute).
+- bone pos +30 UU on the weapon-attach helper -> **THE ENTIRE GUN rendered at
+  the new spot, undistorted** - the attached weapon's render transform is
+  derived from this array. The engine-side lever M7-v2 needed.
+
+**The AHands rig (47 bones, indices measured at the wall save, pistol raised):**
+right hand cluster is CONTIGUOUS 27-44 (27 wrist, 28-30 thumb, 31-42 finger
+chains, **43 weapon-attach helper** - same quat as the wrist, the gun rides it -
+44 muzzle-ish tip at x=+71). Right sleeve: 24 clavicle, 25 upperarm, 26 elbow,
+45/46 forearm twist helpers. The lowered LEFT arm occupies 4-23 (wrist/finger
+split still to be measured with a plasmid equipped). Bones 0-2 near origin
+(root/head), 3 left-of-center.
+
+**Attachments** (AActor::AttachToBone 0x379EF0): stores the bone FName ON the
+attached actor at **+0xF0/+0xF4**, then calls the attached actor's `SetBase`
+(vtable +0x1A0, args newBase + floor vec3{0,0,1} + bool) and notifies the
+instance (0x3FA1E0). Script side (`Hands.uc` summaries): the weapon attach is
+EQUIP-TIME ONLY - `OnEquippingStarted(holdable)` -> `AttachToBone(holdable,
+holdable.AttachBone)` (AttachBone = per-weapon name property); the per-tick
+path (`UpdateHandValues`) only runs UpdateLocation + hand-bob parameters, so
+nothing re-asserts attachment against a per-frame bone write.
+
+**DrawScale, finally**: float at **actor +0x2AC**, written by
+AActor::SetDrawScale (0x375830) together with a dirty protocol - `[actor+0xD0]
+|= 0x10`, `[actor+0x3F4]++` (the render-revision counter that
+execUpdateRenderRevision 0x37A370 bumps), `[actor+0x3E4] = 0` - plus
+level-hash re-registration when actor flag +0x304 bit 0 is set. The session-11
+"+0x168/+0x16C" probes were the wrong fields, and a raw field poke without the
+revision bump is invisible anyway. Untested live so far: the AHands actor read
+0.0 there.
+
+**Write protocol used by the bone drive** (`bones.cpp`): write from the
+CalcView detour (after the engine tick), then CLEAR the dirty flag so a
+render-side evaluate-if-dirty cannot rebuild the pose the same frame; detect
+engine re-evaluation by comparing the anchor bone against the last write
+(changed = fresh engine pose -> recapture the reference); on disable set dirty
+so the engine restores itself. Freeze (+0x20) is kept as a diagnostic lever,
+not used by the drive - it also stops the rig's own animations, and whether it
+starves the anim notifies that drive firing is UNTESTED.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on

@@ -27,6 +27,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/aim.h"
+#include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -44,7 +45,8 @@ const uint8_t* g_imageBase = nullptr;
 
 std::atomic<bool> g_enabled{false};
 std::atomic<int> g_pendingEnable{-1}; // overlay -> game thread (see aim.cpp)
-std::atomic<int> g_mode{1};           // 0 = gun (weapon actor), 1 = hands (AHands)
+std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
+                                      // retired), 2 = bones (M7-v2, default)
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
 std::atomic<int> g_handMode{2};       // 0 left, 1 right, 2 auto
 std::atomic<int> g_autoHand{1};       // the latched auto choice
@@ -269,9 +271,10 @@ void load_config();
 void save_config();
 
 void log_status() {
+    int mode = g_mode.load(std::memory_order_relaxed);
     BVR_LOG("[hands] status: %s | mode=%s pose=%s | hand=%s | writes=%u",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
-            g_mode.load(std::memory_order_relaxed) == 0 ? "GUN" : "HANDS",
+            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : "BONES",
             g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
             g_handMode.load(std::memory_order_relaxed) == 0   ? "LEFT"
             : g_handMode.load(std::memory_order_relaxed) == 1 ? "RIGHT"
@@ -345,7 +348,10 @@ void load_config() {
         if (sscanf_s(line, "%63[^=]=%f", key, static_cast<unsigned>(sizeof key), &v) != 2)
             continue;
         ++n;
-        if (strcmp(key, "mode") == 0) g_mode.store(v != 0.0f ? 1 : 0, std::memory_order_relaxed);
+        if (strcmp(key, "mode") == 0) {
+            int m = static_cast<int>(v);
+            g_mode.store(m < 0 ? 0 : m > 2 ? 2 : m, std::memory_order_relaxed);
+        }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "posFwdCm") == 0) g_posFwdCm.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "posRightCm") == 0) g_posRightCm.store(v, std::memory_order_relaxed);
@@ -380,9 +386,10 @@ int active_hand() {
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     load_config();
+    int mode = g_mode.load(std::memory_order_relaxed);
     BVR_LOG("[hands] init: mode=%s (AHands vtable 0x%X, APlayerWeapon vtable 0x%X)",
-            g_mode.load(std::memory_order_relaxed) == 0 ? "GUN" : "HANDS",
-            patterns::kHandsVtableRva, patterns::kPlayerWeaponVtableRva);
+            mode == 0 ? "GUN" : mode == 1 ? "HANDS" : "BONES", patterns::kHandsVtableRva,
+            patterns::kPlayerWeaponVtableRva);
 }
 
 void on_calcview(const FrameContext& ctx) {
@@ -408,6 +415,7 @@ void on_calcview(const FrameContext& ctx) {
         g_weaponActor = nullptr;
         g_lastHandsScanMs = 0;
         g_lastWeaponScanMs = 0;
+        bones::on_world_change();
     }
 
     // One-shot probe: describe every instance of both classes, choose none.
@@ -516,15 +524,23 @@ void on_calcview(const FrameContext& ctx) {
                     gp.loc.y + fwd[1] * of + right[1] * orr + up[1] * ou,
                     gp.loc.z + fwd[2] * of + right[2] * orr + up[2] * ou};
 
-    uint8_t* p = static_cast<uint8_t*>(target);
-    bool wrote = write12(p + patterns::kActorLocOffset, loc);
-    if (g_writeRot.load(std::memory_order_relaxed)) {
-        int32_t rot[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
-        wrote = write12(p + patterns::kActorViewDirOffset, rot) || wrote;
-    }
-    if (!wrote) {
-        g_handsActor = nullptr; // the write faulted - stop trusting this pointer
-        return;
+    if (g_mode.load(std::memory_order_relaxed) == 2) {
+        // BONES (M7-v2): the actor stays engine-placed (eye anchor, correct
+        // culling, correct engine-side FX anchoring) and the hand CLUSTER
+        // moves to the controller instead.
+        gp.loc = {loc[0], loc[1], loc[2]};
+        if (!bones::drive(ctx, target, gp, active_hand())) return;
+    } else {
+        uint8_t* p = static_cast<uint8_t*>(target);
+        bool wrote = write12(p + patterns::kActorLocOffset, loc);
+        if (g_writeRot.load(std::memory_order_relaxed)) {
+            int32_t rot[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
+            wrote = write12(p + patterns::kActorViewDirOffset, rot) || wrote;
+        }
+        if (!wrote) {
+            g_handsActor = nullptr; // the write faulted - stop trusting this pointer
+            return;
+        }
     }
     g_writes.fetch_add(1, std::memory_order_relaxed);
     g_lastX.store(loc[0], std::memory_order_relaxed);
@@ -553,11 +569,14 @@ void handle_command(const char* args) {
         g_enabled.store(false, std::memory_order_relaxed);
         BVR_LOG("[hands] OFF - engine placement restored");
     } else if (strcmp(verb, "mode") == 0) {
-        bool gun = strncmp(rest, "gun", 3) == 0;
-        g_mode.store(gun ? 0 : 1, std::memory_order_relaxed);
+        int mode = strncmp(rest, "gun", 3) == 0     ? 0
+                   : strncmp(rest, "hands", 5) == 0 ? 1
+                                                    : 2;
+        g_mode.store(mode, std::memory_order_relaxed);
         BVR_LOG("[hands] mode = %s",
-                gun ? "GUN (drive the weapon actor - EXPERIMENTAL, renderer ignores it)"
-                    : "HANDS (drive the AHands rig)");
+                mode == 0   ? "GUN (inert - renderer ignores an attached weapon's actor fields)"
+                : mode == 1 ? "HANDS (actor pinning - retired, kept for A/B)"
+                            : "BONES (M7-v2: hand cluster follows the controller)");
     } else if (strcmp(verb, "pose") == 0) {
         bool aim = strncmp(rest, "aim", 3) == 0;
         g_useAimPose.store(aim, std::memory_order_relaxed);
@@ -699,6 +718,8 @@ void draw_debug_ui() {
     if (ImGui::Button("Save offsets")) save_config();
     ImGui::SameLine();
     if (ImGui::Button("Reload")) load_config();
+
+    bones::draw_debug_ui();
 
     ImGui::Text("weapon %p | hands %p | writes %u", g_weaponActor, g_handsActor,
                 g_writes.load(std::memory_order_relaxed));
