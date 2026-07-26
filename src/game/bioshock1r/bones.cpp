@@ -92,10 +92,15 @@ char g_status[160] = "idle";
 // rig lands on the world-correct pixel. See patterns.h "Foreground scene".
 std::atomic<int> g_renderLock{1};         // 0 off, 1 abs (true position), 2 diff
                                           // (head-split cancel only)
-// Correction gain. With the drive live the engine switches rig sections to a
-// rigid path whose matrices REBUILD from the very bones we move, so part of
-// the correction is applied twice; 0.5 measured closest to unity end to end.
-std::atomic<float> g_lockGain{0.5f};
+// Correction gains. Session 13 measured "gain 0.5 lands, 1.0 doubles" and
+// blamed a rigid-path rebake; session 14 decomposed that 1.79x overshoot as
+// (model depth-scale error 1.63, from the section-contaminated eye) x (true
+// rebake ~1.1). With the model's depth scale now physically calibrated, the
+// remaining rebake factor is ~1.1 on BOTH axes, so both gains default to
+// ~1/1.1. Separate knobs kept - the axes are measured by different
+// instruments (simhead sweeps vs size/parallax A/Bs).
+std::atomic<float> g_lockGain{0.9f};      // lateral
+std::atomic<float> g_lockDepthGain{0.9f}; // along the fg forward
 std::atomic<float> g_lockDeltaMag{0.0f};  // telemetry: |delta| UU last frame
 std::atomic<uint32_t> g_lockSolves{0};
 std::atomic<uint32_t> g_lockSkips{0};
@@ -185,15 +190,17 @@ void qts_rotate(const float q[4], const float v[3], float out[3]) {
 // ---- render lock -------------------------------------------------------------
 
 // Build the foreground-view model matrix (rows x, y, w of [R | -R*E], scaled
-// by the fixed projection) for a given component-frame rotation quat.
-void build_fg_model(const float qd[4], float M[12]) {
+// by the fixed projection) for a given component-frame rotation quat and eye
+// position. The eye is a PARAMETER because it rides the camera (session 13
+// part 3): eye = camera position in component space + the measured pull-back
+// expressed in the fg view's own frame.
+void build_fg_model(const float qd[4], const float E[3], float M[12]) {
     float fgF[3], fgR[3], fgU[3];
     static const float kX[3] = {1.0f, 0.0f, 0.0f}, kY[3] = {0.0f, 1.0f, 0.0f},
                        kZ[3] = {0.0f, 0.0f, 1.0f};
     quat_rotate(qd[0], qd[1], qd[2], qd[3], kX, fgF);
     quat_rotate(qd[0], qd[1], qd[2], qd[3], kY, fgR);
     quat_rotate(qd[0], qd[1], qd[2], qd[3], kZ, fgU);
-    const float* E = patterns::kFgEyeComp;
     M[0] = patterns::kFgInvTanH * fgR[0];
     M[1] = patterns::kFgInvTanH * fgR[1];
     M[2] = patterns::kFgInvTanH * fgR[2];
@@ -208,13 +215,18 @@ void build_fg_model(const float qd[4], float M[12]) {
     M[11] = -(M[8] * E[0] + M[9] * E[1] + M[10] * E[2]);
 }
 
+// Natural foreground depth of a component point through the model (row w).
+float fg_natural_w(const float M[12], const float ptc[3]) {
+    return M[8] * ptc[0] + M[9] * ptc[1] + M[10] * ptc[2] + M[11];
+}
+
 // Solve M (rows x, y, w) for the component point that renders at (ndcX, ndcY)
-// while keeping ptc's natural foreground depth (size/perspective unchanged).
-bool solve_fg(const float M[12], float ndcX, float ndcY, const float ptc[3], float outP[3]) {
-    float wNat = M[8] * ptc[0] + M[9] * ptc[1] + M[10] * ptc[2] + M[11];
-    if (wNat < 1.0f) return false;
+// with foreground depth w. The caller picks w: the world-equivalent k*d for
+// the depth-corrected solves, or the natural depth for the diff-mode anchor.
+bool solve_fg(const float M[12], float ndcX, float ndcY, float w, float outP[3]) {
+    if (w < 1.0f) return false;
     float A[3][3] = {{M[0], M[1], M[2]}, {M[4], M[5], M[6]}, {M[8], M[9], M[10]}};
-    float b[3] = {ndcX * wNat - M[3], ndcY * wNat - M[7], wNat - M[11]};
+    float b[3] = {ndcX * w - M[3], ndcY * w - M[7], w - M[11]};
     float det = A[0][0] * (A[1][1] * A[2][2] - A[1][2] * A[2][1]) -
                 A[0][1] * (A[1][0] * A[2][2] - A[1][2] * A[2][0]) +
                 A[0][2] * (A[1][0] * A[2][1] - A[1][1] * A[2][0]);
@@ -233,9 +245,10 @@ bool solve_fg(const float M[12], float ndcX, float ndcY, const float ptc[3], flo
 }
 
 // NDC of the world target through a pinhole at the camera position with the
-// given rotation and the world option FOV.
+// given rotation and the world option FOV. outDf = the target's forward
+// distance from the camera - the "true distance" the depth constraint uses.
 bool world_ndc(const FrameContext& ctx, const GamePose& gp, const FRotator& rot, float tanH,
-               float* outX, float* outY) {
+               float* outX, float* outY, float* outDf) {
     float fwd[3], right[3], up[3];
     ue_rot_basis(rot, fwd, right, up);
     float d[3] = {gp.loc.x - ctx.camX, gp.loc.y - ctx.camY, gp.loc.z - ctx.camZ};
@@ -246,24 +259,39 @@ bool world_ndc(const FrameContext& ctx, const GamePose& gp, const FRotator& rot,
     float tanV = tanH * (9.0f / 16.0f); // 16:9 window (matches the option's meaning)
     *outX = dr / (df * tanH);
     *outY = du / (df * tanV);
+    *outDf = df;
     return true;
 }
 
 // Compute the component-space nudge that counters the foreground pipeline's
 // camera-coupled displacement of the rig. The pipeline (fixed 60-deg 4:3
-// projection, eye parked ~32 UU behind the rig origin in ACTOR space, hand
-// sway) is self-consistent at view center but slides the rig laterally once
-// the camera splits from the actor rotation (HMD head-look). The transform is
-// MODELED analytically (patterns.h kFgEyeComp block) - live captures embed
-// the engine's per-frame re-derivations of section transforms from the very
+// projection, eye pulled ~32 UU behind the RENDER CAMERA - it rides the
+// camera, translation included; session 13 part 3 - plus hand sway) is
+// self-consistent at view center but slides the rig laterally under head-
+// split AND pins its stereo depth at ~(d+32)/k. The transform is MODELED
+// analytically (patterns.h kFgEyeComp block) - live captures embed the
+// engine's per-frame re-derivations of section transforms from the very
 // bones this module writes (feedback), so they cannot be used.
-// Modes: abs = solve the anchor onto its TRUE world pixel (fixes the raised/
-// too-close authored composition as well; inherits the vanilla sway wobble).
-// diff = cancel only the head-split term (authored composition preserved,
-// zero correction when camera == actor).
-// qaInv/actorRot come from the drive (already computed there).
+// Depth constraint (session 14): the rig must RENDER at fg depth k*df,
+// k = tan(worldFov/2)/tan(fgFov/2) - apparent size, stereo disparity, and
+// translation parallax are all the same (1/w)*k geometry, so that one
+// constraint makes all three world-correct at once. It renders today at
+// df + kFgEyeFwdBehindCam (parallax-calibrated), so the solve pushes the
+// anchor deeper by the DIFFERENCE, expressed against the model's own
+// natural depth (the model's absolute depth scale is section-relative and
+// cannot be trusted; its lateral geometry is g5-validated and kept).
+// Modes: abs = solve the anchor onto its TRUE world pixel at w* (fixes the
+// raised/too-close authored composition as well; inherits the sway wobble).
+// diff = subtract the zero-split solve taken at ptc's NATURAL depth, so the
+// delta carries the full depth correction plus only the head-split lateral
+// cancel (authored lateral composition preserved).
+// The correction returns SPLIT into a lateral part and a depth part (along
+// the fg forward) because the rigid-section rebake gain was measured on the
+// lateral axis only - the depth axis gets its own gain (vrbones lockdgain).
+// qaInv/actorRot/actorLoc come from the drive (already computed there).
 bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float qaInv[4],
-                       const FRotator& actorRot, const float ptc[3], float outDelta[3]) {
+                       const FRotator& actorRot, const float actorLoc[3], const float ptc[3],
+                       float outLat[3], float outDepth[3]) {
     int mode = g_renderLock.load(std::memory_order_relaxed);
     int32_t* opt = patterns::hfov_option_ptr();
     float hfov = opt && *opt > 0 ? static_cast<float>(*opt) : 0.0f;
@@ -271,8 +299,22 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
     float tanH = tanf(hfov * 0.5f / kRadToDeg);
 
     FRotator camRot{ctx.camPitch, ctx.camYaw, ctx.camRoll};
-    float ndcX, ndcY;
-    if (!world_ndc(ctx, gp, camRot, tanH, &ndcX, &ndcY)) return false;
+    float ndcX, ndcY, df;
+    if (!world_ndc(ctx, gp, camRot, tanH, &ndcX, &ndcY, &df)) return false;
+
+    // World-equivalent fg depth. kFgInvTanH = 1/tan(fgFov/2), so the lens
+    // ratio k = tan(worldFov/2)/tan(fgFov/2) = tanH * kFgInvTanH (~2.1 at
+    // option 117, ~3.3 at 137). The solve places the anchor at w* = k*df:
+    // apparent size, stereo disparity, and translation parallax are all the
+    // same (1/w)*k geometry, so one constraint makes all three world-correct
+    // at once - PROVIDED the model's absolute depth scale is the REAL one.
+    // That is why the eye below uses the parallax-calibrated pull-back: with
+    // the dump-mean kFgEyeComp forward (-32.1, section-frame-contaminated)
+    // the lateral solve renders ~1.6x weaker through the real lens than the
+    // model believes (session 14, offset A/B flat-measured).
+    float k = tanH * patterns::kFgInvTanH;
+    float wStar = k * df;
+    if (wStar < 4.0f) return false; // hand at/behind the face: no stable solve
 
     float qcam[4], qdRaw[4], qd[4];
     ue_rot_to_quat(camRot, qcam);
@@ -287,45 +329,79 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
         ue_rot_to_quat(biasRot, s_qBias);
     }
     quat_mul(qdRaw, s_qBias, qd);
-    float M1[12];
-    build_fg_model(qd, M1);
-    float p1[3];
-    if (!solve_fg(M1, ndcX, ndcY, ptc, p1)) return false;
 
+    // Effective fg eye: camera position in component space + the TRUE
+    // pull-back (forward from the parallax calibration - kFgEyeFwdBehindCam;
+    // laterals from the dump mean, statics the abs solve absorbs) rotated
+    // into the fg view's frame. The eye RIDES THE CAMERA - dump-proven
+    // (offset 0 30 0 moved the recovered eye 29.7 UU).
+    float dCam[3] = {ctx.camX - actorLoc[0], ctx.camY - actorLoc[1], ctx.camZ - actorLoc[2]};
+    float camComp[3], ePulled[3], eyeEff[3];
+    qts_rotate(qaInv, dCam, camComp);
+    const float eTrue[3] = {-patterns::kFgEyeFwdBehindCam, patterns::kFgEyeComp[1],
+                            patterns::kFgEyeComp[2]};
+    quat_rotate(qd[0], qd[1], qd[2], qd[3], eTrue, ePulled);
+    eyeEff[0] = camComp[0] + ePulled[0];
+    eyeEff[1] = camComp[1] + ePulled[1];
+    eyeEff[2] = camComp[2] + ePulled[2];
+
+    float M1[12];
+    build_fg_model(qd, eyeEff, M1);
+    float wNat = fg_natural_w(M1, ptc);
+    float p1[3];
+    if (!solve_fg(M1, ndcX, ndcY, wStar, p1)) return false;
+
+    float delta[3];
     if (mode == 2) {
-        // Differential: subtract the zero-split solution so the correction
-        // vanishes when the camera sits on the actor rotation.
-        float ndcX0, ndcY0;
-        if (!world_ndc(ctx, gp, actorRot, tanH, &ndcX0, &ndcY0)) return false;
+        // Differential: subtract the zero-split solution AT NATURAL DEPTH so
+        // the lateral part vanishes when the camera sits on the actor while
+        // the depth correction survives the subtraction.
+        float ndcX0, ndcY0, df0;
+        if (!world_ndc(ctx, gp, actorRot, tanH, &ndcX0, &ndcY0, &df0)) return false;
+        float e0[3];
+        quat_rotate(s_qBias[0], s_qBias[1], s_qBias[2], s_qBias[3], eTrue, e0);
         float M0[12], p0[3];
-        build_fg_model(s_qBias, M0); // zero split still carries the composition bias
-        if (!solve_fg(M0, ndcX0, ndcY0, ptc, p0)) return false;
-        outDelta[0] = p1[0] - p0[0];
-        outDelta[1] = p1[1] - p0[1];
-        outDelta[2] = p1[2] - p0[2];
+        build_fg_model(s_qBias, e0, M0); // zero split still carries the bias
+        if (!solve_fg(M0, ndcX0, ndcY0, fg_natural_w(M0, ptc), p0)) return false;
+        delta[0] = p1[0] - p0[0];
+        delta[1] = p1[1] - p0[1];
+        delta[2] = p1[2] - p0[2];
     } else {
-        outDelta[0] = p1[0] - ptc[0];
-        outDelta[1] = p1[1] - ptc[1];
-        outDelta[2] = p1[2] - ptc[2];
+        delta[0] = p1[0] - ptc[0];
+        delta[1] = p1[1] - ptc[1];
+        delta[2] = p1[2] - ptc[2];
     }
+
+    // Split along the fg forward (M row w is the unit forward vector).
+    float dDepth = delta[0] * M1[8] + delta[1] * M1[9] + delta[2] * M1[10];
+    outDepth[0] = dDepth * M1[8];
+    outDepth[1] = dDepth * M1[9];
+    outDepth[2] = dDepth * M1[10];
+    outLat[0] = delta[0] - outDepth[0];
+    outLat[1] = delta[1] - outDepth[1];
+    outLat[2] = delta[2] - outDepth[2];
+    float latMag = sqrtf(outLat[0] * outLat[0] + outLat[1] * outLat[1] + outLat[2] * outLat[2]);
 
     if (g_tlmWindowOpen) {
-        BVR_LOG("[tlm] lock mode=%d tgt=(%.3f %.3f) d=(%.2f %.2f %.2f)", mode, ndcX, ndcY,
-                outDelta[0], outDelta[1], outDelta[2]);
+        BVR_LOG("[tlm] lock mode=%d tgt=(%.3f %.3f) df=%.1f k=%.2f wNat=%.1f w*=%.1f "
+                "lat=%.2f depth=%+.2f",
+                mode, ndcX, ndcY, df, k, wNat, wStar, latMag, dDepth);
     }
-    float mag2 = outDelta[0] * outDelta[0] + outDelta[1] * outDelta[1] +
-                 outDelta[2] * outDelta[2];
-    if (mag2 > 30.0f * 30.0f) {
+    // Per-axis refusal: the depth correction is LARGE by design (~25-70 UU),
+    // the lateral one is not - a big lateral delta still means a model bug.
+    if (latMag > 30.0f || dDepth < -120.0f || dDepth > 120.0f) {
         static uint64_t lastDump = 0;
         uint64_t now = GetTickCount64();
         if (now - lastDump > 2000) {
             lastDump = now;
-            BVR_LOG("[bones] lock: refusing outsized delta (%.1f %.1f %.1f)", outDelta[0],
-                    outDelta[1], outDelta[2]);
+            BVR_LOG("[bones] lock: refusing outsized delta (lat %.1f depth %+.1f)", latMag,
+                    dDepth);
         }
         return false;
     }
-    g_lockDeltaMag.store(sqrtf(mag2), std::memory_order_relaxed);
+    g_lockDeltaMag.store(
+        sqrtf(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]),
+        std::memory_order_relaxed);
     return true;
 }
 
@@ -451,12 +527,13 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // the uncorrected pose when no fresh capture exists - e.g. rig off
     // screen, menu, or the watch not hitting).
     if (g_renderLock.load(std::memory_order_relaxed) != 0) {
-        float delta[3];
-        if (render_lock_delta(ctx, gp, qaInv, actorRot, ptc, delta)) {
-            float g = g_lockGain.load(std::memory_order_relaxed);
-            ptc[0] += delta[0] * g;
-            ptc[1] += delta[1] * g;
-            ptc[2] += delta[2] * g;
+        float dLat[3], dDepth[3];
+        if (render_lock_delta(ctx, gp, qaInv, actorRot, actorLoc, ptc, dLat, dDepth)) {
+            float gl = g_lockGain.load(std::memory_order_relaxed);
+            float gd = g_lockDepthGain.load(std::memory_order_relaxed);
+            ptc[0] += dLat[0] * gl + dDepth[0] * gd;
+            ptc[1] += dLat[1] * gl + dDepth[1] * gd;
+            ptc[2] += dLat[2] * gl + dDepth[2] * gd;
             g_lockSolves.fetch_add(1, std::memory_order_relaxed);
         } else {
             g_lockSkips.fetch_add(1, std::memory_order_relaxed);
@@ -594,9 +671,12 @@ void handle_command(const char* args) {
                 g_lastHand.load(std::memory_order_relaxed), g_refValid ? 1 : 0,
                 g_collapse.load(std::memory_order_relaxed) ? 1 : 0);
         int lockMode = g_renderLock.load(std::memory_order_relaxed);
-        BVR_LOG("[bones] render lock: %s |delta|=%.2f UU solves=%u skips=%u",
+        BVR_LOG("[bones] render lock: %s |delta|=%.2f UU gain=%.2f dgain=%.2f solves=%u "
+                "skips=%u",
                 lockMode == 0 ? "off" : lockMode == 2 ? "DIFF" : "ABS",
                 g_lockDeltaMag.load(std::memory_order_relaxed),
+                g_lockGain.load(std::memory_order_relaxed),
+                g_lockDepthGain.load(std::memory_order_relaxed),
                 g_lockSolves.load(std::memory_order_relaxed),
                 g_lockSkips.load(std::memory_order_relaxed));
         BVR_LOG("[bones] right cluster %d-%d anchor %d | left %d-%d anchor %d",
@@ -674,10 +754,19 @@ void handle_command(const char* args) {
         float g = 0.5f;
         if (sscanf_s(rest, "%f", &g) == 1 && g >= 0.0f && g <= 2.0f) {
             g_lockGain.store(g, std::memory_order_relaxed);
-            BVR_LOG("[bones] render lock gain = %.2f", g);
+            BVR_LOG("[bones] render lock lateral gain = %.2f", g);
         } else {
             BVR_LOG("[bones] usage: vrbones lockgain <0..2> (current %.2f)",
                     g_lockGain.load(std::memory_order_relaxed));
+        }
+    } else if (strcmp(verb, "lockdgain") == 0) {
+        float g = 0.5f;
+        if (sscanf_s(rest, "%f", &g) == 1 && g >= 0.0f && g <= 2.0f) {
+            g_lockDepthGain.store(g, std::memory_order_relaxed);
+            BVR_LOG("[bones] render lock depth gain = %.2f", g);
+        } else {
+            BVR_LOG("[bones] usage: vrbones lockdgain <0..2> (current %.2f)",
+                    g_lockDepthGain.load(std::memory_order_relaxed));
         }
     } else if (strcmp(verb, "log") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
@@ -696,7 +785,7 @@ void handle_command(const char* args) {
         }
     } else {
         BVR_LOG("[bones] unknown command '%s' (status|list|poke|freeze|collapse|ref|anchor|"
-                "lcluster|lock|log)",
+                "lcluster|lock|lockgain|lockdgain|log)",
                 verb);
     }
 }
@@ -713,6 +802,12 @@ void draw_debug_ui() {
         ImGui::RadioButton("lock ABS (true position)", &lockMode, 1) ||
         ImGui::RadioButton("lock DIFF (head-split cancel only)", &lockMode, 2))
         g_renderLock.store(lockMode, std::memory_order_relaxed);
+    float gl = g_lockGain.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("lock lateral gain", &gl, 0.0f, 2.0f, "%.2f"))
+        g_lockGain.store(gl, std::memory_order_relaxed);
+    float gd = g_lockDepthGain.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("lock depth gain", &gd, 0.0f, 2.0f, "%.2f"))
+        g_lockDepthGain.store(gd, std::memory_order_relaxed);
     ImGui::Text("lock |delta| %.1f UU, solves %u, skips %u",
                 g_lockDeltaMag.load(std::memory_order_relaxed),
                 g_lockSolves.load(std::memory_order_relaxed),

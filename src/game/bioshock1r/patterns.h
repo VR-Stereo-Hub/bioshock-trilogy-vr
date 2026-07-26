@@ -483,8 +483,23 @@ inline constexpr uint32_t kFgCbBytes = 576;
 // to 3 decimals: M = rows scaled (1/tanH, 1/tanV, 1, 1) of [R | -R*E], where
 // R = (actor-inverse x camera) rotation in the rig's component frame plus the
 // engine's idle hand sway (~+-3 deg, unmodeled residual), and E = the
-// foreground eye parked in COMPONENT space behind the rig origin:
+// foreground eye. The eye RIDES THE CAMERA, translation included (session 13
+// part 3: the rig parallaxes 1.35x under a pure camera offset - an
+// actor-anchored eye cannot produce that; the 12 dumps all had
+// camLoc == actorLoc so they measured only the pull-back). Effective eye in
+// component space = camera position + kFgEyeComp rotated into the fg view's
+// frame; kFgEyeComp itself is the pull-back behind the render camera:
 inline constexpr float kFgEyeComp[3] = {-32.1f, -5.6f, -0.9f}; // mean of 12 dumps, +-0.5
+// CAVEAT (session 14): the matrix-recovered eye is SECTION-FRAME-RELATIVE -
+// each vm section recovers a different value (a=7704 vs a=14595 differ by
+// ~15 UU), so kFgEyeComp is NOT the absolute pull-back. The render-lock
+// model uses only its LATERAL components (statics the abs solve absorbs);
+// the forward component it uses is the TRUE camera-to-fg-eye pull-back,
+// calibrated from physical measurements (three independent baselines
+// agree): camera-offset parallax 420 px -> w_gun 29.9 at df 17.4 -> P 12.5;
+// size ratio 0.605 on distance doubling 17.4->37.4 -> P 13.2 (session 13's
+// 0.62 -> 15.2); the user's perceived ~28 cm at hand ~35 cm -> P 12.3:
+inline constexpr float kFgEyeFwdBehindCam = 13.0f; // UU; rendered depth = df + this
 inline constexpr float kFgInvTanH = 1.2990381f; // 1/0.7698004
 inline constexpr float kFgInvTanV = 2.3094011f; // 1/0.4330127
 // The fg view rotation = R_delta composed with a small composition bias whose
