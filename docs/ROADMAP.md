@@ -262,28 +262,35 @@ Goal in the user's words: the weapon and the plasmid hand each move as ONE with 
 controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK, dual-wield.
 "I don't need it to be perfect - I just want it in sync with the controller."
 
-- [ ] **Step 1 - find the viewmodel's draw calls.** Contained experiment with a clear yes/no.
-      Fingerprint: we write the rig's transform ourselves, so the viewmodel is the draw whose
-      world matrix matches what we just wrote. Also answers whether the sleeve and the hand
-      are separate material SECTIONS - if they are, hiding an arm is a draw-call skip and
-      needs no bone work at all.
-- [ ] **Step 2 - prove render-side control**: skip a draw (hide a part) and substitute a
-      matrix (move/scale a part). Scale lands here since no DrawScale field was ever found.
-- [ ] **Step 3 - reach the bone matrices** (constant-buffer palette if GPU-skinned, the mesh
-      instance if CPU-skinned - unverified, check before promising). This is the load-bearing
-      capability: bones are ENGINE-side, so attachments and effects follow automatically.
-- [ ] **Step 4 - drive the hands from the bones**: right hand/weapon from the right
-      controller, left hand from the left, forearm bones collapsed to hide the arms. No IK -
-      the hand bone is written directly, which is why dropping arm articulation makes this
-      dramatically cheaper.
-- [ ] **THE EARLY RISK TEST, do it in step 1-2, not at the end: do the plasmid's hand FX
-      follow?** The electricity is a particle system and it is unknown whether it rides the
-      hand bone or is drawn independently. If it does not follow a render-side move, plasmids
-      MUST go the bone route. The user's hard requirement: no shipping a working weapon with a
-      broken plasmid hand - they are one deliverable.
+- [x] ~~Step 1 - find the viewmodel's draw calls~~ / ~~Step 2 - prove render-side control~~
+      *SUPERSEDED 2026-07-26 (session 12, user's call: goal-first, any stable method): the
+      bone route landed DIRECTLY, so the render-side rungs were never needed. Kept in
+      reserve: the fully-designed vm_draw fallback (Map/Unmap CB patching) in the session-12
+      plan file, and the enlarged `dumpframe full` capture (256 -> 1344 B, shipped) that
+      answers the GPU-vs-CPU-skinning question from one dump if it ever matters.*
+- [x] **Step 3 - reach the bone matrices.** *DONE OFFLINE + LIVE 2026-07-26 (session 12,
+      ENGINE_NOTES "Skeleton / bone internals"): per-actor `SkeletonInstance` at actor
+      +0x3FC, component-space hkQsTransform array (+0x48, 48 B stride, 47 bones on the
+      AHands rig), evaluate-if-dirty flag +0x88, freeze +0x20. Live pokes proved per-bone
+      writes render the same frame AND the equipped weapon renders from the attach bone's
+      entry (bone 43) - engine-side, undistorted.*
+- [x] **Step 4 - drive the hands from the bones.** *BUILT + FLAT-VERIFIED 2026-07-26
+      (session 12, `bones.cpp`, `vrhands mode bones` = new default): the hand CLUSTER
+      (wrist+fingers+attach bone) moves rigidly to the controller pose; simpose series
+      rotates about the GRIP on all three axes incl. wrist roll (the actor-pinning lever
+      is gone); fire test passed with the drive live (subs, ammo, off-crosshair decal,
+      dumps 8->8); sleeve bones collapse to zero scale to hide the arm (default on).
+      IN-HEADSET CHECK PENDING.*
+- [x] **THE EARLY RISK TEST: do the plasmid's hand FX follow?** *YES - for ENGINE-side
+      (bone) writes, proven 2026-07-26 by A/B: with the drive on, Electro Bolt's idle
+      electricity wrapped the DRIVEN hand at the synthetic-controller spot; drive off, it
+      snapped back to the engine pose. A live cast fired through the anim-notify chain
+      with the drive running (ability InitiateDamage called, EVE consumed, wall scorch).
+      The render-side path was never used, so its FX limitation never applied.*
 - [ ] **Done when:** the weapon is one with the right controller and the plasmid hand is one
       with the left, each inspectable from any angle, at a believable size, with their effects
-      attached. (Arms hidden is a valid and expected answer.)
+      attached. (Arms hidden is a valid and expected answer.) *Mechanics flat-verified
+      2026-07-26; awaiting the user's in-headset verdict (checklist in STATUS).*
 
 - [ ] ~~Done when: hands + current weapon track the controller convincingly~~ (superseded by
       M7-v2 above; wrench melee rides the weapon path for free)

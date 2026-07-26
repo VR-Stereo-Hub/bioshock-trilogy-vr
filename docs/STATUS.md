@@ -2,7 +2,56 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-26, session 11 close - M7 REPLANNED with the user)
+## Current state (2026-07-26, session 12 - M7-v2 BONE DRIVE BUILT + FLAT-VERIFIED)
+
+**The viewmodel now follows the controller at the BONE level, and every flat
+check passed on the first build: the gun rotates about the GRIP on all three
+axes (the actor-pinning lever arm is gone), the fire test passed with the
+drive live, and the plasmid PARITY test passed - Electro Bolt's electricity
+rides the driven hand.** `vrhands mode bones` is the new default; the actor is
+no longer written (it stays engine-placed at the eye anchor - no culling risk,
+sane FX anchoring). Awaiting the user's in-headset verdict (checklist below).
+
+**How it works** (bones.cpp + ENGINE_NOTES "Skeleton / bone internals", all
+offsets in patterns.h): the AHands actor carries a `SkeletonInstance` at +0x3FC
+whose bone array is 47 component-space hkQsTransforms (pos+quat+scale, 48 B).
+The engine re-evaluates it lazily behind a dirty flag; our write runs in the
+CalcView detour after the engine tick, then clears the dirty flag so the
+renderer keeps our pose. The RIGHT hand cluster (wrist 27, fingers 28-42,
+weapon-attach bone 43 - the equipped gun renders from that entry, live-proven)
+and the LEFT cluster (wrist 6, fingers 7-21) each move RIGIDLY to their
+controller's pose: rotate the engine's reference pose about the anchor bone,
+translate the anchor onto the target. No IK. Sleeve bones ({24,25,26,45,46} /
+{3,4,5,22,23}) collapse to zero scale to hide the arms (overlay toggle,
+default ON). The reference self-refreshes whenever the engine re-evaluates,
+so engine animations ride along when present and nothing feeds back when not.
+
+**Flat evidence (2026-07-26, wall save, all screenshots in the session
+scratchpad):** simpose 0/0/0 put the gun+fist at the synthetic controller spot
+pointing forward; yaw+30 / pitch-25 / roll+45 each rotated gun+hand about the
+grip with the fist planted (roll rolls about the BARREL - the wrist-roll spec
+item); fire test: 4 shots, subs=4, ammo 57->53, fresh decal well off the
+head-crosshair, dumps 8->8, game alive; left hand: cluster measured with
+Electro Bolt raised, drive + collapse verified, FX parity A/B (drive on = the
+electric shell at the driven spot; off = snaps back to the engine pose), and a
+live cast fired through the anim-notify chain (ability InitiateDamage called,
+EVE consumed, wall scorch) with the drive running.
+
+**Bonus finds recorded in ENGINE_NOTES/patterns.h:** the REAL DrawScale
+(actor +0x2AC + the dirty protocol the session-11 pokes were missing -
+untested live, the likely engine-side gun-size lever), the attach-bone FName
+on the attached actor (+0xF0), SetBase = actor vtable +0x1A0, skeleton freeze
+flag (+0x20, `vrbones freeze`), and the weapon attach being EQUIP-TIME only
+(Hands.uc: OnEquippingStarted -> AttachToBone; nothing re-asserts per tick).
+
+**Session-12 method note:** the ROADMAP's render-side steps 1-2 were never
+needed - the native-table impl walks (GetBoneCoords -> the instance chain)
+plus one hexdump/poke session reached the bones directly, before any code was
+written. The render-side vm_draw design (Map/Unmap CB patching) stays fully
+specified in the session-12 plan file as the fallback that never fired; the
+enlarged `dumpframe full` capture (256 -> 1344 B) shipped anyway.
+
+## Previous state (2026-07-26, session 11 close - M7 REPLANNED with the user)
 
 **Two in-headset runs and a long design review retired the actor-pinning
 approach. M7 restarts at the draw/bone level next session.** The shipped build
@@ -602,32 +651,20 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-1. **M7-v2 STEP 1 - find the viewmodel's draw calls.** The whole next session
-   hangs off this one contained experiment, and it has a clear yes/no. Use
-   `core/gfx/frame_inspector` (already hooks the context vtable's draw slots)
-   plus `dumpframe full`. The fingerprint: we write the rig's transform
-   ourselves via `vrhands`, so the viewmodel is the draw whose world matrix
-   matches what we just wrote - park the rig somewhere unmistakable with
-   `vrhands test`/`simpose` and look for the matching matrix. DR-3 already
-   found the view-proj matrix in VS b0 bytes 128-191. Answer two things:
-   (a) which draws are the gun vs the arms, and (b) whether the sleeve and the
-   hand are separate MATERIAL SECTIONS - if they are, hiding an arm is a
-   draw-call skip and needs no bone work at all.
-2. **STEP 2 - prove render-side control**: no-op a draw (part disappears) and
-   substitute a matrix (part moves/scales). Model SCALE lands here, since no
-   DrawScale field was ever found engine-side.
-3. **THE EARLY RISK TEST - do the plasmid's hand FX follow a render-side
-   move?** Cast Electro Bolt, move the hand's draws, watch the electricity. If
-   it stays behind, plasmids must go bone-level. Do this in step 1-2, NOT at
-   the end: the user requires weapon and plasmid parity in one deliverable.
-4. **STEP 3 - reach the bone matrices.** Constant-buffer palette if the build
-   skins on the GPU, the mesh instance if CPU-skinned. UNVERIFIED - check
-   before promising anything, per the session-11 lesson about assuming.
-5. **STEP 4 - drive the hands from the bones**: right hand/weapon from the
-   right controller, left hand from the left, forearm bones collapsed to hide
-   the arms. Direct bone writes, **no IK solver** - the user dropped arm
-   articulation, which is what makes this tractable.
-6. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
+1. **The in-headset M7-v2 verdict** (checklist below) - the mechanics are
+   flat-proven; what remains is the user's eye on grip alignment, wrist roll,
+   size, and the plasmid hand. Tuning levers already in place: the trim/offset
+   sliders (same semantics as before, now applied to the bone target) and
+   `vrbones anchor <idx>` if the grip point itself needs to move.
+2. **Model scale, now probably cheap**: test the REAL DrawScale live - write
+   actor +0x2AC through the dirty protocol (or call AActor::SetDrawScale
+   0x375830 directly) on the AHands actor and the weapon actor; if the
+   attached weapon scales with the rig, wire it to a slider. (The +0x2AC field
+   read 0.0 on AHands at rest - understand that before trusting the lever.)
+3. **Polish knobs the headset run may ask for**: per-hand anchor trims (the
+   left wrist anchor may want a palm offset), collapse scope (clavicle in or
+   out), and a smoothing option if raw controller jitter reads on the model.
+4. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
    engine line-check - start at the damage factory, factory fetched by 0x231E70
    in `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl
    `+0xEC`); verify a PROJECTILE plasmid (Incinerate); hide the head-centred
@@ -648,44 +685,44 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 12. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7 second run (session 11 EVENING build)
+### IN-HEADSET CHECKLIST - M7-v2 first run (session 12 BONE-DRIVE build)
 
 Setup unchanged: Quest 3 + Virtual Desktop, launch from Steam, load the newest
 save, tick **VR stereo**, then tick **"Viewmodel follows the controller"** in
 the "Hands + weapon (M7)" overlay section. The laser you liked is untouched.
-What changed since your first run: the model now aligns to the SAME ray as the
-laser and the bullets (no more built-in tilt), the trim sliders now behave at
-every controller orientation (the old ones only worked in one pose - that was
-a real bug, not your tuning), offsets reach +/-120 cm, and the junk defaults
-were cleared.
+What changed since your last run: the model is now driven at the BONE level -
+the gun+fist move as one rigid piece anchored AT the grip (no more eye-anchor
+lever, no culling wall, no offset fights), the arm/sleeve is hidden by
+default, and the plasmid hand + its electricity are driven the same way.
 
-1. **Pull the right trigger twice first** (raises the weapon from the lowered
-   pose), then move and rotate the controller: the gun should point where the
-   laser points, and ROTATING the controller should no longer make the model
-   fly around - rotation error now stays constant instead of swinging.
-2. **The known remaining flaw, please judge HOW bad**: the gun still ORBITS a
-   pivot behind it (at your head's eye anchor) instead of rotating in your
-   palm. Pulling "offset forward" NEGATIVE moves the pivot toward the gun -
-   but past roughly your hand's own distance from your face the whole model
-   VANISHES (engine culls it; known, next session removes the limit via the
-   detach work). Find the most tolerable point and tell me the numbers.
-3. **Size check**: the gun is still oversized - a scale control needs one more
-   reverse-engineering find (in progress). Say how much it bothers you at the
-   offsets you settle on; that sets the priority.
-4. **Plasmid hand**: left trigger once - the viewmodel should hand over to the
-   left controller, same alignment rules.
-5. **Aim trim re-judge with the laser + gun together** (unchanged ask from the
-   first run): fire at the wall, adjust "Aim pitch/yaw trim" until dots and
-   decals agree, tell me the values.
+1. **Pull the right trigger twice** (first pull only raises the weapon), then
+   move and ROTATE the controller slowly on each axis: the gun should rotate
+   in your palm - yaw, pitch, AND wrist roll - staying glued to the laser ray.
+   This is the "model goes faster than the aim" test: they should now move as
+   one. If a constant misalignment remains, tune the trim/offset sliders (they
+   act on the bone target now) and tell me the values.
+2. **Size + distance check**: with the gun finally AT your hand, judge the
+   size honestly - a scale lever (the real DrawScale field) is queued if it
+   still reads oversized.
+3. **Arm hiding verdict**: the sleeve/arm collapses by default. If you see a
+   skin blob near the elbow/shoulder or anything smeared, say where; the
+   overlay checkbox "Hide the driven arm" A/Bs it live.
+4. **Plasmid hand**: left trigger once - the LEFT controller takes over with
+   the electric hand. Same rotation checks as the gun, plus: does the idle
+   electricity stay wrapped on the hand everywhere you move it?
+5. **Cast check**: cast Electro Bolt at the wall with the hand pointed away
+   from your gaze - bolt + scorch should follow the HAND's aim (the laser
+   shows the ray), and the cast flare should stay on the hand.
 6. **Load-crossing (20 seconds, still owed)**: with everything armed, Esc ->
    LOAD -> newest save -> YES, fire both hands, confirm no crash dump.
-7. **Optional, trainer**: Incinerate cast with the hand pointed away from your
-   gaze - does the fireball follow the HAND? (Closes the projectile-plasmid
-   question.)
+7. **Optional, trainer**: Incinerate cast - does the fireball follow the HAND?
+   (Closes the projectile-plasmid question.)
 
 Expected and not failures: crosshair still head-centred and disagreeing with
-the laser; HUD in both eyes; sleeve stretch at big offsets; `vrhands mode gun`
-prints "inert" by design.
+the laser; HUD in both eyes; the rig's idle/fire animations may look muted or
+static while the drive holds the pose (known trade-off, tell me if it bothers
+you); `vrhands mode gun` prints "inert" by design; `vrhands mode hands` is the
+retired actor-pinning kept only for A/B.
 
 ## Open questions / blockers
 
@@ -704,6 +741,41 @@ prints "inert" by design.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-26 - Session 12 (M7-v2: the bone drive, built and flat-verified in one day)
+
+- **Method pivot at planning (user's call: goal-first, any stable method)**:
+  skipped the ROADMAP's render-side steps 1-2 and went straight for the bones.
+  Two design-review passes fed the plan; the engine-side one scanned the disk
+  image's native table offline and found the full bone API kept from UE2 plus
+  Vengeance's LOW/HIGH dual skeleton, `SkeletonInstanceFreeze`, and
+  `execSetDrawScale` (-> the REAL DrawScale at +0x2AC with a dirty protocol).
+- **Offline impl walks reached the skeleton before any boot**: actor +0x3FC ->
+  `SkeletonInstance` -> component-space hkQsTransform array (+0x48, 47 bones),
+  evaluate-if-dirty flag, freeze flag. RTTI + factory walk confirmed the class.
+- **One pokeaddr session proved everything**: bone writes render the same
+  frame, freeze holds them, per-bone independence (component space), and the
+  headline - poking the weapon-attach bone (43) moved THE ENTIRE GUN,
+  undistorted: the attached weapon renders from this array. Engine-side lever
+  found; ENGINE_NOTES "Skeleton / bone internals" has the full map.
+- **bones.cpp shipped** (mode bones = new default; policy stays in hands.cpp):
+  rigid cluster move about the anchor bone, dirty-flag clear after write,
+  self-refreshing reference (animations ride along when the engine evaluates;
+  no feedback when it does not), per-hand sleeve collapse via zero bone scale.
+- **Flat ladder all green on the first build**: simpose park + yaw/pitch/ROLL
+  series rotate about the GRIP (screenshots); fire test subs=4, ammo 57->53,
+  off-crosshair decal, dumps 8->8; left cluster measured with Electro Bolt
+  raised (wrist 6, fingers 7-21); **plasmid parity PROVEN** - FX at the driven
+  hand with the drive on, snap back on off, live cast fires through the
+  anim-notify chain with the drive running.
+- Session interrupted mid-way by a power cut (PC-side, not the game); Steam
+  needed a manual re-sign-in. No state lost - the recon evidence had already
+  decided the design.
+- Commits: bone drive + skeleton notes, enlarged dumpframe capture (b0 256 ->
+  1344 B), left cluster + per-hand collapse. All pushed to main.
+- Note for the record: the remote history was force-rewritten by the user
+  (identity change to mohamad-balouza); local work was cherry-picked onto the
+  new history before pushing.
 
 ### 2026-07-26 - Session 11 part 3 (second headset run + the M7 replan)
 
