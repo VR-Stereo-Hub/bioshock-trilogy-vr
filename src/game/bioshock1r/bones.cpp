@@ -244,20 +244,26 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         g_refValid = true;
     }
 
-    // World target -> component space. THE FRAME MATTERS (in-headset lesson,
-    // 2026-07-26): the renderer orients the first-person rig by the RENDER
-    // CAMERA's rotation, not by the actor's rotation field - flat they are the
-    // same value, so only a camera-vs-actor rotation split (the injected-pitch
-    // A/B, or the HMD head-look) exposes it. Compose against the FINAL camera
-    // rotation this frame produced (ctx), anchored at the actor's LOCATION
-    // field (which the renderer does use - camera-position moves proved that).
+    // World target -> component space, composed against the ACTOR transform.
+    // THE FRAME MATTERS, and the in-headset telemetry settled it (2026-07-26,
+    // session 12 part 3): during an +-80 deg head-yaw sweep the actor rotation
+    // held constant (stick-only, no head-look) while the world target stayed
+    // solid - and the user saw the gun move REVERSED, which is exactly
+    // actor-frame rendering composed against the camera frame. The renderer
+    // orients the rig by the ACTOR fields; composing against them makes the
+    // bone values head-independent end to end (the head enters only the view
+    // matrix, as it should). The one-day detour through "compose against
+    // fc.cam" came from misreading a flat screenshot - see STATUS session 12.
     float actorLoc[3];
-    if (!read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorLocOffset, actorLoc, 12))
+    int32_t actorRotRaw[3];
+    if (!read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorLocOffset, actorLoc, 12) ||
+        !read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorViewDirOffset, actorRotRaw,
+                12))
         return false;
-    FRotator camRot{ctx.camPitch, ctx.camYaw, ctx.camRoll};
+    FRotator actorRot{actorRotRaw[0], actorRotRaw[1], actorRotRaw[2]};
 
     float qa[4], qt[4], qaInv[4], qtc[4];
-    ue_rot_to_quat(camRot, qa);
+    ue_rot_to_quat(actorRot, qa);
     ue_rot_to_quat(gp.rot, qt);
     quat_conj(qa, qaInv);
     quat_mul(qaInv, qt, qtc); // target rotation, component space
@@ -279,16 +285,15 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     }
 
     if (g_tlmWindowOpen) {
-        int32_t actorRot[3] = {0, 0, 0};
-        read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorViewDirOffset, actorRot, 12);
         BVR_LOG("[tlm] cam loc=(%.1f %.1f %.1f) rot=(%d %d %d) base=(%.1f %.1f %.1f) "
                 "dyaw=%.2f",
                 ctx.camX, ctx.camY, ctx.camZ, ctx.camPitch, ctx.camYaw, ctx.camRoll, ctx.baseX,
                 ctx.baseY, ctx.baseZ, ctx.driveYawOffsetRad * kRadToDeg);
         BVR_LOG("[tlm] actor loc=(%.1f %.1f %.1f) rot=(%d %d %d) | target loc=(%.1f %.1f "
                 "%.1f) rot=(%d %d %d) hand=%d",
-                actorLoc[0], actorLoc[1], actorLoc[2], actorRot[0], actorRot[1], actorRot[2],
-                gp.loc.x, gp.loc.y, gp.loc.z, gp.rot.pitch, gp.rot.yaw, gp.rot.roll, hand);
+                actorLoc[0], actorLoc[1], actorLoc[2], actorRotRaw[0], actorRotRaw[1],
+                actorRotRaw[2], gp.loc.x, gp.loc.y, gp.loc.z, gp.rot.pitch, gp.rot.yaw,
+                gp.rot.roll, hand);
         BVR_LOG("[tlm] comp p=(%.2f %.2f %.2f) q=(%.3f %.3f %.3f %.3f) | anchorBefore "
                 "p=(%.2f %.2f %.2f) engineEval=%d reapplies=%u",
                 ptc[0], ptc[1], ptc[2], qtc[0], qtc[1], qtc[2], qtc[3], cur.p[0], cur.p[1],
