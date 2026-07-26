@@ -294,11 +294,23 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       inverts an analytic model of it per frame at gain 0.5; flat simhead sweeps hold the
       anchor within 2-4 deg of world-true through +-30 yaw / +-20 pitch (was 15-25 deg of
       coupling). ENGINE_NOTES "Foreground scene FOV" has the whole chain.*
+- [x] **The depth geometry (the "glued to my face / HUD" defect): fixed and verified
+      numerically, flat, in stereo.** *2026-07-27 session 14: the fg eye rides the CAMERA
+      (translation included, dump-proven) with a true pull-back of 13 UU (calibrated from
+      three agreeing physical baselines - the dump-recovered eye is section-frame-relative
+      and unusable absolutely); the render lock now solves the anchor at w* = k*trueDistance,
+      making apparent size, stereo depth, and translation parallax world-correct at once.
+      Acceptance: camera-offset parallax 420 -> 355 px (world-correct 341); size on
+      hand-distance doubling 0.605 -> 0.465-0.470 (correct 0.465); depth band clean to
+      wSolve ~142; simhead sweep unregressed; fire test clean. Session 13's "rebake
+      doubling" decomposed as model-scale error 1.63 x true rebake 1.1; per-axis gains
+      (lockgain/lockdgain) default 0.9. ENGINE_NOTES "Foreground scene FOV" session-14
+      block has the calibration chain.*
 - [ ] **Done when:** the weapon is one with the right controller and the plasmid hand is one
       with the left, each inspectable from any angle, at a believable size, with their effects
       attached. (Arms hidden is a valid and expected answer.) *Mechanics flat-verified
-      2026-07-26 incl. the head-coupling counter; awaiting the user's in-headset verdict
-      (checklist in STATUS).*
+      2026-07-26 incl. the head-coupling counter; depth geometry flat-verified 2026-07-27;
+      awaiting the user's in-headset verdict (checklist in STATUS).*
 
 - [ ] ~~Done when: hands + current weapon track the controller convincingly~~ (superseded by
       M7-v2 above; wrench melee rides the weapon path for free)

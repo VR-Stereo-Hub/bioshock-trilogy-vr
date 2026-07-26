@@ -2,7 +2,44 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-26, session 13 - THE CAMERA-COUPLED RIG TERM: ROOT-CAUSED AND COUNTERED FLAT)
+## Current state (2026-07-27, session 14 - THE DEPTH FIX: SIZE, STEREO DEPTH, PARALLAX WORLD-CORRECT FLAT)
+
+**Session 13's depth-geometry defect (the "hands are a HUD on my face, but a
+bit 3d" percept) is fixed and flat-verified IN STEREO with numeric acceptance;
+the in-headset verdict is the only open gate (checklist below).** The render
+lock's third constraint is now **w\* = k \* trueDistance** (k = the world/fg
+lens ratio, ~2.12 at FOV 117): apparent size, stereo disparity, and
+translation parallax are all the same (1/w)\*k geometry, so the one constraint
+made all three world-correct at once. Measured on the wall save, vrstereo on,
+baselines replicated first on the same harness: camera-offset parallax 420 px
+(1.23x world-correct) -> **355 px vs 341 world-correct (1.04x)**; gun size on
+hand-distance doubling 0.605 -> **0.465-0.470 vs 0.465 exact**; fg depth band
+clean up to wSolve ~142 (FOV 137 + hand extended - the clamp fallback never
+fired); simhead +-30/+-20 sweep still glued (no rotation regression); fire
+test 57->55 with a fresh decal, dumps 8->8.
+
+**Two model corrections were forced by measurement on the way** (full chain in
+ENGINE_NOTES "Foreground scene FOV", session-14 block): (1) the fg eye RIDES
+THE CAMERA, translation included - dump-proven (`offset 0 30 0` moved the
+matrix-recovered eye 29.7 UU); the model now composes the eye from the live
+camera position. (2) The dump-recovered E is SECTION-FRAME-RELATIVE - useless
+as an absolute pull-back; the TRUE pull-back (13 UU behind the camera,
+`kFgEyeFwdBehindCam`) was calibrated from three independent physical baselines
+that agree to ~1 UU. With the model's depth scale made real, session 13's
+"rigid-rebake doubling" decomposed into (model-scale error 1.63) x (true
+rebake ~1.1), so BOTH gains now default 0.9: `vrbones lockgain` (lateral) and
+the new `vrbones lockdgain` (depth), live knobs + overlay sliders.
+
+**Instrument findings this session** (recorded in ENGINE_NOTES): `camrot` does
+not rotate the fg view while the drive is on (the rigid path orients by the
+actor view) - simhead is the only valid flat head-look stand-in; window
+captures are eye-phase-locked, so stereo disparity is unmeasurable from
+screenshots (size + offset-parallax carry the same geometry and are the
+acceptance instruments); with lock ABS live the gun sits pixel-frozen across
+a shot series where lock-off wobbled +-16 px (the sway may be partially
+absorbed by the per-frame re-pin now).
+
+## Previous state (2026-07-26, session 13 - THE CAMERA-COUPLED RIG TERM: ROOT-CAUSED AND COUNTERED FLAT)
 
 **Session 12's single blocker is identified end to end and countered; the flat
 simhead sweep now holds the gun on the world within a few degrees through
@@ -707,138 +744,91 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-**HEADSET VERDICT ON THE RENDER LOCK: NO CHANGE FELT (2026-07-26, session 13
-part 2), and the post-mortem points somewhere new - STEREO DEPTH.** The user's
-words: the gun still counter-moves under head-look, gun and laser move "in the
-same direction but at different speeds", the gun is "almost glued to the
-camera... huge", and hand-distance changes render as "very little increments"
-- "like the hands are part of the HUD on my face, but a bit 3d". Post-mortem
-evidence: the overlay after their run showed lock |delta| = 1.7 UU (vs 6-11
-in the flat sweeps) - IN-HEADSET YOU LOOK AT YOUR HAND, so it sits at view
-CENTER where the position term the lock corrects is tiny. The flat harness
-measured mono screen position off-center; the user's percept is dominated by
-things the mono harness cannot see. USER DIRECTIVE going forward: test in
-STEREO ONLY (the mod is stereo-only in use; mono-flat "passes" have misled
-two sessions), investigate before changing anything.
-
-**THE ISSUE IS NOW CONFIRMED AND QUANTIFIED (session 13 part 3, flat, stereo
-on, lock off, no code changes) - it is the foreground scene's DEPTH GEOMETRY,
-one mechanism explaining every symptom:**
-- **Camera-translation A/B (`offset 0 +-10 0`, hand world-parked)**: the wall
-  shifted ~70 px, the GUN shifted ~425 px - the rig parallaxes like an object
-  **~14 UU (~28 cm) from the face** while the hand's true distance is ~20 UU,
-  and it over-responds to camera translation ~1.35x vs world-correct
-  (~310 px). So: the fg eye FOLLOWS camera translation (disparity exists -
-  matches the user seeing real 3D; the earlier zero-disparity guess is dead,
-  and the model's "E anchored in ACTOR space" is wrong for translation - E
-  rides the CAMERA), and the depth-hack geometry (eye pulled back ~30 UU +
-  narrow lens) makes the STEREO disparity of the rig correspond to
-  ~(trueDepth + 30)/2.1 - a depth bubble that pins the gun 25-40 cm from the
-  eyes for ANY realistic hand position. "Super close to the camera": measured.
-- **Hand-distance A/B (`vrhands pos 40 0 0` = hand 40 cm further)**: doubling
-  the hand's true distance shrank the gun only 0.62x (world-correct: 0.5x),
-  and through the +30 depth offset the perceived distance moves 27 -> ~38 cm
-  when the real hand moved 35 -> 75 cm. "Moves away in very little
-  increments": measured.
-- Every head translation (lean, the neck offset in every head turn, the
-  per-eye offsets themselves) slides the rig 1.35x against the world, and the
-  laser (compositor-space, world-correct) moves at 1.0x - "same direction,
-  different speeds": measured.
-
-**NEXT SESSION IS THE FIX, fully specified - and it is one constraint change,
-not a radical rebuild:** in `render_lock_delta` (bones.cpp), replace the
-keep-natural-depth constraint (third solve equation, currently w = wNat) with
-**w* = k * trueDistance**, k = tan(worldFov/2)/0.7698 (the lens ratio,
-computed per frame from the option FOV). Because apparent size, stereo
-disparity, and translation-parallax are all the SAME (1/w)*k geometry, that
-one constraint makes all three world-correct simultaneously - the gun takes
-its true size, its true stereo depth, moves 1:1 with the hand, and stops
-sliding under head translation. The ndc-position solve (the session-13
-rotation model) stays as is.
-Verify while building (all flat, all stereo):
-1. Acceptance = repeat the camera-offset A/B: the gun must shift ~310 px
-   (like a 20-UU object), not 425. Repeat the hand-distance A/B: doubling
-   distance halves the size. Numeric, no headset, no mono.
-2. Check the fg near/far clip band tolerates w up to ~140 (extended arm at
-   FOV 137); check cluster proportions at the deeper depth (the rigid
-   cluster translates as one - intra-rig distortion should stay second
-   order); re-measure the rigid-rebake gain (lockgain) under the new
-   constraint.
-3. Then the in-headset run: expect the gun AT the hand's distance, correct
-   size (this also likely retires the DrawScale item), 1:1 hand motion.
-Fallback if the depth band clips or distorts: the vm_draw render-side lane
-(substitute the fg transform per eye in the 576-tier cb - designed session
-12; FX parity must be re-proven there).
-After geometry lands: sway kill at source (UpdateHandValues bob params) as
-polish.
-2. **Model scale, now probably cheap**: test the REAL DrawScale live - write
-   actor +0x2AC through the dirty protocol (or call AActor::SetDrawScale
-   0x375830 directly) on the AHands actor and the weapon actor; if the
-   attached weapon scales with the rig, wire it to a slider. (The +0x2AC field
-   read 0.0 on AHands at rest - understand that before trusting the lever.)
-3. **Polish knobs the headset run may ask for**: per-hand anchor trims (the
+1. **THE IN-HEADSET RUN on the session-14 build (the only open gate for the
+   depth work)** - checklist below. Flat says the gun now sits at the hand's
+   true distance at the true size and moves 1:1; only the user's eye closes
+   it. Live knobs if anything reads off: `vrbones lockdgain <0..2>` (depth,
+   default 0.9), `vrbones lockgain <0..2>` (lateral, default 0.9),
+   `vrbones lock abs|diff|off`.
+2. **Model scale - CHECK IN-HEADSET BEFORE SPENDING TIME**: the session-14 fix
+   makes apparent size track distance world-correctly, which likely retires
+   the "gun huge" complaint entirely. The DrawScale lever (actor +0x2AC via
+   the dirty protocol / AActor::SetDrawScale 0x375830) stays queued ONLY for
+   "the model's proportions read oversized next to my real hand at the
+   CORRECT distance" - a different, smaller complaint.
+3. **Sway kill at source (UpdateHandValues bob params)**: possibly less urgent
+   now - with lock ABS the flat shot series sat pixel-frozen (the per-frame
+   re-pin may be absorbing the lateral sway); ask the user whether any
+   breathing still shows before building this.
+4. **Polish knobs the headset run may ask for**: per-hand anchor trims (the
    left wrist anchor may want a palm offset), collapse scope (clavicle in or
    out), and a smoothing option if raw controller jitter reads on the model.
-4. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
+5. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
    engine line-check - start at the damage factory, factory fetched by 0x231E70
    in `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl
    `+0xEC`); verify a PROJECTILE plasmid (Incinerate); hide the head-centred
    crosshair; per-weapon offset profiles keyed by weapon class name; and the
    20-second load-crossing check the user still owes.
-7. **Dropped from M7 by the user's call**: dual-wield (BioShock 1 equips one
+6. **Dropped from M7 by the user's call**: dual-wield (BioShock 1 equips one
    hand at a time - it moves to the M10 BioShock 2 adapter, which supports it
    natively), elbow IK, arm bending, two-handed grips.
-8. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
+7. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
    Controller polish (deadzone/curve/menu timing) and rebinds stay parked in M9.
-9. Still open from M3: cutscene cameras are head-driven. The aim path already
+8. Still open from M3: cutscene cameras are head-driven. The aim path already
    guards on the view actor's vtable (AShockPlayer) - reuse that predicate for
    the camera when it is addressed.
-10. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
-    guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
-11. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
+9. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
+   guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
+10. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
     Link / SteamVR cross-check any time.
-12. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
+11. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7-v2 render-lock run (session 13 build)
+### IN-HEADSET CHECKLIST - M7-v2 depth-fix run (session 14 build)
 
 Setup unchanged: Quest 3 + Virtual Desktop, launch from Steam, load the newest
 save, tick **VR stereo**, then **"Viewmodel follows the controller"**. What
-changed since your last run: the head-coupling is countered (the renderer's
-foreground pipeline is modeled and inverted - "render lock", ON by default).
-Live knobs if anything reads off: `vrbones lock abs|diff|off`, `vrbones
-lockgain <0..2>` (default 0.5).
+changed since your last run: the rig's foreground DEPTH geometry is fixed -
+the "hands are part of the HUD on my face" percept was a measured depth bubble
+(everything rendered ~28 cm from the eyes) and the render lock now places the
+gun at the controller's TRUE distance, size, and parallax.
 
-1. **THE headline test - park your hand, move your head.** Hold the right
-   controller still (rest it on something if you can), then yaw/pitch/roll
-   your HEAD slowly and widely. The gun should stay planted in the world -
-   no sliding with or against your head. A slow small breathing (~the width
-   of the gun sight) is the engine's own hand sway - tell me if it bothers
-   you (killing it at the source is queued). If the gun still trails or
-   overshoots your head turn SYSTEMATICALLY, say which direction: lockgain
-   0.65 (trailing) or 0.4 (overshooting) is the live A/B.
-2. **abs vs diff, your call**: `vrbones lock abs` (default) puts the gun at
-   the controller's TRUE position - likely lower and further out than you're
-   used to, laser starting at the barrel. `vrbones lock diff` keeps the
-   classic raised composition and only cancels head-coupling. Try both for a
-   minute each and pick.
-3. **Tracking recheck**: rotate the controller on each axis (yaw, pitch,
-   wrist roll) - gun rotates about the grip, glued to the laser, same as the
+1. **Depth + size, the headline.** Hold the controller at a normal aim
+   distance and look at the gun: it should read AT YOUR HAND, not near your
+   face, and clearly smaller than last run. Push the hand out, pull it in -
+   the gun should recede/approach 1:1 ("moves away in very little increments"
+   should be gone).
+2. **Head translation.** Park the hand (rest it on something), then LEAN your
+   head side to side and forward. The gun should hold its place in the world
+   like a real object at the hand's distance - no sliding against the laser,
+   no "same direction different speeds".
+3. **Laser agreement.** Under both hand motion and head motion the gun and
+   the laser should now move together, same direction, same speed.
+4. **Resting placement, your call**: `lock abs` (default) puts the gun at the
+   controller's true spot - lower/further out than the classic raised
+   composition. If the resting SPOT reads wrong (not the depth), try
+   `vrbones lock diff` (classic composition, same depth fix) and say which
+   you prefer.
+5. **If depth reads slightly over/under-done** (gun a touch too near/far or
+   too big/small): `vrbones lockdgain 0.75` vs `1.1` is the live A/B
+   (default 0.9). Any residual head-motion trail: `vrbones lockgain 0.75`
+   vs `1.1`.
+6. **Tracking recheck**: rotate the controller on each axis (yaw, pitch,
+   wrist roll) - gun rotates about the grip, glued to the laser, as in the
    run you called "a metric ton better".
-4. **Fire + plasmid parity**: two right-trigger pulls, shoot the wall; left
-   trigger, Electro Bolt cast - electricity on the driven hand, bolt following
+7. **Fire + plasmid parity**: two right-trigger pulls at the wall; left
+   trigger, Electro Bolt - electricity on the driven hand, bolt following
    the hand's aim.
-5. **Size verdict** (unchanged this session): the gun still renders through
-   the narrow foreground lens, so it reads large; the DrawScale lever is the
-   queued fix - confirm it still bothers you before we spend the time.
-6. **Load-crossing (20 seconds, still owed)**: with everything armed, Esc ->
+8. **Proportions verdict (replaces the old size item)**: AT the correct
+   distance, does the model itself still read oversized next to your real
+   hand? Only if yes does the DrawScale lever get built.
+9. **Load-crossing (20 seconds, still owed)**: with everything armed, Esc ->
    LOAD -> newest save -> YES, fire both hands, confirm no crash dump.
 
 Expected and not failures: crosshair still head-centred and disagreeing with
 the laser; HUD in both eyes; the rig's idle/fire animations may look muted or
-static while the drive holds the pose (known trade-off, tell me if it bothers
-you); `vrhands mode gun` prints "inert" by design; `vrhands mode hands` is the
-retired actor-pinning kept only for A/B.
+static while the drive holds the pose; `vrhands mode gun` prints "inert" by
+design; `vrhands mode hands` is the retired actor-pinning kept only for A/B.
 
 ## Open questions / blockers
 
@@ -857,6 +847,37 @@ retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 14 (the depth fix: w* = k*d, flat-stereo acceptance PASSED)
+
+- Implemented the session-13 spec (the depth constraint in render_lock_delta)
+  plus the two corrections the measurements forced: the fg eye rides the
+  CAMERA translation (dump-proven: `offset 0 30 0` moved the recovered eye
+  29.7 UU), and the model's absolute pull-back is the physically-calibrated
+  13 UU (`kFgEyeFwdBehindCam`) - the dump-recovered E turned out to be
+  section-frame-relative (each vm section recovers a different eye) and its
+  -32 forward was 1.63x the real scale.
+- Baselines replicated BEFORE judging the fix (lock off, same harness:
+  parallax 420 px, size ratio 0.605 - matching session 13's 425/0.62), then
+  the acceptance measured: parallax 355 px vs 341 world-correct (1.04x, was
+  1.23x); size 0.465-0.470 vs 0.465 exact; depth band clean at wSolve 142
+  (FOV 137 + hand out 40 cm - clamp fallback never fired); simhead
+  -30/0/+30 yaw and +-20 pitch sweep glued (no rotation regression); fire
+  test 57->55 with a fresh decal, dumps 8->8, stereo 150+ pairs/s clean.
+- Session 13's "rigid-rebake doubling" DECOMPOSED: the 1.79x gain-1.0
+  overshoot = (model depth-scale error 1.63) x (true rebake ~1.1). Gains are
+  now per-axis (`lockgain` lateral / new `lockdgain` depth), both default
+  0.9 ~ 1/1.1, both on the overlay.
+- Instrument findings recorded in ENGINE_NOTES: camrot does not rotate the
+  fg view with the drive on (rigid path orients by the actor view) - simhead
+  is the only valid flat head-look stand-in; window captures are
+  eye-phase-locked (disparity unmeasurable from shots; size/parallax carry
+  the same geometry); with lock ABS the shot series sat pixel-frozen where
+  lock-off wobbled +-16 px (sway possibly part-absorbed by the re-pin).
+- Harness cost of the session: three false trails from template matching
+  (stale gun regions after the composition moved at the new gains;
+  multimodal correlation surfaces). Settled by blob/crop-and-look absolute
+  localization. Recorded as caveat (d) in the ENGINE_NOTES session-14 block.
 
 ### 2026-07-26 - Session 13 part 3 (the depth geometry confirmed flat, fix specified)
 

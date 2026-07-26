@@ -941,6 +941,65 @@ fixed projection, and that is the whole "camera-coupled rig term" of session
   f12 fingerprint with foreign transform content. The watch stays in core as
   a diagnostic instrument.
 
+### Session 14 (2026-07-27) - the depth constraint: size, stereo depth, parallax world-correct
+
+- **The fg eye RIDES THE CAMERA, translation included** - settled by dump:
+  drive on, lock off, `offset 0 30 0` (render-camera-only translation) moved
+  the matrix-recovered eye by (-0.3, +29.7, +0.9) - the full offset. The
+  session-13 model's actor-anchored E could never produce the measured 1.35x
+  parallax over-response; a camera-riding eye produces it exactly. The model
+  now composes eye = camComp + rotate(qd, pull-back), camComp = qaInv *
+  (ctx.cam - actorLoc).
+- **The matrix-recovered eye is SECTION-FRAME-RELATIVE; its absolute value is
+  NOT recoverable from captures.** Solving rows*e = -translation per vm draw
+  gives a=7704 -> (-66.4, -19.6, 9.5) and a=14595 -> (-51.6, -20.6, 21.9)
+  with the drive OFF, and (-32.6, -3.8, -1.7) for a=7704 with the drive ON -
+  each is e_true minus that section's own frozen frame offset. Session 13's
+  E (-32.1, -5.6, -0.9) is the a=7704 drive-on value, i.e. ts-contaminated;
+  with it the model's natural depth ran ~1.63x the real one (49.5 vs ~30 at
+  the parked pose). kFgEyeComp stays recorded for its LATERAL components
+  only (statics the abs solve absorbs).
+- **The TRUE pull-back, physically calibrated: kFgEyeFwdBehindCam = 13.0 UU
+  (rendered fg depth = df + 13, df = target forward distance from the
+  camera).** Three independent instruments agree: camera-offset parallax
+  (lock off, 10 UU offset moved the gun 420 px through the 0.7698 lens ->
+  w 29.9 at df 17.4 -> P 12.5); size ratio on hand-distance doubling (0.605
+  at df 17.4->37.4 -> P 13.2); the user's perceived ~28 cm at a ~35 cm hand
+  -> P 12.3.
+- **The depth constraint (the session-14 fix, bones.cpp)**: the render-lock
+  third solve equation is now w* = k*df, k = tan(worldFov/2)/tan(fg 30 deg)
+  = tanH * kFgInvTanH (~2.12 at option 117, ~3.30 at 137), built on the
+  physically-scaled eye. Apparent size, stereo disparity, and translation
+  parallax are the same (1/w)*k geometry, so the one constraint fixes all
+  three. The correction returns split lateral/depth (along the fg forward)
+  with separate refusal caps (30 / 120 UU) and separate gains.
+- **Session 13's "rebake doubling" DECOMPOSED**: the gain-1.0 overshoot
+  (14-deg cancel -> ~25 deg effect, 1.79x) = model depth-scale error (1.63)
+  x true rigid-path rebake (~1.1). With the model scale corrected, both axes
+  run gain ~1/1.1: `vrbones lockgain 0.9` (lateral) + `lockdgain 0.9`
+  (depth), both live knobs and overlay sliders.
+- **Flat-stereo acceptance (vrstereo on throughout; baselines replicated
+  first on the same harness)**: camera-offset parallax 420 px (1.23x world)
+  -> 355 px vs 341 world-correct (1.04x); size-on-distance-doubling 0.605 ->
+  0.465-0.470 vs 0.465 exact; fg depth band tolerates wSolve 142 (FOV 137 +
+  hand 40 cm out - rig intact, the clamp fallback never fired); simhead
+  +-30 yaw / +-20 pitch sweep stays glued (no regression vs g5); fire test
+  57->55 with a fresh decal, dumps 8->8.
+- **Instrument caveats, so nobody re-walks them**: (a) with the drive ON,
+  `camrot` does NOT rotate the fg view (composite followed ~3 of 40 deg -
+  the rigid path orients by the ACTOR/pawn view) while `simhead` DOES (~16
+  of 20 deg pitch) - so camrot is not a head-look stand-in under the drive;
+  simhead remains the valid one. (b) Window captures are eye-phase-locked
+  (same stereo eye every shot - session 6's finding reconfirmed), so
+  disparity cannot be measured from screenshots; size and offset-parallax
+  carry the same (1/w)*k information. (c) With lock ABS live the gun sat
+  pixel-identical across a shot series (the per-frame ndc re-pin), where
+  lock-off series wobbled +-16 px - the vanilla sway may be partially
+  absorbed by the lock now; not conclusively separated from a quiet sway
+  phase. (d) Template-based pixel measures go multimodal when the gun's
+  composition moves between builds - re-localize the gun (crop + look)
+  before trusting any cross-build A/B.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
