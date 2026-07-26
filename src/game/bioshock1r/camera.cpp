@@ -127,7 +127,9 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 // on the game thread; when its write time changes, every line is applied and
 // logged. Lets a test harness drive the debug controls without the overlay.
 // Camera commands: "fov <deg>", "fov off", "gfov <deg>", "gfov off",
-// "offset <x> <y> <z>", "recenter".
+// "offset <x> <y> <z>", "camrot <pitch> <yaw> <roll>" (render-camera-only
+// rotation offset in degrees - the flat stand-in for HMD head-look),
+// "recenter".
 // Discovery commands (route to core/debug/value_scan; game thread only):
 //   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
 //   memscani <u>  memrescani <u>   (integer-typed variants)
@@ -201,6 +203,18 @@ void apply_command(const char* cmd, const char* args) {
             g_offsetY.store(y, std::memory_order_relaxed);
             g_offsetZ.store(z, std::memory_order_relaxed);
             BVR_LOG("[b1r] command: offset %.1f %.1f %.1f", x, y, z);
+        }
+    } else if (strcmp(cmd, "camrot") == 0) {
+        // Render-camera-only rotation offset (degrees), the seam twin of the
+        // overlay's camera test sliders. The flat stand-in for HMD head-look:
+        // it rotates the CalcView out-params (and fc) but never the pawn, so
+        // it splits "render camera" from "actor rotation" exactly like a
+        // headset does - the discriminator the M7-v2 head-coupling fix needed.
+        if (sscanf_s(args, "%f %f %f", &x, &y, &z) == 3) {
+            g_pitchDeg.store(x, std::memory_order_relaxed);
+            g_yawDeg.store(y, std::memory_order_relaxed);
+            g_rollDeg.store(z, std::memory_order_relaxed);
+            BVR_LOG("[b1r] command: camrot %.1f %.1f %.1f", x, y, z);
         }
     } else if (strcmp(cmd, "memscan") == 0) {
         if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::scan_f32(v);

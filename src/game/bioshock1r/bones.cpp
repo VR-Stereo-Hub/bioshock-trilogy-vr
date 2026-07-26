@@ -201,17 +201,20 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         g_refValid = true;
     }
 
-    // Actor world pose -> the component-space target.
+    // World target -> component space. THE FRAME MATTERS (in-headset lesson,
+    // 2026-07-26): the renderer orients the first-person rig by the RENDER
+    // CAMERA's rotation, not by the actor's rotation field - flat they are the
+    // same value, so only a camera-vs-actor rotation split (the injected-pitch
+    // A/B, or the HMD head-look) exposes it. Compose against the FINAL camera
+    // rotation this frame produced (ctx), anchored at the actor's LOCATION
+    // field (which the renderer does use - camera-position moves proved that).
     float actorLoc[3];
-    int32_t actorRotRaw[3];
-    if (!read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorLocOffset, actorLoc, 12) ||
-        !read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorViewDirOffset, actorRotRaw,
-                12))
+    if (!read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorLocOffset, actorLoc, 12))
         return false;
-    FRotator actorRot{actorRotRaw[0], actorRotRaw[1], actorRotRaw[2]};
+    FRotator camRot{ctx.camPitch, ctx.camYaw, ctx.camRoll};
 
     float qa[4], qt[4], qaInv[4], qtc[4];
-    ue_rot_to_quat(actorRot, qa);
+    ue_rot_to_quat(camRot, qa);
     ue_rot_to_quat(gp.rot, qt);
     quat_conj(qa, qaInv);
     quat_mul(qaInv, qt, qtc); // target rotation, component space
@@ -281,7 +284,6 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     set_dirty(0); // render-side evaluate-if-dirty must not rebuild over us
     g_writes.fetch_add(1, std::memory_order_relaxed);
     g_lastHand.store(hand, std::memory_order_relaxed);
-    (void)ctx;
     return true;
 }
 
