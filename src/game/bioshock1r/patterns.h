@@ -432,6 +432,14 @@ inline constexpr int kBoneRClusterFirst = 27;
 inline constexpr int kBoneRClusterLast = 44;
 inline constexpr int kBoneWeaponAttach = 43;
 inline constexpr int kBoneRSleeve[] = {24, 25, 26, 45, 46};
+// Left mirror, measured with Electro Bolt raised (left arm forward): wrist 6,
+// thumb 7-9, fingers 10-21 - contiguous cluster 6-21, anchored at the wrist
+// (no attach/muzzle analog exists on the left). Sleeve mirror: 3 clavicle,
+// 4 upperarm, 5 elbow, 22/23 forearm twist helpers.
+inline constexpr int kBoneLClusterFirst = 6;
+inline constexpr int kBoneLClusterLast = 21;
+inline constexpr int kBoneLWrist = 6;
+inline constexpr int kBoneLSleeve[] = {3, 4, 5, 22, 23};
 
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,

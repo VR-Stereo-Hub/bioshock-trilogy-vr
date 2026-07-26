@@ -55,9 +55,10 @@ bool g_refValid = false;
 Qts g_lastWrittenAnchor[2]; // per hand
 bool g_hasWritten[2] = {false, false};
 
-// Right cluster is baked (patterns.h); the left one is measured live first
-// (lcluster command), then baked the same way.
-std::atomic<int> g_lFirst{-1}, g_lLast{-1}, g_lAnchor{-1};
+// Both clusters are baked (patterns.h) after live measurement; the lcluster
+// command stays as a runtime override for future rig experiments.
+std::atomic<int> g_lFirst{patterns::kBoneLClusterFirst}, g_lLast{patterns::kBoneLClusterLast},
+    g_lAnchor{patterns::kBoneLWrist};
 std::atomic<int> g_rAnchorOverride{-1};
 
 std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
@@ -254,23 +255,26 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // while the drive keeps clearing the dirty flag.
     bool collapse = g_collapse.load(std::memory_order_relaxed);
     static bool s_wasCollapsed = false;
-    if (hand == 1) {
-        if (collapse) {
-            static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            for (int idx : patterns::kBoneRSleeve) {
-                if (idx >= g_boneCount) continue;
-                write_n(g_bones[idx].p, ptc, 12);
-                write_n(g_bones[idx].s, kZero, 12);
-            }
-        } else if (s_wasCollapsed) {
-            for (int idx : patterns::kBoneRSleeve) {
-                if (idx >= g_boneCount) continue;
-                write_n(g_bones[idx].p, g_ref[idx].p, 12);
-                write_n(g_bones[idx].s, g_ref[idx].s, 12);
-            }
+    const int* sleeve = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+    const size_t sleeveCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
+                                         : _countof(patterns::kBoneLSleeve);
+    if (collapse) {
+        static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        for (size_t k = 0; k < sleeveCount; ++k) {
+            int idx = sleeve[k];
+            if (idx >= g_boneCount) continue;
+            write_n(g_bones[idx].p, ptc, 12);
+            write_n(g_bones[idx].s, kZero, 12);
         }
-        s_wasCollapsed = collapse;
+    } else if (s_wasCollapsed) {
+        for (size_t k = 0; k < sleeveCount; ++k) {
+            int idx = sleeve[k];
+            if (idx >= g_boneCount) continue;
+            write_n(g_bones[idx].p, g_ref[idx].p, 12);
+            write_n(g_bones[idx].s, g_ref[idx].s, 12);
+        }
     }
+    s_wasCollapsed = collapse;
 
     if (!read_n(&g_bones[anchor], &g_lastWrittenAnchor[hand], sizeof(Qts))) return false;
     g_hasWritten[hand] = true;
