@@ -2,7 +2,38 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-27, session 15 - STRATEGY PIVOT: THE FG FOV FIELD FOUND; THE DOLLY IS THE LAST WALL)
+## Current state (2026-07-27, session 16 - OPTION 2 COMPLETE FLAT: MATCHED LENS SHIPS ON, FULL ACCEPTANCE AT k=1)
+
+**The decision hour picked the good branch: the driven rigid path's pull at
+the matched lens calibrated to +11.5 UU (not the vanilla path's 65 - the
+driven path's eye offset is NOT fov-coupled), two independent instruments
+agreeing within ~1 UU. The whole session-14 acceptance ladder then passed at
+k=1 on a clean boot with the SHIPPING DEFAULTS: `vrfgfov` ON, `vrbones
+lockpull` 12.8 (= 11.5 physical through the 0.9 depth gain).** The rig now
+renders through the WORLD lens - correct internal perspective, full
+arm+sweater composition - at world-correct size, depth, and parallax.
+`vrfgfov off` restores the session-14 narrow-lens configuration for A/B.
+
+**A real defect was found and fixed on the way (ENGINE_NOTES session 16):
+the simhead sweep - the one instrument zero-split calibration can't cover -
+showed the gun over-shifting the world under head-split by exactly
+pull*sin(split)*gain on both axes. The renderer's eye offset does NOT swing
+with the camera-vs-actor split: the matched path now rotates the pull by the
+constant view bias only (identical at zero split; the unmatched path keeps
+its verified qd rotation). Post-fix: gun world-glued within 2-17 px across
++-30 yaw / +-20 pitch.**
+
+**Clean-boot acceptance numbers (shipping defaults, all under vrstereo)**:
+far-range offset parallax -156 px vs -159 world-correct (0.98x); size ratio
+0.475-0.489 vs 0.465 (1.02-1.05x); simhead sweep glued (above); fire test 6
+pulls ammo 59->53 with a fresh wall decal, dumps 8->8; stereo heartbeat
+clean throughout (1T, presents = 2x builds, guardskips 0). **The in-headset
+verdict is the only open gate (checklist below).** One known edge for it:
+a hand closer than ~23 cm real puts the corrected cluster behind the world
+camera and the engine culls the rig (the session-15 constraint at the new
+11.5 threshold; probe it in the checklist).
+
+## Previous state (2026-07-27, session 15 - STRATEGY PIVOT: THE FG FOV FIELD FOUND; THE DOLLY IS THE LAST WALL)
 
 **The user called the counter-modeling approach dead after three sessions and
 pivoted to patching the foreground pipeline at its source. The pivot paid
@@ -779,23 +810,16 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **SESSION 16, FIRST HOUR - calibrate the DRIVE-ON pull at the matched
-   lens** (the one number that decides how Option 2 completes): vrfgfov on,
-   drive on, parked hand, lock abs with `lockpull 0`, run the standard
-   offset-parallax + size A/Bs (cal.ps1 pattern from the session-15
-   scratchpad). Three outcomes: (a) pull_driveOn is small -> set lockpull to
-   it, re-run the session-14 acceptance ladder at k=1, DONE - Option 2
-   complete; (b) pull_driveOn is large positive -> bones cannot counter it
-   (behind-camera culling, flat-proven) -> hunt the dolly source: disasm the
-   transform build upstream of the cb commit (writer RVAs harvested, xdis.py
-   ready) - timebox ONE session; (c) the source stays unfound -> the vm_draw
-   replay lane (the user's original proposal) with everything learned.
-1. **The in-headset A/B the user can run ANY TIME on this build**: the
-   default is session 14's acceptance-passed configuration (checklist below
-   still valid). Optionally `vrfgfov on` + `vrbones lock off` for a LOOK at
-   the honest lens (correct perspective and composition; depth reads beyond
-   the hand - known, uncalibrated) - impressions welcome, pass/fail not
-   expected yet.
+0. **THE IN-HEADSET RUN on the session-16 build** (checklist below): the
+   matched lens + calibrated pull is the shipping default and every flat
+   gate passed - the user's eye is the only remaining gate for M7-v2's
+   "Done when". `vrfgfov off` is the live A/B back to the session-14 look.
+1. **If the headset run reports depth slightly off**: `vrbones lockdgain`
+   is the live A/B (it scales the applied pull too - the 12.8 knob assumes
+   0.9); if the resting spot reads wrong, `vrbones lock diff`. If the rig
+   BLANKS when the hand comes near the face: expected inside ~23 cm (the
+   behind-camera cull edge, ENGINE_NOTES session 16) - report the distance,
+   a soft clamp on the applied pull near the face is the queued fix.
 2. **Model scale - CHECK IN-HEADSET BEFORE SPENDING TIME**: the session-14 fix
    makes apparent size track distance world-correctly, which likely retires
    the "gun huge" complaint entirely. The DrawScale lever (actor +0x2AC via
@@ -830,46 +854,46 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 11. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7-v2 depth-fix run (session 14 build)
+### IN-HEADSET CHECKLIST - M7-v2 matched-lens run (session 16 build)
 
 Setup unchanged: Quest 3 + Virtual Desktop, launch from Steam, load the newest
 save, tick **VR stereo**, then **"Viewmodel follows the controller"**. What
-changed since your last run: the rig's foreground DEPTH geometry is fixed -
-the "hands are part of the HUD on my face" percept was a measured depth bubble
-(everything rendered ~28 cm from the eyes) and the render lock now places the
-gun at the controller's TRUE distance, size, and parallax.
+changed since your last run: the rig now renders through the WORLD lens (the
+real foreground-FOV field found in session 15, calibrated and defaulted ON in
+session 16) - correct internal perspective, the full arm+sweater composition,
+world-correct size/depth/parallax, and a head-look overshoot the flat sweep
+caught is fixed. `vrfgfov off` flips back to the previous build's look live.
 
-1. **Depth + size, the headline.** Hold the controller at a normal aim
-   distance and look at the gun: it should read AT YOUR HAND, not near your
-   face, and clearly smaller than last run. Push the hand out, pull it in -
-   the gun should recede/approach 1:1 ("moves away in very little increments"
-   should be gone).
-2. **Head translation.** Park the hand (rest it on something), then LEAN your
-   head side to side and forward. The gun should hold its place in the world
-   like a real object at the hand's distance - no sliding against the laser,
-   no "same direction different speeds".
-3. **Laser agreement.** Under both hand motion and head motion the gun and
-   the laser should now move together, same direction, same speed.
-4. **Resting placement, your call**: `lock abs` (default) puts the gun at the
-   controller's true spot - lower/further out than the classic raised
-   composition. If the resting SPOT reads wrong (not the depth), try
-   `vrbones lock diff` (classic composition, same depth fix) and say which
-   you prefer.
-5. **If depth reads slightly over/under-done** (gun a touch too near/far or
-   too big/small): `vrbones lockdgain 0.75` vs `1.1` is the live A/B
-   (default 0.9). Any residual head-motion trail: `vrbones lockgain 0.75`
-   vs `1.1`.
-6. **Tracking recheck**: rotate the controller on each axis (yaw, pitch,
-   wrist roll) - gun rotates about the grip, glued to the laser, as in the
-   run you called "a metric ton better".
+1. **The headline: composition + perspective.** Does the gun+hand now read
+   like a native VR viewmodel (a normal object with correct proportions),
+   not a telephoto cutout pasted into a wide-angle world?
+2. **Depth + size.** Gun AT the hand, receding/approaching 1:1 as you push
+   and pull the controller.
+3. **Head-look decoupling.** Park the hand, look around with your head (yaw
+   AND pitch) - the gun should hold its world spot exactly (this run
+   specifically fixed an overshoot here; any residual trail is signal:
+   `vrbones lockgain 0.75` vs `1.1` is the live A/B).
+4. **Lean/translation.** Lean side to side and forward - gun holds its place
+   like a real object, no sliding against the laser.
+5. **The close-range edge (NEW, please probe).** Bring the controller slowly
+   toward your face: the rig is EXPECTED to blank out somewhere inside
+   ~25 cm (engine culls behind-camera geometry - known edge, fix queued if
+   it bothers). Report roughly where it vanishes and that it comes back.
+6. **Tracking recheck**: yaw/pitch/wrist-roll about the grip, glued to the
+   laser.
 7. **Fire + plasmid parity**: two right-trigger pulls at the wall; left
-   trigger, Electro Bolt - electricity on the driven hand, bolt following
-   the hand's aim.
-8. **Proportions verdict (replaces the old size item)**: AT the correct
-   distance, does the model itself still read oversized next to your real
-   hand? Only if yes does the DrawScale lever get built.
-9. **Load-crossing (20 seconds, still owed)**: with everything armed, Esc ->
-   LOAD -> newest save -> YES, fire both hands, confirm no crash dump.
+   trigger Electro Bolt - electricity on the driven hand.
+8. **Depth knob if needed**: gun a touch near/far or big/small ->
+   `vrbones lockdgain 0.75` vs `1.1` (default 0.9; it also scales the pull).
+9. **The A/B, any time**: `vrfgfov off` = the session-14 narrow-lens look.
+   Which do you prefer, and by how much?
+10. **Resting placement + proportions, your calls**: if the resting SPOT
+    reads wrong (not the depth), `vrbones lock diff` keeps the classic
+    composition with the same depth fix. And AT the correct distance, does
+    the model itself still read oversized next to your real hand? Only if
+    yes does the DrawScale lever get built.
+11. **Load-crossing (20 seconds, still owed)**: with everything armed, Esc ->
+    LOAD -> newest save -> YES, fire both hands, confirm no crash dump.
 
 Expected and not failures: crosshair still head-centred and disagreeing with
 the laser; HUD in both eyes; the rig's idle/fire animations may look muted or
@@ -893,6 +917,35 @@ design; `vrhands mode hands` is the retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 16 (the decision hour picked branch (a): drive-on pull +11.5, matched lens ships ON, full flat acceptance at k=1)
+
+- The first-hour calibration (lock abs, lockpull 0, matched lens, wall save):
+  offset-parallax solved pull +12.0, size-on-distance solved +10.8 - two
+  independent instruments within ~1 UU. The driven path's pull is NOT
+  fov-coupled (11.5 vs the vanilla path's 65; near the stock-lens 13).
+  Branch (a) of the decision tree: no disassembly hunt needed.
+- Residuals at lockpull 11.5 measured exactly the 0.9 dgain (no rebake
+  amplification on this axis) -> default knob 12.8 lands 11.5 physical.
+- The simhead sweep caught a real defect the zero-split A/Bs cannot see:
+  the model rotated the eye pull with the camera-delta quat, over-shifting
+  the gun by pull*sin(split)*gain (predicted 194/134 px, measured 194/137).
+  Fix: matched path rotates the pull by the constant view bias only.
+  Post-fix sweep: gun world-glued within 2-17 px over +-30 yaw / +-20 pitch.
+- Clean-boot acceptance with shipping defaults (vrfgfov ON, lockpull 12.8),
+  all under vrstereo: parallax -156 vs -159 px (0.98x), size 0.475-0.489 vs
+  0.465, sweep glued, fire test ammo 59->53 + fresh decal, dumps 8->8,
+  stereo heartbeat clean. Option 2 complete flat; headset checklist issued.
+- Instrument lessons recorded in ENGINE_NOTES: close-range parallax
+  templates are invalid (viewpoint change + the gun's own depth extent);
+  big mixed templates false-match on scale (tight disc template + direct
+  disc-width profile are the robust size instruments); the fist blob finds
+  the statue under teal lighting; simhead recenters on its first pose (arm
+  zero first); crosshair-aimed test bullets hide their decal behind the
+  parked gun (use vraim test to land one in the open); the boot A-press
+  loop can leave the MAP open - screenshot-verify before any series.
+- Known edge shipped as-is (probe in headset): hand nearer ~23 cm real puts
+  the corrected cluster behind the world camera -> engine culls the rig.
 
 ### 2026-07-27 - Session 15 (pivot to source-patching: the fg FOV field found live; the dolly wall mapped)
 

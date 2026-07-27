@@ -306,11 +306,22 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       doubling" decomposed as model-scale error 1.63 x true rebake 1.1; per-axis gains
       (lockgain/lockdgain) default 0.9. ENGINE_NOTES "Foreground scene FOV" session-14
       block has the calibration chain.*
+- [x] **The honest lens (the telephoto-composition ceiling): matched, calibrated, shipped
+      ON.** *2026-07-27 sessions 15-16: the fg pass's FOV is a live PlayerController field
+      (+0x460) consumed per frame; `vrfgfov` writes the world-equivalent spec and the whole
+      rig re-lenses to the WORLD lens (dump-proven across all cb tiers). The driven path's
+      eye pull at the matched lens calibrated +11.5 UU (NOT fov-coupled - the vanilla
+      path's 65 never applies to the driven rig), knob default 12.8 through the 0.9 depth
+      gain; the pull rides the ACTOR frame under head-split (simhead-proven, the qd-frame
+      overshoot fixed). Full session-14 acceptance ladder re-passed at k=1 on a clean boot
+      with shipping defaults: parallax 0.98x, size 1.02-1.05x, sweep glued 2-17 px, fire
+      clean, dumps stable. ENGINE_NOTES "Foreground scene FOV" sessions 15-16.*
 - [ ] **Done when:** the weapon is one with the right controller and the plasmid hand is one
       with the left, each inspectable from any angle, at a believable size, with their effects
       attached. (Arms hidden is a valid and expected answer.) *Mechanics flat-verified
       2026-07-26 incl. the head-coupling counter; depth geometry flat-verified 2026-07-27;
-      awaiting the user's in-headset verdict (checklist in STATUS).*
+      the honest-lens configuration flat-verified 2026-07-27 (session 16); awaiting the
+      user's in-headset verdict (checklist in STATUS).*
 
 - [ ] ~~Done when: hands + current weapon track the controller convincingly~~ (superseded by
       M7-v2 above; wrench melee rides the weapon path for free)
