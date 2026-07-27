@@ -140,11 +140,29 @@ churn this round. Queued to M9 by the user: the WRENCH SWING GESTURE
 (velocity-triggered melee - they play-tested the timing manually and it
 felt right).
 
-**RE-VERIFY IN-HEADSET (quick, 5 items):** (1) pause menu + a vending
+**5. (part 3, same night) The weapon wheel was unselectable up/down - the
+pitch kill was eating stick Y in the radial state too.** The kill now LIFTS
+while a grip/bumper is held (the wheel reads stick Y), and because the
+wheel's binding state keeps the look axis bound, camera.cpp snapshots the PC
+pitch at bumper-down and writes it back at release - the wheel selects, and
+wheel-time look drift cannot stick. Flat, exact: pitch frozen at 853 under
+full-up stick with no bumper; RB held -> pitch moved to 4001 (and the
+calls/s dropped = the wheel actually opened); release -> pitch restored to
+EXACTLY 853.
+
+**6. (part 3) ZOOM IS REMOVED in VR (user's call - nothing needs it and an
+HMD FOV zoom is a comfort hazard).** RS-click never reaches the game; the
+click is purely the ammo modifier now (the tap-vs-hold logic is gone with
+it). The `vrinput test press RS` lane still injects raw XInput for harness
+use.
+
+**RE-VERIFY IN-HEADSET (quick, 6 items):** (1) pause menu + a vending
 machine: opaque panels, counters clipped; (2) A loots/confirms menus, B
 jumps; (3) ammo: hold right-stick click + up/down/left selects the right
-slot each time, quick tap still zooms, no selects while turning normally;
-(4) FPS feel vs `vrhud off` in the same spot; (5) nothing else moved.
+slot each time, no selects while turning normally, clicking alone does
+NOTHING (zoom gone); (4) WEAPON WHEEL: hold grip, select with the stick
+incl. up/down, release - and the view pitch must be exactly where you left
+it; (5) FPS feel vs `vrhud off` in the same spot; (6) nothing else moved.
 
 ## Previous state (2026-07-27, session 18 - M8 QUICK PHASE CODE-COMPLETE FLAT: both release blockers fixed, per-hand offsets, grip-switch fix, release zip staged)
 
@@ -1613,6 +1631,17 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-28 - Session 19 part 3 (wheel-select fix + zoom removed)
+
+- The pitch kill was eating stick Y inside the radial state too - the weapon
+  wheel could not select up/down. The kill now lifts while a grip/bumper is
+  held, with a PC-pitch snapshot/restore around the hold (the radial state
+  keeps the look axis bound, so wheel-time drift would otherwise stick).
+  Flat-exact: 853 frozen no-bumper; 853 -> 4001 during the RB hold (calls/s
+  drop = wheel open); restored to exactly 853 on release.
+- Zoom removed in VR by the user's call: RS-click never reaches the game;
+  the click is purely the ammo modifier. Test lane unaffected.
 
 ### 2026-07-28 - Session 19 part 2 (headset PASSED; the four feedback fixes flat the same night)
 

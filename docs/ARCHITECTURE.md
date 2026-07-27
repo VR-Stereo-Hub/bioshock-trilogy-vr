@@ -131,7 +131,8 @@ to VR conventions (jump on the lower-right button) instead of passing through.
 | Left thumbstick | LS | move |
 | Right thumbstick | RS | look (Y zeroed during VR gameplay - the HMD owns pitch; `vrinput pitchkill off` restores) |
 | Right stick, CLICK HELD + push up/down/left | DPAD_UP / DOWN / LEFT pulse | ammo-slot select (each dpad direction selects its slot; turning suppressed while held; grips suppress it - the radials read the stick) |
-| Right stick, quick click-tap | RS click pulse | zoom (unchanged; only the tap is delayed past the select window) |
+| Right stick click alone | (nothing) | zoom is REMOVED in VR (user's call - an HMD FOV zoom is a comfort hazard; RS click never reaches the game) |
+| (while a grip/bumper is held) | RS Y passes through | the radial wheels read stick Y for selection - the pitch kill lifts for the hold, and the game side snapshots/restores the PC pitch around it so wheel-time look drift cannot stick |
 | Right trigger | RT | fire weapon |
 | Left trigger | LT | fire plasmid |
 | Right grip (squeeze, 0.70/0.55 hysteresis) | RB | next weapon / weapon radial on hold |

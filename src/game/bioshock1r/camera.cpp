@@ -925,6 +925,33 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                     strictGameplay ? "GAMEPLAY (ShockPlayer view)" : "menu/cutscene");
         }
 
+        // Radial-wheel pitch guard (session 19 part 2): the stick-pitch kill
+        // lifts while a grip/bumper is held so the weapon wheel can read
+        // stick Y - but the wheel's binding state keeps the look axis bound
+        // too, so REAL pitch accumulates on the PC during the hold. Snapshot
+        // the PC pitch at bumper-down, write it back at release: the wheel
+        // selects, the body pitch returns exactly where it was. Same field
+        // the stick writes (PC rotation, pitch at +0x0), so the engine's own
+        // clamp semantics hold.
+        {
+            bool lb = false, rb = false;
+            bvr::input::last_composed_bumpers(&lb, &rb);
+            bool bumperHeld = lb || rb;
+            static bool s_wasHeld = false;
+            static int32_t s_savedPitch = 0;
+            static void* s_savedPc = nullptr;
+            int32_t* pcPitch = reinterpret_cast<int32_t*>(static_cast<uint8_t*>(self) +
+                                                          patterns::kActorViewDirOffset);
+            if (bumperHeld && !s_wasHeld && vrDrove && strictGameplay) {
+                s_savedPitch = *pcPitch;
+                s_savedPc = self;
+            } else if (!bumperHeld && s_wasHeld) {
+                if (s_savedPc == self) *pcPitch = s_savedPitch;
+                s_savedPc = nullptr; // never restore across a world change
+            }
+            s_wasHeld = bumperHeld;
+        }
+
         // THE HARD-INVARIANT INSTRUMENT (session 17). Run a FIXED XR pose
         // through the unmodified context and log where it lands. This is the
         // exact function the aim ray and the viewmodel both call, with the

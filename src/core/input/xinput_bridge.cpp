@@ -194,10 +194,16 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     std::lock_guard<std::mutex> lock(g_mutex);
     Gamepad out = merge(real, compose_synthetic(now));
     // Stick-pitch kill: yaw (rx) deliberately stays - stick turn composes
-    // with the M7.5 body transfer; only pitch belongs to the HMD.
+    // with the M7.5 body transfer; only pitch belongs to the HMD. The kill
+    // LIFTS while a grip/bumper is held: the radial wheels read stick Y for
+    // selection (session 19 part 2 - the wheel was unselectable). The game
+    // side snapshots the PC pitch at bumper-down and restores it at release,
+    // so the look-pitch the wheel state also accumulates cannot stick.
     if (g_pitchKill.load(std::memory_order_relaxed) &&
         g_vrGameplay.load(std::memory_order_relaxed) &&
-        now - g_vrGameplayLastMs.load(std::memory_order_relaxed) <= kVrGameplayStaleMs)
+        now - g_vrGameplayLastMs.load(std::memory_order_relaxed) <= kVrGameplayStaleMs &&
+        !(out.buttons &
+          (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER)))
         out.ry = 0;
     if (g_packetBump || memcmp(&out, &g_lastComposed, sizeof out) != 0) {
         ++g_packet;

@@ -29,13 +29,11 @@ constexpr uint64_t kStartPulseMs = 150;
 // Ammo-slot select (session 19, headset-revised): while the right-stick
 // CLICK is held, stick directions past kFlickPress select the ammo slot
 // (dpad up/down/left pulses); re-arm inside +-kFlickRearm, cooldown against
-// machine-gunning. A click-tap shorter than kZoomTapMs with no selection
-// still pulses RS-click (the game's zoom).
+// machine-gunning. Zoom is removed - RS-click never reaches the game.
 constexpr float kFlickPress = 0.65f;
 constexpr float kFlickRearm = 0.30f;
 constexpr uint64_t kFlickPulseMs = 150;
 constexpr uint64_t kFlickCooldownMs = 300;
-constexpr uint64_t kZoomTapMs = 400;
 
 XrActionSet g_actionSet = XR_NULL_HANDLE;
 
@@ -77,9 +75,7 @@ bool g_flickArmed = true;
 uint16_t g_flickPulseBit = 0;
 uint64_t g_flickPulseUntilMs = 0;
 uint64_t g_flickCooldownMs = 0;
-uint64_t g_rsClickDownMs = 0;   // 0 = stick click not held
-bool g_rsClickConsumed = false; // a slot was selected during this hold
-uint64_t g_zoomPulseUntilMs = 0;
+bool g_rsClickWasDown = false;
 
 // M6 hand poses. Located on the render thread in input_sync; read from the
 // GAME thread by the adapter's aim path, so publish through atomics-guarded
@@ -418,27 +414,24 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
 
     uint64_t now = GetTickCount64();
 
-    // Ammo-slot select (session 19, revised by the headset run): the three
-    // ammo types sit on dpad UP / DOWN / LEFT (each direction SELECTS its
-    // slot - flat-proven CallHudFunction handlers), so a two-direction
-    // flick could only reach two of them. New scheme: HOLD the right-stick
+    // Ammo-slot select (session 19, revised twice by headset runs): the
+    // three ammo types sit on dpad UP / DOWN / LEFT (each direction SELECTS
+    // its slot - flat-proven CallHudFunction handlers). HOLD the right-stick
     // CLICK as a modifier - stick directions then select the slot (dpad
-    // up/down/left pulses) and turning is suppressed; a QUICK click-release
-    // with no selection still pulses RS-click = the game's zoom, so nothing
-    // is lost. Direction reads the PRE-deadzone stick; the re-arm band
-    // allows several selects in one hold; grips suppress it (the radials
-    // read the stick).
+    // pulses) and turning is suppressed. ZOOM IS GONE by the user's call
+    // (a FOV zoom inside an HMD is a comfort hazard and nothing requires
+    // it), so the click is purely the ammo modifier and RS-click never
+    // reaches the game. Direction reads the PRE-deadzone stick; the re-arm
+    // band allows several selects in one hold; grips suppress it (the
+    // radials read the stick).
     {
         float rawX = 0.0f, rawY = 0.0f;
         read_vec2(session, g_look, &rawX, &rawY);
         bool rsClick = read_bool(session, g_stickClickR);
         bool gripHeld = g_gripLatchedL || g_gripLatchedR;
 
-        if (rsClick && g_rsClickDownMs == 0) {
-            g_rsClickDownMs = now;
-            g_rsClickConsumed = false;
-            g_flickArmed = true;
-        }
+        if (rsClick && !g_rsClickWasDown) g_flickArmed = true;
+        g_rsClickWasDown = rsClick;
         if (rsClick && !gripHeld) {
             // Modifier held: the stick selects, the game sees no turn.
             pad.rx = 0;
@@ -453,21 +446,13 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                     g_flickPulseUntilMs = now + kFlickPulseMs;
                     g_flickCooldownMs = now + kFlickCooldownMs;
                     g_flickArmed = false;
-                    g_rsClickConsumed = true;
                 }
             }
             if (rawX > -kFlickRearm && rawX < kFlickRearm && rawY > -kFlickRearm &&
                 rawY < kFlickRearm)
                 g_flickArmed = true;
         }
-        if (!rsClick && g_rsClickDownMs != 0) {
-            // Quick tap with no selection = the original zoom click.
-            if (!g_rsClickConsumed && now - g_rsClickDownMs < kZoomTapMs)
-                g_zoomPulseUntilMs = now + kFlickPulseMs;
-            g_rsClickDownMs = 0;
-        }
         if (now < g_flickPulseUntilMs) pad.buttons |= g_flickPulseBit;
-        if (now < g_zoomPulseUntilMs) pad.buttons |= XINPUT_GAMEPAD_RIGHT_THUMB;
     }
 
     // Left menu: short press pulses START on release, holding it past the
