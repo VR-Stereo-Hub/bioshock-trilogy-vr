@@ -1361,15 +1361,20 @@ and it resumes.
   0.2/17.7, aimPosL 0.2/-0.5/-0.7 - "make them in the preset" done; NOT
   baked as code defaults (per-weapon differences pending). The inis on this
   box are now LIVE USER DATA - do not delete them in cleanup anymore.
-- **Test loadout**: the cheat path is closed - `giveall` (ShockCheatManager
-  has GiveAll/FillPlasmids) fell off the client+engine exec chains and
-  FAULTED the viewport chain (SEH caught; relaunched). The Tab console is
-  compiled out (known). Route chosen: the Nexus NG+ save (nexusmods.com
-  /bioshock/mods/77 - end-of-game at the Fontaine fight, all weapons with
-  mods, almost all plasmids, filename per the Steam guide; installs into
-  Documents\BioshockHD\Bioshock\SaveGames) - needs the user's Nexus login,
-  so they download, we install/verify. Per-weapon aim variance is the open
-  design question after that (per-weapon profiles keyed by class name need
+- **Test loadout: DONE.** The cheat path is closed - `giveall`
+  (ShockCheatManager has GiveAll/FillPlasmids) fell off the client+engine
+  exec chains and FAULTED the viewport chain (SEH caught; relaunched). The
+  Tab console is compiled out (known). The Nexus NG+ save (nexusmods.com
+  /bioshock/mods/77) was downloaded by the user, installed as
+  `7_21_2024_21_54_13.bsb` (13.6 MB, mtime touched to newest) into
+  Documents\BioshockHD\BioShock\SaveGames, and USER-VERIFIED: it loads at
+  the Fontaine fight with ALL weapons and plasmids in the LB/RB wheels.
+  Boot note: CONTINUE loaded the wall save anyway (it tracks last-played,
+  not newest mtime) - pick the NG+ save via LOAD explicitly; the flat
+  harness is unaffected. Two observations for the headset run: the shotgun
+  (and likely others) is a TWO-HANDED hold mesh - a new composition class
+  for the one-controller bone drive - and per-weapon aim variance is the
+  open design question (per-weapon profiles keyed by class name would need
   the FName resolution work).
 - Dumps 8->8 across part 3.
 
