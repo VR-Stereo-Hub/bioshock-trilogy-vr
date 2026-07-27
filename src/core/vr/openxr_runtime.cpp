@@ -1165,6 +1165,15 @@ void set_camera_mode(bool on) {
                 on ? "ON" : "off");
 }
 
+void set_enabled(bool on) {
+    bool was = g_enabled.exchange(on, std::memory_order_relaxed);
+    if (was != on) BVR_LOG("xr: VR %s (preset/programmatic)", on ? "ENABLED" : "disabled");
+}
+
+void set_sr_pair_pacing(bool on) {
+    g_srPairPacing.store(on, std::memory_order_relaxed);
+}
+
 float suggested_hfov_deg() {
     return g_hfovDeg.load(std::memory_order_relaxed);
 }
@@ -1219,6 +1228,8 @@ bool get_head_pose(HeadPose&) { return false; }
 bool get_hand_pose(int, bool, HeadPose&) { return false; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
+void set_enabled(bool) {}
+void set_sr_pair_pacing(bool) {}
 float suggested_hfov_deg() { return 0.0f; }
 void set_rendered_hfov(float) {}
 int current_eye_sign() { return 0; }

@@ -52,8 +52,10 @@ std::atomic<int> g_pendingEnable{-1}; // -1 none, 0 off, 1 on
 // of taste (grip angle, wrist posture) - the user's first in-headset run wanted
 // the ray a little lower than the raw pose gave.
 std::atomic<bool> g_useAimPose{true};
-std::atomic<float> g_pitchOffsetDeg{0.0f};
-std::atomic<float> g_yawOffsetDeg{0.0f};
+// Per-hand since session 16 part 3 (user request): each controller's wrist
+// posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
+std::atomic<float> g_pitchOffsetDeg[2] = {0.0f, 0.0f};
+std::atomic<float> g_yawOffsetDeg[2] = {0.0f, 0.0f};
 // M7 laser: the visible form of this same ray, published to core every frame.
 // It lives here rather than with the hands so it cannot drift from the trim
 // above - a laser that disagrees with the bullet is worse than no laser.
@@ -689,10 +691,12 @@ std::atomic<bool>* sub_flag_by_name(const char* name) {
 }
 
 void log_status() {
-    BVR_LOG("[aim] pose=%s cal pitch%+.1f yaw%+.1f deg",
+    BVR_LOG("[aim] pose=%s cal L pitch%+.1f yaw%+.1f | R pitch%+.1f yaw%+.1f deg",
             g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
-            g_pitchOffsetDeg.load(std::memory_order_relaxed),
-            g_yawOffsetDeg.load(std::memory_order_relaxed));
+            g_pitchOffsetDeg[0].load(std::memory_order_relaxed),
+            g_yawOffsetDeg[0].load(std::memory_order_relaxed),
+            g_pitchOffsetDeg[1].load(std::memory_order_relaxed),
+            g_yawOffsetDeg[1].load(std::memory_order_relaxed));
     BVR_LOG("[aim] status: %s | seams weapon=%d ability=%d | handOrigin=%d probe=%d",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
             g_subWeapon.load(std::memory_order_relaxed) ? 1 : 0,
@@ -805,10 +809,10 @@ void on_calcview(const FrameContext& ctx) {
 
         out.origin = gp.loc;
         out.rot.yaw = gp.rot.yaw + static_cast<int32_t>(
-                                       g_yawOffsetDeg.load(std::memory_order_relaxed) *
+                                       g_yawOffsetDeg[i].load(std::memory_order_relaxed) *
                                        kRotUnitsPerDegree);
         out.rot.pitch = gp.rot.pitch + static_cast<int32_t>(
-                                           g_pitchOffsetDeg.load(std::memory_order_relaxed) *
+                                           g_pitchOffsetDeg[i].load(std::memory_order_relaxed) *
                                            kRotUnitsPerDegree);
         out.rot.roll = 0; // aim carries no roll; the camera owns roll
         out.valid = true;
@@ -820,8 +824,9 @@ void on_calcview(const FrameContext& ctx) {
     bvr::vr::LaserConfig lc{};
     lc.enabled = g_laser.load(std::memory_order_relaxed) && ctx.vrDriving && g_gameplayView;
     lc.hand = hands::active_hand();
-    lc.pitchTrimDeg = g_pitchOffsetDeg.load(std::memory_order_relaxed);
-    lc.yawTrimDeg = g_yawOffsetDeg.load(std::memory_order_relaxed);
+    int lh = lc.hand == 0 ? 0 : 1;
+    lc.pitchTrimDeg = g_pitchOffsetDeg[lh].load(std::memory_order_relaxed);
+    lc.yawTrimDeg = g_yawOffsetDeg[lh].load(std::memory_order_relaxed);
     lc.dots = g_laserDots.load(std::memory_order_relaxed);
     lc.nearM = g_laserNearM.load(std::memory_order_relaxed);
     lc.farM = g_laserFarM.load(std::memory_order_relaxed);
@@ -889,13 +894,25 @@ void handle_command(const char* args) {
         g_useAimPose.store(aim, std::memory_order_relaxed);
         BVR_LOG("[aim] pose source = %s", aim ? "AIM (pointing ray)" : "GRIP (handle axis)");
     } else if (strcmp(verb, "cal") == 0) {
+        // "cal [l|r] <pitch> [yaw]" - no side = both hands (legacy behavior).
+        int hand = -1;
+        const char* nums = rest;
+        if ((rest[0] == 'l' || rest[0] == 'r') && (rest[1] == ' ' || rest[1] == '\t')) {
+            hand = rest[0] == 'r' ? 1 : 0;
+            nums = rest + 1;
+            while (*nums == ' ' || *nums == '\t') ++nums;
+        }
         float pitch = 0.0f, yaw = 0.0f;
-        if (sscanf_s(rest, "%f %f", &pitch, &yaw) >= 1) {
-            g_pitchOffsetDeg.store(pitch, std::memory_order_relaxed);
-            g_yawOffsetDeg.store(yaw, std::memory_order_relaxed);
-            BVR_LOG("[aim] calibration offset: pitch %+.1f yaw %+.1f deg", pitch, yaw);
+        if (sscanf_s(nums, "%f %f", &pitch, &yaw) >= 1) {
+            for (int h = 0; h < 2; ++h) {
+                if (hand >= 0 && h != hand) continue;
+                g_pitchOffsetDeg[h].store(pitch, std::memory_order_relaxed);
+                g_yawOffsetDeg[h].store(yaw, std::memory_order_relaxed);
+            }
+            BVR_LOG("[aim] calibration offset (%s): pitch %+.1f yaw %+.1f deg",
+                    hand < 0 ? "both" : hand == 1 ? "right" : "left", pitch, yaw);
         } else {
-            BVR_LOG("[aim] usage: vraim cal <pitchDeg> [yawDeg]  (+pitch aims higher)");
+            BVR_LOG("[aim] usage: vraim cal [l|r] <pitchDeg> [yawDeg]  (+pitch aims higher)");
         }
     } else if (strcmp(verb, "laser") == 0) {
         // "laser on|off" or "laser <dots> <nearM> <farM> <sizeDeg>"
@@ -978,12 +995,18 @@ void* learned_weapon_object() {
     return g_objRight;
 }
 
-float trim_pitch_deg() {
-    return g_pitchOffsetDeg.load(std::memory_order_relaxed);
+float trim_pitch_deg(int hand) {
+    return g_pitchOffsetDeg[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
 }
 
-float trim_yaw_deg() {
-    return g_yawOffsetDeg.load(std::memory_order_relaxed);
+float trim_yaw_deg(int hand) {
+    return g_yawOffsetDeg[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
+}
+
+void set_trim(int hand, float pitchDeg, float yawDeg) {
+    int h = hand == 0 ? 0 : 1;
+    g_pitchOffsetDeg[h].store(pitchDeg, std::memory_order_relaxed);
+    g_yawOffsetDeg[h].store(yawDeg, std::memory_order_relaxed);
 }
 
 bool active() {
@@ -999,12 +1022,19 @@ void draw_debug_ui() {
     bool useAim = g_useAimPose.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Use the runtime AIM pose (off = grip pose)", &useAim))
         g_useAimPose.store(useAim, std::memory_order_relaxed);
-    float pitchCal = g_pitchOffsetDeg.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("Aim pitch trim (deg)", &pitchCal, -30.0f, 30.0f))
-        g_pitchOffsetDeg.store(pitchCal, std::memory_order_relaxed);
-    float yawCal = g_yawOffsetDeg.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("Aim yaw trim (deg)", &yawCal, -30.0f, 30.0f))
-        g_yawOffsetDeg.store(yawCal, std::memory_order_relaxed);
+    // Per-hand trims (session 16 part 3): R = weapon, L = plasmid.
+    float rp = g_pitchOffsetDeg[1].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("R aim pitch trim (deg)", &rp, -30.0f, 30.0f))
+        g_pitchOffsetDeg[1].store(rp, std::memory_order_relaxed);
+    float ry = g_yawOffsetDeg[1].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("R aim yaw trim (deg)", &ry, -30.0f, 30.0f))
+        g_yawOffsetDeg[1].store(ry, std::memory_order_relaxed);
+    float lp = g_pitchOffsetDeg[0].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("L aim pitch trim (deg)", &lp, -30.0f, 30.0f))
+        g_pitchOffsetDeg[0].store(lp, std::memory_order_relaxed);
+    float ly = g_yawOffsetDeg[0].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("L aim yaw trim (deg)", &ly, -30.0f, 30.0f))
+        g_yawOffsetDeg[0].store(ly, std::memory_order_relaxed);
 
     bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Ray starts at the hand (off = engine origin, direction only)",

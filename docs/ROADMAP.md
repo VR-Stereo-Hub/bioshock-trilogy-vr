@@ -344,6 +344,23 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
 
 - [ ] gameswf HUD draws redirected to offscreen RT → floating quad during stereo gameplay
 - [ ] Snap turn, height/seated recenter, optional vignette
+- [ ] **World/viewmodel scale SPLIT (parked here 2026-07-27, session 16 part 3, user's
+      call):** worldScale now defaults 100 (the user's in-headset calibration - viewmodel
+      size AND distance finally read right; the world reads ~half size in trade, judged
+      acceptable). If the world scale ever needs to move independently, the viewmodel needs
+      its OWN stereo basis: per-eye bone offsets giving the hand cluster its own IPD so the
+      gun keeps its size while reading at the true hand distance (the naive two-slider split
+      puts the gun at double the hand's perceived distance and doubles hand motion - the
+      session-11 percepts). Design sketch in the session-16 part-3 conversation; the per-eye
+      write path (bones reapply) already exists.
+- [ ] **Headset-disconnect stall (session 16 part 3, user report):** taking the headset off
+      mid-game drops the flat window under 1 fps until reconnect - the per-present
+      xrWaitFrame pacing keeps waiting while the session idles (log: presents=0/s, session
+      VISIBLE). Skip/timeout the pacing when the session leaves FOCUSED.
+- [ ] **Flat-screen mirror under stereo (session 16 part 3, user request):** the desktop
+      window alternates L/R eyes under SequentialReentry - unwatchable for streaming/
+      recording. Mirror one eye only (e.g. re-blit the held left-eye image on right-eye
+      presents at Present-tail) WITHOUT disturbing the eye capture the compositor feeds on.
 - [ ] IPD slider verification + calibration (parked here 2026-07-24 from M4 rung 1 by user
       choice - user could not tell if it does anything; test with an exaggerated offset,
       calibrate world scale first since perceived depth scale is the worldScale/IPD ratio)

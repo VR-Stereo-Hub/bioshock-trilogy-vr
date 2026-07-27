@@ -64,6 +64,11 @@ bool vr_camera_mode();
 // one-toggle flows use it).
 void set_camera_mode(bool on);
 
+// Same contract for the master enable and the SR pair pacing flag - the
+// adapter's VR-preset flow arms them programmatically (session 16 part 3).
+void set_enabled(bool on);
+void set_sr_pair_pacing(bool on);
+
 // Symmetric horizontal FOV (degrees) circumscribing the headset's per-eye
 // FOV at the backbuffer aspect - what the game should render with in camera
 // mode. 0 until the first views are located.

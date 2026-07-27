@@ -2,6 +2,34 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Current state (2026-07-27, session 16 part 3 - WORLDSCALE 100 BY USER CALIBRATION; VR PRESET 1 SHIPS)
+
+**The size problem dissolved without touching the mesh: the user found that
+worldScale 100 makes the viewmodel read PERFECT in-headset - size AND
+distance ("exactly on my controller and with the right size") - because at
+100 the drawn angular size finally agrees with the stereo distance (at 50
+the 2x-oversized mesh read "too close"; familiar-size vs stereo conflict).
+The world reads ~half size in trade; the user judged it acceptable.
+worldScale now DEFAULTS 100.** The engine-lever scale hunt from part 2 is
+retired; the proper world/viewmodel scale SPLIT (viewmodel's own stereo
+basis via per-eye bone offsets) is parked in M9 with a design sketch.
+
+**Shipped this part (all flat-smoke-tested on a clean boot):**
+- **Head-anchor offset sliders** (up/fwd UU, "VR camera" section; default up
+  -24 = the stand-vs-crouch eye delta) - the "head very wrong at 100" fix;
+  applied inside the VR/simhead drive, image-verified flat.
+- **Per-hand aim trims** (`vraim cal [l|r] <pitch> [yaw]` + four overlay
+  sliders, R weapon / L plasmid) - the laser, fire ray, and viewmodel all
+  read the same per-hand values.
+- **VR PRESET 1** (overlay button + `vrpreset` command): one press arms the
+  user's full configuration in a safe order - VR enable, camera mode, SR
+  pair pacing, vrinput, game-FOV write, controller aim + AIM pose + hand
+  origin + laser, viewmodel + align-aim, then vrstereo last. `vrpreset
+  save` / "Save preset values" persists the tuned sliders (worldScale, head
+  offsets, IPD, gameFov, per-hand trims) to vrpreset.ini; the preset loads
+  them on apply. All echoes + ini round-trip + fire test verified flat
+  (dumps 8, clean).
+
 ## Current state (2026-07-27, session 16 - OPTION 2 COMPLETE FLAT: MATCHED LENS SHIPS ON, FULL ACCEPTANCE AT k=1)
 
 **IN-HEADSET VERDICT (same day, session 16 part 2): THE CORE WORKS. The
@@ -835,32 +863,31 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **VIEWMODEL SCALE - the render-path hunt (session 17 opener).** The user
-   needs hand+weapon at roughly half authored size; every engine-side lever
-   is flat-dead (ENGINE_NOTES session 16 part 2). Routes, in order: (a)
-   disasm the attach-matrix build (AActor::AttachToBone 0x379EF0, the
-   per-section fg bake 0x3DBF7C/0x3EDCBF -> 0x60ECCA chain from fgstack) to
-   find where chain scale is consumed - both the blowup inversion and a
-   clean injection point; (b) test weapon-actor DrawScale in ISOLATION (gun
-   only - masked by the chain blowup in tonight's combined test); (c) the
-   vm_draw replay lane, which owns the matrices outright. While there, keep
-   an eye out for an engine-side viewmodel-scale config sibling near the fg
-   fov consumer (the renderer reads PC+0x460 per frame - a scale neighbor
-   may exist on the same path).
-1. **The laser-crossing anomaly** (laser flips from right of the weapon to
-   left of it at large right-aim angles): collect the user's answers to the
-   discriminating questions (head turned or not; wrist-rotate vs lateral
-   reach; gradual slide vs jump; vertical too; do bullets follow the laser
-   while flipped; does one eye closed change it), plus the two live A/Bs
-   (`vrbones lockgain 1.0`, one-eye test). Then reproduce flat with a
-   simpose yaw/lateral sweep measuring rendered-barrel vs true-aim angle.
-   Candidate terms: the 10% lateral lock residual (gain 0.9), an off-axis
-   fg-projection mismatch, binocular disparity mismatch (game-side eye
-   offsets vs the runtime's true per-eye projection - worldScale-coupled;
-   note stand eye height 60 UU hints the true world scale is nearer 36 UU/m
-   than the current 50).
-2. **In-headset re-verify after (0) lands**: the session-16 checklist below
-   still stands for everything but scale.
+0. **IN-HEADSET CHECK of the part-3 build**: press "VR PRESET 1", tune
+   "Head offset up" until standing height feels right (default -24 UU),
+   tune the per-hand aim trims, then "Save preset values". Report whether
+   worldScale 100 + head offset makes the whole rig feel right end to end.
+1. **SESSION 17 FOCUS - the viewmodel edge desync + cull (user report,
+   part 3):** the viewmodel is keyed to the CHARACTER FACING (right-stick),
+   not the head - aiming the hand far from the stick-facing degrades the
+   weapon-laser alignment GRADUALLY, and past ~90 deg the whole rig
+   DISAPPEARS (reappears when the stick catches up). Suspects: the lock's
+   authored-composition residual grows with hand-vs-facing angle (lockgain
+   0.9 leaves 10% of a growing delta), an off-axis fg-projection mismatch,
+   and the vanish = engine bounds/frustum culling of a cluster dragged far
+   outside the authored composition volume (same family as the
+   behind-camera cull). Flat-reproducible WITHOUT a headset: park simpose
+   at increasing yaw angles from the actor facing (0/30/60/90/120), measure
+   rendered-barrel vs target angle per step, and find the exact cull-on/off
+   angle; `camrot` splits camera from facing if needed. In-headset
+   discriminators for the user, any time: does the flip happen on wrist
+   ROTATION alone or lateral REACH; gradual slide vs sudden jump; vertical
+   too; do bullets land at the laser while flipped; does one eye closed
+   change it; does `vrbones lockgain 1.1` shrink it.
+2. **The retired scale hunt**: worldScale 100 solved the size percept; the
+   engine-lever negatives stay documented (ENGINE_NOTES session 16 part 2)
+   and the world/viewmodel scale SPLIT design is parked in M9. Do NOT
+   reopen unless the user wants the world scale moved independently.
 3. **If the headset run reports depth slightly off**: `vrbones lockdgain`
    is the live A/B (it scales the applied pull too - the 12.8 knob assumes
    0.9); if the resting spot reads wrong, `vrbones lock diff`. If the rig
@@ -963,6 +990,27 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 16 part 3 (worldScale 100, head offset, per-hand trims, VR PRESET 1)
+
+- The user's own experiment settled the size problem: worldScale 100 makes
+  the viewmodel read perfect in-headset (size + distance - angular size and
+  stereo finally agree; at 50 the oversized mesh read "too close" by the
+  familiar-size cue). Defaulted 100; world reads ~half size, accepted; the
+  proper world/viewmodel SPLIT (viewmodel's own stereo basis via per-eye
+  bone offsets - design sketched) parked in M9.
+- Shipped + flat-smoke-tested: head-anchor offset sliders (up/fwd, default
+  up -24 = stand-vs-crouch eye delta; image-verified through the simhead
+  drive), per-hand aim trims (vraim cal [l|r] + 4 sliders, one-ray shared
+  by laser/bullet/viewmodel), VR PRESET 1 (one button arms the full 13-
+  toggle configuration in order, vrstereo last; vrpreset save persists the
+  tuned slider values to vrpreset.ini and apply loads them - echo chain,
+  ini round-trip, and fire test all verified on a clean boot, dumps 8).
+- User reports queued for session 17 (M9-parked where noted): the viewmodel
+  edge desync + cull keyed to the character facing (the session-17 focus -
+  flat-reproducible); headset-disconnect stalls the flat window under 1 fps
+  (pacing waits while the session idles - M9); flat-screen mirror for
+  streaming under stereo (window alternates eyes - M9).
 
 ### 2026-07-27 - Session 16 part 2 (IN-HEADSET: the core verdict is POSITIVE; the scale wall mapped)
 

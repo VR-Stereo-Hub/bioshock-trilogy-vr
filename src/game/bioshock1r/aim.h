@@ -65,10 +65,12 @@ bool hook_live();
 // uses it to drive the gun's own actor.
 void* learned_weapon_object();
 
-// The live aim trim (degrees), shared so the laser, the fire ray and the M7
-// viewmodel stay one ray.
-float trim_pitch_deg();
-float trim_yaw_deg();
+// The live aim trim (degrees), PER HAND (0 = left/plasmid, 1 = right/weapon)
+// since session 16 part 3 - shared so the laser, the fire ray and the M7
+// viewmodel stay one ray. set_trim is the VR-preset load path.
+float trim_pitch_deg(int hand);
+float trim_yaw_deg(int hand);
+void set_trim(int hand, float pitchDeg, float yawDeg);
 
 // True while substitution is armed (master switch + a usable hand ray).
 bool active();

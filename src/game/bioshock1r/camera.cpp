@@ -50,7 +50,28 @@ std::atomic<float> g_fovDeg{100.0f};
 std::atomic<bool>  g_logCamera{true};
 
 // M3 VR camera drive.
-std::atomic<float> g_worldScale{50.0f};        // Unreal units per meter
+// Session 16 part 3: default 100 by the user's in-headset calibration - at
+// 100 the viewmodel matches the real hand in size AND distance (angular size
+// and stereo finally agree; at 50 the oversized mesh read "too close"). The
+// world reads ~half size in exchange; the user judged it acceptable. A
+// world/hands scale SPLIT (own stereo for the viewmodel) is the M9 polish
+// item if that trade ever bothers.
+std::atomic<float> g_worldScale{100.0f};       // Unreal units per meter
+// User head-anchor offset (session 16 part 3): the pawn's authored eye
+// height reads wrong once worldScale moves (60 UU = 0.6 m at 100 UU/m - the
+// "head very wrong" report); vertical + view-forward sliders correct the
+// anchor. Default up -24 UU = the stand-vs-crouch eye delta (the crouch
+// placement is what the user called right at 100). Persisted via the VR
+// preset ini.
+std::atomic<float> g_headOffUpUu{-24.0f};
+std::atomic<float> g_headOffFwdUu{0.0f};
+// VR preset 1 (session 16 part 3): one button/command arming the user's full
+// VR configuration - every switch they flipped by hand, in a safe order,
+// plus tuned slider values (vrpreset.ini once saved; shipped defaults
+// otherwise). The overlay buttons only set pending flags - the apply/save
+// run on the game thread next frame.
+std::atomic<bool> g_vrPresetPending{false};
+std::atomic<bool> g_vrPresetSavePending{false};
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
@@ -198,6 +219,10 @@ FILETIME g_lastCmdWrite{};
 // Dispatch one command line. `cmd` is the first whitespace-delimited token;
 // `args` is the remainder of the line (may be empty). Tokenizing on the first
 // word first means no command can be shadowed by another's prefix.
+// Defined below (VR preset 1); the command dispatcher reaches them too.
+void apply_vr_preset();
+void save_vr_preset();
+
 void apply_command(const char* cmd, const char* args) {
     float v = 0.0f, x = 0.0f, y = 0.0f, z = 0.0f;
     unsigned lo = 0, hi = 0, n = 0;
@@ -361,9 +386,91 @@ void apply_command(const char* cmd, const char* args) {
         char line[32];
         _snprintf_s(line, sizeof line, _TRUNCATE, "vrstereo %s", args);
         scenedraw::handle_command(line);
+    } else if (strcmp(cmd, "vrpreset") == 0) {
+        if (strncmp(args, "save", 4) == 0) save_vr_preset();
+        else apply_vr_preset();
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args); // DR-5 probe; logs its own echoes
     }
+}
+
+// ---- VR preset 1 (session 16 part 3) ---------------------------------------
+// Toggles are implied ON; the ini persists only slider VALUES the user tuned.
+
+void vr_preset_path(wchar_t* out, size_t count) {
+    swprintf_s(out, count, L"%s\\vrpreset.ini", bvr::log::data_dir());
+}
+
+void save_vr_preset() {
+    wchar_t path[MAX_PATH];
+    vr_preset_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f) {
+        BVR_LOG("[b1r] could not write vrpreset.ini");
+        return;
+    }
+    fprintf(f, "# BioShock VR - VR preset 1 slider values (toggles are implied ON)\n");
+    fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
+    fprintf(f, "headUpUu=%.1f\n", g_headOffUpUu.load(std::memory_order_relaxed));
+    fprintf(f, "headFwdUu=%.1f\n", g_headOffFwdUu.load(std::memory_order_relaxed));
+    fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
+    fprintf(f, "gameFovDeg=%.1f\n", g_gameFovDeg.load(std::memory_order_relaxed));
+    fprintf(f, "aimTrimLPitch=%.1f\n", aim::trim_pitch_deg(0));
+    fprintf(f, "aimTrimLYaw=%.1f\n", aim::trim_yaw_deg(0));
+    fprintf(f, "aimTrimRPitch=%.1f\n", aim::trim_pitch_deg(1));
+    fprintf(f, "aimTrimRYaw=%.1f\n", aim::trim_yaw_deg(1));
+    fclose(f);
+    BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
+}
+
+void load_vr_preset_values() {
+    wchar_t path[MAX_PATH];
+    vr_preset_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f) return; // no file = shipped defaults
+    char line[128];
+    int n = 0;
+    float lp = aim::trim_pitch_deg(0), ly = aim::trim_yaw_deg(0);
+    float rp = aim::trim_pitch_deg(1), ry = aim::trim_yaw_deg(1);
+    while (fgets(line, sizeof line, f)) {
+        char key[48] = {};
+        float v = 0.0f;
+        if (sscanf_s(line, "%47[^=]=%f", key, static_cast<unsigned>(sizeof key), &v) != 2)
+            continue;
+        ++n;
+        if (strcmp(key, "worldScale") == 0) g_worldScale.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "headUpUu") == 0) g_headOffUpUu.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "headFwdUu") == 0) g_headOffFwdUu.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "ipdMm") == 0) g_ipdMm.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "gameFovDeg") == 0) g_gameFovDeg.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "aimTrimLPitch") == 0) lp = v;
+        else if (strcmp(key, "aimTrimLYaw") == 0) ly = v;
+        else if (strcmp(key, "aimTrimRPitch") == 0) rp = v;
+        else if (strcmp(key, "aimTrimRYaw") == 0) ry = v;
+        else --n;
+    }
+    fclose(f);
+    aim::set_trim(0, lp, ly);
+    aim::set_trim(1, rp, ry);
+    if (n) BVR_LOG("[b1r] VR preset: %d value(s) loaded from vrpreset.ini", n);
+}
+
+void apply_vr_preset() {
+    BVR_LOG("[b1r] VR PRESET 1: arming the full VR configuration");
+    bvr::vr::set_enabled(true);        // paces the game to the headset
+    bvr::vr::set_camera_mode(true);    // 6DOF head drive
+    bvr::vr::set_sr_pair_pacing(true); // one waitFrame per eye pair
+    input::handle_command("on");       // motion controllers as gamepad
+    g_gameFovWrite.store(true, std::memory_order_relaxed);
+    aim::handle_command("on");         // controller aim (R weapon / L plasmid)
+    aim::handle_command("pose aim");   // the runtime AIM pose
+    aim::handle_command("origin on");  // ray starts at the hand
+    aim::handle_command("laser on");
+    hands::handle_command("on");       // viewmodel follows the controller
+    hands::handle_command("pose aim"); // align to the AIM ray
+    load_vr_preset_values();           // tuned sliders (ini) over defaults
+    scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
+    BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
 }
 
 void poll_command_file(uint64_t now) {
@@ -464,6 +571,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
 
     uint64_t now = GetTickCount64();
     poll_command_file(now);
+    // Overlay preset buttons land here (game thread; the overlay draws on
+    // the render thread and only sets the pending flags).
+    if (g_vrPresetPending.exchange(false, std::memory_order_relaxed)) apply_vr_preset();
+    if (g_vrPresetSavePending.exchange(false, std::memory_order_relaxed)) save_vr_preset();
     // M5: pump the engine's own pad pipeline against the synthetic gamepad
     // (self-throttles to once per present; no-op while vrinput is off).
     input_drive::on_frame(now);
@@ -546,6 +657,17 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_headOffX.store(ox, std::memory_order_relaxed);
         g_headOffY.store(oy, std::memory_order_relaxed);
         g_headOffZ.store(oz, std::memory_order_relaxed);
+
+        // User head-anchor offset (sliders; see the atomics above). Vertical
+        // is world-up; forward rides the final view yaw, horizontal only.
+        float hoUp = g_headOffUpUu.load(std::memory_order_relaxed);
+        float hoFwd = g_headOffFwdUu.load(std::memory_order_relaxed);
+        if (hoUp != 0.0f || hoFwd != 0.0f) {
+            float vyaw = static_cast<float>(rot->yaw) / kRotUnitsPerRadian;
+            loc->x += cosf(vyaw) * hoFwd;
+            loc->y += sinf(vyaw) * hoFwd;
+            loc->z += hoUp;
+        }
 
         // AlternateEye (M4 rung 1): shift the camera half an IPD along
         // view-right; core flips the sign after each submitted frame so
@@ -816,8 +938,15 @@ void draw_debug_ui() {
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed));
+        if (ImGui::Button("VR PRESET 1 - everything on"))
+            g_vrPresetPending.store(true, std::memory_order_relaxed);
+        ImGui::SameLine();
+        if (ImGui::Button("Save preset values"))
+            g_vrPresetSavePending.store(true, std::memory_order_relaxed);
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
+        atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
+        atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
         bool forceFov = g_forceHeadsetFov.load(std::memory_order_relaxed);

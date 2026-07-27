@@ -20,7 +20,7 @@ struct FrameContext {
     float driveYawOffsetRad = 0.0f; // yaw the head drive added on top of the game yaw
     float recenterYawRad = 0.0f;    // XR yaw at recenter
     float recenterPx = 0.0f, recenterPy = 0.0f, recenterPz = 0.0f; // XR meters at recenter
-    float worldScale = 50.0f;       // UU per meter
+    float worldScale = 100.0f;      // UU per meter (session-16 user calibration)
     void* viewActor = nullptr;      // *view_actor out-param (cutscene guard)
     void* pc = nullptr;             // the PlayerController the hook fired on
 };

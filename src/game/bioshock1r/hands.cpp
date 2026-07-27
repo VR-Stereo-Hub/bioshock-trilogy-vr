@@ -514,11 +514,11 @@ void on_calcview(const FrameContext& ctx) {
 
         gp = xr_pose_to_game(mapCtx, pos, q2);
 
-        // The aim calibration trim, applied exactly the way the fire ray and
-        // the laser apply it, so the barrel and the bullet stay one ray.
-        gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg() *
+        // The aim calibration trim (per hand), applied exactly the way the
+        // fire ray and the laser apply it - barrel and bullet stay one ray.
+        gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg(active_hand()) *
                                              kRotUnitsPerDegree);
-        gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg() *
+        gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg(active_hand()) *
                                            kRotUnitsPerDegree);
     }
 
