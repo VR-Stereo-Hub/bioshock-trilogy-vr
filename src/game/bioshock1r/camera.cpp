@@ -435,6 +435,9 @@ void save_vr_preset() {
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
+    // The per-hand model offsets live in hands.ini; saving them here too makes
+    // the one in-headset save button cover every tuned slider.
+    hands::save_offsets();
 }
 
 void load_vr_preset_values() {
