@@ -54,6 +54,9 @@ void on_calcview(const FrameContext& ctx);
 //   rot [l|r] <pitch> <yaw> <roll>  mesh-alignment trim in degrees, composed in
 //                           the controller's LOCAL frame (holds at any
 //                           orientation); no side = BOTH hands
+//   hideinactive on|off     collapse the whole INACTIVE hand's cluster while
+//                           the other drives (default ON; the weapon-attach
+//                           bone hides by translation - see bones.h)
 //   save | reload           persist / re-read the offsets (per-hand keys in
 //                           hands.ini; a legacy suffix-less key loads to both)
 //   test <dYaw> <dPitch> [distUU] [holdMs]   camera-relative placement (proves

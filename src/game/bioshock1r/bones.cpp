@@ -73,6 +73,23 @@ struct CachedSleeve {
 };
 CachedSleeve g_cacheSleeve[8];
 int g_cacheSleeveCount = 0;
+
+// Session 19: the whole INACTIVE hand collapses too - the drive poses only
+// the active hand's cluster, so the other one stays engine-animated at the
+// eye anchor and reads as a ghost hand. Cache mirrors g_cacheSleeve so the
+// stereo second pass replays the same writes. writeScale is false for the
+// weapon-attach bone: it hides by translation, never by scale (see drive()).
+std::atomic<bool> g_hideInactive{true};
+struct CachedHidden {
+    int idx;
+    float p[3];
+    float s[3];
+    bool writeScale;
+};
+CachedHidden g_cacheHidden[32];
+int g_cacheHiddenCount = 0;
+int g_hiddenHand = -1; // whose cluster is collapsed right now (game thread)
+
 void* g_cacheSkelInst = nullptr;
 uint64_t g_cacheMs = 0;
 
@@ -438,6 +455,31 @@ void cluster_of(int hand, int* first, int* last, int* anchor) {
     }
 }
 
+// Restore a hidden hand's cluster + sleeve from the reference pose. g_ref is
+// a safe source: an engine re-evaluation rewrites the whole array (scales
+// included) and triggers the reference refresh in drive(), so the reference
+// can never hold our zeroed scales.
+void restore_hidden(int hand) {
+    if (hand < 0 || !g_bones || !g_refValid) return;
+    int first = 0, last = 0, anchor = 0;
+    cluster_of(hand, &first, &last, &anchor);
+    for (int i = first; i <= last && i < g_boneCount; ++i) {
+        if (i < 0) continue;
+        write_n(g_bones[i].p, g_ref[i].p, 12);
+        write_n(g_bones[i].q, g_ref[i].q, 16);
+        write_n(g_bones[i].s, g_ref[i].s, 12);
+    }
+    const int* sleeve = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+    const size_t sleeveCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
+                                         : _countof(patterns::kBoneLSleeve);
+    for (size_t k = 0; k < sleeveCount; ++k) {
+        int idx = sleeve[k];
+        if (idx >= g_boneCount) continue;
+        write_n(g_bones[idx].p, g_ref[idx].p, 12);
+        write_n(g_bones[idx].s, g_ref[idx].s, 12);
+    }
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -456,7 +498,19 @@ void on_world_change() {
     g_hasWritten[0] = g_hasWritten[1] = false;
     g_cacheSkelInst = nullptr;
     g_cacheMs = 0;
+    g_hiddenHand = -1; // the collapsed bones died with the old world
+    g_cacheHiddenCount = 0;
 }
+
+void set_hide_inactive(bool on) {
+    bool was = g_hideInactive.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[bones] hideinactive %s (inactive hand %s)", on ? "ON" : "off",
+                on ? "collapses while the other drives"
+                   : "restores on the next driven frame");
+}
+
+bool hide_inactive() { return g_hideInactive.load(std::memory_order_relaxed); }
 
 bool telemetry_on() {
     return g_telemetry.load(std::memory_order_relaxed);
@@ -498,6 +552,17 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         if (!read_n(g_bones, g_ref, sizeof(Qts) * static_cast<size_t>(g_boneCount)))
             return false;
         g_refValid = true;
+    }
+
+    // Hide-inactive bookkeeping, BEFORE the rigid write: if the hand about to
+    // be driven is the one currently collapsed (hand switch), or the feature
+    // just turned off, restore it from the reference first - the rigid write
+    // below sets p/q but never touches .s, so a zero scale left behind would
+    // keep the incoming hand invisible.
+    bool hideInactive = g_hideInactive.load(std::memory_order_relaxed);
+    if (g_hiddenHand >= 0 && (!hideInactive || g_hiddenHand == hand)) {
+        restore_hidden(g_hiddenHand);
+        g_hiddenHand = -1;
     }
 
     // World target -> component space, composed against the ACTOR transform.
@@ -646,6 +711,43 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     }
     s_wasCollapsed = collapse;
 
+    // Collapse the whole INACTIVE hand: cluster + its sleeve (session 19).
+    // Zero scale hides the skin exactly like the sleeve collapse; positions
+    // pin at the driven target so residual geometry stays inside the fist.
+    // EXCEPTION - the weapon-attach bone hides by TRANSLATION, scale
+    // untouched: the engine's attach path inverse-decomposes chain scale
+    // (session 16: any wrist-chain scale blows the attached weapon up
+    // near-plane, and zero would be 1/0), so the equipped gun is parked far
+    // below the actor in component space and frustum-culled instead.
+    g_cacheHiddenCount = 0;
+    if (hideInactive) {
+        const int ih = 1 - hand;
+        int hFirst = 0, hLast = 0, hAnchor = 0;
+        cluster_of(ih, &hFirst, &hLast, &hAnchor);
+        static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        static const float kFarBelow[3] = {0.0f, 0.0f, -5000.0f};
+        const int* hSleeve = ih == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        const size_t hSleeveCount = ih == 1 ? _countof(patterns::kBoneRSleeve)
+                                            : _countof(patterns::kBoneLSleeve);
+        auto hideBone = [&](int idx) {
+            if (idx < 0 || idx >= g_boneCount) return;
+            bool isAttach = ih == 1 && idx == patterns::kBoneWeaponAttach;
+            const float* p = isAttach ? kFarBelow : ptc;
+            write_n(g_bones[idx].p, p, 12);
+            if (!isAttach) write_n(g_bones[idx].s, kZero, 12);
+            if (g_cacheHiddenCount < static_cast<int>(_countof(g_cacheHidden))) {
+                CachedHidden& ch = g_cacheHidden[g_cacheHiddenCount++];
+                ch.idx = idx;
+                memcpy(ch.p, p, 12);
+                memcpy(ch.s, kZero, 12);
+                ch.writeScale = !isAttach;
+            }
+        };
+        for (int i = hFirst; i <= hLast; ++i) hideBone(i);
+        for (size_t k = 0; k < hSleeveCount; ++k) hideBone(hSleeve[k]);
+        g_hiddenHand = ih;
+    }
+
     if (!read_n(&g_bones[anchor], &g_lastWrittenAnchor[hand], sizeof(Qts))) return false;
     g_hasWritten[hand] = true;
     set_dirty(0); // render-side evaluate-if-dirty must not rebuild over us
@@ -676,6 +778,12 @@ void reapply() {
         write_n(g_bones[cs.idx].p, cs.p, 12);
         write_n(g_bones[cs.idx].s, cs.s, 12);
     }
+    for (int k = 0; k < g_cacheHiddenCount; ++k) {
+        const CachedHidden& ch = g_cacheHidden[k];
+        if (ch.idx >= g_boneCount) continue;
+        write_n(g_bones[ch.idx].p, ch.p, 12);
+        if (ch.writeScale) write_n(g_bones[ch.idx].s, ch.s, 12);
+    }
     set_dirty(0);
 }
 
@@ -692,11 +800,12 @@ void handle_command(const char* args) {
 
     if (strcmp(verb, "status") == 0) {
         BVR_LOG("[bones] inst=%p bones=%p count=%d writes=%u lastHand=%d refValid=%d "
-                "collapse=%d",
+                "collapse=%d hideinactive=%d hiddenHand=%d",
                 g_skelInst, static_cast<void*>(g_bones), g_boneCount,
                 g_writes.load(std::memory_order_relaxed),
                 g_lastHand.load(std::memory_order_relaxed), g_refValid ? 1 : 0,
-                g_collapse.load(std::memory_order_relaxed) ? 1 : 0);
+                g_collapse.load(std::memory_order_relaxed) ? 1 : 0,
+                g_hideInactive.load(std::memory_order_relaxed) ? 1 : 0, g_hiddenHand);
         int lockMode = g_renderLock.load(std::memory_order_relaxed);
         BVR_LOG("[bones] render lock: %s |delta|=%.2f UU gain=%.2f dgain=%.2f solves=%u "
                 "skips=%u",
@@ -833,6 +942,9 @@ void draw_debug_ui() {
     bool col = g_collapse.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Hide the driven arm (collapse sleeve bones)", &col))
         g_collapse.store(col, std::memory_order_relaxed);
+    bool hide = g_hideInactive.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Hide the inactive hand", &hide))
+        set_hide_inactive(hide);
     int lockMode = g_renderLock.load(std::memory_order_relaxed);
     if (ImGui::RadioButton("lock off", &lockMode, 0) ||
         ImGui::RadioButton("lock ABS (true position)", &lockMode, 1) ||
