@@ -86,12 +86,12 @@ std::atomic<void*>    g_lastViewActor{nullptr}; // *view_actor out-param (the pa
 // ForegroundFovAngle (patterns.h kPcForegroundFovOffset) EVERY FRAME; writing
 // the world-equivalent 4:3 spec re-lenses the whole rig to the WORLD lens
 // (dump-proven: every vm draw joins the world projection cluster, lighting
-// tiers included). Default OFF until the drive-on interaction is calibrated:
-// the fg eye's fov-coupled dolly measured +65 UU (vanilla path, matched
-// lens) but the driven rigid path renders a DIFFERENT pull, and countering
-// via bones dies on the engine's behind-camera culling - the calibration is
-// session 16's first task (vrfgfov on + vrbones lockpull are the knobs).
-std::atomic<bool>  g_fgFovMatch{false};
+// tiers included). Default ON since session 16: the driven path's pull at
+// the matched lens calibrated small (+11.5 UU, vrbones lockpull default) and
+// the full flat-stereo acceptance ladder passed at k=1 - the rig renders
+// through the honest lens at world-correct size/depth/parallax. `vrfgfov
+// off` restores the session-14 narrow-lens configuration for A/B.
+std::atomic<bool>  g_fgFovMatch{true};
 std::atomic<float> g_fgFovSaved{0.0f};   // engine value to restore on disable
 std::atomic<float> g_fgFovWritten{0.0f}; // telemetry: what we wrote last
 

@@ -102,11 +102,14 @@ std::atomic<int> g_renderLock{1};         // 0 off, 1 abs (true position), 2 dif
 // instruments (simhead sweeps vs size/parallax A/Bs).
 std::atomic<float> g_lockGain{0.9f};      // lateral
 std::atomic<float> g_lockDepthGain{0.9f}; // along the fg forward
-// Fg-eye pull-back behind the camera at the MATCHED lens (session 15: the
-// lens is honest via vrfgfov, but the fg eye still dollies back by a
-// fov-coupled amount; ~65 UU measured at option 117 via offset parallax).
-// Runtime-tunable (vrbones lockpull) because the flat A/Bs calibrate it.
-std::atomic<float> g_lockPull{65.0f};
+// Fg-eye pull-back behind the camera at the MATCHED lens. The DRIVEN rigid
+// path renders a much smaller pull than the vanilla path's fov-coupled ~65
+// (session 16 flat calibration at option 117: +11.5 UU physical, agreed by
+// offset-parallax and size A/Bs within ~1 UU, and close to the stock-lens
+// 13 - the driven path's pull is NOT fov-coupled). The default is the knob
+// value that lands 11.5 through the 0.9 depth gain (11.5/0.9 = 12.8); if
+// lockdgain changes, the effective pull moves with it.
+std::atomic<float> g_lockPull{12.8f};
 std::atomic<float> g_lockDeltaMag{0.0f};  // telemetry: |delta| UU last frame
 std::atomic<uint32_t> g_lockSolves{0};
 std::atomic<uint32_t> g_lockSkips{0};
@@ -346,7 +349,16 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
     float pull = matched ? g_lockPull.load(std::memory_order_relaxed)
                          : patterns::kFgEyeFwdBehindCam;
     const float eTrue[3] = {-pull, patterns::kFgEyeComp[1], patterns::kFgEyeComp[2]};
-    quat_rotate(qd[0], qd[1], qd[2], qd[3], eTrue, ePulled);
+    // Pull frame (session-16 simhead discriminator): at the matched lens the
+    // renderer's eye offset does NOT swing with the camera-vs-actor head
+    // split - the gun over-shifted the world by exactly pull*sin(split)*gain
+    // on both axes when eTrue rode qd - so it rotates by the constant view
+    // bias only (identical at zero split, where the A/Bs calibrated it). The
+    // unmatched session-14 path keeps the qd rotation it was verified with.
+    if (matched)
+        quat_rotate(s_qBias[0], s_qBias[1], s_qBias[2], s_qBias[3], eTrue, ePulled);
+    else
+        quat_rotate(qd[0], qd[1], qd[2], qd[3], eTrue, ePulled);
     eyeEff[0] = camComp[0] + ePulled[0];
     eyeEff[1] = camComp[1] + ePulled[1];
     eyeEff[2] = camComp[2] + ePulled[2];

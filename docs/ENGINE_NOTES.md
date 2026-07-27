@@ -1061,6 +1061,67 @@ dolly) is located behaviorally but its source survives the night.
   plumbing - live invTan scales, k=1 collapse, `vrbones lockpull` - is all
   in place behind the toggle).
 
+### Session 16 (2026-07-27) - the drive-on pull calibrated SMALL; the matched lens ships ON
+
+**The decision-hour measurement came out branch (a): the driven rigid path's
+pull at the matched lens is +11.5 UU - not the vanilla path's 65.** Measured
+at lock abs + lockpull 0 on the wall save (rendered depth = df + pull), by
+two independent instruments that agreed within ~1 UU: offset-parallax (gun
+shifted -202 px vs -343 world-correct at df 17.3 -> pull +12.0) and
+size-on-distance (hand +20 UU: ratio 0.585 vs 0.465 -> pull +10.8). The
+value sits near the stock-lens 13 (kFgEyeFwdBehindCam), far from the
+vanilla-path 65: **the driven path's eye offset is NOT fov-coupled** - the
+fov-coupled dolly session 15 measured belongs to the vanilla rig path only,
+and it never applies to the rigid sections rebuilt from our driven bones.
+
+- **Knob vs gain**: the applied depth correction lands at exactly
+  dgain*solve - residuals at lockpull 11.5 measured +1.1-1.4 UU on both
+  instruments = the 0.9 gain, no rebake amplification on this axis. The
+  default knob is therefore 11.5/0.9 = **12.8** (lands 11.5 physical); if
+  lockdgain changes, the effective pull moves with it.
+- **THE PULL FRAME - found by the simhead sweep, the one discriminator the
+  zero-split calibration cannot cover.** With eTrue rotated by the
+  camera-delta quat (qd), the gun over-shifted the world under head-split by
+  exactly pull*sin(split)*gain on BOTH axes (yaw+30: 194 px predicted, 194
+  measured; pitch-20: 134 predicted, 137 measured). **The renderer's eye
+  offset does NOT swing with the camera-vs-actor split** - the matched path
+  now rotates the pull by the constant view bias only (identical at zero
+  split, where the A/Bs calibrated it); the unmatched session-14 path keeps
+  the qd rotation it was verified with. Post-fix sweep: gun world-glued
+  within 2-17 px across +-30 yaw / +-20 pitch (gun template corrs .88-.96).
+- **Clean-boot acceptance with shipping defaults** (vrfgfov ON, lockpull
+  12.8), all under vrstereo: far-range offset parallax -156 px vs -159
+  world-correct (0.98x); size ratio 0.475 (tight-template) / 0.489 (direct
+  disc-width profile) vs 0.465 (1.02-1.05x); sweep world-glued as above;
+  fire test 6 pulls, ammo 59->53, fresh wall decal, dumps 8->8; stereo
+  heartbeat clean throughout (mode=1T, presents = 2x builds, guardskips 0).
+- **Instrument findings (each cost real time tonight)**:
+  1. The offset-parallax template instrument is INVALID at close range: at
+     rendered ~17 UU a 10 UU lateral offset is a ~30-deg viewpoint change
+     and the gun spans ~10 UU of depth, so per-feature shifts range
+     270-456 px and NCC returns feature-dependent garbage (three templates:
+     -172/-252/-260). Run the parallax A/B at the far parked pose
+     (vrhands pos 40 0 0, rendered ~37 UU), where two templates agreed.
+  2. Big mixed templates (gun+fist+background) false-match on SCALE (0.345
+     vs the true 0.475 from a tight disc-only template, cross-checked by a
+     dark-pixel disc-width profile at 0.489).
+  3. The skin-tone fist blob is defeated by the wall save's teal lighting
+     and finds the golden statue instead - localize by crop-and-look.
+  4. `simhead` RECENTERS onto its first pose: establish zero with
+     `simhead 0 0 0` FIRST, or the first sweep step measures nothing.
+  5. With no aim pose source (no headset and no `vraim test`), fired bullets
+     follow the center crosshair - the impact hides BEHIND the parked gun.
+     Decal evidence needs `vraim test r <yaw>` to land in the open.
+  6. The wall-save boot's A-press loop can leave the MAP screen open
+     (A = zoom on that screen); verify the screen state by screenshot
+     before any series (press B to close).
+- **Behind-camera edge at the matched lens**: the corrected anchor sits at
+  df - 11.5 UU from the camera, so a hand closer than ~11.5 UU (~23 cm real)
+  puts the cluster behind the world camera and the engine culls the rig
+  (session 15's constraint, now with an 11.5 threshold instead of 65). The
+  wStar<4 refusal covers df<4; between ~4 and ~12 the rig may blank. Listed
+  as an in-headset checklist probe.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
