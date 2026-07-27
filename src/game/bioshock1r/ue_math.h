@@ -22,6 +22,16 @@ constexpr float kRotUnitsPerDegree = 65536.0f / 360.0f;
 constexpr float kRotUnitsPerRadian = 65536.0f / (2.0f * kPi);
 constexpr float kRadToDeg = 57.29578f;
 
+// Shortest-way-round rotator delta, wrapped to (-32768, 32767] - i.e. to
+// (-180, +180] degrees. Rotator components are consumed modulo 65536 by this
+// engine, so this is the ONLY correct way to subtract two of them: a raw
+// subtraction of yaw 100 from yaw 65500 reads as -65400 rather than +136.
+// The M7.5 yaw transfer's exactness rests on this being integer arithmetic -
+// see body.h.
+inline int32_t wrap_rot(int32_t delta) {
+    return static_cast<int16_t>(delta & 0xFFFF);
+}
+
 inline void quat_rotate(float qx, float qy, float qz, float qw, const float v[3],
                         float out[3]) {
     float t[3] = {2.0f * (qy * v[2] - qz * v[1]), 2.0f * (qz * v[0] - qx * v[2]),
