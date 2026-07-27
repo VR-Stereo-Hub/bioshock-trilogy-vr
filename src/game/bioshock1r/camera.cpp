@@ -873,6 +873,20 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.pc = self;
         g_lastViewActor.store(fc.viewActor, std::memory_order_relaxed);
 
+        // Strict gameplay-view (body.cpp predicate, no menu-attract escape
+        // hatch), published to the input bridge as the stick-pitch-kill gate
+        // and logged on transition - the harness's generic "in gameplay"
+        // signal (boot.ps1 watches for this line; any save, any level).
+        bool strictGameplay = body::is_gameplay_view(fc.viewActor);
+        bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
+        static int s_lastViewState = -1;
+        int viewState = strictGameplay ? 1 : 0;
+        if (viewState != s_lastViewState) {
+            s_lastViewState = viewState;
+            BVR_LOG("[b1r] view state: %s",
+                    strictGameplay ? "GAMEPLAY (ShockPlayer view)" : "menu/cutscene");
+        }
+
         // THE HARD-INVARIANT INSTRUMENT (session 17). Run a FIXED XR pose
         // through the unmodified context and log where it lands. This is the
         // exact function the aim ray and the viewmodel both call, with the

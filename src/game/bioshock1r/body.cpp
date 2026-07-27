@@ -122,17 +122,6 @@ uint32_t to_rva(const void* p) {
     return static_cast<uint32_t>(static_cast<const uint8_t*>(p) - g_imageBase);
 }
 
-// The cutscene/vehicle guard, same predicate aim.cpp and hands.cpp use - but
-// WITHOUT their `viewActor == pc` escape hatch. That hatch exists so the aim
-// ray still works in the main-menu attract scene; a write to the body facing
-// emphatically must not fire there.
-bool is_gameplay_view(void* viewActor) {
-    if (!viewActor) return false;
-    void* vtbl = nullptr;
-    if (!read_ptr(viewActor, &vtbl)) return false;
-    return to_rva(vtbl) == patterns::kShockPlayerVtableRva;
-}
-
 const char* state_name(State s) {
     switch (s) {
         case kOff: return "off";
@@ -207,6 +196,19 @@ int32_t wanted_step(int32_t residualUnits, float dt) {
 }
 
 } // namespace
+
+// The cutscene/vehicle guard, same predicate aim.cpp and hands.cpp use - but
+// WITHOUT their `viewActor == pc` escape hatch. That hatch exists so the aim
+// ray still works in the main-menu attract scene; a write to the body facing
+// emphatically must not fire there. Public since session 19: the stick-pitch
+// kill and the harness's "in gameplay" log signal gate on the same strict
+// predicate.
+bool is_gameplay_view(void* viewActor) {
+    if (!viewActor) return false;
+    void* vtbl = nullptr;
+    if (!read_ptr(viewActor, &vtbl)) return false;
+    return to_rva(vtbl) == patterns::kShockPlayerVtableRva;
+}
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;

@@ -39,6 +39,18 @@ uint64_t g_xrLastMs = 0;          // publish staleness guard (session teardown
                                   // stops publishing entirely - expire the slot)
 constexpr uint64_t kXrStaleMs = 500;
 
+// Stick-pitch kill (session 19): while the VR camera drives a real gameplay
+// view, the composed right-stick Y is zeroed - the HMD owns pitch there, and
+// a stick-pitched body drags the viewmodel with it and aims the wrench's
+// melee phantom at the body pitch instead of the hand. The game layer
+// publishes the gate once per CalcView; the slot self-expires like the XR pad
+// so a stopped publisher (world unload, drive off) fails open to stock
+// behavior. Menus/cutscenes publish false and keep stick pitch.
+std::atomic<bool> g_pitchKill{true};
+std::atomic<bool> g_vrGameplay{false};
+std::atomic<uint64_t> g_vrGameplayLastMs{0};
+constexpr uint64_t kVrGameplayStaleMs = 500;
+
 // Self-expiring test slots: the command seam polls at 1 Hz, so a "hold" must
 // outlive its command inside the DLL. deadline == 0 means empty.
 struct TimedStick { int16_t x = 0, y = 0; uint64_t deadline = 0; };
@@ -181,6 +193,12 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     uint64_t now = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_mutex);
     Gamepad out = merge(real, compose_synthetic(now));
+    // Stick-pitch kill: yaw (rx) deliberately stays - stick turn composes
+    // with the M7.5 body transfer; only pitch belongs to the HMD.
+    if (g_pitchKill.load(std::memory_order_relaxed) &&
+        g_vrGameplay.load(std::memory_order_relaxed) &&
+        now - g_vrGameplayLastMs.load(std::memory_order_relaxed) <= kVrGameplayStaleMs)
+        out.ry = 0;
     if (g_packetBump || memcmp(&out, &g_lastComposed, sizeof out) != 0) {
         ++g_packet;
         g_packetBump = false;
@@ -468,6 +486,21 @@ void publish_xr_state(const Gamepad& pad, bool active) {
     g_xrLastMs = GetTickCount64();
 }
 
+void publish_vr_gameplay(bool on) {
+    g_vrGameplay.store(on, std::memory_order_relaxed);
+    g_vrGameplayLastMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+void set_pitch_kill(bool on) {
+    bool was = g_pitchKill.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("input: pitchkill %s (right-stick Y %s while the VR camera "
+                "drives gameplay)",
+                on ? "ON" : "off", on ? "zeroed" : "passes through");
+}
+
+bool pitch_kill() { return g_pitchKill.load(std::memory_order_relaxed); }
+
 float stick_deadzone() { return g_deadzone.load(std::memory_order_relaxed); }
 
 void last_composed_triggers(uint8_t* lt, uint8_t* rt) {
@@ -498,6 +531,19 @@ void handle_command(const char* args) {
         set_enabled(false);
     } else if (strcmp(verb, "status") == 0) {
         log_status();
+    } else if (strcmp(verb, "pitchkill") == 0) {
+        if (strncmp(rest, "on", 2) == 0) {
+            set_pitch_kill(true);
+        } else if (strncmp(rest, "off", 3) == 0) {
+            set_pitch_kill(false);
+        } else {
+            uint64_t age = GetTickCount64() -
+                           g_vrGameplayLastMs.load(std::memory_order_relaxed);
+            BVR_LOG("input: pitchkill %s, vr-gameplay gate %s (published %llu ms ago)",
+                    g_pitchKill.load(std::memory_order_relaxed) ? "ON" : "off",
+                    g_vrGameplay.load(std::memory_order_relaxed) ? "ACTIVE" : "inactive",
+                    static_cast<unsigned long long>(age));
+        }
     } else if (strcmp(verb, "test") == 0) {
         char what[16] = {};
         consumed = 0;
@@ -578,6 +624,10 @@ void draw_debug_ui() {
     float dz = g_deadzone.load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("Stick deadzone", &dz, 0.0f, 0.4f, "%.2f"))
         g_deadzone.store(dz, std::memory_order_relaxed);
+
+    bool pk = g_pitchKill.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Kill right-stick pitch under VR", &pk))
+        set_pitch_kill(pk);
 
     // GetState poll rate, sampled ~1/s (render thread only).
     static uint64_t lastMs = 0;
