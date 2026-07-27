@@ -878,15 +878,28 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    frame, transfer the head-look yaw into the body facing and subtract the
    same amount from the camera's additive yaw - the camera is unchanged
    (seamless), the invisible body re-aligns under the view, stick-forward
-   = look direction, the viewmodel stays deep in its envelope. Implement
-   in the camera drive (the PC control-rotation write side of the additive
-   yaw in camera.cpp; `driveYawOffsetRad` is the amount to transfer);
-   watch for: how the game maps the left stick (control rotation vs pawn
-   rotation), recenter semantics, cutscene/vehicle guards (view-actor
-   vtable predicate), and the lock model's actor-rot inputs (the transfer
-   makes the zero-split assumption BETTER). Verify flat with simhead +
-   synthetic left-stick input (walk direction vs look direction), then the
-   angle sweep below as the before/after instrument.
+   = look direction, the viewmodel stays deep in its envelope.
+   **HARD INVARIANT - THE USER'S NON-REGRESSION REQUIREMENT: the hand must
+   NOT move with the head/camera again.** The controller->world mapping
+   composes through the body yaw (frame_context.h rotates the
+   recenter-local pose out by gameYaw), so transferring yaw into the body
+   WITHOUT rotating the recenter yaw reference by the same amount
+   re-couples the hand to the head - the exact defect sessions 12-16
+   killed. The transfer must leave the final camera AND the composite
+   controller-to-world mapping bit-identical; only the body/head-look
+   split of the yaw relabels (the recenter reference absorbs the
+   transferred amount). GATE: the parked-hand simhead sweep (gun glued to
+   the world) and the full acceptance ladder pass UNCHANGED before the
+   transfer ships - any drift there is an instant stop-and-fix, and the
+   in-headset checklist must re-verify head-decoupling explicitly.
+   Implement in the camera drive (the PC control-rotation write side of
+   the additive yaw in camera.cpp; `driveYawOffsetRad` is the amount to
+   transfer); watch for: how the game maps the left stick (control
+   rotation vs pawn rotation), recenter semantics, cutscene/vehicle guards
+   (view-actor vtable predicate), and the lock model's actor-rot inputs
+   (the transfer makes the zero-split assumption BETTER). Verify flat with
+   simhead + synthetic left-stick input (walk direction vs look
+   direction), then the angle sweep below as the before/after instrument.
    THE RESIDUAL INVESTIGATION (after the transfer lands): holding the HAND
    far off the gaze still reaches large hand-vs-body angles. Park simpose
    at yaw 0/30/60/80/90/100/120 from the facing, measure rendered-barrel
@@ -1011,6 +1024,15 @@ and it resumes.
   AND the rig culling past ~90 deg (all keyed to the body facing).
   Session-17 focus: BODY-FOLLOWS-HEAD yaw transfer (rotate the body under
   an unchanged camera each frame) - fix spec in Next steps item 1.
+- THE NON-REGRESSION GATE (user's explicit requirement, added same day):
+  the transfer must NOT bring back the-hand-follows-the-head. The
+  controller->world mapping composes through the body yaw, so a naive
+  transfer rotates the hand with the chased head - the exact sessions-12-16
+  defect. Invariant: the final camera AND the composite controller-to-world
+  mapping stay bit-identical; only the body/head-look SPLIT of the yaw
+  relabels (the recenter reference absorbs the transferred amount). Proof:
+  the parked-hand simhead sweep (gun glued to world) + the full acceptance
+  ladder pass unchanged BEFORE the transfer ships.
 
 ### 2026-07-27 - Session 16 part 3 (worldScale 100, head offset, per-hand trims, VR PRESET 1)
 
