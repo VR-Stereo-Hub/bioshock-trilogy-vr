@@ -495,6 +495,13 @@ void save_vr_preset() {
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fprintf(f, "crosshairVisible=%d\n",
             g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0);
+    {
+        float hd = 0, hw = 0, hu = 0;
+        bvr::vr::get_hud_quad(&hd, &hw, &hu);
+        fprintf(f, "hudQuadDistM=%.2f\n", hd);
+        fprintf(f, "hudQuadWidthM=%.2f\n", hw);
+        fprintf(f, "hudQuadUpM=%.2f\n", hu);
+    }
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
     // The per-hand model offsets live in hands.ini; saving them here too makes
@@ -514,6 +521,8 @@ void load_vr_preset_values() {
     float plf = aim::pos_fwd_cm(0), plr = aim::pos_right_cm(0), plu = aim::pos_up_cm(0);
     float prf = aim::pos_fwd_cm(1), prr = aim::pos_right_cm(1), pru = aim::pos_up_cm(1);
     float bodyRate = body::rate_per_sec(), bodyDz = body::deadzone_deg();
+    float hudD = 0, hudW = 0, hudU = 0;
+    bvr::vr::get_hud_quad(&hudD, &hudW, &hudU);
     while (fgets(line, sizeof line, f)) {
         char key[48] = {};
         float v = 0.0f;
@@ -539,6 +548,9 @@ void load_vr_preset_values() {
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
         else if (strcmp(key, "crosshairVisible") == 0)
             g_crosshairVisible.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "hudQuadDistM") == 0) hudD = v;
+        else if (strcmp(key, "hudQuadWidthM") == 0) hudW = v;
+        else if (strcmp(key, "hudQuadUpM") == 0) hudU = v;
         else --n;
     }
     fclose(f);
@@ -547,6 +559,7 @@ void load_vr_preset_values() {
     aim::set_pos_offset(0, plf, plr, plu);
     aim::set_pos_offset(1, prf, prr, pru);
     body::set_tuning(bodyRate, bodyDz);
+    if (hudD > 0.0f && hudW > 0.0f) bvr::vr::set_hud_quad(hudD, hudW, hudU);
     if (n) BVR_LOG("[b1r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 

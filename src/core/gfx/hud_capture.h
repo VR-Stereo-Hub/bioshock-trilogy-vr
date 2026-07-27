@@ -44,9 +44,12 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx);
 void on_present(ID3D11DeviceContext* ctx);
 
 // The captured HUD as a shader resource (null when nothing was redirected
-// this interval or the RT does not exist). Same thread as the consumers.
-ID3D11ShaderResourceView* srv();
-ID3D11Texture2D* texture();
+// this interval or the RT does not exist). Serves the PROCESSED copy - rgb
+// premultiplied by construction, alpha repaired via blit::process (run at
+// most once per interval; `ctx` may be null to only query). Same thread as
+// the consumers.
+ID3D11ShaderResourceView* srv(ID3D11DeviceContext* ctx);
+ID3D11Texture2D* texture(ID3D11DeviceContext* ctx);
 bool redirected_this_interval();
 
 // Master enable (the redirect only runs while enabled AND gated).

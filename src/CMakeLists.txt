@@ -17,6 +17,8 @@ add_library(bioshockvr SHARED
     core/framework/framework.h
     core/debug/value_scan.cpp
     core/debug/value_scan.h
+    core/gfx/blit.cpp
+    core/gfx/blit.h
     core/gfx/frame_inspector.cpp
     core/gfx/frame_inspector.h
     core/gfx/hud_capture.cpp
@@ -67,6 +69,7 @@ target_link_libraries(bioshockvr PRIVATE
     minhook
     imgui
     d3d11
+    d3dcompiler
     dbghelp
 )
 if(BIOSHOCKVR_WITH_OPENXR)

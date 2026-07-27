@@ -1,5 +1,6 @@
 #include "core/gfx/hud_capture.h"
 
+#include "core/gfx/blit.h"
 #include "core/util/log.h"
 
 #include <atomic>
@@ -14,11 +15,18 @@ std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_force{false};
 std::atomic<bool> g_gate{false};
 
-// Our RT (created lazily to match the tonemap target's desc).
+// Our RT (created lazily to match the tonemap target's desc), plus the
+// PROCESSED copy: gameswf leaves garbage in the capture's alpha channel, so
+// consumers read RT2 = rgb unchanged + alpha repaired (blit::process) once
+// per interval.
 ID3D11Texture2D* g_tex = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 ID3D11ShaderResourceView* g_srv = nullptr;
+ID3D11Texture2D* g_tex2 = nullptr;
+ID3D11RenderTargetView* g_rtv2 = nullptr;
+ID3D11ShaderResourceView* g_srv2 = nullptr;
 UINT g_texW = 0, g_texH = 0;
+bool g_processedThisInterval = false;
 
 // ---- per-interval classifier state ----------------------------------------
 // Current binding (tracked at SetRT; resources are identity keys only).
@@ -65,7 +73,10 @@ bool ensure_rt(ID3D11DeviceContext* ctx, UINT w, UINT h, DXGI_FORMAT fmt) {
     td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
     bool ok = SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_tex)) &&
               SUCCEEDED(dev->CreateRenderTargetView(g_tex, nullptr, &g_rtv)) &&
-              SUCCEEDED(dev->CreateShaderResourceView(g_tex, nullptr, &g_srv));
+              SUCCEEDED(dev->CreateShaderResourceView(g_tex, nullptr, &g_srv)) &&
+              SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_tex2)) &&
+              SUCCEEDED(dev->CreateRenderTargetView(g_tex2, nullptr, &g_rtv2)) &&
+              SUCCEEDED(dev->CreateShaderResourceView(g_tex2, nullptr, &g_srv2));
     dev->Release();
     if (!ok) {
         release_resources();
@@ -182,6 +193,7 @@ void on_present(ID3D11DeviceContext* ctx) {
         ctx->ClearRenderTargetView(g_rtv, clear);
     }
     g_hudThisInterval = false;
+    g_processedThisInterval = false;
     g_hudTarget = nullptr;
     g_substituted = false;
     g_curRt = nullptr;
@@ -191,13 +203,19 @@ void on_present(ID3D11DeviceContext* ctx) {
 
 // Consumers (eye-capture-adjacent composite, quad copy) run in the present
 // chain BEFORE on_present() rolls the interval - so validity keys on the
-// CURRENT interval's redirects.
-ID3D11ShaderResourceView* srv() {
-    return g_hudThisInterval ? g_srv : nullptr;
+// CURRENT interval's redirects. Both accessors serve the PROCESSED copy
+// (alpha repaired), running the repair pass at most once per interval.
+ID3D11ShaderResourceView* srv(ID3D11DeviceContext* ctx) {
+    if (!g_hudThisInterval || !g_srv2) return nullptr;
+    if (!g_processedThisInterval && ctx) {
+        if (!bvr::blit::process(ctx, g_rtv2, g_srv, g_texW, g_texH)) return nullptr;
+        g_processedThisInterval = true;
+    }
+    return g_processedThisInterval ? g_srv2 : nullptr;
 }
 
-ID3D11Texture2D* texture() {
-    return g_hudThisInterval ? g_tex : nullptr;
+ID3D11Texture2D* texture(ID3D11DeviceContext* ctx) {
+    return srv(ctx) ? g_tex2 : nullptr;
 }
 
 bool redirected_this_interval() {
@@ -237,7 +255,11 @@ void release_resources() {
     if (g_srv) { g_srv->Release(); g_srv = nullptr; }
     if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
     if (g_tex) { g_tex->Release(); g_tex = nullptr; }
+    if (g_srv2) { g_srv2->Release(); g_srv2 = nullptr; }
+    if (g_rtv2) { g_rtv2->Release(); g_rtv2 = nullptr; }
+    if (g_tex2) { g_tex2->Release(); g_tex2 = nullptr; }
     g_texW = g_texH = 0;
+    g_processedThisInterval = false;
 }
 
 } // namespace bvr::hud

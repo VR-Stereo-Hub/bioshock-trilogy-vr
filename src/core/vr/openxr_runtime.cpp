@@ -6,6 +6,7 @@
 
 #include "core/vr/openxr_runtime.h"
 
+#include "core/gfx/blit.h"
 #include "core/gfx/hud_capture.h"
 #include "core/util/log.h"
 
@@ -76,6 +77,23 @@ std::atomic<bool> g_enabled{true};        // kill switch: tears the session down
 std::atomic<float> g_screenDistM{1.75f};  // quad distance in meters
 std::atomic<float> g_screenWidthM{2.4f};  // quad width in meters
 std::atomic<bool> g_cameraMode{false};    // M3: drive the game camera from the HMD
+
+// Session 19 HUD floating quad: the gameswf HUD captured by core/gfx/
+// hud_capture is copied into its own swapchain and composited head-locked
+// (g_viewSpace) during stereo gameplay. Sliders persist via vrpreset.ini.
+XrSwapchain g_hudSwapchain = XR_NULL_HANDLE;
+std::vector<XrSwapchainImageD3D11KHR> g_hudImages;
+uint32_t g_hudSwapW = 0, g_hudSwapH = 0;
+int64_t g_swapFormat = 0; // the format create_swapchains picked (lazy HUD create)
+std::atomic<float> g_hudDistM{1.30f};
+std::atomic<float> g_hudWidthM{1.25f};
+std::atomic<float> g_hudUpM{-0.10f};
+std::atomic<uint32_t> g_hudFramesSubmitted{0};
+std::atomic<bool> g_loggedFirstHudQuad{false};
+
+// Cached backbuffer RTV for the post-capture window HUD composite.
+ID3D11RenderTargetView* g_backbufferRtv = nullptr;
+ID3D11Texture2D* g_backbufferForRtv = nullptr; // identity only, never deref'd
 
 // Bring-up retry (render thread only).
 uint64_t g_nextRetryMs = 0;
@@ -337,6 +355,15 @@ void destroy_laser() {
     }
 }
 
+void destroy_hud_swapchain() {
+    if (g_hudSwapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(g_hudSwapchain);
+        g_hudSwapchain = XR_NULL_HANDLE;
+    }
+    g_hudImages.clear();
+    g_hudSwapW = g_hudSwapH = 0;
+}
+
 void destroy_swapchains() {
     for (int i = 0; i < 2; ++i) {
         if (g_swapchains[i] != XR_NULL_HANDLE) {
@@ -346,8 +373,83 @@ void destroy_swapchains() {
         g_images[i].clear();
     }
     destroy_laser();
+    destroy_hud_swapchain();
     g_swapW = g_swapH = 0;
     reset_aer(); // the held eye images died with the swapchains
+}
+
+// Lazy: sized to the HUD capture RT, format = the eye swapchains' pick
+// (CopyResource-compatible UNORM/sRGB family).
+void create_hud_swapchain(uint32_t w, uint32_t h) {
+    destroy_hud_swapchain();
+    if (!g_swapFormat || g_session == XR_NULL_HANDLE) return;
+    XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    sci.format = g_swapFormat;
+    sci.sampleCount = 1;
+    sci.width = w;
+    sci.height = h;
+    sci.faceCount = 1;
+    sci.arraySize = 1;
+    sci.mipCount = 1;
+    if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_hudSwapchain))) {
+        BVR_LOG("xr: HUD swapchain creation failed");
+        g_hudSwapchain = XR_NULL_HANDLE;
+        return;
+    }
+    uint32_t count = 0;
+    xrEnumerateSwapchainImages(g_hudSwapchain, 0, &count, nullptr);
+    g_hudImages.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+    if (XR_FAILED(xrEnumerateSwapchainImages(
+            g_hudSwapchain, count, &count,
+            reinterpret_cast<XrSwapchainImageBaseHeader*>(g_hudImages.data())))) {
+        BVR_LOG("xr: HUD swapchain image enumeration failed");
+        destroy_hud_swapchain();
+        return;
+    }
+    g_hudSwapW = w;
+    g_hudSwapH = h;
+    BVR_LOG("xr: HUD quad swapchain ready (%ux%u, %u images)", w, h, count);
+}
+
+// Post-capture window composite: draw the captured HUD back onto the
+// backbuffer so the FLAT window keeps its HUD while the compositor feed
+// stays clean. Runs at most once per present, always AFTER the eye capture
+// and AFTER the mirror's right-half re-blit. Uses the swapchain's own
+// device/context so it also works with no XR session (flat testing).
+void composite_hud(IDXGISwapChain* swapchain) {
+    if (!bvr::hud::redirected_this_interval()) return;
+    ID3D11Texture2D* bb = nullptr;
+    if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&bb))) || !bb) return;
+    if (g_backbufferRtv && g_backbufferForRtv != bb) {
+        g_backbufferRtv->Release();
+        g_backbufferRtv = nullptr;
+    }
+    ID3D11Device* dev = nullptr;
+    swapchain->GetDevice(IID_PPV_ARGS(&dev));
+    if (!dev) {
+        bb->Release();
+        return;
+    }
+    if (!g_backbufferRtv) {
+        if (FAILED(dev->CreateRenderTargetView(bb, nullptr, &g_backbufferRtv))) {
+            dev->Release();
+            bb->Release();
+            return;
+        }
+        g_backbufferForRtv = bb;
+    }
+    D3D11_TEXTURE2D_DESC d{};
+    bb->GetDesc(&d);
+    ID3D11DeviceContext* ctx = nullptr;
+    dev->GetImmediateContext(&ctx);
+    if (ctx) {
+        ID3D11ShaderResourceView* srv = bvr::hud::srv(ctx); // alpha-repaired copy
+        if (srv) bvr::blit::alpha_premul(ctx, g_backbufferRtv, srv, d.Width, d.Height);
+        ctx->Release();
+    }
+    dev->Release();
+    bb->Release();
 }
 
 void teardown_session(const char* why) {
@@ -502,6 +604,7 @@ bool create_swapchains(IDXGISwapChain* swapchain) {
 
     g_swapW = desc.BufferDesc.Width;
     g_swapH = desc.BufferDesc.Height;
+    g_swapFormat = pick; // the HUD quad swapchain creates lazily with this
     BVR_LOG("xr: swapchain pair %ux%u format %lld (%u images each)", g_swapW, g_swapH,
             static_cast<long long>(pick), imageCount);
 
@@ -1051,6 +1154,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
         // it). The game may still be presenting alternating stereo eyes -
         // keep draining the tag ring and keep the window pinned to one eye.
         mirror_present(swapchain, sr_pop_eye());
+        composite_hud(swapchain); // the window keeps its HUD even with no session
         return;
     }
     bool pairSecond = g_srPairOpen; // this present completes an open pair
@@ -1063,8 +1167,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerQuad laserQuads[kMaxLaserDots] = {};
-    // The game frame is layer 0; the aim laser adds one quad per dot on top.
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots] = {};
+    XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    // The game frame is layer 0; the aim laser adds one quad per dot on top,
+    // the HUD quad one more (worst case 10 of the 16 runtimes must accept).
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 1] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -1167,6 +1273,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
                         BVR_LOG("xr: pair pacing live (one waitFrame per eye "
                                 "pair)");
                     backbuffer->Release();
+                    composite_hud(swapchain); // capture done - window gets HUD
                     return;
                 }
 
@@ -1230,8 +1337,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
 
     // Mirror, right half: the right eye's XR capture is done (or was skipped
     // this present) - pin the backbuffer to the held left image before the
-    // real Present displays it.
+    // real Present displays it. The window HUD composite comes after (the
+    // re-blit would overwrite it).
     if (srSign > 0) mirror_present(swapchain, srSign);
+    composite_hud(swapchain);
 
     // Aim laser on top of the game frame - projection mode only, since in quad
     // ("cinema screen") mode there is no world for it to point into.
@@ -1243,6 +1352,55 @@ void on_present_end(IDXGISwapChain* swapchain) {
         g_laserLayersSubmitted.store(dots, std::memory_order_relaxed);
     } else {
         g_laserLayersSubmitted.store(0, std::memory_order_relaxed);
+    }
+
+    // HUD floating quad (session 19): head-locked, fed from the gameswf
+    // capture. Submitted only in projection mode with fresh HUD content and
+    // a live view space.
+    if (layerCount && projectionMode && g_viewSpace != XR_NULL_HANDLE) {
+        ID3D11Texture2D* hudTex = bvr::hud::texture(g_context); // alpha-repaired
+        if (hudTex) {
+            D3D11_TEXTURE2D_DESC hd{};
+            hudTex->GetDesc(&hd);
+            if (g_hudSwapchain == XR_NULL_HANDLE || g_hudSwapW != hd.Width ||
+                g_hudSwapH != hd.Height)
+                create_hud_swapchain(hd.Width, hd.Height);
+            if (g_hudSwapchain != XR_NULL_HANDLE) {
+                uint32_t idx = 0;
+                XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_hudSwapchain, &ai, &idx))) {
+                    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                    wi.timeout = XR_INFINITE_DURATION;
+                    if (XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwapchain, &wi)))
+                        g_context->CopyResource(g_hudImages[idx].texture, hudTex);
+                    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                    xrReleaseSwapchainImage(g_hudSwapchain, &ri);
+
+                    // The processed capture is premultiplied rgb + repaired
+                    // alpha - premultiplied compositor semantics (no
+                    // UNPREMULTIPLIED bit).
+                    hudQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                    hudQuad.space = g_viewSpace; // head-locked
+                    hudQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                    hudQuad.subImage.swapchain = g_hudSwapchain;
+                    hudQuad.subImage.imageRect = {
+                        {0, 0}, {static_cast<int32_t>(hd.Width), static_cast<int32_t>(hd.Height)}};
+                    hudQuad.pose.orientation.w = 1.0f;
+                    hudQuad.pose.position = {0.0f, g_hudUpM.load(std::memory_order_relaxed),
+                                             -g_hudDistM.load(std::memory_order_relaxed)};
+                    float w = g_hudWidthM.load(std::memory_order_relaxed);
+                    hudQuad.size = {w, w * static_cast<float>(hd.Height) /
+                                           static_cast<float>(hd.Width)};
+                    layers[layerCount++] =
+                        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hudQuad);
+                    g_hudFramesSubmitted.fetch_add(1, std::memory_order_relaxed);
+                    if (!g_loggedFirstHudQuad.exchange(true))
+                        BVR_LOG("xr: HUD quad live (%ux%u, %.2f m wide at %.2f m)",
+                                hd.Width, hd.Height, w,
+                                g_hudDistM.load(std::memory_order_relaxed));
+                }
+            }
+        }
     }
 
     XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
@@ -1273,6 +1431,11 @@ void on_resize() {
     // Recreated at the new backbuffer size on the next frame.
     destroy_swapchains();
     release_mirror();
+    if (g_backbufferRtv) {
+        g_backbufferRtv->Release();
+        g_backbufferRtv = nullptr;
+        g_backbufferForRtv = nullptr;
+    }
 }
 
 void draw_debug_ui() {
@@ -1370,6 +1533,21 @@ void draw_debug_ui() {
         if (ImGui::SliderFloat("Screen width (m)", &width, 0.5f, 6.0f))
             g_screenWidthM.store(width, std::memory_order_relaxed);
     }
+
+    // Session 19 HUD quad: capture toggle + head-locked placement.
+    bool hudOn = bvr::hud::enabled();
+    if (ImGui::Checkbox("VR HUD (gameswf on a floating quad)", &hudOn))
+        bvr::hud::set_enabled(hudOn);
+    float hd = g_hudDistM.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("HUD distance (m)", &hd, 0.5f, 3.0f))
+        g_hudDistM.store(hd, std::memory_order_relaxed);
+    float hw = g_hudWidthM.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("HUD width (m)", &hw, 0.3f, 3.0f))
+        g_hudWidthM.store(hw, std::memory_order_relaxed);
+    float hu = g_hudUpM.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("HUD height offset (m)", &hu, -1.0f, 1.0f))
+        g_hudUpM.store(hu, std::memory_order_relaxed);
+    ImGui::Text("HUD quad frames %u", g_hudFramesSubmitted.load(std::memory_order_relaxed));
 }
 
 bool get_head_pose(HeadPose& out) {
@@ -1486,6 +1664,18 @@ void set_laser(const LaserConfig& cfg) {
     g_laserSizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
 }
 
+void set_hud_quad(float distM, float widthM, float upM) {
+    g_hudDistM.store(distM, std::memory_order_relaxed);
+    g_hudWidthM.store(widthM, std::memory_order_relaxed);
+    g_hudUpM.store(upM, std::memory_order_relaxed);
+}
+
+void get_hud_quad(float* distM, float* widthM, float* upM) {
+    if (distM) *distM = g_hudDistM.load(std::memory_order_relaxed);
+    if (widthM) *widthM = g_hudWidthM.load(std::memory_order_relaxed);
+    if (upM) *upM = g_hudUpM.load(std::memory_order_relaxed);
+}
+
 void sr_push_eye(int eyeSign) {
     uint32_t head = g_srHead.load(std::memory_order_relaxed);
     uint32_t tail = g_srTail.load(std::memory_order_acquire);
@@ -1526,6 +1716,12 @@ void set_rendered_hfov(float) {}
 int current_eye_sign() { return 0; }
 void sr_push_eye(int) {}
 void set_laser(const LaserConfig&) {}
+void set_hud_quad(float, float, float) {}
+void get_hud_quad(float* d, float* w, float* u) {
+    if (d) *d = 0;
+    if (w) *w = 0;
+    if (u) *u = 0;
+}
 
 } // namespace bvr::vr
 
