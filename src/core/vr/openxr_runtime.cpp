@@ -64,6 +64,7 @@ ID3D11Texture2D* g_laserDot = nullptr; // CPU-generated source, copied in per fr
 std::atomic<bool> g_laserOn{false};
 std::atomic<int> g_laserHand{1};
 std::atomic<float> g_laserPitchTrim{0.0f}, g_laserYawTrim{0.0f};
+std::atomic<float> g_laserPosFwdCm{0.0f}, g_laserPosRightCm{0.0f}, g_laserPosUpCm{0.0f};
 std::atomic<int> g_laserDots{6};
 std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
 std::atomic<uint32_t> g_laserLayersSubmitted{0};
@@ -948,6 +949,36 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     d[1] = sinf(pitch);
     d[2] = -cp * cosf(yaw);
 
+    // Ray ORIGIN offset (cm -> m) in the TRIMMED ray's zero-roll frame - the
+    // same offset the game-side ray build applies in UU (aim.cpp), so the
+    // beam and the fire origin move together by construction. right =
+    // d x worldUp (horizontal right of the ray), up completes the frame;
+    // near-vertical rays get the forward component only (degenerate cross).
+    {
+        float ofM = g_laserPosFwdCm.load(std::memory_order_relaxed) * 0.01f;
+        float orM = g_laserPosRightCm.load(std::memory_order_relaxed) * 0.01f;
+        float ouM = g_laserPosUpCm.load(std::memory_order_relaxed) * 0.01f;
+        if (ofM != 0.0f || orM != 0.0f || ouM != 0.0f) {
+            pos[0] += d[0] * ofM;
+            pos[1] += d[1] * ofM;
+            pos[2] += d[2] * ofM;
+            float right[3] = {d[1] * 0.0f - d[2] * 1.0f, d[2] * 0.0f - d[0] * 0.0f,
+                              d[0] * 1.0f - d[1] * 0.0f}; // d x (0,1,0)
+            float rl = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+            if (rl > 1e-3f) {
+                right[0] /= rl;
+                right[1] /= rl;
+                right[2] /= rl;
+                float up2[3] = {right[1] * d[2] - right[2] * d[1],
+                                right[2] * d[0] - right[0] * d[2],
+                                right[0] * d[1] - right[1] * d[0]}; // right x d
+                pos[0] += right[0] * orM + up2[0] * ouM;
+                pos[1] += right[1] * orM + up2[1] * ouM;
+                pos[2] += right[2] * orM + up2[2] * ouM;
+            }
+        }
+    }
+
     // Billboard against the head (midpoint of the two eyes).
     float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
                      (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
@@ -1442,6 +1473,9 @@ void set_laser(const LaserConfig& cfg) {
     g_laserHand.store(cfg.hand ? 1 : 0, std::memory_order_relaxed);
     g_laserPitchTrim.store(cfg.pitchTrimDeg, std::memory_order_relaxed);
     g_laserYawTrim.store(cfg.yawTrimDeg, std::memory_order_relaxed);
+    g_laserPosFwdCm.store(cfg.posFwdCm, std::memory_order_relaxed);
+    g_laserPosRightCm.store(cfg.posRightCm, std::memory_order_relaxed);
+    g_laserPosUpCm.store(cfg.posUpCm, std::memory_order_relaxed);
     g_laserDots.store(cfg.dots, std::memory_order_relaxed);
     g_laserNearM.store(cfg.nearM, std::memory_order_relaxed);
     g_laserFarM.store(cfg.farM, std::memory_order_relaxed);

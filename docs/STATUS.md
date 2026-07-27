@@ -83,6 +83,39 @@ firing pulls with an LB/RB plasmid round-trip in between, fresh decal, dumps
 guardskips 0). Test-artifact inis (hands.ini with zeros, vrpreset.ini with
 defaults) deleted after the run per the session-17 trap - code owns defaults.
 
+### Session 18 part 2 (same day): aim-ray origin offsets + the crosshair kill
+
+**6. Aim-ray ORIGIN offsets (user ask: "the aim is the thing that is
+misaligned, not the model").** New per-hand `vraim pos [l|r] <fwd> <right>
+<up>` in cm (no side = both), an overlay "Ray offset hand: L / R" selector
+with three sliders under the existing trim sliders, persisted in vrpreset.ini
+(aimPosL*/aimPosR*). Applied ONCE at ray build (aim.cpp) along the FINAL
+(trimmed) ray's zero-roll basis, so the laser, the fire-origin substitution,
+and everything else reading the ray move together by construction - the
+model deliberately does NOT take them (its own sliders stay, and the two are
+tuned against each other). The laser applies the identical cm offset XR-side
+in meters with the same basis convention. Flat-proven exact under vrstereo:
+`pos r 0 60 0` moved the R ray origin by (-0.7, +60.0, 0.0) UU with the L ray
+bit-identical; `pos l 0 0 45` moved L +45.0 UU up; two fire-seam
+substitutions carried the offset ray (subs=2); save -> zero -> preset apply
+restored both hands' values from the ini.
+
+**7. The flat crosshair is GONE by default (user ask), and the lever is a
+one-line engine property.** `ShockPlayer.bReticleDisabled` makes the game's
+own RenderReticle push "NoReticle" to the flash HUD every frame - found by
+reading the SCRIPT SOURCE embedded in ShockGame.U (the reticle functions are
+in the 40% UELib cannot decompile; the source text can, ENGINE_NOTES session
+18 part 2). It is written through **the engine's own console SET handler via
+the exec seam** - `set ShockPlayer bReticleDisabled True` -> HANDLED - which
+is the session's biggest reusable find: ANY script property is now writable
+by name, no offsets, no reflection (SET also writes the class default, so
+load-crossing pawns inherit it). Shipped as `vrxhair on|off|status` +
+overlay checkbox ("Flat-screen crosshair", VR camera section), DEFAULT
+HIDDEN, re-asserted every 15 s, `crosshairVisible` persisted in vrpreset.ini.
+Flat: clean boot hides it automatically (19 -> 0 bright pixels in the center
+crop, screenshot-verified), `vrxhair on` restores those exact pixels, off
+kills them again, dumps 8->8.
+
 ## Previous state (2026-07-27, session 17 - M7.5 SHIPS AND IS IN-HEADSET VERIFIED; DEADZONE 23 DEG BY USER CALIBRATION)
 
 **IN-HEADSET VERDICT (same day): "This is perfect... the stick was working as
@@ -1157,11 +1190,25 @@ first.
    within a few seconds. Then check `vrpace status` in the log and tell me
    the skips/keepalives numbers and any "xrWaitFrame blocked N ms" lines -
    they tell us whether VDXR needed the keepalive.
-6. **Expected noise, not bugs**: during headset-off idle the log prints a
+6. **THE RAY OFFSET SLIDERS (part 2, your ask).** In the aim section, "Ray
+   offset hand: L / R" + three sliders (forward/right/up, cm). Tune the
+   LASER onto the barrel of the tuned model: the beam and the bullets move
+   together (one ray by construction), the model does not move. Check a shot
+   actually lands on the laser after tuning - that is the invariant that
+   matters. Then "Save preset values" and confirm it comes back after a
+   reload + PRESET 1.
+7. **THE CROSSHAIR (part 2, your ask).** The flat head-centred crosshair
+   should simply be GONE from the moment the game is up - no preset needed,
+   hidden is the default. The overlay checkbox "Flat-screen crosshair" (VR
+   camera section) or `vrxhair on` brings it back live if you ever want it.
+   Check it STAYS gone across a save load and a level transition.
+8. **Expected noise, not bugs**: during headset-off idle the log prints a
    watchdog "deadlock state detected (log only)" line every ~5 s (the
    keepalive block trips it); the VD menu overlay still parks the model
-   dead-center (VISIBLE state, poses stop - known since session 16).
-7. **Anything off: `vrmirror off` / `vrpace off` first.** If the symptom
+   dead-center (VISIBLE state, poses stop - known since session 16); and the
+   log prints one `engine exec 'set ShockPlayer bReticleDisabled True' ->
+   HANDLED` line every 15 s (the crosshair re-assert).
+9. **Anything off: `vrmirror off` / `vrpace off` first.** If the symptom
    survives both, it predates this session.
 
 ### PREVIOUS CHECKLIST - M7.5 body-follows-head (session 17) - PASSED
@@ -1295,6 +1342,32 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 18 part 2 (aim-ray origin offsets + the crosshair kill via the engine SET seam)
+
+- Two user asks, both flat-green same day:
+- **Aim-ray origin offsets**: per-hand `vraim pos [l|r] <f> <r> <u>` cm,
+  "Ray offset hand" selector + 3 sliders, vrpreset persistence. Applied once
+  at ray build along the trimmed ray's zero-roll basis; the laser applies the
+  identical offset XR-side (same basis convention: right = ray x world-up),
+  so beam + bullet + substitution move as one and the model stays put. Flat:
+  +60.0 UU right / +45.0 UU up exact, per-hand isolated, subs=2 carried the
+  offset, ini round-trip via save -> zero -> apply.
+- **Crosshair hidden by default**: the lever is `ShockPlayer.bReticleDisabled`
+  (game-side RenderReticle then pushes "NoReticle" to the flash HUD per
+  frame), found by reading the script SOURCE TEXT embedded in ShockGame.U
+  after UELib failed to decompile the reticle functions. Written via **the
+  engine's console SET handler through the exec seam** (`exece set
+  shockplayer breticledisabled true` -> HANDLED) - the reusable find: any
+  script property is now settable BY NAME with no offset/bitmask, and SET
+  writes the class default so it survives load crossings. Shipped
+  `vrxhair on|off` + checkbox, default hidden, 15 s re-assert,
+  `crosshairVisible` in vrpreset.ini. Flat: clean boot 0 bright center
+  pixels (was 19), toggle restores/kills them exactly, dumps 8->8.
+- Method note: package source-text extraction needs BOTH UTF-16 alignments
+  (odd-phase strings are invisible to an even-aligned decode), and char
+  indices in a decoded string are half the byte offset - one extraction ran
+  at the wrong offset before the arithmetic was fixed.
 
 ### 2026-07-27 - Session 18 (M8 quick phase: both blockers + per-hand offsets + grip fix, all flat-green; release staged)
 

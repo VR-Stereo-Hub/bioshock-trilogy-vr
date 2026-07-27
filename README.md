@@ -48,10 +48,15 @@ Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrprese
 
 - **World scale / IPD / game FOV** - comfort and scale calibration
 - **Head anchor offsets** - if the camera sits wrong in the body
-- **Per-hand aim trim** - laser/bullet alignment per hand
+- **Per-hand aim trim** - laser/bullet direction alignment per hand
+- **Per-hand ray offsets** - the "Ray offset hand: L / R" selector + three sliders move the
+  laser (and the bullets with it - they are one ray) to line up with the controller and model
 - **Per-hand model offsets** - the "Tuning hand: L / R" selector picks which hand the six
   position/rotation sliders edit, so the pistol and the plasmid hand are tuned independently
 - **`vrbody off`** - live A/B for the body-follows-head transfer (deadzone defaults 23 deg)
+
+The flat-screen crosshair is hidden by default (the laser replaces it); the "Flat-screen
+crosshair" checkbox or `vrxhair on` brings it back.
 
 The desktop window mirrors the **left eye** while stereo runs (`vrmirror off` restores the raw
 alternating view), and the game keeps running at full speed on the monitor when you take the

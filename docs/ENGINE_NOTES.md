@@ -1366,6 +1366,52 @@ block trips the reentry watchdog's detect-only log line - expected noise.
 idle will tell us how VDXR actually behaves (event-driven recovery vs
 keepalive-dependent).
 
+## Reticle + the engine SET seam (M8 session 18 part 2, 2026-07-27)
+
+**The flat crosshair has a first-class engine off-switch: `ShockPlayer.
+bReticleDisabled`.** ShockHUD.RenderReticle's FIRST branch checks
+`ShouldHideReticle()` and pushes the type string "NoReticle" to the flash HUD
+movie (`CallMethodString("SetReticleInfo", ...)`) - the game itself then
+hides the reticle every frame. `DisableReticle`/`EnableReticle`/
+`ShouldHideReticle` are three-line script functions around that one bool
+(read straight from the SOURCE TEXT embedded in ShockGame.U - see below);
+nothing else in ShockGame calls them, so nothing fights a write. Verified
+live both ways: set true -> the ornate ring at screen center vanishes
+(19 -> 0 bright pixels in an 80x80 center crop), set false -> it returns.
+
+**The bigger find: the engine's console `SET <class> <prop> <value>` handler
+WORKS through the exec seam** - `exece set shockplayer breticledisabled true`
+returned HANDLED and took effect. That means ANY script property is now
+writable BY NAME with no offset, no bitmask, no reflection walking: the
+engine resolves the property itself. SET also writes the class default, so
+newly spawned instances (load crossings) inherit the value. This closes the
+gap session 9 left ("script-command path needs the player-object Exec
+signature") for the entire SET/GET family. Caveats: it writes ALL instances
+of the class plus the default (fine for player-singleton classes); property
+GETs still need `get` (untested).
+
+**Package source-text extraction, the method.** UELib fails to deserialize
+~40% of UFunctions on this licensee build (the reticle trio included), but
+the packages embed the full UnrealScript SOURCE as UTF-16 TextBuffer objects.
+Byte-scan the .u for UTF-16 identifiers - CHECK BOTH ALIGNMENTS (a name at an
+odd byte offset is invisible to an even-aligned decode; the reticle
+functions sat at odd phase) - then read the surrounding text. Faster and
+more complete than decompiling when it works; `tools/uscript/` stays the
+workspace, findings summarized here, never the source itself.
+
+**Aim-ray origin offsets (session 18 part 2, user request).** The model
+offsets move the MESH about its pivot, so a tuned model can sit visually
+right while the aim ray no longer runs along the barrel. New per-hand
+`vraim pos [l|r] <fwd> <right> <up>` (cm) moves the RAY: applied once at ray
+build in aim.cpp along the FINAL (trimmed) ray's zero-roll basis, so the
+laser, the fire-origin substitution, and every other g_ray consumer move
+together by construction (the laser applies the same cm offset XR-side,
+meters, same basis convention: right = ray x world-up). Flat-proven exact:
+`pos r 0 60 0` moved the R ray origin (-0.7, +60.0, 0.0) UU (the 0.64 deg
+yaw cosine leak on X), `pos l 0 0 45` moved L by +45.0 UU up, each hand
+isolated, 2 fire-seam substitutions carried the offset ray, vrpreset
+round-trip (save -> zero -> apply restores).
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on

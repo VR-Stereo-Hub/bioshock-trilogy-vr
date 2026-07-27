@@ -137,6 +137,9 @@ struct LaserConfig {
     int hand = 1;              // 0 left, 1 right
     float pitchTrimDeg = 0.0f; // must match the fire ray's trim
     float yawTrimDeg = 0.0f;
+    float posFwdCm = 0.0f;     // ray ORIGIN offset in the trimmed ray's frame,
+    float posRightCm = 0.0f;   // matching the game-side fire-origin offset
+    float posUpCm = 0.0f;      // (cm here; the game side scales by worldScale)
     int dots = 6;              // clamped to the layer budget
     float nearM = 0.30f;       // first dot, meters from the controller
     float farM = 6.0f;         // last dot

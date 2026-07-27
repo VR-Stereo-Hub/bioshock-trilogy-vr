@@ -425,6 +425,16 @@ fixed or the release waits:**
       over the six sliders, per-hand hands.ini keys with legacy fallback, and `vrpreset
       save` now persists them too. Flat-proven: each hand's offsets apply only while that
       hand drives (0.01 UU exact), ini round-trips both formats.
+- [x] **Aim-ray origin offsets (user ask 2026-07-27, session 18 part 2)**: per-hand
+      `vraim pos [l|r] <fwd> <right> <up>` cm + "Ray offset hand" selector sliders,
+      applied once at ray build so laser + bullets + substitution move as one while the
+      tuned model stays put; vrpreset.ini persistence. Flat-exact (+-60/45 UU, per-hand
+      isolated, subs carried, round-trip).
+- [x] **Crosshair hidden by default (user ask 2026-07-27, session 18 part 2)**: the
+      engine-native lever `ShockPlayer.bReticleDisabled` written via the engine console
+      SET handler through the exec seam (the reusable name-based property-write find);
+      `vrxhair on|off` + overlay checkbox, 15 s re-assert, persisted. Flat: 19 -> 0
+      bright center pixels on a clean boot, toggle exact both ways.
 
 **HUD usability:**
 - [ ] See health + EVE clearly in VR: gameswf HUD draws redirected to offscreen RT → a
