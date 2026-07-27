@@ -83,6 +83,7 @@ void* g_handsActor = nullptr;
 void* g_weaponActor = nullptr;
 uint64_t g_lastHandsScanMs = 0;
 uint64_t g_lastWeaponScanMs = 0;
+uint32_t g_handsScanFails = 0; // consecutive empty scans -> backoff
 void* g_lastPc = nullptr;
 std::atomic<uint32_t> g_writes{0};
 std::atomic<int32_t> g_lastMatches{0};
@@ -234,17 +235,35 @@ void* find_hands_actor(const FrameContext& ctx, bool probeOnly) {
         if (has_vtable(g_handsActor, patterns::kHandsVtableRva)) return g_handsActor;
         g_handsActor = nullptr;
         uint64_t now = GetTickCount64();
-        if (now - g_lastHandsScanMs < 2000) return nullptr;
+        // Exponential backoff on consecutive empty scans (2s -> 32s cap).
+        // The rig legitimately does not exist for long stretches (the NG+
+        // intro runs minutes with no hands), and the full heap scan can take
+        // SECONDS on a grown late-game heap - without backoff the 2 s
+        // cooldown dragged the whole game to ~1 fps for the entire intro
+        // (session 18 part 3, live). Reset on success, world change, and
+        // re-enable, so pickup stays prompt when the rig actually appears.
+        uint32_t shift = g_handsScanFails > 4 ? 4 : g_handsScanFails;
+        if (now - g_lastHandsScanMs < (2000ull << shift)) return nullptr;
         g_lastHandsScanMs = now;
     }
     ScanCtx sc{ctx.camX, ctx.camY, ctx.camZ, probeOnly, !probeOnly};
     int matches = 0;
+    uint64_t scanStart = GetTickCount64();
     void* found = patterns::scan_for_vtable_object(
         patterns::kHandsVtableRva, patterns::kActorViewDirOffset + 12, &accept_hands, &sc,
         "AHands", &matches);
     g_lastMatches.store(matches, std::memory_order_relaxed);
     if (probeOnly) return nullptr;
     g_handsActor = found;
+    if (found) {
+        g_handsScanFails = 0;
+    } else {
+        if (g_handsScanFails == 0)
+            BVR_LOG("[hands] no live AHands in this world yet (scan %u ms) - "
+                    "retrying with backoff",
+                    static_cast<uint32_t>(GetTickCount64() - scanStart));
+        ++g_handsScanFails;
+    }
     return g_handsActor;
 }
 
@@ -448,6 +467,7 @@ void on_calcview(const FrameContext& ctx) {
     int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
     if (pending == 1) {
         g_enabled.store(true, std::memory_order_relaxed);
+        g_handsScanFails = 0; // re-enable: scan promptly
         BVR_LOG("[hands] ON (overlay) - viewmodel follows the controller");
     } else if (pending == 0) {
         g_enabled.store(false, std::memory_order_relaxed);
@@ -465,6 +485,7 @@ void on_calcview(const FrameContext& ctx) {
         g_weaponActor = nullptr;
         g_lastHandsScanMs = 0;
         g_lastWeaponScanMs = 0;
+        g_handsScanFails = 0; // new world: scan promptly again
         bones::on_world_change();
     }
 
@@ -636,6 +657,7 @@ void handle_command(const char* args) {
 
     if (strcmp(verb, "on") == 0) {
         g_enabled.store(true, std::memory_order_relaxed);
+        g_handsScanFails = 0; // re-enable: scan promptly
         BVR_LOG("[hands] ON - viewmodel follows the controller");
         log_status();
     } else if (strcmp(verb, "off") == 0) {
