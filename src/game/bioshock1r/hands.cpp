@@ -281,9 +281,10 @@ void log_status() {
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
             mode == 0 ? "GUN" : mode == 1 ? "HANDS" : "BONES",
             g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
-            g_handMode.load(std::memory_order_relaxed) == 0   ? "LEFT"
-            : g_handMode.load(std::memory_order_relaxed) == 1 ? "RIGHT"
-                                                              : "auto",
+            g_handMode.load(std::memory_order_relaxed) == 0 ? "LEFT"
+            : g_handMode.load(std::memory_order_relaxed) == 1
+                ? "RIGHT"
+                : (g_autoHand.load(std::memory_order_relaxed) == 0 ? "auto(L)" : "auto(R)"),
             g_writes.load(std::memory_order_relaxed));
     BVR_LOG("[hands]   weapon actor=%p (learned %p) | hands actor=%p (matches %d)",
             g_weaponActor, bvr::b1r::aim::learned_weapon_object(), g_handsActor,
@@ -399,14 +400,25 @@ void load_config() {
 
 } // namespace
 
-// BioShock holds ONE thing at a time (the trigger that fires also switches
-// hands - XENON_RT/LT), so the viewmodel belongs to whichever hand last fired.
-// Seeded from the triggers the bridge itself composes, exactly like aim.cpp's
-// object map. Shared with the aim laser so the beam leaves the hand that is
-// actually holding the weapon.
+// BioShock holds ONE thing at a time, so the viewmodel belongs to whichever
+// hand the player last engaged. Two ways to engage, both latched here from
+// the state the bridge itself composes (same source as aim.cpp's object map):
+//   - the TRIGGERS (fire = switch-and-fire, XENON_RT/LT), and
+//   - the BUMPERS (the grips compose to LB/RB, and a bumper press switches
+//     the raised hand with NO trigger event - the M8 grip-switch bug was the
+//     latch only learning from triggers, so a grip switch left the model on
+//     the stale controller until the next trigger pull).
+// Bumpers are checked first so a same-frame trigger wins (firing is the
+// stronger evidence of which hand the player means). Shared with the aim
+// laser so the beam leaves the hand that is actually holding the weapon.
 int active_hand() {
     int mode = g_handMode.load(std::memory_order_relaxed);
     if (mode == 0 || mode == 1) return mode;
+
+    bool lb = false, rb = false;
+    bvr::input::last_composed_bumpers(&lb, &rb);
+    if (rb && !lb) g_autoHand.store(1, std::memory_order_relaxed);
+    else if (lb && !rb) g_autoHand.store(0, std::memory_order_relaxed);
 
     uint8_t lt = 0, rt = 0;
     bvr::input::last_composed_triggers(&lt, &rt);
