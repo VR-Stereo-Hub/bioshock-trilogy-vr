@@ -1312,6 +1312,60 @@ so head AND hand rotate together in the world while the in-game body does not
 residual/cull sweep is the instrument that quantifies where the boundary sits
 in each direction.
 
+## Desktop present / mirror + hand attribution (M8 session 18, 2026-07-27)
+
+**Why the session-17 screenshots were all the same eye phase - the desktop
+present duty cycle is heavily skewed, not 50/50.** Under SequentialReentry
+with pair pacing, the two presents of one stereo pair are separated only by
+the time the game takes to BUILD the right-eye frame (~1-3 ms), while the
+right-eye image then stays on the window through the whole next pair's
+blocking xrWaitFrame (~8+ ms at 90 Hz, or the full inter-pair gap flat). A
+DWM-sourced capture (PrintWindow/screenshot) samples the composed surface and
+therefore lands on the SECOND eye of the pair with high probability - 12/12
+same-phase shots is expected behavior, not evidence that alternation is gone.
+The alternation is real (a 60 Hz recorder catches left-eye slices as flicker);
+it is just not uniform. Session-8-era captures caught both phases because
+pair pacing did not exist yet - the pair was split by a blocking wait.
+
+**The mirror fix (M8b)** rides the same sr eye tags the capture uses: left
+presents snapshot the backbuffer into a held texture (read-only), right
+presents copy it back over the backbuffer AFTER the right eye's XR capture,
+so the real Present always displays the left eye and the compositor feed is
+untouched. It also runs on presents with no open XR frame (pace-guard skip,
+session gone) since the game keeps presenting alternating eyes there. Flat
+acceptance 2026-07-27: within-condition consecutive-shot img-diff 0.31-0.73
+(the floor) for mirror on AND off - both phase-locked, as the duty cycle
+predicts - while the cross-diff mirror-on vs mirror-off is 13.6-13.9 (the
+full near-field eye offset at worldScale 100): the pin flips WHICH eye the
+window shows. Counters: holds == blits exactly, one per pair.
+
+**Grip-switch wrong-controller bug: root cause is attribution, not the game.**
+The grips compose to the BUMPERS (LB/RB) in the M5 mapping, and a bumper
+press switches the raised hand (LB -> plasmid, RB -> weapon) WITHOUT any
+trigger event. `hands::active_hand()`'s auto latch learned only from the
+composed triggers, so a grip switch left the latch (and with it the bone
+drive and the laser) on the stale controller until the next trigger pull -
+which also explains the reported self-correction after one shot. Fix: the
+latch now learns from the composed bumpers too (bumpers checked first,
+triggers second so a same-frame fire wins). Flat-proven on a clean boot:
+after two right pulls the status reads auto(R); a single LB press flips it
+to auto(L) with no trigger; RB flips it back. The fire-direction was never
+wrong: the aim seams attribute weapon-vs-plasmid structurally (which C++
+seam fired), so only the model/laser lagged.
+
+**xrWaitFrame under an idle headset (VDXR observation, M8a).** When the
+headset idles the session drops FOCUSED -> VISIBLE and per-present
+xrWaitFrame starts blocking for seconds (flat window <1 fps, presents=0/s).
+The pace guard skips the blocking wait once a session that HAS been FOCUSED
+leaves that state; bring-up is exempt (SYNCHRONIZED -> VISIBLE -> FOCUSED
+requires submitted frames to advance, so a naive not-FOCUSED gate would
+deadlock session start), and a 5 s keepalive still paces one real frame in
+case the runtime wants frames before re-granting FOCUSED. The keepalive's
+block trips the reentry watchdog's detect-only log line - expected noise.
+`xrWaitFrame` block durations now log when >1 s, so the first real headset
+idle will tell us how VDXR actually behaves (event-driven recovery vs
+keepalive-dependent).
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
