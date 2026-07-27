@@ -70,4 +70,9 @@ void draw_debug_ui();
 
 bool enabled();
 
+// Tuned values the VR preset persists to vrpreset.ini.
+float rate_per_sec();
+float deadzone_deg();
+void set_tuning(float ratePerSec, float deadzoneDeg);
+
 } // namespace bvr::b1r::body

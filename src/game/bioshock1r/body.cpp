@@ -21,11 +21,14 @@ const uint8_t* g_imageBase = nullptr;
 
 // ---- knobs (overlay thread writes, game thread reads) ----------------------
 
-// Default OFF for the flat acceptance gate: with this off the build must
-// reproduce the session-16 numbers exactly, which is how the integer-yaw
-// refactor gets its own regression test. Promoted to default ON (and into the
-// VR preset) once the gate passes.
-std::atomic<bool>  g_armed{false};
+// Default ON since session 17: the flat gate passed with it off (reproducing
+// the session-16 numbers, which is how the integer-yaw refactor got its own
+// regression test) and then passed again with it on - the hand's world pose
+// and the camera came out bit-identical, and the render lock's correction went
+// from swinging 10.5 UU across a +-30 deg head sweep to flat within 0.5 UU,
+// landing on the same 4.57 the calibrated zero-split configuration uses.
+// `vrbody off` is the live in-headset A/B against the session-16 build.
+std::atomic<bool>  g_armed{true};
 // 0 = instant 1:1 (the user's call, session 17): the body snaps to the head
 // yaw every frame, so stick-forward is ALWAYS exactly the look direction and
 // the camera-vs-body split stays ~0 - the best case for both the viewmodel
@@ -391,6 +394,14 @@ int32_t on_calcview(void* pc, void* viewActor, int32_t gameYawUnits,
 }
 
 bool enabled() { return g_armed.load(std::memory_order_relaxed); }
+
+float rate_per_sec() { return g_ratePerSec.load(std::memory_order_relaxed); }
+float deadzone_deg() { return g_deadzoneDeg.load(std::memory_order_relaxed); }
+
+void set_tuning(float ratePerSec, float deadzoneDeg) {
+    g_ratePerSec.store(ratePerSec < 0.0f ? 0.0f : ratePerSec, std::memory_order_relaxed);
+    g_deadzoneDeg.store(deadzoneDeg < 0.0f ? 0.0f : deadzoneDeg, std::memory_order_relaxed);
+}
 
 void handle_command(const char* args) {
     float v = 0.0f;

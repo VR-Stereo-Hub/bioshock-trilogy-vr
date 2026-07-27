@@ -431,6 +431,8 @@ void save_vr_preset() {
     fprintf(f, "aimTrimLYaw=%.1f\n", aim::trim_yaw_deg(0));
     fprintf(f, "aimTrimRPitch=%.1f\n", aim::trim_pitch_deg(1));
     fprintf(f, "aimTrimRYaw=%.1f\n", aim::trim_yaw_deg(1));
+    fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
+    fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
 }
@@ -444,6 +446,7 @@ void load_vr_preset_values() {
     int n = 0;
     float lp = aim::trim_pitch_deg(0), ly = aim::trim_yaw_deg(0);
     float rp = aim::trim_pitch_deg(1), ry = aim::trim_yaw_deg(1);
+    float bodyRate = body::rate_per_sec(), bodyDz = body::deadzone_deg();
     while (fgets(line, sizeof line, f)) {
         char key[48] = {};
         float v = 0.0f;
@@ -459,11 +462,14 @@ void load_vr_preset_values() {
         else if (strcmp(key, "aimTrimLYaw") == 0) ly = v;
         else if (strcmp(key, "aimTrimRPitch") == 0) rp = v;
         else if (strcmp(key, "aimTrimRYaw") == 0) ry = v;
+        else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
+        else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
         else --n;
     }
     fclose(f);
     aim::set_trim(0, lp, ly);
     aim::set_trim(1, rp, ry);
+    body::set_tuning(bodyRate, bodyDz);
     if (n) BVR_LOG("[b1r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
@@ -480,6 +486,7 @@ void apply_vr_preset() {
     aim::handle_command("laser on");
     hands::handle_command("on");       // viewmodel follows the controller
     hands::handle_command("pose aim"); // align to the AIM ray
+    body::handle_command("on");        // M7.5: stick-forward = look direction
     load_vr_preset_values();           // tuned sliders (ini) over defaults
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
