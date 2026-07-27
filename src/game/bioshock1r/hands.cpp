@@ -1,4 +1,4 @@
-// M7 visible hands + weapons. See hands.h for the design; ENGINE_NOTES
+﻿// M7 visible hands + weapons. See hands.h for the design; ENGINE_NOTES
 // "Viewmodel / AHands" for the derivations.
 //
 // Two drivable targets, learned from the first in-headset test (2026-07-25):
@@ -593,9 +593,11 @@ void handle_command(const char* args) {
         BVR_LOG("[hands] pose source = %s", aim ? "AIM (matches laser + bullets)"
                                                 : "GRIP (physical hand axis)");
     } else if (strcmp(verb, "scale") == 0) {
-        BVR_LOG("[hands] scale is not wired yet: no CONFIRMED DrawScale field on this "
-                "build (the two candidates probed 2026-07-25 were a hide/cull-style "
-                "field and an inert 1.0) - gun size stays a next-session item");
+        BVR_LOG("[hands] scale has no working lever yet - three flat-proven dead ends "
+                "2026-07-27 (ENGINE_NOTES session 16 part 2): cluster bone .s blows the "
+                "attached weapon up (the attach path inverts chain scale), and the rig "
+                "actor's DrawScale is geometry-inert on the fg path. Needs the "
+                "attach/fg render-path disasm or the vm_draw lane - next session's task");
     } else if (strcmp(verb, "probe") == 0) {
         int n = 1;
         if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 1;

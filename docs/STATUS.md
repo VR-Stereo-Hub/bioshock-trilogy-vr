@@ -4,6 +4,31 @@
 
 ## Current state (2026-07-27, session 16 - OPTION 2 COMPLETE FLAT: MATCHED LENS SHIPS ON, FULL ACCEPTANCE AT k=1)
 
+**IN-HEADSET VERDICT (same day, session 16 part 2): THE CORE WORKS. The
+user: "now it's fully working, and it's not moving with the head/headset/
+camera anymore!! Which is amazing progress!"** The model follows the
+controller and head-look is decoupled - the defect that survived sessions
+12-15 is gone in the headset. Remaining from the same run: (1) SCALE - "the
+left hand is like as big as my head and the weapon is like as big as my
+torso + head". Three levers were probed flat the same night and ALL THREE
+ARE DEAD (ENGINE_NOTES session 16 part 2): cluster bone .s blows the
+attached weapon up near-plane (the attach path inverts chain scale - even
+with the attach helper excluded), and rig-actor DrawScale is geometry-inert
+on the fg path (positions round-trip, meshes don't scale). Scale needs the
+attach/fg render-path disasm or the vm_draw lane - THE top next-session
+task; no knob ships. (2) Weapon-laser fine alignment via the existing
+pos/trim sliders - after scale. (3) A laser-crossing anomaly at large
+right-aim angles (laser drifts from the right side of the weapon to its
+left side) - discriminating questions + live A/Bs issued to the user.
+
+**Harness note that cost a false alarm: with the Virtual Desktop / Quest
+menu OPEN the XR session drops FOCUSED -> VISIBLE and the runtime stops
+delivering controller poses - the drive receives an identity pose and the
+model parks dead-center.** It looks exactly like "the viewmodel is stuck
+and ignores the controller". Close the overlay and it resumes. (Log
+signature: `xr: session state VISIBLE`, hands target rot pinned to
+(0, camera-yaw, 0).)
+
 **The decision hour picked the good branch: the driven rigid path's pull at
 the matched lens calibrated to +11.5 UU (not the vanilla path's 65 - the
 driven path's eye offset is NOT fov-coupled), two independent instruments
@@ -810,48 +835,66 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **THE IN-HEADSET RUN on the session-16 build** (checklist below): the
-   matched lens + calibrated pull is the shipping default and every flat
-   gate passed - the user's eye is the only remaining gate for M7-v2's
-   "Done when". `vrfgfov off` is the live A/B back to the session-14 look.
-1. **If the headset run reports depth slightly off**: `vrbones lockdgain`
+0. **VIEWMODEL SCALE - the render-path hunt (session 17 opener).** The user
+   needs hand+weapon at roughly half authored size; every engine-side lever
+   is flat-dead (ENGINE_NOTES session 16 part 2). Routes, in order: (a)
+   disasm the attach-matrix build (AActor::AttachToBone 0x379EF0, the
+   per-section fg bake 0x3DBF7C/0x3EDCBF -> 0x60ECCA chain from fgstack) to
+   find where chain scale is consumed - both the blowup inversion and a
+   clean injection point; (b) test weapon-actor DrawScale in ISOLATION (gun
+   only - masked by the chain blowup in tonight's combined test); (c) the
+   vm_draw replay lane, which owns the matrices outright. While there, keep
+   an eye out for an engine-side viewmodel-scale config sibling near the fg
+   fov consumer (the renderer reads PC+0x460 per frame - a scale neighbor
+   may exist on the same path).
+1. **The laser-crossing anomaly** (laser flips from right of the weapon to
+   left of it at large right-aim angles): collect the user's answers to the
+   discriminating questions (head turned or not; wrist-rotate vs lateral
+   reach; gradual slide vs jump; vertical too; do bullets follow the laser
+   while flipped; does one eye closed change it), plus the two live A/Bs
+   (`vrbones lockgain 1.0`, one-eye test). Then reproduce flat with a
+   simpose yaw/lateral sweep measuring rendered-barrel vs true-aim angle.
+   Candidate terms: the 10% lateral lock residual (gain 0.9), an off-axis
+   fg-projection mismatch, binocular disparity mismatch (game-side eye
+   offsets vs the runtime's true per-eye projection - worldScale-coupled;
+   note stand eye height 60 UU hints the true world scale is nearer 36 UU/m
+   than the current 50).
+2. **In-headset re-verify after (0) lands**: the session-16 checklist below
+   still stands for everything but scale.
+3. **If the headset run reports depth slightly off**: `vrbones lockdgain`
    is the live A/B (it scales the applied pull too - the 12.8 knob assumes
    0.9); if the resting spot reads wrong, `vrbones lock diff`. If the rig
    BLANKS when the hand comes near the face: expected inside ~23 cm (the
    behind-camera cull edge, ENGINE_NOTES session 16) - report the distance,
    a soft clamp on the applied pull near the face is the queued fix.
-2. **Model scale - CHECK IN-HEADSET BEFORE SPENDING TIME**: the session-14 fix
-   makes apparent size track distance world-correctly, which likely retires
-   the "gun huge" complaint entirely. The DrawScale lever (actor +0x2AC via
-   the dirty protocol / AActor::SetDrawScale 0x375830) stays queued ONLY for
-   "the model's proportions read oversized next to my real hand at the
-   CORRECT distance" - a different, smaller complaint.
-3. **Sway kill at source (UpdateHandValues bob params)**: possibly less urgent
+   (Weapon-laser fine alignment: the existing pos/trim sliders + "Save
+   offsets" - after the scale lands.)
+4. **Sway kill at source (UpdateHandValues bob params)**: possibly less urgent
    now - with lock ABS the flat shot series sat pixel-frozen (the per-frame
    re-pin may be absorbing the lateral sway); ask the user whether any
    breathing still shows before building this.
-4. **Polish knobs the headset run may ask for**: per-hand anchor trims (the
+5. **Polish knobs the headset run may ask for**: per-hand anchor trims (the
    left wrist anchor may want a palm offset), collapse scope (clavicle in or
    out), and a smoothing option if raw controller jitter reads on the model.
-5. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
+6. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
    engine line-check - start at the damage factory, factory fetched by 0x231E70
    in `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl
    `+0xEC`); verify a PROJECTILE plasmid (Incinerate); hide the head-centred
    crosshair; per-weapon offset profiles keyed by weapon class name; and the
    20-second load-crossing check the user still owes.
-6. **Dropped from M7 by the user's call**: dual-wield (BioShock 1 equips one
+7. **Dropped from M7 by the user's call**: dual-wield (BioShock 1 equips one
    hand at a time - it moves to the M10 BioShock 2 adapter, which supports it
    natively), elbow IK, arm bending, two-handed grips.
-7. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
+8. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
    Controller polish (deadzone/curve/menu timing) and rebinds stay parked in M9.
-8. Still open from M3: cutscene cameras are head-driven. The aim path already
+9. Still open from M3: cutscene cameras are head-driven. The aim path already
    guards on the view actor's vtable (AShockPlayer) - reuse that predicate for
    the camera when it is addressed.
-9. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
-   guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
-10. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
+10. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
+    guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
+11. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
     Link / SteamVR cross-check any time.
-11. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
+12. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
 ### IN-HEADSET CHECKLIST - M7-v2 matched-lens run (session 16 build)
@@ -898,7 +941,10 @@ caught is fixed. `vrfgfov off` flips back to the previous build's look live.
 Expected and not failures: crosshair still head-centred and disagreeing with
 the laser; HUD in both eyes; the rig's idle/fire animations may look muted or
 static while the drive holds the pose; `vrhands mode gun` prints "inert" by
-design; `vrhands mode hands` is the retired actor-pinning kept only for A/B.
+design; `vrhands mode hands` is the retired actor-pinning kept only for A/B;
+and with the VD/Quest MENU OPEN the model parks dead-center (the runtime
+stops delivering poses in the VISIBLE session state) - close the overlay
+and it resumes.
 
 ## Open questions / blockers
 
@@ -917,6 +963,30 @@ design; `vrhands mode hands` is the retired actor-pinning kept only for A/B.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 16 part 2 (IN-HEADSET: the core verdict is POSITIVE; the scale wall mapped)
+
+- The user tested the session-16 build in-headset: **"now it's fully
+  working, and it's not moving with the head/headset/camera anymore!!
+  Which is amazing progress!"** - the model follows the controller with
+  head-look decoupled. M7-v2's core mechanism has its first positive
+  in-headset verdict.
+- A "viewmodel stuck center, ignores the controller" false alarm was
+  root-caused live: the VD/Quest menu drops the XR session FOCUSED ->
+  VISIBLE and poses stop - identity pose parks the model center. Documented
+  in the checklist + ENGINE_NOTES.
+- Remaining user reports: model far over life size (hand ~ head, weapon ~
+  torso+head); weapon-laser fine alignment (existing sliders, after scale);
+  and a laser-crossing anomaly at large right-aim angles (questions + live
+  A/Bs issued; investigation queued).
+- The scale lever was hunted the same night - THREE flat-proven dead ends
+  (cluster bone .s: attach path blows the weapon up from ANY chain scale;
+  attach-bone exclusion: identical; rig DrawScale + position pre-divide:
+  geometry-inert on the fg path). All reverted; `vrhands scale` prints an
+  honest not-yet; the shipping drive is byte-identical in behavior to the
+  acceptance build (regression [tlm] reproduced df=17.4 k=1.00 depth=-12.81,
+  fire clean, dumps 8). Render-path disasm or vm_draw is session 17's
+  opener (ENGINE_NOTES session 16 part 2).
 
 ### 2026-07-27 - Session 16 (the decision hour picked branch (a): drive-on pull +11.5, matched lens ships ON, full flat acceptance at k=1)
 

@@ -318,10 +318,12 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       clean, dumps stable. ENGINE_NOTES "Foreground scene FOV" sessions 15-16.*
 - [ ] **Done when:** the weapon is one with the right controller and the plasmid hand is one
       with the left, each inspectable from any angle, at a believable size, with their effects
-      attached. (Arms hidden is a valid and expected answer.) *Mechanics flat-verified
-      2026-07-26 incl. the head-coupling counter; depth geometry flat-verified 2026-07-27;
-      the honest-lens configuration flat-verified 2026-07-27 (session 16); awaiting the
-      user's in-headset verdict (checklist in STATUS).*
+      attached. (Arms hidden is a valid and expected answer.) *CORE IN-HEADSET VERDICT
+      POSITIVE 2026-07-27 (session 16 part 2): "fully working, and it's not moving with the
+      head/headset/camera anymore" - tracking + head decoupling done. Still open for this
+      box: believable SIZE (all engine-side scale levers flat-dead, render-path work queued -
+      STATUS next steps 0) and the laser-crossing anomaly at large aim angles (STATUS next
+      steps 1).*
 
 - [ ] ~~Done when: hands + current weapon track the controller convincingly~~ (superseded by
       M7-v2 above; wrench melee rides the weapon path for free)

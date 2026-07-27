@@ -585,6 +585,15 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     g_cacheCount = 0;
     g_cacheSleeveCount = 0;
     const float* pa = g_ref[anchor].p;
+    // NOTE viewmodel scale has NO working lever yet - three flat-proven dead
+    // ends on 2026-07-27 (ENGINE_NOTES session 16 part 2): cluster bone .s
+    // scales the skin but ANY scale in the wrist chain makes the engine's
+    // attach path blow the weapon up near-plane (inverse-scale decompose;
+    // excluding the attach helper's own .s changed nothing), and the rig
+    // actor's DrawScale is geometry-inert on the fg path (bone positions
+    // round-trip through it, skin and gun render unscaled). The factor needs
+    // the render-path work (attach-matrix / fg section bake disasm, or the
+    // vm_draw replay lane) - until then no scale is applied here.
     for (int i = first; i <= last; ++i) {
         float rel[3] = {g_ref[i].p[0] - pa[0], g_ref[i].p[1] - pa[1], g_ref[i].p[2] - pa[2]};
         float rot[3];
@@ -812,7 +821,7 @@ void handle_command(const char* args) {
         }
     } else {
         BVR_LOG("[bones] unknown command '%s' (status|list|poke|freeze|collapse|ref|anchor|"
-                "lcluster|lock|lockgain|lockdgain|log)",
+                "lcluster|lock|lockgain|lockdgain|lockpull|log)",
                 verb);
     }
 }

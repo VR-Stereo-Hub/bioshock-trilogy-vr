@@ -1122,6 +1122,52 @@ and it never applies to the rigid sections rebuilt from our driven bones.
   wStar<4 refusal covers df<4; between ~4 and ~12 the rig may blank. Listed
   as an in-headset checklist probe.
 
+### Session 16 part 2 (2026-07-27) - in-headset core verdict + the viewmodel-scale wall
+
+**In-headset, same night: the core WORKS - the model follows the controller
+with head-look fully decoupled (user: "fully working... amazing progress").**
+Remaining user reports: the model reads far over life size (hand ~ head
+size, weapon ~ torso+head), and a laser-vs-weapon lateral flip at large
+right-aim angles (under investigation - see STATUS).
+
+**VIEWMODEL SCALE: three levers probed flat the same night, all DEAD - the
+factor needs render-path work.**
+
+1. **Cluster bone .s (hkQsTransform scale field)**: the SKINNED geometry
+   scales correctly (fist halved at .s 0.5), but the ATTACHED WEAPON blows
+   up to near-plane huge - the attach path decomposes an INVERSE-scale term
+   out of the wrist chain. Monotonic with s (0.8 -> moderately oversized gun,
+   0.5 -> drum chambers filling the screen).
+2. **Same, with the attach helper (bone 43) kept at authored scale**: the
+   IDENTICAL blowup - the attach math reads the chain (wrist 27 et al), not
+   the attach bone's own scale field. Any scale anywhere in the chain is
+   fatal to the attached weapon.
+3. **Rig-actor DrawScale (+0x2AC via the dirty protocol) + drive positions
+   pre-divided by s**: no blowup, anchor stays pinned (bone positions
+   round-trip through the scale - written p renders at s*p), but the
+   GEOMETRY is inert: gun width 240 -> 234 px at s=0.5 (2%, not 50%) and the
+   fingers compress to half-spacing at full size. The fg rig path consumes
+   actor DrawScale for bone translations but NOT for skin/attached-mesh
+   size.
+
+Untested in isolation: DrawScale on the WEAPON actor (its effect was masked
+by the chain blowup in the combined test) - it could at best scale the gun,
+never the hand. Next-session routes: disassemble the attach-matrix build
+(AActor::AttachToBone 0x379EF0 / the per-section fg bake at 0x3DBF7C -
+find where chain scale is consumed and where a clean scale can be injected),
+or take size control in the vm_draw replay lane where we own the matrices.
+The `vrhands scale` command stays as an honest not-yet message; no scale
+knob ships.
+
+**Harness note (cost a false alarm): with the Virtual Desktop / Quest menu
+open the XR session drops FOCUSED -> VISIBLE, the runtime stops delivering
+controller poses, and the drive receives an IDENTITY pose - the model parks
+dead-center as if stuck.** Log signature: `xr: session state VISIBLE` +
+hands target rot pinned to (0, camera-yaw, 0). Close the overlay and it
+resumes. Also noted: `xr: sr tag ring skewed (depth 8) - cleared` repeats
+while the session is VISIBLE/idle with presents at 0 - harmless in that
+state, recovers on resume.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on
