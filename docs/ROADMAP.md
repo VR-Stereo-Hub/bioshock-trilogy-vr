@@ -437,10 +437,22 @@ fixed or the release waits:**
       bright center pixels on a clean boot, toggle exact both ways.
 
 **HUD usability:**
-- [ ] See health + EVE clearly in VR: gameswf HUD draws redirected to offscreen RT → a
-      floating quad during stereo gameplay (moved up from M9 - it IS the "better HUD" work)
-- [ ] Keybind audit on Quest 3 Touch: every needed action reachable and correct (the M5
-      "rebinds wanted later" list gets resolved here)
+- [x] See health + EVE clearly in VR - DONE flat 2026-07-28 (session 19): the gameswf
+      HUD draws are classified per present interval (scene-vote + tonemap detection,
+      corrected fingerprint in ENGINE_NOTES) and redirected to an offscreen RT; the
+      alpha-repaired copy feeds a head-locked XrCompositionLayerQuad (distance/width/
+      height sliders, vrpreset.ini) AND a post-capture window composite, so the flat
+      window keeps its HUD while both eyes come out clean - this also fixes the old
+      "HUD in both eyes" defect, and the pause menu lands on the readable quad for
+      free. Flat: 119 HUD draws/interval classified, leaks=0, redirect removes the
+      HUD from the frame, composite restores the window, round-trips exact. The
+      in-headset quad verdict is on the session-19 checklist.
+- [x] Keybind audit on Quest 3 Touch - DONE flat 2026-07-28 (session 19): ground truth
+      pulled from User.ini XENON_* (ENGINE_NOTES - the game layout is A=Use, B=Heal,
+      X=Reload/Hack/EVE, Y=Jump; DPAD_UP/DOWN cycle ammo, flat-proven); the XR layer
+      re-routes Touch A->jump, B->use, Y->heal, X->reload, and right-stick Y FLICKS
+      (freed by the stick-pitch kill) pulse dpad up/down = ammo-type cycling. Headset
+      walkthrough on the checklist.
 - [ ] **Done when:** a friend can install from the release zip, press VR PRESET 1, see
       their health/EVE, and every binding they need works - and someone watching the
       monitor sees a normal single-eye picture, including after the headset comes off.

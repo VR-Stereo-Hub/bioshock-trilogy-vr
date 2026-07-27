@@ -205,6 +205,11 @@ evidence, and both need a headset.
   game first and retries past the poller's transient file lock. IMPORTANT: the poller runs
   inside the CalcView hook, which the engine pauses while the window is unfocused - after
   game-cmd, run a game-shot (it holds focus ~2.5 s) so the poll actually fires.
+- **Controlled boot to gameplay**: `powershell -ExecutionPolicy Bypass -File .\tools\boot.ps1`
+  (its OWN PowerShell call) launches via Steam, dismisses the revert-Options dialog with No,
+  and A-presses through the menus until the mod logs the `view state: GAMEPLAY` transition
+  (save-agnostic since session 19 - the strict ShockPlayer view predicate, any save). It ends
+  with one B press (closes a stray MAP screen); still screenshot-verify before measuring.
 - **Stale command.txt re-applies at boot** (learned 2026-07-24 session 7: a leftover
   "reentry stereo on" armed hooks at the menu on a fresh launch). Delete
   `%LOCALAPPDATA%\BioshockVR\command.txt` (or overwrite it) before a launch that must

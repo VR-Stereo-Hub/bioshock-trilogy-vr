@@ -1436,3 +1436,82 @@ two lines (`Damager = Instigator; InitiateDamage('None')`).
 trigger pull only switches hands ("SwitchToWeapons"/"SwitchToPlasmids"), the
 second one fires. A single synthetic pull therefore looks like it did nothing.
 `LeftMouse = Fire` (active hand), `RightMouse = SwitchWeaponsOrPlasmids`.
+
+## Session 19 - the gameswf HUD pipeline, the pad layout, and hide-inactive constraints
+
+### The in-game HUD fingerprint, corrected (supersedes the session-6 note)
+
+Frame-dump ground truth (stereo gameplay, lite+full dumps, 2026-07-28): the whole
+gameswf HUD is drawn EVERY present interval (both eye passes) as a contiguous run
+of ~119 NON-INDEXED `Draw` calls on the TONEMAP TARGET (backbuffer-sized RGBA8,
+RTV|SRV) **with the scene DSV still bound** (depth-testing off in state) - the
+session-6 "no DSV bound" detail was inverted for gameplay. The tonemap itself is
+the interval's only no-DSV draw on that target and samples the HDR scene RT
+(R11G11B10F). The world renders exclusively via `DrawIndexed`. Every HUD draw's
+stack carries the gameswf batch-flush at exe RVA **0x7B8EB5** (above the shared
+draw helper 0x765C1C), with the recursive movie-clip walk 0x7ED6A1 deeper in.
+DrawAuto/Dispatch/ExecuteCommandList are never used (census hooks added, all 0) -
+no deferred contexts anywhere.
+
+Classifier shipped in `core/gfx/hud_capture.cpp` (per present interval): the
+scene RT is the resource hosting the most DSV-bound DrawIndexed calls (vote, >=32
+wins); the first non-indexed draw on an LDR-1080 target sampling the vote leader
+is the tonemap and marks that target; every later non-indexed draw on it is HUD
+and gets our RTV substituted at draw time (through the ORIGINAL OMSetRenderTargets
+so the classifier's own binding state stays honest). Flat: ~119 hudDraws per
+interval, leaks=0 (nothing DrawIndexes the target post-tonemap), menus never arm
+(no scene votes), the pause menu redirects too (world keeps rendering under it -
+in-headset it lands on the readable quad).
+
+### gameswf destination alpha is garbage - repair before blending
+
+The capture RT (cleared to 0,0,0,0) receives gameswf output whose RGB is
+premultiplied BY CONSTRUCTION (SrcAlpha*src + InvSrcAlpha*black), but the alpha
+channel ends up unusable - a SOURCE_ALPHA consumer draws nothing. Shipped repair
+(`core/gfx/blit.cpp` ps_process): alpha = max(stored, saturate(luminance*2.5)),
+rgb untouched, blend OFF, into a second RT; every consumer (window composite,
+XR quad) reads the processed copy with PREMULTIPLIED blending (ONE/INV_SRC_ALPHA;
+quad submits WITHOUT the UNPREMULTIPLIED flag). Cosmetic cost: semi-transparent
+HUD glass reads slightly more vivid.
+
+### Frame dumps and the stereo pair phase
+
+A dump armed from the command seam (game thread, CalcView poll) always opens on
+the SAME phase of the stereo pair - single-window dumps can never see what the
+other half draws (this hid the HUD for half a session). `dumpframe [full] [n]`
+now records n consecutive present windows (files suffixed `_qN`).
+
+### The gamepad action layout (User.ini XENON_*, flat-verified)
+
+A=Use, B=UseHypoOfType MedHypo (heal), X=Hack|Reload|InjectBioAmmo (contextual),
+Y=Jump, LB/RB hold=ability/weapon radial (sticks feed xRadial* while held),
+LT/RT=SwitchAndFireAbility/Weapon, LS=Duck, RS=ZoomCycle, START=Pause,
+BACK=ShowContextHelp, DPAD_RIGHT=hints. **DPAD_UP and DPAD_DOWN cycle the
+equipped weapon's AMMO TYPE** (CallHudFunction DPadUp/DownPressed - flat-proven:
+00 Buck -> Electric Buck -> Exploding Buck on the shotgun). The VR bindings
+re-route the face buttons XR-side (openxr_input.cpp): Touch A->XInput Y (jump),
+B->A (use), Y->B (heal), X->X; right-stick Y flicks pulse DPAD_UP/DOWN for ammo
+(rising edge past 0.65 pre-deadzone, re-arm inside 0.30, 300 ms cooldown,
+suppressed while a grip is held - the radials read the stick).
+
+### Hide-inactive: the attach bone must never be scaled
+
+`vrhands hideinactive` collapses the inactive hand's cluster+sleeve by zero
+scale (positions pinned at the driven target), EXCEPT the weapon-attach bone 43:
+the engine's attach path inverse-decomposes chain scale (session 16 - any wrist
+chain scale blows the weapon up near-plane; zero would be 1/0), so the equipped
+weapon hides by TRANSLATING bone 43 to (0,0,-5000) component space instead
+(frustum-culled, scale untouched). Restore comes from g_ref BEFORE the incoming
+hand is driven on a switch - the rigid write sets p/q but never .s, so a stale
+zero scale would leave the hand invisible. An engine re-evaluation rewrites the
+whole array scales included, so g_ref can never hold our zeros.
+
+### The strict gameplay-view signal
+
+`body::is_gameplay_view` (ShockPlayer vtable on the view actor, no viewActor==pc
+escape hatch) is now computed every CalcView and published to the input bridge as
+the stick-pitch-kill gate, and logged on transition as
+`[b1r] view state: GAMEPLAY (ShockPlayer view)` / `menu/cutscene` - the harness's
+generic "save is loaded" detector (tools/boot.ps1). The intro and main menu read
+menu/cutscene (viewActor==pc there); the transition to GAMEPLAY fires exactly at
+save load, any save, any level.

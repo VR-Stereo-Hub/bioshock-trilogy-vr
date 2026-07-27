@@ -8,12 +8,14 @@ The mod is a DLL injected into the game's process. It hooks the game's DirectX 1
 the Vengeance engine (Unreal Engine 2.5 lineage) camera path, and drives them from an OpenXR
 session. No game files are modified and no game assets are distributed.
 
-> **Status:** first playable release. Working today: full-rate stereo rendering, 6DOF head
-> tracking, motion-controller aim with a laser (right hand = weapons, left hand = plasmids),
-> the visible viewmodel following the controller, body-follows-head movement ("walk where you
-> look"), a single-eye desktop mirror, and in-headset tuning sliders that persist. See
+> **Status:** playable. Working today: full-rate stereo rendering, 6DOF head tracking,
+> motion-controller aim with a laser (right hand = weapons, left hand = plasmids), the visible
+> viewmodel following the controller with the inactive hand hidden, body-follows-head movement
+> ("walk where you look"), the game HUD (health/EVE/ammo - and the pause menu) on a readable
+> floating panel in VR, VR-standard controller bindings with stick-flick ammo switching, a
+> single-eye desktop mirror, and in-headset tuning sliders that persist. See
 > [docs/STATUS.md](docs/STATUS.md) for the current state and [docs/ROADMAP.md](docs/ROADMAP.md)
-> for what is next (HUD readability in VR is the known big gap).
+> for what is next (per-weapon aim alignment is the known big gap).
 
 ## Requirements
 
@@ -41,8 +43,24 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 2. Press **F10** to open the mod overlay and click **VR PRESET 1** - one press arms
    everything in the right order: VR pacing, 6DOF camera, motion controllers, controller aim +
    laser, the viewmodel drive, body-follows-head, and stereo last.
-3. Quest 3 Touch: right controller aims and fires weapons, left controller aims and casts
-   plasmids, grips switch hands, sticks move and turn.
+3. Quest 3 Touch controls:
+
+| Input | Action |
+|---|---|
+| Right trigger | fire weapon (first pull raises it) |
+| Left trigger | cast plasmid (first pull raises it) |
+| Right grip | switch/cycle weapon (hold for the radial) |
+| Left grip | switch/cycle plasmid (hold for the radial) |
+| Left stick | move (crouch on click) |
+| Right stick | turn; **flick up/down = switch ammo type**; zoom on click |
+| A | jump |
+| B | use / interact |
+| X | reload / hack / inject EVE |
+| Y | first-aid kit |
+| Left menu button | pause (hold: map/objectives) |
+
+   Under VR the right stick no longer pitches the view (your head does); `vrinput pitchkill
+   off` restores stick pitch if you want it back.
 
 Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrpreset save`):
 
@@ -57,6 +75,11 @@ Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrprese
 
 The flat-screen crosshair is hidden by default (the laser replaces it); the "Flat-screen
 crosshair" checkbox or `vrxhair on` brings it back.
+
+The game HUD (health, EVE, ammo - and the pause menu) shows on a head-locked floating panel
+during stereo gameplay; "HUD distance/width/height offset" sliders place it, `vrhud off`
+disables the capture entirely, and the inactive hand's model is hidden while the other hand
+is raised (`vrhands hideinactive off` shows both).
 
 The desktop window mirrors the **left eye** while stereo runs (`vrmirror off` restores the raw
 alternating view), and the game keeps running at full speed on the monitor when you take the

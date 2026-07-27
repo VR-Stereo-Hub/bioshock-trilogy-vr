@@ -120,22 +120,28 @@ Known hard parts of re-entry and their mitigations:
   set) + game/bioshock1r/input_drive (drives UWindowsViewport::UpdateInput and the engine's own
   SetUseController). Details: ENGINE_NOTES "Gamepad architecture".*
 
-### Controller mapping (Quest 3 Touch -> Xbox 360 pad, M5)
+### Controller mapping (Quest 3 Touch -> Xbox 360 pad, M5; face buttons re-routed session 19)
+
+The game's own layout (User.ini XENON_*, ENGINE_NOTES session 19) is A=Use,
+B=Heal, X=Reload/Hack/EVE, Y=Jump - so the XR layer re-routes the face buttons
+to VR conventions (jump on the lower-right button) instead of passing through.
 
 | Touch input | XInput output | BioShock meaning |
 |---|---|---|
 | Left thumbstick | LS | move |
-| Right thumbstick | RS | look |
+| Right thumbstick | RS | look (Y zeroed during VR gameplay - the HMD owns pitch; `vrinput pitchkill off` restores) |
+| Right stick flick up / down | DPAD_UP / DPAD_DOWN pulse | ammo-type cycle (suppressed while a grip is held - the radials read the stick) |
 | Right trigger | RT | fire weapon |
 | Left trigger | LT | fire plasmid |
-| Right grip (squeeze, 0.70/0.55 hysteresis) | RB | next weapon |
-| Left grip (same) | LB | next plasmid |
-| A / B (right) | A / B | use / jump (game layout) |
-| X / Y (left) | X / Y | reload / EVE (game layout) |
-| Stick clicks | LS / RS click | crouch / zoom (game layout) |
+| Right grip (squeeze, 0.70/0.55 hysteresis) | RB | next weapon / weapon radial on hold |
+| Left grip (same) | LB | next plasmid / plasmid radial on hold |
+| A | Y | jump |
+| B | A | use / interact |
+| X | X | reload / hack / inject EVE |
+| Y | B | first-aid (med hypo) |
+| Stick clicks | LS / RS click | crouch / zoom |
 | Left menu, short press (<500 ms, pulsed on release) | START | pause menu |
 | Left menu, hold (>=500 ms) | BACK | map/objectives |
-| (unmapped - no spare inputs) | dpad | quick-select; test-only via `vrinput test press DU/DD/DL/DR`; real selection belongs to the M8 radial wheels |
 - **Lane 2 - engine-level**: console-exec dispatcher for discrete actions (weapon/plasmid
   switch, ToggleHUD, SetFOV - one high-value hook makes dozens of features one-liners); direct
   hooks for continuous aim.
