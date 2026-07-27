@@ -2,7 +2,14 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-28, session 19 - M8 COMPLETE FLAT: HUD on a floating quad, VR-standard bindings + ammo flicks, inactive hand hidden, stick pitch killed; v0.2.0 awaits the headset run)
+## Current state (2026-07-28, session 19 - M8 COMPLETE, v0.2.0 PUBLISHED: HUD on a floating quad, VR bindings, inactive hand hidden, stick pitch killed)
+
+**v0.2.0 IS PUBLISHED** (tag on main at PR #4's merge,
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.2.0) after the
+user's TWO in-headset passes: the main run ("I tested and it looks amazing")
+and the feedback-round re-verify ("everything passed"). Watch the repo issues
+for early-adopter reports. Next session starts at the SESSION 20 PLAN below
+(aim-sync algebra + the flat testing framework).
 
 **Branch `s19-m8-completion` (from main at v0.1.0). Everything below is
 flat-verified on clean boots with numeric acceptance; the in-headset checklist
@@ -1631,6 +1638,15 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-28 - Session 19 close (v0.2.0 PUBLISHED)
+
+- The user's re-verify passed everything ("Everything passed, go ahead").
+  PR #4 merged to main, tag v0.2.0 on the merge, release zip (RelWithDebInfo
+  DLLs + README.txt from the merged tree) + notes published on GitHub.
+  M8 is COMPLETE. Left-handed mode captured in the post-v1 backlog;
+  off-hand tracking + two-handed weapons queued in M9 behind the session-20
+  aim work; wrench swing gesture in M9 polish.
 
 ### 2026-07-28 - Session 19 part 3 (wheel-select fix + zoom removed)
 

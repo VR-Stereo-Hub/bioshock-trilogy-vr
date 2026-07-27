@@ -453,9 +453,14 @@ fixed or the release waits:**
       re-routes Touch A->jump, B->use, Y->heal, X->reload, and right-stick Y FLICKS
       (freed by the stick-pitch kill) pulse dpad up/down = ammo-type cycling. Headset
       walkthrough on the checklist.
-- [ ] **Done when:** a friend can install from the release zip, press VR PRESET 1, see
+- [x] **Done when:** a friend can install from the release zip, press VR PRESET 1, see
       their health/EVE, and every binding they need works - and someone watching the
       monitor sees a normal single-eye picture, including after the headset comes off.
+      **M8 COMPLETE 2026-07-28: v0.2.0 published**
+      (https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.2.0) after two
+      in-headset passes ("looks amazing") + the feedback round (stencil masks, true
+      alpha coverage, A/B swap, click-held ammo select, wheel pitch guard, zoom
+      removed) - every fix flat-verified then headset-confirmed.
 
 ## M9 - Comfort + UI/config + release polish (~2–3 sessions)
 
