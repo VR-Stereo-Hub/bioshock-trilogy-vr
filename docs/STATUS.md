@@ -1234,6 +1234,14 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    user reports the right stick dead there (the pitchkill gate is strict-
    view, which stays true while paused).
 
+   FOLLOW-ONS QUEUED BEHIND THIS WORK (user's call 2026-07-28, detailed in
+   ROADMAP M9): off-hand tracking (`vrhands offhand track` - drive the
+   inactive cluster from its controller instead of collapsing it; do after
+   (b) so both hands ride one algebra) and TWO-HANDED weapon handling
+   (foregrip engage + rear-to-front-hand aim line; hard prerequisites are
+   (b) and (d)/(e) - per-weapon identity and foregrip offsets). Neither
+   blocks v0.2.0.
+
 2. **DONE 2026-07-27: v0.1.0 IS PUBLISHED** - tag on main at PR #3's merge,
    release zip (both RelWithDebInfo DLLs + README.txt) at
    https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.1.0, known

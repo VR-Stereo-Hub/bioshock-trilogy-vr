@@ -459,6 +459,30 @@ fixed or the release waits:**
 
 ## M9 - Comfort + UI/config + release polish (~2–3 sessions)
 
+**Two-hand track (user's call 2026-07-28, sequenced AFTER the session-20 aim work):**
+- [ ] **Off-hand tracking** (`vrhands offhand track|hide`, default hide until judged by
+      eye): drive the INACTIVE hand's cluster from its controller instead of collapsing
+      it - the same rigid drive run on both clusters per frame. Reload/idle anims on the
+      tracked hand are overwritten by construction (the weapon's own skeleton still
+      animates itself). The open question is the off-hand's SHAPE (the engine's last
+      evaluated pose may be a grab/reach); mitigation on file: snapshot a good cluster
+      shape (e.g. the plasmid idle) and use it as the off-hand's fixed reference.
+      Prerequisite: none hard, but do it after the session-20 trim unification so both
+      hands ride one algebra.
+- [ ] **Two-handed weapon handling** (shotgun/MG/GL/crossbow/chemical thrower): left
+      hand within ~10 cm of the foregrip + grip = engage; weapon then aims along the
+      rear-hand -> front-hand line (a different ray source into the same fire-seam
+      substitution; the model gets the same target rotation) and the left cluster sits
+      at "bone-43 world transform + per-weapon foregrip offset" - a transform we WRITE,
+      so no engine cooperation needed. Release on grip-off or distance. Purely
+      presentation + aim math - the game has no two-hand mechanic to desync. What makes
+      it cheap here: no arms/elbows = no IK, and the art already contains authored
+      grip shapes to snapshot (the shotgun's two-hand idle). PREREQUISITES, in order:
+      session-20 trim-algebra unification (do not build two-hand aim on the algebra
+      being replaced), then FName/per-weapon identity + the muzzle/foregrip bone probe
+      (per-weapon foregrip offsets; the weapon skeletons may carry foregrip bones).
+      Per-weapon engage radius + offsets tuned by eye.
+
 - [ ] Snap turn, height/seated recenter, optional vignette
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
