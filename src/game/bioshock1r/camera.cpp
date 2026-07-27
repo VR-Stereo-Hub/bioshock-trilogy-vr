@@ -72,6 +72,18 @@ std::atomic<float> g_headOffFwdUu{0.0f};
 // run on the game thread next frame.
 std::atomic<bool> g_vrPresetPending{false};
 std::atomic<bool> g_vrPresetSavePending{false};
+
+// M8 session 18 part 2: the flat-screen crosshair, DEFAULT HIDDEN (user ask).
+// The lever is `ShockPlayer.bReticleDisabled` - the game's own RenderReticle
+// then pushes "NoReticle" to the flash HUD every frame (script source read
+// straight from ShockGame.U; ENGINE_NOTES session 18 part 2). It is written
+// through the engine's own console SET handler via the exec seam, so no
+// property offset or bitmask is ever needed, and SET also writes the class
+// default, so pawns spawned later (load crossings) inherit it. Re-asserted
+// on a slow cadence in case anything script-side calls EnableReticle.
+std::atomic<bool> g_crosshairVisible{false}; // `vrxhair on` re-shows it
+int g_crosshairApplied = -1;                 // last state pushed (-1 = never)
+uint64_t g_crosshairAssertMs = 0;            // game thread only
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
@@ -401,6 +413,23 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "vrpreset") == 0) {
         if (strncmp(args, "save", 4) == 0) save_vr_preset();
         else apply_vr_preset();
+    } else if (strcmp(cmd, "vrpace") == 0) {
+        bvr::vr::handle_pace_command(args); // M8 disconnect-stall guard
+    } else if (strcmp(cmd, "vrmirror") == 0) {
+        bvr::vr::handle_mirror_command(args); // M8 single-eye desktop mirror
+    } else if (strcmp(cmd, "vrxhair") == 0) {
+        // M8 part 2: the flat-screen crosshair. Default HIDDEN; "on" re-shows.
+        if (strncmp(args, "on", 2) == 0) {
+            g_crosshairVisible.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b1r] crosshair ON (flat reticle re-enabled)");
+        } else if (strncmp(args, "off", 3) == 0) {
+            g_crosshairVisible.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b1r] crosshair OFF (ShockPlayer.bReticleDisabled via engine SET)");
+        } else {
+            BVR_LOG("[b1r] crosshair %s (applied=%d) - vrxhair on|off|status",
+                    g_crosshairVisible.load(std::memory_order_relaxed) ? "ON" : "off",
+                    g_crosshairApplied);
+        }
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args); // DR-5 probe; logs its own echoes
     }
@@ -431,10 +460,21 @@ void save_vr_preset() {
     fprintf(f, "aimTrimLYaw=%.1f\n", aim::trim_yaw_deg(0));
     fprintf(f, "aimTrimRPitch=%.1f\n", aim::trim_pitch_deg(1));
     fprintf(f, "aimTrimRYaw=%.1f\n", aim::trim_yaw_deg(1));
+    fprintf(f, "aimPosLFwd=%.1f\n", aim::pos_fwd_cm(0));
+    fprintf(f, "aimPosLRight=%.1f\n", aim::pos_right_cm(0));
+    fprintf(f, "aimPosLUp=%.1f\n", aim::pos_up_cm(0));
+    fprintf(f, "aimPosRFwd=%.1f\n", aim::pos_fwd_cm(1));
+    fprintf(f, "aimPosRRight=%.1f\n", aim::pos_right_cm(1));
+    fprintf(f, "aimPosRUp=%.1f\n", aim::pos_up_cm(1));
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
+    fprintf(f, "crosshairVisible=%d\n",
+            g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0);
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
+    // The per-hand model offsets live in hands.ini; saving them here too makes
+    // the one in-headset save button cover every tuned slider.
+    hands::save_offsets();
 }
 
 void load_vr_preset_values() {
@@ -446,6 +486,8 @@ void load_vr_preset_values() {
     int n = 0;
     float lp = aim::trim_pitch_deg(0), ly = aim::trim_yaw_deg(0);
     float rp = aim::trim_pitch_deg(1), ry = aim::trim_yaw_deg(1);
+    float plf = aim::pos_fwd_cm(0), plr = aim::pos_right_cm(0), plu = aim::pos_up_cm(0);
+    float prf = aim::pos_fwd_cm(1), prr = aim::pos_right_cm(1), pru = aim::pos_up_cm(1);
     float bodyRate = body::rate_per_sec(), bodyDz = body::deadzone_deg();
     while (fgets(line, sizeof line, f)) {
         char key[48] = {};
@@ -462,13 +504,23 @@ void load_vr_preset_values() {
         else if (strcmp(key, "aimTrimLYaw") == 0) ly = v;
         else if (strcmp(key, "aimTrimRPitch") == 0) rp = v;
         else if (strcmp(key, "aimTrimRYaw") == 0) ry = v;
+        else if (strcmp(key, "aimPosLFwd") == 0) plf = v;
+        else if (strcmp(key, "aimPosLRight") == 0) plr = v;
+        else if (strcmp(key, "aimPosLUp") == 0) plu = v;
+        else if (strcmp(key, "aimPosRFwd") == 0) prf = v;
+        else if (strcmp(key, "aimPosRRight") == 0) prr = v;
+        else if (strcmp(key, "aimPosRUp") == 0) pru = v;
         else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
+        else if (strcmp(key, "crosshairVisible") == 0)
+            g_crosshairVisible.store(v != 0.0f, std::memory_order_relaxed);
         else --n;
     }
     fclose(f);
     aim::set_trim(0, lp, ly);
     aim::set_trim(1, rp, ry);
+    aim::set_pos_offset(0, plf, plr, plu);
+    aim::set_pos_offset(1, prf, prr, pru);
     body::set_tuning(bodyRate, bodyDz);
     if (n) BVR_LOG("[b1r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
@@ -490,6 +542,20 @@ void apply_vr_preset() {
     load_vr_preset_values();           // tuned sliders (ini) over defaults
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
+}
+
+// Crosshair upkeep (see the globals): push the wanted state through the
+// engine's SET handler on change, and re-assert every 15 s while hidden in
+// case script-side EnableReticle callers exist somewhere. Game thread.
+void assert_crosshair(uint64_t now) {
+    int want = g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0;
+    bool due = want != g_crosshairApplied ||
+               (want == 0 && now - g_crosshairAssertMs >= 15000);
+    if (!due) return;
+    g_crosshairApplied = want;
+    g_crosshairAssertMs = now;
+    console_exec::run_engine(want ? "set ShockPlayer bReticleDisabled False"
+                                  : "set ShockPlayer bReticleDisabled True");
 }
 
 void poll_command_file(uint64_t now) {
@@ -597,6 +663,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // M5: pump the engine's own pad pipeline against the synthetic gamepad
     // (self-throttles to once per present; no-op while vrinput is off).
     input_drive::on_frame(now);
+    assert_crosshair(now); // M8 part 2: flat crosshair hidden by default
     if (g_logCamera.load(std::memory_order_relaxed)) {
         if (g_lastHeartbeatMs == 0) {
             g_lastHeartbeatMs = now;
@@ -1048,6 +1115,9 @@ void draw_debug_ui() {
         ImGui::SameLine();
         if (ImGui::Button("Save preset values"))
             g_vrPresetSavePending.store(true, std::memory_order_relaxed);
+        bool xhair = g_crosshairVisible.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Flat-screen crosshair (default off in VR)", &xhair))
+            g_crosshairVisible.store(xhair, std::memory_order_relaxed);
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);

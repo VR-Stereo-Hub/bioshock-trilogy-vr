@@ -72,6 +72,15 @@ float trim_pitch_deg(int hand);
 float trim_yaw_deg(int hand);
 void set_trim(int hand, float pitchDeg, float yawDeg);
 
+// The aim-ray ORIGIN offset (cm, in the trimmed ray's frame), PER HAND -
+// session 18 part 2. Moves the laser AND the fire origin together (applied
+// once at ray build); the viewmodel keeps its own offsets. `vraim pos [l|r]
+// <fwd> <right> <up>`; set_pos_offset is the VR-preset load path.
+float pos_fwd_cm(int hand);
+float pos_right_cm(int hand);
+float pos_up_cm(int hand);
+void set_pos_offset(int hand, float fwdCm, float rightCm, float upCm);
+
 // True while substitution is armed (master switch + a usable hand ray).
 bool active();
 

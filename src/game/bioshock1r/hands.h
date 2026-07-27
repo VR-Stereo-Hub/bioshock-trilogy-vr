@@ -48,10 +48,14 @@ void on_calcview(const FrameContext& ctx);
 //   probe [n]               log every AHands + player-weapon instance, choose none
 //   hand l|r|auto           which controller drives the model (auto = the hand
 //                           whose trigger was last pulled; default)
-//   pos <fwd> <right> <up>  model offset in cm, in the model's final frame
-//   rot <pitch> <yaw> <roll>  mesh-alignment trim in degrees, composed in the
-//                           controller's LOCAL frame (holds at any orientation)
-//   save | reload           persist / re-read the offsets
+//   pos [l|r] <fwd> <right> <up>  model offset in cm, in the model's final
+//                           frame; no side = BOTH hands (legacy form, what the
+//                           harness and old scripts use)
+//   rot [l|r] <pitch> <yaw> <roll>  mesh-alignment trim in degrees, composed in
+//                           the controller's LOCAL frame (holds at any
+//                           orientation); no side = BOTH hands
+//   save | reload           persist / re-read the offsets (per-hand keys in
+//                           hands.ini; a legacy suffix-less key loads to both)
 //   test <dYaw> <dPitch> [distUU] [holdMs]   camera-relative placement (proves
 //                           the write lands; no pose math)
 //   simpose <yaw> <pitch> <roll> [holdMs]    synthetic XR controller pose fed
@@ -64,6 +68,11 @@ void handle_command(const char* args);
 // whose trigger last fired, or the forced choice. Shared with the aim laser so
 // the beam leaves the hand that is actually holding the weapon.
 int active_hand();
+
+// Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
+// Called by `vrpreset save` too, so the one in-headset save button covers the
+// model sliders along with the preset's own values.
+void save_offsets();
 
 // Overlay section (render thread).
 void draw_debug_ui();

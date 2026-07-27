@@ -40,6 +40,12 @@ float stick_deadzone();
 // trigger is the player pulling" is information the mod already owns.
 void last_composed_triggers(uint8_t* lt, uint8_t* rt);
 
+// Last composed bumper pair. The grips compose to the bumpers, and in this
+// game a bumper press SWITCHES the raised hand (LB -> plasmid = left hand,
+// RB -> weapon = right hand) without any trigger event - the M8 grip-switch
+// fix latches hand attribution from these too.
+void last_composed_bumpers(bool* lb, bool* rb);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping

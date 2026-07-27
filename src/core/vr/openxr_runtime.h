@@ -69,6 +69,27 @@ void set_camera_mode(bool on);
 void set_enabled(bool on);
 void set_sr_pair_pacing(bool on);
 
+// --- M8: headset-disconnect stall guard --------------------------------------
+// "vrpace ..." seam (game thread). When the session leaves FOCUSED after
+// having held it, presents skip the blocking xrWaitFrame so the flat window
+// keeps running while the headset idles; a 5 s keepalive still paces one real
+// frame so the runtime can re-grant FOCUSED even if it wants to see frames.
+//   on | off          the guard (off = pre-M8 stall behavior, live A/B)
+//   simidle on|off    flat stand-in for a headset idle: the same guard
+//                     decision runs with the state forced VISIBLE and a 1 s
+//                     sleep in place of the runtime's blocked wait (flat has
+//                     no XR session, so this is how the guard is verified)
+//   status            guard state + skip/keepalive/last-wait telemetry
+void handle_pace_command(const char* args);
+
+// --- M8: desktop mirror ------------------------------------------------------
+// "vrmirror ..." seam (game thread). Under SequentialReentry stereo the flat
+// window alternates L/R eyes per present; the mirror pins it to the LEFT eye
+// (left presents snapshot the backbuffer, right presents re-show the held
+// image AFTER the right eye's XR capture, so the headset feed is untouched).
+//   on | off | status   (off = the pre-M8 alternation, live A/B)
+void handle_mirror_command(const char* args);
+
 // Symmetric horizontal FOV (degrees) circumscribing the headset's per-eye
 // FOV at the backbuffer aspect - what the game should render with in camera
 // mode. 0 until the first views are located.
@@ -116,6 +137,9 @@ struct LaserConfig {
     int hand = 1;              // 0 left, 1 right
     float pitchTrimDeg = 0.0f; // must match the fire ray's trim
     float yawTrimDeg = 0.0f;
+    float posFwdCm = 0.0f;     // ray ORIGIN offset in the trimmed ray's frame,
+    float posRightCm = 0.0f;   // matching the game-side fire-origin offset
+    float posUpCm = 0.0f;      // (cm here; the game side scales by worldScale)
     int dots = 6;              // clamped to the layer budget
     float nearM = 0.30f;       // first dot, meters from the controller
     float farM = 6.0f;         // last dot

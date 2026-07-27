@@ -52,6 +52,7 @@ Gamepad g_lastComposed{};
 // an atomic rather than a peek at g_lastComposed so a hooked engine native on
 // the game thread never has to take g_mutex.
 std::atomic<uint16_t> g_lastTriggers{0};
+std::atomic<uint16_t> g_lastButtons{0}; // composed button bits, same contract
 uint32_t g_packet = 0;            // bridge-owned monotonic dwPacketNumber
 bool g_packetBump = false;        // forced bump on enable/disable edges
 
@@ -158,10 +159,14 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
         // tell weapon fire from plasmid fire, and that has to work for a player
         // on a physical pad too.
         uint16_t t = 0;
-        if (*result == ERROR_SUCCESS)
+        uint16_t b = 0;
+        if (*result == ERROR_SUCCESS) {
             t = static_cast<uint16_t>(xs->Gamepad.bLeftTrigger) |
                 static_cast<uint16_t>(static_cast<uint16_t>(xs->Gamepad.bRightTrigger) << 8);
+            b = xs->Gamepad.wButtons;
+        }
         g_lastTriggers.store(t, std::memory_order_relaxed);
+        g_lastButtons.store(b, std::memory_order_relaxed);
         return;
     }
 
@@ -187,6 +192,7 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     g_lastTriggers.store(static_cast<uint16_t>(out.lt) |
                              static_cast<uint16_t>(static_cast<uint16_t>(out.rt) << 8),
                          std::memory_order_relaxed);
+    g_lastButtons.store(out.buttons, std::memory_order_relaxed);
 
     if (!g_loggedFirstCompose.exchange(true, std::memory_order_relaxed))
         BVR_LOG("input: first synthetic compose served (packet %u)", g_packet);
@@ -468,6 +474,12 @@ void last_composed_triggers(uint8_t* lt, uint8_t* rt) {
     uint16_t t = g_lastTriggers.load(std::memory_order_relaxed);
     if (lt) *lt = static_cast<uint8_t>(t & 0xFF);
     if (rt) *rt = static_cast<uint8_t>(t >> 8);
+}
+
+void last_composed_bumpers(bool* lb, bool* rb) {
+    uint16_t b = g_lastButtons.load(std::memory_order_relaxed);
+    if (lb) *lb = (b & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+    if (rb) *rb = (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
 }
 
 void handle_command(const char* args) {

@@ -64,6 +64,7 @@ ID3D11Texture2D* g_laserDot = nullptr; // CPU-generated source, copied in per fr
 std::atomic<bool> g_laserOn{false};
 std::atomic<int> g_laserHand{1};
 std::atomic<float> g_laserPitchTrim{0.0f}, g_laserYawTrim{0.0f};
+std::atomic<float> g_laserPosFwdCm{0.0f}, g_laserPosRightCm{0.0f}, g_laserPosUpCm{0.0f};
 std::atomic<int> g_laserDots{6};
 std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
 std::atomic<uint32_t> g_laserLayersSubmitted{0};
@@ -150,6 +151,51 @@ bool g_srPairOpen = false; // present thread only
 std::atomic<uint32_t> g_srPairs{0}, g_srPairAborts{0};
 std::atomic<bool> g_loggedFirstPair{false};
 
+// M8 release blocker (a): the headset-disconnect stall guard. When the
+// headset idles, the runtime drops the session out of FOCUSED and xrWaitFrame
+// starts blocking for seconds per call, dragging the flat window under 1 fps
+// (log signature: presents=0/s, `xr: session state VISIBLE`). Once a session
+// has been FOCUSED, losing FOCUSED switches pacing to SKIP: presents stop
+// calling the blocking wait entirely and the game runs free, while
+// pump_events keeps running every present so the return to FOCUSED is acted
+// on immediately. A low-cadence keepalive still runs one real paced frame in
+// case the runtime wants to see frames before re-granting FOCUSED -
+// event-driven recovery is the primary path, the keepalive is insurance.
+// The guard NEVER engages before the first FOCUSED: during bring-up
+// (SYNCHRONIZED -> VISIBLE -> FOCUSED) the runtime needs submitted frames to
+// advance its own state machine, so a naive "skip whenever not FOCUSED"
+// would deadlock session start.
+constexpr uint64_t kPaceKeepaliveMs = 5000;
+std::atomic<bool> g_paceGuard{true};      // A/B knob (`vrpace off` = old behavior)
+std::atomic<bool> g_everFocused{false};   // written on the present thread
+uint64_t g_nextKeepaliveMs = 0;           // present thread only
+std::atomic<uint32_t> g_paceSkips{0}, g_paceKeepalives{0};
+std::atomic<uint32_t> g_lastWaitMs{0}; // last xrWaitFrame block, telemetry
+std::atomic<bool> g_simIdle{false};    // flat stand-in (`vrpace simidle on`)
+
+// M8 release blocker (b): the desktop mirror. Under SequentialReentry every
+// Present alternates the backbuffer between the two eyes, so the flat window
+// cannot be streamed, recorded, or shown. Fix: LEFT-eye presents snapshot the
+// backbuffer (read-only - the compositor's eye capture is untouched); on
+// RIGHT-eye presents, AFTER the right eye has been captured into its XR
+// swapchain, the held left image is copied back over the backbuffer, so the
+// real Present always displays the LEFT eye. Runs off the same sr eye tags
+// the capture uses, and also on presents with no open XR frame (pace-guard
+// skips, session gone) - the game keeps presenting alternating eyes there
+// and the window still needs the pin.
+// (Session-17 screenshot clue, explained: the pair's two presents have very
+// unequal display time - L is visible only while the game builds the R frame,
+// R through the whole next blocking xrWaitFrame - so DWM-sourced captures
+// land on R with high probability. Same phase 12/12 was duty-cycle skew, not
+// absence of alternation; a 60 Hz recorder still catches L slices.)
+std::atomic<bool> g_mirror{true};        // `vrmirror off` = old alternation
+ID3D11Texture2D* g_mirrorTex = nullptr;  // held left-eye image, present thread
+uint32_t g_mirrorW = 0, g_mirrorH = 0;
+DXGI_FORMAT g_mirrorFmt = DXGI_FORMAT_UNKNOWN;
+bool g_mirrorHeld = false;               // a left image has been snapshotted
+std::atomic<uint32_t> g_mirrorHolds{0}, g_mirrorBlits{0};
+std::atomic<bool> g_loggedFirstMirror{false};
+
 // Pop one tag; 0 = none pending (mono/AER frame).
 int sr_pop_eye() {
     uint32_t tail = g_srTail.load(std::memory_order_relaxed);
@@ -189,6 +235,87 @@ const char* state_str(XrSessionState s) {
         case XR_SESSION_STATE_EXITING: return "EXITING";
         default: return "UNKNOWN";
     }
+}
+
+// The stall-guard decision for one present, shared verbatim by the real pace
+// path and the flat simulation (which forces state/everFocused). True = this
+// present must NOT run the blocking pacing. Present thread only.
+bool pace_should_skip(XrSessionState state, bool everFocused, uint64_t now) {
+    if (!g_paceGuard.load(std::memory_order_relaxed)) return false;
+    if (state == XR_SESSION_STATE_FOCUSED) return false;
+    if (!everFocused) return false; // bring-up: frames are how we REACH focused
+    if (now >= g_nextKeepaliveMs) {
+        g_nextKeepaliveMs = now + kPaceKeepaliveMs;
+        g_paceKeepalives.fetch_add(1, std::memory_order_relaxed);
+        BVR_LOG("xr: pace keepalive while %s (one paced frame so the runtime can "
+                "re-grant FOCUSED; skips so far %u)",
+                state_str(state), g_paceSkips.load(std::memory_order_relaxed));
+        return false;
+    }
+    g_paceSkips.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void release_mirror() {
+    if (g_mirrorTex) {
+        g_mirrorTex->Release();
+        g_mirrorTex = nullptr;
+    }
+    g_mirrorHeld = false;
+    g_mirrorW = g_mirrorH = 0;
+    g_mirrorFmt = DXGI_FORMAT_UNKNOWN;
+}
+
+// The eye pin for one present (see the block comment at the globals). Uses
+// the game device straight off the backbuffer, so it works with or without a
+// live XR session. eyeSign: -1 = this backbuffer is the LEFT eye (snapshot),
+// +1 = RIGHT eye (re-blit the held left over it - call only AFTER the right
+// eye's XR capture), 0 = mono (nothing to pin).
+void mirror_present(IDXGISwapChain* swapchain, int eyeSign) {
+    if (eyeSign == 0 || !g_mirror.load(std::memory_order_relaxed)) return;
+    ID3D11Texture2D* backbuffer = nullptr;
+    if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) || !backbuffer) return;
+    D3D11_TEXTURE2D_DESC bd{};
+    backbuffer->GetDesc(&bd);
+    ID3D11Device* dev = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    backbuffer->GetDevice(&dev);
+    if (dev) dev->GetImmediateContext(&ctx);
+    if (ctx) {
+        if (g_mirrorTex &&
+            (g_mirrorW != bd.Width || g_mirrorH != bd.Height || g_mirrorFmt != bd.Format))
+            release_mirror();
+        if (!g_mirrorTex && eyeSign < 0) {
+            D3D11_TEXTURE2D_DESC td = bd;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = 0;
+            td.CPUAccessFlags = 0;
+            td.MiscFlags = 0;
+            if (SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_mirrorTex))) {
+                g_mirrorW = bd.Width;
+                g_mirrorH = bd.Height;
+                g_mirrorFmt = bd.Format;
+            } else {
+                g_mirrorTex = nullptr; // failed create: mirror silently off
+            }
+        }
+        if (g_mirrorTex) {
+            if (eyeSign < 0) {
+                ctx->CopyResource(g_mirrorTex, backbuffer);
+                g_mirrorHeld = true;
+                g_mirrorHolds.fetch_add(1, std::memory_order_relaxed);
+            } else if (g_mirrorHeld) {
+                ctx->CopyResource(backbuffer, g_mirrorTex);
+                g_mirrorBlits.fetch_add(1, std::memory_order_relaxed);
+                if (!g_loggedFirstMirror.exchange(true))
+                    BVR_LOG("xr: desktop mirror pinned to the LEFT eye "
+                            "(right-eye presents re-show the held left image)");
+            }
+        }
+        ctx->Release();
+    }
+    if (dev) dev->Release();
+    backbuffer->Release();
 }
 
 void reset_aer() {
@@ -244,6 +371,8 @@ void teardown_session(const char* why) {
     g_srPairOpen = false;
     g_system = XR_NULL_SYSTEM_ID;
     g_state = XR_SESSION_STATE_UNKNOWN;
+    g_everFocused = false;
+    g_nextKeepaliveMs = 0;
     g_framesSubmitted = 0;
     g_nextRetryMs = GetTickCount64() + 5000; // cooldown before the next attempt
 }
@@ -490,10 +619,23 @@ void pump_events() {
                     }
                     break;
                 }
+                case XR_SESSION_STATE_FOCUSED:
+                    if (g_everFocused &&
+                        g_paceSkips.load(std::memory_order_relaxed) > 0)
+                        BVR_LOG("xr: FOCUSED again - full pacing resumes (guard "
+                                "skipped %u presents, %u keepalives)",
+                                g_paceSkips.load(std::memory_order_relaxed),
+                                g_paceKeepalives.load(std::memory_order_relaxed));
+                    g_everFocused = true;
+                    g_nextKeepaliveMs = 0;
+                    break;
                 case XR_SESSION_STATE_STOPPING:
                     if (g_sessionBegun) {
                         xrEndSession(g_session);
                         g_sessionBegun = false;
+                        // The next bring-up must pace freely again (bring-up
+                        // needs frames), so the focus latch resets with it.
+                        g_everFocused = false;
                         BVR_LOG("xr: session stopped (headset idle?) - waiting for READY again");
                     }
                     break;
@@ -558,6 +700,19 @@ void init_instance() {
 }
 
 void on_present_begin(IDXGISwapChain* swapchain) {
+    // Flat stand-in for the headset-idle stall (flat has no XR session, so the
+    // real path below never runs): the SAME guard decision runs with the state
+    // forced VISIBLE and the focus latch forced, and a 1 s sleep stands in for
+    // the runtime's blocked xrWaitFrame on frames the guard lets through.
+    // Acceptance: `vrpace simidle on` with the guard ON holds presents/s near
+    // the free-running rate (one 1 s keepalive hitch per 5 s); with the guard
+    // OFF it collapses under 1/s - the stall being fixed, reproduced.
+    if (g_simIdle.load(std::memory_order_relaxed)) {
+        if (!pace_should_skip(XR_SESSION_STATE_VISIBLE, true, GetTickCount64()))
+            Sleep(1000);
+        return;
+    }
+
     if (g_instance == XR_NULL_HANDLE) return;
 
     if (!g_enabled.load(std::memory_order_relaxed)) {
@@ -579,6 +734,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     pump_events();
     if (g_session == XR_NULL_HANDLE || !g_sessionBegun) return;
 
+    // M8 (a): headset idle (session left FOCUSED after having held it) - skip
+    // the blocking pacing so the flat window keeps running. Events were
+    // already pumped above, so recovery needs no paced frame to be seen.
+    if (pace_should_skip(g_state, g_everFocused, GetTickCount64())) return;
+
     // A mid-session ResizeBuffers destroys the swapchains; recreate them at
     // the new backbuffer size (and recompute the fov, which depends on aspect).
     if (g_swapchains[0] == XR_NULL_HANDLE) {
@@ -591,7 +751,21 @@ void on_present_begin(IDXGISwapChain* swapchain) {
 
     XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
     g_frameState = {XR_TYPE_FRAME_STATE};
+    uint64_t waitStart = GetTickCount64();
     XrResult r = xrWaitFrame(g_session, &fwi, &g_frameState);
+    uint32_t waitMs = static_cast<uint32_t>(GetTickCount64() - waitStart);
+    g_lastWaitMs.store(waitMs, std::memory_order_relaxed);
+    // Telemetry for the disconnect stall: a healthy wait is one display
+    // period. Long blocks with their session state tell us how THIS runtime
+    // behaves when the headset idles (rate-limited: keepalives are expected
+    // to block while unfocused).
+    if (waitMs > 1000) {
+        static uint64_t lastStallLogMs = 0;
+        if (waitStart - lastStallLogMs > 5000) {
+            lastStallLogMs = waitStart;
+            BVR_LOG("xr: xrWaitFrame blocked %u ms (state %s)", waitMs, state_str(g_state));
+        }
+    }
     if (XR_FAILED(r)) {
         BVR_LOG("xr: xrWaitFrame failed: %s", res_str(r));
         teardown_session("waitframe failed");
@@ -775,6 +949,36 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     d[1] = sinf(pitch);
     d[2] = -cp * cosf(yaw);
 
+    // Ray ORIGIN offset (cm -> m) in the TRIMMED ray's zero-roll frame - the
+    // same offset the game-side ray build applies in UU (aim.cpp), so the
+    // beam and the fire origin move together by construction. right =
+    // d x worldUp (horizontal right of the ray), up completes the frame;
+    // near-vertical rays get the forward component only (degenerate cross).
+    {
+        float ofM = g_laserPosFwdCm.load(std::memory_order_relaxed) * 0.01f;
+        float orM = g_laserPosRightCm.load(std::memory_order_relaxed) * 0.01f;
+        float ouM = g_laserPosUpCm.load(std::memory_order_relaxed) * 0.01f;
+        if (ofM != 0.0f || orM != 0.0f || ouM != 0.0f) {
+            pos[0] += d[0] * ofM;
+            pos[1] += d[1] * ofM;
+            pos[2] += d[2] * ofM;
+            float right[3] = {d[1] * 0.0f - d[2] * 1.0f, d[2] * 0.0f - d[0] * 0.0f,
+                              d[0] * 1.0f - d[1] * 0.0f}; // d x (0,1,0)
+            float rl = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+            if (rl > 1e-3f) {
+                right[0] /= rl;
+                right[1] /= rl;
+                right[2] /= rl;
+                float up2[3] = {right[1] * d[2] - right[2] * d[1],
+                                right[2] * d[0] - right[0] * d[2],
+                                right[0] * d[1] - right[1] * d[0]}; // right x d
+                pos[0] += right[0] * orM + up2[0] * ouM;
+                pos[1] += right[1] * orM + up2[1] * ouM;
+                pos[2] += right[2] * orM + up2[2] * ouM;
+            }
+        }
+    }
+
     // Billboard against the head (midpoint of the two eyes).
     float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
                      (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
@@ -841,7 +1045,13 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
 }
 
 void on_present_end(IDXGISwapChain* swapchain) {
-    if (!g_frameOpen) return;
+    if (!g_frameOpen) {
+        // No XR frame this present (session gone, or the pace guard skipped
+        // it). The game may still be presenting alternating stereo eyes -
+        // keep draining the tag ring and keep the window pinned to one eye.
+        mirror_present(swapchain, sr_pop_eye());
+        return;
+    }
     bool pairSecond = g_srPairOpen; // this present completes an open pair
     g_srPairOpen = false;
     g_frameOpen = false; // the pair-hold path below re-arms both
@@ -873,6 +1083,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // convention AER validated in-headset (depth not inverted).
     int srSign = sr_pop_eye();
     bool srFrame = projectionMode && srSign != 0;
+
+    // Mirror, left half: snapshot the LEFT eye before anything else runs
+    // (read-only - the XR eye capture below is unaffected). The right half
+    // runs after the capture block, once the right eye is safely captured.
+    if (srSign < 0) mirror_present(swapchain, srSign);
 
     // Pair-pacing bookkeeping and the hold decision. A LEFT-tagged present
     // holds the frame open for its RIGHT sibling; anything unexpected on the
@@ -1009,6 +1224,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
         }
     }
 
+    // Mirror, right half: the right eye's XR capture is done (or was skipped
+    // this present) - pin the backbuffer to the held left image before the
+    // real Present displays it.
+    if (srSign > 0) mirror_present(swapchain, srSign);
+
     // Aim laser on top of the game frame - projection mode only, since in quad
     // ("cinema screen") mode there is no world for it to point into.
     if (layerCount && projectionMode) {
@@ -1048,6 +1268,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
 void on_resize() {
     // Recreated at the new backbuffer size on the next frame.
     destroy_swapchains();
+    release_mirror();
 }
 
 void draw_debug_ui() {
@@ -1124,6 +1345,16 @@ void draw_debug_ui() {
     if (camMode && !g_projectionReady.load(std::memory_order_relaxed))
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
                            "projection NOT ready - drive is held off (see log)");
+    uint32_t paceSkips = g_paceSkips.load(std::memory_order_relaxed);
+    if (paceSkips)
+        ImGui::Text("pace guard: skipped %u waits, %u keepalives, last wait %u ms",
+                    paceSkips, g_paceKeepalives.load(std::memory_order_relaxed),
+                    g_lastWaitMs.load(std::memory_order_relaxed));
+    uint32_t mirrorBlits = g_mirrorBlits.load(std::memory_order_relaxed);
+    if (mirrorBlits)
+        ImGui::Text("mirror: %s | %u left holds, %u re-blits",
+                    g_mirror.load(std::memory_order_relaxed) ? "left eye" : "OFF",
+                    g_mirrorHolds.load(std::memory_order_relaxed), mirrorBlits);
 
     input_draw_debug_ui(); // M5 action-layer status line
 
@@ -1174,6 +1405,57 @@ void set_sr_pair_pacing(bool on) {
     g_srPairPacing.store(on, std::memory_order_relaxed);
 }
 
+void handle_pace_command(const char* args) {
+    char verb[16] = {};
+    int consumed = 0;
+    if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1)
+        verb[0] = '\0';
+    const char* rest = args + consumed;
+    while (*rest == ' ' || *rest == '\t') ++rest;
+
+    if (strcmp(verb, "on") == 0) {
+        g_paceGuard.store(true, std::memory_order_relaxed);
+        BVR_LOG("xr: pace guard ON (unfocused session skips the blocking wait)");
+    } else if (strcmp(verb, "off") == 0) {
+        g_paceGuard.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: pace guard OFF (pre-M8 behavior: every present waits, the "
+                "flat window stalls when the headset idles)");
+    } else if (strcmp(verb, "simidle") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_simIdle.store(on, std::memory_order_relaxed);
+        BVR_LOG("xr: simulated idle %s%s", on ? "ON" : "off",
+                on ? " (flat stand-in: state VISIBLE, 1 s block per paced frame; "
+                     "with the guard off, commands crawl at ~1/s until it lands)"
+                   : "");
+    } else {
+        BVR_LOG("xr: pace guard %s | session %s everFocused=%d | skips %u "
+                "keepalives %u lastWait %u ms | simidle %s "
+                "(vrpace on|off|simidle on|off|status)",
+                g_paceGuard.load(std::memory_order_relaxed) ? "ON" : "off",
+                state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? 1 : 0,
+                g_paceSkips.load(std::memory_order_relaxed),
+                g_paceKeepalives.load(std::memory_order_relaxed),
+                g_lastWaitMs.load(std::memory_order_relaxed),
+                g_simIdle.load(std::memory_order_relaxed) ? "ON" : "off");
+    }
+}
+
+void handle_mirror_command(const char* args) {
+    if (strncmp(args, "on", 2) == 0) {
+        g_mirror.store(true, std::memory_order_relaxed);
+        BVR_LOG("xr: desktop mirror ON (window pinned to the LEFT eye under stereo)");
+    } else if (strncmp(args, "off", 3) == 0) {
+        g_mirror.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: desktop mirror OFF (pre-M8 behavior: the window alternates "
+                "eyes under stereo)");
+    } else {
+        BVR_LOG("xr: mirror %s | holds %u blits %u (vrmirror on|off|status)",
+                g_mirror.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_mirrorHolds.load(std::memory_order_relaxed),
+                g_mirrorBlits.load(std::memory_order_relaxed));
+    }
+}
+
 float suggested_hfov_deg() {
     return g_hfovDeg.load(std::memory_order_relaxed);
 }
@@ -1191,6 +1473,9 @@ void set_laser(const LaserConfig& cfg) {
     g_laserHand.store(cfg.hand ? 1 : 0, std::memory_order_relaxed);
     g_laserPitchTrim.store(cfg.pitchTrimDeg, std::memory_order_relaxed);
     g_laserYawTrim.store(cfg.yawTrimDeg, std::memory_order_relaxed);
+    g_laserPosFwdCm.store(cfg.posFwdCm, std::memory_order_relaxed);
+    g_laserPosRightCm.store(cfg.posRightCm, std::memory_order_relaxed);
+    g_laserPosUpCm.store(cfg.posUpCm, std::memory_order_relaxed);
     g_laserDots.store(cfg.dots, std::memory_order_relaxed);
     g_laserNearM.store(cfg.nearM, std::memory_order_relaxed);
     g_laserFarM.store(cfg.farM, std::memory_order_relaxed);
@@ -1230,6 +1515,8 @@ bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
 void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
+void handle_pace_command(const char*) {}
+void handle_mirror_command(const char*) {}
 float suggested_hfov_deg() { return 0.0f; }
 void set_rendered_hfov(float) {}
 int current_eye_sign() { return 0; }

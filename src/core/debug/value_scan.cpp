@@ -71,7 +71,9 @@ void for_each_writable_region(Fn&& fn) {
 
     uintptr_t p = 0x10000;
     MEMORY_BASIC_INFORMATION mbi{};
-    while (p < 0x7FFF0000u &&
+    // Full 4 GB walk - the game is LAA and allocates above 2 GB in long
+    // sessions (same fix as patterns.cpp scan_for_vtable_object).
+    while (p < 0xFFFE0000u &&
            VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof(mbi)) == sizeof(mbi)) {
         uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
         uintptr_t end = base + mbi.RegionSize;

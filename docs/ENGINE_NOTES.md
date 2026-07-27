@@ -1312,6 +1312,106 @@ so head AND hand rotate together in the world while the in-game body does not
 residual/cull sweep is the instrument that quantifies where the boundary sits
 in each direction.
 
+## Desktop present / mirror + hand attribution (M8 session 18, 2026-07-27)
+
+**Why the session-17 screenshots were all the same eye phase - the desktop
+present duty cycle is heavily skewed, not 50/50.** Under SequentialReentry
+with pair pacing, the two presents of one stereo pair are separated only by
+the time the game takes to BUILD the right-eye frame (~1-3 ms), while the
+right-eye image then stays on the window through the whole next pair's
+blocking xrWaitFrame (~8+ ms at 90 Hz, or the full inter-pair gap flat). A
+DWM-sourced capture (PrintWindow/screenshot) samples the composed surface and
+therefore lands on the SECOND eye of the pair with high probability - 12/12
+same-phase shots is expected behavior, not evidence that alternation is gone.
+The alternation is real (a 60 Hz recorder catches left-eye slices as flicker);
+it is just not uniform. Session-8-era captures caught both phases because
+pair pacing did not exist yet - the pair was split by a blocking wait.
+
+**The mirror fix (M8b)** rides the same sr eye tags the capture uses: left
+presents snapshot the backbuffer into a held texture (read-only), right
+presents copy it back over the backbuffer AFTER the right eye's XR capture,
+so the real Present always displays the left eye and the compositor feed is
+untouched. It also runs on presents with no open XR frame (pace-guard skip,
+session gone) since the game keeps presenting alternating eyes there. Flat
+acceptance 2026-07-27: within-condition consecutive-shot img-diff 0.31-0.73
+(the floor) for mirror on AND off - both phase-locked, as the duty cycle
+predicts - while the cross-diff mirror-on vs mirror-off is 13.6-13.9 (the
+full near-field eye offset at worldScale 100): the pin flips WHICH eye the
+window shows. Counters: holds == blits exactly, one per pair.
+
+**Grip-switch wrong-controller bug: root cause is attribution, not the game.**
+The grips compose to the BUMPERS (LB/RB) in the M5 mapping, and a bumper
+press switches the raised hand (LB -> plasmid, RB -> weapon) WITHOUT any
+trigger event. `hands::active_hand()`'s auto latch learned only from the
+composed triggers, so a grip switch left the latch (and with it the bone
+drive and the laser) on the stale controller until the next trigger pull -
+which also explains the reported self-correction after one shot. Fix: the
+latch now learns from the composed bumpers too (bumpers checked first,
+triggers second so a same-frame fire wins). Flat-proven on a clean boot:
+after two right pulls the status reads auto(R); a single LB press flips it
+to auto(L) with no trigger; RB flips it back. The fire-direction was never
+wrong: the aim seams attribute weapon-vs-plasmid structurally (which C++
+seam fired), so only the model/laser lagged.
+
+**xrWaitFrame under an idle headset (VDXR observation, M8a).** When the
+headset idles the session drops FOCUSED -> VISIBLE and per-present
+xrWaitFrame starts blocking for seconds (flat window <1 fps, presents=0/s).
+The pace guard skips the blocking wait once a session that HAS been FOCUSED
+leaves that state; bring-up is exempt (SYNCHRONIZED -> VISIBLE -> FOCUSED
+requires submitted frames to advance, so a naive not-FOCUSED gate would
+deadlock session start), and a 5 s keepalive still paces one real frame in
+case the runtime wants frames before re-granting FOCUSED. The keepalive's
+block trips the reentry watchdog's detect-only log line - expected noise.
+`xrWaitFrame` block durations now log when >1 s, so the first real headset
+idle will tell us how VDXR actually behaves (event-driven recovery vs
+keepalive-dependent).
+
+## Reticle + the engine SET seam (M8 session 18 part 2, 2026-07-27)
+
+**The flat crosshair has a first-class engine off-switch: `ShockPlayer.
+bReticleDisabled`.** ShockHUD.RenderReticle's FIRST branch checks
+`ShouldHideReticle()` and pushes the type string "NoReticle" to the flash HUD
+movie (`CallMethodString("SetReticleInfo", ...)`) - the game itself then
+hides the reticle every frame. `DisableReticle`/`EnableReticle`/
+`ShouldHideReticle` are three-line script functions around that one bool
+(read straight from the SOURCE TEXT embedded in ShockGame.U - see below);
+nothing else in ShockGame calls them, so nothing fights a write. Verified
+live both ways: set true -> the ornate ring at screen center vanishes
+(19 -> 0 bright pixels in an 80x80 center crop), set false -> it returns.
+
+**The bigger find: the engine's console `SET <class> <prop> <value>` handler
+WORKS through the exec seam** - `exece set shockplayer breticledisabled true`
+returned HANDLED and took effect. That means ANY script property is now
+writable BY NAME with no offset, no bitmask, no reflection walking: the
+engine resolves the property itself. SET also writes the class default, so
+newly spawned instances (load crossings) inherit the value. This closes the
+gap session 9 left ("script-command path needs the player-object Exec
+signature") for the entire SET/GET family. Caveats: it writes ALL instances
+of the class plus the default (fine for player-singleton classes); property
+GETs still need `get` (untested).
+
+**Package source-text extraction, the method.** UELib fails to deserialize
+~40% of UFunctions on this licensee build (the reticle trio included), but
+the packages embed the full UnrealScript SOURCE as UTF-16 TextBuffer objects.
+Byte-scan the .u for UTF-16 identifiers - CHECK BOTH ALIGNMENTS (a name at an
+odd byte offset is invisible to an even-aligned decode; the reticle
+functions sat at odd phase) - then read the surrounding text. Faster and
+more complete than decompiling when it works; `tools/uscript/` stays the
+workspace, findings summarized here, never the source itself.
+
+**Aim-ray origin offsets (session 18 part 2, user request).** The model
+offsets move the MESH about its pivot, so a tuned model can sit visually
+right while the aim ray no longer runs along the barrel. New per-hand
+`vraim pos [l|r] <fwd> <right> <up>` (cm) moves the RAY: applied once at ray
+build in aim.cpp along the FINAL (trimmed) ray's zero-roll basis, so the
+laser, the fire-origin substitution, and every other g_ray consumer move
+together by construction (the laser applies the same cm offset XR-side,
+meters, same basis convention: right = ray x world-up). Flat-proven exact:
+`pos r 0 60 0` moved the R ray origin (-0.7, +60.0, 0.0) UU (the 0.64 deg
+yaw cosine leak on X), `pos l 0 0 45` moved L by +45.0 UU up, each hand
+isolated, 2 fire-seam substitutions carried the offset ray, vrpreset
+round-trip (save -> zero -> apply restores).
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on

@@ -56,6 +56,17 @@ std::atomic<bool> g_useAimPose{true};
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
 std::atomic<float> g_pitchOffsetDeg[2] = {0.0f, 0.0f};
 std::atomic<float> g_yawOffsetDeg[2] = {0.0f, 0.0f};
+// Per-hand aim-ray ORIGIN offsets in cm (session 18 part 2, user request):
+// the model offsets move the MESH about its pivot, so a tuned model can sit
+// right while the ray no longer runs along the barrel. These move the RAY
+// itself - laser, fire origin, everything reading g_ray - to re-align with
+// the controller and the tuned model. Applied along the FINAL (trimmed)
+// ray's zero-roll basis at ray build, so the laser and the bullet cannot
+// disagree; the model deliberately does not take them (it has its own
+// sliders, and the two are tuned against each other).
+std::atomic<float> g_posFwdCm[2] = {0.0f, 0.0f};
+std::atomic<float> g_posRightCm[2] = {0.0f, 0.0f};
+std::atomic<float> g_posUpCm[2] = {0.0f, 0.0f};
 // M7 laser: the visible form of this same ray, published to core every frame.
 // It lives here rather than with the hands so it cannot drift from the trim
 // above - a laser that disagrees with the bullet is worse than no laser.
@@ -697,6 +708,14 @@ void log_status() {
             g_yawOffsetDeg[0].load(std::memory_order_relaxed),
             g_pitchOffsetDeg[1].load(std::memory_order_relaxed),
             g_yawOffsetDeg[1].load(std::memory_order_relaxed));
+    BVR_LOG("[aim] ray origin offset L fwd%+.1f right%+.1f up%+.1f | R fwd%+.1f right%+.1f "
+            "up%+.1f cm",
+            g_posFwdCm[0].load(std::memory_order_relaxed),
+            g_posRightCm[0].load(std::memory_order_relaxed),
+            g_posUpCm[0].load(std::memory_order_relaxed),
+            g_posFwdCm[1].load(std::memory_order_relaxed),
+            g_posRightCm[1].load(std::memory_order_relaxed),
+            g_posUpCm[1].load(std::memory_order_relaxed));
     BVR_LOG("[aim] status: %s | seams weapon=%d ability=%d | handOrigin=%d probe=%d",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
             g_subWeapon.load(std::memory_order_relaxed) ? 1 : 0,
@@ -732,6 +751,25 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     g_syms = symbols;
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
+}
+
+// The origin offset rides the FINAL (trimmed) ray frame - both lanes, the
+// synthetic test lane included, which is what makes it flat-assertable via
+// the ray origins in `vraim status`.
+void apply_origin_offset(int i, Ray& out, float worldScale) {
+    float of = g_posFwdCm[i].load(std::memory_order_relaxed);
+    float orr = g_posRightCm[i].load(std::memory_order_relaxed);
+    float ou = g_posUpCm[i].load(std::memory_order_relaxed);
+    if (of == 0.0f && orr == 0.0f && ou == 0.0f) return;
+    float fwd[3], right[3], up[3];
+    ue_rot_basis(out.rot, fwd, right, up);
+    float uuPerCm = worldScale / 100.0f;
+    of *= uuPerCm;
+    orr *= uuPerCm;
+    ou *= uuPerCm;
+    out.origin.x += fwd[0] * of + right[0] * orr + up[0] * ou;
+    out.origin.y += fwd[1] * of + right[1] * orr + up[1] * ou;
+    out.origin.z += fwd[2] * of + right[2] * orr + up[2] * ou;
 }
 
 void on_calcview(const FrameContext& ctx) {
@@ -793,6 +831,7 @@ void on_calcview(const FrameContext& ctx) {
             out.rot.pitch = ctx.camPitch +
                             static_cast<int32_t>(g_test[i].pitchDeg * kRotUnitsPerDegree);
             out.rot.roll = 0;
+            apply_origin_offset(i, out, ctx.worldScale);
             continue;
         }
 
@@ -815,6 +854,7 @@ void on_calcview(const FrameContext& ctx) {
                                            g_pitchOffsetDeg[i].load(std::memory_order_relaxed) *
                                            kRotUnitsPerDegree);
         out.rot.roll = 0; // aim carries no roll; the camera owns roll
+        apply_origin_offset(i, out, ctx.worldScale);
         out.valid = true;
     }
 
@@ -827,6 +867,9 @@ void on_calcview(const FrameContext& ctx) {
     int lh = lc.hand == 0 ? 0 : 1;
     lc.pitchTrimDeg = g_pitchOffsetDeg[lh].load(std::memory_order_relaxed);
     lc.yawTrimDeg = g_yawOffsetDeg[lh].load(std::memory_order_relaxed);
+    lc.posFwdCm = g_posFwdCm[lh].load(std::memory_order_relaxed);
+    lc.posRightCm = g_posRightCm[lh].load(std::memory_order_relaxed);
+    lc.posUpCm = g_posUpCm[lh].load(std::memory_order_relaxed);
     lc.dots = g_laserDots.load(std::memory_order_relaxed);
     lc.nearM = g_laserNearM.load(std::memory_order_relaxed);
     lc.farM = g_laserFarM.load(std::memory_order_relaxed);
@@ -913,6 +956,30 @@ void handle_command(const char* args) {
                     hand < 0 ? "both" : hand == 1 ? "right" : "left", pitch, yaw);
         } else {
             BVR_LOG("[aim] usage: vraim cal [l|r] <pitchDeg> [yawDeg]  (+pitch aims higher)");
+        }
+    } else if (strcmp(verb, "pos") == 0) {
+        // "pos [l|r] <fwd> <right> <up>" (cm) - the aim-ray ORIGIN offset;
+        // no side = both hands, mirroring cal.
+        int hand = -1;
+        const char* nums = rest;
+        if ((rest[0] == 'l' || rest[0] == 'r') && (rest[1] == ' ' || rest[1] == '\t')) {
+            hand = rest[0] == 'r' ? 1 : 0;
+            nums = rest + 1;
+            while (*nums == ' ' || *nums == '\t') ++nums;
+        }
+        float f = 0.0f, r = 0.0f, u = 0.0f;
+        if (sscanf_s(nums, "%f %f %f", &f, &r, &u) == 3) {
+            for (int h = 0; h < 2; ++h) {
+                if (hand >= 0 && h != hand) continue;
+                g_posFwdCm[h].store(f, std::memory_order_relaxed);
+                g_posRightCm[h].store(r, std::memory_order_relaxed);
+                g_posUpCm[h].store(u, std::memory_order_relaxed);
+            }
+            BVR_LOG("[aim] ray origin offset (%s): fwd%+.1f right%+.1f up%+.1f cm "
+                    "(laser + fire origin move together)",
+                    hand < 0 ? "both" : hand == 1 ? "right" : "left", f, r, u);
+        } else {
+            BVR_LOG("[aim] usage: vraim pos [l|r] <fwdCm> <rightCm> <upCm>");
         }
     } else if (strcmp(verb, "laser") == 0) {
         // "laser on|off" or "laser <dots> <nearM> <farM> <sizeDeg>"
@@ -1003,6 +1070,25 @@ float trim_yaw_deg(int hand) {
     return g_yawOffsetDeg[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
 }
 
+float pos_fwd_cm(int hand) {
+    return g_posFwdCm[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
+}
+
+float pos_right_cm(int hand) {
+    return g_posRightCm[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
+}
+
+float pos_up_cm(int hand) {
+    return g_posUpCm[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
+}
+
+void set_pos_offset(int hand, float fwdCm, float rightCm, float upCm) {
+    int h = hand == 0 ? 0 : 1;
+    g_posFwdCm[h].store(fwdCm, std::memory_order_relaxed);
+    g_posRightCm[h].store(rightCm, std::memory_order_relaxed);
+    g_posUpCm[h].store(upCm, std::memory_order_relaxed);
+}
+
 void set_trim(int hand, float pitchDeg, float yawDeg) {
     int h = hand == 0 ? 0 : 1;
     g_pitchOffsetDeg[h].store(pitchDeg, std::memory_order_relaxed);
@@ -1035,6 +1121,25 @@ void draw_debug_ui() {
     float ly = g_yawOffsetDeg[0].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("L aim yaw trim (deg)", &ly, -30.0f, 30.0f))
         g_yawOffsetDeg[0].store(ly, std::memory_order_relaxed);
+
+    // Ray ORIGIN offsets (session 18 part 2): move the laser + fire origin to
+    // line up with the controller and the tuned model. Selector like the
+    // hands section - one set of sliders, per-hand values.
+    static int posHand = 1;
+    ImGui::Text("Ray offset hand:");
+    ImGui::SameLine();
+    ImGui::RadioButton("L##aimpos", &posHand, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton("R##aimpos", &posHand, 1);
+    float pf = g_posFwdCm[posHand].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("ray offset forward (cm)", &pf, -30.0f, 30.0f))
+        g_posFwdCm[posHand].store(pf, std::memory_order_relaxed);
+    float pr = g_posRightCm[posHand].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("ray offset right (cm)", &pr, -30.0f, 30.0f))
+        g_posRightCm[posHand].store(pr, std::memory_order_relaxed);
+    float pu = g_posUpCm[posHand].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("ray offset up (cm)", &pu, -30.0f, 30.0f))
+        g_posUpCm[posHand].store(pu, std::memory_order_relaxed);
 
     bool handOrigin = g_handOrigin.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Ray starts at the hand (off = engine origin, direction only)",

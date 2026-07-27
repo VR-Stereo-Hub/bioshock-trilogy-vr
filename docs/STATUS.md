@@ -2,7 +2,121 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-27, session 17 - M7.5 SHIPS AND IS IN-HEADSET VERIFIED; DEADZONE 23 DEG BY USER CALIBRATION)
+## Current state (2026-07-27, session 18 - M8 QUICK PHASE CODE-COMPLETE FLAT: both release blockers fixed, per-hand offsets, grip-switch fix, release zip staged)
+
+**Branch `m8-release-quick-phase` (from main at PR #2's merge). Everything below
+is flat-verified on clean boots with numeric acceptance; the in-headset run is
+the open gate, and the GitHub release publishes only after it + the user's
+explicit go.**
+
+**1. Per-hand model offsets (the user's ask, shipped first).** The viewmodel's
+six position/rotation offsets are now PER HAND (0 = left/plasmid, 1 =
+right/weapon, same convention as `vraim cal`): `vrhands pos [l|r] <f> <r> <u>`
+and `vrhands rot [l|r] <p> <y> <r>` - no side = BOTH hands, so the harness and
+old scripts are untouched; the overlay grew a "Tuning hand: L / R" selector
+above the existing six sliders (not twelve sliders); hands.ini persists
+per-hand keys (`posFwdCmL/R`, ...) with the legacy suffix-less key loading to
+both; and **`vrpreset save` now also writes hands.ini**, so the one in-headset
+save button covers the model sliders. Flat proof, all exact: with the right
+hand driving, `pos r 40 0 0` moved the written loc +40.0 UU along fwd, a LEFT
+offset left it bit-identical at baseline; with `hand l` the left offset
+engaged (+40.0); `rot r 0 30 0` moved the written yaw by exactly 5461 units;
+both ini formats round-trip. The M7.5 invariant is untouched by construction -
+the change only swaps WHICH atomic feeds the existing trim/offset math,
+nothing in the camera/recenter path was edited.
+
+**2. Headset-disconnect stall (M8 blocker a) - FIXED flat.** When the headset
+idles, the session leaves FOCUSED and per-present xrWaitFrame blocks for
+seconds (<1 fps flat). The new pace guard (openxr_runtime.cpp) skips the
+blocking pacing once a session that HAS been FOCUSED leaves that state.
+Bring-up is exempt - SYNCHRONIZED -> VISIBLE -> FOCUSED needs submitted frames
+to advance, a naive not-FOCUSED gate would deadlock session start - and a 5 s
+keepalive still paces one real frame in case VDXR wants frames before
+re-granting FOCUSED (event recovery is primary: pump_events runs every present
+regardless). `vrpace on|off|simidle on|off|status`; wait durations >1 s now
+log with the session state. Flat acceptance via the simulated idle (state
+forced VISIBLE, 1 s sleep in place of the blocked wait): guard ON held
+378-396 presents/s with one keepalive hitch per 5 s; guard OFF reproduced the
+field stall exactly (presents=1/s); re-enabling recovered to 416/s. Known
+cosmetic: each keepalive block trips the reentry watchdog's detect-only line.
+
+**3. Flat-screen mirror (M8 blocker b) - FIXED flat, and the session-17 clue
+is EXPLAINED.** The window now always displays the LEFT eye: left-tagged
+presents snapshot the backbuffer (read-only), right-tagged presents re-blit
+the held image AFTER the right eye's XR capture, so the compositor feed is
+untouched; the pin also runs on presents with no open XR frame (pace-guard
+skips / no session - the game still presents alternating eyes there).
+`vrmirror on|off|status`. Why all 12 session-17 shots were one phase: the
+pair's presents have wildly unequal display time (L visible only while the R
+frame builds, ~1-3 ms; R through the next blocking wait, ~8+ ms), so
+DWM-sourced captures land on R with high probability - duty-cycle skew, not
+absent alternation (ENGINE_NOTES session 18). Acceptance matches that model:
+within-condition consecutive shots sit at the 0.31-0.73 floor for BOTH mirror
+on and off, while the on-vs-off cross-diff is 13.6-13.9 (the near-field eye
+offset at worldScale 100) - the pin flips which eye the window shows. Holds ==
+blits exactly (74774 each); stereo heartbeat unaffected (presents = 2x builds,
+guardskips 0).
+
+**4. Grip-switch wrong-controller bug - ROOT-CAUSED AND FIXED flat (the
+ROADMAP theory was right).** Grips compose to the bumpers, a bumper press
+switches the raised hand with no trigger event, and `active_hand()`'s auto
+latch learned only from triggers - so the model+laser stayed on the stale
+controller until the next pull (= the predicted self-correction). The latch
+now learns from the composed bumpers too (LB -> left/plasmid, RB ->
+right/weapon; triggers checked second so a same-frame fire wins). Live flat
+repro then fix-proof on a clean boot: two right pulls -> status `auto(R)`; LB
+alone raised Electro Bolt and (pre-fix) left the latch RIGHT; post-fix LB
+alone flips to `auto(L)`, RB back to `auto(R)`, no triggers. Fire direction
+was never affected (seam attribution is structural). Status now prints the
+latched hand: `hand=auto(L|R)`.
+
+**5. Release prep (task 4) - staged, NOT published.** README rewritten
+(install incl. itsloopyo conflict + VDXR setup, VR PRESET 1 flow, tuning incl.
+per-hand offsets, mirror/pace defaults; overlay key verified F10). Release zip
+built from the RelWithDebInfo build (both DLLs + README.txt) at the session-18
+scratchpad as `bioshock-vr-v0.1.0.zip`. Tag + GitHub release wait for the
+in-headset verdict and the user's explicit go.
+
+**Promoted-build clean-boot smoke (grip-fix build):** fire test 59->53 for 6
+firing pulls with an LB/RB plasmid round-trip in between, fresh decal, dumps
+8->8 all session, vrstereo heartbeat clean (mode=1T, presents = 2x builds,
+guardskips 0). Test-artifact inis (hands.ini with zeros, vrpreset.ini with
+defaults) deleted after the run per the session-17 trap - code owns defaults.
+
+### Session 18 part 2 (same day): aim-ray origin offsets + the crosshair kill
+
+**6. Aim-ray ORIGIN offsets (user ask: "the aim is the thing that is
+misaligned, not the model").** New per-hand `vraim pos [l|r] <fwd> <right>
+<up>` in cm (no side = both), an overlay "Ray offset hand: L / R" selector
+with three sliders under the existing trim sliders, persisted in vrpreset.ini
+(aimPosL*/aimPosR*). Applied ONCE at ray build (aim.cpp) along the FINAL
+(trimmed) ray's zero-roll basis, so the laser, the fire-origin substitution,
+and everything else reading the ray move together by construction - the
+model deliberately does NOT take them (its own sliders stay, and the two are
+tuned against each other). The laser applies the identical cm offset XR-side
+in meters with the same basis convention. Flat-proven exact under vrstereo:
+`pos r 0 60 0` moved the R ray origin by (-0.7, +60.0, 0.0) UU with the L ray
+bit-identical; `pos l 0 0 45` moved L +45.0 UU up; two fire-seam
+substitutions carried the offset ray (subs=2); save -> zero -> preset apply
+restored both hands' values from the ini.
+
+**7. The flat crosshair is GONE by default (user ask), and the lever is a
+one-line engine property.** `ShockPlayer.bReticleDisabled` makes the game's
+own RenderReticle push "NoReticle" to the flash HUD every frame - found by
+reading the SCRIPT SOURCE embedded in ShockGame.U (the reticle functions are
+in the 40% UELib cannot decompile; the source text can, ENGINE_NOTES session
+18 part 2). It is written through **the engine's own console SET handler via
+the exec seam** - `set ShockPlayer bReticleDisabled True` -> HANDLED - which
+is the session's biggest reusable find: ANY script property is now writable
+by name, no offsets, no reflection (SET also writes the class default, so
+load-crossing pawns inherit it). Shipped as `vrxhair on|off|status` +
+overlay checkbox ("Flat-screen crosshair", VR camera section), DEFAULT
+HIDDEN, re-asserted every 15 s, `crosshairVisible` persisted in vrpreset.ini.
+Flat: clean boot hides it automatically (19 -> 0 bright pixels in the center
+crop, screenshot-verified), `vrxhair on` restores those exact pixels, off
+kills them again, dumps 8->8.
+
+## Previous state (2026-07-27, session 17 - M7.5 SHIPS AND IS IN-HEADSET VERIFIED; DEADZONE 23 DEG BY USER CALIBRATION)
 
 **IN-HEADSET VERDICT (same day): "This is perfect... the stick was working as
 expected, the models didn't move when I moved my head... so just needed that
@@ -969,28 +1083,84 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **DONE: the user verified M7.5 in-headset - "this is perfect".** Deadzone
-   defaulted to their tuned 23 deg. Branch `m7.5-body-yaw-transfer` is ready to
-   merge to main by PR.
-1. **THE M8 QUICK PHASE - both items are RELEASE BLOCKERS by the user's call,
-   and neither was started in session 17** (the session went entirely on M7.5
-   and its verification):
-   (a) **headset-disconnect stall** - the flat window drops under 1 fps while
-   the headset idles (presents=0/s, session VISIBLE in the log; the per-present
-   xrWaitFrame pacing keeps waiting). Skip or time out the pacing when the XR
-   session leaves FOCUSED; must recover cleanly on reconnect.
-   (b) **flat-screen mirror** - the desktop window alternates L/R eyes under
-   SequentialReentry, so the mod cannot be streamed, recorded, or shown. Re-blit
-   the held left-eye image on right-eye presents at Present-tail WITHOUT
-   touching the eye capture the compositor feeds on. Verify: consecutive window
-   captures phase-consistent (the img-diff floor, not the eye-offset value).
-   *Note from session 17: all 12 acceptance shots came out the SAME eye phase,
-   so the alternation is not uniform - worth understanding while fixing it.*
-   Then the first GitHub release (tagged build, zip with both DLLs,
-   README/INSTALL covering the xinput1_3 proxy, the itsloopyo conflict, Virtual
-   Desktop/VDXR setup, and use: VR PRESET 1, the sliders, `vrpreset save`), and
-   the grip-switch wrong-controller bug (spec in ROADMAP M8; cheap first check
-   is whether it self-corrects after one trigger pull). Then M8's HUD usability.
+0. **SESSION 19 PLAN - the user's four reports from the all-weapons run
+   (investigated 2026-07-27 session 18 part 4, code untouched; work them in
+   this order):**
+
+   (a) **Model/laser sync - the ROOT CAUSE is two different trim algebras,
+   so one tuning only holds at ONE controller orientation.** The ray's trim
+   is rotator ADDS in game space (yaw about world-up, pitch about horizon -
+   aim.cpp ray build and the laser's XR-side math, deliberately identical);
+   the model's trim is a QUATERNION COMPOSED IN THE CONTROLLER'S LOCAL FRAME
+   (hands.cpp, the session-11 fix for the "pivot breaks everything" bug).
+   Those agree at the tuning pose and DIVERGE as the controller rotates -
+   the divergence grows with both the trim size and the rotation from the
+   tuning pose. It did NOT regress: before part 3 the coupling HID it
+   (the model inherited the ray's trim on top of its own); decoupling made
+   it visible. FIX: convert the aim trim (ray + laser, both sides) to the
+   SAME local-frame quaternion compose the model uses; after that one
+   tuning holds at every orientation. Numeric gate BEFORE any headset ask:
+   a `synccheck` self-test that sweeps ~20 simpose orientations and prints
+   the angle between the model's driven rot and the ray rot - max
+   divergence should collapse to ~0 after the algebra unification (it will
+   NOT be 0 before). The render lock is position-only (gain 0.9) and can
+   still shift the model a few UU relative to the beam - measure it in the
+   same sweep, list it separately.
+
+   (b) **Auto-derive the barrel per weapon (the user's ask) - feasible via
+   the weapon's OWN skeleton, and the FName resolution unlocks it.** The
+   equipped weapon is a skeletal mesh (reload anims) attached to hand bone
+   43; muzzle-flash FX anchor somewhere on it, so a muzzle bone/socket very
+   likely exists. Probe: read the weapon ACTOR's SkeletonInstance (try the
+   AHands offset +0x3FC first - same engine actor layout), dump its bone
+   array per weapon, find the muzzle bone (tip-most along the barrel axis;
+   names make it trivial). Then aim ray := muzzle bone's world transform
+   mapped through the existing chain - laser and bullets follow the
+   RENDERED barrel exactly, zero manual tuning, per-weapon automatic, and
+   the whole per-weapon-profile question dissolves. PREREQUISITE that pays
+   twice: FName index -> string resolution (parked since session 11; also
+   the key for per-weapon ini profiles as the fallback if no muzzle bone
+   exists). Fallback if skeleton probing fails: per-weapon manual profiles
+   keyed by class name.
+
+   (c) **Right-stick pitch must die under VR.** The composed pad's right
+   stick Y feeds the game's pitch: the PC/pawn ViewRotation pitches, and
+   the renderer orients the rig by the ACTOR fields, so the MODEL rides the
+   stick (the user's report) - and the wrench's Havok melee phantom swings
+   where the BODY pitch points, not the hand (the melee-hitbox half of the
+   report). Fix step 1 (surgical): zero the right-stick Y in the composed
+   pad while the VR camera drives (gameplay only - menus keep it). Fix
+   step 2 (evaluate after 1): drive the body PITCH from the HMD the way
+   M7.5 drives yaw, so melee/interactions follow the head; the M7.5
+   probe/commit machinery is the template. Step 1 alone likely kills both
+   symptoms - measure melee aim before building step 2.
+
+   (d) **Hide the inactive hand.** The mechanism already exists: the sleeve
+   collapse (bones.cpp `g_collapse`, zero-scale). Extend it to the whole
+   INACTIVE hand cluster - left wrist 6 + fingers 7-21 when the weapon is
+   up; right wrist 27 + fingers 28-42 + weapon bone 43 when the plasmid is
+   up. `vrhands hideinactive on|off`, default ON. Watch: FX anchored to
+   collapsed bones (Electro Bolt shell on a hidden left hand) - verify the
+   plasmid FX parity test still passes with the collapse live.
+
+1. **THE IN-HEADSET RUN for session 18's changes** - the checklist below.
+   If it passes, open the PR for `m8-release-quick-phase`.
+1. **Publish the first GitHub release AFTER the user's explicit go** (their
+   rule: nothing public-facing without asking): tag (proposed v0.1.0) on the
+   merged main, upload the zip (rebuild from the tagged commit: `build.ps1
+   -Release`, then zip the two RelWithDebInfo DLLs + README.txt), release
+   notes from the README's status blurb.
+2. **Watch the pace-guard telemetry on the first real headset idle**: the >1 s
+   xrWaitFrame log lines + `vrpace status` skips/keepalives show whether VDXR
+   recovers via events alone (then the 5 s keepalive can lengthen) or needs
+   the keepalive. If the headset-off window still stalls in the field, the
+   fallback design is an async wait thread - not built because the sync gate
+   passed flat.
+3. **Then M8's HUD usability** (health/EVE on a floating quad during stereo
+   gameplay + the Quest 3 keybind audit) - the remaining M8 items.
+
+Carried-over backlog (numbering kept from session 17):
+
 2. **The M7.5 leftover: the exact cull angle.** Park `vrhands simpose <yaw> 0 0
    120000` at 0/30/60/80/90/100/120 from the facing and find the cull-on/off
    boundary from both directions - but NOT with NCC template chaining, which
@@ -1040,7 +1210,67 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7.5 body-follows-head (session 17) - PASSED
+### IN-HEADSET CHECKLIST - M8 quick phase (session 18)
+
+Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam, load the
+newest save, press **VR PRESET 1**. Four changes to judge; `vrmirror off`,
+`vrpace off`, and the L/R forms are the live A/Bs. Nothing in the camera or
+recenter path changed, so head decoupling and body-follow should feel
+IDENTICAL to session 17 - anything different there is a regression, say so
+first.
+
+1. **Non-regression sweep (do this first, 60 seconds).** Park the hand, look
+   around wide - the model must hold its world spot exactly like session 17.
+   Stick-walk where you look, turn past 90 both ways, two right-trigger pulls
+   + an Electro Bolt. Any drag, drift, or stutter that session 17 did not
+   have: stop and report.
+2. **THE GRIP-SWITCH FIX (the bug you reported).** Switch hands with the GRIP
+   several times, in both directions, WITHOUT pulling triggers in between.
+   The incoming hand's model must appear on the CORRECT controller
+   immediately - no wrong-controller model, no needing a trigger pull to fix
+   it. Then mix in trigger switching to confirm nothing regressed there.
+3. **PER-HAND MODEL OFFSETS (your ask).** Overlay -> "Hands + weapon (M7)":
+   above the six sliders there is now "Tuning hand: L (plasmid) / R (weapon)".
+   With the pistol up, tune R sliders - the plasmid hand must NOT move when
+   you later raise it. Switch the selector to L, tune the plasmid hand - the
+   pistol must stay where you put it. Press **"Save preset values"** (one
+   button now saves these too), quit to menu, reload, PRESET 1 - both hands'
+   tuning must come back.
+4. **THE DESKTOP MIRROR (blocker b).** While playing in stereo, glance at the
+   monitor (or better: have the phone record it / stream it). The window must
+   show ONE steady eye - no L/R flicker, no shimmer. In the HEADSET nothing
+   may change: stereo depth still correct both eyes (this is the one thing
+   flat cannot verify - the re-blit must not have touched the compositor
+   feed). `vrmirror off` = the old flickering window for comparison.
+5. **THE DISCONNECT STALL (blocker a).** Mid-game, take the headset off and
+   let it sleep (or close Virtual Desktop streaming). The flat window must
+   KEEP RUNNING at full speed (the old behavior was <1 fps). Put the headset
+   back on / reconnect VD: the game must come back into the headset cleanly
+   within a few seconds. Then check `vrpace status` in the log and tell me
+   the skips/keepalives numbers and any "xrWaitFrame blocked N ms" lines -
+   they tell us whether VDXR needed the keepalive.
+6. **THE RAY OFFSET SLIDERS (part 2, your ask).** In the aim section, "Ray
+   offset hand: L / R" + three sliders (forward/right/up, cm). Tune the
+   LASER onto the barrel of the tuned model: the beam and the bullets move
+   together (one ray by construction), the model does not move. Check a shot
+   actually lands on the laser after tuning - that is the invariant that
+   matters. Then "Save preset values" and confirm it comes back after a
+   reload + PRESET 1.
+7. **THE CROSSHAIR (part 2, your ask).** The flat head-centred crosshair
+   should simply be GONE from the moment the game is up - no preset needed,
+   hidden is the default. The overlay checkbox "Flat-screen crosshair" (VR
+   camera section) or `vrxhair on` brings it back live if you ever want it.
+   Check it STAYS gone across a save load and a level transition.
+8. **Expected noise, not bugs**: during headset-off idle the log prints a
+   watchdog "deadlock state detected (log only)" line every ~5 s (the
+   keepalive block trips it); the VD menu overlay still parks the model
+   dead-center (VISIBLE state, poses stop - known since session 16); and the
+   log prints one `engine exec 'set ShockPlayer bReticleDisabled True' ->
+   HANDLED` line every 15 s (the crosshair re-assert).
+9. **Anything off: `vrmirror off` / `vrpace off` first.** If the symptom
+   survives both, it predates this session.
+
+### PREVIOUS CHECKLIST - M7.5 body-follows-head (session 17) - PASSED
 
 **Result: passed on the first run.** Head decoupling held ("the models didn't
 move when I moved my head"), the stick worked as expected, and looking to a
@@ -1171,6 +1401,136 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 18 part 4 (the 2 GB scan wall: level transition lost the viewmodel)
+
+- **User report from the long NG+ play session: after a level transition the
+  model stopped following, re-enabling did nothing, and the game froze
+  briefly on a cycle. Root cause: `scan_for_vtable_object` walked only to
+  0x7FFF0000 - the game is Large-Address-Aware, and after enough streaming
+  the new level's AHands actor was allocated ABOVE 2 GB.** The log showed
+  the smoking gun: "2 vtable match(es), chosen=00000000" every 32 s (the
+  part-3 backoff working as designed - each futile scan cost ~4 s, the
+  periodic freeze) while the rig visibly rendered engine-placed. Fixed:
+  both heap walkers (patterns.cpp + value_scan.cpp) now walk to 0xFFFE0000
+  (VirtualQuery simply fails past the top on non-LAA processes). Verified
+  on the user's new all-weapons Medical Pavilion save: chosen=5A1862C0,
+  bones 47, drive writing, fire smoke clean, dumps 8->8. NOTE: a fresh
+  boot cannot reproduce the >2 GB heap state - the mechanism evidence is
+  the log + the constant; the user's next long session is the field test.
+- The user made THE all-weapons save (NG+ at the Medical Pavilion, full
+  arsenal + plasmids + ammo types restored by NG+ at that story point) -
+  the permanent test anchor going forward. CONTINUE loads it.
+- boot.ps1's success detector is wall-save-specific and prints FAIL on any
+  other save - cosmetic, fix next session.
+
+### 2026-07-27 - Session 18 part 3 (trim decoupling + the user's tuning captured; loadout via Nexus save pending)
+
+- **In-headset feedback from the user's first part-2 run**: the ray offsets
+  work (they tuned R right-7.9/up+7.5 cm live), BUT re-trimming the aim
+  rotation dragged the tuned MODEL with it - the session-11 "barrel follows
+  the ray by construction" coupling, now wrong because the model has its own
+  per-hand trim. FIXED: the aim calibration trim is no longer applied to the
+  model (model = raw aim pose + model trim; ray = raw aim pose + aim trim +
+  origin offset). `vrhands aligntrim on` restores the old coupling. Flat:
+  with `cal r 0 20` armed the model rot stayed bit-identical (0 116 0);
+  aligntrim on moved it exactly +20 deg (3756). NOTE for the headset: the
+  user's L trim (17.7 deg yaw) was tuned WITH the coupling live - the left
+  hand may need a re-tune under the fix.
+- **The user's live tuning was captured to the inis** (they had not pressed
+  save): vrpreset.ini now holds aimPosR right-7.9/up+7.5, aimTrimL
+  0.2/17.7, aimPosL 0.2/-0.5/-0.7 - "make them in the preset" done; NOT
+  baked as code defaults (per-weapon differences pending). The inis on this
+  box are now LIVE USER DATA - do not delete them in cleanup anymore.
+- **Test loadout: DONE.** The cheat path is closed - `giveall`
+  (ShockCheatManager has GiveAll/FillPlasmids) fell off the client+engine
+  exec chains and FAULTED the viewport chain (SEH caught; relaunched). The
+  Tab console is compiled out (known). The Nexus NG+ save (nexusmods.com
+  /bioshock/mods/77) was downloaded by the user, installed as
+  `7_21_2024_21_54_13.bsb` (13.6 MB, mtime touched to newest) into
+  Documents\BioshockHD\BioShock\SaveGames, and USER-VERIFIED: it loads at
+  the Fontaine fight with ALL weapons and plasmids in the LB/RB wheels.
+  Boot note: CONTINUE loaded the wall save anyway (it tracks last-played,
+  not newest mtime) - pick the NG+ save via LOAD explicitly; the flat
+  harness is unaffected. Two observations for the headset run: the shotgun
+  (and likely others) is a TWO-HANDED hold mesh - a new composition class
+  for the one-controller bone drive - and per-weapon aim variance is the
+  open design question (per-weapon profiles keyed by class name would need
+  the FName resolution work).
+- Dumps 8->8 across part 3.
+
+### 2026-07-27 - Session 18 part 2 (aim-ray origin offsets + the crosshair kill via the engine SET seam)
+
+- Two user asks, both flat-green same day:
+- **Aim-ray origin offsets**: per-hand `vraim pos [l|r] <f> <r> <u>` cm,
+  "Ray offset hand" selector + 3 sliders, vrpreset persistence. Applied once
+  at ray build along the trimmed ray's zero-roll basis; the laser applies the
+  identical offset XR-side (same basis convention: right = ray x world-up),
+  so beam + bullet + substitution move as one and the model stays put. Flat:
+  +60.0 UU right / +45.0 UU up exact, per-hand isolated, subs=2 carried the
+  offset, ini round-trip via save -> zero -> apply.
+- **Crosshair hidden by default**: the lever is `ShockPlayer.bReticleDisabled`
+  (game-side RenderReticle then pushes "NoReticle" to the flash HUD per
+  frame), found by reading the script SOURCE TEXT embedded in ShockGame.U
+  after UELib failed to decompile the reticle functions. Written via **the
+  engine's console SET handler through the exec seam** (`exece set
+  shockplayer breticledisabled true` -> HANDLED) - the reusable find: any
+  script property is now settable BY NAME with no offset/bitmask, and SET
+  writes the class default so it survives load crossings. Shipped
+  `vrxhair on|off` + checkbox, default hidden, 15 s re-assert,
+  `crosshairVisible` in vrpreset.ini. Flat: clean boot 0 bright center
+  pixels (was 19), toggle restores/kills them exactly, dumps 8->8.
+- Method note: package source-text extraction needs BOTH UTF-16 alignments
+  (odd-phase strings are invisible to an even-aligned decode), and char
+  indices in a decoded string are half the byte offset - one extraction ran
+  at the wrong offset before the arithmetic was fixed.
+
+### 2026-07-27 - Session 18 (M8 quick phase: both blockers + per-hand offsets + grip fix, all flat-green; release staged)
+
+- Branch `m8-release-quick-phase` off main (post-PR-#2). Five commits: per-hand
+  offsets, pace guard, mirror pin, grip-switch latch fix, docs/release.
+- **Per-hand model offsets** (user ask): `vrhands pos|rot [l|r]` (no side =
+  both), overlay "Tuning hand" selector, per-hand hands.ini keys + legacy
+  fallback, `vrpreset save` also writes hands.ini now. Flat: each hand's
+  offsets apply only while that hand drives - +40.0 UU exact when driving,
+  baseline bit-identical when not; rot trim +5461 units exact for 30 deg;
+  both ini formats round-trip.
+- **Pace guard (blocker a)**: skip per-present xrWaitFrame once a
+  previously-FOCUSED session leaves FOCUSED; bring-up exempt (the state
+  machine needs frames to REACH focused); 5 s keepalive as recovery
+  insurance; >1 s waits now logged with state. Flat via `vrpace simidle on`
+  (state forced VISIBLE + 1 s sleep standing in for the blocked wait):
+  guard ON 378-396 presents/s, guard OFF 1/s (the field stall reproduced),
+  re-on recovers 416/s. 21345 skips / 15 keepalives across the sim, clean.
+- **Mirror pin (blocker b)**: window always shows the LEFT eye - left
+  presents snapshot the backbuffer, right presents re-blit AFTER the right
+  eye's XR capture; also active with no open XR frame (that path is exactly
+  the headset-off case). Flat: within-condition shots at the 0.31-0.73
+  floor for BOTH mirror on and off; on-vs-off cross-diff 13.6-13.9 = the
+  pin flips the displayed eye; holds == blits (74774 each); stereo
+  heartbeat unchanged.
+- **The session-17 same-phase clue EXPLAINED** (ENGINE_NOTES session 18):
+  under pair pacing the L image is displayed only while the R frame builds
+  (~1-3 ms) but R persists through the next blocking wait (~8+ ms), so
+  DWM-sourced captures land on R with high probability. Duty-cycle skew,
+  not absent alternation - the naive 50/50 bimodal model was wrong, and
+  the acceptance numbers match the corrected model exactly.
+- **Grip-switch bug root-caused and fixed** (ROADMAP theory confirmed):
+  grips compose to bumpers; a bumper press switches the raised hand with no
+  trigger event; the auto latch learned only from triggers. Live flat repro
+  (LB raised Electro Bolt, latch stayed RIGHT), then fix (latch learns from
+  composed bumpers, triggers win same-frame), then flat proof on a clean
+  boot: auto(R) -> LB alone -> auto(L) -> RB alone -> auto(R). Status now
+  prints the latch (`hand=auto(L|R)`).
+- Promoted-build smoke: fire 59->53 for 6 firing pulls with an LB/RB
+  round-trip between, dumps 8->8 all session, stereo clean throughout.
+- Release staged, NOT published (user gate): README rewritten (install,
+  itsloopyo conflict, VDXR setup, PRESET 1, tuning, mirror/pace), zip with
+  both RelWithDebInfo DLLs at the session-18 scratchpad. Proposed tag
+  v0.1.0 after the in-headset run.
+- Harness notes: `2>&1` on a native exe in PowerShell 5.1 still wraps
+  stderr as errors (cost one build re-run); test-artifact inis deleted
+  after the run per the session-17 vrpreset trap.
 
 ### 2026-07-27 - Session 17 part 2 (IN-HEADSET: PASSED; deadzone 23 deg becomes the default)
 

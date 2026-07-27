@@ -50,19 +50,30 @@ std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
 std::atomic<int> g_handMode{2};       // 0 left, 1 right, 2 auto
 std::atomic<int> g_autoHand{1};       // the latched auto choice
+// Session 18 part 3 (user report): OFF by default - the aim CALIBRATION trim
+// used to be applied to the model too, so re-trimming the ray dragged the
+// already-tuned model with it. Now the model is raw aim pose + its own trim,
+// and the ray is raw aim pose + aim trim + origin offset; each is tuned
+// against the other. `vrhands aligntrim on` restores the old coupling.
+std::atomic<bool> g_alignAimTrim{false};
 
-// Model offsets. Position is in CENTIMETRES in the model's final (trimmed)
-// frame; the rotation trim is degrees, applied in the CONTROLLER'S LOCAL frame
-// as a quaternion compose - euler adds after conversion only behave at one
-// controller orientation (the first headset test's "pivot" bug).
+// Model offsets, PER HAND (0 left / 1 right, same convention as aim.cpp): the
+// pistol and the plasmid hand sit differently in the mesh, so one shared set
+// meant tuning the weapon also moved the plasmid hand. Position is in
+// CENTIMETRES in the model's final (trimmed) frame; the rotation trim is
+// degrees, applied in the CONTROLLER'S LOCAL frame as a quaternion compose -
+// euler adds after conversion only behave at one controller orientation (the
+// first headset test's "pivot" bug).
 // Defaults are ZERO on purpose. The ideal pivot correction (pull the mesh's gun
 // to the controller, ~-100 cm forward) is CULLED: the engine drops the whole
 // rig the moment the actor origin goes behind the camera (live-proven - the
 // rig vanished with the origin 32 UU back). Forward pull is therefore limited
 // to roughly the controller's own distance from the face, and where that line
 // sits is the user's in-headset call, not a default.
-std::atomic<float> g_posFwdCm{0.0f}, g_posRightCm{0.0f}, g_posUpCm{0.0f};
-std::atomic<float> g_rotPitchDeg{0.0f}, g_rotYawDeg{0.0f}, g_rotRollDeg{0.0f};
+std::atomic<float> g_posFwdCm[2]{0.0f, 0.0f}, g_posRightCm[2]{0.0f, 0.0f},
+    g_posUpCm[2]{0.0f, 0.0f};
+std::atomic<float> g_rotPitchDeg[2]{0.0f, 0.0f}, g_rotYawDeg[2]{0.0f, 0.0f},
+    g_rotRollDeg[2]{0.0f, 0.0f};
 
 std::atomic<bool> g_writeRot{true}; // rotation write can be disabled on its own
 int32_t g_probeLeft = 0;
@@ -72,6 +83,7 @@ void* g_handsActor = nullptr;
 void* g_weaponActor = nullptr;
 uint64_t g_lastHandsScanMs = 0;
 uint64_t g_lastWeaponScanMs = 0;
+uint32_t g_handsScanFails = 0; // consecutive empty scans -> backoff
 void* g_lastPc = nullptr;
 std::atomic<uint32_t> g_writes{0};
 std::atomic<int32_t> g_lastMatches{0};
@@ -223,17 +235,35 @@ void* find_hands_actor(const FrameContext& ctx, bool probeOnly) {
         if (has_vtable(g_handsActor, patterns::kHandsVtableRva)) return g_handsActor;
         g_handsActor = nullptr;
         uint64_t now = GetTickCount64();
-        if (now - g_lastHandsScanMs < 2000) return nullptr;
+        // Exponential backoff on consecutive empty scans (2s -> 32s cap).
+        // The rig legitimately does not exist for long stretches (the NG+
+        // intro runs minutes with no hands), and the full heap scan can take
+        // SECONDS on a grown late-game heap - without backoff the 2 s
+        // cooldown dragged the whole game to ~1 fps for the entire intro
+        // (session 18 part 3, live). Reset on success, world change, and
+        // re-enable, so pickup stays prompt when the rig actually appears.
+        uint32_t shift = g_handsScanFails > 4 ? 4 : g_handsScanFails;
+        if (now - g_lastHandsScanMs < (2000ull << shift)) return nullptr;
         g_lastHandsScanMs = now;
     }
     ScanCtx sc{ctx.camX, ctx.camY, ctx.camZ, probeOnly, !probeOnly};
     int matches = 0;
+    uint64_t scanStart = GetTickCount64();
     void* found = patterns::scan_for_vtable_object(
         patterns::kHandsVtableRva, patterns::kActorViewDirOffset + 12, &accept_hands, &sc,
         "AHands", &matches);
     g_lastMatches.store(matches, std::memory_order_relaxed);
     if (probeOnly) return nullptr;
     g_handsActor = found;
+    if (found) {
+        g_handsScanFails = 0;
+    } else {
+        if (g_handsScanFails == 0)
+            BVR_LOG("[hands] no live AHands in this world yet (scan %u ms) - "
+                    "retrying with backoff",
+                    static_cast<uint32_t>(GetTickCount64() - scanStart));
+        ++g_handsScanFails;
+    }
     return g_handsActor;
 }
 
@@ -276,22 +306,28 @@ void log_status() {
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
             mode == 0 ? "GUN" : mode == 1 ? "HANDS" : "BONES",
             g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
-            g_handMode.load(std::memory_order_relaxed) == 0   ? "LEFT"
-            : g_handMode.load(std::memory_order_relaxed) == 1 ? "RIGHT"
-                                                              : "auto",
+            g_handMode.load(std::memory_order_relaxed) == 0 ? "LEFT"
+            : g_handMode.load(std::memory_order_relaxed) == 1
+                ? "RIGHT"
+                : (g_autoHand.load(std::memory_order_relaxed) == 0 ? "auto(L)" : "auto(R)"),
             g_writes.load(std::memory_order_relaxed));
     BVR_LOG("[hands]   weapon actor=%p (learned %p) | hands actor=%p (matches %d)",
             g_weaponActor, bvr::b1r::aim::learned_weapon_object(), g_handsActor,
             g_lastMatches.load(std::memory_order_relaxed));
-    BVR_LOG("[hands]   offset pos fwd%+.1f right%+.1f up%+.1f cm | trim pitch%+.1f yaw%+.1f "
-            "roll%+.1f deg | writeRot=%d",
-            g_posFwdCm.load(std::memory_order_relaxed),
-            g_posRightCm.load(std::memory_order_relaxed),
-            g_posUpCm.load(std::memory_order_relaxed),
-            g_rotPitchDeg.load(std::memory_order_relaxed),
-            g_rotYawDeg.load(std::memory_order_relaxed),
-            g_rotRollDeg.load(std::memory_order_relaxed),
-            g_writeRot.load(std::memory_order_relaxed) ? 1 : 0);
+    for (int h = 0; h < 2; ++h) {
+        BVR_LOG("[hands]   offset %s pos fwd%+.1f right%+.1f up%+.1f cm | trim pitch%+.1f "
+                "yaw%+.1f roll%+.1f deg%s",
+                h == 0 ? "L" : "R",
+                g_posFwdCm[h].load(std::memory_order_relaxed),
+                g_posRightCm[h].load(std::memory_order_relaxed),
+                g_posUpCm[h].load(std::memory_order_relaxed),
+                g_rotPitchDeg[h].load(std::memory_order_relaxed),
+                g_rotYawDeg[h].load(std::memory_order_relaxed),
+                g_rotRollDeg[h].load(std::memory_order_relaxed),
+                h == 1 ? (g_writeRot.load(std::memory_order_relaxed) ? " | writeRot=1"
+                                                                     : " | writeRot=0")
+                       : "");
+    }
     uint64_t now = GetTickCount64();
     BVR_LOG("[hands]   last write loc=(%.1f %.1f %.1f) rot=(%d %d %d) testHold=%dms "
             "simHold=%dms",
@@ -323,16 +359,38 @@ void save_config() {
         return;
     }
     fprintf(f, "# BioShock VR - M7 viewmodel offsets (cm / degrees, model-local frame)\n");
+    fprintf(f, "# Per-hand keys: ...L = left (plasmid), ...R = right (weapon). A legacy\n");
+    fprintf(f, "# suffix-less key (posFwdCm=...) still loads and applies to BOTH hands.\n");
     fprintf(f, "mode=%d\n", g_mode.load(std::memory_order_relaxed));
     fprintf(f, "aimPose=%d\n", g_useAimPose.load(std::memory_order_relaxed) ? 1 : 0);
-    fprintf(f, "posFwdCm=%.2f\n", g_posFwdCm.load(std::memory_order_relaxed));
-    fprintf(f, "posRightCm=%.2f\n", g_posRightCm.load(std::memory_order_relaxed));
-    fprintf(f, "posUpCm=%.2f\n", g_posUpCm.load(std::memory_order_relaxed));
-    fprintf(f, "rotPitchDeg=%.2f\n", g_rotPitchDeg.load(std::memory_order_relaxed));
-    fprintf(f, "rotYawDeg=%.2f\n", g_rotYawDeg.load(std::memory_order_relaxed));
-    fprintf(f, "rotRollDeg=%.2f\n", g_rotRollDeg.load(std::memory_order_relaxed));
+    for (int h = 0; h < 2; ++h) {
+        const char* s = h == 0 ? "L" : "R";
+        fprintf(f, "posFwdCm%s=%.2f\n", s, g_posFwdCm[h].load(std::memory_order_relaxed));
+        fprintf(f, "posRightCm%s=%.2f\n", s, g_posRightCm[h].load(std::memory_order_relaxed));
+        fprintf(f, "posUpCm%s=%.2f\n", s, g_posUpCm[h].load(std::memory_order_relaxed));
+        fprintf(f, "rotPitchDeg%s=%.2f\n", s, g_rotPitchDeg[h].load(std::memory_order_relaxed));
+        fprintf(f, "rotYawDeg%s=%.2f\n", s, g_rotYawDeg[h].load(std::memory_order_relaxed));
+        fprintf(f, "rotRollDeg%s=%.2f\n", s, g_rotRollDeg[h].load(std::memory_order_relaxed));
+    }
     fclose(f);
     BVR_LOG("[hands] offsets saved to hands.ini");
+}
+
+// "posFwdCmL"/"posFwdCmR" store one hand; the legacy suffix-less "posFwdCm"
+// (pre-per-hand ini files) stores BOTH, so an old hands.ini keeps working.
+bool store_hand_key(const char* key, const char* base, std::atomic<float> (&dst)[2], float v) {
+    size_t n = strlen(base);
+    if (strncmp(key, base, n) != 0) return false;
+    if (key[n] == '\0') {
+        dst[0].store(v, std::memory_order_relaxed);
+        dst[1].store(v, std::memory_order_relaxed);
+        return true;
+    }
+    if ((key[n] == 'L' || key[n] == 'R') && key[n + 1] == '\0') {
+        dst[key[n] == 'R' ? 1 : 0].store(v, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
 }
 
 void load_config() {
@@ -353,12 +411,12 @@ void load_config() {
             g_mode.store(m < 0 ? 0 : m > 2 ? 2 : m, std::memory_order_relaxed);
         }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
-        else if (strcmp(key, "posFwdCm") == 0) g_posFwdCm.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "posRightCm") == 0) g_posRightCm.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "posUpCm") == 0) g_posUpCm.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "rotPitchDeg") == 0) g_rotPitchDeg.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "rotYawDeg") == 0) g_rotYawDeg.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "rotRollDeg") == 0) g_rotRollDeg.store(v, std::memory_order_relaxed);
+        else if (store_hand_key(key, "posFwdCm", g_posFwdCm, v)) {}
+        else if (store_hand_key(key, "posRightCm", g_posRightCm, v)) {}
+        else if (store_hand_key(key, "posUpCm", g_posUpCm, v)) {}
+        else if (store_hand_key(key, "rotPitchDeg", g_rotPitchDeg, v)) {}
+        else if (store_hand_key(key, "rotYawDeg", g_rotYawDeg, v)) {}
+        else if (store_hand_key(key, "rotRollDeg", g_rotRollDeg, v)) {}
         else --n;
     }
     fclose(f);
@@ -367,14 +425,25 @@ void load_config() {
 
 } // namespace
 
-// BioShock holds ONE thing at a time (the trigger that fires also switches
-// hands - XENON_RT/LT), so the viewmodel belongs to whichever hand last fired.
-// Seeded from the triggers the bridge itself composes, exactly like aim.cpp's
-// object map. Shared with the aim laser so the beam leaves the hand that is
-// actually holding the weapon.
+// BioShock holds ONE thing at a time, so the viewmodel belongs to whichever
+// hand the player last engaged. Two ways to engage, both latched here from
+// the state the bridge itself composes (same source as aim.cpp's object map):
+//   - the TRIGGERS (fire = switch-and-fire, XENON_RT/LT), and
+//   - the BUMPERS (the grips compose to LB/RB, and a bumper press switches
+//     the raised hand with NO trigger event - the M8 grip-switch bug was the
+//     latch only learning from triggers, so a grip switch left the model on
+//     the stale controller until the next trigger pull).
+// Bumpers are checked first so a same-frame trigger wins (firing is the
+// stronger evidence of which hand the player means). Shared with the aim
+// laser so the beam leaves the hand that is actually holding the weapon.
 int active_hand() {
     int mode = g_handMode.load(std::memory_order_relaxed);
     if (mode == 0 || mode == 1) return mode;
+
+    bool lb = false, rb = false;
+    bvr::input::last_composed_bumpers(&lb, &rb);
+    if (rb && !lb) g_autoHand.store(1, std::memory_order_relaxed);
+    else if (lb && !rb) g_autoHand.store(0, std::memory_order_relaxed);
 
     uint8_t lt = 0, rt = 0;
     bvr::input::last_composed_triggers(&lt, &rt);
@@ -398,6 +467,7 @@ void on_calcview(const FrameContext& ctx) {
     int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
     if (pending == 1) {
         g_enabled.store(true, std::memory_order_relaxed);
+        g_handsScanFails = 0; // re-enable: scan promptly
         BVR_LOG("[hands] ON (overlay) - viewmodel follows the controller");
     } else if (pending == 0) {
         g_enabled.store(false, std::memory_order_relaxed);
@@ -415,6 +485,7 @@ void on_calcview(const FrameContext& ctx) {
         g_weaponActor = nullptr;
         g_lastHandsScanMs = 0;
         g_lastWeaponScanMs = 0;
+        g_handsScanFails = 0; // new world: scan promptly again
         bones::on_world_change();
     }
 
@@ -456,7 +527,9 @@ void on_calcview(const FrameContext& ctx) {
     void* target = find_hands_actor(ctx, false);
     if (!target) return;
 
-    // Where the model goes.
+    // Where the model goes. The hand is resolved once and used for the pose,
+    // the aim trim, and both per-hand model offsets below.
+    const int hand = active_hand();
     GamePose gp{};
     uint64_t now = GetTickCount64();
     if (now < g_test.deadline) {
@@ -491,7 +564,7 @@ void on_calcview(const FrameContext& ctx) {
         } else {
             bvr::vr::HeadPose hp{};
             bool aimPose = g_useAimPose.load(std::memory_order_relaxed);
-            if (!ctx.vrDriving || !bvr::vr::get_hand_pose(active_hand(), aimPose, hp)) return;
+            if (!ctx.vrDriving || !bvr::vr::get_hand_pose(hand, aimPose, hp)) return;
             pos[0] = hp.px;
             pos[1] = hp.py;
             pos[2] = hp.pz;
@@ -505,28 +578,32 @@ void on_calcview(const FrameContext& ctx) {
                     lastTlm = now;
                     BVR_LOG("[tlm] ctrl%d xr p=(%.3f %.3f %.3f) q=(%.3f %.3f %.3f %.3f) "
                             "pose=%s",
-                            active_hand(), hp.px, hp.py, hp.pz, hp.qx, hp.qy, hp.qz, hp.qw,
+                            hand, hp.px, hp.py, hp.pz, hp.qx, hp.qy, hp.qz, hp.qw,
                             aimPose ? "aim" : "grip");
                 }
             }
         }
 
-        // Mesh-alignment trim, composed in the controller's local frame so it
-        // holds at EVERY controller orientation.
+        // Mesh-alignment trim (per hand), composed in the controller's local
+        // frame so it holds at EVERY controller orientation.
         float trim[4], q2[4];
-        xr_local_trim_quat(g_rotPitchDeg.load(std::memory_order_relaxed) / kRadToDeg,
-                           g_rotYawDeg.load(std::memory_order_relaxed) / kRadToDeg,
-                           g_rotRollDeg.load(std::memory_order_relaxed) / kRadToDeg, trim);
+        xr_local_trim_quat(g_rotPitchDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
+                           g_rotYawDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
+                           g_rotRollDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
+                           trim);
         quat_mul(quat, trim, q2);
 
         gp = xr_pose_to_game(mapCtx, pos, q2);
 
-        // The aim calibration trim (per hand), applied exactly the way the
-        // fire ray and the laser apply it - barrel and bullet stay one ray.
-        gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg(active_hand()) *
-                                             kRotUnitsPerDegree);
-        gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg(active_hand()) *
-                                           kRotUnitsPerDegree);
+        // The aim calibration trim is NOT applied to the model by default
+        // (see g_alignAimTrim above) - re-trimming the ray must not move the
+        // tuned model.
+        if (g_alignAimTrim.load(std::memory_order_relaxed)) {
+            gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg(hand) *
+                                                 kRotUnitsPerDegree);
+            gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg(hand) *
+                                               kRotUnitsPerDegree);
+        }
     }
 
     // Position offset rides the final (trimmed) frame: "2 cm forward" means
@@ -534,9 +611,9 @@ void on_calcview(const FrameContext& ctx) {
     float fwd[3], right[3], up[3];
     ue_rot_basis(gp.rot, fwd, right, up);
     float uuPerCm = ctx.worldScale / 100.0f;
-    float of = g_posFwdCm.load(std::memory_order_relaxed) * uuPerCm;
-    float orr = g_posRightCm.load(std::memory_order_relaxed) * uuPerCm;
-    float ou = g_posUpCm.load(std::memory_order_relaxed) * uuPerCm;
+    float of = g_posFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+    float orr = g_posRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+    float ou = g_posUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
     float loc[3] = {gp.loc.x + fwd[0] * of + right[0] * orr + up[0] * ou,
                     gp.loc.y + fwd[1] * of + right[1] * orr + up[1] * ou,
                     gp.loc.z + fwd[2] * of + right[2] * orr + up[2] * ou};
@@ -546,7 +623,7 @@ void on_calcview(const FrameContext& ctx) {
         // culling, correct engine-side FX anchoring) and the hand CLUSTER
         // moves to the controller instead.
         gp.loc = {loc[0], loc[1], loc[2]};
-        if (!bones::drive(ctx, target, gp, active_hand())) return;
+        if (!bones::drive(ctx, target, gp, hand)) return;
     } else {
         uint8_t* p = static_cast<uint8_t*>(target);
         bool wrote = write12(p + patterns::kActorLocOffset, loc);
@@ -580,6 +657,7 @@ void handle_command(const char* args) {
 
     if (strcmp(verb, "on") == 0) {
         g_enabled.store(true, std::memory_order_relaxed);
+        g_handsScanFails = 0; // re-enable: scan promptly
         BVR_LOG("[hands] ON - viewmodel follows the controller");
         log_status();
     } else if (strcmp(verb, "off") == 0) {
@@ -616,25 +694,55 @@ void handle_command(const char* args) {
         g_handMode.store(mode, std::memory_order_relaxed);
         BVR_LOG("[hands] hand = %s", mode == 0 ? "LEFT" : mode == 1 ? "RIGHT" : "auto");
     } else if (strcmp(verb, "pos") == 0) {
+        // "pos [l|r] <fwd> <right> <up>" - no side = both hands (the legacy
+        // form, kept so the acceptance harness and old scripts still work).
+        int side = -1;
+        const char* nums = rest;
+        if ((rest[0] == 'l' || rest[0] == 'r') && (rest[1] == ' ' || rest[1] == '\t')) {
+            side = rest[0] == 'r' ? 1 : 0;
+            nums = rest + 1;
+            while (*nums == ' ' || *nums == '\t') ++nums;
+        }
         float f = 0.0f, r = 0.0f, u = 0.0f;
-        if (sscanf_s(rest, "%f %f %f", &f, &r, &u) == 3) {
-            g_posFwdCm.store(f, std::memory_order_relaxed);
-            g_posRightCm.store(r, std::memory_order_relaxed);
-            g_posUpCm.store(u, std::memory_order_relaxed);
-            BVR_LOG("[hands] pos offset fwd%+.1f right%+.1f up%+.1f cm", f, r, u);
+        if (sscanf_s(nums, "%f %f %f", &f, &r, &u) == 3) {
+            for (int h = 0; h < 2; ++h) {
+                if (side >= 0 && h != side) continue;
+                g_posFwdCm[h].store(f, std::memory_order_relaxed);
+                g_posRightCm[h].store(r, std::memory_order_relaxed);
+                g_posUpCm[h].store(u, std::memory_order_relaxed);
+            }
+            BVR_LOG("[hands] pos offset (%s) fwd%+.1f right%+.1f up%+.1f cm",
+                    side < 0 ? "both" : side == 1 ? "right" : "left", f, r, u);
         } else {
-            BVR_LOG("[hands] usage: vrhands pos <fwdCm> <rightCm> <upCm>");
+            BVR_LOG("[hands] usage: vrhands pos [l|r] <fwdCm> <rightCm> <upCm>");
         }
     } else if (strcmp(verb, "rot") == 0) {
-        float p = 0.0f, y = 0.0f, r = 0.0f;
-        if (sscanf_s(rest, "%f %f %f", &p, &y, &r) == 3) {
-            g_rotPitchDeg.store(p, std::memory_order_relaxed);
-            g_rotYawDeg.store(y, std::memory_order_relaxed);
-            g_rotRollDeg.store(r, std::memory_order_relaxed);
-            BVR_LOG("[hands] rot trim pitch%+.1f yaw%+.1f roll%+.1f deg", p, y, r);
-        } else {
-            BVR_LOG("[hands] usage: vrhands rot <pitchDeg> <yawDeg> <rollDeg>");
+        int side = -1;
+        const char* nums = rest;
+        if ((rest[0] == 'l' || rest[0] == 'r') && (rest[1] == ' ' || rest[1] == '\t')) {
+            side = rest[0] == 'r' ? 1 : 0;
+            nums = rest + 1;
+            while (*nums == ' ' || *nums == '\t') ++nums;
         }
+        float p = 0.0f, y = 0.0f, r = 0.0f;
+        if (sscanf_s(nums, "%f %f %f", &p, &y, &r) == 3) {
+            for (int h = 0; h < 2; ++h) {
+                if (side >= 0 && h != side) continue;
+                g_rotPitchDeg[h].store(p, std::memory_order_relaxed);
+                g_rotYawDeg[h].store(y, std::memory_order_relaxed);
+                g_rotRollDeg[h].store(r, std::memory_order_relaxed);
+            }
+            BVR_LOG("[hands] rot trim (%s) pitch%+.1f yaw%+.1f roll%+.1f deg",
+                    side < 0 ? "both" : side == 1 ? "right" : "left", p, y, r);
+        } else {
+            BVR_LOG("[hands] usage: vrhands rot [l|r] <pitchDeg> <yawDeg> <rollDeg>");
+        }
+    } else if (strcmp(verb, "aligntrim") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_alignAimTrim.store(on, std::memory_order_relaxed);
+        BVR_LOG("[hands] aim-trim coupling %s (%s)", on ? "ON" : "off",
+                on ? "model follows the aim calibration trim - pre-part-3 behavior"
+                   : "model independent of the aim trim (default)");
     } else if (strcmp(verb, "writerot") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_writeRot.store(on, std::memory_order_relaxed);
@@ -696,6 +804,10 @@ bool active() {
            (g_weaponActor != nullptr || g_handsActor != nullptr);
 }
 
+void save_offsets() {
+    save_config();
+}
+
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Hands + weapon (M7)")) return;
 
@@ -714,25 +826,36 @@ void draw_debug_ui() {
     ImGui::SameLine();
     if (ImGui::RadioButton("auto", &hand, 2)) g_handMode.store(2, std::memory_order_relaxed);
 
-    float f = g_posFwdCm.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("offset forward (cm)", &f, -120.0f, 120.0f))
-        g_posFwdCm.store(f, std::memory_order_relaxed);
-    float r = g_posRightCm.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("offset right (cm)", &r, -120.0f, 120.0f))
-        g_posRightCm.store(r, std::memory_order_relaxed);
-    float u = g_posUpCm.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("offset up (cm)", &u, -120.0f, 120.0f))
-        g_posUpCm.store(u, std::memory_order_relaxed);
+    // The six sliders below edit ONE hand's offsets - the selector picks
+    // which (in-headset tuning wants one set of sliders, not twelve).
+    // Separate from the drive-hand radio above: that picks which controller
+    // OWNS the viewmodel, this picks which hand's numbers the sliders show.
+    static int tuneHand = 1; // start on the weapon hand
+    ImGui::Text("Tuning hand:");
+    ImGui::SameLine();
+    ImGui::RadioButton("L (plasmid)", &tuneHand, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton("R (weapon)", &tuneHand, 1);
 
-    float rp = g_rotPitchDeg.load(std::memory_order_relaxed);
+    float f = g_posFwdCm[tuneHand].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("offset forward (cm)", &f, -120.0f, 120.0f))
+        g_posFwdCm[tuneHand].store(f, std::memory_order_relaxed);
+    float r = g_posRightCm[tuneHand].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("offset right (cm)", &r, -120.0f, 120.0f))
+        g_posRightCm[tuneHand].store(r, std::memory_order_relaxed);
+    float u = g_posUpCm[tuneHand].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("offset up (cm)", &u, -120.0f, 120.0f))
+        g_posUpCm[tuneHand].store(u, std::memory_order_relaxed);
+
+    float rp = g_rotPitchDeg[tuneHand].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("trim pitch (deg)", &rp, -90.0f, 90.0f))
-        g_rotPitchDeg.store(rp, std::memory_order_relaxed);
-    float ry = g_rotYawDeg.load(std::memory_order_relaxed);
+        g_rotPitchDeg[tuneHand].store(rp, std::memory_order_relaxed);
+    float ry = g_rotYawDeg[tuneHand].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("trim yaw (deg)", &ry, -90.0f, 90.0f))
-        g_rotYawDeg.store(ry, std::memory_order_relaxed);
-    float rr = g_rotRollDeg.load(std::memory_order_relaxed);
+        g_rotYawDeg[tuneHand].store(ry, std::memory_order_relaxed);
+    float rr = g_rotRollDeg[tuneHand].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("trim roll (deg)", &rr, -180.0f, 180.0f))
-        g_rotRollDeg.store(rr, std::memory_order_relaxed);
+        g_rotRollDeg[tuneHand].store(rr, std::memory_order_relaxed);
 
     if (ImGui::Button("Save offsets")) save_config();
     ImGui::SameLine();

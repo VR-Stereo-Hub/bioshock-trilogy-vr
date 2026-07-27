@@ -85,7 +85,13 @@ void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccep
 
     uintptr_t p = 0x10000;
     MEMORY_BASIC_INFORMATION mbi{};
-    while (p < 0x7FFF0000u &&
+    // Walk the FULL 4 GB range: the game is Large-Address-Aware, and after a
+    // long session the engine allocates actors ABOVE 2 GB - a 0x7FFF0000 cap
+    // made the live AHands invisible after a level transition (session 18
+    // part 4, live: "2 matches, chosen=0" forever while the rig rendered on
+    // screen). VirtualQuery just fails past the top on non-LAA processes, so
+    // the loop still terminates there.
+    while (p < 0xFFFE0000u &&
            VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof(mbi)) == sizeof(mbi)) {
         uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
         uintptr_t end = base + mbi.RegionSize;
