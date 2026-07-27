@@ -1083,9 +1083,68 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **THE IN-HEADSET RUN for session 18's four changes** - the checklist below.
-   Everything is flat-green; the headset decides. If it passes, open the PR
-   for `m8-release-quick-phase`.
+0. **SESSION 19 PLAN - the user's four reports from the all-weapons run
+   (investigated 2026-07-27 session 18 part 4, code untouched; work them in
+   this order):**
+
+   (a) **Model/laser sync - the ROOT CAUSE is two different trim algebras,
+   so one tuning only holds at ONE controller orientation.** The ray's trim
+   is rotator ADDS in game space (yaw about world-up, pitch about horizon -
+   aim.cpp ray build and the laser's XR-side math, deliberately identical);
+   the model's trim is a QUATERNION COMPOSED IN THE CONTROLLER'S LOCAL FRAME
+   (hands.cpp, the session-11 fix for the "pivot breaks everything" bug).
+   Those agree at the tuning pose and DIVERGE as the controller rotates -
+   the divergence grows with both the trim size and the rotation from the
+   tuning pose. It did NOT regress: before part 3 the coupling HID it
+   (the model inherited the ray's trim on top of its own); decoupling made
+   it visible. FIX: convert the aim trim (ray + laser, both sides) to the
+   SAME local-frame quaternion compose the model uses; after that one
+   tuning holds at every orientation. Numeric gate BEFORE any headset ask:
+   a `synccheck` self-test that sweeps ~20 simpose orientations and prints
+   the angle between the model's driven rot and the ray rot - max
+   divergence should collapse to ~0 after the algebra unification (it will
+   NOT be 0 before). The render lock is position-only (gain 0.9) and can
+   still shift the model a few UU relative to the beam - measure it in the
+   same sweep, list it separately.
+
+   (b) **Auto-derive the barrel per weapon (the user's ask) - feasible via
+   the weapon's OWN skeleton, and the FName resolution unlocks it.** The
+   equipped weapon is a skeletal mesh (reload anims) attached to hand bone
+   43; muzzle-flash FX anchor somewhere on it, so a muzzle bone/socket very
+   likely exists. Probe: read the weapon ACTOR's SkeletonInstance (try the
+   AHands offset +0x3FC first - same engine actor layout), dump its bone
+   array per weapon, find the muzzle bone (tip-most along the barrel axis;
+   names make it trivial). Then aim ray := muzzle bone's world transform
+   mapped through the existing chain - laser and bullets follow the
+   RENDERED barrel exactly, zero manual tuning, per-weapon automatic, and
+   the whole per-weapon-profile question dissolves. PREREQUISITE that pays
+   twice: FName index -> string resolution (parked since session 11; also
+   the key for per-weapon ini profiles as the fallback if no muzzle bone
+   exists). Fallback if skeleton probing fails: per-weapon manual profiles
+   keyed by class name.
+
+   (c) **Right-stick pitch must die under VR.** The composed pad's right
+   stick Y feeds the game's pitch: the PC/pawn ViewRotation pitches, and
+   the renderer orients the rig by the ACTOR fields, so the MODEL rides the
+   stick (the user's report) - and the wrench's Havok melee phantom swings
+   where the BODY pitch points, not the hand (the melee-hitbox half of the
+   report). Fix step 1 (surgical): zero the right-stick Y in the composed
+   pad while the VR camera drives (gameplay only - menus keep it). Fix
+   step 2 (evaluate after 1): drive the body PITCH from the HMD the way
+   M7.5 drives yaw, so melee/interactions follow the head; the M7.5
+   probe/commit machinery is the template. Step 1 alone likely kills both
+   symptoms - measure melee aim before building step 2.
+
+   (d) **Hide the inactive hand.** The mechanism already exists: the sleeve
+   collapse (bones.cpp `g_collapse`, zero-scale). Extend it to the whole
+   INACTIVE hand cluster - left wrist 6 + fingers 7-21 when the weapon is
+   up; right wrist 27 + fingers 28-42 + weapon bone 43 when the plasmid is
+   up. `vrhands hideinactive on|off`, default ON. Watch: FX anchored to
+   collapsed bones (Electro Bolt shell on a hidden left hand) - verify the
+   plasmid FX parity test still passes with the collapse live.
+
+1. **THE IN-HEADSET RUN for session 18's changes** - the checklist below.
+   If it passes, open the PR for `m8-release-quick-phase`.
 1. **Publish the first GitHub release AFTER the user's explicit go** (their
    rule: nothing public-facing without asking): tag (proposed v0.1.0) on the
    merged main, upload the zip (rebuild from the tagged commit: `build.ps1
