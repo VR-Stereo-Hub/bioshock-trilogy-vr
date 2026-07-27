@@ -50,6 +50,12 @@ std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
 std::atomic<int> g_handMode{2};       // 0 left, 1 right, 2 auto
 std::atomic<int> g_autoHand{1};       // the latched auto choice
+// Session 18 part 3 (user report): OFF by default - the aim CALIBRATION trim
+// used to be applied to the model too, so re-trimming the ray dragged the
+// already-tuned model with it. Now the model is raw aim pose + its own trim,
+// and the ray is raw aim pose + aim trim + origin offset; each is tuned
+// against the other. `vrhands aligntrim on` restores the old coupling.
+std::atomic<bool> g_alignAimTrim{false};
 
 // Model offsets, PER HAND (0 left / 1 right, same convention as aim.cpp): the
 // pistol and the plasmid hand sit differently in the mesh, so one shared set
@@ -568,12 +574,15 @@ void on_calcview(const FrameContext& ctx) {
 
         gp = xr_pose_to_game(mapCtx, pos, q2);
 
-        // The aim calibration trim (per hand), applied exactly the way the
-        // fire ray and the laser apply it - barrel and bullet stay one ray.
-        gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg(hand) *
-                                             kRotUnitsPerDegree);
-        gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg(hand) *
-                                           kRotUnitsPerDegree);
+        // The aim calibration trim is NOT applied to the model by default
+        // (see g_alignAimTrim above) - re-trimming the ray must not move the
+        // tuned model.
+        if (g_alignAimTrim.load(std::memory_order_relaxed)) {
+            gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg(hand) *
+                                                 kRotUnitsPerDegree);
+            gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg(hand) *
+                                               kRotUnitsPerDegree);
+        }
     }
 
     // Position offset rides the final (trimmed) frame: "2 cm forward" means
@@ -706,6 +715,12 @@ void handle_command(const char* args) {
         } else {
             BVR_LOG("[hands] usage: vrhands rot [l|r] <pitchDeg> <yawDeg> <rollDeg>");
         }
+    } else if (strcmp(verb, "aligntrim") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_alignAimTrim.store(on, std::memory_order_relaxed);
+        BVR_LOG("[hands] aim-trim coupling %s (%s)", on ? "ON" : "off",
+                on ? "model follows the aim calibration trim - pre-part-3 behavior"
+                   : "model independent of the aim trim (default)");
     } else if (strcmp(verb, "writerot") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_writeRot.store(on, std::memory_order_relaxed);

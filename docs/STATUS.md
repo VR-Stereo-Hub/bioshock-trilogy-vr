@@ -1343,6 +1343,36 @@ and it resumes.
 
 ## Session log (newest first)
 
+### 2026-07-27 - Session 18 part 3 (trim decoupling + the user's tuning captured; loadout via Nexus save pending)
+
+- **In-headset feedback from the user's first part-2 run**: the ray offsets
+  work (they tuned R right-7.9/up+7.5 cm live), BUT re-trimming the aim
+  rotation dragged the tuned MODEL with it - the session-11 "barrel follows
+  the ray by construction" coupling, now wrong because the model has its own
+  per-hand trim. FIXED: the aim calibration trim is no longer applied to the
+  model (model = raw aim pose + model trim; ray = raw aim pose + aim trim +
+  origin offset). `vrhands aligntrim on` restores the old coupling. Flat:
+  with `cal r 0 20` armed the model rot stayed bit-identical (0 116 0);
+  aligntrim on moved it exactly +20 deg (3756). NOTE for the headset: the
+  user's L trim (17.7 deg yaw) was tuned WITH the coupling live - the left
+  hand may need a re-tune under the fix.
+- **The user's live tuning was captured to the inis** (they had not pressed
+  save): vrpreset.ini now holds aimPosR right-7.9/up+7.5, aimTrimL
+  0.2/17.7, aimPosL 0.2/-0.5/-0.7 - "make them in the preset" done; NOT
+  baked as code defaults (per-weapon differences pending). The inis on this
+  box are now LIVE USER DATA - do not delete them in cleanup anymore.
+- **Test loadout**: the cheat path is closed - `giveall` (ShockCheatManager
+  has GiveAll/FillPlasmids) fell off the client+engine exec chains and
+  FAULTED the viewport chain (SEH caught; relaunched). The Tab console is
+  compiled out (known). Route chosen: the Nexus NG+ save (nexusmods.com
+  /bioshock/mods/77 - end-of-game at the Fontaine fight, all weapons with
+  mods, almost all plasmids, filename per the Steam guide; installs into
+  Documents\BioshockHD\Bioshock\SaveGames) - needs the user's Nexus login,
+  so they download, we install/verify. Per-weapon aim variance is the open
+  design question after that (per-weapon profiles keyed by class name need
+  the FName resolution work).
+- Dumps 8->8 across part 3.
+
 ### 2026-07-27 - Session 18 part 2 (aim-ray origin offsets + the crosshair kill via the engine SET seam)
 
 - Two user asks, both flat-green same day:
