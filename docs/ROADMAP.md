@@ -541,5 +541,15 @@ fixed or the release waits:**
   (elbow poking the wrong way, body clipping) reads worse than M7's floating hands+weapon, so
   this is opt-in polish - only ship it if it actually looks right. Pairs with two-handed
   weapons + physical melee swings.
+- **Left-handed mode** (user's call 2026-07-28): a `handedness left` toggle swapping
+  every ROLE assignment in the mod's own mapping - the weapon viewmodel/aim/laser
+  follow the LEFT controller, plasmid the right, triggers/grips/radials/ammo modifier
+  swap with them, optional second toggle for stick swap (move on right stick). The
+  per-hand tuning (trims/offsets) must follow the ROLE, not the physical hand.
+  Accepted cosmetic compromise: the visible weapon hand stays the RIGHT-hand mesh
+  (mirroring is a wall - negative bone scale hits the session-16 attach-path
+  inverse-scale minefield and flips triangle winding; re-attaching to the left hand
+  has no grip art). The input/pose swap is what handedness is actually for and is
+  roughly a session of work incl. testing.
 - BioShock Infinite (UE3 build 6829) adapter feasibility study
 - OpenVR backend (if some runtime needs it)
