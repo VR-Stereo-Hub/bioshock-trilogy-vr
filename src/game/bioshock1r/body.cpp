@@ -34,7 +34,14 @@ std::atomic<bool>  g_armed{true};
 // the camera-vs-body split stays ~0 - the best case for both the viewmodel
 // alignment and the bounds cull. Non-zero = exponential follow at that rate.
 std::atomic<float> g_ratePerSec{0.0f};
-std::atomic<float> g_deadzoneDeg{0.0f};
+// 23 deg by the user's in-headset calibration (session 17): "just needed that
+// deadzone change and it was perfect". Inside the band the body does not steer
+// at all, so ordinary glances leave the viewmodel completely world-locked -
+// which is what removes the last of the "the gun moves with the camera a bit"
+// percept - and only a deliberate turn past the band carries the body along.
+// Beyond it the body trails the head by exactly the band width, so head and
+// body never diverge by more than 23 deg no matter how far you turn.
+std::atomic<float> g_deadzoneDeg{23.0f};
 std::atomic<float> g_maxDegPerSec{180.0f};  // safety slew cap, not feel
 std::atomic<int>   g_field{0};              // 0 pc, 1 pawn, 2 both
 std::atomic<bool>  g_probeLog{false};

@@ -374,9 +374,12 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       Note the sweep also exposed that the two physical cases differ: a head-only glance with
       the hand parked in the world *increases* hand-vs-body, while the reported case (the
       user swivels, so head and hand rotate together) drives it to ~0.
-- [ ] **Done when:** the user confirms in the headset that walking forward goes where they
-      look, the gun stays aligned with the laser at any reachable aim angle, the rig never
-      vanishes in normal play - and the hand still does NOT follow the head.
+- [x] **Done when:** the user confirms in the headset. **PASSED 2026-07-27** - "this is
+      perfect... the stick was working as expected, the models didn't move when I moved my
+      head". One tuning change, now the shipped default: `vrbody deadzone` 0 -> **23 deg**,
+      which removes the last "the gun moves with the camera a bit" percept (inside the band
+      the body does not steer, so a glance leaves the viewmodel world-locked; beyond it the
+      body trails the head by exactly the band width). M7.5 DONE.
 
 ## M8 - Release quick phase + HUD usability (~1–2 sessions)
 

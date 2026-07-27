@@ -2,11 +2,35 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-27, session 17 - M7.5 BODY-FOLLOWS-HEAD YAW TRANSFER SHIPS; INVARIANT HELD EXACTLY)
+## Current state (2026-07-27, session 17 - M7.5 SHIPS AND IS IN-HEADSET VERIFIED; DEADZONE 23 DEG BY USER CALIBRATION)
 
-**Branch `m7.5-body-yaw-transfer` (NOT merged - the user reviews by PR after
-their headset run). Everything below is flat-verified; the in-headset verdict
-is the only open gate.**
+**IN-HEADSET VERDICT (same day): "This is perfect... the stick was working as
+expected, the models didn't move when I moved my head... so just needed that
+deadzone change and it was perfect."** The user tuned `vrbody deadzone` to
+**23 deg** live and asked for it as the default; it now ships that way. All
+three reported symptoms are addressed and the hard invariant survived the
+headset: the models do not move with the head.
+
+**Why the deadzone was the last piece.** The user's one remaining note was
+"the gun moves with the camera a bit". Inside the 23 deg band the body does
+not steer at all, so an ordinary glance leaves the viewmodel completely
+world-locked; only a deliberate turn past the band carries the body along. And
+because the transfer takes `residual - band`, beyond the band the body trails
+the head by exactly 23 deg, so head and body never diverge further than that
+no matter how far you turn. Flat-confirmed on the shipping default: `resid`
+settles at exactly 23.00 deg, and the invariant is untouched by the band -
+gameYaw and recenterYaw each moved 0.38398 rad (22 deg = 45 - 23) while
+`camYaw` stayed 8308 and the hand's world yaw stayed 116, both bit-identical.
+
+**Branch `m7.5-body-yaw-transfer`, ready to merge.** Everything below is
+flat-verified and now headset-verified.
+
+**Harness note worth keeping: a `vrpreset.ini` written by a smoke test will
+silently OVERRIDE a later code default.** The session-16-era ini on this box
+pinned `bodyDeadzoneDeg=0.0` and would have cancelled the new 23 deg default
+on the next preset press. It contained nothing but shipped defaults, so it was
+deleted and code owns the values again. Any future default change needs the
+same check.
 
 **The root cause the user found by playing is fixed. The body facing is the
 PlayerController's `Rotation.Yaw` at `PC+0x1E8`** - found and proven live in
@@ -945,9 +969,9 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **THE OPEN GATE: the user's in-headset run on branch
-   `m7.5-body-yaw-transfer`** (checklist below, head-decoupling re-verification
-   is item 1). If it passes, open the PR and merge to main. Do NOT merge first.
+0. **DONE: the user verified M7.5 in-headset - "this is perfect".** Deadzone
+   defaulted to their tuned 23 deg. Branch `m7.5-body-yaw-transfer` is ready to
+   merge to main by PR.
 1. **THE M8 QUICK PHASE - both items are RELEASE BLOCKERS by the user's call,
    and neither was started in session 17** (the session went entirely on M7.5
    and its verification):
@@ -1016,7 +1040,13 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7.5 body-follows-head (session 17 build, branch `m7.5-body-yaw-transfer`)
+### IN-HEADSET CHECKLIST - M7.5 body-follows-head (session 17) - PASSED
+
+**Result: passed on the first run.** Head decoupling held ("the models didn't
+move when I moved my head"), the stick worked as expected, and looking to a
+specific spot left or right at a decent angle behaved. The only change asked
+for was `vrbody deadzone` 0 -> **23 deg**, which is now the shipped default -
+so the "Deadzone (deg)" slider below reads 23, not 0, on any later run.
 
 Setup: Quest 3 + Virtual Desktop, launch from Steam, load the newest save,
 press **VR PRESET 1** (it now arms the yaw transfer too, after the viewmodel
@@ -1141,6 +1171,30 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 17 part 2 (IN-HEADSET: PASSED; deadzone 23 deg becomes the default)
+
+- The user tested the session-17 build: **"This is perfect... the stick was
+  working as expected, the models didn't move when I moved my head while
+  looking forward and around that section, when I looked at a specific part to
+  the right or left that needed a decent angle also worked as expected."** The
+  hard invariant survived the headset - that is the gate M7.5 existed to pass.
+- One tuning change, made live by the user and now the shipped default:
+  **`vrbody deadzone` 0 -> 23 deg**. Their remaining note before it was "the
+  gun moves with the camera a bit"; inside the band the body does not steer at
+  all, so a glance leaves the viewmodel world-locked, and beyond the band the
+  body trails the head by exactly the band width (head and body never diverge
+  more than 23 deg).
+- Flat re-verified on the shipping default: `resid` settles at exactly
+  23.00 deg; gameYaw and recenterYaw each moved 0.38398 rad (45 - 23 = 22 deg)
+  while camYaw stayed 8308 and the hand's world yaw stayed 116 - both
+  bit-identical, so the deadzone does not weaken the invariant. Fire smoke
+  under stereo clean, dumps 8->8, guardskips 0.
+- **Trap found while shipping the default: a `vrpreset.ini` left by a smoke
+  test silently OVERRIDES a later code default.** The ini on this box pinned
+  `bodyDeadzoneDeg=0.0` and would have cancelled the new default on the next
+  preset press. It held nothing but shipped defaults, so it was deleted. Check
+  this whenever a default changes.
 
 ### 2026-07-27 - Session 17 (M7.5: the body-follows-head yaw transfer ships, invariant exact)
 
