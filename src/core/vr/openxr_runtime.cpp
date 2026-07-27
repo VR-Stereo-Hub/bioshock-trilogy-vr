@@ -172,6 +172,29 @@ std::atomic<uint32_t> g_paceSkips{0}, g_paceKeepalives{0};
 std::atomic<uint32_t> g_lastWaitMs{0}; // last xrWaitFrame block, telemetry
 std::atomic<bool> g_simIdle{false};    // flat stand-in (`vrpace simidle on`)
 
+// M8 release blocker (b): the desktop mirror. Under SequentialReentry every
+// Present alternates the backbuffer between the two eyes, so the flat window
+// cannot be streamed, recorded, or shown. Fix: LEFT-eye presents snapshot the
+// backbuffer (read-only - the compositor's eye capture is untouched); on
+// RIGHT-eye presents, AFTER the right eye has been captured into its XR
+// swapchain, the held left image is copied back over the backbuffer, so the
+// real Present always displays the LEFT eye. Runs off the same sr eye tags
+// the capture uses, and also on presents with no open XR frame (pace-guard
+// skips, session gone) - the game keeps presenting alternating eyes there
+// and the window still needs the pin.
+// (Session-17 screenshot clue, explained: the pair's two presents have very
+// unequal display time - L is visible only while the game builds the R frame,
+// R through the whole next blocking xrWaitFrame - so DWM-sourced captures
+// land on R with high probability. Same phase 12/12 was duty-cycle skew, not
+// absence of alternation; a 60 Hz recorder still catches L slices.)
+std::atomic<bool> g_mirror{true};        // `vrmirror off` = old alternation
+ID3D11Texture2D* g_mirrorTex = nullptr;  // held left-eye image, present thread
+uint32_t g_mirrorW = 0, g_mirrorH = 0;
+DXGI_FORMAT g_mirrorFmt = DXGI_FORMAT_UNKNOWN;
+bool g_mirrorHeld = false;               // a left image has been snapshotted
+std::atomic<uint32_t> g_mirrorHolds{0}, g_mirrorBlits{0};
+std::atomic<bool> g_loggedFirstMirror{false};
+
 // Pop one tag; 0 = none pending (mono/AER frame).
 int sr_pop_eye() {
     uint32_t tail = g_srTail.load(std::memory_order_relaxed);
@@ -230,6 +253,68 @@ bool pace_should_skip(XrSessionState state, bool everFocused, uint64_t now) {
     }
     g_paceSkips.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+void release_mirror() {
+    if (g_mirrorTex) {
+        g_mirrorTex->Release();
+        g_mirrorTex = nullptr;
+    }
+    g_mirrorHeld = false;
+    g_mirrorW = g_mirrorH = 0;
+    g_mirrorFmt = DXGI_FORMAT_UNKNOWN;
+}
+
+// The eye pin for one present (see the block comment at the globals). Uses
+// the game device straight off the backbuffer, so it works with or without a
+// live XR session. eyeSign: -1 = this backbuffer is the LEFT eye (snapshot),
+// +1 = RIGHT eye (re-blit the held left over it - call only AFTER the right
+// eye's XR capture), 0 = mono (nothing to pin).
+void mirror_present(IDXGISwapChain* swapchain, int eyeSign) {
+    if (eyeSign == 0 || !g_mirror.load(std::memory_order_relaxed)) return;
+    ID3D11Texture2D* backbuffer = nullptr;
+    if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) || !backbuffer) return;
+    D3D11_TEXTURE2D_DESC bd{};
+    backbuffer->GetDesc(&bd);
+    ID3D11Device* dev = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    backbuffer->GetDevice(&dev);
+    if (dev) dev->GetImmediateContext(&ctx);
+    if (ctx) {
+        if (g_mirrorTex &&
+            (g_mirrorW != bd.Width || g_mirrorH != bd.Height || g_mirrorFmt != bd.Format))
+            release_mirror();
+        if (!g_mirrorTex && eyeSign < 0) {
+            D3D11_TEXTURE2D_DESC td = bd;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = 0;
+            td.CPUAccessFlags = 0;
+            td.MiscFlags = 0;
+            if (SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_mirrorTex))) {
+                g_mirrorW = bd.Width;
+                g_mirrorH = bd.Height;
+                g_mirrorFmt = bd.Format;
+            } else {
+                g_mirrorTex = nullptr; // failed create: mirror silently off
+            }
+        }
+        if (g_mirrorTex) {
+            if (eyeSign < 0) {
+                ctx->CopyResource(g_mirrorTex, backbuffer);
+                g_mirrorHeld = true;
+                g_mirrorHolds.fetch_add(1, std::memory_order_relaxed);
+            } else if (g_mirrorHeld) {
+                ctx->CopyResource(backbuffer, g_mirrorTex);
+                g_mirrorBlits.fetch_add(1, std::memory_order_relaxed);
+                if (!g_loggedFirstMirror.exchange(true))
+                    BVR_LOG("xr: desktop mirror pinned to the LEFT eye "
+                            "(right-eye presents re-show the held left image)");
+            }
+        }
+        ctx->Release();
+    }
+    if (dev) dev->Release();
+    backbuffer->Release();
 }
 
 void reset_aer() {
@@ -929,7 +1014,13 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
 }
 
 void on_present_end(IDXGISwapChain* swapchain) {
-    if (!g_frameOpen) return;
+    if (!g_frameOpen) {
+        // No XR frame this present (session gone, or the pace guard skipped
+        // it). The game may still be presenting alternating stereo eyes -
+        // keep draining the tag ring and keep the window pinned to one eye.
+        mirror_present(swapchain, sr_pop_eye());
+        return;
+    }
     bool pairSecond = g_srPairOpen; // this present completes an open pair
     g_srPairOpen = false;
     g_frameOpen = false; // the pair-hold path below re-arms both
@@ -961,6 +1052,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // convention AER validated in-headset (depth not inverted).
     int srSign = sr_pop_eye();
     bool srFrame = projectionMode && srSign != 0;
+
+    // Mirror, left half: snapshot the LEFT eye before anything else runs
+    // (read-only - the XR eye capture below is unaffected). The right half
+    // runs after the capture block, once the right eye is safely captured.
+    if (srSign < 0) mirror_present(swapchain, srSign);
 
     // Pair-pacing bookkeeping and the hold decision. A LEFT-tagged present
     // holds the frame open for its RIGHT sibling; anything unexpected on the
@@ -1097,6 +1193,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
         }
     }
 
+    // Mirror, right half: the right eye's XR capture is done (or was skipped
+    // this present) - pin the backbuffer to the held left image before the
+    // real Present displays it.
+    if (srSign > 0) mirror_present(swapchain, srSign);
+
     // Aim laser on top of the game frame - projection mode only, since in quad
     // ("cinema screen") mode there is no world for it to point into.
     if (layerCount && projectionMode) {
@@ -1136,6 +1237,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
 void on_resize() {
     // Recreated at the new backbuffer size on the next frame.
     destroy_swapchains();
+    release_mirror();
 }
 
 void draw_debug_ui() {
@@ -1217,6 +1319,11 @@ void draw_debug_ui() {
         ImGui::Text("pace guard: skipped %u waits, %u keepalives, last wait %u ms",
                     paceSkips, g_paceKeepalives.load(std::memory_order_relaxed),
                     g_lastWaitMs.load(std::memory_order_relaxed));
+    uint32_t mirrorBlits = g_mirrorBlits.load(std::memory_order_relaxed);
+    if (mirrorBlits)
+        ImGui::Text("mirror: %s | %u left holds, %u re-blits",
+                    g_mirror.load(std::memory_order_relaxed) ? "left eye" : "OFF",
+                    g_mirrorHolds.load(std::memory_order_relaxed), mirrorBlits);
 
     input_draw_debug_ui(); // M5 action-layer status line
 
@@ -1302,6 +1409,22 @@ void handle_pace_command(const char* args) {
     }
 }
 
+void handle_mirror_command(const char* args) {
+    if (strncmp(args, "on", 2) == 0) {
+        g_mirror.store(true, std::memory_order_relaxed);
+        BVR_LOG("xr: desktop mirror ON (window pinned to the LEFT eye under stereo)");
+    } else if (strncmp(args, "off", 3) == 0) {
+        g_mirror.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: desktop mirror OFF (pre-M8 behavior: the window alternates "
+                "eyes under stereo)");
+    } else {
+        BVR_LOG("xr: mirror %s | holds %u blits %u (vrmirror on|off|status)",
+                g_mirror.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_mirrorHolds.load(std::memory_order_relaxed),
+                g_mirrorBlits.load(std::memory_order_relaxed));
+    }
+}
+
 float suggested_hfov_deg() {
     return g_hfovDeg.load(std::memory_order_relaxed);
 }
@@ -1359,6 +1482,7 @@ void set_camera_mode(bool) {}
 void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}
+void handle_mirror_command(const char*) {}
 float suggested_hfov_deg() { return 0.0f; }
 void set_rendered_hfov(float) {}
 int current_eye_sign() { return 0; }

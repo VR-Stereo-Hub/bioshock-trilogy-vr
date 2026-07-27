@@ -82,6 +82,14 @@ void set_sr_pair_pacing(bool on);
 //   status            guard state + skip/keepalive/last-wait telemetry
 void handle_pace_command(const char* args);
 
+// --- M8: desktop mirror ------------------------------------------------------
+// "vrmirror ..." seam (game thread). Under SequentialReentry stereo the flat
+// window alternates L/R eyes per present; the mirror pins it to the LEFT eye
+// (left presents snapshot the backbuffer, right presents re-show the held
+// image AFTER the right eye's XR capture, so the headset feed is untouched).
+//   on | off | status   (off = the pre-M8 alternation, live A/B)
+void handle_mirror_command(const char* args);
+
 // Symmetric horizontal FOV (degrees) circumscribing the headset's per-eye
 // FOV at the backbuffer aspect - what the game should render with in camera
 // mode. 0 until the first views are located.
