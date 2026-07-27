@@ -1034,11 +1034,19 @@ and it resumes.
   incoming hand's model on the WRONG controller - consistent with the hand
   map learning attribution only from the trigger-keyed fire seams; a
   grip-initiated switch never crosses them. Queued in the M8 quick phase.
-- ROADMAP restructured (user's calls): selection wheels -> post-v1 (the
-  current switching UI is good enough); M8 = release quick phase (first
-  GitHub release + the grip bug) then HUD usability (health/EVE visible,
-  keybind audit; the gameswf redirect moved up from M9); M9 = comfort +
-  better overlay/config UI polish + release follow-up.
+- **M7-v2 IS DONE - the user's call.** Tracking + head decoupling verified
+  in-headset (part 2), size resolved by their worldScale-100 calibration
+  (part 3 - the engine-lever scale hunt turned out to be unnecessary, not
+  unfinished), effects proven on the driven hand back in session 12. The
+  ROADMAP box is ticked; the body-facing coupling is split out as M7.5
+  (a camera/locomotion defect, not a viewmodel one) = session 17.
+- ROADMAP restructured (user's calls): M7-v2 ticked + M7.5 added (the
+  session-17 body/head work with its non-regression invariant as a
+  checklist item); selection wheels -> post-v1 (the current switching UI
+  is good enough); M8 = release quick phase (first GitHub release + the
+  grip bug) then HUD usability (health/EVE visible, keybind audit; the
+  gameswf redirect moved up from M9); M9 = comfort + better overlay/config
+  UI polish + release follow-up.
 - THE NON-REGRESSION GATE (user's explicit requirement, added same day):
   the transfer must NOT bring back the-hand-follows-the-head. The
   controller->world mapping composes through the body yaw, so a naive

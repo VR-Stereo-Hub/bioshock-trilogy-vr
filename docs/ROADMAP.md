@@ -316,14 +316,17 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       overshoot fixed). Full session-14 acceptance ladder re-passed at k=1 on a clean boot
       with shipping defaults: parallax 0.98x, size 1.02-1.05x, sweep glued 2-17 px, fire
       clean, dumps stable. ENGINE_NOTES "Foreground scene FOV" sessions 15-16.*
-- [ ] **Done when:** the weapon is one with the right controller and the plasmid hand is one
+- [x] **Done when:** the weapon is one with the right controller and the plasmid hand is one
       with the left, each inspectable from any angle, at a believable size, with their effects
-      attached. (Arms hidden is a valid and expected answer.) *CORE IN-HEADSET VERDICT
-      POSITIVE 2026-07-27 (session 16 part 2): "fully working, and it's not moving with the
-      head/headset/camera anymore" - tracking + head decoupling done. Still open for this
-      box: believable SIZE (all engine-side scale levers flat-dead, render-path work queued -
-      STATUS next steps 0) and the laser-crossing anomaly at large aim angles (STATUS next
-      steps 1).*
+      attached. (Arms hidden is a valid and expected answer.) ***M7-v2 IS DONE - the user's
+      call 2026-07-27 (session 16 part 4).*** *In-headset verdict (part 2): "fully working,
+      and it's not moving with the head/headset/camera anymore" - tracking and head
+      decoupling confirmed. SIZE resolved in part 3 by the user's own worldScale-100
+      calibration (viewmodel size AND distance both read right - the engine-side mesh-scale
+      levers stayed dead and turned out to be unnecessary, ENGINE_NOTES session 16 part 2).
+      Effects were proven riding the driven hand in session 12 (Electro Bolt parity + live
+      cast). The remaining body-facing coupling is NOT a viewmodel defect - it is a
+      camera/locomotion one, split out as M7.5 below.*
 
 - [ ] ~~Done when: hands + current weapon track the controller convincingly~~ (superseded by
       M7-v2 above; wrench melee rides the weapon path for free)
@@ -332,6 +335,33 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       controller - good enough for the short FP forearm. Making the ELBOW articulate as the
       hand moves is IK arms (post-v1 below) - the user wants this captured as a post-polish
       focus item.*
+
+## M7.5 - Body/head decoupling follow-up (session 17, ~1 session)
+
+> Split out of M7-v2 on 2026-07-27 (session 16 part 4): the viewmodel milestone is DONE, but
+> the user found one root cause that still degrades play - and it is a CAMERA/LOCOMOTION
+> defect, not a viewmodel one. Full spec + the invariant in STATUS "Next steps" item 1.
+
+- [ ] **Body-follows-head yaw transfer.** The body/pawn facing only rotates with the RIGHT
+      STICK, so with the head physically turned: left-stick "forward" walks along the OLD
+      facing (the user's decisive observation), weapon-laser alignment degrades as the hand
+      aims away from that facing, and past ~90 deg the rig leaves the authored bounds and is
+      CULLED (returns when the stick catches up). Fix: each frame transfer the head-look yaw
+      into the body facing while subtracting the same amount from the camera's additive yaw,
+      so the camera is unchanged and the invisible body re-aligns under the view.
+- [ ] **HARD INVARIANT - no regression of head decoupling (the user's explicit
+      requirement).** The controller-to-world mapping composes through the body yaw, so the
+      transfer must leave the final camera AND that composite mapping bit-identical (the
+      recenter reference absorbs the transferred yaw). Gate: the parked-hand simhead sweep
+      (gun glued to the world) and the full session-16 acceptance ladder pass UNCHANGED
+      before it ships; the in-headset checklist re-verifies decoupling as item 1.
+- [ ] **Residual edge alignment + the cull angle**, measured after the transfer: simpose
+      sweep at 0/30/60/80/90/100/120 deg from the facing, rendered barrel vs target angle
+      per step, exact cull-on/off angle from both directions; `vrbones lockgain` A/B if the
+      error still grows with angle.
+- [ ] **Done when:** walking forward goes where the user looks, the gun stays aligned with
+      the laser at any reachable aim angle, the rig never vanishes in normal play - and the
+      hand still does NOT follow the head.
 
 ## M8 - Release quick phase + HUD usability (~1–2 sessions)
 
