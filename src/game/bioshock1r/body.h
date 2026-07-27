@@ -70,6 +70,13 @@ void draw_debug_ui();
 
 bool enabled();
 
+// STRICT gameplay-view predicate: the view actor is the player's ShockPlayer
+// (vtable match), with NO `viewActor == pc` escape hatch - so the main-menu
+// attract scene and cutscenes read false. This is the body-write guard, and
+// since session 19 also the gate for the stick-pitch kill and the source of
+// the "[b1r] view state" harness log signal.
+bool is_gameplay_view(void* viewActor);
+
 // Tuned values the VR preset persists to vrpreset.ini.
 float rate_per_sec();
 float deadzone_deg();

@@ -1,6 +1,7 @@
 #include "d3d11_hook.h"
 
 #include "core/gfx/frame_inspector.h"
+#include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -77,6 +78,21 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
     vr::on_present_begin(swapchain); // xrWaitFrame paces the game while a session runs
     overlay::on_present(swapchain);
     vr::on_present_end(swapchain);   // copies the finished frame (incl. overlay) to the quad
+    // HUD capture rolls LAST: every consumer of the redirected HUD RT (eye
+    // capture, window composite, quad copy - all inside on_present_end) has
+    // run by now; this clears the RT and resets the interval classifier.
+    {
+        ID3D11Device* device = nullptr;
+        if (SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&device))) && device) {
+            ID3D11DeviceContext* context = nullptr;
+            device->GetImmediateContext(&context);
+            if (context) {
+                hud::on_present(context);
+                context->Release();
+            }
+            device->Release();
+        }
+    }
     return g_origPresent(swapchain, syncInterval, flags);
 }
 
@@ -85,6 +101,7 @@ HRESULT WINAPI ResizeBuffersDetour(IDXGISwapChain* swapchain, UINT bufferCount,
                                    UINT swapchainFlags) {
     vr::on_resize();
     overlay::on_resize();
+    hud::release_resources(); // recreated lazily at the new size
     HRESULT hr = g_origResizeBuffers(swapchain, bufferCount, width, height, format, swapchainFlags);
     BVR_LOG("ResizeBuffers: %ux%u format %u -> hr=0x%08X", width, height, format, hr);
     return hr;

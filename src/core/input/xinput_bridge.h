@@ -32,6 +32,18 @@ bool enabled();
 // focused); the slot also self-expires if publishing stops entirely.
 void publish_xr_state(const Gamepad& pad, bool active);
 
+// The game layer publishes "the VR camera is driving a REAL gameplay view"
+// once per frame (CalcView; strict predicate - menus/cutscenes publish
+// false). While true and pitchkill is on, the composed right-stick Y is
+// zeroed: under VR the HMD owns pitch, and a stick-pitched body drags the
+// viewmodel and the melee phantom with it (session 19). Self-expires if
+// publishing stops, failing open to stock behavior.
+void publish_vr_gameplay(bool on);
+
+// Master toggle for the stick-pitch kill (default ON; `vrinput pitchkill`).
+void set_pitch_kill(bool on);
+bool pitch_kill();
+
 // Radial stick deadzone (fraction 0..0.5) applied by the XR composer.
 float stick_deadzone();
 
@@ -56,6 +68,7 @@ bool hijack_import_slot(void** slot);
 
 // Seam command handler: args after the "vrinput" verb (game thread).
 //   on | off | status
+//   pitchkill on|off|status
 //   test stick l|r <x> <y> [holdMs]   raw -32768..32767
 //   test trig  l|r <0..255> [holdMs]
 //   test press <A|B|X|Y|LB|RB|START|BACK|LS|RS|DU|DD|DL|DR> [holdMs]

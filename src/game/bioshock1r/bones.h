@@ -47,6 +47,14 @@ void reapply();
 // The old actors died with the old world; drop every cached pointer.
 void on_world_change();
 
+// Session 19: collapse the whole INACTIVE hand's cluster + sleeve while the
+// other hand drives (default ON; `vrhands hideinactive on|off`). The
+// weapon-attach bone hides by translation, never scale - the attach path
+// inverse-decomposes chain scale (session 16). Restores from the reference
+// on toggle-off and on hand switch, before the incoming hand is driven.
+void set_hide_inactive(bool on);
+bool hide_inactive();
+
 // Seam commands (game thread): status | list [n] | poke <idx> <dUU> |
 // freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor> |
 // log on|off (in-headset telemetry: head/controller/camera/actor/target/bone

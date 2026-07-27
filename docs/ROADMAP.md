@@ -437,16 +437,58 @@ fixed or the release waits:**
       bright center pixels on a clean boot, toggle exact both ways.
 
 **HUD usability:**
-- [ ] See health + EVE clearly in VR: gameswf HUD draws redirected to offscreen RT → a
-      floating quad during stereo gameplay (moved up from M9 - it IS the "better HUD" work)
-- [ ] Keybind audit on Quest 3 Touch: every needed action reachable and correct (the M5
-      "rebinds wanted later" list gets resolved here)
+- [x] See health + EVE clearly in VR - DONE flat 2026-07-28 (session 19): the gameswf
+      HUD draws are classified per present interval (scene-vote + tonemap detection,
+      corrected fingerprint in ENGINE_NOTES) and redirected to an offscreen RT; the
+      alpha-repaired copy feeds a head-locked XrCompositionLayerQuad (distance/width/
+      height sliders, vrpreset.ini) AND a post-capture window composite, so the flat
+      window keeps its HUD while both eyes come out clean - this also fixes the old
+      "HUD in both eyes" defect, and the pause menu lands on the readable quad for
+      free. Flat: 119 HUD draws/interval classified, leaks=0, redirect removes the
+      HUD from the frame, composite restores the window, round-trips exact. The
+      in-headset quad verdict is on the session-19 checklist.
+- [x] Keybind audit on Quest 3 Touch - DONE flat 2026-07-28 (session 19): ground truth
+      pulled from User.ini XENON_* (ENGINE_NOTES - the game layout is A=Use, B=Heal,
+      X=Reload/Hack/EVE, Y=Jump; DPAD_UP/DOWN cycle ammo, flat-proven); the XR layer
+      re-routes Touch A->jump, B->use, Y->heal, X->reload, and right-stick Y FLICKS
+      (freed by the stick-pitch kill) pulse dpad up/down = ammo-type cycling. Headset
+      walkthrough on the checklist.
 - [ ] **Done when:** a friend can install from the release zip, press VR PRESET 1, see
       their health/EVE, and every binding they need works - and someone watching the
       monitor sees a normal single-eye picture, including after the headset comes off.
 
 ## M9 - Comfort + UI/config + release polish (~2–3 sessions)
 
+**Two-hand track (user's call 2026-07-28, sequenced AFTER the session-20 aim work):**
+- [ ] **Off-hand tracking** (`vrhands offhand track|hide`, default hide until judged by
+      eye): drive the INACTIVE hand's cluster from its controller instead of collapsing
+      it - the same rigid drive run on both clusters per frame. Reload/idle anims on the
+      tracked hand are overwritten by construction (the weapon's own skeleton still
+      animates itself). The open question is the off-hand's SHAPE (the engine's last
+      evaluated pose may be a grab/reach); mitigation on file: snapshot a good cluster
+      shape (e.g. the plasmid idle) and use it as the off-hand's fixed reference.
+      Prerequisite: none hard, but do it after the session-20 trim unification so both
+      hands ride one algebra.
+- [ ] **Two-handed weapon handling** (shotgun/MG/GL/crossbow/chemical thrower): left
+      hand within ~10 cm of the foregrip + grip = engage; weapon then aims along the
+      rear-hand -> front-hand line (a different ray source into the same fire-seam
+      substitution; the model gets the same target rotation) and the left cluster sits
+      at "bone-43 world transform + per-weapon foregrip offset" - a transform we WRITE,
+      so no engine cooperation needed. Release on grip-off or distance. Purely
+      presentation + aim math - the game has no two-hand mechanic to desync. What makes
+      it cheap here: no arms/elbows = no IK, and the art already contains authored
+      grip shapes to snapshot (the shotgun's two-hand idle). PREREQUISITES, in order:
+      session-20 trim-algebra unification (do not build two-hand aim on the algebra
+      being replaced), then FName/per-weapon identity + the muzzle/foregrip bone probe
+      (per-weapon foregrip offsets; the weapon skeletons may carry foregrip bones).
+      Per-weapon engage radius + offsets tuned by eye.
+
+- [ ] **Wrench swing gesture (user's call 2026-07-28)**: trigger the melee hit from the
+      physical SWING instead of (or in addition to) the trigger - velocity threshold on
+      the right controller while the wrench is equipped -> pulse RT, cooldown against
+      double-fires. The user play-tested timing the trigger to their swing and it felt
+      right, so the gesture only needs to reproduce that timing. Hand poses per frame
+      already exist (velocity = dP/dt); keep the trigger working as-is.
 - [ ] Snap turn, height/seated recenter, optional vignette
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
@@ -499,5 +541,15 @@ fixed or the release waits:**
   (elbow poking the wrong way, body clipping) reads worse than M7's floating hands+weapon, so
   this is opt-in polish - only ship it if it actually looks right. Pairs with two-handed
   weapons + physical melee swings.
+- **Left-handed mode** (user's call 2026-07-28): a `handedness left` toggle swapping
+  every ROLE assignment in the mod's own mapping - the weapon viewmodel/aim/laser
+  follow the LEFT controller, plasmid the right, triggers/grips/radials/ammo modifier
+  swap with them, optional second toggle for stick swap (move on right stick). The
+  per-hand tuning (trims/offsets) must follow the ROLE, not the physical hand.
+  Accepted cosmetic compromise: the visible weapon hand stays the RIGHT-hand mesh
+  (mirroring is a wall - negative bone scale hits the session-16 attach-path
+  inverse-scale minefield and flips triangle winding; re-attaching to the left hand
+  has no grip art). The input/pose swap is what handedness is actually for and is
+  roughly a session of work incl. testing.
 - BioShock Infinite (UE3 build 6829) adapter feasibility study
 - OpenVR backend (if some runtime needs it)

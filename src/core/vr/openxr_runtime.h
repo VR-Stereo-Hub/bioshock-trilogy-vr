@@ -150,4 +150,9 @@ struct LaserConfig {
 // builds the layers from it at submit time.
 void set_laser(const LaserConfig& cfg);
 
+// Session 19 HUD floating quad placement (meters; head-locked). Persisted by
+// the VR preset; sliders in the VR overlay section.
+void set_hud_quad(float distM, float widthM, float upM);
+void get_hud_quad(float* distM, float* widthM, float* upM);
+
 } // namespace bvr::vr

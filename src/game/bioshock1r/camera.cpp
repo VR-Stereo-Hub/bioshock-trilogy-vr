@@ -6,6 +6,7 @@
 
 #include "core/debug/value_scan.h"
 #include "core/gfx/frame_inspector.h"
+#include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
@@ -387,7 +388,12 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "membases") == 0) {
         bvr::value_scan::log_module_bases();
     } else if (strcmp(cmd, "dumpframe") == 0) {
-        bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
+        // dumpframe [full] [n] - n > 1 records consecutive present windows
+        // (both halves of a stereo pair; files suffixed _qN).
+        bool full = strncmp(args, "full", 4) == 0;
+        int count = 1;
+        sscanf_s(full ? args + 4 : args, " %d", &count);
+        bvr::frame_inspector::arm(full ? 2 : 1, count);
     } else if (strcmp(cmd, "vrinput") == 0) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
     } else if (strcmp(cmd, "vraim") == 0) {
@@ -417,6 +423,25 @@ void apply_command(const char* cmd, const char* args) {
         bvr::vr::handle_pace_command(args); // M8 disconnect-stall guard
     } else if (strcmp(cmd, "vrmirror") == 0) {
         bvr::vr::handle_mirror_command(args); // M8 single-eye desktop mirror
+    } else if (strcmp(cmd, "vrhud") == 0) {
+        // Session 19 HUD capture: gameswf HUD redirected off the game frame
+        // (clean eyes) and shown as a floating quad in stereo.
+        if (strncmp(args, "force on", 8) == 0) {
+            bvr::hud::set_force(true);
+        } else if (strncmp(args, "force off", 9) == 0) {
+            bvr::hud::set_force(false);
+        } else if (strncmp(args, "on", 2) == 0) {
+            bvr::hud::set_enabled(true);
+        } else if (strncmp(args, "off", 3) == 0) {
+            bvr::hud::set_enabled(false);
+        } else {
+            unsigned hd = 0, rd = 0, lk = 0, iv = 0;
+            bvr::hud::get_counters(&hd, &rd, &lk, &iv);
+            BVR_LOG("[hud] status: %s force=%d | hudDraws=%u redirects=%u leaks=%u "
+                    "hudIntervals=%u (vrhud on|off|force on|force off|status)",
+                    bvr::hud::enabled() ? "ON" : "off", bvr::hud::force() ? 1 : 0, hd, rd,
+                    lk, iv);
+        }
     } else if (strcmp(cmd, "vrxhair") == 0) {
         // M8 part 2: the flat-screen crosshair. Default HIDDEN; "on" re-shows.
         if (strncmp(args, "on", 2) == 0) {
@@ -470,6 +495,13 @@ void save_vr_preset() {
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fprintf(f, "crosshairVisible=%d\n",
             g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0);
+    {
+        float hd = 0, hw = 0, hu = 0;
+        bvr::vr::get_hud_quad(&hd, &hw, &hu);
+        fprintf(f, "hudQuadDistM=%.2f\n", hd);
+        fprintf(f, "hudQuadWidthM=%.2f\n", hw);
+        fprintf(f, "hudQuadUpM=%.2f\n", hu);
+    }
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
     // The per-hand model offsets live in hands.ini; saving them here too makes
@@ -489,6 +521,8 @@ void load_vr_preset_values() {
     float plf = aim::pos_fwd_cm(0), plr = aim::pos_right_cm(0), plu = aim::pos_up_cm(0);
     float prf = aim::pos_fwd_cm(1), prr = aim::pos_right_cm(1), pru = aim::pos_up_cm(1);
     float bodyRate = body::rate_per_sec(), bodyDz = body::deadzone_deg();
+    float hudD = 0, hudW = 0, hudU = 0;
+    bvr::vr::get_hud_quad(&hudD, &hudW, &hudU);
     while (fgets(line, sizeof line, f)) {
         char key[48] = {};
         float v = 0.0f;
@@ -514,6 +548,9 @@ void load_vr_preset_values() {
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
         else if (strcmp(key, "crosshairVisible") == 0)
             g_crosshairVisible.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "hudQuadDistM") == 0) hudD = v;
+        else if (strcmp(key, "hudQuadWidthM") == 0) hudW = v;
+        else if (strcmp(key, "hudQuadUpM") == 0) hudU = v;
         else --n;
     }
     fclose(f);
@@ -522,6 +559,7 @@ void load_vr_preset_values() {
     aim::set_pos_offset(0, plf, plr, plu);
     aim::set_pos_offset(1, prf, prr, pru);
     body::set_tuning(bodyRate, bodyDz);
+    if (hudD > 0.0f && hudW > 0.0f) bvr::vr::set_hud_quad(hudD, hudW, hudU);
     if (n) BVR_LOG("[b1r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
@@ -872,6 +910,47 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.viewActor = viewActor ? *viewActor : nullptr;
         fc.pc = self;
         g_lastViewActor.store(fc.viewActor, std::memory_order_relaxed);
+
+        // Strict gameplay-view (body.cpp predicate, no menu-attract escape
+        // hatch), published to the input bridge as the stick-pitch-kill gate
+        // and logged on transition - the harness's generic "in gameplay"
+        // signal (boot.ps1 watches for this line; any save, any level).
+        bool strictGameplay = body::is_gameplay_view(fc.viewActor);
+        bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
+        static int s_lastViewState = -1;
+        int viewState = strictGameplay ? 1 : 0;
+        if (viewState != s_lastViewState) {
+            s_lastViewState = viewState;
+            BVR_LOG("[b1r] view state: %s",
+                    strictGameplay ? "GAMEPLAY (ShockPlayer view)" : "menu/cutscene");
+        }
+
+        // Radial-wheel pitch guard (session 19 part 2): the stick-pitch kill
+        // lifts while a grip/bumper is held so the weapon wheel can read
+        // stick Y - but the wheel's binding state keeps the look axis bound
+        // too, so REAL pitch accumulates on the PC during the hold. Snapshot
+        // the PC pitch at bumper-down, write it back at release: the wheel
+        // selects, the body pitch returns exactly where it was. Same field
+        // the stick writes (PC rotation, pitch at +0x0), so the engine's own
+        // clamp semantics hold.
+        {
+            bool lb = false, rb = false;
+            bvr::input::last_composed_bumpers(&lb, &rb);
+            bool bumperHeld = lb || rb;
+            static bool s_wasHeld = false;
+            static int32_t s_savedPitch = 0;
+            static void* s_savedPc = nullptr;
+            int32_t* pcPitch = reinterpret_cast<int32_t*>(static_cast<uint8_t*>(self) +
+                                                          patterns::kActorViewDirOffset);
+            if (bumperHeld && !s_wasHeld && vrDrove && strictGameplay) {
+                s_savedPitch = *pcPitch;
+                s_savedPc = self;
+            } else if (!bumperHeld && s_wasHeld) {
+                if (s_savedPc == self) *pcPitch = s_savedPitch;
+                s_savedPc = nullptr; // never restore across a world change
+            }
+            s_wasHeld = bumperHeld;
+        }
 
         // THE HARD-INVARIANT INSTRUMENT (session 17). Run a FIXED XR pose
         // through the unmodified context and log where it lands. This is the

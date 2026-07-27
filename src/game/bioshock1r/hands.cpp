@@ -747,6 +747,8 @@ void handle_command(const char* args) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_writeRot.store(on, std::memory_order_relaxed);
         BVR_LOG("[hands] rotation write %s", on ? "ON" : "off (position only)");
+    } else if (strcmp(verb, "hideinactive") == 0) {
+        bones::set_hide_inactive(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "save") == 0) {
         save_config();
     } else if (strcmp(verb, "reload") == 0) {
@@ -794,7 +796,8 @@ void handle_command(const char* args) {
         log_status();
     } else {
         BVR_LOG("[hands] unknown command '%s' (on|off|mode gun|hands|pose aim|grip|scale|"
-                "probe|hand|pos|rot|writerot|save|reload|test|simpose|testclear|status)",
+                "probe|hand|pos|rot|writerot|hideinactive|save|reload|test|simpose|"
+                "testclear|status)",
                 verb);
     }
 }

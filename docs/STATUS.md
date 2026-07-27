@@ -2,7 +2,169 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-27, session 18 - M8 QUICK PHASE CODE-COMPLETE FLAT: both release blockers fixed, per-hand offsets, grip-switch fix, release zip staged)
+## Current state (2026-07-28, session 19 - M8 COMPLETE FLAT: HUD on a floating quad, VR-standard bindings + ammo flicks, inactive hand hidden, stick pitch killed; v0.2.0 awaits the headset run)
+
+**Branch `s19-m8-completion` (from main at v0.1.0). Everything below is
+flat-verified on clean boots with numeric acceptance; the in-headset checklist
+below is the open gate, and v0.2.0 publishes only after it + the user's
+explicit go. Per the user's call, item 4 of the session-19 plan (aim-sync
+algebra unification + the synccheck/record-replay testing framework + FName +
+muzzle probe + idle-sway kill) moves WHOLE to session 20 / v0.3.0 - its root
+causes and designs are fully written down in the session-19 plan file and the
+"SESSION 20 PLAN" block below.**
+
+**1. Hide the inactive hand (`vrhands hideinactive`, DEFAULT ON).** The
+inactive hand's whole cluster + sleeve collapse exactly like the driven
+sleeve (zero scale, positions pinned at the driven target, cached and
+replayed by `reapply()` for the stereo second eye) - EXCEPT the weapon-attach
+bone 43, which hides by TRANSLATION to (0,0,-5000) component space: the
+attach path inverse-decomposes chain scale (session 16), so zero scale would
+be 1/0. On a hand switch the incoming cluster restores from g_ref BEFORE the
+rigid write (which sets p/q but never .s). Flat: ghost-arm region diff 2.64
+mean/6.9% changed ON-vs-OFF with the drive live, ON-vs-ON2 at the 0.75 noise
+floor; both switch directions round-trip (shotgun back at full scale, no
+attach blowup); Electro Bolt cast executed with the collapse live (EVE
+consumed, FX shell riding the DRIVEN hand); fire test passed; dumps 8->8.
+
+**2. Right-stick pitch is dead under VR gameplay (`vrinput pitchkill`,
+DEFAULT ON).** camera.cpp computes the STRICT gameplay-view predicate
+(body.cpp's, now public) every CalcView and publishes vrDrove && strict to
+the input bridge; compose_over() zeroes the composed right-stick Y while the
+gate holds (self-expiring - fails open). Menus/cutscenes keep pitch (strict
+false there). Flat: gate ACTIVE (published 16 ms fresh), pitch frozen through
+8 s of full-up stick at two different pitch values while YAW still spun;
+pitchkill off freed the pitch instantly (853 -> the 18000 clamp); packet
+numbers still bump. The wrench-melee question (does it now hit where the hand
+points?) is measured on the headset checklist before any body-pitch drive
+gets built.
+
+**3. THE HUD IS ON A FLOATING QUAD (M8 "HUD usability" - the release
+headline).** The frame-dump fingerprint was re-derived and CORRECTED
+(ENGINE_NOTES session 19: the HUD is ~119 NON-INDEXED Draw calls per present
+interval on the tonemap target with the scene DSV still BOUND - session 6 had
+that inverted; the tonemap is the interval's only no-DSV draw; the world is
+pure DrawIndexed; gameswf's batch flush 0x7B8EB5 is in every HUD stack).
+`core/gfx/hud_capture.cpp` classifies per interval (scene-RT vote by
+DSV-bound DrawIndexed, tonemap = first non-indexed draw sampling the vote
+leader, everything non-indexed after it on that target = HUD) and substitutes
+our RTV at draw time. gameswf's destination alpha is GARBAGE, so consumers
+read an alpha-repaired copy (luminance-derived, `core/gfx/blit.cpp`,
+premultiplied semantics). The processed capture feeds (a) a HEAD-LOCKED
+XrCompositionLayerQuad during stereo gameplay (distance/width/height sliders,
+persisted; +1 layer = 10 of the 16 runtimes must accept) and (b) a
+post-eye-capture window composite at all three present exits, so the FLAT
+window keeps its HUD while the compositor feed stays clean - which also
+fixes the parked "HUD renders in both eyes" defect, and the PAUSE MENU lands
+on the readable quad for free. Flat: classification 119/interval with
+leaks=0 across every boot; `vrhud force on` removes the HUD from the frame
+(4.5% region diff, no blackout) and the composite restores the window
+(HUD-corner pixels back, slightly more vivid from the alpha repair); menus
+never classify; pause menu redirects + composites; round-trips exact; dumps
+8->8. `vrhud on|off|force on|force off|status`; the quad itself renders only
+with a session - ITS visual verdict is the headset checklist's headline item.
+
+**4. VR-standard bindings + stick-flick ammo switching (the controls
+audit).** Ground truth pulled from the live User.ini XENON_* block
+(ENGINE_NOTES): the game's pad layout is A=Use, B=Heal(MedHypo),
+X=Reload/Hack/InjectEVE, Y=Jump - confirming the user's complaint exactly
+(jump sat on Touch Y). The XR layer now re-routes the face buttons: Touch
+A->jump, B->use, Y->heal, X->reload (VR convention per the HL2VR/VRChat/
+Pavlov survey: jump belongs on A). DPAD_UP/DOWN were flat-PROVEN to cycle the
+equipped weapon's ammo type (00 Buck -> Electric -> Exploding on the
+shotgun), so right-stick Y FLICKS (freed by the pitch kill) pulse them:
+rising edge past 0.65 pre-deadzone, re-arm inside 0.30, 300 ms cooldown,
+suppressed while a grip is held (the radials read the stick). README +
+ARCHITECTURE tables rewritten. The remap lives in the XR-session-only path,
+so flat coverage is the dpad ground truth + boot smoke (clean); the button
+walkthrough is on the headset checklist.
+
+**5. Harness upgrades that paid for themselves the same session.**
+`tools/boot.ps1` is now IN THE REPO and save-agnostic: it watches for the
+new `[b1r] view state: GAMEPLAY` transition line (the strict predicate,
+logged on change) instead of the old wall-save location - verified on five
+boots this session, 3-15 presses each. `dumpframe [full] [n]` records n
+CONSECUTIVE present windows (`_qN` files) - a command-armed dump always
+opens on the same stereo-pair phase, which is exactly why the HUD hid from
+single-window dumps for half a session. The frame inspector now also hooks
+DrawAuto/Dispatch/CopySubresourceRegion/CopyResource/UpdateSubresource/
+ExecuteCommandList (census + events; all zero for this game - no deferred
+contexts, which the HUD hunt needed proven).
+
+**Promoted-build clean-boot smoke (remap build):** preset chain in order,
+stereo heartbeat clean (mode=1T, presents = 2x builds, guardskips 0), two
+right-trigger pulls fired, HUD classifier live with redirects 0 while
+ungated, dumps 8->8. The vrpreset.ini gained hudQuadDistM/WidthM/UpM keys
+(defaults 1.30/1.25/-0.10 m) - the user's live ini keeps every old key.
+
+### Session 19 part 2 - IN-HEADSET VERDICT + the feedback round (same day)
+
+**THE HEADSET RUN PASSED: "I tested and it looks amazing... there's just some
+small fixes."** No regression (item 1 perfect); HUD panel "very good...
+amazing"; ghost hands "perfect... exactly as intended"; monitor perfect; and
+THE WRENCH WORKS with the pitch kill alone - the HMD-pitch body drive is NOT
+needed (dropped from session 20). Four fixes came back and ALL FOUR ARE DONE
+FLAT the same night:
+
+**1. Menus were transparent on the quad -> gameswf's blend states accumulate
+GARBAGE COVERAGE in the alpha channel** (they blend alpha like color). Every
+blend state seen on a redirected draw now gets a cached variant with the
+alpha ops corrected to over-composite (ONE / INV_SRC_ALPHA - rgb ops
+untouched), so true coverage accumulates and the luminance repair dropped to
+a 0.35 safety floor. Flat: the pause menu's cityscape panels render SOLID
+black with the yellow glow correct - the original art.
+
+**2. The odometer digit strips sprawled unclipped (user's screenshot) ->
+flash MASKS are STENCIL-based and the redirect bound no DSV.** The capture
+RT now owns a D24S8 depth-stencil, bound with every substitution and cleared
+per interval. Flat: the pause menu's money (0451) and ADAM (2580) counters
+render CLIPPED to their windows - strips gone.
+
+**3. Buttons revised by feel: Touch A goes BACK to use/loot/menu-confirm
+(it is the game's confirm button - looting and menus were unintuitive
+remapped), jump moves to B.** X reload / Y heal stay.
+
+**4. Ammo select redesigned - three types, three directions: HOLD the
+right-stick CLICK, then push UP / DOWN / LEFT to select that slot (the dpad
+directions each SELECT a slot, they do not cycle - which is why up/down
+flicks could only reach two). Turning is suppressed while the click is held;
+a QUICK click-tap with no push still zooms** (the click's original owner -
+the tap is just delayed past the 400 ms select window). Flick-without-click
+is gone entirely, which also removes any accidental-flick worry.
+
+**FPS question measured flat: the whole HUD capture costs ~4% of an
+UNCAPPED flat frame (336 vs 349 presents/s = ~0.11 ms/frame) - under 1% of
+a headset frame budget.** The perceived hit is most likely the zone or the
+Debug build; `vrhud off` is the live in-headset A/B if it recurs. A
+per-present resource-desc cache also removed most of the classifier's COM
+churn this round. Queued to M9 by the user: the WRENCH SWING GESTURE
+(velocity-triggered melee - they play-tested the timing manually and it
+felt right).
+
+**5. (part 3, same night) The weapon wheel was unselectable up/down - the
+pitch kill was eating stick Y in the radial state too.** The kill now LIFTS
+while a grip/bumper is held (the wheel reads stick Y), and because the
+wheel's binding state keeps the look axis bound, camera.cpp snapshots the PC
+pitch at bumper-down and writes it back at release - the wheel selects, and
+wheel-time look drift cannot stick. Flat, exact: pitch frozen at 853 under
+full-up stick with no bumper; RB held -> pitch moved to 4001 (and the
+calls/s dropped = the wheel actually opened); release -> pitch restored to
+EXACTLY 853.
+
+**6. (part 3) ZOOM IS REMOVED in VR (user's call - nothing needs it and an
+HMD FOV zoom is a comfort hazard).** RS-click never reaches the game; the
+click is purely the ammo modifier now (the tap-vs-hold logic is gone with
+it). The `vrinput test press RS` lane still injects raw XInput for harness
+use.
+
+**RE-VERIFY IN-HEADSET (quick, 6 items):** (1) pause menu + a vending
+machine: opaque panels, counters clipped; (2) A loots/confirms menus, B
+jumps; (3) ammo: hold right-stick click + up/down/left selects the right
+slot each time, no selects while turning normally, clicking alone does
+NOTHING (zoom gone); (4) WEAPON WHEEL: hold grip, select with the stick
+incl. up/down, release - and the view pitch must be exactly where you left
+it; (5) FPS feel vs `vrhud off` in the same spot; (6) nothing else moved.
+
+## Previous state (2026-07-27, session 18 - M8 QUICK PHASE CODE-COMPLETE FLAT: both release blockers fixed, per-hand offsets, grip-switch fix, release zip staged)
 
 **Branch `m8-release-quick-phase` (from main at PR #2's merge). Everything below
 is flat-verified on clean boots with numeric acceptance; the in-headset run is
@@ -1083,67 +1245,72 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **SESSION 19 PLAN - the user's four reports from the all-weapons run
-   (investigated 2026-07-27 session 18 part 4, code untouched; work them in
-   this order):**
+0. **THE IN-HEADSET CHECKLIST BELOW, then v0.2.0** (tag on merged main,
+   `build.ps1 -Release`, zip both RelWithDebInfo DLLs + README.txt, notes
+   leading with what moved off the v0.1.0 known-issues list: HUD readability,
+   bindings, the ghost hand, stick pitch). PR is open; merge + publish only
+   on the user's explicit go.
 
-   (a) **Model/laser sync - the ROOT CAUSE is two different trim algebras,
-   so one tuning only holds at ONE controller orientation.** The ray's trim
-   is rotator ADDS in game space (yaw about world-up, pitch about horizon -
-   aim.cpp ray build and the laser's XR-side math, deliberately identical);
-   the model's trim is a QUATERNION COMPOSED IN THE CONTROLLER'S LOCAL FRAME
-   (hands.cpp, the session-11 fix for the "pivot breaks everything" bug).
-   Those agree at the tuning pose and DIVERGE as the controller rotates -
-   the divergence grows with both the trim size and the rotation from the
-   tuning pose. It did NOT regress: before part 3 the coupling HID it
-   (the model inherited the ray's trim on top of its own); decoupling made
-   it visible. FIX: convert the aim trim (ray + laser, both sides) to the
-   SAME local-frame quaternion compose the model uses; after that one
-   tuning holds at every orientation. Numeric gate BEFORE any headset ask:
-   a `synccheck` self-test that sweeps ~20 simpose orientations and prints
-   the angle between the model's driven rot and the ray rot - max
-   divergence should collapse to ~0 after the algebra unification (it will
-   NOT be 0 before). The render lock is position-only (gain 0.9) and can
-   still shift the model a few UU relative to the beam - measure it in the
-   same sweep, list it separately.
+1. **SESSION 20 PLAN - aim/laser/model sync + the flat testing framework
+   (session-19 plan item 4, deferred whole by the user's call; the full
+   design incl. the design-check agent's refinements is in the session-19
+   plan file `~/.claude/plans/continue-the-bioshock-vr-project-frolicking-
+   hinton.md`, stages 4.1-4.6):**
 
-   (b) **Auto-derive the barrel per weapon (the user's ask) - feasible via
-   the weapon's OWN skeleton, and the FName resolution unlocks it.** The
-   equipped weapon is a skeletal mesh (reload anims) attached to hand bone
-   43; muzzle-flash FX anchor somewhere on it, so a muzzle bone/socket very
-   likely exists. Probe: read the weapon ACTOR's SkeletonInstance (try the
-   AHands offset +0x3FC first - same engine actor layout), dump its bone
-   array per weapon, find the muzzle bone (tip-most along the barrel axis;
-   names make it trivial). Then aim ray := muzzle bone's world transform
-   mapped through the existing chain - laser and bullets follow the
-   RENDERED barrel exactly, zero manual tuning, per-weapon automatic, and
-   the whole per-weapon-profile question dissolves. PREREQUISITE that pays
-   twice: FName index -> string resolution (parked since session 11; also
-   the key for per-weapon ini profiles as the fallback if no muzzle bone
-   exists). Fallback if skeleton probing fails: per-weapon manual profiles
-   keyed by class name.
+   (a) `synccheck` FIRST (the failing baseline): refactor the ray and model
+   pose->rot chains into pure functions, cache the last FrameContext, sweep
+   ~20 axis-angle orientations INCLUDING roll, print max ray-vs-barrel
+   divergence for live AND canonical (10/10) trims. Expect nonzero pre-fix.
+   (b) Unify the trim algebra: ray + laser adopt the model's local-frame
+   quat compose (q_ctrl x q_trim, trim built by xr_local_trim_quat, roll
+   dropped only at the final rotator write); laser origin basis adopts the
+   ray's zero-roll convention (kill its near-vertical degeneracy bail);
+   DELETE the legacy aligntrim euler path; promote quat helpers to a core
+   math header. Gate: synccheck collapses to ~0 at every orientation; the
+   user's tuned trim values carry over (they agree at the tuning pose).
+   The model's own full-roll offset basis stays UNTOUCHED (live tuning).
+   (c) Record+replay (`vrrec start|stop|play|status`): ONE tap in
+   camera.cpp's CalcView tail (works flat AND in-headset - an
+   on_present_begin tap cannot record flat), heads via a replayHead lane
+   (simHead is angles-only), hands via NEW sim slots at the
+   input_get_hand_pose funnel, pad via publish_xr_state; RECENTER STATE +
+   worldScale serialized in the file header or every comparison fails;
+   frame-for-frame replay; `[rec] mark` lines every 10th frame; refuse
+   play while a session lives. Gate: neutral-stick record/replay with
+   |dloc| < 0.01 UU, |drot| <= 2 units, pad exact.
+   (d) FName index->string: capture the FName-ctor address
+   find_fname_index_global already computes AND DISCARDS (:129-134),
+   disassemble to GNames (capstone), licensee layout prior = UTF-16
+   POSITIVE count 8-byte flags; fallback = the GetHighBone{Name,Index}
+   native oracle via find_native_function.
+   (e) Muzzle-bone probe: bones::locate() is already generic - run it on
+   the cached g_weaponActor (produced every frame, currently unused), dump
+   bone names via (d), derive the ray from the muzzle bone's rendered
+   transform (compose weapon component space through the attach at hands
+   bone 43). Fallback: per-weapon manual profiles keyed by class name.
+   Cheap alternative on file: hands-rig bone 44 = "muzzle-ish tip" at
+   x=+71.
+   (f) Idle-sway investigation + kill (user 2026-07-27: clearly visible
+   in-headset, likely less than flat - "worth it to put our minds at
+   ease"): MEASURE the surviving amplitude flat first (shot series, lock
+   on/off), decompile UpdateHandBobAnimationParameters + Hands
+   defaultproperties (dump.ps1, ~40% fail rate), then zero the bob params
+   via the SET seam (re-assert like vrxhair); toggle + armed by PRESET 1.
 
-   (c) **Right-stick pitch must die under VR.** The composed pad's right
-   stick Y feeds the game's pitch: the PC/pawn ViewRotation pitches, and
-   the renderer orients the rig by the ACTOR fields, so the MODEL rides the
-   stick (the user's report) - and the wrench's Havok melee phantom swings
-   where the BODY pitch points, not the hand (the melee-hitbox half of the
-   report). Fix step 1 (surgical): zero the right-stick Y in the composed
-   pad while the VR camera drives (gameplay only - menus keep it). Fix
-   step 2 (evaluate after 1): drive the body PITCH from the HMD the way
-   M7.5 drives yaw, so melee/interactions follow the head; the M7.5
-   probe/commit machinery is the template. Step 1 alone likely kills both
-   symptoms - measure melee aim before building step 2.
+   ANSWERED by the session-19 headset run: the wrench works with the pitch
+   kill alone - the HMD-pitch body drive is NOT needed and is dropped. Watch
+   only: map-pan-under-pause if the user ever reports the right stick dead
+   there (the pitchkill gate is strict-view, which stays true while paused).
 
-   (d) **Hide the inactive hand.** The mechanism already exists: the sleeve
-   collapse (bones.cpp `g_collapse`, zero-scale). Extend it to the whole
-   INACTIVE hand cluster - left wrist 6 + fingers 7-21 when the weapon is
-   up; right wrist 27 + fingers 28-42 + weapon bone 43 when the plasmid is
-   up. `vrhands hideinactive on|off`, default ON. Watch: FX anchored to
-   collapsed bones (Electro Bolt shell on a hidden left hand) - verify the
-   plasmid FX parity test still passes with the collapse live.
+   FOLLOW-ONS QUEUED BEHIND THIS WORK (user's call 2026-07-28, detailed in
+   ROADMAP M9): off-hand tracking (`vrhands offhand track` - drive the
+   inactive cluster from its controller instead of collapsing it; do after
+   (b) so both hands ride one algebra) and TWO-HANDED weapon handling
+   (foregrip engage + rear-to-front-hand aim line; hard prerequisites are
+   (b) and (d)/(e) - per-weapon identity and foregrip offsets). Neither
+   blocks v0.2.0.
 
-1. **DONE 2026-07-27: v0.1.0 IS PUBLISHED** - tag on main at PR #3's merge,
+2. **DONE 2026-07-27: v0.1.0 IS PUBLISHED** - tag on main at PR #3's merge,
    release zip (both RelWithDebInfo DLLs + README.txt) at
    https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.1.0, known
    issues listed (HUD, per-weapon alignment, bindings, flat menus = the v0.2
@@ -1215,7 +1382,65 @@ Carried-over backlog (numbering kept from session 17):
 13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M8 quick phase (session 18)
+### IN-HEADSET CHECKLIST - M8 completion (session 19)
+
+Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam, load the
+newest save (CONTINUE = the NG+ Medical Pavilion all-weapons anchor), press
+**VR PRESET 1**. Nothing in the camera/recenter/body path changed - head
+decoupling and body-follow must feel identical to v0.1.0; any difference there
+is a regression, say so first. Live A/Bs: `vrhud off`, `vrhands hideinactive
+off`, `vrinput pitchkill off`, `vrhud force off`.
+
+1. **Non-regression sweep (60 s, do first).** Park the hand, look around wide,
+   stick-walk, turn past 90 both ways, two right-trigger pulls + an Electro
+   Bolt. Anything session 18 did not do: stop and report.
+2. **THE HUD QUAD (the headline).** From the moment stereo is up in gameplay:
+   health/EVE/ammo must float on a readable head-locked panel - no more
+   eye-searing screen-edge double vision. Judge: readability at a glance,
+   size/distance/height (three "HUD" sliders in the VR section tune it -
+   "Save preset values" persists), and that it never blocks aiming. Check the
+   ammo counter updates when you fire and switch types. Then open the PAUSE
+   MENU: it should land on the same readable panel (bonus feature - tell me
+   if navigating it feels fine). `vrhud off` = HUD back in the game frame.
+3. **THE MONITOR while stereo runs**: the flat window must still show the
+   HUD over the single-eye mirror (slightly more vivid bars than stock is
+   expected - the alpha repair). During headset-off idle the window keeps
+   running WITH its HUD.
+4. **HIDE-INACTIVE.** With the weapon up: NO ghost left hand/arm anywhere
+   (the sweater arm reaching for the shotgun forend is the defect that
+   died). Switch to plasmid (grip or trigger): weapon AND right hand
+   gone, plasmid hand normal with FX. Switch back: weapon returns at FULL
+   size instantly (a tiny/invisible/blown-up weapon after a switch = the
+   restore failed, report + `vrhands hideinactive off`). Cast Electro Bolt:
+   FX on the visible hand, nothing floating in the air.
+5. **STICK PITCH.** The right stick turns you but can NO LONGER pitch the
+   view - pitch is your head alone. The viewmodel must no longer ride
+   vertically when you push the stick. THE WRENCH QUESTION (answer this one
+   carefully - it decides whether session 20 builds the body-pitch drive):
+   swing the wrench at things above/below eye level while aiming with your
+   HAND, head level - does it hit where the hand points now, or still where
+   the body faces? `vrinput pitchkill off` = old behavior live.
+6. **THE NEW BINDINGS walkthrough** (README table): A jumps, B uses/loots,
+   X reloads (and hacks/injects EVE in context), Y pops a first-aid kit,
+   grips still switch/radial, triggers still fire, stick clicks
+   crouch/zoom, menu short/hold = pause/map. **AMMO FLICKS**: with a gun
+   up, flick the right stick UP = next ammo type, DOWN = previous - check
+   it never fires accidentally while turning (the flick needs a sharp
+   full push; report if it triggers on normal turns), and that holding a
+   grip + moving the stick still drives the radial without ammo flips.
+7. **Expected noise, not bugs**: the HUD quad is head-locked (moves with
+   you by design - say if you'd prefer it lazier/world-locked, that is a
+   slider-able follow-up); HUD glass slightly more vivid; the VD overlay
+   still parks the model dead-center (VISIBLE state, known); one
+   `engine exec 'set ShockPlayer bReticleDisabled True' -> HANDLED` line
+   every 15 s.
+8. **The 4 GB-scan field watch**: if the model EVER stops following after a
+   level transition, grab the log immediately ("AHands scan" lines).
+9. **Anything off**: `vrhud off` / `vrhands hideinactive off` /
+   `vrinput pitchkill off` first - if the symptom survives all three, it
+   predates this session.
+
+### PREVIOUS CHECKLIST - M8 quick phase (session 18) - PASSED (v0.1.0 shipped on it)
 
 Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam, load the
 newest save, press **VR PRESET 1**. Four changes to judge; `vrmirror off`,
@@ -1407,7 +1632,82 @@ and it resumes.
 
 ## Session log (newest first)
 
-### 2026-07-27 - Session 18 part 4 (the 2 GB scan wall: level transition lost the viewmodel)
+### 2026-07-28 - Session 19 part 3 (wheel-select fix + zoom removed)
+
+- The pitch kill was eating stick Y inside the radial state too - the weapon
+  wheel could not select up/down. The kill now lifts while a grip/bumper is
+  held, with a PC-pitch snapshot/restore around the hold (the radial state
+  keeps the look axis bound, so wheel-time drift would otherwise stick).
+  Flat-exact: 853 frozen no-bumper; 853 -> 4001 during the RB hold (calls/s
+  drop = wheel open); restored to exactly 853 on release.
+- Zoom removed in VR by the user's call: RS-click never reaches the game;
+  the click is purely the ammo modifier. Test lane unaffected.
+
+### 2026-07-28 - Session 19 part 2 (headset PASSED; the four feedback fixes flat the same night)
+
+- The user's in-headset verdict: "looks amazing" - no regression, HUD panel
+  and ghost-hand removal called out as perfect, monitor perfect, and the
+  WRENCH passed with the pitch kill alone (the HMD-pitch body drive is
+  dropped from session 20).
+- Feedback fixes, all flat-green: menu transparency root-caused to gameswf
+  blend states accumulating garbage alpha coverage -> cached alpha-corrected
+  blend-state variants per redirected draw (lum repair down to a 0.35
+  floor); the sprawling odometer strips root-caused to stencil-based flash
+  MASKS with no DSV bound -> the capture RT owns a D24S8 now (pause-menu
+  counters render clipped, panels opaque - both verified on the window
+  composite); Touch A back to use/confirm with jump on B; ammo select
+  redesigned as right-stick CLICK-HELD + up/down/left (three slots, three
+  directions - the dpad SELECTS slots, it does not cycle), quick tap still
+  zooms, bare flicks removed.
+- FPS measured flat: the full capture costs ~4% of an uncapped flat frame
+  (~0.11 ms) - the perceived dip is likely zone/Debug-build. Desc cache
+  added against the classifier's COM churn. Wrench swing gesture queued to
+  M9 (user's call). Docs + tables updated; re-verify list in Current state.
+
+### 2026-07-28 - Session 19 (M8 COMPLETE flat: HUD quad, VR bindings + ammo flicks, hide-inactive, stick-pitch kill; item 4 deferred whole to session 20)
+
+- Branch `s19-m8-completion` off main at v0.1.0. Worked the SESSION 19 PLAN
+  items in the user's order; per their call, v0.2.0 ships after items 1-3
+  (this session) and item 4 (aim-sync algebra + testing framework) moves
+  whole to session 20 - designs written down in Next steps + the plan file.
+- **Harness first**: tools/boot.ps1 rewritten save-agnostic around a new
+  `[b1r] view state: GAMEPLAY` transition log (the strict ShockPlayer
+  predicate, promoted public from body.cpp) - five clean boots this session,
+  3-15 A-presses each. One early misread (the NG+ save's Medical Pavilion
+  coords pattern-matched to what looked like a menu loc from the old log)
+  cost 38 stray A-presses before the screenshot showed live gameplay - the
+  detector had been right all along.
+- **Hide-inactive (1a)**: inactive cluster+sleeve zero-scale collapse, weapon
+  bone 43 hidden BY TRANSLATION (attach path inverse-decomposes scale),
+  restore-from-ref before the incoming hand drives. Flat: ghost-arm diff
+  2.64/6.9% vs 0.75 floor, both switch directions, FX parity cast live,
+  fire test, dumps 8->8. One trap self-inflicted mid-run: the 120 s
+  simpose cap expired silently and a whole plasmid-phase test ran on the
+  ENGINE pose - caught by the frozen writes counter, redone armed.
+- **Stick-pitch kill (1b)**: compose_over zeroes right-stick Y while
+  camera.cpp publishes vrDrove && strict-gameplay. Pitch frozen through
+  full-up holds while yaw spun; kill-off freed it instantly (853 -> 18000
+  clamp); packet bumps intact.
+- **THE HUD (2)**: the hunt falsified the session-6 fingerprint (dumps
+  showed the HUD draws carry the scene DSV; the tonemap is the no-DSV one),
+  after first proving the HUD wasn't in ANY single dump window (dumpframe N
+  built - command-armed dumps always open on the same pair phase) and that
+  no deferred contexts exist (six new census hooks, all zero). Classifier =
+  scene-vote + tonemap detection + non-indexed-after; redirect at draw time
+  via the original SetRT; leaks=0 every boot. gameswf's garbage destination
+  alpha found the hard way (first composite drew nothing) -> luminance
+  repair pass; premultiplied consumers. Window composite at all three
+  present exits; head-locked quad + sliders + preset keys; pause menu rides
+  the quad. vrhud on|off|force|status.
+- **Controls (3)**: User.ini XENON_* ground truth (A=Use B=Heal X=Reload/
+  Hack/EVE Y=Jump - the user's "jump is on Y" confirmed); DPAD_UP/DOWN
+  flat-proven as AMMO CYCLE (shotgun 00->Electric->Exploding); Touch face
+  buttons re-routed to VR convention + right-stick flick ammo switching
+  (edge 0.65, re-arm 0.30, cooldown 300 ms, grip-suppressed). README +
+  ARCHITECTURE tables rewritten.
+- Commits: hideinactive, pitchkill, boot.ps1, dumpframe N + census hooks +
+  hud classifier/redirect, quad + composite + alpha repair, bindings +
+  flicks, docs. In-headset checklist written; PR + v0.2.0 wait on the user.
 
 - **User report from the long NG+ play session: after a level transition the
   model stopped following, re-enabling did nothing, and the game froze
