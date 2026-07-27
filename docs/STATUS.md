@@ -15,9 +15,10 @@ retired; the proper world/viewmodel scale SPLIT (viewmodel's own stereo
 basis via per-eye bone offsets) is parked in M9 with a design sketch.
 
 **Shipped this part (all flat-smoke-tested on a clean boot):**
-- **Head-anchor offset sliders** (up/fwd UU, "VR camera" section; default up
-  -24 = the stand-vs-crouch eye delta) - the "head very wrong at 100" fix;
-  applied inside the VR/simhead drive, image-verified flat.
+- **Head-anchor offset sliders** (up/fwd UU, "VR camera" section; defaults 0
+  by the user's call in part 4 - tuned by eye, persisted via the preset) -
+  the "head very wrong at 100" fix; applied inside the VR/simhead drive,
+  image-verified flat.
 - **Per-hand aim trims** (`vraim cal [l|r] <pitch> [yaw]` + four overlay
   sliders, R weapon / L plasmid) - the laser, fire ray, and viewmodel all
   read the same per-hand values.
@@ -863,27 +864,34 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **IN-HEADSET CHECK of the part-3 build**: press "VR PRESET 1", tune
-   "Head offset up" until standing height feels right (default -24 UU),
-   tune the per-hand aim trims, then "Save preset values". Report whether
-   worldScale 100 + head offset makes the whole rig feel right end to end.
-1. **SESSION 17 FOCUS - the viewmodel edge desync + cull (user report,
-   part 3):** the viewmodel is keyed to the CHARACTER FACING (right-stick),
-   not the head - aiming the hand far from the stick-facing degrades the
-   weapon-laser alignment GRADUALLY, and past ~90 deg the whole rig
-   DISAPPEARS (reappears when the stick catches up). Suspects: the lock's
-   authored-composition residual grows with hand-vs-facing angle (lockgain
-   0.9 leaves 10% of a growing delta), an off-axis fg-projection mismatch,
-   and the vanish = engine bounds/frustum culling of a cluster dragged far
-   outside the authored composition volume (same family as the
-   behind-camera cull). Flat-reproducible WITHOUT a headset: park simpose
-   at increasing yaw angles from the actor facing (0/30/60/90/120), measure
-   rendered-barrel vs target angle per step, and find the exact cull-on/off
-   angle; `camrot` splits camera from facing if needed. In-headset
-   discriminators for the user, any time: does the flip happen on wrist
-   ROTATION alone or lateral REACH; gradual slide vs sudden jump; vertical
-   too; do bullets land at the laser while flipped; does one eye closed
-   change it; does `vrbones lockgain 1.1` shrink it.
+0. **DONE (part 4): the user verified the part-3 build in-headset -
+   "perfect, it works perfectly."** Head-offset defaults set to 0 at their
+   request (they tune by eye + "Save preset values").
+1. **SESSION 17 FOCUS - BODY-FOLLOWS-HEAD yaw transfer (root cause found
+   by the user, part 4):** the body/pawn facing only rotates with the
+   right stick, so THREE symptoms hang off one root: left-stick "forward"
+   walks along the OLD body facing when the user physically looks away
+   (their decisive observation); the viewmodel's composition frame is the
+   body facing, so hand-vs-body angle grows with head-look and alignment
+   degrades; past ~90 deg the rig leaves the authored bounds and the
+   engine CULLS it (reappears when the stick catches up). THE FIX: each
+   frame, transfer the head-look yaw into the body facing and subtract the
+   same amount from the camera's additive yaw - the camera is unchanged
+   (seamless), the invisible body re-aligns under the view, stick-forward
+   = look direction, the viewmodel stays deep in its envelope. Implement
+   in the camera drive (the PC control-rotation write side of the additive
+   yaw in camera.cpp; `driveYawOffsetRad` is the amount to transfer);
+   watch for: how the game maps the left stick (control rotation vs pawn
+   rotation), recenter semantics, cutscene/vehicle guards (view-actor
+   vtable predicate), and the lock model's actor-rot inputs (the transfer
+   makes the zero-split assumption BETTER). Verify flat with simhead +
+   synthetic left-stick input (walk direction vs look direction), then the
+   angle sweep below as the before/after instrument.
+   THE RESIDUAL INVESTIGATION (after the transfer lands): holding the HAND
+   far off the gaze still reaches large hand-vs-body angles. Park simpose
+   at yaw 0/30/60/80/90/100/120 from the facing, measure rendered-barrel
+   vs target per step, find the exact cull angle both directions. If the
+   error grows ~linearly, A/B lockgain 0.9 vs 1.0 at the worst angle.
 2. **The retired scale hunt**: worldScale 100 solved the size percept; the
    engine-lever negatives stay documented (ENGINE_NOTES session 16 part 2)
    and the world/viewmodel scale SPLIT design is parked in M9. Do NOT
@@ -990,6 +998,19 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 16 part 4 (preset verified in-headset; the ROOT CAUSE of the edge desync found by the user)
+
+- The user verified the part-3 build in-headset: "perfect, it works
+  perfectly." Head-offset defaults set to 0 at their request (tuned by eye,
+  persisted via the preset ini).
+- THE UNIFYING OBSERVATION (user's): with the head physically turned, the
+  LEFT STICK still walks along the OLD body facing - the body/pawn only
+  rotates with the right stick. That one fact ties together the movement
+  mapping, the viewmodel-laser desync growing with hand-vs-facing angle,
+  AND the rig culling past ~90 deg (all keyed to the body facing).
+  Session-17 focus: BODY-FOLLOWS-HEAD yaw transfer (rotate the body under
+  an unchanged camera each frame) - fix spec in Next steps item 1.
 
 ### 2026-07-27 - Session 16 part 3 (worldScale 100, head offset, per-hand trims, VR PRESET 1)
 

@@ -60,10 +60,9 @@ std::atomic<float> g_worldScale{100.0f};       // Unreal units per meter
 // User head-anchor offset (session 16 part 3): the pawn's authored eye
 // height reads wrong once worldScale moves (60 UU = 0.6 m at 100 UU/m - the
 // "head very wrong" report); vertical + view-forward sliders correct the
-// anchor. Default up -24 UU = the stand-vs-crouch eye delta (the crouch
-// placement is what the user called right at 100). Persisted via the VR
-// preset ini.
-std::atomic<float> g_headOffUpUu{-24.0f};
+// anchor. Defaults 0 by the user's call (session 16 part 4) - they tune by
+// eye and persist their value via the VR preset ini.
+std::atomic<float> g_headOffUpUu{0.0f};
 std::atomic<float> g_headOffFwdUu{0.0f};
 // VR preset 1 (session 16 part 3): one button/command arming the user's full
 // VR configuration - every switch they flipped by hand, in a safe order,
