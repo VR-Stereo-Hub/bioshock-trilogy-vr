@@ -1402,6 +1402,28 @@ and it resumes.
 
 ## Session log (newest first)
 
+### 2026-07-27 - Session 18 part 4 (the 2 GB scan wall: level transition lost the viewmodel)
+
+- **User report from the long NG+ play session: after a level transition the
+  model stopped following, re-enabling did nothing, and the game froze
+  briefly on a cycle. Root cause: `scan_for_vtable_object` walked only to
+  0x7FFF0000 - the game is Large-Address-Aware, and after enough streaming
+  the new level's AHands actor was allocated ABOVE 2 GB.** The log showed
+  the smoking gun: "2 vtable match(es), chosen=00000000" every 32 s (the
+  part-3 backoff working as designed - each futile scan cost ~4 s, the
+  periodic freeze) while the rig visibly rendered engine-placed. Fixed:
+  both heap walkers (patterns.cpp + value_scan.cpp) now walk to 0xFFFE0000
+  (VirtualQuery simply fails past the top on non-LAA processes). Verified
+  on the user's new all-weapons Medical Pavilion save: chosen=5A1862C0,
+  bones 47, drive writing, fire smoke clean, dumps 8->8. NOTE: a fresh
+  boot cannot reproduce the >2 GB heap state - the mechanism evidence is
+  the log + the constant; the user's next long session is the field test.
+- The user made THE all-weapons save (NG+ at the Medical Pavilion, full
+  arsenal + plasmids + ammo types restored by NG+ at that story point) -
+  the permanent test anchor going forward. CONTINUE loads it.
+- boot.ps1's success detector is wall-save-specific and prints FAIL on any
+  other save - cosmetic, fix next session.
+
 ### 2026-07-27 - Session 18 part 3 (trim decoupling + the user's tuning captured; loadout via Nexus save pending)
 
 - **In-headset feedback from the user's first part-2 run**: the ray offsets
