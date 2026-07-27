@@ -401,6 +401,8 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "vrpreset") == 0) {
         if (strncmp(args, "save", 4) == 0) save_vr_preset();
         else apply_vr_preset();
+    } else if (strcmp(cmd, "vrpace") == 0) {
+        bvr::vr::handle_pace_command(args); // M8 disconnect-stall guard
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args); // DR-5 probe; logs its own echoes
     }

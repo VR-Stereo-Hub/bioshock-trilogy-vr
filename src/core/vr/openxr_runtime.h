@@ -69,6 +69,19 @@ void set_camera_mode(bool on);
 void set_enabled(bool on);
 void set_sr_pair_pacing(bool on);
 
+// --- M8: headset-disconnect stall guard --------------------------------------
+// "vrpace ..." seam (game thread). When the session leaves FOCUSED after
+// having held it, presents skip the blocking xrWaitFrame so the flat window
+// keeps running while the headset idles; a 5 s keepalive still paces one real
+// frame so the runtime can re-grant FOCUSED even if it wants to see frames.
+//   on | off          the guard (off = pre-M8 stall behavior, live A/B)
+//   simidle on|off    flat stand-in for a headset idle: the same guard
+//                     decision runs with the state forced VISIBLE and a 1 s
+//                     sleep in place of the runtime's blocked wait (flat has
+//                     no XR session, so this is how the guard is verified)
+//   status            guard state + skip/keepalive/last-wait telemetry
+void handle_pace_command(const char* args);
+
 // Symmetric horizontal FOV (degrees) circumscribing the headset's per-eye
 // FOV at the backbuffer aspect - what the game should render with in camera
 // mode. 0 until the first views are located.
