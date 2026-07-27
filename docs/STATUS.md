@@ -905,12 +905,15 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    at yaw 0/30/60/80/90/100/120 from the facing, measure rendered-barrel
    vs target per step, find the exact cull angle both directions. If the
    error grows ~linearly, A/B lockgain 0.9 vs 1.0 at the worst angle.
-   THE QUEUE AFTER SESSION 17 (user's call, part 4): the M8 QUICK PHASE -
-   first GitHub release (zip + install/use README) and the grip-switch
-   wrong-controller bug (switching hands via GRIP loads the incoming
-   hand's model on the wrong controller - the hand map only learns from
-   the trigger-keyed fire seams; spec in ROADMAP M8). Then M8's HUD
-   usability (health/EVE visible, keybind audit).
+   THE QUEUE AFTER SESSION 17 (user's calls, part 4): the M8 QUICK PHASE,
+   whose first two items are RELEASE BLOCKERS because they hit every user -
+   (a) the flat-screen mirror (the window alternates L/R under stereo, so
+   the mod cannot be streamed/recorded/shown) and (b) the
+   headset-disconnect stall (<1 fps flat while the headset idles). THEN
+   the first GitHub release (zip + install/use README) and the grip-switch
+   wrong-controller bug (spec in ROADMAP M8). Then M8's HUD usability
+   (health/EVE visible, keybind audit). If session 17 finishes early,
+   starting the two blockers is the right use of the remaining time.
 2. **The retired scale hunt**: worldScale 100 solved the size percept; the
    engine-lever negatives stay documented (ENGINE_NOTES session 16 part 2)
    and the world/viewmodel scale SPLIT design is parked in M9. Do NOT
@@ -1072,11 +1075,12 @@ and it resumes.
   toggle configuration in order, vrstereo last; vrpreset save persists the
   tuned slider values to vrpreset.ini and apply loads them - echo chain,
   ini round-trip, and fire test all verified on a clean boot, dumps 8).
-- User reports queued for session 17 (M9-parked where noted): the viewmodel
-  edge desync + cull keyed to the character facing (the session-17 focus -
-  flat-reproducible); headset-disconnect stalls the flat window under 1 fps
-  (pacing waits while the session idles - M9); flat-screen mirror for
-  streaming under stereo (window alternates eyes - M9).
+- User reports from this part: the viewmodel edge desync + cull keyed to
+  the character facing (root-caused in part 4 - the session-17/M7.5 focus);
+  headset-disconnect stalls the flat window under 1 fps (pacing waits while
+  the session idles); flat-screen mirror for streaming under stereo (the
+  window alternates eyes). The latter two were promoted to M8 RELEASE
+  BLOCKERS in part 4 - they affect every user, not just this desk.
 
 ### 2026-07-27 - Session 16 part 2 (IN-HEADSET: the core verdict is POSITIVE; the scale wall mapped)
 

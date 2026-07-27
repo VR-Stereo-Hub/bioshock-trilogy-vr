@@ -369,18 +369,32 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
 > to post-v1 (the current switching UI is good enough); in their place, a QUICK RELEASE
 > phase right after session 17, then HUD usability.
 
-**Quick phase (immediately after session 17):**
+**Quick phase (immediately after session 17). The two defects below are RELEASE BLOCKERS
+by the user's call 2026-07-27 - they hit every user, not just this desk, so they ship
+fixed or the release waits:**
+- [ ] **Flat-screen mirror under stereo (RELEASE BLOCKER)**: the desktop window alternates
+      L/R eyes under SequentialReentry, so the mod cannot be streamed, recorded, or shown
+      to anyone on a monitor. Mirror ONE eye only (e.g. re-blit the held left-eye image on
+      right-eye presents at Present-tail) WITHOUT disturbing the eye capture the compositor
+      feeds on. Verify: consecutive window captures are phase-consistent (the img-diff
+      floor, not the ~2.0 eye-offset value) while the headset view stays correct.
+- [ ] **Headset-disconnect stall (RELEASE BLOCKER)**: taking the headset off mid-game drops
+      the flat window under 1 fps until reconnect - the per-present xrWaitFrame pacing keeps
+      waiting while the session idles (log: presents=0/s, session VISIBLE). Skip or timeout
+      the pacing when the session leaves FOCUSED; must recover cleanly on reconnect (the
+      quiet-retry path already exists).
 - [ ] **First GitHub release**: tagged build + release zip (the two DLLs) + README/INSTALL
       section covering how to install (xinput1_3.dll proxy into `Build\Final`, the
       itsloopyo-mod conflict note, Virtual Desktop/VDXR setup) and how to use (VR PRESET 1
-      button, the tuning sliders, vrpreset save).
+      button, the tuning sliders, vrpreset save). Ships AFTER the two blockers above.
 - [ ] **Hand-switch wrong-controller bug (user report 2026-07-27)**: switching hands via
       GRIP instead of trigger loads the incoming hand's model on the WRONG controller
       (e.g. the in-game right hand rides the left controller). Likely cause: the hand map
       learns object-to-hand attribution ONLY from the trigger-keyed fire seams ("learned
       RIGHT-hand object"); a grip-initiated switch never crosses those seams, so the drive
-      keeps the stale attribution. Fix direction: learn from the switch path too, or read
-      the engine's own which-hand-is-raised state instead of inferring from triggers.
+      keeps the stale attribution. Cheap first check: does one trigger pull correct it?
+      Fix direction: learn from the switch path too, or read the engine's own
+      which-hand-is-raised state instead of inferring from triggers.
 
 **HUD usability:**
 - [ ] See health + EVE clearly in VR: gameswf HUD draws redirected to offscreen RT → a
@@ -388,7 +402,8 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
 - [ ] Keybind audit on Quest 3 Touch: every needed action reachable and correct (the M5
       "rebinds wanted later" list gets resolved here)
 - [ ] **Done when:** a friend can install from the release zip, press VR PRESET 1, see
-      their health/EVE, and every binding they need works.
+      their health/EVE, and every binding they need works - and someone watching the
+      monitor sees a normal single-eye picture, including after the headset comes off.
 
 ## M9 - Comfort + UI/config + release polish (~2–3 sessions)
 
@@ -404,14 +419,6 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       puts the gun at double the hand's perceived distance and doubles hand motion - the
       session-11 percepts). Design sketch in the session-16 part-3 conversation; the per-eye
       write path (bones reapply) already exists.
-- [ ] **Headset-disconnect stall (session 16 part 3, user report):** taking the headset off
-      mid-game drops the flat window under 1 fps until reconnect - the per-present
-      xrWaitFrame pacing keeps waiting while the session idles (log: presents=0/s, session
-      VISIBLE). Skip/timeout the pacing when the session leaves FOCUSED.
-- [ ] **Flat-screen mirror under stereo (session 16 part 3, user request):** the desktop
-      window alternates L/R eyes under SequentialReentry - unwatchable for streaming/
-      recording. Mirror one eye only (e.g. re-blit the held left-eye image on right-eye
-      presents at Present-tail) WITHOUT disturbing the eye capture the compositor feeds on.
 - [ ] IPD slider verification + calibration (parked here 2026-07-24 from M4 rung 1 by user
       choice - user could not tell if it does anything; test with an exaggerated offset,
       calibrate world scale first since perceived depth scale is the worldScale/IPD ratio)
