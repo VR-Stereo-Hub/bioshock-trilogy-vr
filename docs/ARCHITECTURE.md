@@ -360,3 +360,32 @@ runtime.
   camera. Fallback ladder if the dolly source stays unfound: (a) accept the offset with
   matched lens + exact laterals; (b) the vm_draw replay lane (render the rig ourselves at
   the controller, engine rig hidden - the user's original proposal, still on the table).
+- **2026-07-27 (session 17) - M7.5: transfer the head-look yaw into the body every frame,
+  and let the RECENTER REFERENCE absorb exactly what the body took. This OVERTURNS the
+  M6-era "rejected: writing the pawn/controller Rotation field" note above.** That
+  rejection was correct for M6's question (aim) and wrong for this one (locomotion): the
+  objection was that the rotation field "also drives movement direction and pawn facing",
+  which is precisely what M7.5 needs it to do. The user found the root cause by playing -
+  the body only turns with the right stick, so with the head turned, left-stick forward
+  walks along the old facing, the viewmodel's composition frame drifts from the hand, and
+  past ~90 deg the rig is culled. `body.cpp` writes `PC+0x1E8` (the controller's
+  `Rotation.Yaw` - located and proven in ENGINE_NOTES session 17) once per rendered frame.
+  Two design choices carry the risk. (1) **The recenter reference absorbs the transfer.**
+  The camera and both halves of the controller-to-world mapping depend only on
+  `gameYaw - recenterYaw`, so moving both by the same amount is a pure relabel - the
+  user's hard non-regression requirement (the hand must never follow the head again)
+  becomes a theorem rather than a tolerance, and the yaw path was converted to integer
+  rotator units so the cancellation is exact. `on_calcview` returns the units actually
+  COMMITTED, never the units requested, so the two can never drift apart. (2) **A probe
+  handshake replaces a watchdog**: on arm the module transfers 1.1 deg and checks the body
+  actually moved by it before scaling up, undoing itself and hard-disabling after three
+  failures. A slow rolling watchdog would have let tens of degrees of camera error
+  accumulate before tripping; this bounds the worst case to ~1.1 deg for one frame. The
+  gameplay-view guard deliberately drops the `viewActor == pc` escape hatch that aim.cpp
+  keeps for the menu attract scene - the aim ray wants the menu, a body write does not.
+  Rejected: steering the body through synthetic right-stick input (native and safe, but
+  the applied amount is unknowable per frame, so the recenter absorption lags by a frame -
+  exactly the drift the invariant forbids); writing the pawn rotation (it does not move
+  the camera, so absorbing into the recenter would counter-rotate the view every frame,
+  and the engine re-stamps it from the controller anyway - live-confirmed the pawn follows
+  our PC write for free).

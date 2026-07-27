@@ -1,8 +1,113 @@
-# Project status
+﻿# Project status
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-27, session 16 part 3 - WORLDSCALE 100 BY USER CALIBRATION; VR PRESET 1 SHIPS)
+## Current state (2026-07-27, session 17 - M7.5 SHIPS AND IS IN-HEADSET VERIFIED; DEADZONE 23 DEG BY USER CALIBRATION)
+
+**IN-HEADSET VERDICT (same day): "This is perfect... the stick was working as
+expected, the models didn't move when I moved my head... so just needed that
+deadzone change and it was perfect."** The user tuned `vrbody deadzone` to
+**23 deg** live and asked for it as the default; it now ships that way. All
+three reported symptoms are addressed and the hard invariant survived the
+headset: the models do not move with the head.
+
+**Why the deadzone was the last piece.** The user's one remaining note was
+"the gun moves with the camera a bit". Inside the 23 deg band the body does
+not steer at all, so an ordinary glance leaves the viewmodel completely
+world-locked; only a deliberate turn past the band carries the body along. And
+because the transfer takes `residual - band`, beyond the band the body trails
+the head by exactly 23 deg, so head and body never diverge further than that
+no matter how far you turn. Flat-confirmed on the shipping default: `resid`
+settles at exactly 23.00 deg, and the invariant is untouched by the band -
+gameYaw and recenterYaw each moved 0.38398 rad (22 deg = 45 - 23) while
+`camYaw` stayed 8308 and the hand's world yaw stayed 116, both bit-identical.
+
+**Branch `m7.5-body-yaw-transfer`, ready to merge.** Everything below is
+flat-verified and now headset-verified.
+
+**Harness note worth keeping: a `vrpreset.ini` written by a smoke test will
+silently OVERRIDE a later code default.** The session-16-era ini on this box
+pinned `bodyDeadzoneDeg=0.0` and would have cancelled the new 23 deg default
+on the next preset press. It contained nothing but shipped defaults, so it was
+deleted and code owns the values again. Any future default change needs the
+same check.
+
+**The root cause the user found by playing is fixed. The body facing is the
+PlayerController's `Rotation.Yaw` at `PC+0x1E8`** - found and proven live in
+one boot, nine probe steps, all positive (ENGINE_NOTES session 17): it carries
+a non-zero pitch where the pawn's is 0, an additive yaw write LANDS and HOLDS
+across samples, the pawn follows for free (so a PC-only write is enough), the
+engine's own turn COMPOSES on our value rather than snapping, and a synthetic
+walk burst followed the written facing to **0.4 deg**. That last step proved
+the whole milestone before a line of transfer code ran.
+
+**THE HARD INVARIANT HELD EXACTLY - not "within tolerance".** The camera and
+both halves of the controller-to-world mapping depend only on the composite
+`gameYaw - recenterYaw`, so the transfer adds T to the body and exactly T to
+the recenter reference. Measured: the composite read **1.27742 rad at every
+head angle** (0/30/45/90/-45) in both states; at head 45 the hand's world pose
+(`rot.yaw=13323`) and the camera (`camYaw=21516`) were **bit-identical** off vs
+on while gameYaw and recenterYaw each moved +0.78540 rad; `[tlm] yawstep`
+showed **max=0 units, nbig=0** through the arm transient at ~1650 frames/s.
+The yaw path was converted to integer rotator units so the cancellation is
+exact rather than approximate, and `body::on_calcview` returns the units
+COMMITTED (never the units requested), so the two absorbed quantities are the
+same integer and cannot drift apart.
+
+**The feature, as numbers.** Walk direction with the transfer OFF: 116.49 and
+116.67 deg at two head angles **90 deg apart** - it tracked the body (118.19)
+and ignored the head, which is the reported defect measured. With it ON: at
+head +45, walk 163.19 / body 163.19 / camera 163.19; at head -45, walk 73.20 /
+body 73.19 / camera 73.19. Walk == body == camera to 0.01 deg, the pair
+spanning 89.99 deg for a 90 deg head change.
+
+**A second payoff nobody planned: the render lock's correction goes FLAT under
+head-look.** Parked hand, +-30 deg head sweep - with the transfer off the
+lateral correction swings **10.5 UU** (it scales with the camera-vs-actor
+split); with it on it is **flat within 0.46 UU**, and it lands on `lat` 4.58
+against the 4.57 that the calibrated, headset-verified zero-split
+configuration uses. So the transfer restores the session-16 regime at *every*
+head angle instead of only at head 0. Because the lock runs at gain 0.9, a
+swinging correction leaves a swinging residual (the "gun drifts as you look
+around" percept) while a constant one leaves a constant, trimmable offset.
+
+**Be ready for this in the headset: the viewmodel WILL render differently with
+`vrbody on` vs `off`, and that is the mechanism working.** At head 45 the
+world region of the frame is pixel-identical between the two (mean abs diff
+0.048 against a 0.3 floor - the camera really is unchanged) while the gun+arm
+region reads 23.4, and looking at the crops the gun is not merely shifted but
+**viewed from a different angle**. The renderer orients the foreground rig by
+the ACTOR fields, so with the transfer on the rig is viewed from the camera's
+own orientation instead of from a 45-deg-stale body facing. The lock corrects
+position, never viewing angle - which is why it could never fully paper this
+over.
+
+**Shipped defaults: `vrbody` ON, armed by VR PRESET 1 (after the viewmodel,
+before vrstereo). `vrbody off` is the one-command live A/B against the
+session-16 build.** Knobs `vrbody rate` (0 = instant 1:1, the user's call) and
+`vrbody deadzone` (0) persist to vrpreset.ini. Safety: a probe handshake
+transfers 1.1 deg and verifies the body actually moved before scaling up,
+undoing itself and hard-disabling after three failures (worst-case visible
+error ~1.1 deg for one frame); a gameplay-view guard that deliberately drops
+aim.cpp's menu escape hatch; PC-pointer and discontinuity resets; a
+once-per-present gate.
+
+**Clean-boot acceptance (promoted build, under vrstereo):** fire test 57->51
+for 6 pulls with the transfer live, dumps 8->8, stereo heartbeat clean
+(mode=1T, presents 336/s = 2x build 168/s, guardskips 0), preset echo chain in
+order, ini round-trip, and a 20-step alternating +-90 deg soak that returned
+camYaw to its exact starting value with the recenter back to 0.0000 deg.
+
+**One thing did NOT get measured and is honestly open: the exact cull angle.**
+The 0/30/60/80/90/100/120 deg sweep needs a template-free instrument - NCC
+template chaining broke down across the composition changes (correlations
+0.56-0.79 at every step, so every pixel number from it is void; recorded in
+ENGINE_NOTES so it is not retried blind). The sweep did expose that the two
+physical cases differ in sign: a head-only glance with the hand parked in the
+world *increases* hand-vs-body, while the reported case (the user swivels, so
+head and hand rotate together) drives it to ~0.
+
+## Previous state (2026-07-27, session 16 part 3 - WORLDSCALE 100 BY USER CALIBRATION; VR PRESET 1 SHIPS)
 
 **The size problem dissolved without touching the mesh: the user found that
 worldScale 100 makes the viewmodel read PERFECT in-headset - size AND
@@ -864,61 +969,42 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **DONE (part 4): the user verified the part-3 build in-headset -
-   "perfect, it works perfectly."** Head-offset defaults set to 0 at their
-   request (they tune by eye + "Save preset values").
-1. **SESSION 17 FOCUS - BODY-FOLLOWS-HEAD yaw transfer (root cause found
-   by the user, part 4):** the body/pawn facing only rotates with the
-   right stick, so THREE symptoms hang off one root: left-stick "forward"
-   walks along the OLD body facing when the user physically looks away
-   (their decisive observation); the viewmodel's composition frame is the
-   body facing, so hand-vs-body angle grows with head-look and alignment
-   degrades; past ~90 deg the rig leaves the authored bounds and the
-   engine CULLS it (reappears when the stick catches up). THE FIX: each
-   frame, transfer the head-look yaw into the body facing and subtract the
-   same amount from the camera's additive yaw - the camera is unchanged
-   (seamless), the invisible body re-aligns under the view, stick-forward
-   = look direction, the viewmodel stays deep in its envelope.
-   **HARD INVARIANT - THE USER'S NON-REGRESSION REQUIREMENT: the hand must
-   NOT move with the head/camera again.** The controller->world mapping
-   composes through the body yaw (frame_context.h rotates the
-   recenter-local pose out by gameYaw), so transferring yaw into the body
-   WITHOUT rotating the recenter yaw reference by the same amount
-   re-couples the hand to the head - the exact defect sessions 12-16
-   killed. The transfer must leave the final camera AND the composite
-   controller-to-world mapping bit-identical; only the body/head-look
-   split of the yaw relabels (the recenter reference absorbs the
-   transferred amount). GATE: the parked-hand simhead sweep (gun glued to
-   the world) and the full acceptance ladder pass UNCHANGED before the
-   transfer ships - any drift there is an instant stop-and-fix, and the
-   in-headset checklist must re-verify head-decoupling explicitly.
-   Implement in the camera drive (the PC control-rotation write side of
-   the additive yaw in camera.cpp; `driveYawOffsetRad` is the amount to
-   transfer); watch for: how the game maps the left stick (control
-   rotation vs pawn rotation), recenter semantics, cutscene/vehicle guards
-   (view-actor vtable predicate), and the lock model's actor-rot inputs
-   (the transfer makes the zero-split assumption BETTER). Verify flat with
-   simhead + synthetic left-stick input (walk direction vs look
-   direction), then the angle sweep below as the before/after instrument.
-   THE RESIDUAL INVESTIGATION (after the transfer lands): holding the HAND
-   far off the gaze still reaches large hand-vs-body angles. Park simpose
-   at yaw 0/30/60/80/90/100/120 from the facing, measure rendered-barrel
-   vs target per step, find the exact cull angle both directions. If the
-   error grows ~linearly, A/B lockgain 0.9 vs 1.0 at the worst angle.
-   THE QUEUE AFTER SESSION 17 (user's calls, part 4): the M8 QUICK PHASE,
-   whose first two items are RELEASE BLOCKERS because they hit every user -
-   (a) the flat-screen mirror (the window alternates L/R under stereo, so
-   the mod cannot be streamed/recorded/shown) and (b) the
-   headset-disconnect stall (<1 fps flat while the headset idles). THEN
-   the first GitHub release (zip + install/use README) and the grip-switch
-   wrong-controller bug (spec in ROADMAP M8). Then M8's HUD usability
-   (health/EVE visible, keybind audit). If session 17 finishes early,
-   starting the two blockers is the right use of the remaining time.
-2. **The retired scale hunt**: worldScale 100 solved the size percept; the
+0. **DONE: the user verified M7.5 in-headset - "this is perfect".** Deadzone
+   defaulted to their tuned 23 deg. Branch `m7.5-body-yaw-transfer` is ready to
+   merge to main by PR.
+1. **THE M8 QUICK PHASE - both items are RELEASE BLOCKERS by the user's call,
+   and neither was started in session 17** (the session went entirely on M7.5
+   and its verification):
+   (a) **headset-disconnect stall** - the flat window drops under 1 fps while
+   the headset idles (presents=0/s, session VISIBLE in the log; the per-present
+   xrWaitFrame pacing keeps waiting). Skip or time out the pacing when the XR
+   session leaves FOCUSED; must recover cleanly on reconnect.
+   (b) **flat-screen mirror** - the desktop window alternates L/R eyes under
+   SequentialReentry, so the mod cannot be streamed, recorded, or shown. Re-blit
+   the held left-eye image on right-eye presents at Present-tail WITHOUT
+   touching the eye capture the compositor feeds on. Verify: consecutive window
+   captures phase-consistent (the img-diff floor, not the eye-offset value).
+   *Note from session 17: all 12 acceptance shots came out the SAME eye phase,
+   so the alternation is not uniform - worth understanding while fixing it.*
+   Then the first GitHub release (tagged build, zip with both DLLs,
+   README/INSTALL covering the xinput1_3 proxy, the itsloopyo conflict, Virtual
+   Desktop/VDXR setup, and use: VR PRESET 1, the sliders, `vrpreset save`), and
+   the grip-switch wrong-controller bug (spec in ROADMAP M8; cheap first check
+   is whether it self-corrects after one trigger pull). Then M8's HUD usability.
+2. **The M7.5 leftover: the exact cull angle.** Park `vrhands simpose <yaw> 0 0
+   120000` at 0/30/60/80/90/100/120 from the facing and find the cull-on/off
+   boundary from both directions - but NOT with NCC template chaining, which
+   failed outright in session 17 (correlations 0.56-0.79; every number void).
+   Use a template-free instrument: the `[tlm] lock tgt=` NDC is ground truth for
+   where the anchor should land, and a dark-pixel disc-width profile or a
+   `vrhands off` reference-frame difference detects presence/absence without a
+   template. Only worth doing if the user still sees the rig vanish in the
+   headset with the transfer on - the mechanism that caused it is now removed.
+3. **The retired scale hunt**: worldScale 100 solved the size percept; the
    engine-lever negatives stay documented (ENGINE_NOTES session 16 part 2)
    and the world/viewmodel scale SPLIT design is parked in M9. Do NOT
    reopen unless the user wants the world scale moved independently.
-3. **If the headset run reports depth slightly off**: `vrbones lockdgain`
+4. **If the headset run reports depth slightly off**: `vrbones lockdgain`
    is the live A/B (it scales the applied pull too - the 12.8 knob assumes
    0.9); if the resting spot reads wrong, `vrbones lock diff`. If the rig
    BLANKS when the hand comes near the face: expected inside ~23 cm (the
@@ -926,35 +1012,100 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    a soft clamp on the applied pull near the face is the queued fix.
    (Weapon-laser fine alignment: the existing pos/trim sliders + "Save
    offsets" - after the scale lands.)
-4. **Sway kill at source (UpdateHandValues bob params)**: possibly less urgent
+5. **Sway kill at source (UpdateHandValues bob params)**: possibly less urgent
    now - with lock ABS the flat shot series sat pixel-frozen (the per-frame
    re-pin may be absorbing the lateral sway); ask the user whether any
    breathing still shows before building this.
-5. **Polish knobs the headset run may ask for**: per-hand anchor trims (the
+6. **Polish knobs the headset run may ask for**: per-hand anchor trims (the
    left wrist anchor may want a palm offset), collapse scope (clavicle in or
    out), and a smoothing option if raw controller jitter reads on the model.
-6. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
+7. Carried over, unchanged: a true dot at the IMPACT point (needs a per-frame
    engine line-check - start at the damage factory, factory fetched by 0x231E70
    in `UAttackAbility::InitiateDamage` 0x1BBD80, virtual at factory vtbl
    `+0xEC`); verify a PROJECTILE plasmid (Incinerate); hide the head-centred
    crosshair; per-weapon offset profiles keyed by weapon class name; and the
    20-second load-crossing check the user still owes.
-7. **Dropped from M7 by the user's call**: dual-wield (BioShock 1 equips one
+8. **Dropped from M7 by the user's call**: dual-wield (BioShock 1 equips one
    hand at a time - it moves to the M10 BioShock 2 adapter, which supports it
    natively), elbow IK, arm bending, two-handed grips.
-8. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
+9. M5 rung 2 - menu mode (quad + controller laser -> virtual mouse, DR-6).
    Controller polish (deadzone/curve/menu timing) and rebinds stay parked in M9.
-9. Still open from M3: cutscene cameras are head-driven. The aim path already
+10. Still open from M3: cutscene cameras are head-driven. The aim path already
    guards on the view actor's vtable (AShockPlayer) - reuse that predicate for
    the camera when it is addressed.
-10. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
+11. If the init-crash flake (bioshockvr.dll+0x30BE5, one occurrence pre-SEH
     guards) recurs: the crash log prints module+RVA - symbolize against the PDB.
-11. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
+12. DR-7 borderless/windowed stability; DR-6 menu input path; optional Steam
     Link / SteamVR cross-check any time.
-12. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
+13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M7-v2 matched-lens run (session 16 build)
+### IN-HEADSET CHECKLIST - M7.5 body-follows-head (session 17) - PASSED
+
+**Result: passed on the first run.** Head decoupling held ("the models didn't
+move when I moved my head"), the stick worked as expected, and looking to a
+specific spot left or right at a decent angle behaved. The only change asked
+for was `vrbody deadzone` 0 -> **23 deg**, which is now the shipped default -
+so the "Deadzone (deg)" slider below reads 23, not 0, on any later run.
+
+Setup: Quest 3 + Virtual Desktop, launch from Steam, load the newest save,
+press **VR PRESET 1** (it now arms the yaw transfer too, after the viewmodel
+and before stereo). What changed: the invisible body/pawn facing now follows
+your head every frame, so **forward is where you look**. The camera is
+mathematically unchanged by this - you should not feel the transfer happen at
+all, only its effects. `vrbody off` reverts to the session-16 behaviour live,
+`vrbody on` brings it back: that is the A/B for every question below.
+
+1. **HEAD DECOUPLING - the non-regression check, please do this FIRST.** Park
+   your hand pointing at something and look around with your head, yaw AND
+   pitch, through a wide range. **The gun must hold its world spot and must
+   NOT follow your head.** This is the defect that took sessions 12-16 to kill
+   and the one thing we cannot regress. Flat it is bit-identical (the hand's
+   world pose and the camera came out byte-for-byte the same with the transfer
+   on and off), but your eyes are the gate. If anything drags with your head,
+   say so and stop - `vrbody off` is the immediate revert.
+2. **The headline: walk where you look.** Physically turn your head, then push
+   the left stick forward without touching the right stick. You should walk in
+   the direction you are looking. Then A/B it: `vrbody off`, same test - you
+   should get the old behaviour (walking along the stale facing). Does the new
+   one feel right, or does it need smoothing? (`vrbody rate 3` eases the body
+   in over ~1/3 s instead of snapping; `vrbody deadzone 20` makes small
+   glances not steer. Both default 0 = instant, which is what you asked for -
+   these are here in case instant feels twitchy in practice.)
+3. **The disappearing rig.** This is the symptom that should be gone. Turn
+   past 90 deg in both directions, aim off to the sides, do the things that
+   used to make the whole rig vanish. Does it still vanish anywhere? If yes,
+   roughly what angle and which direction - and does `vrbody off` make it
+   worse? (Flat note: the mechanism that caused it is removed, but the exact
+   cull boundary was NOT measured this session - the template instrument
+   failed and I did not want to report numbers I could not trust.)
+4. **Weapon-laser alignment at angle.** The complaint was that alignment
+   degraded as the hand aimed away from the body facing. Aim well off to the
+   side and check the barrel against the laser. Flat, the render lock's
+   correction went from swinging 10.5 UU across a +-30 deg head sweep to flat
+   within 0.5 UU, which should read as "the gun stops drifting as you look
+   around" - does it?
+5. **Expect the viewmodel to LOOK different between `vrbody on` and `off`.**
+   Not a bug: the renderer views the rig from the actor's orientation, so with
+   the transfer on it is viewed from your camera's orientation instead of a
+   stale body facing. Flat, the world is pixel-identical between the two while
+   the gun sits differently. Which one looks right to you?
+6. **Turning still works normally.** Right stick turns camera and body
+   together as before; it composes with the transfer rather than fighting it
+   (flat-proven). Any stutter, fight, or drift while turning is signal.
+7. **Fire + plasmid parity**: two right-trigger pulls at a wall, then left
+   trigger Electro Bolt - electricity on the driven hand. (Flat: 6 pulls,
+   ammo 57->51, no crash dumps.)
+8. **Load crossing (20 seconds)**: Esc -> LOAD -> newest save -> YES, then
+   fire both hands. The transfer resets its state machine on the new
+   PlayerController and re-probes; you should not notice.
+9. **Cutscene / bathysphere**: if you hit one, confirm the view behaves
+   normally. The transfer is gated off whenever the view actor is not your
+   pawn, but it has not been tested against a real cutscene.
+10. **Anything that feels off, `vrbody off` first** - if that fixes it, it is
+    mine; if not, it predates this session.
+
+### PREVIOUS CHECKLIST - M7-v2 matched-lens run (session 16 build)
 
 Setup unchanged: Quest 3 + Virtual Desktop, launch from Steam, load the newest
 save, tick **VR stereo**, then **"Viewmodel follows the controller"**. What
@@ -1015,11 +1166,93 @@ and it resumes.
   line, still dead) and key-bound commands are inert. The mod issues engine
   commands via the console-command seam (`exec` -> engine Exec dispatchers).
 - Adapter VRAM logs as "3072 MB" - DXGI_ADAPTER_DESC.DedicatedVideoMemory is a 32-bit SIZE_T in
-  our process, so values ≥4 GB truncate. Cosmetic; ignore.
+  our process, so values â‰¥4 GB truncate. Cosmetic; ignore.
 - itsloopyo's headtracking mod also installs as `xinput1_3.dll` - mutually exclusive with ours
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-27 - Session 17 part 2 (IN-HEADSET: PASSED; deadzone 23 deg becomes the default)
+
+- The user tested the session-17 build: **"This is perfect... the stick was
+  working as expected, the models didn't move when I moved my head while
+  looking forward and around that section, when I looked at a specific part to
+  the right or left that needed a decent angle also worked as expected."** The
+  hard invariant survived the headset - that is the gate M7.5 existed to pass.
+- One tuning change, made live by the user and now the shipped default:
+  **`vrbody deadzone` 0 -> 23 deg**. Their remaining note before it was "the
+  gun moves with the camera a bit"; inside the band the body does not steer at
+  all, so a glance leaves the viewmodel world-locked, and beyond the band the
+  body trails the head by exactly the band width (head and body never diverge
+  more than 23 deg).
+- Flat re-verified on the shipping default: `resid` settles at exactly
+  23.00 deg; gameYaw and recenterYaw each moved 0.38398 rad (45 - 23 = 22 deg)
+  while camYaw stayed 8308 and the hand's world yaw stayed 116 - both
+  bit-identical, so the deadzone does not weaken the invariant. Fire smoke
+  under stereo clean, dumps 8->8, guardskips 0.
+- **Trap found while shipping the default: a `vrpreset.ini` left by a smoke
+  test silently OVERRIDES a later code default.** The ini on this box pinned
+  `bodyDeadzoneDeg=0.0` and would have cancelled the new default on the next
+  preset press. It held nothing but shipped defaults, so it was deleted. Check
+  this whenever a default changes.
+
+### 2026-07-27 - Session 17 (M7.5: the body-follows-head yaw transfer ships, invariant exact)
+
+- Work done on branch **`m7.5-body-yaw-transfer`** at the user's request, to
+  keep the verified session-16 behaviour on main until they sign off in the
+  headset. Two commits; PR after their run.
+- **The body facing was found in one boot: `PC+0x1E8`** (the
+  PlayerController's `Rotation.Yaw` - AActor layout inherited by AController,
+  same +0x1E4 offset the mod already read on AHands and the pawn). A
+  read-only `vrbody probe` line plus a `vrbody poke <deg>` one-shot write
+  answered all nine probe steps positively: non-zero pitch where the pawn's is
+  0, the write lands and holds across 11 samples, the pawn follows for free,
+  the engine's turn composes on our value, and a synthetic walk burst followed
+  the written facing to 0.4 deg. The milestone was proven before any transfer
+  code ran. This overturns the M6-era ARCHITECTURE note rejecting a
+  pawn/controller rotation write.
+- **The hard invariant held exactly.** Composite `gameYaw - recenterYaw` read
+  1.27742 rad at every head angle in both states; at head 45 the hand's world
+  pose and the camera were bit-identical off vs on; `[tlm] yawstep` max=0
+  units / nbig=0 through the arm transient. The yaw path was converted to
+  integer rotator units to make the cancellation exact, and `on_calcview`
+  returns the units COMMITTED so the two absorbed quantities are one integer.
+- **The feature measured**: transfer OFF, the walk heading changed 0.18 deg
+  for a 90 deg head change; ON, walk == body == camera to 0.01 deg at +45 and
+  -45, spanning 89.99 deg.
+- **Unplanned second payoff**: with the transfer on, the render lock's lateral
+  correction goes flat within 0.46 UU across a +-30 deg head sweep instead of
+  swinging 10.5 UU, landing on the same 4.57 the calibrated zero-split
+  configuration uses. The transfer restores the headset-verified session-16
+  regime at every head angle rather than only at head 0.
+- **A trap that would have faked a regression, caught before it did**:
+  `hands.cpp` forced the simpose lane's recenter yaw to 0, making the parked
+  synthetic hand body-locked while a real controller is recenter-locked - the
+  gate would have shown the parked gun swinging a full 45 deg and read as the
+  sessions-12-16 defect. Fixed; it was a no-op before the transfer existed.
+- **Two honest negatives, both recorded in ENGINE_NOTES so they are not
+  retried blind**: (1) NCC template chaining across the sweep failed outright
+  (correlations 0.56-0.79 at every step) because the composition changes too
+  much per 15 deg - every pixel number from it is void, and the exact cull
+  angle is therefore still unmeasured. The `[tlm] lock` telemetry is the
+  template-free instrument that answers the same question. (2) The cull is
+  direction-dependent: a head-only glance with the hand parked in the world
+  *increases* hand-vs-body, while the reported case (the user swivels, so head
+  and hand move together) drives it to ~0. Both are real.
+- Also learned: a walk burst that slides along collision geometry yields a
+  plausible-looking heading that is pure geometry (one read 105.65 deg at 16%
+  perpendicular deviation). Every burst is now gated on straightness <= 5% and
+  a failure is VOID, not a result.
+- Promoted to default ON and into VR PRESET 1 (after the viewmodel, before
+  vrstereo); `vrbody off` is the live A/B. `bodyRate`/`bodyDeadzoneDeg` persist
+  to vrpreset.ini, both 0 = instant 1:1 by the user's call.
+- Clean-boot acceptance on the promoted build: fire test 57->51 for 6 pulls,
+  dumps 8->8 throughout the whole session, stereo clean (mode=1T, presents =
+  2x builds, guardskips 0), preset echo chain + ini round-trip, and a 20-step
+  +-90 deg soak returning camYaw and the recenter to their exact start values.
+- **Not started, and they are the next session's job**: the two M8 release
+  blockers (headset-disconnect stall, flat-screen mirror). The session went
+  entirely on M7.5 and its verification.
 
 ### 2026-07-27 - Session 16 part 4 (preset verified in-headset; the ROOT CAUSE of the edge desync found by the user)
 
@@ -2119,15 +2352,15 @@ THEN arm 1t):**
 - Researched game installation (32-bit DX11 Vengeance/UE2.5, no DRM, gameswf Flash UI), engine
   family (BS2R same engine; Infinite UE3-6829), modding ecosystem, prior VR art (vorpX G3D works;
   itsloopyo headtracking hook proven; REFramework MIT reference), and the VR injection stack
-  (OpenXR-first for VDXR+SteamVR). Full findings → RESEARCH.md.
-- Decided architecture (C++20/x86, xinput proxy → bioshockvr.dll, core+adapter split, stereo
-  ladder with SequentialReentry as primary bet) → ARCHITECTURE.md decision log.
+  (OpenXR-first for VDXR+SteamVR). Full findings â†’ RESEARCH.md.
+- Decided architecture (C++20/x86, xinput proxy â†’ bioshockvr.dll, core+adapter split, stereo
+  ladder with SequentialReentry as primary bet) â†’ ARCHITECTURE.md decision log.
 - Built: repo + docs suite, CMake (VS2022 `-A Win32`, submodules minhook/imgui/OpenXR-SDK pinned),
   xinput proxy (ordinals verified against the real SysWOW64 DLL with dumpbin - game imports @2/@3),
   mod DLL (deferred init, logger, minidump handler, MinHook, kiero-style Present/ResizeBuffers
   hooks, ImGui overlay), tools scripts.
 - **In-game smoke test passed** on first run (full init chain + D3D11 device info in log).
-  Found + fixed: logger file locking (fopen_s denies sharing → switched to `_wfsopen` with
+  Found + fixed: logger file locking (fopen_s denies sharing â†’ switched to `_wfsopen` with
   `_SH_DENYNO`), non-ASCII mojibake in log lines, missing `-Install` passthrough in build.ps1.
 - Verified: LAA=YES; D3D11 confirmed at runtime; user ini path confirmed after first launch.
 - Repo created and pushed: https://github.com/mohamad-balouza/bioshock-vr (public, MIT).

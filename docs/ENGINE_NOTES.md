@@ -1168,6 +1168,150 @@ resumes. Also noted: `xr: sr tag ring skewed (depth 8) - cleared` repeats
 while the session is VISIBLE/idle with presents at 0 - harmless in that
 state, recovers on resume.
 
+## Body facing / control rotation (M7.5 session 17, 2026-07-27)
+
+**THE PLAYERCONTROLLER'S ROTATION IS AT `PC + 0x1E4`, it is the view rotation
+the camera comes from, an ADDITIVE YAW WRITE TO IT STICKS, and it reaches
+locomotion.** Nine-step live probe on the wall save, one boot, all positive -
+the `vrbody probe` telemetry line plus the `vrbody poke <deg>` one-shot write
+(both in `body.cpp`). This closes the session-11 open question and overturns
+the ARCHITECTURE decision-log entry that rejected writing the controller
+rotation.
+
+- **It is the AActor layout, inherited.** `AController` derives from `AActor`,
+  so `kActorViewDirOffset` (0x1E4, already used on AHands and the pawn) is the
+  controller's `Rotation` too. Live: `PC.rot=(144 116 0)` vs
+  `pawn.rot=(0 116 0)` - **same yaw, and the PC carries a NON-ZERO PITCH while
+  the pawn's is 0**. That is the discriminator: session 11's inference
+  ("pawns keep pitch 0, so the pitched view rotation lives on the
+  PlayerController") was right, and this is the field. Yaw is the second
+  int32, i.e. `PC+0x1E8`.
+- **An additive write LANDS and HOLDS.** `vrbody poke 40` wrote yaw
+  116 -> 7398; the camera swung 40 deg and the value held across 11 telemetry
+  samples over 5.5 s. Nothing recomputes it from another authority.
+- **The pawn follows for free.** `pawn.yaw` tracked to 7398 on the next sample
+  (the engine's own FaceRotation propagation), so a **PC-only write is
+  sufficient** - no pawn write, and therefore no risk of desyncing a colliding
+  actor's rotation. `vrbody field pawn|both` exists but is not needed.
+- **The engine's own turn COMPOSES on our value.** A synthetic right-stick
+  turn took 7398 -> 13324, continuing from the written value rather than
+  snapping to a stick-derived absolute. The rotation update is incremental
+  (`Rotation.Yaw += delta`), which is what makes an additive transfer safe
+  alongside normal player turning.
+- **It reaches locomotion.** With the body poked to yaw 13324 (73.19 deg), a
+  synthetic left-stick-forward burst walked 780 UU along heading **72.79 deg**
+  - a 0.4 deg match to the written facing, and ~73 deg away from the original
+  one. So `PlayerWalking` composes movement against this rotation (directly or
+  through the pawn copy).
+- Pitch is deliberately never written: the engine applies a signed clamp to it
+  and the pawn is kept at pitch 0 by design. Yaw only, masked `& 0xFFFF` (the
+  engine keeps components in [0, 65535]; the live read of 55599 and 13324 are
+  both in range).
+
+**THE YAW-TRANSFER INVARIANT (why this cannot re-couple the hand).** The final
+camera and BOTH halves of the XR-controller-to-world mapping are functions of
+one composite:
+
+```
+camera yaw = gameYaw + (headYaw - recenterYaw)
+hand rot   = (gameYaw - recenterYaw) + controller yaw
+hand pos   = base + R(gameYaw - recenterYaw) * xr_to_ue(pos - recenterP) * scale
+```
+
+So adding T to the body while adding exactly T to the recenter reference
+leaves the camera and the mapping unchanged - only the body/head-look SPLIT
+relabels. Done in integer rotator units it is exact:
+`rot->yaw' = (gameYaw + T) + (residual - T) = gameYaw + residual`. That is why
+`camera.cpp` keeps the recenter yaw as `int32_t g_recenterYawUnits` (also
+wrap_rot-bounded, so it cannot accumulate into ulps larger than a rotation
+unit) and why `body::on_calcview` RETURNS the units actually committed rather
+than the units requested - the two absorbed quantities are the same integer.
+
+**Flat-measured, wall save, one boot (session 17):**
+
+- Composite `gameYaw - recenterYaw` = **1.27742 rad at every head angle**
+  (0/30/45/90/-45, transfer on and off) - five decimal places, unchanged.
+- True A/B at head 45: transfer OFF vs ON, the hand's world pose from the
+  `[tlm] xrmap` fixed-pose probe read `rot.yaw=13323` in **both** and
+  `camYaw=21516` in **both**, while gameYaw and recenterYaw each moved
+  +0.78540 rad. Position differed by 0.001 UU (float rounding; the gate was
+  0.05).
+- `[tlm] yawstep max=+0 units, nbig=0` across the arm transient and steady
+  state at ~1650 frames/s - the camera does not move at all when the transfer
+  arms, not merely "within tolerance".
+- Walk direction, transfer **OFF**: 116.49 deg and 116.67 deg at two head
+  angles **90 deg apart** - the walk tracked the body (118.19) and ignored the
+  head. That is the reported defect as a number.
+- Walk direction, transfer **ON**: at head +45, walk 163.19 / body 163.19 /
+  camera 163.19; at head -45, walk 73.20 / body 73.19 / camera 73.19. Walk ==
+  body == camera to 0.01 deg, and the pair spans 89.99 deg for a 90 deg head
+  change. Both bursts >800 UU with 0.25% straightness.
+
+**Instrument caveat recorded the hard way:** a walk burst that slides along
+collision geometry yields a plausible-looking heading that is pure geometry
+(one burst read 105.65 deg with 16% perpendicular deviation). Gate every burst
+on straightness <= 5% of path length and treat a failure as VOID, not as a
+result.
+
+**THE RENDER LOCK'S CORRECTION GOES FLAT UNDER HEAD-LOOK - the transfer's
+second, unplanned payoff.** Parked hand, `simhead` swept +-30 deg about a
+45 deg base, `[tlm] lock` read at every step. The predicted world NDC (`tgt`)
+and `df` came out **identical at every step in both conditions** (the hand is
+world-parked and the camera is unchanged, exactly as the invariant requires),
+and `targetYaw` held at 16500 throughout. What changed was the correction:
+
+| head delta | predicted ndcX | `lat` OFF | `lat` ON | actorYaw OFF | actorYaw ON |
+|---|---|---|---|---|---|
+| -30 | +0.088 | 1.04 | 4.50 | 16500 | 19231 |
+| -15 | -0.073 | 2.67 | 4.50 | 16500 | 21961 |
+| 0   | -0.245 | 6.12 | 4.58 | 16500 | 24692 |
+| +15 | -0.458 | 9.16 | 4.73 | 16500 | 27423 |
+| +30 | -0.779 | 11.59 | 4.96 | 16500 | 30153 |
+
+With the transfer OFF the lateral correction swings **10.5 UU** across the
+sweep (it scales with the camera-vs-actor split, which is what the lock exists
+to cancel); with it ON the correction is **flat within 0.46 UU** and actorYaw
+tracks the camera in exact 2731-unit (15 deg) steps. `depth` behaves the same
+way: a 6.1 UU swing becomes 1.0. Because the lock is applied at gain 0.9, a
+swinging correction leaves a swinging residual - the "gun drifts as you look
+around" percept - while a constant one leaves a constant, trimmable offset.
+
+**And the ON value lands on the calibrated one: `lat` 4.58 at head 45 with the
+transfer on vs 4.57 at head 0 with it off** - i.e. the transfer restores, at
+every head angle, the exact zero-split configuration that session 16
+calibrated and the user verified in the headset.
+
+**The rendered viewmodel DOES move between the two states, and that is the
+mechanism working, not a regression.** At head 45 the world region of the
+frame is pixel-identical off vs on (mean abs diff 0.048, against a 0.3
+same-condition floor) while the gun+arm region reads 23.4 - and crop-and-look
+shows the gun is not merely shifted but **viewed from a different angle**. The
+renderer orients the foreground rig by the ACTOR fields, so with the transfer
+on the rig is viewed from the camera's own orientation instead of from a
+45-deg-stale body facing. The lock corrects POSITION, never viewing angle,
+which is why it could never fully paper this over. Removing the split at its
+source is what the ENGINE_NOTES session-12 finding ("the user saw the gun move
+REVERSED... actor-frame rendering composed against the camera frame") was
+always pointing at.
+
+**Instrument that failed, recorded so it is not retried blind:** tracking the
+gun across the sweep with an NCC template - even re-localised every step and
+re-cut from the previous step's match - produced correlations of 0.56-0.79 at
+every step but the trivial self-match. The composition changes too much per
+15 deg for template chaining to survive, so every pixel number from it is
+VOID. The `[tlm] lock` telemetry above is the template-free instrument that
+answers the same question, and it should be preferred.
+
+**Nuance the flat sweep exposed - the cull is direction-dependent.** `simpose`
+parks the synthetic hand in the RECENTER frame, i.e. it models "the head turns
+but the hand stays put in the world". In that case the transfer *increases*
+hand-vs-body (0 -> -45 deg at head 45, measured: actor yaw 21516 vs target yaw
+13323). The reported symptom is the other case - the user physically swivels,
+so head AND hand rotate together in the world while the in-game body does not
+- and there the transfer drives hand-vs-body to ~0. Both are real; the
+residual/cull sweep is the instrument that quantifies where the boundary sits
+in each direction.
+
 ## UnrealScript findings
 
 _(Summaries only - never paste decompiled code. Tooling: UE Explorer/UELib on

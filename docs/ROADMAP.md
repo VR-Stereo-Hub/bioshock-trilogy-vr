@@ -342,26 +342,44 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
 > the user found one root cause that still degrades play - and it is a CAMERA/LOCOMOTION
 > defect, not a viewmodel one. Full spec + the invariant in STATUS "Next steps" item 1.
 
-- [ ] **Body-follows-head yaw transfer.** The body/pawn facing only rotates with the RIGHT
-      STICK, so with the head physically turned: left-stick "forward" walks along the OLD
-      facing (the user's decisive observation), weapon-laser alignment degrades as the hand
-      aims away from that facing, and past ~90 deg the rig leaves the authored bounds and is
-      CULLED (returns when the stick catches up). Fix: each frame transfer the head-look yaw
-      into the body facing while subtracting the same amount from the camera's additive yaw,
-      so the camera is unchanged and the invisible body re-aligns under the view.
-- [ ] **HARD INVARIANT - no regression of head decoupling (the user's explicit
-      requirement).** The controller-to-world mapping composes through the body yaw, so the
-      transfer must leave the final camera AND that composite mapping bit-identical (the
-      recenter reference absorbs the transferred yaw). Gate: the parked-hand simhead sweep
-      (gun glued to the world) and the full session-16 acceptance ladder pass UNCHANGED
-      before it ships; the in-headset checklist re-verifies decoupling as item 1.
-- [ ] **Residual edge alignment + the cull angle**, measured after the transfer: simpose
-      sweep at 0/30/60/80/90/100/120 deg from the facing, rendered barrel vs target angle
-      per step, exact cull-on/off angle from both directions; `vrbones lockgain` A/B if the
-      error still grows with angle.
-- [ ] **Done when:** walking forward goes where the user looks, the gun stays aligned with
-      the laser at any reachable aim angle, the rig never vanishes in normal play - and the
-      hand still does NOT follow the head.
+- [x] **Body-follows-head yaw transfer.** SHIPPED session 17, default ON, armed by VR
+      PRESET 1; `vrbody off` is the live A/B. The body facing lives at the
+      PlayerController's `Rotation.Yaw` (`PC+0x1E8`) - located and proven live: non-zero
+      pitch where the pawn's is 0, an additive write holds, the pawn follows for free, the
+      engine's own turn composes on our value, and the walk direction follows it to 0.4 deg
+      (ENGINE_NOTES session 17). `body.cpp` transfers the head-look yaw once per rendered
+      frame behind a probe handshake and a gameplay-view guard.
+- [x] **HARD INVARIANT - no regression of head decoupling.** Held exactly, not merely
+      within tolerance. The composite `gameYaw - recenterYaw` measured **1.27742 rad at
+      every head angle** (0/30/45/90/-45) in both states; at head 45 the hand's world pose
+      (`rot.yaw=13323`) and the camera (`camYaw=21516`) were **bit-identical** off vs on
+      while gameYaw and recenterYaw each moved +0.78540 rad; `[tlm] yawstep` showed
+      **max=0 units, nbig=0** through the arm transient. The yaw path was converted to
+      integer rotator units to make the cancellation exact.
+- [x] **Feature verified flat.** Walk direction with the transfer OFF: 116.49 and 116.67 deg
+      at two head angles 90 deg apart (it tracked the body and ignored the head - the defect
+      as a number). With it ON: walk == body == camera to 0.01 deg at both +45 and -45, the
+      pair spanning 89.99 deg for a 90 deg head change. Fire test 57->51 for 6 pulls, dumps
+      8->8, stereo clean, 20-step +-90 soak returned camYaw and the recenter exactly to
+      their starting values.
+- [x] **Residual sweep** (partial, and it found something better than expected): with the
+      transfer ON the render lock's lateral correction goes **flat within 0.46 UU** across a
+      +-30 deg head sweep instead of swinging 10.5 UU, landing on the same 4.57 the
+      calibrated zero-split configuration uses - so the transfer restores the
+      headset-verified session-16 regime at every head angle. Full table in ENGINE_NOTES.
+- [ ] **Still open - the exact cull angle.** The 0/30/60/80/90/100/120 deg simpose sweep and
+      the cull-on/off boundary in both directions were NOT measured: NCC template chaining
+      broke down across the composition changes (correlations 0.56-0.79, every number void -
+      recorded in ENGINE_NOTES so it is not retried blind). Needs a template-free instrument.
+      Note the sweep also exposed that the two physical cases differ: a head-only glance with
+      the hand parked in the world *increases* hand-vs-body, while the reported case (the
+      user swivels, so head and hand rotate together) drives it to ~0.
+- [x] **Done when:** the user confirms in the headset. **PASSED 2026-07-27** - "this is
+      perfect... the stick was working as expected, the models didn't move when I moved my
+      head". One tuning change, now the shipped default: `vrbody deadzone` 0 -> **23 deg**,
+      which removes the last "the gun moves with the camera a bit" percept (inside the band
+      the body does not steer, so a glance leaves the viewmodel world-locked; beyond it the
+      body trails the head by exactly the band width). M7.5 DONE.
 
 ## M8 - Release quick phase + HUD usability (~1–2 sessions)
 

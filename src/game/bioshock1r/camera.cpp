@@ -9,6 +9,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
+#include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
 #include "core/vr/openxr_runtime.h"
@@ -131,7 +132,17 @@ uint64_t g_lastHeartbeatMs = 0;
 uint32_t g_heartbeatBaseCount = 0;
 bool g_haveRecenter = false;
 bvr::vr::HeadPose g_recenterPose{};
-float g_recenterYawRad = 0.0f;
+// The seated frame's yaw zero, in ROTATOR UNITS (65536/turn), not radians.
+// Integer because the M7.5 body yaw transfer moves it: the camera and the
+// whole controller-to-world mapping are functions of (gameYaw - recenterYaw),
+// so the transfer adds T to the body and exactly T to this - and in integers
+// that cancellation is exact rather than merely close (body.h has the proof).
+// It also cannot accumulate: wrap_rot keeps it in (-180, +180] deg, where a
+// bare float would have drifted into ulps larger than a rotation unit after a
+// few minutes of spinning.
+int32_t g_recenterYawUnits = 0;
+// Float mirror, for the FrameContext and the telemetry only.
+float recenter_yaw_rad() { return g_recenterYawUnits / kRotUnitsPerRadian; }
 
 // Synthetic HMD lane (session 12 part 4): `simhead <yaw> <pitch> <roll>
 // [holdMs]` feeds a scripted head pose through the REAL camera drive -
@@ -373,6 +384,8 @@ void apply_command(const char* cmd, const char* args) {
         hands::handle_command(args); // M7 viewmodel; logs its own echoes
     } else if (strcmp(cmd, "vrbones") == 0) {
         bones::handle_command(args); // M7-v2 skeleton probes; logs its own echoes
+    } else if (strcmp(cmd, "vrbody") == 0) {
+        body::handle_command(args); // M7.5 yaw transfer; logs its own echoes
     } else if (strcmp(cmd, "exec") == 0) {
         console_exec::run_viewport(args); // engine console command, viewport chain
     } else if (strcmp(cmd, "execc") == 0) {
@@ -418,6 +431,8 @@ void save_vr_preset() {
     fprintf(f, "aimTrimLYaw=%.1f\n", aim::trim_yaw_deg(0));
     fprintf(f, "aimTrimRPitch=%.1f\n", aim::trim_pitch_deg(1));
     fprintf(f, "aimTrimRYaw=%.1f\n", aim::trim_yaw_deg(1));
+    fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
+    fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
 }
@@ -431,6 +446,7 @@ void load_vr_preset_values() {
     int n = 0;
     float lp = aim::trim_pitch_deg(0), ly = aim::trim_yaw_deg(0);
     float rp = aim::trim_pitch_deg(1), ry = aim::trim_yaw_deg(1);
+    float bodyRate = body::rate_per_sec(), bodyDz = body::deadzone_deg();
     while (fgets(line, sizeof line, f)) {
         char key[48] = {};
         float v = 0.0f;
@@ -446,11 +462,14 @@ void load_vr_preset_values() {
         else if (strcmp(key, "aimTrimLYaw") == 0) ly = v;
         else if (strcmp(key, "aimTrimRPitch") == 0) rp = v;
         else if (strcmp(key, "aimTrimRYaw") == 0) ry = v;
+        else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
+        else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
         else --n;
     }
     fclose(f);
     aim::set_trim(0, lp, ly);
     aim::set_trim(1, rp, ry);
+    body::set_tuning(bodyRate, bodyDz);
     if (n) BVR_LOG("[b1r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
@@ -467,6 +486,7 @@ void apply_vr_preset() {
     aim::handle_command("laser on");
     hands::handle_command("on");       // viewmodel follows the controller
     hands::handle_command("pose aim"); // align to the AIM ray
+    body::handle_command("on");        // M7.5: stick-forward = look direction
     load_vr_preset_values();           // tuned sliders (ini) over defaults
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
@@ -603,6 +623,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // the pre-head-offset camera loc and the yaw the drive added.
     FVector baseLoc = loc ? *loc : FVector{};
     float driveYawOffsetRad = 0.0f;
+    // The same quantity in rotator units - what M7.5 transfers to the body.
+    int32_t residualUnits = 0;
+    int32_t gameYawUnitsRaw = rot ? rot->yaw : 0; // the engine's own body yaw
     bvr::vr::HeadPose hp{};
     bool simHead = now < g_simHead.deadline;
     if (simHead) {
@@ -623,18 +646,23 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         UeAngles a = hmd_angles(hp);
         if (g_recenterRequested.exchange(false, std::memory_order_relaxed) || !g_haveRecenter) {
             g_recenterPose = hp;
-            g_recenterYawRad = a.yawRad;
+            g_recenterYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
             g_haveRecenter = true;
+            body::on_reset("recentered");
             BVR_LOG("[b1r] vr camera recentered (yaw %.1f deg)", a.yawRad * 57.29578f);
         }
 
+        // Integer all the way through: the head-look residual is the ONLY
+        // thing added to the game's own yaw, and the M7.5 transfer subtracts
+        // from it by exactly the units it hands to the body.
         int32_t gameYawUnits = rot->yaw;
+        int32_t headYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
+        residualUnits = wrap_rot(headYawUnits - g_recenterYawUnits);
         float gameYawRad = static_cast<float>(gameYawUnits) / kRotUnitsPerRadian;
         rot->pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian);
         rot->roll = static_cast<int32_t>(a.rollRad * kRotUnitsPerRadian);
-        driveYawOffsetRad = a.yawRad - g_recenterYawRad;
-        rot->yaw = gameYawUnits +
-                   static_cast<int32_t>((a.yawRad - g_recenterYawRad) * kRotUnitsPerRadian);
+        driveYawOffsetRad = static_cast<float>(residualUnits) / kRotUnitsPerRadian;
+        rot->yaw = gameYawUnits + residualUnits;
 
         float dxr[3] = {hp.px - g_recenterPose.px, hp.py - g_recenterPose.py,
                         hp.pz - g_recenterPose.pz};
@@ -643,7 +671,8 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         float scale = g_worldScale.load(std::memory_order_relaxed);
         // Into the recenter-local frame, then out by the game yaw (which is
         // where recenter-forward points now, since our yaw is purely additive).
-        float c = cosf(-g_recenterYawRad), s = sinf(-g_recenterYawRad);
+        float recenterYawRad = recenter_yaw_rad();
+        float c = cosf(-recenterYawRad), s = sinf(-recenterYawRad);
         float lx = d[0] * c - d[1] * s;
         float ly = d[0] * s + d[1] * c;
         float cg = cosf(gameYawRad), sg = sinf(gameYawRad);
@@ -697,7 +726,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                 BVR_LOG("[tlm] head xr p=(%.3f %.3f %.3f) yaw=%.1f pitch=%.1f roll=%.1f | "
                         "recenter yaw=%.1f p=(%.3f %.3f %.3f) | headOff=(%.1f %.1f %.1f)",
                         hp.px, hp.py, hp.pz, a.yawRad * 57.29578f, a.pitchRad * 57.29578f,
-                        a.rollRad * 57.29578f, g_recenterYawRad * 57.29578f, g_recenterPose.px,
+                        a.rollRad * 57.29578f, recenter_yaw_rad() * 57.29578f, g_recenterPose.px,
                         g_recenterPose.py, g_recenterPose.pz, ox, oy, oz);
             }
         }
@@ -768,7 +797,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             fc.camRoll = rot->roll;
         }
         fc.driveYawOffsetRad = driveYawOffsetRad;
-        fc.recenterYawRad = g_recenterYawRad;
+        fc.recenterYawRad = recenter_yaw_rad();
         fc.recenterPx = g_recenterPose.px;
         fc.recenterPy = g_recenterPose.py;
         fc.recenterPz = g_recenterPose.pz;
@@ -776,6 +805,31 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.viewActor = viewActor ? *viewActor : nullptr;
         fc.pc = self;
         g_lastViewActor.store(fc.viewActor, std::memory_order_relaxed);
+
+        // THE HARD-INVARIANT INSTRUMENT (session 17). Run a FIXED XR pose
+        // through the unmodified context and log where it lands. This is the
+        // exact function the aim ray and the viewmodel both call, with the
+        // real recenter values, independent of any synthetic lane - so with a
+        // static scene, any change in this line between `vrbody on` and
+        // `vrbody off` IS the hand-follows-the-head defect. gameYaw and
+        // recenterYaw must move together (that is the relabel); loc and rot
+        // must not move at all.
+        if (bones::telemetry_on()) {
+            static uint64_t lastXrmap = 0;
+            if (now - lastXrmap >= 200) {
+                lastXrmap = now;
+                const float probePos[3] = {0.15f, -0.20f, -0.35f};
+                const float probeQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                GamePose gp = xr_pose_to_game(fc, probePos, probeQuat);
+                BVR_LOG("[tlm] xrmap loc=(%.3f %.3f %.3f) rot=(%d %d %d) "
+                        "gameYaw=%.5f recenterYaw=%.5f camYaw=%d dyaw=%.5f",
+                        gp.loc.x, gp.loc.y, gp.loc.z, gp.rot.pitch, gp.rot.yaw, gp.rot.roll,
+                        static_cast<double>(fc.camYaw) / kRotUnitsPerRadian -
+                            fc.driveYawOffsetRad,
+                        fc.recenterYawRad, fc.camYaw, fc.driveYawOffsetRad);
+            }
+        }
+
         aim::on_calcview(fc);
         // The viewmodel write goes LAST in the frame: the engine placed the
         // hands during its own tick, so ours has to be the one that survives.
@@ -831,6 +885,58 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     } else if (g_wasOverridingFov) {
         *fov_ptr(self) = g_savedFov; // one-shot restore
         g_wasOverridingFov = false;
+    }
+
+    // M7.5 body-follows-head yaw transfer, LAST in the frame and for a
+    // load-bearing reason: aim::on_calcview and hands::on_calcview above
+    // consumed the (driveYawOffset, recenterYaw) pair, and that pair must
+    // describe the body facing the engine actually has RIGHT NOW. The write
+    // below is state for the NEXT frame - by then the engine's own rot->yaw
+    // carries the transferred amount and the residual has shrunk by exactly
+    // the same integer, so the camera and the hand mapping are unchanged.
+    // Transfer first and the hand would be off by T for one frame, every
+    // frame: the very defect the hard invariant forbids.
+    // Camera continuity, sampled EVERY frame (a 5 Hz line cannot see a
+    // single-frame jump). The transfer's whole safety story is "the camera is
+    // unchanged", so this tracks the largest per-frame step in the final
+    // camera yaw and counts the frames that exceed a couple of rotation units.
+    // Arming the transfer must not move either number: if the recenter fails
+    // to absorb what the body took, camYaw jumps ~8192 units and then runs
+    // away, and this line shows it inside one second.
+    if (rot && bones::telemetry_on()) {
+        static bool haveYs = false;
+        static int32_t prevYs = 0;
+        static int32_t maxStep = 0;
+        static uint32_t nbig = 0, frames = 0;
+        static uint64_t lastYs = 0;
+        if (haveYs) {
+            int32_t step = wrap_rot(rot->yaw - prevYs);
+            if (abs(step) > abs(maxStep)) maxStep = step;
+            if (abs(step) > 2) ++nbig;
+        }
+        prevYs = rot->yaw;
+        haveYs = true;
+        ++frames;
+        if (now - lastYs >= 1000) {
+            lastYs = now;
+            BVR_LOG("[tlm] yawstep max=%+d units (%.4f deg) nbig=%u frames=%u | "
+                    "camYaw=%d gameYaw=%d resid=%+d recenter=%.4f deg",
+                    maxStep, maxStep / kRotUnitsPerDegree, nbig, frames, rot->yaw,
+                    gameYawUnitsRaw, residualUnits,
+                    g_recenterYawUnits / kRotUnitsPerDegree);
+            maxStep = 0;
+            nbig = 0;
+            frames = 0;
+        }
+    }
+
+    {
+        int32_t moved = body::on_calcview(self, viewActor ? *viewActor : nullptr,
+                                          gameYawUnitsRaw, residualUnits, vrDrove);
+        // Absorb EXACTLY what the body took - never the amount we asked for.
+        // These two are the same integer, which is what makes the invariant a
+        // theorem instead of a tolerance.
+        if (moved) g_recenterYawUnits = wrap_rot(g_recenterYawUnits + moved);
     }
 }
 

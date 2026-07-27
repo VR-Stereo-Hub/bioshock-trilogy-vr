@@ -473,13 +473,20 @@ void on_calcview(const FrameContext& ctx) {
         FrameContext mapCtx = ctx;
         if (now < g_sim.deadline) {
             // Synthetic XR pose through the REAL mapping path: a fixed spot a
-            // hand would occupy, oriented by the sim angles, recenter identity.
+            // hand would occupy, oriented by the sim angles.
             pos[0] = 0.15f;  // meters right of the recenter origin
             pos[1] = -0.20f; // below it
             pos[2] = -0.35f; // in front (XR forward is -Z)
             xr_local_trim_quat(g_sim.pitchDeg / kRadToDeg, g_sim.yawDeg / kRadToDeg,
                                g_sim.rollDeg / kRadToDeg, quat);
-            mapCtx.recenterYawRad = 0.0f;
+            // POSITION zero only. The recenter YAW is deliberately left alone
+            // (session 17): forcing it to 0 here made the parked synthetic hand
+            // BODY-locked while a real controller is RECENTER-locked, so with
+            // the M7.5 yaw transfer armed the parked gun swung by the full head
+            // angle - indistinguishable by eye from the sessions-12-16
+            // head-coupling defect, but a pure artifact of this line. It was a
+            // no-op before the transfer existed: every flat baseline arms
+            // `simhead 0 0 0` first, which sets the recenter yaw to exactly 0.
             mapCtx.recenterPx = mapCtx.recenterPy = mapCtx.recenterPz = 0.0f;
         } else {
             bvr::vr::HeadPose hp{};
