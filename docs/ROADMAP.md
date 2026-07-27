@@ -494,6 +494,17 @@ fixed or the release waits:**
       double-fires. The user play-tested timing the trigger to their swing and it felt
       right, so the gesture only needs to reproduce that timing. Hand poses per frame
       already exist (velocity = dP/dt); keep the trigger working as-is.
+- [ ] **Kill the first-boot restart (user's call 2026-07-28)**: the game latches its
+      one-shot XInput boot probe (6 calls, slot 0, never re-polled - session 9), so a
+      fresh install needs one restart after the first preset press (README notes it).
+      Fix: the wrapper answers the failed probe with success + a neutral zeroed pad, so
+      the game polls forever and `vrinput on` engages instantly, first boot included -
+      then the marker file AND the README note both retire. GATE FIRST with one flat
+      boot: phantom pad connected + vrinput off -> the menu prompts must stay
+      keyboard/mouse (session-9 evidence says prompts key on last-used input, not
+      connectivity; if that is wrong, fall back to flipping the game's latched
+      slot-connected flag instead - the probe call sites are catchable in the wrapper,
+      so the latch is a short disasm hop away).
 - [ ] Snap turn, height/seated recenter, optional vignette
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
