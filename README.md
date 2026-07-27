@@ -43,6 +43,10 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 2. Press **F10** to open the mod overlay and click **VR PRESET 1** - one press arms
    everything in the right order: VR pacing, 6DOF camera, motion controllers, controller aim +
    laser, the viewmodel drive, body-follows-head, and stereo last.
+   **First-ever launch only:** the game checks for a gamepad once at startup, so on a fresh
+   install the motion controllers stay dead until you **restart the game once** after the
+   first preset press (the press itself enables them for every later launch). If you had any
+   physical controller plugged in when the game started, this does not apply.
 3. Quest 3 Touch controls:
 
 | Input | Action |
