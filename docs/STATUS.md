@@ -1143,8 +1143,13 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    collapsed bones (Electro Bolt shell on a hidden left hand) - verify the
    plasmid FX parity test still passes with the collapse live.
 
-1. **THE IN-HEADSET RUN for session 18's changes** - the checklist below.
-   If it passes, open the PR for `m8-release-quick-phase`.
+1. **DONE 2026-07-27: v0.1.0 IS PUBLISHED** - tag on main at PR #3's merge,
+   release zip (both RelWithDebInfo DLLs + README.txt) at
+   https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.1.0, known
+   issues listed (HUD, per-weapon alignment, bindings, flat menus = the v0.2
+   targets). The user play-verified the build in-headset through a long NG+
+   session the same day. Watch the repo issues for early-adopter reports.
+   Session 19 ends by cutting v0.2.0 the same way (after the user's go).
 1. **Publish the first GitHub release AFTER the user's explicit go** (their
    rule: nothing public-facing without asking): tag (proposed v0.1.0) on the
    merged main, upload the zip (rebuild from the tagged commit: `build.ps1
