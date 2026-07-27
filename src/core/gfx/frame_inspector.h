@@ -19,7 +19,11 @@ bool install(void** ctxVtable);
 
 // Arm a one-shot dump of the NEXT full Present-to-Present frame.
 // mode 1 = lite (no constant-buffer readback), 2 = full.
-void arm(int mode);
+// Arm a frame dump: mode 1 = lite, 2 = full (cb bytes). count > 1 records
+// that many CONSECUTIVE present windows (files suffixed _qN) - required to see
+// both halves of a stereo pair, since a game-thread arm always opens on the
+// same pair phase.
+void arm(int mode, int count = 1);
 
 // Frame boundary, called at the head of the Present detour: finalizes and
 // writes a recording frame, or begins a pending one.

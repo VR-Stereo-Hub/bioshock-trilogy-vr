@@ -12,6 +12,8 @@
 
 #include "core/gfx/frame_inspector.h"
 
+#include "core/gfx/hud_capture.h"
+
 #include "core/util/log.h"
 
 #include <windows.h>
@@ -39,8 +41,25 @@ thread_local int t_suppress = 0;
 
 // Lifetime call census per hooked slot (diagnostic): are the detours even
 // being called? Indexed by EventKind order below.
-std::atomic<uint32_t> g_callCensus[7]{};
-enum CensusIdx { CxDrawIndexed, CxDraw, CxDrawIdxInst, CxDrawInst, CxSetRT, CxClearRtv, CxClearDsv };
+std::atomic<uint32_t> g_callCensus[13]{};
+enum CensusIdx {
+    CxDrawIndexed,
+    CxDraw,
+    CxDrawIdxInst,
+    CxDrawInst,
+    CxSetRT,
+    CxClearRtv,
+    CxClearDsv,
+    // Session 19 (the HUD hunt): draws that never showed in any window meant
+    // the HUD reaches the backbuffer some other way - count every remaining
+    // lane that can move pixels.
+    CxDrawAuto,
+    CxDispatch,
+    CxCopySubRes,
+    CxCopyRes,
+    CxUpdateSubRes,
+    CxExecCmdList,
+};
 
 constexpr size_t kMaxEvents = 20000;
 constexpr size_t kMaxStack = 12;
@@ -62,6 +81,12 @@ enum class EventKind : uint8_t {
     ClearRtv,
     ClearDsv,
     SetRenderTargets,
+    DrawAuto,
+    Dispatch,
+    CopySubRes,  // rtv0 = dst, srv0 = src (field reuse)
+    CopyRes,     // rtv0 = dst, srv0 = src
+    UpdateSubRes,// rtv0 = dst
+    ExecCmdList, // a = RestoreContextState
 };
 
 struct Event {
@@ -116,6 +141,23 @@ using MapFn = HRESULT(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*,
 using UnmapFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT);
 MapFn g_origMap = nullptr;
 UnmapFn g_origUnmap = nullptr;
+
+using DrawAutoFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*);
+using DispatchFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, UINT);
+using CopySubResFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT, UINT,
+                                              UINT, UINT, ID3D11Resource*, UINT,
+                                              const D3D11_BOX*);
+using CopyResFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*,
+                                           ID3D11Resource*);
+using UpdateSubResFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Resource*, UINT,
+                                                const D3D11_BOX*, const void*, UINT, UINT);
+using ExecCmdListFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
+DrawAutoFn g_origDrawAuto = nullptr;
+DispatchFn g_origDispatch = nullptr;
+CopySubResFn g_origCopySubRes = nullptr;
+CopyResFn g_origCopyRes = nullptr;
+UpdateSubResFn g_origUpdateSubRes = nullptr;
+ExecCmdListFn g_origExecCmdList = nullptr;
 
 // ---- cb watch (session 13) --------------------------------------------------
 // The engine uploads per-draw constants through Map(WRITE_DISCARD)/memcpy/
@@ -224,6 +266,24 @@ int register_resource(ID3D11View* view) {
     }
     g_resources.emplace(res, info);
     res->Release(); // table keys are identity only, never dereferenced
+    return info.id;
+}
+
+// Raw-resource variant (the Copy/Update lanes have no view). Identity-keyed
+// like the view path; does NOT take a reference.
+int register_resource_raw(ID3D11Resource* res) {
+    if (!res) return -1;
+    auto it = g_resources.find(res);
+    if (it != g_resources.end()) return it->second.id;
+    ResourceInfo info{};
+    info.id = g_nextResourceId++;
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+        tex->GetDesc(&info.desc);
+        info.isTexture2d = true;
+        tex->Release();
+    }
+    g_resources.emplace(res, info);
     return info.id;
 }
 
@@ -394,6 +454,7 @@ Event& push_event(EventKind kind, const void* retAddr, void* espHint) {
 void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCount,
                                          UINT startIndex, INT baseVertex) {
     g_callCensus[CxDrawIndexed].fetch_add(1, std::memory_order_relaxed);
+    if (t_suppress == 0) bvr::hud::on_draw_indexed();
     if (should_record()) {
         ++t_suppress; // our own Get* calls must not recurse into recording
         Event& ev = push_event(EventKind::DrawIndexed, _ReturnAddress(),
@@ -415,6 +476,16 @@ void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UI
         ev.b = startVertex;
         capture_draw_state(ctx, ev);
         --t_suppress;
+    }
+    // HUD redirect (session 19): a gameswf-classified draw gets our RT bound
+    // instead - through the ORIGINAL SetRT so the substitution does not roll
+    // the classifier's own binding state.
+    if (t_suppress == 0) {
+        if (ID3D11RenderTargetView* sub = bvr::hud::on_draw(ctx)) {
+            ++t_suppress;
+            g_origOMSetRenderTargets(ctx, 1, &sub, nullptr);
+            --t_suppress;
+        }
     }
     g_origDraw(ctx, vertexCount, startVertex);
 }
@@ -454,6 +525,7 @@ void STDMETHODCALLTYPE OMSetRenderTargetsDetour(ID3D11DeviceContext* ctx, UINT n
                                                 ID3D11RenderTargetView* const* rtvs,
                                                 ID3D11DepthStencilView* dsv) {
     g_callCensus[CxSetRT].fetch_add(1, std::memory_order_relaxed);
+    if (t_suppress == 0) bvr::hud::on_setrt(numViews, rtvs, dsv);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::SetRenderTargets, _ReturnAddress(),
@@ -492,6 +564,87 @@ void STDMETHODCALLTYPE ClearDsvDetour(ID3D11DeviceContext* ctx, ID3D11DepthStenc
     g_origClearDsv(ctx, dsv, flags, depth, stencil);
 }
 
+void STDMETHODCALLTYPE DrawAutoDetour(ID3D11DeviceContext* ctx) {
+    g_callCensus[CxDrawAuto].fetch_add(1, std::memory_order_relaxed);
+    if (should_record()) {
+        ++t_suppress;
+        Event& ev = push_event(EventKind::DrawAuto, _ReturnAddress(), _AddressOfReturnAddress());
+        capture_draw_state(ctx, ev);
+        --t_suppress;
+    }
+    g_origDrawAuto(ctx);
+}
+
+void STDMETHODCALLTYPE DispatchDetour(ID3D11DeviceContext* ctx, UINT x, UINT y, UINT z) {
+    g_callCensus[CxDispatch].fetch_add(1, std::memory_order_relaxed);
+    if (should_record()) {
+        ++t_suppress;
+        Event& ev = push_event(EventKind::Dispatch, _ReturnAddress(), _AddressOfReturnAddress());
+        ev.a = x;
+        ev.b = y;
+        --t_suppress;
+    }
+    g_origDispatch(ctx, x, y, z);
+}
+
+void STDMETHODCALLTYPE CopySubResDetour(ID3D11DeviceContext* ctx, ID3D11Resource* dst,
+                                        UINT dstSub, UINT dstX, UINT dstY, UINT dstZ,
+                                        ID3D11Resource* src, UINT srcSub,
+                                        const D3D11_BOX* box) {
+    g_callCensus[CxCopySubRes].fetch_add(1, std::memory_order_relaxed);
+    if (should_record()) {
+        ++t_suppress;
+        Event& ev = push_event(EventKind::CopySubRes, _ReturnAddress(),
+                               _AddressOfReturnAddress());
+        ev.rtv0 = register_resource_raw(dst);
+        ev.srv0 = register_resource_raw(src);
+        ev.a = dstX;
+        ev.b = dstY;
+        --t_suppress;
+    }
+    g_origCopySubRes(ctx, dst, dstSub, dstX, dstY, dstZ, src, srcSub, box);
+}
+
+void STDMETHODCALLTYPE CopyResDetour(ID3D11DeviceContext* ctx, ID3D11Resource* dst,
+                                     ID3D11Resource* src) {
+    g_callCensus[CxCopyRes].fetch_add(1, std::memory_order_relaxed);
+    if (should_record()) {
+        ++t_suppress;
+        Event& ev = push_event(EventKind::CopyRes, _ReturnAddress(), _AddressOfReturnAddress());
+        ev.rtv0 = register_resource_raw(dst);
+        ev.srv0 = register_resource_raw(src);
+        --t_suppress;
+    }
+    g_origCopyRes(ctx, dst, src);
+}
+
+void STDMETHODCALLTYPE UpdateSubResDetour(ID3D11DeviceContext* ctx, ID3D11Resource* dst,
+                                          UINT dstSub, const D3D11_BOX* box, const void* data,
+                                          UINT rowPitch, UINT depthPitch) {
+    g_callCensus[CxUpdateSubRes].fetch_add(1, std::memory_order_relaxed);
+    if (should_record()) {
+        ++t_suppress;
+        Event& ev = push_event(EventKind::UpdateSubRes, _ReturnAddress(),
+                               _AddressOfReturnAddress());
+        ev.rtv0 = register_resource_raw(dst);
+        --t_suppress;
+    }
+    g_origUpdateSubRes(ctx, dst, dstSub, box, data, rowPitch, depthPitch);
+}
+
+void STDMETHODCALLTYPE ExecCmdListDetour(ID3D11DeviceContext* ctx, ID3D11CommandList* list,
+                                         BOOL restore) {
+    g_callCensus[CxExecCmdList].fetch_add(1, std::memory_order_relaxed);
+    if (should_record()) {
+        ++t_suppress;
+        Event& ev = push_event(EventKind::ExecCmdList, _ReturnAddress(),
+                               _AddressOfReturnAddress());
+        ev.a = restore ? 1 : 0;
+        --t_suppress;
+    }
+    g_origExecCmdList(ctx, list, restore);
+}
+
 // ---- dump writer --------------------------------------------------------
 
 const char* kind_name(EventKind k) {
@@ -503,6 +656,12 @@ const char* kind_name(EventKind k) {
         case EventKind::ClearRtv: return "ClearRTV";
         case EventKind::ClearDsv: return "ClearDSV";
         case EventKind::SetRenderTargets: return "SetRT";
+        case EventKind::DrawAuto: return "DrawAuto";
+        case EventKind::Dispatch: return "Dispatch";
+        case EventKind::CopySubRes: return "CopySubRes";
+        case EventKind::CopyRes: return "CopyRes";
+        case EventKind::UpdateSubRes: return "UpdateSubRes";
+        case EventKind::ExecCmdList: return "ExecCmdList";
     }
     return "?";
 }
@@ -512,14 +671,16 @@ bool is_draw(EventKind k) {
            k == EventKind::DrawIndexedInstanced || k == EventKind::DrawInstanced;
 }
 
+int g_dumpSeq = 0; // per-boot counter: consecutive-window dumps land in one second
+
 void write_dump() {
     wchar_t path[MAX_PATH];
     wchar_t base[MAX_PATH];
     if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return;
     SYSTEMTIME st{};
     GetLocalTime(&st);
-    swprintf_s(path, L"%s\\BioshockVR\\framedump_%02u%02u%02u.txt", base, st.wHour, st.wMinute,
-               st.wSecond);
+    swprintf_s(path, L"%s\\BioshockVR\\framedump_%02u%02u%02u_q%d.txt", base, st.wHour,
+               st.wMinute, st.wSecond, g_dumpSeq++);
 
     FILE* f = nullptr;
     if (_wfopen_s(&f, path, L"wt") != 0 || !f) {
@@ -531,11 +692,15 @@ void write_dump() {
             static_cast<unsigned>(g_events.size()), g_mode == 2 ? "full" : "lite",
             static_cast<unsigned>(g_exeBase));
     fprintf(f, "lifetime call census: DrawIndexed=%u Draw=%u DrawIdxInst=%u DrawInst=%u "
-               "SetRT=%u ClearRTV=%u ClearDSV=%u\n\n",
+               "SetRT=%u ClearRTV=%u ClearDSV=%u DrawAuto=%u Dispatch=%u CopySubRes=%u "
+               "CopyRes=%u UpdateSubRes=%u ExecCmdList=%u\n\n",
             g_callCensus[CxDrawIndexed].load(), g_callCensus[CxDraw].load(),
             g_callCensus[CxDrawIdxInst].load(), g_callCensus[CxDrawInst].load(),
             g_callCensus[CxSetRT].load(), g_callCensus[CxClearRtv].load(),
-            g_callCensus[CxClearDsv].load());
+            g_callCensus[CxClearDsv].load(), g_callCensus[CxDrawAuto].load(),
+            g_callCensus[CxDispatch].load(), g_callCensus[CxCopySubRes].load(),
+            g_callCensus[CxCopyRes].load(), g_callCensus[CxUpdateSubRes].load(),
+            g_callCensus[CxExecCmdList].load());
     BVR_LOG("[gfx] census: DrawIndexed=%u Draw=%u DrawIdxInst=%u DrawInst=%u SetRT=%u "
             "ClearRTV=%u ClearDSV=%u",
             g_callCensus[CxDrawIndexed].load(), g_callCensus[CxDraw].load(),
@@ -664,6 +829,19 @@ bool install(void** ctxVtable) {
         {14, reinterpret_cast<void*>(&MapDetour), reinterpret_cast<void**>(&g_origMap), "Map"},
         {15, reinterpret_cast<void*>(&UnmapDetour), reinterpret_cast<void**>(&g_origUnmap),
          "Unmap"},
+        // Session 19 (the HUD hunt): every other lane that can move pixels.
+        {38, reinterpret_cast<void*>(&DrawAutoDetour),
+         reinterpret_cast<void**>(&g_origDrawAuto), "DrawAuto"},
+        {41, reinterpret_cast<void*>(&DispatchDetour),
+         reinterpret_cast<void**>(&g_origDispatch), "Dispatch"},
+        {46, reinterpret_cast<void*>(&CopySubResDetour),
+         reinterpret_cast<void**>(&g_origCopySubRes), "CopySubresourceRegion"},
+        {47, reinterpret_cast<void*>(&CopyResDetour),
+         reinterpret_cast<void**>(&g_origCopyRes), "CopyResource"},
+        {48, reinterpret_cast<void*>(&UpdateSubResDetour),
+         reinterpret_cast<void**>(&g_origUpdateSubRes), "UpdateSubresource"},
+        {58, reinterpret_cast<void*>(&ExecCmdListDetour),
+         reinterpret_cast<void**>(&g_origExecCmdList), "ExecuteCommandList"},
     };
 
     int hooked = 0;
@@ -676,8 +854,8 @@ bool install(void** ctxVtable) {
             BVR_LOG("[gfx] inspector hook %s FAILED: %s", s.name, MH_StatusToString(status));
         }
     }
-    BVR_LOG("[gfx] frame inspector: %d/9 context slots hooked", hooked);
-    return hooked == 9;
+    BVR_LOG("[gfx] frame inspector: %d/15 context slots hooked", hooked);
+    return hooked == 15;
 }
 
 void set_cb_watch(const float* pattern, uint32_t patFirst, uint32_t patCount,
@@ -725,9 +903,15 @@ bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs) {
     return false;
 }
 
-void arm(int mode) {
+std::atomic<int> g_armCount{0}; // windows left to record (consecutive presents)
+
+void arm(int mode, int count) {
+    if (count < 1) count = 1;
+    if (count > 8) count = 8;
+    g_armCount.store(count, std::memory_order_relaxed);
     g_armMode.store(mode == 2 ? 2 : 1, std::memory_order_relaxed);
-    BVR_LOG("[gfx] frame dump armed (%s)", mode == 2 ? "full" : "lite");
+    BVR_LOG("[gfx] frame dump armed (%s, %d window%s)", mode == 2 ? "full" : "lite", count,
+            count == 1 ? "" : "s");
 }
 
 void on_present(IDXGISwapChain*) {
@@ -739,6 +923,15 @@ void on_present(IDXGISwapChain*) {
         g_resources.clear();
         g_nextResourceId = 0;
         g_lastCb0Captured = nullptr;
+        // Consecutive-window capture (session 19): a command armed at CalcView
+        // always opens on the SAME phase of the stereo pair, so a single
+        // window can never see what the other pair half draws (the HUD hunt
+        // hit exactly this). Roll straight into the next window.
+        if (g_armCount.fetch_sub(1, std::memory_order_relaxed) - 1 > 0) {
+            g_events.reserve(4096);
+            g_recording.store(true, std::memory_order_relaxed);
+            return;
+        }
     }
     int pending = g_armMode.exchange(0, std::memory_order_relaxed);
     if (pending) {

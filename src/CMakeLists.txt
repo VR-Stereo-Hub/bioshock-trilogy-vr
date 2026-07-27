@@ -19,6 +19,8 @@ add_library(bioshockvr SHARED
     core/debug/value_scan.h
     core/gfx/frame_inspector.cpp
     core/gfx/frame_inspector.h
+    core/gfx/hud_capture.cpp
+    core/gfx/hud_capture.h
     core/hooks/d3d11_hook.cpp
     core/hooks/d3d11_hook.h
     core/hooks/pattern_scan.cpp

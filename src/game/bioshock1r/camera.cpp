@@ -6,6 +6,7 @@
 
 #include "core/debug/value_scan.h"
 #include "core/gfx/frame_inspector.h"
+#include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
@@ -387,7 +388,12 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "membases") == 0) {
         bvr::value_scan::log_module_bases();
     } else if (strcmp(cmd, "dumpframe") == 0) {
-        bvr::frame_inspector::arm(strncmp(args, "full", 4) == 0 ? 2 : 1);
+        // dumpframe [full] [n] - n > 1 records consecutive present windows
+        // (both halves of a stereo pair; files suffixed _qN).
+        bool full = strncmp(args, "full", 4) == 0;
+        int count = 1;
+        sscanf_s(full ? args + 4 : args, " %d", &count);
+        bvr::frame_inspector::arm(full ? 2 : 1, count);
     } else if (strcmp(cmd, "vrinput") == 0) {
         input::handle_command(args); // M5 synthetic gamepad; logs its own echoes
     } else if (strcmp(cmd, "vraim") == 0) {
@@ -417,6 +423,25 @@ void apply_command(const char* cmd, const char* args) {
         bvr::vr::handle_pace_command(args); // M8 disconnect-stall guard
     } else if (strcmp(cmd, "vrmirror") == 0) {
         bvr::vr::handle_mirror_command(args); // M8 single-eye desktop mirror
+    } else if (strcmp(cmd, "vrhud") == 0) {
+        // Session 19 HUD capture: gameswf HUD redirected off the game frame
+        // (clean eyes) and shown as a floating quad in stereo.
+        if (strncmp(args, "force on", 8) == 0) {
+            bvr::hud::set_force(true);
+        } else if (strncmp(args, "force off", 9) == 0) {
+            bvr::hud::set_force(false);
+        } else if (strncmp(args, "on", 2) == 0) {
+            bvr::hud::set_enabled(true);
+        } else if (strncmp(args, "off", 3) == 0) {
+            bvr::hud::set_enabled(false);
+        } else {
+            unsigned hd = 0, rd = 0, lk = 0, iv = 0;
+            bvr::hud::get_counters(&hd, &rd, &lk, &iv);
+            BVR_LOG("[hud] status: %s force=%d | hudDraws=%u redirects=%u leaks=%u "
+                    "hudIntervals=%u (vrhud on|off|force on|force off|status)",
+                    bvr::hud::enabled() ? "ON" : "off", bvr::hud::force() ? 1 : 0, hd, rd,
+                    lk, iv);
+        }
     } else if (strcmp(cmd, "vrxhair") == 0) {
         // M8 part 2: the flat-screen crosshair. Default HIDDEN; "on" re-shows.
         if (strncmp(args, "on", 2) == 0) {

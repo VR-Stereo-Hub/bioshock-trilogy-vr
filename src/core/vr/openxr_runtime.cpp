@@ -6,6 +6,7 @@
 
 #include "core/vr/openxr_runtime.h"
 
+#include "core/gfx/hud_capture.h"
 #include "core/util/log.h"
 
 #ifdef BVR_WITH_OPENXR
@@ -1083,6 +1084,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // convention AER validated in-headset (depth not inverted).
     int srSign = sr_pop_eye();
     bool srFrame = projectionMode && srSign != 0;
+    // HUD capture gate (session 19): the gameswf redirect runs only while
+    // stereo gameplay frames flow (menus stop the eye tags -> gate drops).
+    bvr::hud::set_gate(srFrame);
 
     // Mirror, left half: snapshot the LEFT eye before anything else runs
     // (read-only - the XR eye capture below is unaffected). The right half
