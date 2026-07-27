@@ -905,6 +905,12 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    at yaw 0/30/60/80/90/100/120 from the facing, measure rendered-barrel
    vs target per step, find the exact cull angle both directions. If the
    error grows ~linearly, A/B lockgain 0.9 vs 1.0 at the worst angle.
+   THE QUEUE AFTER SESSION 17 (user's call, part 4): the M8 QUICK PHASE -
+   first GitHub release (zip + install/use README) and the grip-switch
+   wrong-controller bug (switching hands via GRIP loads the incoming
+   hand's model on the wrong controller - the hand map only learns from
+   the trigger-keyed fire seams; spec in ROADMAP M8). Then M8's HUD
+   usability (health/EVE visible, keybind audit).
 2. **The retired scale hunt**: worldScale 100 solved the size percept; the
    engine-lever negatives stay documented (ENGINE_NOTES session 16 part 2)
    and the world/viewmodel scale SPLIT design is parked in M9. Do NOT
@@ -1024,6 +1030,15 @@ and it resumes.
   AND the rig culling past ~90 deg (all keyed to the body facing).
   Session-17 focus: BODY-FOLLOWS-HEAD yaw transfer (rotate the body under
   an unchanged camera each frame) - fix spec in Next steps item 1.
+- New bug report: switching hands via GRIP (instead of trigger) loads the
+  incoming hand's model on the WRONG controller - consistent with the hand
+  map learning attribution only from the trigger-keyed fire seams; a
+  grip-initiated switch never crosses them. Queued in the M8 quick phase.
+- ROADMAP restructured (user's calls): selection wheels -> post-v1 (the
+  current switching UI is good enough); M8 = release quick phase (first
+  GitHub release + the grip bug) then HUD usability (health/EVE visible,
+  keybind audit; the gameswf redirect moved up from M9); M9 = comfort +
+  better overlay/config UI polish + release follow-up.
 - THE NON-REGRESSION GATE (user's explicit requirement, added same day):
   the transfer must NOT bring back the-hand-follows-the-head. The
   controller->world mapping composes through the body yaw, so a naive

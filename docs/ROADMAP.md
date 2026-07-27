@@ -333,17 +333,38 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       hand moves is IK arms (post-v1 below) - the user wants this captured as a post-polish
       focus item.*
 
-## M8 - Selection wheels (~1–2 sessions)
+## M8 - Release quick phase + HUD usability (~1–2 sessions)
 
-- [ ] Controller-anchored quad wheels: weapons (right grip), plasmids (left grip)
-- [ ] Inventory via adapter queryState (interim: static list); select → console exec / synthetic
-      input; haptic tick
-- [ ] **Done when:** HL:Alyx-style - hold, flick, release to switch weapon and plasmid.
+> **Restructured 2026-07-27 (session 16 part 4, user's call):** the selection wheels moved
+> to post-v1 (the current switching UI is good enough); in their place, a QUICK RELEASE
+> phase right after session 17, then HUD usability.
 
-## M9 - HUD capture + comfort + release polish (~2–3 sessions)
+**Quick phase (immediately after session 17):**
+- [ ] **First GitHub release**: tagged build + release zip (the two DLLs) + README/INSTALL
+      section covering how to install (xinput1_3.dll proxy into `Build\Final`, the
+      itsloopyo-mod conflict note, Virtual Desktop/VDXR setup) and how to use (VR PRESET 1
+      button, the tuning sliders, vrpreset save).
+- [ ] **Hand-switch wrong-controller bug (user report 2026-07-27)**: switching hands via
+      GRIP instead of trigger loads the incoming hand's model on the WRONG controller
+      (e.g. the in-game right hand rides the left controller). Likely cause: the hand map
+      learns object-to-hand attribution ONLY from the trigger-keyed fire seams ("learned
+      RIGHT-hand object"); a grip-initiated switch never crosses those seams, so the drive
+      keeps the stale attribution. Fix direction: learn from the switch path too, or read
+      the engine's own which-hand-is-raised state instead of inferring from triggers.
 
-- [ ] gameswf HUD draws redirected to offscreen RT → floating quad during stereo gameplay
+**HUD usability:**
+- [ ] See health + EVE clearly in VR: gameswf HUD draws redirected to offscreen RT → a
+      floating quad during stereo gameplay (moved up from M9 - it IS the "better HUD" work)
+- [ ] Keybind audit on Quest 3 Touch: every needed action reachable and correct (the M5
+      "rebinds wanted later" list gets resolved here)
+- [ ] **Done when:** a friend can install from the release zip, press VR PRESET 1, see
+      their health/EVE, and every binding they need works.
+
+## M9 - Comfort + UI/config + release polish (~2–3 sessions)
+
 - [ ] Snap turn, height/seated recenter, optional vignette
+- [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
+      only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
 - [ ] **World/viewmodel scale SPLIT (parked here 2026-07-27, session 16 part 3, user's
       call):** worldScale now defaults 100 (the user's in-headset calibration - viewmodel
       size AND distance finally read right; the world reads ~half size in trade, judged
@@ -375,8 +396,10 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
       round trip. Likely state interaction between the vr::enabled/session pacing flag and
       the stereo capture path (sr tag ring / pair pacing holding stale state, or camera-mode
       request vs g_enabled) - map the three toggles' state machine when fixing.
-- [ ] Config surface cleanup; README install guide; GitHub release zip
-- [ ] **Done when:** a non-developer installs from the release zip and plays with full HUD.
+- [ ] Config surface cleanup + release-notes refresh (the FIRST release ships in M8's quick
+      phase; this is the polished follow-up)
+- [ ] **Done when:** a non-developer installs from the current release zip and plays with
+      full HUD and no developer knowledge.
 
 ## M10 - BioShock 2 Remastered adapter (~2–4 sessions)
 
@@ -386,6 +409,10 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
 
 ## Post-v1 backlog (not scheduled)
 
+- **Selection wheels** (moved here 2026-07-27, session 16 part 4, user's call - the
+  existing switching UI is good enough for v1): controller-anchored quad wheels for
+  weapons (right grip) and plasmids (left grip), HL:Alyx-style hold-flick-release;
+  inventory via adapter queryState, select via console exec / synthetic input, haptic tick.
 - Asymmetric per-eye projection matrices (reclaim wasted pixels)
 - Wrist-anchored HUD elements (health/EVE)
 - **Hand IK arms** (user-requested post-polish focus, 2026-07-25): articulated forearm/elbow
