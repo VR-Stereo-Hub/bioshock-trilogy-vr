@@ -130,16 +130,17 @@ to VR conventions (jump on the lower-right button) instead of passing through.
 |---|---|---|
 | Left thumbstick | LS | move |
 | Right thumbstick | RS | look (Y zeroed during VR gameplay - the HMD owns pitch; `vrinput pitchkill off` restores) |
-| Right stick flick up / down | DPAD_UP / DPAD_DOWN pulse | ammo-type cycle (suppressed while a grip is held - the radials read the stick) |
+| Right stick, CLICK HELD + push up/down/left | DPAD_UP / DOWN / LEFT pulse | ammo-slot select (each dpad direction selects its slot; turning suppressed while held; grips suppress it - the radials read the stick) |
+| Right stick, quick click-tap | RS click pulse | zoom (unchanged; only the tap is delayed past the select window) |
 | Right trigger | RT | fire weapon |
 | Left trigger | LT | fire plasmid |
 | Right grip (squeeze, 0.70/0.55 hysteresis) | RB | next weapon / weapon radial on hold |
 | Left grip (same) | LB | next plasmid / plasmid radial on hold |
-| A | Y | jump |
-| B | A | use / interact |
+| A | A | use / interact / menu confirm (headset verdict: A stays use) |
+| B | Y | jump |
 | X | X | reload / hack / inject EVE |
 | Y | B | first-aid (med hypo) |
-| Stick clicks | LS / RS click | crouch / zoom |
+| Left stick click | LS click | crouch |
 | Left menu, short press (<500 ms, pulsed on release) | START | pause menu |
 | Left menu, hold (>=500 ms) | BACK | map/objectives |
 - **Lane 2 - engine-level**: console-exec dispatcher for discrete actions (weapon/plasmid

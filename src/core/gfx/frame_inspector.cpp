@@ -479,11 +479,15 @@ void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UI
     }
     // HUD redirect (session 19): a gameswf-classified draw gets our RT bound
     // instead - through the ORIGINAL SetRT so the substitution does not roll
-    // the classifier's own binding state.
+    // the classifier's own binding state. Our DSV rides along (flash masks
+    // stencil against it) and the blend state swaps to its alpha-corrected
+    // variant (checked per draw - gameswf changes states mid-stream).
     if (t_suppress == 0) {
         if (ID3D11RenderTargetView* sub = bvr::hud::on_draw(ctx)) {
             ++t_suppress;
-            g_origOMSetRenderTargets(ctx, 1, &sub, nullptr);
+            ID3D11DepthStencilView* dsv = bvr::hud::capture_dsv();
+            g_origOMSetRenderTargets(ctx, 1, &sub, dsv);
+            bvr::hud::fix_blend_alpha(ctx);
             --t_suppress;
         }
     }

@@ -96,6 +96,56 @@ right-trigger pulls fired, HUD classifier live with redirects 0 while
 ungated, dumps 8->8. The vrpreset.ini gained hudQuadDistM/WidthM/UpM keys
 (defaults 1.30/1.25/-0.10 m) - the user's live ini keeps every old key.
 
+### Session 19 part 2 - IN-HEADSET VERDICT + the feedback round (same day)
+
+**THE HEADSET RUN PASSED: "I tested and it looks amazing... there's just some
+small fixes."** No regression (item 1 perfect); HUD panel "very good...
+amazing"; ghost hands "perfect... exactly as intended"; monitor perfect; and
+THE WRENCH WORKS with the pitch kill alone - the HMD-pitch body drive is NOT
+needed (dropped from session 20). Four fixes came back and ALL FOUR ARE DONE
+FLAT the same night:
+
+**1. Menus were transparent on the quad -> gameswf's blend states accumulate
+GARBAGE COVERAGE in the alpha channel** (they blend alpha like color). Every
+blend state seen on a redirected draw now gets a cached variant with the
+alpha ops corrected to over-composite (ONE / INV_SRC_ALPHA - rgb ops
+untouched), so true coverage accumulates and the luminance repair dropped to
+a 0.35 safety floor. Flat: the pause menu's cityscape panels render SOLID
+black with the yellow glow correct - the original art.
+
+**2. The odometer digit strips sprawled unclipped (user's screenshot) ->
+flash MASKS are STENCIL-based and the redirect bound no DSV.** The capture
+RT now owns a D24S8 depth-stencil, bound with every substitution and cleared
+per interval. Flat: the pause menu's money (0451) and ADAM (2580) counters
+render CLIPPED to their windows - strips gone.
+
+**3. Buttons revised by feel: Touch A goes BACK to use/loot/menu-confirm
+(it is the game's confirm button - looting and menus were unintuitive
+remapped), jump moves to B.** X reload / Y heal stay.
+
+**4. Ammo select redesigned - three types, three directions: HOLD the
+right-stick CLICK, then push UP / DOWN / LEFT to select that slot (the dpad
+directions each SELECT a slot, they do not cycle - which is why up/down
+flicks could only reach two). Turning is suppressed while the click is held;
+a QUICK click-tap with no push still zooms** (the click's original owner -
+the tap is just delayed past the 400 ms select window). Flick-without-click
+is gone entirely, which also removes any accidental-flick worry.
+
+**FPS question measured flat: the whole HUD capture costs ~4% of an
+UNCAPPED flat frame (336 vs 349 presents/s = ~0.11 ms/frame) - under 1% of
+a headset frame budget.** The perceived hit is most likely the zone or the
+Debug build; `vrhud off` is the live in-headset A/B if it recurs. A
+per-present resource-desc cache also removed most of the classifier's COM
+churn this round. Queued to M9 by the user: the WRENCH SWING GESTURE
+(velocity-triggered melee - they play-tested the timing manually and it
+felt right).
+
+**RE-VERIFY IN-HEADSET (quick, 5 items):** (1) pause menu + a vending
+machine: opaque panels, counters clipped; (2) A loots/confirms menus, B
+jumps; (3) ammo: hold right-stick click + up/down/left selects the right
+slot each time, quick tap still zooms, no selects while turning normally;
+(4) FPS feel vs `vrhud off` in the same spot; (5) nothing else moved.
+
 ## Previous state (2026-07-27, session 18 - M8 QUICK PHASE CODE-COMPLETE FLAT: both release blockers fixed, per-hand offsets, grip-switch fix, release zip staged)
 
 **Branch `m8-release-quick-phase` (from main at PR #2's merge). Everything below
@@ -1229,10 +1279,10 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    defaultproperties (dump.ps1, ~40% fail rate), then zero the bob params
    via the SET seam (re-assert like vrxhair); toggle + armed by PRESET 1.
 
-   Watch also: whether the wrench melee needs the HMD-pitch body drive
-   (checklist question this session decides it); map-pan-under-pause if the
-   user reports the right stick dead there (the pitchkill gate is strict-
-   view, which stays true while paused).
+   ANSWERED by the session-19 headset run: the wrench works with the pitch
+   kill alone - the HMD-pitch body drive is NOT needed and is dropped. Watch
+   only: map-pan-under-pause if the user ever reports the right stick dead
+   there (the pitchkill gate is strict-view, which stays true while paused).
 
    FOLLOW-ONS QUEUED BEHIND THIS WORK (user's call 2026-07-28, detailed in
    ROADMAP M9): off-hand tracking (`vrhands offhand track` - drive the
@@ -1563,6 +1613,27 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-28 - Session 19 part 2 (headset PASSED; the four feedback fixes flat the same night)
+
+- The user's in-headset verdict: "looks amazing" - no regression, HUD panel
+  and ghost-hand removal called out as perfect, monitor perfect, and the
+  WRENCH passed with the pitch kill alone (the HMD-pitch body drive is
+  dropped from session 20).
+- Feedback fixes, all flat-green: menu transparency root-caused to gameswf
+  blend states accumulating garbage alpha coverage -> cached alpha-corrected
+  blend-state variants per redirected draw (lum repair down to a 0.35
+  floor); the sprawling odometer strips root-caused to stencil-based flash
+  MASKS with no DSV bound -> the capture RT owns a D24S8 now (pause-menu
+  counters render clipped, panels opaque - both verified on the window
+  composite); Touch A back to use/confirm with jump on B; ammo select
+  redesigned as right-stick CLICK-HELD + up/down/left (three slots, three
+  directions - the dpad SELECTS slots, it does not cycle), quick tap still
+  zooms, bare flicks removed.
+- FPS measured flat: the full capture costs ~4% of an uncapped flat frame
+  (~0.11 ms) - the perceived dip is likely zone/Debug-build. Desc cache
+  added against the classifier's COM churn. Wrench swing gesture queued to
+  M9 (user's call). Docs + tables updated; re-verify list in Current state.
 
 ### 2026-07-28 - Session 19 (M8 COMPLETE flat: HUD quad, VR bindings + ammo flicks, hide-inactive, stick-pitch kill; item 4 deferred whole to session 20)
 

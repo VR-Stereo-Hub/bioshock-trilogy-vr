@@ -33,10 +33,17 @@ namespace bvr::hud {
 void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
               ID3D11DepthStencilView* dsv);
 void on_draw_indexed();
-// Returns the RTV to substitute for this draw (bind it, no DSV), or null to
-// leave the game's binding alone. `ctx` is used to lazily create the RT and
-// to inspect srv0 for the tonemap check.
+// Returns the RTV to substitute for this draw (bind it together with
+// capture_dsv() - gameswf masks stencil against it), or null to leave the
+// game's binding alone. `ctx` is used to lazily create the RT and to inspect
+// srv0 for the tonemap check.
 ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx);
+// Our depth-stencil for redirected draws (flash masks are stencil-based).
+ID3D11DepthStencilView* capture_dsv();
+// Swap the bound blend state for its alpha-corrected variant (gameswf states
+// accumulate garbage coverage in the alpha channel; the variant fixes only
+// the alpha ops). Call after binding the substitution, before the draw.
+void fix_blend_alpha(ID3D11DeviceContext* ctx);
 
 // Present boundary (render thread, called at the END of the present detour,
 // after every consumer of the RT ran): clears the RT for the next interval

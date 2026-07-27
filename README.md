@@ -52,9 +52,9 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 | Right grip | switch/cycle weapon (hold for the radial) |
 | Left grip | switch/cycle plasmid (hold for the radial) |
 | Left stick | move (crouch on click) |
-| Right stick | turn; **flick up/down = switch ammo type**; zoom on click |
-| A | jump |
-| B | use / interact |
+| Right stick | turn; quick click = zoom; **hold click + push up/down/left = select ammo type** |
+| A | use / interact (and menu confirm) |
+| B | jump |
 | X | reload / hack / inject EVE |
 | Y | first-aid kit |
 | Left menu button | pause (hold: map/objectives) |

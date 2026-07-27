@@ -22,12 +22,14 @@ VSOut vs_main(uint id : SV_VertexID) {
 float4 ps_main(VSOut i) : SV_Target {
     return tex0.Sample(samp0, i.uv);
 }
-// Alpha repair: gameswf leaves garbage in dest alpha; rgb over a zero clear
-// is premultiplied, so luminance approximates coverage.
+// Alpha safety floor: coverage now accumulates correctly (the redirect swaps
+// gameswf blend states for alpha-corrected variants), so the luminance term
+// is only a low floor against any state that slips through - bright pixels
+// can never be fully invisible.
 float4 ps_process(VSOut i) : SV_Target {
     float4 c = tex0.Sample(samp0, i.uv);
     float lum = dot(c.rgb, float3(0.299, 0.587, 0.114));
-    c.a = max(c.a, saturate(lum * 2.5));
+    c.a = max(c.a, saturate(lum * 0.35));
     return c;
 }
 )";

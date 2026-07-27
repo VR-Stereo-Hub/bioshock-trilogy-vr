@@ -483,6 +483,12 @@ fixed or the release waits:**
       (per-weapon foregrip offsets; the weapon skeletons may carry foregrip bones).
       Per-weapon engage radius + offsets tuned by eye.
 
+- [ ] **Wrench swing gesture (user's call 2026-07-28)**: trigger the melee hit from the
+      physical SWING instead of (or in addition to) the trigger - velocity threshold on
+      the right controller while the wrench is equipped -> pulse RT, cooldown against
+      double-fires. The user play-tested timing the trigger to their swing and it felt
+      right, so the gesture only needs to reproduce that timing. Hand poses per frame
+      already exist (velocity = dP/dt); keep the trigger working as-is.
 - [ ] Snap turn, height/seated recenter, optional vignette
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)

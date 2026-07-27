@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <map>
 
 namespace bvr::hud {
 namespace {
@@ -28,6 +29,22 @@ ID3D11ShaderResourceView* g_srv2 = nullptr;
 UINT g_texW = 0, g_texH = 0;
 bool g_processedThisInterval = false;
 
+// Our own depth-stencil for the redirected draws (session 19, headset round):
+// gameswf implements flash MASKS via stencil - redirecting with no DSV left
+// the vending/pause odometer digit strips unclipped (user's screenshot).
+// Cleared each interval; the mask write-then-test is self-contained.
+ID3D11Texture2D* g_depthTex = nullptr;
+ID3D11DepthStencilView* g_dsv = nullptr;
+
+// Alpha-corrected variants of the gameswf blend states (session 19, headset
+// round): gameswf's states blend the ALPHA channel like the color channel
+// (a*a + (1-a)*dst), which accumulates garbage coverage - dark opaque menu
+// panels ended up transparent on the quad. Each state seen on a redirected
+// draw gets a variant with SrcBlendAlpha=ONE, DestBlendAlpha=INV_SRC_ALPHA
+// (correct over-composite coverage), rgb ops untouched. Keyed by the
+// original state pointer; variants are ours and released with the RT.
+std::map<ID3D11BlendState*, ID3D11BlendState*> g_blendVariants;
+
 // ---- per-interval classifier state ----------------------------------------
 // Current binding (tracked at SetRT; resources are identity keys only).
 ID3D11Resource* g_curRt = nullptr;
@@ -35,7 +52,6 @@ bool g_curRtLdr = false;      // desc matches a HUD-capable target
 bool g_curDsvBound = false;
 UINT g_curW = 0, g_curH = 0;
 DXGI_FORMAT g_curFmt = DXGI_FORMAT_UNKNOWN;
-bool g_substituted = false;   // our RTV is currently bound instead
 
 // Scene-RT vote: the resource hosting the most DSV-bound DrawIndexed calls.
 struct Vote { ID3D11Resource* res; unsigned n; };
@@ -71,12 +87,17 @@ bool ensure_rt(ID3D11DeviceContext* ctx, UINT w, UINT h, DXGI_FORMAT fmt) {
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    D3D11_TEXTURE2D_DESC dd = td;
+    dd.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
     bool ok = SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_tex)) &&
               SUCCEEDED(dev->CreateRenderTargetView(g_tex, nullptr, &g_rtv)) &&
               SUCCEEDED(dev->CreateShaderResourceView(g_tex, nullptr, &g_srv)) &&
               SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_tex2)) &&
               SUCCEEDED(dev->CreateRenderTargetView(g_tex2, nullptr, &g_rtv2)) &&
-              SUCCEEDED(dev->CreateShaderResourceView(g_tex2, nullptr, &g_srv2));
+              SUCCEEDED(dev->CreateShaderResourceView(g_tex2, nullptr, &g_srv2)) &&
+              SUCCEEDED(dev->CreateTexture2D(&dd, nullptr, &g_depthTex)) &&
+              SUCCEEDED(dev->CreateDepthStencilView(g_depthTex, nullptr, &g_dsv));
     dev->Release();
     if (!ok) {
         release_resources();
@@ -87,7 +108,8 @@ bool ensure_rt(ID3D11DeviceContext* ctx, UINT w, UINT h, DXGI_FORMAT fmt) {
     g_texH = h;
     const float clear[4] = {0, 0, 0, 0};
     ctx->ClearRenderTargetView(g_rtv, clear);
-    BVR_LOG("[hud] capture RT created %ux%u fmt=%d", w, h, fmt);
+    ctx->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+    BVR_LOG("[hud] capture RT created %ux%u fmt=%d (+D24S8 for gameswf masks)", w, h, fmt);
     return true;
 }
 
@@ -99,9 +121,20 @@ bool armed() {
 
 } // namespace
 
+// Per-present cache of resource -> HUD-capable desc (the same few RTs rebind
+// ~200x per interval; QI+GetDesc per bind showed up as avoidable per-frame
+// COM churn in the session-19 FPS pass).
+struct DescCacheEntry {
+    ID3D11Resource* res;
+    bool ldr;
+    UINT w, h;
+    DXGI_FORMAT fmt;
+};
+DescCacheEntry g_descCache[8] = {};
+int g_descCacheCount = 0;
+
 void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
               ID3D11DepthStencilView* dsv) {
-    g_substituted = false; // any bind from the game supersedes our substitution
     g_curRt = nullptr;
     g_curRtLdr = false;
     g_curDsvBound = dsv != nullptr;
@@ -110,6 +143,17 @@ void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
     rtvs[0]->GetResource(&res);
     if (!res) return;
     g_curRt = res;
+    res->Release(); // identity only from here on
+
+    for (int i = 0; i < g_descCacheCount; ++i) {
+        if (g_descCache[i].res == res) {
+            g_curRtLdr = g_descCache[i].ldr;
+            g_curW = g_descCache[i].w;
+            g_curH = g_descCache[i].h;
+            g_curFmt = g_descCache[i].fmt;
+            return;
+        }
+    }
     ID3D11Texture2D* tex = nullptr;
     if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
         D3D11_TEXTURE2D_DESC d{};
@@ -125,7 +169,14 @@ void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
                      (d.BindFlags & D3D11_BIND_SHADER_RESOURCE);
         tex->Release();
     }
-    res->Release(); // identity only from here on
+    if (g_descCacheCount < static_cast<int>(_countof(g_descCache))) {
+        DescCacheEntry& e = g_descCache[g_descCacheCount++];
+        e.res = res;
+        e.ldr = g_curRtLdr;
+        e.w = g_curW;
+        e.h = g_curH;
+        e.fmt = g_curFmt;
+    }
 }
 
 void on_draw_indexed() {
@@ -180,8 +231,9 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
     if (!armed()) return nullptr;
     if (!ensure_rt(ctx, g_curW, g_curH, g_curFmt)) return nullptr;
     g_cRedirects.fetch_add(1, std::memory_order_relaxed);
-    if (g_substituted) return nullptr; // already bound from a previous draw
-    g_substituted = true;
+    // Returned for EVERY redirected draw - the caller re-binds each time
+    // (cheap, self-healing against mid-stream game binds) and swaps the
+    // blend state to its alpha-corrected variant.
     return g_rtv;
 }
 
@@ -191,14 +243,17 @@ void on_present(ID3D11DeviceContext* ctx) {
     if (g_hudThisInterval && g_rtv && ctx) {
         const float clear[4] = {0, 0, 0, 0};
         ctx->ClearRenderTargetView(g_rtv, clear);
+        if (g_dsv)
+            ctx->ClearDepthStencilView(g_dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+                                       1.0f, 0);
     }
     g_hudThisInterval = false;
     g_processedThisInterval = false;
     g_hudTarget = nullptr;
-    g_substituted = false;
     g_curRt = nullptr;
     g_curRtLdr = false;
     memset(g_votes, 0, sizeof g_votes);
+    g_descCacheCount = 0;
 }
 
 // Consumers (eye-capture-adjacent composite, quad copy) run in the present
@@ -251,6 +306,52 @@ void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
     if (intervalsWithHud) *intervalsWithHud = g_cIntervals.load(std::memory_order_relaxed);
 }
 
+ID3D11DepthStencilView* capture_dsv() {
+    return g_dsv;
+}
+
+void fix_blend_alpha(ID3D11DeviceContext* ctx) {
+    ID3D11BlendState* cur = nullptr;
+    FLOAT bf[4] = {};
+    UINT mask = 0xFFFFFFFF;
+    ctx->OMGetBlendState(&cur, bf, &mask);
+    // Already one of our variants (consecutive redirected draws with no
+    // game state change in between): nothing to do.
+    for (const auto& [orig, variant] : g_blendVariants) {
+        if (variant == cur) {
+            cur->Release();
+            return;
+        }
+    }
+    auto it = g_blendVariants.find(cur);
+    ID3D11BlendState* variant = nullptr;
+    if (it != g_blendVariants.end()) {
+        variant = it->second;
+    } else {
+        D3D11_BLEND_DESC d{};
+        if (cur) {
+            cur->GetDesc(&d);
+        } else {
+            // Default state: blending off - output alpha is already the
+            // shader's (correct coverage); still force the alpha write on.
+            d.RenderTarget[0].BlendEnable = FALSE;
+        }
+        d.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        d.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        d.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        d.RenderTarget[0].RenderTargetWriteMask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
+        ID3D11Device* dev = nullptr;
+        ctx->GetDevice(&dev);
+        if (dev) {
+            if (SUCCEEDED(dev->CreateBlendState(&d, &variant)))
+                g_blendVariants.emplace(cur, variant);
+            dev->Release();
+        }
+    }
+    if (variant) ctx->OMSetBlendState(variant, bf, mask);
+    if (cur) cur->Release();
+}
+
 void release_resources() {
     if (g_srv) { g_srv->Release(); g_srv = nullptr; }
     if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
@@ -258,6 +359,11 @@ void release_resources() {
     if (g_srv2) { g_srv2->Release(); g_srv2 = nullptr; }
     if (g_rtv2) { g_rtv2->Release(); g_rtv2 = nullptr; }
     if (g_tex2) { g_tex2->Release(); g_tex2 = nullptr; }
+    if (g_dsv) { g_dsv->Release(); g_dsv = nullptr; }
+    if (g_depthTex) { g_depthTex->Release(); g_depthTex = nullptr; }
+    for (auto& [orig, variant] : g_blendVariants)
+        if (variant) variant->Release();
+    g_blendVariants.clear();
     g_texW = g_texH = 0;
     g_processedThisInterval = false;
 }
