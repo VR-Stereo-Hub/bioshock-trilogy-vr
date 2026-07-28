@@ -92,6 +92,16 @@ void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
 bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs);
 bool fov_mismatch();
 
+// Session 22 per-kind routing:
+//   screen_only   true while intervals are PURE gameswf with the world pass
+//                 absent (hack minigame, loading screens, FMV-class screens -
+//                 dump-proven 0 DrawIndexed). The VR runtime drops these to
+//                 the readable quad screen. Hysteresis'd; transitions logged.
+//   postfx_count  lifetime count of post-tonemap draws left IN-FRAME because
+//                 they sample a backbuffer-sized texture (alcohol blur etc.).
+bool screen_only();
+unsigned postfx_count();
+
 // Free device objects (device loss / resize; recreated lazily).
 void release_resources();
 

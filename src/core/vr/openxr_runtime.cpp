@@ -144,9 +144,11 @@ std::atomic<uint64_t> g_gameplayView{0};
 std::atomic<bool> g_cineEnabled{true};
 std::atomic<bool> g_cineActive{false}; // written by the render thread only
 // "vrcine mode stereo": during fov-mismatch scenes keep the projection and
-// claim the MEASURED fov instead of the option (stereo cinematics; the
-// strict-false/stale legs still drop to the quad). Default off = quad.
-std::atomic<bool> g_cineStereo{false};
+// claim the MEASURED fov instead of the option (stereo cinematics with
+// head-look; screen-only and strict-false/stale intervals still drop to the
+// quad - a 2D board has no stereo content). DEFAULT per the user's call
+// 2026-07-29: stereo; "vrcine mode quad" / the overlay toggle is the A/B.
+std::atomic<bool> g_cineStereo{true};
 int g_cineStreak = 0;                  // render thread only (hysteresis)
 std::atomic<uint32_t> g_cineEnters{0}, g_cineExits{0}, g_cinePresents{0};
 constexpr uint64_t kCineStaleMs = 300;
@@ -1253,8 +1255,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
         bool strict = (pv & 1) != 0;
         bool stale = stampMs == 0 || GetTickCount64() - stampMs > kCineStaleMs;
         bool fovMm = bvr::hud::fov_mismatch();
+        bool screenOnly = bvr::hud::screen_only(); // hack/loading/FMV screens
         bool stereoCine = g_cineStereo.load(std::memory_order_relaxed);
-        bool wantCine = stale || !strict || (fovMm && !stereoCine);
+        bool wantCine = stale || !strict || screenOnly || (fovMm && !stereoCine);
         bool active = g_cineActive.load(std::memory_order_relaxed);
         if (wantCine != active) {
             if (++g_cineStreak >= kCineHysteresis) {
@@ -1265,9 +1268,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     g_cineEnters.fetch_add(1, std::memory_order_relaxed);
                 else
                     g_cineExits.fetch_add(1, std::memory_order_relaxed);
-                BVR_LOG("xr: cinematic quad %s (strict=%d stale=%d fovMismatch=%d)",
+                BVR_LOG("xr: cinematic quad %s (strict=%d stale=%d fovMismatch=%d "
+                        "screenOnly=%d)",
                         active ? "ON" : "off", strict ? 1 : 0, stale ? 1 : 0,
-                        fovMm ? 1 : 0);
+                        fovMm ? 1 : 0, screenOnly ? 1 : 0);
             }
         } else {
             g_cineStreak = 0;
@@ -1612,8 +1616,14 @@ void draw_debug_ui() {
         if (ImGui::Checkbox("SR pair pacing (one waitFrame per eye pair)", &pair))
             g_srPairPacing.store(pair, std::memory_order_relaxed);
         bool cine = g_cineEnabled.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Cinematic fallback (cutscenes on the big screen)", &cine))
+        if (ImGui::Checkbox("Cinematic auto-detect (cutscenes/screens)", &cine))
             g_cineEnabled.store(cine, std::memory_order_relaxed);
+        if (cine) {
+            bool stereoC = g_cineStereo.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Cinematics as stereo projection (off = big screen)",
+                                &stereoC))
+                g_cineStereo.store(stereoC, std::memory_order_relaxed);
+        }
         if (aer) {
             ImGui::SameLine();
             bool swap = g_aerSwapEyes.load(std::memory_order_relaxed);
@@ -1868,7 +1878,7 @@ void handle_cine_command(const char* args) {
         bool haveFov = bvr::hud::fov_watch(&t, &tv, &fovAge);
         BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
                 "published strict=%d age=%llums | rendered tanH=%.4f age=%llums "
-                "mismatch=%d (vrcine on|off|mode quad|mode stereo|status)",
+                "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|status)",
                 g_cineEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_cineStereo.load(std::memory_order_relaxed) ? "stereo" : "quad",
                 g_cineActive.load(std::memory_order_relaxed) ? 1 : 0,
@@ -1878,7 +1888,7 @@ void handle_cine_command(const char* args) {
                 pv ? static_cast<int>(pv & 1) : -1,
                 static_cast<unsigned long long>(ageMs),
                 haveFov ? t : 0.0f, haveFov ? fovAge : 0,
-                bvr::hud::fov_mismatch() ? 1 : 0);
+                bvr::hud::fov_mismatch() ? 1 : 0, bvr::hud::screen_only() ? 1 : 0);
     }
 }
 

@@ -63,6 +63,23 @@ void last_composed_triggers(uint8_t* lt, uint8_t* rt);
 // fix latches hand attribution from these too.
 void last_composed_bumpers(bool* lb, bool* rb);
 
+// Session 22: the FINAL composed sticks the game consumed (post merge/
+// pitchkill/turn controls) - the movement-wonkiness instrument reads them.
+void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);
+
+// Session 22 turn controls (persisted via vrpreset.ini; overlay sliders).
+// Smooth scale multiplies composed stick X under the vr-gameplay gate; snap
+// mode consumes stick-X edges into discrete steps the camera adapter drains
+// with take_snap_steps() and applies to the recenter composite (the body
+// transfer carries the body - camera.cpp).
+float turn_scale();
+void set_turn_scale(float s);
+bool snap_turn();
+void set_snap_turn(bool on);
+float snap_angle_deg();
+void set_snap_angle_deg(float d);
+int take_snap_steps(); // +right/-left steps queued since the last drain
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping
@@ -74,6 +91,7 @@ bool hijack_import_slot(void** slot);
 // Seam command handler: args after the "vrinput" verb (game thread).
 //   on | off | status
 //   pitchkill on|off|status
+//   turnscale <0.1..4> | snap on|off | snapangle <deg> | sticklog on|off
 //   test stick l|r <x> <y> [holdMs]   raw -32768..32767
 //   test trig  l|r <0..255> [holdMs]
 //   test press <A|B|X|Y|LB|RB|START|BACK|LS|RS|DU|DD|DL|DR> [holdMs]

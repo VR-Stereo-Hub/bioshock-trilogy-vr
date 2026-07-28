@@ -86,6 +86,64 @@ std::atomic<unsigned long long> g_fovStampMs{0};
 std::atomic<bool> g_fovMismatchOn{false};
 int g_fovMismatchStreak = 0;
 
+// ---- Session 22: per-kind routing state -------------------------------------
+// (a) Screen-only intervals: the hack minigame and loading screens draw PURE
+// gameswf with the world pass completely absent (dump-proven: 0 DrawIndexed,
+// 322/87 swf draws) - nothing classifies, so today they render in-frame
+// across the whole projection FOV. The detector below (swf draws with no
+// scene leader) publishes to the VR runtime, which drops those intervals to
+// the readable quad screen regardless of the cinematic stereo/quad mode.
+// (c) In-frame post effects: the alcohol-blur composite is a post-tonemap
+// non-indexed draw from the engine's post path sampling a BACKBUFFER-SIZED
+// texture (dump-proven), while gameswf HUD samples 2048x2048 UI atlases -
+// srv0 size is the discriminator; those draws stay in the frame.
+int g_swfDrawsThisInterval = 0;
+std::atomic<bool> g_screenOnlyOn{false};
+int g_screenOnlyStreak = 0;
+std::atomic<unsigned> g_cPostFx{0};
+struct SrvCacheEntry { ID3D11Resource* res; UINT w, h; };
+SrvCacheEntry g_srvCache[8] = {};
+int g_srvCacheCount = 0;
+
+// srv0 dimensions with the same per-interval identity cache the RT descs use
+// (the HUD run rebinds the same few atlases dozens of times per interval).
+bool srv0_size(ID3D11DeviceContext* ctx, UINT* w, UINT* h) {
+    ID3D11ShaderResourceView* srv = nullptr;
+    ctx->PSGetShaderResources(0, 1, &srv);
+    if (!srv) return false;
+    ID3D11Resource* res = nullptr;
+    srv->GetResource(&res);
+    srv->Release();
+    if (!res) return false;
+    res->Release(); // identity from here on (the PS binding holds the ref)
+    for (int i = 0; i < g_srvCacheCount; ++i) {
+        if (g_srvCache[i].res == res) {
+            *w = g_srvCache[i].w;
+            *h = g_srvCache[i].h;
+            return true;
+        }
+    }
+    UINT tw = 0, th = 0;
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+        D3D11_TEXTURE2D_DESC d{};
+        tex->GetDesc(&d);
+        tw = d.Width;
+        th = d.Height;
+        tex->Release();
+    }
+    if (g_srvCacheCount < static_cast<int>(_countof(g_srvCache))) {
+        SrvCacheEntry& e = g_srvCache[g_srvCacheCount++];
+        e.res = res;
+        e.w = tw;
+        e.h = th;
+    }
+    if (!tw) return false;
+    *w = tw;
+    *h = th;
+    return true;
+}
+
 bool ensure_fov_staging(ID3D11DeviceContext* ctx) {
     if (g_fovStaging) return true;
     ID3D11Device* dev = nullptr;
@@ -327,6 +385,7 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
 
 ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
     if (!g_curRt || !g_curRtLdr) return nullptr;
+    ++g_swfDrawsThisInterval; // session 22: screen-only interval detector
 
     if (!g_hudTarget) {
         // Tonemap check: first non-indexed draw on an LDR target sampling the
@@ -346,6 +405,19 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
 
     if (g_curRt != g_hudTarget) return nullptr;
 
+    // Session 22 kind (c): the engine's own post effects (alcohol blur) are
+    // also post-tonemap non-indexed draws here, but they sample a
+    // BACKBUFFER-SIZED texture (gameswf samples UI atlases). They belong IN
+    // the frame - per-eye correct by construction - so they never redirect
+    // and never count as HUD content.
+    {
+        UINT sw = 0, sh = 0;
+        if (srv0_size(ctx, &sw, &sh) && sw == g_curW && sh == g_curH) {
+            g_cPostFx.fetch_add(1, std::memory_order_relaxed);
+            return nullptr;
+        }
+    }
+
     // A non-indexed draw on the HUD target after the tonemap = gameswf.
     g_cHudDraws.fetch_add(1, std::memory_order_relaxed);
     g_hudThisInterval = true;
@@ -360,6 +432,28 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
 
 void on_present(ID3D11DeviceContext* ctx) {
     fov_watch_on_present(ctx); // session 22: map last interval's cb0 copy
+
+    // Session 22 kind (a): screen-only interval verdict (hysteresis over
+    // present intervals, transitions logged - the flat instrument). Computed
+    // BEFORE the vote reset below. The 20-draw floor keeps single stray swf
+    // draws (subtitle fade, console line) from tripping it.
+    {
+        bool screenOnly = scene_leader() == nullptr && g_swfDrawsThisInterval >= 20;
+        if (screenOnly != g_screenOnlyOn.load(std::memory_order_relaxed)) {
+            if (++g_screenOnlyStreak >= 3) {
+                g_screenOnlyStreak = 0;
+                g_screenOnlyOn.store(screenOnly, std::memory_order_relaxed);
+                BVR_LOG("[hud] screen-only interval %s (swf draws %d, world pass %s)",
+                        screenOnly ? "ON (hack/loading/FMV-class screen)" : "off",
+                        g_swfDrawsThisInterval, screenOnly ? "absent" : "present");
+            }
+        } else {
+            g_screenOnlyStreak = 0;
+        }
+        g_swfDrawsThisInterval = 0;
+        g_srvCacheCount = 0;
+    }
+
     if (g_hudThisInterval) g_cIntervals.fetch_add(1, std::memory_order_relaxed);
     g_hadHudLastInterval = g_hudThisInterval;
     if (g_hudThisInterval && g_rtv && ctx) {
@@ -439,6 +533,14 @@ bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs) {
 
 bool fov_mismatch() {
     return g_fovMismatchOn.load(std::memory_order_relaxed);
+}
+
+bool screen_only() {
+    return g_screenOnlyOn.load(std::memory_order_relaxed);
+}
+
+unsigned postfx_count() {
+    return g_cPostFx.load(std::memory_order_relaxed);
 }
 
 ID3D11DepthStencilView* capture_dsv() {

@@ -203,15 +203,22 @@ float* fov_ptr(void* pc) {
     return reinterpret_cast<float*>(static_cast<uint8_t*>(pc) + patterns::kFovLiveOffset);
 }
 
-// Half-IPD shift along view-right of `rot`, sign -1 = left eye. Same math the
-// AER path uses, shared by both SequentialReentry passes.
+// Half-IPD shift along view-right of `rot`, sign -1 = left eye. Shared by
+// both SequentialReentry passes and the AER path. Session 22: the right axis
+// comes from the FULL rotation (ue_rot_basis) - the old yaw-only right kept
+// the virtual eyes horizontal while real eyes stack vertically under head
+// roll (the "weird stereoscopy when tilting the head sideways" report). At
+// roll 0 the basis row reduces to (-sin yaw, cos yaw, 0), bit-identical to
+// the old formula - the neutral-roll rendering is unchanged by construction.
 void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
-    float yawRad = static_cast<float>(rot.yaw) / kRotUnitsPerRadian;
+    float fwd[3], right[3], up[3];
+    ue_rot_basis(rot, fwd, right, up);
     float halfIpdUu = static_cast<float>(sign) *
                       (g_ipdMm.load(std::memory_order_relaxed) / 2000.0f) *
                       g_worldScale.load(std::memory_order_relaxed);
-    loc->x += -sinf(yawRad) * halfIpdUu;
-    loc->y += cosf(yawRad) * halfIpdUu;
+    loc->x += right[0] * halfIpdUu;
+    loc->y += right[1] * halfIpdUu;
+    loc->z += right[2] * halfIpdUu;
 }
 
 // Automated-test seam: %LOCALAPPDATA%\BioshockVR\command.txt is polled at 1 Hz
@@ -374,6 +381,21 @@ void apply_command(const char* cmd, const char* args) {
         // "fovaudit pose on|off" arms the tagged-vs-consumed yaw log (headset).
         if (strncmp(args, "pose", 4) == 0) {
             bvr::vr::set_pose_audit(strstr(args + 4, "on") != nullptr);
+        } else if (strncmp(args, "eyes", 4) == 0) {
+            // Session 22 head-roll gate: the per-eye camera stash and their
+            // delta vector. Under `simhead 0 0 <roll>` the delta must rotate
+            // with the roll (|z| -> halfIpd at 90 deg); pre-fix it stayed
+            // horizontal at every roll.
+            uint64_t nowMs = GetTickCount64();
+            BVR_LOG("[b1r] eyecam L=(%.3f %.3f %.3f) R=(%.3f %.3f %.3f) "
+                    "d=(%.3f %.3f %.3f) ageL=%llums ageR=%llums",
+                    g_eyeCamLoc[0].x, g_eyeCamLoc[0].y, g_eyeCamLoc[0].z,
+                    g_eyeCamLoc[1].x, g_eyeCamLoc[1].y, g_eyeCamLoc[1].z,
+                    g_eyeCamLoc[1].x - g_eyeCamLoc[0].x,
+                    g_eyeCamLoc[1].y - g_eyeCamLoc[0].y,
+                    g_eyeCamLoc[1].z - g_eyeCamLoc[0].z,
+                    static_cast<unsigned long long>(nowMs - g_eyeCamStampMs[0]),
+                    static_cast<unsigned long long>(nowMs - g_eyeCamStampMs[1]));
         } else {
             int32_t* opt = patterns::hfov_option_ptr();
             float tanH = 0.0f, tanV = 0.0f;
@@ -520,9 +542,10 @@ void apply_command(const char* cmd, const char* args) {
             unsigned hd = 0, rd = 0, lk = 0, iv = 0;
             bvr::hud::get_counters(&hd, &rd, &lk, &iv);
             BVR_LOG("[hud] status: %s force=%d | hudDraws=%u redirects=%u leaks=%u "
-                    "hudIntervals=%u (vrhud on|off|force on|force off|status)",
+                    "hudIntervals=%u | postFx=%u screenOnly=%d "
+                    "(vrhud on|off|force on|force off|status)",
                     bvr::hud::enabled() ? "ON" : "off", bvr::hud::force() ? 1 : 0, hd, rd,
-                    lk, iv);
+                    lk, iv, bvr::hud::postfx_count(), bvr::hud::screen_only() ? 1 : 0);
         }
     } else if (strcmp(cmd, "vrxhair") == 0) {
         // M8 part 2: the flat-screen crosshair. Default HIDDEN; "on" re-shows.
@@ -575,6 +598,9 @@ void save_vr_preset() {
     fprintf(f, "aimPosRUp=%.1f\n", aim::pos_up_cm(1));
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
+    fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
+    fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
+    fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
     fprintf(f, "crosshairVisible=%d\n",
             g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0);
     {
@@ -630,6 +656,9 @@ void load_vr_preset_values() {
         else if (strcmp(key, "aimPosRUp") == 0) pru = v;
         else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
+        else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
+        else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
+        else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
         else if (strcmp(key, "crosshairVisible") == 0)
             g_crosshairVisible.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "hudQuadDistM") == 0) hudD = v;
@@ -928,14 +957,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // SequentialReentry stereo (rung 2), which applies both eye offsets
         // itself at the end of this body.
         int eyeSign = scenedraw::stereo_active() ? 0 : bvr::vr::current_eye_sign();
-        if (eyeSign != 0) {
-            float finalYawRad = static_cast<float>(rot->yaw) / kRotUnitsPerRadian;
-            float halfIpdUu =
-                static_cast<float>(eyeSign) *
-                (g_ipdMm.load(std::memory_order_relaxed) / 2000.0f) * scale;
-            loc->x += -sinf(finalYawRad) * halfIpdUu;
-            loc->y += cosf(finalYawRad) * halfIpdUu;
-        }
+        // Session 22: routed through apply_eye_offset so SR and AER share ONE
+        // implementation (full-rotation right axis, head-roll correct).
+        if (eyeSign != 0) apply_eye_offset(loc, *rot, eyeSign);
 
         vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
                     ? bvr::vr::suggested_hfov_deg()
@@ -1223,6 +1247,22 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // These two are the same integer, which is what makes the invariant a
         // theorem instead of a tolerance.
         if (moved) g_recenterYawUnits = wrap_rot(g_recenterYawUnits + moved);
+    }
+
+    // Session 22 snap turn: shift the recenter composite by one step per
+    // queued edge - subtracting from recenterYaw raises the residual exactly
+    // like a physical head turn, and the M7.5 transfer above carries the
+    // body on the following frames (instant at the shipped rate 0). The
+    // composite invariant is untouched by construction; effect lands next
+    // CalcView (this frame's residual was already consumed).
+    if (g_haveRecenter && vrDrove) {
+        if (int steps = bvr::input::take_snap_steps()) {
+            int32_t units = static_cast<int32_t>(
+                lroundf(bvr::input::snap_angle_deg() * kRotUnitsPerDegree * steps));
+            g_recenterYawUnits = wrap_rot(g_recenterYawUnits - units);
+            BVR_LOG("[b1r] snap turn %+d step(s) (%.0f deg each)", steps,
+                    bvr::input::snap_angle_deg());
+        }
     }
 }
 
