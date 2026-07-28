@@ -46,4 +46,11 @@ void input_draw_debug_ui();
 // Unreal units.
 bool input_get_hand_pose(int hand, bool aimPose, float* pos3, float* quat4);
 
+// Session 20 vrrec: sim overlay on the funnel above. While any slot is armed,
+// input_get_hand_pose serves the injected poses to ALL consumers (ray, model,
+// laser); clear restores the live slots. Game-thread writers.
+void input_set_sim_hand(int hand, bool aimPose, bool valid, const float pos3[3],
+                        const float quat4[4]);
+void input_clear_sim_hands();
+
 } // namespace bvr::vr

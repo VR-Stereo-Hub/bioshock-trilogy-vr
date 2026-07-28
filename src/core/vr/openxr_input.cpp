@@ -89,6 +89,16 @@ struct HandSlot {
 HandSlot g_hands[2]; // grip pose: 0 = left, 1 = right
 HandSlot g_aims[2];  // aim pose, same indexing
 
+// Session 20 vrrec: sim overlay ON the funnel. While armed, EVERY consumer of
+// input_get_hand_pose (fire ray, viewmodel, laser) reads the injected poses
+// instead of the runtime's - replay only works if all three see one
+// consistent world. Written from the game thread (replay tick / drive
+// command), read game+render side - the same atomics discipline as the live
+// slots.
+std::atomic<bool> g_simHandsActive{false};
+HandSlot g_simHands[2];
+HandSlot g_simAims[2];
+
 // Telemetry for the overlay (render thread writes, overlay reads same thread).
 std::atomic<uint32_t> g_syncOk{0};
 std::atomic<uint32_t> g_syncNotFocused{0};
@@ -474,11 +484,33 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
 
 bool input_get_hand_pose(int hand, bool aimPose, float* pos3, float* quat4) {
     if (hand < 0 || hand > 1 || !pos3 || !quat4) return false;
-    const HandSlot& s = aimPose ? g_aims[hand] : g_hands[hand];
+    const bool sim = g_simHandsActive.load(std::memory_order_relaxed);
+    const HandSlot& s = sim ? (aimPose ? g_simAims[hand] : g_simHands[hand])
+                            : (aimPose ? g_aims[hand] : g_hands[hand]);
     if (!s.valid.load(std::memory_order_relaxed)) return false;
     pos3[0] = s.px; pos3[1] = s.py; pos3[2] = s.pz;
     quat4[0] = s.qx; quat4[1] = s.qy; quat4[2] = s.qz; quat4[3] = s.qw;
     return true;
+}
+
+void input_set_sim_hand(int hand, bool aimPose, bool valid, const float pos3[3],
+                        const float quat4[4]) {
+    if (hand < 0 || hand > 1) return;
+    HandSlot& s = aimPose ? g_simAims[hand] : g_simHands[hand];
+    if (pos3) { s.px = pos3[0]; s.py = pos3[1]; s.pz = pos3[2]; }
+    if (quat4) { s.qx = quat4[0]; s.qy = quat4[1]; s.qz = quat4[2]; s.qw = quat4[3]; }
+    s.valid.store(valid, std::memory_order_relaxed);
+    // Arming ANY slot flips the whole funnel to sim - unset slots read
+    // invalid, which is what a faithful replay of an untracked hand wants.
+    g_simHandsActive.store(true, std::memory_order_relaxed);
+}
+
+void input_clear_sim_hands() {
+    g_simHandsActive.store(false, std::memory_order_relaxed);
+    for (int h = 0; h < 2; ++h) {
+        g_simHands[h].valid.store(false, std::memory_order_relaxed);
+        g_simAims[h].valid.store(false, std::memory_order_relaxed);
+    }
 }
 
 void input_draw_debug_ui() {

@@ -1549,6 +1549,23 @@ bool get_hand_pose(int hand, bool aimPose, HeadPose& out) {
     return true;
 }
 
+void set_sim_hand_pose(int hand, bool aimPose, bool valid, const float pos3[3],
+                       const float quat4[4]) {
+    input_set_sim_hand(hand, aimPose, valid, pos3, quat4);
+}
+
+void clear_sim_hand_poses() {
+    input_clear_sim_hands();
+}
+
+bool session_live() {
+    return g_session != XR_NULL_HANDLE;
+}
+
+int64_t last_predicted_time() {
+    return static_cast<int64_t>(g_frameState.predictedDisplayTime);
+}
+
 bool vr_camera_mode() {
     return g_cameraMode.load(std::memory_order_relaxed) &&
            g_sessionBegun.load(std::memory_order_relaxed) &&
@@ -1690,6 +1707,10 @@ void on_resize() {}
 void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
 bool get_hand_pose(int, bool, HeadPose&) { return false; }
+void set_sim_hand_pose(int, bool, bool, const float[3], const float[4]) {}
+void clear_sim_hand_poses() {}
+bool session_live() { return false; }
+int64_t last_predicted_time() { return 0; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
 void set_enabled(bool) {}
