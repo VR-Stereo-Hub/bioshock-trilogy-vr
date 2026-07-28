@@ -59,6 +59,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/input_drive.h
     game/bioshock1r/patterns.cpp
     game/bioshock1r/patterns.h
+    game/bioshock1r/recorder.cpp
+    game/bioshock1r/recorder.h
     game/bioshock1r/scenedraw.cpp
     game/bioshock1r/scenedraw.h
     game/bioshock1r/ue_math.h

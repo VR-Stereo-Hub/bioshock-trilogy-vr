@@ -8,6 +8,8 @@
 // D3D11 hooks install; everything else runs on the game's render thread
 // inside the Present/ResizeBuffers detours.
 
+#include <cstdint>
+
 struct IDXGISwapChain;
 
 namespace bvr::vr {
@@ -52,6 +54,24 @@ bool get_head_pose(HeadPose& out);
 // `aimPose` true = the runtime's pointing ray (aiming), false = the grip pose
 // (hand/weapon placement).
 bool get_hand_pose(int hand, bool aimPose, HeadPose& out);
+
+// --- Session 20: vrrec record+replay support ---------------------------------
+// Sim overlay on the hand-pose funnel: while armed, every consumer of
+// get_hand_pose/input_get_hand_pose (fire ray, viewmodel, laser) reads the
+// injected poses. The recorder writes one set per replayed frame; a flat
+// drive command can arm a static set for recording without a headset.
+void set_sim_hand_pose(int hand, bool aimPose, bool valid, const float pos3[3],
+                       const float quat4[4]);
+void clear_sim_hand_poses();
+
+// True while an XR session object exists (any state). `vrrec play` refuses
+// while this holds - a live session and a replay would be two writers on the
+// same funnel.
+bool session_live();
+
+// The last xrWaitFrame's predictedDisplayTime (0 with no session) - recorded
+// as per-frame metadata.
+int64_t last_predicted_time();
 
 // True when the user enabled VR camera mode AND a session is running; the
 // adapter drives the game camera from the HMD only while this holds. Frame
@@ -144,6 +164,16 @@ struct LaserConfig {
     float nearM = 0.30f;       // first dot, meters from the controller
     float farM = 6.0f;         // last dot
     float sizeDeg = 0.7f;      // angular diameter, so the beam reads evenly
+    // Session 20 muzzle ray: when on, the beam leaves along the RENDERED
+    // barrel instead of the trimmed controller forward - direction =
+    // (q_ctrl (x) model trim) applied to the barrel axis d0 (XR frame; the
+    // game side derives d0 from the driven rig's reference pose each frame).
+    // Roll matters for an off-axis vector, so the model ROLL trim rides too.
+    bool muzzle = false;
+    float muzzleD0[3] = {0.0f, 0.0f, -1.0f};
+    float modelPitchTrimDeg = 0.0f;
+    float modelYawTrimDeg = 0.0f;
+    float modelRollTrimDeg = 0.0f;
 };
 
 // Publish the laser state (game thread, once per frame). The render thread

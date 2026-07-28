@@ -17,6 +17,7 @@
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/bioshock1r/ue_math.h"
 
@@ -404,6 +405,8 @@ void apply_command(const char* cmd, const char* args) {
         bones::handle_command(args); // M7-v2 skeleton probes; logs its own echoes
     } else if (strcmp(cmd, "vrbody") == 0) {
         body::handle_command(args); // M7.5 yaw transfer; logs its own echoes
+    } else if (strcmp(cmd, "vrrec") == 0) {
+        recorder::handle_command(args); // session 20 record+replay; logs its own echoes
     } else if (strcmp(cmd, "exec") == 0) {
         console_exec::run_viewport(args); // engine console command, viewport chain
     } else if (strcmp(cmd, "execc") == 0) {
@@ -732,8 +735,15 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     int32_t residualUnits = 0;
     int32_t gameYawUnitsRaw = rot ? rot->yaw : 0; // the engine's own body yaw
     bvr::vr::HeadPose hp{};
-    bool simHead = now < g_simHead.deadline;
-    if (simHead) {
+    bool driveHead = false;
+    bool liveHead = false;
+    if (recorder::playing()) {
+        // Session 20 replay lane: the recorded head (position + quat) drives
+        // the camera; a frame recorded with no drive faithfully leaves the
+        // camera alone. The sim and live lanes are locked out while playing -
+        // and so is the auto-recenter (play restored the recorded reference).
+        driveHead = recorder::replay_head(hp);
+    } else if (now < g_simHead.deadline) {
         // Synthetic head pose, XR convention (same quat builder simpose uses
         // for the hand). Position stays at the recenter origin - rotation is
         // what every head-coupling report has been about.
@@ -745,9 +755,12 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         hp.qy = q[1];
         hp.qz = q[2];
         hp.qw = q[3];
+        driveHead = true;
+    } else if (bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
+        driveHead = true;
+        liveHead = true;
     }
-    if (loc && rot &&
-        (simHead || (bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)))) {
+    if (loc && rot && driveHead) {
         UeAngles a = hmd_angles(hp);
         if (g_recenterRequested.exchange(false, std::memory_order_relaxed) || !g_haveRecenter) {
             g_recenterPose = hp;
@@ -976,6 +989,12 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             }
         }
 
+        // Session 20 vrrec: record (or replay) this frame's input state -
+        // BEFORE aim/hands consume it, so a replayed frame feeds all three
+        // funnel consumers one consistent world. Once per game tick by
+        // construction (the stereo second pass skips this whole body).
+        recorder::on_tick(fc, hp, vrDrove, liveHead);
+
         aim::on_calcview(fc);
         // The viewmodel write goes LAST in the frame: the engine placed the
         // hands during its own tick, so ours has to be the one that survives.
@@ -1125,6 +1144,24 @@ bool fg_fov_match_active() {
 
 bool hook_live() {
     return g_hookLive.load(std::memory_order_relaxed);
+}
+
+void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* worldScale) {
+    if (pose) *pose = g_recenterPose;
+    if (yawUnits) *yawUnits = g_recenterYawUnits;
+    if (worldScale) *worldScale = g_worldScale.load(std::memory_order_relaxed);
+}
+
+void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float worldScale) {
+    g_recenterPose = pose;
+    g_recenterYawUnits = yawUnits;
+    g_worldScale.store(worldScale, std::memory_order_relaxed);
+    g_haveRecenter = true;
+    // A pending auto-recenter would re-reference the mapping onto the first
+    // replayed head pose, throwing away the state just restored.
+    g_recenterRequested.store(false, std::memory_order_relaxed);
+    BVR_LOG("[b1r] recenter state SET (yaw %d units, worldScale %.1f) - vrrec play restore",
+            yawUnits, worldScale);
 }
 
 void set_fov_override(float hfovDeg) {

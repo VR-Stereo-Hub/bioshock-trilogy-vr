@@ -57,6 +57,12 @@ void on_calcview(const FrameContext& ctx);
 //   hideinactive on|off     collapse the whole INACTIVE hand's cluster while
 //                           the other drives (default ON; the weapon-attach
 //                           bone hides by translation - see bones.h)
+//   fname <index>|weapon    resolve a name index to its string via GNames
+//                           (session 20); `weapon` reads the cached weapon
+//                           actor's attach-bone FName
+//   swaykill on|off|status  freeze the drive's reference against the idle
+//                           animation's breathing (default ON; session 20 -
+//                           real animations pass the threshold)
 //   save | reload           persist / re-read the offsets (per-hand keys in
 //                           hands.ini; a legacy suffix-less key loads to both)
 //   test <dYaw> <dPitch> [distUU] [holdMs]   camera-relative placement (proves
@@ -71,6 +77,18 @@ void handle_command(const char* args);
 // whose trigger last fired, or the forced choice. Shared with the aim laser so
 // the beam leaves the hand that is actually holding the weapon.
 int active_hand();
+
+// Live mesh-alignment trim (degrees, per hand) - read by `vraim synccheck` so
+// its model chain sweeps the REAL tuned values (session 20).
+float model_trim_pitch_deg(int hand);
+float model_trim_yaw_deg(int hand);
+float model_trim_roll_deg(int hand);
+
+// The live actors this module tracks (null until found/learned). The session-20
+// muzzle probe inspects the WEAPON's own skeleton, which is produced here every
+// frame; game thread only, revalidated by the caller's own reads.
+void* hands_actor();
+void* weapon_actor();
 
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the

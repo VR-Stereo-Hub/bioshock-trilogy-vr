@@ -63,4 +63,40 @@ inline GamePose xr_pose_to_game(const FrameContext& ctx, const float pos[3],
     return out;
 }
 
+// ---- The two trimmed pose->rot chains, as PURE functions (session 20) -------
+// Production (hands.cpp / aim.cpp) and the `vraim synccheck` sweep call the
+// SAME code, so the sweep measures the real thing. Since the session-20
+// unification both chains compose the trim as a quaternion in the
+// controller's LOCAL frame (the model's algebra - the only one that holds at
+// every controller orientation); the ray then drops roll at the final
+// rotator write. The pre-unification ray added rotator angles in game space
+// after the map, which agreed with the model only at the tuning pose
+// (measured: up to 28.21 deg divergence at rolled poses, ENGINE_NOTES
+// session 20).
+
+// Model chain (hands.cpp): trim quat composed in the controller's local frame,
+// then mapped. Holds at every controller orientation.
+inline GamePose model_pose_from_xr(const FrameContext& ctx, const float pos[3],
+                                   const float quat[4], float trimPitchDeg,
+                                   float trimYawDeg, float trimRollDeg) {
+    float trim[4], q2[4];
+    xr_local_trim_quat(trimPitchDeg / kRadToDeg, trimYawDeg / kRadToDeg,
+                       trimRollDeg / kRadToDeg, trim);
+    quat_mul(quat, trim, q2);
+    return xr_pose_to_game(ctx, pos, q2);
+}
+
+// Ray chain (aim.cpp): the model's EXACT compose with the roll trim slot 0
+// (roll is innermost in xr_local_trim_quat, so it could not move the ray
+// anyway), roll dropped only at the final rotator write - aim carries no
+// roll; the camera owns roll. Tuned pitch/yaw trim values carry over from
+// the old rotator-add algebra: the two agree exactly at the neutral pose.
+inline GamePose ray_pose_from_xr(const FrameContext& ctx, const float pos[3],
+                                 const float quat[4], float trimPitchDeg,
+                                 float trimYawDeg) {
+    GamePose out = model_pose_from_xr(ctx, pos, quat, trimPitchDeg, trimYawDeg, 0.0f);
+    out.rot.roll = 0;
+    return out;
+}
+
 } // namespace bvr::b1r

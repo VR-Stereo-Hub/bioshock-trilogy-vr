@@ -40,8 +40,11 @@ std::vector<const uint8_t*> find_references(const ProcessImage& img, const void*
 // From a code xref to an FName's init string: forward-scan (<=96 bytes) for
 // the E8 CALL into the FName constructor, then past that 5-byte CALL for the
 // 89 0D (mov [imm32], ecx) store that caches the returned name index. Returns
-// the address of that global, or null.
-const uint8_t* find_fname_index_global(const ProcessImage& img, const uint8_t* stringXref);
+// the address of that global, or null. `ctorOut` (optional) receives the
+// resolved CALL target - the FName constructor itself, the entry point of the
+// engine's whole name system (session 20: disassembling it yields GNames).
+const uint8_t* find_fname_index_global(const ProcessImage& img, const uint8_t* stringXref,
+                                       const uint8_t** ctorOut = nullptr);
 
 // Backward-scan (<=512 bytes) from an xref for the MSVC function prologue
 // CC CC CC 55 8B EC. Returns the address of the 55 (push ebp), or null.
@@ -52,6 +55,7 @@ struct EventScanResult {
     size_t stringMatches = 0;            // wide-string occurrences of the name
     size_t stringXrefs = 0;              // code refs to those strings
     const uint8_t* fnameIndexGlobal = nullptr;
+    const uint8_t* fnameCtor = nullptr;  // the FName constructor (session 20)
     size_t globalXrefs = 0;              // refs to the FName index global
     size_t candidates = 0;               // refs surviving the init-site filter
     void* function = nullptr;            // resolved event function entry point

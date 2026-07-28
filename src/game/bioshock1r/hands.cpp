@@ -50,13 +50,6 @@ std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
 std::atomic<int> g_handMode{2};       // 0 left, 1 right, 2 auto
 std::atomic<int> g_autoHand{1};       // the latched auto choice
-// Session 18 part 3 (user report): OFF by default - the aim CALIBRATION trim
-// used to be applied to the model too, so re-trimming the ray dragged the
-// already-tuned model with it. Now the model is raw aim pose + its own trim,
-// and the ray is raw aim pose + aim trim + origin offset; each is tuned
-// against the other. `vrhands aligntrim on` restores the old coupling.
-std::atomic<bool> g_alignAimTrim{false};
-
 // Model offsets, PER HAND (0 left / 1 right, same convention as aim.cpp): the
 // pistol and the plasmid hand sit differently in the mesh, so one shared set
 // meant tuning the weapon also moved the plasmid hand. Position is in
@@ -452,6 +445,28 @@ int active_hand() {
     return g_autoHand.load(std::memory_order_relaxed);
 }
 
+void* hands_actor() {
+    return g_handsActor;
+}
+
+void* weapon_actor() {
+    void* w = weapon_valid(g_weaponActor) ? g_weaponActor
+                                          : bvr::b1r::aim::learned_weapon_object();
+    return weapon_valid(w) ? w : nullptr;
+}
+
+// Live mesh-alignment trim, read by `vraim synccheck` so its model chain runs
+// on the REAL tuned values (session 20).
+float model_trim_pitch_deg(int hand) {
+    return g_rotPitchDeg[hand & 1].load(std::memory_order_relaxed);
+}
+float model_trim_yaw_deg(int hand) {
+    return g_rotYawDeg[hand & 1].load(std::memory_order_relaxed);
+}
+float model_trim_roll_deg(int hand) {
+    return g_rotRollDeg[hand & 1].load(std::memory_order_relaxed);
+}
+
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     load_config();
@@ -585,25 +600,17 @@ void on_calcview(const FrameContext& ctx) {
         }
 
         // Mesh-alignment trim (per hand), composed in the controller's local
-        // frame so it holds at EVERY controller orientation.
-        float trim[4], q2[4];
-        xr_local_trim_quat(g_rotPitchDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
-                           g_rotYawDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
-                           g_rotRollDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
-                           trim);
-        quat_mul(quat, trim, q2);
-
-        gp = xr_pose_to_game(mapCtx, pos, q2);
-
-        // The aim calibration trim is NOT applied to the model by default
-        // (see g_alignAimTrim above) - re-trimming the ray must not move the
-        // tuned model.
-        if (g_alignAimTrim.load(std::memory_order_relaxed)) {
-            gp.rot.pitch += static_cast<int32_t>(bvr::b1r::aim::trim_pitch_deg(hand) *
-                                                 kRotUnitsPerDegree);
-            gp.rot.yaw += static_cast<int32_t>(bvr::b1r::aim::trim_yaw_deg(hand) *
-                                               kRotUnitsPerDegree);
-        }
+        // frame so it holds at EVERY controller orientation. The chain is a
+        // pure function in frame_context.h, shared with `vraim synccheck`.
+        gp = model_pose_from_xr(mapCtx, pos, quat,
+                                g_rotPitchDeg[hand].load(std::memory_order_relaxed),
+                                g_rotYawDeg[hand].load(std::memory_order_relaxed),
+                                g_rotRollDeg[hand].load(std::memory_order_relaxed));
+        // The aim calibration trim is deliberately NOT applied to the model
+        // (session 18 part 3): re-trimming the ray must not move the tuned
+        // model. The legacy `aligntrim` euler coupling was DELETED in session
+        // 20 - euler adds after conversion were the wrong algebra everywhere
+        // but the tuning pose, and the unification left nothing for it to do.
     }
 
     // Position offset rides the final (trimmed) frame: "2 cm forward" means
@@ -737,16 +744,43 @@ void handle_command(const char* args) {
         } else {
             BVR_LOG("[hands] usage: vrhands rot [l|r] <pitchDeg> <yawDeg> <rollDeg>");
         }
-    } else if (strcmp(verb, "aligntrim") == 0) {
-        bool on = strncmp(rest, "on", 2) == 0;
-        g_alignAimTrim.store(on, std::memory_order_relaxed);
-        BVR_LOG("[hands] aim-trim coupling %s (%s)", on ? "ON" : "off",
-                on ? "model follows the aim calibration trim - pre-part-3 behavior"
-                   : "model independent of the aim trim (default)");
     } else if (strcmp(verb, "writerot") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_writeRot.store(on, std::memory_order_relaxed);
         BVR_LOG("[hands] rotation write %s", on ? "ON" : "off (position only)");
+    } else if (strcmp(verb, "fname") == 0) {
+        // Session 20: the name-system gate. `fname <idx>` resolves any name
+        // index; `fname weapon` reads the cached weapon actor's attach-bone
+        // FName (+0xF0 {index, number}) - the stage-4 acceptance.
+        if (strncmp(rest, "weapon", 6) == 0) {
+            void* w = weapon_valid(g_weaponActor) ? g_weaponActor
+                                                  : bvr::b1r::aim::learned_weapon_object();
+            if (!weapon_valid(w)) {
+                BVR_LOG("[hands] fname: no live weapon actor (fire once so the aim seam "
+                        "learns it)");
+                return;
+            }
+            const int32_t* nm = reinterpret_cast<const int32_t*>(
+                static_cast<uint8_t*>(w) + patterns::kActorAttachBoneNameOffset);
+            const wchar_t* t = patterns::fname_text(nm[0]);
+            BVR_LOG("[hands] weapon attach-bone FName idx=%d num=%d -> '%S' "
+                    "(GNames count %d)",
+                    nm[0], nm[1], t ? t : L"<unresolved>", patterns::fname_count());
+        } else {
+            int idx = 0;
+            if (sscanf_s(rest, "%d", &idx) == 1) {
+                const wchar_t* t = patterns::fname_text(idx);
+                BVR_LOG("[hands] fname %d -> '%S' (GNames count %d)", idx,
+                        t ? t : L"<unresolved>", patterns::fname_count());
+            } else {
+                BVR_LOG("[hands] usage: vrhands fname <index>|weapon");
+            }
+        }
+    } else if (strcmp(verb, "swaykill") == 0) {
+        if (strncmp(rest, "status", 6) == 0)
+            BVR_LOG("[hands] swaykill %s", bones::sway_kill() ? "ON" : "off");
+        else
+            bones::set_sway_kill(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "hideinactive") == 0) {
         bones::set_hide_inactive(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "save") == 0) {

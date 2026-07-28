@@ -16,6 +16,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/ue_math.h"
 
@@ -52,6 +53,14 @@ std::atomic<int> g_pendingEnable{-1}; // -1 none, 0 off, 1 on
 // of taste (grip angle, wrist posture) - the user's first in-headset run wanted
 // the ray a little lower than the raw pose gave.
 std::atomic<bool> g_useAimPose{true};
+// Session 20 muzzle ray (default OFF until the in-headset verdict): the RIGHT
+// hand's ray leaves along the RENDERED barrel - direction = the model's
+// target rotation applied to the rig's reference barrel axis
+// (bones::barrel_ref_axis) - instead of the trimmed controller forward.
+// Per-weapon automatic (the reference pose is the per-weapon animation), no
+// manual trim. The left/plasmid hand keeps the pointing ray: there is no
+// barrel to follow.
+std::atomic<bool> g_muzzleRay{false};
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
 std::atomic<float> g_pitchOffsetDeg[2] = {0.0f, 0.0f};
@@ -772,9 +781,17 @@ void apply_origin_offset(int i, Ray& out, float worldScale) {
     out.origin.z += fwd[2] * of + right[2] * orr + up[2] * ou;
 }
 
+// Last published FrameContext, cached for `vraim synccheck` (session 20): the
+// sweep needs a real frame's transform to map through, outside the frame.
+// Written and read on the game thread only (commands run there too).
+static FrameContext g_lastCtx{};
+static bool g_haveCtx = false;
+
 void on_calcview(const FrameContext& ctx) {
     uint64_t now = GetTickCount64();
     g_rayStampMs = now;
+    g_lastCtx = ctx;
+    g_haveCtx = true;
 
     // Apply an overlay request from THIS thread (see g_pendingEnable).
     int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
@@ -844,16 +861,34 @@ void on_calcview(const FrameContext& ctx) {
 
         const float pos[3] = {hp.px, hp.py, hp.pz};
         const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
-        GamePose gp = xr_pose_to_game(ctx, pos, quat);
-
+        // The trimmed chain is a pure function in frame_context.h, shared
+        // with `vraim synccheck` (roll forced 0 there - the camera owns roll).
+        GamePose gp = ray_pose_from_xr(ctx, pos, quat,
+                                       g_pitchOffsetDeg[i].load(std::memory_order_relaxed),
+                                       g_yawOffsetDeg[i].load(std::memory_order_relaxed));
         out.origin = gp.loc;
-        out.rot.yaw = gp.rot.yaw + static_cast<int32_t>(
-                                       g_yawOffsetDeg[i].load(std::memory_order_relaxed) *
-                                       kRotUnitsPerDegree);
-        out.rot.pitch = gp.rot.pitch + static_cast<int32_t>(
-                                           g_pitchOffsetDeg[i].load(std::memory_order_relaxed) *
-                                           kRotUnitsPerDegree);
-        out.rot.roll = 0; // aim carries no roll; the camera owns roll
+        out.rot = gp.rot;
+
+        // Muzzle ray (session 20, right hand only): the bullet leaves along
+        // the RENDERED barrel. The model's target rotation is recomputed here
+        // through the same pure function hands.cpp uses this frame (same ctx,
+        // same funnel pose, same trims - no staleness, no coupling), then
+        // applied to the reference barrel axis. Falls back to the trimmed
+        // controller ray whenever the rig has no reference yet.
+        if (i == 1 && g_muzzleRay.load(std::memory_order_relaxed)) {
+            float d0[3];
+            if (bvr::b1r::bones::barrel_ref_axis(d0)) {
+                GamePose mgp = model_pose_from_xr(ctx, pos, quat,
+                                                  hands::model_trim_pitch_deg(1),
+                                                  hands::model_trim_yaw_deg(1),
+                                                  hands::model_trim_roll_deg(1));
+                float qt[4], dirW[3];
+                ue_rot_to_quat(mgp.rot, qt);
+                quat_rotate(qt[0], qt[1], qt[2], qt[3], d0, dirW);
+                out.rot = ue_dir_to_rot(dirW); // pitch/yaw; roll stays 0
+            }
+        }
+
         apply_origin_offset(i, out, ctx.worldScale);
         out.valid = true;
     }
@@ -874,7 +909,106 @@ void on_calcview(const FrameContext& ctx) {
     lc.nearM = g_laserNearM.load(std::memory_order_relaxed);
     lc.farM = g_laserFarM.load(std::memory_order_relaxed);
     lc.sizeDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
+    // Muzzle ray (session 20): the beam must follow the bullet. d0 converts
+    // UE (fwd,right,up) -> XR (right,up,-fwd): (y, z, -x).
+    if (lc.hand == 1 && g_muzzleRay.load(std::memory_order_relaxed)) {
+        float d0[3];
+        if (bvr::b1r::bones::barrel_ref_axis(d0)) {
+            lc.muzzle = true;
+            lc.muzzleD0[0] = d0[1];
+            lc.muzzleD0[1] = d0[2];
+            lc.muzzleD0[2] = -d0[0];
+            lc.modelPitchTrimDeg = hands::model_trim_pitch_deg(1);
+            lc.modelYawTrimDeg = hands::model_trim_yaw_deg(1);
+            lc.modelRollTrimDeg = hands::model_trim_roll_deg(1);
+        }
+    }
     bvr::vr::set_laser(lc);
+}
+
+// ---- synccheck (session 20): ray-vs-barrel divergence sweep -----------------
+// Sweeps axis-angle controller orientations - INCLUDING rolled poses, where
+// the two algebras differ most - through BOTH pure pose->rot chains
+// (frame_context.h) against the cached last FrameContext, and prints the angle
+// between the ray direction and the model barrel direction per pose. Two trim
+// sets per pose: the LIVE trims (what the user's tuning experiences) and a
+// canonical 10/10 trim fed IDENTICALLY to both chains, so any canonical
+// divergence is pure algebra difference - the deterministic gate. Position is
+// deliberately NOT part of the gate: the render lock shifts position only
+// (bones.cpp - never rotation, quoted separately below) and the two
+// origin-offset bases are tuned against each other by design.
+static void run_synccheck() {
+    if (!g_haveCtx) {
+        BVR_LOG("[sync] no FrameContext cached yet - enter gameplay first");
+        return;
+    }
+    const FrameContext ctx = g_lastCtx;
+    const float pos[3] = {0.15f, -0.20f, -0.35f}; // the sim lane's hand spot
+
+    struct AxisAngle { float x, y, z, deg; };
+    static const AxisAngle kPoses[] = {
+        {0, 0, 1, 0},                                       // identity
+        {1, 0, 0, 45},  {1, 0, 0, -45}, {1, 0, 0, 90},      // pitch-ish (XR +X)
+        {0, 1, 0, 45},  {0, 1, 0, -45}, {0, 1, 0, 90},      // yaw-ish (XR +Y)
+        {0, 0, 1, 45},  {0, 0, 1, -45}, {0, 0, 1, 90},      // ROLL (view axis)
+        {0, 0, 1, 180},
+        {1, 1, 0, 60},  {1, 0, 1, 60},  {0, 1, 1, 60},      // mixed axes
+        {1, -1, 0, 60}, {1, 0, -1, 60}, {0, 1, -1, 60},
+        {1, 1, 1, 60},  {1, 1, 1, 120}, {1, -1, 1, 90}, {-1, 1, 1, 90},
+    };
+    constexpr int kPoseCount = static_cast<int>(sizeof kPoses / sizeof kPoses[0]);
+
+    // Angle between the two chains' forward directions for one trim set.
+    auto diverge = [&](const float q[4], float rayPitch, float rayYaw, float mPitch,
+                       float mYaw, float mRoll) {
+        GamePose rp = ray_pose_from_xr(ctx, pos, q, rayPitch, rayYaw);
+        GamePose mp = model_pose_from_xr(ctx, pos, q, mPitch, mYaw, mRoll);
+        float dr[3], dm[3];
+        ue_rot_to_dir(rp.rot, dr);
+        ue_rot_to_dir(mp.rot, dm);
+        float dot = dr[0] * dm[0] + dr[1] * dm[1] + dr[2] * dm[2];
+        if (dot > 1.0f) dot = 1.0f;
+        if (dot < -1.0f) dot = -1.0f;
+        return acosf(dot) * kRadToDeg;
+    };
+
+    const float rayP[2] = {g_pitchOffsetDeg[0].load(std::memory_order_relaxed),
+                           g_pitchOffsetDeg[1].load(std::memory_order_relaxed)};
+    const float rayY[2] = {g_yawOffsetDeg[0].load(std::memory_order_relaxed),
+                           g_yawOffsetDeg[1].load(std::memory_order_relaxed)};
+    BVR_LOG("[sync] sweep of %d poses | ray trim L(%+.1f,%+.1f) R(%+.1f,%+.1f) | "
+            "model trim L(%+.1f,%+.1f,%+.1f) R(%+.1f,%+.1f,%+.1f) | canon 10/10 both chains",
+            kPoseCount, rayP[0], rayY[0], rayP[1], rayY[1], hands::model_trim_pitch_deg(0),
+            hands::model_trim_yaw_deg(0), hands::model_trim_roll_deg(0),
+            hands::model_trim_pitch_deg(1), hands::model_trim_yaw_deg(1),
+            hands::model_trim_roll_deg(1));
+
+    float maxL = 0.0f, maxR = 0.0f, maxC = 0.0f;
+    for (int p = 0; p < kPoseCount; ++p) {
+        const AxisAngle& aa = kPoses[p];
+        float len = sqrtf(aa.x * aa.x + aa.y * aa.y + aa.z * aa.z);
+        float q[4];
+        quat_axis_angle(aa.x / len, aa.y / len, aa.z / len, aa.deg / kRadToDeg, q);
+
+        float dL = diverge(q, rayP[0], rayY[0], hands::model_trim_pitch_deg(0),
+                           hands::model_trim_yaw_deg(0), hands::model_trim_roll_deg(0));
+        float dR = diverge(q, rayP[1], rayY[1], hands::model_trim_pitch_deg(1),
+                           hands::model_trim_yaw_deg(1), hands::model_trim_roll_deg(1));
+        float dC = diverge(q, 10.0f, 10.0f, 10.0f, 10.0f, 0.0f);
+        if (dL > maxL) maxL = dL;
+        if (dR > maxR) maxR = dR;
+        if (dC > maxC) maxC = dC;
+        BVR_LOG("[sync] %2d axis(%+.0f,%+.0f,%+.0f) %+4.0f deg | liveL %6.2f liveR %6.2f "
+                "canon %6.2f deg",
+                p, aa.x, aa.y, aa.z, aa.deg, dL, dR, dC);
+    }
+    BVR_LOG("[sync] MAX divergence: liveL %.2f liveR %.2f CANON %.2f deg over %d poses "
+            "(canon is the algebra gate: identical trims in, so nonzero = the two "
+            "algebras disagree)",
+            maxL, maxR, maxC, kPoseCount);
+    BVR_LOG("[sync] position (separate story): render-lock delta last frame %.2f UU - "
+            "position-only by construction, never rotation",
+            bvr::b1r::bones::lock_delta_mag());
 }
 
 void handle_command(const char* args) {
@@ -1044,11 +1178,24 @@ void handle_command(const char* args) {
         g_test[idx].deadline = GetTickCount64() + static_cast<uint64_t>(hold);
         BVR_LOG("[aim] test aim %s: yaw %+.1f pitch %+.1f for %d ms", idx ? "RIGHT" : "LEFT",
                 yaw, pitch, hold);
+    } else if (strcmp(verb, "muzzle") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_muzzleRay.store(on, std::memory_order_relaxed);
+        float d0[3];
+        bool haveRef = bvr::b1r::bones::barrel_ref_axis(d0);
+        BVR_LOG("[aim] muzzle ray %s - right-hand ray %s (barrel axis %s: %.3f %.3f %.3f)",
+                on ? "ON" : "off",
+                on ? "follows the RENDERED barrel (per-weapon, no manual trim)"
+                   : "back to the trimmed controller forward",
+                haveRef ? "from the live reference" : "UNAVAILABLE yet",
+                haveRef ? d0[0] : 0.0f, haveRef ? d0[1] : 0.0f, haveRef ? d0[2] : 0.0f);
+    } else if (strcmp(verb, "synccheck") == 0) {
+        run_synccheck();
     } else if (strcmp(verb, "status") == 0) {
         log_status();
     } else {
         BVR_LOG("[aim] unknown command '%s' "
-                "(on|off|probe|dump|origin|seam|test|scan|scanimpl|scanoff|status)",
+                "(on|off|probe|dump|origin|seam|test|synccheck|scan|scanimpl|scanoff|status)",
                 verb);
     }
 }

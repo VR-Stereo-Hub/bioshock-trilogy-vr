@@ -492,6 +492,12 @@ void publish_xr_state(const Gamepad& pad, bool active) {
     g_xrLastMs = GetTickCount64();
 }
 
+void last_xr_pad(Gamepad* pad, bool* active) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (pad) *pad = g_xrPad;
+    if (active) *active = g_xrActive;
+}
+
 void publish_vr_gameplay(bool on) {
     g_vrGameplay.store(on, std::memory_order_relaxed);
     g_vrGameplayLastMs.store(GetTickCount64(), std::memory_order_relaxed);

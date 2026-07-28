@@ -1515,3 +1515,157 @@ the stick-pitch-kill gate, and logged on transition as
 generic "save is loaded" detector (tools/boot.ps1). The intro and main menu read
 menu/cutscene (viewActor==pc there); the transition to GAMEPLAY fires exactly at
 save load, any save, any level.
+
+## Session 20 - the two trim algebras: measured divergence baseline (synccheck)
+
+The session-18/19 root-cause claim ("the ray trims via rotator ADDS in game
+space, the model trims via a QUAT COMPOSED in the controller's local frame -
+they agree only at the tuning pose") is now MEASURED. Both pose->rot chains
+were refactored into pure functions in `frame_context.h`
+(`ray_pose_from_xr`, `model_pose_from_xr`) that production (aim.cpp,
+hands.cpp) and the new `vraim synccheck` sweep share, so the sweep measures
+the real shipping code. The sweep drives ~21 axis-angle controller
+orientations (identity, +-45/90 per axis, 180 roll, mixed axes) through both
+chains against the cached last FrameContext and prints the angle between the
+ray direction and the model barrel direction.
+
+**Baseline (2026-07-28, pre-unification build, clean boot, NG+ Medical
+Pavilion, vrpreset armed):** with a canonical 10/10 trim fed IDENTICALLY to
+both chains (so every degree of divergence is pure algebra difference):
+
+- identity pose and all pure-YAW poses: 0.00 deg (rotations about world up
+  commute with the yaw add - the algebras agree exactly there, which is why
+  eye-tuning at a neutral pose always "worked")
+- pitch poses: 4.14 deg at +45, 1.76 at -45, 11.58 at +90
+- ROLL poses (about the view axis): 10.70 deg at 45, 19.85 at 90,
+  **28.21 deg at 180 - the maximum of the whole sweep**
+- mixed axes: 2.33-13.70 deg
+- **MAX canonical divergence: 28.21 deg.** Roll is where the two algebras
+  differ most - an XR-local-euler sweep (no rolled poses) would have
+  under-reported the defect badly.
+
+Live-trim sweep on the user's tuning (ray L +0.2/+17.7, R 0/0; model trims
+all 0): liveR ~0.0 everywhere (zero trims = both chains degenerate to the
+same map), liveL up to 17.70 deg (the L ray trim has no model-side
+counterpart by construction of the tuning). Render-lock position delta
+quoted separately at 0.00 UU (position-only by construction - the lock never
+touches rotation).
+
+Verification that the refactor is behavior-preserving: model drive live via
+simpose (writes counting, loc/rot exact for sim 0/0/0), fire test through
+the armed synthetic ray - substituted rot (1763, 20919) = camera (853,
+19099) + trim (5, 10 deg) * 182.04 units/deg exactly, subs=2, ammo 47->43,
+dumps 8->8.
+
+**Post-unification (same day): the algebra gate collapsed 28.21 -> 0.03 deg.**
+Ray + laser now run the model's exact compose (q_ctrl (x) q_trim via
+xr_local_trim_quat; `ray_pose_from_xr` = `model_pose_from_xr` + roll drop in
+frame_context.h; helpers promoted to core/util/xr_math.h so the laser -
+core code - shares them). Canonical sweep: <= 0.03 deg at EVERY pose (the
+int-rotator quantization floor, 1 unit = 0.0055 deg). The live-L sweep is
+the confirmation from the other side: 17.70 deg at EVERY orientation
+(constant = pure trim-value difference between the L ray trim and the L
+model trim; pre-fix it varied 0.20-17.70 with orientation = algebra error).
+The laser's origin basis now builds right from the ray's YAW angle (zero-roll
+convention, defined at any pitch); the old d x worldUp cross degenerated near
+vertical and silently dropped the right/up offset components. Legacy
+`vrhands aligntrim` deleted. Fire test on the unified build: calls=2 subs=2
+skips=0, substituted rot exact, dumps 8->8.
+
+### The name system: GNames located, index->string live (session 20 stage 4)
+
+The FName-chain event scan finds the FName constructor and used to throw it
+away; it is now captured (`EventScanResult::fnameCtor`, logged at boot:
+**RVA 0x70D660**). Capstone disassembly (scratchpad only - never committed):
+0x70D660 is a thin SEH wrapper that enters a name-system critical section
+(global at RVA 0x136CEB8) and calls the real worker at **RVA 0x70D3C0**. The
+worker: wcslen, digit-suffix split (`Name_123` -> base + number - FName is
+8 bytes {int32 index, int32 number}; the number stores at FName+4), a
+case-insensitive hash AND 0xFFF into a **4096-bucket hash table at RVA
+0x1370EC0** (chain via entry+0xC, wcsicmp against entry+0x10), and on the
+FindType==2 path indexes **GNames.Data at RVA 0x13904EC**
+(`TArray<FNameEntry*>`: Data, +4 Count, +8 Max) and ORs 0x4000000 into
+entry+4.
+
+**FNameEntry layout** (matches the package-file prior - UTF-16, 8-byte
+flags): +0x0 the entry's own index (used as a self-check by the resolver),
++0x4/+0x8 the 8-byte flags, +0xC hash-chain next, +0x10 UTF-16 text in
+place. Bonus find: a free-index STACK (Data/Count/Max ints at RVA
+0x13904F8/FC/0x1390500) - new names reuse recycled indices.
+
+`patterns::fname_text(index)` reads GNames with full validation (every
+dereference is_memory_valid + the entry self-index check); exposed as
+`vrhands fname <index>|weapon`. **Live gate passed**: index 0 -> 'None',
+1 -> 'ByteProperty' (the canonical Unreal table opening), GNames count
+54129, and the equipped weapon's attach-bone FName (weapon+0xF0) ->
+**'Launcher'** (idx 18075) - the AHands rig's weapon-attach socket name
+(bone 43 in index space).
+
+### Weapon skeletons, bone names, and the muzzle ray (session 20 stage 5)
+
+**Bone-name map**: SkeletonInstance +0x08 -> SharedSkeletonData; its +0xAC map
+(lookup fn 0x5F6500, capstone-disassembled) is a standard UE hash map -
++0x00 pairs base (16-byte pairs {chain next, FName index, FName number,
+value}), +0x0C int32 bucket array (-1 empty), +0x10 bucket count (power of
+two). Walking every bucket chain enumerates FName->boneIndex, which inverted
++ fname_text gives index->name for ANY skeletal actor (`vrbones skel
+[hands|weapon]`).
+
+**The shotgun's own skeleton is 3 bones**: SG_Body (x=10.1), SG_Pump
+(x=57.3), SG_Shell (x=25.0) - all identity-ish quats, so the weapon's
+component +X is the barrel axis, and there is NO explicit muzzle bone. The
+muzzle ray therefore derives from the HANDS rig (bones 43->44 of the
+per-weapon reference pose), as the plan's on-file alternative anticipated.
+
+**Muzzle-ray derivation** (vraim muzzle on|off, default OFF): bones::drive
+writes every cluster quat as qtc (x) q_ref with qtc = inv(q_actor) (x)
+q_target, so the rendered world direction of (bone44ref - bone43ref) is
+q_target (x) d0 - the actor frame cancels, the head never enters
+(actor-frame rendering, session 12 part 3). d0 = normalize(p44ref - p43ref)
+is recomputed per frame from the live reference, so it is per-weapon (the
+reference IS the per-weapon animation) and follows any authored sway.
+**Flat-measured on the shotgun**: d0 = (0.98, ~0.01, 0.15-0.19) - the
+rendered barrel sits ~9-11 deg ABOVE the attach frame's forward and visibly
+wanders inside that band with the idle sway (the misalignment users
+hand-trim today, now followed automatically). Muzzle off -> ray rot
+(0, camYaw); on -> (+1971, +41) units = +10.8/+0.2 deg = asin(d0.z) exactly.
+Fire test with the muzzle ray live: calls=3 subs=3 skips=0, dumps 8->8. The
+laser rides the same d0 XR-side (LaserConfig.muzzle; model trim incl. ROLL -
+roll moves an off-axis vector).
+
+**Negative result**: `exec NextWeapon` through the viewport chain FAULTS
+(eip exe+0x4C2353, SEH caught) - UE2 stock console weapon switching is not
+wired on this build; flat weapon switching stays an open harness gap (the
+bumpers open the session-19 radial, which needs real stick timing). The
+per-weapon d0 change is structurally guaranteed but goes to the in-headset
+checklist for the eyes-on proof.
+
+### Idle sway: measured, root-cause identified, killed in the drive (session 20 stage 6)
+
+**Measured flat first** (the muzzle ray's barrel-axis echo as the
+instrument): at idle under the live drive the reference pose's barrel
+direction oscillates 8.4-11.0 deg (z component 0.146-0.191) = **+-1.2 deg
+amplitude**, yaw +-0.6 deg; 1 Hz anchor telemetry vs a frozen snapshot
+peaks at **3.01 UU / 4.6 deg** on the wrist anchors.
+
+**Negative result (the SET-seam premise dissolves)**:
+`UpdateHandBobAnimationParameters` decompiled - it drives the WALK bob on
+animation channel 2 with weight = velocity/GroundSpeed, i.e. ZERO at
+standstill. `PlayHandBobAnimation` confirms channel 2 = the additive bob.
+The idle breathing is the authored base idle ANIMATION - there is no script
+property to zero, so nothing for the SET seam to set.
+
+**The kill (default ON, `vrhands swaykill on|off`)**: the sway reaches the
+VR rig through exactly one door - the drive's per-frame reference recapture
+- so the reference FREEZES against it: a fresh engine pose is adopted only
+when either wrist anchor moves past 6 UU / 12 deg (2x the measured idle
+envelope; equip/reload/fire move tens of UU), plus a 600 ms settle window
+past the last big frame so the eventual freeze holds the SETTLED pose, not
+a mid-animation one. Flat acceptance: kill ON = barrel axis bitwise
+IDENTICAL across 8 samples / 32 s; OFF = the wobble returns instantly; two
+fire pulls passed the threshold (reference re-adopted, settled 0.4 deg from
+the old snapshot) and re-froze 3/3. The weapon's own skeleton (pump,
+cylinder) animates untouched - it is a different SkeletonInstance. Side
+effect by construction: hand-cluster finger animation during reload freezes
+too (the drive was already overwriting it); the weapon's own reload
+animation still shows.

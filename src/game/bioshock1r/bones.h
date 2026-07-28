@@ -55,7 +55,15 @@ void on_world_change();
 void set_hide_inactive(bool on);
 bool hide_inactive();
 
-// Seam commands (game thread): status | list [n] | poke <idx> <dUU> |
+// Session 20: freeze the drive's reference against the idle animation's
+// breathing (default ON; `vrhands swaykill on|off`). Real animations pass an
+// anchor-delta threshold and re-freeze when they settle. Measured baseline:
+// +-1.2 deg of barrel-direction wobble at idle without it.
+void set_sway_kill(bool on);
+bool sway_kill();
+
+// Seam commands (game thread): status | list [n] | skel [hands|weapon] |
+// poke <idx> <dUU> |
 // freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor> |
 // log on|off (in-headset telemetry: head/controller/camera/actor/target/bone
 // samples at ~5 Hz so a headset session can be diagnosed from the log)
@@ -65,6 +73,17 @@ void handle_command(const char* args);
 // raw-pose lines to the same telemetry stream (each site throttles itself to
 // ~5 Hz; the log timestamps correlate the lines of one sample).
 bool telemetry_on();
+
+// |render-lock position delta| applied last frame, UU. POSITION-only by
+// construction (the lock never touches rotation) - `vraim synccheck` quotes it
+// so the position story stays separate from the rotation-divergence gate.
+float lock_delta_mag();
+
+// Session 20 muzzle ray: the rendered barrel axis (hands-rig bones 43->44 in
+// the current reference pose), expressed in the drive target's local frame -
+// world barrel dir = target rotation (x) d0 (see the impl derivation). False
+// until a reference pose exists. Game thread.
+bool barrel_ref_axis(float d0[3]);
 
 // Overlay section (render thread only).
 void draw_debug_ui();

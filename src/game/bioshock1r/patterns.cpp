@@ -147,6 +147,12 @@ bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
         BVR_LOG("[b1r] fname index global: %p (%zu xref(s), %zu candidate(s) after init-site filter)",
                 scan.fnameIndexGlobal, scan.globalXrefs, scan.candidates);
     }
+    if (scan.fnameCtor) {
+        // Session 20: the FName constructor, kept for the name-system work
+        // (GNames derivation in ENGINE_NOTES; resolver below).
+        BVR_LOG("[b1r] fname ctor = %p (RVA 0x%X)", scan.fnameCtor,
+                static_cast<unsigned>(scan.fnameCtor - image.base));
+    }
 
     if (!ok) {
         const char* stage = scan.stringMatches == 0     ? "wide string not found"
@@ -223,6 +229,31 @@ void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& 
         BVR_LOG("[b1r] UAttackAbility::GetPerfectFireStart impl prologue mismatch at RVA 0x%X"
                 " - plasmid aim unavailable", kAbilityFireStartImplRva);
     }
+}
+
+const wchar_t* fname_text(int32_t index) {
+    using bvr::pattern_scan::is_memory_valid;
+    if (!g_imageBase || index < 0) return nullptr;
+    const uint8_t* arrayBase = g_imageBase + kGNamesDataRva;
+    if (!is_memory_valid(arrayBase, 8)) return nullptr;
+    const uint8_t* const* data = *reinterpret_cast<const uint8_t* const* const*>(arrayBase);
+    int32_t count = *reinterpret_cast<const int32_t*>(arrayBase + 4);
+    if (!data || index >= count) return nullptr;
+    if (!is_memory_valid(data + index, sizeof(void*))) return nullptr;
+    const uint8_t* entry = data[index];
+    if (!entry || !is_memory_valid(entry, kFNameEntryTextOffset + 2)) return nullptr;
+    // Entries self-identify: +0 is the entry's own index. A mismatch means
+    // the layout assumption broke (or the slot is recycled garbage) - refuse.
+    if (*reinterpret_cast<const int32_t*>(entry) != index) return nullptr;
+    return reinterpret_cast<const wchar_t*>(entry + kFNameEntryTextOffset);
+}
+
+int32_t fname_count() {
+    using bvr::pattern_scan::is_memory_valid;
+    if (!g_imageBase) return 0;
+    const uint8_t* arrayBase = g_imageBase + kGNamesDataRva;
+    if (!is_memory_valid(arrayBase, 8)) return 0;
+    return *reinterpret_cast<const int32_t*>(arrayBase + 4);
 }
 
 } // namespace bvr::b1r::patterns

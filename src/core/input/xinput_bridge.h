@@ -32,6 +32,11 @@ bool enabled();
 // focused); the slot also self-expires if publishing stops entirely.
 void publish_xr_state(const Gamepad& pad, bool active);
 
+// The last pad published above + its active flag - what the composer will
+// merge this frame. The session-20 recorder taps it per CalcView so a replay
+// can re-publish the exact pad stream.
+void last_xr_pad(Gamepad* pad, bool* active);
+
 // The game layer publishes "the VR camera is driving a REAL gameplay view"
 // once per frame (CalcView; strict predicate - menus/cutscenes publish
 // false). While true and pitchkill is on, the composed right-stick Y is

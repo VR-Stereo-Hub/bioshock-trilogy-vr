@@ -231,6 +231,19 @@ evidence, and both need a headset.
   `%LOCALAPPDATA%\BioshockVR\framedump_HHMMSS.txt` for the next full Present-to-Present
   frame: per-draw RTs/formats, viewports, VS b0 readback (full mode), callstack RVAs, and
   a draws-per-RT + stack-histogram summary. Never commit dumps (game-derived).
+- **Record/replay (session 20)**: `vrrec start|stop|play [file]|hand [p y r|off]|status`
+  records the per-frame input state (head pose, the four hand-funnel poses, the XR pad)
+  once per game tick at the CalcView tail and replays it frame for frame through the
+  production paths - files in `%LOCALAPPDATA%\BioshockVR\recordings\*.bvrrec`, recenter
+  state + worldScale in the header (restored on play). `vrrec hand` arms a static
+  synthetic pose on all four funnel slots (model+ray+laser follow it - the flat record
+  path). `[rec] REC/PLAY mark` lines every 10th frame print head pose, driven camera,
+  and the aim-R ray through the shared pure chain - a record log and a replay log are
+  comparable number for number (session-20 acceptance: 712/712 marks bitwise EXACT).
+  Rules: `play` refuses while an XR session lives; RECENTER BEFORE `start`, never
+  during; record comparisons with `vrbody off` (or long-settled) - the yaw transfer's
+  probe moves gameYaw/recenterYaw between record and replay time and offsets every
+  camera mark by the transferred amount (measured: the 1.1 deg arm probe = 200 units).
 - **Reentry probe (DR-5)**: `reentry hook [build|submit|drain|flush]` / `reentry unhook`
   (MinHook the game-thread scene BUILD root (default - the SequentialReentry seam), the
   frame submit, the render-thread drain, or the flush - command-gated, default runs stay

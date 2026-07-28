@@ -20,6 +20,7 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -73,6 +74,27 @@ struct CachedSleeve {
 };
 CachedSleeve g_cacheSleeve[8];
 int g_cacheSleeveCount = 0;
+
+// Session 20 idle-sway kill (default ON; `vrhands swaykill on|off`): freeze
+// the drive's reference pose against the idle animation's breathing. A fresh
+// engine pose is adopted only when either wrist anchor moved past the
+// thresholds - real animations (equip/reload/melee) pass through and
+// re-freeze when they settle; the measured idle wobble (+-1.2 deg barrel
+// direction, sub-UU positions) stays out. Acts only on the DRIVEN rig; the
+// weapon's own skeleton (pump, cylinder) animates untouched.
+std::atomic<bool> g_swayKill{true};
+// 2x the MEASURED idle envelope vs a frozen snapshot (session 20, 1 Hz sway
+// telemetry: dpos peaks 3.01 UU, dang peaks 4.6 deg) - real animations move
+// the anchors tens of UU / tens of degrees, so the gap is wide on both sides.
+constexpr float kSwayPosThreshUu = 6.0f;
+constexpr float kSwayAngThreshDeg = 12.0f;
+// After a real animation, keep tracking this long past the LAST threshold
+// crossing so the freeze lands on the SETTLED pose, not the last big frame.
+constexpr uint64_t kSwaySettleMs = 600;
+uint64_t g_lastBigDeltaMs = 0;
+// Telemetry (1 Hz while frozen): the probe deltas the threshold judges, so
+// the thresholds are set from measured idle amplitude, not guesses.
+uint64_t g_lastSwayTlmMs = 0;
 
 // Session 19: the whole INACTIVE hand collapses too - the drive poses only
 // the active hand's cluster, so the other one stays engine-animated at the
@@ -167,38 +189,104 @@ uint32_t to_rva(const void* p) {
 // actor -> SkeletonInstance, fully revalidated (vtable, plausible count,
 // readable array). The instance is recreated on mesh relinks, so never trust
 // yesterday's pointer.
-bool locate(void* handsActor) {
+//
+// Session 20: the resolution itself is BY VALUE and slot-free (`resolve_skel`)
+// so any actor's skeleton can be inspected - the weapon carries its own, which
+// is what the muzzle probe needs. `locate()` keeps the module's single cached
+// slot for the drive, which only ever poses the AHands rig.
+struct Skel {
+    void* inst = nullptr;
+    Qts* bones = nullptr;
+    int count = 0;
+};
+
+bool resolve_skel(void* actor, Skel& out) {
+    out = {};
+    if (!actor) return false;
     void* si = nullptr;
-    if (!read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorSkelInstOffset, &si,
-                sizeof si) ||
-        !si) {
-        g_skelInst = nullptr;
+    if (!read_n(static_cast<uint8_t*>(actor) + patterns::kActorSkelInstOffset, &si, sizeof si) ||
+        !si)
         return false;
-    }
     void* vtbl = nullptr;
-    if (!read_n(si, &vtbl, sizeof vtbl) || to_rva(vtbl) != patterns::kSkeletonInstanceVtableRva) {
-        g_skelInst = nullptr;
+    if (!read_n(si, &vtbl, sizeof vtbl) || to_rva(vtbl) != patterns::kSkeletonInstanceVtableRva)
         return false;
-    }
     struct {
         Qts* bones;
         int count;
     } a{};
     if (!read_n(static_cast<uint8_t*>(si) + patterns::kSkelInstBonesOffset, &a, sizeof a) ||
-        !a.bones || a.count < 8 || a.count > kMaxBones) {
+        !a.bones || a.count < 1 || a.count > kMaxBones)
+        return false;
+    out.inst = si;
+    out.bones = a.bones;
+    out.count = a.count;
+    return true;
+}
+
+// Bone index -> name, via the SharedSkeletonData FName->index map walked in
+// reverse (patterns.h "Session 20: bone NAMES"). Returns how many names were
+// filled; entries stay null when a bone has no map entry.
+int resolve_bone_names(const Skel& sk, const wchar_t** names, int cap) {
+    for (int i = 0; i < cap; ++i) names[i] = nullptr;
+    if (!sk.inst) return 0;
+    void* shared = nullptr;
+    if (!read_n(static_cast<uint8_t*>(sk.inst) + patterns::kSkelInstSharedOffset, &shared,
+                sizeof shared) ||
+        !shared)
+        return 0;
+    const uint8_t* map = static_cast<const uint8_t*>(shared) + patterns::kSharedBoneNameMapOffset;
+    struct {
+        const uint8_t* pairs;
+    } p{};
+    const int32_t* buckets = nullptr;
+    int32_t bucketCount = 0;
+    if (!read_n(map + patterns::kNameMapPairsOffset, &p, sizeof p) ||
+        !read_n(map + patterns::kNameMapBucketsOffset, &buckets, sizeof buckets) ||
+        !read_n(map + patterns::kNameMapBucketCountOffset, &bucketCount, sizeof bucketCount))
+        return 0;
+    if (!p.pairs || !buckets || bucketCount <= 0 || bucketCount > 65536) return 0;
+
+    int filled = 0;
+    for (int b = 0; b < bucketCount; ++b) {
+        int32_t idx = -1;
+        if (!read_n(buckets + b, &idx, sizeof idx)) break;
+        // Chain walk, bounded by the table size so a corrupt link cannot spin.
+        for (int guard = 0; idx >= 0 && guard <= cap * 4; ++guard) {
+            struct {
+                int32_t next, nameIdx, nameNum, value;
+            } pair{};
+            if (!read_n(p.pairs + static_cast<size_t>(idx) * patterns::kNameMapPairStride, &pair,
+                        sizeof pair))
+                break;
+            if (pair.value >= 0 && pair.value < cap && !names[pair.value]) {
+                const wchar_t* t = patterns::fname_text(pair.nameIdx);
+                if (t) {
+                    names[pair.value] = t;
+                    ++filled;
+                }
+            }
+            idx = pair.next;
+        }
+    }
+    return filled;
+}
+
+bool locate(void* handsActor) {
+    Skel sk{};
+    if (!resolve_skel(handsActor, sk) || sk.count < 8) {
         g_skelInst = nullptr;
         return false;
     }
-    if (si != g_skelInst || a.bones != g_bones || a.count != g_boneCount) {
-        BVR_LOG("[bones] skeleton: inst=%p bones=%p count=%d%s", si,
-                static_cast<void*>(a.bones), a.count,
-                a.count == patterns::kHandsRigBoneCount ? "" : " (UNEXPECTED count)");
+    if (sk.inst != g_skelInst || sk.bones != g_bones || sk.count != g_boneCount) {
+        BVR_LOG("[bones] skeleton: inst=%p bones=%p count=%d%s", sk.inst,
+                static_cast<void*>(sk.bones), sk.count,
+                sk.count == patterns::kHandsRigBoneCount ? "" : " (UNEXPECTED count)");
         g_refValid = false; // new array = new reference
         g_hasWritten[0] = g_hasWritten[1] = false;
     }
-    g_skelInst = si;
-    g_bones = a.bones;
-    g_boneCount = a.count;
+    g_skelInst = sk.inst;
+    g_bones = sk.bones;
+    g_boneCount = sk.count;
     return true;
 }
 
@@ -502,6 +590,19 @@ void on_world_change() {
     g_cacheHiddenCount = 0;
 }
 
+void set_sway_kill(bool on) {
+    bool was = g_swayKill.exchange(on, std::memory_order_relaxed);
+    if (was && !on) g_refValid = false; // release the frozen pose immediately
+    BVR_LOG("[bones] idle-sway kill %s (%s)", on ? "ON" : "off",
+            on ? "reference frozen against idle breathing; real animations pass the "
+                 "threshold and re-freeze when settled"
+               : "reference tracks every engine evaluation - sway visible again");
+}
+
+bool sway_kill() {
+    return g_swayKill.load(std::memory_order_relaxed);
+}
+
 void set_hide_inactive(bool on) {
     bool was = g_hideInactive.exchange(on, std::memory_order_relaxed);
     if (was != on)
@@ -514,6 +615,32 @@ bool hide_inactive() { return g_hideInactive.load(std::memory_order_relaxed); }
 
 bool telemetry_on() {
     return g_telemetry.load(std::memory_order_relaxed);
+}
+
+float lock_delta_mag() {
+    return g_lockDeltaMag.load(std::memory_order_relaxed);
+}
+
+bool barrel_ref_axis(float d0[3]) {
+    // The rendered barrel axis in the DRIVE TARGET's local frame (UE
+    // fwd/right/up). Derivation: drive() writes every cluster quat as
+    // qtc (x) q_ref with qtc = inv(q_actor) (x) q_target and positions as a
+    // rigid rotation of the reference about the anchor, so the rendered
+    // world direction of (bone44ref - bone43ref) is q_target (x) d0 - the
+    // actor frame cancels. d0 tracks the reference pose, which IS the
+    // per-weapon animation (bone 44 = "muzzle-ish tip", patterns.h), so the
+    // muzzle ray is per-weapon automatic and follows any authored sway the
+    // engine still plays.
+    if (!g_refValid || g_boneCount <= patterns::kBoneRClusterLast) return false;
+    const float* pa = g_ref[patterns::kBoneWeaponAttach].p;
+    const float* pm = g_ref[patterns::kBoneRClusterLast].p; // bone 44
+    float d[3] = {pm[0] - pa[0], pm[1] - pa[1], pm[2] - pa[2]};
+    float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (len < 1.0f) return false; // degenerate reference (collapsed rig)
+    d0[0] = d[0] / len;
+    d0[1] = d[1] / len;
+    d0[2] = d[2] / len;
+    return true;
 }
 
 bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
@@ -549,9 +676,53 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     bool engineEvaluated =
         !g_hasWritten[hand] || memcmp(&cur, &g_lastWrittenAnchor[hand], sizeof cur) != 0;
     if (engineEvaluated || !g_refValid) {
-        if (!read_n(g_bones, g_ref, sizeof(Qts) * static_cast<size_t>(g_boneCount)))
+        // Session 20 sway kill: the idle breathing is the authored idle
+        // ANIMATION (channel 0/1 - no script parameter to zero, measured),
+        // and it reaches the VR rig only through this recapture. With the
+        // kill armed, a fresh engine pose replaces the reference ONLY when
+        // it differs by a REAL animation's magnitude (equip/reload/melee -
+        // they track live and re-freeze when they settle); idle wobble
+        // (measured +-1.2 deg / sub-UU on the anchor) stays frozen out.
+        Qts fresh[kMaxBones];
+        if (!read_n(g_bones, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount)))
             return false;
-        g_refValid = true;
+        bool adopt = true;
+        if (g_refValid && g_swayKill.load(std::memory_order_relaxed)) {
+            adopt = false;
+            uint64_t nowMs = GetTickCount64();
+            float maxPos = 0.0f, maxAng = 0.0f;
+            static const int kProbe[2] = {patterns::kBoneLWrist, patterns::kBoneWeaponAttach};
+            for (int k = 0; k < 2; ++k) {
+                int b = kProbe[k];
+                if (b >= g_boneCount) continue;
+                float dp[3] = {fresh[b].p[0] - g_ref[b].p[0], fresh[b].p[1] - g_ref[b].p[1],
+                               fresh[b].p[2] - g_ref[b].p[2]};
+                float dot = fresh[b].q[0] * g_ref[b].q[0] + fresh[b].q[1] * g_ref[b].q[1] +
+                            fresh[b].q[2] * g_ref[b].q[2] + fresh[b].q[3] * g_ref[b].q[3];
+                if (dot < 0.0f) dot = -dot;
+                if (dot > 1.0f) dot = 1.0f;
+                float angDeg = 2.0f * acosf(dot) * kRadToDeg;
+                float posUu = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+                if (posUu > maxPos) maxPos = posUu;
+                if (angDeg > maxAng) maxAng = angDeg;
+            }
+            if (maxPos > kSwayPosThreshUu || maxAng > kSwayAngThreshDeg)
+                g_lastBigDeltaMs = nowMs;
+            // Track through the animation AND a settle window past its last
+            // big frame, so the eventual freeze holds the SETTLED pose.
+            adopt = (nowMs - g_lastBigDeltaMs) < kSwaySettleMs;
+            if (g_telemetry.load(std::memory_order_relaxed) &&
+                nowMs - g_lastSwayTlmMs >= 1000) {
+                g_lastSwayTlmMs = nowMs;
+                BVR_LOG("[tlm] sway probe: dpos=%.2f UU dang=%.2f deg (thresh %.1f/%.1f) %s",
+                        maxPos, maxAng, kSwayPosThreshUu, kSwayAngThreshDeg,
+                        adopt ? "TRACKING" : "frozen");
+            }
+        }
+        if (adopt || !g_refValid) {
+            memcpy(g_ref, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
+            g_refValid = true;
+        }
     }
 
     // Hide-inactive bookkeeping, BEFORE the rigid write: if the hand about to
@@ -835,6 +1006,37 @@ void handle_command(const char* args) {
                     "scale(%.2f %.2f %.2f)",
                     i, b.p[0], b.p[1], b.p[2], b.q[0], b.q[1], b.q[2], b.q[3], b.s[0], b.s[1],
                     b.s[2]);
+        }
+    } else if (strcmp(verb, "skel") == 0) {
+        // Session 20 muzzle probe: dump ANY actor's skeleton WITH bone names.
+        // "skel hands" (default) = the AHands rig; "skel weapon" = the
+        // equipped weapon's own skeleton, where the muzzle bone lives.
+        bool wantWeapon = strncmp(rest, "weapon", 6) == 0;
+        void* actor = wantWeapon ? hands::weapon_actor() : hands::hands_actor();
+        if (!actor) {
+            BVR_LOG("[bones] skel: no live %s actor (arm the drive; fire once for the "
+                    "weapon)",
+                    wantWeapon ? "weapon" : "hands");
+            return;
+        }
+        Skel sk{};
+        if (!resolve_skel(actor, sk)) {
+            BVR_LOG("[bones] skel: %s actor %p has no SkeletonInstance at +0x%X (or the "
+                    "vtable did not validate)",
+                    wantWeapon ? "weapon" : "hands", actor, patterns::kActorSkelInstOffset);
+            return;
+        }
+        const wchar_t* names[kMaxBones];
+        int named = resolve_bone_names(sk, names, sk.count);
+        BVR_LOG("[bones] skel %s: actor=%p inst=%p bones=%p count=%d (%d named)",
+                wantWeapon ? "WEAPON" : "HANDS", actor, sk.inst, static_cast<void*>(sk.bones),
+                sk.count, named);
+        for (int i = 0; i < sk.count; ++i) {
+            Qts b{};
+            if (!read_n(&sk.bones[i], &b, sizeof b)) break;
+            BVR_LOG("[bones]  %2d %-24S pos(%8.2f %8.2f %8.2f) quat(%6.3f %6.3f %6.3f %6.3f)",
+                    i, names[i] ? names[i] : L"<unnamed>", b.p[0], b.p[1], b.p[2], b.q[0],
+                    b.q[1], b.q[2], b.q[3]);
         }
     } else if (strcmp(verb, "poke") == 0) {
         int idx = -1;

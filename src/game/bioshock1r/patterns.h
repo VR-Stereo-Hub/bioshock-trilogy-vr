@@ -410,6 +410,18 @@ inline constexpr uint32_t kSkelInstBoneCountOffset = 0x4C;  // int (AHands rig: 
 inline constexpr uint32_t kSkelInstBonesBOffset = 0x54;     // hkQsTransform* array B
 inline constexpr uint32_t kSkelInstBoneCountBOffset = 0x58;
 inline constexpr uint32_t kSkelInstDirtyOffset = 0x88;   // evaluate-if-dirty flag (byte)
+// Session 20: bone NAMES. SkeletonInstance +0x08 -> SharedSkeletonData, whose
+// +0xAC map is FName -> bone index (lookup fn 0x5F6500, disassembled): a
+// standard UE hash map - +0x00 pairs base (16-byte pairs: +0 chain next,
+// +4 FName index, +8 FName number, +0xC value), +0x0C bucket array (int32,
+// -1 = empty), +0x10 bucket count (power of two). Walking every bucket chain
+// enumerates the whole table, which inverts to bone index -> name.
+inline constexpr uint32_t kSkelInstSharedOffset = 0x08;
+inline constexpr uint32_t kSharedBoneNameMapOffset = 0xAC;
+inline constexpr uint32_t kNameMapPairsOffset = 0x00;
+inline constexpr uint32_t kNameMapBucketsOffset = 0x0C;
+inline constexpr uint32_t kNameMapBucketCountOffset = 0x10;
+inline constexpr uint32_t kNameMapPairStride = 16;
 // The attach bone FName is stored ON the attached actor (weapon +0xF0/+0xF4)
 // by AActor::AttachToBone; attachment itself is bone-name + SetBase (actor
 // vtable +0x1A0). Equip-time only - nothing re-asserts it per tick.
@@ -518,6 +530,27 @@ inline constexpr float kFgInvTanV = 2.3094011f; // 1/0.4330127
 // vanilla's visible hand liveliness, the model's residual floor).
 inline constexpr float kFgViewYawBiasDeg = 1.7f;
 inline constexpr float kFgViewPitchBiasDeg = 1.1f;
+
+// ---- Name system (session 20) ----------------------------------------------
+// Derived by capstone disassembly of the FName constructor the event scan
+// already finds (thin SEH/lock wrapper at RVA 0x70D660 -> worker 0x70D3C0);
+// full chain in ENGINE_NOTES "Session 20". GNames is a TArray<FNameEntry*>
+// indexed by name index:
+//   [kGNamesDataRva] = FNameEntry** Data, +4 = int32 Count, +8 = int32 Max
+// FNameEntry: +0x0 int32 index (self), +0x4/+0x8 the 8-byte flags (the
+// FindType==2 path ORs 0x4000000 into +0x4), +0xC FNameEntry* hash next,
+// +0x10 UTF-16 text in place. An FName field is 8 bytes {index, number}.
+// The 4096-bucket string->index hash lives at kFNameHashRva (bonus oracle).
+inline constexpr uint32_t kGNamesDataRva = 0x13904EC;
+inline constexpr uint32_t kFNameHashRva = 0x1370EC0;
+inline constexpr uint32_t kFNameEntryHashNextOffset = 0xC;
+inline constexpr uint32_t kFNameEntryTextOffset = 0x10;
+
+// UTF-16 text of a name index, or null (unresolved base / out of range /
+// unreadable entry - every dereference is validated, fail-soft). Game thread.
+const wchar_t* fname_text(int32_t index);
+// GNames.Count (0 if unavailable) - for status lines.
+int32_t fname_count();
 
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
