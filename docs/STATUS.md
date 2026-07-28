@@ -1889,6 +1889,11 @@ stereo|quad`), `vrcine off`, `vrhud off`, `vrinput snap on|off`.
    the board must now sit on the READABLE screen (not sprayed across
    the FOV). Loading screens same. Main menu after quit-to-menu: also
    on the screen - confirm it is navigable by controller.
+   *Headset round 1 (2026-07-29): worked but the screen was world-locked
+   at the recenter facing - the user had to turn back to it. FIXED same
+   night: screen-only intervals now ride the HEAD-LOCKED view space
+   (like the pause panel), centered wherever you look; cinematic scenes
+   keep the world-locked screen. Re-verify.*
 4. **THE BIG DADDY FMV** (when you next pass one - no flat repro): it
    should land on the screen, not in the small HUD box. Report either
    way.

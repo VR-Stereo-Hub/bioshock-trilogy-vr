@@ -1469,7 +1469,17 @@ void on_present_end(IDXGISwapChain* swapchain) {
                         BVR_LOG("xr: alternate-eye stereo live (both eyes hold offset images)");
                 } else {
                     float width = g_screenWidthM.load(std::memory_order_relaxed);
-                    quad.space = g_space;
+                    // Session 22 (user feedback, first headset run): SCREEN-ONLY
+                    // intervals (hack minigame, loading screens - world-less 2D
+                    // boards) ride the HEAD-LOCKED view space, exactly like the
+                    // pause-menu panel, so the board is centered on wherever the
+                    // player is looking instead of the recenter-origin facing.
+                    // Cinematic scenes (fov-mismatch/strict legs) and the plain
+                    // camera-off screen keep the world-locked space unchanged.
+                    bool headLock = g_cineActive.load(std::memory_order_relaxed) &&
+                                    bvr::hud::screen_only() &&
+                                    g_viewSpace != XR_NULL_HANDLE;
+                    quad.space = headLock ? g_viewSpace : g_space;
                     quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
                     quad.subImage = sub;
                     quad.pose.orientation.w = 1.0f;
