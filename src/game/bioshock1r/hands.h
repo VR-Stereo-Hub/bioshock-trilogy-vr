@@ -96,6 +96,14 @@ void* weapon_actor();
 // too. Game thread; callers gate on gameplay view to avoid cutscene scans.
 void* resolve_weapon_actor(const FrameContext& ctx);
 
+// Hands.CurrentHoldable read raw off the rig, CLASS-AGNOSTIC (session 21
+// part 3: the MachineGun/GrenadeLauncher native vtable differs from
+// kPlayerWeaponVtableRva, so vtable-gated paths rejected them and pinned
+// the stale weapon). False = the rig is unknown/unreadable (fall back to
+// the legacy paths); true with *out possibly null. The per-weapon profile
+// layer's identity source - it validates by CLASS NAME, not vtable.
+bool current_holdable(void** out);
+
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.

@@ -1868,3 +1868,26 @@ work. Cosmetic follow-up queued: during some VISIBLE stretches the flat
 window also stops presenting despite the pace guard (presents=0 while the
 skip counter is idle) - the guard covers xrWaitFrame but something else
 in the frame loop stalls; in-play impact none.
+
+### Session 21 part 3 - the MachineGun/GrenadeLauncher keying gap
+
+Run-2 log proof: Shotgun/Pistol/ChemicalThrower/Crossbow keyed and swapped
+per wheel switch (the rig read works), but 'MachineGun' and
+'GrenadeLauncher' NEVER keyed - those two carry a DIFFERENT NATIVE VTABLE
+than kPlayerWeaponVtableRva, so the vtable-gated holdable path rejected
+them and fell back to the stale cached weapon: the old key stayed active
+and the user's MG/GL tuning edits landed in the previous weapon's profile.
+Fix: `hands::current_holdable()` returns the raw Hands.CurrentHoldable
+pointer class-agnostically (with a rig-known/unknown status so legacy
+fallbacks only serve pre-rig states); the profile layer keys purely on
+object_class_name (UClass-vtable-validated, works for ANY class) and
+CLEARS the key when a holdable's class cannot resolve (edits then touch no
+profile - logged). weapon_actor() keeps its PlayerWeapon-vtable gate for
+legacy consumers. The MG/GL live-switch proof stays on the headset list
+(cannot switch flat); everything else gated exact on a clean boot.
+
+Also this round: the user's fixed LEFT-hand calibration (aim trim
++4.4/+30.0 deg, ray offset R+4.6/U+0.7 cm) written to vrpreset.ini and
+baked as CODE DEFAULTS (their explicit ask); their four live profiles
+rescued to weapons.ini via wsave before anything could drop them (the run
+had not pressed save).

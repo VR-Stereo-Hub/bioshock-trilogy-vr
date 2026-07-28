@@ -165,6 +165,44 @@ now the default - confirm the aim-model sync feels like your `lock off`
 moment with no commands. (4) Optional: `fovaudit pose on` for 30 s (the
 submission closeout from the session-21 checklist still stands).
 
+### Session 21 part 3 (same day) - run 2: profiles nearly perfect, the MG/GL gap
+
+**The user's run 2:** per-weapon profiles "almost perfect... pretty good" -
+Shotgun/Pistol/ChemicalThrower/Crossbow keyed and swapped per wheel switch
+(log-proven, instant, no fire needed). But **MachineGun and
+GrenadeLauncher never keyed** (their tuning edits polluted whichever
+profile was still active): those two carry a DIFFERENT NATIVE VTABLE than
+kPlayerWeaponVtableRva, so the vtable-gated holdable read rejected them
+and the stale-cache fallback pinned the old key. FIXED the same night:
+`hands::current_holdable()` returns the rig's holdable CLASS-AGNOSTICALLY
+(the profile layer keys purely on object_class_name, which validates via
+the UClass vtable and resolves ANY class; an unresolvable class now CLEARS
+the key so edits can never touch another weapon's profile - logged).
+Flat-gated: 4 profiles load, Shotgun keys + applies, preset-save chains
+weapons.ini (mtime + 20 lines verified), fire subs 2/2, dumps stable. The
+MG/GL live-switch proof needs the wheel - headset item.
+
+**Also done on the user's ask:** (a) their four GOOD profiles from run 2
+were rescued to weapons.ini via `vraim wsave` before the game closed (the
+run had not pressed save) - Crossbow/others may carry MG/GL pollution, the
+user re-checks per weapon; (b) the user's FIXED LEFT-HAND calibration (aim
+trim +4.4/+30.0 deg, ray offset right +4.6 / up +0.7 cm, model offsets all
+zero) is written into vrpreset.ini AND baked as CODE DEFAULTS (aim.cpp) -
+new installs now start on their calibration; the rest of their preset
+(worldScale 100, ipd 63, gfov 130, deadzone 23) already matched the
+shipped defaults. The R-hand/profile default bake waits for their next
+tuning pass (their call). weapons.ini is now a LIVE USER FILE - never
+delete it in harness cleanups.
+
+**Headset re-test (run 3, short):** (1) equip the MACHINE GUN - the log
+must echo `weapon profile 'MachineGun' CREATED ...` the moment it equips;
+tune it; same for the GRENADE LAUNCHER; (2) re-check Crossbow (and any
+weapon tuned right before/after the MG/GL attempts in run 2) for polluted
+values - retune where needed; (3) switch across all six - each keeps its
+own; (4) "Save preset values" once at the end; (5) plasmid hand: confirm
+the left laser sits right out of the box (its calibration is now the
+default).
+
 ## Previous state (2026-07-28, session 20 - THE AIM-SYNC SESSION: one trim algebra, vrrec record+replay, FName/GNames, the muzzle ray, the idle-sway kill - ALL SIX STAGES FLAT-GREEN on branch s20-aim-sync)
 
 **Branch `s20-aim-sync`, MERGED to main as PR #5 (2026-07-28, the user's

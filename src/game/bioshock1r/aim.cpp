@@ -66,8 +66,11 @@ std::atomic<bool> g_useAimPose{true};
 std::atomic<bool> g_muzzleRay{false};
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
-std::atomic<float> g_pitchOffsetDeg[2] = {0.0f, 0.0f};
-std::atomic<float> g_yawOffsetDeg[2] = {0.0f, 0.0f};
+// LEFT defaults = the user's in-headset calibration (session 21 part 3,
+// their explicit ask: bake the fixed left hand into the defaults). The
+// right hand stays 0 - the per-weapon profiles own it now.
+std::atomic<float> g_pitchOffsetDeg[2] = {4.4f, 0.0f};
+std::atomic<float> g_yawOffsetDeg[2] = {30.0f, 0.0f};
 // Per-hand aim-ray ORIGIN offsets in cm (session 18 part 2, user request):
 // the model offsets move the MESH about its pivot, so a tuned model can sit
 // right while the ray no longer runs along the barrel. These move the RAY
@@ -77,8 +80,8 @@ std::atomic<float> g_yawOffsetDeg[2] = {0.0f, 0.0f};
 // disagree; the model deliberately does not take them (it has its own
 // sliders, and the two are tuned against each other).
 std::atomic<float> g_posFwdCm[2] = {0.0f, 0.0f};
-std::atomic<float> g_posRightCm[2] = {0.0f, 0.0f};
-std::atomic<float> g_posUpCm[2] = {0.0f, 0.0f};
+std::atomic<float> g_posRightCm[2] = {4.6f, 0.0f}; // L = user calibration (s21p3)
+std::atomic<float> g_posUpCm[2] = {0.7f, 0.0f};    // L = user calibration (s21p3)
 // ---- Session 21: per-weapon profiles ----------------------------------------
 // The RIGHT hand's trim + ray-origin offsets hot-swap per weapon, keyed by
 // the equipped weapon's canonical class name ('Shotgun', 'Pistol', ... via
@@ -873,16 +876,27 @@ void update_weapon_profile(const FrameContext& ctx) {
     // lesson; the game intro has no weapon for minutes).
     uint32_t mask = nullResolves >= 3 ? 2047 : 15;
     if ((++throttle & mask) != 0) return;
-    // Primary: Hands.CurrentHoldable straight off the rig (weapon_actor()
-    // reads it first since session 21 part 2) - instant, scanless swap
-    // detection. The anchored heap scan remains the fallback for states
-    // where the rig pointer is not resolved yet.
-    void* w = hands::weapon_actor();
-    if (!w) w = hands::resolve_weapon_actor(ctx);
-    nullResolves = w ? 0 : nullResolves + 1;
+    // Primary: Hands.CurrentHoldable raw off the rig, CLASS-AGNOSTIC
+    // (session 21 part 3: MachineGun/GrenadeLauncher carry a different
+    // native vtable, so the vtable-gated path rejected them and the stale
+    // cache pinned the OLD key - their edits landed in the previous
+    // weapon's profile). When the rig read works, its pointer is the
+    // identity, period: no fallback may resurrect a stale weapon. The
+    // legacy paths only serve states where the rig is not resolved yet.
+    void* w = nullptr;
+    bool haveRig = hands::current_holdable(&w);
+    if (!haveRig) {
+        w = hands::weapon_actor();
+        if (!w) w = hands::resolve_weapon_actor(ctx);
+    }
+    nullResolves = (haveRig || w) ? 0 : nullResolves + 1;
     if (w == g_weaponKeyActor) return;
     g_weaponKeyActor = w;
     const wchar_t* name = w ? patterns::object_class_name(w) : nullptr;
+    if (w && !name)
+        BVR_LOG("[aim] holdable %p has NO resolvable class name - profile key cleared, "
+                "slider edits will touch no profile until it resolves",
+                w);
     apply_weapon_key(name ? narrow_key(name) : std::string(), "weapon change");
 }
 

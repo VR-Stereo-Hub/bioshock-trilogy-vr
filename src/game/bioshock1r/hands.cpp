@@ -496,6 +496,26 @@ void* resolve_weapon_actor(const FrameContext& ctx) {
     return find_weapon_actor(ctx, false);
 }
 
+bool current_holdable(void** out) {
+    // Raw rig read, CLASS-AGNOSTIC: the MachineGun and GrenadeLauncher carry
+    // a different native vtable than kPlayerWeaponVtableRva, so the
+    // vtable-gated weapon_actor() path rejected them and fell back to the
+    // stale cached weapon - the session-21 part-3 defect (their profile key
+    // never changed and edits landed in the previous weapon's profile). The
+    // profile layer keys on the CLASS NAME, which validates through the
+    // UClass vtable instead - any holdable class resolves. Returns false
+    // when the rig itself is unknown/unreadable (callers then fall back to
+    // the legacy paths); *out may be null (nothing equipped).
+    if (!has_vtable(g_handsActor, patterns::kHandsVtableRva)) return false;
+    void* hold = nullptr;
+    if (!read_ptr(static_cast<const uint8_t*>(g_handsActor) +
+                      patterns::kHandsCurrentHoldableOffset,
+                  &hold))
+        return false;
+    *out = hold;
+    return true;
+}
+
 // Live mesh-alignment trim, read by `vraim synccheck` so its model chain runs
 // on the REAL tuned values (session 20).
 float model_trim_pitch_deg(int hand) {
