@@ -464,7 +464,10 @@ fixed or the release waits:**
 
 ## M9 - Comfort + UI/config + release polish (~2–3 sessions)
 
-**Two-hand track (user's call 2026-07-28, sequenced AFTER the session-20 aim work):**
+**Two-hand track (user's call 2026-07-28, sequenced AFTER the session-20 aim work -
+which SHIPPED 2026-07-28 on branch s20-aim-sync: one trim algebra (28.21 -> 0.03 deg),
+vrrec record+replay, FName/GNames + named skeleton dumps, the muzzle ray, the idle-sway
+kill. Both prerequisites below are now MET.):**
 - [ ] **Off-hand tracking** (`vrhands offhand track|hide`, default hide until judged by
       eye): drive the INACTIVE hand's cluster from its controller instead of collapsing
       it - the same rigid drive run on both clusters per frame. Reload/idle anims on the

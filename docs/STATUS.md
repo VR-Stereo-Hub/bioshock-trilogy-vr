@@ -2,7 +2,102 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-28, session 19 - M8 COMPLETE, v0.2.0 PUBLISHED: HUD on a floating quad, VR bindings, inactive hand hidden, stick pitch killed)
+## Current state (2026-07-28, session 20 - THE AIM-SYNC SESSION: one trim algebra, vrrec record+replay, FName/GNames, the muzzle ray, the idle-sway kill - ALL SIX STAGES FLAT-GREEN on branch s20-aim-sync)
+
+**Branch `s20-aim-sync` (from main at v0.2.0). Every stage below passed its
+numeric flat gate on clean boots; the in-headset checklist below is the open
+gate, and v0.3.0 publishes only after it + the user's explicit go. The
+session-19 plan's stage designs (4.1-4.6) were followed as written - nothing
+re-derived - with two design corrections forced by measurement (the SET-seam
+sway premise dissolved; the fopen_s share-mode trap resurfaced 19 sessions
+after session 1 fixed the same bug in the logger).**
+
+**1. The root cause is MEASURED, then KILLED (stages 1-2, the headline).**
+`vraim synccheck` sweeps 21 axis-angle controller orientations (roll
+included) through BOTH pose->rot chains as PURE functions
+(frame_context.h - production and the test share the code). Pre-fix
+baseline with a canonical 10/10 trim fed identically to both chains: 0.00
+deg at identity/pure-yaw poses, ~4-12 on pitch, 10.70/19.85/**28.21 deg at
+45/90/180 roll** - roll is where the two algebras differed most, exactly
+where eye-tuning never looked. Post-unification (ray + laser adopt the
+model's `q_ctrl (x) q_trim` compose via the promoted core/util/xr_math.h;
+`ray_pose_from_xr` = `model_pose_from_xr` + roll drop; the laser's origin
+basis now angle-built zero-roll, degeneracy bail gone; legacy `aligntrim`
+DELETED): canonical max **0.03 deg** (the int-rotator floor) at every pose,
+and the live-L divergence reads a CONSTANT 17.70 deg at every orientation =
+pure trim-value difference, orientation-independent - the definition of one
+algebra. Tuned trims carry over by construction. Fire test exact, laser
+echo unchanged, dumps 8->8.
+
+**2. vrrec record+replay (stage 3) - frame-for-frame EXACT.** One tap in
+CalcView's tail records what the game consumed (head, the four
+funnel poses, the published pad, predictedDisplayTime); replay feeds a
+dedicated head lane in the camera gate + sim slots ON the
+input_get_hand_pose funnel (ray, model, laser all read one world) + the pad
+publish, with recenter state + worldScale serialized in the header and
+restored on play. Acceptance: a neutral-stick simhead sweep (7112 frames)
+replayed with **712/712 marks bitwise identical** - |dloc| 0.000000 UU,
+rot/cam delta 0 units, head pose exact, pad exact - including the swept
+segments (20-deg head yaw replayed to the unit). Traps found and settled:
+the seam's trailing newline read as a file name (errno 22); fopen_s opens
+non-sharable (fresh recordings held by the indexer - _wfsopen _SH_DENYNO);
+`vrbody`'s probe moves gameYaw/recenterYaw between record and play, so
+comparisons run `vrbody off` or settled (documented in TESTING.md).
+`vrrec hand` arms a static funnel pose - the flat record path.
+
+**3. FName index->string (stage 4).** The event scan's discarded FName-ctor
+address is now captured (RVA 0x70D660 -> worker 0x70D3C0); capstone
+disassembly yielded GNames (TArray<FNameEntry*> Data at RVA 0x13904EC),
+the 4096-bucket name hash (0x1370EC0), and the entry layout that matches
+the package prior (+0 self-index, +4/+8 the 8-byte flags, +0xC chain,
++0x10 UTF-16 text). `patterns::fname_text()` validates every dereference +
+the self-index. Gate: index 0 -> 'None', 1 -> 'ByteProperty' (the canonical
+table opening), and the weapon's attach-bone FName (weapon+0xF0) ->
+**'Launcher'** (GNames count 54129).
+
+**4. The muzzle ray (stage 5; `vraim muzzle on|off`, DEFAULT OFF pending
+your verdict).** `vrbones skel weapon` dumps ANY actor's skeleton WITH
+names (the SharedSkeletonData +0xAC FName->index map, layout from the
+0x5F6500 lookup disasm, walked in reverse): the shotgun is 3 bones
+(SG_Body/SG_Pump/SG_Shell, +X = barrel, NO muzzle bone) - so the ray
+derives from the HANDS rig as the plan's on-file alternative: rendered
+world barrel = q_target (x) d0 with d0 = normalize(bone44ref - bone43ref)
+(the actor frame cancels - derivation in ENGINE_NOTES). d0 is per-weapon
+BY CONSTRUCTION (the reference pose IS the per-weapon animation - the
+flat-measured shotgun value: the barrel sits **~9-11 deg ABOVE the attach
+forward**, the exact misalignment hand-trimmed by eye until now). Flat:
+muzzle off ray rot (0, camYaw) -> on (+1971, +41) units = asin(d0.z) to
+the unit; fire subs 3/3 with the muzzle ray live; the laser rides the same
+d0 XR-side (model trim incl. ROLL - it moves an off-axis vector). Open
+flat gap, honestly: a per-weapon d0 CHANGE was not demonstrated flat
+(bumpers open the radial, which needs real stick timing; `exec NextWeapon`
+FAULTS - SEH caught, negative result logged) - it is structural + on your
+checklist.
+
+**5. The idle-sway kill (stage 6; `vrhands swaykill on|off`, DEFAULT ON).**
+Measured FIRST: at idle the reference barrel direction breathes **+-1.2
+deg** (8.4-11.0 deg band, the muzzle echo as instrument); anchor deltas
+peak 3.01 UU / 4.6 deg. The SET-seam premise DISSOLVED on decompilation:
+UpdateHandBobAnimationParameters is the WALK bob (channel 2, weight =
+velocity/GroundSpeed = zero at standstill) - the idle breathing is the
+authored base idle animation, no script property to zero. The kill lives
+where the sway enters the VR rig: the drive's reference recapture now
+FREEZES unless either wrist anchor moves past 6 UU / 12 deg (2x the
+measured envelope) with a 600 ms settle window so post-animation freezes
+hold the SETTLED pose. Flat: kill ON = barrel axis bitwise identical 8/8
+over 32 s; OFF = wobble back instantly; two fire pulls passed the
+threshold and re-froze 3/3 (settled 0.4 deg from the old snapshot). The
+weapon's own skeleton (pump/cylinder) animates untouched.
+
+**Promoted-build clean-boot smoke (the stage-6 build):** preset chain in
+order, stereo heartbeat clean (mode=1T, presents = 2x builds, guardskips
+0), fire test subs exact, crash dumps 8->8 across every boot of the
+session, vrpreset.ini + hands.ini untouched (live values loaded and echoed
+correctly all session). Off-hand tracking (the stretch) was NOT started -
+it stays queued in M9, now unblocked (one algebra + per-weapon identity
+both exist).
+
+## Previous state (2026-07-28, session 19 - M8 COMPLETE, v0.2.0 PUBLISHED: HUD on a floating quad, VR bindings, inactive hand hidden, stick pitch killed)
 
 **v0.2.0 IS PUBLISHED** (tag on main at PR #4's merge,
 https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.2.0) after the
@@ -1252,70 +1347,32 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
 ## Next steps
 
-0. **THE IN-HEADSET CHECKLIST BELOW, then v0.2.0** (tag on merged main,
-   `build.ps1 -Release`, zip both RelWithDebInfo DLLs + README.txt, notes
-   leading with what moved off the v0.1.0 known-issues list: HUD readability,
-   bindings, the ghost hand, stick pitch). PR is open; merge + publish only
-   on the user's explicit go.
+0. **THE IN-HEADSET CHECKLIST BELOW (session 20), then v0.3.0**: after the
+   user's pass + explicit go - merge PR, tag v0.3.0 on merged main,
+   `build.ps1 -Release`, zip both RelWithDebInfo DLLs + README.txt (README
+   gets the new commands in the same pass: vraim muzzle, vrhands swaykill,
+   vrrec, vrbones skel, vrhands fname, vraim synccheck), notes leading with
+   the aim-sync fix (28.21 deg -> 0.03) + the sway kill.
 
-1. **SESSION 20 PLAN - aim/laser/model sync + the flat testing framework
-   (session-19 plan item 4, deferred whole by the user's call; the full
-   design incl. the design-check agent's refinements is in the session-19
-   plan file `~/.claude/plans/continue-the-bioshock-vr-project-frolicking-
-   hinton.md`, stages 4.1-4.6):**
+1. **Post-verdict decisions the checklist feeds**: does `vraim muzzle`
+   become the DEFAULT (and ride vrpreset.ini)? Does swaykill stay
+   default-ON? If muzzle wins per-weapon judgment for some weapons only,
+   build per-weapon profiles keyed by class name (the FName machinery
+   exists - fname_text of the weapon's class).
 
-   (a) `synccheck` FIRST (the failing baseline): refactor the ray and model
-   pose->rot chains into pure functions, cache the last FrameContext, sweep
-   ~20 axis-angle orientations INCLUDING roll, print max ray-vs-barrel
-   divergence for live AND canonical (10/10) trims. Expect nonzero pre-fix.
-   (b) Unify the trim algebra: ray + laser adopt the model's local-frame
-   quat compose (q_ctrl x q_trim, trim built by xr_local_trim_quat, roll
-   dropped only at the final rotator write); laser origin basis adopts the
-   ray's zero-roll convention (kill its near-vertical degeneracy bail);
-   DELETE the legacy aligntrim euler path; promote quat helpers to a core
-   math header. Gate: synccheck collapses to ~0 at every orientation; the
-   user's tuned trim values carry over (they agree at the tuning pose).
-   The model's own full-roll offset basis stays UNTOUCHED (live tuning).
-   (c) Record+replay (`vrrec start|stop|play|status`): ONE tap in
-   camera.cpp's CalcView tail (works flat AND in-headset - an
-   on_present_begin tap cannot record flat), heads via a replayHead lane
-   (simHead is angles-only), hands via NEW sim slots at the
-   input_get_hand_pose funnel, pad via publish_xr_state; RECENTER STATE +
-   worldScale serialized in the file header or every comparison fails;
-   frame-for-frame replay; `[rec] mark` lines every 10th frame; refuse
-   play while a session lives. Gate: neutral-stick record/replay with
-   |dloc| < 0.01 UU, |drot| <= 2 units, pad exact.
-   (d) FName index->string: capture the FName-ctor address
-   find_fname_index_global already computes AND DISCARDS (:129-134),
-   disassemble to GNames (capstone), licensee layout prior = UTF-16
-   POSITIVE count 8-byte flags; fallback = the GetHighBone{Name,Index}
-   native oracle via find_native_function.
-   (e) Muzzle-bone probe: bones::locate() is already generic - run it on
-   the cached g_weaponActor (produced every frame, currently unused), dump
-   bone names via (d), derive the ray from the muzzle bone's rendered
-   transform (compose weapon component space through the attach at hands
-   bone 43). Fallback: per-weapon manual profiles keyed by class name.
-   Cheap alternative on file: hands-rig bone 44 = "muzzle-ish tip" at
-   x=+71.
-   (f) Idle-sway investigation + kill (user 2026-07-27: clearly visible
-   in-headset, likely less than flat - "worth it to put our minds at
-   ease"): MEASURE the surviving amplitude flat first (shot series, lock
-   on/off), decompile UpdateHandBobAnimationParameters + Hands
-   defaultproperties (dump.ps1, ~40% fail rate), then zero the bob params
-   via the SET seam (re-assert like vrxhair); toggle + armed by PRESET 1.
+2. **SESSION 20 leftovers, small**: demonstrate a per-weapon d0 change flat
+   (needs a flat weapon-switch lane - the radial wants real stick timing;
+   `exec NextWeapon` faults, negative result logged); wire
+   find_weapon_actor's caching form per frame if stage-5 features grow.
 
-   ANSWERED by the session-19 headset run: the wrench works with the pitch
-   kill alone - the HMD-pitch body drive is NOT needed and is dropped. Watch
-   only: map-pan-under-pause if the user ever reports the right stick dead
-   there (the pitchkill gate is strict-view, which stays true while paused).
+3. **Off-hand tracking + two-handed weapons (ROADMAP M9)** - now UNBLOCKED:
+   both prerequisites (one trim algebra; per-weapon identity via
+   FName/skeletons) shipped this session. Then the wrench swing gesture and
+   the first-boot-restart fix (M9 polish).
 
-   FOLLOW-ONS QUEUED BEHIND THIS WORK (user's call 2026-07-28, detailed in
-   ROADMAP M9): off-hand tracking (`vrhands offhand track` - drive the
-   inactive cluster from its controller instead of collapsing it; do after
-   (b) so both hands ride one algebra) and TWO-HANDED weapon handling
-   (foregrip engage + rear-to-front-hand aim line; hard prerequisites are
-   (b) and (d)/(e) - per-weapon identity and foregrip offsets). Neither
-   blocks v0.2.0.
+4. **vrrec follow-on**: record a real in-headset run (checklist item 8) and
+   replay it flat next session - the first true flat reproduction of a
+   headset defect report.
 
 2. **DONE 2026-07-27: v0.1.0 IS PUBLISHED** - tag on main at PR #3's merge,
    release zip (both RelWithDebInfo DLLs + README.txt) at
@@ -1389,7 +1446,51 @@ Carried-over backlog (numbering kept from session 17):
 13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - M8 completion (session 19)
+### IN-HEADSET CHECKLIST - aim sync + testing framework (session 20)
+
+Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam, CONTINUE
+(the NG+ Medical Pavilion all-weapons anchor), press **VR PRESET 1**. Nothing
+in the camera/recenter/body path changed - head decoupling and body-follow
+must feel identical to v0.2.0; any difference there is a regression, say so
+first. Live A/Bs: `vraim muzzle on|off`, `vrhands swaykill on|off`.
+
+1. **Non-regression sweep (60 s, do first).** Park the hand, look around
+   wide, stick-walk, turn past 90 both ways, two right-trigger pulls + an
+   Electro Bolt, open the pause menu once. Anything session 19 did not do:
+   stop and report.
+2. **THE ALGEBRA FIX (the headline). Laser vs barrel at MANY orientations,
+   ESPECIALLY WRIST ROLL.** Weapon up, laser on: roll your wrist +-90, tilt
+   up/down/diagonal, point across your body - the laser must stay glued to
+   the barrel line at EVERY orientation now (pre-fix it drifted up to ~28
+   deg at rolled poses - the "agrees only where I tuned it" defect). Same
+   check on the plasmid hand: whatever offset the L laser has vs the hand,
+   it should now be CONSTANT at every orientation (if you want it tighter,
+   `vraim cal l <pitch> <yaw>` now holds everywhere, not just at one pose).
+3. **THE MUZZLE RAY** (arm `vraim muzzle on`): bullets + laser now leave
+   along the RENDERED barrel. Judge vs `vraim muzzle off` (the trimmed
+   controller ray you have today). Then SWITCH WEAPONS through the wheel -
+   pistol, MG, shotgun, crossbow - each should auto-align its laser to its
+   own barrel with ZERO manual trim (this is the per-weapon proof the flat
+   harness could not do). Report per weapon which mode aims truer.
+4. **THE SWAY KILL** (on by default): raise a weapon, stand still, watch
+   the barrel/laser - the breathing should be GONE. `vrhands swaykill off`
+   = the old sway for comparison. Then verify animations still LIVE: fire,
+   reload, switch weapons, swing the wrench - all should play through
+   normally and the hand must settle correctly afterwards (a hand frozen
+   mid-pose after an animation = the settle window failed, report it).
+5. **Quick controls regression** (adjacent code, unchanged paths): wheel
+   select incl. up/down with pitch restore, ammo click-hold select, A/B/X/Y
+   as v0.2.0.
+6. **(optional but valuable, 60 s) Record a real run**: `vrrec start`, play
+   normally - walk, look, fire, switch - then `vrrec stop`. That file lets
+   me replay your exact run flat next session (first true flat reproduction
+   of headset behavior). Nothing to judge; just do it once mid-session.
+7. **The 4 GB-scan field watch**: if the model EVER stops following after a
+   level transition, grab the log ("AHands scan" lines).
+8. **Anything off**: `vraim muzzle off` / `vrhands swaykill off` first - if
+   the symptom survives both, it predates this session.
+
+### PREVIOUS CHECKLIST - M8 completion (session 19) - PASSED (v0.2.0 shipped on it)
 
 Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam, load the
 newest save (CONTINUE = the NG+ Medical Pavilion all-weapons anchor), press
@@ -1638,6 +1739,33 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-28 - Session 20 (the aim-sync session: all six stages flat-green)
+
+- Worked the session-19 plan stages 4.1-4.6 as designed, each flat-gated:
+  synccheck baseline (canonical algebra divergence 28.21 deg max, roll-
+  dominant) -> trim-algebra unification (0.03 deg max = the int-rotator
+  floor; quat helpers promoted to core/util/xr_math.h; aligntrim deleted)
+  -> vrrec record+replay (712/712 marks bitwise exact incl. swept head
+  segments) -> FName/GNames (ctor 0x70D660 captured, GNames 0x13904EC,
+  'None'/'ByteProperty'/'Launcher' resolved) -> muzzle ray (vraim muzzle;
+  shotgun barrel measured ~9-11 deg above the attach forward; laser rides
+  the same d0) -> idle-sway kill (vrhands swaykill; +-1.2 deg measured,
+  frozen bitwise 8/8, animations pass a 2x-envelope threshold with a 600 ms
+  settle window).
+- Design corrections forced by measurement: the SET-seam sway premise
+  dissolved (the bob function is the velocity-weighted WALK bob; idle
+  breathing is the authored idle anim - no property to zero), so the kill
+  moved to the drive's reference recapture; fopen_s share-mode trap hit
+  AGAIN (session 1 fixed the same bug in the logger) - recordings open via
+  _wfsopen _SH_DENYNO.
+- Negative results logged: `exec NextWeapon` faults (SEH caught); flat
+  weapon switching through the radial remains a harness gap; vrbody state
+  poisons record/replay comparisons (documented rule: vrbody off or
+  settled).
+- Stretch (off-hand tracking) not started - queued in M9, now unblocked.
+- Branch s20-aim-sync, six commits, PR opened; v0.3.0 waits on the
+  in-headset checklist + explicit go.
 
 ### 2026-07-28 - Session 19 close (v0.2.0 PUBLISHED)
 
