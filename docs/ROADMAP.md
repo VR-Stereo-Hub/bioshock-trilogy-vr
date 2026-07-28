@@ -256,6 +256,11 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       `%LOCALAPPDATA%\BioshockVR\hands.ini`. Keyed `default` for now - PER-WEAPON keys still
       want the live weapon's class name, which means resolving the UObject class/name offsets
       on this build (the only save carries pistol + wrench, so one profile covers it).*
+      *UPGRADED 2026-07-28 (session 21): TRUE per-weapon profiles shipped - the R-hand aim
+      trim + ray-origin offsets hot-swap keyed by the weapon's CLASS NAME (UObject +0x28
+      name / +0x30 class resolved live via GNames), persisted to weapons.ini, saved by the
+      preset button, weapon resolved pre-fire via the Base==AHands structural scan. The
+      live-switch swap proof is on the session-21 in-headset checklist.*
 ### M7-v2 - the rebuild (planned 2026-07-26 with the user)
 
 Goal in the user's words: the weapon and the plasmid hand each move as ONE with their own
