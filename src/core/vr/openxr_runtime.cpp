@@ -1198,6 +1198,73 @@ float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
     return atan2f(-f[0], -f[2]) * 57.29578f;
 }
 
+// Session 22 letterbox unsqueeze (see capture_frame): engine cinematics
+// squeeze the scene into a middle band over black; runtimes proved
+// unreliable with projection-layer imageRect crops (VDXR kept the bars),
+// so the eye capture un-letterboxes the frame ITSELF - band stretched
+// across the full image by our own blit, plain copy everywhere else.
+ID3D11Texture2D* g_lbScratch = nullptr;
+ID3D11ShaderResourceView* g_lbScratchSrv = nullptr;
+std::atomic<bool> g_loggedLbStretch{false};
+
+void release_lb_scratch() {
+    if (g_lbScratchSrv) { g_lbScratchSrv->Release(); g_lbScratchSrv = nullptr; }
+    if (g_lbScratch) { g_lbScratch->Release(); g_lbScratch = nullptr; }
+}
+
+void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
+    unsigned lbTop = 0, lbBot = 0;
+    if (bvr::hud::letterbox(&lbTop, &lbBot) && lbTop + lbBot < g_swapH) {
+        D3D11_TEXTURE2D_DESC bd{};
+        backbuffer->GetDesc(&bd);
+        if (g_lbScratch) {
+            D3D11_TEXTURE2D_DESC sd{};
+            g_lbScratch->GetDesc(&sd);
+            if (sd.Width != bd.Width || sd.Height != bd.Height ||
+                sd.Format != bd.Format)
+                release_lb_scratch();
+        }
+        if (!g_lbScratch && g_device) {
+            D3D11_TEXTURE2D_DESC sd = bd;
+            sd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            sd.Usage = D3D11_USAGE_DEFAULT;
+            sd.CPUAccessFlags = 0;
+            sd.MiscFlags = 0;
+            sd.MipLevels = 1;
+            if (FAILED(g_device->CreateTexture2D(&sd, nullptr, &g_lbScratch)) ||
+                FAILED(g_device->CreateShaderResourceView(g_lbScratch, nullptr,
+                                                          &g_lbScratchSrv)))
+                release_lb_scratch();
+        }
+        if (g_lbScratch && g_lbScratchSrv) {
+            // XR swapchain images can be typeless - view with the created
+            // format first, null-desc as the fallback.
+            ID3D11RenderTargetView* rtv = nullptr;
+            D3D11_RENDER_TARGET_VIEW_DESC rd{};
+            rd.Format = static_cast<DXGI_FORMAT>(g_swapFormat);
+            rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            if (FAILED(g_device->CreateRenderTargetView(dst, &rd, &rtv)))
+                g_device->CreateRenderTargetView(dst, nullptr, &rtv);
+            if (rtv) {
+                g_context->CopyResource(g_lbScratch, backbuffer);
+                float h = static_cast<float>(g_swapH);
+                bool ok = bvr::blit::stretch_band(
+                    g_context, rtv, g_lbScratchSrv, g_swapW, g_swapH,
+                    static_cast<float>(lbTop) / h,
+                    static_cast<float>(g_swapH - lbTop - lbBot) / h);
+                rtv->Release();
+                if (ok) {
+                    if (!g_loggedLbStretch.exchange(true))
+                        BVR_LOG("xr: letterbox unsqueeze live (band %u..%u of %u)",
+                                lbTop, g_swapH - lbBot, g_swapH);
+                    return;
+                }
+            }
+        }
+    }
+    g_context->CopyResource(dst, backbuffer);
+}
+
 void on_present_end(IDXGISwapChain* swapchain) {
     if (!g_frameOpen) {
         // No XR frame this present (session gone, or the pace guard skipped
@@ -1353,8 +1420,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 wi.timeout = XR_INFINITE_DURATION;
                 if (XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi))) {
                     // Same size + same typeless family (guaranteed at creation),
-                    // so a straight GPU copy carries the frame - overlay included.
-                    g_context->CopyResource(g_images[target][index].texture, backbuffer);
+                    // so a straight GPU copy carries the frame - overlay
+                    // included. Under an engine letterbox the copy becomes an
+                    // unsqueeze blit instead (session 22, capture_frame).
+                    capture_frame(g_images[target][index].texture, backbuffer);
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_swapchains[target], &ri);
@@ -1394,22 +1463,6 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 sub.swapchain = g_swapchains[target];
                 sub.imageRect = {{0, 0},
                                  {static_cast<int32_t>(g_swapW), static_cast<int32_t>(g_swapH)}};
-                // Session 22 round 2: engine cinematics letterbox the frame
-                // (scene anamorphically squeezed into a middle band over an
-                // opaque-black clear). Crop the submission to the band - the
-                // compositor stretches it back to the claimed fov, so the
-                // bars vanish and the geometry comes out correct. Applies to
-                // the projection AND the quad path (both consume `sub`; the
-                // quad keeps its full-aspect size = the same unsqueeze).
-                {
-                    unsigned lbTop = 0, lbBot = 0;
-                    if (bvr::hud::letterbox(&lbTop, &lbBot) &&
-                        lbTop + lbBot < g_swapH) {
-                        sub.imageRect.offset.y = static_cast<int32_t>(lbTop);
-                        sub.imageRect.extent.height =
-                            static_cast<int32_t>(g_swapH - lbTop - lbBot);
-                    }
-                }
 
                 if (projectionMode) {
                     // fov = the symmetric fov the game rendered with (hfov
@@ -1608,6 +1661,7 @@ void on_resize() {
     // Recreated at the new backbuffer size on the next frame.
     destroy_swapchains();
     release_mirror();
+    release_lb_scratch(); // size-tied; also self-heals on desc mismatch
     if (g_backbufferRtv) {
         g_backbufferRtv->Release();
         g_backbufferRtv = nullptr;

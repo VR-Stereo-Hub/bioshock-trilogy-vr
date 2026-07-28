@@ -28,6 +28,15 @@ bool alpha_premul(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
 bool process(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
              ID3D11ShaderResourceView* src, UINT dstW, UINT dstH);
 
+// Session 22: stretch a horizontal BAND of src ([topFrac .. topFrac +
+// heightFrac] in v) across the FULL destination, blending off. The
+// engine-cinematic letterbox unsqueeze: runtimes proved unreliable with
+// projection-layer imageRect crops (VDXR showed the bars regardless), so the
+// eye capture un-letterboxes the frame itself before submission.
+bool stretch_band(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
+                  ID3D11ShaderResourceView* src, UINT dstW, UINT dstH,
+                  float topFrac, float heightFrac);
+
 // Release device objects (device loss / shutdown; recreated lazily).
 void release();
 

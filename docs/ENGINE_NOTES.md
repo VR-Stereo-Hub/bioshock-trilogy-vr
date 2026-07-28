@@ -2038,3 +2038,18 @@ Harness trap (session 22, marker retirement fallout): nothing pre-arms
 vrinput at boot anymore, and test presses only compose while vrinput is
 ON - boot.ps1 now sends `vrinput on` before its A-press loop; any manual
 boot flow must do the same.
+
+### Session 22 round 3 - imageRect crop NEGATIVE, the unsqueeze blit
+
+The first letterbox fix cropped the projection layer's subImage imageRect
+to the band. IN-HEADSET NEGATIVE (user run, VDXR): the bars stayed
+visible - the runtime did not honor the sub-rect on the projection layer
+(the drive suspension from the same flag worked, so detection was live;
+the crop simply had no visual effect). Replaced with a runtime-agnostic
+mechanism: while the letterbox holds, the eye capture stretches the image
+band across the full swapchain image ITSELF (blit::stretch_band - a
+vs_stretch UV-remap variant of the proven fullscreen-triangle blit, band
+sourced from a backbuffer-desc scratch copy; falls back to the plain
+CopyResource on any failure). One-shot log: `xr: letterbox unsqueeze
+live (band A..B of H)`. Covers projection AND quad modes at once (both
+consume the captured image). Do not retry imageRect crops on VDXR.
