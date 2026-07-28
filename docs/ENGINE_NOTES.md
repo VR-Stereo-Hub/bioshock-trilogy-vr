@@ -1948,3 +1948,50 @@ landing on the crash-site repro save after one replay (it drops to
 second in the LOAD list). A save LOAD produced NO view-state transition
 and NO fov-write OFF/ON churn (strict stayed true through the load
 screen on this box).
+
+### Session 22 part 2 - fullscreen-screen fingerprints and the per-kind routing
+
+Dump ground truth for the three misrouted kinds (all `dumpframe full 2`,
+clean boots, resource tables in the dumps):
+
+- **Loading screen**: ~87 non-indexed gameswf draws (flush 0x7B8EB5 in
+  every stack) straight onto the final LDR target, DSV bound but ZERO
+  DrawIndexed in the interval - no world pass, no tonemap, nothing for
+  the session-19 classifier to classify. Renders in-frame = full-FOV in
+  the headset.
+- **Hack minigame**: same family, measured 322 swf draws / 0 DrawIndexed
+  (the intro board; the world pass is fully absent for the whole hack
+  session even though the scene BUILD calls keep running - the build
+  draws nothing). The user's "basically the same as the loading screen"
+  was literally exact. The main menu is this family too (125 draws).
+- **Alcohol-blur composite**: the SECOND non-indexed draw on the tonemap
+  target (right after the tonemap), engine post path (no gameswf flush
+  in its stack), sampling a BACKBUFFER-SIZED texture (1920x1080 RGBA8) -
+  while every real HUD/flash draw samples 2048x2048 BC-compressed UI
+  atlases or nothing. The pre-tonemap 480x270 blur pyramid runs on its
+  own RTs and never touches the classifier.
+
+Shipped discriminators (hud_capture.cpp): screen-only interval =
+swf-draws >= 20 with no scene-vote leader (3-interval hysteresis,
+`[hud] screen-only interval ON/off` transitions - flat instrument);
+in-frame post effect = post-tonemap draw whose srv0 dimensions equal the
+target's (srv desc cache, same 8-slot pattern as the RT desc cache).
+Measured: postFx = 0 across normal gameplay (no false positives); the
+pause menu contributes ~1/interval (its fullscreen dim layer sampling
+the scene - correctly in-frame; the menu PANELS keep redirecting to the
+quad). Loading screens fire exactly one ON/off pair per load (87 and
+120-draw intervals measured on two different loads).
+
+### Session 22 part 3 - the first-boot probe fix, virgin-install measured
+
+compose_over now answers a FAILED slot-0 GetState with a neutral
+CONNECTED pad (constant packet 1) even while vrinput is off. Virgin
+boot (all inis + the old vrinput.on marker set aside): the main menu
+shows NO pad glyphs before any pad input (prompts key on last-used
+input, the session-9 model - the phantom pad alone does not flip them);
+after `vrinput on` mid-session the IAT lane immediately polls at ~680
+calls/s and a dpad press moves the UI (packet 1->3, the 2K-link prompt
+flips to a pad glyph) - the restart is gone. The proxy-lane counter
+STAYS at 6 by design (the Steam overlay swallows that lane post-boot;
+it is not a poll-rate oracle). The marker machinery is deleted; the
+orphan vrinput.on file on existing installs is inert.

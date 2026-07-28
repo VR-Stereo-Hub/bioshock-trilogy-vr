@@ -44,11 +44,9 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 1. Load into the game flat first (menus are still flat-screen for now).
 2. Press **F10** to open the mod overlay and click **VR PRESET 1** - one press arms
    everything in the right order: VR pacing, 6DOF camera, motion controllers, controller aim +
-   laser, the viewmodel drive, body-follows-head, and stereo last.
-   **First-ever launch only:** the game checks for a gamepad once at startup, so on a fresh
-   install the motion controllers stay dead until you **restart the game once** after the
-   first preset press (the press itself enables them for every later launch). If you had any
-   physical controller plugged in when the game started, this does not apply.
+   laser, the viewmodel drive, body-follows-head, and stereo last. No restart is ever
+   needed - the mod answers the game's one-shot startup gamepad check itself, so the
+   motion controllers engage the moment the preset is pressed, first launch included.
 3. Quest 3 Touch controls:
 
 | Input | Action |
@@ -82,6 +80,12 @@ Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrprese
 - **Head anchor offsets** - if the camera sits wrong in the body
 - **Per-hand model offsets** - the "Tuning hand: L / R" selector picks which hand the six
   position/rotation sliders edit, so the pistol and the plasmid hand are tuned independently
+- **Turn controls** - "Smooth turn speed" scales the stick turn rate; "Snap turn" replaces
+  smooth turning with discrete steps (angle slider, default 45 deg)
+- **Cinematics** - scripted scenes (the bathysphere descent), the hack minigame, loading
+  screens and FMVs are auto-detected. Cutscenes play as a full stereo projection with
+  head-look by default; untick "Cinematics as stereo projection" to watch them on a big
+  virtual screen instead. Flat 2D screens (hacking, loading) always use the readable screen.
 - **`vrbody off`** - live A/B for the body-follows-head transfer (instant 1:1 by default)
 
 ### The bundled preset (v0.3.0+)
