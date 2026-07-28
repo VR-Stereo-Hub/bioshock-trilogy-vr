@@ -4,13 +4,60 @@
 
 ## Current state (2026-07-28, session 20 - THE AIM-SYNC SESSION: one trim algebra, vrrec record+replay, FName/GNames, the muzzle ray, the idle-sway kill - ALL SIX STAGES FLAT-GREEN on branch s20-aim-sync)
 
-**Branch `s20-aim-sync` (from main at v0.2.0). Every stage below passed its
-numeric flat gate on clean boots; the in-headset checklist below is the open
-gate, and v0.3.0 publishes only after it + the user's explicit go. The
-session-19 plan's stage designs (4.1-4.6) were followed as written - nothing
-re-derived - with two design corrections forced by measurement (the SET-seam
-sway premise dissolved; the fopen_s share-mode trap resurfaced 19 sessions
-after session 1 fixed the same bug in the logger).**
+**Branch `s20-aim-sync`, MERGED to main as PR #5 (2026-07-28, the user's
+explicit call after the part-2 results below - everything default-armed is
+sound; the one failed feature ships default-OFF). v0.3.0 is NOT tagged yet -
+it waits for the session-21 work. The session-19 plan's stage designs
+(4.1-4.6) were followed as written - nothing re-derived - with two design
+corrections forced by measurement (the SET-seam sway premise dissolved; the
+fopen_s share-mode trap resurfaced 19 sessions after session 1 fixed the
+same bug in the logger).**
+
+### Session 20 part 2 (same day) - IN-HEADSET RESULTS, the BioVR analysis, and the re-plan
+
+**The user's headset run, the ground truth:** (a) the algebra unification is
+correct but a NO-OP for their weapon hand (R trims are 0/0 - expected once
+understood; the fix matters for the L hand's 17.7 deg trim and any future
+trim). The REAL standing defect: the laser sits LATERALLY OFF the rendered
+gun with the offset FLIPPING SIGN with hand yaw (aim 90 deg right of facing
+-> beam LEFT of the weapon; 90 deg left -> beam RIGHT), and the beam does
+not originate at the barrel on most weapons. (b) `vraim muzzle` FAILED: the
+pistol beam went up-and-right "by a lot" - the bone-43->44 axis is NOT the
+barrel (d0 read ~31 deg up / ~18 deg right); the flat gate had only proven
+internal consistency, never axis-vs-rendered-barrel ground truth. It ships
+default OFF; RETIRE the derivation (keep `vrbones skel`). (c) muzzle mode
+showed the SAME lateral drift as normal mode -> the drift is UPSTREAM of
+all ray math, in the render/composition domain. (d) swaykill (default ON)
+drew no complaint - provisionally good.
+
+**The BioVR analysis (BioVRDev/Bioshock-Remastered-VR, released ~2026-07-13,
+analyzed 2026-07-28; NO LICENSE = all rights reserved - CONCEPTS AND
+MEASUREMENTS ONLY, never code; full findings in RESEARCH.md):** their scale
+numbers are IDENTICAL to ours (1 UU = 1 cm, half-IPD ~3.2 cm camera offset,
+head pos x100) - their better feel comes from two DISCIPLINES: (1)
+FOV-EXACT SUBMISSION (projection layer tagged with a symmetric frustum
+built from exactly the game's locked render FOV, never the runtime's
+asymmetric per-eye fov; their measured mismatch symptom "yaw warped, pitch
+stayed clean" MATCHES our +-90 sign-flipping drift), and (2) CYCLOPEAN HAND
+ANCHORING (hands at one world position for both eyes - per-eye-camera
+placement cancels disparity, "zero parallax means very far away", reads
+HUGE = our sessions 11-16 size percept). Their aiming polish = dot==shot
+from one value + per-weapon 3-vec3 profiles keyed by real weapon class +
+an exact "fire at a wall, nudge the dot onto the hole" calibration flow.
+They did NOT solve the rendered-gun-vs-dot drift (same structural split as
+ours), have NO sway kill (ours works), and credit this repo for the
+reticle disable, the arm-hide bone indices, and the HUD capture.
+
+**The re-plan (user's call): the WORLD-PASS RE-HOMING is the new big swing**
+- move the EXISTING AHands rig (+ attached weapon) out of the foreground
+pass into the WORLD pass (find the pass-membership switch with dumpframe's
+per-pass draw classification; flip it). If it works the entire drift domain
+dies at once (fg lens split, eye dolly, render lock all unnecessary) with
+FX/equip anchoring intact. Do NOT spawn a separate puppet actor - FX and
+anim-notifies stay on the original rig. Follow-up idea (user's): anchor the
+VR frame to the pawn's STATIC eye point (Pawn.Location + EyeHeight, the
++0x550-area field) instead of the animated camera, so walk-bob never leaks
+into camera or hands - the BioVR-proven lever.
 
 **1. The root cause is MEASURED, then KILLED (stages 1-2, the headline).**
 `vraim synccheck` sweeps 21 axis-angle controller orientations (roll
@@ -1345,34 +1392,47 @@ retired: xr_hello32 (32-bit) ran a complete OpenXR session on VDXR 1.0.10 with t
 (60 frames, RTX 4060 LUID match) - M2 is unblocked. DR-2 done. Repo public at
 https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
-## Next steps
+## Next steps (re-ordered 2026-07-28 after the part-2 results + BioVR analysis)
 
-0. **THE IN-HEADSET CHECKLIST BELOW (session 20), then v0.3.0**: after the
-   user's pass + explicit go - merge PR, tag v0.3.0 on merged main,
-   `build.ps1 -Release`, zip both RelWithDebInfo DLLs + README.txt (README
-   gets the new commands in the same pass: vraim muzzle, vrhands swaykill,
-   vrrec, vrbones skel, vrhands fname, vraim synccheck), notes leading with
-   the aim-sync fix (28.21 deg -> 0.03) + the sway kill.
+1. **THE FOV AUDIT (first - cheap, prime suspect for the +-90 drift AND the
+   world-size percept).** Measure: the FOV the game ACTUALLY renders under
+   vrstereo (recover tangents from dumpframe projection matrices - the
+   session-13 technique) vs what our submitted projection layer is TAGGED
+   with (openxr_runtime.cpp submission - do we pass the runtime's
+   asymmetric views[].fov?) vs the game FOV we write. If they disagree:
+   submit a symmetric frustum built from the RENDERED fov exactly
+   (BioVR-style "remove the lie"). Flat gate: rendered tangents ==
+   submitted tangents per eye, logged. Headset gate: the +-90 flip
+   shrinks/dies. This benefits everything downstream incl. item 2.
 
-1. **Post-verdict decisions the checklist feeds**: does `vraim muzzle`
-   become the DEFAULT (and ride vrpreset.ini)? Does swaykill stay
-   default-ON? If muzzle wins per-weapon judgment for some weapons only,
-   build per-weapon profiles keyed by class name (the FName machinery
-   exists - fname_text of the weapon's class).
+2. **WORLD-PASS RE-HOMING (the big swing, user's call).** Find what marks
+   the AHands rig as foreground (actor flag / class check / fg list) and
+   flip it so the rig + attached weapon render through the WORLD pass at
+   their true world position. Instrument: dumpframe classifies draws per
+   pass - poke candidates, watch the rig's draws migrate tiers. Kills the
+   whole drift domain (fg lens split, eye dolly, render lock) with
+   FX/equip anchoring intact. Do NOT spawn a puppet actor. Expected
+   trades: gun clips walls (normal VR), possible lighting differences,
+   mesh may read oversized in the world pass - but DrawScale (+0x2AC +
+   dirty protocol) was only proven inert on the FG path and likely works
+   on the world path = the scale knob for free. Fallback if the switch
+   cannot be found/flipped: item 3 carries the release.
 
-2. **SESSION 20 leftovers, small**: demonstrate a per-weapon d0 change flat
-   (needs a flat weapon-switch lane - the radial wants real stick timing;
-   `exec NextWeapon` faults, negative result logged); wire
-   find_weapon_actor's caching form per frame if stage-5 features grow.
+3. **PER-WEAPON PROFILES + WALL CALIBRATION** (retires the muzzle
+   derivation; needed in some form either way): per-weapon aim-trim +
+   origin offsets keyed by weapon identity (fname_text / learned weapon
+   object; consider resolving the weapon's class name for a stable key),
+   hot-swap on switch, persisted. Calibration flow: our laser IS the fire
+   ray, so "fire at the wall, adjust until the beam sits on the bullet
+   hole, per weapon" is exact - overlay sliders/commands + save.
 
-3. **Off-hand tracking + two-handed weapons (ROADMAP M9)** - now UNBLOCKED:
-   both prerequisites (one trim algebra; per-weapon identity via
-   FName/skeletons) shipped this session. Then the wrench swing gesture and
-   the first-boot-restart fix (M9 polish).
+4. **Follow-up (user's idea): pawn-eye-point anchoring** - anchor the VR
+   frame to Pawn.Location + EyeHeight (static) instead of the animated
+   camera base so walk-bob never leaks into camera or hands. Do after 2.
 
-4. **vrrec follow-on**: record a real in-headset run (checklist item 8) and
-   replay it flat next session - the first true flat reproduction of a
-   headset defect report.
+5. **Then**: off-hand tracking + two-handed weapons (ROADMAP M9, both
+   prerequisites shipped), wrench swing gesture, first-boot-restart fix.
+   v0.3.0 tags when items 1-3 are headset-verified with the user's go.
 
 2. **DONE 2026-07-27: v0.1.0 IS PUBLISHED** - tag on main at PR #3's merge,
    release zip (both RelWithDebInfo DLLs + README.txt) at
@@ -1446,7 +1506,7 @@ Carried-over backlog (numbering kept from session 17):
 13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - aim sync + testing framework (session 20)
+### IN-HEADSET CHECKLIST - aim sync + testing framework (session 20) - RAN SAME DAY, results in "Session 20 part 2" above (muzzle failed -> default OFF; drift persists -> session-21 plan; swaykill clean; PR #5 merged on the user's call)
 
 Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam, CONTINUE
 (the NG+ Medical Pavilion all-weapons anchor), press **VR PRESET 1**. Nothing
@@ -1739,6 +1799,24 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-28 - Session 20 part 2 (headset results, PR #5 merged, the BioVR analysis, the re-plan)
+
+- In-headset: the algebra fix is a no-op for the user's zero R trims
+  (expected); the standing defect is the laser sitting laterally off the
+  rendered gun with the sign flipping at +-90 hand yaw + origin off the
+  barrel; `vraim muzzle` FAILED (bone-44 axis is not the barrel - retire
+  the derivation, feature stays default-OFF); the same drift shows in both
+  modes -> render/composition domain; swaykill drew no complaint.
+- PR #5 merged to main on the user's call (nothing default-armed failed).
+- Analyzed the new BioVRDev/Bioshock-Remastered-VR mod (NO license -
+  concepts only; findings in RESEARCH.md): same scale numbers as ours;
+  their feel comes from FOV-exact layer submission + cyclopean hand
+  anchoring + per-weapon hand-tuned profiles with an exact dot==shot
+  wall-calibration loop; no sway kill; same structural gun-vs-dot drift.
+- Re-plan (user's call): FOV audit first, then the WORLD-PASS RE-HOMING of
+  the existing rig (the new big swing), per-weapon profiles as
+  fallback/polish, pawn-eye-point anchoring as follow-up.
 
 ### 2026-07-28 - Session 20 (the aim-sync session: all six stages flat-green)
 

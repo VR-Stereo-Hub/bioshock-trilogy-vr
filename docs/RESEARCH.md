@@ -109,3 +109,67 @@ No native VR mod (stereo + motion controls) exists for any BioShock game. UEVR d
 - Take-Two has DMCA'd **paid** VR mods (Luke Ross GTA/RDR2/Mafia, July 2022 -
   [PC Gamer](https://www.pcgamer.com/take-two-has-been-issuing-takedowns-for-gta-mods/));
   free open-source BioShock mods and tools have remained up. Stay free, unaffiliated, asset-clean.
+
+## BioVRDev/Bioshock-Remastered-VR analysis (2026-07-28)
+
+Source: https://github.com/BioVRDev/Bioshock-Remastered-VR (released
+~2026-07-13, analyzed at commit of 2026-07-28). **NO LICENSE file = all
+rights reserved: concepts and measurements only, never code** - same
+boundary as UEVR. Their README credits this repo for the reticle disable
+(console SET path), the arm-hide bone indices, and the HUD render-target
+capture.
+
+**Architecture**: dxgi.dll proxy; hooks Present + eventPlayerCalcView (same
+seams as ours). Stereo = ALTERNATE EYE per game frame at full game rate
+(consecutive frames pair L/R, ~4.2 ms apart), with a pair-locked camera
+(eye 1 re-renders from eye 0's snapshot), head pose latched once per pair,
+and the projection layer stamped with the pose the image was rendered from.
+Model drive = ABSOLUTE writes to the AHands ACTOR Rotation/Location every
+CalcView (the approach we retired for the bone drive) + a render-thread
+roll re-write (the game erases roll between tick and render). No fire
+hook: they write the PlayerController rotation (clamped +-20 deg vs head,
+EMA 0.35) and let the game shoot; the VR dot is an OpenXR quad from the
+same offset table, so dot==shot by construction and their calibration flow
+("fire at a wall, nudge the dot onto the bullet hole") is exact.
+
+**Scale**: numerically identical to ours - 1 UU = 1 cm hard-coded (=
+worldScale 100), half-IPD default 3.2 cm as a camera-location offset along
+the final right vector, head position at x100, NO rig scaling (all scale
+knobs default off). The size percept works because of two disciplines:
+(1) FOV-EXACT SUBMISSION - the game render FOV is locked via Bioshock.ini
+(+ HorizontalFOVLock) and the layer is tagged with a SYMMETRIC frustum
+built from exactly that FOV and the buffer aspect, never the runtime's
+asymmetric per-eye fov ("the headset's frustum is canted and asymmetric,
+and that lie is what we remove"); their measured mismatch symptom: "yaw
+warped, pitch stayed clean". (2) CYCLOPEAN HAND ANCHORING - hands placed
+once per pair at the camera center captured BEFORE the per-eye offset;
+per-eye placement "cancels their disparity exactly ... zero parallax means
+very far away" (reads huge).
+
+**Per-weapon system**: three vec3s per weapon slot (GripOffset position cm,
+RotOffset model quat-compose, CursorOffset aim quat-compose), keyed by
+resolving the held weapon's UClass (holdable+0x30) against
+ShockPawn.AllPossibleWeaponClasses (found by TArray shape-matching);
+hot-swapped on switch, numpad-tuned live, self-saving. 5 of 9 slots
+hand-tuned at release. Offsets are resolution/FOV-specific (their README:
+the cross-resolution scaling law "was ruled out"; they rescale right/up by
+tan(fgNow/2)/tan(fgRef/2) at startup only).
+
+**What they did NOT solve** (independent confirmation of our walls): the
+rendered-gun-vs-dot drift (same foreground-projection-vs-compositor split;
+their code admits the dot "can drift from the rendered gun"; only static
+offset rescaling exists), idle sway (README: "remains"; an experimental
+IdlingHandsAnim TArray rewrite at holdable+0x458 ships default-off with a
+hang warning), attach-bone scale (their comment mirrors our session-16
+1/0 finding), fg FOV (same formula as our vrfgfov, generalized for aspect:
+2*atan(tan(fov/2)*(4/3)/aspect)). Useful extra levers they found:
+head-bob removal by re-basing the camera on Pawn.Location + EyeHeight
+(static field, ~+0x550 area) instead of the animated camera; the fg fov
+offset found by float snapshot/diff driven by pistol zoom;
+ZoomedForegroundFOVAngle is why they unbound ADS.
+
+**Takeaways adopted into our plan** (STATUS next steps): the FOV audit
+(submitted frustum must equal the rendered one exactly), cyclopean/rig
+placement verification (subsumed by the world-pass re-homing experiment),
+per-weapon profiles + the exact wall-calibration flow, pawn-eye-point
+anchoring as the walk-bob decoupling lever.
