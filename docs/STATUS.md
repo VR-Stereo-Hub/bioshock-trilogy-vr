@@ -1555,31 +1555,42 @@ retired: xr_hello32 (32-bit) ran a complete OpenXR session on VDXR 1.0.10 with t
 (60 frames, RTX 4060 LUID match) - M2 is unblocked. DR-2 done. Repo public at
 https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
-## Next steps (re-rewritten 2026-07-28 after the part-2 headset feedback; the +-90 drift is CLOSED - it was the render lock, now default OFF)
+## Next steps (re-rewritten 2026-07-28 after the part-2 headset feedback; the +-90 drift is CLOSED - it was the render lock, now default OFF. Part 3: the user demoted the scale work to polish - "not that important for the gameplay")
 
-1. **Session 22 - MODEL/WORLD SCALE DECOUPLING (the user's ask, the new
-   headline).** Two independent sliders: world scale (the existing
-   worldScale) and a HAND/MODEL scale that does not touch the world.
-   Known walls from session 16 (do not re-walk blind): cluster bone .s
-   blows up the attached weapon (the attach path inverts chain scale);
-   actor DrawScale is geometry-inert on the fg path. Candidate routes, in
-   probe order: (a) understand the fovA world-coupling (the fovA arg
-   changes rendered rig scale flat - if its world-consumer is found and
-   masked, fovA becomes a clean per-rig zoom = the model-scale slider for
-   free); (b) DrawScale on a fova-matched rig (the session-21 STATUS note:
-   inert was only proven on the OLD fg path); (c) the per-eye bone-offset
-   stereo-basis split parked in M9 (the session-16 design sketch).
-2. **fovA world-motion mystery (feeds 1a)**: flat-find what ELSE consumes
-   the fg node's fovA (the user saw THE WORLD move with head under `fova
-   match` while the rig stayed decent) - dump-diff a fova-on/off pair
-   window by window; the consumer is whichever non-rig pass's transforms
-   move. Until explained, fova stays default-off and out of headset runs.
+1. **Await the part-3 headset verdict** (profiles swapping per wheel
+   switch, save/reload persistence, lock-off default feel) - fixes ship
+   from whatever comes back; then merge PR #6. v0.3.0 tags on the user's
+   explicit go after a green run.
+2. **Then the gameplay track (M9)**: pawn-eye-point anchoring (the user's
+   walk-bob decoupling idea - camera base from Pawn.Location + eye height
+   behind a default-OFF toggle), off-hand tracking + two-handed weapons
+   (both prerequisites shipped), wrench swing gesture, first-boot-restart
+   fix.
+3. **The submission-side closeout (cheap, headset-only, any run)**: one
+   glance at the `xr: fovaudit submit` line (src must read `readback`,
+   swap = the render resolution) + `fovaudit pose on` for 30 s of head
+   motion. Largely academic now the drift closed as the lock, but one
+   glance settles it forever.
 
-3. **The submission-side closeout (cheap, headset-only)**: one glance at
-   the `xr: fovaudit submit` line (src must read `readback`, swap = the
-   render resolution) + `fovaudit pose on` for 30 s of head motion.
-   Largely academic now the drift closed as the lock, but one glance
-   settles it forever.
+**POLISH / POST-POLISH (user's call 2026-07-28 part 3 - explicitly not
+gameplay-critical):**
+
+- **Model/world scale decoupling**: two independent sliders - world scale
+  (the existing worldScale) and a HAND/MODEL scale that does not touch
+  the world. Known walls from session 16 (do not re-walk blind): cluster
+  bone .s blows up the attached weapon (the attach path inverts chain
+  scale); actor DrawScale is geometry-inert on the fg path. Candidate
+  routes, in probe order: (a) the fovA world-coupling hunt below - if the
+  world-consumer is found and masked, fovA becomes a clean per-rig zoom =
+  the model-scale slider for free; (b) DrawScale on a fova-matched rig
+  (inert was only proven on the OLD fg path); (c) the per-eye bone-offset
+  stereo-basis split parked in M9 (the session-16 design sketch).
+- **fovA world-motion mystery (feeds the above)**: flat-find what ELSE
+  consumes the fg node's fovA (the user saw THE WORLD move with head
+  under `fova match` while the rig stayed decent) - dump-diff a
+  fova-on/off pair window by window; the consumer is whichever non-rig
+  pass's transforms move. Until explained, fova stays default-off and out
+  of headset runs.
 
 3. **Wall-calibration pass (the user, in headset)**: per-weapon profiles
    are live - calibrate each weapon dot==shot with the

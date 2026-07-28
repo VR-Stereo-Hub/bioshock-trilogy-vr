@@ -525,6 +525,11 @@ kill. Both prerequisites below are now MET.):**
       puts the gun at double the hand's perceived distance and doubles hand motion - the
       session-11 percepts). Design sketch in the session-16 part-3 conversation; the per-eye
       write path (bones reapply) already exists.
+      *RE-CONFIRMED POLISH 2026-07-28 (session 21 part 3, user's call: "not that important
+      for the gameplay"): the ask is now two independent sliders (world + hand/model scale).
+      New candidate routes since the fg-scene decode - the fovA per-rig zoom (once its
+      world-coupling is explained and masked) or DrawScale on a fova-matched rig - see
+      STATUS "POLISH / POST-POLISH" for the probe order.*
 - [ ] IPD slider verification + calibration (parked here 2026-07-24 from M4 rung 1 by user
       choice - user could not tell if it does anything; test with an exaggerated offset,
       calibrate world scale first since perceived depth scale is the worldScale/IPD ratio)
