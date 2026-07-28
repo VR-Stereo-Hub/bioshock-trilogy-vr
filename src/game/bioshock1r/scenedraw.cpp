@@ -631,6 +631,17 @@ void maybe_second_build(void* ecx, void* edx, void* a1, void* a2, void* a3,
     }
     if (!want) return;
 
+    // Session 22: with CalcView silent (scripted scene) pass 2 would just
+    // re-render an identical camera - no eye offsets arm, and the cinematic
+    // fallback is showing the quad. Skip the wasted double build (and its
+    // blocking waitFrame). Same-thread ordering makes this exact: a stalled
+    // game thread stalls builds too, so silence here can only mean the engine
+    // is deliberately skipping CalcView.
+    if (camera::calcview_silent(400)) {
+        g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     // Stall guard 1 (reactive): no present since the previous build means the
     // render thread is paused (unfocused) or wedged - do not stack a second
     // frame onto a stalled pipeline.
@@ -732,6 +743,15 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
         static_cast<uint32_t>(bvr::d3d11_hook::present_count());
     uint32_t presentDelta = presentLow - g_lastBuildPresentLow;
     g_lastBuildPresentLow = presentLow;
+
+    // Session 22: scripted cameras (bathysphere descent) bypass CalcView, so
+    // the FOV write's restore path never runs there - do it from here, the
+    // game-thread hook that keeps firing during scenes, BEFORE the build so
+    // this very frame renders at the authored FOV. Re-arm is automatic when
+    // CalcView resumes (camera.cpp owns the latch). 400 ms sits ABOVE the
+    // render side's 300 ms quad fallback on purpose (quad-over-forced-FOV for
+    // ~100 ms is invisible; projection-over-restored-FOV would not be).
+    if (depth == 0) camera::restore_game_fov_if_stale(400);
 
     // Stereo eye tag for pass 1 (LEFT), pushed BEFORE the original: the
     // pass's Present strictly follows (async via the pump in threaded mode,

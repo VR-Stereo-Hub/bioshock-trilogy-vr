@@ -454,7 +454,7 @@ Event& push_event(EventKind kind, const void* retAddr, void* espHint) {
 void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCount,
                                          UINT startIndex, INT baseVertex) {
     g_callCensus[CxDrawIndexed].fetch_add(1, std::memory_order_relaxed);
-    if (t_suppress == 0) bvr::hud::on_draw_indexed();
+    if (t_suppress == 0) bvr::hud::on_draw_indexed(ctx);
     if (should_record()) {
         ++t_suppress; // our own Get* calls must not recurse into recording
         Event& ev = push_event(EventKind::DrawIndexed, _ReturnAddress(),

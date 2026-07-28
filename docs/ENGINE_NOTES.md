@@ -1891,3 +1891,60 @@ Also this round: the user's fixed LEFT-hand calibration (aim trim
 baked as CODE DEFAULTS (their explicit ask); their four live profiles
 rescued to weapons.ini via wsave before anything could drop them (the run
 had not pressed save).
+
+## Session 22 - scripted-camera scenes: the descent's real mechanism (measured flat)
+
+The session-22 plan carried two hypotheses for the bathysphere descent
+("no stereo + fisheye"): (a) scripted cameras bypass eventPlayerCalcView,
+(b) our gfov-130 option write fisheyes a ~75-authored camera. **Both are
+wrong for the descent** - measured on the crash-site save, vrstereo on,
+clean boot, the ride replayed end to end:
+
+- **CalcView keeps firing the whole ride** (heartbeat 150-1100 calls/s,
+  camera loc walking the scripted track), and the view actor stays
+  AShockPlayer - `[b1r] view state:` logs ZERO transitions across the
+  descent, the pause menu, and the hack minigame (one boot-time
+  menu/cutscene -> GAMEPLAY pair is the whole log). Strict-view and
+  CalcView-staleness detectors both MISS this scene class.
+- **The renderer consumes CalcView's camera even mid-scene**: the world
+  pass's cb0 camera position matches the CalcView heartbeat loc to the UU
+  (45542.2/-15444.8/-22293.4 vs 45543.1/-15447.8/-22293.4 at the same
+  second). Eye offsets applied in CalcView DO reach the pixels - the
+  "no stereo" percept is NOT missing disparity at the render level.
+- **The scene renders its OWN FOV and ignores the option**: dump decode
+  mid-ride shows ONE tangent cluster tanH=1.2800 tanV=0.7200 = 104.0 deg
+  at 16:9 in BOTH eye windows while the option int reads 130 (fovaudit
+  mid-ride: option=130, gfovWrite on). Control immediately after arrival:
+  cluster 2.1445/1.2063 = exactly option 130 (the session-21
+  rendered==option result holds for gameplay). The user's persisted
+  option is itself 130, so "restore the saved option" can never fix a
+  scene that does not read the option at all.
+- **Root cause of both user percepts: the projection layer CLAIMS the
+  option-derived FOV (130) over a 104-rendered image.** A 26-deg claim
+  error warps geometry (the "fisheye") and mis-registers the two eyes'
+  reprojection enough to break fusion (the "no stereo" percept) even
+  though pixel-level disparity exists.
+
+**The shipped detector (session 22): the live rendered-FOV watch**
+(core/gfx/hud_capture.cpp): once per present interval the first
+DSV-bound DrawIndexed's VS b0 head (80 bytes) is copied to a tiny staging
+buffer (CopySubresourceRegion, async) and mapped on a LATER present with
+DO_NOT_WAIT (zero stalls); tangents decode from the screen-ray block at
+floats 12..18 (the session-21 layout decode-framedump.ps1 verifies
+offline; both derivations must agree within 2% or the block is ignored).
+`fov_mismatch()` = rendered-vs-option outside +-10%, 3-interval
+hysteresis, transitions logged (`[hud] rendered-fov mismatch ON/off`) -
+session-independent, so the descent is a fully flat-testable repro:
+exactly one ON ~11 s after the lever pull (104.0 vs 130.0), live
+`fovaudit live:` echoes 1.2799/0.7200 age 0 ms mid-ride, one off at
+arrival. The cinematic quad fallback (openxr_runtime on_present_end)
+keys on strict-false OR publish-staleness OR fov_mismatch; the first two
+legs never fired during the descent and stay for menu-attract/true-bypass
+scene classes.
+
+Traps recorded: the descent ride creates a "Welcome to Rapture
+(AutoSave)" at arrival that becomes the NEWEST save - CONTINUE stops
+landing on the crash-site repro save after one replay (it drops to
+second in the LOAD list). A save LOAD produced NO view-state transition
+and NO fov-write OFF/ON churn (strict stayed true through the load
+screen on this box).

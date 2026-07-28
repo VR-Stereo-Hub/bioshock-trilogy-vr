@@ -2,8 +2,12 @@
 
 #include "core/gfx/blit.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h" // rendered_hfov_deg (fov-watch comparison)
+
+#include <windows.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <map>
 
@@ -62,6 +66,100 @@ bool g_hadHudLastInterval = false;
 
 // Lifetime counters.
 std::atomic<unsigned> g_cHudDraws{0}, g_cRedirects{0}, g_cLeaks{0}, g_cIntervals{0};
+
+// ---- Session 22: live rendered-FOV watch (see hud_capture.h) ----------------
+// One 80-byte staging buffer: the first scene draw of an interval copies the
+// head of its VS b0 into it (CopySubresourceRegion, async); the copy is
+// mapped on a LATER present with DO_NOT_WAIT, so the pipeline never stalls.
+// Tangent layout (session 21, dump-verified): floats 12..18 hold the
+// screen-ray helper (2tanH, 0, -tanH, 0, 0, -2tanV, tanV); the two
+// derivations must agree or the block is not a perspective pass.
+constexpr UINT kFovCbBytes = 80; // floats 0..19
+ID3D11Buffer* g_fovStaging = nullptr;
+bool g_fovPending = false; // copied, not yet mapped
+int g_fovPendingAge = 0;   // presents since the copy
+int g_fovTriesThisInterval = 0;
+bool g_fovCapturedThisInterval = false;
+std::atomic<float> g_fovTanH{0.0f}, g_fovTanV{0.0f};
+std::atomic<unsigned long long> g_fovStampMs{0};
+// Mismatch verdict (render thread writes; hysteresis over present intervals).
+std::atomic<bool> g_fovMismatchOn{false};
+int g_fovMismatchStreak = 0;
+
+bool ensure_fov_staging(ID3D11DeviceContext* ctx) {
+    if (g_fovStaging) return true;
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return false;
+    D3D11_BUFFER_DESC sd{};
+    sd.ByteWidth = kFovCbBytes;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    HRESULT hr = dev->CreateBuffer(&sd, nullptr, &g_fovStaging);
+    dev->Release();
+    return SUCCEEDED(hr) && g_fovStaging;
+}
+
+// Map attempt + mismatch bookkeeping, once per present (from on_present).
+void fov_watch_on_present(ID3D11DeviceContext* ctx) {
+    if (g_fovPending && ctx && g_fovStaging) {
+        ++g_fovPendingAge;
+        D3D11_MAPPED_SUBRESOURCE m{};
+        HRESULT hr = ctx->Map(g_fovStaging, 0, D3D11_MAP_READ,
+                              D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+        if (SUCCEEDED(hr)) {
+            const float* f = static_cast<const float*>(m.pData);
+            float tanH1 = f[12] * 0.5f, tanH2 = -f[14];
+            float tanV1 = -f[17] * 0.5f, tanV2 = f[18];
+            ctx->Unmap(g_fovStaging, 0);
+            g_fovPending = false;
+            bool ok = std::isfinite(tanH1) && std::isfinite(tanH2) &&
+                      std::isfinite(tanV1) && std::isfinite(tanV2) &&
+                      tanH1 > 0.05f && tanH1 < 20.0f && tanV1 > 0.05f &&
+                      fabsf(tanH1 - tanH2) <= 0.02f * tanH1 &&
+                      fabsf(tanV1 - tanV2) <= 0.02f * tanV1;
+            if (ok) {
+                g_fovTanH.store(tanH1, std::memory_order_relaxed);
+                g_fovTanV.store(tanV1, std::memory_order_relaxed);
+                g_fovStampMs.store(GetTickCount64(), std::memory_order_relaxed);
+            }
+            // Non-perspective/zero blocks fail silently - the stamp just ages.
+        } else if (g_fovPendingAge > 8) {
+            g_fovPending = false; // copy stuck (device weirdness) - recapture
+        }
+    }
+    g_fovCapturedThisInterval = false;
+    g_fovTriesThisInterval = 0;
+
+    // Rendered-vs-option verdict with a 3-interval hysteresis, logged on
+    // transition. Session-independent by design: this is the flat-testable
+    // instrument (the descent shows ON with no headset attached).
+    unsigned long long stamp = g_fovStampMs.load(std::memory_order_relaxed);
+    bool fresh = stamp && GetTickCount64() - stamp < 500;
+    float optHfov = bvr::vr::rendered_hfov_deg();
+    bool mm = false;
+    if (fresh && optHfov > 1.0f) {
+        float optTan = tanf(optHfov * 0.5f * 3.14159265f / 180.0f);
+        if (optTan > 0.01f) {
+            float r = g_fovTanH.load(std::memory_order_relaxed) / optTan;
+            mm = r < 0.90f || r > 1.10f;
+        }
+    }
+    if (mm != g_fovMismatchOn.load(std::memory_order_relaxed)) {
+        if (++g_fovMismatchStreak >= 3) {
+            g_fovMismatchStreak = 0;
+            g_fovMismatchOn.store(mm, std::memory_order_relaxed);
+            BVR_LOG("[hud] rendered-fov mismatch %s (rendered tanH %.4f = %.1f deg "
+                    "vs option %.1f deg)",
+                    mm ? "ON (scripted-camera fov)" : "off",
+                    g_fovTanH.load(std::memory_order_relaxed),
+                    2.0f * atanf(g_fovTanH.load(std::memory_order_relaxed)) * 57.29578f,
+                    optHfov);
+        }
+    } else {
+        g_fovMismatchStreak = 0;
+    }
+}
 
 ID3D11Resource* scene_leader() {
     Vote* best = nullptr;
@@ -179,7 +277,7 @@ void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
     }
 }
 
-void on_draw_indexed() {
+void on_draw_indexed(ID3D11DeviceContext* ctx) {
     if (!g_curRt) return;
     if (g_curRt == g_hudTarget && g_hudTarget) {
         // The fingerprint says the world never DrawIndexes the tonemap target
@@ -189,6 +287,29 @@ void on_draw_indexed() {
         return;
     }
     if (!g_curDsvBound) return;
+
+    // Session 22 fov watch: grab the first decodable scene draw's cb0 head
+    // (bounded attempts - early depth-only passes can bind small buffers).
+    if (!g_fovCapturedThisInterval && !g_fovPending && ctx &&
+        g_fovTriesThisInterval < 8) {
+        ++g_fovTriesThisInterval;
+        ID3D11Buffer* cb0 = nullptr;
+        ctx->VSGetConstantBuffers(0, 1, &cb0);
+        if (cb0) {
+            D3D11_BUFFER_DESC bd{};
+            cb0->GetDesc(&bd);
+            // 320 = the smallest world-pass cb tier that carries the ray block.
+            if (bd.ByteWidth >= 320 && ensure_fov_staging(ctx)) {
+                D3D11_BOX box{0, 0, 0, kFovCbBytes, 1, 1};
+                ctx->CopySubresourceRegion(g_fovStaging, 0, 0, 0, 0, cb0, 0, &box);
+                g_fovPending = true;
+                g_fovPendingAge = 0;
+                g_fovCapturedThisInterval = true;
+            }
+            cb0->Release();
+        }
+    }
+
     for (Vote& v : g_votes) {
         if (v.res == g_curRt) {
             ++v.n;
@@ -238,6 +359,7 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
 }
 
 void on_present(ID3D11DeviceContext* ctx) {
+    fov_watch_on_present(ctx); // session 22: map last interval's cb0 copy
     if (g_hudThisInterval) g_cIntervals.fetch_add(1, std::memory_order_relaxed);
     g_hadHudLastInterval = g_hudThisInterval;
     if (g_hudThisInterval && g_rtv && ctx) {
@@ -306,6 +428,19 @@ void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
     if (intervalsWithHud) *intervalsWithHud = g_cIntervals.load(std::memory_order_relaxed);
 }
 
+bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs) {
+    unsigned long long s = g_fovStampMs.load(std::memory_order_relaxed);
+    if (!s) return false;
+    if (tanH) *tanH = g_fovTanH.load(std::memory_order_relaxed);
+    if (tanV) *tanV = g_fovTanV.load(std::memory_order_relaxed);
+    if (ageMs) *ageMs = GetTickCount64() - s;
+    return true;
+}
+
+bool fov_mismatch() {
+    return g_fovMismatchOn.load(std::memory_order_relaxed);
+}
+
 ID3D11DepthStencilView* capture_dsv() {
     return g_dsv;
 }
@@ -366,6 +501,9 @@ void release_resources() {
     g_blendVariants.clear();
     g_texW = g_texH = 0;
     g_processedThisInterval = false;
+    if (g_fovStaging) { g_fovStaging->Release(); g_fovStaging = nullptr; }
+    g_fovPending = false;
+    g_fovCapturedThisInterval = false;
 }
 
 } // namespace bvr::hud

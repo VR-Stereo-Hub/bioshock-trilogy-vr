@@ -179,6 +179,18 @@ SimHead g_simHead;
 bool g_srBaseValid = false;
 FVector g_srBaseLoc{};
 FRotator g_srBaseRot{};
+// Session 22: age + eye-offset latch for the pass-2 replay. The stamp kills
+// the stale-base hazard - CalcView can go silent for minutes during scripted
+// scenes, and pass 2 must never replay a pre-cutscene camera. The latch
+// carries pass-1's strict-gameplay decision so a non-gameplay pair renders
+// both eyes IDENTICAL (the quad screen shows one image; an IPD offset
+// between its two source presents would jitter it).
+uint64_t g_srBaseStampMs = 0;
+bool g_srBaseEyed = false;
+// Last normal-pass CalcView tick (game thread). Scripted cameras bypass
+// CalcView entirely, so staleness here is the cutscene signal for the
+// BuildDetour-side FOV restore and the second-build skip.
+uint64_t g_lastCalcViewMs = 0;
 
 // Session 21 fg view-sync stash: the final per-eye camera (post eye offset)
 // of the current pair. Game thread only (1t); freshness-gated by stamp so a
@@ -211,6 +223,11 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 // "recenter", "fovaudit [pose on|off]" (session 21: option vs submitted vs
 // option-derived fov side by side; `pose on` arms the tagged-vs-consumed
 // yaw log for the headset).
+// "vrcine on|off|mode quad|mode stereo|status" (session 22: cinematic quad
+// fallback - scripted scenes and menus drop the projection layer to the
+// big-screen quad; the detector is strict-view/staleness/rendered-vs-option
+// fov mismatch; "mode stereo" keeps the projection through fov-mismatch
+// scenes and claims the measured fov; status prints counters + fov watch).
 // Discovery commands (route to core/debug/value_scan; game thread only):
 //   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
 //   memscani <u>  memrescani <u>   (integer-typed variants)
@@ -379,8 +396,21 @@ void apply_command(const char* cmd, const char* args) {
                     src == 0   ? "readback"
                     : src == 1 ? "fallback"
                     : src == 2 ? "manual"
+                    : src == 3 ? "live"
                                : "none",
                     sw, sh, optTanH, optTanV);
+            // Session 22 live fov watch: what the game is ACTUALLY rendering
+            // right now (decoded per present from the first scene draw's cb0).
+            float liveTanH = 0.0f, liveTanV = 0.0f;
+            unsigned long long liveAge = 0;
+            if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge))
+                BVR_LOG("[b1r] fovaudit live: rendered tanH=%.4f tanV=%.4f (%.1f deg) "
+                        "age=%llums | mismatch=%d cineActive=%d",
+                        liveTanH, liveTanV, 2.0f * atanf(liveTanH) * kRadToDeg,
+                        liveAge, bvr::hud::fov_mismatch() ? 1 : 0,
+                        bvr::vr::cinematic_active() ? 1 : 0);
+            else
+                BVR_LOG("[b1r] fovaudit live: no decoded scene tangents yet");
         }
     } else if (strcmp(cmd, "fsweep") == 0) {
         float lo = 0.0f, hi = 0.0f;
@@ -473,6 +503,8 @@ void apply_command(const char* cmd, const char* args) {
         bvr::vr::handle_pace_command(args); // M8 disconnect-stall guard
     } else if (strcmp(cmd, "vrmirror") == 0) {
         bvr::vr::handle_mirror_command(args); // M8 single-eye desktop mirror
+    } else if (strcmp(cmd, "vrcine") == 0) {
+        bvr::vr::handle_cine_command(args); // session 22 cinematic quad fallback
     } else if (strcmp(cmd, "vrhud") == 0) {
         // Session 19 HUD capture: gameswf HUD redirected off the game frame
         // (clean eyes) and shown as a floating quad in stereo.
@@ -696,10 +728,14 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     float reentryYawDeg = 0.0f;
     if (scenedraw::second_pass_for_current_thread(&reentryYawDeg)) {
         g_original(self, edx, viewActor, loc, rot);
-        if (scenedraw::stereo_active() && g_srBaseValid && loc && rot) {
+        // Session 22: the 100 ms age gate keeps a resuming CalcView from
+        // replaying a base armed before a scene (pass 2 always follows its
+        // pass 1 within one tick; anything older is a stale pair).
+        if (scenedraw::stereo_active() && g_srBaseValid && loc && rot &&
+            GetTickCount64() - g_srBaseStampMs <= 100) {
             *loc = g_srBaseLoc;
             *rot = g_srBaseRot;
-            apply_eye_offset(loc, *rot, +1);
+            if (g_srBaseEyed) apply_eye_offset(loc, *rot, +1);
             g_eyeCamLoc[1] = *loc; // fg view-sync stash, RIGHT eye
             g_eyeCamRot[1] = *rot;
             g_eyeCamStampMs[1] = GetTickCount64();
@@ -750,6 +786,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     }
 
     uint64_t now = GetTickCount64();
+    g_lastCalcViewMs = now; // session 22: cutscene-silence detector
     poll_command_file(now);
     // Overlay preset buttons land here (game thread; the overlay draws on
     // the render thread and only sets the pending flags).
@@ -788,6 +825,16 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // The same quantity in rotator units - what M7.5 transfers to the body.
     int32_t residualUnits = 0;
     int32_t gameYawUnitsRaw = rot ? rot->yaw : 0; // the engine's own body yaw
+
+    // Session 22: the strict gameplay-view verdict (body.cpp predicate, no
+    // menu-attract escape hatch) now gates the live head drive, the FOV
+    // write, and the eye offsets, so it is computed up front - it used to
+    // live in the FrameContext publish below. Published to the render thread
+    // too: the cinematic quad fallback keys on it (and on its staleness -
+    // scripted cameras bypass CalcView entirely).
+    bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
+    bvr::vr::publish_gameplay_view(strictGameplay);
+
     bvr::vr::HeadPose hp{};
     bool driveHead = false;
     bool liveHead = false;
@@ -810,7 +857,13 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         hp.qz = q[2];
         hp.qw = q[3];
         driveHead = true;
-    } else if (bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
+    } else if (strictGameplay && !bvr::vr::cinematic_active() &&
+               bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
+        // Session 22: the live lane is gated on the strict view AND the
+        // cinematic fallback - the HMD must not steer scripted/menu cameras
+        // (their content lands on the quad screen, and head-steering it
+        // would wobble the whole screen). The sim and replay lanes above
+        // stay ungated for flat tests.
         driveHead = true;
         liveHead = true;
     }
@@ -908,8 +961,13 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // source). Precedence: VR forced headset fov > manual gfov. One-shot
     // save/restore so the user's option value returns untouched.
     if (optionFov) {
-        bool wantVr = vrDrove && vrFov > 0.0f;
-        bool wantManual = g_gameFovWrite.load(std::memory_order_relaxed);
+        // Session 22: both wants are gated on the strict view, so leaving
+        // gameplay (scripted camera that still CalcViews, menus) restores the
+        // authored FOV through the existing latch and re-arms on return. The
+        // CalcView-SILENT case (descent) cannot reach this code - scenedraw's
+        // BuildDetour calls restore_game_fov_if_stale() for it.
+        bool wantVr = strictGameplay && vrDrove && vrFov > 0.0f;
+        bool wantManual = strictGameplay && g_gameFovWrite.load(std::memory_order_relaxed);
         if (wantVr || wantManual) {
             if (!g_wasWritingGameFov) {
                 g_savedGameFov = *optionFov;
@@ -978,11 +1036,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.pc = self;
         g_lastViewActor.store(fc.viewActor, std::memory_order_relaxed);
 
-        // Strict gameplay-view (body.cpp predicate, no menu-attract escape
-        // hatch), published to the input bridge as the stick-pitch-kill gate
+        // Strict gameplay-view (hoisted above the drive lanes since session
+        // 22), published to the input bridge as the stick-pitch-kill gate
         // and logged on transition - the harness's generic "in gameplay"
         // signal (boot.ps1 watches for this line; any save, any level).
-        bool strictGameplay = body::is_gameplay_view(fc.viewActor);
         bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
         static int s_lastViewState = -1;
         int viewState = strictGameplay ? 1 : 0;
@@ -1087,7 +1144,14 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_srBaseLoc = *loc;
         g_srBaseRot = *rot;
         g_srBaseValid = true;
-        apply_eye_offset(loc, *rot, -1);
+        g_srBaseStampMs = now;
+        // Session 22: while the cinematic quad fallback holds (or the view is
+        // not strict gameplay), both eyes stay IDENTICAL - the quad shows one
+        // image per present and an IPD offset would jitter it. The renderer
+        // consumes CalcView's camera even in scripted scenes (dump-proven),
+        // so this suppression is load-bearing, not belt-and-suspenders.
+        g_srBaseEyed = strictGameplay && !bvr::vr::cinematic_active();
+        if (g_srBaseEyed) apply_eye_offset(loc, *rot, -1);
         g_eyeCamLoc[0] = *loc; // fg view-sync stash, LEFT eye
         g_eyeCamRot[0] = *rot;
         g_eyeCamStampMs[0] = GetTickCount64();
@@ -1201,6 +1265,25 @@ bool fg_fov_match_active() {
 
 bool hook_live() {
     return g_hookLive.load(std::memory_order_relaxed);
+}
+
+// Session 22: scripted cameras bypass eventPlayerCalcView, so the FOV write's
+// normal restore path (inside CalcViewDetour) cannot run during them. The
+// scene-build detour - which keeps firing on the same game thread - calls
+// these instead. Re-arm is automatic on the first CalcView after the scene.
+bool calcview_silent(uint64_t staleMs) {
+    return g_lastCalcViewMs != 0 && GetTickCount64() - g_lastCalcViewMs > staleMs;
+}
+
+void restore_game_fov_if_stale(uint64_t staleMs) {
+    if (!g_wasWritingGameFov || !calcview_silent(staleMs)) return;
+    int32_t* optionFov = patterns::hfov_option_ptr();
+    if (!optionFov) return;
+    *optionFov = g_savedGameFov;
+    g_wasWritingGameFov = false;
+    BVR_LOG("[b1r] game fov write OFF (restored option %d - calcview silent %llu ms)",
+            g_savedGameFov,
+            static_cast<unsigned long long>(GetTickCount64() - g_lastCalcViewMs));
 }
 
 void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* worldScale) {

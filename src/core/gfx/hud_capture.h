@@ -32,7 +32,7 @@ namespace bvr::hud {
 // Called from the frame_inspector detours (render thread, before forwarding).
 void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
               ID3D11DepthStencilView* dsv);
-void on_draw_indexed();
+void on_draw_indexed(ID3D11DeviceContext* ctx);
 // Returns the RTV to substitute for this draw (bind it together with
 // capture_dsv() - gameswf masks stencil against it), or null to leave the
 // game's binding alone. `ctx` is used to lazily create the RT and to inspect
@@ -73,6 +73,24 @@ bool force();
 // Telemetry for `vrhud status` (per second, reset on read... no - lifetime).
 void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
                   unsigned* intervalsWithHud);
+
+// ---- Session 22: live rendered-FOV watch -------------------------------------
+// Scripted cameras (the bathysphere descent) render their OWN fov - 104 deg
+// measured by dump decode - while the FOV option (and therefore the projection
+// layer's claim) still reads 130. The claim mismatch is the in-headset
+// "fisheye + broken fusion" percept, and rendered-vs-option is the live
+// cutscene detector. Once per present interval the first scene draw's VS b0
+// is partially copied to a tiny staging buffer and mapped a present LATER
+// (DO_NOT_WAIT, zero pipeline stalls); tangents decode from the screen-ray
+// block at floats 12..18 (the session-21 layout that decode-framedump.ps1
+// verifies offline).
+//   fov_watch     latest decoded tangents; false until the first decode
+//   fov_mismatch  hysteresis'd rendered-vs-option verdict (compares against
+//                 bvr::vr::rendered_hfov_deg(), logs transitions - the
+//                 flat-testable instrument; the VR runtime keys the cinematic
+//                 quad fallback on it)
+bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs);
+bool fov_mismatch();
 
 // Free device objects (device loss / resize; recreated lazily).
 void release_resources();

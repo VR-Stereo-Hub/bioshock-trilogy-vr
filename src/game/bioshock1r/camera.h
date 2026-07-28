@@ -37,6 +37,18 @@ void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float w
 // no fresh stash exists (stereo off, drive idle > 200 ms, or never driven).
 bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]);
 
+// Session 22 cinematic fallback, called from scenedraw's BuildDetour (same
+// game thread): scripted cameras bypass eventPlayerCalcView, so the FOV
+// write's normal restore path cannot run during them.
+//   calcview_silent          true once the normal CalcView pass has been
+//                            quiet for more than staleMs (0 = never fired
+//                            reads as NOT silent - conservative at boot)
+//   restore_game_fov_if_stale  one-shot restore of the FOV option the write
+//                            latched; re-arms automatically when CalcView
+//                            resumes (the latch lives in CalcViewDetour)
+bool calcview_silent(uint64_t staleMs);
+void restore_game_fov_if_stale(uint64_t staleMs);
+
 // Full ImGui section: hook status, telemetry, and all debug controls.
 // Called from the overlay through IGameAdapter::drawDebugUi().
 void draw_debug_ui();
