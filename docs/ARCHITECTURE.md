@@ -397,3 +397,26 @@ runtime.
   the camera, so absorbing into the recenter would counter-rotate the view every frame,
   and the engine re-stamps it from the controller anyway - live-confirmed the pawn follows
   our PC write for free).
+
+- **2026-07-28 (session 20) - ONE trim algebra for ray, laser, and model; quat helpers
+  promoted to core.** The fire ray used to apply its calibration trim as rotator ADDS in
+  game space after the XR->game map, and the laser as yaw/pitch adds inside a spherical
+  decomposition - while the model composed its trim as a quaternion in the controller's
+  LOCAL frame. Three algebras for one physical quantity agree only at the pose the user
+  tuned at; the session-20 `vraim synccheck` sweep measured up to **28.21 deg** of
+  ray-vs-barrel divergence at rolled poses with identical trims fed to both chains
+  (ENGINE_NOTES session 20). Now all three run the model's compose - `q_ctrl (x) q_trim`
+  via `xr_local_trim_quat`, roll slot 0 for the ray/laser (roll is innermost and cannot
+  move a ray), roll dropped only at the ray's final rotator write - implemented ONCE as
+  pure functions in `frame_context.h` (`ray_pose_from_xr` = `model_pose_from_xr` + roll
+  drop), which production and synccheck share, so the sweep measures the shipping code
+  and the gate is `synccheck ~0 at every orientation`. The laser's origin-offset basis
+  also adopts the ray's zero-roll convention (right built from the ray's yaw ANGLE, so
+  it stays defined at any pitch - the old `d x worldUp` cross degenerated near vertical
+  and silently dropped the right/up offsets there). The quat helpers moved to
+  `core/util/xr_math.h` (`bvr::xrmath`) because core code (the laser) must not include
+  game headers; `ue_math.h` re-exports them so game code keeps its spelling. The model's
+  own full-roll position-offset basis is deliberately UNTOUCHED (live user tuning rides
+  it), and tuned trim values carry over: the old and new algebras agree exactly at the
+  neutral tuning pose. The legacy `vrhands aligntrim` euler coupling was deleted - wrong
+  algebra everywhere but the tuning pose, and nothing left for it to do.

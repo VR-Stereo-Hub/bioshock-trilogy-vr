@@ -9,6 +9,7 @@
 #include "core/gfx/blit.h"
 #include "core/gfx/hud_capture.h"
 #include "core/util/log.h"
+#include "core/util/xr_math.h"
 
 #ifdef BVR_WITH_OPENXR
 
@@ -1030,56 +1031,40 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     float pos[3], quat[4];
     if (!input_get_hand_pose(hand, true, pos, quat)) return 0; // AIM pose = the fire ray
 
-    // Controller forward (-Z in XR), then the SAME pitch/yaw trim the fire ray
-    // applies, expressed the same way: yaw about world up, pitch about the
-    // horizon. If these two ever disagree the laser stops being a calibration
-    // tool and becomes a lie.
-    const float fwd[3] = {0.0f, 0.0f, -1.0f};
-    float d[3];
-    {
-        float qx = quat[0], qy = quat[1], qz = quat[2], qw = quat[3];
-        float t[3] = {2.0f * (qy * fwd[2] - qz * fwd[1]), 2.0f * (qz * fwd[0] - qx * fwd[2]),
-                      2.0f * (qx * fwd[1] - qy * fwd[0])};
-        d[0] = fwd[0] + qw * t[0] + (qy * t[2] - qz * t[1]);
-        d[1] = fwd[1] + qw * t[1] + (qz * t[0] - qx * t[2]);
-        d[2] = fwd[2] + qw * t[2] + (qx * t[1] - qy * t[0]);
-    }
+    // Session 20 unification: the laser composes its pitch/yaw trim as a
+    // quaternion in the controller's LOCAL frame - the model's and the fire
+    // ray's EXACT algebra (core/util/xr_math.h). The old spherical
+    // decomposition added the trim in world angles, which matched the other
+    // two only at the tuning pose. If these ever disagree again the laser
+    // stops being a calibration tool and becomes a lie.
     constexpr float kDegToRad = 3.14159265f / 180.0f;
-    float yaw = atan2f(d[0], -d[2]) + g_laserYawTrim.load(std::memory_order_relaxed) * kDegToRad;
-    float pitch = asinf(fmaxf(-1.0f, fminf(1.0f, d[1]))) +
-                  g_laserPitchTrim.load(std::memory_order_relaxed) * kDegToRad;
-    float cp = cosf(pitch);
-    d[0] = cp * sinf(yaw);
-    d[1] = sinf(pitch);
-    d[2] = -cp * cosf(yaw);
+    const float fwd[3] = {0.0f, 0.0f, -1.0f};
+    float trim[4], q2[4], d[3];
+    bvr::xrmath::xr_local_trim_quat(
+        g_laserPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
+        g_laserYawTrim.load(std::memory_order_relaxed) * kDegToRad, 0.0f, trim);
+    bvr::xrmath::quat_mul(quat, trim, q2);
+    bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], fwd, d);
 
-    // Ray ORIGIN offset (cm -> m) in the TRIMMED ray's zero-roll frame - the
-    // same offset the game-side ray build applies in UU (aim.cpp), so the
-    // beam and the fire origin move together by construction. right =
-    // d x worldUp (horizontal right of the ray), up completes the frame;
-    // near-vertical rays get the forward component only (degenerate cross).
+    // Ray ORIGIN offset (cm -> m) in the trimmed ray's ZERO-ROLL frame, built
+    // from the ray's YAW angle exactly like the game-side build (aim.cpp
+    // ue_rot_basis at roll 0) so the beam and the fire origin move together
+    // by construction. Angle-built right stays defined at ANY pitch - the old
+    // d x worldUp cross degenerated near vertical and silently dropped the
+    // right/up offset components there.
     {
         float ofM = g_laserPosFwdCm.load(std::memory_order_relaxed) * 0.01f;
         float orM = g_laserPosRightCm.load(std::memory_order_relaxed) * 0.01f;
         float ouM = g_laserPosUpCm.load(std::memory_order_relaxed) * 0.01f;
         if (ofM != 0.0f || orM != 0.0f || ouM != 0.0f) {
-            pos[0] += d[0] * ofM;
-            pos[1] += d[1] * ofM;
-            pos[2] += d[2] * ofM;
-            float right[3] = {d[1] * 0.0f - d[2] * 1.0f, d[2] * 0.0f - d[0] * 0.0f,
-                              d[0] * 1.0f - d[1] * 0.0f}; // d x (0,1,0)
-            float rl = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
-            if (rl > 1e-3f) {
-                right[0] /= rl;
-                right[1] /= rl;
-                right[2] /= rl;
-                float up2[3] = {right[1] * d[2] - right[2] * d[1],
-                                right[2] * d[0] - right[0] * d[2],
-                                right[0] * d[1] - right[1] * d[0]}; // right x d
-                pos[0] += right[0] * orM + up2[0] * ouM;
-                pos[1] += right[1] * orM + up2[1] * ouM;
-                pos[2] += right[2] * orM + up2[2] * ouM;
-            }
+            float yaw = atan2f(d[0], -d[2]);
+            float right[3] = {cosf(yaw), 0.0f, sinf(yaw)};
+            float up2[3] = {right[1] * d[2] - right[2] * d[1],
+                            right[2] * d[0] - right[0] * d[2],
+                            right[0] * d[1] - right[1] * d[0]}; // right x d
+            pos[0] += d[0] * ofM + right[0] * orM + up2[0] * ouM;
+            pos[1] += d[1] * ofM + right[1] * orM + up2[1] * ouM;
+            pos[2] += d[2] * ofM + right[2] * orM + up2[2] * ouM;
         }
     }
 

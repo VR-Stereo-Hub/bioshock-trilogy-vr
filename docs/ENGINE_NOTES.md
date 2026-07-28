@@ -1556,3 +1556,18 @@ simpose (writes counting, loc/rot exact for sim 0/0/0), fire test through
 the armed synthetic ray - substituted rot (1763, 20919) = camera (853,
 19099) + trim (5, 10 deg) * 182.04 units/deg exactly, subs=2, ammo 47->43,
 dumps 8->8.
+
+**Post-unification (same day): the algebra gate collapsed 28.21 -> 0.03 deg.**
+Ray + laser now run the model's exact compose (q_ctrl (x) q_trim via
+xr_local_trim_quat; `ray_pose_from_xr` = `model_pose_from_xr` + roll drop in
+frame_context.h; helpers promoted to core/util/xr_math.h so the laser -
+core code - shares them). Canonical sweep: <= 0.03 deg at EVERY pose (the
+int-rotator quantization floor, 1 unit = 0.0055 deg). The live-L sweep is
+the confirmation from the other side: 17.70 deg at EVERY orientation
+(constant = pure trim-value difference between the L ray trim and the L
+model trim; pre-fix it varied 0.20-17.70 with orientation = algebra error).
+The laser's origin basis now builds right from the ray's YAW angle (zero-roll
+convention, defined at any pitch); the old d x worldUp cross degenerated near
+vertical and silently dropped the right/up offset components. Legacy
+`vrhands aligntrim` deleted. Fire test on the unified build: calls=2 subs=2
+skips=0, substituted rot exact, dumps 8->8.
