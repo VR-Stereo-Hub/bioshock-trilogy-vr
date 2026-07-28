@@ -889,7 +889,14 @@ void update_weapon_profile(const FrameContext& ctx) {
     bool haveRig = hands::current_holdable(&w);
     if (!haveRig) {
         w = hands::weapon_actor();
-        if (!w) w = hands::resolve_weapon_actor(ctx);
+        // Session 22: the SCAN fallback goes fully DORMANT after 3 straight
+        // failures - the reduced cadence still meant a multi-second heap
+        // walk every ~2000 frames FOREVER on saves with no resolvable
+        // weapon (the early game; user-felt as "the game freezes every
+        // couple of seconds" at the Gatherer's Garden). The cheap rig and
+        // learned-actor reads above keep running at the throttled cadence
+        // and re-arm the scanner the moment they see anything.
+        if (!w && nullResolves < 3) w = hands::resolve_weapon_actor(ctx);
     }
     nullResolves = (haveRig || w) ? 0 : nullResolves + 1;
     if (w == g_weaponKeyActor) return;

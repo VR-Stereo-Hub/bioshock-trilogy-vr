@@ -166,6 +166,7 @@ int g_lbStreak = 0;
 unsigned g_lbLastTop = 0, g_lbLastBot = 0; // last raw measurement (render thread)
 std::atomic<uint32_t> g_lbBars{0};         // packed top<<16 | bot, 0 = inactive
 std::atomic<unsigned> g_cLbIntervals{0};
+std::atomic<unsigned> g_cLbFills{0}; // bar/fade fills kept in-frame (round 3)
 
 bool ensure_lb_staging(ID3D11DeviceContext* ctx, UINT h) {
     if (g_lbStaging && g_lbH == h) return true;
@@ -539,6 +540,19 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
     // BACKBUFFER-SIZED texture (gameswf samples UI atlases). They belong IN
     // the frame - per-eye correct by construction - so they never redirect
     // and never count as HUD content.
+    // Session 22 round 3 (user diagnosis: the cinematic bars sat ON the HUD
+    // panel, same dimensions and placement): during an engine letterbox the
+    // WHOLE flash layer renders into the frame natively - bars, fades and
+    // subtitles exactly as the flat game composes them (original blend
+    // states, no redirect, no panel). Correct by construction: the frame
+    // cannot differ from flat, and the unsqueeze then crops the bars. The
+    // panel stays empty for the duration (no redirected content = the quad
+    // copy and window composite idle on their own gates).
+    if (letterbox(nullptr, nullptr)) {
+        g_cLbFills.fetch_add(1, std::memory_order_relaxed);
+        return nullptr;
+    }
+
     {
         UINT sw = 0, sh = 0;
         if (srv0_size(ctx, &sw, &sh) && sw == g_curW && sh == g_curH) {
@@ -560,8 +574,8 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
 }
 
 void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
-    fov_watch_on_present(ctx);      // session 22: map last interval's cb0 copy
-    letterbox_watch(ctx, swapchain); // session 22 round 2: cinematic bars
+    (void)swapchain; // letterbox sampling moved to letterbox_sample (detour HEAD)
+    fov_watch_on_present(ctx); // session 22: map last interval's cb0 copy
 
     // Session 22 kind (a): screen-only interval verdict (hysteresis over
     // present intervals, transitions logged - the flat instrument). Computed
@@ -675,6 +689,16 @@ bool letterbox(unsigned* topPx, unsigned* botPx) {
     if (topPx) *topPx = packed >> 16;
     if (botPx) *botPx = packed & 0xFFFF;
     return true;
+}
+
+void letterbox_sample(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
+    // Called at the HEAD of the present detour: the backbuffer holds the
+    // game's finished frame and NONE of our additions yet. Sampling at the
+    // tail read the frame AFTER the window HUD composite painted panel
+    // content into the bar rows - the detector flapped off whenever a
+    // session was FOCUSED, and most captures went to the eyes unstretched
+    // (the round-3 in-headset "bars still there" report).
+    letterbox_watch(ctx, swapchain);
 }
 
 unsigned postfx_count() {

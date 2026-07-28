@@ -1203,15 +1203,26 @@ float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
 // unreliable with projection-layer imageRect crops (VDXR kept the bars),
 // so the eye capture un-letterboxes the frame ITSELF - band stretched
 // across the full image by our own blit, plain copy everywhere else.
-ID3D11Texture2D* g_lbScratch = nullptr;
+ID3D11Texture2D* g_lbScratch = nullptr;        // backbuffer copy, SRV source
 ID3D11ShaderResourceView* g_lbScratchSrv = nullptr;
+ID3D11Texture2D* g_lbStretched = nullptr;      // our RTV target, then copied
+ID3D11RenderTargetView* g_lbStretchedRtv = nullptr;
 std::atomic<bool> g_loggedLbStretch{false};
+std::atomic<bool> g_loggedLbFail{false};
 
 void release_lb_scratch() {
     if (g_lbScratchSrv) { g_lbScratchSrv->Release(); g_lbScratchSrv = nullptr; }
     if (g_lbScratch) { g_lbScratch->Release(); g_lbScratch = nullptr; }
+    if (g_lbStretchedRtv) { g_lbStretchedRtv->Release(); g_lbStretchedRtv = nullptr; }
+    if (g_lbStretched) { g_lbStretched->Release(); g_lbStretched = nullptr; }
 }
 
+// The stretch never touches the RUNTIME's image with a view: backbuffer ->
+// scratch (SRV) -> stretch-blit -> OUR stretched tex (RTV) -> CopyResource
+// into the XR image - the same copy the normal path has always used (same
+// R8G8B8A8 typeless family as the swapchain's SRGB format, bit-preserving,
+// no double-encode). Every failure logs ONCE and falls back to the plain
+// copy (bars visible but nothing worse).
 void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
     unsigned lbTop = 0, lbBot = 0;
     if (bvr::hud::letterbox(&lbTop, &lbBot) && lbTop + lbBot < g_swapH) {
@@ -1226,40 +1237,51 @@ void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
         }
         if (!g_lbScratch && g_device) {
             D3D11_TEXTURE2D_DESC sd = bd;
-            sd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             sd.Usage = D3D11_USAGE_DEFAULT;
             sd.CPUAccessFlags = 0;
             sd.MiscFlags = 0;
             sd.MipLevels = 1;
-            if (FAILED(g_device->CreateTexture2D(&sd, nullptr, &g_lbScratch)) ||
-                FAILED(g_device->CreateShaderResourceView(g_lbScratch, nullptr,
-                                                          &g_lbScratchSrv)))
+            sd.ArraySize = 1;
+            sd.SampleDesc.Count = 1;
+            sd.SampleDesc.Quality = 0;
+            sd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            HRESULT h1 = g_device->CreateTexture2D(&sd, nullptr, &g_lbScratch);
+            HRESULT h2 = g_lbScratch ? g_device->CreateShaderResourceView(
+                                           g_lbScratch, nullptr, &g_lbScratchSrv)
+                                     : E_FAIL;
+            sd.BindFlags = D3D11_BIND_RENDER_TARGET;
+            HRESULT h3 = SUCCEEDED(h2)
+                             ? g_device->CreateTexture2D(&sd, nullptr, &g_lbStretched)
+                             : E_FAIL;
+            HRESULT h4 = g_lbStretched ? g_device->CreateRenderTargetView(
+                                             g_lbStretched, nullptr, &g_lbStretchedRtv)
+                                       : E_FAIL;
+            if (FAILED(h1) || FAILED(h2) || FAILED(h3) || FAILED(h4)) {
+                if (!g_loggedLbFail.exchange(true))
+                    BVR_LOG("xr: letterbox stretch resources FAILED "
+                            "(fmt %d, hr %08X/%08X/%08X/%08X) - bars stay",
+                            static_cast<int>(bd.Format),
+                            static_cast<unsigned>(h1), static_cast<unsigned>(h2),
+                            static_cast<unsigned>(h3), static_cast<unsigned>(h4));
                 release_lb_scratch();
-        }
-        if (g_lbScratch && g_lbScratchSrv) {
-            // XR swapchain images can be typeless - view with the created
-            // format first, null-desc as the fallback.
-            ID3D11RenderTargetView* rtv = nullptr;
-            D3D11_RENDER_TARGET_VIEW_DESC rd{};
-            rd.Format = static_cast<DXGI_FORMAT>(g_swapFormat);
-            rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-            if (FAILED(g_device->CreateRenderTargetView(dst, &rd, &rtv)))
-                g_device->CreateRenderTargetView(dst, nullptr, &rtv);
-            if (rtv) {
-                g_context->CopyResource(g_lbScratch, backbuffer);
-                float h = static_cast<float>(g_swapH);
-                bool ok = bvr::blit::stretch_band(
-                    g_context, rtv, g_lbScratchSrv, g_swapW, g_swapH,
-                    static_cast<float>(lbTop) / h,
-                    static_cast<float>(g_swapH - lbTop - lbBot) / h);
-                rtv->Release();
-                if (ok) {
-                    if (!g_loggedLbStretch.exchange(true))
-                        BVR_LOG("xr: letterbox unsqueeze live (band %u..%u of %u)",
-                                lbTop, g_swapH - lbBot, g_swapH);
-                    return;
-                }
             }
+        }
+        if (g_lbScratch && g_lbScratchSrv && g_lbStretched && g_lbStretchedRtv) {
+            g_context->CopyResource(g_lbScratch, backbuffer);
+            float h = static_cast<float>(g_swapH);
+            bool ok = bvr::blit::stretch_band(
+                g_context, g_lbStretchedRtv, g_lbScratchSrv, g_swapW, g_swapH,
+                static_cast<float>(lbTop) / h,
+                static_cast<float>(g_swapH - lbTop - lbBot) / h);
+            if (ok) {
+                g_context->CopyResource(dst, g_lbStretched);
+                if (!g_loggedLbStretch.exchange(true))
+                    BVR_LOG("xr: letterbox unsqueeze live (band %u..%u of %u)",
+                            lbTop, g_swapH - lbBot, g_swapH);
+                return;
+            }
+            if (!g_loggedLbFail.exchange(true))
+                BVR_LOG("xr: letterbox stretch blit FAILED - bars stay");
         }
     }
     g_context->CopyResource(dst, backbuffer);

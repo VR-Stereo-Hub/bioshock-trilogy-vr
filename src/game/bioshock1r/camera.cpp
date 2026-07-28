@@ -546,11 +546,14 @@ void apply_command(const char* cmd, const char* args) {
         } else {
             unsigned hd = 0, rd = 0, lk = 0, iv = 0;
             bvr::hud::get_counters(&hd, &rd, &lk, &iv);
+            unsigned lbT = 0, lbB = 0;
+            bool lb = bvr::hud::letterbox(&lbT, &lbB);
             BVR_LOG("[hud] status: %s force=%d | hudDraws=%u redirects=%u leaks=%u "
-                    "hudIntervals=%u | postFx=%u screenOnly=%d "
+                    "hudIntervals=%u | postFx=%u screenOnly=%d letterbox=%d(%u/%u) "
                     "(vrhud on|off|force on|force off|status)",
                     bvr::hud::enabled() ? "ON" : "off", bvr::hud::force() ? 1 : 0, hd, rd,
-                    lk, iv, bvr::hud::postfx_count(), bvr::hud::screen_only() ? 1 : 0);
+                    lk, iv, bvr::hud::postfx_count(), bvr::hud::screen_only() ? 1 : 0,
+                    lb ? 1 : 0, lbT, lbB);
         }
     } else if (strcmp(cmd, "vrxhair") == 0) {
         // M8 part 2: the flat-screen crosshair. Default HIDDEN; "on" re-shows.

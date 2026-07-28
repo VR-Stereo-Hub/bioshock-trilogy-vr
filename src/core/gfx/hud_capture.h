@@ -110,6 +110,10 @@ unsigned postfx_count();
 // submitted subImage to the band (the compositor unsqueezes - bars gone) and
 // the camera adapter suspends the live head drive (authored camera plays).
 bool letterbox(unsigned* topPx, unsigned* botPx);
+// Backbuffer sampling for the watch - MUST run at the HEAD of the present
+// detour (pure game frame; sampling after our window composite made the
+// detector flap whenever a session was FOCUSED - round-3 headset negative).
+void letterbox_sample(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain);
 
 // Free device objects (device loss / resize; recreated lazily).
 void release_resources();

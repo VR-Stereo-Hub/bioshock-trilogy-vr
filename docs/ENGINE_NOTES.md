@@ -2053,3 +2053,32 @@ sourced from a backbuffer-desc scratch copy; falls back to the plain
 CopyResource on any failure). One-shot log: `xr: letterbox unsqueeze
 live (band A..B of H)`. Covers projection AND quad modes at once (both
 consume the captured image). Do not retry imageRect crops on VDXR.
+
+### Session 22 round 4 - flash-native cinematics, the sampler feedback trap, scanner dormancy
+
+- The round-3 "texture-less fills = bars" fingerprint was WRONG (one dump
+  line over-generalized): rendering just those fills in-frame with their
+  raw flash blend states blacked out scene content (the user's "can't see
+  both hands" regression). Superseded by the correct-by-construction rule:
+  while the letterbox holds, the WHOLE flash layer renders in-frame with
+  native state - the frame cannot differ from flat (verified: mid-sequence
+  flat screenshot is vanilla; authored hands + bars composed by the game) -
+  and the unsqueeze crops the bars for the headset. The HUD panel stays
+  empty for the duration (subtitles render in-frame like flat).
+- SAMPLER FEEDBACK TRAP: the letterbox watch originally sampled the
+  backbuffer at the present-detour TAIL - AFTER our own window HUD
+  composite painted panel content into the bar rows. With a FOCUSED
+  session the detector flapped off constantly and most captures reached
+  the eyes unstretched (the "bars still there" headset negatives).
+  letterbox_sample now runs at the detour HEAD: pure game pixels, before
+  overlay/mirror/composite. Rule: any backbuffer-content DETECTOR must
+  sample before our own writers.
+- WEAPON-RESOLVER DORMANCY: on saves with no resolvable weapon (early
+  game, wrench-only) the scan fallback still ran a multi-second full heap
+  walk every ~2048 frames FOREVER (backoff reduced cadence, never
+  stopped) - flat-felt as "the game freezes every couple of seconds";
+  log signature: [b1r] APlayerWeapon scan ... chosen=00000000 on a ~5 s
+  cadence with matching camera-heartbeat gaps. The scanner now goes fully
+  dormant after 3 straight failures; the cheap rig/learned reads keep
+  running and re-arm it. Verified: exactly 3 scans post-load, then a
+  1.000 s heartbeat metronome.
