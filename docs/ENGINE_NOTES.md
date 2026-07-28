@@ -1669,3 +1669,225 @@ cylinder) animates untouched - it is a different SkeletonInstance. Side
 effect by construction: hand-cluster finger animation during reload freezes
 too (the drive was already overwriting it); the weapon's own reload
 animation still shows.
+
+### The FOV audit: no lie exists between render and submission (session 21)
+
+**Question** (prompted by BioVR's measured "yaw warped, pitch clean" mismatch
+symptom matching our +-90 sign-flipping laser-vs-gun drift): does the FOV the
+game RENDERS under vrstereo equal the FOV our projection layer is TAGGED
+with? The readback that feeds the claim (camera.cpp) reads the same engine
+address we write, so it echoes our own value - it had never been
+ground-truthed against the renderer's actual output.
+
+**Instrumentation added**: (1) `xr: fovaudit submit` log at the projection
+submission site - the per-eye claimed tangents + source
+(readback/fallback/manual) + swap dims, logged on change;
+(2) `fovaudit` seam command - option int, gfov write state, submitted
+tangents, option-derived expectation side by side; (3)
+`tools/decode-framedump.ps1` - parses a `dumpframe full [n]` dump, recovers
+tangents per draw from the cb0 screen-ray helper block (floats 12..18 =
+`(2tanH, 0, -tanH, 0, 0, -2tanV, tanV)`), attributes each depth-tested draw
+to its governing cb0 capture (exact: a block is written whenever the VS b0
+buffer OBJECT changes), clusters by tangent pair, and tags per cluster how
+many draws carry the per-section fg-bake RVAs (0x3DBF7C/0x3EDCBF) in their
+stacks - the lens-independent fg marker (needed because the shipped vrfgfov
+match makes fg tangents EQUAL world tangents by design, so tangent
+clustering alone cannot separate the passes).
+
+**Measurement** (clean boot, NG+ Medical Pavilion, VR PRESET 1, vrstereo
+heartbeat clean, `dumpframe full 2` = both SR eyes): ONE perspective cluster
+per window - tanH=2.1445 tanV=1.2063 (= 130-deg hfov at 16:9) on 298/300
+depth-tested draws (q0/q1), identical across both eye windows, matching the
+option-derived tan(130/2)=2.144507 / *9/16=1.206285 to dump print precision
+(dH=dV=0.00001). The fg draws (fgBakeStacks=9, 576-byte b0 tier, first draws
+of the pass) carry the SAME tangents - the fg lens match verified from the
+cb side. Every undecodable block (119 draws/window) has ALL-ZERO screen-ray
+slots = non-perspective passes (shadow/UI) - no hidden second lens. Render
+viewport 1920x1080 (399 draws), so the 16:9 vertical derivation holds.
+
+**Verdict - negative result, the fov-lie hypothesis for the +-90 drift is
+DEAD flat**: the renderer does not clamp option 130, both stereo eyes render
+the same symmetric frustum, and submission builds its claim from the same
+option int at the same aspect (structural; `projViews[eye].fov` is symmetric
+both eyes from one scalar - the runtime's asymmetric per-eye fov never
+reaches submission, which is exactly BioVR's "remove the lie" discipline,
+already our architecture). Remaining live suspects for the drift: (a)
+session-only claim state - the new submit log line prints src + swap dims,
+one-glance check on the next headset run (src must read `readback`, swap
+must read the render resolution); (b) pose-tag attribution - `fovaudit pose
+on` arms a tagged-vs-consumed yaw delta log (in-headset only; flat has no
+session); (c) the structural foreground-vs-compositor split - the world-pass
+re-homing experiment.
+
+### The foreground pass decoded: a second scene node, and the fovA zoom-pull lever (session 21)
+
+**Architecture (dump stack-diff + capstone, all constants in patterns.h
+"FOREGROUND SCENE NODE"):** the fg pass is a SECOND SCENE NODE flowing
+through the SAME render machinery as the world (fg and world skeletal draws
+share the whole draw layer; a per-section transform-provider virtual at
+vtbl+0x20 does the bake). The scene build (0x4CCE70) allocates a 0x400-byte
+fg node from the frame pool every build and constructs it at 0x56DC30 with
+MEASURED argument semantics: (parentScene, &scene.view@+0x118, x,
+vec3 cameraLoc, rotator cameraRot, float fovA <- PC+0x45C, float fovB <-
+PC+0x460), storing it at scene+0x1B0 (vtable 0xE1846C). The finisher
+(0x56DD90) builds the node's view matrix at +0x150 (+ inverse at +0x190,
+world-projection diag at +0x1D0) FROM THE LOC/ROT ARGS; the fovs land at
++0x3F0/+0x3F4. The ctor runs BEFORE CalcView inside each build (call sites
+build+0xD59 vs +0xF1A).
+
+**The fg camera inputs are ALREADY world-synced per eye** (pass-labeled
+ctor-arg capture, `vrfgnode on` + `dump`): pass 1's node receives the LEFT
+eye camera, pass 2's the RIGHT (values match apply_eye_offset's +-3.17 UU
+at the live yaw exactly), rotation = the DRIVEN camera rotator. Two raised
+hypotheses measured and KILLED the same night: (a) "fg view = stale
+pre-drive camera" - simhead sweep showed the DRIVEN yaw/pitch in the args;
+(b) "crossed eyes under SR" (each pass getting the sibling's camera - would
+have inverted rig disparity) - the pass-labeled capture shows correct-eye
+delivery. The `vrfgnode sync on` substitution (feeds the ctor camera.cpp's
+per-eye stash) is therefore a measured flat-static NO-OP; kept default-OFF
+as an in-headset latency A/B only.
+
+**THE LEVER - the fovA/fovB pair IS the fg zoom-pull.** fovA (from
+PC+0x45C, engine-restamped to 75.0 every frame - unpokeable as data; the
+session-15 "75.0 poked inert" verdict explained) is the REFERENCE fov;
+fovB (PC+0x460) the actual fg fov. Their ratio drives the rig's
+magnification + eye pull-back (the fov-coupled dolly sessions 13-16
+countered with the render lock + lockpull). `vrfgnode fova match`
+(ctor-arg substitution fovA:=fovB - always wins, unlike the data poke):
+the rig collapses to TRUE world geometry - screenshot mean-abs-diff 11.09
+with 44.2% of channels changed vs a 2.9 ambient floor, world pixels
+untouched, exact round-trip on `fova off`. Fire path alive under
+`fova match` + `vrbones lock off` (3 weapon-hook calls, no crash); ctor
+substitutions 3358+/0 misses; crash dumps stable across all fg-node work.
+**Candidate end-state (retune next session, headset-judged): vrfgfov on
+(projection matched) + fova match (zoom-pull neutralized) + render lock
+OFF = the rig at true world-lens geometry; the whole counter-model domain
+(lock, lockgain/lockdgain/lockpull, kFgEye* constants) retires.**
+
+**Negative results, all live-measured this session:**
+- NO script-side fg membership property exists: the full Actor property
+  list (282 props) and Hands' own (70) contain nothing foreground/pass
+  related - membership is native-only (fits the name-table finding: only
+  FOV-related foreground names exist).
+- Pawn+0x724 = the pawn->Hands reference (found by pointer-value hexdump
+  scan; the ONLY holder in pawn+0..0x1C00, PC holds none in +0..0x800).
+  Nulling it is FATAL within ~1 s (0xC0000005 at +0x6F5ED7, a hash-chain
+  walk on a corrupted [obj+0x10] - secondary damage, not the direct
+  consumer). NOT a lever. 26 code refs to +0x724 exist, all in game-logic
+  regions (0x1CA-0x313xxx) - the scene build never reads it directly.
+- The three section-transform provider classes (bake fns 0x3DBF10 /
+  0x3EDC40 / 0x60C5B0; vtbl slot +0x20 at rvas 0xDF20B4/0xDF32D4/0xE1CAA0)
+  are SKINNING STRATEGIES with 656/178/240 live instances - not fg
+  markers. Per-draw fg identification = the fg-bake stack RVAs
+  (0x3DBF7C/0x3EDCBF), which tools/decode-framedump.ps1 tags (lens-blind,
+  works under the matched lens where tangent clustering cannot separate
+  the passes).
+- The 576-byte cb tier is NOT fg-exclusive (world draws use it too; 88
+  draws at the tier, 9 fg).
+
+### UObject identity: class-name keys for any live object (session 21)
+
+**Derivation (live, seam-only, no disasm):** the equipped weapon actor's
+header decodes as a classic UObject: +0x28 = the object's own FName index
+(read 18009 -> 'Shotgun' via fname_text; +0x2C = the instance number), and
++0x30 = the UClass pointer - a heap object carrying its own vtable (RVA
+0xE2F04C) whose +0x28 FName is the CANONICAL class name (number 0).
+Cross-checked on the AHands actor: its class resolves to **'PlayerHands'**
+(the ShockGame subclass - explains the all_classes 'Hands : Actor' entry as
+the base). Production accessor `patterns::object_class_name()` validates
+every dereference plus the UClass vtable before trusting the layout.
+
+**Per-weapon profiles (vraim weapon|wsave|wkey, weapons.ini):** the R-hand
+trim + ray-origin offsets hot-swap keyed by that class name; the R atomics
+stay the single live truth (laser + fire ray + model publish read them
+unchanged), stash-on-switch / seed-on-first-sight semantics, persisted as
+`<Class>.<field>=<value>`. Flat-proven exact: sim-key round-trip restores
+stashed values to the digit both directions ('Shotgun' 5.00/3.00 restored
+after a 'Pistol' 9/8 detour), weapons.ini write/load round-trips (10 values,
+2 weapons at boot), and the equipped shotgun keyed 'Shotgun' PRE-FIRE via
+the resolving scan. IMPORTANT ordering semantic: a resolved profile applies
+OVER the vrpreset.ini R values - by design (the profile is the per-weapon
+truth; the preset seeds the first profile on a virgin weapons.ini).
+
+**Weapon-actor resolution hardening:** the old proximity-only accept (120
+UU from the expected gun spot) missed in live boot states (2 owner-matched
+candidates, both rejected); the scan now accepts STRUCTURALLY first - the
+candidate whose Base (+0x450) IS the AHands actor (attachment, the
+session-20 equip-flow fact) - with proximity as fallback, and the profile
+resolver backs off after 3 consecutive null resolves (the session-18
+scan-cadence lesson; the game intro legitimately has NO weapon for minutes).
+
+**Boot-harness hazard found on the way:** boot.ps1's press-mashing can land
+on NEW GAME instead of CONTINUE after a force-kill dialog cycle - the run
+lands in the 1960 plane intro ("IMPORTING NEW GAME PLUS DATA" on this NG+
+profile). No save damage (the intro does not autosave before the lighthouse
+transition; the .bsb set was verified untouched), but flat runs must
+screenshot-verify the landing state before measuring.
+
+### Session 21 part 2 - the headset feedback round (same day)
+
+**THE +-90 DRIFT ROOT CAUSE CLOSES: it was the render lock itself.** The
+user ran `vrbones lock off` (as part of the fovA preview) and reported
+"exactly what I was looking for - the aim is in tune with the model...
+perfect". The lock's counter-model (calibrated sessions 13-16 against the
+old fg composition) miscorrects laterally at large hand yaws - the very
+sign-flipping laser-vs-gun offset reported in session 20. Lock is now
+DEFAULT OFF (`vrbones lock abs` = the live A/B back); the solve code stays
+for reference until the composition work retires it.
+
+**Hands.CurrentHoldable = hands+0x45C** (patterns.h has the derivation):
+the equipped-weapon pointer read straight off the rig actor. It replaces
+learned/cache/scan as the weapon resolver's primary source - the
+trigger-learned object PINNED the resolver to the previously FIRED weapon
+across wheel switches (unequipped weapons keep vtable + owner), which is
+why profiles only swapped on fire in the first headset run (log-proven:
+swaps at fire timestamps, minutes after the switches).
+
+**Profile seeding race (log-proven, fixed):** the first resolve beat the
+preset's value load by ~1 s, seeded the first profile from pre-preset
+ZEROS, and the preset-tail re-apply then wrote the zeros over the user's
+tuned baseline. Now: the resolver idles until a value source exists
+(preset baseline captured or ini profiles loaded), new profiles seed from
+the CAPTURED preset baseline (not from the outgoing weapon's values), all
+flat-gated exact.
+
+**fovA in-headset negative (parked, default off):** under `vrfgnode fova
+match` the user reports THE WORLD moving with head motion (the rig
+"decent") - the fovA argument evidently feeds more than the rig's section
+bake (a world-coupled or full-screen consumer downstream of the fg node's
+fovs). Do not re-arm in-headset until that consumer is identified; the
+flat instrument findings stand.
+
+**FPS/freeze audit of the headset run (log analysis):** every
+sub-20-presents/s stall run coincides exactly with an XR session
+FOCUSED->VISIBLE window (VD overlay open / headset set down), including
+the long 19:37-19:38 window where the fova commands were typed; zero
+mid-play heap scans (all 5 scans at boot), zero xrWaitFrame-blocked
+lines, steady heartbeat during FOCUSED play. The freezes were not mod
+work. Cosmetic follow-up queued: during some VISIBLE stretches the flat
+window also stops presenting despite the pace guard (presents=0 while the
+skip counter is idle) - the guard covers xrWaitFrame but something else
+in the frame loop stalls; in-play impact none.
+
+### Session 21 part 3 - the MachineGun/GrenadeLauncher keying gap
+
+Run-2 log proof: Shotgun/Pistol/ChemicalThrower/Crossbow keyed and swapped
+per wheel switch (the rig read works), but 'MachineGun' and
+'GrenadeLauncher' NEVER keyed - those two carry a DIFFERENT NATIVE VTABLE
+than kPlayerWeaponVtableRva, so the vtable-gated holdable path rejected
+them and fell back to the stale cached weapon: the old key stayed active
+and the user's MG/GL tuning edits landed in the previous weapon's profile.
+Fix: `hands::current_holdable()` returns the raw Hands.CurrentHoldable
+pointer class-agnostically (with a rig-known/unknown status so legacy
+fallbacks only serve pre-rig states); the profile layer keys purely on
+object_class_name (UClass-vtable-validated, works for ANY class) and
+CLEARS the key when a holdable's class cannot resolve (edits then touch no
+profile - logged). weapon_actor() keeps its PlayerWeapon-vtable gate for
+legacy consumers. The MG/GL live-switch proof stays on the headset list
+(cannot switch flat); everything else gated exact on a clean boot.
+
+Also this round: the user's fixed LEFT-hand calibration (aim trim
++4.4/+30.0 deg, ray offset R+4.6/U+0.7 cm) written to vrpreset.ini and
+baked as CODE DEFAULTS (their explicit ask); their four live profiles
+rescued to weapons.ini via wsave before anything could drop them (the run
+had not pressed save).

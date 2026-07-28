@@ -27,6 +27,16 @@ void set_fov_override(float hfovDeg); // <= 0 disables; game value restored
 void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* worldScale);
 void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float worldScale);
 
+// Session 21 fg view-sync: the FINAL per-eye camera of the most recent
+// SequentialReentry pair (0 = left, 1 = right), stashed after each pass's
+// eye offset. The engine's fg scene node ctor runs BEFORE CalcView inside
+// each build and so receives the camera one BUILD stale - the OTHER eye's
+// camera under SR (the crossed-eye defect, ENGINE_NOTES session 21).
+// scenedraw's ctor detour substitutes these instead: correct eye, one PAIR
+// stale, both eyes from the same pair (consistent disparity). False when
+// no fresh stash exists (stereo off, drive idle > 200 ms, or never driven).
+bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]);
+
 // Full ImGui section: hook status, telemetry, and all debug controls.
 // Called from the overlay through IGameAdapter::drawDebugUi().
 void draw_debug_ui();

@@ -122,6 +122,21 @@ float suggested_hfov_deg();
 // binocular-scope distortion in the headset.
 void set_rendered_hfov(float hfovDeg);
 
+// --- Session 21: FOV audit ---------------------------------------------------
+// The tangents the projection layer was last TAGGED with, plus which source
+// produced the claimed hfov (0 = adapter readback, 1 = circumscribed fallback,
+// 2 = manual claim slider) and the swapchain dims. Zero/-1 until the first
+// projection-layer frame. Read by the `fovaudit` seam command; the flat gate
+// compares these against tangents recovered from dumpframe cb0 blocks.
+void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* swapH);
+
+// Pose-tag audit (default off, log-only): per stereo submission (rate-limited)
+// log the yaw the layer is TAGGED with against the yaw the game thread last
+// CONSUMED from the head-pose funnel. A steady nonzero delta means the image
+// is attributed to a pose generation the game never rendered from - the
+// next-cheapest suspect for a yaw-dependent lateral drift after the fov.
+void set_pose_audit(bool on);
+
 // --- M4 rung 1: AlternateEye stereo -----------------------------------------
 // Which eye the NEXT game frame should render for: -1 left, +1 right, 0 =
 // AlternateEye off (render centered, exactly the M3 behavior). The adapter's

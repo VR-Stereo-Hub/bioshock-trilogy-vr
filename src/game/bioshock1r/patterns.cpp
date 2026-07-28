@@ -256,4 +256,21 @@ int32_t fname_count() {
     return *reinterpret_cast<const int32_t*>(arrayBase + 4);
 }
 
+const wchar_t* object_class_name(const void* obj) {
+    using bvr::pattern_scan::is_memory_valid;
+    if (!g_imageBase || !obj) return nullptr;
+    const uint8_t* o = static_cast<const uint8_t*>(obj);
+    if (!is_memory_valid(o, kUObjectClassOffset + sizeof(void*))) return nullptr;
+    const uint8_t* cls =
+        *reinterpret_cast<const uint8_t* const*>(o + kUObjectClassOffset);
+    if (!cls || !is_memory_valid(cls, kUObjectNameIndexOffset + sizeof(int32_t)))
+        return nullptr;
+    // The +0x30 target must BE a UClass - vtable-gated so a stranger layout
+    // (or a freed object) can never produce a bogus profile key.
+    if (*reinterpret_cast<const void* const*>(cls) != g_imageBase + kUClassVtableRva)
+        return nullptr;
+    return fname_text(
+        *reinterpret_cast<const int32_t*>(cls + kUObjectNameIndexOffset));
+}
+
 } // namespace bvr::b1r::patterns

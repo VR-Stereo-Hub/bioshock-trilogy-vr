@@ -51,6 +51,12 @@ bool stereo_active();
 // Safe from any thread (the overlay checkbox draws on the render thread).
 void request_vrstereo(bool on);
 
+// Session 21 discovery instrument: "vrfgnode on|off|dump" - read-only hook on
+// the engine's per-frame FOREGROUND SCENE NODE ctor (patterns.h "FOREGROUND
+// SCENE NODE"); dump logs the parent-view/node snapshots taken at ctor tail
+// and at frame submit. Game thread only.
+void handle_fgnode_command(const char* args);
+
 // Read-only telemetry section for the overlay (control is commands-only).
 void draw_debug_ui();
 

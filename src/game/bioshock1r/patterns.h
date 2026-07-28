@@ -531,6 +531,59 @@ inline constexpr float kFgInvTanV = 2.3094011f; // 1/0.4330127
 inline constexpr float kFgViewYawBiasDeg = 1.7f;
 inline constexpr float kFgViewPitchBiasDeg = 1.1f;
 
+// ---- The FOREGROUND SCENE NODE (session 21) --------------------------------
+// The fg pass is a SECOND SCENE NODE, pure data through shared render
+// machinery (dump stack-diff: fg and world draws share the whole skeletal
+// draw layer; they differ only in which recorded scene command iterates the
+// mesh and which section-transform provider bakes it). The scene build
+// (kSceneBuildRva 0x4CCE70) allocates a 0x400-byte fg node per frame from
+// the frame pool and constructs it at the RVA below with
+// (parentScene, &parentScene.view@+0x118, x, vec3 PC+0x65C, triple PC+0x668,
+// float PC+0x45C, float PC+0x460), then stores it at parentScene+0x1B0.
+// Derivation: static capstone disasm of the build's [PC+0x460] float read
+// (the only fg-fov consumer in the build region; found by disp-0x460 code
+// search) at build+0xD71, and of the ctor + its finisher (0x56DD90 - view
+// offset/rotation compose into node+0x150). The ctor's base-class call
+// receives THE PARENT VIEW POINTER - the fg node's view starts as a copy of
+// the world view; the fg divergence (actor orientation, eye pull) enters
+// downstream. The vec3 at PC+0x65C and triple at PC+0x668 read zero live at
+// rest (auxiliary offsets; 75/75/60 fov floats sit just before them at
+// PC+0x648..0x650).
+inline constexpr uint32_t kFgSceneNodeCtorRva = 0x56DC30;
+inline constexpr uint8_t kFgSceneNodeCtorPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+inline constexpr uint32_t kFgSceneNodeVtableRva = 0xE1846C; // written by the build after ctor
+inline constexpr uint32_t kSceneViewOffset = 0x118;   // parent scene's view block
+inline constexpr uint32_t kSceneFgNodeOffset = 0x1B0; // parentScene -> fg node (per frame)
+inline constexpr uint32_t kScenePcOffset = 0x48;      // parentScene -> PlayerController
+inline constexpr uint32_t kFgSceneNodeViewOffset = 0x150; // view matrix the finisher composes
+inline constexpr uint32_t kFgSceneNodeFovAOffset = 0x3F0; // from PC+0x45C (default 75.0)
+inline constexpr uint32_t kFgSceneNodeFovBOffset = 0x3F4; // from PC+0x460 (the vrfgfov field)
+inline constexpr uint32_t kFgSceneNodeBytes = 0x400;
+
+// Hands.CurrentHoldable - THE equipped-weapon pointer, read directly off the
+// rig actor (session 21 part 2). Derived live: with hands=594733A0 and the
+// equipped weapon=5FAB2F00 known, the weapon pointer occurs EXACTLY ONCE in
+// hands+0..0x800, at +0x45C - right after the actor's Base/Owner block
+// (hands+0x450 held the pawn = Hands.Base; the weapon's own +0x450 holds the
+// hands actor: the attach chain weapon -> hands -> pawn is self-consistent).
+// This replaces learned/cache/scan as the primary weapon resolution: the
+// trigger-learned object PINNED the old resolver to the previously-fired
+// weapon across wheel switches (an unequipped weapon stays vtable- and
+// owner-valid), which is why per-weapon profiles only swapped on FIRE in the
+// first headset run.
+inline constexpr uint32_t kHandsCurrentHoldableOffset = 0x45C;
+
+// ---- UObject identity (session 21) ------------------------------------------
+// Derived live via the seam: the equipped weapon actor's +0x28 dword read
+// 18009 -> 'Shotgun' through fname_text (+0x2C = the instance number), and
+// +0x30 -> a heap object carrying the UClass vtable whose OWN +0x28 is the
+// same index with number 0 (the canonical class name). Cross-checked on the
+// AHands actor: +0x28 -> 'PlayerHands', class object at +0x30 agrees.
+// kUClassVtableRva validates the +0x30 target before it is trusted.
+inline constexpr uint32_t kUObjectNameIndexOffset = 0x28; // FName index (+0x2C = number)
+inline constexpr uint32_t kUObjectClassOffset = 0x30;     // UClass*
+inline constexpr uint32_t kUClassVtableRva = 0xE2F04C;
+
 // ---- Name system (session 20) ----------------------------------------------
 // Derived by capstone disassembly of the FName constructor the event scan
 // already finds (thin SEH/lock wrapper at RVA 0x70D660 -> worker 0x70D3C0);
@@ -551,6 +604,12 @@ inline constexpr uint32_t kFNameEntryTextOffset = 0x10;
 const wchar_t* fname_text(int32_t index);
 // GNames.Count (0 if unavailable) - for status lines.
 int32_t fname_count();
+
+// Canonical class name of any live UObject, or null. Every step validated:
+// obj readable -> obj+kUObjectClassOffset -> UClass vtable at kUClassVtableRva
+// -> class+kUObjectNameIndexOffset -> fname_text. The per-weapon profile key
+// (session 21). Game thread.
+const wchar_t* object_class_name(const void* obj);
 
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,

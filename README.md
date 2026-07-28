@@ -10,12 +10,14 @@ session. No game files are modified and no game assets are distributed.
 
 > **Status:** playable. Working today: full-rate stereo rendering, 6DOF head tracking,
 > motion-controller aim with a laser (right hand = weapons, left hand = plasmids), the visible
-> viewmodel following the controller with the inactive hand hidden, body-follows-head movement
-> ("walk where you look"), the game HUD (health/EVE/ammo - and the pause menu) on a readable
-> floating panel in VR, VR-standard controller bindings with stick-flick ammo switching, a
-> single-eye desktop mirror, and in-headset tuning sliders that persist. See
-> [docs/STATUS.md](docs/STATUS.md) for the current state and [docs/ROADMAP.md](docs/ROADMAP.md)
-> for what is next (per-weapon aim alignment is the known big gap).
+> viewmodel following the controller with the inactive hand hidden, **per-weapon aim profiles**
+> (every weapon keeps its own laser calibration and swaps it in the moment you equip it),
+> body-follows-head movement ("walk where you look"), the game HUD (health/EVE/ammo - and the
+> pause menu) on a readable floating panel in VR, VR-standard controller bindings with
+> ammo-select on the right stick, a single-eye desktop mirror, and in-headset tuning sliders
+> that persist. The shipped defaults ARE a full calibration (aim trims, per-weapon profiles,
+> body follow) tuned in-headset on a Quest 3. See [docs/STATUS.md](docs/STATUS.md) for the
+> current state and [docs/ROADMAP.md](docs/ROADMAP.md) for what is next.
 
 ## Requirements
 
@@ -69,13 +71,35 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrpreset save`):
 
 - **World scale / IPD / game FOV** - comfort and scale calibration
-- **Head anchor offsets** - if the camera sits wrong in the body
-- **Per-hand aim trim** - laser/bullet direction alignment per hand
+- **Per-hand aim trim** (up to +-90 deg) - laser/bullet direction alignment per hand
+- **Per-weapon profiles** - the right hand's aim trim + ray offsets automatically follow the
+  EQUIPPED weapon: tune with a weapon up and only that weapon's profile changes, swapped in
+  the moment you switch. Calibration flow: fire at a wall, nudge the sliders until the laser
+  sits on the bullet holes, next weapon, then one "Save preset values". The overlay's
+  "weapon profile:" line shows which weapon you are editing.
 - **Per-hand ray offsets** - the "Ray offset hand: L / R" selector + three sliders move the
   laser (and the bullets with it - they are one ray) to line up with the controller and model
+- **Head anchor offsets** - if the camera sits wrong in the body
 - **Per-hand model offsets** - the "Tuning hand: L / R" selector picks which hand the six
   position/rotation sliders edit, so the pistol and the plasmid hand are tuned independently
-- **`vrbody off`** - live A/B for the body-follows-head transfer (deadzone defaults 23 deg)
+- **`vrbody off`** - live A/B for the body-follows-head transfer (instant 1:1 by default)
+
+### The bundled preset (v0.3.0+)
+
+**A fresh install needs no tuning**: the shipped defaults are a complete in-headset
+calibration (left/plasmid hand trim, per-weapon profiles for all eight holdables, body
+follow, HUD placement). Just install and press VR PRESET 1.
+
+The release zip also carries the same calibration as plain files (`vrpreset.ini`,
+`hands.ini`, `weapons.ini`):
+
+- **New users**: nothing to do - the DLL defaults are identical to these files.
+- **Existing users with their own tuning**: your files in `%LOCALAPPDATA%\BioshockVR\`
+  ALWAYS win over the built-in defaults, key by key - updating the DLLs changes nothing you
+  tuned. To adopt the bundled calibration instead, back up and delete (or overwrite) those
+  three files in `%LOCALAPPDATA%\BioshockVR\` and restart the game. To adopt only parts
+  (say, the weapon profiles but not your world scale), copy just that one file - or even
+  single lines: every `key=value` line stands alone.
 
 The flat-screen crosshair is hidden by default (the laser replaces it); the "Flat-screen
 crosshair" checkbox or `vrxhair on` brings it back.

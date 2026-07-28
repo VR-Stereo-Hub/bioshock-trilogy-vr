@@ -136,6 +136,22 @@ std::atomic<bool> g_loggedFirstProjection{false};
 std::atomic<bool> g_loggedFirstStereo{false};
 uint64_t g_lastProjBlockedLogMs = 0;
 
+// Session-21 FOV audit: the tangents the projection layer was last TAGGED
+// with and which source produced the claimed hfov. Logged on change at the
+// submission site and readable by the game thread's `fovaudit` command; the
+// flat gate compares these against tangents recovered from dumpframe cb0
+// blocks. The pose audit (default off) additionally logs the yaw the layer
+// is tagged with vs the yaw the game thread last consumed from the head-pose
+// funnel - a generation-skew instrument, in-headset only (flat has no session).
+constexpr const char* kFovSrcNames[3] = {"readback", "fallback", "manual"};
+std::atomic<float> g_auditTanH{0.0f};
+std::atomic<float> g_auditTanV{0.0f};
+std::atomic<int> g_auditFovSrc{-1};
+std::atomic<bool> g_poseAudit{false};
+std::atomic<float> g_consumedHeadQuat[4] = {}; // x,y,z,w - game-thread stamp
+std::atomic<uint32_t> g_consumedHeadCount{0};
+uint64_t g_lastPoseAuditLogMs = 0; // render thread only
+
 // M4 rung 1: AlternateEye stereo (AER). The render thread owns everything here
 // except g_aerEyeSign, which CalcView on the game thread reads through
 // current_eye_sign() to pick the per-frame eye offset. The sign also encodes
@@ -1153,6 +1169,14 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     return built;
 }
 
+// Yaw of an XR-space orientation (forward = -Z, right = +X), for the pose
+// audit. Absolute convention is arbitrary; only deltas are read.
+float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
+    float fwd[3] = {0.0f, 0.0f, -1.0f}, f[3];
+    bvr::xrmath::quat_rotate(qx, qy, qz, qw, fwd, f);
+    return atan2f(-f[0], -f[2]) * 57.29578f;
+}
+
 void on_present_end(IDXGISwapChain* swapchain) {
     if (!g_frameOpen) {
         // No XR frame this present (session gone, or the pace guard skipped
@@ -1181,10 +1205,16 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // Claim the fov the game actually rendered with (adapter readback);
     // fall back to the circumscribed target before the first readback lands.
     // The manual calibration override beats both (see its declaration).
+    int hfovSrc = 0; // fov audit: 0 readback, 1 fallback, 2 manual
     float hfovDeg = g_renderedHfov.load(std::memory_order_relaxed);
-    if (hfovDeg <= 0.0f) hfovDeg = g_hfovDeg.load(std::memory_order_relaxed);
-    if (g_claimFovManual.load(std::memory_order_relaxed))
+    if (hfovDeg <= 0.0f) {
+        hfovDeg = g_hfovDeg.load(std::memory_order_relaxed);
+        hfovSrc = 1;
+    }
+    if (g_claimFovManual.load(std::memory_order_relaxed)) {
         hfovDeg = g_claimFovDeg.load(std::memory_order_relaxed);
+        hfovSrc = 2;
+    }
     bool projectionMode = g_cameraMode.load(std::memory_order_relaxed) &&
                           g_projectionReady.load(std::memory_order_relaxed) && hfovDeg > 0.0f;
 
@@ -1293,6 +1323,21 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     float halfH = hfovDeg * 0.5f / 57.29578f;
                     float halfV = atanf(tanf(halfH) * static_cast<float>(g_swapH) /
                                         static_cast<float>(g_swapW));
+                    // FOV audit (session 21): the tangents this layer is
+                    // TAGGED with, logged on change. The flat gate compares
+                    // them against tangents recovered from dumpframe cb0.
+                    float tanClaimH = tanf(halfH), tanClaimV = tanf(halfV);
+                    if (tanClaimH != g_auditTanH.load(std::memory_order_relaxed) ||
+                        tanClaimV != g_auditTanV.load(std::memory_order_relaxed) ||
+                        hfovSrc != g_auditFovSrc.load(std::memory_order_relaxed)) {
+                        g_auditTanH.store(tanClaimH, std::memory_order_relaxed);
+                        g_auditTanV.store(tanClaimV, std::memory_order_relaxed);
+                        g_auditFovSrc.store(hfovSrc, std::memory_order_relaxed);
+                        BVR_LOG("xr: fovaudit submit tanH=%.6f tanV=%.6f (hfov %.2f deg, "
+                                "src=%s, swap %ux%u, symmetric both eyes)",
+                                tanClaimH, tanClaimV, hfovDeg, kFovSrcNames[hfovSrc],
+                                g_swapW, g_swapH);
+                    }
                     // AER: each eye shows its swapchain's most recently
                     // released image with the pose stored at its capture (the
                     // compositor reprojects the stale eye). Until both eyes
@@ -1310,6 +1355,29 @@ void on_present_end(IDXGISwapChain* swapchain) {
                             projViews[eye].subImage = sub;
                         }
                         projViews[eye].fov = {-halfH, halfH, halfV, -halfV};
+                    }
+                    // Pose-tag audit (session 21, armed by `fovaudit pose on`):
+                    // tagged-vs-consumed yaw, rate-limited. In-headset only.
+                    if (stereo && g_poseAudit.load(std::memory_order_relaxed)) {
+                        uint64_t now = GetTickCount64();
+                        if (now - g_lastPoseAuditLogMs >= 500) {
+                            g_lastPoseAuditLogMs = now;
+                            float yawTag = xr_quat_yaw_deg(
+                                projViews[0].pose.orientation.x, projViews[0].pose.orientation.y,
+                                projViews[0].pose.orientation.z, projViews[0].pose.orientation.w);
+                            float yawUse = xr_quat_yaw_deg(
+                                g_consumedHeadQuat[0].load(std::memory_order_relaxed),
+                                g_consumedHeadQuat[1].load(std::memory_order_relaxed),
+                                g_consumedHeadQuat[2].load(std::memory_order_relaxed),
+                                g_consumedHeadQuat[3].load(std::memory_order_relaxed));
+                            float d = yawTag - yawUse;
+                            while (d > 180.0f) d -= 360.0f;
+                            while (d < -180.0f) d += 360.0f;
+                            BVR_LOG("xr: poseaudit tagged yaw %.2f vs consumed %.2f "
+                                    "(delta %.2f deg, samples %u)",
+                                    yawTag, yawUse, d,
+                                    g_consumedHeadCount.load(std::memory_order_relaxed));
+                        }
                     }
                     proj.space = g_space;
                     proj.viewCount = 2;
@@ -1559,6 +1627,13 @@ bool get_head_pose(HeadPose& out) {
     std::lock_guard<std::mutex> lock(g_poseMutex);
     if (!g_poseValid) return false;
     out = g_headPose;
+    // Pose-tag audit stamp: the orientation the game thread actually consumed
+    // (compared against the submitted layer pose while the audit is armed).
+    g_consumedHeadQuat[0].store(out.qx, std::memory_order_relaxed);
+    g_consumedHeadQuat[1].store(out.qy, std::memory_order_relaxed);
+    g_consumedHeadQuat[2].store(out.qz, std::memory_order_relaxed);
+    g_consumedHeadQuat[3].store(out.qw, std::memory_order_relaxed);
+    g_consumedHeadCount.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -1668,6 +1743,20 @@ void set_rendered_hfov(float hfovDeg) {
     g_renderedHfov.store(hfovDeg, std::memory_order_relaxed);
 }
 
+void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* swapH) {
+    if (tanH) *tanH = g_auditTanH.load(std::memory_order_relaxed);
+    if (tanV) *tanV = g_auditTanV.load(std::memory_order_relaxed);
+    if (src) *src = g_auditFovSrc.load(std::memory_order_relaxed);
+    if (swapW) *swapW = g_swapW;
+    if (swapH) *swapH = g_swapH;
+}
+
+void set_pose_audit(bool on) {
+    bool was = g_poseAudit.exchange(on, std::memory_order_relaxed);
+    if (was != on) BVR_LOG("xr: pose audit %s (tagged-vs-consumed yaw, stereo only)",
+                           on ? "ON" : "off");
+}
+
 int current_eye_sign() {
     return g_aerEyeSign.load(std::memory_order_relaxed);
 }
@@ -1745,6 +1834,14 @@ void handle_pace_command(const char*) {}
 void handle_mirror_command(const char*) {}
 float suggested_hfov_deg() { return 0.0f; }
 void set_rendered_hfov(float) {}
+void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* swapH) {
+    if (tanH) *tanH = 0.0f;
+    if (tanV) *tanV = 0.0f;
+    if (src) *src = -1;
+    if (swapW) *swapW = 0;
+    if (swapH) *swapH = 0;
+}
+void set_pose_audit(bool) {}
 int current_eye_sign() { return 0; }
 void sr_push_eye(int) {}
 void set_laser(const LaserConfig&) {}

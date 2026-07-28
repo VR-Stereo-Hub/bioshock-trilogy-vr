@@ -180,6 +180,13 @@ bool g_srBaseValid = false;
 FVector g_srBaseLoc{};
 FRotator g_srBaseRot{};
 
+// Session 21 fg view-sync stash: the final per-eye camera (post eye offset)
+// of the current pair. Game thread only (1t); freshness-gated by stamp so a
+// mode flip cannot leave scenedraw substituting stale poses.
+FVector g_eyeCamLoc[2] = {};
+FRotator g_eyeCamRot[2] = {};
+uint64_t g_eyeCamStampMs[2] = {};
+
 float* fov_ptr(void* pc) {
     return reinterpret_cast<float*>(static_cast<uint8_t*>(pc) + patterns::kFovLiveOffset);
 }
@@ -201,7 +208,9 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 // Camera commands: "fov <deg>", "fov off", "gfov <deg>", "gfov off",
 // "offset <x> <y> <z>", "camrot <pitch> <yaw> <roll>" (render-camera-only
 // rotation offset in degrees - the flat stand-in for HMD head-look),
-// "recenter".
+// "recenter", "fovaudit [pose on|off]" (session 21: option vs submitted vs
+// option-derived fov side by side; `pose on` arms the tagged-vs-consumed
+// yaw log for the headset).
 // Discovery commands (route to core/debug/value_scan; game thread only):
 //   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
 //   memscani <u>  memrescani <u>   (integer-typed variants)
@@ -334,9 +343,45 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b1r] fg lens match %s (last written %.1f)", on ? "ON" : "off",
                 g_fgFovWritten.load(std::memory_order_relaxed));
     } else if (strcmp(cmd, "fginfo") == 0) {
-        BVR_LOG("[b1r] fginfo: pc=%p viewActor=%p (fsweep them for the fg fov property)",
+        BVR_LOG("[b1r] fginfo: pc=%p viewActor=%p hands=%p weapon=%p (fsweep/hexdump "
+                "targets)",
                 g_playerController.load(std::memory_order_relaxed),
-                g_lastViewActor.load(std::memory_order_relaxed));
+                g_lastViewActor.load(std::memory_order_relaxed), hands::hands_actor(),
+                hands::weapon_actor());
+    } else if (strcmp(cmd, "fovaudit") == 0) {
+        // Session 21 FOV audit: the three fov truths side by side - the
+        // engine option we write, what the runtime last TAGGED the projection
+        // layer with, and the option-derived expectation at the swap aspect.
+        // The RENDERED side comes from `dumpframe full 2` decoded by
+        // tools/decode-framedump.ps1; the flat gate is rendered == submitted.
+        // "fovaudit pose on|off" arms the tagged-vs-consumed yaw log (headset).
+        if (strncmp(args, "pose", 4) == 0) {
+            bvr::vr::set_pose_audit(strstr(args + 4, "on") != nullptr);
+        } else {
+            int32_t* opt = patterns::hfov_option_ptr();
+            float tanH = 0.0f, tanV = 0.0f;
+            int src = -1;
+            unsigned sw = 0, sh = 0;
+            bvr::vr::fov_audit(&tanH, &tanV, &src, &sw, &sh);
+            // Option-derived expectation. Flat there is no session (swap dims
+            // 0x0) - assume the 16:9 render aspect the dumps confirm per draw.
+            float optTanH = 0.0f, optTanV = 0.0f;
+            if (opt) {
+                optTanH = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
+                optTanV = optTanH * ((sw && sh) ? (static_cast<float>(sh) / static_cast<float>(sw))
+                                                : (9.0f / 16.0f));
+            }
+            BVR_LOG("[b1r] fovaudit: option=%d gfovWrite=%s(%.1f) | submitted tanH=%.6f "
+                    "tanV=%.6f src=%s swap=%ux%u | option-derived tanH=%.6f tanV=%.6f",
+                    opt ? *opt : -1,
+                    g_gameFovWrite.load(std::memory_order_relaxed) ? "on" : "off",
+                    g_gameFovDeg.load(std::memory_order_relaxed), tanH, tanV,
+                    src == 0   ? "readback"
+                    : src == 1 ? "fallback"
+                    : src == 2 ? "manual"
+                               : "none",
+                    sw, sh, optTanH, optTanV);
+        }
     } else if (strcmp(cmd, "fsweep") == 0) {
         float lo = 0.0f, hi = 0.0f;
         if (sscanf_s(args, "%x %u %f %f", &addr, &len, &lo, &hi) == 4)
@@ -407,6 +452,8 @@ void apply_command(const char* cmd, const char* args) {
         body::handle_command(args); // M7.5 yaw transfer; logs its own echoes
     } else if (strcmp(cmd, "vrrec") == 0) {
         recorder::handle_command(args); // session 20 record+replay; logs its own echoes
+    } else if (strcmp(cmd, "vrfgnode") == 0) {
+        scenedraw::handle_fgnode_command(args); // session 21 fg-scene-node instrument
     } else if (strcmp(cmd, "exec") == 0) {
         console_exec::run_viewport(args); // engine console command, viewport chain
     } else if (strcmp(cmd, "execc") == 0) {
@@ -508,8 +555,10 @@ void save_vr_preset() {
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
     // The per-hand model offsets live in hands.ini; saving them here too makes
-    // the one in-headset save button cover every tuned slider.
+    // the one in-headset save button cover every tuned slider. Same for the
+    // session-21 per-weapon profiles (weapons.ini).
     hands::save_offsets();
+    aim::save_weapon_profiles();
 }
 
 void load_vr_preset_values() {
@@ -581,6 +630,8 @@ void apply_vr_preset() {
     hands::handle_command("pose aim"); // align to the AIM ray
     body::handle_command("on");        // M7.5: stick-forward = look direction
     load_vr_preset_values();           // tuned sliders (ini) over defaults
+    aim::note_preset_baseline();       // seed source for new weapon profiles
+    aim::reapply_weapon_profile();     // the active weapon profile beats the baseline
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
 }
@@ -649,6 +700,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             *loc = g_srBaseLoc;
             *rot = g_srBaseRot;
             apply_eye_offset(loc, *rot, +1);
+            g_eyeCamLoc[1] = *loc; // fg view-sync stash, RIGHT eye
+            g_eyeCamRot[1] = *rot;
+            g_eyeCamStampMs[1] = GetTickCount64();
         } else if (rot) {
             rot->yaw += static_cast<int32_t>(reentryYawDeg * kRotUnitsPerDegree);
         }
@@ -1034,6 +1088,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_srBaseRot = *rot;
         g_srBaseValid = true;
         apply_eye_offset(loc, *rot, -1);
+        g_eyeCamLoc[0] = *loc; // fg view-sync stash, LEFT eye
+        g_eyeCamRot[0] = *rot;
+        g_eyeCamStampMs[0] = GetTickCount64();
     } else {
         g_srBaseValid = false;
     }
@@ -1150,6 +1207,18 @@ void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* world
     if (pose) *pose = g_recenterPose;
     if (yawUnits) *yawUnits = g_recenterYawUnits;
     if (worldScale) *worldScale = g_worldScale.load(std::memory_order_relaxed);
+}
+
+bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]) {
+    if (eye < 0 || eye > 1) return false;
+    if (GetTickCount64() - g_eyeCamStampMs[eye] > 200) return false; // stale/idle
+    loc[0] = g_eyeCamLoc[eye].x;
+    loc[1] = g_eyeCamLoc[eye].y;
+    loc[2] = g_eyeCamLoc[eye].z;
+    rot[0] = g_eyeCamRot[eye].pitch;
+    rot[1] = g_eyeCamRot[eye].yaw;
+    rot[2] = g_eyeCamRot[eye].roll;
+    return true;
 }
 
 void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float worldScale) {

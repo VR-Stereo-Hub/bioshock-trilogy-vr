@@ -256,6 +256,11 @@ Goal: retire the project-level risks before building on them. Findings → ENGIN
       `%LOCALAPPDATA%\BioshockVR\hands.ini`. Keyed `default` for now - PER-WEAPON keys still
       want the live weapon's class name, which means resolving the UObject class/name offsets
       on this build (the only save carries pistol + wrench, so one profile covers it).*
+      *UPGRADED 2026-07-28 (session 21): TRUE per-weapon profiles shipped - the R-hand aim
+      trim + ray-origin offsets hot-swap keyed by the weapon's CLASS NAME (UObject +0x28
+      name / +0x30 class resolved live via GNames), persisted to weapons.ini, saved by the
+      preset button, weapon resolved pre-fire via the Base==AHands structural scan. The
+      live-switch swap proof is on the session-21 in-headset checklist.*
 ### M7-v2 - the rebuild (planned 2026-07-26 with the user)
 
 Goal in the user's words: the weapon and the plasmid hand each move as ONE with their own
@@ -520,6 +525,11 @@ kill. Both prerequisites below are now MET.):**
       puts the gun at double the hand's perceived distance and doubles hand motion - the
       session-11 percepts). Design sketch in the session-16 part-3 conversation; the per-eye
       write path (bones reapply) already exists.
+      *RE-CONFIRMED POLISH 2026-07-28 (session 21 part 3, user's call: "not that important
+      for the gameplay"): the ask is now two independent sliders (world + hand/model scale).
+      New candidate routes since the fg-scene decode - the fovA per-rig zoom (once its
+      world-coupling is explained and masked) or DrawScale on a fova-matched rig - see
+      STATUS "POLISH / POST-POLISH" for the probe order.*
 - [ ] IPD slider verification + calibration (parked here 2026-07-24 from M4 rung 1 by user
       choice - user could not tell if it does anything; test with an exaggerated offset,
       calibrate world scale first since perceived depth scale is the worldScale/IPD ratio)

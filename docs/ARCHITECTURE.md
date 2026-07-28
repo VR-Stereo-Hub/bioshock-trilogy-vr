@@ -420,3 +420,25 @@ runtime.
   it), and tuned trim values carry over: the old and new algebras agree exactly at the
   neutral tuning pose. The legacy `vrhands aligntrim` euler coupling was deleted - wrong
   algebra everywhere but the tuning pose, and nothing left for it to do.
+
+- **2026-07-28 (session 21): per-weapon profiles are a SWAP LAYER over the
+  existing R-hand atomics, not a lookup at ray build.** The alternative
+  (resolving `profile(weaponKey)` inside the hot ray/laser/model paths) would
+  have threaded weapon identity through three modules and made the laser
+  publish depend on a map lookup. Instead the six R-hand atomics stay the
+  single live truth every consumer already reads; the profile layer only
+  stashes them on a weapon-key change and re-loads the new key's values
+  (seeded from current on first sight). Consequences the design accepts: the
+  map lags the atomics between switches (stash points: switch + save), and
+  anything that overwrites the R atomics wholesale must re-apply the active
+  profile afterwards - which is exactly the preset-tail
+  `aim::reapply_weapon_profile()` hook (the flat-caught clobber). Same-frame
+  consistency is free because swap and consumers all run in the CalcView
+  tail on the game thread.
+
+- **2026-07-28 (session 21): every new render lever ships DEFAULT OFF.**
+  `vrfgnode sync|fova` can invalidate the headset-approved session-16
+  calibration (lockpull/gains encode the old fovA/fovB zoom-pull), so the
+  shipping composition stays byte-identical to session 20 until the
+  session-22 retune re-runs the acceptance ladder in the new regime and the
+  user judges it in the headset.

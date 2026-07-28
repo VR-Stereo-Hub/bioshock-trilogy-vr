@@ -2,7 +2,228 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-28, session 20 - THE AIM-SYNC SESSION: one trim algebra, vrrec record+replay, FName/GNames, the muzzle ray, the idle-sway kill - ALL SIX STAGES FLAT-GREEN on branch s20-aim-sync)
+## Current state (2026-07-28, session 21 - RENDER SYNC: the fov audit came back clean, the fg scene decoded down to its ctor args, the fovA zoom-pull lever found, per-weapon profiles shipped - branch s21-render-sync)
+
+**Branch `s21-render-sync` off main (post-PR-#5). Three flat-gated commits:
+the FOV audit (negative result + permanent instruments), the fg scene-node
+discovery (the `vrfgnode` instrument + the fovA lever, every new render
+lever DEFAULT OFF - the shipping look is byte-identical to session 20), and
+per-weapon aim profiles (shipping; engages only when a weapon resolves).
+v0.3.0 is still NOT tagged - it waits for the in-headset verdict on the
+checklist below and the user's explicit go.**
+
+### 1. THE FOV AUDIT (plan item 1) - the fov-lie hypothesis is DEAD, and that is the finding
+
+Instrumented the projection submission (per-eye claimed tangents + claim
+source logged on change; the `fovaudit` seam command prints option vs
+submitted vs option-derived side by side; `fovaudit pose on` arms a
+tagged-vs-consumed yaw log for the headset) and built
+`tools/decode-framedump.ps1` (recovers tangents from the cb0 screen-ray
+block per depth-tested draw, clusters them, tags fg draws by the
+lens-blind fg-bake stack RVAs). Measured under vrstereo on a clean boot
+(`dumpframe full 2`): ONE tangent cluster per eye window - tanH=2.1445
+tanV=1.2063 = exactly tan(130/2) at 16:9 - identical in both eyes, fg
+draws included (the vrfgfov lens match verified from the cb side for the
+first time), and no hidden second lens (every undecodable block is a
+zero-filled non-perspective pass). The submission builds its claim from
+the same option int at the same aspect, so rendered == submitted by
+construction + measurement. BioVR's "remove the lie" discipline was
+ALREADY our architecture. The +-90 drift is NOT a projection-tag mismatch;
+the live suspects narrowed to the pose-tag domain (one new log line + the
+poseaudit measure it on the next headset run) and the fg composition
+(finding 2).
+
+### 2. THE FG SCENE DECODED (plan item 2 - world-pass re-homing found a better lever)
+
+The dump stack-diff + capstone work mapped the fg mechanism end to end
+(constants in patterns.h "FOREGROUND SCENE NODE"; full story + negatives
+in ENGINE_NOTES):
+
+- The fg pass is a SECOND SCENE NODE (0x400 bytes, allocated per frame,
+  ctor RVA 0x56DC30, stored at scene+0x1B0) flowing through the SAME
+  render machinery as the world; the per-section transform providers are
+  skinning strategies (656/178/240 live instances), NOT fg markers.
+- The ctor receives the CAMERA POSE + TWO FOVS as plain arguments: vec3
+  camera loc, rotator camera rot, fovA (PC+0x45C, engine-restamped 75.0
+  every frame - why session 15's poke read inert), fovB (PC+0x460, the
+  vrfgfov field).
+- The camera inputs are ALREADY per-eye correct under SR stereo
+  (pass-labeled capture: pass 1 receives the LEFT eye camera, pass 2 the
+  RIGHT, matching apply_eye_offset to the digit). Two models raised and
+  KILLED by measurement the same night: the stale-pre-drive camera and
+  CROSSED EYES (which would have inverted the rig's disparity). The
+  `vrfgnode sync` substitution built for the crossing is a measured
+  flat-static no-op - kept default-OFF as an in-headset latency A/B only.
+- **THE FIND: fovA/fovB is the fg ZOOM-PULL pair.** `vrfgnode fova match`
+  (ctor-argument substitution - always wins, no byte patching) collapses
+  the rig to TRUE world-lens geometry: screenshot diff 11.09 mean / 44.2%
+  of channels changed vs the 2.9 ambient floor, world pixels untouched,
+  exact round-trip on `fova off`, fire path clean under `fova match` +
+  `vrbones lock off`. This is the fov-coupled eye-dolly/magnification the
+  render lock has countered since session 13, now controllable at ONE
+  seam.
+- Negatives (ENGINE_NOTES): no script-side fg membership property exists
+  (Actor + Hands property lists enumerated); pawn+0x724 = pawn->Hands and
+  nulling it is FATAL (one crash, dump #9, minidump kept) - a proven
+  non-lever; the 576-byte cb tier is not fg-exclusive.
+
+**Candidate end-state for session 22 (needs the retune + the user's
+eyes): `vrfgfov on` + `vrfgnode fova match` + `vrbones lock off` = the rig
+rendered at true world geometry, retiring the whole counter-model domain
+(render lock, lockgain/lockdgain/lockpull, kFgEye* constants).**
+
+### 3. PER-WEAPON PROFILES (plan item 3) - SHIPPING
+
+- **Identity**: `patterns::object_class_name()` - UObject +0x28 = own
+  FName index, +0x30 = UClass (vtable-gated at RVA 0xE2F04C), derived
+  live and cross-checked (weapon -> 'Shotgun'; the AHands actor ->
+  'PlayerHands'). The profile key is the canonical class name.
+- **The layer**: the R-hand trim + ray-origin offsets hot-swap per weapon
+  class; the R atomics stay the single live truth (laser, fire ray, model
+  publish all unchanged by construction); stash-on-switch,
+  seed-from-current on first sight; persisted to weapons.ini;
+  `vrpreset save` chains it; and the preset's value load RE-APPLIES the
+  active profile at its tail (a flat-caught ordering clobber, fixed and
+  gated). Commands: `vraim weapon | wsave | wkey sim <name> | wkey real`;
+  the aim overlay shows the active key.
+- **Resolution**: the weapon actor resolves PRE-FIRE now - the anchored
+  scan accepts STRUCTURALLY first (candidate Base +0x450 == the AHands
+  actor; attachment, not proximity) with the 120 UU proximity fallback,
+  plus null-resolve backoff (the game intro has no weapon for minutes and
+  must not full-heap-scan at 2 s cadence - live-reproduced).
+- **Flat gates, all exact**: sim-key round-trip restores stashed values
+  to the digit both directions; weapons.ini write/load round-trips (10
+  values / 2 weapons); the composed chain proven on a clean boot (ini
+  loaded at init -> the equipped shotgun keyed 'Shotgun' pre-fire ->
+  profile values applied over the preset baseline -> re-applied after the
+  preset chain); fire seam subs 2/2 with the profile live; heartbeat
+  clean; dumps stable. The REAL weapon-switch swap cannot be driven flat
+  (`exec NextWeapon` FAULTS - standing trap): it is the headline of the
+  in-headset checklist.
+- **The calibration flow**: our laser IS the fire ray - equip, fire at a
+  wall, nudge the R trim/ray-offset sliders until the beam sits on the
+  bullet hole, next weapon; profiles capture automatically; one "Save
+  preset values" press persists everything.
+
+### Harness notes (new traps, all field-hit this session)
+
+- **boot.ps1 roulette**: after an abandoned run the MAIN MENU focus sits
+  on NEW GAME, and the A-press loop starts a new game (the 1960 plane
+  intro; this NG+ profile shows "IMPORTING NEW GAME PLUS DATA"). No save
+  damage - the intro does not autosave before the lighthouse and the .bsb
+  set was verified untouched - but flat runs MUST screenshot-verify the
+  landing state. Deterministic recovery: main menu -> dpad-DOWN as an
+  80 ms TAP (250 ms holds auto-repeat) to LOAD GAME -> A -> A on the
+  newest entry. Mouse clicks do NOT register on the MAIN menu (they do on
+  gameswf pause menus).
+- The weapon-profile update gates on gameplay view AND backs off after 3
+  null resolves - do not loosen either guard.
+- A weapons.ini written by flat tests is a TEST ARTIFACT and was deleted
+  at session end (the session-17 "ini overrides code defaults" trap,
+  weapons edition): profiles apply OVER the preset's R values by design,
+  so a stale test ini would clobber live tuning. The user's real profiles
+  seed from their tuned R values on first play.
+- Crash-dump baseline moved 8 -> 9 this session (the pawn+0x724 discovery
+  crash, deliberately taken and logged); every later boot held 9.
+
+### Session 21 part 2 (same day) - THE HEADSET FEEDBACK ROUND
+
+**The user's verdicts:** (a) **`vrbones lock off` is "exactly what I was
+looking for - the aim is in tune with the model... perfect"** - the +-90
+laser-vs-gun drift ROOT CAUSE was the render lock's own correction. LOCK
+IS NOW DEFAULT OFF (`vrbones lock abs` = the A/B back). (b) `vrfgnode
+fova match` made THE WORLD move with head motion (rig "decent") -
+in-headset NEGATIVE, parked default-off; the fovA arg evidently feeds a
+world-coupled consumer beyond the rig bake (ENGINE_NOTES). (c) Per-weapon
+profiles "didn't change per weapon" - TWO log-proven bugs, both fixed +
+flat-gated the same night: the resolver's learned-object preference
+pinned the key to the previously FIRED weapon across wheel switches (now:
+Hands.CurrentHoldable at hands+0x45C read directly off the rig - instant,
+scanless, pre-fire swap detection), and the first profile seeded from
+pre-preset ZEROS then re-applied over the user's baseline (now: the
+resolver idles until the preset baseline is captured; new profiles seed
+from that baseline, not from the outgoing weapon's values). (d) NEW ASK,
+next session's headline: DECOUPLE world scale from model scale - a world
+slider and a separate hand/model scale slider (worldScale currently
+scales both; the session-16 negatives - bone .s attach blowup, DrawScale
+inert on the fg path - are the known walls; the fovA true-scale geometry
+may be the opening if its world coupling gets explained). (e) FPS/freeze
+audit: every stall in the run's log coincides with a FOCUSED->VISIBLE
+window (VD overlay/headset off) - NOT mod work; zero mid-play scans, zero
+blocked waits, clean heartbeat during play. Flat gates for the fixes:
+baseline captured (0/-7.9/7.5), 'Shotgun' created FROM the baseline,
+actor+class resolve pre-fire via the rig read, sim-swap round-trip exact
+(4.00/2.00 restored; Pistol seeded from baseline), fire subs 2/2, dumps
+9->9, no stray weapons.ini.
+
+**Re-test in headset (short):** (1) tune the pistol's laser at a wall,
+wheel-switch to the shotgun - its own tuning must be there IMMEDIATELY
+(no fire needed), switch back - pistol tuning returns; the log echoes
+`weapon profile '<name>' applied` per switch. (2) "Save preset values"
+once happy; reload + PRESET 1: all weapon tunings return. (3) Lock-off is
+now the default - confirm the aim-model sync feels like your `lock off`
+moment with no commands. (4) Optional: `fovaudit pose on` for 30 s (the
+submission closeout from the session-21 checklist still stands).
+
+### Session 21 part 3 (same day) - run 2: profiles nearly perfect, the MG/GL gap
+
+**The user's run 2:** per-weapon profiles "almost perfect... pretty good" -
+Shotgun/Pistol/ChemicalThrower/Crossbow keyed and swapped per wheel switch
+(log-proven, instant, no fire needed). But **MachineGun and
+GrenadeLauncher never keyed** (their tuning edits polluted whichever
+profile was still active): those two carry a DIFFERENT NATIVE VTABLE than
+kPlayerWeaponVtableRva, so the vtable-gated holdable read rejected them
+and the stale-cache fallback pinned the old key. FIXED the same night:
+`hands::current_holdable()` returns the rig's holdable CLASS-AGNOSTICALLY
+(the profile layer keys purely on object_class_name, which validates via
+the UClass vtable and resolves ANY class; an unresolvable class now CLEARS
+the key so edits can never touch another weapon's profile - logged).
+Flat-gated: 4 profiles load, Shotgun keys + applies, preset-save chains
+weapons.ini (mtime + 20 lines verified), fire subs 2/2, dumps stable. The
+MG/GL live-switch proof needs the wheel - headset item.
+
+**Also done on the user's ask:** (a) their four GOOD profiles from run 2
+were rescued to weapons.ini via `vraim wsave` before the game closed (the
+run had not pressed save) - Crossbow/others may carry MG/GL pollution, the
+user re-checks per weapon; (b) the user's FIXED LEFT-HAND calibration (aim
+trim +4.4/+30.0 deg, ray offset right +4.6 / up +0.7 cm, model offsets all
+zero) is written into vrpreset.ini AND baked as CODE DEFAULTS (aim.cpp) -
+new installs now start on their calibration; the rest of their preset
+(worldScale 100, ipd 63, gfov 130, deadzone 23) already matched the
+shipped defaults. The R-hand/profile default bake waits for their next
+tuning pass (their call). weapons.ini is now a LIVE USER FILE - never
+delete it in harness cleanups.
+
+**Headset re-test (run 3, short):** (1) equip the MACHINE GUN - the log
+must echo `weapon profile 'MachineGun' CREATED ...` the moment it equips;
+tune it; same for the GRENADE LAUNCHER; (2) re-check Crossbow (and any
+weapon tuned right before/after the MG/GL attempts in run 2) for polluted
+values - retune where needed; (3) switch across all six - each keeps its
+own; (4) "Save preset values" once at the end; (5) plasmid hand: confirm
+the left laser sits right out of the box (its calibration is now the
+default).
+
+### Session 21 part 4 (same day) - RUN 3 PASSED, v0.3.0 SHIPS
+
+**Run 3: "Alright perfect, looks pretty good and everything is added" -
+MachineGun + GrenadeLauncher keyed and held their own profiles (the
+class-agnostic fix proven live), all eight holdables calibrated, the left
+hand re-tuned (trim -6.8/+30.0, offsets -2.8/0.6/0.5), deadzone set 0 by
+the user (lock-off removed the percept the 23-deg band existed for).**
+Their live values were saved via the seam (`vrpreset save` -> all three
+inis) and BAKED AS CODE DEFAULTS on their explicit ask: aim L/R defaults,
+deadzone 0 (body.cpp), and all 8 weapon profiles seeded at init
+(weapons.ini overrides key by key). Aim-trim sliders widened to +-90 deg
+(the user's L yaw sat pinned at the old +-30 cap). VIRGIN-INSTALL GATE:
+with all three inis set aside, a clean boot + preset reproduced the full
+calibration from code alone (L trim/offsets, R baseline, deadzone 0, 8
+profiles, Shotgun keyed + applied) - a fresh install needs no tuning;
+inis restored after, fire subs 2/2, dumps stable. README rewritten (per
+weapon profiles + the bundled-preset section incl. how existing users
+adopt or keep their own). v0.3.0: PR #6 merged, tagged, released with
+the preset inis in the zip - the user's go on record this part.
+
+## Previous state (2026-07-28, session 20 - THE AIM-SYNC SESSION: one trim algebra, vrrec record+replay, FName/GNames, the muzzle ray, the idle-sway kill - ALL SIX STAGES FLAT-GREEN on branch s20-aim-sync)
 
 **Branch `s20-aim-sync`, MERGED to main as PR #5 (2026-07-28, the user's
 explicit call after the part-2 results below - everything default-armed is
@@ -1392,47 +1613,55 @@ retired: xr_hello32 (32-bit) ran a complete OpenXR session on VDXR 1.0.10 with t
 (60 frames, RTX 4060 LUID match) - M2 is unblocked. DR-2 done. Repo public at
 https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
-## Next steps (re-ordered 2026-07-28 after the part-2 results + BioVR analysis)
+## Next steps (re-rewritten 2026-07-28 after the part-2 headset feedback; the +-90 drift is CLOSED - it was the render lock, now default OFF. Part 3: the user demoted the scale work to polish - "not that important for the gameplay")
 
-1. **THE FOV AUDIT (first - cheap, prime suspect for the +-90 drift AND the
-   world-size percept).** Measure: the FOV the game ACTUALLY renders under
-   vrstereo (recover tangents from dumpframe projection matrices - the
-   session-13 technique) vs what our submitted projection layer is TAGGED
-   with (openxr_runtime.cpp submission - do we pass the runtime's
-   asymmetric views[].fov?) vs the game FOV we write. If they disagree:
-   submit a symmetric frustum built from the RENDERED fov exactly
-   (BioVR-style "remove the lie"). Flat gate: rendered tangents ==
-   submitted tangents per eye, logged. Headset gate: the +-90 flip
-   shrinks/dies. This benefits everything downstream incl. item 2.
+1. **Await the part-3 headset verdict** (profiles swapping per wheel
+   switch, save/reload persistence, lock-off default feel) - fixes ship
+   from whatever comes back; then merge PR #6. v0.3.0 tags on the user's
+   explicit go after a green run.
+2. **Then the gameplay track (M9)**: pawn-eye-point anchoring (the user's
+   walk-bob decoupling idea - camera base from Pawn.Location + eye height
+   behind a default-OFF toggle), off-hand tracking + two-handed weapons
+   (both prerequisites shipped), wrench swing gesture, first-boot-restart
+   fix.
+3. **The submission-side closeout (cheap, headset-only, any run)**: one
+   glance at the `xr: fovaudit submit` line (src must read `readback`,
+   swap = the render resolution) + `fovaudit pose on` for 30 s of head
+   motion. Largely academic now the drift closed as the lock, but one
+   glance settles it forever.
 
-2. **WORLD-PASS RE-HOMING (the big swing, user's call).** Find what marks
-   the AHands rig as foreground (actor flag / class check / fg list) and
-   flip it so the rig + attached weapon render through the WORLD pass at
-   their true world position. Instrument: dumpframe classifies draws per
-   pass - poke candidates, watch the rig's draws migrate tiers. Kills the
-   whole drift domain (fg lens split, eye dolly, render lock) with
-   FX/equip anchoring intact. Do NOT spawn a puppet actor. Expected
-   trades: gun clips walls (normal VR), possible lighting differences,
-   mesh may read oversized in the world pass - but DrawScale (+0x2AC +
-   dirty protocol) was only proven inert on the FG path and likely works
-   on the world path = the scale knob for free. Fallback if the switch
-   cannot be found/flipped: item 3 carries the release.
+**POLISH / POST-POLISH (user's call 2026-07-28 part 3 - explicitly not
+gameplay-critical):**
 
-3. **PER-WEAPON PROFILES + WALL CALIBRATION** (retires the muzzle
-   derivation; needed in some form either way): per-weapon aim-trim +
-   origin offsets keyed by weapon identity (fname_text / learned weapon
-   object; consider resolving the weapon's class name for a stable key),
-   hot-swap on switch, persisted. Calibration flow: our laser IS the fire
-   ray, so "fire at the wall, adjust until the beam sits on the bullet
-   hole, per weapon" is exact - overlay sliders/commands + save.
+- **Model/world scale decoupling**: two independent sliders - world scale
+  (the existing worldScale) and a HAND/MODEL scale that does not touch
+  the world. Known walls from session 16 (do not re-walk blind): cluster
+  bone .s blows up the attached weapon (the attach path inverts chain
+  scale); actor DrawScale is geometry-inert on the fg path. Candidate
+  routes, in probe order: (a) the fovA world-coupling hunt below - if the
+  world-consumer is found and masked, fovA becomes a clean per-rig zoom =
+  the model-scale slider for free; (b) DrawScale on a fova-matched rig
+  (inert was only proven on the OLD fg path); (c) the per-eye bone-offset
+  stereo-basis split parked in M9 (the session-16 design sketch).
+- **fovA world-motion mystery (feeds the above)**: flat-find what ELSE
+  consumes the fg node's fovA (the user saw THE WORLD move with head
+  under `fova match` while the rig stayed decent) - dump-diff a
+  fova-on/off pair window by window; the consumer is whichever non-rig
+  pass's transforms move. Until explained, fova stays default-off and out
+  of headset runs.
 
-4. **Follow-up (user's idea): pawn-eye-point anchoring** - anchor the VR
-   frame to Pawn.Location + EyeHeight (static) instead of the animated
-   camera base so walk-bob never leaks into camera or hands. Do after 2.
+3. **Wall-calibration pass (the user, in headset)**: per-weapon profiles
+   are live - calibrate each weapon dot==shot with the
+   laser-on-bullet-hole flow, per weapon, then one "Save preset values".
 
-5. **Then**: off-hand tracking + two-handed weapons (ROADMAP M9, both
-   prerequisites shipped), wrench swing gesture, first-boot-restart fix.
-   v0.3.0 tags when items 1-3 are headset-verified with the user's go.
+4. **Pawn-eye-point anchoring (the user's idea, unstarted)**: anchor the
+   VR frame to Pawn.Location + EyeHeight instead of the animated camera
+   base so walk-bob never leaks into camera or hands. Cleanest AFTER the
+   fova-match regime lands (one composition rewrite, not two).
+
+5. **Then**: off-hand tracking + two-handed weapons (M9, prerequisites
+   shipped), wrench swing gesture, first-boot-restart fix. v0.3.0 tags
+   when the session-20/21 work is headset-verified with the user's go.
 
 2. **DONE 2026-07-27: v0.1.0 IS PUBLISHED** - tag on main at PR #3's merge,
    release zip (both RelWithDebInfo DLLs + README.txt) at
@@ -1506,7 +1735,47 @@ Carried-over backlog (numbering kept from session 17):
 13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - aim sync + testing framework (session 20) - RAN SAME DAY, results in "Session 20 part 2" above (muzzle failed -> default OFF; drift persists -> session-21 plan; swaykill clean; PR #5 merged on the user's call)
+### IN-HEADSET CHECKLIST - render sync + per-weapon profiles (session 21)
+
+Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam,
+CONTINUE = the NG+ Medical Pavilion anchor (TRAP: if the game boots into
+the 1960 plane intro, the main-menu focus moved to NEW GAME - use main
+menu -> LOAD GAME -> the newest entry), press **VR PRESET 1**. Shipping
+defaults are byte-identical to session 20 except the per-weapon profile
+layer; every new render lever is opt-in. Nothing in the camera/recenter/
+body path changed.
+
+1. **Non-regression sweep (60 s, first).** Park the hand, look around
+   wide, stick-walk, turn past 90 both ways, two right-trigger pulls + an
+   Electro Bolt, pause menu once. Anything session 20 did not do: stop
+   and report.
+2. **PER-WEAPON PROFILES (the shipping headline).** With the shotgun up,
+   fire at a wall and nudge the R trim + ray-offset sliders until the
+   laser sits exactly on the bullet holes. Switch weapons through the
+   wheel - pistol, MG, crossbow - and tune two or three the same way.
+   Switch back and forth: each weapon must keep ITS OWN tuning (the log
+   echoes `weapon profile '<name>' applied` per switch - this live-switch
+   swap is the one proof the flat harness cannot do). Then "Save preset
+   values", quit to menu, reload, PRESET 1: every weapon's tuning must
+   come back by itself.
+3. **THE FOVA PREVIEW (opt-in, 2 minutes - session 22's decision data).**
+   `vrfgnode fova match` then `vrbones lock off`. The gun/hands will read
+   MUCH smaller and deeper - that is true world geometry (the flat A/B
+   shows the composition collapse). Judge two things only: (a) at +-90
+   hand yaw, does the rendered gun now sit closer to the laser (the drift
+   you reported)? (b) does the world-size percept change? Do NOT re-tune
+   anything in this mode; `vrfgnode fova off` + `vrbones lock abs`
+   restores the shipping look exactly.
+4. **The submission log glance.** After PRESET 1, find the one-line
+   `xr: fovaudit submit ...` in the log: report `src=` and `swap=`
+   (expected: `readback` and your render resolution). Optionally run
+   `fovaudit pose on` for ~30 s of head motion and grab the `poseaudit`
+   lines - they close the pose-tag suspect for the +-90 flip.
+5. **Anything off**: `vraim wkey real` re-resolves the weapon profile;
+   the R sliders always edit the ACTIVE weapon. If a symptom survives
+   `vrfgnode off` + the default toggles, it predates this session.
+
+### PREVIOUS CHECKLIST - aim sync + testing framework (session 20) - RAN SAME DAY, results in "Session 20 part 2" above (muzzle failed -> default OFF; drift persists -> session-21 plan; swaykill clean; PR #5 merged on the user's call)
 
 Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam, CONTINUE
 (the NG+ Medical Pavilion all-weapons anchor), press **VR PRESET 1**. Nothing
@@ -1799,6 +2068,44 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-28 - Session 21 (render sync: fov audit clean, the fg scene decoded, the fovA lever, per-weapon profiles)
+
+- FOV AUDIT (plan item 1): instrumented submission tangents (`fovaudit`,
+  on-change submit log, poseaudit) + built tools/decode-framedump.ps1;
+  measured rendered == submitted == option-derived to 1e-5, both eyes, fg
+  draws included, no hidden lens. NEGATIVE RESULT: no fov lie exists -
+  BioVR's discipline was already our architecture. ENGINE_NOTES entry.
+- FG SCENE (plan item 2): decoded the fg pass to a second scene node
+  (ctor 0x56DC30, camera-pose + fovA/fovB args, node at scene+0x1B0);
+  proved the camera inputs already per-eye correct (killed the
+  crossed-eye and stale-camera models by pass-labeled measurement);
+  FOUND THE fovA/fovB ZOOM-PULL - `vrfgnode fova match` collapses the rig
+  to true world geometry (diff 11.09/44.2% vs 2.9 floor, exact
+  round-trip). Negatives logged: no script fg property; pawn+0x724 null =
+  fatal (dump #9); providers = skinning strategies. All levers default
+  OFF; the session-22 retune decides the new regime.
+- PER-WEAPON PROFILES (plan item 3, SHIPPING): UObject identity derived
+  live (+0x28 name / +0x30 class, 'Shotgun'/'PlayerHands' cross-check);
+  R-hand trim+offset profiles keyed by class name, hot-swap + weapons.ini
+  + preset-chain save + preset-tail re-apply; weapon resolves PRE-FIRE
+  via the structural Base==AHands accept + null backoff. All flat gates
+  exact; the live-switch swap is the checklist headline.
+- Harness: boot.ps1 NEW-GAME roulette diagnosed (menu focus; recovery =
+  LOAD GAME via 80 ms dpad taps; main menu ignores mouse clicks); crash
+  baseline 8 -> 9 (the one deliberate discovery crash).
+- NOT started: stage 4 (pawn-eye anchoring) - queued behind the retune.
+- Parts 2-4 (same day, three headset runs + fixes between): the +-90
+  drift CLOSED as the render lock itself (lock now default OFF); weapon
+  resolver rebuilt twice on live evidence (learned-object pinning, then
+  the MG/GL native-vtable gap -> class-agnostic Hands.CurrentHoldable at
+  +0x45C); profile seeding race fixed (preset baseline); the user's full
+  calibration saved + BAKED AS DEFAULTS (incl. deadzone 0 and 8 default
+  weapon profiles; virgin-install gate green); trim sliders +-90;
+  scale-decoupling demoted to polish (user's call); fovA in-headset
+  negative (world moves - consumer unknown, parked); FPS audit: all
+  stalls = VISIBLE windows, not mod work. v0.3.0 MERGED + TAGGED +
+  RELEASED with the preset inis bundled.
 
 ### 2026-07-28 - Session 20 part 2 (headset results, PR #5 merged, the BioVR analysis, the re-plan)
 

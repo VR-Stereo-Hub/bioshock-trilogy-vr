@@ -40,8 +40,12 @@ std::atomic<float> g_ratePerSec{0.0f};
 // which is what removes the last of the "the gun moves with the camera a bit"
 // percept - and only a deliberate turn past the band carries the body along.
 // Beyond it the body trails the head by exactly the band width, so head and
-// body never diverge by more than 23 deg no matter how far you turn.
-std::atomic<float> g_deadzoneDeg{23.0f};
+// body never diverge by more than the band no matter how far you turn.
+// DEFAULT 0 since v0.3.0 (session 21 part 4, the user's call): with the
+// render lock retired nothing moves with the camera anymore, so the band
+// that hid the lock's swing is not needed - instant 1:1 body follow.
+// (The 23-deg calibration was the session-17 answer to a lock-era percept.)
+std::atomic<float> g_deadzoneDeg{0.0f};
 std::atomic<float> g_maxDegPerSec{180.0f};  // safety slew cap, not feel
 std::atomic<int>   g_field{0};              // 0 pc, 1 pawn, 2 both
 std::atomic<bool>  g_probeLog{false};
