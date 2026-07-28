@@ -513,7 +513,29 @@ kill. Both prerequisites below are now MET.):**
       connectivity; if that is wrong, fall back to flipping the game's latched
       slot-connected flag instead - the probe call sites are catchable in the wrapper,
       so the latch is a short disasm hop away).
-- [ ] Snap turn, height/seated recenter, optional vignette
+- [ ] Snap turn + smooth-turn speed slider (user's call 2026-07-28 post-v0.3.0), height/seated
+      recenter, optional vignette
+- [ ] **Cinematics in VR (user's headline for the next release, 2026-07-28)**: scripted-camera
+      scenes (the bathysphere descent) render WITHOUT stereo and fisheyed. Hypotheses:
+      scripted cameras bypass eventPlayerCalcView (no SR base cache = no per-eye offsets =
+      zero disparity) while the gfov-130 option write still applies to a ~75-deg-authored
+      camera (the fisheye). Direction: on the strict non-gameplay predicate, restore the game
+      FOV and fall back to the big-screen QUAD submission (the M2 path still in
+      on_present_end); re-arm projection on gameplay return. Closes the M3 "cutscene cameras
+      are head-driven" leftover too. User provides a descent save for flat replay.
+- [ ] **Fullscreen effects/FMVs must stay in-frame, not on the HUD quad (user, 2026-07-28)**:
+      the Big Daddy plasmid FMV plays "in a box" sized by the HUD sliders and heavy
+      post-process (alcohol blur) does the same - fullscreen gameswf draws on the tonemap
+      target classify as HUD today (hud_capture.cpp). Classify viewport-covering draws as
+      in-frame effects (left per-eye in the game frame); FMVs ideally join the cinema-screen
+      path. Flat repro: drink alcohol, diff the classification.
+- [ ] **Head-ROLL eye separation bug (user report 2026-07-28, root cause confirmed)**:
+      apply_eye_offset builds view-right from YAW ONLY - a rolled head keeps horizontal eye
+      separation = wrong disparity when tilting the head sideways. Fix: offset along the full
+      rotation's right axis (ue_rot_basis), SR + AER paths both.
+- [ ] **Movement wonkiness investigation (user report 2026-07-28, deadzone 0 did not fix)**:
+      instrument first (vrrec a walk; log composed stick vs body yaw per frame), then decide
+      between bodyRate smoothing, a stick response curve, or hardware noise. Do not tune blind.
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
 - [ ] **World/viewmodel scale SPLIT (parked here 2026-07-27, session 16 part 3, user's

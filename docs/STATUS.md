@@ -1613,22 +1613,71 @@ retired: xr_hello32 (32-bit) ran a complete OpenXR session on VDXR 1.0.10 with t
 (60 frames, RTX 4060 LUID match) - M2 is unblocked. DR-2 done. Repo public at
 https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
-## Next steps (re-rewritten 2026-07-28 after the part-2 headset feedback; the +-90 drift is CLOSED - it was the render lock, now default OFF. Part 3: the user demoted the scale work to polish - "not that important for the gameplay")
+## Next steps (SESSION 22 PLAN, user's list 2026-07-28 post-v0.3.0; order = their priority: cinematics first, then the smalls; new release after the cinematic/aim-adjacent fixes)
 
-1. **Await the part-3 headset verdict** (profiles swapping per wheel
-   switch, save/reload persistence, lock-off default feel) - fixes ship
-   from whatever comes back; then merge PR #6. v0.3.0 tags on the user's
-   explicit go after a green run.
-2. **Then the gameplay track (M9)**: pawn-eye-point anchoring (the user's
-   walk-bob decoupling idea - camera base from Pawn.Location + eye height
-   behind a default-OFF toggle), off-hand tracking + two-handed weapons
-   (both prerequisites shipped), wrench swing gesture, first-boot-restart
-   fix.
-3. **The submission-side closeout (cheap, headset-only, any run)**: one
-   glance at the `xr: fovaudit submit` line (src must read `readback`,
-   swap = the render resolution) + `fovaudit pose on` for 30 s of head
-   motion. Largely academic now the drift closed as the lock, but one
-   glance settles it forever.
+1. **CINEMATICS (the user's headline - "big issue for everyone").**
+   Symptom: the bathysphere descent (and other scripted-camera scenes)
+   renders WITHOUT stereo and fisheyed. Working hypotheses, both
+   code-grounded: (a) scripted cameras do not flow through
+   eventPlayerCalcView, so `g_srBaseValid` never arms - pass 2 gets no
+   eye offset = ZERO disparity while the pair still submits as a
+   projection layer; (b) our per-frame option write (gfov 130) still
+   applies to a camera authored for ~75 = the fisheye. Fix direction:
+   the strict non-gameplay predicate already exists (body/camera.cpp) -
+   when it drops, RESTORE the game FOV and fall back to the BIG-SCREEN
+   QUAD path (the M2 machinery still in on_present_end - projectionMode
+   false = quad) so cutscenes play on a comfortable virtual screen;
+   re-arm projection on gameplay return. The M3 leftover "cutscene
+   cameras are head-driven" closes with the same lever. THE USER
+   PROVIDES A SAVE at the descent for flat replay.
+2. **FULLSCREEN EFFECTS MISCLASSIFIED AS HUD (user item 8).** The Big
+   Daddy plasmid FMV plays "in a box" whose size follows the HUD sliders
+   = it is being captured by the HUD redirect onto the quad; heavy
+   post-process effects (alcohol blur) do the same. Root cause: they are
+   gameswf/fullscreen draws on the tonemap target after the tonemap =
+   exactly the current HUD classification (hud_capture.cpp). Fix:
+   classify FULLSCREEN-covering draws (viewport-sized geometry) as
+   in-frame effects - leave them in the game frame (per-eye, correct for
+   post effects) instead of redirecting to the quad; FMVs ideally join
+   the item-1 cinema-screen path. Flat repro exists without a cutscene:
+   drink alcohol (the save has bars nearby) and diff the classification.
+3. **First-boot restart fix (user item 1).** The game samples gamepad
+   presence once at startup; on a pad-free machine the first-ever boot
+   has dead controllers until a restart after the preset press. Fix
+   candidate: the xinput proxy answers slot 0 CONNECTED (neutral state)
+   from the very first query even before vrinput arms (passthrough when
+   a real pad exists). core/input/xinput_bridge.cpp.
+4. **Head-ROLL eye separation (user item 7, root cause CONFIRMED in
+   code).** `apply_eye_offset` (camera.cpp) builds view-right from YAW
+   ONLY - with the head rolled, real eyes stack vertically but the
+   virtual eyes stay horizontal = the "weird stereoscopy when turning
+   the head sideways". Fix: offset along the FULL rotation's right axis
+   (ue_rot_basis), both the SR and AER paths.
+5. **Smooth-turn speed slider + snap turn (user item 4).** Slider =
+   scale composed stick X in the input bridge. Snap = consume stick-X
+   edges and shift the recenter composite by N deg (the vrbody transfer
+   then carries the body instantly - the machinery exists); persisted
+   knobs + overlay controls.
+6. **Movement wonkiness investigation (user item 5).** Feels wonky even
+   at deadzone 0. Suspects: deadzone 0 itself (body now steers on every
+   head micro-motion - the cure may be a small bodyRate smoothing, knob
+   exists), the game's own stick response on composed values, or real
+   controller noise. Instrument first: vrrec a walk + log composed
+   stick vs body yaw; then tune, do not guess.
+7. **Hacking in VR check (user item 3).** Likely ALREADY fixed by the
+   HUD-quad work (the hack minigame is a gameswf flash screen = should
+   classify as HUD and land on the readable quad like the pause menu).
+   Verify in-headset; if it renders but interacts badly, it becomes a
+   session-23 item. Test spots from the CONTINUE save: the Circus of
+   Values machine in the Medical Pavilion foyer, the Atlas security-bot
+   hack tutorial a little further in, or any Health Station.
+8. **Hands offset sliders (user item 6)**: already shipped ("Tuning
+   hand: L / R" six per-hand sliders + hands.ini persistence). Verify
+   presence/usability in-headset, nothing to build.
+
+Then (unchanged queue): pawn-eye anchoring, off-hand tracking +
+two-handed weapons, wrench gesture. The fovaudit-submit/poseaudit glance
+remains a free 30 s check on any headset run.
 
 **POLISH / POST-POLISH (user's call 2026-07-28 part 3 - explicitly not
 gameplay-critical):**
