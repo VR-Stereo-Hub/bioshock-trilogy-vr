@@ -471,6 +471,22 @@ void* hands_actor() {
 }
 
 void* weapon_actor() {
+    // Primary (session 21 part 2): read Hands.CurrentHoldable straight off
+    // the rig - THE equipped weapon by definition, updated by the engine at
+    // equip time. The old learned/cache preference pinned the resolver to
+    // the previously FIRED weapon across wheel switches (an unequipped
+    // weapon keeps its vtable and owner), which broke per-weapon profile
+    // swapping in the first headset run.
+    if (has_vtable(g_handsActor, patterns::kHandsVtableRva)) {
+        void* hold = nullptr;
+        if (read_ptr(static_cast<const uint8_t*>(g_handsActor) +
+                         patterns::kHandsCurrentHoldableOffset,
+                     &hold) &&
+            weapon_valid(hold)) {
+            g_weaponActor = hold;
+            return hold;
+        }
+    }
     void* w = weapon_valid(g_weaponActor) ? g_weaponActor
                                           : bvr::b1r::aim::learned_weapon_object();
     return weapon_valid(w) ? w : nullptr;

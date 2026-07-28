@@ -101,6 +101,15 @@ bool g_weaponKeySim = false;      // a sim key is armed (flat test seam)
 uint32_t g_weaponSwaps = 0;
 std::mutex g_weaponKeyUiMutex; // the overlay (render thread) reads the name
 char g_weaponKeyUi[48] = "-";
+// The preset-loaded R baseline. New profiles seed from THIS, not from
+// whatever R values happen to be live (headset run 1: the first resolve
+// beat the preset's value load by one second, so the first profile seeded
+// from pre-preset ZEROS and the preset-tail re-apply then wrote those
+// zeros over the user's tuned baseline). Until a baseline exists (or ini
+// profiles were loaded), the resolver stays idle - the flat flow and the
+// user's flow both press the preset before playing.
+WeaponProfile g_presetBaseline{};
+bool g_presetBaselineValid = false;
 // M7 laser: the visible form of this same ray, published to core every frame.
 // It lives here rather than with the hands so it cannot drift from the trim
 // above - a laser that disagrees with the bullet is worse than no laser.
@@ -812,15 +821,27 @@ void apply_weapon_key(const std::string& key, const char* why) {
     ++g_weaponSwaps;
     auto it = g_weaponProfiles.find(key);
     if (it == g_weaponProfiles.end()) {
-        stash_active_profile(); // impossible path guard; keeps map coherent
-        WeaponProfile p{g_pitchOffsetDeg[1].load(std::memory_order_relaxed),
-                        g_yawOffsetDeg[1].load(std::memory_order_relaxed),
-                        g_posFwdCm[1].load(std::memory_order_relaxed),
-                        g_posRightCm[1].load(std::memory_order_relaxed),
-                        g_posUpCm[1].load(std::memory_order_relaxed)};
+        // First sight: seed from the PRESET BASELINE (the user's generic
+        // tuning), not from the outgoing weapon's values - switching from a
+        // tuned shotgun to a never-seen pistol must not inherit
+        // shotgun-specific trims.
+        WeaponProfile p = g_presetBaselineValid
+                              ? g_presetBaseline
+                              : WeaponProfile{g_pitchOffsetDeg[1].load(std::memory_order_relaxed),
+                                              g_yawOffsetDeg[1].load(std::memory_order_relaxed),
+                                              g_posFwdCm[1].load(std::memory_order_relaxed),
+                                              g_posRightCm[1].load(std::memory_order_relaxed),
+                                              g_posUpCm[1].load(std::memory_order_relaxed)};
         g_weaponProfiles[key] = p;
-        BVR_LOG("[aim] weapon profile '%s' CREATED from current R values (%s)", key.c_str(),
-                why);
+        g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
+        g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
+        g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
+        g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
+        BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): trim %.2f/%.2f pos "
+                "%.1f/%.1f/%.1f",
+                key.c_str(), g_presetBaselineValid ? "preset baseline" : "current R values",
+                why, p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp);
     } else {
         const WeaponProfile& p = it->second;
         g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
@@ -839,19 +860,25 @@ void apply_weapon_key(const std::string& key, const char* why) {
 void update_weapon_profile(const FrameContext& ctx) {
     if (g_weaponKeySim) return; // a forced key holds until 'wkey real'
     if (!g_gameplayView) return; // no cutscene/menu heap scans
+    // Idle until a value source exists: either the preset baseline was
+    // captured (the user pressed VR PRESET 1) or ini profiles loaded. This
+    // closes the headset-run-1 race where the first resolve beat the
+    // preset's value load and seeded the first profile from zeros.
+    if (!g_presetBaselineValid && g_weaponProfiles.empty()) return;
     static uint32_t throttle = 0;
     static uint32_t nullResolves = 0;
-    // Failure backoff on top of the resolver's own 2 s scan cooldown: a
-    // world state with no acceptable weapon must not full-heap-scan every
-    // 2 s forever (the session-18 hands-scan ~1 fps lesson; live this boot:
-    // the intro has no weapon at all and scans repeated every ~3.5 s at the
-    // weaker mask). 3 consecutive nulls -> only every 2048th call reaches
-    // the resolver (~15 s at stereo CalcView rates).
+    // Failure backoff for the SCAN fallback only (the rig read is a pointer
+    // dereference and free): a world state with no acceptable weapon must
+    // not full-heap-scan on a cadence (the session-18 hands-scan ~1 fps
+    // lesson; the game intro has no weapon for minutes).
     uint32_t mask = nullResolves >= 3 ? 2047 : 15;
     if ((++throttle & mask) != 0) return;
-    // Resolving accessor: prefers the trigger-learned object, else the
-    // anchored heap scan - pre-fire weapons key too.
-    void* w = hands::resolve_weapon_actor(ctx);
+    // Primary: Hands.CurrentHoldable straight off the rig (weapon_actor()
+    // reads it first since session 21 part 2) - instant, scanless swap
+    // detection. The anchored heap scan remains the fallback for states
+    // where the rig pointer is not resolved yet.
+    void* w = hands::weapon_actor();
+    if (!w) w = hands::resolve_weapon_actor(ctx);
     nullResolves = w ? 0 : nullResolves + 1;
     if (w == g_weaponKeyActor) return;
     g_weaponKeyActor = w;
@@ -901,6 +928,22 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     load_weapon_profiles();
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
+}
+
+void note_preset_baseline() {
+    // Called right after the preset's value load: the R atomics now hold
+    // the user's generic (non-per-weapon) tuning. New profiles seed from
+    // this; its existence also un-idles the profile resolver.
+    g_presetBaseline = {g_pitchOffsetDeg[1].load(std::memory_order_relaxed),
+                        g_yawOffsetDeg[1].load(std::memory_order_relaxed),
+                        g_posFwdCm[1].load(std::memory_order_relaxed),
+                        g_posRightCm[1].load(std::memory_order_relaxed),
+                        g_posUpCm[1].load(std::memory_order_relaxed)};
+    g_presetBaselineValid = true;
+    BVR_LOG("[aim] preset R baseline noted: trim %.2f/%.2f pos %.1f/%.1f/%.1f (seeds new "
+            "weapon profiles)",
+            g_presetBaseline.trimPitch, g_presetBaseline.trimYaw, g_presetBaseline.posFwd,
+            g_presetBaseline.posRight, g_presetBaseline.posUp);
 }
 
 void reapply_weapon_profile() {

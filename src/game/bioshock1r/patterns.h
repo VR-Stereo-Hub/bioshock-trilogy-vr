@@ -560,6 +560,19 @@ inline constexpr uint32_t kFgSceneNodeFovAOffset = 0x3F0; // from PC+0x45C (defa
 inline constexpr uint32_t kFgSceneNodeFovBOffset = 0x3F4; // from PC+0x460 (the vrfgfov field)
 inline constexpr uint32_t kFgSceneNodeBytes = 0x400;
 
+// Hands.CurrentHoldable - THE equipped-weapon pointer, read directly off the
+// rig actor (session 21 part 2). Derived live: with hands=594733A0 and the
+// equipped weapon=5FAB2F00 known, the weapon pointer occurs EXACTLY ONCE in
+// hands+0..0x800, at +0x45C - right after the actor's Base/Owner block
+// (hands+0x450 held the pawn = Hands.Base; the weapon's own +0x450 holds the
+// hands actor: the attach chain weapon -> hands -> pawn is self-consistent).
+// This replaces learned/cache/scan as the primary weapon resolution: the
+// trigger-learned object PINNED the old resolver to the previously-fired
+// weapon across wheel switches (an unequipped weapon stays vtable- and
+// owner-valid), which is why per-weapon profiles only swapped on FIRE in the
+// first headset run.
+inline constexpr uint32_t kHandsCurrentHoldableOffset = 0x45C;
+
 // ---- UObject identity (session 21) ------------------------------------------
 // Derived live via the seam: the equipped weapon actor's +0x28 dword read
 // 18009 -> 'Shotgun' through fname_text (+0x2C = the instance number), and

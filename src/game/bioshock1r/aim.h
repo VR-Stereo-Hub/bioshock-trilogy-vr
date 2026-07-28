@@ -106,4 +106,11 @@ void save_weapon_profiles();
 // at apply_vr_preset's tail. Game thread.
 void reapply_weapon_profile();
 
+// Capture the just-loaded preset R values as the seed for new weapon
+// profiles, and un-idle the profile resolver (it waits for a value source
+// so a pre-preset resolve can never seed a profile from zeros - the
+// headset-run-1 race). Called right after load_vr_preset_values(). Game
+// thread.
+void note_preset_baseline();
+
 } // namespace bvr::b1r::aim

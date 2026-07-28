@@ -630,6 +630,7 @@ void apply_vr_preset() {
     hands::handle_command("pose aim"); // align to the AIM ray
     body::handle_command("on");        // M7.5: stick-forward = look direction
     load_vr_preset_values();           // tuned sliders (ini) over defaults
+    aim::note_preset_baseline();       // seed source for new weapon profiles
     aim::reapply_weapon_profile();     // the active weapon profile beats the baseline
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");

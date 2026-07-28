@@ -130,7 +130,13 @@ char g_status[160] = "idle";
 // Render-lock (session 13): solve the anchor against the renderer's OWN
 // foreground transform (captured per frame from the vm draws' cb0) so the
 // rig lands on the world-correct pixel. See patterns.h "Foreground scene".
-std::atomic<int> g_renderLock{1};         // 0 off, 1 abs (true position), 2 diff
+// DEFAULT OFF since session 21 part 2 - the user's in-headset verdict:
+// "lock off is exactly what I was looking for, the aim is in tune with the
+// model" - the lock's own correction WAS the +-90-flipping laser-vs-gun
+// drift reported in session 20 (its model was calibrated against the old
+// fg composition and miscorrects laterally at large hand yaws).
+// `vrbones lock abs` remains the live A/B back to the old behavior.
+std::atomic<int> g_renderLock{0};         // 0 off, 1 abs (true position), 2 diff
                                           // (head-split cancel only)
 // Correction gains. Session 13 measured "gain 0.5 lands, 1.0 doubles" and
 // blamed a rigid-path rebake; session 14 decomposed that 1.79x overshoot as

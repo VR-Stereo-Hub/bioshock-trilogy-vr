@@ -1823,3 +1823,48 @@ lands in the 1960 plane intro ("IMPORTING NEW GAME PLUS DATA" on this NG+
 profile). No save damage (the intro does not autosave before the lighthouse
 transition; the .bsb set was verified untouched), but flat runs must
 screenshot-verify the landing state before measuring.
+
+### Session 21 part 2 - the headset feedback round (same day)
+
+**THE +-90 DRIFT ROOT CAUSE CLOSES: it was the render lock itself.** The
+user ran `vrbones lock off` (as part of the fovA preview) and reported
+"exactly what I was looking for - the aim is in tune with the model...
+perfect". The lock's counter-model (calibrated sessions 13-16 against the
+old fg composition) miscorrects laterally at large hand yaws - the very
+sign-flipping laser-vs-gun offset reported in session 20. Lock is now
+DEFAULT OFF (`vrbones lock abs` = the live A/B back); the solve code stays
+for reference until the composition work retires it.
+
+**Hands.CurrentHoldable = hands+0x45C** (patterns.h has the derivation):
+the equipped-weapon pointer read straight off the rig actor. It replaces
+learned/cache/scan as the weapon resolver's primary source - the
+trigger-learned object PINNED the resolver to the previously FIRED weapon
+across wheel switches (unequipped weapons keep vtable + owner), which is
+why profiles only swapped on fire in the first headset run (log-proven:
+swaps at fire timestamps, minutes after the switches).
+
+**Profile seeding race (log-proven, fixed):** the first resolve beat the
+preset's value load by ~1 s, seeded the first profile from pre-preset
+ZEROS, and the preset-tail re-apply then wrote the zeros over the user's
+tuned baseline. Now: the resolver idles until a value source exists
+(preset baseline captured or ini profiles loaded), new profiles seed from
+the CAPTURED preset baseline (not from the outgoing weapon's values), all
+flat-gated exact.
+
+**fovA in-headset negative (parked, default off):** under `vrfgnode fova
+match` the user reports THE WORLD moving with head motion (the rig
+"decent") - the fovA argument evidently feeds more than the rig's section
+bake (a world-coupled or full-screen consumer downstream of the fg node's
+fovs). Do not re-arm in-headset until that consumer is identified; the
+flat instrument findings stand.
+
+**FPS/freeze audit of the headset run (log analysis):** every
+sub-20-presents/s stall run coincides exactly with an XR session
+FOCUSED->VISIBLE window (VD overlay open / headset set down), including
+the long 19:37-19:38 window where the fova commands were typed; zero
+mid-play heap scans (all 5 scans at boot), zero xrWaitFrame-blocked
+lines, steady heartbeat during FOCUSED play. The freezes were not mod
+work. Cosmetic follow-up queued: during some VISIBLE stretches the flat
+window also stops presenting despite the pace guard (presents=0 while the
+skip counter is idle) - the guard covers xrWaitFrame but something else
+in the frame loop stalls; in-play impact none.

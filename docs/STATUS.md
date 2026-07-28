@@ -126,6 +126,45 @@ rendered at true world geometry, retiring the whole counter-model domain
 - Crash-dump baseline moved 8 -> 9 this session (the pawn+0x724 discovery
   crash, deliberately taken and logged); every later boot held 9.
 
+### Session 21 part 2 (same day) - THE HEADSET FEEDBACK ROUND
+
+**The user's verdicts:** (a) **`vrbones lock off` is "exactly what I was
+looking for - the aim is in tune with the model... perfect"** - the +-90
+laser-vs-gun drift ROOT CAUSE was the render lock's own correction. LOCK
+IS NOW DEFAULT OFF (`vrbones lock abs` = the A/B back). (b) `vrfgnode
+fova match` made THE WORLD move with head motion (rig "decent") -
+in-headset NEGATIVE, parked default-off; the fovA arg evidently feeds a
+world-coupled consumer beyond the rig bake (ENGINE_NOTES). (c) Per-weapon
+profiles "didn't change per weapon" - TWO log-proven bugs, both fixed +
+flat-gated the same night: the resolver's learned-object preference
+pinned the key to the previously FIRED weapon across wheel switches (now:
+Hands.CurrentHoldable at hands+0x45C read directly off the rig - instant,
+scanless, pre-fire swap detection), and the first profile seeded from
+pre-preset ZEROS then re-applied over the user's baseline (now: the
+resolver idles until the preset baseline is captured; new profiles seed
+from that baseline, not from the outgoing weapon's values). (d) NEW ASK,
+next session's headline: DECOUPLE world scale from model scale - a world
+slider and a separate hand/model scale slider (worldScale currently
+scales both; the session-16 negatives - bone .s attach blowup, DrawScale
+inert on the fg path - are the known walls; the fovA true-scale geometry
+may be the opening if its world coupling gets explained). (e) FPS/freeze
+audit: every stall in the run's log coincides with a FOCUSED->VISIBLE
+window (VD overlay/headset off) - NOT mod work; zero mid-play scans, zero
+blocked waits, clean heartbeat during play. Flat gates for the fixes:
+baseline captured (0/-7.9/7.5), 'Shotgun' created FROM the baseline,
+actor+class resolve pre-fire via the rig read, sim-swap round-trip exact
+(4.00/2.00 restored; Pistol seeded from baseline), fire subs 2/2, dumps
+9->9, no stray weapons.ini.
+
+**Re-test in headset (short):** (1) tune the pistol's laser at a wall,
+wheel-switch to the shotgun - its own tuning must be there IMMEDIATELY
+(no fire needed), switch back - pistol tuning returns; the log echoes
+`weapon profile '<name>' applied` per switch. (2) "Save preset values"
+once happy; reload + PRESET 1: all weapon tunings return. (3) Lock-off is
+now the default - confirm the aim-model sync feels like your `lock off`
+moment with no commands. (4) Optional: `fovaudit pose on` for 30 s (the
+submission closeout from the session-21 checklist still stands).
+
 ## Previous state (2026-07-28, session 20 - THE AIM-SYNC SESSION: one trim algebra, vrrec record+replay, FName/GNames, the muzzle ray, the idle-sway kill - ALL SIX STAGES FLAT-GREEN on branch s20-aim-sync)
 
 **Branch `s20-aim-sync`, MERGED to main as PR #5 (2026-07-28, the user's
@@ -1516,25 +1555,31 @@ retired: xr_hello32 (32-bit) ran a complete OpenXR session on VDXR 1.0.10 with t
 (60 frames, RTX 4060 LUID match) - M2 is unblocked. DR-2 done. Repo public at
 https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
-## Next steps (rewritten 2026-07-28 after session 21; the session-20 plan's items 1-3 are DONE - 1 as a clean negative, 2 as the fovA discovery, 3 shipped)
+## Next steps (re-rewritten 2026-07-28 after the part-2 headset feedback; the +-90 drift is CLOSED - it was the render lock, now default OFF)
 
-1. **Session 22 - THE FOVA-MATCH RETUNE (the big one).** Arm `vrfgnode
-   fova match` + `vrbones lock off` under vrstereo and re-run the
-   session-14/16 acceptance ladder (size ratio on distance doubling,
-   camera-offset parallax, simhead glue sweep) in the new regime. The
-   session-16 calibration (lockpull 12.8, gains 0.9) encodes the OLD
-   zoom-pull and does not apply. If the ladder holds: make the trio the
-   default, delete the render-lock domain (bones.cpp solve, the lock
-   knobs, kFgEye* constants), and re-derive the drive's composition
-   against the true world lens. Headset gate: the user's +-90 laser-vs-gun
-   drift and the world-size percept, judged by eye (checklist item 3 gives
-   the preview tonight).
+1. **Session 22 - MODEL/WORLD SCALE DECOUPLING (the user's ask, the new
+   headline).** Two independent sliders: world scale (the existing
+   worldScale) and a HAND/MODEL scale that does not touch the world.
+   Known walls from session 16 (do not re-walk blind): cluster bone .s
+   blows up the attached weapon (the attach path inverts chain scale);
+   actor DrawScale is geometry-inert on the fg path. Candidate routes, in
+   probe order: (a) understand the fovA world-coupling (the fovA arg
+   changes rendered rig scale flat - if its world-consumer is found and
+   masked, fovA becomes a clean per-rig zoom = the model-scale slider for
+   free); (b) DrawScale on a fova-matched rig (the session-21 STATUS note:
+   inert was only proven on the OLD fg path); (c) the per-eye bone-offset
+   stereo-basis split parked in M9 (the session-16 design sketch).
+2. **fovA world-motion mystery (feeds 1a)**: flat-find what ELSE consumes
+   the fg node's fovA (the user saw THE WORLD move with head under `fova
+   match` while the rig stayed decent) - dump-diff a fova-on/off pair
+   window by window; the consumer is whichever non-rig pass's transforms
+   move. Until explained, fova stays default-off and out of headset runs.
 
-2. **The submission-side closeout (cheap, headset-only)**: one glance at
-   the new `xr: fovaudit submit` line (src must read `readback`, swap =
-   the render resolution) + `fovaudit pose on` for 30 s of head motion
-   (the tagged-vs-consumed yaw deltas). Closes the last submission-side
-   suspects for the +-90 flip.
+3. **The submission-side closeout (cheap, headset-only)**: one glance at
+   the `xr: fovaudit submit` line (src must read `readback`, swap = the
+   render resolution) + `fovaudit pose on` for 30 s of head motion.
+   Largely academic now the drift closed as the lock, but one glance
+   settles it forever.
 
 3. **Wall-calibration pass (the user, in headset)**: per-weapon profiles
    are live - calibrate each weapon dot==shot with the
