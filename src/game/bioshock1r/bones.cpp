@@ -20,6 +20,7 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -167,38 +168,104 @@ uint32_t to_rva(const void* p) {
 // actor -> SkeletonInstance, fully revalidated (vtable, plausible count,
 // readable array). The instance is recreated on mesh relinks, so never trust
 // yesterday's pointer.
-bool locate(void* handsActor) {
+//
+// Session 20: the resolution itself is BY VALUE and slot-free (`resolve_skel`)
+// so any actor's skeleton can be inspected - the weapon carries its own, which
+// is what the muzzle probe needs. `locate()` keeps the module's single cached
+// slot for the drive, which only ever poses the AHands rig.
+struct Skel {
+    void* inst = nullptr;
+    Qts* bones = nullptr;
+    int count = 0;
+};
+
+bool resolve_skel(void* actor, Skel& out) {
+    out = {};
+    if (!actor) return false;
     void* si = nullptr;
-    if (!read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorSkelInstOffset, &si,
-                sizeof si) ||
-        !si) {
-        g_skelInst = nullptr;
+    if (!read_n(static_cast<uint8_t*>(actor) + patterns::kActorSkelInstOffset, &si, sizeof si) ||
+        !si)
         return false;
-    }
     void* vtbl = nullptr;
-    if (!read_n(si, &vtbl, sizeof vtbl) || to_rva(vtbl) != patterns::kSkeletonInstanceVtableRva) {
-        g_skelInst = nullptr;
+    if (!read_n(si, &vtbl, sizeof vtbl) || to_rva(vtbl) != patterns::kSkeletonInstanceVtableRva)
         return false;
-    }
     struct {
         Qts* bones;
         int count;
     } a{};
     if (!read_n(static_cast<uint8_t*>(si) + patterns::kSkelInstBonesOffset, &a, sizeof a) ||
-        !a.bones || a.count < 8 || a.count > kMaxBones) {
+        !a.bones || a.count < 1 || a.count > kMaxBones)
+        return false;
+    out.inst = si;
+    out.bones = a.bones;
+    out.count = a.count;
+    return true;
+}
+
+// Bone index -> name, via the SharedSkeletonData FName->index map walked in
+// reverse (patterns.h "Session 20: bone NAMES"). Returns how many names were
+// filled; entries stay null when a bone has no map entry.
+int resolve_bone_names(const Skel& sk, const wchar_t** names, int cap) {
+    for (int i = 0; i < cap; ++i) names[i] = nullptr;
+    if (!sk.inst) return 0;
+    void* shared = nullptr;
+    if (!read_n(static_cast<uint8_t*>(sk.inst) + patterns::kSkelInstSharedOffset, &shared,
+                sizeof shared) ||
+        !shared)
+        return 0;
+    const uint8_t* map = static_cast<const uint8_t*>(shared) + patterns::kSharedBoneNameMapOffset;
+    struct {
+        const uint8_t* pairs;
+    } p{};
+    const int32_t* buckets = nullptr;
+    int32_t bucketCount = 0;
+    if (!read_n(map + patterns::kNameMapPairsOffset, &p, sizeof p) ||
+        !read_n(map + patterns::kNameMapBucketsOffset, &buckets, sizeof buckets) ||
+        !read_n(map + patterns::kNameMapBucketCountOffset, &bucketCount, sizeof bucketCount))
+        return 0;
+    if (!p.pairs || !buckets || bucketCount <= 0 || bucketCount > 65536) return 0;
+
+    int filled = 0;
+    for (int b = 0; b < bucketCount; ++b) {
+        int32_t idx = -1;
+        if (!read_n(buckets + b, &idx, sizeof idx)) break;
+        // Chain walk, bounded by the table size so a corrupt link cannot spin.
+        for (int guard = 0; idx >= 0 && guard <= cap * 4; ++guard) {
+            struct {
+                int32_t next, nameIdx, nameNum, value;
+            } pair{};
+            if (!read_n(p.pairs + static_cast<size_t>(idx) * patterns::kNameMapPairStride, &pair,
+                        sizeof pair))
+                break;
+            if (pair.value >= 0 && pair.value < cap && !names[pair.value]) {
+                const wchar_t* t = patterns::fname_text(pair.nameIdx);
+                if (t) {
+                    names[pair.value] = t;
+                    ++filled;
+                }
+            }
+            idx = pair.next;
+        }
+    }
+    return filled;
+}
+
+bool locate(void* handsActor) {
+    Skel sk{};
+    if (!resolve_skel(handsActor, sk) || sk.count < 8) {
         g_skelInst = nullptr;
         return false;
     }
-    if (si != g_skelInst || a.bones != g_bones || a.count != g_boneCount) {
-        BVR_LOG("[bones] skeleton: inst=%p bones=%p count=%d%s", si,
-                static_cast<void*>(a.bones), a.count,
-                a.count == patterns::kHandsRigBoneCount ? "" : " (UNEXPECTED count)");
+    if (sk.inst != g_skelInst || sk.bones != g_bones || sk.count != g_boneCount) {
+        BVR_LOG("[bones] skeleton: inst=%p bones=%p count=%d%s", sk.inst,
+                static_cast<void*>(sk.bones), sk.count,
+                sk.count == patterns::kHandsRigBoneCount ? "" : " (UNEXPECTED count)");
         g_refValid = false; // new array = new reference
         g_hasWritten[0] = g_hasWritten[1] = false;
     }
-    g_skelInst = si;
-    g_bones = a.bones;
-    g_boneCount = a.count;
+    g_skelInst = sk.inst;
+    g_bones = sk.bones;
+    g_boneCount = sk.count;
     return true;
 }
 
@@ -520,6 +587,28 @@ float lock_delta_mag() {
     return g_lockDeltaMag.load(std::memory_order_relaxed);
 }
 
+bool barrel_ref_axis(float d0[3]) {
+    // The rendered barrel axis in the DRIVE TARGET's local frame (UE
+    // fwd/right/up). Derivation: drive() writes every cluster quat as
+    // qtc (x) q_ref with qtc = inv(q_actor) (x) q_target and positions as a
+    // rigid rotation of the reference about the anchor, so the rendered
+    // world direction of (bone44ref - bone43ref) is q_target (x) d0 - the
+    // actor frame cancels. d0 tracks the reference pose, which IS the
+    // per-weapon animation (bone 44 = "muzzle-ish tip", patterns.h), so the
+    // muzzle ray is per-weapon automatic and follows any authored sway the
+    // engine still plays.
+    if (!g_refValid || g_boneCount <= patterns::kBoneRClusterLast) return false;
+    const float* pa = g_ref[patterns::kBoneWeaponAttach].p;
+    const float* pm = g_ref[patterns::kBoneRClusterLast].p; // bone 44
+    float d[3] = {pm[0] - pa[0], pm[1] - pa[1], pm[2] - pa[2]};
+    float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (len < 1.0f) return false; // degenerate reference (collapsed rig)
+    d0[0] = d[0] / len;
+    d0[1] = d[1] / len;
+    d0[2] = d[2] / len;
+    return true;
+}
+
 bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
     // Telemetry window: opened here (the once-per-frame pass-1 path) so every
     // module's lines for one sample land together in the log.
@@ -839,6 +928,37 @@ void handle_command(const char* args) {
                     "scale(%.2f %.2f %.2f)",
                     i, b.p[0], b.p[1], b.p[2], b.q[0], b.q[1], b.q[2], b.q[3], b.s[0], b.s[1],
                     b.s[2]);
+        }
+    } else if (strcmp(verb, "skel") == 0) {
+        // Session 20 muzzle probe: dump ANY actor's skeleton WITH bone names.
+        // "skel hands" (default) = the AHands rig; "skel weapon" = the
+        // equipped weapon's own skeleton, where the muzzle bone lives.
+        bool wantWeapon = strncmp(rest, "weapon", 6) == 0;
+        void* actor = wantWeapon ? hands::weapon_actor() : hands::hands_actor();
+        if (!actor) {
+            BVR_LOG("[bones] skel: no live %s actor (arm the drive; fire once for the "
+                    "weapon)",
+                    wantWeapon ? "weapon" : "hands");
+            return;
+        }
+        Skel sk{};
+        if (!resolve_skel(actor, sk)) {
+            BVR_LOG("[bones] skel: %s actor %p has no SkeletonInstance at +0x%X (or the "
+                    "vtable did not validate)",
+                    wantWeapon ? "weapon" : "hands", actor, patterns::kActorSkelInstOffset);
+            return;
+        }
+        const wchar_t* names[kMaxBones];
+        int named = resolve_bone_names(sk, names, sk.count);
+        BVR_LOG("[bones] skel %s: actor=%p inst=%p bones=%p count=%d (%d named)",
+                wantWeapon ? "WEAPON" : "HANDS", actor, sk.inst, static_cast<void*>(sk.bones),
+                sk.count, named);
+        for (int i = 0; i < sk.count; ++i) {
+            Qts b{};
+            if (!read_n(&sk.bones[i], &b, sizeof b)) break;
+            BVR_LOG("[bones]  %2d %-24S pos(%8.2f %8.2f %8.2f) quat(%6.3f %6.3f %6.3f %6.3f)",
+                    i, names[i] ? names[i] : L"<unnamed>", b.p[0], b.p[1], b.p[2], b.q[0],
+                    b.q[1], b.q[2], b.q[3]);
         }
     } else if (strcmp(verb, "poke") == 0) {
         int idx = -1;

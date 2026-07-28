@@ -70,6 +70,11 @@ std::atomic<float> g_laserPitchTrim{0.0f}, g_laserYawTrim{0.0f};
 std::atomic<float> g_laserPosFwdCm{0.0f}, g_laserPosRightCm{0.0f}, g_laserPosUpCm{0.0f};
 std::atomic<int> g_laserDots{6};
 std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
+// Session 20 muzzle ray (see LaserConfig): beam along the rendered barrel.
+std::atomic<bool> g_laserMuzzle{false};
+std::atomic<float> g_laserMuzzleD0[3] = {0.0f, 0.0f, -1.0f};
+std::atomic<float> g_laserModelPitchTrim{0.0f}, g_laserModelYawTrim{0.0f},
+    g_laserModelRollTrim{0.0f};
 std::atomic<uint32_t> g_laserLayersSubmitted{0};
 std::atomic<bool> g_loggedFirstLaser{false};
 
@@ -1040,11 +1045,26 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     constexpr float kDegToRad = 3.14159265f / 180.0f;
     const float fwd[3] = {0.0f, 0.0f, -1.0f};
     float trim[4], q2[4], d[3];
-    bvr::xrmath::xr_local_trim_quat(
-        g_laserPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
-        g_laserYawTrim.load(std::memory_order_relaxed) * kDegToRad, 0.0f, trim);
-    bvr::xrmath::quat_mul(quat, trim, q2);
-    bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], fwd, d);
+    if (g_laserMuzzle.load(std::memory_order_relaxed)) {
+        // Muzzle ray: the beam follows the RENDERED barrel - the MODEL's trim
+        // (roll included: it moves an off-axis vector) applied to the barrel
+        // axis the game side derived from the driven rig this frame.
+        const float d0[3] = {g_laserMuzzleD0[0].load(std::memory_order_relaxed),
+                             g_laserMuzzleD0[1].load(std::memory_order_relaxed),
+                             g_laserMuzzleD0[2].load(std::memory_order_relaxed)};
+        bvr::xrmath::xr_local_trim_quat(
+            g_laserModelPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
+            g_laserModelYawTrim.load(std::memory_order_relaxed) * kDegToRad,
+            g_laserModelRollTrim.load(std::memory_order_relaxed) * kDegToRad, trim);
+        bvr::xrmath::quat_mul(quat, trim, q2);
+        bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], d0, d);
+    } else {
+        bvr::xrmath::xr_local_trim_quat(
+            g_laserPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
+            g_laserYawTrim.load(std::memory_order_relaxed) * kDegToRad, 0.0f, trim);
+        bvr::xrmath::quat_mul(quat, trim, q2);
+        bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], fwd, d);
+    }
 
     // Ray ORIGIN offset (cm -> m) in the trimmed ray's ZERO-ROLL frame, built
     // from the ray's YAW angle exactly like the game-side build (aim.cpp
@@ -1664,6 +1684,12 @@ void set_laser(const LaserConfig& cfg) {
     g_laserNearM.store(cfg.nearM, std::memory_order_relaxed);
     g_laserFarM.store(cfg.farM, std::memory_order_relaxed);
     g_laserSizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
+    g_laserMuzzle.store(cfg.muzzle, std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i)
+        g_laserMuzzleD0[i].store(cfg.muzzleD0[i], std::memory_order_relaxed);
+    g_laserModelPitchTrim.store(cfg.modelPitchTrimDeg, std::memory_order_relaxed);
+    g_laserModelYawTrim.store(cfg.modelYawTrimDeg, std::memory_order_relaxed);
+    g_laserModelRollTrim.store(cfg.modelRollTrimDeg, std::memory_order_relaxed);
 }
 
 void set_hud_quad(float distM, float widthM, float upM) {

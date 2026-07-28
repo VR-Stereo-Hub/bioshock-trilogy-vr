@@ -410,6 +410,18 @@ inline constexpr uint32_t kSkelInstBoneCountOffset = 0x4C;  // int (AHands rig: 
 inline constexpr uint32_t kSkelInstBonesBOffset = 0x54;     // hkQsTransform* array B
 inline constexpr uint32_t kSkelInstBoneCountBOffset = 0x58;
 inline constexpr uint32_t kSkelInstDirtyOffset = 0x88;   // evaluate-if-dirty flag (byte)
+// Session 20: bone NAMES. SkeletonInstance +0x08 -> SharedSkeletonData, whose
+// +0xAC map is FName -> bone index (lookup fn 0x5F6500, disassembled): a
+// standard UE hash map - +0x00 pairs base (16-byte pairs: +0 chain next,
+// +4 FName index, +8 FName number, +0xC value), +0x0C bucket array (int32,
+// -1 = empty), +0x10 bucket count (power of two). Walking every bucket chain
+// enumerates the whole table, which inverts to bone index -> name.
+inline constexpr uint32_t kSkelInstSharedOffset = 0x08;
+inline constexpr uint32_t kSharedBoneNameMapOffset = 0xAC;
+inline constexpr uint32_t kNameMapPairsOffset = 0x00;
+inline constexpr uint32_t kNameMapBucketsOffset = 0x0C;
+inline constexpr uint32_t kNameMapBucketCountOffset = 0x10;
+inline constexpr uint32_t kNameMapPairStride = 16;
 // The attach bone FName is stored ON the attached actor (weapon +0xF0/+0xF4)
 // by AActor::AttachToBone; attachment itself is bone-name + SetBase (actor
 // vtable +0x1A0). Equip-time only - nothing re-asserts it per tick.

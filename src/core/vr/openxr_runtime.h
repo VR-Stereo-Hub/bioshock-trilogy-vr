@@ -164,6 +164,16 @@ struct LaserConfig {
     float nearM = 0.30f;       // first dot, meters from the controller
     float farM = 6.0f;         // last dot
     float sizeDeg = 0.7f;      // angular diameter, so the beam reads evenly
+    // Session 20 muzzle ray: when on, the beam leaves along the RENDERED
+    // barrel instead of the trimmed controller forward - direction =
+    // (q_ctrl (x) model trim) applied to the barrel axis d0 (XR frame; the
+    // game side derives d0 from the driven rig's reference pose each frame).
+    // Roll matters for an off-axis vector, so the model ROLL trim rides too.
+    bool muzzle = false;
+    float muzzleD0[3] = {0.0f, 0.0f, -1.0f};
+    float modelPitchTrimDeg = 0.0f;
+    float modelYawTrimDeg = 0.0f;
+    float modelRollTrimDeg = 0.0f;
 };
 
 // Publish the laser state (game thread, once per frame). The render thread

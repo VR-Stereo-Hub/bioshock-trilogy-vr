@@ -445,6 +445,16 @@ int active_hand() {
     return g_autoHand.load(std::memory_order_relaxed);
 }
 
+void* hands_actor() {
+    return g_handsActor;
+}
+
+void* weapon_actor() {
+    void* w = weapon_valid(g_weaponActor) ? g_weaponActor
+                                          : bvr::b1r::aim::learned_weapon_object();
+    return weapon_valid(w) ? w : nullptr;
+}
+
 // Live mesh-alignment trim, read by `vraim synccheck` so its model chain runs
 // on the REAL tuned values (session 20).
 float model_trim_pitch_deg(int hand) {

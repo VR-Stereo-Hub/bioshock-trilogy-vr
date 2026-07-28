@@ -1600,3 +1600,42 @@ dereference is_memory_valid + the entry self-index check); exposed as
 54129, and the equipped weapon's attach-bone FName (weapon+0xF0) ->
 **'Launcher'** (idx 18075) - the AHands rig's weapon-attach socket name
 (bone 43 in index space).
+
+### Weapon skeletons, bone names, and the muzzle ray (session 20 stage 5)
+
+**Bone-name map**: SkeletonInstance +0x08 -> SharedSkeletonData; its +0xAC map
+(lookup fn 0x5F6500, capstone-disassembled) is a standard UE hash map -
++0x00 pairs base (16-byte pairs {chain next, FName index, FName number,
+value}), +0x0C int32 bucket array (-1 empty), +0x10 bucket count (power of
+two). Walking every bucket chain enumerates FName->boneIndex, which inverted
++ fname_text gives index->name for ANY skeletal actor (`vrbones skel
+[hands|weapon]`).
+
+**The shotgun's own skeleton is 3 bones**: SG_Body (x=10.1), SG_Pump
+(x=57.3), SG_Shell (x=25.0) - all identity-ish quats, so the weapon's
+component +X is the barrel axis, and there is NO explicit muzzle bone. The
+muzzle ray therefore derives from the HANDS rig (bones 43->44 of the
+per-weapon reference pose), as the plan's on-file alternative anticipated.
+
+**Muzzle-ray derivation** (vraim muzzle on|off, default OFF): bones::drive
+writes every cluster quat as qtc (x) q_ref with qtc = inv(q_actor) (x)
+q_target, so the rendered world direction of (bone44ref - bone43ref) is
+q_target (x) d0 - the actor frame cancels, the head never enters
+(actor-frame rendering, session 12 part 3). d0 = normalize(p44ref - p43ref)
+is recomputed per frame from the live reference, so it is per-weapon (the
+reference IS the per-weapon animation) and follows any authored sway.
+**Flat-measured on the shotgun**: d0 = (0.98, ~0.01, 0.15-0.19) - the
+rendered barrel sits ~9-11 deg ABOVE the attach frame's forward and visibly
+wanders inside that band with the idle sway (the misalignment users
+hand-trim today, now followed automatically). Muzzle off -> ray rot
+(0, camYaw); on -> (+1971, +41) units = +10.8/+0.2 deg = asin(d0.z) exactly.
+Fire test with the muzzle ray live: calls=3 subs=3 skips=0, dumps 8->8. The
+laser rides the same d0 XR-side (LaserConfig.muzzle; model trim incl. ROLL -
+roll moves an off-axis vector).
+
+**Negative result**: `exec NextWeapon` through the viewport chain FAULTS
+(eip exe+0x4C2353, SEH caught) - UE2 stock console weapon switching is not
+wired on this build; flat weapon switching stays an open harness gap (the
+bumpers open the session-19 radial, which needs real stick timing). The
+per-weapon d0 change is structurally guaranteed but goes to the in-headset
+checklist for the eyes-on proof.

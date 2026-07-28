@@ -81,6 +81,12 @@ float model_trim_pitch_deg(int hand);
 float model_trim_yaw_deg(int hand);
 float model_trim_roll_deg(int hand);
 
+// The live actors this module tracks (null until found/learned). The session-20
+// muzzle probe inspects the WEAPON's own skeleton, which is produced here every
+// frame; game thread only, revalidated by the caller's own reads.
+void* hands_actor();
+void* weapon_actor();
+
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.

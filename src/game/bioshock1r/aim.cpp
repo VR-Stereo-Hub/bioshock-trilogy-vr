@@ -53,6 +53,14 @@ std::atomic<int> g_pendingEnable{-1}; // -1 none, 0 off, 1 on
 // of taste (grip angle, wrist posture) - the user's first in-headset run wanted
 // the ray a little lower than the raw pose gave.
 std::atomic<bool> g_useAimPose{true};
+// Session 20 muzzle ray (default OFF until the in-headset verdict): the RIGHT
+// hand's ray leaves along the RENDERED barrel - direction = the model's
+// target rotation applied to the rig's reference barrel axis
+// (bones::barrel_ref_axis) - instead of the trimmed controller forward.
+// Per-weapon automatic (the reference pose is the per-weapon animation), no
+// manual trim. The left/plasmid hand keeps the pointing ray: there is no
+// barrel to follow.
+std::atomic<bool> g_muzzleRay{false};
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
 std::atomic<float> g_pitchOffsetDeg[2] = {0.0f, 0.0f};
@@ -858,9 +866,29 @@ void on_calcview(const FrameContext& ctx) {
         GamePose gp = ray_pose_from_xr(ctx, pos, quat,
                                        g_pitchOffsetDeg[i].load(std::memory_order_relaxed),
                                        g_yawOffsetDeg[i].load(std::memory_order_relaxed));
-
         out.origin = gp.loc;
         out.rot = gp.rot;
+
+        // Muzzle ray (session 20, right hand only): the bullet leaves along
+        // the RENDERED barrel. The model's target rotation is recomputed here
+        // through the same pure function hands.cpp uses this frame (same ctx,
+        // same funnel pose, same trims - no staleness, no coupling), then
+        // applied to the reference barrel axis. Falls back to the trimmed
+        // controller ray whenever the rig has no reference yet.
+        if (i == 1 && g_muzzleRay.load(std::memory_order_relaxed)) {
+            float d0[3];
+            if (bvr::b1r::bones::barrel_ref_axis(d0)) {
+                GamePose mgp = model_pose_from_xr(ctx, pos, quat,
+                                                  hands::model_trim_pitch_deg(1),
+                                                  hands::model_trim_yaw_deg(1),
+                                                  hands::model_trim_roll_deg(1));
+                float qt[4], dirW[3];
+                ue_rot_to_quat(mgp.rot, qt);
+                quat_rotate(qt[0], qt[1], qt[2], qt[3], d0, dirW);
+                out.rot = ue_dir_to_rot(dirW); // pitch/yaw; roll stays 0
+            }
+        }
+
         apply_origin_offset(i, out, ctx.worldScale);
         out.valid = true;
     }
@@ -881,6 +909,20 @@ void on_calcview(const FrameContext& ctx) {
     lc.nearM = g_laserNearM.load(std::memory_order_relaxed);
     lc.farM = g_laserFarM.load(std::memory_order_relaxed);
     lc.sizeDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
+    // Muzzle ray (session 20): the beam must follow the bullet. d0 converts
+    // UE (fwd,right,up) -> XR (right,up,-fwd): (y, z, -x).
+    if (lc.hand == 1 && g_muzzleRay.load(std::memory_order_relaxed)) {
+        float d0[3];
+        if (bvr::b1r::bones::barrel_ref_axis(d0)) {
+            lc.muzzle = true;
+            lc.muzzleD0[0] = d0[1];
+            lc.muzzleD0[1] = d0[2];
+            lc.muzzleD0[2] = -d0[0];
+            lc.modelPitchTrimDeg = hands::model_trim_pitch_deg(1);
+            lc.modelYawTrimDeg = hands::model_trim_yaw_deg(1);
+            lc.modelRollTrimDeg = hands::model_trim_roll_deg(1);
+        }
+    }
     bvr::vr::set_laser(lc);
 }
 
@@ -1136,6 +1178,17 @@ void handle_command(const char* args) {
         g_test[idx].deadline = GetTickCount64() + static_cast<uint64_t>(hold);
         BVR_LOG("[aim] test aim %s: yaw %+.1f pitch %+.1f for %d ms", idx ? "RIGHT" : "LEFT",
                 yaw, pitch, hold);
+    } else if (strcmp(verb, "muzzle") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_muzzleRay.store(on, std::memory_order_relaxed);
+        float d0[3];
+        bool haveRef = bvr::b1r::bones::barrel_ref_axis(d0);
+        BVR_LOG("[aim] muzzle ray %s - right-hand ray %s (barrel axis %s: %.3f %.3f %.3f)",
+                on ? "ON" : "off",
+                on ? "follows the RENDERED barrel (per-weapon, no manual trim)"
+                   : "back to the trimmed controller forward",
+                haveRef ? "from the live reference" : "UNAVAILABLE yet",
+                haveRef ? d0[0] : 0.0f, haveRef ? d0[1] : 0.0f, haveRef ? d0[2] : 0.0f);
     } else if (strcmp(verb, "synccheck") == 0) {
         run_synccheck();
     } else if (strcmp(verb, "status") == 0) {
