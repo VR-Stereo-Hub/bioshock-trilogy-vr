@@ -531,6 +531,35 @@ inline constexpr float kFgInvTanV = 2.3094011f; // 1/0.4330127
 inline constexpr float kFgViewYawBiasDeg = 1.7f;
 inline constexpr float kFgViewPitchBiasDeg = 1.1f;
 
+// ---- The FOREGROUND SCENE NODE (session 21) --------------------------------
+// The fg pass is a SECOND SCENE NODE, pure data through shared render
+// machinery (dump stack-diff: fg and world draws share the whole skeletal
+// draw layer; they differ only in which recorded scene command iterates the
+// mesh and which section-transform provider bakes it). The scene build
+// (kSceneBuildRva 0x4CCE70) allocates a 0x400-byte fg node per frame from
+// the frame pool and constructs it at the RVA below with
+// (parentScene, &parentScene.view@+0x118, x, vec3 PC+0x65C, triple PC+0x668,
+// float PC+0x45C, float PC+0x460), then stores it at parentScene+0x1B0.
+// Derivation: static capstone disasm of the build's [PC+0x460] float read
+// (the only fg-fov consumer in the build region; found by disp-0x460 code
+// search) at build+0xD71, and of the ctor + its finisher (0x56DD90 - view
+// offset/rotation compose into node+0x150). The ctor's base-class call
+// receives THE PARENT VIEW POINTER - the fg node's view starts as a copy of
+// the world view; the fg divergence (actor orientation, eye pull) enters
+// downstream. The vec3 at PC+0x65C and triple at PC+0x668 read zero live at
+// rest (auxiliary offsets; 75/75/60 fov floats sit just before them at
+// PC+0x648..0x650).
+inline constexpr uint32_t kFgSceneNodeCtorRva = 0x56DC30;
+inline constexpr uint8_t kFgSceneNodeCtorPrologue[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+inline constexpr uint32_t kFgSceneNodeVtableRva = 0xE1846C; // written by the build after ctor
+inline constexpr uint32_t kSceneViewOffset = 0x118;   // parent scene's view block
+inline constexpr uint32_t kSceneFgNodeOffset = 0x1B0; // parentScene -> fg node (per frame)
+inline constexpr uint32_t kScenePcOffset = 0x48;      // parentScene -> PlayerController
+inline constexpr uint32_t kFgSceneNodeViewOffset = 0x150; // view matrix the finisher composes
+inline constexpr uint32_t kFgSceneNodeFovAOffset = 0x3F0; // from PC+0x45C (default 75.0)
+inline constexpr uint32_t kFgSceneNodeFovBOffset = 0x3F4; // from PC+0x460 (the vrfgfov field)
+inline constexpr uint32_t kFgSceneNodeBytes = 0x400;
+
 // ---- Name system (session 20) ----------------------------------------------
 // Derived by capstone disassembly of the FName constructor the event scan
 // already finds (thin SEH/lock wrapper at RVA 0x70D660 -> worker 0x70D3C0);

@@ -1718,3 +1718,69 @@ must read the render resolution); (b) pose-tag attribution - `fovaudit pose
 on` arms a tagged-vs-consumed yaw delta log (in-headset only; flat has no
 session); (c) the structural foreground-vs-compositor split - the world-pass
 re-homing experiment.
+
+### The foreground pass decoded: a second scene node, and the fovA zoom-pull lever (session 21)
+
+**Architecture (dump stack-diff + capstone, all constants in patterns.h
+"FOREGROUND SCENE NODE"):** the fg pass is a SECOND SCENE NODE flowing
+through the SAME render machinery as the world (fg and world skeletal draws
+share the whole draw layer; a per-section transform-provider virtual at
+vtbl+0x20 does the bake). The scene build (0x4CCE70) allocates a 0x400-byte
+fg node from the frame pool every build and constructs it at 0x56DC30 with
+MEASURED argument semantics: (parentScene, &scene.view@+0x118, x,
+vec3 cameraLoc, rotator cameraRot, float fovA <- PC+0x45C, float fovB <-
+PC+0x460), storing it at scene+0x1B0 (vtable 0xE1846C). The finisher
+(0x56DD90) builds the node's view matrix at +0x150 (+ inverse at +0x190,
+world-projection diag at +0x1D0) FROM THE LOC/ROT ARGS; the fovs land at
++0x3F0/+0x3F4. The ctor runs BEFORE CalcView inside each build (call sites
+build+0xD59 vs +0xF1A).
+
+**The fg camera inputs are ALREADY world-synced per eye** (pass-labeled
+ctor-arg capture, `vrfgnode on` + `dump`): pass 1's node receives the LEFT
+eye camera, pass 2's the RIGHT (values match apply_eye_offset's +-3.17 UU
+at the live yaw exactly), rotation = the DRIVEN camera rotator. Two raised
+hypotheses measured and KILLED the same night: (a) "fg view = stale
+pre-drive camera" - simhead sweep showed the DRIVEN yaw/pitch in the args;
+(b) "crossed eyes under SR" (each pass getting the sibling's camera - would
+have inverted rig disparity) - the pass-labeled capture shows correct-eye
+delivery. The `vrfgnode sync on` substitution (feeds the ctor camera.cpp's
+per-eye stash) is therefore a measured flat-static NO-OP; kept default-OFF
+as an in-headset latency A/B only.
+
+**THE LEVER - the fovA/fovB pair IS the fg zoom-pull.** fovA (from
+PC+0x45C, engine-restamped to 75.0 every frame - unpokeable as data; the
+session-15 "75.0 poked inert" verdict explained) is the REFERENCE fov;
+fovB (PC+0x460) the actual fg fov. Their ratio drives the rig's
+magnification + eye pull-back (the fov-coupled dolly sessions 13-16
+countered with the render lock + lockpull). `vrfgnode fova match`
+(ctor-arg substitution fovA:=fovB - always wins, unlike the data poke):
+the rig collapses to TRUE world geometry - screenshot mean-abs-diff 11.09
+with 44.2% of channels changed vs a 2.9 ambient floor, world pixels
+untouched, exact round-trip on `fova off`. Fire path alive under
+`fova match` + `vrbones lock off` (3 weapon-hook calls, no crash); ctor
+substitutions 3358+/0 misses; crash dumps stable across all fg-node work.
+**Candidate end-state (retune next session, headset-judged): vrfgfov on
+(projection matched) + fova match (zoom-pull neutralized) + render lock
+OFF = the rig at true world-lens geometry; the whole counter-model domain
+(lock, lockgain/lockdgain/lockpull, kFgEye* constants) retires.**
+
+**Negative results, all live-measured this session:**
+- NO script-side fg membership property exists: the full Actor property
+  list (282 props) and Hands' own (70) contain nothing foreground/pass
+  related - membership is native-only (fits the name-table finding: only
+  FOV-related foreground names exist).
+- Pawn+0x724 = the pawn->Hands reference (found by pointer-value hexdump
+  scan; the ONLY holder in pawn+0..0x1C00, PC holds none in +0..0x800).
+  Nulling it is FATAL within ~1 s (0xC0000005 at +0x6F5ED7, a hash-chain
+  walk on a corrupted [obj+0x10] - secondary damage, not the direct
+  consumer). NOT a lever. 26 code refs to +0x724 exist, all in game-logic
+  regions (0x1CA-0x313xxx) - the scene build never reads it directly.
+- The three section-transform provider classes (bake fns 0x3DBF10 /
+  0x3EDC40 / 0x60C5B0; vtbl slot +0x20 at rvas 0xDF20B4/0xDF32D4/0xE1CAA0)
+  are SKINNING STRATEGIES with 656/178/240 live instances - not fg
+  markers. Per-draw fg identification = the fg-bake stack RVAs
+  (0x3DBF7C/0x3EDCBF), which tools/decode-framedump.ps1 tags (lens-blind,
+  works under the matched lens where tangent clustering cannot separate
+  the passes).
+- The 576-byte cb tier is NOT fg-exclusive (world draws use it too; 88
+  draws at the tier, 9 fg).

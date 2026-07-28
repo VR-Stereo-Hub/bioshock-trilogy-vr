@@ -15,6 +15,7 @@
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -75,6 +76,7 @@ HookSlot g_flush{"flush"};
 HookSlot g_submit{"submit"};
 HookSlot g_build{"build"};
 HookSlot g_flushpoint{"flushpoint"};
+HookSlot g_fgctor{"fgctor"}; // session 21: the FOREGROUND SCENE NODE ctor
 
 // Controls: command poller (game thread) writes, detour threads read.
 std::atomic<bool>  g_doubleCall{false};
@@ -757,6 +759,107 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
         g_activeTid.store(0, std::memory_order_relaxed);
 }
 
+// ---- session 21: fg scene node instrument (world-pass re-homing) -----------
+// The scene build constructs a per-frame FOREGROUND SCENE NODE for the
+// first-person rig (patterns::kFgSceneNodeCtorRva; layout facts in
+// patterns.h). This read-only hook snapshots the ctor's parent-view argument
+// plus the whole node at TWO points - ctor tail and frame submit - so
+// `vrfgnode dump` shows where the fg view diverges from the parent (world)
+// view: at construction, during command record, or not at all (then the
+// divergence is bake-side actor-frame math). Discovery instrument only;
+// nothing here writes engine state.
+using FgCtorFn = void*(__fastcall*)(void* self, void* edx, void* scene, void* parentView,
+                                    void* a3, float ofsX, float ofsY, float ofsZ,
+                                    int32_t rotA, int32_t rotB, int32_t rotC, float fovA,
+                                    float fovB);
+std::atomic<bool> g_fgWatch{false};
+std::atomic<uint32_t> g_fgCtorCalls{0};
+// fg view-sync (the crossed-eye fix): substitute the ctor's camera args with
+// the CORRECT eye's driven camera from camera.cpp's stash. Default OFF.
+std::atomic<bool> g_fgSync{false};
+std::atomic<uint32_t> g_fgSyncSubs{0};
+std::atomic<uint32_t> g_fgSyncMisses{0};
+// fovA-arg override (0 = off): the ctor's first fov input (from PC+0x45C,
+// engine-restamped to 75.0 every frame - unpokeable as data). If the bake's
+// eye pull-back derives from the fovA/fovB pair, overriding fovA == fovB
+// moves the rig's rendered depth - the pull's origin discriminator.
+std::atomic<float> g_fgFovAOverride{0.0f};
+// Snapshot state: written on the game thread inside the build (1t), read by
+// the command poller on the same thread - plain fields are safe.
+void* g_fgNodeScene = nullptr;
+void* g_fgNodeLast = nullptr;
+void* g_fgNodeParentView = nullptr;
+float g_fgCtorOfs[3] = {};
+int32_t g_fgCtorRot[3] = {};
+float g_fgCtorFov[2] = {};
+// Per-eye claim check: under SR stereo the two builds of one pair should
+// carry +-IPD/2-offset eye cameras in their WORLD views - do the fg nodes?
+// Two slots, alternating per ctor call; the dump prints both.
+float g_fgCtorOfs2[2][3] = {};
+int32_t g_fgCtorRot2[2][3] = {};
+uint32_t g_fgCtorSlot = 0;
+uint8_t g_fgParentSnap[0x100];
+uint8_t g_fgNodeSnapCtor[patterns::kFgSceneNodeBytes];
+uint8_t g_fgNodeSnapSubmit[patterns::kFgSceneNodeBytes];
+bool g_fgSnapCtorOk = false;
+bool g_fgSnapSubmitOk = false;
+
+bool snap_mem(void* dst, const void* src, size_t n) {
+    __try {
+        memcpy(dst, src, n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void* __fastcall FgCtorDetour(void* self, void* edx, void* scene, void* parentView, void* a3,
+                              float ofsX, float ofsY, float ofsZ, int32_t rotA, int32_t rotB,
+                              int32_t rotC, float fovA, float fovB) {
+    // fg view-sync: the engine hands this ctor the camera one BUILD stale,
+    // which under SR stereo is the OTHER eye's camera (crossed eyes,
+    // full-IPD lateral error + inverted rig disparity - flat-measured,
+    // ENGINE_NOTES session 21). Substitute the CORRECT eye's driven camera
+    // from the previous pair: both eyes then come from one consistent pose
+    // sample, correct-eye, one pair stale (same order of lag as stock).
+    if (g_fgSync.load(std::memory_order_relaxed) && g_stereo.load(std::memory_order_relaxed)) {
+        int eye = g_secondPassTid.load(std::memory_order_relaxed) == GetCurrentThreadId() ? 1 : 0;
+        float sl[3];
+        int32_t sr[3];
+        if (camera::driven_eye_cam(eye, sl, sr)) {
+            ofsX = sl[0]; ofsY = sl[1]; ofsZ = sl[2];
+            rotA = sr[0]; rotB = sr[1]; rotC = sr[2];
+            g_fgSyncSubs.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            g_fgSyncMisses.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    float fovAOv = g_fgFovAOverride.load(std::memory_order_relaxed);
+    if (fovAOv != 0.0f) fovA = fovAOv < 0.0f ? fovB : fovAOv; // -1 = "match fovB"
+    void* ret = reinterpret_cast<FgCtorFn>(g_fgctor.original)(
+        self, edx, scene, parentView, a3, ofsX, ofsY, ofsZ, rotA, rotB, rotC, fovA, fovB);
+    g_fgCtorCalls.fetch_add(1, std::memory_order_relaxed);
+    if (g_fgWatch.load(std::memory_order_relaxed)) {
+        g_fgNodeScene = scene;
+        g_fgNodeLast = self;
+        g_fgNodeParentView = parentView;
+        g_fgCtorOfs[0] = ofsX; g_fgCtorOfs[1] = ofsY; g_fgCtorOfs[2] = ofsZ;
+        g_fgCtorRot[0] = rotA; g_fgCtorRot[1] = rotB; g_fgCtorRot[2] = rotC;
+        g_fgCtorFov[0] = fovA; g_fgCtorFov[1] = fovB;
+        // Slot by PASS: 0 = first build of the pair (LEFT eye), 1 = second
+        // (RIGHT). Under sync the values are post-substitution.
+        uint32_t slot =
+            g_secondPassTid.load(std::memory_order_relaxed) == GetCurrentThreadId() ? 1u : 0u;
+        g_fgCtorSlot = slot;
+        g_fgCtorOfs2[slot][0] = ofsX; g_fgCtorOfs2[slot][1] = ofsY; g_fgCtorOfs2[slot][2] = ofsZ;
+        g_fgCtorRot2[slot][0] = rotA; g_fgCtorRot2[slot][1] = rotB; g_fgCtorRot2[slot][2] = rotC;
+        g_fgSnapCtorOk = snap_mem(g_fgParentSnap, parentView, sizeof g_fgParentSnap) &&
+                         snap_mem(g_fgNodeSnapCtor, self, sizeof g_fgNodeSnapCtor);
+        g_fgSnapSubmitOk = false; // re-armed by the next submit
+    }
+    return ret;
+}
+
 void __fastcall SubmitDetour(void* ecx, void* edx, FVec3* loc, FRot3* rot,
                              void* arg3) {
     uint32_t tid = GetCurrentThreadId();
@@ -768,6 +871,12 @@ void __fastcall SubmitDetour(void* ecx, void* edx, FVec3* loc, FRot3* rot,
     }
     g_submitEntries.fetch_add(1, std::memory_order_relaxed);
     note_caller(to_rva(_ReturnAddress()));
+
+    // fg-node instrument: re-read the node at submit time (post-record) so
+    // the dump can diff ctor-state vs recorded-state. SEH-guarded - the node
+    // lives in the frame pool and a stale pointer must not fault.
+    if (g_fgWatch.load(std::memory_order_relaxed) && g_fgNodeLast && !g_fgSnapSubmitOk)
+        g_fgSnapSubmitOk = snap_mem(g_fgNodeSnapSubmit, g_fgNodeLast, sizeof g_fgNodeSnapSubmit);
 
     uint32_t presentLow =
         static_cast<uint32_t>(bvr::d3d11_hook::present_count());
@@ -1436,6 +1545,128 @@ bool stereo_active() {
 
 void request_vrstereo(bool on) {
     g_vrstereoPending.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+void handle_fgnode_command(const char* args) {
+    if (strncmp(args, "fova", 4) == 0) {
+        float v = 0.0f;
+        if (strstr(args + 4, "off"))
+            v = 0.0f;
+        else if (strstr(args + 4, "match"))
+            v = -1.0f;
+        else if (sscanf_s(args + 4, " %f", &v) != 1)
+            v = 0.0f;
+        if (v != 0.0f && !g_fgctor.enabled.load(std::memory_order_relaxed) &&
+            !install_slot(g_fgctor, patterns::kFgSceneNodeCtorRva,
+                          reinterpret_cast<void*>(&FgCtorDetour),
+                          patterns::kFgSceneNodeCtorPrologue,
+                          sizeof patterns::kFgSceneNodeCtorPrologue))
+            return;
+        g_fgFovAOverride.store(v, std::memory_order_relaxed);
+        BVR_LOG("[fgnode] fovA override %s (%.2f; -1 = match fovB)", v != 0.0f ? "ON" : "off",
+                v);
+    } else if (strncmp(args, "sync", 4) == 0) {
+        bool on = strstr(args + 4, "off") == nullptr;
+        if (on && !g_fgctor.enabled.load(std::memory_order_relaxed) &&
+            !install_slot(g_fgctor, patterns::kFgSceneNodeCtorRva,
+                          reinterpret_cast<void*>(&FgCtorDetour),
+                          patterns::kFgSceneNodeCtorPrologue,
+                          sizeof patterns::kFgSceneNodeCtorPrologue))
+            return;
+        g_fgSync.store(on, std::memory_order_relaxed);
+        BVR_LOG("[fgnode] view-sync %s (subs %u misses %u) - fg scene gets the CORRECT "
+                "eye's driven camera%s",
+                on ? "ON" : "off", g_fgSyncSubs.load(std::memory_order_relaxed),
+                g_fgSyncMisses.load(std::memory_order_relaxed),
+                on ? "; requires vrstereo" : "");
+    } else if (strncmp(args, "on", 2) == 0) {
+        if (install_slot(g_fgctor, patterns::kFgSceneNodeCtorRva,
+                         reinterpret_cast<void*>(&FgCtorDetour),
+                         patterns::kFgSceneNodeCtorPrologue,
+                         sizeof patterns::kFgSceneNodeCtorPrologue)) {
+            g_fgWatch.store(true, std::memory_order_relaxed);
+            BVR_LOG("[fgnode] watch ON (fg scene node ctor hooked; 'vrfgnode dump' logs "
+                    "the ctor-vs-submit snapshots)");
+        }
+    } else if (strncmp(args, "off", 3) == 0) {
+        g_fgWatch.store(false, std::memory_order_relaxed);
+        g_fgSync.store(false, std::memory_order_relaxed);
+        disable_slot(g_fgctor);
+        BVR_LOG("[fgnode] watch + sync off");
+    } else if (strncmp(args, "dump", 4) == 0) {
+        BVR_LOG("[fgnode] ctorCalls=%u scene=%p node=%p pview=%p snaps ctor=%d submit=%d",
+                g_fgCtorCalls.load(std::memory_order_relaxed), g_fgNodeScene, g_fgNodeLast,
+                g_fgNodeParentView, g_fgSnapCtorOk ? 1 : 0, g_fgSnapSubmitOk ? 1 : 0);
+        if (!g_fgSnapCtorOk) {
+            BVR_LOG("[fgnode] no ctor snapshot yet (watch on + gameplay view needed)");
+            return;
+        }
+        BVR_LOG("[fgnode] ctor args: ofs=(%.4g %.4g %.4g) rot=(%d %d %d) fovA=%.2f fovB=%.2f",
+                g_fgCtorOfs[0], g_fgCtorOfs[1], g_fgCtorOfs[2], g_fgCtorRot[0], g_fgCtorRot[1],
+                g_fgCtorRot[2], g_fgCtorFov[0], g_fgCtorFov[1]);
+        BVR_LOG("[fgnode] pair slots: pass1/L ofs=(%.6g %.6g %.6g) rot=(%d %d %d) | pass2/R "
+                "ofs=(%.6g %.6g %.6g) rot=(%d %d %d)",
+                g_fgCtorOfs2[0][0], g_fgCtorOfs2[0][1], g_fgCtorOfs2[0][2], g_fgCtorRot2[0][0],
+                g_fgCtorRot2[0][1], g_fgCtorRot2[0][2], g_fgCtorOfs2[1][0], g_fgCtorOfs2[1][1],
+                g_fgCtorOfs2[1][2], g_fgCtorRot2[1][0], g_fgCtorRot2[1][1], g_fgCtorRot2[1][2]);
+        // Parent view block (scene+0x118): 64 floats.
+        const float* pv = reinterpret_cast<const float*>(g_fgParentSnap);
+        for (int i = 0; i < 64; i += 8)
+            BVR_LOG("[fgnode] pview+0x%03X: %.4g %.4g %.4g %.4g %.4g %.4g %.4g %.4g", i * 4,
+                    pv[i], pv[i + 1], pv[i + 2], pv[i + 3], pv[i + 4], pv[i + 5], pv[i + 6],
+                    pv[i + 7]);
+        // Locate the parent-view copy inside the node (first 16-byte run).
+        int foundAt = -1;
+        for (size_t off = 0; off + 16 <= sizeof g_fgNodeSnapCtor; off += 4) {
+            if (memcmp(g_fgNodeSnapCtor + off, g_fgParentSnap, 16) == 0) {
+                foundAt = static_cast<int>(off);
+                break;
+            }
+        }
+        BVR_LOG("[fgnode] parent-view first 16 bytes %s in node(ctor)%s0x%X",
+                foundAt >= 0 ? "FOUND" : "NOT found", foundAt >= 0 ? " at +" : " (searched +0..+",
+                foundAt >= 0 ? static_cast<unsigned>(foundAt)
+                             : static_cast<unsigned>(sizeof g_fgNodeSnapCtor));
+        // The node's own view region (+0x140..+0x200) at ctor time.
+        const float* nv = reinterpret_cast<const float*>(g_fgNodeSnapCtor);
+        for (int i = 0x140 / 4; i < 0x200 / 4; i += 8)
+            BVR_LOG("[fgnode] node+0x%03X: %.4g %.4g %.4g %.4g %.4g %.4g %.4g %.4g", i * 4,
+                    nv[i], nv[i + 1], nv[i + 2], nv[i + 3], nv[i + 4], nv[i + 5], nv[i + 6],
+                    nv[i + 7]);
+        BVR_LOG("[fgnode] node vec3@0x310=(%.4g %.4g %.4g) fovs@0x3F0=(%.2f %.2f)",
+                nv[0x310 / 4], nv[0x314 / 4], nv[0x318 / 4], nv[0x3F0 / 4], nv[0x3F4 / 4]);
+        // Submit-vs-ctor diff, 16-byte rows.
+        if (g_fgSnapSubmitOk) {
+            char rows[256];
+            size_t len = 0;
+            int changed = 0;
+            for (size_t off = 0; off < sizeof g_fgNodeSnapCtor; off += 16) {
+                if (memcmp(g_fgNodeSnapCtor + off, g_fgNodeSnapSubmit + off, 16) == 0) continue;
+                ++changed;
+                if (len < sizeof rows - 12)
+                    len += sprintf_s(rows + len, sizeof rows - len, " +0x%X",
+                                     static_cast<unsigned>(off));
+            }
+            BVR_LOG("[fgnode] submit-vs-ctor: %d changed row(s):%s", changed,
+                    changed ? rows : " none");
+            if (changed) {
+                const float* sv = reinterpret_cast<const float*>(g_fgNodeSnapSubmit);
+                for (int i = 0x140 / 4; i < 0x200 / 4; i += 8)
+                    BVR_LOG("[fgnode] subm+0x%03X: %.4g %.4g %.4g %.4g %.4g %.4g %.4g %.4g",
+                            i * 4, sv[i], sv[i + 1], sv[i + 2], sv[i + 3], sv[i + 4], sv[i + 5],
+                            sv[i + 6], sv[i + 7]);
+            }
+        }
+    } else {
+        BVR_LOG("[fgnode] usage: vrfgnode on|off|dump|sync on|sync off (hook=%d watch=%d "
+                "sync=%d calls=%u subs=%u misses=%u)",
+                g_fgctor.enabled.load(std::memory_order_relaxed) ? 1 : 0,
+                g_fgWatch.load(std::memory_order_relaxed) ? 1 : 0,
+                g_fgSync.load(std::memory_order_relaxed) ? 1 : 0,
+                g_fgCtorCalls.load(std::memory_order_relaxed),
+                g_fgSyncSubs.load(std::memory_order_relaxed),
+                g_fgSyncMisses.load(std::memory_order_relaxed));
+    }
 }
 
 void note_calcview() {

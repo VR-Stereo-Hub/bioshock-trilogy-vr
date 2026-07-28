@@ -180,6 +180,13 @@ bool g_srBaseValid = false;
 FVector g_srBaseLoc{};
 FRotator g_srBaseRot{};
 
+// Session 21 fg view-sync stash: the final per-eye camera (post eye offset)
+// of the current pair. Game thread only (1t); freshness-gated by stamp so a
+// mode flip cannot leave scenedraw substituting stale poses.
+FVector g_eyeCamLoc[2] = {};
+FRotator g_eyeCamRot[2] = {};
+uint64_t g_eyeCamStampMs[2] = {};
+
 float* fov_ptr(void* pc) {
     return reinterpret_cast<float*>(static_cast<uint8_t*>(pc) + patterns::kFovLiveOffset);
 }
@@ -445,6 +452,8 @@ void apply_command(const char* cmd, const char* args) {
         body::handle_command(args); // M7.5 yaw transfer; logs its own echoes
     } else if (strcmp(cmd, "vrrec") == 0) {
         recorder::handle_command(args); // session 20 record+replay; logs its own echoes
+    } else if (strcmp(cmd, "vrfgnode") == 0) {
+        scenedraw::handle_fgnode_command(args); // session 21 fg-scene-node instrument
     } else if (strcmp(cmd, "exec") == 0) {
         console_exec::run_viewport(args); // engine console command, viewport chain
     } else if (strcmp(cmd, "execc") == 0) {
@@ -687,6 +696,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             *loc = g_srBaseLoc;
             *rot = g_srBaseRot;
             apply_eye_offset(loc, *rot, +1);
+            g_eyeCamLoc[1] = *loc; // fg view-sync stash, RIGHT eye
+            g_eyeCamRot[1] = *rot;
+            g_eyeCamStampMs[1] = GetTickCount64();
         } else if (rot) {
             rot->yaw += static_cast<int32_t>(reentryYawDeg * kRotUnitsPerDegree);
         }
@@ -1072,6 +1084,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_srBaseRot = *rot;
         g_srBaseValid = true;
         apply_eye_offset(loc, *rot, -1);
+        g_eyeCamLoc[0] = *loc; // fg view-sync stash, LEFT eye
+        g_eyeCamRot[0] = *rot;
+        g_eyeCamStampMs[0] = GetTickCount64();
     } else {
         g_srBaseValid = false;
     }
@@ -1188,6 +1203,18 @@ void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* world
     if (pose) *pose = g_recenterPose;
     if (yawUnits) *yawUnits = g_recenterYawUnits;
     if (worldScale) *worldScale = g_worldScale.load(std::memory_order_relaxed);
+}
+
+bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]) {
+    if (eye < 0 || eye > 1) return false;
+    if (GetTickCount64() - g_eyeCamStampMs[eye] > 200) return false; // stale/idle
+    loc[0] = g_eyeCamLoc[eye].x;
+    loc[1] = g_eyeCamLoc[eye].y;
+    loc[2] = g_eyeCamLoc[eye].z;
+    rot[0] = g_eyeCamRot[eye].pitch;
+    rot[1] = g_eyeCamRot[eye].yaw;
+    rot[2] = g_eyeCamRot[eye].roll;
+    return true;
 }
 
 void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float worldScale) {
