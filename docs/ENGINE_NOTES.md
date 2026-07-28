@@ -1669,3 +1669,52 @@ cylinder) animates untouched - it is a different SkeletonInstance. Side
 effect by construction: hand-cluster finger animation during reload freezes
 too (the drive was already overwriting it); the weapon's own reload
 animation still shows.
+
+### The FOV audit: no lie exists between render and submission (session 21)
+
+**Question** (prompted by BioVR's measured "yaw warped, pitch clean" mismatch
+symptom matching our +-90 sign-flipping laser-vs-gun drift): does the FOV the
+game RENDERS under vrstereo equal the FOV our projection layer is TAGGED
+with? The readback that feeds the claim (camera.cpp) reads the same engine
+address we write, so it echoes our own value - it had never been
+ground-truthed against the renderer's actual output.
+
+**Instrumentation added**: (1) `xr: fovaudit submit` log at the projection
+submission site - the per-eye claimed tangents + source
+(readback/fallback/manual) + swap dims, logged on change;
+(2) `fovaudit` seam command - option int, gfov write state, submitted
+tangents, option-derived expectation side by side; (3)
+`tools/decode-framedump.ps1` - parses a `dumpframe full [n]` dump, recovers
+tangents per draw from the cb0 screen-ray helper block (floats 12..18 =
+`(2tanH, 0, -tanH, 0, 0, -2tanV, tanV)`), attributes each depth-tested draw
+to its governing cb0 capture (exact: a block is written whenever the VS b0
+buffer OBJECT changes), clusters by tangent pair, and tags per cluster how
+many draws carry the per-section fg-bake RVAs (0x3DBF7C/0x3EDCBF) in their
+stacks - the lens-independent fg marker (needed because the shipped vrfgfov
+match makes fg tangents EQUAL world tangents by design, so tangent
+clustering alone cannot separate the passes).
+
+**Measurement** (clean boot, NG+ Medical Pavilion, VR PRESET 1, vrstereo
+heartbeat clean, `dumpframe full 2` = both SR eyes): ONE perspective cluster
+per window - tanH=2.1445 tanV=1.2063 (= 130-deg hfov at 16:9) on 298/300
+depth-tested draws (q0/q1), identical across both eye windows, matching the
+option-derived tan(130/2)=2.144507 / *9/16=1.206285 to dump print precision
+(dH=dV=0.00001). The fg draws (fgBakeStacks=9, 576-byte b0 tier, first draws
+of the pass) carry the SAME tangents - the fg lens match verified from the
+cb side. Every undecodable block (119 draws/window) has ALL-ZERO screen-ray
+slots = non-perspective passes (shadow/UI) - no hidden second lens. Render
+viewport 1920x1080 (399 draws), so the 16:9 vertical derivation holds.
+
+**Verdict - negative result, the fov-lie hypothesis for the +-90 drift is
+DEAD flat**: the renderer does not clamp option 130, both stereo eyes render
+the same symmetric frustum, and submission builds its claim from the same
+option int at the same aspect (structural; `projViews[eye].fov` is symmetric
+both eyes from one scalar - the runtime's asymmetric per-eye fov never
+reaches submission, which is exactly BioVR's "remove the lie" discipline,
+already our architecture). Remaining live suspects for the drift: (a)
+session-only claim state - the new submit log line prints src + swap dims,
+one-glance check on the next headset run (src must read `readback`, swap
+must read the render resolution); (b) pose-tag attribution - `fovaudit pose
+on` arms a tagged-vs-consumed yaw delta log (in-headset only; flat has no
+session); (c) the structural foreground-vs-compositor split - the world-pass
+re-homing experiment.
