@@ -1628,8 +1628,11 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    QUAD path (the M2 machinery still in on_present_end - projectionMode
    false = quad) so cutscenes play on a comfortable virtual screen;
    re-arm projection on gameplay return. The M3 leftover "cutscene
-   cameras are head-driven" closes with the same lever. THE USER
-   PROVIDES A SAVE at the descent for flat replay.
+   cameras are head-driven" closes with the same lever. THE USER'S SAVE
+   IS READY: the NEWEST save ("crash site") spawns next to the lever
+   that starts the descent - NOTE this means CONTINUE now lands there,
+   NOT at the all-weapons Medical Pavilion anchor (that one is second in
+   the LOAD list).
 2. **FULLSCREEN EFFECTS MISCLASSIFIED AS HUD (user item 8).** The Big
    Daddy plasmid FMV plays "in a box" whose size follows the HUD sliders
    = it is being captured by the HUD redirect onto the quad; heavy
@@ -1664,13 +1667,14 @@ https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
    exists), the game's own stick response on composed values, or real
    controller noise. Instrument first: vrrec a walk + log composed
    stick vs body yaw; then tune, do not guess.
-7. **Hacking in VR check (user item 3).** Likely ALREADY fixed by the
-   HUD-quad work (the hack minigame is a gameswf flash screen = should
-   classify as HUD and land on the readable quad like the pause menu).
-   Verify in-headset; if it renders but interacts badly, it becomes a
-   session-23 item. Test spots from the CONTINUE save: the Circus of
-   Values machine in the Medical Pavilion foyer, the Atlas security-bot
-   hack tutorial a little further in, or any Health Station.
+7. **Hacking in VR - CONFIRMED BROKEN (user tested 2026-07-28 evening).**
+   NOT on the readable quad like shopping/pause: the hack minigame takes
+   the WHOLE FOV, "basically the same as the loading screen", barely
+   visible. Same misclassification family as item 2 above (fullscreen
+   flash screens) - fix them together: hack screen + loading screens +
+   FMVs belong on the readable quad/cinema screen, post-process effects
+   belong in-frame. Repro: the all-weapons save, short walk to the
+   vending machine.
 8. **Hands offset sliders (user item 6)**: already shipped ("Tuning
    hand: L / R" six per-hand sliders + hands.ini persistence). Verify
    presence/usability in-headset, nothing to build.

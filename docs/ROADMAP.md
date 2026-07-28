@@ -523,12 +523,16 @@ kill. Both prerequisites below are now MET.):**
       FOV and fall back to the big-screen QUAD submission (the M2 path still in
       on_present_end); re-arm projection on gameplay return. Closes the M3 "cutscene cameras
       are head-driven" leftover too. User provides a descent save for flat replay.
-- [ ] **Fullscreen effects/FMVs must stay in-frame, not on the HUD quad (user, 2026-07-28)**:
-      the Big Daddy plasmid FMV plays "in a box" sized by the HUD sliders and heavy
-      post-process (alcohol blur) does the same - fullscreen gameswf draws on the tonemap
-      target classify as HUD today (hud_capture.cpp). Classify viewport-covering draws as
-      in-frame effects (left per-eye in the game frame); FMVs ideally join the cinema-screen
-      path. Flat repro: drink alcohol, diff the classification.
+- [ ] **Fullscreen flash screens + effects need per-kind routing (user, 2026-07-28; hacking
+      CONFIRMED broken same evening)**: three misrouted kinds today - (a) the HACK minigame
+      and loading screens take the whole FOV ("barely see everything"), unreadable in VR:
+      they belong ON the readable quad like the pause menu; (b) the Big Daddy plasmid FMV
+      plays "in a box" sized by the HUD sliders: belongs on the cinema screen; (c) heavy
+      post-process (alcohol blur) also lands on the quad: belongs IN-FRAME per eye on the
+      camera, not on a HUD panel (the user's exact framing). All three are fullscreen
+      gameswf/tonemap-adjacent draws that hud_capture.cpp currently classifies one way.
+      Flat repros: vending-machine hack near the all-weapons save; drink alcohol for the
+      post-process case.
 - [ ] **Head-ROLL eye separation bug (user report 2026-07-28, root cause confirmed)**:
       apply_eye_offset builds view-right from YAW ONLY - a rolled head keeps horizontal eye
       separation = wrong disparity when tilting the head sideways. Fix: offset along the full
