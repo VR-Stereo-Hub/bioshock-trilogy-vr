@@ -118,7 +118,8 @@ std::vector<const uint8_t*> find_references(const ProcessImage& img, const void*
     return out;
 }
 
-const uint8_t* find_fname_index_global(const ProcessImage& img, const uint8_t* stringXref) {
+const uint8_t* find_fname_index_global(const ProcessImage& img, const uint8_t* stringXref,
+                                       const uint8_t** ctorOut) {
     constexpr size_t kForwardWindow = 96;
     const uint8_t* imageEnd = img.base + img.size;
     const uint8_t* windowEnd = stringXref + kForwardWindow;
@@ -132,6 +133,14 @@ const uint8_t* find_fname_index_global(const ProcessImage& img, const uint8_t* s
         }
     }
     if (!call) return nullptr;
+    if (ctorOut) {
+        // Resolve the rel32: target = end-of-instruction + displacement. This
+        // is the FName constructor itself - previously computed and thrown
+        // away; session 20 keeps it (GNames falls out of its disassembly).
+        int32_t rel;
+        memcpy(&rel, call + 1, sizeof rel);
+        *ctorOut = call + 5 + rel;
+    }
 
     for (const uint8_t* p = call + 5; p + 6 <= windowEnd; ++p) {
         if (p[0] == 0x89 && p[1] == 0x0D) { // MOV [imm32], ECX - index store
@@ -172,9 +181,11 @@ bool find_event_function(const ProcessImage& img, const char* eventName, EventSc
         out.stringXrefs += stringXrefs.size();
 
         for (const uint8_t* sx : stringXrefs) {
-            const uint8_t* global = find_fname_index_global(img, sx);
+            const uint8_t* ctor = nullptr;
+            const uint8_t* global = find_fname_index_global(img, sx, &ctor);
             if (!global) continue;
             out.fnameIndexGlobal = global;
+            out.fnameCtor = ctor;
 
             std::vector<const uint8_t*> globalXrefs = find_references(img, global);
             out.globalXrefs = globalXrefs.size();

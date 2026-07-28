@@ -1571,3 +1571,32 @@ convention, defined at any pitch); the old d x worldUp cross degenerated near
 vertical and silently dropped the right/up offset components. Legacy
 `vrhands aligntrim` deleted. Fire test on the unified build: calls=2 subs=2
 skips=0, substituted rot exact, dumps 8->8.
+
+### The name system: GNames located, index->string live (session 20 stage 4)
+
+The FName-chain event scan finds the FName constructor and used to throw it
+away; it is now captured (`EventScanResult::fnameCtor`, logged at boot:
+**RVA 0x70D660**). Capstone disassembly (scratchpad only - never committed):
+0x70D660 is a thin SEH wrapper that enters a name-system critical section
+(global at RVA 0x136CEB8) and calls the real worker at **RVA 0x70D3C0**. The
+worker: wcslen, digit-suffix split (`Name_123` -> base + number - FName is
+8 bytes {int32 index, int32 number}; the number stores at FName+4), a
+case-insensitive hash AND 0xFFF into a **4096-bucket hash table at RVA
+0x1370EC0** (chain via entry+0xC, wcsicmp against entry+0x10), and on the
+FindType==2 path indexes **GNames.Data at RVA 0x13904EC**
+(`TArray<FNameEntry*>`: Data, +4 Count, +8 Max) and ORs 0x4000000 into
+entry+4.
+
+**FNameEntry layout** (matches the package-file prior - UTF-16, 8-byte
+flags): +0x0 the entry's own index (used as a self-check by the resolver),
++0x4/+0x8 the 8-byte flags, +0xC hash-chain next, +0x10 UTF-16 text in
+place. Bonus find: a free-index STACK (Data/Count/Max ints at RVA
+0x13904F8/FC/0x1390500) - new names reuse recycled indices.
+
+`patterns::fname_text(index)` reads GNames with full validation (every
+dereference is_memory_valid + the entry self-index check); exposed as
+`vrhands fname <index>|weapon`. **Live gate passed**: index 0 -> 'None',
+1 -> 'ByteProperty' (the canonical Unreal table opening), GNames count
+54129, and the equipped weapon's attach-bone FName (weapon+0xF0) ->
+**'Launcher'** (idx 18075) - the AHands rig's weapon-attach socket name
+(bone 43 in index space).

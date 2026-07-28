@@ -738,6 +738,34 @@ void handle_command(const char* args) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_writeRot.store(on, std::memory_order_relaxed);
         BVR_LOG("[hands] rotation write %s", on ? "ON" : "off (position only)");
+    } else if (strcmp(verb, "fname") == 0) {
+        // Session 20: the name-system gate. `fname <idx>` resolves any name
+        // index; `fname weapon` reads the cached weapon actor's attach-bone
+        // FName (+0xF0 {index, number}) - the stage-4 acceptance.
+        if (strncmp(rest, "weapon", 6) == 0) {
+            void* w = weapon_valid(g_weaponActor) ? g_weaponActor
+                                                  : bvr::b1r::aim::learned_weapon_object();
+            if (!weapon_valid(w)) {
+                BVR_LOG("[hands] fname: no live weapon actor (fire once so the aim seam "
+                        "learns it)");
+                return;
+            }
+            const int32_t* nm = reinterpret_cast<const int32_t*>(
+                static_cast<uint8_t*>(w) + patterns::kActorAttachBoneNameOffset);
+            const wchar_t* t = patterns::fname_text(nm[0]);
+            BVR_LOG("[hands] weapon attach-bone FName idx=%d num=%d -> '%S' "
+                    "(GNames count %d)",
+                    nm[0], nm[1], t ? t : L"<unresolved>", patterns::fname_count());
+        } else {
+            int idx = 0;
+            if (sscanf_s(rest, "%d", &idx) == 1) {
+                const wchar_t* t = patterns::fname_text(idx);
+                BVR_LOG("[hands] fname %d -> '%S' (GNames count %d)", idx,
+                        t ? t : L"<unresolved>", patterns::fname_count());
+            } else {
+                BVR_LOG("[hands] usage: vrhands fname <index>|weapon");
+            }
+        }
     } else if (strcmp(verb, "hideinactive") == 0) {
         bones::set_hide_inactive(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "save") == 0) {

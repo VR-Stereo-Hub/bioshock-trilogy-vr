@@ -519,6 +519,27 @@ inline constexpr float kFgInvTanV = 2.3094011f; // 1/0.4330127
 inline constexpr float kFgViewYawBiasDeg = 1.7f;
 inline constexpr float kFgViewPitchBiasDeg = 1.1f;
 
+// ---- Name system (session 20) ----------------------------------------------
+// Derived by capstone disassembly of the FName constructor the event scan
+// already finds (thin SEH/lock wrapper at RVA 0x70D660 -> worker 0x70D3C0);
+// full chain in ENGINE_NOTES "Session 20". GNames is a TArray<FNameEntry*>
+// indexed by name index:
+//   [kGNamesDataRva] = FNameEntry** Data, +4 = int32 Count, +8 = int32 Max
+// FNameEntry: +0x0 int32 index (self), +0x4/+0x8 the 8-byte flags (the
+// FindType==2 path ORs 0x4000000 into +0x4), +0xC FNameEntry* hash next,
+// +0x10 UTF-16 text in place. An FName field is 8 bytes {index, number}.
+// The 4096-bucket string->index hash lives at kFNameHashRva (bonus oracle).
+inline constexpr uint32_t kGNamesDataRva = 0x13904EC;
+inline constexpr uint32_t kFNameHashRva = 0x1370EC0;
+inline constexpr uint32_t kFNameEntryHashNextOffset = 0xC;
+inline constexpr uint32_t kFNameEntryTextOffset = 0x10;
+
+// UTF-16 text of a name index, or null (unresolved base / out of range /
+// unreadable entry - every dereference is validated, fail-soft). Game thread.
+const wchar_t* fname_text(int32_t index);
+// GNames.Count (0 if unavailable) - for status lines.
+int32_t fname_count();
+
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,
     //                 FVector* camLoc, FRotator* camRot)

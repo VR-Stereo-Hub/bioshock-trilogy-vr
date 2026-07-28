@@ -57,6 +57,9 @@ void on_calcview(const FrameContext& ctx);
 //   hideinactive on|off     collapse the whole INACTIVE hand's cluster while
 //                           the other drives (default ON; the weapon-attach
 //                           bone hides by translation - see bones.h)
+//   fname <index>|weapon    resolve a name index to its string via GNames
+//                           (session 20); `weapon` reads the cached weapon
+//                           actor's attach-bone FName
 //   save | reload           persist / re-read the offsets (per-hand keys in
 //                           hands.ini; a legacy suffix-less key loads to both)
 //   test <dYaw> <dPitch> [distUU] [holdMs]   camera-relative placement (proves
