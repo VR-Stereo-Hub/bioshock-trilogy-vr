@@ -1784,3 +1784,42 @@ OFF = the rig at true world-lens geometry; the whole counter-model domain
   the passes).
 - The 576-byte cb tier is NOT fg-exclusive (world draws use it too; 88
   draws at the tier, 9 fg).
+
+### UObject identity: class-name keys for any live object (session 21)
+
+**Derivation (live, seam-only, no disasm):** the equipped weapon actor's
+header decodes as a classic UObject: +0x28 = the object's own FName index
+(read 18009 -> 'Shotgun' via fname_text; +0x2C = the instance number), and
++0x30 = the UClass pointer - a heap object carrying its own vtable (RVA
+0xE2F04C) whose +0x28 FName is the CANONICAL class name (number 0).
+Cross-checked on the AHands actor: its class resolves to **'PlayerHands'**
+(the ShockGame subclass - explains the all_classes 'Hands : Actor' entry as
+the base). Production accessor `patterns::object_class_name()` validates
+every dereference plus the UClass vtable before trusting the layout.
+
+**Per-weapon profiles (vraim weapon|wsave|wkey, weapons.ini):** the R-hand
+trim + ray-origin offsets hot-swap keyed by that class name; the R atomics
+stay the single live truth (laser + fire ray + model publish read them
+unchanged), stash-on-switch / seed-on-first-sight semantics, persisted as
+`<Class>.<field>=<value>`. Flat-proven exact: sim-key round-trip restores
+stashed values to the digit both directions ('Shotgun' 5.00/3.00 restored
+after a 'Pistol' 9/8 detour), weapons.ini write/load round-trips (10 values,
+2 weapons at boot), and the equipped shotgun keyed 'Shotgun' PRE-FIRE via
+the resolving scan. IMPORTANT ordering semantic: a resolved profile applies
+OVER the vrpreset.ini R values - by design (the profile is the per-weapon
+truth; the preset seeds the first profile on a virgin weapons.ini).
+
+**Weapon-actor resolution hardening:** the old proximity-only accept (120
+UU from the expected gun spot) missed in live boot states (2 owner-matched
+candidates, both rejected); the scan now accepts STRUCTURALLY first - the
+candidate whose Base (+0x450) IS the AHands actor (attachment, the
+session-20 equip-flow fact) - with proximity as fallback, and the profile
+resolver backs off after 3 consecutive null resolves (the session-18
+scan-cadence lesson; the game intro legitimately has NO weapon for minutes).
+
+**Boot-harness hazard found on the way:** boot.ps1's press-mashing can land
+on NEW GAME instead of CONTINUE after a force-kill dialog cycle - the run
+lands in the 1960 plane intro ("IMPORTING NEW GAME PLUS DATA" on this NG+
+profile). No save damage (the intro does not autosave before the lighthouse
+transition; the .bsb set was verified untouched), but flat runs must
+screenshot-verify the landing state before measuring.

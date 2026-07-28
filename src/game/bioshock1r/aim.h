@@ -94,4 +94,16 @@ void set_pos_offset(int hand, float fwdCm, float rightCm, float upCm);
 // True while substitution is armed (master switch + a usable hand ray).
 bool active();
 
+// Session 21 per-weapon profiles: persist the R-hand trim/offset map
+// (weapons.ini, keyed by weapon class name). Called by `vrpreset save`'s
+// chain (one in-headset save button covers everything) and `vraim wsave`.
+// Game thread.
+void save_weapon_profiles();
+
+// Re-apply the ACTIVE weapon profile over the R atomics without stashing -
+// the VR preset's value load runs at arbitrary time vs the first profile
+// resolve and must not leave preset baselines over a live profile. Called
+// at apply_vr_preset's tail. Game thread.
+void reapply_weapon_profile();
+
 } // namespace bvr::b1r::aim

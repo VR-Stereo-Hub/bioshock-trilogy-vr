@@ -28,6 +28,9 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
 
 namespace bvr::b1r::aim {
 namespace {
@@ -76,6 +79,28 @@ std::atomic<float> g_yawOffsetDeg[2] = {0.0f, 0.0f};
 std::atomic<float> g_posFwdCm[2] = {0.0f, 0.0f};
 std::atomic<float> g_posRightCm[2] = {0.0f, 0.0f};
 std::atomic<float> g_posUpCm[2] = {0.0f, 0.0f};
+// ---- Session 21: per-weapon profiles ----------------------------------------
+// The RIGHT hand's trim + ray-origin offsets hot-swap per weapon, keyed by
+// the equipped weapon's canonical class name ('Shotgun', 'Pistol', ... via
+// patterns::object_class_name). The R atomics above stay THE live values
+// everything reads (ray, laser, model publish, sliders); on a weapon change
+// the outgoing values are stashed into the old key's profile and the new
+// key's (seeded from the current values when first seen) loads in. The
+// left/plasmid hand is untouched. weapons.ini persists the map (saved by
+// `vrpreset save` and `vraim wsave`). Real weapon switching cannot be
+// driven flat (exec NextWeapon FAULTS, session 20) - `vraim wkey sim
+// <name>` forces a key for the flat swap proof; the live-switch proof is
+// an in-headset checklist item. Game thread only (except the UI name copy).
+struct WeaponProfile {
+    float trimPitch, trimYaw, posFwd, posRight, posUp;
+};
+std::map<std::string, WeaponProfile> g_weaponProfiles;
+std::string g_weaponKey;          // active profile key ("" = none)
+void* g_weaponKeyActor = nullptr; // weapon pointer the key was resolved from
+bool g_weaponKeySim = false;      // a sim key is armed (flat test seam)
+uint32_t g_weaponSwaps = 0;
+std::mutex g_weaponKeyUiMutex; // the overlay (render thread) reads the name
+char g_weaponKeyUi[48] = "-";
 // M7 laser: the visible form of this same ray, published to core every frame.
 // It lives here rather than with the hands so it cannot drift from the trim
 // above - a laser that disagrees with the bullet is worse than no laser.
@@ -752,14 +777,171 @@ void log_status() {
             g_gameplayView ? 1 : 0);
 }
 
+// ---- per-weapon profile machinery (session 21) ------------------------------
+
+// Class names are plain ASCII; anything else maps to '_' so a hostile name
+// cannot break the ini line format.
+std::string narrow_key(const wchar_t* w) {
+    std::string s;
+    for (int i = 0; w && w[i] && i < 47; ++i)
+        s.push_back(w[i] >= 32 && w[i] < 127 && w[i] != '.' && w[i] != '=' ? static_cast<char>(w[i])
+                                                                           : '_');
+    return s;
+}
+
+// Capture the live R-hand values into the active profile (no-op keyless).
+void stash_active_profile() {
+    if (g_weaponKey.empty()) return;
+    WeaponProfile& p = g_weaponProfiles[g_weaponKey];
+    p.trimPitch = g_pitchOffsetDeg[1].load(std::memory_order_relaxed);
+    p.trimYaw = g_yawOffsetDeg[1].load(std::memory_order_relaxed);
+    p.posFwd = g_posFwdCm[1].load(std::memory_order_relaxed);
+    p.posRight = g_posRightCm[1].load(std::memory_order_relaxed);
+    p.posUp = g_posUpCm[1].load(std::memory_order_relaxed);
+}
+
+void apply_weapon_key(const std::string& key, const char* why) {
+    if (key == g_weaponKey) return;
+    stash_active_profile();
+    g_weaponKey = key;
+    {
+        std::lock_guard<std::mutex> lock(g_weaponKeyUiMutex);
+        strcpy_s(g_weaponKeyUi, key.empty() ? "-" : key.c_str());
+    }
+    if (key.empty()) return;
+    ++g_weaponSwaps;
+    auto it = g_weaponProfiles.find(key);
+    if (it == g_weaponProfiles.end()) {
+        stash_active_profile(); // impossible path guard; keeps map coherent
+        WeaponProfile p{g_pitchOffsetDeg[1].load(std::memory_order_relaxed),
+                        g_yawOffsetDeg[1].load(std::memory_order_relaxed),
+                        g_posFwdCm[1].load(std::memory_order_relaxed),
+                        g_posRightCm[1].load(std::memory_order_relaxed),
+                        g_posUpCm[1].load(std::memory_order_relaxed)};
+        g_weaponProfiles[key] = p;
+        BVR_LOG("[aim] weapon profile '%s' CREATED from current R values (%s)", key.c_str(),
+                why);
+    } else {
+        const WeaponProfile& p = it->second;
+        g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
+        g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
+        g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
+        g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
+        BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f (%s)",
+                key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp, why);
+    }
+}
+
+// Per-frame (throttled) weapon-change watch. The weapon actor accessor is
+// cached + vtable-revalidated in hands.cpp; the class name resolves only on
+// a pointer change, so steady-state cost is one pointer compare.
+void update_weapon_profile(const FrameContext& ctx) {
+    if (g_weaponKeySim) return; // a forced key holds until 'wkey real'
+    if (!g_gameplayView) return; // no cutscene/menu heap scans
+    static uint32_t throttle = 0;
+    static uint32_t nullResolves = 0;
+    // Failure backoff on top of the resolver's own 2 s scan cooldown: a
+    // world state with no acceptable weapon must not full-heap-scan every
+    // 2 s forever (the session-18 hands-scan ~1 fps lesson; live this boot:
+    // the intro has no weapon at all and scans repeated every ~3.5 s at the
+    // weaker mask). 3 consecutive nulls -> only every 2048th call reaches
+    // the resolver (~15 s at stereo CalcView rates).
+    uint32_t mask = nullResolves >= 3 ? 2047 : 15;
+    if ((++throttle & mask) != 0) return;
+    // Resolving accessor: prefers the trigger-learned object, else the
+    // anchored heap scan - pre-fire weapons key too.
+    void* w = hands::resolve_weapon_actor(ctx);
+    nullResolves = w ? 0 : nullResolves + 1;
+    if (w == g_weaponKeyActor) return;
+    g_weaponKeyActor = w;
+    const wchar_t* name = w ? patterns::object_class_name(w) : nullptr;
+    apply_weapon_key(name ? narrow_key(name) : std::string(), "weapon change");
+}
+
+void weapons_ini_path(wchar_t* out, size_t count) {
+    swprintf_s(out, count, L"%s\\weapons.ini", bvr::log::data_dir());
+}
+
+void load_weapon_profiles() {
+    wchar_t path[MAX_PATH];
+    weapons_ini_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f) return; // no file yet is normal
+    char line[256];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        char key[48] = {};
+        char field[32] = {};
+        float v = 0.0f;
+        if (sscanf_s(line, "%47[^.].%31[^=]=%f", key, static_cast<unsigned>(sizeof key), field,
+                     static_cast<unsigned>(sizeof field), &v) != 3)
+            continue;
+        WeaponProfile& p = g_weaponProfiles[key];
+        if (strcmp(field, "trimPitch") == 0) p.trimPitch = v;
+        else if (strcmp(field, "trimYaw") == 0) p.trimYaw = v;
+        else if (strcmp(field, "posFwd") == 0) p.posFwd = v;
+        else if (strcmp(field, "posRight") == 0) p.posRight = v;
+        else if (strcmp(field, "posUp") == 0) p.posUp = v;
+        else continue;
+        ++n;
+    }
+    fclose(f);
+    if (n)
+        BVR_LOG("[aim] %d weapon-profile value(s) loaded from weapons.ini (%u weapon(s))", n,
+                static_cast<unsigned>(g_weaponProfiles.size()));
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols& symbols) {
     g_imageBase = image.base;
     g_image = image;
     g_syms = symbols;
+    load_weapon_profiles();
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
+}
+
+void reapply_weapon_profile() {
+    // The VR preset's value load writes the vrpreset.ini R trims over
+    // whatever profile was live (flat-caught: profile applied, preset chain
+    // finished seconds later, R reverted). Re-apply WITHOUT stashing - the
+    // preset values are a baseline, not a profile edit.
+    if (g_weaponKey.empty()) return;
+    auto it = g_weaponProfiles.find(g_weaponKey);
+    if (it == g_weaponProfiles.end()) return;
+    const WeaponProfile& p = it->second;
+    g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
+    g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
+    g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
+    g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
+    g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
+    BVR_LOG("[aim] weapon profile '%s' re-applied after preset load", g_weaponKey.c_str());
+}
+
+void save_weapon_profiles() {
+    stash_active_profile(); // the live R values are the active profile's truth
+    if (g_weaponProfiles.empty()) return;
+    wchar_t path[MAX_PATH];
+    weapons_ini_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f) {
+        BVR_LOG("[aim] could not write weapons.ini");
+        return;
+    }
+    fprintf(f, "# BioShock VR - per-weapon R-hand aim profiles (session 21).\n");
+    fprintf(f, "# <WeaponClassName>.<field>=<value>; trims in degrees, pos offsets in cm.\n");
+    for (const auto& [key, p] : g_weaponProfiles) {
+        fprintf(f, "%s.trimPitch=%.2f\n", key.c_str(), p.trimPitch);
+        fprintf(f, "%s.trimYaw=%.2f\n", key.c_str(), p.trimYaw);
+        fprintf(f, "%s.posFwd=%.2f\n", key.c_str(), p.posFwd);
+        fprintf(f, "%s.posRight=%.2f\n", key.c_str(), p.posRight);
+        fprintf(f, "%s.posUp=%.2f\n", key.c_str(), p.posUp);
+    }
+    fclose(f);
+    BVR_LOG("[aim] %u weapon profile(s) saved to weapons.ini",
+            static_cast<unsigned>(g_weaponProfiles.size()));
 }
 
 // The origin offset rides the FINAL (trimmed) ray frame - both lanes, the
@@ -819,6 +1001,7 @@ void on_calcview(const FrameContext& ctx) {
         g_lastPc = ctx.pc;
         g_objRight = nullptr;
         g_objLeft = nullptr;
+        g_weaponKeyActor = nullptr; // weapon actor died with the world - re-resolve
     }
 
     // Cutscene guard (the open M3 item): the view actor during normal play is
@@ -833,6 +1016,10 @@ void on_calcview(const FrameContext& ctx) {
         if (!g_gameplayView && ctx.viewActor == ctx.pc)
             g_gameplayView = true; // menu attract scene views through the PC itself
     }
+
+    // Per-weapon profile hot-swap (session 21): the active R-hand trim/offsets
+    // follow the equipped weapon's class (gameplay view only - see the guard).
+    update_weapon_profile(ctx);
 
     for (int i = 0; i < 2; ++i) {
         Ray& out = g_ray[i];
@@ -1191,11 +1378,41 @@ void handle_command(const char* args) {
                 haveRef ? d0[0] : 0.0f, haveRef ? d0[1] : 0.0f, haveRef ? d0[2] : 0.0f);
     } else if (strcmp(verb, "synccheck") == 0) {
         run_synccheck();
+    } else if (strcmp(verb, "weapon") == 0) {
+        // Per-weapon profile status (session 21).
+        void* w = hands::weapon_actor();
+        const wchar_t* cls = w ? patterns::object_class_name(w) : nullptr;
+        BVR_LOG("[aim] weapon profile: active='%s'%s actor=%p class='%S' | %u profile(s), "
+                "%u swap(s) | R trim %.2f/%.2f pos %.1f/%.1f/%.1f",
+                g_weaponKey.empty() ? "-" : g_weaponKey.c_str(), g_weaponKeySim ? " (SIM)" : "",
+                w, cls ? cls : L"-", static_cast<unsigned>(g_weaponProfiles.size()),
+                g_weaponSwaps, g_pitchOffsetDeg[1].load(std::memory_order_relaxed),
+                g_yawOffsetDeg[1].load(std::memory_order_relaxed),
+                g_posFwdCm[1].load(std::memory_order_relaxed),
+                g_posRightCm[1].load(std::memory_order_relaxed),
+                g_posUpCm[1].load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "wsave") == 0) {
+        save_weapon_profiles();
+    } else if (strcmp(verb, "wkey") == 0) {
+        // Flat test seam: force a profile key (real switching cannot be driven
+        // flat - exec NextWeapon FAULTS). 'wkey real' resumes actor tracking.
+        char name[48] = {};
+        if (strncmp(rest, "real", 4) == 0) {
+            g_weaponKeySim = false;
+            g_weaponKeyActor = nullptr; // force re-resolve from the live actor
+            BVR_LOG("[aim] wkey: back to live weapon tracking");
+        } else if (sscanf_s(rest, "sim %47s", name, static_cast<unsigned>(sizeof name)) == 1) {
+            g_weaponKeySim = true;
+            apply_weapon_key(name, "wkey sim");
+        } else {
+            BVR_LOG("[aim] usage: vraim wkey sim <ClassName> | vraim wkey real");
+        }
     } else if (strcmp(verb, "status") == 0) {
         log_status();
     } else {
         BVR_LOG("[aim] unknown command '%s' "
-                "(on|off|probe|dump|origin|seam|test|synccheck|scan|scanimpl|scanoff|status)",
+                "(on|off|probe|dump|origin|seam|test|synccheck|weapon|wsave|wkey|scan|"
+                "scanimpl|scanoff|status)",
                 verb);
     }
 }
@@ -1292,6 +1509,16 @@ void draw_debug_ui() {
     if (ImGui::Checkbox("Ray starts at the hand (off = engine origin, direction only)",
                         &handOrigin))
         g_handOrigin.store(handOrigin, std::memory_order_relaxed);
+
+    // Per-weapon profiles (session 21): the R sliders above edit the ACTIVE
+    // weapon's profile - swap happens automatically on weapon change; "Save
+    // preset values" persists weapons.ini too. Calibration flow: fire at a
+    // wall, nudge the R trim/offset sliders until the beam sits on the
+    // bullet hole, next weapon.
+    {
+        std::lock_guard<std::mutex> lock(g_weaponKeyUiMutex);
+        ImGui::Text("weapon profile: %s", g_weaponKeyUi);
+    }
 
     // The laser is this same ray made visible, so it lives in this section and
     // shares the trim sliders above - use it to judge the trim by eye.

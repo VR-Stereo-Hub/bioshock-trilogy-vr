@@ -560,6 +560,17 @@ inline constexpr uint32_t kFgSceneNodeFovAOffset = 0x3F0; // from PC+0x45C (defa
 inline constexpr uint32_t kFgSceneNodeFovBOffset = 0x3F4; // from PC+0x460 (the vrfgfov field)
 inline constexpr uint32_t kFgSceneNodeBytes = 0x400;
 
+// ---- UObject identity (session 21) ------------------------------------------
+// Derived live via the seam: the equipped weapon actor's +0x28 dword read
+// 18009 -> 'Shotgun' through fname_text (+0x2C = the instance number), and
+// +0x30 -> a heap object carrying the UClass vtable whose OWN +0x28 is the
+// same index with number 0 (the canonical class name). Cross-checked on the
+// AHands actor: +0x28 -> 'PlayerHands', class object at +0x30 agrees.
+// kUClassVtableRva validates the +0x30 target before it is trusted.
+inline constexpr uint32_t kUObjectNameIndexOffset = 0x28; // FName index (+0x2C = number)
+inline constexpr uint32_t kUObjectClassOffset = 0x30;     // UClass*
+inline constexpr uint32_t kUClassVtableRva = 0xE2F04C;
+
 // ---- Name system (session 20) ----------------------------------------------
 // Derived by capstone disassembly of the FName constructor the event scan
 // already finds (thin SEH/lock wrapper at RVA 0x70D660 -> worker 0x70D3C0);
@@ -580,6 +591,12 @@ inline constexpr uint32_t kFNameEntryTextOffset = 0x10;
 const wchar_t* fname_text(int32_t index);
 // GNames.Count (0 if unavailable) - for status lines.
 int32_t fname_count();
+
+// Canonical class name of any live UObject, or null. Every step validated:
+// obj readable -> obj+kUObjectClassOffset -> UClass vtable at kUClassVtableRva
+// -> class+kUObjectNameIndexOffset -> fname_text. The per-weapon profile key
+// (session 21). Game thread.
+const wchar_t* object_class_name(const void* obj);
 
 struct Symbols {
     // void __thiscall(APlayerController* this, AActor** viewActor,

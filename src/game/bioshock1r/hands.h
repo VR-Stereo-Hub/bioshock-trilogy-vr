@@ -90,6 +90,12 @@ float model_trim_roll_deg(int hand);
 void* hands_actor();
 void* weapon_actor();
 
+// Like weapon_actor(), but SCANS when the cache is empty (trigger-learned
+// object preferred; else the anchored heap scan, 2 s internal cooldown).
+// The session-21 per-weapon profile key source - pre-fire weapons resolve
+// too. Game thread; callers gate on gameplay view to avoid cutscene scans.
+void* resolve_weapon_actor(const FrameContext& ctx);
+
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.

@@ -185,6 +185,7 @@ bool accept_hands(void* obj, void* user) {
 struct WeaponScanCtx {
     float camX, camY, camZ;
     const uint8_t* imageBase;
+    void* handsActor; // structural accept: Base(+0x450) == the AHands rig
     void* best;
     float bestDist;
     bool logEvery;
@@ -201,18 +202,31 @@ bool accept_weapon(void* obj, void* user) {
                                               c->imageBase);
     if (ownerRva != patterns::kShockPlayerVtableRva) return false;
 
+    // Structural accept first (session 21): the EQUIPPED weapon is attached
+    // to the AHands rig - its Base (+0x450) is the hands actor. Distance to
+    // the expected gun spot depends on pose/state and misses in some boot
+    // states (live: 2 owner-matched candidates, both >120 UU); attachment
+    // does not.
+    void* base = *reinterpret_cast<void* const*>(p + patterns::kActorBaseOffset);
+    if (c->handsActor && base == c->handsActor) {
+        c->best = obj;
+        c->bestDist = 0.0f;
+        return false;
+    }
+
     float loc[3];
     memcpy(loc, p + patterns::kActorLocOffset, sizeof loc);
     float dx = loc[0] - c->camX, dy = loc[1] - c->camY, dz = loc[2] - c->camZ;
     float dist = sqrtf(dx * dx + dy * dy + dz * dz);
     if (c->logEvery)
-        BVR_LOG("[hands] player weapon match @ %p loc=(%.1f %.1f %.1f) distToGunSpot=%.1f UU",
-                obj, loc[0], loc[1], loc[2], dist);
+        BVR_LOG("[hands] player weapon match @ %p loc=(%.1f %.1f %.1f) distToGunSpot=%.1f UU "
+                "base=%p",
+                obj, loc[0], loc[1], loc[2], dist, base);
     if (dist < 120.0f && dist < c->bestDist) {
         c->best = obj;
         c->bestDist = dist;
     }
-    return false; // never "accept" - the nearest wins after the walk
+    return false; // never "accept" - attachment/nearest wins after the walk
 }
 
 bool weapon_valid(void* w) {
@@ -278,8 +292,15 @@ void* find_weapon_actor(const FrameContext& ctx, bool probeOnly) {
     float dir[3];
     FRotator viewRot{ctx.camPitch, ctx.camYaw, 0};
     ue_rot_to_dir(viewRot, dir);
-    WeaponScanCtx wc{ctx.camX + dir[0] * 50.0f, ctx.camY + dir[1] * 50.0f,
-                     ctx.camZ + dir[2] * 50.0f, g_imageBase, nullptr, 1e9f, probeOnly};
+    WeaponScanCtx wc{ctx.camX + dir[0] * 50.0f,
+                     ctx.camY + dir[1] * 50.0f,
+                     ctx.camZ + dir[2] * 50.0f,
+                     g_imageBase,
+                     has_vtable(g_handsActor, patterns::kHandsVtableRva) ? g_handsActor
+                                                                         : nullptr,
+                     nullptr,
+                     1e9f,
+                     probeOnly};
     int matches = 0;
     patterns::scan_for_vtable_object(patterns::kPlayerWeaponVtableRva,
                                      patterns::kWeaponOwnerOffset + sizeof(void*),
@@ -453,6 +474,10 @@ void* weapon_actor() {
     void* w = weapon_valid(g_weaponActor) ? g_weaponActor
                                           : bvr::b1r::aim::learned_weapon_object();
     return weapon_valid(w) ? w : nullptr;
+}
+
+void* resolve_weapon_actor(const FrameContext& ctx) {
+    return find_weapon_actor(ctx, false);
 }
 
 // Live mesh-alignment trim, read by `vraim synccheck` so its model chain runs
