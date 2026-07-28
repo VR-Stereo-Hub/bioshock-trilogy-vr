@@ -1515,3 +1515,44 @@ the stick-pitch-kill gate, and logged on transition as
 generic "save is loaded" detector (tools/boot.ps1). The intro and main menu read
 menu/cutscene (viewActor==pc there); the transition to GAMEPLAY fires exactly at
 save load, any save, any level.
+
+## Session 20 - the two trim algebras: measured divergence baseline (synccheck)
+
+The session-18/19 root-cause claim ("the ray trims via rotator ADDS in game
+space, the model trims via a QUAT COMPOSED in the controller's local frame -
+they agree only at the tuning pose") is now MEASURED. Both pose->rot chains
+were refactored into pure functions in `frame_context.h`
+(`ray_pose_from_xr`, `model_pose_from_xr`) that production (aim.cpp,
+hands.cpp) and the new `vraim synccheck` sweep share, so the sweep measures
+the real shipping code. The sweep drives ~21 axis-angle controller
+orientations (identity, +-45/90 per axis, 180 roll, mixed axes) through both
+chains against the cached last FrameContext and prints the angle between the
+ray direction and the model barrel direction.
+
+**Baseline (2026-07-28, pre-unification build, clean boot, NG+ Medical
+Pavilion, vrpreset armed):** with a canonical 10/10 trim fed IDENTICALLY to
+both chains (so every degree of divergence is pure algebra difference):
+
+- identity pose and all pure-YAW poses: 0.00 deg (rotations about world up
+  commute with the yaw add - the algebras agree exactly there, which is why
+  eye-tuning at a neutral pose always "worked")
+- pitch poses: 4.14 deg at +45, 1.76 at -45, 11.58 at +90
+- ROLL poses (about the view axis): 10.70 deg at 45, 19.85 at 90,
+  **28.21 deg at 180 - the maximum of the whole sweep**
+- mixed axes: 2.33-13.70 deg
+- **MAX canonical divergence: 28.21 deg.** Roll is where the two algebras
+  differ most - an XR-local-euler sweep (no rolled poses) would have
+  under-reported the defect badly.
+
+Live-trim sweep on the user's tuning (ray L +0.2/+17.7, R 0/0; model trims
+all 0): liveR ~0.0 everywhere (zero trims = both chains degenerate to the
+same map), liveL up to 17.70 deg (the L ray trim has no model-side
+counterpart by construction of the tuning). Render-lock position delta
+quoted separately at 0.00 UU (position-only by construction - the lock never
+touches rotation).
+
+Verification that the refactor is behavior-preserving: model drive live via
+simpose (writes counting, loc/rot exact for sim 0/0/0), fire test through
+the armed synthetic ray - substituted rot (1763, 20919) = camera (853,
+19099) + trim (5, 10 deg) * 182.04 units/deg exactly, subs=2, ammo 47->43,
+dumps 8->8.

@@ -51,6 +51,12 @@ void on_calcview(const FrameContext& ctx);
 //   seam <weapon|ability> on|off
 //   scan <Class> <Func> [n] / scanoff   hook ANY name-based native read-only
 //                           (fire-flow investigation without a rebuild)
+//   synccheck               sweep ~20 controller orientations (incl. roll)
+//                           through the ray AND model pose->rot chains and
+//                           print the ray-vs-barrel divergence per pose, for
+//                           the live trims and a canonical 10/10 trim
+//                           (session 20; the pure chains live in
+//                           frame_context.h)
 void handle_command(const char* args);
 
 // Overlay section (render thread).

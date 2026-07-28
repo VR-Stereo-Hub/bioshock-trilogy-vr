@@ -66,6 +66,11 @@ void handle_command(const char* args);
 // ~5 Hz; the log timestamps correlate the lines of one sample).
 bool telemetry_on();
 
+// |render-lock position delta| applied last frame, UU. POSITION-only by
+// construction (the lock never touches rotation) - `vraim synccheck` quotes it
+// so the position story stays separate from the rotation-divergence gate.
+float lock_delta_mag();
+
 // Overlay section (render thread only).
 void draw_debug_ui();
 

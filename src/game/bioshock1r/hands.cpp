@@ -452,6 +452,18 @@ int active_hand() {
     return g_autoHand.load(std::memory_order_relaxed);
 }
 
+// Live mesh-alignment trim, read by `vraim synccheck` so its model chain runs
+// on the REAL tuned values (session 20).
+float model_trim_pitch_deg(int hand) {
+    return g_rotPitchDeg[hand & 1].load(std::memory_order_relaxed);
+}
+float model_trim_yaw_deg(int hand) {
+    return g_rotYawDeg[hand & 1].load(std::memory_order_relaxed);
+}
+float model_trim_roll_deg(int hand) {
+    return g_rotRollDeg[hand & 1].load(std::memory_order_relaxed);
+}
+
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     load_config();
@@ -585,15 +597,12 @@ void on_calcview(const FrameContext& ctx) {
         }
 
         // Mesh-alignment trim (per hand), composed in the controller's local
-        // frame so it holds at EVERY controller orientation.
-        float trim[4], q2[4];
-        xr_local_trim_quat(g_rotPitchDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
-                           g_rotYawDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
-                           g_rotRollDeg[hand].load(std::memory_order_relaxed) / kRadToDeg,
-                           trim);
-        quat_mul(quat, trim, q2);
-
-        gp = xr_pose_to_game(mapCtx, pos, q2);
+        // frame so it holds at EVERY controller orientation. The chain is a
+        // pure function in frame_context.h, shared with `vraim synccheck`.
+        gp = model_pose_from_xr(mapCtx, pos, quat,
+                                g_rotPitchDeg[hand].load(std::memory_order_relaxed),
+                                g_rotYawDeg[hand].load(std::memory_order_relaxed),
+                                g_rotRollDeg[hand].load(std::memory_order_relaxed));
 
         // The aim calibration trim is NOT applied to the model by default
         // (see g_alignAimTrim above) - re-trimming the ray must not move the

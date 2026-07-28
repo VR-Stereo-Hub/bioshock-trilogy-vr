@@ -72,6 +72,12 @@ void handle_command(const char* args);
 // the beam leaves the hand that is actually holding the weapon.
 int active_hand();
 
+// Live mesh-alignment trim (degrees, per hand) - read by `vraim synccheck` so
+// its model chain sweeps the REAL tuned values (session 20).
+float model_trim_pitch_deg(int hand);
+float model_trim_yaw_deg(int hand);
+float model_trim_roll_deg(int hand);
+
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.

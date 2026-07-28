@@ -63,4 +63,37 @@ inline GamePose xr_pose_to_game(const FrameContext& ctx, const float pos[3],
     return out;
 }
 
+// ---- The two trimmed pose->rot chains, as PURE functions (session 20) -------
+// Production (hands.cpp / aim.cpp) and the `vraim synccheck` sweep call the
+// SAME code, so the sweep measures the real thing. Until the session-20
+// unification lands the two apply their trims with DIFFERENT algebras - the
+// model composes a quaternion in the controller's LOCAL frame, the ray adds
+// rotator angles in game space after the map - and therefore agree only near
+// the pose the user tuned at. That divergence is exactly what synccheck
+// exists to expose (and what stage 2 collapses).
+
+// Model chain (hands.cpp): trim quat composed in the controller's local frame,
+// then mapped. Holds at every controller orientation.
+inline GamePose model_pose_from_xr(const FrameContext& ctx, const float pos[3],
+                                   const float quat[4], float trimPitchDeg,
+                                   float trimYawDeg, float trimRollDeg) {
+    float trim[4], q2[4];
+    xr_local_trim_quat(trimPitchDeg / kRadToDeg, trimYawDeg / kRadToDeg,
+                       trimRollDeg / kRadToDeg, trim);
+    quat_mul(quat, trim, q2);
+    return xr_pose_to_game(ctx, pos, q2);
+}
+
+// Ray chain (aim.cpp): map first, then add the trim as game-space rotator
+// angles. Roll is forced 0 - aim carries no roll; the camera owns roll.
+inline GamePose ray_pose_from_xr(const FrameContext& ctx, const float pos[3],
+                                 const float quat[4], float trimPitchDeg,
+                                 float trimYawDeg) {
+    GamePose out = xr_pose_to_game(ctx, pos, quat);
+    out.rot.pitch += static_cast<int32_t>(trimPitchDeg * kRotUnitsPerDegree);
+    out.rot.yaw += static_cast<int32_t>(trimYawDeg * kRotUnitsPerDegree);
+    out.rot.roll = 0;
+    return out;
+}
+
 } // namespace bvr::b1r

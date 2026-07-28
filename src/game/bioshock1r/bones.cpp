@@ -516,6 +516,10 @@ bool telemetry_on() {
     return g_telemetry.load(std::memory_order_relaxed);
 }
 
+float lock_delta_mag() {
+    return g_lockDeltaMag.load(std::memory_order_relaxed);
+}
+
 bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
     // Telemetry window: opened here (the once-per-frame pass-1 path) so every
     // module's lines for one sample land together in the log.
