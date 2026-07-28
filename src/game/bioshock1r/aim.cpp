@@ -66,10 +66,11 @@ std::atomic<bool> g_useAimPose{true};
 std::atomic<bool> g_muzzleRay{false};
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
-// LEFT defaults = the user's in-headset calibration (session 21 part 3,
-// their explicit ask: bake the fixed left hand into the defaults). The
-// right hand stays 0 - the per-weapon profiles own it now.
-std::atomic<float> g_pitchOffsetDeg[2] = {4.4f, 0.0f};
+// Defaults = the user's in-headset calibration, v0.3.0 bake (session 21
+// part 4, their explicit ask: the saved preset becomes the defaults). The
+// right-hand TRIM stays 0 - the per-weapon profiles own the right hand;
+// its POS offsets below carry the generic baseline.
+std::atomic<float> g_pitchOffsetDeg[2] = {-6.8f, 0.0f};
 std::atomic<float> g_yawOffsetDeg[2] = {30.0f, 0.0f};
 // Per-hand aim-ray ORIGIN offsets in cm (session 18 part 2, user request):
 // the model offsets move the MESH about its pivot, so a tuned model can sit
@@ -79,9 +80,9 @@ std::atomic<float> g_yawOffsetDeg[2] = {30.0f, 0.0f};
 // ray's zero-roll basis at ray build, so the laser and the bullet cannot
 // disagree; the model deliberately does not take them (it has its own
 // sliders, and the two are tuned against each other).
-std::atomic<float> g_posFwdCm[2] = {0.0f, 0.0f};
-std::atomic<float> g_posRightCm[2] = {4.6f, 0.0f}; // L = user calibration (s21p3)
-std::atomic<float> g_posUpCm[2] = {0.7f, 0.0f};    // L = user calibration (s21p3)
+std::atomic<float> g_posFwdCm[2] = {-2.8f, 0.0f};  // v0.3.0 user-calibration bake
+std::atomic<float> g_posRightCm[2] = {0.6f, -2.8f};
+std::atomic<float> g_posUpCm[2] = {0.5f, 7.5f};
 // ---- Session 21: per-weapon profiles ----------------------------------------
 // The RIGHT hand's trim + ray-origin offsets hot-swap per weapon, keyed by
 // the equipped weapon's canonical class name ('Shotgun', 'Pistol', ... via
@@ -900,6 +901,21 @@ void update_weapon_profile(const FrameContext& ctx) {
     apply_weapon_key(name ? narrow_key(name) : std::string(), "weapon change");
 }
 
+// v0.3.0 default profiles = the user's calibrated set (session 21 part 4,
+// their ask: the saved preset becomes the defaults - dot==shot per weapon
+// out of the box). Seeded BEFORE weapons.ini loads, so a user's own file
+// always overrides, key by key.
+void seed_default_profiles() {
+    g_weaponProfiles["ChemicalThrower"] = {0.00f, -8.17f, 0.93f, -0.43f, -9.78f};
+    g_weaponProfiles["Crossbow"] = {0.23f, -6.65f, 0.00f, -4.40f, 11.00f};
+    g_weaponProfiles["GrenadeLauncher"] = {0.00f, 0.00f, 0.00f, -2.80f, 7.50f};
+    g_weaponProfiles["MachineGun"] = {2.80f, -1.17f, 0.00f, -3.50f, 13.10f};
+    g_weaponProfiles["Pistol"] = {-1.17f, -4.20f, -0.70f, -2.06f, 18.71f};
+    g_weaponProfiles["ResearchCamera"] = {0.00f, 0.00f, 0.00f, -2.80f, 7.50f};
+    g_weaponProfiles["Shotgun"] = {0.00f, 0.00f, 0.00f, -2.76f, 7.50f};
+    g_weaponProfiles["Wrench"] = {0.00f, 0.00f, 0.00f, -2.80f, 7.50f};
+}
+
 void weapons_ini_path(wchar_t* out, size_t count) {
     swprintf_s(out, count, L"%s\\weapons.ini", bvr::log::data_dir());
 }
@@ -939,7 +955,8 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     g_imageBase = image.base;
     g_image = image;
     g_syms = symbols;
-    load_weapon_profiles();
+    seed_default_profiles();
+    load_weapon_profiles(); // a user's weapons.ini overrides the seeds key by key
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
 }
@@ -1530,17 +1547,19 @@ void draw_debug_ui() {
     if (ImGui::Checkbox("Use the runtime AIM pose (off = grip pose)", &useAim))
         g_useAimPose.store(useAim, std::memory_order_relaxed);
     // Per-hand trims (session 16 part 3): R = weapon, L = plasmid.
+    // Range +-90 since v0.3.0: the user's left-wrist posture pinned the old
+    // +-30 cap (their saved L yaw sat at exactly 30.0 = the slider max).
     float rp = g_pitchOffsetDeg[1].load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("R aim pitch trim (deg)", &rp, -30.0f, 30.0f))
+    if (ImGui::SliderFloat("R aim pitch trim (deg)", &rp, -90.0f, 90.0f))
         g_pitchOffsetDeg[1].store(rp, std::memory_order_relaxed);
     float ry = g_yawOffsetDeg[1].load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("R aim yaw trim (deg)", &ry, -30.0f, 30.0f))
+    if (ImGui::SliderFloat("R aim yaw trim (deg)", &ry, -90.0f, 90.0f))
         g_yawOffsetDeg[1].store(ry, std::memory_order_relaxed);
     float lp = g_pitchOffsetDeg[0].load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("L aim pitch trim (deg)", &lp, -30.0f, 30.0f))
+    if (ImGui::SliderFloat("L aim pitch trim (deg)", &lp, -90.0f, 90.0f))
         g_pitchOffsetDeg[0].store(lp, std::memory_order_relaxed);
     float ly = g_yawOffsetDeg[0].load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("L aim yaw trim (deg)", &ly, -30.0f, 30.0f))
+    if (ImGui::SliderFloat("L aim yaw trim (deg)", &ly, -90.0f, 90.0f))
         g_yawOffsetDeg[0].store(ly, std::memory_order_relaxed);
 
     // Ray ORIGIN offsets (session 18 part 2): move the laser + fire origin to

@@ -203,6 +203,26 @@ own; (4) "Save preset values" once at the end; (5) plasmid hand: confirm
 the left laser sits right out of the box (its calibration is now the
 default).
 
+### Session 21 part 4 (same day) - RUN 3 PASSED, v0.3.0 SHIPS
+
+**Run 3: "Alright perfect, looks pretty good and everything is added" -
+MachineGun + GrenadeLauncher keyed and held their own profiles (the
+class-agnostic fix proven live), all eight holdables calibrated, the left
+hand re-tuned (trim -6.8/+30.0, offsets -2.8/0.6/0.5), deadzone set 0 by
+the user (lock-off removed the percept the 23-deg band existed for).**
+Their live values were saved via the seam (`vrpreset save` -> all three
+inis) and BAKED AS CODE DEFAULTS on their explicit ask: aim L/R defaults,
+deadzone 0 (body.cpp), and all 8 weapon profiles seeded at init
+(weapons.ini overrides key by key). Aim-trim sliders widened to +-90 deg
+(the user's L yaw sat pinned at the old +-30 cap). VIRGIN-INSTALL GATE:
+with all three inis set aside, a clean boot + preset reproduced the full
+calibration from code alone (L trim/offsets, R baseline, deadzone 0, 8
+profiles, Shotgun keyed + applied) - a fresh install needs no tuning;
+inis restored after, fire subs 2/2, dumps stable. README rewritten (per
+weapon profiles + the bundled-preset section incl. how existing users
+adopt or keep their own). v0.3.0: PR #6 merged, tagged, released with
+the preset inis in the zip - the user's go on record this part.
+
 ## Previous state (2026-07-28, session 20 - THE AIM-SYNC SESSION: one trim algebra, vrrec record+replay, FName/GNames, the muzzle ray, the idle-sway kill - ALL SIX STAGES FLAT-GREEN on branch s20-aim-sync)
 
 **Branch `s20-aim-sync`, MERGED to main as PR #5 (2026-07-28, the user's
@@ -2075,6 +2095,17 @@ and it resumes.
   LOAD GAME via 80 ms dpad taps; main menu ignores mouse clicks); crash
   baseline 8 -> 9 (the one deliberate discovery crash).
 - NOT started: stage 4 (pawn-eye anchoring) - queued behind the retune.
+- Parts 2-4 (same day, three headset runs + fixes between): the +-90
+  drift CLOSED as the render lock itself (lock now default OFF); weapon
+  resolver rebuilt twice on live evidence (learned-object pinning, then
+  the MG/GL native-vtable gap -> class-agnostic Hands.CurrentHoldable at
+  +0x45C); profile seeding race fixed (preset baseline); the user's full
+  calibration saved + BAKED AS DEFAULTS (incl. deadzone 0 and 8 default
+  weapon profiles; virgin-install gate green); trim sliders +-90;
+  scale-decoupling demoted to polish (user's call); fovA in-headset
+  negative (world moves - consumer unknown, parked); FPS audit: all
+  stalls = VISIBLE windows, not mod work. v0.3.0 MERGED + TAGGED +
+  RELEASED with the preset inis bundled.
 
 ### 2026-07-28 - Session 20 part 2 (headset results, PR #5 merged, the BioVR analysis, the re-plan)
 
