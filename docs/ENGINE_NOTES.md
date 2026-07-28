@@ -1995,3 +1995,46 @@ flips to a pad glyph) - the restart is gone. The proxy-lane counter
 STAYS at 6 by design (the Steam overlay swallows that lane post-boot;
 it is not a poll-rate oracle). The marker machinery is deleted; the
 orphan vrinput.on file on existing installs is inert.
+
+### Session 22 round 2 - engine-cinematic letterbox (the plasmid FMV class)
+
+The user's "Big Daddy plasmid FMV" report (black bars mid-view + camera
+different from flat) is the ENGINE-CINEMATIC class, dump-decoded on their
+prepared Gatherer's Garden save (the Electro Bolt injection sequence):
+
+- The engine CLEARS the final target to opaque black (ClearRTV 0,0,0,1 -
+  event immediately before the tonemap) and draws the tonemap as a
+  vertically SHRUNKEN quad - full 1920x1080 viewport, shrunk GEOMETRY -
+  leaving the top/bottom of the clear unpainted. The bars are therefore
+  NOT draws (nothing to classify) and the band content is the FULL render
+  anamorphically squeezed (the world pass renders normal full-frame at
+  the option fov - the live watch read 130.0 exact, mismatch=0, through
+  the whole sequence).
+- CalcView keeps firing with strict GAMEPLAY and the AUTHORED camera
+  choreography in loc/rot (heartbeat showed authored ROLL -7773..-8189
+  during the wake-up shot). Pre-fix, the live head drive overwrote that
+  choreography (the user's "camera was different than flat"), and the
+  letterboxed frame projected across the whole claim (bars as floating
+  bands).
+- Sequence anatomy from the live transitions: letterbox ON (165/185 px
+  of 1080) -> full-screen blackout (correctly rejected by the
+  full-black guard: "top 1080") -> ON again (the balcony phase) -> ...
+  The boot attract also letterboxes briefly (222/285 px) - caught and
+  released cleanly.
+
+Shipped: the LETTERBOX WATCH (hud_capture): three 1-px backbuffer columns
+copied to a staging strip per present (async, DO_NOT_WAIT map - the
+fov-watch pattern); a row is "bar" only if EXACTLY black (<=2/255) in all
+three columns; >=4% height each side + rough symmetry + not-full-screen +
+5-interval stability = letterbox, transitions logged. Consumers: the VR
+runtime CROPS the submitted subImage (projection AND quad) to the band -
+the compositor stretches it back to the claimed fov, which exactly
+un-squeezes the anamorphic content (bars gone, geometry correct); the
+camera adapter suspends the LIVE head drive while the letterbox holds
+(authored camera plays, exactly the flat look - eye offsets still apply,
+so the cinematic stays stereo).
+
+Harness trap (session 22, marker retirement fallout): nothing pre-arms
+vrinput at boot anymore, and test presses only compose while vrinput is
+ON - boot.ps1 now sends `vrinput on` before its A-press loop; any manual
+boot flow must do the same.

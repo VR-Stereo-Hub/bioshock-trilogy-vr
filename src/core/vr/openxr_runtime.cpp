@@ -1394,6 +1394,22 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 sub.swapchain = g_swapchains[target];
                 sub.imageRect = {{0, 0},
                                  {static_cast<int32_t>(g_swapW), static_cast<int32_t>(g_swapH)}};
+                // Session 22 round 2: engine cinematics letterbox the frame
+                // (scene anamorphically squeezed into a middle band over an
+                // opaque-black clear). Crop the submission to the band - the
+                // compositor stretches it back to the claimed fov, so the
+                // bars vanish and the geometry comes out correct. Applies to
+                // the projection AND the quad path (both consume `sub`; the
+                // quad keeps its full-aspect size = the same unsqueeze).
+                {
+                    unsigned lbTop = 0, lbBot = 0;
+                    if (bvr::hud::letterbox(&lbTop, &lbBot) &&
+                        lbTop + lbBot < g_swapH) {
+                        sub.imageRect.offset.y = static_cast<int32_t>(lbTop);
+                        sub.imageRect.extent.height =
+                            static_cast<int32_t>(g_swapH - lbTop - lbBot);
+                    }
+                }
 
                 if (projectionMode) {
                     // fov = the symmetric fov the game rendered with (hfov

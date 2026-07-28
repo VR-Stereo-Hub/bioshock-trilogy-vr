@@ -144,6 +144,135 @@ bool srv0_size(ID3D11DeviceContext* ctx, UINT* w, UINT* h) {
     return true;
 }
 
+// ---- Session 22 round 2: letterbox watch -------------------------------------
+// Engine cinematics (plasmid FMV sequences) clear the FINAL target to opaque
+// black and tonemap the scene into a vertically SHRUNKEN quad (dump: ClearRTV
+// (0,0,0,1) + a full-viewport draw whose geometry covers only the middle
+// band). The bars are unpainted clear - there is no draw to classify - and
+// the band content is the full render anamorphically squeezed. Watch: three
+// thin columns of the backbuffer copied to a staging strip per present
+// (async, DO_NOT_WAIT map a present later - the fov-watch pattern); a row is
+// "bar" only if EXACTLY black across all three columns. Symmetric stable
+// top/bottom runs = letterbox: the VR runtime crops the submitted subImage
+// to the band (the compositor unsqueezes it back to the claimed fov - bars
+// gone, geometry correct) and the adapter suspends the live head drive so
+// the authored camera choreography plays (the flat-screen look, in stereo).
+constexpr int kLbCols = 3;
+ID3D11Texture2D* g_lbStaging = nullptr;
+UINT g_lbH = 0, g_lbSrcW = 0, g_lbSrcH = 0;
+bool g_lbPending = false;
+int g_lbPendingAge = 0;
+int g_lbStreak = 0;
+unsigned g_lbLastTop = 0, g_lbLastBot = 0; // last raw measurement (render thread)
+std::atomic<uint32_t> g_lbBars{0};         // packed top<<16 | bot, 0 = inactive
+std::atomic<unsigned> g_cLbIntervals{0};
+
+bool ensure_lb_staging(ID3D11DeviceContext* ctx, UINT h) {
+    if (g_lbStaging && g_lbH == h) return true;
+    if (g_lbStaging) {
+        g_lbStaging->Release();
+        g_lbStaging = nullptr;
+    }
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return false;
+    D3D11_TEXTURE2D_DESC sd{};
+    sd.Width = kLbCols;
+    sd.Height = h;
+    sd.MipLevels = 1;
+    sd.ArraySize = 1;
+    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    HRESULT hr = dev->CreateTexture2D(&sd, nullptr, &g_lbStaging);
+    dev->Release();
+    if (SUCCEEDED(hr)) g_lbH = h;
+    return SUCCEEDED(hr) && g_lbStaging;
+}
+
+void letterbox_watch(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
+    // Map last present's copy first (never blocks).
+    if (g_lbPending && g_lbStaging) {
+        ++g_lbPendingAge;
+        D3D11_MAPPED_SUBRESOURCE m{};
+        HRESULT hr = ctx->Map(g_lbStaging, 0, D3D11_MAP_READ,
+                              D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+        if (SUCCEEDED(hr)) {
+            const uint8_t* base = static_cast<const uint8_t*>(m.pData);
+            UINT h = g_lbH;
+            auto rowBlack = [&](UINT r) {
+                const uint8_t* p = base + r * m.RowPitch;
+                for (int c = 0; c < kLbCols; ++c)
+                    if (p[c * 4] > 2 || p[c * 4 + 1] > 2 || p[c * 4 + 2] > 2)
+                        return false;
+                return true;
+            };
+            UINT top = 0;
+            while (top < h && rowBlack(top)) ++top;
+            UINT bot = 0;
+            while (bot < h - top && rowBlack(h - 1 - bot)) ++bot;
+            ctx->Unmap(g_lbStaging, 0);
+            g_lbPending = false;
+
+            UINT minBar = h / 25;                 // >= 4% each
+            bool full = top + bot >= h;           // black screen (fade/loading)
+            UINT hi = top > bot ? top : bot;
+            bool symmetric = (top > bot ? top - bot : bot - top) <= hi / 4 + 8;
+            bool isLb = !full && top >= minBar && bot >= minBar && symmetric;
+            // Stability: consecutive agreeing verdicts (bars within 3 px)
+            // before switching state - the clear can flicker at scene cuts.
+            bool active = g_lbBars.load(std::memory_order_relaxed) != 0;
+            bool agrees = isLb == active;
+            if (isLb && (top > g_lbLastTop + 3 || g_lbLastTop > top + 3 ||
+                         bot > g_lbLastBot + 3 || g_lbLastBot > bot + 3))
+                agrees = active && false; // moving bars: treat as disagreement
+            g_lbLastTop = top;
+            g_lbLastBot = bot;
+            if (!agrees) {
+                if (++g_lbStreak >= 5) {
+                    g_lbStreak = 0;
+                    g_lbBars.store(isLb ? ((top & 0xFFFF) << 16) | (bot & 0xFFFF) : 0,
+                                   std::memory_order_relaxed);
+                    if (isLb) g_cLbIntervals.fetch_add(1, std::memory_order_relaxed);
+                    BVR_LOG("[hud] letterbox %s (top %u px, bottom %u px of %u)",
+                            isLb ? "ON (engine cinematic bars)" : "off", top, bot, h);
+                }
+            } else {
+                g_lbStreak = 0;
+                if (isLb) // track slow bar animation while active
+                    g_lbBars.store(((top & 0xFFFF) << 16) | (bot & 0xFFFF),
+                                   std::memory_order_relaxed);
+            }
+        } else if (g_lbPendingAge > 8) {
+            g_lbPending = false;
+        }
+    }
+
+    // Queue this present's copy: three 1-px columns at 1/4, 1/2, 3/4 width.
+    if (g_lbPending || !swapchain) return;
+    ID3D11Texture2D* bb = nullptr;
+    if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&bb))) || !bb) return;
+    D3D11_TEXTURE2D_DESC bd{};
+    bb->GetDesc(&bd);
+    if ((bd.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+         bd.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+         bd.Format == DXGI_FORMAT_B8G8R8A8_UNORM) &&
+        ensure_lb_staging(ctx, bd.Height)) {
+        g_lbSrcW = bd.Width;
+        g_lbSrcH = bd.Height;
+        for (int c = 0; c < kLbCols; ++c) {
+            UINT x = bd.Width * (c + 1) / 4;
+            D3D11_BOX box{x, 0, 0, x + 1, bd.Height, 1};
+            ctx->CopySubresourceRegion(g_lbStaging, 0, static_cast<UINT>(c), 0, 0,
+                                       bb, 0, &box);
+        }
+        g_lbPending = true;
+        g_lbPendingAge = 0;
+    }
+    bb->Release();
+}
+
 bool ensure_fov_staging(ID3D11DeviceContext* ctx) {
     if (g_fovStaging) return true;
     ID3D11Device* dev = nullptr;
@@ -430,8 +559,9 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
     return g_rtv;
 }
 
-void on_present(ID3D11DeviceContext* ctx) {
-    fov_watch_on_present(ctx); // session 22: map last interval's cb0 copy
+void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
+    fov_watch_on_present(ctx);      // session 22: map last interval's cb0 copy
+    letterbox_watch(ctx, swapchain); // session 22 round 2: cinematic bars
 
     // Session 22 kind (a): screen-only interval verdict (hysteresis over
     // present intervals, transitions logged - the flat instrument). Computed
@@ -539,6 +669,14 @@ bool screen_only() {
     return g_screenOnlyOn.load(std::memory_order_relaxed);
 }
 
+bool letterbox(unsigned* topPx, unsigned* botPx) {
+    uint32_t packed = g_lbBars.load(std::memory_order_relaxed);
+    if (!packed) return false;
+    if (topPx) *topPx = packed >> 16;
+    if (botPx) *botPx = packed & 0xFFFF;
+    return true;
+}
+
 unsigned postfx_count() {
     return g_cPostFx.load(std::memory_order_relaxed);
 }
@@ -606,6 +744,9 @@ void release_resources() {
     if (g_fovStaging) { g_fovStaging->Release(); g_fovStaging = nullptr; }
     g_fovPending = false;
     g_fovCapturedThisInterval = false;
+    if (g_lbStaging) { g_lbStaging->Release(); g_lbStaging = nullptr; }
+    g_lbH = 0;
+    g_lbPending = false;
 }
 
 } // namespace bvr::hud

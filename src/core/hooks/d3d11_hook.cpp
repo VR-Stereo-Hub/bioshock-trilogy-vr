@@ -87,7 +87,7 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
             ID3D11DeviceContext* context = nullptr;
             device->GetImmediateContext(&context);
             if (context) {
-                hud::on_present(context);
+                hud::on_present(context, swapchain);
                 context->Release();
             }
             device->Release();

@@ -124,6 +124,61 @@ analysis next session. Do not tune blind.
   SKIPS toward the crash - recover via the pause menu LOAD instead.
 - The old vrinput.on marker no longer pre-arms anything (code deleted).
 
+### Session 22 round 2 (same night) - THE HEADSET FEEDBACK ROUND
+
+**The user's verdicts, run 1:** no regression; stereo cinematics "amazing"
+(104-not-130 understood and accepted); alcohol blur "perfect"; hacking
+"amazing, works as intended" after the same-night head-lock fix (the first
+try was world-locked at the recenter facing - screen-only intervals now
+ride the head-locked view space like the pause panel); head-roll fixed;
+turn controls "perfect". Movement wonkiness ROOT-CAUSED BY THE USER: their
+controller's up+right stick diagonal is dead (all other directions fine;
+mod stick path audited clean - deadzone/clamp direction-agnostic); they
+will cross-check the hardware with another tester/game. Remaining asks all
+landed the same night:
+
+1. **The "Big Daddy plasmid FMV" class = ENGINE-CINEMATIC LETTERBOX**,
+   dump-decoded on their prepared Gatherer's Garden save: the engine
+   clears the final target opaque-black and tonemaps the scene into a
+   vertically SHRUNKEN quad - bars are unpainted clear (nothing to
+   classify), content is anamorphically squeezed, world renders full
+   130 (mismatch=0), CalcView stays strict-GAMEPLAY with the AUTHORED
+   camera choreography. Shipped the LETTERBOX WATCH (3-column exact-black
+   backbuffer sampling, async staging, 5-interval stability, full-black
+   fade guard) + two consumers: the submitted subImage (projection AND
+   quad) CROPS to the band - the compositor unsqueezes, bars gone,
+   geometry correct - and the live head drive SUSPENDS while the
+   letterbox holds (authored camera plays like flat; eye offsets stay =
+   stereo cinematics). Flat gates: the injection sequence's phases
+   tracked exactly (ON 165/185 px -> blackout REJECTED via the full-black
+   guard -> ON -> final off), boot attract caught/released (222/285),
+   90 s+ post-sequence gameplay soak with zero false positives, dumps 9.
+2. **The user's new L-hand calibration rescued via `vrpreset save`**
+   (they had not pressed save) and BAKED as code defaults: trim
+   -7.5/+37.0 (offsets unchanged). Their turn prefs (scale 2.56, snap on,
+   45 deg) persisted to their ini (not baked - shipped defaults stay
+   1.0/off/45).
+3. **Laser OFF by default + preset**: the preset no longer arms it; the
+   persisted `laserOn` ini key (written by "Save preset values") applies
+   the user's choice, so opting back in sticks. Virgin default = off.
+4. **F10 overlay hardening** (user: overlay vanished while scrolling,
+   dead until alt-tab): (a) backbuffer-identity watch recreates the RTV
+   when the game swaps buffers without ResizeBuffers (the "invisible
+   overlay, F10 toggles nothing visible" state); (b) the WndProc now
+   CONSUMES mouse/keyboard messages while ImGui wants them (the game was
+   fighting the overlay for the wheel/clicks); (c) new `vroverlay on|off`
+   seam = remote/emergency toggle. Root cause unconfirmed (not flat-
+   reproducible on demand) - the user re-checks scrolling next run.
+5. **Harness trap from the marker retirement**: nothing pre-arms vrinput
+   at boot and test presses only compose while it is ON - boot.ps1 now
+   sends `vrinput on` before its A-press loop (it timed out otherwise).
+
+**Still open before the release**: the user's in-headset re-verify of the
+letterbox class (their prepared save; both cinematic modes), the overlay
+scroll behavior, and their controller cross-check. After the release: the
+CLEAN-MACHINE new-user flow session (user's ask - wipe, install from the
+release zip, fix whatever breaks until out-of-box works).
+
 ## Previous state (2026-07-28, session 21 - RENDER SYNC: the fov audit came back clean, the fg scene decoded down to its ctor args, the fovA zoom-pull lever found, per-weapon profiles shipped - branch s21-render-sync)
 
 **Branch `s21-render-sync` off main (post-PR-#5). Three flat-gated commits:

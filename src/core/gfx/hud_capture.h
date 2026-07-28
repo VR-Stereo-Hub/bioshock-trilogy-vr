@@ -47,8 +47,9 @@ void fix_blend_alpha(ID3D11DeviceContext* ctx);
 
 // Present boundary (render thread, called at the END of the present detour,
 // after every consumer of the RT ran): clears the RT for the next interval
-// and rolls the per-interval classifier state.
-void on_present(ID3D11DeviceContext* ctx);
+// and rolls the per-interval classifier state. The swapchain feeds the
+// letterbox watch (may be null - the watch just idles).
+void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain);
 
 // The captured HUD as a shader resource (null when nothing was redirected
 // this interval or the RT does not exist). Serves the PROCESSED copy - rgb
@@ -101,6 +102,14 @@ bool fov_mismatch();
 //                 they sample a backbuffer-sized texture (alcohol blur etc.).
 bool screen_only();
 unsigned postfx_count();
+
+// Session 22 round 2: engine-cinematic letterbox (plasmid FMV sequences
+// clear the final target black and tonemap the scene into a shrunken middle
+// band - no draws to classify, the bars are unpainted clear). True while
+// bars are live; outputs their pixel heights. The VR runtime crops the
+// submitted subImage to the band (the compositor unsqueezes - bars gone) and
+// the camera adapter suspends the live head drive (authored camera plays).
+bool letterbox(unsigned* topPx, unsigned* botPx);
 
 // Free device objects (device loss / resize; recreated lazily).
 void release_resources();

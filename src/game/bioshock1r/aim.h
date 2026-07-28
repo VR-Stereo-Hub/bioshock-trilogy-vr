@@ -91,6 +91,11 @@ float pos_right_cm(int hand);
 float pos_up_cm(int hand);
 void set_pos_offset(int hand, float fwdCm, float rightCm, float upCm);
 
+// Session 22: the laser is OFF by default (user's call - it was a
+// calibration tool; profiles are calibrated now). The preset applies the
+// persisted vrpreset.ini choice (`laserOn`), so opting back in sticks.
+bool laser_enabled();
+
 // True while substitution is armed (master switch + a usable hand ray).
 bool active();
 

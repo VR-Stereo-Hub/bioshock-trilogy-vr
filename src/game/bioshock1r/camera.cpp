@@ -7,6 +7,7 @@
 #include "core/debug/value_scan.h"
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
+#include "core/ui/overlay.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
@@ -527,6 +528,10 @@ void apply_command(const char* cmd, const char* args) {
         bvr::vr::handle_mirror_command(args); // M8 single-eye desktop mirror
     } else if (strcmp(cmd, "vrcine") == 0) {
         bvr::vr::handle_cine_command(args); // session 22 cinematic quad fallback
+    } else if (strcmp(cmd, "vroverlay") == 0) {
+        bool on = strncmp(args, "on", 2) == 0;
+        bvr::overlay::set_visible(on);
+        BVR_LOG("[b1r] overlay %s (seam request)", on ? "ON" : "off");
     } else if (strcmp(cmd, "vrhud") == 0) {
         // Session 19 HUD capture: gameswf HUD redirected off the game frame
         // (clean eyes) and shown as a floating quad in stereo.
@@ -601,6 +606,7 @@ void save_vr_preset() {
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
+    fprintf(f, "laserOn=%d\n", aim::laser_enabled() ? 1 : 0);
     fprintf(f, "crosshairVisible=%d\n",
             g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0);
     {
@@ -659,6 +665,8 @@ void load_vr_preset_values() {
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
+        else if (strcmp(key, "laserOn") == 0)
+            aim::handle_command(v != 0.0f ? "laser on" : "laser off");
         else if (strcmp(key, "crosshairVisible") == 0)
             g_crosshairVisible.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "hudQuadDistM") == 0) hudD = v;
@@ -686,7 +694,8 @@ void apply_vr_preset() {
     aim::handle_command("on");         // controller aim (R weapon / L plasmid)
     aim::handle_command("pose aim");   // the runtime AIM pose
     aim::handle_command("origin on");  // ray starts at the hand
-    aim::handle_command("laser on");
+    // Session 22: the laser no longer arms here - OFF by default (user's
+    // call), applied from the persisted `laserOn` ini key in the load below.
     hands::handle_command("on");       // viewmodel follows the controller
     hands::handle_command("pose aim"); // align to the AIM ray
     body::handle_command("on");        // M7.5: stick-forward = look direction
@@ -887,12 +896,16 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         hp.qw = q[3];
         driveHead = true;
     } else if (strictGameplay && !bvr::vr::cinematic_active() &&
+               !bvr::hud::letterbox(nullptr, nullptr) &&
                bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
         // Session 22: the live lane is gated on the strict view AND the
         // cinematic fallback - the HMD must not steer scripted/menu cameras
         // (their content lands on the quad screen, and head-steering it
-        // would wobble the whole screen). The sim and replay lanes above
-        // stay ungated for flat tests.
+        // would wobble the whole screen). Round 2: also suspended while the
+        // engine letterbox is up (plasmid FMV sequences) so the AUTHORED
+        // camera choreography plays exactly like flat - stereo stays (the
+        // eye offsets ride the authored camera). The sim and replay lanes
+        // above stay ungated for flat tests.
         driveHead = true;
         liveHead = true;
     }
