@@ -60,6 +60,9 @@ void on_calcview(const FrameContext& ctx);
 //   fname <index>|weapon    resolve a name index to its string via GNames
 //                           (session 20); `weapon` reads the cached weapon
 //                           actor's attach-bone FName
+//   swaykill on|off|status  freeze the drive's reference against the idle
+//                           animation's breathing (default ON; session 20 -
+//                           real animations pass the threshold)
 //   save | reload           persist / re-read the offsets (per-hand keys in
 //                           hands.ini; a legacy suffix-less key loads to both)
 //   test <dYaw> <dPitch> [distUU] [holdMs]   camera-relative placement (proves

@@ -75,6 +75,27 @@ struct CachedSleeve {
 CachedSleeve g_cacheSleeve[8];
 int g_cacheSleeveCount = 0;
 
+// Session 20 idle-sway kill (default ON; `vrhands swaykill on|off`): freeze
+// the drive's reference pose against the idle animation's breathing. A fresh
+// engine pose is adopted only when either wrist anchor moved past the
+// thresholds - real animations (equip/reload/melee) pass through and
+// re-freeze when they settle; the measured idle wobble (+-1.2 deg barrel
+// direction, sub-UU positions) stays out. Acts only on the DRIVEN rig; the
+// weapon's own skeleton (pump, cylinder) animates untouched.
+std::atomic<bool> g_swayKill{true};
+// 2x the MEASURED idle envelope vs a frozen snapshot (session 20, 1 Hz sway
+// telemetry: dpos peaks 3.01 UU, dang peaks 4.6 deg) - real animations move
+// the anchors tens of UU / tens of degrees, so the gap is wide on both sides.
+constexpr float kSwayPosThreshUu = 6.0f;
+constexpr float kSwayAngThreshDeg = 12.0f;
+// After a real animation, keep tracking this long past the LAST threshold
+// crossing so the freeze lands on the SETTLED pose, not the last big frame.
+constexpr uint64_t kSwaySettleMs = 600;
+uint64_t g_lastBigDeltaMs = 0;
+// Telemetry (1 Hz while frozen): the probe deltas the threshold judges, so
+// the thresholds are set from measured idle amplitude, not guesses.
+uint64_t g_lastSwayTlmMs = 0;
+
 // Session 19: the whole INACTIVE hand collapses too - the drive poses only
 // the active hand's cluster, so the other one stays engine-animated at the
 // eye anchor and reads as a ghost hand. Cache mirrors g_cacheSleeve so the
@@ -569,6 +590,19 @@ void on_world_change() {
     g_cacheHiddenCount = 0;
 }
 
+void set_sway_kill(bool on) {
+    bool was = g_swayKill.exchange(on, std::memory_order_relaxed);
+    if (was && !on) g_refValid = false; // release the frozen pose immediately
+    BVR_LOG("[bones] idle-sway kill %s (%s)", on ? "ON" : "off",
+            on ? "reference frozen against idle breathing; real animations pass the "
+                 "threshold and re-freeze when settled"
+               : "reference tracks every engine evaluation - sway visible again");
+}
+
+bool sway_kill() {
+    return g_swayKill.load(std::memory_order_relaxed);
+}
+
 void set_hide_inactive(bool on) {
     bool was = g_hideInactive.exchange(on, std::memory_order_relaxed);
     if (was != on)
@@ -642,9 +676,53 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     bool engineEvaluated =
         !g_hasWritten[hand] || memcmp(&cur, &g_lastWrittenAnchor[hand], sizeof cur) != 0;
     if (engineEvaluated || !g_refValid) {
-        if (!read_n(g_bones, g_ref, sizeof(Qts) * static_cast<size_t>(g_boneCount)))
+        // Session 20 sway kill: the idle breathing is the authored idle
+        // ANIMATION (channel 0/1 - no script parameter to zero, measured),
+        // and it reaches the VR rig only through this recapture. With the
+        // kill armed, a fresh engine pose replaces the reference ONLY when
+        // it differs by a REAL animation's magnitude (equip/reload/melee -
+        // they track live and re-freeze when they settle); idle wobble
+        // (measured +-1.2 deg / sub-UU on the anchor) stays frozen out.
+        Qts fresh[kMaxBones];
+        if (!read_n(g_bones, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount)))
             return false;
-        g_refValid = true;
+        bool adopt = true;
+        if (g_refValid && g_swayKill.load(std::memory_order_relaxed)) {
+            adopt = false;
+            uint64_t nowMs = GetTickCount64();
+            float maxPos = 0.0f, maxAng = 0.0f;
+            static const int kProbe[2] = {patterns::kBoneLWrist, patterns::kBoneWeaponAttach};
+            for (int k = 0; k < 2; ++k) {
+                int b = kProbe[k];
+                if (b >= g_boneCount) continue;
+                float dp[3] = {fresh[b].p[0] - g_ref[b].p[0], fresh[b].p[1] - g_ref[b].p[1],
+                               fresh[b].p[2] - g_ref[b].p[2]};
+                float dot = fresh[b].q[0] * g_ref[b].q[0] + fresh[b].q[1] * g_ref[b].q[1] +
+                            fresh[b].q[2] * g_ref[b].q[2] + fresh[b].q[3] * g_ref[b].q[3];
+                if (dot < 0.0f) dot = -dot;
+                if (dot > 1.0f) dot = 1.0f;
+                float angDeg = 2.0f * acosf(dot) * kRadToDeg;
+                float posUu = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+                if (posUu > maxPos) maxPos = posUu;
+                if (angDeg > maxAng) maxAng = angDeg;
+            }
+            if (maxPos > kSwayPosThreshUu || maxAng > kSwayAngThreshDeg)
+                g_lastBigDeltaMs = nowMs;
+            // Track through the animation AND a settle window past its last
+            // big frame, so the eventual freeze holds the SETTLED pose.
+            adopt = (nowMs - g_lastBigDeltaMs) < kSwaySettleMs;
+            if (g_telemetry.load(std::memory_order_relaxed) &&
+                nowMs - g_lastSwayTlmMs >= 1000) {
+                g_lastSwayTlmMs = nowMs;
+                BVR_LOG("[tlm] sway probe: dpos=%.2f UU dang=%.2f deg (thresh %.1f/%.1f) %s",
+                        maxPos, maxAng, kSwayPosThreshUu, kSwayAngThreshDeg,
+                        adopt ? "TRACKING" : "frozen");
+            }
+        }
+        if (adopt || !g_refValid) {
+            memcpy(g_ref, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
+            g_refValid = true;
+        }
     }
 
     // Hide-inactive bookkeeping, BEFORE the rigid write: if the hand about to

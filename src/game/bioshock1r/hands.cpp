@@ -776,6 +776,11 @@ void handle_command(const char* args) {
                 BVR_LOG("[hands] usage: vrhands fname <index>|weapon");
             }
         }
+    } else if (strcmp(verb, "swaykill") == 0) {
+        if (strncmp(rest, "status", 6) == 0)
+            BVR_LOG("[hands] swaykill %s", bones::sway_kill() ? "ON" : "off");
+        else
+            bones::set_sway_kill(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "hideinactive") == 0) {
         bones::set_hide_inactive(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "save") == 0) {

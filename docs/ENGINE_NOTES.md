@@ -1639,3 +1639,33 @@ wired on this build; flat weapon switching stays an open harness gap (the
 bumpers open the session-19 radial, which needs real stick timing). The
 per-weapon d0 change is structurally guaranteed but goes to the in-headset
 checklist for the eyes-on proof.
+
+### Idle sway: measured, root-cause identified, killed in the drive (session 20 stage 6)
+
+**Measured flat first** (the muzzle ray's barrel-axis echo as the
+instrument): at idle under the live drive the reference pose's barrel
+direction oscillates 8.4-11.0 deg (z component 0.146-0.191) = **+-1.2 deg
+amplitude**, yaw +-0.6 deg; 1 Hz anchor telemetry vs a frozen snapshot
+peaks at **3.01 UU / 4.6 deg** on the wrist anchors.
+
+**Negative result (the SET-seam premise dissolves)**:
+`UpdateHandBobAnimationParameters` decompiled - it drives the WALK bob on
+animation channel 2 with weight = velocity/GroundSpeed, i.e. ZERO at
+standstill. `PlayHandBobAnimation` confirms channel 2 = the additive bob.
+The idle breathing is the authored base idle ANIMATION - there is no script
+property to zero, so nothing for the SET seam to set.
+
+**The kill (default ON, `vrhands swaykill on|off`)**: the sway reaches the
+VR rig through exactly one door - the drive's per-frame reference recapture
+- so the reference FREEZES against it: a fresh engine pose is adopted only
+when either wrist anchor moves past 6 UU / 12 deg (2x the measured idle
+envelope; equip/reload/fire move tens of UU), plus a 600 ms settle window
+past the last big frame so the eventual freeze holds the SETTLED pose, not
+a mid-animation one. Flat acceptance: kill ON = barrel axis bitwise
+IDENTICAL across 8 samples / 32 s; OFF = the wobble returns instantly; two
+fire pulls passed the threshold (reference re-adopted, settled 0.4 deg from
+the old snapshot) and re-froze 3/3. The weapon's own skeleton (pump,
+cylinder) animates untouched - it is a different SkeletonInstance. Side
+effect by construction: hand-cluster finger animation during reload freezes
+too (the drive was already overwriting it); the weapon's own reload
+animation still shows.

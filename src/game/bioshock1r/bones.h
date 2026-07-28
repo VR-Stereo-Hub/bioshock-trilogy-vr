@@ -55,6 +55,13 @@ void on_world_change();
 void set_hide_inactive(bool on);
 bool hide_inactive();
 
+// Session 20: freeze the drive's reference against the idle animation's
+// breathing (default ON; `vrhands swaykill on|off`). Real animations pass an
+// anchor-delta threshold and re-freeze when they settle. Measured baseline:
+// +-1.2 deg of barrel-direction wobble at idle without it.
+void set_sway_kill(bool on);
+bool sway_kill();
+
 // Seam commands (game thread): status | list [n] | skel [hands|weapon] |
 // poke <idx> <dUU> |
 // freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor> |
