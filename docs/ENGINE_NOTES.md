@@ -2192,3 +2192,35 @@ result, higher frame rate. Confirmed independently by an external tester who fou
 **Guidance for users: match the game resolution to the headset's per-eye aspect
 (near square for Quest), do not just raise it to 4K.** The `xr: headset fov half-angles
 ... -> game hfov N deg (aspect A)` startup line reports A; the closer to 1.0, the better.
+
+### Session 23 addendum - the second crash class (external, v0.4.0) and the resize churn
+
+A second dump from the external machine is a DIFFERENT crash from the v0.2.0 one:
+main thread, `eip/ecx/esi = 0xDEDEDEDE` (freed-memory poison), 22 stack frames of
+`virtualdesktop-openxr-32.dll -> d3d11.dll` and no game or mod frame - a use-after-free
+of a D3D11 object the OpenXR runtime still held. The dump's timestamp PREDATES the log
+sent with it (the log is from the relaunch), so the crashing run's log is lost - exactly
+the trap `bioshockvr.prev.log` now closes.
+
+Evidence from the surviving logs of that machine:
+
+- **Mid-session same-size ResizeBuffers is real**: 7 s after FOCUSED, 3840x2160 ->
+  3840x2160, and `vr::on_resize()` destroyed and recreated all three XR swapchains
+  inline for a no-op resize. Guarded now (same-size resizes keep the swapchains; the
+  backbuffer-derived views still release unconditionally because DXGI fails the game's
+  ResizeBuffers while references are held).
+- **The `windowed` flag is not load-bearing**: one run reported `windowed=0` (DXGI
+  `GetDesc().Windowed` at first Present) but the tester runs non-fullscreen, and both
+  runs that produced dumps were `windowed=1`. Candidates for the flag on that one run:
+  the game's own Fullscreen video setting, or DisplayFusion's window management
+  (`AppHook32` is injected in that process). Fullscreen is NOT the discriminator.
+- **Pacing oscillation**: CalcView rate flips between ~90/s (headset-paced) and
+  6000-7000/s (unpaced) in multi-second blocks on that machine - xrWaitFrame pacing is
+  repeatedly lost and regained, matching the tester's "connecting sometimes takes over a
+  minute". Unexplained; worth instrumenting if crashes persist after the resize guard.
+- **The "v0.2.0 works" premise is dead**: their first dump IS a v0.2.0 crash (worker
+  thread, FSynchronize dispatch, 25 s into the menu). All four releases crash on that
+  machine; v0.2.0 got luckier runs. There may be no version regression at all.
+
+Still open: defer swapchain destruction on REAL size changes to a safe point in the
+frame loop (never between xrBeginFrame/xrEndFrame); the pacing oscillation.

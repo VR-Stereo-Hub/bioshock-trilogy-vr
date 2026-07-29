@@ -91,6 +91,17 @@ the tester; math in ENGINE_NOTES, guidance now in the README.
 
 ## Next steps
 
+0. **Late session-23 findings (after the handoff above was first written):** a second
+   external dump is a DIFFERENT crash - main-thread use-after-free (0xDEDEDEDE poison)
+   inside VDXR->d3d11 frame submission, no mod frame on the stack. Shipped a guard:
+   same-size ResizeBuffers no longer destroys the XR swapchains (their machine issues
+   one mid-session 7 s after FOCUSED). Also: the v0.2.0-works premise is dead (their
+   first dump IS a v0.2.0 crash), fullscreen is not the discriminator (both dump-
+   producing runs were windowed=1), and their CalcView rate oscillates 90/s <-> 7000/s
+   (pacing lost/regained - unexplained). Full detail in ENGINE_NOTES session 23
+   addendum. Still open: defer real-size-change swapchain teardown to a safe point in
+   the frame loop; the pacing oscillation.
+
 1. **Get v0.4.1 to the tester.** With the filter re-arm their next crash should finally
    produce a dump with heap + data segs, registers and a symbolized stack. Ask for
    `bioshockvr.log`, `bioshockvr.prev.log` and the `.dmp` BEFORE relaunching.
