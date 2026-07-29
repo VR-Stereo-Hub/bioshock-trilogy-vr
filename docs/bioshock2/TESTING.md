@@ -36,8 +36,9 @@ Differences from BS1:
 - The command poller runs off the **ProcessEvent detour**, not the CalcView tail - so commands
   work at the main menu too (BS2's menu never runs PlayerCalcView).
 - The 1 Hz heartbeat logs the **FINAL camera** (post drive + offsets):
-  `[b2r] camera: loc=(...) rot=(...) headOff=(...) drive=0|1 (N calls/s)` - flat checks measure
-  these numbers directly.
+  `[b2r] camera: loc=(...) rot=(...) fov=N headOff=(...) drive=0|1 (N calls/s)` - flat checks
+  measure these numbers directly (`fov=` is the live HorizontalFOV option, 0 until the settings
+  object is located).
 - `simhead` takes an optional **position triple** (meters, XR space):
   `simhead <yaw> <pitch> <roll> [px py pz] [holdMs]` - proves the full 6DOF mapping flat, which
   BS1's rotation-only lane could not.
@@ -54,9 +55,26 @@ Differences from BS1:
 | `worldscale 50` | headOff halves exactly |
 | `worldscale 100` + `simhead off` + `offset 0 0 0` | camera returns to game values, drive=0 |
 
-M3 command vocabulary: `recenter`, `offset x y z`, `worldscale v`, `headoff up fwd`,
-`simhead ...`, `vrcam on|off`, `camlog on|off`, `vroverlay on|off`, `vrcine ...`. BS1's wider
-vocabulary (memscan family, vrstereo, vraim, reentry, exec) is NOT ported yet.
+Command vocabulary: `recenter`, `offset x y z`, `worldscale v`, `headoff up fwd`,
+`simhead ...`, `vrcam on|off`, `camlog on|off`, `vroverlay on|off`, `vrcine ...`; since
+session 25 also the FOV levers (`vrfov on|off|status`, `gfov <deg>|off`, `fovaudit`) and the
+full discovery family (`memscan(i)/memrescan(i)/memlist/memread/mempoke(i)/memrestore/memptr/
+pokeaddr(i)/hexdump/fsweep/strscan/membases/dumpframe`, plus the b2r-first
+`vtscan <hexRva> [needBytesHex]` candidate-vtable verifier - one-shot, walks the full 4 GB,
+~3 s Debug in gameplay, EXPECTED to freeze the game for that long). BS1's vrstereo/vraim/
+reentry/exec are NOT ported yet.
+
+## FOV flat acceptance (session 25 - log + img-diff measured)
+
+| step | expected |
+|---|---|
+| boot to menu | `UShockUserSettings scan: N vtable match(es), chosen=<heap addr>` one-shot; heartbeat gains `fov=100` (the option value) |
+| `fovaudit` | `option=<slider value>`, option-derived tanH == tan(option/2); with an XR session up, `src=readback` and submitted == option-derived; without one, `src=none swap=0x0` |
+| user changes the slider in Graphics Options | heartbeat `fov=` and `fovaudit` follow, no rescan (cache revalidates) |
+| `gfov 120` in gameplay | `game fov write ON (saved option N)`; heartbeat `fov=120`; visibly wider render |
+| `gfov off` | `game fov write OFF (restored option N)`; options UI still shows the user's value afterwards |
+| Esc to pause menu with a write armed | restore within ~0.5 s: the OFF edge (menu still CalcViews) or the stale-restore line (`calcview silent`) |
+| `vrfov on` flat (no XR session) | no write (`suggested_hfov` is 0 without a session) - the status form says so |
 
 ## In-headset M3 checklist
 
@@ -69,9 +87,28 @@ vocabulary (memscan family, vrstereo, vraim, reentry, exec) is NOT ported yet.
 5. Recenter from the overlay: horizon level, forward = game forward.
 6. Tune world scale (BS1 shipped 100 UU/m) and head offset up/fwd.
 7. Esc pause menu: drops to the flat big screen, returns to VR camera on resume.
-8. Report distortion/fisheye: EXPECTED at M3 - there is no BS2 FOV readback yet, so the
-   projection layer claims the headset FOV while the game renders its own (the documented next
-   M10 step; note BS2 has a native FOV slider in Graphics Options).
+8. Distortion/fisheye: since session 25 there is a live FOV readback, so this should be GONE
+   with `vrfov` off (see the FOV checklist below). If fisheye is back, check `fovaudit` first.
 
 Verify from the log, not from a flat mirror screenshot: `view state: GAMEPLAY (ShockPlayer
 view)`, heartbeat `drive=1`, and moving `headOff` values are the acceptance signals.
+
+## In-headset FOV checklist (session 25 acceptance: fisheye + world-drag gone)
+
+1. Quest 3 + Virtual Desktop (VDXR), launch BS2, load a save, `vrcam on` (overlay or command).
+2. `fovaudit` -> `src=readback`, submitted tanH == option-derived tanH (the honest claim).
+3. With `vrfov` OFF (the default): look around and at straight edges - **fisheye GONE, no
+   world-drag on head turns** (the world holds still). The image will not fill the headset's
+   full FOV - that is CORRECT at the game's option FOV (Quest 3 wants ~104+, the option
+   default is 100).
+4. `vrfov on` (command or the "Force headset FOV" checkbox): log shows
+   `game fov write ON (saved option N)`; the image now fills the headset FOV, still
+   undistorted, still no world-drag.
+5. Viewmodel check while `vrfov` is on: drill/weapon/hands look correctly proportioned (BS2's
+   fg follows the world FOV natively - flat-verified session 25; this step is the in-headset
+   confirmation. Only if the viewmodel breaks HERE does any BS1 fg machinery get considered).
+6. Esc to pause: `game fov write OFF (restored option N)` in the log; resume re-arms the write.
+7. Quit to the main menu, open Graphics Options: the FOV slider shows YOUR original value
+   (save/restore leak check). While there, note the slider's min/max endpoints - they are
+   still unrecorded in ENGINE_NOTES.
+8. Report: fisheye gone? world-drag gone? viewmodel correct with vrfov on? slider endpoints?

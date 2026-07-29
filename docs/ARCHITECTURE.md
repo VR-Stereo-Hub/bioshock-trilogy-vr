@@ -568,3 +568,29 @@ runtime.
   machinery, and only the parts proven necessary. First application: the FOV work must
   start by testing whether BS2's native FOV propagation already keeps the viewmodel
   correct across FOV values - if it does, BS1's entire fg apparatus stays unported.
+
+- **2026-07-29 (session 25, M10): discovery tooling DUPLICATED into b2r per the
+  duplicate-now policy - value-scan command routes verbatim, the vtable heap scanner
+  with one deliberate divergence.** The memscan-family/dumpframe routes are ~70 lines of
+  address-free forwarding copied into b2r's dispatcher; moving the dispatcher to a
+  shared home was re-rejected because it would edit released bioshock1r/camera.cpp and
+  add a shared TU for no behavioral gain (stays on the seam-leak list). The b2r copy of
+  `scan_for_vtable_object` is BS1's shape plus a NEW `vtscan <hexRva>` probe command
+  (one-shot candidate-vtable verifier, logs every live match), and the b2r settings
+  locator bakes in 3-miss DORMANCY from day one - BS1's settings scanner predates the
+  session-22 dormancy lesson and only rate-limits. Re-arm signal: view-state changes.
+
+- **2026-07-29 (session 25, M10): BS2 FOV design - honest claim unconditionally, the
+  write levers gated and default OFF, and NO foreground machinery.** Readback: every
+  CalcView reads `UShockUserSettings+0x4C` into `vr::set_rendered_hfov`; a missing
+  object claims 0, core's explicit "no readback" signal (falls back to the headset
+  target - bit-identical to pre-readback behavior, so the bring-up path never
+  regresses). Write: BS1's write-block shape (`vrfov` forced-headset wants strict
+  gameplay AND an actively driving HMD; `gfov` manual wants strict gameplay; one-shot
+  save/restore of the user's option), but the CalcView-silent stale-restore ticks from
+  the ProcessEvent detour (gate: one bool read every 64th event) because BS2 has no
+  scenedraw hook. Both levers DEFAULT OFF per the every-lever-off rule. The native-path
+  check came FIRST per the s24 directive and returned the decisive verdict: poking the
+  option re-lensed the drill viewmodel WITH the world (screenshots, ENGINE_NOTES) - so
+  fovA/fovB/kFgEyeComp/vrfgfov stay unported, and BS2's FOV milestone is readback +
+  write + nothing else.

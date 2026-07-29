@@ -592,7 +592,10 @@ kill. Both prerequisites below are now MET.):**
       the milestone. Every core/adapter seam leak found → ARCHITECTURE decision log.
       (M3-level: session 24, one session as budgeted - flat 6DOF integer-exact, in-headset
       PASSED (fisheye/world-drag = the expected FOV-claim gap); seam-leak inventory in the
-      decision log. Still open: M4-level stereo, FOV readback/write.)
+      decision log. FOV readback/write: session 25, flat-complete - HorizontalFOV derived
+      fresh at UShockUserSettings+0x4C, claim == rendered, vrfov/gfov default OFF, and the
+      native-path check killed the entire BS1 fg-porting question (viewmodel follows the
+      world FOV natively). Awaiting in-headset FOV acceptance. Still open: M4-level stereo.)
 
 ## Post-v1 backlog (not scheduled)
 
