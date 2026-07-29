@@ -596,7 +596,18 @@ kill. Both prerequisites below are now MET.):**
       at UShockUserSettings+0x4C, claim == rendered, vrfov/gfov default OFF, the native-path
       check killed the entire BS1 fg-porting question (viewmodel follows the world FOV
       natively), and the in-headset acceptance PASSED same day: fisheye gone, world-drag
-      gone, restore edges exercised. Still open: M4-level stereo - the milestone's last leg.)
+      gone, restore edges exercised.
+      M4-level stereo: session 26, FLAT-COMPLETE - substrate derived in one session
+      (UGameEngine::Draw 0x4EE8D0 via the live kick/kick2 samplers + offline capstone
+      walks), and the policy gate paid out its biggest win yet: SequentialReentry runs
+      on the THREADED substrate - no 1t, no flush-point, no drain guard, none of BS1's
+      single-threading machinery ports. Pulse/continuous/stereo all flat-green:
+      presents/s == 2 x draws/s exact, per-eye camera delta IPD-exact (6.30 UU), 2nd-pass
+      CalcView replay 655/655, zero faults; `vrstereo on` one-toggle READY; every lever
+      default OFF; pass 2 deny-by-default on the single gameplay caller. Still open for
+      the milestone tick: the IN-HEADSET depth verdict (checklist in
+      docs/bioshock2/TESTING.md - depth reads, eye swap, comfort, world-scale
+      calibration now unblocked) and a user-driven load-crossing pass.)
 
 ## Post-v1 backlog (not scheduled)
 
