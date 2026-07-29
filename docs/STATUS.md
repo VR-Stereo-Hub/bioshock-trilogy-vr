@@ -4,11 +4,19 @@
 
 ## Current state (2026-07-29, session 25 - M10: BS2 FOV DONE flat - readback claim == rendered, forced-headset-FOV write default OFF, discovery tooling ported, crash-dump loop fixed - branch s25-m10-bs2-fov)
 
-**The BS2 FOV-claim mismatch is closed on the flat side.** `UShockUserSettings.HorizontalFOV`
-derived fresh at **+0x4C** (BS1's +0x8C reads 3 on BS2 - the never-copy rule earned its keep),
-readback wired into `vr::set_rendered_hfov` every CalcView, `vrfov`/`gfov` write levers landed
-DEFAULT OFF, capabilities now 0x3. In-headset acceptance (fisheye + world-drag gone) is the
-one open gate - checklist in docs/bioshock2/TESTING.md.
+**The BS2 FOV-claim mismatch is CLOSED - in-headset ACCEPTED (user, Quest 3 / VDXR).**
+`UShockUserSettings.HorizontalFOV` derived fresh at **+0x4C** (BS1's +0x8C reads 3 on BS2 -
+the never-copy rule earned its keep), readback wired into `vr::set_rendered_hfov` every
+CalcView, `vrfov`/`gfov` write levers landed DEFAULT OFF, capabilities now 0x3. User verdict:
+**fisheye GONE, world-drag GONE**; viewmodel unremarkable (nothing looked wrong = the
+no-fg-defect flat finding holds in-headset); the Esc-pause save/restore edges were exercised
+repeatedly in-headset (the 19:37 ON/OFF cycles in the session log ARE the user's pause tests
+- each pause restored option 100, each resume re-armed). vrfov wrote 131 on this rig
+(headset-derived, effectively BS1's 130); the manual gfov lever now defaults to 130 for BS1
+parity. Two user observations correctly deferred: world scale cannot be judged or perceived
+in mono (slider works - flat-proved - but perceived size needs stereo's IPD ratio; already
+the session-24 call), and vrstereo/SR does not exist on BS2 yet (that IS the next
+milestone).
 
 ### 1. THE HEADLINE: BS2's foreground follows the world FOV natively - BS1's fg apparatus stays unported
 
@@ -73,17 +81,17 @@ native first, test whether the BS1 problem exists, port only what is proven nece
 entry in the ARCHITECTURE decision log + CLAUDE.md hard rules. Session 25's fg verdict is the
 first applied case.
 
-1. **User session for the FOV acceptance** (checklist in docs/bioshock2/TESTING.md): flat
-   gameplay gates (`gfov 120` ON/OFF edges, Esc stale-restore, slider min/max endpoints for
-   ENGINE_NOTES), then in-headset: fisheye + world-drag gone with `vrfov` off, image fills
-   the headset with `vrfov` on, viewmodel correct (the in-headset native confirmation).
-   Then PR s25-m10-bs2-fov -> main, merge when green.
-2. **BS2 M4 stereo**: re-derive the scene-build seam + render-queue substrate; same shapes as
-   BS1 expected (frame submit ret 0xC + SetEvent tail, render pump WFSO loop, scene build ret
-   0x10), different RVAs, E9-stub hop on every census - and per the policy, check first
-   whether BS2's renderer offers a less invasive doubling path before assuming
-   SequentialReentry's exact BS1 shape. `dumpframe full 2` decode-check on BS2 is a cheap
-   first probe.
+1. **BS2 M4 stereo** (the user's top ask - "jitter 3D" parallax already reads well in mono,
+   and world-scale tuning is blocked on it): re-derive the render substrate. Session-25
+   recon says BS1's STATIC submit-finding method is dead on BS2 (SetEvent is
+   wrapped/virtually dispatched, zero static callers of the wrapper) - so start LIVE: port
+   BS1's SetEvent caller sampler (`reentry kick` instrument), sample the game-thread submit
+   caller, walk back to the entry offline. Pump-loop candidates 0x7C3E40 / 0xCF3EE0 banked
+   in ENGINE_NOTES. `dumpframe full 2` decode-check on BS2 is a cheap first probe. Per the
+   policy: check whether BS2 offers a less invasive doubling path before assuming
+   SequentialReentry's exact BS1 shape.
+2. Record the BS2 FOV slider min/max endpoints next time someone is in Graphics Options
+   (ENGINE_NOTES gap, cosmetic).
 3. **Triage the BS2 idle-gameplay crash** (dump kept, RVA 0x4FF0FE) - one-off or a class?
    BS1's session-23 offline-disasm triage recipe applies.
 4. Menu-load view actor class (vtable RVA 0x106EE20) still not RTTI-identified.
@@ -2555,9 +2563,13 @@ strict-gameplay gated, save/restore, stale-restore from the PE detour since BS2 
 scenedraw hook), heartbeat fov= field, fovaudit, overlay controls, CAP_FOV_WRITE. Flat gates
 passed at the menu including the negative one (gfov refuses to write outside gameplay). A
 harness lesson re-learned the hard way: an unfocused BS2 pauses to ~1-2 ProcessEvent calls/s,
-so a command can sit undispatched for minutes - pair EVERY game-cmd with a game-shot. Open:
-gameplay write gates + slider endpoints + the in-headset acceptance (checklist in
-docs/bioshock2/TESTING.md), then PR.
+so a command can sit undispatched for minutes - pair EVERY game-cmd with a game-shot.
+IN-HEADSET VERDICT (user, same day): **ACCEPTED - fisheye gone, world-drag gone**, viewmodel
+unremarkable, Esc-pause restore edges exercised repeatedly in-headset (vrfov wrote 131 =
+headset-derived, effectively BS1's 130; gfov lever re-defaulted to 130 for parity). User also
+confirmed mono parallax depth reads well and asked for stereo - correctly not there yet;
+world-scale perception likewise deferred to stereo (the mono slider only scales lean
+translation, flat-proved working). PR opened and merged same session per the s24 precedent.
 
 ### Session 24 - 2026-07-29 - M10 started: BioShock 2 adapter to M3 parity
 
