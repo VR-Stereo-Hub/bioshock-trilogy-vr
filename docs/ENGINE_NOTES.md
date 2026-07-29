@@ -2082,3 +2082,113 @@ consume the captured image). Do not retry imageRect crops on VDXR.
   dormant after 3 straight failures; the cheap rig/learned reads keep
   running and re-arm it. Verified: exactly 3 scans post-load, then a
   1.000 s heartbeat metronome.
+
+## Session 23 - crash-report forensics, build identification, thumbrest hardware
+
+### Attributing an external crash report to a release (the method)
+
+An external report ("v0.2.0 worked, newer ones crash at the menu or while loading")
+arrived with a log and a minidump. The log banner said `bioshockvr 0.1.0 starting`,
+which was useless: `BVR_VERSION` was a hand-edited `#define` that stayed "0.1.0" for
+the v0.1.0, v0.2.0 AND v0.3.0 releases. Three independent methods identified the
+build, and all three agreed on **v0.2.0**:
+
+1. **PE TimeDateStamp of the shipped DLL.** The minidump's module list carries each
+   module's `TimeDateStamp`. The reported `bioshockvr.dll` read 0x6A67E457 =
+   2026-07-27 23:05:59 UTC, a byte-exact match for the v0.2.0 release asset. Per-release
+   fingerprints (download the assets and read `e_lfanew + 8`):
+
+   | Release | bytes | PE TimeDateStamp (UTC) | sha256 prefix |
+   |---|---:|---|---|
+   | v0.1.0 | 2,749,440 | 2026-07-27 19:55:13 | 8C071BAD24F7C872 |
+   | v0.2.0 | 2,779,648 | 2026-07-27 23:05:59 | F96FC7A4D8A80E02 |
+   | v0.3.0 | 2,830,848 | 2026-07-28 18:19:45 | D36EEDC8168A2EE0 |
+   | v0.4.0 | 2,830,848 | 2026-07-29 00:26:50 | 82EF1971A1C46623 |
+
+   Note v0.3.0 and v0.4.0 are the same SIZE - only hash or timestamp separates them.
+2. **Banner exclusion.** "0.1.0" rules out v0.4.0 only (v0.4.0 is the first release whose
+   banner is correct). Necessary but not sufficient.
+3. **Feature fingerprint in the log.** `[b1r] APlayerWeapon scan:` is emitted
+   unconditionally by every scan (`patterns.cpp`, the `%s scan:` line) and the resolver
+   does not exist before v0.3.0. 25 s at the menu with ZERO such lines excludes v0.3.0
+   and v0.4.0. Verified positively on this machine: a v0.4.0 menu boot logs exactly
+   three of them before dormancy.
+
+**Lesson, fixed in this session:** the version now comes from `project(... VERSION)` +
+`git describe`, regenerated every build (`cmake/GenerateVersion.cmake`), and the mod logs
+its own PE TimeDateStamp at startup. A report is now self-identifying.
+
+### The reported crash (v0.2.0, external machine) - what the dump does and does not say
+
+- `0xC0000005` with `ExceptionInformation[0] == 8`: a **DEP execute violation**. The CPU
+  tried to FETCH an instruction from `0x2714FB00`, non-executable game heap. This is a
+  different bug class from a null deref and the old crash log did not distinguish them.
+- The memory captured around the faulting IP is engine data, not code: adjacent FName
+  entries (`CountDownToHeartBeat`, `ResponsePending`) and an object whose vtable resolves
+  by RTTI to **`FThreadLockStepExecution`**, holding pointers to two `FSynchronize`
+  objects. So the target was a live engine sync object, reached as a function pointer.
+- The faulting thread is **a game worker thread, not the game thread**. Frames:
+  `BaseThreadInitThunk` -> runnable dispatch at `BioshockHD.exe+0x70CBDE` -> the
+  `SetEvent`/`WaitForSingleObject` task loop at `BioshockHD.exe+0x7CCF40`, which
+  virtual-calls queued `FSynchronize` tasks. **No bioshockvr.dll frame is on that stack**;
+  all of the mod's CalcView and exec work runs on the game thread.
+- Timing: the last CalcView heartbeat is 13 s before the fault, i.e. the game was mid
+  level-load or transition - matching the reporter's "or while loading".
+- The reported run had **no `[reentry]` lines at all**, so 1t/stereo were never armed.
+  The session-23 watchdog bug below is therefore NOT this crash.
+- **Ruled out: address-space exhaustion.** The report peaked at `PeakVirtualSize`
+  1.88 GB, which reads alarming until you note the exe is LAA, so the ceiling is ~4 GB
+  (confirmed live: `env: ... host LAA=yes (user address space 4095 MB)`). 46%, not a wall.
+- **Not root-caused.** The dump was `MiniDumpNormal` - stacks and module list only, no
+  heap and no data segments - so the contents of the smashed slot are unrecoverable.
+  Fixed this session (see `crash.cpp`); a fresh report is required.
+
+Environment of the report, for comparison with this dev machine: Win10 19045, 4 cores,
+RTX 3070, Quest 2 over VirtualDesktopXR 1.0.10, backbuffer 3840x2160, with DisplayFusion's
+`AppHook32` and the Steam overlay also injected. This machine: Win10 26200, 12 cores,
+RTX 4060, 1920x1080. Resolution and core count are NOT reproduced locally.
+
+### Thumbrest: what the hardware actually exposes
+
+From `third_party/OpenXR-SDK/specification/registry/xr.xml` (authoritative, in-tree):
+
+| Profile | thumbrest | trackpad |
+|---|---|---|
+| `oculus/touch_controller`, `meta/touch_plus_controller` (Quest 3) | `touch` | none |
+| `meta/touch_pro_controller`, `facebook/touch_controller_pro` | `touch`, `force` | none |
+| `htc/vive_controller` | none | `x`, `y`, `click`, `touch` |
+| `valve/index_controller` | none | `x`, `y`, `touch`, `force` |
+
+**The Quest 3 thumbrest is a single boolean.** No X, no Y - directional "flicks" on it are
+impossible. Quest Pro adds analog `force`, which is pressure (1D), still not a direction.
+The flick idea comes from TRACKPADS (Vive wand, Index), which do carry x/y. Any thumbrest
+modifier is necessarily CROSS-HAND: a thumb cannot rest on the pad and push the adjacent
+stick at the same time. UEVR uses it the same way, as a boolean modifier for DPad-shifting.
+
+**Runtime support verified:** VDXR 1.0.10 reports it -
+`xr-input: RIGHT thumbrest touch reported by the runtime` (2026-07-29, Quest 3).
+Suggesting the two `/input/thumbrest/touch` bindings raised the action count 17 -> 19 with
+no suggestion failure.
+
+### Backbuffer aspect decides how much of the eye render is wasted
+
+The XR eye swapchains are created at the game's backbuffer size, so the BACKBUFFER
+ASPECT - a game video-settings choice, not a mod setting - determines the game hfov the
+mod must request, and therefore how much of each rendered eye is inside the headset FOV.
+
+The mod requests the hfov that covers the headset's vertical half-angle at the render
+aspect: `tan(hfov/2) = tan(vHalf) * aspect`. Measured, Quest 2 half-angles h=49 v=50:
+
+| backbuffer | aspect | requested hfov | horizontal actually visible |
+|---|---:|---:|---:|
+| 3840x2160 | 1.778 | 129.5 deg | `tan(49)/tan(64.7)` = **54%** |
+| 2750x2850 | 0.965 | 98.0 deg | ~100% |
+
+So 4K 16:9 renders 8.3 MPx of which ~4.5 MPx is discarded, while a near-square
+2750x2850 renders 7.8 MPx that nearly all lands in the lens - fewer pixels, sharper
+result, higher frame rate. Confirmed independently by an external tester who found
+2700x2700 both sharper and faster than 4K before we had the explanation.
+
+**Guidance for users: match the game resolution to the headset's per-eye aspect
+(near square for Quest), do not just raise it to 4K.** The `xr: headset fov half-angles
+... -> game hfov N deg (aspect A)` startup line reports A; the closer to 1.0, the better.

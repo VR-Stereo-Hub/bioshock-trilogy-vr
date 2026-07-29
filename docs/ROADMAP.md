@@ -614,5 +614,20 @@ kill. Both prerequisites below are now MET.):**
   inverse-scale minefield and flips triangle winding; re-attaching to the left hand
   has no grip art). The input/pose swap is what handedness is actually for and is
   roughly a session of work incl. testing.
+- **Seated / standing recenter modes** (user's ask 2026-07-29, session 23 - deferred to the
+  next release): the mod menu has ONE recenter. It zeroes yaw AND full head position, so
+  whatever posture you recenter in becomes the character's eye height - correct for that
+  posture, wrong the moment you change it. Standing players want a second mode. Three
+  candidate designs, undecided:
+  (a) **yaw + horizontal only** - do not zero height, so real standing height drives eye
+      height and crouching maps 1:1; seated keeps today's zero-everything behaviour.
+      Smallest change, no new reference space, no guardian dependency.
+  (b) **floor-referenced** - `XR_REFERENCE_SPACE_TYPE_STAGE`/`LOCAL_FLOOR` for standing.
+      Most physically correct, but the mod currently creates only LOCAL
+      (`openxr_runtime.cpp:720`) and the whole aim/body calibration sits on that pose
+      pipeline, so it is the riskiest.
+  (c) **height offset preset only** - one recenter plus a saved height boost that seated
+      uses and standing sets to zero. Purely additive, but manual.
+  Whichever wins persists in `vrpreset.ini` and gets an overlay control next to Recenter.
 - BioShock Infinite (UE3 build 6829) adapter feasibility study
 - OpenVR backend (if some runtime needs it)
