@@ -538,6 +538,16 @@ kill. Both prerequisites below are now MET.):**
       sticklog on` logs the FINAL composed pad at 10 Hz (post merge/pitchkill/turn) and
       last_composed_sticks() exists for the recorder; pair with `vrbody probe on` resid
       lines on a real headset walk. The capture + analysis are still open.
+- [ ] **Cinematic letterbox BARS (parked 2026-07-29, session 22 round 5, user's call:
+      ship without, fix next cycle)**: three in-headset rounds failed to remove the
+      bars (VDXR ignores projection imageRect; the capture-side unsqueeze provably
+      executed yet bars stayed - mechanism unresolved). Unsqueeze ships DEFAULT OFF
+      (`vrcine unsqueeze on`). Next tools: dump the EYE SWAPCHAIN content during
+      letterbox, rule out VD-side compositing, tight in-headset A/Bs per toggle.
+- [ ] **Suspend hands/aim/laser drives during cinematics (session 22 round 5)**: with
+      controllers awake the controllable rig overrides the authored cinematic hands
+      (authored hands only showed when the controllers were idle). Gate the drives on
+      the letterbox like the head drive; re-arm on exit.
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
 - [ ] **World/viewmodel scale SPLIT (parked here 2026-07-27, session 16 part 3, user's

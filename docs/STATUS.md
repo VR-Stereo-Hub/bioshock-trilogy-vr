@@ -179,6 +179,36 @@ scroll behavior, and their controller cross-check. After the release: the
 CLEAN-MACHINE new-user flow session (user's ask - wipe, install from the
 release zip, fix whatever breaks until out-of-box works).
 
+### Session 22 round 5 (2026-07-29, pre-release) - LETTERBOX BARS PARKED OPEN, user's call
+
+Three in-headset rounds could not remove the cinematic letterbox bars
+(imageRect crop ignored by VDXR; the capture-side unsqueeze executed -
+`unsqueeze live` logged - but the user still saw bars; mechanism
+UNRESOLVED). The user called STOP: ship the release, tackle the bars next
+cycle. Shipping posture: the unsqueeze is DEFAULT OFF (`vrcine unsqueeze
+on` = the experiment lever); the letterbox DETECTOR, the authored-camera
+drive suspension and the flash-native in-frame rendering stay live (the
+parts the user verified; the flat frame is pixel-vanilla by construction).
+
+**Two documented open items for the next release:**
+1. **The bars themselves** - where do the user-visible bars actually come
+   from with the unsqueeze provably drawing? Next tools: capture the eye
+   swapchain content (not the backbuffer) during letterbox; check whether
+   VD's own compositing letterboxes; A/B `vrhud off` + `vrcine unsqueeze
+   on|off` in-headset with 30 s verdicts per toggle.
+2. **Hands drive during cinematics** - the user sees the CONTROLLABLE rig
+   hands instead of the authored cinematic hands whenever the controllers
+   are awake (the run where authored hands showed = controllers idle in
+   the lap; not a build regression). Fix: suspend the hands/aim/laser
+   drives while the letterbox holds, exactly like the head drive.
+
+Also fixed this round (user-found while flat-playing): the weapon
+resolver's scan fallback froze the game for seconds every ~2000 frames
+FOREVER on weaponless saves (early game) - now fully dormant after 3
+failures, re-armed by the cheap rig reads (3 scans then a 1.000 s
+heartbeat metronome, measured). This was the "game freezes every couple
+of seconds" report and it is exactly the new-user first-hour path.
+
 ## Previous state (2026-07-28, session 21 - RENDER SYNC: the fov audit came back clean, the fg scene decoded down to its ctor args, the fovA zoom-pull lever found, per-weapon profiles shipped - branch s21-render-sync)
 
 **Branch `s21-render-sync` off main (post-PR-#5). Three flat-gated commits:

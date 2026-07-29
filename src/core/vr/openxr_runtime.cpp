@@ -1203,6 +1203,12 @@ float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
 // unreliable with projection-layer imageRect crops (VDXR kept the bars),
 // so the eye capture un-letterboxes the frame ITSELF - band stretched
 // across the full image by our own blit, plain copy everywhere else.
+// v0.4.0 ships the unsqueeze DEFAULT OFF ("vrcine unsqueeze on" re-arms):
+// three in-headset rounds could not make it remove the bars (mechanism
+// unresolved - parked for the next release) and a mistimed crop is a
+// content-loss risk. Detection, the drive suspension and the flash-native
+// frame all stay live - they are the parts the user verified.
+std::atomic<bool> g_lbUnsqueeze{false};
 ID3D11Texture2D* g_lbScratch = nullptr;        // backbuffer copy, SRV source
 ID3D11ShaderResourceView* g_lbScratchSrv = nullptr;
 ID3D11Texture2D* g_lbStretched = nullptr;      // our RTV target, then copied
@@ -1225,7 +1231,8 @@ void release_lb_scratch() {
 // copy (bars visible but nothing worse).
 void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
     unsigned lbTop = 0, lbBot = 0;
-    if (bvr::hud::letterbox(&lbTop, &lbBot) && lbTop + lbBot < g_swapH) {
+    if (g_lbUnsqueeze.load(std::memory_order_relaxed) &&
+        bvr::hud::letterbox(&lbTop, &lbBot) && lbTop + lbBot < g_swapH) {
         D3D11_TEXTURE2D_DESC bd{};
         backbuffer->GetDesc(&bd);
         if (g_lbScratch) {
@@ -1958,7 +1965,13 @@ void publish_gameplay_view(bool strictGameplay) {
 }
 
 void handle_cine_command(const char* args) {
-    if (strncmp(args, "mode stereo", 11) == 0) {
+    if (strncmp(args, "unsqueeze on", 12) == 0) {
+        g_lbUnsqueeze.store(true, std::memory_order_relaxed);
+        BVR_LOG("xr: letterbox unsqueeze ON (experimental - bars mechanism unresolved)");
+    } else if (strncmp(args, "unsqueeze off", 13) == 0) {
+        g_lbUnsqueeze.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: letterbox unsqueeze off");
+    } else if (strncmp(args, "mode stereo", 11) == 0) {
         g_cineStereo.store(true, std::memory_order_relaxed);
         BVR_LOG("xr: cinematic mode STEREO (fov-mismatch scenes keep the projection, "
                 "claim = measured fov; strict-false/stale still drop to the quad)");
