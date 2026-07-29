@@ -70,6 +70,18 @@ constexpr uint32_t kProcessEventVtblByteOffset = 0xC;
 //   UGameEngine        0x10BD7DC / 0x10BD9E8 (BS1's console_exec used the
 //   second of the pair - expect the same here, but verify before calling).
 
+// --- heap scan for vtable-identified objects (session 25) -------------------
+// BS2 shape of BS1's scanner (bioshock1r/patterns.cpp - duplicated per the
+// duplicate-now seam policy): walk the FULL 4 GB committed private RW space
+// (the game is LAA; actors allocate above 2 GB) for objects whose dword0 is
+// imageBase + vtableRva. `accept` is called per match until it takes one;
+// every call site must treat this as EXPENSIVE (multi-second) - one-shot use
+// only, never on a cadence (BS1 session-22 lesson: a scan cadence reads as
+// "the game freezes every couple of seconds").
+using ObjectAccept = bool (*)(void* obj, void* user);
+void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccept accept,
+                             void* user, const char* what, int* outMatches);
+
 struct Symbols {
     // The dead-on-BS2 event thunk (RVA 0x395CC0 live) - resolved and logged
     // for the knowledge base, NEVER hooked: its signature differs from BS1's
