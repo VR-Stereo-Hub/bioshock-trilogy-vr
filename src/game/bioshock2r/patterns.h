@@ -70,30 +70,80 @@ constexpr uint32_t kProcessEventVtblByteOffset = 0xC;
 //   UGameEngine        0x10BD7DC / 0x10BD9E8 (BS1's console_exec used the
 //   second of the pair - expect the same here, but verify before calling).
 
-// --- render-substrate discovery (session 26) --------------------------------
-// The engine's ONLY static path to kernel32!SetEvent is the event-object
-// signal ("Trigger") method below: `push [ecx+4]; call [IAT SetEvent]; ret` -
-// a 10-byte __thiscall with the HANDLE at object+4 (the same event-object
-// shape BS1 documented on its submit kick). It has ZERO static E8 callers
-// (virtual dispatch), so the submit is derived LIVE: `reentry kick2` hooks
-// this method and samples _ReturnAddress() = the engine-side call site.
-// Session-25 recon CORRECTIONS (offline capstone census, 2026-07-29 s26):
-// 0xB81020 (E9 stub 0xF01A) is SuspendThread/ResumeThread on a thread object,
-// 0xCDB917 (stub 0xD9BD) is a crit-section once-init helper, the second FF15
-// SetEvent site 0xCDB9BB is CRT encoded-pointer once-init machinery, and the
-// FF25 import jmp-thunks (SetEvent's at 0xF3E494) have zero callers - none of
-// these are render seams. Sync-primitive census + derivations in
-// docs/bioshock2/ENGINE_NOTES.md. Recorded there, comment-only here until a
-// consumer lands: ReleaseSemaphore FF15 cluster 0x5C98CE/0x5C9A1B/0x5C9B84/
-// 0x5C9DB8 (job-system shape); WFSO(INFINITE, handlePair[i<2]) helper
-// 0x7C3E40 over the global handle pair at RVA 0x1803A14 (pump-wait
-// candidate); CreateSemaphoreW ctor 0xCF3EE0 (session-25 "pump candidate"
-// label was wrong - it is a semaphore-object constructor).
+// --- render substrate (session 26) -------------------------------------------
+// Derived by the live kick/kick2 samplers + offline capstone walks; full
+// derivation chains in docs/bioshock2/ENGINE_NOTES.md "Scene-draw
+// architecture (session 26)". Headlines:
+// - The scene build root is UGameEngine::Draw: vtable slot +0x118 of the
+//   session-24 RTTI candidate 0x10BD7DC holds jmp stub 0x139D -> body
+//   0x4EE8D0 (aligned-stack + SEH prologue, ret 0x10, this = the engine,
+//   render-command ring cursors at this+0x118/+0x11C). ZERO static E8
+//   callers - virtually dispatched; the gameplay caller ret RVA comes from
+//   the live caller census (deny-by-default gate data for pass 2).
+// - Draw reads its camera from the viewport's camera actor at the head:
+//   [[arg1+0x48] + 0x1EC..0x1F4] = loc floats, [+0x1F8..0x200] = rot ints -
+//   written earlier by the tick-side PlayerCalcView dispatch (fn 0x4D1080,
+//   references the documented FName index global 0x17D9A08). CalcView does
+//   NOT run inside Draw on BS2 (BS1 difference!) - a doubled Draw needs the
+//   cached fields poked, not a CalcView replay.
+// - 0x5C7C80 is NOT a frame submit despite wearing BS1's submit shape
+//   (TLS frame-id spin-wait, camera globals, ret 0xC, tail event kick): its
+//   `this` is the FContentStreamingManager global and the camera globals it
+//   fills are the streaming view info. Hooked as telemetry only.
+// - The two once-per-present SetEvent threads are the Flash (gameswf) and
+//   FMOD lock-step runnables (FThreadLockStepRunnable::Run = 0x67DAD0,
+//   shared vtable slot 1); the hw-thread quotient helper 0x67DAB0 gates the
+//   Flash kick: threaded iff [0x149760C] / [0x1497798] > 1 (BS1's quotient
+//   family, one out-of-line copy).
+// Session-25 recon CORRECTIONS: 0xB81020 (stub 0xF01A) = thread
+// Suspend/Resume; 0xCDB917 (stub 0xD9BD) = crit-section once-init helper;
+// FF15 SetEvent site 0xCDB9BB = CRT once-init machinery; 0xCF3EE0 =
+// CreateSemaphoreW object ctor (not a pump); 0x7C3E40 = WFSO(INFINITE)
+// helper over the handle pair at 0x1803A14, callers 0x7A3FD6/0x7A4563
+// (not the render queue).
+
+// UGameEngine::Draw - THE SequentialReentry seam candidate.
+constexpr uint32_t kGameEngineVtableRva = 0x10BD7DC; // RTTI walk s24, consumed s26
+constexpr uint32_t kDrawVtblByteOffset = 0x118;      // slot holding stub -> Draw
+constexpr uint32_t kSceneBuildRva = 0x4EE8D0;        // UGameEngine::Draw body
+constexpr uint8_t kSceneBuildPrologue[] = {0x53, 0x8B, 0xDC, 0x83, 0xEC,
+                                           0x08, 0x83, 0xE4, 0xF0};
+// push ebx; mov ebx,esp; sub esp,8; and esp,-16 (aligned-stack MSVC frame,
+// BS1's build prologue family; SEH frame follows)
+
+// Draw's camera source (the pass-2 poke target).
+constexpr uint32_t kViewportCamActorOffset = 0x48;
+constexpr uint32_t kCamActorLocOffset = 0x1EC; // 3 floats
+constexpr uint32_t kCamActorRotOffset = 0x1F8; // 3 int32 rotator units
+
+// FContentStreamingManager view hand-off (telemetry hook only).
+constexpr uint32_t kStreamViewRva = 0x5C7C80;
+constexpr uint8_t kStreamViewPrologue[] = {0x55, 0x8B, 0xEC, 0x64, 0xA1,
+                                           0x2C, 0x00, 0x00, 0x00};
+// push ebp; mov ebp,esp; mov eax,fs:[0x2C]
+
+// FEventWin::Trigger (vtable 0x11E4FAC slot 2): `push [ecx+4]; call
+// [IAT SetEvent]; ret` - handle at object+4. The kick2 sampler hooks it.
+// Opcode bytes only: the FF15 operand embeds the ASLR-rebased IAT VA.
 constexpr uint32_t kEventTriggerRva = 0xB81050;
-// Opcode bytes only: the FF15 operand embeds the ASLR-rebased IAT VA, so the
-// last 4 bytes of the instruction differ from the disk image at runtime.
 constexpr uint8_t kEventTriggerPrologue[] = {0xFF, 0x71, 0x04, 0xFF, 0x15};
-// push dword ptr [ecx+4]; call dword ptr [imm32]
+
+// Globals (RVAs; live-verified via hexdump against the running game):
+constexpr uint32_t kDrawCounterRva = 0x17D7D2C;     // inc at Draw head (~presents/s)
+constexpr uint32_t kStreamMgrGlobalRva = 0x17F5D54; // FContentStreamingManager*
+constexpr uint32_t kStreamCamLocRva = 0x17F5D7C;    // 3 floats, == live camera
+constexpr uint32_t kStreamFrameIdARva = 0x17F5D8C;  // high bit = done (BS1 shape)
+constexpr uint32_t kStreamCamRotRva = 0x17F5D90;    // 3 int32, == live camera
+constexpr uint32_t kStreamFrameIdBRva = 0x17F5DA0;
+constexpr uint32_t kHwThreadsRva = 0x149760C;       // quotient numerator
+constexpr uint32_t kThreadDivisorRva = 0x1497798;   // quotient divisor
+constexpr uint32_t kFlashTaskGlobalRva = 0x17F7794; // Flash lock-step task
+
+// Static build-identity gate for the Draw hook: image[kGameEngineVtableRva +
+// kDrawVtblByteOffset] must hold imageBase + a jmp stub that lands on
+// kSceneBuildRva, whose bytes match kSceneBuildPrologue. Pure image reads -
+// refuses the hook on any mismatch (a wrong candidate names itself).
+bool verify_draw_chain(const bvr::pattern_scan::ProcessImage& image);
 
 // --- UShockUserSettings: the FOV option (session 25) ------------------------
 // Vtable RVA runtime-VERIFIED 2026-07-29: vtscan found a live heap object

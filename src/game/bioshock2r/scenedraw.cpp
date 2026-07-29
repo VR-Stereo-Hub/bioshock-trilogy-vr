@@ -32,15 +32,53 @@ namespace {
 
 const uint8_t* g_imageBase = nullptr;
 size_t g_imageSize = 0;
+bvr::pattern_scan::ProcessImage g_image{};
 
-// Reserved for the substrate hooks (commit 2+): nonzero exactly while a
-// depth-0 hooked render call is in flight on that thread. The poll-gate
-// deferral (inside_hooked_call) and the calcview in/out attribution key on
-// these from day one so the camera-side plumbing lands once.
+// UGameEngine::Draw is `ret 0x10` with a live ECX this (the engine object) -
+// __fastcall passthrough with a dummy EDX slot and 4 stack params is
+// register/stack/cleanup-identical (same trick as the BS1 build detour).
+using DrawFn = void(__fastcall*)(void* ecx, void* edx, void* a1, void* a2, void* a3,
+                                 void* a4);
+// FContentStreamingManager view hand-off: `ret 0xC`, live ECX this,
+// args (FVector* loc, FRotator* rot, void* obj). Telemetry hook only.
+using StreamFn = void(__fastcall*)(void* ecx, void* edx, void* loc, void* rot, void* a3);
+
+struct HookSlot {
+    const char* name = nullptr;
+    void* target = nullptr;
+    void* original = nullptr; // trampoline; cast to the slot's signature
+    bool created = false;     // game thread only
+    std::atomic<bool> enabled{false};
+};
+HookSlot g_draw{"draw"};
+HookSlot g_stream{"stream"};
+
+// Nonzero exactly while a depth-0 hooked render call is in flight on that
+// thread. The poll-gate deferral (inside_hooked_call) and the calcview
+// in/out attribution key on these.
 std::atomic<uint32_t> g_activeTid{0};
 std::atomic<int> g_activeDepth{0};
 std::atomic<uint32_t> g_calcInside{0};
 std::atomic<uint32_t> g_calcOutside{0};
+std::atomic<uint32_t> g_lastCalcTid{0};
+
+// Telemetry (detour threads write, beat/overlay read).
+std::atomic<uint32_t> g_drawEntries{0};
+std::atomic<uint32_t> g_streamEntries{0};
+std::atomic<uint32_t> g_lastDrawTid{0};
+std::atomic<uint32_t> g_drawUs{0};
+std::atomic<uint32_t> g_callerRvas[4]{};
+std::atomic<int> g_dumpRemaining{0}; // stream-args dump lines left
+// Draw-head camera probe: what Draw sees in the viewport camera actor's
+// cached fields (the tick-side CalcView product = the pass-2 poke target).
+std::atomic<float> g_camSrcLoc[3]{};
+std::atomic<int32_t> g_camSrcRot[3]{};
+std::atomic<uint32_t> g_camActorProbes{0};
+
+// Heartbeat bookkeeping - beat thread (the Draw thread) only.
+uint64_t g_lastBeatMs = 0;
+uint32_t g_beatDraws = 0, g_beatStreams = 0, g_beatCalcIn = 0, g_beatCalcOut = 0;
+uint64_t g_beatPresents = 0;
 
 // One-shot CalcView stack scan request.
 std::atomic<int> g_calcstackPending{0};
@@ -48,6 +86,17 @@ std::atomic<int> g_calcstackPending{0};
 uint32_t to_rva(const void* p) {
     uintptr_t d = reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(g_imageBase);
     return d < g_imageSize ? static_cast<uint32_t>(d) : 0xFFFFFFFFu;
+}
+
+void note_caller(uint32_t rva) {
+    for (auto& slot : g_callerRvas) {
+        uint32_t cur = slot.load(std::memory_order_relaxed);
+        if (cur == rva) return;
+        if (cur == 0) {
+            slot.store(rva, std::memory_order_relaxed);
+            return;
+        }
+    }
 }
 
 // --- kick samplers -----------------------------------------------------------
@@ -289,25 +338,208 @@ void log_game_stack() {
     BVR_LOG("[reentry] calcstack (game tid %u):%s", GetCurrentThreadId(), line);
 }
 
+// --- substrate hooks (commit 2: pass-through + telemetry only) ---------------
+
+bool install_slot(HookSlot& slot, uint32_t rva, void* detour, const uint8_t* prologue,
+                  size_t prologueLen) {
+    if (!g_imageBase) {
+        BVR_LOG("[reentry] no image base - init failed?");
+        return false;
+    }
+    if (slot.enabled.load(std::memory_order_relaxed)) {
+        BVR_LOG("[reentry] %s hook already enabled", slot.name);
+        return true;
+    }
+    slot.target = const_cast<uint8_t*>(g_imageBase) + rva;
+    if (!slot.created) {
+        if (!bvr::pattern_scan::is_memory_valid(slot.target, prologueLen) ||
+            memcmp(slot.target, prologue, prologueLen) != 0) {
+            BVR_LOG("[reentry] %s prologue mismatch at %p - build changed? REFUSING hook",
+                    slot.name, slot.target);
+            return false;
+        }
+        MH_STATUS st = MH_CreateHook(slot.target, detour,
+                                     reinterpret_cast<void**>(&slot.original));
+        if (st != MH_OK) {
+            BVR_LOG("[reentry] MH_CreateHook(%s) failed: %s", slot.name,
+                    MH_StatusToString(st));
+            return false;
+        }
+        slot.created = true;
+    }
+    MH_STATUS st = MH_EnableHook(slot.target); // self-enabling, never MH_ALL_HOOKS
+    if (st != MH_OK) {
+        BVR_LOG("[reentry] MH_EnableHook(%s) failed: %s", slot.name, MH_StatusToString(st));
+        return false;
+    }
+    g_lastBeatMs = 0; // reseed heartbeat bases on next beat
+    slot.enabled.store(true, std::memory_order_relaxed);
+    BVR_LOG("[reentry] %s hook ENABLED (target %p, rva 0x%X)", slot.name, slot.target, rva);
+    return true;
+}
+
+void disable_slot(HookSlot& slot) {
+    if (!slot.enabled.load(std::memory_order_relaxed)) return;
+    // Disable only - MH_RemoveHook would free the trampoline while another
+    // thread could still be returning through it.
+    MH_STATUS st = MH_DisableHook(slot.target);
+    slot.enabled.store(false, std::memory_order_relaxed);
+    BVR_LOG("[reentry] %s hook disabled (%s)", slot.name, MH_StatusToString(st));
+}
+
+// Draw-head camera probe: what the engine will render this frame, read from
+// the viewport camera actor's cached fields. Guarded - a1 can be anything
+// during teardown.
+void probe_cam_actor(void* a1) {
+    using namespace bvr::pattern_scan;
+    if (!a1 || !is_memory_valid(static_cast<uint8_t*>(a1) + patterns::kViewportCamActorOffset,
+                                sizeof(void*)))
+        return;
+    uint8_t* cam = *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(a1) +
+                                                patterns::kViewportCamActorOffset);
+    if (!cam || !is_memory_valid(cam + patterns::kCamActorLocOffset, 24)) return;
+    const float* loc = reinterpret_cast<const float*>(cam + patterns::kCamActorLocOffset);
+    const int32_t* rot = reinterpret_cast<const int32_t*>(cam + patterns::kCamActorRotOffset);
+    for (int i = 0; i < 3; ++i) {
+        g_camSrcLoc[i].store(loc[i], std::memory_order_relaxed);
+        g_camSrcRot[i].store(rot[i], std::memory_order_relaxed);
+    }
+    g_camActorProbes.fetch_add(1, std::memory_order_relaxed);
+}
+
+void heartbeat(uint64_t now) {
+    if (g_lastBeatMs == 0) {
+        g_lastBeatMs = now;
+        g_beatDraws = g_drawEntries.load(std::memory_order_relaxed);
+        g_beatStreams = g_streamEntries.load(std::memory_order_relaxed);
+        g_beatCalcIn = g_calcInside.load(std::memory_order_relaxed);
+        g_beatCalcOut = g_calcOutside.load(std::memory_order_relaxed);
+        g_beatPresents = bvr::d3d11_hook::present_count();
+        return;
+    }
+    if (now - g_lastBeatMs < 1000) return;
+    uint32_t draws = g_drawEntries.load(std::memory_order_relaxed);
+    uint32_t streams = g_streamEntries.load(std::memory_order_relaxed);
+    uint32_t calcIn = g_calcInside.load(std::memory_order_relaxed);
+    uint32_t calcOut = g_calcOutside.load(std::memory_order_relaxed);
+    uint64_t presents = bvr::d3d11_hook::present_count();
+    BVR_LOG("[reentry] beat: draws/s=%u presents/s=%llu stream/s=%u calc in/out=%u/%u "
+            "drawTid=%u presentTid=%u calcTid=%u drawUs=%u camSrc=(%.1f %.1f %.1f | "
+            "%d %d %d) callers=%X,%X,%X,%X",
+            draws - g_beatDraws, static_cast<unsigned long long>(presents - g_beatPresents),
+            streams - g_beatStreams, calcIn - g_beatCalcIn, calcOut - g_beatCalcOut,
+            g_lastDrawTid.load(std::memory_order_relaxed),
+            bvr::d3d11_hook::last_present_tid(),
+            g_lastCalcTid.load(std::memory_order_relaxed),
+            g_drawUs.load(std::memory_order_relaxed),
+            g_camSrcLoc[0].load(std::memory_order_relaxed),
+            g_camSrcLoc[1].load(std::memory_order_relaxed),
+            g_camSrcLoc[2].load(std::memory_order_relaxed),
+            g_camSrcRot[0].load(std::memory_order_relaxed),
+            g_camSrcRot[1].load(std::memory_order_relaxed),
+            g_camSrcRot[2].load(std::memory_order_relaxed),
+            g_callerRvas[0].load(std::memory_order_relaxed),
+            g_callerRvas[1].load(std::memory_order_relaxed),
+            g_callerRvas[2].load(std::memory_order_relaxed),
+            g_callerRvas[3].load(std::memory_order_relaxed));
+    g_lastBeatMs = now;
+    g_beatDraws = draws;
+    g_beatStreams = streams;
+    g_beatCalcIn = calcIn;
+    g_beatCalcOut = calcOut;
+    g_beatPresents = presents;
+}
+
+void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, void* a4) {
+    uint32_t tid = GetCurrentThreadId();
+    g_lastDrawTid.store(tid, std::memory_order_relaxed);
+    note_caller(to_rva(_ReturnAddress()));
+    g_drawEntries.fetch_add(1, std::memory_order_relaxed);
+    int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
+    if (depth == 0) {
+        g_activeTid.store(tid, std::memory_order_relaxed);
+        probe_cam_actor(a1);
+    }
+
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
+    reinterpret_cast<DrawFn>(g_draw.original)(ecx, edx, a1, a2, a3, a4);
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    g_drawUs.store(static_cast<uint32_t>((t1.QuadPart - t0.QuadPart) * 1000000 /
+                                         freq.QuadPart),
+                   std::memory_order_relaxed);
+
+    if (depth == 0) {
+        g_activeTid.store(0, std::memory_order_relaxed);
+        heartbeat(GetTickCount64());
+    }
+    g_activeDepth.fetch_sub(1, std::memory_order_relaxed);
+}
+
+void __fastcall StreamViewDetour(void* ecx, void* edx, void* loc, void* rot, void* a3) {
+    g_streamEntries.fetch_add(1, std::memory_order_relaxed);
+    if (g_dumpRemaining.load(std::memory_order_relaxed) > 0) {
+        g_dumpRemaining.fetch_sub(1, std::memory_order_relaxed);
+        const float* l = static_cast<const float*>(loc);
+        const int32_t* r = static_cast<const int32_t*>(rot);
+        bool ok = bvr::pattern_scan::is_memory_valid(loc, 12) &&
+                  bvr::pattern_scan::is_memory_valid(rot, 12);
+        if (ok)
+            BVR_LOG("[reentry] stream view: tid=%u loc=(%.1f %.1f %.1f) rot=(%d %d %d) "
+                    "obj=%p",
+                    GetCurrentThreadId(), l[0], l[1], l[2], r[0], r[1], r[2], a3);
+    }
+    reinterpret_cast<StreamFn>(g_stream.original)(ecx, edx, loc, rot, a3);
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     g_imageSize = image.size;
+    g_image = image;
 }
 
 void handle_command(const char* args) {
     char verb[16] = {};
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
-        BVR_LOG("[reentry] command needs a verb: kick on|off|kick2 on|off|"
-                "calcstack|status (substrate verbs land once the RVAs are derived)");
+        BVR_LOG("[reentry] command needs a verb: hook [draw|stream]|unhook|dump <n>|"
+                "kick on|off|kick2 on|off|calcstack|status");
         return;
     }
     const char* rest = args + consumed;
     while (*rest == ' ' || *rest == '\t') ++rest;
 
-    if (strcmp(verb, "kick") == 0) {
+    if (strcmp(verb, "hook") == 0) {
+        if (strncmp(rest, "stream", 6) == 0) {
+            install_slot(g_stream, patterns::kStreamViewRva,
+                         reinterpret_cast<void*>(&StreamViewDetour),
+                         patterns::kStreamViewPrologue,
+                         sizeof patterns::kStreamViewPrologue);
+        } else { // default: UGameEngine::Draw (the SR seam candidate)
+            // Build-identity gate first: the vtable slot chain must land on
+            // the constant (pure image reads; a wrong candidate refuses).
+            if (!patterns::verify_draw_chain(g_image)) return;
+            install_slot(g_draw, patterns::kSceneBuildRva,
+                         reinterpret_cast<void*>(&DrawDetour),
+                         patterns::kSceneBuildPrologue,
+                         sizeof patterns::kSceneBuildPrologue);
+        }
+    } else if (strcmp(verb, "unhook") == 0) {
+        disable_slot(g_draw);
+        disable_slot(g_stream);
+    } else if (strcmp(verb, "dump") == 0) {
+        int n = 0;
+        if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 8;
+        if (n > 32) n = 32;
+        g_dumpRemaining.store(n, std::memory_order_relaxed);
+        BVR_LOG("[reentry] dump armed: next %d stream-view calls%s", n,
+                g_stream.enabled.load(std::memory_order_relaxed)
+                    ? ""
+                    : " (stream hook is OFF - 'reentry hook stream' first)");
+    } else if (strcmp(verb, "kick") == 0) {
         kick_sampler(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "kick2") == 0) {
         kick2_sampler(strncmp(rest, "on", 2) == 0);
@@ -315,21 +547,27 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView dispatch logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: kick=%d kick2=%d calcview in/out %u/%u "
-                "(BS2 substrate hooks not derived yet - session 26 ladder)",
+        BVR_LOG("[reentry] status: draw=%s stream=%s kick=%d kick2=%d calcview in/out "
+                "%u/%u draws=%u streams=%u camProbes=%u",
+                g_draw.enabled.load(std::memory_order_relaxed) ? "on" : "off",
+                g_stream.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_kickSampling.load(std::memory_order_relaxed) ? 1 : 0,
                 g_kick2Sampling.load(std::memory_order_relaxed) ? 1 : 0,
                 g_calcInside.load(std::memory_order_relaxed),
-                g_calcOutside.load(std::memory_order_relaxed));
+                g_calcOutside.load(std::memory_order_relaxed),
+                g_drawEntries.load(std::memory_order_relaxed),
+                g_streamEntries.load(std::memory_order_relaxed),
+                g_camActorProbes.load(std::memory_order_relaxed));
     } else {
-        BVR_LOG("[reentry] unknown verb '%s' (BS2 has kick|kick2|calcstack|status; "
-                "hook/1t/stereo/vrstereo land after the substrate derivation)",
+        BVR_LOG("[reentry] unknown verb '%s' (BS2 has hook|unhook|dump|kick|kick2|"
+                "calcstack|status; 1t/stereo/vrstereo land after live verification)",
                 verb);
     }
 }
 
 void note_calcview() {
     uint32_t tid = GetCurrentThreadId();
+    g_lastCalcTid.store(tid, std::memory_order_relaxed);
     if (g_activeTid.load(std::memory_order_relaxed) == tid)
         g_calcInside.fetch_add(1, std::memory_order_relaxed);
     else
@@ -345,7 +583,9 @@ bool inside_hooked_call() {
 }
 
 bool hook_live() {
-    return g_trigger2Enabled.load(std::memory_order_relaxed);
+    return g_draw.enabled.load(std::memory_order_relaxed) ||
+           g_stream.enabled.load(std::memory_order_relaxed) ||
+           g_trigger2Enabled.load(std::memory_order_relaxed);
 }
 
 bool stereo_active() {
@@ -354,12 +594,20 @@ bool stereo_active() {
 
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Reentry probe (BS2 discovery)")) return;
-    ImGui::Text("samplers: kick %s  kick2 %s  calcview in/out %u/%u",
+    ImGui::Text("hooks: draw %s  stream %s  samplers: kick %s  kick2 %s",
+                g_draw.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_stream.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_kickSampling.load(std::memory_order_relaxed) ? "ON" : "off",
-                g_kick2Sampling.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_kick2Sampling.load(std::memory_order_relaxed) ? "ON" : "off");
+    ImGui::Text("draws %u  streams %u  calcview in/out %u/%u  drawTid %u presentTid %u",
+                g_drawEntries.load(std::memory_order_relaxed),
+                g_streamEntries.load(std::memory_order_relaxed),
                 g_calcInside.load(std::memory_order_relaxed),
-                g_calcOutside.load(std::memory_order_relaxed));
-    ImGui::TextDisabled("control via seam: reentry kick|kick2|calcstack|status");
+                g_calcOutside.load(std::memory_order_relaxed),
+                g_lastDrawTid.load(std::memory_order_relaxed),
+                bvr::d3d11_hook::last_present_tid());
+    ImGui::TextDisabled(
+        "control via seam: reentry hook|unhook|dump|kick|kick2|calcstack|status");
 }
 
 } // namespace bvr::b2r::scenedraw

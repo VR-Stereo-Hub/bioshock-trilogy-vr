@@ -24,6 +24,7 @@ PresentFn g_origPresent = nullptr;
 ResizeBuffersFn g_origResizeBuffers = nullptr;
 std::atomic<bool> g_loggedFirstPresent{false};
 std::atomic<uint64_t> g_presentCount{0};
+std::atomic<uint32_t> g_lastPresentTid{0};
 
 void LogSwapchainInfo(IDXGISwapChain* swapchain) {
     DXGI_SWAP_CHAIN_DESC desc{};
@@ -55,6 +56,7 @@ void LogSwapchainInfo(IDXGISwapChain* swapchain) {
 
 HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags) {
     const uint64_t presents = g_presentCount.fetch_add(1, std::memory_order_relaxed);
+    g_lastPresentTid.store(GetCurrentThreadId(), std::memory_order_relaxed);
     // Cheap re-arm of our unhandled-exception filter (~every 10 s at 60 fps).
     // The game, the Steam overlay and the 2K SDK all install theirs after our
     // DLL attach, and last writer wins - session 23: a tester's crash produced
@@ -209,6 +211,10 @@ bool install() {
     BVR_LOG("D3D11 swapchain hooks installed (Present @ %p, ResizeBuffers @ %p)",
             present, resizeBuffers);
     return true;
+}
+
+uint32_t last_present_tid() {
+    return g_lastPresentTid.load(std::memory_order_relaxed);
 }
 
 uint64_t present_count() {
