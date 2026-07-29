@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <share.h>
 
 namespace bvr::b1r::camera {
@@ -76,6 +77,11 @@ std::atomic<float> g_headOffFwdUu{0.0f};
 // run on the game thread next frame.
 std::atomic<bool> g_vrPresetPending{false};
 std::atomic<bool> g_vrPresetSavePending{false};
+// Render-resolution request from the overlay. The overlay runs on the RENDER
+// thread and this does file I/O plus a read-back, so it goes through the
+// established pending-atomic seam and is performed on the game thread, next to
+// the preset consumers. Packed as one 64-bit value so the pair cannot tear.
+std::atomic<uint64_t> g_resWritePending{0};
 
 // M8 session 18 part 2: the flat-screen crosshair, DEFAULT HIDDEN (user ask).
 // The lever is `ShockPlayer.bReticleDisabled` - the game's own RenderReticle
@@ -926,6 +932,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // the render thread and only sets the pending flags).
     if (g_vrPresetPending.exchange(false, std::memory_order_relaxed)) apply_vr_preset();
     if (g_vrPresetSavePending.exchange(false, std::memory_order_relaxed)) save_vr_preset();
+    if (uint64_t req = g_resWritePending.exchange(0, std::memory_order_relaxed)) {
+        game_ini::write_viewport(static_cast<uint32_t>(req >> 32),
+                                 static_cast<uint32_t>(req & 0xFFFFFFFFu));
+    }
     // M5: pump the engine's own pad pipeline against the synthetic gamepad
     // (self-throttles to once per present; no-op while vrinput is off).
     input_drive::on_frame(now);
@@ -1585,6 +1595,101 @@ void draw_debug_ui() {
         bool lockoff = g_lockOnDisabled.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Lock-on disabled (pad aim magnetism off)", &lockoff))
             g_lockOnDisabled.store(lockoff, std::memory_order_relaxed);
+        // ---- render resolution ------------------------------------------
+        // This is the sharpness control, and it is the game's own resolution
+        // because the eye render IS the backbuffer. It cannot be applied live:
+        // the engine's SETRES faults (ENGINE_NOTES session 27), so the only
+        // working lever is the config the engine reads at startup. Say so
+        // plainly rather than letting a slider imply an instant effect.
+        if (ImGui::CollapsingHeader("Render resolution (applies on next launch)")) {
+            static bool s_read = false;
+            static int s_w = 0, s_h = 0;
+            unsigned liveW = 0, liveH = 0;
+            bvr::vr::fov_audit(nullptr, nullptr, nullptr, &liveW, &liveH);
+            game_ini::Viewport v = game_ini::read_viewport();
+            if (!s_read && v.valid) {
+                s_read = true;
+                s_w = static_cast<int>(v.windowedW);
+                s_h = static_cast<int>(v.windowedH);
+            }
+            if (!v.valid) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                   "Bioshock.ini not found - cannot set the resolution");
+            } else {
+                ImGui::Text("ini: %ux%u   live backbuffer: %ux%u", v.windowedW, v.windowedH,
+                            liveW, liveH);
+                if (liveW && liveH) {
+                    // A headset eye is near square. A 16:9 buffer spends most of
+                    // its width outside the lenses, which is the whole reason
+                    // this control exists - quantify it instead of asserting it.
+                    float aspect = static_cast<float>(liveW) / static_cast<float>(liveH);
+                    ImGui::Text("aspect %.3f (1.000 is ideal; a headset eye is near square)",
+                                aspect);
+                    if (aspect > 1.25f || aspect < 0.8f)
+                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                           "far from square: much of this render falls "
+                                           "outside the lenses");
+                }
+                // A dropdown of named modes with a Custom escape hatch - the
+                // shape every game's video options uses, so it needs no
+                // explaining. The list is square-first because a headset eye is
+                // near square, with one 16:9 entry for playing flat. The top end
+                // is deliberately generous: a user on a Dream Air runs 7680x4320
+                // happily, so clamping low would be the bug, not the safety.
+                struct Mode {
+                    const char* name;
+                    int w, h;
+                };
+                static const Mode kModes[] = {
+                    {"1920 x 1080  (16:9, for flat play)", 1920, 1080},
+                    {"2048 x 2048  (4.2 MPx, balanced)", 2048, 2048},
+                    {"2560 x 2560  (6.6 MPx, sharper)", 2560, 2560},
+                    {"3072 x 3072  (9.4 MPx, high-end GPU)", 3072, 3072},
+                    {"4096 x 4096  (16.8 MPx, very demanding)", 4096, 4096},
+                    {"Custom...", 0, 0},
+                };
+                const int kCustom = static_cast<int>(std::size(kModes)) - 1;
+
+                // Preselect whatever the ini already says, so the dropdown opens
+                // showing the truth rather than a default.
+                static int s_sel = -1;
+                if (s_sel < 0) {
+                    s_sel = kCustom;
+                    for (int i = 0; i < kCustom; ++i)
+                        if (kModes[i].w == s_w && kModes[i].h == s_h) s_sel = i;
+                }
+                const char* preview = kModes[s_sel].name;
+                if (ImGui::BeginCombo("Resolution", preview)) {
+                    for (int i = 0; i < static_cast<int>(std::size(kModes)); ++i) {
+                        if (ImGui::Selectable(kModes[i].name, s_sel == i)) {
+                            s_sel = i;
+                            if (i != kCustom) {
+                                s_w = kModes[i].w;
+                                s_h = kModes[i].h;
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (s_sel == kCustom) {
+                    ImGui::InputInt("width", &s_w, 64, 256);
+                    ImGui::InputInt("height", &s_h, 64, 256);
+                    if (s_w < 1024) s_w = 1024;
+                    if (s_h < 1024) s_h = 1024;
+                    if (s_w > 8192) s_w = 8192;
+                    if (s_h > 8192) s_h = 8192;
+                }
+                ImGui::Text("selected: %d x %d, %.1f MPx per eye", s_w, s_h,
+                            static_cast<double>(s_w) * s_h / 1.0e6);
+                if (ImGui::Button("Write to Bioshock.ini")) {
+                    g_resWritePending.store((static_cast<uint64_t>(s_w) << 32) |
+                                                static_cast<uint32_t>(s_h),
+                                            std::memory_order_relaxed);
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("restart the game for it to take effect");
+            }
+        }
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
