@@ -4,8 +4,11 @@
 
 ## Current state (2026-07-29, session 23 - CLEAN-MACHINE NEW-USER FLOW + CRASH CAPTURE: Steam's CSERHelper was eating our crash handler, load-crossing stereo drop fixed, thumbrest ammo modifier, v0.4.1 packaged - branch s23-crash-diagnostics)
 
-**v0.4.1 IS BUILT AND PACKAGED, NOT PUBLISHED** (`dist/bioshock-vr-v0.4.1.zip`).
-Publishing is the user's call.
+**v0.4.1 IS RELEASED (2026-07-29):** PR #11 merged to main, tagged, published at
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.4.1 (zip 1,215,780
+bytes, sha256 026EF542C1D68232..., DLL build id stamps exactly v0.4.1). Built for
+the external tester: their next crash produces a rich dump despite Steam's
+CSERHelper displacing our filter, and prev.log survives their relaunch reflex.
 
 ### 1. THE HEADLINE: Steam's crash reporter displaces our exception filter
 
