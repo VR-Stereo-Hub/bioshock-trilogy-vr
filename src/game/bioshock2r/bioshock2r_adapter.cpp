@@ -11,7 +11,12 @@ uint32_t Bioshock2RAdapter::capabilities() const {
     // CAP_FOV_WRITE since session 25: the UShockUserSettings HorizontalFOV
     // offset is runtime-verified and the write is save/restore-gated
     // (camera.cpp write block; patterns.h has the derivation).
-    return camera::hook_live() ? (game::CAP_CAMERA_OVERRIDE | game::CAP_FOV_WRITE) : 0u;
+    // CAP_SCENE_REENTRY since session 26: advertised while a reentry hook is
+    // live (the double-Draw SR machinery in scenedraw.cpp).
+    uint32_t caps =
+        camera::hook_live() ? (game::CAP_CAMERA_OVERRIDE | game::CAP_FOV_WRITE) : 0u;
+    if (scenedraw::hook_live()) caps |= game::CAP_SCENE_REENTRY;
+    return caps;
 }
 
 bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {

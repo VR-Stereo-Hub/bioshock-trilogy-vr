@@ -15,6 +15,8 @@
 
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
+#include "game/bioshock2r/camera.h"
 #include "game/bioshock2r/patterns.h"
 
 #include <windows.h>
@@ -69,6 +71,31 @@ std::atomic<uint32_t> g_lastDrawTid{0};
 std::atomic<uint32_t> g_drawUs{0};
 std::atomic<uint32_t> g_callerRvas[4]{};
 std::atomic<int> g_dumpRemaining{0}; // stream-args dump lines left
+
+// SequentialReentry controls + telemetry (session 26). The BS2 primary bet
+// runs the double Draw on the THREADED substrate: the Draw path has no
+// submit handshake (that spin-wait belongs to the streaming manager), the
+// ring is cursor-based, and the endframe render sync runs once per tick
+// AFTER the doubled call - so a second Draw just enqueues a second scene +
+// present. 1t machinery is derived only if this proves unstable (the
+// standing "BS2 is not bound by BS1's methods" policy gate, applied).
+std::atomic<bool> g_doubleCall{false};
+std::atomic<int> g_pulseCount{0};
+std::atomic<float> g_secondYawDeg{30.0f}; // probe mode: yaw on pass 2
+std::atomic<bool> g_stereo{false};
+std::atomic<uint32_t> g_stereoSkips{0}; // pass 2 skipped (gate/stall)
+std::atomic<uint32_t> g_secondCalls{0};
+std::atomic<uint32_t> g_secondPassTid{0};
+std::atomic<uint32_t> g_secondPassHits{0};
+std::atomic<uint32_t> g_call2Us{0};
+std::atomic<uint32_t> g_foreignCallerSkips{0}; // non-gameplay-caller Draws seen armed
+std::atomic<bool> g_poisoned{false};
+std::atomic<uint32_t> g_lastExcCode{0};
+std::atomic<uint32_t> g_lastExcRva{0};
+std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
+// Draw (game) thread only: present count at the previous depth-0 entry -
+// doubling is skipped while presents are stalled (unfocused window).
+uint32_t g_lastDrawPresentLow = 0;
 // Draw-head camera probe: what Draw sees in the viewport camera actor's
 // cached fields (the tick-side CalcView product = the pass-2 poke target).
 std::atomic<float> g_camSrcLoc[3]{};
@@ -77,7 +104,8 @@ std::atomic<uint32_t> g_camActorProbes{0};
 
 // Heartbeat bookkeeping - beat thread (the Draw thread) only.
 uint64_t g_lastBeatMs = 0;
-uint32_t g_beatDraws = 0, g_beatStreams = 0, g_beatCalcIn = 0, g_beatCalcOut = 0;
+uint32_t g_beatDraws = 0, g_beatStreams = 0, g_beatCalcIn = 0, g_beatCalcOut = 0,
+         g_beatSecond = 0;
 uint64_t g_beatPresents = 0;
 
 // One-shot CalcView stack scan request.
@@ -407,6 +435,98 @@ void probe_cam_actor(void* a1) {
     g_camActorProbes.fetch_add(1, std::memory_order_relaxed);
 }
 
+// SEH filter for the SECOND Draw call only (the first stays unguarded -
+// swallowing a vanilla-path crash would destroy real crash dumps). C++
+// throws and stack overflow pass through to the game's own handling.
+int reentry_filter(unsigned code, EXCEPTION_POINTERS* ep) {
+    if (code == 0xE06D7363u) return EXCEPTION_CONTINUE_SEARCH;
+    if (code == EXCEPTION_STACK_OVERFLOW) return EXCEPTION_CONTINUE_SEARCH;
+    g_lastExcCode.store(code, std::memory_order_relaxed);
+    g_lastExcRva.store(ep ? to_rva(ep->ExceptionRecord->ExceptionAddress) : 0,
+                       std::memory_order_relaxed);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// No C++ objects in this frame (SEH + unwinding = C2712).
+bool call_draw_guarded(DrawFn fn, void* ecx, void* edx, void* a1, void* a2, void* a3,
+                       void* a4) {
+    __try {
+        fn(ecx, edx, a1, a2, a3, a4);
+        return true;
+    } __except (reentry_filter(GetExceptionCode(), GetExceptionInformation())) {
+        return false;
+    }
+}
+
+// The second Draw of a pair (game thread, depth 0, after the first call
+// returned). ORIGINAL args pass through unchanged - the camera enters via
+// the CalcView dispatch that re-fires inside the Draw (live-verified
+// exactly-once-per-Draw), which the ProcessEvent seam replays as the RIGHT
+// eye (second_pass_replay in camera.cpp).
+void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void* a4,
+                       uint32_t callerRva, uint32_t presentDelta) {
+    if (g_poisoned.load(std::memory_order_relaxed)) return;
+    bool pulse = false;
+    if (g_pulseCount.load(std::memory_order_relaxed) > 0) {
+        pulse = g_pulseCount.fetch_sub(1, std::memory_order_relaxed) > 0;
+        if (!pulse) g_pulseCount.store(0, std::memory_order_relaxed);
+    }
+    bool continuous = g_doubleCall.load(std::memory_order_relaxed) ||
+                      g_stereo.load(std::memory_order_relaxed);
+    if (!pulse && !continuous) return;
+
+    // Deny-by-default caller gate (the 1t-load-hazard lesson in BS2 form):
+    // ONLY the census-verified gameplay dispatcher may be doubled. Loaders,
+    // teardown paths, anything unknown = skip + count.
+    if (callerRva != patterns::kSceneBuildGameplayRetRva) {
+        g_foreignCallerSkips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // Scripted-camera hole: CalcView silent means the scene bypasses the
+    // camera dispatch - a doubled frame would replay a stale base.
+    if (camera::calcview_silent(400)) {
+        g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // Present-stall guard: no present landed between the previous Draw and
+    // this one (unfocused window / hitching render thread) - doubling has no
+    // value and a stall is the prime wedge suspect. Pulses bypass it so the
+    // instrument stays usable for A/B while paused.
+    if (presentDelta == 0 && !pulse) {
+        g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    if (g_stereo.load(std::memory_order_relaxed)) bvr::vr::sr_push_eye(+1);
+    g_secondPassTid.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
+    bool ok = call_draw_guarded(reinterpret_cast<DrawFn>(g_draw.original), ecx, edx, a1,
+                                a2, a3, a4);
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    g_secondPassTid.store(0, std::memory_order_relaxed);
+    g_call2Us.store(
+        static_cast<uint32_t>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart),
+        std::memory_order_relaxed);
+    if (!ok) {
+        g_poisoned.store(true, std::memory_order_relaxed);
+        g_doubleCall.store(false, std::memory_order_relaxed);
+        g_stereo.store(false, std::memory_order_relaxed);
+        BVR_LOG("[reentry] second draw FAULTED code=0x%08X rva=0x%X - POISONED "
+                "(doubling disarmed; 'reentry reset' to clear)",
+                g_lastExcCode.load(std::memory_order_relaxed),
+                g_lastExcRva.load(std::memory_order_relaxed));
+        return;
+    }
+    g_secondCalls.fetch_add(1, std::memory_order_relaxed);
+    if (pulse)
+        BVR_LOG("[reentry] pulse: second draw ok, call2=%u us, presentDelta=%u, "
+                "presents now %llu",
+                g_call2Us.load(std::memory_order_relaxed), presentDelta,
+                static_cast<unsigned long long>(bvr::d3d11_hook::present_count()));
+}
+
 void heartbeat(uint64_t now) {
     if (g_lastBeatMs == 0) {
         g_lastBeatMs = now;
@@ -414,6 +534,7 @@ void heartbeat(uint64_t now) {
         g_beatStreams = g_streamEntries.load(std::memory_order_relaxed);
         g_beatCalcIn = g_calcInside.load(std::memory_order_relaxed);
         g_beatCalcOut = g_calcOutside.load(std::memory_order_relaxed);
+        g_beatSecond = g_secondCalls.load(std::memory_order_relaxed);
         g_beatPresents = bvr::d3d11_hook::present_count();
         return;
     }
@@ -422,11 +543,13 @@ void heartbeat(uint64_t now) {
     uint32_t streams = g_streamEntries.load(std::memory_order_relaxed);
     uint32_t calcIn = g_calcInside.load(std::memory_order_relaxed);
     uint32_t calcOut = g_calcOutside.load(std::memory_order_relaxed);
+    uint32_t seconds = g_secondCalls.load(std::memory_order_relaxed);
     uint64_t presents = bvr::d3d11_hook::present_count();
-    BVR_LOG("[reentry] beat: draws/s=%u presents/s=%llu stream/s=%u calc in/out=%u/%u "
-            "drawTid=%u presentTid=%u calcTid=%u drawUs=%u camSrc=(%.1f %.1f %.1f | "
-            "%d %d %d) callers=%X,%X,%X,%X",
-            draws - g_beatDraws, static_cast<unsigned long long>(presents - g_beatPresents),
+    BVR_LOG("[reentry] beat: draws/s=%u 2nd/s=%u presents/s=%llu stream/s=%u calc "
+            "in/out=%u/%u drawTid=%u presentTid=%u calcTid=%u drawUs=%u camSrc=(%.1f "
+            "%.1f %.1f | %d %d %d) callers=%X,%X,%X,%X",
+            draws - g_beatDraws, seconds - g_beatSecond,
+            static_cast<unsigned long long>(presents - g_beatPresents),
             streams - g_beatStreams, calcIn - g_beatCalcIn, calcOut - g_beatCalcOut,
             g_lastDrawTid.load(std::memory_order_relaxed),
             bvr::d3d11_hook::last_present_tid(),
@@ -447,18 +570,29 @@ void heartbeat(uint64_t now) {
     g_beatStreams = streams;
     g_beatCalcIn = calcIn;
     g_beatCalcOut = calcOut;
+    g_beatSecond = seconds;
     g_beatPresents = presents;
 }
 
 void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, void* a4) {
     uint32_t tid = GetCurrentThreadId();
+    uint32_t callerRva = to_rva(_ReturnAddress());
     g_lastDrawTid.store(tid, std::memory_order_relaxed);
-    note_caller(to_rva(_ReturnAddress()));
+    note_caller(callerRva);
     g_drawEntries.fetch_add(1, std::memory_order_relaxed);
     int depth = g_activeDepth.fetch_add(1, std::memory_order_relaxed);
+    uint32_t presentLowAtEntry = static_cast<uint32_t>(bvr::d3d11_hook::present_count());
     if (depth == 0) {
         g_activeTid.store(tid, std::memory_order_relaxed);
         probe_cam_actor(a1);
+        // Pass-1 eye tag: this Draw's present captures as the LEFT eye. The
+        // camera side caches the driven base and applies -IPD/2 on the
+        // CalcView dispatch inside this call. A later pass-2 skip leaves a
+        // lone tag; core's tag ring self-heals at depth > 2.
+        if (g_stereo.load(std::memory_order_relaxed) &&
+            !g_poisoned.load(std::memory_order_relaxed) &&
+            callerRva == patterns::kSceneBuildGameplayRetRva)
+            bvr::vr::sr_push_eye(-1);
     }
 
     LARGE_INTEGER t0, t1, freq;
@@ -471,6 +605,12 @@ void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, v
                    std::memory_order_relaxed);
 
     if (depth == 0) {
+        // Second pass while the depth/tid latch is still held: the pass-2
+        // CalcView dispatch must attribute as inside, and the command poller
+        // must stay deferred for the whole pair.
+        maybe_second_draw(ecx, edx, a1, a2, a3, a4, callerRva,
+                          presentLowAtEntry - g_lastDrawPresentLow);
+        g_lastDrawPresentLow = presentLowAtEntry;
         g_activeTid.store(0, std::memory_order_relaxed);
         heartbeat(GetTickCount64());
     }
@@ -493,6 +633,27 @@ void __fastcall StreamViewDetour(void* ecx, void* edx, void* loc, void* rot, voi
     reinterpret_cast<StreamFn>(g_stream.original)(ecx, edx, loc, rot, a3);
 }
 
+// The one-toggle compound (game thread only, outside hooked calls). BS2
+// sequence: camera mode -> stereo. NO 1t rung - threaded-mode doubling is
+// the primary bet on this game (see the module-head note); compare BS1's
+// apply_vrstereo, which fronts a structural single-threading step.
+void apply_vrstereo(bool on) {
+    if (on) {
+        BVR_LOG("[reentry] VRSTEREO ON: sequencing camera mode -> stereo (threaded "
+                "substrate - the BS2 primary bet, no 1t)");
+        bvr::vr::set_camera_mode(true);
+        if (!g_stereo.load(std::memory_order_relaxed)) handle_command("stereo on");
+        bool ok = g_stereo.load(std::memory_order_relaxed);
+        BVR_LOG("[reentry] VRSTEREO %s (stereo=%d; sticky across loads via the "
+                "gameplay-caller gate; 'vrstereo off' reverses)",
+                ok ? "READY" : "INCOMPLETE - see refusals above", ok ? 1 : 0);
+    } else {
+        BVR_LOG("[reentry] VRSTEREO OFF: stereo -> camera mode");
+        if (g_stereo.load(std::memory_order_relaxed)) handle_command("stereo off");
+        bvr::vr::set_camera_mode(false);
+    }
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -512,7 +673,65 @@ void handle_command(const char* args) {
     const char* rest = args + consumed;
     while (*rest == ' ' || *rest == '\t') ++rest;
 
-    if (strcmp(verb, "hook") == 0) {
+    if (strcmp(verb, "vrstereo") == 0) {
+        apply_vrstereo(strncmp(rest, "on", 2) == 0);
+    } else if (strcmp(verb, "stereo") == 0) {
+        if (strncmp(rest, "on", 2) == 0) {
+            if (g_poisoned.load(std::memory_order_relaxed)) {
+                BVR_LOG("[reentry] stereo refused: poisoned ('reentry reset' first)");
+                return;
+            }
+            if (!g_draw.enabled.load(std::memory_order_relaxed)) {
+                if (!patterns::verify_draw_chain(g_image)) return;
+                if (!install_slot(g_draw, patterns::kSceneBuildRva,
+                                  reinterpret_cast<void*>(&DrawDetour),
+                                  patterns::kSceneBuildPrologue,
+                                  sizeof patterns::kSceneBuildPrologue))
+                    return;
+            }
+            g_stereo.store(true, std::memory_order_relaxed);
+            BVR_LOG("[reentry] STEREO ON (threaded substrate; every gameplay draw "
+                    "doubles L/R, eye-tagged for per-present capture)");
+        } else {
+            g_stereo.store(false, std::memory_order_relaxed);
+            BVR_LOG("[reentry] stereo off");
+        }
+    } else if (strcmp(verb, "pulse") == 0) {
+        int n = 0;
+        if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 1;
+        if (n > 8) n = 8;
+        if (!g_draw.enabled.load(std::memory_order_relaxed)) {
+            BVR_LOG("[reentry] pulse needs the draw hook ('reentry hook' first)");
+            return;
+        }
+        g_pulseCount.store(n, std::memory_order_relaxed);
+        BVR_LOG("[reentry] pulse armed: next %d gameplay draw(s) double (yaw %.1f on "
+                "pass 2 unless stereo)",
+                n, g_secondYawDeg.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "on") == 0) {
+        if (!g_draw.enabled.load(std::memory_order_relaxed)) {
+            BVR_LOG("[reentry] 'on' needs the draw hook ('reentry hook' first)");
+            return;
+        }
+        g_doubleCall.store(true, std::memory_order_relaxed);
+        BVR_LOG("[reentry] continuous double-draw ON (yaw %.1f on pass 2)",
+                g_secondYawDeg.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "off") == 0) {
+        g_doubleCall.store(false, std::memory_order_relaxed);
+        g_pulseCount.store(0, std::memory_order_relaxed);
+        BVR_LOG("[reentry] double-draw off");
+    } else if (strcmp(verb, "yaw") == 0) {
+        float v = 0.0f;
+        if (sscanf_s(rest, "%f", &v) == 1) {
+            g_secondYawDeg.store(v, std::memory_order_relaxed);
+            BVR_LOG("[reentry] second-pass yaw = %.1f deg", v);
+        }
+    } else if (strcmp(verb, "reset") == 0) {
+        g_poisoned.store(false, std::memory_order_relaxed);
+        BVR_LOG("[reentry] poison cleared (last fault code=0x%08X rva=0x%X)",
+                g_lastExcCode.load(std::memory_order_relaxed),
+                g_lastExcRva.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "hook") == 0) {
         if (strncmp(rest, "stream", 6) == 0) {
             install_slot(g_stream, patterns::kStreamViewRva,
                          reinterpret_cast<void*>(&StreamViewDetour),
@@ -528,6 +747,9 @@ void handle_command(const char* args) {
                          sizeof patterns::kSceneBuildPrologue);
         }
     } else if (strcmp(verb, "unhook") == 0) {
+        g_doubleCall.store(false, std::memory_order_relaxed);
+        g_pulseCount.store(0, std::memory_order_relaxed);
+        g_stereo.store(false, std::memory_order_relaxed);
         disable_slot(g_draw);
         disable_slot(g_stream);
     } else if (strcmp(verb, "dump") == 0) {
@@ -547,20 +769,29 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView dispatch logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: draw=%s stream=%s kick=%d kick2=%d calcview in/out "
-                "%u/%u draws=%u streams=%u camProbes=%u",
+        BVR_LOG("[reentry] status: draw=%s stream=%s stereo=%d double=%d pulse=%d "
+                "yaw=%.1f seconds=%u skips=%u foreign=%u 2ndHits=%u call2Us=%u "
+                "poisoned=%d kick=%d kick2=%d calcview in/out %u/%u draws=%u",
                 g_draw.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_stream.enabled.load(std::memory_order_relaxed) ? "on" : "off",
+                g_stereo.load(std::memory_order_relaxed) ? 1 : 0,
+                g_doubleCall.load(std::memory_order_relaxed) ? 1 : 0,
+                g_pulseCount.load(std::memory_order_relaxed),
+                g_secondYawDeg.load(std::memory_order_relaxed),
+                g_secondCalls.load(std::memory_order_relaxed),
+                g_stereoSkips.load(std::memory_order_relaxed),
+                g_foreignCallerSkips.load(std::memory_order_relaxed),
+                g_secondPassHits.load(std::memory_order_relaxed),
+                g_call2Us.load(std::memory_order_relaxed),
+                g_poisoned.load(std::memory_order_relaxed) ? 1 : 0,
                 g_kickSampling.load(std::memory_order_relaxed) ? 1 : 0,
                 g_kick2Sampling.load(std::memory_order_relaxed) ? 1 : 0,
                 g_calcInside.load(std::memory_order_relaxed),
                 g_calcOutside.load(std::memory_order_relaxed),
-                g_drawEntries.load(std::memory_order_relaxed),
-                g_streamEntries.load(std::memory_order_relaxed),
-                g_camActorProbes.load(std::memory_order_relaxed));
+                g_drawEntries.load(std::memory_order_relaxed));
     } else {
-        BVR_LOG("[reentry] unknown verb '%s' (BS2 has hook|unhook|dump|kick|kick2|"
-                "calcstack|status; 1t/stereo/vrstereo land after live verification)",
+        BVR_LOG("[reentry] unknown verb '%s' (BS2 has vrstereo|stereo|pulse|on|off|yaw|"
+                "reset|hook|unhook|dump|kick|kick2|calcstack|status)",
                 verb);
     }
 }
@@ -589,25 +820,59 @@ bool hook_live() {
 }
 
 bool stereo_active() {
-    return false; // SR lands with the substrate commits
+    return g_stereo.load(std::memory_order_relaxed) &&
+           g_draw.enabled.load(std::memory_order_relaxed) &&
+           !g_poisoned.load(std::memory_order_relaxed);
+}
+
+bool second_pass_for_current_thread(float* yawDegOut) {
+    uint32_t t = g_secondPassTid.load(std::memory_order_relaxed);
+    if (t == 0 || t != GetCurrentThreadId()) return false;
+    g_secondPassHits.fetch_add(1, std::memory_order_relaxed);
+    *yawDegOut = g_secondYawDeg.load(std::memory_order_relaxed);
+    return true;
+}
+
+void request_vrstereo(bool on) {
+    g_vrstereoPending.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+void apply_pending_vrstereo() {
+    // Act on the EXCHANGED value, not a pre-read - a request posted between
+    // load and exchange must not be swallowed.
+    if (g_vrstereoPending.load(std::memory_order_relaxed) >= 0) {
+        int pending = g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
+        if (pending >= 0) apply_vrstereo(pending == 1);
+    }
 }
 
 void draw_debug_ui() {
-    if (!ImGui::CollapsingHeader("Reentry probe (BS2 discovery)")) return;
-    ImGui::Text("hooks: draw %s  stream %s  samplers: kick %s  kick2 %s",
+    if (!ImGui::CollapsingHeader("Reentry / stereo (BS2)")) return;
+    // The one-toggle: applied on the game thread via the pending request -
+    // the overlay may be drawing on the render thread.
+    bool srOn = stereo_active();
+    bool srToggle = srOn;
+    if (ImGui::Checkbox("VR stereo (camera mode + stereo)", &srToggle) && srToggle != srOn)
+        request_vrstereo(srToggle);
+    ImGui::Text("hooks: draw %s  stream %s%s%s  samplers: kick %s  kick2 %s",
                 g_draw.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_stream.enabled.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_stereo.load(std::memory_order_relaxed) ? "  STEREO" : "",
+                g_poisoned.load(std::memory_order_relaxed) ? "  POISONED" : "",
                 g_kickSampling.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_kick2Sampling.load(std::memory_order_relaxed) ? "ON" : "off");
-    ImGui::Text("draws %u  streams %u  calcview in/out %u/%u  drawTid %u presentTid %u",
+    ImGui::Text("draws %u  2nd %u  skips %u/%u  calc in/out %u/%u  drawTid %u "
+                "presentTid %u",
                 g_drawEntries.load(std::memory_order_relaxed),
-                g_streamEntries.load(std::memory_order_relaxed),
+                g_secondCalls.load(std::memory_order_relaxed),
+                g_stereoSkips.load(std::memory_order_relaxed),
+                g_foreignCallerSkips.load(std::memory_order_relaxed),
                 g_calcInside.load(std::memory_order_relaxed),
                 g_calcOutside.load(std::memory_order_relaxed),
                 g_lastDrawTid.load(std::memory_order_relaxed),
                 bvr::d3d11_hook::last_present_tid());
-    ImGui::TextDisabled(
-        "control via seam: reentry hook|unhook|dump|kick|kick2|calcstack|status");
+    ImGui::TextDisabled("control via seam: reentry vrstereo|stereo|pulse|on|off|yaw|"
+                        "reset|hook|unhook|dump|kick|kick2|calcstack|status");
 }
 
 } // namespace bvr::b2r::scenedraw

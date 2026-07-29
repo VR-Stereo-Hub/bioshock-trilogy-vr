@@ -48,10 +48,29 @@ bool inside_hooked_call();
 // True while any reentry hook is created AND enabled.
 bool hook_live();
 
-// M4 rung 2 gate: true while SequentialReentry stereo is on. The camera
-// module suppresses the AlternateEye sign while this holds (SR applies both
-// eye offsets itself). Always false until the substrate commits land.
+// M4 rung 2 gate: true while SequentialReentry stereo is on (draw hook live,
+// not poisoned). The camera module then renders pass 1 as the LEFT eye
+// (cache the driven camera, apply -IPD/2) and pass 2 as the RIGHT (replay
+// the cached base, +IPD/2); AlternateEye is suppressed.
 bool stereo_active();
+
+// ProcessEvent-seam head check: true when the current thread is executing
+// the SECOND (re-entry) Draw call. The camera dispatch handler must then
+// run ONLY the replay (second_pass_replay) - none of its normal body.
+bool second_pass_for_current_thread(float* yawDegOut);
+
+// One-toggle "VR stereo" request: posts the on/off intent; the game thread
+// applies camera mode + stereo outside any hooked call (the overlay checkbox
+// draws on the render thread and must never install hooks itself).
+// BS2 note: NO single-threading rung in the sequence - threaded-mode
+// doubling is the primary bet here (the Draw path has no submit handshake;
+// the endframe sync runs once per tick). 1t machinery gets derived only if
+// this proves unstable.
+void request_vrstereo(bool on);
+
+// Applies a pending request; called from the ProcessEvent poll lane, which
+// only ticks outside hooked calls. Cheap when nothing is pending.
+void apply_pending_vrstereo();
 
 // Read-only telemetry section for the overlay (control is commands-only).
 void draw_debug_ui();

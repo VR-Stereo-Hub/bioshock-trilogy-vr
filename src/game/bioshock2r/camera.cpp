@@ -66,15 +66,31 @@ std::atomic<bool> g_gameFovWrite{false};
 // judged good, so the manual lever defaults to match that neighborhood).
 std::atomic<float> g_gameFovDeg{130.0f};
 
-// M4 rung 1 (AlternateEye) + the future SR passes share this half-IPD shift.
-// The eye sign comes from core (vr::current_eye_sign(), 0 while the AER
-// checkbox is off), suppressed once SequentialReentry stereo is active.
+// M4 rung 1 (AlternateEye) + the SR passes share this half-IPD shift. The
+// AER eye sign comes from core (vr::current_eye_sign(), 0 while the AER
+// checkbox is off), suppressed while SequentialReentry stereo is active.
 std::atomic<float> g_ipdMm{63.0f};
 // AER flat measure (game thread only): last eyed camera loc per sign, so the
 // heartbeat can print the live inter-eye delta - the G0 stereo quantity
 // (ipd/1000 x worldScale UU between consecutive frames' cameras).
 FVector g_aerLoc[2] = {};
 uint64_t g_aerStampMs[2] = {};
+
+// M4 rung 2 (SequentialReentry): the pass-1 dispatch caches the fully-driven
+// camera here (post head drive + debug offsets, PRE eye offset) so pass 2
+// replays the exact same base with the opposite eye. Game thread only; pass
+// 2 always immediately follows its pass 1 inside the same doubled Draw.
+// The stamp kills the stale-base hazard (scripted scenes silence CalcView);
+// the eyed latch carries pass-1's strict-gameplay decision so a non-gameplay
+// pair renders both eyes IDENTICAL (quad-screen content must not jitter).
+bool g_srBaseValid = false;
+FVector g_srBaseLoc{};
+FRotator g_srBaseRot{};
+uint64_t g_srBaseStampMs = 0;
+bool g_srBaseEyed = false;
+// SR flat measure: final per-eye cameras (post eye offset) for the 1 Hz log.
+FVector g_srEyeLoc[2] = {};
+uint64_t g_srEyeStampMs[2] = {};
 
 // M3 VR camera drive. worldScale default follows BS1's in-headset calibration
 // (100 UU/m, session 16) as the starting point - BS2 gets its own verdict
@@ -220,8 +236,11 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   dumpframe [full] [n]
 //   vtscan <hexRva> [needBytesHex]  (b2r-first: one-shot heap scan for live
 //   objects whose dword0 == base + RVA - the candidate-vtable verifier)
-// Render-substrate discovery (session 26; scenedraw.h has the grammar):
-//   reentry kick on|off | kick2 on|off | calcstack | status
+// Stereo / render substrate (session 26; scenedraw.h has the grammar):
+//   vrstereo on|off              ONE toggle: camera mode + stereo (threaded
+//                                substrate - BS2's primary bet, no 1t rung)
+//   reentry vrstereo|stereo|pulse|on|off|yaw|reset|hook [draw|stream]|
+//           unhook|dump <n>|kick on|off|kick2 on|off|calcstack|status
 
 void apply_command(const char* cmd, const char* args) {
     float v = 0.0f, x = 0.0f, y = 0.0f, z = 0.0f;
@@ -450,6 +469,11 @@ void apply_command(const char* cmd, const char* args) {
         }
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args);
+    } else if (strcmp(cmd, "vrstereo") == 0) {
+        // Top-level alias for the one-toggle (BS1 parity). The poller only
+        // ticks outside hooked calls, so applying directly here is safe.
+        scenedraw::handle_command(strncmp(args, "on", 2) == 0 ? "vrstereo on"
+                                                              : "vrstereo off");
     } else {
         BVR_LOG("[b2r] unknown command: %s (see the vocabulary comment in camera.cpp; "
                 "BS1-only levers like vrstereo/vraim/exec are not ported yet)",
@@ -704,6 +728,26 @@ void calcview_tail(void* self, CalcViewParams* p) {
     loc->y += g_offsetY.load(std::memory_order_relaxed);
     loc->z += g_offsetZ.load(std::memory_order_relaxed);
 
+    // SR pass 1 (LEFT eye): cache the fully-driven base camera LAST - after
+    // everything above that mutates it - then shift this pass's render half
+    // an IPD left. Pass 2 replays the base with the opposite eye. The eyed
+    // latch carries the strict-gameplay decision (non-gameplay pairs render
+    // both eyes identical for the quad screen).
+    if (scenedraw::stereo_active()) {
+        g_srBaseLoc = *loc;
+        g_srBaseRot = *rot;
+        g_srBaseStampMs = now;
+        g_srBaseValid = true;
+        g_srBaseEyed = strictGameplay && !bvr::vr::cinematic_active();
+        if (g_srBaseEyed) {
+            apply_eye_offset(loc, *rot, -1);
+            g_srEyeLoc[0] = *loc;
+            g_srEyeStampMs[0] = now;
+        }
+    } else {
+        g_srBaseValid = false;
+    }
+
     // Heartbeat LAST so it reports the FINAL camera handed back to the game -
     // drive, offsets and all. This is what the flat 6DOF checks measure
     // (offset -> exact UU delta; simhead -> exact rotator units; sim position
@@ -721,6 +765,22 @@ void calcview_tail(void* self, CalcViewParams* p) {
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed), vrDrove ? 1 : 0,
                     count - g_heartbeatBaseCount);
+            // SR flat measure (G6): live inter-eye camera delta from the two
+            // passes of the current pair. Expect |d| == ipdMm/1000 x
+            // worldScale UU (6.3 at defaults).
+            if (g_srEyeStampMs[0] && g_srEyeStampMs[1] && now - g_srEyeStampMs[0] < 500 &&
+                now - g_srEyeStampMs[1] < 500) {
+                float dx = g_srEyeLoc[1].x - g_srEyeLoc[0].x;
+                float dy = g_srEyeLoc[1].y - g_srEyeLoc[0].y;
+                float dz = g_srEyeLoc[1].z - g_srEyeLoc[0].z;
+                BVR_LOG("[b2r] sr eyes: L=(%.2f %.2f %.2f) R=(%.2f %.2f %.2f) "
+                        "|d|=%.2f UU (expect %.2f)",
+                        g_srEyeLoc[0].x, g_srEyeLoc[0].y, g_srEyeLoc[0].z,
+                        g_srEyeLoc[1].x, g_srEyeLoc[1].y, g_srEyeLoc[1].z,
+                        sqrtf(dx * dx + dy * dy + dz * dz),
+                        g_ipdMm.load(std::memory_order_relaxed) / 1000.0f *
+                            g_worldScale.load(std::memory_order_relaxed));
+            }
             // AER flat measure (G0): live inter-eye camera delta. Expect
             // |d| == ipdMm/1000 x worldScale UU (6.3 at defaults) with the
             // head held still (simhead).
@@ -762,6 +822,35 @@ void restore_game_fov_if_stale(uint64_t staleMs) {
             static_cast<unsigned long long>(now - g_lastCalcViewMs));
 }
 
+// The SECOND-pass dispatch of a doubled Draw (SequentialReentry pass 2).
+// Runs INSTEAD of calcview_tail: replay the cached pass-1 base with the
+// RIGHT eye, or (non-stereo probe mode) add the flat yaw delta. Everything
+// else is deliberately skipped - no drive, no telemetry, no FOV write, no
+// heartbeat, and NO g_lastCalcViewMs update (staleness must keep meaning
+// "the NORMAL pass went silent"). Writes are absolute, so multiple
+// dispatches inside one pass-2 window are idempotent.
+// NOTE for the future body/bones port: BS1's pass 2 also re-applies the
+// bone drive here (bioshock1r/camera.cpp:821-824 - the engine re-evaluates
+// the skeleton during pass 2). BS2 has no bones module yet; revisit this
+// exact spot when it grows one.
+void second_pass_replay(CalcViewParams* p, float yawDeg) {
+    uint64_t now = GetTickCount64();
+    if (scenedraw::stereo_active()) {
+        if (!g_srBaseValid || now - g_srBaseStampMs > 100) return; // stale base: leave as-is
+        p->loc = g_srBaseLoc;
+        p->rot = g_srBaseRot;
+        if (g_srBaseEyed) {
+            apply_eye_offset(&p->loc, p->rot, +1);
+            g_srEyeLoc[1] = p->loc;
+            g_srEyeStampMs[1] = now;
+        }
+    } else {
+        // Flat double-render probe: a visibly yawed second frame is the
+        // proof the engine renders a second full scene per tick.
+        p->rot.yaw += static_cast<int32_t>(yawDeg * kRotUnitsPerDegree);
+    }
+}
+
 // --- the detours -------------------------------------------------------------
 
 // FindFunctionChecked: learn the PlayerCalcView UFunction pointer with zero
@@ -798,12 +887,25 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
     if ((s_pollGate & 0xFF) == 0 || (s_pollGate & 0x3F) == 0) {
         if (!scenedraw::inside_hooked_call()) {
             if ((s_pollGate & 0xFF) == 0) poll_command_file(GetTickCount64());
-            if ((s_pollGate & 0x3F) == 0) restore_game_fov_if_stale(400);
+            if ((s_pollGate & 0x3F) == 0) {
+                restore_game_fov_if_stale(400);
+                // Overlay-posted vrstereo request: hook installs must never
+                // run mid-Draw or from the render thread; this lane is the
+                // game thread outside hooked calls. Also the MENU-arming
+                // path - BS2's menu never runs PlayerCalcView.
+                scenedraw::apply_pending_vrstereo();
+            }
         }
     }
 
-    if (fn && parms && fn == g_calcViewFn.load(std::memory_order_relaxed))
-        calcview_tail(self, static_cast<CalcViewParams*>(parms));
+    if (fn && parms && fn == g_calcViewFn.load(std::memory_order_relaxed)) {
+        auto* p = static_cast<CalcViewParams*>(parms);
+        float yawDeg = 0.0f;
+        if (scenedraw::second_pass_for_current_thread(&yawDeg))
+            second_pass_replay(p, yawDeg);
+        else
+            calcview_tail(self, p);
+    }
 }
 
 void atomic_slider(const char* label, std::atomic<float>& value, float lo, float hi) {
@@ -869,6 +971,12 @@ void set_fov_override(float hfovDeg) {
     } else {
         g_gameFovWrite.store(false, std::memory_order_relaxed);
     }
+}
+
+bool calcview_silent(uint64_t maxAgeMs) {
+    if (g_lastCalcViewMs == 0) return true;
+    uint64_t now = GetTickCount64();
+    return now - g_lastCalcViewMs > maxAgeMs;
 }
 
 void draw_debug_ui() {

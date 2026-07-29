@@ -111,10 +111,26 @@ constexpr uint8_t kSceneBuildPrologue[] = {0x53, 0x8B, 0xDC, 0x83, 0xEC,
 // push ebx; mov ebx,esp; sub esp,8; and esp,-16 (aligned-stack MSVC frame,
 // BS1's build prologue family; SEH frame follows)
 
-// Draw's camera source (the pass-2 poke target).
+// Draw's camera source probe (telemetry; the live camera enters via the
+// CalcView dispatch that runs EXACTLY once inside every Draw - live-verified
+// calcIn == draws every beat, so the BS1 pass-2 replay design transfers).
 constexpr uint32_t kViewportCamActorOffset = 0x48;
 constexpr uint32_t kCamActorLocOffset = 0x1EC; // 3 floats
 constexpr uint32_t kCamActorRotOffset = 0x1F8; // 3 int32 rotator units
+
+// The ONE gameplay Draw caller (live census 2026-07-29: single ret RVA over
+// every beat, count == presents). It is the little virtual-dispatch fn at
+// 0xCD5D60 (`call [vtbl+0x118]`, ret 4), itself called from the viewport
+// iterator at 0xCD2C40. Pass 2 doubles ONLY Draws arriving from here -
+// deny-by-default: any other caller (load paths included) is skipped and
+// counted, so doubling can never run inside a loader.
+constexpr uint32_t kSceneBuildGameplayRetRva = 0xCD5D7B;
+
+// Render-thread sync pair (banked for the 1t fallback, unconsumed): the
+// endframe fn 0x501EA0 triggers FEventWin global [0x1A69294] once per
+// present (kick2 site 0x5029BA) and reads its sibling [0x1A69298]; static
+// readers of the pair include 0xB929F2 (render-thread loop candidate).
+// Only derived further if threaded-mode doubling proves unstable.
 
 // FContentStreamingManager view hand-off (telemetry hook only).
 constexpr uint32_t kStreamViewRva = 0x5C7C80;
