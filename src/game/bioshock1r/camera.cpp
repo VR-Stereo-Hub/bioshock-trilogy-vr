@@ -745,13 +745,23 @@ void apply_vr_preset() {
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
 }
 
+// Re-assert interval for the engine-exec upkeep below. Was 15 s, which meant a
+// shipping session made two calls into the engine's SET handler through a
+// hand-built FOutputDevice stub every 15 seconds forever - five times in the 85 s
+// of the session-27 crash report. The stub is now measured and self-disabling
+// (console_exec.cpp), but the exposure was still 20x more than the job needs:
+// the state is re-asserted on the events that can actually undo it (entering
+// gameplay, a pawn or level change - see note_world_event) and this timer is only
+// a slow safety net for a script-side caller we have not identified.
+constexpr uint64_t kExecReassertMs = 300000; // 5 minutes
+
 // Crosshair upkeep (see the globals): push the wanted state through the
-// engine's SET handler on change, and re-assert every 15 s while hidden in
-// case script-side EnableReticle callers exist somewhere. Game thread.
+// engine's SET handler on change, on a world event, and on the slow safety
+// net. Game thread.
 void assert_crosshair(uint64_t now) {
     int want = g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0;
     bool due = want != g_crosshairApplied ||
-               (want == 0 && now - g_crosshairAssertMs >= 15000);
+               (want == 0 && now - g_crosshairAssertMs >= kExecReassertMs);
     if (!due) return;
     g_crosshairApplied = want;
     g_crosshairAssertMs = now;
@@ -775,6 +785,15 @@ void assert_lockon(uint64_t now) {
     else if (first)
         BVR_LOG("[b1r] pad lock-on re-enabled: the game's own radius returns "
                 "on the next game restart");
+}
+
+// One engine-state re-assert, driven by an event rather than a timer. Called on
+// the gameplay-view transition, which is the point a new pawn or a fresh level
+// can have reset the properties we set.
+void note_world_event(const char* why) {
+    g_crosshairApplied = -1; // sentinel: forces one assert on the next tick
+    g_lockOnApplied = -1;
+    BVR_LOG("[b1r] engine-state re-assert queued (%s)", why);
 }
 
 void poll_command_file(uint64_t now) {
@@ -1176,6 +1195,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             if (strictGameplay) {
                 patterns::hfov_scan_rearm("entered gameplay view");
                 aim::weapon_scan_rearm("entered gameplay view");
+                // Same event drives the engine-property re-assert, which used to
+                // run off a 15 s timer forever (session 27).
+                note_world_event("entered gameplay view");
             }
         }
 

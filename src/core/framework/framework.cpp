@@ -65,11 +65,43 @@ void log_environment() {
             static_cast<unsigned long long>(mem.ullTotalPhys >> 20), laa ? "yes" : "NO",
             static_cast<unsigned long long>(
                 reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress) >> 20));
+
+    // THE HOST EXE FINGERPRINT (session 27). Until now the log identified the
+    // mod's build but said nothing about the game's, while the adapters trust
+    // roughly a hundred absolute RVAs derived from one specific build. Every
+    // storefront ships the same file NAME, so exe-name matching cannot tell a
+    // Steam build from an Epic or GOG one - which means a different binary is
+    // detected as supported and then mis-scanned. This line is what lets a
+    // user's log answer "is this the build our addresses are for?" in one look.
+    if (hostNt) {
+        LARGE_INTEGER fileSize{};
+        wchar_t exeW[MAX_PATH]{};
+        if (GetModuleFileNameW(nullptr, exeW, MAX_PATH)) {
+            WIN32_FILE_ATTRIBUTE_DATA fad{};
+            if (GetFileAttributesExW(exeW, GetFileExInfoStandard, &fad)) {
+                fileSize.HighPart = static_cast<LONG>(fad.nFileSizeHigh);
+                fileSize.LowPart = fad.nFileSizeLow;
+            }
+        }
+        BVR_LOG("host exe: pe-timestamp 0x%08X size-of-image 0x%08X checksum 0x%08X "
+                "file-bytes %llu",
+                hostNt->FileHeader.TimeDateStamp, hostNt->OptionalHeader.SizeOfImage,
+                hostNt->OptionalHeader.CheckSum,
+                static_cast<unsigned long long>(fileSize.QuadPart));
+    } else {
+        BVR_LOG("host exe: PE headers unreadable - the build cannot be identified");
+    }
 }
 
 } // namespace
 
 void init() {
+    // The exception filter goes on FIRST (session 27). Everything below it -
+    // shell32 path lookups, MoveFileExW of the previous log, the PE header walk -
+    // used to run with no handler installed, so a fault in any of it produced
+    // neither a dump nor a log line.
+    crash::install();
+
     // Host detection is silent by contract (the log does not exist yet); the
     // game layer supplies the per-game data subdir so two games never share a
     // log/config folder.
@@ -81,8 +113,6 @@ void init() {
     BVR_LOG("host process: %s (base %p)", exePath, GetModuleHandleW(nullptr));
 
     log_environment();
-
-    crash::install();
 
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK) {
@@ -96,12 +126,20 @@ void init() {
 
     game::init_adapter(); // fail-soft: scan/hook failure is logged, game runs flat
 
-    vr::init_instance(); // fail-soft: no runtime just means flat mode
-
+    // The swapchain hooks go in BEFORE the OpenXR instance (session 27). The
+    // first OpenXR call LoadLibrary's the runtime and every implicit API layer,
+    // and there is no timeout anywhere in that path - on a machine where the
+    // runtime is waiting on its streamer it can block indefinitely. With the
+    // old order that cost us the Present detour, and with it crash::rearm(),
+    // whose only caller is that detour: the session then ran with whatever
+    // exception filter had displaced ours (CSERHelper) and produced no dumps at
+    // all. This way a hanging runtime costs VR and nothing else.
     if (!d3d11_hook::install()) {
         BVR_LOG("D3D11 hook install failed - mod disabled, game runs flat");
         return;
     }
+
+    vr::init_instance(); // fail-soft: no runtime just means flat mode
 
     BVR_LOG("init complete; waiting for first Present");
 }
