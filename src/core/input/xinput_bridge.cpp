@@ -58,6 +58,7 @@ constexpr uint64_t kVrGameplayStaleMs = 500;
 // (vr-gameplay fresh, lifted while a grip/bumper holds a radial open).
 std::atomic<float> g_turnScale{1.0f};
 std::atomic<bool> g_snapTurn{false};
+std::atomic<int> g_ammoMod{1}; // AmmoMod::Thumbrest (user's call, session 23)
 std::atomic<float> g_snapAngleDeg{45.0f};
 std::atomic<int> g_snapPending{0}; // +right/-left, drained by take_snap_steps
 bool g_snapArmed = true;           // edge re-arm state; g_mutex holds it
@@ -568,6 +569,13 @@ void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
     if (ry) *ry = g_lastComposed.ry;
 }
 
+AmmoMod ammo_mod() {
+    return static_cast<AmmoMod>(g_ammoMod.load(std::memory_order_relaxed));
+}
+void set_ammo_mod(AmmoMod m) {
+    g_ammoMod.store(static_cast<int>(m), std::memory_order_relaxed);
+}
+
 float turn_scale() { return g_turnScale.load(std::memory_order_relaxed); }
 void set_turn_scale(float s) {
     if (s < 0.1f) s = 0.1f;
@@ -643,6 +651,16 @@ void handle_command(const char* args) {
             set_snap_angle_deg(d);
             BVR_LOG("input: snap angle %.0f deg", snap_angle_deg());
         }
+    } else if (strcmp(verb, "ammomod") == 0) {
+        if (strncmp(rest, "click", 5) == 0) set_ammo_mod(AmmoMod::Click);
+        else if (strncmp(rest, "thumbrest", 9) == 0) set_ammo_mod(AmmoMod::Thumbrest);
+        else if (strncmp(rest, "both", 4) == 0) set_ammo_mod(AmmoMod::Both);
+        const AmmoMod m = ammo_mod();
+        BVR_LOG("input: ammo modifier = %s (vrinput ammomod click|thumbrest|both) - "
+                "thumbrest is the LEFT one; the right stick still picks the slot",
+                m == AmmoMod::Click       ? "CLICK (hold right stick click)"
+                : m == AmmoMod::Thumbrest ? "THUMBREST (rest left thumb)"
+                                          : "BOTH (either)");
     } else if (strcmp(verb, "sticklog") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_stickLog.store(on, std::memory_order_relaxed);
@@ -743,6 +761,19 @@ void draw_debug_ui() {
         if (ImGui::SliderFloat("Snap angle (deg)", &sa, 15.0f, 90.0f, "%.0f"))
             set_snap_angle_deg(sa);
     }
+
+    // Session 23: how you hold the ammo-select modifier. Thumbrest is the
+    // default; "Both" exists for controllers whose runtime reports no
+    // thumbrest at all (Pico, some SteamVR setups) - see xinput_bridge.h.
+    int am = g_ammoMod.load(std::memory_order_relaxed);
+    const char* amNames[] = {"Right-stick click", "Left thumbrest", "Either"};
+    if (ImGui::Combo("Ammo-select modifier", &am, amNames, 3))
+        set_ammo_mod(static_cast<AmmoMod>(am));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Hold this, then push the RIGHT stick up/down/left to pick an "
+                          "ammo slot.\nThe thumbrest is the pad above the buttons - it is "
+                          "the LEFT one,\nbecause your right thumb cannot rest and push the "
+                          "right stick at once.");
 
     // GetState poll rate, sampled ~1/s (render thread only).
     static uint64_t lastMs = 0;

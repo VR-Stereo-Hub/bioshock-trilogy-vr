@@ -442,3 +442,51 @@ runtime.
   shipping composition stays byte-identical to session 20 until the
   session-22 retune re-runs the acceptance ladder in the new regime and the
   user judges it in the headset.
+
+- **2026-07-29 (session 23): the version string is generated, never hand-edited.**
+  `BVR_VERSION` was a `#define` in `framework.h` and shipped "0.1.0" across v0.1.0,
+  v0.2.0 AND v0.3.0, which made an external crash report unattributable to a release
+  and cost a whole session to resolve by PE-timestamp forensics. It now comes from
+  `project(BioshockVR VERSION ...)` via `cmake/GenerateVersion.cmake`, regenerated
+  before every build and stamped with `git describe --tags --always --dirty`; the
+  startup log also prints the DLL's own PE TimeDateStamp and an `env:` line (OS build,
+  cores, RAM, host LAA). Consequence accepted: the version now lives in CMakeLists.txt
+  and a release requires bumping it there, so the tag and the binary cannot diverge
+  silently. Bumping it anywhere else is a bug.
+
+- **2026-07-29 (session 23): crash dumps carry heap-adjacent memory, and the crash log
+  carries registers.** `MiniDumpNormal` gave stacks and a module list only - enough to
+  see THAT a worker thread jumped into game heap, not enough to see what smashed the
+  slot. Now `MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithDataSegs |
+  MiniDumpWithProcessThreadData | MiniDumpWithHandleData | MiniDumpWithThreadInfo |
+  MiniDumpWithUnloadedModules`, plus a re-entrancy guard (a fault inside
+  `MiniDumpWriteDump` used to recurse), the integer registers, a symbolized
+  return-address chain, and an explicit read/write/DEP-execute classification of the
+  access violation. `BVR_FULLDUMP=1` escalates to full memory when asking a reporter
+  for one. Cost accepted: dumps grow from ~150 KB to a few MB.
+
+- **2026-07-29 (session 23): a loading screen is not a deadlock.** The reentry watchdog's
+  signature (stereo on, game thread inside a hooked call, builds and presents both
+  frozen for 1.2 s) is satisfied HONESTLY by a level load, so the first load after
+  VR PRESET 1 auto-disabled stereo and left the user in flat-per-eye VR until they
+  pressed the preset a second time - user-reported, then reproduced flat. The watchdog
+  now stands down while `hud::screen_only()` is true, and an auto-off records that IT
+  was the cause and re-arms once builds and presents advance again with the game thread
+  outside our detours for 500 ms. A deliberate `vrstereo off` / `reentry unhook` clears
+  that flag, so the watchdog can never resurrect a state the user turned off.
+  Coverage consciously reduced: the main menu also trips `screen_only`, so deadlock
+  detection is inert there. Judged acceptable because the event kicks are opt-in
+  (`wdkick` defaults off) and the auto-off "recovery" never actually recovered - its own
+  message told the user to kill the game.
+
+- **2026-07-29 (session 23): the ammo-select modifier is the LEFT thumbrest by default,
+  with an automatic click fallback.** A thumbrest modifier is necessarily cross-hand -
+  a thumb cannot rest on the pad and push the stick beside it - so the modifier is the
+  LEFT pad while the slot directions stay on the RIGHT stick, leaving existing muscle
+  memory intact. Two consequences the design handles explicitly: (1) a thumb PARKED on
+  the pad is not a deliberate gesture, so in thumbrest mode turn is suppressed only
+  while the stick is actually pushed past the select threshold, not for the whole rest;
+  (2) not every controller has a thumbrest (Pico has none; some SteamVR setups do not
+  report one), so the stick click keeps working until a real thumbrest touch is
+  observed, after which the mapping is exactly what was chosen. Overlay combo
+  "Ammo-select modifier" and `vrinput ammomod click|thumbrest|both` switch it.

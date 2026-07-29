@@ -85,7 +85,8 @@ bool Init(IDXGISwapChain* swapchain) {
 
 void DrawUi() {
     ImGui::SetNextWindowSize(ImVec2(420, 420), ImGuiCond_FirstUseEver);
-    ImGui::Begin("BioShock VR " BVR_VERSION);
+    // Build id in the title so an in-headset screenshot identifies the build.
+    ImGui::Begin("BioShock VR " BVR_VERSION " [" BVR_BUILD_ID "]");
     ImGui::Text("%.1f fps (%.2f ms)", ImGui::GetIO().Framerate,
                 1000.0f / ImGui::GetIO().Framerate);
     ImGui::Separator();

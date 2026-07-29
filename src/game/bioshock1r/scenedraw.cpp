@@ -12,6 +12,7 @@
 #include "game/bioshock1r/scenedraw.h"
 
 #include "core/gfx/frame_inspector.h"
+#include "core/gfx/hud_capture.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -132,6 +133,16 @@ std::atomic<uint32_t> g_watchdogKicks{0};
 // the drain (threaded mode) - waking a waiter whose peer is still stuck
 // consumes corrupted state. Detection+log is the safe default.
 std::atomic<bool> g_wdKickEnabled{false};
+// Session 23: the watchdog auto-off is a FALSE-POSITIVE recovery path, not a
+// user action. A level load satisfies the whole deadlock signature honestly
+// (loader parked inside a hooked call, builds and presents frozen), so the
+// first load after VR PRESET 1 used to kill stereo and leave the user in
+// flat-per-eye VR until they pressed the preset a second time. These two flags
+// let the watchdog put stereo back once the pipeline is provably moving again,
+// so one press stays good. A DELIBERATE 'vrstereo off' clears them - the
+// watchdog must never resurrect a state the user turned off on purpose.
+std::atomic<bool> g_stereoAutoOff{false};
+std::atomic<bool> g_autoOffDouble{false}; // g_doubleCall as it was at auto-off
 std::atomic<bool>  g_poisoned{false};
 std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
@@ -338,10 +349,45 @@ DWORD WINAPI WatchdogMain(void*) {
     uint32_t lastBuilds = 0;
     uint64_t lastPresents = 0;
     int stallTicks = 0;
+    int healthyTicks = 0;
     for (;;) {
         Sleep(100);
         if (g_watchdogExit.load(std::memory_order_relaxed)) return 0;
-        if (!g_stereo.load(std::memory_order_relaxed)) { stallTicks = 0; continue; }
+        if (!g_stereo.load(std::memory_order_relaxed)) {
+            stallTicks = 0;
+            // Only ever re-arm what WE turned off. Requires the pipeline to be
+            // moving again AND the game thread to be outside our detours, for
+            // 500 ms - re-arming into a live deadlock would just re-wedge it.
+            if (g_stereoAutoOff.load(std::memory_order_relaxed)) {
+                uint32_t b = g_buildEntries.load(std::memory_order_relaxed);
+                uint64_t p = bvr::d3d11_hook::present_count();
+                bool moving = (b != lastBuilds) || (p != lastPresents);
+                bool outside = g_activeDepth.load(std::memory_order_relaxed) == 0;
+                lastBuilds = b;
+                lastPresents = p;
+                if (moving && outside && ++healthyTicks >= 5) {
+                    g_doubleCall.store(g_autoOffDouble.load(std::memory_order_relaxed),
+                                       std::memory_order_relaxed);
+                    g_stereo.store(true, std::memory_order_relaxed);
+                    g_stereoAutoOff.store(false, std::memory_order_relaxed);
+                    healthyTicks = 0;
+                    BVR_LOG("[reentry] watchdog: pipeline moving again - stereo RE-ARMED "
+                            "(the auto-off was a false positive; hooks were never dropped)");
+                }
+                if (!moving || !outside) healthyTicks = 0;
+            }
+            continue;
+        }
+        // A loading screen is not a deadlock. Pure-gameswf intervals (loading,
+        // hack minigame, FMV) legitimately freeze builds and presents with the
+        // game thread parked inside a hooked call - the exact signature below.
+        // Session 23: this is what killed stereo on the first level load.
+        if (bvr::hud::screen_only()) {
+            stallTicks = 0;
+            lastBuilds = g_buildEntries.load(std::memory_order_relaxed);
+            lastPresents = bvr::d3d11_hook::present_count();
+            continue;
+        }
         uint32_t builds = g_buildEntries.load(std::memory_order_relaxed);
         uint64_t presents = bvr::d3d11_hook::present_count();
         bool inside = g_activeDepth.load(std::memory_order_relaxed) > 0;
@@ -388,10 +434,14 @@ DWORD WINAPI WatchdogMain(void*) {
             // 1.2 s and still wedged: recovery failed, stop doubling so the
             // game (if it ever unsticks) is not immediately re-wedged.
             BVR_LOG("[reentry] watchdog: recovery FAILED - stereo auto-off "
-                    "(game likely needs a kill)");
+                    "(will re-arm automatically if the pipeline recovers)");
+            g_autoOffDouble.store(g_doubleCall.load(std::memory_order_relaxed),
+                                  std::memory_order_relaxed);
+            g_stereoAutoOff.store(true, std::memory_order_relaxed);
             g_stereo.store(false, std::memory_order_relaxed);
             g_doubleCall.store(false, std::memory_order_relaxed);
             stallTicks = 0;
+            healthyTicks = 0;
         }
     }
 }
@@ -1285,6 +1335,7 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "unhook") == 0) {
         g_doubleCall.store(false, std::memory_order_relaxed);
         g_pulseCount.store(0, std::memory_order_relaxed);
+        g_stereoAutoOff.store(false, std::memory_order_relaxed); // deliberate: no re-arm
         g_stereo.store(false, std::memory_order_relaxed);
         g_forceInline.store(false, std::memory_order_relaxed);
         disable_slot(g_flushpoint);
@@ -1361,6 +1412,7 @@ void handle_command(const char* args) {
                                              : "single-threaded");
             }
         } else {
+            g_stereoAutoOff.store(false, std::memory_order_relaxed); // deliberate: no re-arm
             g_stereo.store(false, std::memory_order_relaxed);
             BVR_LOG("[reentry] stereo off (hooks stay; 'reentry unhook' to drop)");
         }

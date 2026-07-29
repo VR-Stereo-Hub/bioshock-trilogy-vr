@@ -78,6 +78,17 @@ bool snap_turn();
 void set_snap_turn(bool on);
 float snap_angle_deg();
 void set_snap_angle_deg(float d);
+
+// Ammo-slot select modifier (session 23). The shipped modifier is the RIGHT
+// STICK CLICK, which testers find awkward to hold while pushing the same
+// stick. The Touch thumbrest is the capacitive pad above the buttons; OpenXR
+// exposes it as .../input/thumbrest/touch on oculus/touch_controller, so it can
+// act as a no-button modifier. It must be the LEFT thumbrest, because your
+// right thumb cannot rest on the right thumbrest and push the right stick at
+// the same time. Default is Click - unchanged behaviour for existing users.
+enum class AmmoMod { Click = 0, Thumbrest = 1, Both = 2 };
+AmmoMod ammo_mod();
+void set_ammo_mod(AmmoMod m);
 int take_snap_steps(); // +right/-left steps queued since the last drain
 
 // Install the bridge's composing XInputGetState wrapper into an import slot

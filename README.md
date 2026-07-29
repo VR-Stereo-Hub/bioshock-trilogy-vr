@@ -35,6 +35,13 @@ session. No game files are modified and no game assets are distributed.
 3. Headset side (Quest 3 + Virtual Desktop): in Virtual Desktop's Streaming tab set the OpenXR
    runtime to **VDXR**, connect, then launch the game from Steam inside Virtual Desktop.
    (Steam Link / SteamVR works too - the mod talks to whatever OpenXR runtime is active.)
+   **Set the game's resolution to roughly SQUARE, not 16:9** - something like 2700x2700.
+   The mod sizes the eye render target from the game's backbuffer, and headset panels are
+   near square, so a 16:9 backbuffer renders a wide strip that the headset then throws
+   away. At 3840x2160 on a Quest 2 only ~54% of the width is inside the FOV: a square
+   2750x2850 has *fewer* total pixels, is sharper in the headset, and runs faster. The
+   startup log prints the consequence - `xr: headset fov half-angles ... -> game hfov N deg
+   (aspect A)`; the closer `aspect` is to 1.0, the less you are wasting.
 4. Launch the game through Steam. The mod logs to `%LOCALAPPDATA%\BioshockVR\bioshockvr.log`.
 
 To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
@@ -56,7 +63,8 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 | Right grip | switch/cycle weapon (hold for the radial) |
 | Left grip | switch/cycle plasmid (hold for the radial) |
 | Left stick | move (crouch on click) |
-| Right stick | turn; **hold click + push up/down/left = select ammo type** (zoom is removed in VR) |
+| Right stick | turn; **hold the LEFT thumbrest + push up/down/left = select ammo type** (zoom is removed in VR) |
+| Left thumbrest | ammo-select modifier (the pad above the X/Y buttons - just rest your thumb on it) |
 | A | use / interact (and menu confirm) |
 | B | jump |
 | X | reload / hack / inject EVE |
@@ -65,6 +73,14 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 
    Under VR the right stick no longer pitches the view (your head does); `vrinput pitchkill
    off` restores stick pitch if you want it back.
+
+   **Ammo select** used to mean holding the right stick *click* while pushing that same
+   stick, which is awkward. It is now the **left thumbrest** - the smooth pad above the
+   X/Y buttons, which senses your thumb resting on it. It has to be the left one: your
+   right thumb cannot rest on the right pad and push the right stick at the same time.
+   The overlay's "Ammo-select modifier" combo (or `vrinput ammomod click|thumbrest|both`)
+   switches back to the stick click, or accepts either. Controllers with no thumbrest
+   (Pico, some SteamVR setups) keep the stick click automatically.
 
 Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrpreset save`):
 

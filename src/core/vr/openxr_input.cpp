@@ -50,6 +50,14 @@ XrAction g_btnY = XR_NULL_HANDLE;
 XrAction g_stickClickL = XR_NULL_HANDLE;
 XrAction g_stickClickR = XR_NULL_HANDLE;
 XrAction g_menu = XR_NULL_HANDLE;
+// Capacitive thumbrest pads (session 23). BOOLEAN touch, part of the core
+// oculus/touch_controller profile - no extension needed. read_bool() returns
+// false when a binding is inactive, so a runtime that does not expose them
+// simply never fires the modifier. g_thumbrestSeen logs the first real touch,
+// which is how we prove the runtime actually reports it.
+XrAction g_thumbrestL = XR_NULL_HANDLE;
+XrAction g_thumbrestR = XR_NULL_HANDLE;
+bool g_thumbrestSeen[2] = {false, false};
 XrAction g_poseL = XR_NULL_HANDLE;     // grip poses - hand position (M7 hands)
 XrAction g_poseR = XR_NULL_HANDLE;
 XrAction g_aimL = XR_NULL_HANDLE;      // AIM poses - where the controller POINTS.
@@ -248,6 +256,10 @@ void input_create(XrInstance instance) {
     made += make_action("stick_r", "Right stick click", XR_ACTION_TYPE_BOOLEAN_INPUT,
                         &g_stickClickR);
     made += make_action("menu", "Menu", XR_ACTION_TYPE_BOOLEAN_INPUT, &g_menu);
+    made += make_action("thumbrest_l", "Left thumbrest touch", XR_ACTION_TYPE_BOOLEAN_INPUT,
+                        &g_thumbrestL);
+    made += make_action("thumbrest_r", "Right thumbrest touch", XR_ACTION_TYPE_BOOLEAN_INPUT,
+                        &g_thumbrestR);
     made += make_action("pose_l", "Left grip pose", XR_ACTION_TYPE_POSE_INPUT, &g_poseL);
     made += make_action("pose_r", "Right grip pose", XR_ACTION_TYPE_POSE_INPUT, &g_poseR);
     made += make_action("aim_l", "Left aim pose", XR_ACTION_TYPE_POSE_INPUT, &g_aimL);
@@ -267,6 +279,8 @@ void input_create(XrInstance instance) {
         {g_btnY, path(instance, "/user/hand/left/input/y/click")},
         {g_stickClickL, path(instance, "/user/hand/left/input/thumbstick/click")},
         {g_stickClickR, path(instance, "/user/hand/right/input/thumbstick/click")},
+        {g_thumbrestL, path(instance, "/user/hand/left/input/thumbrest/touch")},
+        {g_thumbrestR, path(instance, "/user/hand/right/input/thumbrest/touch")},
         {g_menu, path(instance, "/user/hand/left/input/menu/click")},
         {g_poseL, path(instance, "/user/hand/left/input/grip/pose")},
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
@@ -437,15 +451,51 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     {
         float rawX = 0.0f, rawY = 0.0f;
         read_vec2(session, g_look, &rawX, &rawY);
-        bool rsClick = read_bool(session, g_stickClickR);
         bool gripHeld = g_gripLatchedL || g_gripLatchedR;
 
-        if (rsClick && !g_rsClickWasDown) g_flickArmed = true;
-        g_rsClickWasDown = rsClick;
-        if (rsClick && !gripHeld) {
-            // Modifier held: the stick selects, the game sees no turn.
-            pad.rx = 0;
-            pad.ry = 0;
+        // Session 23: the modifier can also be the LEFT thumbrest. It has to be
+        // the left one - the right thumb cannot rest on the right thumbrest and
+        // push the right stick at the same time, so a thumbrest modifier is
+        // necessarily cross-hand. Slot directions stay on the right stick, so
+        // nobody's muscle memory changes.
+        const bool rsClick = read_bool(session, g_stickClickR);
+        const bool restL = read_bool(session, g_thumbrestL);
+        const bool restR = read_bool(session, g_thumbrestR);
+        for (int i = 0; i < 2; ++i) {
+            if ((i == 0 ? restL : restR) && !g_thumbrestSeen[i]) {
+                g_thumbrestSeen[i] = true;
+                BVR_LOG("xr-input: %s thumbrest touch reported by the runtime - "
+                        "usable as the ammo modifier ('vrinput ammomod thumbrest')",
+                        i == 0 ? "LEFT" : "RIGHT");
+            }
+        }
+        const bvr::input::AmmoMod mode = bvr::input::ammo_mod();
+        // Thumbrest is the default, but not every controller has one (Pico has
+        // no thumbrest; some SteamVR setups do not report it) and losing ammo
+        // select entirely would be a nasty surprise. So in Thumbrest mode the
+        // stick click keeps working UNTIL a real thumbrest touch is observed -
+        // after that the mapping is exactly what was chosen.
+        const bool noThumbrestYet = !g_thumbrestSeen[0];
+        const bool clickMod =
+            (mode != bvr::input::AmmoMod::Thumbrest || noThumbrestYet) && rsClick;
+        const bool restMod = mode != bvr::input::AmmoMod::Click && restL;
+        const bool modHeld = clickMod || restMod;
+
+        if (modHeld && !g_rsClickWasDown) g_flickArmed = true;
+        g_rsClickWasDown = modHeld;
+        if (modHeld && !gripHeld) {
+            // Turn suppression. RS-click never reaches the game, so killing turn
+            // for its whole hold costs nothing. A thumb PARKED on the thumbrest
+            // is not a deliberate gesture though - suppressing turn for as long
+            // as it rests there would break turning during normal play - so in
+            // thumbrest mode only suppress while the stick is actually pushed
+            // past the select threshold.
+            const bool pushed =
+                fabsf(rawX) >= kFlickPress || fabsf(rawY) >= kFlickPress;
+            if (clickMod || pushed) {
+                pad.rx = 0;
+                pad.ry = 0;
+            }
             if (g_flickArmed && now >= g_flickCooldownMs) {
                 uint16_t bit = 0;
                 if (rawY >= kFlickPress) bit = XINPUT_GAMEPAD_DPAD_UP;

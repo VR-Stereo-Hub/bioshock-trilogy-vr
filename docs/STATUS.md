@@ -1,17 +1,117 @@
-﻿# Project status
+# Project status
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-29, session 22 - CINEMATICS + FULLSCREEN ROUTING: the descent's real mechanism measured (both hypotheses wrong), live rendered-fov watch, stereo cinematics default, screen-only routing, first-boot restart killed, head-roll eyes, turn controls - branch s22-vr-polish)
+## Current state (2026-07-29, session 23 - CLEAN-MACHINE NEW-USER FLOW + CRASH CAPTURE: Steam's CSERHelper was eating our crash handler, load-crossing stereo drop fixed, thumbrest ammo modifier, v0.4.1 packaged - branch s23-crash-diagnostics)
 
-**v0.4.0 IS RELEASED (2026-07-29): PR #8 merged to main, tagged, zip
-published (both RelWithDebInfo DLLs + README + the bundled preset at
-https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.4.0) after
-the user's play-test and explicit go. The letterbox bars + the
-hands-drive-during-cinematics gate ship as documented known issues (round
-5 below). NEXT SESSION, user's ask: the CLEAN-MACHINE new-user flow -
-wipe, install from the release zip, fix whatever breaks until the
-out-of-box flow works; then the bars investigation.**
+**v0.4.1 IS BUILT AND PACKAGED, NOT PUBLISHED** (`dist/bioshock-vr-v0.4.1.zip`).
+Publishing is the user's call.
+
+### 1. THE HEADLINE: Steam's crash reporter displaces our exception filter
+
+An external tester's v0.4.0 crash produced **no dump and no log line at all** - the log
+just stops mid-heartbeat. That is not a crash we missed; it is a crash we were never told
+about. `SetUnhandledExceptionFilter` is global last-writer-wins and we install at DLL
+attach, so anything that installs later silently owns the slot.
+
+**Reproduced locally within 30 s of adding a re-arm check:**
+`crash: our exception filter had been displaced by 708C2571 [CSERHelper.dll+0x12571]`.
+`CSERHelper.dll` is Steam's Crash Error Reporting Helper, and it is in the tester's module
+list too. It explains everything: their v0.2.0 crash DID produce a dump (it happened
+before Steam took the slot), and their v0.4.0 crashes at ~94 s produce nothing.
+
+Fix: `crash::rearm()` from the present loop (~every 10 s) takes the slot back and chains
+to whoever displaced us, so Steam still gets its report. Plus a vectored handler for the
+always-fatal codes that never reach a filter at all (heap corruption, stack overflow,
+`__fastfail`), and a `DLL_PROCESS_DETACH` breadcrumb so an orderly exit is distinguishable
+from a hard kill (verified absent on TerminateProcess; the orderly path is NOT yet
+verified end to end).
+
+### 2. The external report - ATTRIBUTED, still not root-caused
+
+Tester's original artifacts were a **v0.2.0** run, confirmed later in their own words:
+they tested v3 and v4, both crashed, then re-tested v2 and sent THAT log, not knowing the
+log is truncated every launch. Three methods had already agreed (PE TimeDateStamp byte-matching
+the v0.2.0 asset, the `0.1.0` banner, absence of `APlayerWeapon scan:`). Method + a
+per-release fingerprint table are in ENGINE_NOTES session 23.
+
+The v0.2.0 dump: DEP execute violation, CPU fetching from non-executable game heap in the
+FName table beside an `FThreadLockStepExecution` object, on a GAME WORKER thread in the
+engine's `FSynchronize` dispatch (`BioshockHD.exe+0x7CCF40`), no bioshockvr.dll frame,
+13 s after the last CalcView. Address-space exhaustion RULED OUT (exe is LAA, 1.88 GB of
+~4 GB). Root cause still unknown - `MiniDumpNormal` captured no heap.
+
+Latest v0.4.0 capture (2750x2850, unchanged resolution): 94 s at the menu during the 2K
+account connect, steady 90 calls/s, then the log ends. `fflush` is per-line so nothing was
+lost - the process simply vanished. Consistent with the CSERHelper finding.
+
+### 3. Clean-machine new-user flow - PASSED
+
+Full wipe (both DLLs + `%LOCALAPPDATA%\BioshockVR\`, preset backed up + sha256 manifest
+to `Documents\BioshockVR-backup-20260729-142724\`), vanilla baseline, then the PUBLISHED
+v0.4.0 zip installed by its own README - two DLLs, no preset, shipped defaults. Clean boot,
+7.3 min menu soak flat with no crash, then user play-tested in-headset. Preset restored and
+hash-verified afterwards.
+
+### 4. Load-crossing stereo drop - USER-REPORTED, REPRODUCED, FIXED
+
+After VR PRESET 1 at the menu, loading a level dropped stereo to "VR but not 3D" until the
+preset was pressed again. The reentry watchdog's deadlock signature is satisfied honestly
+by a level load, so it auto-disabled stereo. Now it stands down while
+`hud::screen_only()` is true, and an auto-off re-arms once the pipeline moves again with
+depth 0 for 500 ms; a deliberate `vrstereo off` clears that. Verified flat: the crossing
+that previously logged `deadlock state detected` at +1.0 s and `stereo auto-off` at +2.0 s
+now logs neither, doubling still live. Coverage knowingly reduced: the menu also trips
+screen_only, so detection is inert there.
+
+### 5. Thumbrest ammo modifier - SHIPPED, user says "perfect"
+
+`/input/thumbrest/touch` is core to `oculus/touch_controller`; VDXR 1.0.10 reports it.
+It is ONE BIT - no x/y, so directional flicks are impossible (that idea comes from
+Vive/Index TRACKPADS). Weapon switching stays on the grip. LEFT thumbrest is the modifier
+with slot directions still on the RIGHT stick (a thumb cannot rest on a pad and push the
+stick beside it). Default thumbrest; overlay combo + `vrinput ammomod`; stick click keeps
+working until a real thumbrest touch is seen, so Pico-class controllers are safe.
+
+### 6. Diagnostics, now that we know how expensive their absence is
+
+Version generated from `project(... VERSION)` + `git describe` (the old `#define` shipped
+"0.1.0" for three releases); startup logs PE TimeDateStamp + an `env:` line; dumps carry
+heap-adjacent memory and data segs; crash log gets registers, a symbolized stack and
+read/write/DEP classification; `bioshockvr.prev.log` survives one relaunch (the exact trap
+that cost this session); `tools/package.ps1` + in-repo `release/preset/` make releases
+reproducible and refuse to package a version mismatch.
+
+### 7. For users: match resolution to the headset's per-eye aspect
+
+The eye swapchain is sized from the game backbuffer, so 16:9 renders a wide strip the
+headset discards - at 3840x2160 on a Quest 2 only ~54% of the width is inside the FOV. A
+near-square 2750x2850 has FEWER pixels, is sharper and runs faster. Found independently by
+the tester; math in ENGINE_NOTES, guidance now in the README.
+
+## Next steps
+
+0. **Late session-23 findings (after the handoff above was first written):** a second
+   external dump is a DIFFERENT crash - main-thread use-after-free (0xDEDEDEDE poison)
+   inside VDXR->d3d11 frame submission, no mod frame on the stack. Shipped a guard:
+   same-size ResizeBuffers no longer destroys the XR swapchains (their machine issues
+   one mid-session 7 s after FOCUSED). Also: the v0.2.0-works premise is dead (their
+   first dump IS a v0.2.0 crash), fullscreen is not the discriminator (both dump-
+   producing runs were windowed=1), and their CalcView rate oscillates 90/s <-> 7000/s
+   (pacing lost/regained - unexplained). Full detail in ENGINE_NOTES session 23
+   addendum. Still open: defer real-size-change swapchain teardown to a safe point in
+   the frame loop; the pacing oscillation.
+
+1. **Get v0.4.1 to the tester.** With the filter re-arm their next crash should finally
+   produce a dump with heap + data segs, registers and a symbolized stack. Ask for
+   `bioshockvr.log`, `bioshockvr.prev.log` and the `.dmp` BEFORE relaunching.
+2. **Chase the 2K-account lead** - they report account connect is very slow on v0.3.0 and
+   v0.4.0, and that is the window they die in. Worth checking what the mod does during the
+   menu that could interact with the Steam/2K network path.
+3. **Seated vs standing recenter** - deferred by the user; three designs in the ROADMAP
+   post-v1 backlog.
+4. Letterbox bars investigation (carried from session 22, still open).
+5. Checklist sections B/C/E were never formally walked item by item.
 
 ### 1. CINEMATICS (plan item 1) - both on-file hypotheses DISPROVEN, the real fix shipped
 
@@ -2340,6 +2440,25 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 23 - 2026-07-29 - clean-machine new-user flow + crash capture
+
+Began with an external crash report and the user's ask for a full first-run pass.
+Identified the reported artifacts as v0.2.0 by three independent methods before the
+tester confirmed it, so the report was never evidence of a v0.3.0/v0.4.0 regression.
+Ran the clean-machine flow end to end on the published v0.4.0 zip and it passed. Fixed a
+user-reported load-crossing stereo drop (watchdog false-positive on loading screens),
+verified flat. Added the thumbrest ammo modifier after confirming from the in-tree OpenXR
+registry that the pad is a single bit and cannot flick. Then the real find: chasing "crash
+to desktop with no dump" led to a filter re-arm check that immediately caught Steam's
+CSERHelper.dll displacing our unhandled-exception filter - which is why the tester's newer
+crashes produced no dump and no log line at all. Packaged v0.4.1 around the whole
+diagnostics set. Three corrections worth keeping: v0.3.0 DOES have the weapon-scan backoff
+(only full suppression was new), the AHands backoff already resets on world change (the
+"hands not tracking" the user saw was my own test arming `vrstereo on` alone), and the
+ungated fg-FOV write at menu time exists in v0.2.0 too, so it does not explain the version
+split.
+
 
 ### 2026-07-29 - Session 22 (cinematics measured + fixed, fullscreen routing, first-boot fix, head-roll eyes, turn controls)
 

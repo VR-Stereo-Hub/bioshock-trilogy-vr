@@ -66,7 +66,33 @@ add_library(bioshockvr SHARED
     game/bioshock1r/ue_math.h
 )
 set_target_properties(bioshockvr PROPERTIES PREFIX "")
-target_include_directories(bioshockvr PRIVATE .)
+
+# --- generated version header --------------------------------------------------
+# Regenerated before every build of the mod, so `bioshockvr X.Y.Z (build id)` in
+# the log always matches the tree it was built from. Session 23: the old
+# hand-edited #define shipped "0.1.0" for v0.1.0, v0.2.0 AND v0.3.0, which made a
+# user's crash log unattributable to a release.
+set(BVR_VERSION_HEADER "${CMAKE_BINARY_DIR}/generated/bvr_version.h")
+# Once at configure time so the header exists for a fresh tree and for IDE parsing.
+execute_process(COMMAND ${CMAKE_COMMAND}
+        -DBVR_VERSION=${PROJECT_VERSION}
+        -DBVR_SRC=${PROJECT_SOURCE_DIR}
+        -DBVR_IN=${PROJECT_SOURCE_DIR}/cmake/bvr_version.h.in
+        -DBVR_OUT=${BVR_VERSION_HEADER}
+        -P ${PROJECT_SOURCE_DIR}/cmake/GenerateVersion.cmake)
+add_custom_target(bvr_version ALL
+    BYPRODUCTS "${BVR_VERSION_HEADER}"
+    COMMAND ${CMAKE_COMMAND}
+            -DBVR_VERSION=${PROJECT_VERSION}
+            -DBVR_SRC=${PROJECT_SOURCE_DIR}
+            -DBVR_IN=${PROJECT_SOURCE_DIR}/cmake/bvr_version.h.in
+            -DBVR_OUT=${BVR_VERSION_HEADER}
+            -P ${PROJECT_SOURCE_DIR}/cmake/GenerateVersion.cmake
+    COMMENT "Stamping bvr_version.h (${PROJECT_VERSION} + git describe)"
+    VERBATIM)
+add_dependencies(bioshockvr bvr_version)
+
+target_include_directories(bioshockvr PRIVATE . "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(bioshockvr PRIVATE
     minhook
     imgui

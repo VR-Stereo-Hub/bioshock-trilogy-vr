@@ -1,0 +1,19 @@
+The bundled calibration (v0.4.1)
+================================
+
+You do NOT need these files for a fresh install: the mod's built-in
+defaults are identical to them. Install the two DLLs, press VR PRESET 1,
+play.
+
+They matter only if you ALREADY have your own tuning in
+  %LOCALAPPDATA%\BioshockVR\
+(your files always win over the built-in defaults, key by key):
+
+- Keep your tuning:        do nothing.
+- Adopt this calibration:  back up and replace vrpreset.ini, hands.ini
+                           and weapons.ini in %LOCALAPPDATA%\BioshockVR\
+                           with these, then restart the game.
+- Mix and match:           copy only the file you want (e.g. weapons.ini
+                           for the per-weapon aim profiles), or even
+                           single key=value lines between files - every
+                           line stands alone.

@@ -3,6 +3,7 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
+#include "core/util/crash.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 
@@ -53,7 +54,12 @@ void LogSwapchainInfo(IDXGISwapChain* swapchain) {
 }
 
 HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT flags) {
-    g_presentCount.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t presents = g_presentCount.fetch_add(1, std::memory_order_relaxed);
+    // Cheap re-arm of our unhandled-exception filter (~every 10 s at 60 fps).
+    // The game, the Steam overlay and the 2K SDK all install theirs after our
+    // DLL attach, and last writer wins - session 23: a tester's crash produced
+    // no dump AND no log line, the exact signature of a displaced filter.
+    if ((presents % 600) == 0) crash::rearm();
     if (!g_loggedFirstPresent.exchange(true)) {
         LogSwapchainInfo(swapchain); // DR-2: confirms the D3D11 path is live
         // Frame inspector hooks onto the GAME's immediate context (fail-soft;
@@ -114,7 +120,7 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
 HRESULT WINAPI ResizeBuffersDetour(IDXGISwapChain* swapchain, UINT bufferCount,
                                    UINT width, UINT height, DXGI_FORMAT format,
                                    UINT swapchainFlags) {
-    vr::on_resize();
+    vr::on_resize(width, height, static_cast<unsigned>(format));
     overlay::on_resize();
     hud::release_resources(); // recreated lazily at the new size
     HRESULT hr = g_origResizeBuffers(swapchain, bufferCount, width, height, format, swapchainFlags);

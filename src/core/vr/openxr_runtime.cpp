@@ -52,6 +52,7 @@ XrFrameState g_frameState{XR_TYPE_FRAME_STATE};
 XrSwapchain g_swapchains[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
 std::vector<XrSwapchainImageD3D11KHR> g_images[2];
 uint32_t g_swapW = 0, g_swapH = 0;
+uint32_t g_backbufferFmt = 0; // DXGI format the live swapchains were built for
 
 ID3D11Device* g_device = nullptr;          // game device, AddRef'd
 ID3D11DeviceContext* g_context = nullptr;  // immediate context, AddRef'd
@@ -418,6 +419,7 @@ void destroy_swapchains() {
     destroy_laser();
     destroy_hud_swapchain();
     g_swapW = g_swapH = 0;
+    g_backbufferFmt = 0;
     reset_aer(); // the held eye images died with the swapchains
 }
 
@@ -648,6 +650,7 @@ bool create_swapchains(IDXGISwapChain* swapchain) {
     g_swapW = desc.BufferDesc.Width;
     g_swapH = desc.BufferDesc.Height;
     g_swapFormat = pick; // the HUD quad swapchain creates lazily with this
+    g_backbufferFmt = desc.BufferDesc.Format; // for the same-size resize guard
     BVR_LOG("xr: swapchain pair %ux%u format %lld (%u images each)", g_swapW, g_swapH,
             static_cast<long long>(pick), imageCount);
 
@@ -1686,9 +1689,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
     }
 }
 
-void on_resize() {
-    // Recreated at the new backbuffer size on the next frame.
-    destroy_swapchains();
+void on_resize(unsigned width, unsigned height, unsigned format) {
+    // Backbuffer-derived views MUST go regardless: DXGI fails the game's
+    // ResizeBuffers call outright while anyone still holds a buffer reference.
+    // Our own copy textures are merely size-tied and recreate lazily - cheap.
     release_mirror();
     release_lb_scratch(); // size-tied; also self-heals on desc mismatch
     if (g_backbufferRtv) {
@@ -1696,6 +1700,28 @@ void on_resize() {
         g_backbufferRtv = nullptr;
         g_backbufferForRtv = nullptr;
     }
+
+    // Session 23: an external machine issues mid-session ResizeBuffers calls at
+    // the SAME size (focus/mode churn - DisplayFusion and the 2K overlay are
+    // both live there), and unconditionally xrDestroySwapchain'ing on every one
+    // tears XR swapchains out from under the compositor. A captured crash shows
+    // VDXR calling into d3d11 with 0xDEDEDEDE-poisoned pointers - freed-object
+    // shape. The XR swapchains hold runtime images, not DXGI backbuffer
+    // references, so they cannot block the game's resize: keep them whenever
+    // the geometry they were built for is unchanged. Width/height/format of 0
+    // mean "unchanged" in DXGI's own convention; anything unknown falls through
+    // to the old destroy-and-recreate path.
+    const bool sameSize = g_swapchains[0] != XR_NULL_HANDLE && g_swapW && g_swapH &&
+                          (width == 0 || width == g_swapW) &&
+                          (height == 0 || height == g_swapH) &&
+                          (format == 0 /*DXGI_FORMAT_UNKNOWN*/ || format == g_backbufferFmt);
+    if (sameSize) {
+        BVR_LOG("xr: same-size ResizeBuffers (%ux%u fmt %u) - XR swapchains kept",
+                width, height, format);
+        return;
+    }
+    // Recreated at the new backbuffer size on the next frame.
+    destroy_swapchains();
 }
 
 void draw_debug_ui() {
@@ -2076,7 +2102,7 @@ void init_instance() {
 }
 void on_present_begin(IDXGISwapChain*) {}
 void on_present_end(IDXGISwapChain*) {}
-void on_resize() {}
+void on_resize(unsigned, unsigned, unsigned) {}
 void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
 bool get_hand_pose(int, bool, HeadPose&) { return false; }
