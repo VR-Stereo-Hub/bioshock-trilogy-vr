@@ -14,6 +14,7 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
+#include "game/bioshock1r/game_ini.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
@@ -338,6 +339,21 @@ void apply_command(const char* cmd, const char* args) {
         }
     } else if (strcmp(cmd, "buildgate") == 0) {
         patterns::handle_buildgate_command(args);
+    } else if (strcmp(cmd, "vrres") == 0) {
+        // The eye render IS the game's backbuffer, so the game's resolution is
+        // the VR resolution. `SETRES` faults (ENGINE_NOTES session 27), so the
+        // game's own ini is the only working lever and a change lands on the
+        // next launch. Deliberately explicit rather than automatic.
+        unsigned rw = 0, rh = 0;
+        if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
+            game_ini::write_viewport(rw, rh);
+        } else if (sscanf_s(args, "%u %u", &rw, &rh) == 2 && rw && rh) {
+            game_ini::write_viewport(rw, rh);
+        } else {
+            unsigned bw = 0, bh = 0;
+            bvr::vr::fov_audit(nullptr, nullptr, nullptr, &bw, &bh);
+            game_ini::log_status(bw, bh);
+        }
     } else if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
         BVR_LOG("[b1r] command: recenter");

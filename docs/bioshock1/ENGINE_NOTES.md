@@ -2401,7 +2401,83 @@ followed, so the resolution change never began. Notes:
 - This is also the first real exercise of the exec failure latch: the fault disabled the
   seam for the session with one clear line, instead of being retried every 15 s.
 
-### Still unmeasured: the world lens aspect law
+### MEASURED: the world lens is Hor+ with a fixed vertical, and the option is 16:9-referenced
+
+Two `fovaudit live` readings of the rendered projection, same `option=130`, different
+backbuffer, taken through the ini lane below:
+
+| backbuffer | aspect | rendered tanH | rendered tanV |
+|---|---:|---:|---:|
+| 1920x1080 | 1.7778 | 2.1445 | 1.2063 |
+| 2048x2048 | 1.0000 | **1.2063** | **1.2063** |
+
+**The vertical did not move. The horizontal collapsed.** So the law is the OPPOSITE of what
+this project and BioVRDev both assumed:
+
+```
+tanV = tan(option/2) * 9/16     <- the option is a 16:9-REFERENCED horizontal, and what the
+                                   engine actually derives from it is the VERTICAL
+tanH = tanV * (live aspect)     <- horizontal follows the window. Hor+.
+```
+
+Both rows fit exactly: `tan(65) * 9/16 = 1.2063`, and `1.2063 * 1.7778 = 2.1445`. At 16:9 the
+two conventions coincide (`tanH == tan(option/2)`), which is why this went unnoticed through
+every session so far - every measurement had been taken at 16:9.
+
+Cross-check against the other mod's independently measured table: BioVRDev record
+`GameFovDegrees=100 -> 100.0h / 67.7v` at 16:9, and `tan(50)*9/16 = 0.6703 ->
+2*atan(0.6703) = 68.4 deg` vertical, `0.6703*16/9 = tan(50)` horizontal. Their numbers are
+this law, not the one their spec reasons with.
+
+**Consequence 1 - our submitted claim is wrong at any non-16:9 aspect.** Submission takes
+`hfovDeg` from the option readback and derives `halfV = atan(tan(halfH) * swapH/swapW)`
+(openxr_runtime.cpp). At 16:9 that reproduces the render exactly. At 1:1 it claims 130x130
+against a rendered 100.7x100.7 - a 1.78x horizontal stretch for the compositor to
+reproject, i.e. the yaw-warp signature. The mod already detects it: that run logged
+`mismatch=1`. The fix is to build the claim from the measured law
+(`tanV = tan(option/2)*9/16`, `tanH = tanV*aspect`) instead of assuming the option is a true
+horizontal.
+
+**Consequence 2 - "render square and keep FOV 100" under-shoots badly.** At 1440x1440 with
+option 100 the engine renders ~68x68 deg, not 100x100. That advice appears in BioVRDev's
+SPEC and is contradicted by their own table.
+
+**Consequence 3 - the pinned 130 is accidentally correct at square aspect.** Solving
+`tan(option/2)*9/16*a = tan(H/2)` for `H=100, a=1.0` gives `option = 129.5`, which is what
+VR PRESET 1 already writes (capped at the engine UI's 130). So at a square resolution the
+shipped config renders ~100.7x100.7 - very nearly the ideal for a Quest-class eye. No FOV
+policy change is needed there; the claim is the bug, not the render.
+
+### The ini lane works, and the engine honours a square backbuffer
+
+`%APPDATA%\BioshockHD\Bioshock\Bioshock.ini`, section `[WinDrv.WindowsClient]`. ANSI, CRLF.
+
+**FOUR sections carry the same viewport key names** - the PC driver at line 429 plus
+`[XeDrv.XenonClient]` (468), `[DurangoDrv.DurangoClient]` (500) and `[OrbisDrv.OrbisClient]`
+(532). A key replacement that is not section-scoped writes a console driver section and looks
+like it succeeded. Every write in `game_ini.cpp` is scoped to the PC section, writes BOTH the
+windowed and fullscreen pairs (UE2 reads whichever mode it starts in), backs up once to
+`.bvr-bak-res`, writes via temp + `ReplaceFileW`, and re-reads to verify.
+
+Verified end to end: `vrres 2048x2048` -> `viewport set to 2048x2048 ... verified` -> relaunch
+-> `first Present: backbuffer 2048x2048`. The engine accepts a non-display-mode square size in
+windowed mode without complaint.
+
+Two caveats. The write survived process exit in testing, but the harness hard-kills the
+process, which skips the game's orderly `SaveConfig` - whether a clean quit through the menu
+clobbers it is NOT yet tested. And `HorizontalFOV=130` currently sits in the shipped user ini,
+which is the mod's own live FOV write having been saved by the game at some earlier exit.
+
+A user datapoint that corroborates the whole thesis, independently: on a Dream Air they found
+their runtime's own resolution slider did nothing (it cannot - nothing in the mod reads
+`recommendedImageRect`), and editing this file to 7680x4320 made the image "super crisp". At
+our 130 option and 16:9, only about 4120x4270 of that 7680x4320 falls inside a ~49x50 deg
+eye: 17.6 MP useful out of 33.2 MP rendered, ~53% efficiency, matching the ~54% figure
+already recorded above. The same sharpness is available near-square for ~18 MP. It also caps
+how aggressively a derived target may clamp: 33 MP is a resolution a real user is happily
+running, so any total-pixel ceiling must be generous and overridable.
+
+### Superseded: the earlier "still unmeasured" note on the world lens aspect law
 
 At 1920x1080 the live watch reads `tanH=2.1445 tanV=1.2063`, i.e. `tanV/tanH = 0.5625 =
 9/16` exactly, consistent with `tanH = tan(option/2)` and a vertical derived from the

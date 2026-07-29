@@ -57,6 +57,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/camera.cpp
     game/bioshock1r/camera.h
     game/bioshock1r/console_exec.cpp
+    game/bioshock1r/game_ini.cpp
+    game/bioshock1r/game_ini.h
     game/bioshock1r/console_exec.h
     game/bioshock1r/frame_context.h
     game/bioshock1r/hands.cpp
