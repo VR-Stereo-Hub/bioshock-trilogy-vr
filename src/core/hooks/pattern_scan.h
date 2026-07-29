@@ -84,7 +84,7 @@ struct NativeScanResult {
 // that references it, and read the next dword.
 //
 // Derived 2026-07-25 (M6) by dumping the registration strings out of the exe's
-// .rdata and following their .data references (docs/ENGINE_NOTES.md "Native
+// .rdata and following their .data references (docs/bioshock1/ENGINE_NOTES.md "Native
 // function table"). Nothing here is game-specific - it is how the engine
 // registers name-based natives, so BioShock 2 will resolve the same way.
 bool find_native_function(const ProcessImage& img, const char* className,

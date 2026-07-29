@@ -679,11 +679,13 @@ int g_dumpSeq = 0; // per-boot counter: consecutive-window dumps land in one sec
 
 void write_dump() {
     wchar_t path[MAX_PATH];
-    wchar_t base[MAX_PATH];
-    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return;
+    // Composed from data_dir() so the per-game subdir (log.cpp) is honored;
+    // for BioShock 1 the resulting string is unchanged.
+    const wchar_t* base = bvr::log::data_dir();
+    if (!base[0]) return; // log::init failed - no data dir
     SYSTEMTIME st{};
     GetLocalTime(&st);
-    swprintf_s(path, L"%s\\BioshockVR\\framedump_%02u%02u%02u_q%d.txt", base, st.wHour,
+    swprintf_s(path, L"%s\\framedump_%02u%02u%02u_q%d.txt", base, st.wHour,
                st.wMinute, st.wSecond, g_dumpSeq++);
 
     FILE* f = nullptr;

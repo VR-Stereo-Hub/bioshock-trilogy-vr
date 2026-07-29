@@ -3,8 +3,8 @@
 // right-handed) - PURE math, no engine semantics, which is why this lives in
 // core: the laser (core/vr) and the game adapters must compose trims with the
 // SAME algebra or the beam and the barrel disagree everywhere but the tuning
-// pose (session 20, the aim-sync unification). Promoted from
-// game/bioshock1r/ue_math.h, which re-exports these for its own callers.
+// pose (session 20, the aim-sync unification). Promoted from what is now
+// game/shared/ue_math.h, which re-exports these for its own callers.
 
 #include <cmath>
 

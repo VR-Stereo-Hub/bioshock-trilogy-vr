@@ -8,6 +8,10 @@
 # session-19+ DLL installed. After detection a single B press closes the MAP
 # screen the A-press loop sometimes leaves open (known harness trap);
 # callers should still screenshot-verify before measuring.
+# BS1-ONLY for now: BioShock 2's menu flow and Steam appid (409720) differ; a
+# boot flow for it is future M10 work - launch BS2 manually or via
+# `Start-Process steam://rungameid/409720` and drive with the -Game bs2
+# harness scripts.
 $repo = Split-Path -Parent $PSScriptRoot
 $log = "$env:LOCALAPPDATA\BioshockVR\bioshockvr.log"
 

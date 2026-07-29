@@ -20,7 +20,7 @@
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
-#include "game/bioshock1r/ue_math.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 #include <MinHook.h>
@@ -761,9 +761,11 @@ void poll_command_file(uint64_t now) {
     g_lastCmdPollMs = now;
     static wchar_t path[MAX_PATH];
     if (!path[0]) {
-        wchar_t base[MAX_PATH];
-        if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return;
-        swprintf_s(path, L"%s\\BioshockVR\\command.txt", base);
+        // Composed from data_dir() so the per-game subdir (log.cpp) is
+        // honored; for BioShock 1 the resulting string is unchanged.
+        const wchar_t* dir = bvr::log::data_dir();
+        if (!dir[0]) return; // log::init failed - no data dir to poll
+        swprintf_s(path, L"%s\\command.txt", dir);
     }
     WIN32_FILE_ATTRIBUTE_DATA fad{};
     if (!GetFileAttributesExW(path, GetFileExInfoStandard, &fad)) return;

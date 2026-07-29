@@ -1,8 +1,11 @@
 # Capture the BioshockHD window itself to a PNG (PrintWindow + PW_RENDERFULLCONTENT,
 # which grabs D3D content on Win10/11) - not the whole desktop. Foregrounds the window
 # first and waits, because the game pauses presenting while unfocused.
-# Usage: .\tools\game-shot.ps1 -Out C:\path\shot.png
-param([Parameter(Mandatory=$true)][string]$Out)
+# Usage: .\tools\game-shot.ps1 -Out C:\path\shot.png [-Game bs2]
+param(
+    [Parameter(Mandatory=$true)][string]$Out,
+    [ValidateSet("bs1", "bs2")][string]$Game = "bs1"
+)
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -14,7 +17,8 @@ public static class W {
 }
 '@
 Add-Type -AssemblyName System.Drawing
-$p = Get-Process BioshockHD -ErrorAction Stop
+if ($Game -eq "bs2") { $procName = "Bioshock2HD" } else { $procName = "BioshockHD" }
+$p = Get-Process $procName -ErrorAction Stop
 $h = $p.MainWindowHandle
 if ($h -eq [IntPtr]::Zero) { throw "no main window" }
 [W]::SetForegroundWindow($h) | Out-Null

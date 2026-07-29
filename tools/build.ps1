@@ -3,7 +3,8 @@
 # NOTE: keep this file pure ASCII (PowerShell 5.1 misreads BOM-less UTF-8).
 param(
     [switch]$Release,
-    [switch]$Install
+    [switch]$Install,
+    [ValidateSet("bs1", "bs2")][string]$Game = "bs1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,5 +32,5 @@ finally {
 }
 
 if ($Install) {
-    & (Join-Path $PSScriptRoot "install.ps1") -Release:$Release
+    & (Join-Path $PSScriptRoot "install.ps1") -Release:$Release -Game $Game
 }

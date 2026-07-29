@@ -6,6 +6,7 @@
 #include "core/util/crash.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/adapter_registry.h"
 #include "game/igame_adapter.h"
 
 #include <windows.h>
@@ -69,7 +70,10 @@ void log_environment() {
 } // namespace
 
 void init() {
-    log::init();
+    // Host detection is silent by contract (the log does not exist yet); the
+    // game layer supplies the per-game data subdir so two games never share a
+    // log/config folder.
+    log::init(game::host_data_subdir());
     BVR_LOG("bioshockvr %s starting", BVR_VERSION);
 
     char exePath[MAX_PATH];

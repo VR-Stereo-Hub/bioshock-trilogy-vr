@@ -1,5 +1,5 @@
 // Session 20 vrrec: record + replay the per-frame input state. Design notes in
-// recorder.h; the acceptance contract is in docs/TESTING.md ("record/replay").
+// recorder.h; the acceptance contract is in docs/bioshock1/TESTING.md ("record/replay").
 //
 // Threading: every entry point here runs on the GAME thread (the CalcView tap
 // and the command seam share it), so the module needs no locks of its own.
@@ -12,7 +12,7 @@
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/camera.h"
-#include "game/bioshock1r/ue_math.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 

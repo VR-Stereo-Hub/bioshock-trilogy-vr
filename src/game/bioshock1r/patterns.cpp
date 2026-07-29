@@ -2,7 +2,7 @@
 // itsloopyo/bioshock-remastered-headtracking (MIT), src/memory.rs - the
 // generic implementation lives in core/hooks/pattern_scan.cpp. The logged RVA
 // is the cross-check value against the Rust mod on the same exe build
-// (docs/ENGINE_NOTES.md).
+// (docs/bioshock1/ENGINE_NOTES.md).
 
 #include "game/bioshock1r/patterns.h"
 

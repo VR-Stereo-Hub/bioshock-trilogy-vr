@@ -39,6 +39,8 @@ add_library(bioshockvr SHARED
     core/util/log.h
     core/util/crash.cpp
     core/util/crash.h
+    game/adapter_registry.cpp
+    game/adapter_registry.h
     game/igame_adapter.h
     game/bioshock1r/aim.cpp
     game/bioshock1r/aim.h
@@ -63,7 +65,13 @@ add_library(bioshockvr SHARED
     game/bioshock1r/recorder.h
     game/bioshock1r/scenedraw.cpp
     game/bioshock1r/scenedraw.h
-    game/bioshock1r/ue_math.h
+    game/bioshock2r/bioshock2r_adapter.cpp
+    game/bioshock2r/bioshock2r_adapter.h
+    game/bioshock2r/camera.cpp
+    game/bioshock2r/camera.h
+    game/bioshock2r/patterns.cpp
+    game/bioshock2r/patterns.h
+    game/shared/ue_math.h
 )
 set_target_properties(bioshockvr PROPERTIES PREFIX "")
 
