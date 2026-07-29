@@ -4,10 +4,14 @@
 
 ## Current state (2026-07-29, session 22 - CINEMATICS + FULLSCREEN ROUTING: the descent's real mechanism measured (both hypotheses wrong), live rendered-fov watch, stereo cinematics default, screen-only routing, first-boot restart killed, head-roll eyes, turn controls - branch s22-vr-polish)
 
-**Branch `s22-vr-polish` off main (post-v0.3.0). Two flat-gated feature
-commits + docs. Everything below is flat-verified on clean boots; the
-in-headset checklist at the bottom is the open gate for the next release
-(the user cuts it only after their manual test + explicit go).**
+**v0.4.0 IS RELEASED (2026-07-29): PR #8 merged to main, tagged, zip
+published (both RelWithDebInfo DLLs + README + the bundled preset at
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.4.0) after
+the user's play-test and explicit go. The letterbox bars + the
+hands-drive-during-cinematics gate ship as documented known issues (round
+5 below). NEXT SESSION, user's ask: the CLEAN-MACHINE new-user flow -
+wipe, install from the release zip, fix whatever breaks until the
+out-of-box flow works; then the bars investigation.**
 
 ### 1. CINEMATICS (plan item 1) - both on-file hypotheses DISPROVEN, the real fix shipped
 
