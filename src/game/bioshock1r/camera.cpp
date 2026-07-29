@@ -87,6 +87,17 @@ std::atomic<bool> g_vrPresetSavePending{false};
 std::atomic<bool> g_crosshairVisible{false}; // `vrxhair on` re-shows it
 int g_crosshairApplied = -1;                 // last state pushed (-1 = never)
 uint64_t g_crosshairAssertMs = 0;            // game thread only
+// Session 22 round 5 (user ask, pre-release): the pad SOFT LOCK-ON (aim
+// magnetism - GamepadPlayerInput.SoftLockOnRadius, found in the reticle
+// script source) drags aim toward targets because our motion controllers
+// register as a gamepad. Default DISABLED in VR via the same engine-SET
+// mechanism as the crosshair; re-asserted on the same slow cadence. NOTE:
+// unchecking only stops the assert - the game's own radius returns on the
+// next game restart (SET edits are memory-only and the original default is
+// not readable through this seam).
+std::atomic<bool> g_lockOnDisabled{true};
+int g_lockOnApplied = -1;
+uint64_t g_lockOnAssertMs = 0;
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
@@ -610,6 +621,8 @@ void save_vr_preset() {
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
     fprintf(f, "laserOn=%d\n", aim::laser_enabled() ? 1 : 0);
+    fprintf(f, "lockOnDisabled=%d\n",
+            g_lockOnDisabled.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "crosshairVisible=%d\n",
             g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0);
     {
@@ -670,6 +683,8 @@ void load_vr_preset_values() {
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
         else if (strcmp(key, "laserOn") == 0)
             aim::handle_command(v != 0.0f ? "laser on" : "laser off");
+        else if (strcmp(key, "lockOnDisabled") == 0)
+            g_lockOnDisabled.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "crosshairVisible") == 0)
             g_crosshairVisible.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "hudQuadDistM") == 0) hudD = v;
@@ -721,6 +736,24 @@ void assert_crosshair(uint64_t now) {
     g_crosshairAssertMs = now;
     console_exec::run_engine(want ? "set ShockPlayer bReticleDisabled False"
                                   : "set ShockPlayer bReticleDisabled True");
+}
+
+// Session 22: zero the pad soft lock-on radius while disabled (default).
+// Only asserts the DISABLED state - see the declaration note (the game's
+// own value returns on restart when the user re-enables it).
+void assert_lockon(uint64_t now) {
+    int want = g_lockOnDisabled.load(std::memory_order_relaxed) ? 1 : 0;
+    bool due = want != g_lockOnApplied ||
+               (want == 1 && now - g_lockOnAssertMs >= 15000);
+    if (!due) return;
+    bool first = g_lockOnApplied != want;
+    g_lockOnApplied = want;
+    g_lockOnAssertMs = now;
+    if (want)
+        console_exec::run_engine("set GamepadPlayerInput SoftLockOnRadius 0");
+    else if (first)
+        BVR_LOG("[b1r] pad lock-on re-enabled: the game's own radius returns "
+                "on the next game restart");
 }
 
 void poll_command_file(uint64_t now) {
@@ -837,6 +870,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // (self-throttles to once per present; no-op while vrinput is off).
     input_drive::on_frame(now);
     assert_crosshair(now); // M8 part 2: flat crosshair hidden by default
+    assert_lockon(now);    // session 22: pad aim magnetism off by default
     if (g_logCamera.load(std::memory_order_relaxed)) {
         if (g_lastHeartbeatMs == 0) {
             g_lastHeartbeatMs = now;
@@ -1442,6 +1476,9 @@ void draw_debug_ui() {
         bool xhair = g_crosshairVisible.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Flat-screen crosshair (default off in VR)", &xhair))
             g_crosshairVisible.store(xhair, std::memory_order_relaxed);
+        bool lockoff = g_lockOnDisabled.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Lock-on disabled (pad aim magnetism off)", &lockoff))
+            g_lockOnDisabled.store(lockoff, std::memory_order_relaxed);
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
