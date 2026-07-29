@@ -154,6 +154,27 @@ bool g_wasOverridingFov = false;
 float g_savedFov = 0.0f;
 bool g_wasWritingGameFov = false;
 int32_t g_savedGameFov = 0;
+// WHICH object g_savedGameFov was captured from (session 27). Without this the
+// restore could write object A's saved value into object B after a re-scan
+// picked a different instance, and a value restored into the wrong object is
+// indistinguishable from corruption. Also gates the write itself: the pointer
+// must still be the one we bound to.
+const int32_t* g_savedGameFovOwner = nullptr;
+
+// SEH-guarded write of the settings FOV int. The pointer comes from an object
+// search, and while the search is now stack-safe and liveness-checked
+// (heap_scan.h), "the address passed two identity predicates" is still not the
+// same as "the engine owns this and it is safe to poke". A fault here must
+// never take the game down; it disarms the writer instead. Logging happens at
+// the call site, never inside the guard.
+bool write_option_fov(int32_t* dst, int32_t value) {
+    __try {
+        if (*dst != value) *dst = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 uint64_t g_lastHeartbeatMs = 0;
 uint32_t g_heartbeatBaseCount = 0;
 bool g_haveRecenter = false;
@@ -1047,16 +1068,41 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         if (wantVr || wantManual) {
             if (!g_wasWritingGameFov) {
                 g_savedGameFov = *optionFov;
+                g_savedGameFovOwner = optionFov;
                 g_wasWritingGameFov = true;
-                BVR_LOG("[b1r] game fov write ON (saved option %d)", g_savedGameFov);
+                BVR_LOG("[b1r] game fov write ON (saved option %d from %p)", g_savedGameFov,
+                        optionFov);
+            } else if (optionFov != g_savedGameFovOwner) {
+                // The scan re-bound to a different instance while we were
+                // writing. The old object's saved value means nothing here, so
+                // re-seed rather than carrying it across.
+                BVR_LOG("[b1r] game fov owner changed %p -> %p - re-seeding the saved option "
+                        "(was %d, now %d)",
+                        static_cast<const void*>(g_savedGameFovOwner), optionFov, g_savedGameFov,
+                        *optionFov);
+                g_savedGameFov = *optionFov;
+                g_savedGameFovOwner = optionFov;
             }
             float want = wantVr ? vrFov : g_gameFovDeg.load(std::memory_order_relaxed);
             int32_t wantInt = static_cast<int32_t>(want + 0.5f);
-            if (*optionFov != wantInt) *optionFov = wantInt;
+            if (!write_option_fov(optionFov, wantInt)) {
+                BVR_LOG("[b1r] game fov write FAULTED at %p - disarming the FOV writer", optionFov);
+                g_wasWritingGameFov = false;
+                g_savedGameFovOwner = nullptr;
+                g_gameFovWrite.store(false, std::memory_order_relaxed);
+                g_forceHeadsetFov.store(false, std::memory_order_relaxed);
+            }
         } else if (g_wasWritingGameFov) {
-            *optionFov = g_savedGameFov;
+            // Only restore into the object the value came from.
+            if (optionFov == g_savedGameFovOwner && write_option_fov(optionFov, g_savedGameFov))
+                BVR_LOG("[b1r] game fov write OFF (restored option %d)", g_savedGameFov);
+            else
+                BVR_LOG("[b1r] game fov write OFF (saved %d NOT restored - object is %p, the "
+                        "value came from %p)",
+                        g_savedGameFov, optionFov,
+                        static_cast<const void*>(g_savedGameFovOwner));
             g_wasWritingGameFov = false;
-            BVR_LOG("[b1r] game fov write OFF (restored option %d)", g_savedGameFov);
+            g_savedGameFovOwner = nullptr;
         }
     }
     g_vrDriving.store(vrDrove, std::memory_order_relaxed);
@@ -1123,6 +1169,14 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             s_lastViewState = viewState;
             BVR_LOG("[b1r] view state: %s",
                     strictGameplay ? "GAMEPLAY (ShockPlayer view)" : "menu/cutscene");
+            // The object scanners latch dormant after repeated misses rather
+            // than rescanning forever (session 27); entering gameplay is the
+            // event that plausibly created what they were looking for, so it is
+            // the one place allowed to wake them.
+            if (strictGameplay) {
+                patterns::hfov_scan_rearm("entered gameplay view");
+                aim::weapon_scan_rearm("entered gameplay view");
+            }
         }
 
         // Radial-wheel pitch guard (session 19 part 2): the stick-pitch kill
@@ -1371,10 +1425,20 @@ void restore_game_fov_if_stale(uint64_t staleMs) {
     if (!g_wasWritingGameFov || !calcview_silent(staleMs)) return;
     int32_t* optionFov = patterns::hfov_option_ptr();
     if (!optionFov) return;
-    *optionFov = g_savedGameFov;
+    // Same ownership rule as the CalcView path: never write a value back into an
+    // object it did not come from (session 27).
+    if (optionFov != g_savedGameFovOwner) {
+        BVR_LOG("[b1r] game fov stale-restore SKIPPED - object is %p, the saved %d came from %p",
+                optionFov, g_savedGameFov, static_cast<const void*>(g_savedGameFovOwner));
+        g_wasWritingGameFov = false;
+        g_savedGameFovOwner = nullptr;
+        return;
+    }
+    bool ok = write_option_fov(optionFov, g_savedGameFov);
     g_wasWritingGameFov = false;
-    BVR_LOG("[b1r] game fov write OFF (restored option %d - calcview silent %llu ms)",
-            g_savedGameFov,
+    g_savedGameFovOwner = nullptr;
+    BVR_LOG("[b1r] game fov write OFF (%s option %d - calcview silent %llu ms)",
+            ok ? "restored" : "FAULTED restoring", g_savedGameFov,
             static_cast<unsigned long long>(GetTickCount64() - g_lastCalcViewMs));
 }
 

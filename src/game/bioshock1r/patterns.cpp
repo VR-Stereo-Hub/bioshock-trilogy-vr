@@ -19,90 +19,117 @@ namespace {
 // address for this session's ASLR base.
 const uint8_t* g_imageBase = nullptr;
 
-// Cached UShockUserSettings instance (revalidated by vtable every call). There
-// is no static pointer to it, so we find it by its fixed-RVA vtable and cache
-// the heap address for the session.
+// ---- live-object search (session 27 rewrite) --------------------------------
+// The generic machinery - thread-stack/TEB exclusion, the live-heap fast path,
+// the budgeted sliced fallback - lives in core/hooks/heap_scan.h. This file
+// supplies only the per-class accept filters and the dormancy policy, because
+// those are the parts that know what a BioShock object looks like.
+//
+// What this replaced swept the whole 4 GB address space at a 4-byte stride in
+// one blocking call, accepting any MEM_PRIVATE + PAGE_READWRITE region - which
+// is also the signature of a thread stack. Field consequences: multi-second
+// game-thread stalls, and a candidate that could be a stack slot or a freed
+// block while the FOV writer poked it every frame. Full post-mortem in
+// heap_scan.h and ENGINE_NOTES session 27.
+
+// Cached UShockUserSettings instance (revalidated every call). There is no
+// static pointer to it, so we find it by its fixed-RVA vtable and cache the
+// address for the session.
 void* g_userSettings = nullptr;
-uint64_t g_lastScanMs = 0;
+uint64_t g_lastSettingsAttemptMs = 0;
+int g_settingsMisses = 0;
+bool g_settingsDormant = false;
+ObjectScan g_settingsScan;
 
-bool region_scannable(const MEMORY_BASIC_INFORMATION& mbi) {
-    if (mbi.State != MEM_COMMIT) return false;
-    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) return false;
-    if (mbi.Type != MEM_PRIVATE) return false; // the object lives on the heap
-    switch (mbi.Protect & 0xFF) {
-        case PAGE_READWRITE:
-        case PAGE_EXECUTE_READWRITE:
-            return true;
-        default:
-            return false;
-    }
-}
+// Probe slots for the candidate log line: [0] HorizontalFOV, [1] 1 if the
+// UObject class chain resolved, [2] the class name's FName index.
+bool accept_user_settings(void* obj, void*, int32_t probe[bvr::heap_scan::kProbeSlots]) {
+    const uint8_t* p = static_cast<const uint8_t*>(obj);
+    int32_t fov = *reinterpret_cast<const int32_t*>(p + kUserSettingsHfovOffset);
+    probe[0] = fov;
 
-// SEH-guarded scan of one region for the vtable dword. A region can decommit
-// between VirtualQuery and the read (the game heap churns on other threads),
-// so the raw walk must not fault the game. No C++ objects in this frame.
-void scan_region(uintptr_t base, uintptr_t end, uintptr_t wantVtable, uint32_t needBytes,
-                 ObjectAccept accept, void* user, void** outChosen, int* outMatches) {
-    __try {
-        for (uintptr_t a = base; a + needBytes <= end; a += 4) {
-            if (*reinterpret_cast<const uintptr_t*>(a) != wantVtable) continue;
-            ++*outMatches;
-            void* obj = reinterpret_cast<void*>(a);
-            if (!*outChosen && accept(obj, user)) *outChosen = obj;
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
+    // CORROBORATION (session 27). The vtable dword is one predicate, and it is
+    // satisfied by any 4 bytes that happen to hold that value: a stack slot
+    // spilling the pointer, or a freed object whose header the allocator has
+    // not reused yet. The consumer WRITES to whatever comes back, so one
+    // predicate is not enough. object_class_name walks obj -> +0x30 UClass* ->
+    // UClass vtable identity -> +0x28 FName index -> GNames with every step
+    // validated, so a non-null result is strong evidence of a live UObject.
+    //
+    // Deliberately NOT compared against an expected name: the live instance
+    // could be a subclass and rejecting it would silently disable FOV control.
+    // The resolved name is logged instead, so tightening this to an exact match
+    // later is a one-line change backed by real data.
+    const wchar_t* cls = object_class_name(obj);
+    probe[1] = cls ? 1 : 0;
+    if (!cls) return false;
+    const uint8_t* clsObj = *reinterpret_cast<const uint8_t* const*>(p + kUObjectClassOffset);
+    probe[2] = *reinterpret_cast<const int32_t*>(clsObj + kUObjectNameIndexOffset);
 
-// Accept the first UShockUserSettings whose HorizontalFOV reads as a plausible
-// degree value, logging every candidate so a wrong pick (e.g. a class default
-// object) is diagnosable.
-bool accept_user_settings(void* obj, void*) {
-    int32_t fov = *reinterpret_cast<const int32_t*>(static_cast<uint8_t*>(obj) +
-                                                    kUserSettingsHfovOffset);
-    BVR_LOG("[b1r] UShockUserSettings vtable match @ %p HorizontalFOV=%d", obj, fov);
-    return fov >= 40 && fov <= 170;
-}
-
-// One-shot per session in practice - the object exists by the time CalcView
-// first fires.
-void* scan_for_user_settings() {
-    int matches = 0;
-    return scan_for_vtable_object(kUserSettingsVtableRva,
-                                  kUserSettingsHfovOffset + sizeof(int32_t),
-                                  &accept_user_settings, nullptr, "UShockUserSettings",
-                                  &matches);
+    // The engine's own options UI clamps to 75..130. The 40..170 window this
+    // used to accept let far more debris through.
+    return fov >= kUserSettingsHfovMin && fov <= kUserSettingsHfovMax;
 }
 
 } // namespace
 
-void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccept accept,
-                             void* user, const char* what, int* outMatches) {
-    if (!g_imageBase || !accept) return nullptr;
-    const uintptr_t wantVtable = reinterpret_cast<uintptr_t>(g_imageBase) + vtableRva;
-    void* chosen = nullptr;
-    int matches = 0;
-
-    uintptr_t p = 0x10000;
-    MEMORY_BASIC_INFORMATION mbi{};
-    // Walk the FULL 4 GB range: the game is Large-Address-Aware, and after a
-    // long session the engine allocates actors ABOVE 2 GB - a 0x7FFF0000 cap
-    // made the live AHands invisible after a level transition (session 18
-    // part 4, live: "2 matches, chosen=0" forever while the rig rendered on
-    // screen). VirtualQuery just fails past the top on non-LAA processes, so
-    // the loop still terminates there.
-    while (p < 0xFFFE0000u &&
-           VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof(mbi)) == sizeof(mbi)) {
-        uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-        uintptr_t end = base + mbi.RegionSize;
-        if (end <= base) break;
-        if (region_scannable(mbi))
-            scan_region(base, end, wantVtable, needBytes, accept, user, &chosen, &matches);
-        p = end;
+void log_scan_result(const char* what, const ObjectScan& scan, const ScanResult& r,
+                     bool candidates) {
+    const bvr::heap_scan::Sweep& s = scan.sweep;
+    if (candidates) {
+        for (int i = 0; i < s.recorded; ++i) {
+            const wchar_t* cls = object_class_name(s.addr[i]);
+            BVR_LOG("[b1r] %s candidate @ %p probe=%d,%d,%d,%d class='%ls' -> %s", what, s.addr[i],
+                    s.probe[i][0], s.probe[i][1], s.probe[i][2], s.probe[i][3],
+                    cls ? cls : L"<unresolved>", s.ok[i] ? "ACCEPTED" : "rejected");
+        }
+        if (s.matches > s.recorded)
+            BVR_LOG("[b1r] %s: %d further match(es) not recorded (cap %d)", what,
+                    s.matches - s.recorded, bvr::heap_scan::kMaxRecorded);
     }
-    BVR_LOG("[b1r] %s scan: %d vtable match(es), chosen=%p", what, matches, chosen);
-    if (outMatches) *outMatches = matches;
-    return chosen;
+    BVR_LOG("[b1r] %s scan via %s: %d match(es), %d accepted, chosen=%p "
+            "(%.1f ms, %u slice(s), %u heap(s)/%u block(s), %d exclude span(s)%s)",
+            what, r.path, r.matches, r.accepted, r.object,
+            static_cast<double>(s.elapsedUs) / 1000.0, s.slices, s.heaps, s.blocks,
+            s.excludeSpans,
+            s.excludeMissed > 0   ? " - SOME THREAD STACKS NOT EXCLUDED"
+            : s.excludeMissed < 0 ? " - THREAD ENUMERATION FAILED"
+                                  : "");
+}
+
+bool run_object_scan(ObjectScan& scan, uint32_t vtableRva, uint32_t needBytes,
+                     ObjectAccept accept, void* user, ScanResult& out) {
+    out = ScanResult{};
+    if (!g_imageBase || !accept) return true; // nothing to search: complete and empty
+    const void* wantVtable = g_imageBase + vtableRva;
+
+    // Fast path first: only live, allocated heap blocks, tens of milliseconds,
+    // and it cannot hand back a freed block. When it succeeds the sliced sweep
+    // never runs at all.
+    if (!scan.sweeping) {
+        if (bvr::heap_scan::heap_blocks(scan.sweep, wantVtable, needBytes, accept, user)) {
+            out.object = scan.sweep.first;
+            out.matches = scan.sweep.matches;
+            out.accepted = scan.sweep.accepted;
+            out.path = "heap";
+            return true;
+        }
+        // Not in any Win32 heap block: either the object does not exist yet, or
+        // this engine allocates it from its own pool. Fall back to the region
+        // sweep, sliced so it can never stall a frame.
+        scan.sweeping = true;
+        scan.sweep.cursor = 0;
+    }
+
+    auto outcome = bvr::heap_scan::sweep(scan.sweep, wantVtable, needBytes, accept, user,
+                                         kScanSliceBudgetUs);
+    out.path = "sweep";
+    if (outcome == bvr::heap_scan::Outcome::Working) return false;
+    scan.sweeping = false;
+    out.object = scan.sweep.first;
+    out.matches = scan.sweep.matches;
+    out.accepted = scan.sweep.accepted;
+    return true;
 }
 
 int32_t* hfov_option_ptr() {
@@ -111,26 +138,73 @@ int32_t* hfov_option_ptr() {
 
     const void* wantVtable = g_imageBase + kUserSettingsVtableRva;
 
-    // Revalidate the cache: object freed/moved -> vtable no longer matches.
+    // Revalidate the cache on TWO predicates, not one: the vtable dword AND the
+    // UObject class chain, so a freed-and-not-yet-reused block cannot keep
+    // passing as the settings object while the FOV writer pokes it every frame.
     if (g_userSettings) {
         if (is_memory_valid(g_userSettings, kUserSettingsHfovOffset + sizeof(int32_t)) &&
-            *reinterpret_cast<const void* const*>(g_userSettings) == wantVtable) {
+            *reinterpret_cast<const void* const*>(g_userSettings) == wantVtable &&
+            object_class_name(g_userSettings) != nullptr) {
             return reinterpret_cast<int32_t*>(static_cast<uint8_t*>(g_userSettings) +
                                               kUserSettingsHfovOffset);
         }
-        g_userSettings = nullptr; // stale, fall through to a rescan
+        g_userSettings = nullptr;
+        hfov_scan_rearm("cached settings object went stale");
     }
 
-    // Rate-limit rescans so a not-yet-created object doesn't scan every frame.
-    uint64_t now = GetTickCount64();
-    if (now - g_lastScanMs < 2000) return nullptr;
-    g_lastScanMs = now;
+    // DORMANCY (backported from bioshock2r; the session-22 weapon-resolver
+    // lesson). A rate limit alone means a save where the object never appears
+    // rescans forever, which reads as "the game freezes every couple of
+    // seconds". Only an explicit re-arm clears this.
+    if (g_settingsDormant) return nullptr;
 
-    g_userSettings = scan_for_user_settings();
-    if (!g_userSettings) return nullptr;
+    uint64_t now = GetTickCount64();
+    if (!g_settingsScan.sweeping && now - g_lastSettingsAttemptMs < kScanRetryMs) return nullptr;
+    g_lastSettingsAttemptMs = now;
+
+    ScanResult r{};
+    if (!run_object_scan(g_settingsScan, kUserSettingsVtableRva,
+                         kUserSettingsHfovOffset + sizeof(int32_t), &accept_user_settings, nullptr,
+                         r))
+        return nullptr; // sweep still in progress - no stall, try again next frame
+
+    log_scan_result("UShockUserSettings", g_settingsScan, r, true);
+
+    // FAIL CLOSED on ambiguity: more than one object passed the filter, so we
+    // cannot say which one the renderer reads. Writing to the wrong one is
+    // worse than not writing at all.
+    if (r.accepted > 1) {
+        BVR_LOG("[b1r] UShockUserSettings AMBIGUOUS (%d accepted) - refusing to bind, "
+                "FOV control stays off",
+                r.accepted);
+        g_settingsDormant = true;
+        return nullptr;
+    }
+
+    g_userSettings = r.object;
+    if (!g_userSettings) {
+        if (++g_settingsMisses >= kScanMissesBeforeDormant) {
+            g_settingsDormant = true;
+            BVR_LOG("[b1r] UShockUserSettings scan DORMANT after %d miss(es) - a view-state "
+                    "change re-arms it",
+                    g_settingsMisses);
+        }
+        return nullptr;
+    }
+    g_settingsMisses = 0;
     return reinterpret_cast<int32_t*>(static_cast<uint8_t*>(g_userSettings) +
                                       kUserSettingsHfovOffset);
 }
+
+void hfov_scan_rearm(const char* why) {
+    g_settingsMisses = 0;
+    if (g_settingsDormant) {
+        g_settingsDormant = false;
+        BVR_LOG("[b1r] UShockUserSettings scan re-armed (%s)", why);
+    }
+}
+
+bool settings_bound() { return g_userSettings != nullptr; }
 
 bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     using namespace bvr::pattern_scan;

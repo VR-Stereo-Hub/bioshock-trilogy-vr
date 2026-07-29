@@ -118,4 +118,10 @@ void reapply_weapon_profile();
 // thread.
 void note_preset_baseline();
 
+// Wake the weapon-actor scan fallback, which latches dormant after repeated
+// misses so it can never resume walking memory on a cadence. Call on an event
+// that plausibly created a weapon: entering the gameplay view, a pawn change, a
+// level load. `why` is logged. Game thread.
+void weapon_scan_rearm(const char* why);
+
 } // namespace bvr::b1r::aim

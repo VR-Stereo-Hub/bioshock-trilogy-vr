@@ -223,6 +223,14 @@ bool resolve_skel(void* actor, Skel& out) {
     if (!read_n(static_cast<uint8_t*>(si) + patterns::kSkelInstBonesOffset, &a, sizeof a) ||
         !a.bones || a.count < 1 || a.count > kMaxBones)
         return false;
+    // The count bound alone is not enough (session 27): the drive memcpys up to
+    // count * sizeof(Qts) bytes THROUGH a.bones, so a plausible count paired
+    // with an array pointer that does not actually have that many readable
+    // bytes behind it is a multi-kilobyte write into whatever follows. The SEH
+    // guard on write_n turns that into a survivable fault, not a correct one -
+    // so require the whole span to be committed before trusting the pair.
+    if (!bvr::pattern_scan::is_memory_valid(a.bones, static_cast<size_t>(a.count) * sizeof(Qts)))
+        return false;
     out.inst = si;
     out.bones = a.bones;
     out.count = a.count;

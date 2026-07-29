@@ -149,28 +149,32 @@ bool has_vtable(void* obj, uint32_t wantRva) {
 
 struct ScanCtx {
     float camX, camY, camZ;
-    bool logEvery;  // probe: describe every instance
     bool chooseAny; // probe: choose nothing, so the whole list gets logged
 };
 
-// Both accept callbacks run inside the scan's SEH guard (patterns.cpp).
+// Both accept callbacks run inside the scan's SEH guard (heap_scan.cpp), so
+// neither may LOG or ALLOCATE: MSVC does not run C++ destructors during SEH
+// unwinding, and a fault taken while the log mutex is held would wedge logging
+// for the life of the process (session 27). Diagnostics go out through `probe`
+// and are formatted by the caller afterwards.
+//
 // A UClass default object carries the same vtable as a live actor but sits at
 // the origin with zeroed fields; proximity to the camera separates the live
 // viewmodel from it (and from `0xCCCCCCCC` stack debris).
-bool accept_hands(void* obj, void* user) {
+//
+// Probe slots: [0..2] location truncated to UU, [3] distance to the camera.
+bool accept_hands(void* obj, void* user, int32_t probe[bvr::heap_scan::kProbeSlots]) {
     ScanCtx* c = static_cast<ScanCtx*>(user);
     const uint8_t* p = static_cast<const uint8_t*>(obj);
     float loc[3];
-    int32_t rot[3];
     memcpy(loc, p + patterns::kActorLocOffset, sizeof loc);
-    memcpy(rot, p + patterns::kActorViewDirOffset, sizeof rot);
 
     float dx = loc[0] - c->camX, dy = loc[1] - c->camY, dz = loc[2] - c->camZ;
     float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (c->logEvery)
-        BVR_LOG("[hands] AHands match @ %p loc=(%.1f %.1f %.1f) rot=(%d %d %d) "
-                "distToCam=%.1f UU",
-                obj, loc[0], loc[1], loc[2], rot[0], rot[1], rot[2], dist);
+    probe[0] = static_cast<int32_t>(loc[0]);
+    probe[1] = static_cast<int32_t>(loc[1]);
+    probe[2] = static_cast<int32_t>(loc[2]);
+    probe[3] = static_cast<int32_t>(dist);
     if (!c->chooseAny) return false;
     return dist < 2000.0f && (loc[0] != 0.0f || loc[1] != 0.0f || loc[2] != 0.0f);
 }
@@ -188,10 +192,11 @@ struct WeaponScanCtx {
     void* handsActor; // structural accept: Base(+0x450) == the AHands rig
     void* best;
     float bestDist;
-    bool logEvery;
 };
 
-bool accept_weapon(void* obj, void* user) {
+// Probe slots: [0..2] location truncated to UU, [3] distance to the expected
+// gun spot, or -1 when the structural (attachment) accept fired instead.
+bool accept_weapon(void* obj, void* user, int32_t probe[bvr::heap_scan::kProbeSlots]) {
     WeaponScanCtx* c = static_cast<WeaponScanCtx*>(user);
     const uint8_t* p = static_cast<const uint8_t*>(obj);
 
@@ -208,20 +213,23 @@ bool accept_weapon(void* obj, void* user) {
     // states (live: 2 owner-matched candidates, both >120 UU); attachment
     // does not.
     void* base = *reinterpret_cast<void* const*>(p + patterns::kActorBaseOffset);
-    if (c->handsActor && base == c->handsActor) {
-        c->best = obj;
-        c->bestDist = 0.0f;
-        return false;
-    }
 
     float loc[3];
     memcpy(loc, p + patterns::kActorLocOffset, sizeof loc);
+    probe[0] = static_cast<int32_t>(loc[0]);
+    probe[1] = static_cast<int32_t>(loc[1]);
+    probe[2] = static_cast<int32_t>(loc[2]);
+
+    if (c->handsActor && base == c->handsActor) {
+        c->best = obj;
+        c->bestDist = 0.0f;
+        probe[3] = -1; // structural accept: attached to the rig
+        return false;
+    }
+
     float dx = loc[0] - c->camX, dy = loc[1] - c->camY, dz = loc[2] - c->camZ;
     float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (c->logEvery)
-        BVR_LOG("[hands] player weapon match @ %p loc=(%.1f %.1f %.1f) distToGunSpot=%.1f UU "
-                "base=%p",
-                obj, loc[0], loc[1], loc[2], dist, base);
+    probe[3] = static_cast<int32_t>(dist);
     if (dist < 120.0f && dist < c->bestDist) {
         c->best = obj;
         c->bestDist = dist;
@@ -253,22 +261,19 @@ void* find_hands_actor(const FrameContext& ctx, bool probeOnly) {
         if (now - g_lastHandsScanMs < (2000ull << shift)) return nullptr;
         g_lastHandsScanMs = now;
     }
-    ScanCtx sc{ctx.camX, ctx.camY, ctx.camZ, probeOnly, !probeOnly};
-    int matches = 0;
-    uint64_t scanStart = GetTickCount64();
-    void* found = patterns::scan_for_vtable_object(
-        patterns::kHandsVtableRva, patterns::kActorViewDirOffset + 12, &accept_hands, &sc,
-        "AHands", &matches);
-    g_lastMatches.store(matches, std::memory_order_relaxed);
+    ScanCtx sc{ctx.camX, ctx.camY, ctx.camZ, !probeOnly};
+    static patterns::ObjectScan scan;
+    patterns::ScanResult r{};
+    if (!patterns::run_object_scan(scan, patterns::kHandsVtableRva,
+                                   patterns::kActorViewDirOffset + 12, &accept_hands, &sc, r))
+        return nullptr; // sliced sweep still running - no stall, retry next frame
+    patterns::log_scan_result("AHands", scan, r, probeOnly || g_handsScanFails == 0);
+    g_lastMatches.store(r.matches, std::memory_order_relaxed);
     if (probeOnly) return nullptr;
-    g_handsActor = found;
-    if (found) {
+    g_handsActor = r.object;
+    if (r.object) {
         g_handsScanFails = 0;
     } else {
-        if (g_handsScanFails == 0)
-            BVR_LOG("[hands] no live AHands in this world yet (scan %u ms) - "
-                    "retrying with backoff",
-                    static_cast<uint32_t>(GetTickCount64() - scanStart));
         ++g_handsScanFails;
     }
     return g_handsActor;
@@ -299,13 +304,25 @@ void* find_weapon_actor(const FrameContext& ctx, bool probeOnly) {
                      has_vtable(g_handsActor, patterns::kHandsVtableRva) ? g_handsActor
                                                                          : nullptr,
                      nullptr,
-                     1e9f,
-                     probeOnly};
-    int matches = 0;
-    patterns::scan_for_vtable_object(patterns::kPlayerWeaponVtableRva,
-                                     patterns::kWeaponOwnerOffset + sizeof(void*),
-                                     &accept_weapon, &wc, "APlayerWeapon", &matches);
-    g_lastMatches.store(matches, std::memory_order_relaxed);
+                     1e9f};
+    static patterns::ObjectScan scan;
+    patterns::ScanResult r{};
+    if (!patterns::run_object_scan(scan, patterns::kPlayerWeaponVtableRva,
+                                   patterns::kWeaponOwnerOffset + sizeof(void*), &accept_weapon,
+                                   &wc, r))
+        return nullptr; // sliced sweep still running - no stall, retry next frame
+
+    // This resolver picks through WeaponScanCtx::best rather than by accepting a
+    // candidate, so ScanResult::object is ALWAYS null here. Reporting that as
+    // "chosen=00000000" is what made the shipped log unreadable: an external
+    // crash log could not tell whether the resolver had succeeded or failed
+    // (session 27). Log the real outcome.
+    patterns::log_scan_result("APlayerWeapon", scan, r, probeOnly);
+    g_lastMatches.store(r.matches, std::memory_order_relaxed);
+    BVR_LOG("[hands] player weapon resolver: %d match(es) -> %s @ %p%s", r.matches,
+            wc.best ? (wc.bestDist == 0.0f ? "ATTACHED to the rig" : "nearest to the gun spot")
+                    : "NONE",
+            wc.best, wc.best && wc.bestDist > 0.0f ? " (distance pick)" : "");
     if (probeOnly) return nullptr;
     g_weaponActor = wc.best;
     return g_weaponActor;

@@ -2224,3 +2224,134 @@ Evidence from the surviving logs of that machine:
 
 Still open: defer swapchain destruction on REAL size changes to a safe point in the
 frame loop (never between xrBeginFrame/xrEndFrame); the pacing oscillation.
+
+## Session 27 - the object scanner was the freeze, and probably the crash
+
+A third report from the same external machine (`bvr_20260729_163118.dmp` + log, v0.4.1)
+crashed at the MAIN MENU 85 s in with `0xC0000374` (STATUS_HEAP_CORRUPTION) raised from
+ntdll's heap-verification path: whole stack in ntdll, `fault addr 0`, tid 4072. A heap
+fail-fast always reports the allocator operation that NOTICED, never the write that did
+the damage, so there is no mod frame on that stack by construction. The log, though,
+identifies the object scanner as the only mod machinery active in that window.
+
+### The region filter admitted thread stacks, and the sweep matched its own argument
+
+`region_scannable` accepted `MEM_COMMIT | MEM_PRIVATE | PAGE_READWRITE` under a comment
+saying "the object lives on the heap". That filter excludes `MEM_IMAGE` and `MEM_MAPPED`;
+it does NOT exclude stacks, TEBs or PEBs, which are all exactly
+`MEM_PRIVATE | PAGE_READWRITE`. Every thread stack in the process was therefore swept.
+
+The two false positives in the log prove the mechanism exactly:
+
+```
+[b1r] UShockUserSettings vtable match @ 00D3F1B0 HorizontalFOV=643373088
+[b1r] UShockUserSettings vtable match @ 00D3F1F0 HorizontalFOV=1444230
+crash: eip=76F86F73 esp=00D3F230 ebp=00D3F268
+```
+
+Both are 0x40 apart and sit 0x40 to 0x80 BELOW the crashing thread's esp. The old
+`scan_region` took eight arguments, so `wantVtable` - the value being searched for - was
+pushed onto the scanning thread's own stack on every call, and nested frames held a
+second copy. **The sweep was finding its own argument spill.** The shape had been noted
+three times before (STATUS sessions 18 and 22, bioshock2 ENGINE_NOTES) as a curiosity for
+the per-callsite accept filter to reject, never as a safety problem. `value_scan.cpp` had
+carried self-match hygiene since it was written; the vtable scanner never did.
+
+### Two predicates were guarding three unguarded writes
+
+The entire identity test was `dword0 == imageBase + 0xDA3878` plus `int32 at +0x8C` in
+`[40,170]`. `is_memory_valid` checks page protection only, so it cannot distinguish a live
+allocation from a freed block or a stack slot. And the consumer WRITES: three sites (the
+CalcView FOV write, its restore, and the scenedraw stale-restore) poked an int32 at
+`+0x8C` with no SEH and no ownership check.
+
+The leading explanation for the `0xC0000374`, consistent with every detail including tid
+4072 being the scanning thread: a freed UShockUserSettings-shaped block keeps its vtable
+dword until the allocator reuses it, the cache revalidation kept calling it valid, and an
+int32 written into it smashed free-list bookkeeping. Two related paths: a stack slot whose
+`+0x8C` happened to fall in `[40,170]` would have been accepted and written every
+CalcView, and `g_savedGameFov` captured from object A could be restored into object B
+after a re-scan.
+
+### The freeze was the same code, measured
+
+One UShockUserSettings pass in that log spans 16:30:07.804 to 16:30:10.896 - over 3 s of
+blocked game thread, inside `eventPlayerCalcView`. Across each APlayerWeapon pass the
+camera heartbeat drops from ~90 to 16 calls/s. Cost per futile pass had already been
+measured at 1-4 s (STATUS session 18).
+
+Why it kept happening despite the session-22 fix:
+
+- `hfov_option_ptr` had a 2000 ms rate limit and **no backoff and no dormancy at all**.
+- The weapon resolver's dormancy was a caller-local `static uint32_t nullResolves` that
+  **any single momentary success zeroed**. `weapon_valid()` is two chained vtable compares
+  on memory the mod does not own, so a stack slot or a churning heap block satisfies it
+  transiently, the counter resets, and the walks resume. That is the ~3 s cadence in the
+  log.
+- `aim.cpp`'s comment "no cutscene/menu heap scans" was false: its `g_gameplayView`
+  deliberately counts the menu attract scene as gameplay, which is how full 4 GB walks
+  came to run at the main menu - the exact window this tester dies in.
+
+### What replaced it
+
+`core/hooks/heap_scan.{h,cpp}`, game-agnostic:
+
+- **Thread stacks, TEBs and PEBs excluded exactly.** Once per pass every thread is
+  enumerated (`Thread32First` plus `NtQueryInformationThread` -> `TebBaseAddress` ->
+  `NT_TIB.StackBase/StackLimit`), the whole stack ALLOCATION is excluded rather than just
+  its committed part, and the current thread is added unconditionally. A
+  guard-page-below probe is a second line for a thread that could not be opened, and
+  threads we failed to query are counted and logged rather than silently swept.
+- **The needle is never a live value.** The comparison is
+  `(*p ^ mask) == (needle ^ mask)`, so the raw vtable address does not exist in the
+  sweep's frame at all.
+- **A live-heap fast path first.** `heap_blocks()` walks the BUSY blocks of every process
+  heap under `HeapLock`, testing only blocks large enough to hold the object and probing a
+  few aligned offsets to allow for an allocator header. Two wins: tens of milliseconds
+  instead of seconds, and HeapWalk only reports ALLOCATED blocks, so a freed block cannot
+  be handed to a caller that is about to write to it. `HeapUnlock` runs on the fault path
+  too - a fault escaping with a heap lock held would wedge that heap for the life of the
+  process.
+- **The region sweep survives only as a sliced fallback**, for an engine that allocates
+  from its own VirtualAlloc'd pools. 4 ms wall-clock budget per slice, resumable from a
+  saved cursor, so no single call can stall a frame.
+- **No logging or allocation inside the SEH guard.** MSVC under `/EHsc` does not run C++
+  destructors during SEH unwinding, so a fault taken while the log mutex was held left it
+  held for the life of the process - a silent-freeze class that was live in every accept
+  filter that logged. Candidates, plus four diagnostic ints each, are recorded into a POD
+  array and formatted after the guard returns.
+
+Per-game policy in `patterns.cpp`:
+
+- **UObject corroboration.** `object_class_name()` already walked
+  `obj -> +0x30 UClass* -> UClass vtable identity -> +0x28 FName index -> GNames` with
+  every step validated. Requiring a non-null result is a far stronger test than the vtable
+  dword alone. Deliberately NOT compared against an expected name - the live instance
+  could be a subclass, and rejecting it would silently disable FOV control - so the
+  resolved name is logged instead, and tightening it later is one line backed by real data.
+- **The FOV plausibility window narrowed to the options UI's own 75-130**, from 40-170.
+- **A structural dormancy latch** for both scanners, backported from bioshock2r: a success
+  clears the miss COUNT, only an explicit `hfov_scan_rearm()` or
+  `aim::weapon_scan_rearm()` clears dormancy. Both are called from the one event that
+  plausibly created what they were looking for - the gameplay-view transition in
+  `CalcViewDetour`.
+- **The weapon scan gate moved to the strict `body::is_gameplay_view`**, so it cannot run
+  at the menu.
+- **Fail closed on ambiguity**: more than one accepted candidate refuses to bind at all.
+
+### Diagnostics that were actively misleading
+
+`accept_weapon` returns `false` on every path and communicates through
+`WeaponScanCtx::best`, which was never logged. So
+`APlayerWeapon scan: 1 vtable match(es), chosen=00000000` was **unconditional and
+structurally meaningless** - an external log could not say whether the resolver had
+succeeded or failed. It now reports the real outcome (ATTACHED to the rig / nearest to the
+gun spot / NONE), and the summary line carries the path taken, elapsed ms, slices,
+heaps/blocks walked and the exclusion-span count.
+
+### Also hardened here
+
+`resolve_skel` bounded the bone count at 128 but never checked that `count * sizeof(Qts)`
+bytes were actually readable behind the array pointer, so a plausible count paired with a
+bad pointer was a multi-kilobyte write into whatever followed. The SEH guard on `write_n`
+made that survivable, not correct; the span is now validated before the pair is trusted.

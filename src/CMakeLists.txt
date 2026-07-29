@@ -25,6 +25,8 @@ add_library(bioshockvr SHARED
     core/gfx/hud_capture.h
     core/hooks/d3d11_hook.cpp
     core/hooks/d3d11_hook.h
+    core/hooks/heap_scan.cpp
+    core/hooks/heap_scan.h
     core/hooks/pattern_scan.cpp
     core/hooks/pattern_scan.h
     core/input/xinput_bridge.cpp

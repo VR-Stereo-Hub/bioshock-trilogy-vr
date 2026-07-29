@@ -16,6 +16,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/hands.h"
 #include "game/shared/ue_math.h"
@@ -859,6 +860,12 @@ void apply_weapon_key(const std::string& key, const char* why) {
     }
 }
 
+// Scan-fallback dormancy (session 27). A structural latch, deliberately NOT a
+// counter that the next momentary success zeroes - see the long note at the use
+// site for why that distinction is the whole fix.
+int g_weaponScanMisses = 0;
+bool g_weaponScanDormant = false;
+
 // Per-frame (throttled) weapon-change watch. The weapon actor accessor is
 // cached + vtable-revalidated in hands.cpp; the class name resolves only on
 // a pointer change, so steady-state cost is one pointer compare.
@@ -871,13 +878,11 @@ void update_weapon_profile(const FrameContext& ctx) {
     // preset's value load and seeded the first profile from zeros.
     if (!g_presetBaselineValid && g_weaponProfiles.empty()) return;
     static uint32_t throttle = 0;
-    static uint32_t nullResolves = 0;
-    // Failure backoff for the SCAN fallback only (the rig read is a pointer
-    // dereference and free): a world state with no acceptable weapon must
-    // not full-heap-scan on a cadence (the session-18 hands-scan ~1 fps
-    // lesson; the game intro has no weapon for minutes).
-    uint32_t mask = nullResolves >= 3 ? 2047 : 15;
-    if ((++throttle & mask) != 0) return;
+    // Cheap-read cadence. The scan fallback has its own dormancy latch below,
+    // so this no longer needs to widen (it used to stretch to 2047 frames on
+    // repeated misses, which merely spread the multi-second heap walks out
+    // rather than stopping them).
+    if ((++throttle & 15) != 0) return;
     // Primary: Hands.CurrentHoldable raw off the rig, CLASS-AGNOSTIC
     // (session 21 part 3: MachineGun/GrenadeLauncher carry a different
     // native vtable, so the vtable-gated path rejected them and the stale
@@ -889,16 +894,34 @@ void update_weapon_profile(const FrameContext& ctx) {
     bool haveRig = hands::current_holdable(&w);
     if (!haveRig) {
         w = hands::weapon_actor();
-        // Session 22: the SCAN fallback goes fully DORMANT after 3 straight
-        // failures - the reduced cadence still meant a multi-second heap
-        // walk every ~2000 frames FOREVER on saves with no resolvable
-        // weapon (the early game; user-felt as "the game freezes every
-        // couple of seconds" at the Gatherer's Garden). The cheap rig and
-        // learned-actor reads above keep running at the throttled cadence
-        // and re-arm the scanner the moment they see anything.
-        if (!w && nullResolves < 3) w = hands::resolve_weapon_actor(ctx);
+        // The SCAN fallback goes fully DORMANT after repeated misses. Session
+        // 22 established the need (a reduced cadence still meant a
+        // multi-second heap walk every ~2000 frames FOREVER on saves with no
+        // resolvable weapon - user-felt as "the game freezes every couple of
+        // seconds" at the Gatherer's Garden), but shipped it as a caller-local
+        // counter that ANY momentary success zeroed. weapon_valid() is two
+        // chained vtable compares on memory we do not own, so a stack slot or
+        // a churning heap block satisfies it transiently, the counter resets,
+        // and the walks come back - which is exactly what the session-27
+        // external crash log shows. The latch below is structural: a success
+        // clears the miss COUNT, only an explicit re-arm clears dormancy.
+        //
+        // Also gated on the STRICT gameplay predicate, not aim's own
+        // g_gameplayView: that one deliberately counts the menu attract scene
+        // as gameplay (see the hatch in on_calcview), which is how full heap
+        // walks came to run at the main menu despite the comment above saying
+        // they did not.
+        if (!w && !g_weaponScanDormant && body::is_gameplay_view(ctx.viewActor)) {
+            w = hands::resolve_weapon_actor(ctx);
+            if (!w && ++g_weaponScanMisses >= patterns::kScanMissesBeforeDormant) {
+                g_weaponScanDormant = true;
+                BVR_LOG("[aim] weapon scan fallback DORMANT after %d miss(es) - the cheap rig "
+                        "and learned-actor reads keep running; a view-state change re-arms it",
+                        g_weaponScanMisses);
+            }
+        }
     }
-    nullResolves = (haveRig || w) ? 0 : nullResolves + 1;
+    if (haveRig || w) g_weaponScanMisses = 0;
     if (w == g_weaponKeyActor) return;
     g_weaponKeyActor = w;
     const wchar_t* name = w ? patterns::object_class_name(w) : nullptr;
@@ -1517,6 +1540,14 @@ float trim_yaw_deg(int hand) {
 }
 
 bool laser_enabled() { return g_laser.load(std::memory_order_relaxed); }
+
+void weapon_scan_rearm(const char* why) {
+    g_weaponScanMisses = 0;
+    if (g_weaponScanDormant) {
+        g_weaponScanDormant = false;
+        BVR_LOG("[aim] weapon scan fallback re-armed (%s)", why);
+    }
+}
 
 float pos_fwd_cm(int hand) {
     return g_posFwdCm[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
