@@ -27,3 +27,6 @@ tools/uscript/*
 # OS noise
 Thumbs.db
 desktop.ini
+
+# release zips built by tools/package.ps1
+/dist/
