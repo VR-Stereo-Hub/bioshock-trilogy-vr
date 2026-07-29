@@ -1,7 +1,10 @@
-// Hook behavior (call the original, then adjust the writable out-params;
+// Drive behavior (call the original, then adjust the writable out-values;
 // publish state through atomics) follows
 // itsloopyo/bioshock-remastered-headtracking (MIT), src/engine_hook.rs,
-// via the bioshock1r camera module this file is the M3 subset of.
+// via the bioshock1r camera module this file is the M3 subset of. The seam
+// itself differs from BS1: ProcessEvent filtered to the PlayerCalcView
+// UFunction (see patterns.h - BS2 inlined the event dispatch, the thunk is
+// dead code).
 
 #include "game/bioshock2r/camera.h"
 
@@ -10,7 +13,6 @@
 #include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
-#include "game/bioshock2r/patterns.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
@@ -31,6 +33,16 @@ namespace {
 // FVector/FRotator, the rotation-unit constants and the XR->UE conversion all
 // live in game/shared/ue_math.h - the engine conventions are identical across
 // the two remasters (same build session).
+
+// The inlined dispatch sites build exactly this block and read it back after
+// ProcessEvent returns (offline disasm, patterns.h) - so mutating loc/rot
+// here AFTER calling the original is equivalent to BS1's out-param writes.
+struct CalcViewParams {
+    void* viewActor;
+    FVector loc;
+    FRotator rot;
+};
+static_assert(sizeof(CalcViewParams) == 0x1C, "param block is 0x1C bytes on this engine");
 
 // Controls: overlay thread writes, game thread reads. All relaxed - x86
 // lock-free, and a field arriving one frame late is fine for debug sliders.
@@ -60,11 +72,19 @@ std::atomic<int32_t> g_lastPitch{0}, g_lastYaw{0}, g_lastRoll{0};
 std::atomic<void*> g_playerController{nullptr};
 std::atomic<void*> g_lastViewActor{nullptr};
 std::atomic<uint32_t> g_lastVtblRva{0}; // observed view-actor vtable RVA
+std::atomic<void*> g_calcViewFn{nullptr}; // learned PlayerCalcView UFunction*
 
-using CalcViewFn = void(__fastcall*)(void* self, void* edx, void** viewActor,
-                                     FVector* loc, FRotator* rot);
-CalcViewFn g_original = nullptr;
-void* g_target = nullptr;
+// ProcessEvent(UFunction*, void* parms, void* result): __thiscall, ret 0xC.
+// __fastcall with a dummy EDX slot is register/stack/cleanup-identical.
+using ProcessEventFn = void(__fastcall*)(void* self, void* edx, void* fn, void* parms,
+                                         void* result);
+// FindFunctionChecked(FName{index,number}, UBOOL global): __thiscall, ret 0xC.
+using FindFuncFn = void*(__fastcall*)(void* self, void* edx, uint32_t nameIndex,
+                                      uint32_t nameNumber, uint32_t global);
+ProcessEventFn g_originalPE = nullptr;
+FindFuncFn g_originalFF = nullptr;
+void* g_peTarget = nullptr;
+const uint8_t* g_fnameIndexGlobal = nullptr;
 std::atomic<bool> g_hookLive{false};
 std::atomic<bool> g_loggedFirstFire{false};
 
@@ -97,10 +117,8 @@ FILETIME g_lastCmdWrite{};
 
 // --- gameplay-view predicate -------------------------------------------------
 // Strict form (BS1's body.cpp predicate): the view actor's vtable must be
-// AShockPlayer's. The menu/attract scene CalcViews with viewActor == the
-// PlayerController itself, so this reads false there - deliberately no
-// `viewActor == pc` escape hatch (that hatch exists in BS1 only for the aim
-// ray, which does not exist here yet).
+// AShockPlayer's. Deliberately no `viewActor == pc` escape hatch (that hatch
+// exists in BS1 only for the aim ray, which does not exist here yet).
 
 bool read_ptr(void* addr, void** out) {
     if (!bvr::pattern_scan::is_memory_valid(addr, sizeof(void*))) return false;
@@ -125,7 +143,9 @@ bool is_gameplay_view_rva(uint32_t vtblRva) {
 
 // --- command seam ------------------------------------------------------------
 // <data_dir>\command.txt (= %LOCALAPPDATA%\BioshockVR\bs2\command.txt) polled
-// at 1 Hz on the game thread, same contract as BS1's seam. M3 vocabulary:
+// at 1 Hz on the game thread, same contract as BS1's seam - but driven from
+// the ProcessEvent detour, so it works at the main menu too (BS2's menu never
+// runs PlayerCalcView, unlike BS1's attract scene). M3 vocabulary:
 //   recenter                     re-reference the seated pose
 //   offset <x> <y> <z>           debug camera offset in UU (0 0 0 clears)
 //   worldscale <v>               UU per meter
@@ -178,7 +198,7 @@ void apply_command(const char* cmd, const char* args) {
                 g_simHead.px = n >= 6 ? v[3] : 0.0f;
                 g_simHead.py = n >= 6 ? v[4] : 0.0f;
                 g_simHead.pz = n >= 6 ? v[5] : 0.0f;
-                int hold = n == 4 ? static_cast<int>(v[3])
+                int hold = n == 4   ? static_cast<int>(v[3])
                            : n == 7 ? static_cast<int>(v[6])
                                     : 0;
                 if (hold <= 0) hold = 120000;
@@ -241,44 +261,36 @@ void poll_command_file(uint64_t now) {
     fclose(f);
 }
 
-// --- the detour --------------------------------------------------------------
-// eventPlayerCalcView is __thiscall; __fastcall with a dummy EDX slot is
-// register/stack/cleanup-identical and works as a plain free function.
-// The menu fires this far above frame rate (~7000/s observed on BS1's
-// uncapped menu) - everything in here is throttled or O(1).
-void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
-                               FVector* loc, FRotator* rot) {
-    g_original(self, edx, viewActor, loc, rot);
-
+// --- the camera tail ---------------------------------------------------------
+// Runs after the original ProcessEvent returned for a PlayerCalcView dispatch:
+// the script has produced the camera, the inlined caller has not yet read the
+// block back. Everything here is the BS1 CalcView detour body reshaped onto
+// the param block.
+void calcview_tail(void* self, CalcViewParams* p) {
     g_playerController.store(self, std::memory_order_relaxed);
     uint32_t count = g_callCount.fetch_add(1, std::memory_order_relaxed) + 1;
 
-    if (loc) {
-        g_lastLocX.store(loc->x, std::memory_order_relaxed);
-        g_lastLocY.store(loc->y, std::memory_order_relaxed);
-        g_lastLocZ.store(loc->z, std::memory_order_relaxed);
-    }
-    if (rot) {
-        g_lastPitch.store(rot->pitch, std::memory_order_relaxed);
-        g_lastYaw.store(rot->yaw, std::memory_order_relaxed);
-        g_lastRoll.store(rot->roll, std::memory_order_relaxed);
-    }
+    FVector* loc = &p->loc;
+    FRotator* rot = &p->rot;
+    g_lastLocX.store(loc->x, std::memory_order_relaxed);
+    g_lastLocY.store(loc->y, std::memory_order_relaxed);
+    g_lastLocZ.store(loc->z, std::memory_order_relaxed);
+    g_lastPitch.store(rot->pitch, std::memory_order_relaxed);
+    g_lastYaw.store(rot->yaw, std::memory_order_relaxed);
+    g_lastRoll.store(rot->roll, std::memory_order_relaxed);
 
     if (!g_loggedFirstFire.exchange(true)) {
         BVR_LOG("[b2r] calcview first fire: pc=%p viewactor=%p loc=(%.1f %.1f %.1f) "
                 "rot=(%d %d %d)",
-                self, viewActor ? *viewActor : nullptr, loc ? loc->x : 0.0f,
-                loc ? loc->y : 0.0f, loc ? loc->z : 0.0f, rot ? rot->pitch : 0,
-                rot ? rot->yaw : 0, rot ? rot->roll : 0);
+                self, p->viewActor, loc->x, loc->y, loc->z, rot->pitch, rot->yaw, rot->roll);
     }
 
     uint64_t now = GetTickCount64();
-    poll_command_file(now);
 
     // Gameplay verdict + candidate-RVA self-diagnosis. Published every call:
     // core's cinematic fallback keys on this verdict AND its staleness, so a
     // silent adapter would park the headset on the quad screen permanently.
-    void* va = viewActor ? *viewActor : nullptr;
+    void* va = p->viewActor;
     g_lastViewActor.store(va, std::memory_order_relaxed);
     uint32_t vtblRva = observed_vtable_rva(va);
     g_lastVtblRva.store(vtblRva, std::memory_order_relaxed);
@@ -321,12 +333,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             // UShockUserSettings candidate is unconsumed at M3).
             BVR_LOG("[b2r] camera: loc=(%.1f %.1f %.1f) rot=(%d %d %d) "
                     "headOff=(%.1f %.1f %.1f) (%u calls/s)",
-                    loc ? loc->x : 0.0f, loc ? loc->y : 0.0f, loc ? loc->z : 0.0f,
-                    rot ? rot->pitch : 0, rot ? rot->yaw : 0, rot ? rot->roll : 0,
+                    loc->x, loc->y, loc->z, rot->pitch, rot->yaw, rot->roll,
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
-                    g_headOffZ.load(std::memory_order_relaxed),
-                    count - g_heartbeatBaseCount);
+                    g_headOffZ.load(std::memory_order_relaxed), count - g_heartbeatBaseCount);
             g_lastHeartbeatMs = now;
             g_heartbeatBaseCount = count;
         }
@@ -363,7 +373,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // or menu cameras (their content lands on the quad screen).
         driveHead = true;
     }
-    if (loc && rot && driveHead) {
+    if (driveHead) {
         UeAngles a = ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
         if (g_recenterRequested.exchange(false, std::memory_order_relaxed) || !g_haveRecenter) {
             g_recenterPose = hp;
@@ -425,13 +435,44 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // Stick-pitch-kill gate for the core input bridge, same funnel BS1 feeds.
     bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
 
-    // Debug camera offset - the cheapest "the out-params are writable on this
-    // game too" proof, log-measurable via the heartbeat.
-    if (loc) {
-        loc->x += g_offsetX.load(std::memory_order_relaxed);
-        loc->y += g_offsetY.load(std::memory_order_relaxed);
-        loc->z += g_offsetZ.load(std::memory_order_relaxed);
+    // Debug camera offset - the cheapest "the block is writable on this game
+    // too" proof, log-measurable via the heartbeat.
+    loc->x += g_offsetX.load(std::memory_order_relaxed);
+    loc->y += g_offsetY.load(std::memory_order_relaxed);
+    loc->z += g_offsetZ.load(std::memory_order_relaxed);
+}
+
+// --- the detours -------------------------------------------------------------
+
+// FindFunctionChecked: learn the PlayerCalcView UFunction pointer with zero
+// UObject-layout assumptions - the inlined camera sites resolve the name on
+// EVERY dispatch, so the cache stays fresh from the first gameplay frame.
+void* __fastcall FindFuncDetour(void* self, void* edx, uint32_t nameIndex,
+                                uint32_t nameNumber, uint32_t global) {
+    void* fn = g_originalFF(self, edx, nameIndex, nameNumber, global);
+    if (g_fnameIndexGlobal && fn &&
+        nameIndex == *reinterpret_cast<const uint32_t*>(g_fnameIndexGlobal)) {
+        void* prev = g_calcViewFn.exchange(fn, std::memory_order_relaxed);
+        if (prev != fn)
+            BVR_LOG("[b2r] PlayerCalcView UFunction learned: %p (was %p, this=%p)", fn,
+                    prev, self);
     }
+    return fn;
+}
+
+// ProcessEvent: EVERY script event in the game passes through here - the
+// pre-filter work must stay tiny. Camera work happens only on a pointer match
+// with the learned UFunction; the 1 Hz command poll ticks through a cheap
+// call counter so the seam works at the menu too (no CalcView there on BS2).
+void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
+                                   void* result) {
+    g_originalPE(self, edx, fn, parms, result);
+
+    static uint32_t s_pollGate = 0; // game thread only
+    if ((++s_pollGate & 0xFF) == 0) poll_command_file(GetTickCount64());
+
+    if (fn && parms && fn == g_calcViewFn.load(std::memory_order_relaxed))
+        calcview_tail(self, static_cast<CalcViewParams*>(parms));
 }
 
 void atomic_slider(const char* label, std::atomic<float>& value, float lo, float hi) {
@@ -446,28 +487,43 @@ void init_image(const bvr::pattern_scan::ProcessImage& image) {
     g_imageSize = image.size;
 }
 
-bool install(void* eventPlayerCalcView) {
-    if (!eventPlayerCalcView) return false;
+bool install(const patterns::Symbols& symbols) {
+    if (!symbols.processEvent || !symbols.findFuncChecked || !symbols.fnameIndexGlobal)
+        return false;
+    g_fnameIndexGlobal = symbols.fnameIndexGlobal;
 
-    MH_STATUS status = MH_CreateHook(eventPlayerCalcView,
-                                     reinterpret_cast<void*>(&CalcViewDetour),
-                                     reinterpret_cast<void**>(&g_original));
+    MH_STATUS status = MH_CreateHook(symbols.findFuncChecked,
+                                     reinterpret_cast<void*>(&FindFuncDetour),
+                                     reinterpret_cast<void**>(&g_originalFF));
     if (status != MH_OK) {
-        BVR_LOG("[b2r] MH_CreateHook(calcview) failed: %s", MH_StatusToString(status));
+        BVR_LOG("[b2r] MH_CreateHook(findfunc) failed: %s", MH_StatusToString(status));
         return false;
     }
-    // Self-enabling so this hook's activation never rides on another module's
-    // MH_EnableHook(MH_ALL_HOOKS).
-    status = MH_EnableHook(eventPlayerCalcView);
+    status = MH_CreateHook(symbols.processEvent,
+                           reinterpret_cast<void*>(&ProcessEventDetour),
+                           reinterpret_cast<void**>(&g_originalPE));
     if (status != MH_OK) {
-        BVR_LOG("[b2r] MH_EnableHook(calcview) failed: %s", MH_StatusToString(status));
-        MH_RemoveHook(eventPlayerCalcView);
+        BVR_LOG("[b2r] MH_CreateHook(processevent) failed: %s", MH_StatusToString(status));
+        MH_RemoveHook(symbols.findFuncChecked);
+        return false;
+    }
+    // Self-enabling so these hooks' activation never rides on another
+    // module's MH_EnableHook(MH_ALL_HOOKS). FindFunctionChecked goes live
+    // FIRST: ProcessEvent's filter no-ops until the learner has run, so this
+    // order can never dispatch on a stale null.
+    status = MH_EnableHook(symbols.findFuncChecked);
+    if (status == MH_OK) status = MH_EnableHook(symbols.processEvent);
+    if (status != MH_OK) {
+        BVR_LOG("[b2r] MH_EnableHook(calcview seam) failed: %s", MH_StatusToString(status));
+        MH_RemoveHook(symbols.findFuncChecked);
+        MH_RemoveHook(symbols.processEvent);
         return false;
     }
 
-    g_target = eventPlayerCalcView;
+    g_peTarget = symbols.processEvent;
     g_hookLive.store(true, std::memory_order_relaxed);
-    BVR_LOG("[b2r] calcview hook installed (target %p)", eventPlayerCalcView);
+    BVR_LOG("[b2r] calcview seam installed (ProcessEvent %p + FindFunctionChecked %p)",
+            symbols.processEvent, symbols.findFuncChecked);
     return true;
 }
 
@@ -478,11 +534,17 @@ bool hook_live() {
 void draw_debug_ui() {
     if (!hook_live()) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                           "CalcView: scan FAILED - running flat");
+                           "CalcView seam: scan FAILED - running flat");
         return;
     }
 
-    ImGui::Text("CalcView hook: LIVE @ %p", g_target);
+    ImGui::Text("ProcessEvent hook: LIVE @ %p", g_peTarget);
+    void* fn = g_calcViewFn.load(std::memory_order_relaxed);
+    if (fn)
+        ImGui::Text("PlayerCalcView UFunction: %p", fn);
+    else
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
+                           "PlayerCalcView UFunction: not seen yet (load a save)");
 
     static uint64_t lastSample = 0;
     static uint32_t lastCount = 0;
@@ -502,7 +564,7 @@ void draw_debug_ui() {
     int32_t pitch = g_lastPitch.load(std::memory_order_relaxed);
     int32_t yaw = g_lastYaw.load(std::memory_order_relaxed);
     int32_t roll = g_lastRoll.load(std::memory_order_relaxed);
-    ImGui::Text("calls: %u total, %u/s", total, callsPerSec);
+    ImGui::Text("calcview calls: %u total, %u/s", total, callsPerSec);
     ImGui::Text("pc: %p  view actor: %p (vtbl RVA 0x%X)",
                 g_playerController.load(std::memory_order_relaxed),
                 g_lastViewActor.load(std::memory_order_relaxed),

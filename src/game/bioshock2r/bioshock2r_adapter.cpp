@@ -16,7 +16,7 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     patterns::Symbols symbols{};
     if (!patterns::resolve(image, symbols)) return false; // resolve() logged why
     camera::init_image(image); // vtable-RVA identity checks need the bounds
-    if (!camera::install(symbols.eventPlayerCalcView)) return false;
+    if (!camera::install(symbols)) return false;
     BVR_LOG("[b2r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }
