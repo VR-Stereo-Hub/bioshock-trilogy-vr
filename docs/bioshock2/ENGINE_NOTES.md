@@ -12,6 +12,14 @@ Rules (same as BS1):
   transfer; values never do.
 - No game-derived content in the repo: findings are summarized here, disassembly stays out.
 
+**And one rule that is the OPPOSITE of copying BS1 (user directive, session 24): BS2 is not
+bound by BS1's METHODS either.** BS1's fg/viewmodel FOV counter-modeling, weapon scaling
+compensation, and aim workarounds were forced by BS1-specific limitations. BS2 demonstrably
+differs where it counts (native FOV slider in its options UI, native dual-wield, inlined event
+dispatch that gave us ProcessEvent-by-name hooking). For every BS1 subsystem being brought
+over: first check what BS2 does natively, and prefer the cleaner path when BS2 affords one -
+only port BS1's compensation machinery once BS2 has proven it needs it.
+
 ## PE identity (verified 2026-07-29, session 24)
 
 | field | BioShock 1 | BioShock 2 |

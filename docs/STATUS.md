@@ -72,14 +72,27 @@ docs/bioshock2/ENGINE_NOTES.md. Bonus banked: any BS2 script event is now hookab
 
 ## Next steps
 
-1. **BS2 FOV**: derive the UShockUserSettings hfov offset fresh (memscani workflow needs the
-   value-scan commands ported or run via BS1-style discovery), wire the readback so the
-   projection claim matches, then the write (kill the distortion).
+**STANDING POLICY for all BS2 work (user directive, session 24): BS2 is not bound by BS1's
+methods.** BS1's fg/viewmodel FOV counter-modeling, weapon scaling compensation and aim
+workarounds were forced by BS1 limitations - when BS2 affords a cleaner/native method, use it.
+Test whether the BS1 problem even exists on BS2 before porting any compensation machinery.
+Full entry in the ARCHITECTURE decision log; also in CLAUDE.md hard rules.
+
+1. **BS2 FOV** (kills the confirmed fisheye + world-drag): the goal is claim == rendered,
+   then the forced-headset-FOV write (toggle like BS1's, default per the every-lever-off
+   rule). Order of work under the policy above: (a) FIRST test the native path - change
+   BS2's own FOV slider in the options UI and check whether the viewmodel/weapons stay
+   correct across values (if yes, BS1's entire fg apparatus stays unported); (b) derive the
+   UShockUserSettings hfov offset fresh via the UI-slider + value-rescan method (BS1
+   session-4 recipe; candidate vtable 0x11523D8); (c) wire readback into
+   `vr::set_rendered_hfov` so the projection claim is honest; (d) the gated write.
 2. **BS2 M4 stereo**: re-derive the scene-build seam + render-queue substrate for
    SequentialReentry; expect the same shapes as BS1, different RVAs, plus the jmp-stub
-   indirection everywhere.
+   indirection everywhere - and per the policy, check first whether BS2's renderer offers a
+   less invasive doubling path before assuming SR's exact BS1 shape.
 3. Port the value_scan/dumpframe command routes to b2r (or move the dispatcher to a shared
-   home per the decision-log leak list) so BS2 discovery work has the full toolkit.
+   home per the decision-log leak list) so BS2 discovery work has the full toolkit - needed
+   by step 1b.
 4. BS1 carries: v0.4.1 to the external tester (crash capture), 2K-account lead, seated
    recenter designs, letterbox investigation.
 

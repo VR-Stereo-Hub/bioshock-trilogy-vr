@@ -19,6 +19,12 @@ registry picks by host exe name (`BioshockHD.exe` -> bioshock1r, `Bioshock2HD.ex
 - Engine addresses/signatures live ONLY in the per-game `src/game/<title>/patterns.cpp/.h`, and
   every one is documented in that game's `docs/<game>/ENGINE_NOTES.md` with its derivation method.
   NEVER copy a number between games - same engine tree, different link; derive fresh.
+- **BS2 is NOT bound by BS1's methods** (user directive, 2026-07-29 session 24). Much of BS1's
+  machinery - the foreground/viewmodel FOV counter-modeling, weapon scaling compensation, aim-seam
+  workarounds - exists because of BS1-specific limitations, not because it is the right design.
+  If BS2's build affords a better or more native method (it has a native FOV slider, native
+  dual-wield, ProcessEvent-by-name event hooking), USE THE BETTER METHOD. Before porting any BS1
+  compensation machinery to BS2, first test whether BS2 needs it at all.
 
 ## Session protocol
 

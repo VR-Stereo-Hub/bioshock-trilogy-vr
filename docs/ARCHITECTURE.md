@@ -554,3 +554,17 @@ runtime.
   Docs restructure that goes with all this: game-specific knowledge bases moved to
   per-game folders (docs/bioshock1/, docs/bioshock2/ - ENGINE_NOTES + TESTING each);
   project-wide docs (STATUS/ROADMAP/ARCHITECTURE/RESEARCH) stay at docs/ root.
+
+- **2026-07-29 (session 24, M10): BS2 is not bound by BS1's methods - prefer the better
+  native path when BS2 affords one (USER DIRECTIVE).** BS1's solutions are full of
+  compensation machinery forced by BS1-specific limitations: the foreground/viewmodel
+  lens split and its fovA/fovB calibration, weapon scale/placement compensation, the
+  aim-seam workarounds, single-hand equip constraints. The user's explicit call: when
+  BS2's build makes a cleaner method feasible, adopt it rather than porting BS1's
+  workaround - BS2 already differs favorably (native FOV slider in the options UI,
+  native dual-wield, ProcessEvent-by-name hooking from the inlined-dispatch discovery).
+  Working rule for every subsystem brought to BS2: (1) check what BS2 does natively,
+  (2) test whether the BS1 problem even EXISTS on BS2, (3) only then port compensation
+  machinery, and only the parts proven necessary. First application: the FOV work must
+  start by testing whether BS2's native FOV propagation already keeps the viewmodel
+  correct across FOV values - if it does, BS1's entire fg apparatus stays unported.
