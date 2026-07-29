@@ -2355,3 +2355,57 @@ heaps/blocks walked and the exclusion-span count.
 bytes were actually readable behind the array pointer, so a plausible count paired with a
 bad pointer was a multi-kilobyte write into whatever followed. The SEH guard on `write_n`
 made that survivable, not correct; the span is now validated before the pair is trusted.
+
+### Measured: where each object actually lives
+
+From a boot-to-gameplay run with the new scanner (12-core machine, 1920x1080, no headset):
+
+| object | found by | cost | matches |
+|---|---|---|---|
+| `UShockUserSettings` | **live-heap path**, block prefix | **62 ms**, 271k blocks over 10 heaps | 1, accepted, class `ShockUserSettings` (FName index 2137) |
+| `APlayerWeapon` | region sweep only | 3773 ms of work over **888 slices** | 4, none accepted |
+
+So the settings singleton IS a Win32 heap allocation near its block start, and the fast
+path resolves it two orders of magnitude quicker than the old blocking walk. Engine ACTORS
+are not found in a heap-block prefix - either they sit deeper in their block or they come
+from a pool `HeapWalk` does not describe. The block probe prefix was widened from 64 to 256
+bytes to give the first case a chance; if actor scans still fall through to the sweep, the
+remaining option is enumerating `GObjObjects` (not yet derived), which would retire object
+scanning altogether.
+
+The important part is that the sweep's 3.8 s of work no longer arrives as a 3.8 s stall:
+across all 888 slices the camera heartbeat held 1600-2100 calls/s with no dip.
+
+### `SETRES` through the viewport Exec seam FAULTS - do not ship a live resolution change on it
+
+Measured directly, in gameplay, with the seam that already handles `set ...` successfully:
+
+```
+[b1r] exec fault: eip=106B2353 (exe+0x4C2353) fault-addr=000099DA
+[b1r] viewport exec FAULTED on 'setres 1400x1400w' (SEH caught ...)
+```
+
+A near-null dereference deep inside the engine's own Exec chain, and no `ResizeBuffers`
+followed, so the resolution change never began. Notes:
+
+- The stack stayed BALANCED (the new esp check did not fire), so this is not the
+  FOutputDevice stub's argument-count hazard. `set ShockPlayer ...` through the same
+  machinery works on every run, so the seam itself is sound - something specific to
+  `SETRES` is unhappy, most likely wanting a real output device or a different `this`.
+- `patterns.h` has advertised `UWindowsViewport::Exec` as handling `SETRES`/
+  `TOGGLEFULLSCREEN` since it was derived. Nothing had ever actually called it. It is now
+  measured, and the answer is no.
+- Consequence for the resolution work: the persistence lane (writing the game's own
+  `Bioshock.ini` viewport keys before launch) is the PRIMARY mechanism, not the fallback.
+  A live in-session change stays unavailable until this fault is root-caused.
+- This is also the first real exercise of the exec failure latch: the fault disabled the
+  seam for the session with one clear line, instead of being retried every 15 s.
+
+### Still unmeasured: the world lens aspect law
+
+At 1920x1080 the live watch reads `tanH=2.1445 tanV=1.2063`, i.e. `tanV/tanH = 0.5625 =
+9/16` exactly, consistent with `tanH = tan(option/2)` and a vertical derived from the
+render aspect. But 9/16 IS the render aspect here, so this run cannot distinguish
+"vertical derived from aspect" from "vertical hardcoded to 9/16". Discriminating it needs a
+non-16:9 backbuffer, and with `SETRES` dead that now requires an ini change plus a
+relaunch. Until then the foreground-lens aspect correction is unproven and must not ship.

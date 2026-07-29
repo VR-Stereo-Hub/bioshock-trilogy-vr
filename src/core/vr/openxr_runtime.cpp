@@ -53,6 +53,10 @@ XrSwapchain g_swapchains[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
 std::vector<XrSwapchainImageD3D11KHR> g_images[2];
 uint32_t g_swapW = 0, g_swapH = 0;
 uint32_t g_backbufferFmt = 0; // DXGI format the live swapchains were built for
+// Set by on_resize (which runs inside the game's ResizeBuffersDetour, at an
+// arbitrary point in the frame) and consumed by the frame loop at a point where
+// no XR frame is open. See the long note in on_resize.
+std::atomic<bool> g_resizePending{false};
 
 ID3D11Device* g_device = nullptr;          // game device, AddRef'd
 ID3D11DeviceContext* g_context = nullptr;  // immediate context, AddRef'd
@@ -434,6 +438,8 @@ void destroy_swapchains() {
     destroy_hud_swapchain();
     g_swapW = g_swapH = 0;
     g_backbufferFmt = 0;
+    // Whatever a queued rebuild was for, it has just happened.
+    g_resizePending.store(false, std::memory_order_relaxed);
     reset_aer(); // the held eye images died with the swapchains
 }
 
@@ -902,6 +908,17 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // the blocking pacing so the flat window keeps running. Events were
     // already pumped above, so recovery needs no paced frame to be seen.
     if (pace_should_skip(g_state, g_everFocused, GetTickCount64())) return;
+
+    // Deferred swapchain teardown for a real size change (see on_resize). This
+    // is the safe point: past the pair-hold early return, before any wait, so no
+    // XR frame is open and the compositor is not holding an image we are about
+    // to free. Both flags are checked anyway - the cost is two atomic loads and
+    // the failure mode it prevents is a use-after-free inside the runtime.
+    if (g_resizePending.load(std::memory_order_acquire) && !g_frameOpen && !g_srPairOpen) {
+        g_resizePending.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: performing the queued XR swapchain rebuild (no frame open)");
+        destroy_swapchains();
+    }
 
     // A mid-session ResizeBuffers destroys the swapchains; recreate them at
     // the new backbuffer size (and recompute the fov, which depends on aspect).
@@ -1749,8 +1766,22 @@ void on_resize(unsigned width, unsigned height, unsigned format) {
                 width, height, format);
         return;
     }
-    // Recreated at the new backbuffer size on the next frame.
-    destroy_swapchains();
+
+    // A REAL size change used to destroy the swapchains right here. This
+    // function runs inside the game's ResizeBuffersDetour, which can land
+    // anywhere - including between xrBeginFrame and xrEndFrame, with the
+    // compositor still holding images from the frame in flight. That is the
+    // documented-open half of the session-23 crash (the same-size case above got
+    // its guard then; the real-size case did not), and the captured dump for it
+    // is 22 frames of VDXR calling into d3d11 through 0xDEDEDEDE pointers.
+    //
+    // So only QUEUE it. The frame loop performs the destroy at a point where it
+    // can prove no XR frame is open, and the existing null-swapchain branch in
+    // on_present_begin then rebuilds at the new size.
+    g_resizePending.store(true, std::memory_order_release);
+    BVR_LOG("xr: real ResizeBuffers (%ux%u fmt %u) - XR swapchain rebuild QUEUED for a safe "
+            "point in the frame loop",
+            width, height, format);
 }
 
 void draw_debug_ui() {
