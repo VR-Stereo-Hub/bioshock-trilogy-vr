@@ -27,6 +27,17 @@ void init() {
 
     wchar_t path[MAX_PATH];
     swprintf_s(path, L"%s\\bioshockvr.log", g_dataDir);
+
+    // Keep ONE generation of history. The log is truncated on every launch, so
+    // a user who crashes and then relaunches to check something destroys the
+    // only evidence - which is exactly what happened to the first external
+    // crash report of session 23 (they sent a later, healthy run by mistake and
+    // it cost a session to untangle). Now the crashing run survives as
+    // bioshockvr.prev.log until the launch after next.
+    wchar_t prev[MAX_PATH];
+    swprintf_s(prev, L"%s\\bioshockvr.prev.log", g_dataDir);
+    MoveFileExW(path, prev, MOVEFILE_REPLACE_EXISTING); // no-op on first run
+
     // _SH_DENYNO so tools/tail-log.ps1 can follow the file while the game runs
     // (fopen_s-style opens deny all sharing).
     g_file = _wfsopen(path, L"w", _SH_DENYNO);
