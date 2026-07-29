@@ -32,6 +32,17 @@ inline constexpr uint64_t kHostFileBytes = 21214720;
 // CalcView seam, the FName chain) is build-independent and keeps working.
 bool rva_trusted();
 
+// Force the gate closed at RUNTIME, for testing the stand-down path.
+//
+// This exists because the alternative bit me: the only way to exercise the
+// unverified-build path used to be editing kHostTimeDateStamp and rebuilding,
+// and a sabotaged DLL then got left installed in the game folder. The symptoms
+// (no FOV control, viewmodel not following the controllers) read exactly like a
+// regression, because every object scan refuses. A runtime switch means the test
+// never produces a binary that can be mistaken for a real one.
+// `buildgate off|on|status` on the command seam. Game thread.
+void handle_buildgate_command(const char* args);
+
 // Live horizontal FOV in degrees (float) inside APlayerController.
 // Derivation: itsloopyo/bioshock-remastered-headtracking (MIT)
 // FOV_LIVE_OFFSET; verified live in DR-4. Telemetry-only: the renderer never

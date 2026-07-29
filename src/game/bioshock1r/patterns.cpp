@@ -23,6 +23,8 @@ const uint8_t* g_imageBase = nullptr;
 // Set once by resolve(): does the running exe match the build every RVA in
 // patterns.h came from? See the header's build-identity block.
 bool g_rvaTrusted = false;
+// Test override for the stand-down path - see handle_buildgate_command.
+bool g_buildGateForcedOff = false;
 
 // ---- live-object search (session 27 rewrite) --------------------------------
 // The generic machinery - thread-stack/TEB exclusion, the live-heap fast path,
@@ -231,7 +233,26 @@ void hfov_scan_rearm(const char* why) {
 
 bool settings_bound() { return g_userSettings != nullptr; }
 
-bool rva_trusted() { return g_rvaTrusted; }
+bool rva_trusted() { return g_rvaTrusted && !g_buildGateForcedOff; }
+
+void handle_buildgate_command(const char* args) {
+    if (args && strncmp(args, "off", 3) == 0) {
+        g_buildGateForcedOff = true;
+        BVR_LOG("[b1r] buildgate FORCED OFF - address-dependent features now behave exactly as "
+                "they would on an unrecognised build (object scans refuse, so no FOV control "
+                "and no viewmodel drive). 'buildgate on' restores.");
+    } else if (args && strncmp(args, "on", 2) == 0) {
+        g_buildGateForcedOff = false;
+        // The scanners latched dormant while refusing; wake them.
+        hfov_scan_rearm("buildgate restored");
+        BVR_LOG("[b1r] buildgate restored (host build itself is %s)",
+                g_rvaTrusted ? "VERIFIED" : "STILL UNRECOGNISED");
+    } else {
+        BVR_LOG("[b1r] buildgate: host build %s, forced-off %s -> rva_trusted=%s",
+                g_rvaTrusted ? "VERIFIED" : "NOT RECOGNISED",
+                g_buildGateForcedOff ? "yes" : "no", rva_trusted() ? "yes" : "no");
+    }
+}
 
 bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     using namespace bvr::pattern_scan;

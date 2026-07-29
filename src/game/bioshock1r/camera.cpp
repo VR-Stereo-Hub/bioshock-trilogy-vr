@@ -336,6 +336,8 @@ void apply_command(const char* cmd, const char* args) {
             g_gameFovWrite.store(true, std::memory_order_relaxed);
             BVR_LOG("[b1r] command: gfov %.1f", v);
         }
+    } else if (strcmp(cmd, "buildgate") == 0) {
+        patterns::handle_buildgate_command(args);
     } else if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
         BVR_LOG("[b1r] command: recenter");
