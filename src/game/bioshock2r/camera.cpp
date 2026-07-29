@@ -8,6 +8,8 @@
 
 #include "game/bioshock2r/camera.h"
 
+#include "core/debug/value_scan.h"
+#include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
@@ -155,9 +157,23 @@ bool is_gameplay_view_rva(uint32_t vtblRva) {
 //   camlog on|off                1 Hz heartbeat
 //   vroverlay on|off             core overlay visibility (bring-up A/B)
 //   vrcine <args>                core cinematic-fallback A/B (vrcine status..)
+// Discovery commands (route to core/debug/value_scan; game thread only),
+// ported from BS1's dispatcher for the session-25 FOV derivation - the
+// duplicate-now seam policy applies (see the ARCHITECTURE decision log):
+//   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
+//   memscani <u>  memrescani <u>   (integer-typed variants)
+//   mempoke <idx> <f>  mempoke <lo>-<hi> <f>  mempokei ...same with <u>
+//   memrestore  memptr <idx> [maxDeltaHex]
+//   pokeaddr <hex> <f>  pokeaddri <hex> <u>  hexdump <hex> <len>
+//   fsweep <hexaddr> <len> <lo> <hi>  strscan <text>  membases
+//   dumpframe [full] [n]
+//   vtscan <hexRva> [needBytesHex]  (b2r-first: one-shot heap scan for live
+//   objects whose dword0 == base + RVA - the candidate-vtable verifier)
 
 void apply_command(const char* cmd, const char* args) {
-    float x = 0.0f, y = 0.0f, z = 0.0f;
+    float v = 0.0f, x = 0.0f, y = 0.0f, z = 0.0f;
+    unsigned lo = 0, hi = 0, n = 0;
+    unsigned addr = 0, len = 0;
 
     if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
@@ -226,9 +242,88 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b2r] command: vroverlay %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
     } else if (strcmp(cmd, "vrcine") == 0) {
         bvr::vr::handle_cine_command(args); // core detector A/B on a new game
+    } else if (strcmp(cmd, "fsweep") == 0) {
+        float flo = 0.0f, fhi = 0.0f;
+        if (sscanf_s(args, "%x %u %f %f", &addr, &len, &flo, &fhi) == 4)
+            bvr::value_scan::float_sweep(addr, len, flo, fhi);
+        else
+            BVR_LOG("[b2r] usage: fsweep <hexaddr> <len> <lo> <hi>");
+    } else if (strcmp(cmd, "memscan") == 0) {
+        if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::scan_f32(v);
+    } else if (strcmp(cmd, "memrescan") == 0) {
+        if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::rescan_f32(v);
+    } else if (strcmp(cmd, "memscani") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::scan_u32(n);
+    } else if (strcmp(cmd, "memrescani") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::rescan_u32(n);
+    } else if (strcmp(cmd, "memlist") == 0) {
+        bvr::value_scan::list(sscanf_s(args, "%u", &n) == 1 ? n : 32);
+    } else if (strcmp(cmd, "memread") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::read_at(n);
+    } else if (strcmp(cmd, "mempoke") == 0) {
+        if (sscanf_s(args, "%u-%u %f", &lo, &hi, &v) == 3)
+            bvr::value_scan::poke_range(lo, hi, v);
+        else if (sscanf_s(args, "%u %f", &n, &v) == 2)
+            bvr::value_scan::poke(n, v);
+    } else if (strcmp(cmd, "mempokei") == 0) {
+        unsigned iv = 0;
+        if (sscanf_s(args, "%u-%u %u", &lo, &hi, &iv) == 3)
+            bvr::value_scan::poke_range_u32(lo, hi, iv);
+        else if (sscanf_s(args, "%u %u", &n, &iv) == 2)
+            bvr::value_scan::poke_u32(n, iv);
+    } else if (strcmp(cmd, "memrestore") == 0) {
+        bvr::value_scan::restore_all();
+    } else if (strcmp(cmd, "memptr") == 0) {
+        unsigned maxDelta = 0x400;
+        if (sscanf_s(args, "%u %x", &n, &maxDelta) >= 1)
+            bvr::value_scan::ptr_scan(n, maxDelta);
+    } else if (strcmp(cmd, "pokeaddr") == 0) {
+        if (sscanf_s(args, "%x %f", &addr, &v) == 2)
+            bvr::value_scan::poke_addr(addr, v);
+    } else if (strcmp(cmd, "pokeaddri") == 0) {
+        unsigned iv = 0;
+        if (sscanf_s(args, "%x %u", &addr, &iv) == 2)
+            bvr::value_scan::poke_addr_u32(addr, iv);
+    } else if (strcmp(cmd, "hexdump") == 0) {
+        if (sscanf_s(args, "%x %u", &addr, &len) >= 1)
+            bvr::value_scan::hexdump(addr, len ? len : 64);
+    } else if (strcmp(cmd, "strscan") == 0) {
+        char text[96];
+        if (sscanf_s(args, "%95s", text, static_cast<unsigned>(sizeof text)) == 1)
+            bvr::value_scan::log_string_scan(text);
+    } else if (strcmp(cmd, "membases") == 0) {
+        bvr::value_scan::log_module_bases();
+    } else if (strcmp(cmd, "dumpframe") == 0) {
+        // dumpframe [full] [n] - n > 1 records consecutive present windows
+        // (files suffixed _qN). Same core frame inspector as BS1; the dump
+        // lands in this game's data dir via log::data_dir().
+        bool full = strncmp(args, "full", 4) == 0;
+        int count = 1;
+        sscanf_s(full ? args + 4 : args, " %d", &count);
+        bvr::frame_inspector::arm(full ? 2 : 1, count);
+    } else if (strcmp(cmd, "vtscan") == 0) {
+        // vtscan <hexRva> [needBytesHex] - one-shot candidate-vtable verifier:
+        // logs every live object whose dword0 == base + RVA. The accept
+        // callback never chooses, so the census covers ALL matches; the
+        // summary's chosen=00000000 is expected. EXPENSIVE (full 4 GB walk) -
+        // probe use only, never wire onto a cadence.
+        unsigned needBytes = 0x100;
+        if (sscanf_s(args, "%x %x", &addr, &needBytes) >= 1) {
+            uint32_t rva = addr;
+            patterns::scan_for_vtable_object(
+                rva, needBytes,
+                [](void* obj, void* user) -> bool {
+                    BVR_LOG("[b2r] vtscan 0x%X match @ %p",
+                            *static_cast<const uint32_t*>(user), obj);
+                    return false;
+                },
+                &rva, "vtscan", nullptr);
+        } else {
+            BVR_LOG("[b2r] usage: vtscan <hexRva> [needBytesHex]");
+        }
     } else {
-        BVR_LOG("[b2r] unknown command: %s (M3 seam - BS1's wider vocabulary has not "
-                "been ported; see camera.cpp)",
+        BVR_LOG("[b2r] unknown command: %s (see the vocabulary comment in camera.cpp; "
+                "BS1-only levers like vrstereo/vraim/reentry/exec are not ported yet)",
                 cmd);
     }
 }
