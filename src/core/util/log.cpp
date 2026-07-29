@@ -15,7 +15,7 @@ wchar_t g_dataDir[MAX_PATH] = {};
 
 } // namespace
 
-void init() {
+void init(const wchar_t* subdir) {
     std::lock_guard lock(g_mutex);
     if (g_file) return;
 
@@ -24,6 +24,12 @@ void init() {
         return;
     swprintf_s(g_dataDir, L"%s\\BioshockVR", local);
     CreateDirectoryW(g_dataDir, nullptr);
+    if (subdir && subdir[0]) {
+        wchar_t withSub[MAX_PATH];
+        swprintf_s(withSub, L"%s\\%s", g_dataDir, subdir);
+        wcscpy_s(g_dataDir, withSub);
+        CreateDirectoryW(g_dataDir, nullptr);
+    }
 
     wchar_t path[MAX_PATH];
     swprintf_s(path, L"%s\\bioshockvr.log", g_dataDir);
