@@ -613,6 +613,29 @@ runtime.
   caller gate: pass 2 doubles only Draws whose return RVA is the single census-verified
   gameplay dispatcher (0xCD5D7B) plus the calcview-silent and present-stall skips.
 
+- **2026-07-29 (session 26, HANG FIX, core - affects BOTH games): the unfocused
+  pace KEEPALIVE is retired; an unbounded `xrWaitFrame` is never worth
+  "insurance".** Field hang, found minutes after the BS2 stereo acceptance: the
+  user took the headset off, the session dropped FOCUSED -> VISIBLE, and the game
+  wedged solid (0.11 s CPU over 4 s, 1 running thread, `Not Responding`, kill
+  required) with NO crash, NO dump and NO fault line - the log simply stopped one
+  line after `xr: pace keepalive while VISIBLE`. Mechanism: the M8 stall guard
+  skipped the blocking wait while unfocused BUT let one real paced frame through
+  every 5 s as insurance, and `g_nextKeepaliveMs` starts at 0, so the FIRST
+  unfocused present ran `xrWaitFrame` - which takes no timeout and, with the
+  headset idle, never returned. On BS2 that call sits on the dedicated present
+  thread, so it back-pressured the game thread through the render command ring
+  and froze everything. The keepalive is now gone: once FOCUSED has been held,
+  unfocused presents ALWAYS skip the wait. Recovery never depended on it -
+  `pump_events` runs every present above the guard and the return to FOCUSED is a
+  session event, not something an app earns by submitting frames. Worst case
+  without it is "stays unfocused" (visible, recoverable, `vrpace off` restores the
+  old behavior for A/B); worst case with it was a wedged process. Paired with a
+  belt-and-braces guard: `on_present_begin` now closes any leaked open XR frame
+  before waiting, since waiting on a begun-but-never-ended frame is the other way
+  a runtime can block forever (the SR pair-hold is the only intended open-frame
+  state, and it returns long before that point).
+
 - **2026-07-29 (session 26, M10): BS2 pass-2 camera enters via the ProcessEvent seam
   replay, and commands can never execute mid-Draw.** The doubled Draw re-dispatches
   PlayerCalcView exactly once (live: 2nd-pass hits == second calls, 655/655), so the

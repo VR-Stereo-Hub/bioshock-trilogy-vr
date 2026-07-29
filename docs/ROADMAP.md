@@ -588,7 +588,7 @@ kill. Both prerequisites below are now MET.):**
 - [x] `src/game/bioshock2r/` adapter: new patterns.cpp; expectation is near-total core reuse
       (landed session 24 - patterns + camera + adapter; the CalcView seam is ProcessEvent-based
       because BS2 inlined the event dispatch, see docs/bioshock2/ENGINE_NOTES.md)
-- [~] **Done when:** M3-level (6DOF mono) within one session of scan work; M4-level stereo within
+- [x] **Done when:** M3-level (6DOF mono) within one session of scan work; M4-level stereo within
       the milestone. Every core/adapter seam leak found → ARCHITECTURE decision log.
       (M3-level: session 24, one session as budgeted - flat 6DOF integer-exact, in-headset
       PASSED (fisheye/world-drag = the expected FOV-claim gap); seam-leak inventory in the
@@ -597,17 +597,22 @@ kill. Both prerequisites below are now MET.):**
       check killed the entire BS1 fg-porting question (viewmodel follows the world FOV
       natively), and the in-headset acceptance PASSED same day: fisheye gone, world-drag
       gone, restore edges exercised.
-      M4-level stereo: session 26, FLAT-COMPLETE - substrate derived in one session
+      M4-level stereo: session 26, COMPLETE and IN-HEADSET ACCEPTED (user, same day:
+      "looks awesome - very good for everything"; world scale fine at the default 100).
+      One deferred blemish the user volunteered: the viewmodel/hands read weird in
+      stereo, same class as BS1's - parked to its own milestone (leads in STATUS next
+      steps). Derivation: substrate derived in one session
       (UGameEngine::Draw 0x4EE8D0 via the live kick/kick2 samplers + offline capstone
       walks), and the policy gate paid out its biggest win yet: SequentialReentry runs
       on the THREADED substrate - no 1t, no flush-point, no drain guard, none of BS1's
       single-threading machinery ports. Pulse/continuous/stereo all flat-green:
       presents/s == 2 x draws/s exact, per-eye camera delta IPD-exact (6.30 UU), 2nd-pass
       CalcView replay 655/655, zero faults; `vrstereo on` one-toggle READY; every lever
-      default OFF; pass 2 deny-by-default on the single gameplay caller. Still open for
-      the milestone tick: the IN-HEADSET depth verdict (checklist in
-      docs/bioshock2/TESTING.md - depth reads, eye swap, comfort, world-scale
-      calibration now unblocked) and a user-driven load-crossing pass.)
+      default OFF; pass 2 deny-by-default on the single gameplay caller.
+      M10 is DONE: both acceptance clauses met (M3-level in one session of scan work,
+      M4-level stereo within the milestone, in-headset verified). Carried forward, not
+      blocking: the stereo viewmodel blemish, a user-driven load-crossing pass, and a
+      combat-scene perf profile.)
 
 ## Post-v1 backlog (not scheduled)
 

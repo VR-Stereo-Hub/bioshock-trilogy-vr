@@ -2,7 +2,27 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-29, session 26 - M10: BS2 STEREO FLAT-COMPLETE on the THREADED substrate - no 1t needed, presents == 2x draws exact, per-eye delta IPD-exact, vrstereo one-toggle READY - branch s26-m10-bs2-stereo)
+## Current state (2026-07-29, session 26 - M10 STEREO ACCEPTED IN-HEADSET ("looks awesome"), plus a core HANG FIX found right after - branch s26-pace-hang-fix)
+
+**IN-HEADSET VERDICT (user, Quest 3 / VDXR): stereo ACCEPTED - "looks awesome, very good
+for everything".** Depth, comfort and scale all read right; the user did not need to move
+the world-scale slider off the default 100. One known-deferred blemish, volunteered by the
+user: **the viewmodel/hand models look weird and a bit wrong in stereo, same as BS1 did** -
+explicitly parked for a later milestone (see next steps; the likely mechanism is noted
+there and it is NOT the FOV apparatus, which s25 already cleared).
+
+**THEN THE HANG.** Minutes after the acceptance run the user reported the game not
+responding. Triage: NOT a crash - no dump, no fault, no poison. Process wedged at 0.11 s CPU
+over 4 s with one running thread, log stopped dead one line after `xr: pace keepalive while
+VISIBLE`. Root cause is CORE, affects both games, and predates the stereo work: the M8
+unfocused-pace guard let one real paced frame through every 5 s as "insurance", and
+`xrWaitFrame` takes no timeout - with the headset idle it never returned. On BS2 that call
+runs on the dedicated present thread, so it back-pressured the game thread through the
+render command ring and froze the process. **Fixed** (branch s26-pace-hang-fix): the
+keepalive is retired - once FOCUSED has been held, unfocused presents always skip the
+blocking wait; recovery was always event-driven (`pump_events` runs above the guard). Plus
+a belt-and-braces close of any leaked open XR frame before waiting. Built and installed to
+BOTH games; needs the user's headset-off/on re-test to confirm.
 
 **BS2 SequentialReentry is flat-green, and the headline is what it does NOT need: none of
 BS1's single-threading machinery.** The substrate was derived in one session (live
@@ -75,17 +95,32 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-1. **User in-headset run** (checklist: docs/bioshock2/TESTING.md "In-headset stereo
-   checklist"): depth verdict (L/R fused, not swapped), head-motion comfort (pair
-   pacing ships ON), THE WORLD-SCALE CALIBRATION (unblocked at last), IPD slider
-   verify, pause/load edges. Plus the load-crossing pass (quit-to-menu, CONTINUE) -
-   the menu needs a human driver on BS2.
-2. If the user reports instability under stereo: the 1t fallback derivation entry
+1. **Re-test the hang fix** (user, both games): put the headset on, get FOCUSED, then
+   take it off / let it idle for a minute, then put it back on. Expect one
+   `xr: pacing SKIPPED while VISIBLE` line, the flat window to keep running, and
+   `xr: FOCUSED again after N ms` on return - and NO freeze. Also worth one
+   Alt-Tab-away-and-back cycle.
+2. **BS2 viewmodel/hands in stereo** (the user's one reported blemish, "same as BS1").
+   Bounded diagnostic FIRST, do not assume the BS1 rig: BS2's foreground almost
+   certainly renders from a camera the SR pass-2 replay never touches (the Draw-head
+   probe already shows the cached camera-actor fields at viewport+0x48 hold a
+   DIFFERENT, static value than the live CalcView camera - `camSrc` in the beat line
+   never moved while the real camera did). If the fg scene node takes its view from
+   that path, both eyes get one camera and the weapon reads at the wrong depth -
+   which is exactly what "weird and a bit wrong" looks like. BS1's answer was the fg
+   scene-node ctor hook + per-eye camera substitution (`vrfgnode sync`); check
+   whether BS2 needs the same before porting any of it.
+3. **BS2 input / motion controllers** - the real playability unlock (M5-equivalent).
+   Core's synthetic-XInput lane is game-agnostic, but BS1 also needed an engine-side
+   drive (`input_drive.cpp`, UWindowsViewport::UpdateInput) because nothing calls it
+   in windowed mode; whether BS2 needs the same is unprobed.
+4. If stereo ever proves unstable under long play: the 1t fallback derivation entry
    points are banked in ENGINE_NOTES (render sync pair 0x1A69294/98, endframe fn
    0x501EA0, reader 0xB929F2).
-3. BS2 combat-scene stereo perf profile (needs a combat save).
-4. Record the BS2 FOV slider min/max endpoints when someone is in Graphics Options.
-5. BS1 carries: v0.4.1 to the external tester, 2K-account lead, seated recenter
+5. BS2 combat-scene stereo perf profile (needs a combat save); BS2 load-crossing pass
+   with stereo armed (the menu needs a human driver).
+6. Record the BS2 FOV slider min/max endpoints when someone is in Graphics Options.
+7. BS1 carries: v0.4.1 to the external tester, 2K-account lead, seated recenter
    designs, letterbox investigation.
 
 ## Previous state (2026-07-29, session 25 - M10: BS2 FOV DONE flat - readback claim == rendered, forced-headset-FOV write default OFF, discovery tooling ported, crash-dump loop fixed - branch s25-m10-bs2-fov)
@@ -2663,6 +2698,20 @@ dir unchanged). Carries closed: 0x106EE20 = plain APlayerController (RTTI); the
 path (rare idle race, dump cap already ships). Handoff: the in-headset depth +
 world-scale checklist is in docs/bioshock2/TESTING.md - world-scale tuning is
 unblocked for the first time.
+
+**Same evening - the in-headset verdict and a hang.** User ran the checklist and accepted
+stereo outright ("looks awesome, very good for everything"), world scale fine at the
+default 100, with one deferred blemish: the viewmodel/hand models look weird in stereo,
+same class as BS1's. Minutes later the game stopped responding. Triage found NO crash (no
+dump, no fault, no poison) - a hard wedge at 0 CPU, log ending one line after
+`xr: pace keepalive while VISIBLE`. The M8 unfocused-pace guard's 5 s "insurance" keepalive
+ran a blocking `xrWaitFrame` (no timeout) with the headset idle and never returned; on BS2
+that sits on the dedicated present thread and back-pressured the game thread through the
+render ring. Core fix on branch s26-pace-hang-fix: keepalive retired (unfocused presents
+always skip the wait; recovery was always event-driven via pump_events), plus a
+belt-and-braces close of any leaked open XR frame before waiting. Installed to both games,
+awaiting the user's headset-off/on re-test. Lesson worth keeping: a shipped "insurance"
+path that calls an untimed blocking API is a hang waiting for the right day.
 
 ### Session 25 - 2026-07-29 - BS2 FOV: readback + write landed flat, fg apparatus proven unnecessary
 
