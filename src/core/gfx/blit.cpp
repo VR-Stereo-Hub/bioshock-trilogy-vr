@@ -10,6 +10,7 @@ namespace {
 const char* kShader = R"(
 Texture2D tex0 : register(t0);
 SamplerState samp0 : register(s0);
+cbuffer StretchCB : register(b0) { float4 uvRemap; } // x = vOffset, y = vScale
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 VSOut vs_main(uint id : SV_VertexID) {
     // Fullscreen triangle, no vertex buffer.
@@ -17,6 +18,15 @@ VSOut vs_main(uint id : SV_VertexID) {
     float2 uv = float2((id << 1) & 2, id & 2);
     o.pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
     o.uv = uv;
+    return o;
+}
+// Session 22: sample only a horizontal BAND of the source, stretched across
+// the full destination (the engine-cinematic letterbox unsqueeze).
+VSOut vs_stretch(uint id : SV_VertexID) {
+    VSOut o;
+    float2 uv = float2((id << 1) & 2, id & 2);
+    o.pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    o.uv = float2(uv.x, uvRemap.x + uv.y * uvRemap.y);
     return o;
 }
 float4 ps_main(VSOut i) : SV_Target {
@@ -35,6 +45,8 @@ float4 ps_process(VSOut i) : SV_Target {
 )";
 
 ID3D11VertexShader* g_vs = nullptr;
+ID3D11VertexShader* g_vsStretch = nullptr;
+ID3D11Buffer* g_stretchCb = nullptr;
 ID3D11PixelShader* g_ps = nullptr;
 ID3D11PixelShader* g_psProcess = nullptr;
 ID3D11BlendState* g_blend = nullptr;
@@ -51,11 +63,14 @@ bool ensure_pipeline(ID3D11DeviceContext* ctx) {
     if (!dev) return false;
 
     ID3DBlob* vsb = nullptr;
+    ID3DBlob* vstb = nullptr;
     ID3DBlob* psb = nullptr;
     ID3DBlob* ppb = nullptr;
     ID3DBlob* err = nullptr;
     bool ok = SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr,
                                    "vs_main", "vs_4_0", 0, 0, &vsb, &err)) &&
+              SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr,
+                                   "vs_stretch", "vs_4_0", 0, 0, &vstb, &err)) &&
               SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr,
                                    "ps_main", "ps_4_0", 0, 0, &psb, &err)) &&
               SUCCEEDED(D3DCompile(kShader, strlen(kShader), nullptr, nullptr, nullptr,
@@ -63,11 +78,22 @@ bool ensure_pipeline(ID3D11DeviceContext* ctx) {
     if (ok)
         ok = SUCCEEDED(dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(),
                                                nullptr, &g_vs)) &&
+             SUCCEEDED(dev->CreateVertexShader(vstb->GetBufferPointer(), vstb->GetBufferSize(),
+                                               nullptr, &g_vsStretch)) &&
              SUCCEEDED(dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(),
                                               nullptr, &g_ps)) &&
              SUCCEEDED(dev->CreatePixelShader(ppb->GetBufferPointer(), ppb->GetBufferSize(),
                                               nullptr, &g_psProcess));
+    if (ok) {
+        D3D11_BUFFER_DESC cbd{};
+        cbd.ByteWidth = 16;
+        cbd.Usage = D3D11_USAGE_DYNAMIC;
+        cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        ok = SUCCEEDED(dev->CreateBuffer(&cbd, nullptr, &g_stretchCb));
+    }
     if (vsb) vsb->Release();
+    if (vstb) vstb->Release();
     if (psb) psb->Release();
     if (ppb) ppb->Release();
     if (err) {
@@ -116,9 +142,11 @@ namespace {
 
 bool draw_internal(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
                    ID3D11ShaderResourceView* src, UINT dstW, UINT dstH,
-                   ID3D11PixelShader* ps, ID3D11BlendState* blend) {
+                   ID3D11PixelShader* ps, ID3D11BlendState* blend,
+                   ID3D11VertexShader* vs = nullptr) {
     if (!ctx || !dst || !src || !dstW || !dstH) return false;
     if (!ensure_pipeline(ctx)) return false;
+    if (!vs) vs = g_vs;
 
     // Backup the slices of state we touch (the game re-binds most of this per
     // frame, but the present chain must be transparent regardless).
@@ -141,6 +169,8 @@ bool draw_internal(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
     ID3D11PixelShader* oldPs = nullptr;
     ctx->VSGetShader(&oldVs, nullptr, nullptr);
     ctx->PSGetShader(&oldPs, nullptr, nullptr);
+    ID3D11Buffer* oldVsCb = nullptr;
+    ctx->VSGetConstantBuffers(0, 1, &oldVsCb); // the engine lives in VS b0
     ID3D11ShaderResourceView* oldSrv = nullptr;
     ctx->PSGetShaderResources(0, 1, &oldSrv);
     ID3D11SamplerState* oldSamp = nullptr;
@@ -161,7 +191,8 @@ bool draw_internal(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
     ctx->RSSetViewports(1, &vp);
     ctx->IASetInputLayout(nullptr);
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ctx->VSSetShader(g_vs, nullptr, 0);
+    ctx->VSSetShader(vs, nullptr, 0);
+    if (vs == g_vsStretch) ctx->VSSetConstantBuffers(0, 1, &g_stretchCb);
     ctx->PSSetShader(ps, nullptr, 0);
     ctx->PSSetShaderResources(0, 1, &src);
     ctx->PSSetSamplers(0, 1, &g_sampler);
@@ -173,6 +204,7 @@ bool draw_internal(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
     ctx->RSSetState(oldRaster);
     if (nVp) ctx->RSSetViewports(1, &oldVp);
     ctx->VSSetShader(oldVs, nullptr, 0);
+    ctx->VSSetConstantBuffers(0, 1, &oldVsCb);
     ctx->PSSetShader(oldPs, nullptr, 0);
     ctx->PSSetShaderResources(0, 1, &oldSrv);
     ctx->PSSetSamplers(0, 1, &oldSamp);
@@ -180,6 +212,7 @@ bool draw_internal(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
     ctx->IASetPrimitiveTopology(oldTopo);
     if (oldRtv) oldRtv->Release();
     if (oldDsv) oldDsv->Release();
+    if (oldVsCb) oldVsCb->Release();
     if (oldBlend) oldBlend->Release();
     if (oldDepth) oldDepth->Release();
     if (oldRaster) oldRaster->Release();
@@ -204,8 +237,26 @@ bool process(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
     return draw_internal(ctx, dst, src, dstW, dstH, g_psProcess, nullptr);
 }
 
+bool stretch_band(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
+                  ID3D11ShaderResourceView* src, UINT dstW, UINT dstH,
+                  float topFrac, float heightFrac) {
+    if (!ensure_pipeline(ctx)) return false;
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (FAILED(ctx->Map(g_stretchCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return false;
+    float* f = static_cast<float*>(m.pData);
+    f[0] = topFrac;    // vOffset
+    f[1] = heightFrac; // vScale
+    f[2] = 0.0f;
+    f[3] = 0.0f;
+    ctx->Unmap(g_stretchCb, 0);
+    // Blend OFF (replace): the band overwrites the whole destination.
+    return draw_internal(ctx, dst, src, dstW, dstH, g_ps, nullptr, g_vsStretch);
+}
+
 void release() {
     if (g_vs) { g_vs->Release(); g_vs = nullptr; }
+    if (g_vsStretch) { g_vsStretch->Release(); g_vsStretch = nullptr; }
+    if (g_stretchCb) { g_stretchCb->Release(); g_stretchCb = nullptr; }
     if (g_ps) { g_ps->Release(); g_ps = nullptr; }
     if (g_psProcess) { g_psProcess->Release(); g_psProcess = nullptr; }
     if (g_blend) { g_blend->Release(); g_blend = nullptr; }

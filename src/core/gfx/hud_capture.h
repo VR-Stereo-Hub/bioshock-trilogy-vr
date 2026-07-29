@@ -32,7 +32,7 @@ namespace bvr::hud {
 // Called from the frame_inspector detours (render thread, before forwarding).
 void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
               ID3D11DepthStencilView* dsv);
-void on_draw_indexed();
+void on_draw_indexed(ID3D11DeviceContext* ctx);
 // Returns the RTV to substitute for this draw (bind it together with
 // capture_dsv() - gameswf masks stencil against it), or null to leave the
 // game's binding alone. `ctx` is used to lazily create the RT and to inspect
@@ -47,8 +47,9 @@ void fix_blend_alpha(ID3D11DeviceContext* ctx);
 
 // Present boundary (render thread, called at the END of the present detour,
 // after every consumer of the RT ran): clears the RT for the next interval
-// and rolls the per-interval classifier state.
-void on_present(ID3D11DeviceContext* ctx);
+// and rolls the per-interval classifier state. The swapchain feeds the
+// letterbox watch (may be null - the watch just idles).
+void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain);
 
 // The captured HUD as a shader resource (null when nothing was redirected
 // this interval or the RT does not exist). Serves the PROCESSED copy - rgb
@@ -73,6 +74,46 @@ bool force();
 // Telemetry for `vrhud status` (per second, reset on read... no - lifetime).
 void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
                   unsigned* intervalsWithHud);
+
+// ---- Session 22: live rendered-FOV watch -------------------------------------
+// Scripted cameras (the bathysphere descent) render their OWN fov - 104 deg
+// measured by dump decode - while the FOV option (and therefore the projection
+// layer's claim) still reads 130. The claim mismatch is the in-headset
+// "fisheye + broken fusion" percept, and rendered-vs-option is the live
+// cutscene detector. Once per present interval the first scene draw's VS b0
+// is partially copied to a tiny staging buffer and mapped a present LATER
+// (DO_NOT_WAIT, zero pipeline stalls); tangents decode from the screen-ray
+// block at floats 12..18 (the session-21 layout that decode-framedump.ps1
+// verifies offline).
+//   fov_watch     latest decoded tangents; false until the first decode
+//   fov_mismatch  hysteresis'd rendered-vs-option verdict (compares against
+//                 bvr::vr::rendered_hfov_deg(), logs transitions - the
+//                 flat-testable instrument; the VR runtime keys the cinematic
+//                 quad fallback on it)
+bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs);
+bool fov_mismatch();
+
+// Session 22 per-kind routing:
+//   screen_only   true while intervals are PURE gameswf with the world pass
+//                 absent (hack minigame, loading screens, FMV-class screens -
+//                 dump-proven 0 DrawIndexed). The VR runtime drops these to
+//                 the readable quad screen. Hysteresis'd; transitions logged.
+//   postfx_count  lifetime count of post-tonemap draws left IN-FRAME because
+//                 they sample a backbuffer-sized texture (alcohol blur etc.).
+bool screen_only();
+unsigned postfx_count();
+
+// Session 22 round 2: engine-cinematic letterbox (plasmid FMV sequences
+// clear the final target black and tonemap the scene into a shrunken middle
+// band - no draws to classify, the bars are unpainted clear). True while
+// bars are live; outputs their pixel heights. The VR runtime crops the
+// submitted subImage to the band (the compositor unsqueezes - bars gone) and
+// the camera adapter suspends the live head drive (authored camera plays).
+bool letterbox(unsigned* topPx, unsigned* botPx);
+// Backbuffer sampling for the watch - MUST run at the HEAD of the present
+// detour (pure game frame; sampling after our window composite made the
+// detector flap whenever a session was FOCUSED - round-3 headset negative).
+void letterbox_sample(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain);
 
 // Free device objects (device loss / resize; recreated lazily).
 void release_resources();

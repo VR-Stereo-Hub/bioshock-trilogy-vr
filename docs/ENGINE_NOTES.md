@@ -1891,3 +1891,194 @@ Also this round: the user's fixed LEFT-hand calibration (aim trim
 baked as CODE DEFAULTS (their explicit ask); their four live profiles
 rescued to weapons.ini via wsave before anything could drop them (the run
 had not pressed save).
+
+## Session 22 - scripted-camera scenes: the descent's real mechanism (measured flat)
+
+The session-22 plan carried two hypotheses for the bathysphere descent
+("no stereo + fisheye"): (a) scripted cameras bypass eventPlayerCalcView,
+(b) our gfov-130 option write fisheyes a ~75-authored camera. **Both are
+wrong for the descent** - measured on the crash-site save, vrstereo on,
+clean boot, the ride replayed end to end:
+
+- **CalcView keeps firing the whole ride** (heartbeat 150-1100 calls/s,
+  camera loc walking the scripted track), and the view actor stays
+  AShockPlayer - `[b1r] view state:` logs ZERO transitions across the
+  descent, the pause menu, and the hack minigame (one boot-time
+  menu/cutscene -> GAMEPLAY pair is the whole log). Strict-view and
+  CalcView-staleness detectors both MISS this scene class.
+- **The renderer consumes CalcView's camera even mid-scene**: the world
+  pass's cb0 camera position matches the CalcView heartbeat loc to the UU
+  (45542.2/-15444.8/-22293.4 vs 45543.1/-15447.8/-22293.4 at the same
+  second). Eye offsets applied in CalcView DO reach the pixels - the
+  "no stereo" percept is NOT missing disparity at the render level.
+- **The scene renders its OWN FOV and ignores the option**: dump decode
+  mid-ride shows ONE tangent cluster tanH=1.2800 tanV=0.7200 = 104.0 deg
+  at 16:9 in BOTH eye windows while the option int reads 130 (fovaudit
+  mid-ride: option=130, gfovWrite on). Control immediately after arrival:
+  cluster 2.1445/1.2063 = exactly option 130 (the session-21
+  rendered==option result holds for gameplay). The user's persisted
+  option is itself 130, so "restore the saved option" can never fix a
+  scene that does not read the option at all.
+- **Root cause of both user percepts: the projection layer CLAIMS the
+  option-derived FOV (130) over a 104-rendered image.** A 26-deg claim
+  error warps geometry (the "fisheye") and mis-registers the two eyes'
+  reprojection enough to break fusion (the "no stereo" percept) even
+  though pixel-level disparity exists.
+
+**The shipped detector (session 22): the live rendered-FOV watch**
+(core/gfx/hud_capture.cpp): once per present interval the first
+DSV-bound DrawIndexed's VS b0 head (80 bytes) is copied to a tiny staging
+buffer (CopySubresourceRegion, async) and mapped on a LATER present with
+DO_NOT_WAIT (zero stalls); tangents decode from the screen-ray block at
+floats 12..18 (the session-21 layout decode-framedump.ps1 verifies
+offline; both derivations must agree within 2% or the block is ignored).
+`fov_mismatch()` = rendered-vs-option outside +-10%, 3-interval
+hysteresis, transitions logged (`[hud] rendered-fov mismatch ON/off`) -
+session-independent, so the descent is a fully flat-testable repro:
+exactly one ON ~11 s after the lever pull (104.0 vs 130.0), live
+`fovaudit live:` echoes 1.2799/0.7200 age 0 ms mid-ride, one off at
+arrival. The cinematic quad fallback (openxr_runtime on_present_end)
+keys on strict-false OR publish-staleness OR fov_mismatch; the first two
+legs never fired during the descent and stay for menu-attract/true-bypass
+scene classes.
+
+Traps recorded: the descent ride creates a "Welcome to Rapture
+(AutoSave)" at arrival that becomes the NEWEST save - CONTINUE stops
+landing on the crash-site repro save after one replay (it drops to
+second in the LOAD list). A save LOAD produced NO view-state transition
+and NO fov-write OFF/ON churn (strict stayed true through the load
+screen on this box).
+
+### Session 22 part 2 - fullscreen-screen fingerprints and the per-kind routing
+
+Dump ground truth for the three misrouted kinds (all `dumpframe full 2`,
+clean boots, resource tables in the dumps):
+
+- **Loading screen**: ~87 non-indexed gameswf draws (flush 0x7B8EB5 in
+  every stack) straight onto the final LDR target, DSV bound but ZERO
+  DrawIndexed in the interval - no world pass, no tonemap, nothing for
+  the session-19 classifier to classify. Renders in-frame = full-FOV in
+  the headset.
+- **Hack minigame**: same family, measured 322 swf draws / 0 DrawIndexed
+  (the intro board; the world pass is fully absent for the whole hack
+  session even though the scene BUILD calls keep running - the build
+  draws nothing). The user's "basically the same as the loading screen"
+  was literally exact. The main menu is this family too (125 draws).
+- **Alcohol-blur composite**: the SECOND non-indexed draw on the tonemap
+  target (right after the tonemap), engine post path (no gameswf flush
+  in its stack), sampling a BACKBUFFER-SIZED texture (1920x1080 RGBA8) -
+  while every real HUD/flash draw samples 2048x2048 BC-compressed UI
+  atlases or nothing. The pre-tonemap 480x270 blur pyramid runs on its
+  own RTs and never touches the classifier.
+
+Shipped discriminators (hud_capture.cpp): screen-only interval =
+swf-draws >= 20 with no scene-vote leader (3-interval hysteresis,
+`[hud] screen-only interval ON/off` transitions - flat instrument);
+in-frame post effect = post-tonemap draw whose srv0 dimensions equal the
+target's (srv desc cache, same 8-slot pattern as the RT desc cache).
+Measured: postFx = 0 across normal gameplay (no false positives); the
+pause menu contributes ~1/interval (its fullscreen dim layer sampling
+the scene - correctly in-frame; the menu PANELS keep redirecting to the
+quad). Loading screens fire exactly one ON/off pair per load (87 and
+120-draw intervals measured on two different loads).
+
+### Session 22 part 3 - the first-boot probe fix, virgin-install measured
+
+compose_over now answers a FAILED slot-0 GetState with a neutral
+CONNECTED pad (constant packet 1) even while vrinput is off. Virgin
+boot (all inis + the old vrinput.on marker set aside): the main menu
+shows NO pad glyphs before any pad input (prompts key on last-used
+input, the session-9 model - the phantom pad alone does not flip them);
+after `vrinput on` mid-session the IAT lane immediately polls at ~680
+calls/s and a dpad press moves the UI (packet 1->3, the 2K-link prompt
+flips to a pad glyph) - the restart is gone. The proxy-lane counter
+STAYS at 6 by design (the Steam overlay swallows that lane post-boot;
+it is not a poll-rate oracle). The marker machinery is deleted; the
+orphan vrinput.on file on existing installs is inert.
+
+### Session 22 round 2 - engine-cinematic letterbox (the plasmid FMV class)
+
+The user's "Big Daddy plasmid FMV" report (black bars mid-view + camera
+different from flat) is the ENGINE-CINEMATIC class, dump-decoded on their
+prepared Gatherer's Garden save (the Electro Bolt injection sequence):
+
+- The engine CLEARS the final target to opaque black (ClearRTV 0,0,0,1 -
+  event immediately before the tonemap) and draws the tonemap as a
+  vertically SHRUNKEN quad - full 1920x1080 viewport, shrunk GEOMETRY -
+  leaving the top/bottom of the clear unpainted. The bars are therefore
+  NOT draws (nothing to classify) and the band content is the FULL render
+  anamorphically squeezed (the world pass renders normal full-frame at
+  the option fov - the live watch read 130.0 exact, mismatch=0, through
+  the whole sequence).
+- CalcView keeps firing with strict GAMEPLAY and the AUTHORED camera
+  choreography in loc/rot (heartbeat showed authored ROLL -7773..-8189
+  during the wake-up shot). Pre-fix, the live head drive overwrote that
+  choreography (the user's "camera was different than flat"), and the
+  letterboxed frame projected across the whole claim (bars as floating
+  bands).
+- Sequence anatomy from the live transitions: letterbox ON (165/185 px
+  of 1080) -> full-screen blackout (correctly rejected by the
+  full-black guard: "top 1080") -> ON again (the balcony phase) -> ...
+  The boot attract also letterboxes briefly (222/285 px) - caught and
+  released cleanly.
+
+Shipped: the LETTERBOX WATCH (hud_capture): three 1-px backbuffer columns
+copied to a staging strip per present (async, DO_NOT_WAIT map - the
+fov-watch pattern); a row is "bar" only if EXACTLY black (<=2/255) in all
+three columns; >=4% height each side + rough symmetry + not-full-screen +
+5-interval stability = letterbox, transitions logged. Consumers: the VR
+runtime CROPS the submitted subImage (projection AND quad) to the band -
+the compositor stretches it back to the claimed fov, which exactly
+un-squeezes the anamorphic content (bars gone, geometry correct); the
+camera adapter suspends the LIVE head drive while the letterbox holds
+(authored camera plays, exactly the flat look - eye offsets still apply,
+so the cinematic stays stereo).
+
+Harness trap (session 22, marker retirement fallout): nothing pre-arms
+vrinput at boot anymore, and test presses only compose while vrinput is
+ON - boot.ps1 now sends `vrinput on` before its A-press loop; any manual
+boot flow must do the same.
+
+### Session 22 round 3 - imageRect crop NEGATIVE, the unsqueeze blit
+
+The first letterbox fix cropped the projection layer's subImage imageRect
+to the band. IN-HEADSET NEGATIVE (user run, VDXR): the bars stayed
+visible - the runtime did not honor the sub-rect on the projection layer
+(the drive suspension from the same flag worked, so detection was live;
+the crop simply had no visual effect). Replaced with a runtime-agnostic
+mechanism: while the letterbox holds, the eye capture stretches the image
+band across the full swapchain image ITSELF (blit::stretch_band - a
+vs_stretch UV-remap variant of the proven fullscreen-triangle blit, band
+sourced from a backbuffer-desc scratch copy; falls back to the plain
+CopyResource on any failure). One-shot log: `xr: letterbox unsqueeze
+live (band A..B of H)`. Covers projection AND quad modes at once (both
+consume the captured image). Do not retry imageRect crops on VDXR.
+
+### Session 22 round 4 - flash-native cinematics, the sampler feedback trap, scanner dormancy
+
+- The round-3 "texture-less fills = bars" fingerprint was WRONG (one dump
+  line over-generalized): rendering just those fills in-frame with their
+  raw flash blend states blacked out scene content (the user's "can't see
+  both hands" regression). Superseded by the correct-by-construction rule:
+  while the letterbox holds, the WHOLE flash layer renders in-frame with
+  native state - the frame cannot differ from flat (verified: mid-sequence
+  flat screenshot is vanilla; authored hands + bars composed by the game) -
+  and the unsqueeze crops the bars for the headset. The HUD panel stays
+  empty for the duration (subtitles render in-frame like flat).
+- SAMPLER FEEDBACK TRAP: the letterbox watch originally sampled the
+  backbuffer at the present-detour TAIL - AFTER our own window HUD
+  composite painted panel content into the bar rows. With a FOCUSED
+  session the detector flapped off constantly and most captures reached
+  the eyes unstretched (the "bars still there" headset negatives).
+  letterbox_sample now runs at the detour HEAD: pure game pixels, before
+  overlay/mirror/composite. Rule: any backbuffer-content DETECTOR must
+  sample before our own writers.
+- WEAPON-RESOLVER DORMANCY: on saves with no resolvable weapon (early
+  game, wrench-only) the scan fallback still ran a multi-second full heap
+  walk every ~2048 frames FOREVER (backoff reduced cadence, never
+  stopped) - flat-felt as "the game freezes every couple of seconds";
+  log signature: [b1r] APlayerWeapon scan ... chosen=00000000 on a ~5 s
+  cadence with matching camera-heartbeat gaps. The scanner now goes fully
+  dormant after 3 straight failures; the cheap rig/learned reads keep
+  running and re-arm it. Verified: exactly 3 scans post-load, then a
+  1.000 s heartbeat metronome.

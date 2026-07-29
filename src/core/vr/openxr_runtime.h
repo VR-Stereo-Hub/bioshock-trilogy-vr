@@ -137,6 +137,30 @@ void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* sw
 // next-cheapest suspect for a yaw-dependent lateral drift after the fov.
 void set_pose_audit(bool on);
 
+// --- Session 22: cinematic quad fallback --------------------------------------
+// The adapter publishes the strict gameplay-view verdict once per CalcView.
+// The projection layer drops to the M2 quad screen (3-present hysteresis both
+// edges) while ANY of: the verdict reads false (menu attract, scripted view
+// actor); the publish goes STALE (a camera path that bypasses CalcView); or
+// the live fov watch reports the game rendering a DIFFERENT fov than the
+// option (the bathysphere descent: renders 104, option/claim 130 - the
+// measured cause of the "fisheye + no fusion" cutscene percept; the scripted
+// camera still flows through CalcView there, so only this leg catches it).
+// "vrcine on|off|status" is the live A/B; "vrcine mode stereo" keeps the
+// projection during fov-mismatch scenes and fixes the CLAIM to the measured
+// fov instead (stereo cinematics - opt-in experiment, default quad).
+void publish_gameplay_view(bool strictGameplay);
+void handle_cine_command(const char* args);
+// True while the quad fallback is ACTIVE (render thread state). The adapter
+// suppresses the per-eye offsets while it holds (both presents must carry
+// the same image or the quad jitters by an IPD - the renderer consumes
+// CalcView's camera even in scripted scenes, dump-proven) and skips the live
+// head drive (head-steering a scripted camera wobbles the screen content).
+bool cinematic_active();
+// The hfov (deg) the adapter last read back from the engine's FOV option -
+// the projection claim source, and the fov watch's comparison baseline.
+float rendered_hfov_deg();
+
 // --- M4 rung 1: AlternateEye stereo -----------------------------------------
 // Which eye the NEXT game frame should render for: -1 left, +1 right, 0 =
 // AlternateEye off (render centered, exactly the M3 behavior). The adapter's

@@ -44,6 +44,12 @@ if (-not $game) { "FAIL: game window never appeared"; exit 1 }
 [W]::SetForegroundWindow($game.MainWindowHandle) | Out-Null
 Start-Sleep -Seconds 3
 
+# Session 22: the vrinput.on marker retired with the first-boot probe fix, so
+# nothing pre-arms vrinput at boot anymore - and the test-press slots only
+# compose while vrinput is ON. Arm it before the press loop.
+& "$repo\tools\game-cmd.ps1" "vrinput on" | Out-Null
+Start-Sleep -Seconds 2
+
 # Phase 2: A-press loop until the strict gameplay-view transition logs. The
 # line fires once per menu->gameplay transition, so search the whole log (it
 # is truncated at DLL attach, small, and the one-shot line would scroll out

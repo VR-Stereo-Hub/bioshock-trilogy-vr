@@ -132,6 +132,27 @@ std::atomic<float> g_claimFovDeg{100.0f};
 // a head-driven camera can never appear on the flat quad screen.
 std::atomic<bool> g_projectionReady{false};
 int g_lastLayer = 0; // 0 none, 1 quad, 2 projection (render thread only)
+
+// Session 22 cinematic fallback: the adapter's strict gameplay-view verdict,
+// packed {tickMs << 1 | strict} so one relaxed load is coherent (a two-atomic
+// pair would race between value and stamp). Zero = never published. Staleness
+// IS the cutscene signal: scripted cameras bypass CalcView, so the publisher
+// simply stops. The 300 ms render threshold sits BELOW the game side's 400 ms
+// FOV restore on purpose - the quad showing a 130-FOV image for ~100 ms is
+// invisible; a projection layer over a restored-75 render would not be.
+std::atomic<uint64_t> g_gameplayView{0};
+std::atomic<bool> g_cineEnabled{true};
+std::atomic<bool> g_cineActive{false}; // written by the render thread only
+// "vrcine mode stereo": during fov-mismatch scenes keep the projection and
+// claim the MEASURED fov instead of the option (stereo cinematics with
+// head-look; screen-only and strict-false/stale intervals still drop to the
+// quad - a 2D board has no stereo content). DEFAULT per the user's call
+// 2026-07-29: stereo; "vrcine mode quad" / the overlay toggle is the A/B.
+std::atomic<bool> g_cineStereo{true};
+int g_cineStreak = 0;                  // render thread only (hysteresis)
+std::atomic<uint32_t> g_cineEnters{0}, g_cineExits{0}, g_cinePresents{0};
+constexpr uint64_t kCineStaleMs = 300;
+constexpr int kCineHysteresis = 3;
 std::atomic<bool> g_loggedFirstProjection{false};
 std::atomic<bool> g_loggedFirstStereo{false};
 uint64_t g_lastProjBlockedLogMs = 0;
@@ -143,7 +164,7 @@ uint64_t g_lastProjBlockedLogMs = 0;
 // blocks. The pose audit (default off) additionally logs the yaw the layer
 // is tagged with vs the yaw the game thread last consumed from the head-pose
 // funnel - a generation-skew instrument, in-headset only (flat has no session).
-constexpr const char* kFovSrcNames[3] = {"readback", "fallback", "manual"};
+constexpr const char* kFovSrcNames[4] = {"readback", "fallback", "manual", "live"};
 std::atomic<float> g_auditTanH{0.0f};
 std::atomic<float> g_auditTanV{0.0f};
 std::atomic<int> g_auditFovSrc{-1};
@@ -1177,6 +1198,102 @@ float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
     return atan2f(-f[0], -f[2]) * 57.29578f;
 }
 
+// Session 22 letterbox unsqueeze (see capture_frame): engine cinematics
+// squeeze the scene into a middle band over black; runtimes proved
+// unreliable with projection-layer imageRect crops (VDXR kept the bars),
+// so the eye capture un-letterboxes the frame ITSELF - band stretched
+// across the full image by our own blit, plain copy everywhere else.
+// v0.4.0 ships the unsqueeze DEFAULT OFF ("vrcine unsqueeze on" re-arms):
+// three in-headset rounds could not make it remove the bars (mechanism
+// unresolved - parked for the next release) and a mistimed crop is a
+// content-loss risk. Detection, the drive suspension and the flash-native
+// frame all stay live - they are the parts the user verified.
+std::atomic<bool> g_lbUnsqueeze{false};
+ID3D11Texture2D* g_lbScratch = nullptr;        // backbuffer copy, SRV source
+ID3D11ShaderResourceView* g_lbScratchSrv = nullptr;
+ID3D11Texture2D* g_lbStretched = nullptr;      // our RTV target, then copied
+ID3D11RenderTargetView* g_lbStretchedRtv = nullptr;
+std::atomic<bool> g_loggedLbStretch{false};
+std::atomic<bool> g_loggedLbFail{false};
+
+void release_lb_scratch() {
+    if (g_lbScratchSrv) { g_lbScratchSrv->Release(); g_lbScratchSrv = nullptr; }
+    if (g_lbScratch) { g_lbScratch->Release(); g_lbScratch = nullptr; }
+    if (g_lbStretchedRtv) { g_lbStretchedRtv->Release(); g_lbStretchedRtv = nullptr; }
+    if (g_lbStretched) { g_lbStretched->Release(); g_lbStretched = nullptr; }
+}
+
+// The stretch never touches the RUNTIME's image with a view: backbuffer ->
+// scratch (SRV) -> stretch-blit -> OUR stretched tex (RTV) -> CopyResource
+// into the XR image - the same copy the normal path has always used (same
+// R8G8B8A8 typeless family as the swapchain's SRGB format, bit-preserving,
+// no double-encode). Every failure logs ONCE and falls back to the plain
+// copy (bars visible but nothing worse).
+void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
+    unsigned lbTop = 0, lbBot = 0;
+    if (g_lbUnsqueeze.load(std::memory_order_relaxed) &&
+        bvr::hud::letterbox(&lbTop, &lbBot) && lbTop + lbBot < g_swapH) {
+        D3D11_TEXTURE2D_DESC bd{};
+        backbuffer->GetDesc(&bd);
+        if (g_lbScratch) {
+            D3D11_TEXTURE2D_DESC sd{};
+            g_lbScratch->GetDesc(&sd);
+            if (sd.Width != bd.Width || sd.Height != bd.Height ||
+                sd.Format != bd.Format)
+                release_lb_scratch();
+        }
+        if (!g_lbScratch && g_device) {
+            D3D11_TEXTURE2D_DESC sd = bd;
+            sd.Usage = D3D11_USAGE_DEFAULT;
+            sd.CPUAccessFlags = 0;
+            sd.MiscFlags = 0;
+            sd.MipLevels = 1;
+            sd.ArraySize = 1;
+            sd.SampleDesc.Count = 1;
+            sd.SampleDesc.Quality = 0;
+            sd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            HRESULT h1 = g_device->CreateTexture2D(&sd, nullptr, &g_lbScratch);
+            HRESULT h2 = g_lbScratch ? g_device->CreateShaderResourceView(
+                                           g_lbScratch, nullptr, &g_lbScratchSrv)
+                                     : E_FAIL;
+            sd.BindFlags = D3D11_BIND_RENDER_TARGET;
+            HRESULT h3 = SUCCEEDED(h2)
+                             ? g_device->CreateTexture2D(&sd, nullptr, &g_lbStretched)
+                             : E_FAIL;
+            HRESULT h4 = g_lbStretched ? g_device->CreateRenderTargetView(
+                                             g_lbStretched, nullptr, &g_lbStretchedRtv)
+                                       : E_FAIL;
+            if (FAILED(h1) || FAILED(h2) || FAILED(h3) || FAILED(h4)) {
+                if (!g_loggedLbFail.exchange(true))
+                    BVR_LOG("xr: letterbox stretch resources FAILED "
+                            "(fmt %d, hr %08X/%08X/%08X/%08X) - bars stay",
+                            static_cast<int>(bd.Format),
+                            static_cast<unsigned>(h1), static_cast<unsigned>(h2),
+                            static_cast<unsigned>(h3), static_cast<unsigned>(h4));
+                release_lb_scratch();
+            }
+        }
+        if (g_lbScratch && g_lbScratchSrv && g_lbStretched && g_lbStretchedRtv) {
+            g_context->CopyResource(g_lbScratch, backbuffer);
+            float h = static_cast<float>(g_swapH);
+            bool ok = bvr::blit::stretch_band(
+                g_context, g_lbStretchedRtv, g_lbScratchSrv, g_swapW, g_swapH,
+                static_cast<float>(lbTop) / h,
+                static_cast<float>(g_swapH - lbTop - lbBot) / h);
+            if (ok) {
+                g_context->CopyResource(dst, g_lbStretched);
+                if (!g_loggedLbStretch.exchange(true))
+                    BVR_LOG("xr: letterbox unsqueeze live (band %u..%u of %u)",
+                            lbTop, g_swapH - lbBot, g_swapH);
+                return;
+            }
+            if (!g_loggedLbFail.exchange(true))
+                BVR_LOG("xr: letterbox stretch blit FAILED - bars stay");
+        }
+    }
+    g_context->CopyResource(dst, backbuffer);
+}
+
 void on_present_end(IDXGISwapChain* swapchain) {
     if (!g_frameOpen) {
         // No XR frame this present (session gone, or the pace guard skipped
@@ -1217,6 +1334,63 @@ void on_present_end(IDXGISwapChain* swapchain) {
     }
     bool projectionMode = g_cameraMode.load(std::memory_order_relaxed) &&
                           g_projectionReady.load(std::memory_order_relaxed) && hfovDeg > 0.0f;
+
+    // Session 22 cinematic fallback: drop to the M2 quad screen while the
+    // published gameplay verdict is false (scripted view actor, menu
+    // attract), stale (a camera path bypassing CalcView), or the live fov
+    // watch says the game renders a DIFFERENT fov than the option/claim (the
+    // bathysphere descent: renders 104, claims 130 - measured; the scripted
+    // camera still CalcViews there). Everything downstream self-adjusts per
+    // present: the HUD quad, laser layers, and the HUD redirect gate all key
+    // on projectionMode/srFrame, and reset_aer clears the held eye images
+    // once srFrame drops. "vrcine mode stereo" instead keeps the projection
+    // through fov-mismatch scenes and claims the MEASURED fov.
+    if (g_cineEnabled.load(std::memory_order_relaxed) && projectionMode) {
+        uint64_t pv = g_gameplayView.load(std::memory_order_relaxed);
+        uint64_t stampMs = pv >> 1;
+        bool strict = (pv & 1) != 0;
+        bool stale = stampMs == 0 || GetTickCount64() - stampMs > kCineStaleMs;
+        bool fovMm = bvr::hud::fov_mismatch();
+        bool screenOnly = bvr::hud::screen_only(); // hack/loading/FMV screens
+        bool stereoCine = g_cineStereo.load(std::memory_order_relaxed);
+        bool wantCine = stale || !strict || screenOnly || (fovMm && !stereoCine);
+        bool active = g_cineActive.load(std::memory_order_relaxed);
+        if (wantCine != active) {
+            if (++g_cineStreak >= kCineHysteresis) {
+                g_cineStreak = 0;
+                active = wantCine;
+                g_cineActive.store(active, std::memory_order_relaxed);
+                if (active)
+                    g_cineEnters.fetch_add(1, std::memory_order_relaxed);
+                else
+                    g_cineExits.fetch_add(1, std::memory_order_relaxed);
+                BVR_LOG("xr: cinematic quad %s (strict=%d stale=%d fovMismatch=%d "
+                        "screenOnly=%d)",
+                        active ? "ON" : "off", strict ? 1 : 0, stale ? 1 : 0,
+                        fovMm ? 1 : 0, screenOnly ? 1 : 0);
+            }
+        } else {
+            g_cineStreak = 0;
+        }
+        if (active) {
+            projectionMode = false;
+            g_cinePresents.fetch_add(1, std::memory_order_relaxed);
+        } else if (fovMm && stereoCine) {
+            // Claim-fix stereo cinematics: tag the layer with the fov the
+            // game ACTUALLY renders (live watch), not the ignored option.
+            float t = 0.0f;
+            unsigned long long age = 0;
+            if (bvr::hud::fov_watch(&t, nullptr, &age) && age < 500 && t > 0.05f) {
+                hfovDeg = 2.0f * atanf(t) * 57.29578f;
+                hfovSrc = 3; // "live"
+            }
+        }
+    } else {
+        g_cineStreak = 0;
+        if (g_cineActive.load(std::memory_order_relaxed) &&
+            !g_cineEnabled.load(std::memory_order_relaxed))
+            g_cineActive.store(false, std::memory_order_relaxed); // kill switch
+    }
 
     // SequentialReentry (rung 2): one tag pop per Present, ALWAYS - the ring
     // must drain even in quad mode so a mode change cannot leave stale tags.
@@ -1275,8 +1449,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 wi.timeout = XR_INFINITE_DURATION;
                 if (XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi))) {
                     // Same size + same typeless family (guaranteed at creation),
-                    // so a straight GPU copy carries the frame - overlay included.
-                    g_context->CopyResource(g_images[target][index].texture, backbuffer);
+                    // so a straight GPU copy carries the frame - overlay
+                    // included. Under an engine letterbox the copy becomes an
+                    // unsqueeze blit instead (session 22, capture_frame).
+                    capture_frame(g_images[target][index].texture, backbuffer);
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_swapchains[target], &ri);
@@ -1391,7 +1567,17 @@ void on_present_end(IDXGISwapChain* swapchain) {
                         BVR_LOG("xr: alternate-eye stereo live (both eyes hold offset images)");
                 } else {
                     float width = g_screenWidthM.load(std::memory_order_relaxed);
-                    quad.space = g_space;
+                    // Session 22 (user feedback, first headset run): SCREEN-ONLY
+                    // intervals (hack minigame, loading screens - world-less 2D
+                    // boards) ride the HEAD-LOCKED view space, exactly like the
+                    // pause-menu panel, so the board is centered on wherever the
+                    // player is looking instead of the recenter-origin facing.
+                    // Cinematic scenes (fov-mismatch/strict legs) and the plain
+                    // camera-off screen keep the world-locked space unchanged.
+                    bool headLock = g_cineActive.load(std::memory_order_relaxed) &&
+                                    bvr::hud::screen_only() &&
+                                    g_viewSpace != XR_NULL_HANDLE;
+                    quad.space = headLock ? g_viewSpace : g_space;
                     quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
                     quad.subImage = sub;
                     quad.pose.orientation.w = 1.0f;
@@ -1504,6 +1690,7 @@ void on_resize() {
     // Recreated at the new backbuffer size on the next frame.
     destroy_swapchains();
     release_mirror();
+    release_lb_scratch(); // size-tied; also self-heals on desc mismatch
     if (g_backbufferRtv) {
         g_backbufferRtv->Release();
         g_backbufferRtv = nullptr;
@@ -1537,6 +1724,15 @@ void draw_debug_ui() {
         bool pair = g_srPairPacing.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("SR pair pacing (one waitFrame per eye pair)", &pair))
             g_srPairPacing.store(pair, std::memory_order_relaxed);
+        bool cine = g_cineEnabled.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Cinematic auto-detect (cutscenes/screens)", &cine))
+            g_cineEnabled.store(cine, std::memory_order_relaxed);
+        if (cine) {
+            bool stereoC = g_cineStereo.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Cinematics as stereo projection (off = big screen)",
+                                &stereoC))
+                g_cineStereo.store(stereoC, std::memory_order_relaxed);
+        }
         if (aer) {
             ImGui::SameLine();
             bool swap = g_aerSwapEyes.load(std::memory_order_relaxed);
@@ -1595,6 +1791,12 @@ void draw_debug_ui() {
         ImGui::Text("mirror: %s | %u left holds, %u re-blits",
                     g_mirror.load(std::memory_order_relaxed) ? "left eye" : "OFF",
                     g_mirrorHolds.load(std::memory_order_relaxed), mirrorBlits);
+    uint32_t cineEnters = g_cineEnters.load(std::memory_order_relaxed);
+    if (cineEnters || g_cineActive.load(std::memory_order_relaxed))
+        ImGui::Text("cinematic: %s | enters %u exits %u presents %u",
+                    g_cineActive.load(std::memory_order_relaxed) ? "ACTIVE (quad)" : "off",
+                    cineEnters, g_cineExits.load(std::memory_order_relaxed),
+                    g_cinePresents.load(std::memory_order_relaxed));
 
     input_draw_debug_ui(); // M5 action-layer status line
 
@@ -1757,6 +1959,62 @@ void set_pose_audit(bool on) {
                            on ? "ON" : "off");
 }
 
+void publish_gameplay_view(bool strictGameplay) {
+    g_gameplayView.store((GetTickCount64() << 1) | (strictGameplay ? 1u : 0u),
+                         std::memory_order_relaxed);
+}
+
+void handle_cine_command(const char* args) {
+    if (strncmp(args, "unsqueeze on", 12) == 0) {
+        g_lbUnsqueeze.store(true, std::memory_order_relaxed);
+        BVR_LOG("xr: letterbox unsqueeze ON (experimental - bars mechanism unresolved)");
+    } else if (strncmp(args, "unsqueeze off", 13) == 0) {
+        g_lbUnsqueeze.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: letterbox unsqueeze off");
+    } else if (strncmp(args, "mode stereo", 11) == 0) {
+        g_cineStereo.store(true, std::memory_order_relaxed);
+        BVR_LOG("xr: cinematic mode STEREO (fov-mismatch scenes keep the projection, "
+                "claim = measured fov; strict-false/stale still drop to the quad)");
+    } else if (strncmp(args, "mode quad", 9) == 0) {
+        g_cineStereo.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: cinematic mode QUAD (fov-mismatch scenes drop to the big screen)");
+    } else if (strncmp(args, "on", 2) == 0) {
+        g_cineEnabled.store(true, std::memory_order_relaxed);
+        BVR_LOG("xr: cinematic fallback ON (non-gameplay views drop to the quad screen)");
+    } else if (strncmp(args, "off", 3) == 0) {
+        g_cineEnabled.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: cinematic fallback OFF (pre-session-22: cutscenes submit as a "
+                "mis-claimed projection layer)");
+    } else {
+        uint64_t pv = g_gameplayView.load(std::memory_order_relaxed);
+        uint64_t ageMs = pv ? GetTickCount64() - (pv >> 1) : 0;
+        float t = 0.0f, tv = 0.0f;
+        unsigned long long fovAge = 0;
+        bool haveFov = bvr::hud::fov_watch(&t, &tv, &fovAge);
+        BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
+                "published strict=%d age=%llums | rendered tanH=%.4f age=%llums "
+                "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|status)",
+                g_cineEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_cineStereo.load(std::memory_order_relaxed) ? "stereo" : "quad",
+                g_cineActive.load(std::memory_order_relaxed) ? 1 : 0,
+                g_cineEnters.load(std::memory_order_relaxed),
+                g_cineExits.load(std::memory_order_relaxed),
+                g_cinePresents.load(std::memory_order_relaxed),
+                pv ? static_cast<int>(pv & 1) : -1,
+                static_cast<unsigned long long>(ageMs),
+                haveFov ? t : 0.0f, haveFov ? fovAge : 0,
+                bvr::hud::fov_mismatch() ? 1 : 0, bvr::hud::screen_only() ? 1 : 0);
+    }
+}
+
+bool cinematic_active() {
+    return g_cineActive.load(std::memory_order_relaxed);
+}
+
+float rendered_hfov_deg() {
+    return g_renderedHfov.load(std::memory_order_relaxed);
+}
+
 int current_eye_sign() {
     return g_aerEyeSign.load(std::memory_order_relaxed);
 }
@@ -1842,6 +2100,10 @@ void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* sw
     if (swapH) *swapH = 0;
 }
 void set_pose_audit(bool) {}
+void publish_gameplay_view(bool) {}
+void handle_cine_command(const char*) {}
+bool cinematic_active() { return false; }
+float rendered_hfov_deg() { return 0.0f; }
 int current_eye_sign() { return 0; }
 void sr_push_eye(int) {}
 void set_laser(const LaserConfig&) {}

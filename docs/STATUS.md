@@ -2,7 +2,214 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-28, session 21 - RENDER SYNC: the fov audit came back clean, the fg scene decoded down to its ctor args, the fovA zoom-pull lever found, per-weapon profiles shipped - branch s21-render-sync)
+## Current state (2026-07-29, session 22 - CINEMATICS + FULLSCREEN ROUTING: the descent's real mechanism measured (both hypotheses wrong), live rendered-fov watch, stereo cinematics default, screen-only routing, first-boot restart killed, head-roll eyes, turn controls - branch s22-vr-polish)
+
+**Branch `s22-vr-polish` off main (post-v0.3.0). Two flat-gated feature
+commits + docs. Everything below is flat-verified on clean boots; the
+in-headset checklist at the bottom is the open gate for the next release
+(the user cuts it only after their manual test + explicit go).**
+
+### 1. CINEMATICS (plan item 1) - both on-file hypotheses DISPROVEN, the real fix shipped
+
+Measured on the user's crash-site save (two full descent replays,
+vrstereo on): **CalcView keeps firing the whole ride with a ShockPlayer
+view actor** (zero `view state` transitions - strict/staleness detectors
+never fire), **the renderer consumes our camera writes mid-scene** (world
+cb0 camera == CalcView heartbeat loc to the UU), and **the scene renders
+its OWN fov - 104.0 deg - while the option (and the projection claim)
+says 130** (dump decode: one tangent cluster 1.2800/0.7200 both eyes;
+control after arrival: exactly 2.1445/1.2063 = option 130). The 26-deg
+claim-over-render mismatch IS the fisheye AND the broken fusion. Full
+story + traps in ENGINE_NOTES session 22.
+
+Shipped (commit 9a85856): a **live rendered-fov watch** in hud_capture
+(per-present cb0 tangent decode off the first scene draw - async 80-byte
+staging copy, DO_NOT_WAIT map, zero stalls; `[hud] rendered-fov mismatch
+ON/off` transitions; `fovaudit live:` echo) and the **cinematic
+fallback** in on_present_end: predicate = strict-false | publish-stale |
+fov-mismatch | screen-only, 3-present hysteresis, `vrcine
+on|off|mode|status` + counters. While active: projection drops to the M2
+quad screen, eye offsets + live head drive suppress (renderer consumes
+them mid-scene - dump-proven, so the quad would jitter otherwise), the
+HUD quad/laser/HUD-gate all self-adjust per present. The FOV write is
+strict-gated with a BuildDetour-side restore for true CalcView-silent
+scenes; SR pass-2 gained a 100 ms base-age gate (stale-replay hazard).
+**DEFAULT = `mode stereo` (the user's call): fov-mismatch scenes KEEP the
+stereo projection and the claim follows the MEASURED fov - full stereo
+cinematics with head-look; the overlay toggle "Cinematics as stereo
+projection (off = big screen)" is the in-headset A/B.** Flat gates: one
+mismatch ON at the lever pull (104.0 vs 130.0), one off at arrival, live
+tangents == dump decode to 1e-4 in both states, zero false transitions
+across pause/loads, heartbeat 2x clean, dumps 9->9.
+
+### 2. FULLSCREEN SCREENS/EFFECTS (plan items 2+7) - per-kind routing, dump-grounded
+
+Evidence (dumps on file, fingerprints in ENGINE_NOTES): loading screens
+= ~87 pure-gameswf draws with ZERO DrawIndexed (no world pass, nothing
+classifies - hence full-FOV in headset); the HACK minigame = same family
+(322 draws, 0 DrawIndexed; the user's "same as the loading screen" was
+exact; the main menu = 125); the alcohol-blur composite = the second
+post-tonemap draw sampling a BACKBUFFER-SIZED texture from the engine
+post path, vs HUD draws sampling 2048x2048 BC atlases.
+
+Shipped (commit e4425e6): **screen-only interval detector** (swf draws
+with no scene-vote leader, hysteresis + logged transitions) feeding the
+cinematic fallback - hack/loading/menu/FMV-class screens go to the
+READABLE quad screen regardless of the stereo/quad mode; **in-frame
+post-effect skip** (post-tonemap draw with backbuffer-sized srv0 never
+redirects - srv desc cache, `postFx` counter in vrhud status). Flat
+gates: two save-loads produced exactly one screen-only ON/off pair each
+(87/120-draw intervals); the live hack board fired the detector with the
+user at the machine; postFx = 0 across normal gameplay (zero false
+positives), ~1/interval on the pause menu = its fullscreen DIM layer
+(correctly in-frame - the menu PANELS keep redirecting; flagged on the
+in-headset list as a look-check). The Big Daddy FMV has no flat repro -
+its routing verdict is on the headset checklist.
+
+### 3. FIRST-BOOT RESTART KILLED (plan item 3) - virgin-install gate PASSED
+
+compose_over answers a failed slot-0 GetState with a neutral CONNECTED
+pad while vrinput is off; the vrinput.on marker machinery is deleted
+(the orphan file is inert) and the README restart note is gone. Virgin
+boot (all inis + marker set aside, restored byte-verified after): main
+menu shows NO pad glyphs with the phantom pad idle (prompts key on
+last-used input - the session-9 model held); `vrinput on` mid-session
+put the IAT lane at ~680 polls/s instantly and a dpad press moved the UI
+- no restart. TRAP for counter-readers: the proxy-lane getstate[0]
+counter stays at 6 FOREVER by design (Steam overlay swallows that lane
+post-boot) - it is not a poll oracle; the IAT counter is.
+
+### 4. HEAD-ROLL EYE SEPARATION FIXED (plan item 4) - exact
+
+apply_eye_offset now offsets along the FULL rotation's right axis
+(ue_rot_basis); the AER path shares the one implementation. Flat gate
+(`fovaudit eyes`, simhead roll sweep): eye delta (6.300, 0, 0) at roll
+0 (bit-identical to the old formula by construction), (4.455, 0,
+-4.454) at 45, (0.000, 0, -6.300) at 90 - the separation rotates
+exactly with the head.
+
+### 5. TURN CONTROLS SHIPPED (plan item 5) - exact
+
+Smooth-turn scale on the composed stick X (pitchkill gate cluster -
+gameplay only, lifts in radials) + snap turn (0.65/0.30 edge hysteresis
+-> queued steps consumed at the camera's transfer point: recenter
+composite shifts, the M7.5 transfer carries the body). Flat gates: +1
+then -1 pulse moved camYaw 49152->57344->49152 = +-8192 units (+-45.00
+deg) EXACT round-trip, ONE step per pulse even on a 2 s full deflection;
+turnscale 2.0 turned test rx 8000 into composed 16000 exact. Knobs
+turnScale/snapTurn/snapAngleDeg persisted in vrpreset.ini + overlay
+("Smooth turn speed", "Snap turn", "Snap angle").
+
+### 6. MOVEMENT-WONKINESS INSTRUMENT (plan item 6) - shipped, investigation OPEN
+
+`vrinput sticklog on` logs the FINAL composed pad (post
+merge/pitchkill/turn) at 10 Hz; `last_composed_sticks()` exists for the
+recorder. The real capture wants a HEADSET walk (composed stick vs
+`vrbody probe on` resid lines) - flat synthetic sticks cannot reproduce
+controller noise or head-micro-steering. Queued on the checklist;
+analysis next session. Do not tune blind.
+
+### Session-22 harness notes (new traps)
+
+- **The descent ride WRITES a "Welcome to Rapture (AutoSave)"** that
+  becomes the newest save: after one replay, CONTINUE lands at the
+  arrival dock, NOT the crash-site repro (it drops to second in LOAD).
+- A save LOAD produces NO view-state transition and NO fov-write churn
+  (strict stays true through load screens on this box); loading screens
+  show up as screen-only ON/off pairs instead.
+- Flat fire tests need a pose source: with simhead/aim-test lanes
+  expired the fire seam counts skips (correct fail-soft), not subs -
+  re-arm `simhead` + `vraim test r` before counting subs.
+- The plane-intro trap refined: pressing START during the wallet scene
+  SKIPS toward the crash - recover via the pause menu LOAD instead.
+- The old vrinput.on marker no longer pre-arms anything (code deleted).
+
+### Session 22 round 2 (same night) - THE HEADSET FEEDBACK ROUND
+
+**The user's verdicts, run 1:** no regression; stereo cinematics "amazing"
+(104-not-130 understood and accepted); alcohol blur "perfect"; hacking
+"amazing, works as intended" after the same-night head-lock fix (the first
+try was world-locked at the recenter facing - screen-only intervals now
+ride the head-locked view space like the pause panel); head-roll fixed;
+turn controls "perfect". Movement wonkiness ROOT-CAUSED BY THE USER: their
+controller's up+right stick diagonal is dead (all other directions fine;
+mod stick path audited clean - deadzone/clamp direction-agnostic); they
+will cross-check the hardware with another tester/game. Remaining asks all
+landed the same night:
+
+1. **The "Big Daddy plasmid FMV" class = ENGINE-CINEMATIC LETTERBOX**,
+   dump-decoded on their prepared Gatherer's Garden save: the engine
+   clears the final target opaque-black and tonemaps the scene into a
+   vertically SHRUNKEN quad - bars are unpainted clear (nothing to
+   classify), content is anamorphically squeezed, world renders full
+   130 (mismatch=0), CalcView stays strict-GAMEPLAY with the AUTHORED
+   camera choreography. Shipped the LETTERBOX WATCH (3-column exact-black
+   backbuffer sampling, async staging, 5-interval stability, full-black
+   fade guard) + two consumers: the submitted subImage (projection AND
+   quad) CROPS to the band - the compositor unsqueezes, bars gone,
+   geometry correct - and the live head drive SUSPENDS while the
+   letterbox holds (authored camera plays like flat; eye offsets stay =
+   stereo cinematics). Flat gates: the injection sequence's phases
+   tracked exactly (ON 165/185 px -> blackout REJECTED via the full-black
+   guard -> ON -> final off), boot attract caught/released (222/285),
+   90 s+ post-sequence gameplay soak with zero false positives, dumps 9.
+2. **The user's new L-hand calibration rescued via `vrpreset save`**
+   (they had not pressed save) and BAKED as code defaults: trim
+   -7.5/+37.0 (offsets unchanged). Their turn prefs (scale 2.56, snap on,
+   45 deg) persisted to their ini (not baked - shipped defaults stay
+   1.0/off/45).
+3. **Laser OFF by default + preset**: the preset no longer arms it; the
+   persisted `laserOn` ini key (written by "Save preset values") applies
+   the user's choice, so opting back in sticks. Virgin default = off.
+4. **F10 overlay hardening** (user: overlay vanished while scrolling,
+   dead until alt-tab): (a) backbuffer-identity watch recreates the RTV
+   when the game swaps buffers without ResizeBuffers (the "invisible
+   overlay, F10 toggles nothing visible" state); (b) the WndProc now
+   CONSUMES mouse/keyboard messages while ImGui wants them (the game was
+   fighting the overlay for the wheel/clicks); (c) new `vroverlay on|off`
+   seam = remote/emergency toggle. Root cause unconfirmed (not flat-
+   reproducible on demand) - the user re-checks scrolling next run.
+5. **Harness trap from the marker retirement**: nothing pre-arms vrinput
+   at boot and test presses only compose while it is ON - boot.ps1 now
+   sends `vrinput on` before its A-press loop (it timed out otherwise).
+
+**Still open before the release**: the user's in-headset re-verify of the
+letterbox class (their prepared save; both cinematic modes), the overlay
+scroll behavior, and their controller cross-check. After the release: the
+CLEAN-MACHINE new-user flow session (user's ask - wipe, install from the
+release zip, fix whatever breaks until out-of-box works).
+
+### Session 22 round 5 (2026-07-29, pre-release) - LETTERBOX BARS PARKED OPEN, user's call
+
+Three in-headset rounds could not remove the cinematic letterbox bars
+(imageRect crop ignored by VDXR; the capture-side unsqueeze executed -
+`unsqueeze live` logged - but the user still saw bars; mechanism
+UNRESOLVED). The user called STOP: ship the release, tackle the bars next
+cycle. Shipping posture: the unsqueeze is DEFAULT OFF (`vrcine unsqueeze
+on` = the experiment lever); the letterbox DETECTOR, the authored-camera
+drive suspension and the flash-native in-frame rendering stay live (the
+parts the user verified; the flat frame is pixel-vanilla by construction).
+
+**Two documented open items for the next release:**
+1. **The bars themselves** - where do the user-visible bars actually come
+   from with the unsqueeze provably drawing? Next tools: capture the eye
+   swapchain content (not the backbuffer) during letterbox; check whether
+   VD's own compositing letterboxes; A/B `vrhud off` + `vrcine unsqueeze
+   on|off` in-headset with 30 s verdicts per toggle.
+2. **Hands drive during cinematics** - the user sees the CONTROLLABLE rig
+   hands instead of the authored cinematic hands whenever the controllers
+   are awake (the run where authored hands showed = controllers idle in
+   the lap; not a build regression). Fix: suspend the hands/aim/laser
+   drives while the letterbox holds, exactly like the head drive.
+
+Also fixed this round (user-found while flat-playing): the weapon
+resolver's scan fallback froze the game for seconds every ~2000 frames
+FOREVER on weaponless saves (early game) - now fully dormant after 3
+failures, re-armed by the cheap rig reads (3 scans then a 1.000 s
+heartbeat metronome, measured). This was the "game freezes every couple
+of seconds" report and it is exactly the new-user first-hour path.
+
+## Previous state (2026-07-28, session 21 - RENDER SYNC: the fov audit came back clean, the fg scene decoded down to its ctor args, the fovA zoom-pull lever found, per-weapon profiles shipped - branch s21-render-sync)
 
 **Branch `s21-render-sync` off main (post-PR-#5). Three flat-gated commits:
 the FOV audit (negative result + permanent instruments), the fg scene-node
@@ -1613,75 +1820,26 @@ retired: xr_hello32 (32-bit) ran a complete OpenXR session on VDXR 1.0.10 with t
 (60 frames, RTX 4060 LUID match) - M2 is unblocked. DR-2 done. Repo public at
 https://github.com/mohamad-balouza/bioshock-vr. Em dashes banned repo-wide.
 
-## Next steps (SESSION 22 PLAN, user's list 2026-07-28 post-v0.3.0; order = their priority: cinematics first, then the smalls; new release after the cinematic/aim-adjacent fixes)
+## Next steps (post-session-22; the release gate is the in-headset checklist below)
 
-1. **CINEMATICS (the user's headline - "big issue for everyone").**
-   Symptom: the bathysphere descent (and other scripted-camera scenes)
-   renders WITHOUT stereo and fisheyed. Working hypotheses, both
-   code-grounded: (a) scripted cameras do not flow through
-   eventPlayerCalcView, so `g_srBaseValid` never arms - pass 2 gets no
-   eye offset = ZERO disparity while the pair still submits as a
-   projection layer; (b) our per-frame option write (gfov 130) still
-   applies to a camera authored for ~75 = the fisheye. Fix direction:
-   the strict non-gameplay predicate already exists (body/camera.cpp) -
-   when it drops, RESTORE the game FOV and fall back to the BIG-SCREEN
-   QUAD path (the M2 machinery still in on_present_end - projectionMode
-   false = quad) so cutscenes play on a comfortable virtual screen;
-   re-arm projection on gameplay return. The M3 leftover "cutscene
-   cameras are head-driven" closes with the same lever. THE USER'S SAVE
-   IS READY: the NEWEST save ("crash site") spawns next to the lever
-   that starts the descent - NOTE this means CONTINUE now lands there,
-   NOT at the all-weapons Medical Pavilion anchor (that one is second in
-   the LOAD list).
-2. **FULLSCREEN EFFECTS MISCLASSIFIED AS HUD (user item 8).** The Big
-   Daddy plasmid FMV plays "in a box" whose size follows the HUD sliders
-   = it is being captured by the HUD redirect onto the quad; heavy
-   post-process effects (alcohol blur) do the same. Root cause: they are
-   gameswf/fullscreen draws on the tonemap target after the tonemap =
-   exactly the current HUD classification (hud_capture.cpp). Fix:
-   classify FULLSCREEN-covering draws (viewport-sized geometry) as
-   in-frame effects - leave them in the game frame (per-eye, correct for
-   post effects) instead of redirecting to the quad; FMVs ideally join
-   the item-1 cinema-screen path. Flat repro exists without a cutscene:
-   drink alcohol (the save has bars nearby) and diff the classification.
-3. **First-boot restart fix (user item 1).** The game samples gamepad
-   presence once at startup; on a pad-free machine the first-ever boot
-   has dead controllers until a restart after the preset press. Fix
-   candidate: the xinput proxy answers slot 0 CONNECTED (neutral state)
-   from the very first query even before vrinput arms (passthrough when
-   a real pad exists). core/input/xinput_bridge.cpp.
-4. **Head-ROLL eye separation (user item 7, root cause CONFIRMED in
-   code).** `apply_eye_offset` (camera.cpp) builds view-right from YAW
-   ONLY - with the head rolled, real eyes stack vertically but the
-   virtual eyes stay horizontal = the "weird stereoscopy when turning
-   the head sideways". Fix: offset along the FULL rotation's right axis
-   (ue_rot_basis), both the SR and AER paths.
-5. **Smooth-turn speed slider + snap turn (user item 4).** Slider =
-   scale composed stick X in the input bridge. Snap = consume stick-X
-   edges and shift the recenter composite by N deg (the vrbody transfer
-   then carries the body instantly - the machinery exists); persisted
-   knobs + overlay controls.
-6. **Movement wonkiness investigation (user item 5).** Feels wonky even
-   at deadzone 0. Suspects: deadzone 0 itself (body now steers on every
-   head micro-motion - the cure may be a small bodyRate smoothing, knob
-   exists), the game's own stick response on composed values, or real
-   controller noise. Instrument first: vrrec a walk + log composed
-   stick vs body yaw; then tune, do not guess.
-7. **Hacking in VR - CONFIRMED BROKEN (user tested 2026-07-28 evening).**
-   NOT on the readable quad like shopping/pause: the hack minigame takes
-   the WHOLE FOV, "basically the same as the loading screen", barely
-   visible. Same misclassification family as item 2 above (fullscreen
-   flash screens) - fix them together: hack screen + loading screens +
-   FMVs belong on the readable quad/cinema screen, post-process effects
-   belong in-frame. Repro: the all-weapons save, short walk to the
-   vending machine.
-8. **Hands offset sliders (user item 6)**: already shipped ("Tuning
-   hand: L / R" six per-hand sliders + hands.ini persistence). Verify
-   presence/usability in-headset, nothing to build.
-
-Then (unchanged queue): pawn-eye anchoring, off-hand tracking +
-two-handed weapons, wrench gesture. The fovaudit-submit/poseaudit glance
-remains a free 30 s check on any headset run.
+1. **THE IN-HEADSET RUN (the release gate).** Everything in the
+   session-22 checklist below; headline verdicts: stereo cinematics vs
+   big screen (the overlay toggle - user picks the default that stays),
+   the hack/loading screens on the readable screen, the Big Daddy FMV
+   routing (no flat repro existed), alcohol blur in-frame, head-roll
+   stereo, snap/smooth turn feel. The next release cuts ONLY after the
+   user's explicit go.
+2. **Movement-wonkiness capture + analysis (instrument shipped, data
+   missing).** On a real headset walk: `vrinput sticklog on` + `vrbody
+   probe on` (+ optionally `vrrec start/stop`), walk + look for ~60 s,
+   send the log. Then decide bodyRate smoothing vs stick curve vs
+   hardware noise from the numbers - not blind.
+3. **If a scene class surfaces that defeats all four cinematic legs**
+   (strict/stale/fov-mismatch/screen-only): grab `dumpframe full 2` +
+   `vrcine status` during it - the counters + fingerprints classify it.
+4. Then (unchanged queue): pawn-eye anchoring, off-hand tracking +
+   two-handed weapons, wrench gesture. The fovaudit-submit/poseaudit
+   glance remains a free 30 s check on any headset run.
 
 **POLISH / POST-POLISH (user's call 2026-07-28 part 3 - explicitly not
 gameplay-critical):**
@@ -1788,7 +1946,64 @@ Carried-over backlog (numbering kept from session 17):
 13. **Parked in M9** (user's call 2026-07-24): IPD slider verification, small
     head-motion bobbing, the vrstereo off/re-arm state bug, HUD-in-both-eyes.
 
-### IN-HEADSET CHECKLIST - render sync + per-weapon profiles (session 21)
+### IN-HEADSET CHECKLIST - cinematics + routing + polish (session 22)
+
+Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam.
+**SAVE TRAP: CONTINUE now lands on the "Welcome to Rapture (AutoSave)"
+from the flat descent replays - your crash-site save is SECOND in LOAD,
+Medical Pavilion third.** Press **VR PRESET 1**. Live A/Bs: the
+"Cinematics as stereo projection" overlay checkbox (= `vrcine mode
+stereo|quad`), `vrcine off`, `vrhud off`, `vrinput snap on|off`.
+
+1. **Non-regression sweep (60 s, first).** Park the hand, look around,
+   stick-walk, turn past 90 both ways, two right-trigger pulls + an
+   Electro Bolt, pause menu once. NOTE the pause menu changed slightly
+   BY DESIGN: its fullscreen DIM layer now stays in the world (per eye)
+   while the panels stay on the readable quad - report if it reads
+   worse than before.
+2. **THE DESCENT (the headline).** Load "The Crash Site", pull the
+   lever, ride down TWICE - once per cinematic mode:
+   (a) DEFAULT stereo mode: the ride should be full stereo WITH
+   head-look and NO fisheye (the claim now follows the measured 104);
+   (b) untick "Cinematics as stereo projection": the ride plays on the
+   big virtual screen instead (world-locked, sized by the old Screen
+   distance/width sliders). PICK THE DEFAULT YOU WANT - one checkbox,
+   tell me the verdict. The log echoes `xr: cinematic quad ON/off` and
+   `[hud] rendered-fov mismatch ON/off` for me either way.
+3. **THE HACK (your confirmed-broken case).** Hack the vending machine:
+   the board must now sit on the READABLE screen (not sprayed across
+   the FOV). Loading screens same. Main menu after quit-to-menu: also
+   on the screen - confirm it is navigable by controller.
+   *Headset round 1 (2026-07-29): worked but the screen was world-locked
+   at the recenter facing - the user had to turn back to it. FIXED same
+   night: screen-only intervals now ride the HEAD-LOCKED view space
+   (like the pause panel), centered wherever you look; cinematic scenes
+   keep the world-locked screen. Re-verify.*
+4. **THE BIG DADDY FMV** (when you next pass one - no flat repro): it
+   should land on the screen, not in the small HUD box. Report either
+   way.
+5. **Alcohol blur:** drink something - the blur must be IN the world
+   (both eyes, on the camera), not on the HUD panel.
+6. **HEAD ROLL:** tilt your head to a shoulder while looking at
+   near-field geometry - stereo should stay comfortable/fused (pre-fix
+   it went weird sideways).
+7. **TURN CONTROLS:** feel the "Smooth turn speed" slider; then "Snap
+   turn" on - discrete 45-deg steps, one per flick, hands/body carried
+   exactly (no drift, no double-steps). Adjust the angle slider to
+   taste; "Save preset values" persists all three.
+8. **First-boot sanity (already virgin-gated flat):** controllers came
+   alive with the preset on THIS boot with no restart - just confirm
+   nothing about controller pickup felt different.
+9. **Hands offset sliders (verify-only):** "Tuning hand: L / R" + six
+   sliders exist and move the model per hand (shipped session 18).
+10. **The wonkiness capture (2 min, for next session):** `vrinput
+    sticklog on` + `vrbody probe on`, walk around normally ~60 s,
+    `vrinput sticklog off`. That log is next session's analysis input.
+11. **Anything off:** `vrcine off` kills the whole cinematic layer;
+    `vrhud force off` + `vrhud on` resets the HUD path; if a symptom
+    survives both, it predates this session.
+
+### PREVIOUS CHECKLIST - render sync + per-weapon profiles (session 21)
 
 Setup as always: Quest 3 + Virtual Desktop (VDXR), launch from Steam,
 CONTINUE = the NG+ Medical Pavilion anchor (TRAP: if the game boots into
@@ -2121,6 +2336,43 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### 2026-07-29 - Session 22 (cinematics measured + fixed, fullscreen routing, first-boot fix, head-roll eyes, turn controls)
+
+- CINEMATICS (plan item 1): BOTH on-file hypotheses disproven by
+  measurement on the user's crash-site save (CalcView fires all ride,
+  strict stays GAMEPLAY, renderer consumes our camera to the UU) - the
+  real defect is the scene rendering its OWN 104-deg fov under a 130
+  claim. Shipped the live rendered-fov watch (per-present cb0 tangent
+  decode in hud_capture, zero-stall staging) + the cinematic fallback
+  (strict/stale/fov-mismatch/screen-only legs, hysteresis, vrcine seam +
+  overlay). Default = STEREO cinematics with the claim fixed to the
+  measured fov (user's call mid-session); big screen = the toggle. Two
+  descent replays flat-green. ENGINE_NOTES has the full derivation.
+- FULLSCREEN ROUTING (items 2+7): dumps fingerprinted all three kinds -
+  hack board = 322 gameswf draws / ZERO DrawIndexed (world absent),
+  loading = 87, alcohol blur = post-tonemap draw sampling a
+  backbuffer-sized texture. Shipped the screen-only interval detector
+  (-> readable screen) + the in-frame post-effect skip (srv0-size
+  discriminator; postFx=0 false positives). Live hack board verified
+  with the user at the machine; BD FMV verdict is on the headset list.
+- FIRST-BOOT RESTART (item 3): compose_over answers the dead boot probe
+  with a neutral connected pad; marker machinery deleted; README note
+  gone. Virgin-install gate PASSED (KB/M prompts untouched; IAT lane
+  ~680 polls/s after mid-session vrinput on; dpad moved the menu).
+- HEAD-ROLL EYES (item 4): apply_eye_offset -> full-rotation right axis
+  (ue_rot_basis), AER path unified. Eye delta rotates exactly with roll
+  (6.3/4.455/0 lateral at 0/45/90 deg), bit-identical at roll 0.
+- TURN CONTROLS (item 5): smooth-turn scale + snap turn (recenter-
+  composite steps via the body transfer). +-8192-unit exact steps, one
+  per pulse; scale 2.0 -> composed rx exact. Persisted + overlay.
+- WONKINESS (item 6): instrument shipped (sticklog + accessor); the
+  headset capture + analysis queued.
+- Harness: descent replays create a Welcome-to-Rapture AutoSave (CONTINUE
+  moved!); loads show as screen-only pairs, no view-state/fov churn;
+  fire tests need sim lanes re-armed or subs read as skips; user preset
+  inis backed up (backup-s22-20260728, sha256) and restored byte-exact
+  after the virgin test.
 
 ### 2026-07-28 - Session 21 (render sync: fov audit clean, the fg scene decoded, the fovA lever, per-weapon profiles)
 

@@ -66,12 +66,13 @@ std::atomic<bool> g_useAimPose{true};
 std::atomic<bool> g_muzzleRay{false};
 // Per-hand since session 16 part 3 (user request): each controller's wrist
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
-// Defaults = the user's in-headset calibration, v0.3.0 bake (session 21
-// part 4, their explicit ask: the saved preset becomes the defaults). The
+// Defaults = the user's in-headset calibration (their explicit ask: the
+// saved preset becomes the defaults). Left trim re-baked session 22
+// (2026-07-29 headset run: -7.5/+37.0, "better than before"). The
 // right-hand TRIM stays 0 - the per-weapon profiles own the right hand;
 // its POS offsets below carry the generic baseline.
-std::atomic<float> g_pitchOffsetDeg[2] = {-6.8f, 0.0f};
-std::atomic<float> g_yawOffsetDeg[2] = {30.0f, 0.0f};
+std::atomic<float> g_pitchOffsetDeg[2] = {-7.5f, 0.0f};
+std::atomic<float> g_yawOffsetDeg[2] = {37.0f, 0.0f};
 // Per-hand aim-ray ORIGIN offsets in cm (session 18 part 2, user request):
 // the model offsets move the MESH about its pivot, so a tuned model can sit
 // right while the ray no longer runs along the barrel. These move the RAY
@@ -888,7 +889,14 @@ void update_weapon_profile(const FrameContext& ctx) {
     bool haveRig = hands::current_holdable(&w);
     if (!haveRig) {
         w = hands::weapon_actor();
-        if (!w) w = hands::resolve_weapon_actor(ctx);
+        // Session 22: the SCAN fallback goes fully DORMANT after 3 straight
+        // failures - the reduced cadence still meant a multi-second heap
+        // walk every ~2000 frames FOREVER on saves with no resolvable
+        // weapon (the early game; user-felt as "the game freezes every
+        // couple of seconds" at the Gatherer's Garden). The cheap rig and
+        // learned-actor reads above keep running at the throttled cadence
+        // and re-arm the scanner the moment they see anything.
+        if (!w && nullResolves < 3) w = hands::resolve_weapon_actor(ctx);
     }
     nullResolves = (haveRig || w) ? 0 : nullResolves + 1;
     if (w == g_weaponKeyActor) return;
@@ -1507,6 +1515,8 @@ float trim_pitch_deg(int hand) {
 float trim_yaw_deg(int hand) {
     return g_yawOffsetDeg[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
 }
+
+bool laser_enabled() { return g_laser.load(std::memory_order_relaxed); }
 
 float pos_fwd_cm(int hand) {
     return g_posFwdCm[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);

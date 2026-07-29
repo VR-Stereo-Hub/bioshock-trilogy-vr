@@ -51,6 +51,22 @@ std::atomic<bool> g_vrGameplay{false};
 std::atomic<uint64_t> g_vrGameplayLastMs{0};
 constexpr uint64_t kVrGameplayStaleMs = 500;
 
+// Session 22 turn controls. Smooth scale multiplies the composed stick X
+// (turn speed); snap mode instead consumes stick-X edges into queued steps
+// the camera adapter applies to the recenter composite (the M7.5 transfer
+// then carries the body). Both respect the same gates as the pitch kill
+// (vr-gameplay fresh, lifted while a grip/bumper holds a radial open).
+std::atomic<float> g_turnScale{1.0f};
+std::atomic<bool> g_snapTurn{false};
+std::atomic<float> g_snapAngleDeg{45.0f};
+std::atomic<int> g_snapPending{0}; // +right/-left, drained by take_snap_steps
+bool g_snapArmed = true;           // edge re-arm state; g_mutex holds it
+// Session 22 movement instrumentation: rate-limited composed-stick log
+// ("vrinput sticklog on|off") - the wonkiness investigation pairs it with
+// the vrbody probe's resid line.
+std::atomic<bool> g_stickLog{false};
+uint64_t g_lastStickLogMs = 0; // g_mutex
+
 // Self-expiring test slots: the command seam polls at 1 Hz, so a "hold" must
 // outlive its command inside the DLL. deadline == 0 means empty.
 struct TimedStick { int16_t x = 0, y = 0; uint64_t deadline = 0; };
@@ -92,36 +108,13 @@ int bit_index(uint16_t bit) {
 
 // The game probes XInput exactly ONCE at boot (6 GetState calls for index 0,
 // 1 each for 1-3) and never re-polls a slot that reported disconnected - not
-// on WM_DEVICECHANGE, not on an interval (verified live 2026-07-24). So the
-// enable flag must already be set when that probe runs, which is before the
-// command seam's first poll. A marker file persisted across boots and read at
-// DLL attach closes the gap: once the user opts in, every later boot reports
-// a connected pad to the probe and the game polls at frame rate from then on.
-// Mid-session "vrinput on" after a disconnected boot probe needs a relaunch.
-bool marker_path(wchar_t out[MAX_PATH]) {
-    wchar_t base[MAX_PATH];
-    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return false;
-    swprintf_s(out, MAX_PATH, L"%s\\BioshockVR\\vrinput.on", base);
-    return true;
-}
-
-void persist_enabled(bool on) {
-    wchar_t path[MAX_PATH];
-    if (!marker_path(path)) return;
-    if (on) {
-        HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
-    } else {
-        DeleteFileW(path);
-    }
-}
-
-bool read_persisted_enabled() {
-    wchar_t path[MAX_PATH];
-    if (!marker_path(path)) return false;
-    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
-}
+// on WM_DEVICECHANGE, not on an interval (verified live 2026-07-24). Session
+// 22 retires the old vrinput.on marker-file workaround: compose_over now
+// answers a FAILED slot-0 query with a neutral CONNECTED pad even while
+// vrinput is off, so the probe latches "connected" on every install and a
+// later `vrinput on` engages with no restart (the first-boot-restart fix,
+// ROADMAP M9). Slots 1-3 keep reporting disconnected; a real pad on slot 0
+// passes through untouched.
 
 // Merge b over a: buttons OR, triggers max, stick axes per-axis larger
 // magnitude wins with ties going to `a` - deterministic and order-free.
@@ -179,6 +172,14 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
         }
         g_lastTriggers.store(t, std::memory_order_relaxed);
         g_lastButtons.store(b, std::memory_order_relaxed);
+        // Session 22 first-boot fix: a failed slot-0 query answers as a
+        // neutral CONNECTED pad (constant packet number = "no new input"),
+        // so the game's one-shot boot probe never latches slot 0 dead.
+        if (*result != ERROR_SUCCESS) {
+            memset(xs, 0, sizeof(XINPUT_STATE));
+            xs->dwPacketNumber = 1;
+            *result = ERROR_SUCCESS;
+        }
         return;
     }
 
@@ -199,12 +200,43 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     // selection (session 19 part 2 - the wheel was unselectable). The game
     // side snapshots the PC pitch at bumper-down and restores it at release,
     // so the look-pitch the wheel state also accumulates cannot stick.
-    if (g_pitchKill.load(std::memory_order_relaxed) &&
-        g_vrGameplay.load(std::memory_order_relaxed) &&
-        now - g_vrGameplayLastMs.load(std::memory_order_relaxed) <= kVrGameplayStaleMs &&
-        !(out.buttons &
-          (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER)))
-        out.ry = 0;
+    bool turnGate = g_vrGameplay.load(std::memory_order_relaxed) &&
+                    now - g_vrGameplayLastMs.load(std::memory_order_relaxed) <=
+                        kVrGameplayStaleMs &&
+                    !(out.buttons &
+                      (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER));
+    if (g_pitchKill.load(std::memory_order_relaxed) && turnGate) out.ry = 0;
+
+    // Session 22 turn controls (same gate cluster as the pitch kill; radial
+    // states keep the raw stick).
+    if (turnGate) {
+        if (g_snapTurn.load(std::memory_order_relaxed)) {
+            // Snap owns the turn axis: edge-detect with the proven 0.65/0.30
+            // hysteresis, queue a step, and zero rx to the game.
+            constexpr int16_t kOn = 21299, kOff = 9830;
+            int16_t rx = out.rx;
+            if (g_snapArmed) {
+                if (rx >= kOn) {
+                    g_snapPending.fetch_add(1, std::memory_order_relaxed);
+                    g_snapArmed = false;
+                } else if (rx <= -kOn) {
+                    g_snapPending.fetch_sub(1, std::memory_order_relaxed);
+                    g_snapArmed = false;
+                }
+            } else if (rx > -kOff && rx < kOff) {
+                g_snapArmed = true;
+            }
+            out.rx = 0;
+        } else {
+            float s = g_turnScale.load(std::memory_order_relaxed);
+            if (s != 1.0f) {
+                float v = static_cast<float>(out.rx) * s;
+                out.rx = static_cast<int16_t>(v > 32767.0f    ? 32767
+                                              : v < -32768.0f ? -32768
+                                                              : lroundf(v));
+            }
+        }
+    }
     if (g_packetBump || memcmp(&out, &g_lastComposed, sizeof out) != 0) {
         ++g_packet;
         g_packetBump = false;
@@ -217,6 +249,14 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
                              static_cast<uint16_t>(static_cast<uint16_t>(out.rt) << 8),
                          std::memory_order_relaxed);
     g_lastButtons.store(out.buttons, std::memory_order_relaxed);
+
+    // Session 22 wonkiness instrumentation: the FINAL composed pad, post
+    // merge/pitchkill/turn - what the game actually consumes.
+    if (g_stickLog.load(std::memory_order_relaxed) && now - g_lastStickLogMs >= 100) {
+        g_lastStickLogMs = now;
+        BVR_LOG("[input] stick composed lx=%d ly=%d rx=%d ry=%d pkt=%u",
+                out.lx, out.ly, out.rx, out.ry, g_packet);
+    }
 
     if (!g_loggedFirstCompose.exchange(true, std::memory_order_relaxed))
         BVR_LOG("input: first synthetic compose served (packet %u)", g_packet);
@@ -445,12 +485,6 @@ void init() {
     BVR_LOG("input: bridge registered with proxy seam (module %p)", proxy);
 
     install_dll_hooks(); // retried lazily from commands if the DLLs load later
-
-    if (read_persisted_enabled()) {
-        g_enabled.store(true, std::memory_order_relaxed);
-        BVR_LOG("input: vrinput pre-armed from marker - boot probe will see a "
-                "connected pad");
-    }
 }
 
 bool hijack_import_slot(void** slot) {
@@ -479,7 +513,6 @@ void set_enabled(bool on) {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_packetBump = true;
     }
-    persist_enabled(on); // sticky across boots - see the boot-probe note above
     BVR_LOG("input: vrinput %s", on ? "ON (synthetic gamepad live)" : "off (passthrough)");
 }
 
@@ -527,6 +560,38 @@ void last_composed_bumpers(bool* lb, bool* rb) {
     if (rb) *rb = (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
 }
 
+void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (lx) *lx = g_lastComposed.lx;
+    if (ly) *ly = g_lastComposed.ly;
+    if (rx) *rx = g_lastComposed.rx;
+    if (ry) *ry = g_lastComposed.ry;
+}
+
+float turn_scale() { return g_turnScale.load(std::memory_order_relaxed); }
+void set_turn_scale(float s) {
+    if (s < 0.1f) s = 0.1f;
+    if (s > 4.0f) s = 4.0f;
+    g_turnScale.store(s, std::memory_order_relaxed);
+}
+
+bool snap_turn() { return g_snapTurn.load(std::memory_order_relaxed); }
+void set_snap_turn(bool on) {
+    bool was = g_snapTurn.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("input: snap turn %s (stick X %s)", on ? "ON" : "off",
+                on ? "edges queue discrete steps" : "smooth");
+}
+
+float snap_angle_deg() { return g_snapAngleDeg.load(std::memory_order_relaxed); }
+void set_snap_angle_deg(float d) {
+    if (d < 5.0f) d = 5.0f;
+    if (d > 180.0f) d = 180.0f;
+    g_snapAngleDeg.store(d, std::memory_order_relaxed);
+}
+
+int take_snap_steps() { return g_snapPending.exchange(0, std::memory_order_relaxed); }
+
 void handle_command(const char* args) {
     install_dll_hooks(); // lazy retry in case xinput1_4 loaded after init
 
@@ -556,6 +621,32 @@ void handle_command(const char* args) {
                     g_vrGameplay.load(std::memory_order_relaxed) ? "ACTIVE" : "inactive",
                     static_cast<unsigned long long>(age));
         }
+    } else if (strcmp(verb, "turnscale") == 0) {
+        float s = 0.0f;
+        if (sscanf_s(rest, "%f", &s) == 1) {
+            set_turn_scale(s);
+            BVR_LOG("input: turn scale %.2f", turn_scale());
+        } else {
+            BVR_LOG("input: turn scale %.2f (vrinput turnscale <0.1..4>)", turn_scale());
+        }
+    } else if (strcmp(verb, "snap") == 0) {
+        if (strncmp(rest, "on", 2) == 0) set_snap_turn(true);
+        else if (strncmp(rest, "off", 3) == 0) set_snap_turn(false);
+        else
+            BVR_LOG("input: snap %s angle %.0f deg pending %d "
+                    "(vrinput snap on|off, vrinput snapangle <deg>)",
+                    snap_turn() ? "ON" : "off", snap_angle_deg(),
+                    g_snapPending.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "snapangle") == 0) {
+        float d = 0.0f;
+        if (sscanf_s(rest, "%f", &d) == 1) {
+            set_snap_angle_deg(d);
+            BVR_LOG("input: snap angle %.0f deg", snap_angle_deg());
+        }
+    } else if (strcmp(verb, "sticklog") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_stickLog.store(on, std::memory_order_relaxed);
+        BVR_LOG("input: stick log %s (composed pad @10 Hz)", on ? "ON" : "off");
     } else if (strcmp(verb, "test") == 0) {
         char what[16] = {};
         consumed = 0;
@@ -640,6 +731,18 @@ void draw_debug_ui() {
     bool pk = g_pitchKill.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Kill right-stick pitch under VR", &pk))
         set_pitch_kill(pk);
+
+    // Session 22 turn controls.
+    float ts = g_turnScale.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Smooth turn speed", &ts, 0.2f, 3.0f, "%.2f"))
+        set_turn_scale(ts);
+    bool st = g_snapTurn.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Snap turn (discrete steps)", &st)) set_snap_turn(st);
+    if (st) {
+        float sa = g_snapAngleDeg.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("Snap angle (deg)", &sa, 15.0f, 90.0f, "%.0f"))
+            set_snap_angle_deg(sa);
+    }
 
     // GetState poll rate, sampled ~1/s (render thread only).
     static uint64_t lastMs = 0;

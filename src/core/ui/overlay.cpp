@@ -14,6 +14,8 @@
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
+#include <atomic>
+
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 namespace bvr::overlay {
@@ -21,15 +23,27 @@ namespace {
 
 bool g_initialized = false;
 bool g_visible = false;
+std::atomic<int> g_visibleRequest{-1}; // session 22: seam toggle (-1 = none)
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
+ID3D11Texture2D* g_rtvBackbuffer = nullptr; // identity only, never deref'd
 HWND g_window = nullptr;
 WNDPROC g_originalWndProc = nullptr;
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-    if (g_visible && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam))
-        return TRUE;
+    if (g_visible) {
+        ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
+        // Session 22 (user report: overlay unusable while scrolling): while
+        // ImGui owns the mouse/keyboard, CONSUME those messages instead of
+        // letting the game fight the overlay for them (the wheel doubled as
+        // weapon-cycle, clicks re-captured the cursor mid-drag).
+        ImGuiIO& io = ImGui::GetIO();
+        bool mouseMsg = msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST;
+        bool keyMsg = msg >= WM_KEYFIRST && msg <= WM_KEYLAST;
+        if ((mouseMsg && io.WantCaptureMouse) || (keyMsg && io.WantCaptureKeyboard))
+            return TRUE;
+    }
     return CallWindowProcW(g_originalWndProc, hwnd, msg, wparam, lparam);
 }
 
@@ -38,6 +52,7 @@ bool CreateRenderTarget(IDXGISwapChain* swapchain) {
     if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))))
         return false;
     HRESULT hr = g_device->CreateRenderTargetView(backbuffer, nullptr, &g_rtv);
+    g_rtvBackbuffer = SUCCEEDED(hr) ? backbuffer : nullptr;
     backbuffer->Release();
     return SUCCEEDED(hr);
 }
@@ -95,10 +110,25 @@ void on_present(IDXGISwapChain* swapchain) {
         g_initialized = Init(swapchain);
         if (!g_initialized) return;
     }
+    // Session 22 (user report: overlay gone until an alt-tab): if the game
+    // swaps its backbuffer object WITHOUT a ResizeBuffers (fullscreen-state
+    // churn), a held RTV keeps drawing into the dead buffer - F10 toggles an
+    // overlay nobody can see. Track the buffer identity and re-create.
+    {
+        ID3D11Texture2D* bb = nullptr;
+        if (SUCCEEDED(swapchain->GetBuffer(0, IID_PPV_ARGS(&bb)))) {
+            if (g_rtv && bb != g_rtvBackbuffer) {
+                g_rtv->Release();
+                g_rtv = nullptr;
+                BVR_LOG("overlay: backbuffer identity changed - RTV re-created");
+            }
+            bb->Release();
+        }
+    }
     if (!g_rtv && !CreateRenderTarget(swapchain)) return;
 
     // F10, edge-triggered (Insert was the original choice, but not every
-    // keyboard has it)
+    // keyboard has it); the seam request lane covers harness toggling.
     static bool wasDown = false;
     bool isDown = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
     if (isDown && !wasDown) {
@@ -106,6 +136,11 @@ void on_present(IDXGISwapChain* swapchain) {
         ImGui::GetIO().MouseDrawCursor = g_visible;
     }
     wasDown = isDown;
+    int req = g_visibleRequest.exchange(-1, std::memory_order_relaxed);
+    if (req >= 0) {
+        g_visible = req != 0;
+        ImGui::GetIO().MouseDrawCursor = g_visible;
+    }
 
     if (!g_visible) return;
 
@@ -123,6 +158,11 @@ void on_resize() {
         g_rtv->Release();
         g_rtv = nullptr;
     }
+    g_rtvBackbuffer = nullptr;
+}
+
+void set_visible(bool on) {
+    g_visibleRequest.store(on ? 1 : 0, std::memory_order_relaxed);
 }
 
 } // namespace bvr::overlay

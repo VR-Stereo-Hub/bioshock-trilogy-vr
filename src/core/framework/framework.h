@@ -1,6 +1,6 @@
 #pragma once
 
-#define BVR_VERSION "0.1.0"
+#define BVR_VERSION "0.4.0"
 
 namespace bvr::framework {
 

@@ -75,6 +75,21 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
     // overlay/VR draws for the rest of the detour so they never enter a dump.
     frame_inspector::on_present(swapchain);
     frame_inspector::ScopedSuppress suppress;
+    // Letterbox sampling BEFORE any of our additions touch the backbuffer
+    // (overlay draw, mirror re-blit, window HUD composite) - the frame here
+    // is pure game pixels (session 22 round 3).
+    {
+        ID3D11Device* device = nullptr;
+        if (SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&device))) && device) {
+            ID3D11DeviceContext* context = nullptr;
+            device->GetImmediateContext(&context);
+            if (context) {
+                hud::letterbox_sample(context, swapchain);
+                context->Release();
+            }
+            device->Release();
+        }
+    }
     vr::on_present_begin(swapchain); // xrWaitFrame paces the game while a session runs
     overlay::on_present(swapchain);
     vr::on_present_end(swapchain);   // copies the finished frame (incl. overlay) to the quad
@@ -87,7 +102,7 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
             ID3D11DeviceContext* context = nullptr;
             device->GetImmediateContext(&context);
             if (context) {
-                hud::on_present(context);
+                hud::on_present(context, swapchain);
                 context->Release();
             }
             device->Release();

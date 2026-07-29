@@ -10,4 +10,9 @@ namespace bvr::overlay {
 void on_present(IDXGISwapChain* swapchain);
 void on_resize(); // drop backbuffer references before ResizeBuffers
 
+// Session 22: programmatic visibility (any thread; applied on the next
+// present). The `vroverlay on|off` seam command - the harness cannot press
+// F10, and it doubles as the user's recovery if a keyboard state wedges.
+void set_visible(bool on);
+
 } // namespace bvr::overlay
