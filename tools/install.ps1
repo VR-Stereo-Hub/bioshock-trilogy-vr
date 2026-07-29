@@ -3,7 +3,8 @@
 # NOTE: keep this file pure ASCII (PowerShell 5.1 misreads BOM-less UTF-8).
 param(
     [switch]$Release,
-    [string]$GamePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final"
+    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [string]$GamePath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,8 +12,16 @@ $repo = Split-Path -Parent $PSScriptRoot
 $config = if ($Release) { "RelWithDebInfo" } else { "Debug" }
 $outDir = Join-Path $repo "build\src\$config"
 
-if (-not (Test-Path (Join-Path $GamePath "BioshockHD.exe"))) {
-    throw "BioshockHD.exe not found in '$GamePath' - pass -GamePath."
+if ($Game -eq "bs2") {
+    $exeName = "Bioshock2HD.exe"
+    if (-not $GamePath) { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final" }
+} else {
+    $exeName = "BioshockHD.exe"
+    if (-not $GamePath) { $GamePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final" }
+}
+
+if (-not (Test-Path (Join-Path $GamePath $exeName))) {
+    throw "$exeName not found in '$GamePath' - pass -GamePath."
 }
 
 $proxy = Join-Path $outDir "xinput1_3.dll"
@@ -35,4 +44,8 @@ if ((Test-Path $existing) -and -not (Test-Path $backup)) {
 Copy-Item $proxy (Join-Path $GamePath "xinput1_3.dll") -Force
 Copy-Item $mod (Join-Path $GamePath "bioshockvr.dll") -Force
 Write-Host "Installed $config build to $GamePath"
-Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bioshockvr.log"
+if ($Game -eq "bs2") {
+    Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.log"
+} else {
+    Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bioshockvr.log"
+}

@@ -4,18 +4,24 @@
 # the engine pauses while the window is unfocused, so an unfocused game never
 # reads the file.
 # Usage: .\tools\game-cmd.ps1 "memscani 123" "memlist"
-param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Lines)
+#        .\tools\game-cmd.ps1 -Game bs2 "recenter"
+param(
+    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [Parameter(ValueFromRemainingArguments=$true)][string[]]$Lines
+)
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class Cmd { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
 '@
-$p = Get-Process BioshockHD -ErrorAction SilentlyContinue
+if ($Game -eq "bs2") { $procName = "Bioshock2HD" } else { $procName = "BioshockHD" }
+$p = Get-Process $procName -ErrorAction SilentlyContinue
 if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
     [Cmd]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
     Start-Sleep -Milliseconds 400
 }
-$cmd = "$env:LOCALAPPDATA\BioshockVR\command.txt"
+if ($Game -eq "bs2") { $cmd = "$env:LOCALAPPDATA\BioshockVR\bs2\command.txt" }
+else { $cmd = "$env:LOCALAPPDATA\BioshockVR\command.txt" }
 $text = ($Lines -join "`n")
 for ($i = 0; $i -lt 30; $i++) {
     try {

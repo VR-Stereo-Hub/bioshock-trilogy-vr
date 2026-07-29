@@ -2,10 +2,16 @@
 # one exists. Touches only files we put there.
 # NOTE: keep this file pure ASCII (PowerShell 5.1 misreads BOM-less UTF-8).
 param(
-    [string]$GamePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final"
+    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [string]$GamePath = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $GamePath) {
+    if ($Game -eq "bs2") { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final" }
+    else { $GamePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final" }
+}
 
 $mod = Join-Path $GamePath "bioshockvr.dll"
 $proxy = Join-Path $GamePath "xinput1_3.dll"

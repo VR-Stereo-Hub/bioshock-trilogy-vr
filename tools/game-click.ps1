@@ -1,8 +1,12 @@
 # Click at window-relative coordinates inside the BioshockHD window (foregrounds it
 # first; coordinates are the same as pixel positions in a game-shot.ps1 capture).
 # gameswf menus register these synthetic clicks (verified 2026-07-24: menu navigation).
-# Usage: .\tools\game-click.ps1 -X 967 -Y 601
-param([Parameter(Mandatory=$true)][int]$X, [Parameter(Mandatory=$true)][int]$Y)
+# Usage: .\tools\game-click.ps1 -X 967 -Y 601 [-Game bs2]
+param(
+    [Parameter(Mandatory=$true)][int]$X,
+    [Parameter(Mandatory=$true)][int]$Y,
+    [ValidateSet("bs1", "bs2")][string]$Game = "bs1"
+)
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -14,7 +18,8 @@ public static class M {
     public struct RECT { public int L; public int T; public int R; public int B; }
 }
 '@
-$p = Get-Process BioshockHD -ErrorAction Stop
+if ($Game -eq "bs2") { $procName = "Bioshock2HD" } else { $procName = "BioshockHD" }
+$p = Get-Process $procName -ErrorAction Stop
 $h = $p.MainWindowHandle
 [M]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 400
