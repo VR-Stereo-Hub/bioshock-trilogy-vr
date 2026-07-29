@@ -13,6 +13,16 @@ namespace {
 // this session's ASLR base.
 const uint8_t* g_imageBase = nullptr;
 
+// Cached UShockUserSettings instance (revalidated by vtable every call).
+// Like BS1 there is no known static pointer to it; unlike BS1's scanner this
+// one goes DORMANT after 3 straight misses (scan-hygiene rule from the BS1
+// session-22 weapon-resolver lesson: backoff alone still reads as "the game
+// freezes every couple of seconds" on saves where the object never appears).
+void* g_userSettings = nullptr;
+uint64_t g_lastScanMs = 0;
+int g_scanMisses = 0;
+bool g_scanDormant = false;
+
 bool region_scannable(const MEMORY_BASIC_INFORMATION& mbi) {
     if (mbi.State != MEM_COMMIT) return false;
     if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) return false;
@@ -93,6 +103,71 @@ void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccep
     BVR_LOG("[b2r] %s scan: %d vtable match(es), chosen=%p", what, matches, chosen);
     if (outMatches) *outMatches = matches;
     return chosen;
+}
+
+namespace {
+
+// Accept the first UShockUserSettings whose HorizontalFOV reads as a
+// plausible degree value, logging every candidate so a wrong pick (stack
+// slot, class default object) is diagnosable from the session log.
+bool accept_user_settings(void* obj, void*) {
+    int32_t fov = *reinterpret_cast<const int32_t*>(static_cast<uint8_t*>(obj) +
+                                                    kUserSettingsHfovOffset);
+    BVR_LOG("[b2r] UShockUserSettings vtable match @ %p HorizontalFOV=%d", obj, fov);
+    return fov >= 40 && fov <= 170;
+}
+
+} // namespace
+
+int32_t* hfov_option_ptr() {
+    using namespace bvr::pattern_scan;
+    if (!g_imageBase) return nullptr;
+
+    const void* wantVtable = g_imageBase + kUserSettingsVtableRva;
+
+    // Revalidate the cache: object freed/moved -> vtable no longer matches.
+    if (g_userSettings) {
+        if (is_memory_valid(g_userSettings, kUserSettingsHfovOffset + sizeof(int32_t)) &&
+            *reinterpret_cast<const void* const*>(g_userSettings) == wantVtable) {
+            return reinterpret_cast<int32_t*>(static_cast<uint8_t*>(g_userSettings) +
+                                              kUserSettingsHfovOffset);
+        }
+        g_userSettings = nullptr; // stale, fall through to a rescan
+        hfov_scan_rearm("cached object went stale");
+    }
+
+    if (g_scanDormant) return nullptr;
+
+    // Rate-limit rescans so a not-yet-created object doesn't scan every frame.
+    uint64_t now = GetTickCount64();
+    if (now - g_lastScanMs < 2000) return nullptr;
+    g_lastScanMs = now;
+
+    int matches = 0;
+    g_userSettings = scan_for_vtable_object(kUserSettingsVtableRva,
+                                            kUserSettingsHfovOffset + sizeof(int32_t),
+                                            &accept_user_settings, nullptr,
+                                            "UShockUserSettings", &matches);
+    if (!g_userSettings) {
+        if (++g_scanMisses >= 3) {
+            g_scanDormant = true;
+            BVR_LOG("[b2r] UShockUserSettings scan DORMANT after %d misses (a view-state "
+                    "change re-arms it)",
+                    g_scanMisses);
+        }
+        return nullptr;
+    }
+    g_scanMisses = 0;
+    return reinterpret_cast<int32_t*>(static_cast<uint8_t*>(g_userSettings) +
+                                      kUserSettingsHfovOffset);
+}
+
+void hfov_scan_rearm(const char* why) {
+    g_scanMisses = 0;
+    if (g_scanDormant) {
+        g_scanDormant = false;
+        BVR_LOG("[b2r] UShockUserSettings scan re-armed (%s)", why);
+    }
 }
 
 bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
