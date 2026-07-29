@@ -2,6 +2,7 @@
 
 #include "core/util/log.h"
 #include "game/bioshock1r/bioshock1r_adapter.h"
+#include "game/bioshock2r/bioshock2r_adapter.h"
 #include "game/igame_adapter.h"
 
 #include <windows.h>
@@ -44,8 +45,8 @@ void init_adapter() {
         name = "bioshock1r";
         break;
     case HostGame::Bioshock2:
-        // bioshock2r adapter lands later in M10; the host is already detected
-        // here so its data dir is isolated, but it runs flat until then.
+        instance = b2r::create_adapter();
+        name = "bioshock2r";
         break;
     case HostGame::Unknown:
         break;
