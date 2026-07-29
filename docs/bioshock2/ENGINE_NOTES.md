@@ -180,6 +180,31 @@ included; null object claims 0 = core's explicit fallback signal); the gated wri
 stale-restore from the ProcessEvent detour because BS2 has no scenedraw hook); the 1 Hz
 heartbeat's `fov=` field; `fovaudit`.
 
+## M4 stereo candidates (session 25 stretch - offline recon ONLY, nothing hooked)
+
+Shape-search of the exe against BS1's three render-architecture functions (frame submit:
+TLS-prologue + ret 0xC + SetEvent near tail; render pump: WaitForSingleObject(INFINITE) loop;
+scene build: aligned-stack prologue + ret 0x10). Findings:
+
+- **BS1's static submit-finding method is DEAD on BS2**: the exe has only two `FF 15`
+  SetEvent call sites, both inside wrapper functions (0xB81020, 0xCDB917). The 0xCDB917
+  wrapper (reached via E9 stub 0xD9BD) has ~1954 static callers - a general-purpose sync
+  utility, census-useless. The 0xB81020 wrapper (stub 0xF01A) has ZERO static E8 callers -
+  virtual/register dispatch. No TLS-prologue ret-0xC SetEvent-calling function exists
+  statically. Conclusion: find the submit LIVE, the way BS1 originally did - a kernel32
+  SetEvent caller sampler on the game thread (BS1's `reentry kick` instrument), then walk
+  the sampled return RVA back to the enclosing entry offline.
+- **Render-pump candidates** (WFSO(INFINITE) with a backward-jump loop shape): entries
+  0x7C3E40 and 0xCF3EE0. Unverified; the pump confirms itself live by
+  GetCurrentThreadId-registration + once-per-Present drain cadence.
+- **Scene build**: the aligned-stack + ret 0x10 shape has 300+ static matches - not rankable
+  offline. Derive it from the live submit's gameplay caller ret RVA (BS1 session-6 recipe:
+  hook the submit, log callers, capstone-walk backward past decoy SEH entries; remember the
+  frameless-prologue and 11-byte-CC-run lessons).
+- Per the standing policy: before building SequentialReentry's exact BS1 shape, first check
+  whether BS2's renderer offers a less invasive doubling path (the ProcessEvent-by-name seam
+  may expose per-view script events BS1 never had; unexplored).
+
 ## Derivation recipes (shared with BS1 - short form)
 
 - **FName-chain event scan** (core `pattern_scan::find_event_function`, game-agnostic): wide
