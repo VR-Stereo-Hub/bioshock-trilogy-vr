@@ -39,6 +39,8 @@ add_library(bioshockvr SHARED
     core/util/log.h
     core/util/crash.cpp
     core/util/crash.h
+    game/adapter_registry.cpp
+    game/adapter_registry.h
     game/igame_adapter.h
     game/bioshock1r/aim.cpp
     game/bioshock1r/aim.h

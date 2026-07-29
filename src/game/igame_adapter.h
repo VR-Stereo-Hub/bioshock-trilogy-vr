@@ -38,8 +38,9 @@ struct IGameAdapter {
 };
 
 // Fail-soft: any scan/hook failure is logged and the adapter reports zero
-// capabilities; the game runs flat.
+// capabilities; the game runs flat. Implemented by game/adapter_registry.cpp,
+// which selects the adapter by host exe name.
 void init_adapter();
-IGameAdapter* adapter(); // null until init_adapter() has run
+IGameAdapter* adapter(); // null until init_adapter() has run, or on an unknown host exe
 
 } // namespace bvr::game

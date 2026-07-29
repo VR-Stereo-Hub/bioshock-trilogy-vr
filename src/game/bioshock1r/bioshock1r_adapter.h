@@ -14,4 +14,7 @@ public:
     void drawDebugUi() override;
 };
 
+// The process-lifetime instance, handed to game/adapter_registry.cpp.
+bvr::game::IGameAdapter* create_adapter();
+
 } // namespace bvr::b1r
