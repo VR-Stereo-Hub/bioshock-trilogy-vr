@@ -7,6 +7,7 @@
 #include "game/bioshock1r/patterns.h"
 
 #include "core/util/log.h"
+#include "core/util/module_id.h"
 
 #include <windows.h>
 
@@ -18,6 +19,10 @@ namespace {
 // Captured by resolve() so the lazy hfov_option_ptr() can form the vtable
 // address for this session's ASLR base.
 const uint8_t* g_imageBase = nullptr;
+
+// Set once by resolve(): does the running exe match the build every RVA in
+// patterns.h came from? See the header's build-identity block.
+bool g_rvaTrusted = false;
 
 // ---- live-object search (session 27 rewrite) --------------------------------
 // The generic machinery - thread-stack/TEB exclusion, the live-heap fast path,
@@ -75,6 +80,10 @@ bool accept_user_settings(void* obj, void*, int32_t probe[bvr::heap_scan::kProbe
 
 void log_scan_result(const char* what, const ObjectScan& scan, const ScanResult& r,
                      bool candidates) {
+    // A refusal already said so once, in run_object_scan. Repeating a summary for
+    // a search that never ran turns the retry cadence into log spam - which the
+    // wrong-build test produced, one line every 2 s for the whole session.
+    if (r.disabled) return;
     const bvr::heap_scan::Sweep& s = scan.sweep;
     if (candidates) {
         for (int i = 0; i < s.recorded; ++i) {
@@ -102,6 +111,21 @@ bool run_object_scan(ObjectScan& scan, uint32_t vtableRva, uint32_t needBytes,
                      ObjectAccept accept, void* user, ScanResult& out) {
     out = ScanResult{};
     if (!g_imageBase || !accept) return true; // nothing to search: complete and empty
+    // On an unrecognised build the vtable RVA is an arbitrary constant, and the
+    // callers of this function WRITE to what it returns. Searching memory for a
+    // meaningless value and then poking the winner is the one failure mode worth
+    // refusing outright (session 27).
+    if (!g_rvaTrusted) {
+        static bool once = false;
+        if (!once) {
+            once = true;
+            BVR_LOG("[b1r] object scans DISABLED - the host build is not the one these vtable "
+                    "addresses came from (see the build block above)");
+        }
+        out.path = "disabled (unverified build)";
+        out.disabled = true;
+        return true;
+    }
     const void* wantVtable = g_imageBase + vtableRva;
 
     // Fast path first: only live, allocated heap blocks, tens of milliseconds,
@@ -207,11 +231,38 @@ void hfov_scan_rearm(const char* why) {
 
 bool settings_bound() { return g_userSettings != nullptr; }
 
+bool rva_trusted() { return g_rvaTrusted; }
+
 bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     using namespace bvr::pattern_scan;
 
     g_imageBase = image.base;
     BVR_LOG("[b1r] scanning main module: base %p size 0x%zX", image.base, image.size);
+
+    // Build gate FIRST, so everything logged below is read in the right light.
+    const bvr::module_id::Fingerprint host = bvr::module_id::host_exe();
+    g_rvaTrusted =
+        bvr::module_id::matches(host, kHostTimeDateStamp, kHostSizeOfImage, kHostFileBytes);
+    if (g_rvaTrusted) {
+        BVR_LOG("[b1r] host build VERIFIED (pe-timestamp 0x%08X) - hardcoded addresses trusted",
+                host.timeDateStamp);
+    } else {
+        BVR_LOG("[b1r] ============================================================");
+        BVR_LOG("[b1r] HOST BUILD NOT RECOGNISED - address-dependent features OFF");
+        BVR_LOG("[b1r]   running:  pe-timestamp 0x%08X size-of-image 0x%08X bytes %llu",
+                host.timeDateStamp, host.sizeOfImage,
+                static_cast<unsigned long long>(host.fileBytes));
+        BVR_LOG("[b1r]   expected: pe-timestamp 0x%08X size-of-image 0x%08X bytes %llu",
+                kHostTimeDateStamp, kHostSizeOfImage,
+                static_cast<unsigned long long>(kHostFileBytes));
+        BVR_LOG("[b1r] Every offset this mod hardcodes was derived from the 2022-04-13 Steam");
+        BVR_LOG("[b1r] build. Applying them to a different binary is how a mod corrupts a");
+        BVR_LOG("[b1r] game rather than failing to work, so they stand down and the game");
+        BVR_LOG("[b1r] stays fully playable. Head tracking still uses a pattern scan and is");
+        BVR_LOG("[b1r] unaffected. If you are on Epic, GOG or a newer patch, please send this");
+        BVR_LOG("[b1r] log - the three numbers above are what a per-build offset table needs.");
+        BVR_LOG("[b1r] ============================================================");
+    }
 
     EventScanResult scan{};
     bool ok = find_event_function(image, "PlayerCalcView", scan);

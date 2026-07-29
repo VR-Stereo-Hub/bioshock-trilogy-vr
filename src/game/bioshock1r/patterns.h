@@ -11,6 +11,27 @@
 
 namespace bvr::b1r::patterns {
 
+// ---- host build identity (session 27) ---------------------------------------
+// Every RVA in this header was derived from ONE build of BioshockHD.exe:
+// 2022-04-13, PE TimeDateStamp 0x6256F776, SizeOfImage 0x01677000, 21214720
+// bytes on disk (measured from the live Steam install; the exe carries no PE
+// checksum, so that field is not part of the test).
+//
+// The adapter is chosen by exe BASENAME, and every storefront ships this same
+// file name - so an Epic, GOG or repatched build is not rejected, it is accepted
+// and then mis-addressed. Hook installs survive that (they are prologue- and
+// vtable-gated and refuse), but the object-scan KEYS degrade to "search memory
+// for an arbitrary constant, then write to whatever passes a plausibility
+// test". Those are gated on rva_trusted() instead.
+inline constexpr uint32_t kHostTimeDateStamp = 0x6256F776;
+inline constexpr uint32_t kHostSizeOfImage = 0x01677000;
+inline constexpr uint64_t kHostFileBytes = 21214720;
+
+// False when the running exe is not the build the addresses came from. Features
+// that depend on a raw RVA must stand down; anything pattern-derived (the
+// CalcView seam, the FName chain) is build-independent and keeps working.
+bool rva_trusted();
+
 // Live horizontal FOV in degrees (float) inside APlayerController.
 // Derivation: itsloopyo/bioshock-remastered-headtracking (MIT)
 // FOV_LIVE_OFFSET; verified live in DR-4. Telemetry-only: the renderer never
@@ -694,6 +715,7 @@ struct ScanResult {
     int matches = 0;        // vtable hits
     int accepted = 0;       // accept() said yes; >1 means ambiguous, fail closed
     const char* path = "-"; // "heap" (fast path) or "sweep" (fallback)
+    bool disabled = false;  // refused before searching (unverified build)
 };
 
 // Advance one search. Returns true when a search COMPLETED this call and `out`

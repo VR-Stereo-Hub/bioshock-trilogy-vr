@@ -39,6 +39,8 @@ add_library(bioshockvr SHARED
     core/vr/openxr_runtime.h
     core/util/log.cpp
     core/util/log.h
+    core/util/module_id.cpp
+    core/util/module_id.h
     core/util/crash.cpp
     core/util/crash.h
     game/adapter_registry.cpp
