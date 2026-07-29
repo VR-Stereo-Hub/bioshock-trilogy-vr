@@ -585,9 +585,13 @@ kill. Both prerequisites below are now MET.):**
 
 ## M10 - BioShock 2 Remastered adapter (~2–4 sessions)
 
-- [ ] `src/game/bioshock2r/` adapter: new patterns.cpp; expectation is near-total core reuse
-- [ ] **Done when:** M3-level (6DOF mono) within one session of scan work; M4-level stereo within
+- [x] `src/game/bioshock2r/` adapter: new patterns.cpp; expectation is near-total core reuse
+      (landed session 24 - patterns + camera + adapter; the CalcView seam is ProcessEvent-based
+      because BS2 inlined the event dispatch, see docs/bioshock2/ENGINE_NOTES.md)
+- [~] **Done when:** M3-level (6DOF mono) within one session of scan work; M4-level stereo within
       the milestone. Every core/adapter seam leak found → ARCHITECTURE decision log.
+      (M3-level: session 24, one session as budgeted - flat 6DOF integer-exact; seam-leak
+      inventory in the decision log. Still open: M4-level stereo, FOV readback/write.)
 
 ## Post-v1 backlog (not scheduled)
 

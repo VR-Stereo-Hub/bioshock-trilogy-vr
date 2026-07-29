@@ -490,3 +490,67 @@ runtime.
   report one), so the stick click keeps working until a real thumbrest touch is
   observed, after which the mapping is exactly what was chosen. Overlay combo
   "Ammo-select modifier" and `vrinput ammomod click|thumbrest|both` switch it.
+
+- **2026-07-29 (session 24, M10): adapter dispatch moved to `game/adapter_registry.cpp`,
+  selected by host exe name; host detection is SILENT by contract.** The registry owns
+  `init_adapter()`/`adapter()` (moved verbatim from the BS1 adapter, same fail-soft
+  semantics: publish even on scan failure so the overlay can show it, unknown host runs
+  flat with a log line). Host detection is a separate pure function pair
+  (`detect_host_game()`/`host_data_subdir()`) because framework init needs the per-game
+  data subdir BEFORE `log::init` runs - so those functions must never log. The
+  exe-name-to-game mapping lives only in the game layer; core stays exe-name-free.
+
+- **2026-07-29 (session 24, M10): per-game data dirs - BS2 writes under
+  `%LOCALAPPDATA%\BioshockVR\bs2\`, BS1's flat layout is FROZEN.** The alternative
+  (subfolders for both, with a migration) was rejected: BS1 is released at v0.4.1, an
+  external tester is mid-crash-investigation, and the calibration inis
+  (vrpreset/hands/weapons) must not move or be clobberable by a BS2 session. Mechanism:
+  `log::init(subdir)` appends the game-layer-supplied subfolder; empty keeps the BS1
+  strings byte-identical. Two data-dir bypasses (command.txt in the BS1 poller,
+  framedump in core's frame inspector) were rerouted through `log::data_dir()` so every
+  future consumer inherits the subdir automatically. Rule going forward: NOTHING
+  composes `%LOCALAPPDATA%\BioshockVR` by hand; everything asks `log::data_dir()`.
+
+- **2026-07-29 (session 24, M10): the BS2 camera seam is a ProcessEvent hook filtered to
+  the PlayerCalcView UFunction, learned via a FindFunctionChecked hook.** BS1's seam
+  (hook the compiler-generated event thunk) is DEAD on BS2: the thunk exists and
+  resolves, but the 16-minutes-earlier build inlined the event dispatch at every call
+  site - zero static callers (offline caller census; full trace in
+  docs/bioshock2/ENGINE_NOTES.md). Chosen shape: hook `UObject::FindFunctionChecked` to
+  learn the PlayerCalcView `UFunction*` by comparing the FName index against the
+  scan-derived cached-index global (zero UObject-layout assumptions), and hook the outer
+  `UObject::ProcessEvent` (resolved through the controller vtable slot 3 stub chain,
+  prologue-gated) to mutate the param block after the original returns. Rejected:
+  hooking the dead thunk (unknown signature - a mismatched detour is a stack-corruption
+  hazard); hooking individual inlined callers (35 sites, unknown signatures); naked
+  counting probes (a diagnosis tool, not a seam). Costs accepted: every script event in
+  the game crosses the detour (pre-filter work is two pointer compares), and the seam is
+  one hop more indirect than BS1's. Benefit banked: the pair generalizes - any script
+  event on any object is now hookable by name on BS2, which BS1 never got.
+
+- **2026-07-29 (session 24, M10): core/adapter seam-leak inventory (the M10 acceptance
+  criterion), and the policy: duplicate-in-b2r now, unify once BS2 stabilizes.**
+  Bringing up the second adapter surfaced these leaks, each consciously NOT fixed this
+  session to keep released BS1 code untouched (fixing them means refactoring v0.4.1
+  paths in the same session that brings up a new game):
+  1. The command-file seam lives in each ADAPTER, not core - a skeleton adapter has no
+     commands until its first engine hook fires (BS2's poller now ticks from the
+     ProcessEvent detour; BS1's from CalcView). The poll/parse/dispatch mechanics are
+     duplicated, and core-owned commands (memscan family, dumpframe, vrinput, vrpace)
+     are BS1-only vocabulary until the dispatcher moves to a shared home.
+  2. The vrpreset/hands/weapons serializer persists CORE state (vr, input, hud) from
+     BS1 adapter code - b2r deliberately writes no ini at all until this is resolved.
+  3. The strict-gameplay predicate, 1 Hz heartbeat shape, and the whole 6DOF head-drive
+     math (recenter latch, integer yaw residual, dual-frame position rotation) are
+     duplicated in b2r/camera.cpp - candidates for game/shared once BS2's copy has
+     survived in-headset use.
+  4. `ue_math.h` moved to `game/shared/` (pure engine math, no addresses) with
+     temporary `bvr::b1r`/`bvr::b2r` using-aliases so adapter code keeps unqualified
+     spellings - a shared game-layer namespace convention is still owed.
+  5. `IGameAdapter` remains the 4-method seam (capabilities/init/setFov/drawDebugUi);
+     the documented 9-method target in this file's earlier sections is aspirational.
+     BS2 confirms the pull-based reality works for a second game; the doc gap stays
+     until the interface actually grows.
+  Docs restructure that goes with all this: game-specific knowledge bases moved to
+  per-game folders (docs/bioshock1/, docs/bioshock2/ - ENGINE_NOTES + TESTING each);
+  project-wide docs (STATUS/ROADMAP/ARCHITECTURE/RESEARCH) stay at docs/ root.

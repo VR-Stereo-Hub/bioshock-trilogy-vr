@@ -1,7 +1,7 @@
 #pragma once
 // BioShock 1 Remastered signature table. This header and patterns.cpp are the
 // ONLY files allowed to contain raw addresses/offsets for this game (see
-// ARCHITECTURE.md). Every entry is documented in docs/ENGINE_NOTES.md with
+// ARCHITECTURE.md). Every entry is documented in docs/bioshock1/ENGINE_NOTES.md with
 // its derivation method.
 
 #include "core/hooks/pattern_scan.h"

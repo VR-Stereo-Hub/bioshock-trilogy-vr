@@ -2,7 +2,87 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-29, session 23 - CLEAN-MACHINE NEW-USER FLOW + CRASH CAPTURE: Steam's CSERHelper was eating our crash handler, load-crossing stereo drop fixed, thumbrest ammo modifier, v0.4.1 packaged - branch s23-crash-diagnostics)
+## Current state (2026-07-29, session 24 - M10 STARTED: BioShock 2 Remastered adapter at M3 parity, ProcessEvent CalcView seam, per-game data dirs + adapter registry, per-game docs folders - branch s24-m10-bs2-adapter)
+
+**BS2 RUNS THE MOD.** First M10 session: `src/game/bioshock2r/` exists, injects via the same
+proxy (no new shim), scans clean, and drives a 6DOF head camera. All flat 6DOF checks passed
+integer-exact; in-headset M3 verdict: see the session log entry.
+
+### 1. THE HEADLINE: BS2's event thunk is dead code - the seam is ProcessEvent
+
+`eventPlayerCalcView` resolves on BS2 exactly like BS1 (FName-chain scan, RVA 0x395CC0,
+correct thunk shape) - and NEVER FIRES: the 16-minutes-earlier build inlined the event
+dispatch at every call site. Offline caller census: BS1's thunk has 29 static callers, BS2's
+has ZERO (the check that cracked it - run it BEFORE hooking, not after). The shipped seam:
+hook `UObject::FindFunctionChecked` (RVA 0xB6BA30) to learn the PlayerCalcView `UFunction*` by
+FName index (zero UObject-layout assumptions), and hook the outer `UObject::ProcessEvent`
+(RVA 0x37A7E0, resolved via the controller vtable slot 3 stub chain, prologue-gated) to mutate
+the 0x1C param block `{viewActor, loc, rot}` after the original returns. Full derivation:
+docs/bioshock2/ENGINE_NOTES.md. Bonus banked: any BS2 script event is now hookable by name.
+
+### 2. Runtime-verified BS2 facts (session 24)
+
+- RTTI candidates VERIFIED live: AShockPlayer 0x11197C0 (gameplay view actor),
+  AShockPlayerController 0x1117BF0 (vtable slot 3 resolves to ProcessEvent; menu-load view
+  actor). The camera module logs the observed view-actor vtable RVA on change, so a wrong
+  candidate names its own correction.
+- `view state: GAMEPLAY (ShockPlayer view)` transition works (same phrase as BS1 - the
+  harness detector transfers).
+- BS2's main menu does NOT run PlayerCalcView (BS1's attract scene does, at ~7000/s) - the
+  b2r command poller therefore ticks from the ProcessEvent detour, so the command seam works
+  at the menu too. Dispatch rates observed: ~200-850 calls/s, spikes ~4500/s during loads.
+- Flat 6DOF acceptance (log-measured, final-camera heartbeat): offset z +50.0 exact; simhead
+  pitch 20 deg -> 3640 units, roll 15 -> 2730, yaw residual -5461 integer-exact; sim position
+  (0.10 0.20 -0.30) m -> headOff (6.1 31.0 20.0) UU = |37.4| at worldscale 100, halves exactly
+  at 50. The b2r `simhead` lane takes a position triple - full-6DOF provable flat, which BS1's
+  rotation-only lane never could.
+
+### 3. Architecture work M10 forced (all committed)
+
+- `game/adapter_registry.cpp`: `init_adapter()`/`adapter()` moved out of bioshock1r, dispatch
+  by host exe name; silent host detection feeds `log::init(subdir)` BEFORE the log exists.
+- Per-game data dirs: BS2 = `%LOCALAPPDATA%\BioshockVR\bs2\`, BS1's released flat layout
+  FROZEN (user decision). Two data-dir bypasses fixed (b1r command.txt, core framedump) -
+  everything now composes from `log::data_dir()`.
+- `ue_math.h` -> `game/shared/` (bvr::ue + per-game aliases). Docs restructure: per-game
+  `docs/bioshock1/` + `docs/bioshock2/` (ENGINE_NOTES + TESTING each); CLAUDE.md updated.
+- Tools: `-Game bs1|bs2` on build/install/uninstall/tail-log/game-cmd/game-shot/game-click
+  (defaults bs1, behavior-identical). boot.ps1 stays BS1-only - BS2's gameswf menu ignores
+  synthetic clicks/Enter (arrow keys move the selection; activation unreliable - drive by
+  hand).
+- Seam-leak inventory recorded in the ARCHITECTURE decision log (M10 acceptance criterion):
+  command seam lives per-adapter, preset serializer persists core state from b1r, gameplay
+  predicate + heartbeat + head-drive math duplicated in b2r, IGameAdapter doc-vs-reality gap.
+  Policy: duplicate-in-b2r now, unify once BS2 stabilizes. b2r writes NO ini - BS1
+  calibration untouchable by construction.
+- BS1 regression smoke PASSED after the refactors (same CalcView RVA, caps 0x3, boot.ps1 to
+  GAMEPLAY, command seam + framedump at unchanged paths, ini timestamps untouched).
+
+### 4. Known BS2 gaps (deliberate, next M10 sessions)
+
+- NO FOV readback/write: projection claims headset FOV over the game's rendered FOV -
+  expected distortion in-headset, THE first follow-up. BS2 has a native FOV slider
+  (Graphics Options, default 100) - likely UShockUserSettings; candidate vtable 0x11523D8
+  unconsumed, offset must be derived fresh.
+- Mono only (M4 stereo not started): no scene-reentry scan, no 1t substrate on BS2 yet.
+- No aim/hands/bones/body/input-drive/console-exec; BS1's wider command vocabulary
+  (memscan family, vrstereo, vraim, reentry, exec) not ported.
+- Menu-load view actor class (vtable RVA 0x106EE20) not RTTI-identified yet.
+
+## Next steps
+
+1. **BS2 FOV**: derive the UShockUserSettings hfov offset fresh (memscani workflow needs the
+   value-scan commands ported or run via BS1-style discovery), wire the readback so the
+   projection claim matches, then the write (kill the distortion).
+2. **BS2 M4 stereo**: re-derive the scene-build seam + render-queue substrate for
+   SequentialReentry; expect the same shapes as BS1, different RVAs, plus the jmp-stub
+   indirection everywhere.
+3. Port the value_scan/dumpframe command routes to b2r (or move the dispatcher to a shared
+   home per the decision-log leak list) so BS2 discovery work has the full toolkit.
+4. BS1 carries: v0.4.1 to the external tester (crash capture), 2K-account lead, seated
+   recenter designs, letterbox investigation.
+
+## Previous state (session 23, superseded - CLEAN-MACHINE NEW-USER FLOW + CRASH CAPTURE: Steam's CSERHelper was eating our crash handler, load-crossing stereo drop fixed, thumbrest ammo modifier, v0.4.1 packaged - branch s23-crash-diagnostics)
 
 **v0.4.1 IS RELEASED (2026-07-29):** PR #11 merged to main, tagged, published at
 https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.4.1 (zip 1,215,780
@@ -92,7 +172,7 @@ headset discards - at 3840x2160 on a Quest 2 only ~54% of the width is inside th
 near-square 2750x2850 has FEWER pixels, is sharper and runs faster. Found independently by
 the tester; math in ENGINE_NOTES, guidance now in the README.
 
-## Next steps
+### Next steps as of session 23 (superseded - live items carried into the session-24 list above)
 
 0. **Late session-23 findings (after the handoff above was first written):** a second
    external dump is a DIFFERENT crash - main-thread use-after-free (0xDEDEDEDE poison)
@@ -2443,6 +2523,26 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 24 - 2026-07-29 - M10 started: BioShock 2 adapter to M3 parity
+
+Branched s24-m10-bs2-adapter off main. Three BS1-touching refactors first (adapter registry
+extracted from bioshock1r with exe-name dispatch; log::init grew a per-game subdir so BS2
+lives in %LOCALAPPDATA%\BioshockVR\bs2\ while BS1's released layout stays byte-identical;
+ue_math.h to game/shared) - BS1 regression smoke passed before any BS2 code ran. The
+bioshock2r adapter then went up in two acts: the FName-chain scan resolved eventPlayerCalcView
+first try and the hook NEVER FIRED - even in gameplay. Offline caller census (the new
+must-run check): BS1's thunk has 29 static callers, BS2's has zero - the build inlined the
+event dispatch everywhere. Re-seamed as FindFunctionChecked (learn the UFunction by FName
+index) + outer ProcessEvent (mutate the param block post-original, resolved through the
+controller vtable slot 3 stub chain, prologue-gated) - worked on the first launch: UFunction
+learned in 4 s, both RTTI candidates runtime-verified, GAMEPLAY transition on save load. All
+flat 6DOF checks passed integer-exact via the new position-capable simhead lane and the
+final-camera heartbeat. Tools grew -Game bs1|bs2; docs split into per-game folders
+(docs/bioshock1/, docs/bioshock2/); seam-leak inventory + three design decisions recorded in
+the ARCHITECTURE log. Known gaps left deliberately: no FOV readback (expected in-headset
+distortion - first follow-up), mono only, no aim/hands, BS1 command vocabulary not ported.
+In-headset M3 verdict: PENDING-MARKER.
 
 ### Session 23 - 2026-07-29 - clean-machine new-user flow + crash capture
 
