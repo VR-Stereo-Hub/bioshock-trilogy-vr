@@ -775,7 +775,7 @@ void assert_crosshair(uint64_t now) {
 void assert_lockon(uint64_t now) {
     int want = g_lockOnDisabled.load(std::memory_order_relaxed) ? 1 : 0;
     bool due = want != g_lockOnApplied ||
-               (want == 1 && now - g_lockOnAssertMs >= 15000);
+               (want == 1 && now - g_lockOnAssertMs >= kExecReassertMs);
     if (!due) return;
     bool first = g_lockOnApplied != want;
     g_lockOnApplied = want;

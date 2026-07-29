@@ -913,7 +913,12 @@ void update_weapon_profile(const FrameContext& ctx) {
         // they did not.
         if (!w && !g_weaponScanDormant && body::is_gameplay_view(ctx.viewActor)) {
             w = hands::resolve_weapon_actor(ctx);
-            if (!w && ++g_weaponScanMisses >= patterns::kScanMissesBeforeDormant) {
+            // A null return can mean "searched, not there" OR "the sliced sweep
+            // has not finished yet". Only the first is a miss; counting the
+            // second latched the scanner dormant before it had ever completed a
+            // pass (caught in the first smoke test of the sliced scanner).
+            if (!w && !hands::weapon_scan_in_progress() &&
+                ++g_weaponScanMisses >= patterns::kScanMissesBeforeDormant) {
                 g_weaponScanDormant = true;
                 BVR_LOG("[aim] weapon scan fallback DORMANT after %d miss(es) - the cheap rig "
                         "and learned-actor reads keep running; a view-state change re-arms it",

@@ -179,10 +179,17 @@ uintptr_t sweep_region(uintptr_t begin, uintptr_t end, uintptr_t xorNeedle, uint
 }
 
 // A pooled allocator can put a fixed header in front of the object, so the
-// object need not sit exactly at the block start. Probing a few aligned offsets
-// costs a handful of compares per block and covers that; every hit still has to
-// survive the accept filter, so a wider probe cannot loosen identity.
-constexpr uint32_t kBlockProbeSpan = 64;
+// object need not sit exactly at the block start. Probing aligned offsets across
+// a prefix costs a bounded number of compares per block and covers that; every
+// hit still has to survive the accept filter, so a wider probe cannot loosen
+// identity.
+//
+// Measured on BioShock 1: UShockUserSettings IS found inside this prefix (62 ms
+// for the whole walk), but APlayerWeapon is not - those matches only turned up
+// in the region sweep, so engine actors either sit deeper in their block or come
+// from a pool HeapWalk does not describe. 256 rather than 64 to give the deeper
+// case a chance before falling back; still 64 compares per block.
+constexpr uint32_t kBlockProbeSpan = 256;
 
 // Guarded per-heap walk. The __except swallows and falls through to HeapUnlock,
 // so the unlock runs on both paths: a fault that escaped with the lock held
@@ -291,6 +298,8 @@ void Sweep::reset() {
     accepted = 0;
     first = nullptr;
     recorded = 0;
+    blocks = 0;
+    heaps = 0;
     snapshot_excludes(excludes, &excludeMissed);
     excludeSpans = excludes.count;
 }

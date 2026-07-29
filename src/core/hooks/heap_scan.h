@@ -33,7 +33,12 @@ namespace bvr::heap_scan {
 
 // Regions the sweep must never read: every thread's stack allocation and TEB.
 // Refreshed at the start of each pass, since threads come and go.
-constexpr int kMaxExcludes = 128;
+//
+// Two spans per thread, so this is a thread-count ceiling of half its value.
+// Measured on a 12-core machine running BioShock 1: 64 threads, which filled a
+// 128-span table exactly and silently started dropping stacks. Sized for a
+// machine with several times that many.
+constexpr int kMaxExcludes = 512;
 
 struct ExcludeSet {
     struct Span {

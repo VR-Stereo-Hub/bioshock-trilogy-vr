@@ -96,6 +96,12 @@ void* weapon_actor();
 // too. Game thread; callers gate on gameplay view to avoid cutscene scans.
 void* resolve_weapon_actor(const FrameContext& ctx);
 
+// True while a sliced sweep for the weapon actor is mid-flight, i.e. a null
+// return from resolve_weapon_actor means "not finished" and NOT "not there".
+// Callers with a miss counter must not count the former (session 27). Game
+// thread.
+bool weapon_scan_in_progress();
+
 // Hands.CurrentHoldable read raw off the rig, CLASS-AGNOSTIC (session 21
 // part 3: the MachineGun/GrenadeLauncher native vtable differs from
 // kPlayerWeaponVtableRva, so vtable-gated paths rejected them and pinned

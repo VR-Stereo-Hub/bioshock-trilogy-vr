@@ -92,7 +92,8 @@ void log_scan_result(const char* what, const ObjectScan& scan, const ScanResult&
             what, r.path, r.matches, r.accepted, r.object,
             static_cast<double>(s.elapsedUs) / 1000.0, s.slices, s.heaps, s.blocks,
             s.excludeSpans,
-            s.excludeMissed > 0   ? " - SOME THREAD STACKS NOT EXCLUDED"
+            s.excludes.truncated  ? " - EXCLUSION TABLE FULL, SOME STACKS NOT EXCLUDED"
+            : s.excludeMissed > 0 ? " - SOME THREAD STACKS NOT EXCLUDED"
             : s.excludeMissed < 0 ? " - THREAD ENUMERATION FAILED"
                                   : "");
 }
@@ -123,7 +124,7 @@ bool run_object_scan(ObjectScan& scan, uint32_t vtableRva, uint32_t needBytes,
 
     auto outcome = bvr::heap_scan::sweep(scan.sweep, wantVtable, needBytes, accept, user,
                                          kScanSliceBudgetUs);
-    out.path = "sweep";
+    out.path = "sweep (heap path found nothing)";
     if (outcome == bvr::heap_scan::Outcome::Working) return false;
     scan.sweeping = false;
     out.object = scan.sweep.first;

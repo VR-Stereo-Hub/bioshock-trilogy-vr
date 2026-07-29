@@ -76,6 +76,14 @@ void* g_handsActor = nullptr;
 void* g_weaponActor = nullptr;
 uint64_t g_lastHandsScanMs = 0;
 uint64_t g_lastWeaponScanMs = 0;
+// Search state at file scope, not function-local, because the retry gates below
+// have to be able to ASK whether a sliced sweep is mid-flight. Getting that
+// wrong starves the sweep: the first smoke test of the sliced scanner had the
+// rate limit refusing to continue an in-progress sweep for up to 32 s, while
+// the caller counted every "still working" return as a miss and latched the
+// scanner dormant before it had ever completed a single pass (session 27).
+patterns::ObjectScan g_handsScan;
+patterns::ObjectScan g_weaponScan;
 uint32_t g_handsScanFails = 0; // consecutive empty scans -> backoff
 void* g_lastPc = nullptr;
 std::atomic<uint32_t> g_writes{0};
@@ -258,16 +266,17 @@ void* find_hands_actor(const FrameContext& ctx, bool probeOnly) {
         // (session 18 part 3, live). Reset on success, world change, and
         // re-enable, so pickup stays prompt when the rig actually appears.
         uint32_t shift = g_handsScanFails > 4 ? 4 : g_handsScanFails;
-        if (now - g_lastHandsScanMs < (2000ull << shift)) return nullptr;
+        // The backoff must never gate a sweep that has already started, or the
+        // slices are spread minutes apart and the pass never finishes.
+        if (!g_handsScan.sweeping && now - g_lastHandsScanMs < (2000ull << shift)) return nullptr;
         g_lastHandsScanMs = now;
     }
     ScanCtx sc{ctx.camX, ctx.camY, ctx.camZ, !probeOnly};
-    static patterns::ObjectScan scan;
     patterns::ScanResult r{};
-    if (!patterns::run_object_scan(scan, patterns::kHandsVtableRva,
+    if (!patterns::run_object_scan(g_handsScan, patterns::kHandsVtableRva,
                                    patterns::kActorViewDirOffset + 12, &accept_hands, &sc, r))
         return nullptr; // sliced sweep still running - no stall, retry next frame
-    patterns::log_scan_result("AHands", scan, r, probeOnly || g_handsScanFails == 0);
+    patterns::log_scan_result("AHands", g_handsScan, r, probeOnly || g_handsScanFails == 0);
     g_lastMatches.store(r.matches, std::memory_order_relaxed);
     if (probeOnly) return nullptr;
     g_handsActor = r.object;
@@ -290,7 +299,9 @@ void* find_weapon_actor(const FrameContext& ctx, bool probeOnly) {
         if (weapon_valid(g_weaponActor)) return g_weaponActor;
         g_weaponActor = nullptr;
         uint64_t now = GetTickCount64();
-        if (now - g_lastWeaponScanMs < 2000) return nullptr;
+        // As above: never gate an in-flight sweep.
+        if (!g_weaponScan.sweeping && now - g_lastWeaponScanMs < patterns::kScanRetryMs)
+            return nullptr;
         g_lastWeaponScanMs = now;
     }
     // Anchor at the expected gun spot: 50 UU along the current view.
@@ -305,9 +316,8 @@ void* find_weapon_actor(const FrameContext& ctx, bool probeOnly) {
                                                                          : nullptr,
                      nullptr,
                      1e9f};
-    static patterns::ObjectScan scan;
     patterns::ScanResult r{};
-    if (!patterns::run_object_scan(scan, patterns::kPlayerWeaponVtableRva,
+    if (!patterns::run_object_scan(g_weaponScan, patterns::kPlayerWeaponVtableRva,
                                    patterns::kWeaponOwnerOffset + sizeof(void*), &accept_weapon,
                                    &wc, r))
         return nullptr; // sliced sweep still running - no stall, retry next frame
@@ -317,7 +327,7 @@ void* find_weapon_actor(const FrameContext& ctx, bool probeOnly) {
     // "chosen=00000000" is what made the shipped log unreadable: an external
     // crash log could not tell whether the resolver had succeeded or failed
     // (session 27). Log the real outcome.
-    patterns::log_scan_result("APlayerWeapon", scan, r, probeOnly);
+    patterns::log_scan_result("APlayerWeapon", g_weaponScan, r, probeOnly);
     g_lastMatches.store(r.matches, std::memory_order_relaxed);
     BVR_LOG("[hands] player weapon resolver: %d match(es) -> %s @ %p%s", r.matches,
             wc.best ? (wc.bestDist == 0.0f ? "ATTACHED to the rig" : "nearest to the gun spot")
@@ -512,6 +522,8 @@ void* weapon_actor() {
 void* resolve_weapon_actor(const FrameContext& ctx) {
     return find_weapon_actor(ctx, false);
 }
+
+bool weapon_scan_in_progress() { return g_weaponScan.sweeping; }
 
 bool current_holdable(void** out) {
     // Raw rig read, CLASS-AGNOSTIC: the MachineGun and GrenadeLauncher carry
