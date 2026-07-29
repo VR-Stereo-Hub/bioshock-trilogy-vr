@@ -2,7 +2,70 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-29, session 26 - M10 STEREO ACCEPTED IN-HEADSET ("looks awesome"), plus a core HANG FIX found right after - branch s26-pace-hang-fix)
+## Current state (2026-07-30, session 27 - BS1 STABILITY: the object scanner was the freeze, and probably the crash - branch s27-b1r-stability-and-resolution)
+
+**Stage 1 of four is in and flat-verified on the real game.** The work is driven by a third
+crash report from the same external machine (v0.4.1, `0xC0000374` STATUS_HEAP_CORRUPTION at
+the MAIN MENU 85 s in, whole stack in ntdll) plus widespread freeze reports. Full forensics
+in `docs/bioshock1/ENGINE_NOTES.md` "Session 27".
+
+**What was wrong.** `patterns::scan_for_vtable_object` swept the whole 4 GB address space at
+a 4-byte stride, in one blocking call on the game thread, accepting any
+`MEM_PRIVATE | PAGE_READWRITE` region - which is also the signature of a thread stack. Three
+consequences, all in that log: stacks were swept and the sweep matched its OWN argument
+spill (the two "vtable match" lines sit 0x40 below the crashing thread's esp); a candidate
+that passed only two predicates then reached three unguarded writes, so a freed or
+stack-resident address could be poked every frame; and one pass measured over 3 s of blocked
+game thread, which is the freeze. The session-22 dormancy "fix" did not hold because it was
+a caller-local counter that any momentary success zeroed, and because `aim.cpp`'s gameplay
+predicate deliberately counts the menu attract scene as gameplay, so full walks ran at the
+main menu - the exact window that tester dies in.
+
+**What shipped, measured on a boot-to-gameplay run:**
+
+- New `core/hooks/heap_scan` - thread stacks/TEBs excluded exactly via TEB stack bounds
+  (plus a guard-page probe), the needle only ever compared XOR-masked, a live-heap-block
+  fast path, and the region walk kept only as a 4 ms sliced fallback.
+  **`UShockUserSettings` now resolves in 56-62 ms with exactly one match** (was 3+ s and
+  three matches, two of them our own stack). Engine ACTORS are not in a heap-block prefix
+  and still need the sweep: its ~3.8 s of work now spreads over 888 slices and **the camera
+  heartbeat holds 1600-2100 calls/s across all of it with no dip.**
+- UObject class-chain corroboration on every candidate and revalidation, the FOV window
+  narrowed to the engine UI's 75-130, a structural dormancy latch only an explicit re-arm
+  clears, the weapon scan gated on the strict gameplay view, and fail-closed on ambiguity.
+- **Host build fingerprint gate.** Every storefront ships the same `BioshockHD.exe`, so an
+  Epic/GOG/repatched build was accepted and then mis-addressed. Verified BOTH directions:
+  correct build logs "host build VERIFIED"; a deliberately wrong expected timestamp prints
+  the running-vs-expected numbers, refuses object scans once, keeps the pattern-derived
+  CalcView hook (build-independent), and the game boots to gameplay fully playable.
+- Engine-exec seam hardened: per-slot stub thunks that record being entered, an esp
+  comparison across the call that repairs and latches the seam off on imbalance, and the
+  re-assert moved off its 15 s timer to the gameplay transition plus a 5 min net
+  (8 exec calls per boot -> 4).
+- `crash::install()` first, and the swapchain hooks before the OpenXR instance, so a runtime
+  that blocks on its streamer can no longer cost us the Present detour and with it
+  `crash::rearm()`.
+- Real-size `ResizeBuffers` now QUEUES the XR swapchain rebuild for a point in the frame
+  loop with no XR frame open, closing the documented-open half of the session-23
+  `0xDEDEDEDE` VDXR use-after-free.
+- `XR_ERROR_RUNTIME_UNAVAILABLE` now explains itself: SteamVR has never shipped a 32-bit
+  OpenXR runtime, so Index/Vive/Steam Link users land there every time.
+
+**Two negative results that change the plan.** `SETRES` through the viewport Exec seam
+FAULTS (`exe+0x4C2353`, near-null, no `ResizeBuffers` follows) even though `set ...` through
+the same machinery works every run and the stack stays balanced - that seam has advertised
+`SETRES` support since it was derived and had never been called. So a live in-session
+resolution change is off the table until root-caused, and the game-ini lane becomes the
+PRIMARY mechanism. And the world-lens aspect law is still unmeasured: at 1920x1080
+`tanV/tanH = 9/16` exactly, but 9/16 IS the render aspect there, so this run cannot
+distinguish "derived from aspect" from "hardcoded". The foreground-lens aspect fix is
+therefore unproven and must not ship yet.
+
+**Also fixed:** `-Game` was positional on `game-cmd.ps1`, so every bare
+`game-cmd.ps1 "..."` failed validation and `boot.ps1`'s menu-press loop had been silently
+doing nothing since the BS2 harness commit.
+
+## Previous state (2026-07-29, session 26 - M10 STEREO ACCEPTED IN-HEADSET ("looks awesome"), plus a core HANG FIX found right after - branch s26-pace-hang-fix)
 
 **IN-HEADSET VERDICT (user, Quest 3 / VDXR): stereo ACCEPTED - "looks awesome, very good
 for everything".** Depth, comfort and scale all read right; the user did not need to move
@@ -94,6 +157,57 @@ in case long soaks ever disprove this.
   their checklist).
 
 ## Next steps
+
+**Session 27 stage plan** (branch `s27-b1r-stability-and-resolution`; stage 1 done):
+
+1. **In-headset re-test of stage 1** (user, BS1). This is the release gate for a stability
+   hotfix. Checklist: launch, VR PRESET 1, play a few minutes across a level load. Expect
+   `host build VERIFIED`, one `UShockUserSettings scan via heap` line in tens of ms, a
+   1.000 s camera heartbeat metronome with no gaps, exactly 4 `engine exec` lines per boot,
+   and no `IMBALANCE` / `exec fault` / `crash:` lines. Also: change the game's video
+   resolution once mid-session and confirm `XR swapchain rebuild QUEUED` followed by
+   `performing the queued XR swapchain rebuild` and a clean recovery - that path only
+   matters with a live session, so it cannot be verified flat.
+2. **Stage 2, resolution / FOV / apparent scale.** Blocked on two measurements before any
+   code: (a) the world-lens aspect law, which needs a non-16:9 backbuffer and therefore the
+   ini lane plus a relaunch; (b) the FOREGROUND-lens aspect law, decoded from the fg draws'
+   cb0 block at a non-16:9 resolution. (b) decides between two contradictory fixes: if the
+   fg vertical half-tangent stays `tan(F/2)*3/4` and the horizontal follows the live aspect,
+   then `camera.cpp:1202`'s hardcoded `0.75` is `(4/3)/(16/9)` and is wrong everywhere else,
+   magnifying the viewmodel by `1.7778/aspect` (1.78x at a square backbuffer, which is what
+   the README currently tells users to run) - and fixing it restores the session-16
+   in-headset calibration rather than invalidating it. If instead the fg is
+   aspect-independent, `0.75` is always right and "hands are huge" is something else. Do NOT
+   ship the lens change before that dump. Then: derive the target from
+   `xrEnumerateViewConfigurationViews` (never called today), write the game ini's four
+   viewport keys plus the FOV locks with read-back verification, add `vrres` and overlay
+   presets, and keep the 129.5 circumscribing claim as the 16:9 safety net.
+   Extra hazards to close before any live resize lane: device-identity and hwnd-identity
+   checks in the overlay, and `input_drive`'s `g_armed` re-arm on a client/viewport rebuild
+   (without it motion controllers die silently after a resolution change).
+3. **Stage 3, cutscenes and the aim dot.** Measure the black-bar mechanism first: the Nexus
+   "Fullscreen Cutscenes" mod is a `HUDPC.swf` edit that zeroes a sprite named
+   `WidescreenBars`, which contradicts our own session-22 dump reading (engine clears to
+   black and draws a vertically shrunken tonemap quad). Install it, replay the Gatherer's
+   Garden Electro Bolt sequence, and see whether the bars go and whether the content is
+   squeezed. Then either suppress that one gameswf draw or fix the unsqueeze. Add `vrcine`
+   modes off / authored / authored+look, gating the hands, aim and laser drives on the
+   letterbox exactly as the head drive already is (closes ROADMAP's session-22 round-5
+   item - the authored cinematic hands currently only survive when the controllers are
+   idle). Add a single toggleable aim dot on the verified aim ray.
+4. **Stage 4, SteamVR/OpenVR.** SteamVR has never shipped a 32-bit OpenXR runtime, so
+   Lighthouse and Steam Link users cannot start VR at all; stage 1 now says so in the log.
+   Real fix is a native OpenVR backend behind the `bvr::vr` facade. Independently,
+   `openxr_input.cpp` suggests bindings for only `oculus/touch_controller` and
+   `khr/simple_controller`, so on SteamVR with Index or Vive wands, or on WMR, sticks,
+   triggers, grips and every face button are dead even when a session does start - add
+   those profiles.
+5. **Follow-ups opened by stage 1**: root-cause the `SETRES` fault; an `offsets.ini`
+   override so a non-Steam user can supply their own RVAs without a release; deriving
+   `GObjObjects` to retire object scanning entirely; the config echo block, proxy breadcrumb
+   and OpenXR API-layer enumeration from the diagnostics list.
+
+**Carried from session 26:**
 
 1. **Re-test the hang fix** (user, both games): put the headset on, get FOCUSED, then
    take it off / let it idle for a minute, then put it back on. Expect one

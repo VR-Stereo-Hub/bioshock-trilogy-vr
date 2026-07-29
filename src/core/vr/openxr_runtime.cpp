@@ -854,7 +854,24 @@ void init_instance() {
     ici.enabledExtensionNames = enabled;
     r = xrCreateInstance(&ici, &g_instance);
     if (XR_FAILED(r)) {
-        BVR_LOG("xr: xrCreateInstance failed: %s - VR disabled", res_str(r));
+        BVR_LOG("xr: xrCreateInstance failed: %s - VR disabled, game runs flat", res_str(r));
+        // XR_ERROR_RUNTIME_UNAVAILABLE from a 32-bit process is very rarely a
+        // broken install: SteamVR has never shipped a 32-bit OpenXR runtime, and
+        // BioShock is a 32-bit game. Anyone on Lighthouse hardware (Index, Vive)
+        // or running Steam Link, i.e. with SteamVR as the active runtime, lands
+        // here every single time. Saying so turns "the mod does nothing" into an
+        // actionable report - and it is a whole class of them.
+        if (r == XR_ERROR_RUNTIME_UNAVAILABLE) {
+            BVR_LOG("xr: -----------------------------------------------------------");
+            BVR_LOG("xr: The active OpenXR runtime has no 32-bit support. This game is");
+            BVR_LOG("xr: 32-bit, so VR cannot start. SteamVR is the usual cause: it has");
+            BVR_LOG("xr: never shipped a 32-bit OpenXR runtime, which also covers Index,");
+            BVR_LOG("xr: Vive and Steam Link setups.");
+            BVR_LOG("xr: Workaround today: set a runtime that does ship 32-bit - Virtual");
+            BVR_LOG("xr: Desktop (VDXR) or the Oculus/Meta runtime - as the active OpenXR");
+            BVR_LOG("xr: runtime, then relaunch.");
+            BVR_LOG("xr: -----------------------------------------------------------");
+        }
         g_instance = XR_NULL_HANDLE;
         return;
     }
