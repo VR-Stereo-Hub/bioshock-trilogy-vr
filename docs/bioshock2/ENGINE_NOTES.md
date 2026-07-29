@@ -105,7 +105,7 @@ was validated by reproducing all of BS1's known-good vtable RVAs exactly.
 |---|---|---|
 | `AShockPlayer` | 0x11197C0 | **VERIFIED** - view actor vtable in gameplay matches; drives `view state: GAMEPLAY` |
 | `AShockPlayerController` | 0x1117BF0 | **VERIFIED** (indirectly) - its vtable slot 3 stub resolves to ProcessEvent, and the pre-save menu/load view actor logs it |
-| `UShockUserSettings` | 0x11523D8 | candidate - unconsumed (FOV readback is the next step) |
+| `UShockUserSettings` | 0x11523D8 | **VERIFIED** (session 25) - vtscan found a live heap object with dword0 == base + RVA; consumed by the FOV readback/write (see the FOV section) |
 | `APlayerWeapon` | 0x112CC78 | candidate - unconsumed |
 | `AHands` | 0x1125478 | candidate - unconsumed |
 | `SkeletonInstance` | 0x10D0FC0 | candidate - unconsumed |
@@ -124,12 +124,86 @@ change, so a wrong candidate names its own correction from any session log. Obse
   the CalcView tail works at the BS2 menu - which is why the b2r command poller ticks from the
   ProcessEvent detour instead.
 - The graphics-options first-boot screen has a native **Field Of View slider (default 100)** -
-  BS2 has an exposed FOV concept BS1 lacked; likely the same `UShockUserSettings` int the BS1
-  FOV write targets. Verify offset fresh before writing.
+  BS2 has an exposed FOV concept BS1 lacked. Session 25 confirmed it is the
+  `UShockUserSettings.HorizontalFOV` int (offset below) - and, decisively: **BS2's foreground
+  viewmodel follows the world FOV natively** (poking the option re-lensed the drill WITH the
+  world, screenshot-verified). BS1's entire fg counter-model (fovA/fovB, kFgEyeComp, vrfgfov)
+  exists because BS1's fg rig has a FIXED lens; BS2 does not have that defect, so none of that
+  machinery ports. First applied case of the "BS2 is not bound by BS1's methods" directive.
 - Flat 6DOF checks (session 24, log-measured via the final-camera heartbeat): `offset 0 0 50` ->
   z +50.0 exact; `simhead 0 20 0` -> pitch 3640; roll 15 -> 2730; yaw residual integer-exact
   (16450 -> 10989 = -5461 = -30.0 deg); sim position (0.10, 0.20, -0.30) m at worldscale 100 ->
   headOff (6.1, 31.0, 20.0) UU, |37.4|, halving exactly at worldscale 50.
+
+## UShockUserSettings and the FOV option (session 25)
+
+**`HorizontalFOV` = `UShockUserSettings + 0x4C`, int32, DEGREES.** BS1's +0x8C does NOT
+transfer (it reads 3 here) - derived fresh, as the hard rule demands.
+
+Derivation chain (2026-07-29, live save "Adonis Luxury Resort", option at 100):
+
+1. **Vtable verify first**: `vtscan 11523D8` (the one-shot heap-scan probe, ~3 s Debug walk of
+   the full 4 GB) -> 3 matches: 0x008FF29C / 0x008FF304 (stack slots 0x68 apart holding the
+   pointer - the BS1-documented stack false-positive shape) and **0x0D368F80, a real heap
+   object** whose dword0 == base + 0x11523D8. Candidate promoted to VERIFIED before anything
+   trusted it.
+2. **Object layout vs ini**: `hexdump` of the object against `[ShockGame.ShockUserSettings]` in
+   `%APPDATA%\BioshockHD\Bioshock2\Bioshock2SP.ini`. Config properties visibly mirror the ini:
+   the four volume 100s at +0x64..+0x70, Sensitivity=50 at +0x78, Brightness/Contrast/Gamma
+   0.5/0.5/1.2f at +0x80..+0x88, MouseSensitivity=4.0f at +0xA8. The clincher:
+   `MouseIconScale=10` immediately precedes `HorizontalFOV=100` in the ini, and the object has
+   **+0x48=10 followed by +0x4C=100**. (The object spans ~0xE0 bytes; another UObject starts at
+   +0xE0. +0x44 read 105 - some other field, do not confuse.)
+3. **Consumed-copy proof (poke + img-diff)**: `pokeaddri <obj+0x4C> 130` -> screenshot
+   mean-abs-diff **8.99, 39.3% pixels changed** vs baseline (BS1's session-4 consumed-copy
+   evidence was 11.09/44.2%); `memrestore` -> **1.34 / 5.0%** = the ambient-animation floor.
+   Renderer-consumed **per frame**, no options APPLY. The ini value is only read at boot -
+   matching BS1's "editing the ini does not propagate" finding.
+4. **No code clamp in range**: poke 150 -> monotonic widening (9.97/43.9% vs base, 6.91/34.0%
+   vs the 130 shot). The UI slider's own range is still unrecorded (menu work needs the user);
+   irrelevant for the write path since `suggested_hfov_deg` caps at 160 and Quest-class
+   headsets ask ~104-115.
+5. **Native fg verdict** (the policy gate): in the 100-vs-130 screenshot pair the drill
+   viewmodel SHRANK with the wider lens exactly like the world - BS2's foreground renders
+   through the world FOV. BS1's fixed-lens fg defect does not exist here.
+
+Production locate (patterns.cpp `hfov_option_ptr`): no static pointer assumed (BS1 precedent -
+its .data "roots" were coincidental); heap-scan for the vtable, cache the instance, revalidate
+`dword0 == base + RVA` every call, 2000 ms rescan rate limit, **DORMANT after 3 straight
+misses** (the b2r scanner bakes in the BS1 session-22 dormancy lesson from day one), re-armed
+on view-state changes. Scan cost measured ~3 s (Debug, gameplay heap) - one-shot per session
+in practice.
+
+Consumers: `calcview_tail` readback -> `vr::set_rendered_hfov` (claim == rendered, menus
+included; null object claims 0 = core's explicit fallback signal); the gated write block
+(`vrfov` forced-headset / `gfov` manual, both DEFAULT OFF, strict-gameplay + save/restore,
+stale-restore from the ProcessEvent detour because BS2 has no scenedraw hook); the 1 Hz
+heartbeat's `fov=` field; `fovaudit`.
+
+## M4 stereo candidates (session 25 stretch - offline recon ONLY, nothing hooked)
+
+Shape-search of the exe against BS1's three render-architecture functions (frame submit:
+TLS-prologue + ret 0xC + SetEvent near tail; render pump: WaitForSingleObject(INFINITE) loop;
+scene build: aligned-stack prologue + ret 0x10). Findings:
+
+- **BS1's static submit-finding method is DEAD on BS2**: the exe has only two `FF 15`
+  SetEvent call sites, both inside wrapper functions (0xB81020, 0xCDB917). The 0xCDB917
+  wrapper (reached via E9 stub 0xD9BD) has ~1954 static callers - a general-purpose sync
+  utility, census-useless. The 0xB81020 wrapper (stub 0xF01A) has ZERO static E8 callers -
+  virtual/register dispatch. No TLS-prologue ret-0xC SetEvent-calling function exists
+  statically. Conclusion: find the submit LIVE, the way BS1 originally did - a kernel32
+  SetEvent caller sampler on the game thread (BS1's `reentry kick` instrument), then walk
+  the sampled return RVA back to the enclosing entry offline.
+- **Render-pump candidates** (WFSO(INFINITE) with a backward-jump loop shape): entries
+  0x7C3E40 and 0xCF3EE0. Unverified; the pump confirms itself live by
+  GetCurrentThreadId-registration + once-per-Present drain cadence.
+- **Scene build**: the aligned-stack + ret 0x10 shape has 300+ static matches - not rankable
+  offline. Derive it from the live submit's gameplay caller ret RVA (BS1 session-6 recipe:
+  hook the submit, log callers, capstone-walk backward past decoy SEH entries; remember the
+  frameless-prologue and 11-byte-CC-run lessons).
+- Per the standing policy: before building SequentialReentry's exact BS1 shape, first check
+  whether BS2's renderer offers a less invasive doubling path (the ProcessEvent-by-name seam
+  may expose per-view script events BS1 never had; unexplored).
 
 ## Derivation recipes (shared with BS1 - short form)
 

@@ -2,98 +2,100 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-29, session 24 - M10 STARTED: BioShock 2 Remastered adapter at M3 parity, ProcessEvent CalcView seam, per-game data dirs + adapter registry, per-game docs folders - branch s24-m10-bs2-adapter)
+## Current state (2026-07-29, session 25 - M10: BS2 FOV DONE flat - readback claim == rendered, forced-headset-FOV write default OFF, discovery tooling ported, crash-dump loop fixed - branch s25-m10-bs2-fov)
 
-**BS2 RUNS THE MOD.** First M10 session: `src/game/bioshock2r/` exists, injects via the same
-proxy (no new shim), scans clean, and drives a 6DOF head camera. All flat 6DOF checks passed
-integer-exact; in-headset M3 verdict: see the session log entry.
+**The BS2 FOV-claim mismatch is CLOSED - in-headset ACCEPTED (user, Quest 3 / VDXR).**
+`UShockUserSettings.HorizontalFOV` derived fresh at **+0x4C** (BS1's +0x8C reads 3 on BS2 -
+the never-copy rule earned its keep), readback wired into `vr::set_rendered_hfov` every
+CalcView, `vrfov`/`gfov` write levers landed DEFAULT OFF, capabilities now 0x3. User verdict:
+**fisheye GONE, world-drag GONE**; viewmodel unremarkable (nothing looked wrong = the
+no-fg-defect flat finding holds in-headset); the Esc-pause save/restore edges were exercised
+repeatedly in-headset (the 19:37 ON/OFF cycles in the session log ARE the user's pause tests
+- each pause restored option 100, each resume re-armed). vrfov wrote 131 on this rig
+(headset-derived, effectively BS1's 130); the manual gfov lever now defaults to 130 for BS1
+parity. Two user observations correctly deferred: world scale cannot be judged or perceived
+in mono (slider works - flat-proved - but perceived size needs stereo's IPD ratio; already
+the session-24 call), and vrstereo/SR does not exist on BS2 yet (that IS the next
+milestone).
 
-### 1. THE HEADLINE: BS2's event thunk is dead code - the seam is ProcessEvent
+### 1. THE HEADLINE: BS2's foreground follows the world FOV natively - BS1's fg apparatus stays unported
 
-`eventPlayerCalcView` resolves on BS2 exactly like BS1 (FName-chain scan, RVA 0x395CC0,
-correct thunk shape) - and NEVER FIRES: the 16-minutes-earlier build inlined the event
-dispatch at every call site. Offline caller census: BS1's thunk has 29 static callers, BS2's
-has ZERO (the check that cracked it - run it BEFORE hooking, not after). The shipped seam:
-hook `UObject::FindFunctionChecked` (RVA 0xB6BA30) to learn the PlayerCalcView `UFunction*` by
-FName index (zero UObject-layout assumptions), and hook the outer `UObject::ProcessEvent`
-(RVA 0x37A7E0, resolved via the controller vtable slot 3 stub chain, prologue-gated) to mutate
-the 0x1C param block `{viewActor, loc, rot}` after the original returns. Full derivation:
-docs/bioshock2/ENGINE_NOTES.md. Bonus banked: any BS2 script event is now hookable by name.
+The session-24 policy gate ran FIRST and returned the best possible answer: poking the FOV
+option re-lensed the drill viewmodel WITH the world (screenshot pair, ENGINE_NOTES). BS1's
+entire foreground counter-model - fovA/fovB, kFgEyeComp, vrfgfov, the lock/lockpull domain -
+exists to fight a fixed-lens fg rig that BS2 simply does not have. None of it ports. BS2's
+FOV milestone is readback + gated write + nothing else.
 
-### 2. Runtime-verified BS2 facts (session 24)
+### 2. The derivation (session 25, full chain in docs/bioshock2/ENGINE_NOTES.md)
 
-- RTTI candidates VERIFIED live: AShockPlayer 0x11197C0 (gameplay view actor),
-  AShockPlayerController 0x1117BF0 (vtable slot 3 resolves to ProcessEvent; menu-load view
-  actor). The camera module logs the observed view-actor vtable RVA on change, so a wrong
-  candidate names its own correction.
-- `view state: GAMEPLAY (ShockPlayer view)` transition works (same phrase as BS1 - the
-  harness detector transfers).
-- BS2's main menu does NOT run PlayerCalcView (BS1's attract scene does, at ~7000/s) - the
-  b2r command poller therefore ticks from the ProcessEvent detour, so the command seam works
-  at the menu too. Dispatch rates observed: ~200-850 calls/s, spikes ~4500/s during loads.
-- Flat 6DOF acceptance (log-measured, final-camera heartbeat): offset z +50.0 exact; simhead
-  pitch 20 deg -> 3640 units, roll 15 -> 2730, yaw residual -5461 integer-exact; sim position
-  (0.10 0.20 -0.30) m -> headOff (6.1 31.0 20.0) UU = |37.4| at worldscale 100, halves exactly
-  at 50. The b2r `simhead` lane takes a position triple - full-6DOF provable flat, which BS1's
-  rotation-only lane never could.
+- Vtable 0x11523D8 runtime-VERIFIED via the new `vtscan` probe before anything trusted it
+  (3 matches: 2 stack slots + the real heap object).
+- Offset by ini-adjacency (`MouseIconScale=10` immediately precedes `HorizontalFOV=100` in
+  Bioshock2SP.ini's [ShockGame.ShockUserSettings]; the object mirrors it at +0x48=10,
+  +0x4C=100) + poke proof: 100->130 img-diff 8.99 mean-abs / 39.3% changed vs a 1.34 / 5.0%
+  restore floor. Renderer-consumed per frame, no APPLY, no code clamp through 150.
+- Production locate: heap scan for the vtable (BS1 shape) + 3-miss DORMANCY from day one
+  (the b2r scanner bakes in the session-22 lesson BS1's own settings scanner predates);
+  re-armed on view-state changes. Measured ~0.4 s at menu, ~3 s in gameplay (Debug).
 
-### 3. Architecture work M10 forced (all committed)
+### 3. What landed in code (branch s25-m10-bs2-fov, 5 commits so far)
 
-- `game/adapter_registry.cpp`: `init_adapter()`/`adapter()` moved out of bioshock1r, dispatch
-  by host exe name; silent host detection feeds `log::init(subdir)` BEFORE the log exists.
-- Per-game data dirs: BS2 = `%LOCALAPPDATA%\BioshockVR\bs2\`, BS1's released flat layout
-  FROZEN (user decision). Two data-dir bypasses fixed (b1r command.txt, core framedump) -
-  everything now composes from `log::data_dir()`.
-- `ue_math.h` -> `game/shared/` (bvr::ue + per-game aliases). Docs restructure: per-game
-  `docs/bioshock1/` + `docs/bioshock2/` (ENGINE_NOTES + TESTING each); CLAUDE.md updated.
-- Tools: `-Game bs1|bs2` on build/install/uninstall/tail-log/game-cmd/game-shot/game-click
-  (defaults bs1, behavior-identical). boot.ps1 stays BS1-only - BS2's gameswf menu ignores
-  synthetic clicks/Enter (arrow keys move the selection; activation unreliable - drive by
-  hand).
-- Seam-leak inventory recorded in the ARCHITECTURE decision log (M10 acceptance criterion):
-  command seam lives per-adapter, preset serializer persists core state from b1r, gameplay
-  predicate + heartbeat + head-drive math duplicated in b2r, IGameAdapter doc-vs-reality gap.
-  Policy: duplicate-in-b2r now, unify once BS2 stabilizes. b2r writes NO ini - BS1
-  calibration untouchable by construction.
-- BS1 regression smoke PASSED after the refactors (same CalcView RVA, caps 0x3, boot.ps1 to
-  GAMEPLAY, command seam + framedump at unchanged paths, ini timestamps untouched).
+- b2r command seam: full memscan/pokeaddr/hexdump/fsweep/strscan/membases/dumpframe family
+  (verbatim BS1 routes) + the b2r-first `vtscan <hexRva>` candidate-vtable verifier.
+- b2r patterns: `scan_for_vtable_object` (full-4GB LAA walk, SEH-guarded) + `hfov_option_ptr`
+  (cache + vtable revalidate + 2 s rate limit + 3-miss dormancy + `hfov_scan_rearm`).
+- Readback: every CalcView claims the live option (menus included); missing object claims 0 =
+  core's explicit fallback signal (bit-identical to pre-readback behavior). Heartbeat gained
+  `fov=N`; `fovaudit` ported (simple form); overlay shows the option + Force-headset-FOV
+  checkbox + manual game-FOV write controls.
+- Write block: BS1 shape - `vrfov` (headset-suggested hfov) wants strictGameplay AND vrDrove;
+  `gfov` (manual) wants strictGameplay; one-shot save/restore of the user's option; the
+  CalcView-silent stale-restore ticks from the ProcessEvent detour (BS2 has no scenedraw
+  hook). Adapter advertises CAP_FOV_WRITE; `setFov` routes to the manual lever.
+- Core fix (only BS1-shared file touched): crash.cpp repeat-fault suppressor + 3-dumps-per-
+  session cap. Motive below.
 
-### 4. Known BS2 gaps (deliberate, next M10 sessions)
+### 4. Flat gates all PASSED (log-measured)
 
-- NO FOV readback/write: projection claims headset FOV over the game's rendered FOV -
-  confirmed in-headset as fisheye + the world dragging with head turns (user report,
-  session 24). THE first follow-up. BS2 has a native FOV slider (Graphics Options, default
-  100) - likely UShockUserSettings; candidate vtable 0x11523D8 unconsumed, offset must be
-  derived fresh.
-- Mono only (M4 stereo not started): no scene-reentry scan, no 1t substrate on BS2 yet.
-- No aim/hands/bones/body/input-drive/console-exec; BS1's wider command vocabulary
-  (memscan family, vrstereo, vraim, reentry, exec) not ported.
-- Menu-load view actor class (vtable RVA 0x106EE20) not RTTI-identified yet.
+Scan one-shot at menu boot, correct object chosen from 4 matches, heartbeat `fov=100`;
+`fovaudit` option=100 with option-derived tanH=1.191754 == tan(50 deg) exact (src=none only
+because no XR session was up - readback claim is stored); `gfov 120` at the MENU correctly
+refuses to write (strictGameplay gate); `vrfov status` reports force=off suggested=0.0
+writing=0. Gameplay-side write gates (ON/OFF edges, stale-restore) still need a loaded save -
+queued for the user session below.
+
+### 5. Incident: the session-24 build crash-looped and wrote 115 GB of dumps
+
+The user's BS2 run crashed at 18:20 (null read, `Bioshock2HD.exe+0x4FF0FE`, after ~11 min
+idle in gameplay, headset in VISIBLE-idle) - and Steam's CSERHelper filter CONTINUE_EXECUTIONs
+the fault, so our chained filter re-dumped the SAME fault once per second for 40 minutes:
+2,083 dumps, 115 GB. Cleaned to two exemplars (`bs2\crash\bvr_20260729_182015.dmp` +
+`_185932.dmp`); crash.cpp now suppresses repeat reports at the same address and caps minidumps
+at 3/session. The crash itself is UNTRIAGED - dump kept, RVA 0x4FF0FE, registers in the log
+around 18:20:15.
 
 ## Next steps
 
-**STANDING POLICY for all BS2 work (user directive, session 24): BS2 is not bound by BS1's
-methods.** BS1's fg/viewmodel FOV counter-modeling, weapon scaling compensation and aim
-workarounds were forced by BS1 limitations - when BS2 affords a cleaner/native method, use it.
-Test whether the BS1 problem even exists on BS2 before porting any compensation machinery.
-Full entry in the ARCHITECTURE decision log; also in CLAUDE.md hard rules.
+**STANDING POLICY (user directive, session 24): BS2 is not bound by BS1's methods** - check
+native first, test whether the BS1 problem exists, port only what is proven necessary. Full
+entry in the ARCHITECTURE decision log + CLAUDE.md hard rules. Session 25's fg verdict is the
+first applied case.
 
-1. **BS2 FOV** (kills the confirmed fisheye + world-drag): the goal is claim == rendered,
-   then the forced-headset-FOV write (toggle like BS1's, default per the every-lever-off
-   rule). Order of work under the policy above: (a) FIRST test the native path - change
-   BS2's own FOV slider in the options UI and check whether the viewmodel/weapons stay
-   correct across values (if yes, BS1's entire fg apparatus stays unported); (b) derive the
-   UShockUserSettings hfov offset fresh via the UI-slider + value-rescan method (BS1
-   session-4 recipe; candidate vtable 0x11523D8); (c) wire readback into
-   `vr::set_rendered_hfov` so the projection claim is honest; (d) the gated write.
-2. **BS2 M4 stereo**: re-derive the scene-build seam + render-queue substrate for
-   SequentialReentry; expect the same shapes as BS1, different RVAs, plus the jmp-stub
-   indirection everywhere - and per the policy, check first whether BS2's renderer offers a
-   less invasive doubling path before assuming SR's exact BS1 shape.
-3. Port the value_scan/dumpframe command routes to b2r (or move the dispatcher to a shared
-   home per the decision-log leak list) so BS2 discovery work has the full toolkit - needed
-   by step 1b.
-4. BS1 carries: v0.4.1 to the external tester (crash capture), 2K-account lead, seated
+1. **BS2 M4 stereo** (the user's top ask - "jitter 3D" parallax already reads well in mono,
+   and world-scale tuning is blocked on it): re-derive the render substrate. Session-25
+   recon says BS1's STATIC submit-finding method is dead on BS2 (SetEvent is
+   wrapped/virtually dispatched, zero static callers of the wrapper) - so start LIVE: port
+   BS1's SetEvent caller sampler (`reentry kick` instrument), sample the game-thread submit
+   caller, walk back to the entry offline. Pump-loop candidates 0x7C3E40 / 0xCF3EE0 banked
+   in ENGINE_NOTES. `dumpframe full 2` decode-check on BS2 is a cheap first probe. Per the
+   policy: check whether BS2 offers a less invasive doubling path before assuming
+   SequentialReentry's exact BS1 shape.
+2. Record the BS2 FOV slider min/max endpoints next time someone is in Graphics Options
+   (ENGINE_NOTES gap, cosmetic).
+3. **Triage the BS2 idle-gameplay crash** (dump kept, RVA 0x4FF0FE) - one-off or a class?
+   BS1's session-23 offline-disasm triage recipe applies.
+4. Menu-load view actor class (vtable RVA 0x106EE20) still not RTTI-identified.
+5. BS1 carries: v0.4.1 to the external tester (crash capture), 2K-account lead, seated
    recenter designs, letterbox investigation.
 
 ## Previous state (session 23, superseded - CLEAN-MACHINE NEW-USER FLOW + CRASH CAPTURE: Steam's CSERHelper was eating our crash handler, load-crossing stereo drop fixed, thumbrest ammo modifier, v0.4.1 packaged - branch s23-crash-diagnostics)
@@ -2537,6 +2539,37 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 25 - 2026-07-29 - BS2 FOV: readback + write landed flat, fg apparatus proven unnecessary
+
+Branched s25-m10-bs2-fov off main. Opened by discovering the session-24 build had crash-looped
+on the user's machine: a null read at Bioshock2HD.exe+0x4FF0FE after ~11 min of idle gameplay,
+and CSERHelper's chained filter retries the faulting instruction, so our filter wrote the SAME
+55 MB dump once per second for 40 minutes - 2,083 dumps, 115 GB. Killed the zombie, kept two
+exemplar dumps, deleted the rest, and fixed crash.cpp (repeat-fault suppressor + 3 dumps per
+session cap) - the only BS1-shared file touched all session. Then the milestone work in plan
+order: ported the value_scan/dumpframe routes into b2r's dispatcher (duplicate-now policy) and
+added the b2r-first `vtscan` probe over a new duplicated heap scanner. Derivation ran mostly
+WITHOUT the user: vtscan verified vtable 0x11523D8 live (real object among stack-slot false
+positives), the ini's property adjacency (MouseIconScale=10 right before HorizontalFOV=100)
+matched the object hexdump at +0x48/+0x4C, and the poke proof landed first try - 100->130
+moved 39.3% of pixels (8.99 mean-abs), restore back to the 5.0% ambient floor, monotonic
+through 150, no clamp. THE finding: the drill viewmodel re-lensed WITH the world in the poke
+pair - BS2's foreground follows the world FOV natively, so fovA/fovB/kFgEyeComp/vrfgfov stay
+unported (first applied case of the s24 policy; the offset ALSO proved the never-copy rule:
+BS1's +0x8C reads 3 here). Wired the readback (claim == rendered, missing object claims 0 =
+core's own fallback), the write block (vrfov headset-forced + gfov manual, both default OFF,
+strict-gameplay gated, save/restore, stale-restore from the PE detour since BS2 has no
+scenedraw hook), heartbeat fov= field, fovaudit, overlay controls, CAP_FOV_WRITE. Flat gates
+passed at the menu including the negative one (gfov refuses to write outside gameplay). A
+harness lesson re-learned the hard way: an unfocused BS2 pauses to ~1-2 ProcessEvent calls/s,
+so a command can sit undispatched for minutes - pair EVERY game-cmd with a game-shot.
+IN-HEADSET VERDICT (user, same day): **ACCEPTED - fisheye gone, world-drag gone**, viewmodel
+unremarkable, Esc-pause restore edges exercised repeatedly in-headset (vrfov wrote 131 =
+headset-derived, effectively BS1's 130; gfov lever re-defaulted to 130 for parity). User also
+confirmed mono parallax depth reads well and asked for stereo - correctly not there yet;
+world-scale perception likewise deferred to stereo (the mono slider only scales lean
+translation, flat-proved working). PR opened and merged same session per the s24 precedent.
 
 ### Session 24 - 2026-07-29 - M10 started: BioShock 2 adapter to M3 parity
 

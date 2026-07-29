@@ -63,12 +63,48 @@ constexpr uint8_t kFindFuncCheckedPrologue[] = {0x55, 0x8B, 0xEC, 0x64, 0xA1,
 constexpr uint32_t kProcessEventVtblByteOffset = 0xC;
 
 // Further candidates from the same RTTI walk, recorded for the milestone's
-// next steps (FOV readback, hands, skeleton, console exec). Nothing consumes
-// them at M3, so they stay comment-only until the consuming code lands:
-//   UShockUserSettings 0x11523D8   APlayerWeapon    0x112CC78
-//   AHands             0x1125478   SkeletonInstance 0x10D0FC0
+// next steps (hands, skeleton, console exec). Nothing consumes them yet, so
+// they stay comment-only until the consuming code lands:
+//   APlayerWeapon      0x112CC78   AHands           0x1125478
+//   SkeletonInstance   0x10D0FC0
 //   UGameEngine        0x10BD7DC / 0x10BD9E8 (BS1's console_exec used the
 //   second of the pair - expect the same here, but verify before calling).
+
+// --- UShockUserSettings: the FOV option (session 25) ------------------------
+// Vtable RVA runtime-VERIFIED 2026-07-29: vtscan found a live heap object
+// whose dword0 == base + RVA (the two other matches were stack slots holding
+// the same pointer). HorizontalFOV offset derived FRESH - BS1's +0x8C does
+// NOT transfer (it reads 3 here): located by ini-adjacency (MouseIconScale=10
+// immediately precedes HorizontalFOV=100 in [ShockGame.ShockUserSettings] of
+// Bioshock2SP.ini, mirrored in the object as +0x48=10, +0x4C=100) and proven
+// by poke evidence (100->130 screenshot img-diff mean-abs 8.99 / 39.3%
+// changed vs a 1.34 / 5.0% ambient floor after restore; the drill viewmodel
+// re-lensed WITH the world = BS2's foreground follows the option natively;
+// monotonic widening through 150 = no code clamp in the writable range).
+// int32 DEGREES, renderer-consumed per frame, no options APPLY. Full recipe
+// in docs/bioshock2/ENGINE_NOTES.md.
+constexpr uint32_t kUserSettingsVtableRva = 0x11523D8;
+constexpr uint32_t kUserSettingsHfovOffset = 0x4C;
+
+// Live pointer to the HorizontalFOV int, or null while the settings object
+// is not located. Cache + revalidate by vtable dword every call; a miss
+// falls through to the heap scan (rate-limited, DORMANT after 3 straight
+// misses - hfov_scan_rearm() clears that, called on view-state changes).
+// Game thread only.
+int32_t* hfov_option_ptr();
+void hfov_scan_rearm(const char* why);
+
+// --- heap scan for vtable-identified objects (session 25) -------------------
+// BS2 shape of BS1's scanner (bioshock1r/patterns.cpp - duplicated per the
+// duplicate-now seam policy): walk the FULL 4 GB committed private RW space
+// (the game is LAA; actors allocate above 2 GB) for objects whose dword0 is
+// imageBase + vtableRva. `accept` is called per match until it takes one;
+// every call site must treat this as EXPENSIVE (multi-second) - one-shot use
+// only, never on a cadence (BS1 session-22 lesson: a scan cadence reads as
+// "the game freezes every couple of seconds").
+using ObjectAccept = bool (*)(void* obj, void* user);
+void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccept accept,
+                             void* user, const char* what, int* outMatches);
 
 struct Symbols {
     // The dead-on-BS2 event thunk (RVA 0x395CC0 live) - resolved and logged

@@ -8,6 +8,8 @@
 
 #include "game/bioshock2r/camera.h"
 
+#include "core/debug/value_scan.h"
+#include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
@@ -51,6 +53,18 @@ std::atomic<float> g_offsetX{0.0f}, g_offsetY{0.0f}, g_offsetZ{0.0f};
 // in every session log. Toggle off with `camlog off` / the overlay.
 std::atomic<bool> g_logCamera{true};
 
+// FOV (session 25). The readback claims whatever the game renders (honest
+// projection = no fisheye/world-drag); both WRITE levers ship DEFAULT OFF
+// per the every-lever-off rule. `vrfov` asks for the headset-suggested hfov
+// in strict gameplay while the HMD drives; `gfov` is the manual test lever.
+std::atomic<int32_t> g_lastOptionFov{0}; // telemetry: 0 = object not located
+std::atomic<bool> g_forceHeadsetFov{false};
+std::atomic<bool> g_gameFovWrite{false};
+// Manual-lever default 130 = BS1 parity (user request, session 25 in-headset
+// pass: the headset-derived vrfov wrote 131 on the Quest 3 / VD rig and was
+// judged good, so the manual lever defaults to match that neighborhood).
+std::atomic<float> g_gameFovDeg{130.0f};
+
 // M3 VR camera drive. worldScale default follows BS1's in-headset calibration
 // (100 UU/m, session 16) as the starting point - BS2 gets its own verdict
 // from the user before anything is persisted.
@@ -93,6 +107,12 @@ uintptr_t g_imageBase = 0;
 size_t g_imageSize = 0;
 uint64_t g_lastHeartbeatMs = 0;
 uint32_t g_heartbeatBaseCount = 0;
+// FOV write latch (game thread only): one-shot save of the user's option on
+// the ON edge, restored on the OFF edge - the option ini value is the user's
+// property and must survive every path out of gameplay.
+bool g_wasWritingGameFov = false;
+int32_t g_savedGameFov = 0;
+uint64_t g_lastCalcViewMs = 0;
 bool g_haveRecenter = false;
 bvr::vr::HeadPose g_recenterPose{};
 // The seated frame's yaw zero, in ROTATOR UNITS (65536/turn), integer for the
@@ -155,9 +175,28 @@ bool is_gameplay_view_rva(uint32_t vtblRva) {
 //   camlog on|off                1 Hz heartbeat
 //   vroverlay on|off             core overlay visibility (bring-up A/B)
 //   vrcine <args>                core cinematic-fallback A/B (vrcine status..)
+// FOV (session 25; both write levers DEFAULT OFF):
+//   vrfov on|off|status          forced headset FOV write (strict gameplay +
+//                                HMD driving only; save/restore of the option)
+//   gfov <deg>|off               manual game FOV write (flat test lever)
+//   fovaudit                     option vs submitted claim vs rendered fov
+// Discovery commands (route to core/debug/value_scan; game thread only),
+// ported from BS1's dispatcher for the session-25 FOV derivation - the
+// duplicate-now seam policy applies (see the ARCHITECTURE decision log):
+//   memscan <f>  memrescan <f>  memlist [n]  memread <idx>
+//   memscani <u>  memrescani <u>   (integer-typed variants)
+//   mempoke <idx> <f>  mempoke <lo>-<hi> <f>  mempokei ...same with <u>
+//   memrestore  memptr <idx> [maxDeltaHex]
+//   pokeaddr <hex> <f>  pokeaddri <hex> <u>  hexdump <hex> <len>
+//   fsweep <hexaddr> <len> <lo> <hi>  strscan <text>  membases
+//   dumpframe [full] [n]
+//   vtscan <hexRva> [needBytesHex]  (b2r-first: one-shot heap scan for live
+//   objects whose dword0 == base + RVA - the candidate-vtable verifier)
 
 void apply_command(const char* cmd, const char* args) {
-    float x = 0.0f, y = 0.0f, z = 0.0f;
+    float v = 0.0f, x = 0.0f, y = 0.0f, z = 0.0f;
+    unsigned lo = 0, hi = 0, n = 0;
+    unsigned addr = 0, len = 0;
 
     if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
@@ -226,9 +265,162 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b2r] command: vroverlay %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
     } else if (strcmp(cmd, "vrcine") == 0) {
         bvr::vr::handle_cine_command(args); // core detector A/B on a new game
+    } else if (strcmp(cmd, "vrfov") == 0) {
+        // Forced headset FOV, DEFAULT OFF: in strict gameplay while the HMD
+        // drives, write the headset-suggested hfov into the game option so
+        // the image fills the headset. Off restores on the next CalcView.
+        if (strncmp(args, "status", 6) == 0) {
+            BVR_LOG("[b2r] vrfov status: force=%s suggested=%.1f option=%d "
+                    "writing=%d savedOption=%d",
+                    g_forceHeadsetFov.load(std::memory_order_relaxed) ? "on" : "off",
+                    bvr::vr::suggested_hfov_deg(),
+                    g_lastOptionFov.load(std::memory_order_relaxed),
+                    g_wasWritingGameFov ? 1 : 0, g_savedGameFov);
+        } else {
+            bool on = strncmp(args, "off", 3) != 0;
+            g_forceHeadsetFov.store(on, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vrfov %s (suggested headset hfov %.1f deg; engages "
+                    "in strict gameplay while the HMD drives)",
+                    on ? "on" : "off", bvr::vr::suggested_hfov_deg());
+        }
+    } else if (strcmp(cmd, "gfov") == 0) {
+        // Manual game-option FOV write (flat test lever + clamp probe).
+        if (strncmp(args, "off", 3) == 0) {
+            g_gameFovWrite.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: gfov off");
+        } else if (sscanf_s(args, "%f", &v) == 1 && v > 0.0f) {
+            g_gameFovDeg.store(v, std::memory_order_relaxed);
+            g_gameFovWrite.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: gfov %.1f (writes in strict gameplay)", v);
+        } else {
+            BVR_LOG("[b2r] usage: gfov <deg> | gfov off");
+        }
+    } else if (strcmp(cmd, "fovaudit") == 0) {
+        // The three fov truths side by side (BS1 session-21 instrument, minus
+        // the pose/eyes stereo sub-forms BS2 does not have yet): the engine
+        // option, what the runtime last tagged the projection layer with, and
+        // the option-derived expectation at the swap aspect. The RENDERED
+        // side comes from the core fov watch when it decodes, else from
+        // `dumpframe full 2` + tools/decode-framedump.ps1.
+        int32_t* opt = patterns::hfov_option_ptr();
+        float tanH = 0.0f, tanV = 0.0f;
+        int src = -1;
+        unsigned sw = 0, sh = 0;
+        bvr::vr::fov_audit(&tanH, &tanV, &src, &sw, &sh);
+        // Option-derived expectation. Flat there is no session (swap dims
+        // 0x0) - assume the 16:9 render aspect.
+        float optTanH = 0.0f, optTanV = 0.0f;
+        if (opt) {
+            optTanH = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
+            optTanV = optTanH * ((sw && sh) ? (static_cast<float>(sh) / static_cast<float>(sw))
+                                            : (9.0f / 16.0f));
+        }
+        BVR_LOG("[b2r] fovaudit: option=%d gfovWrite=%s(%.1f) vrfov=%s | submitted "
+                "tanH=%.6f tanV=%.6f src=%s swap=%ux%u | option-derived tanH=%.6f "
+                "tanV=%.6f",
+                opt ? *opt : -1,
+                g_gameFovWrite.load(std::memory_order_relaxed) ? "on" : "off",
+                g_gameFovDeg.load(std::memory_order_relaxed),
+                g_forceHeadsetFov.load(std::memory_order_relaxed) ? "on" : "off", tanH,
+                tanV,
+                src == 0   ? "readback"
+                : src == 1 ? "fallback"
+                : src == 2 ? "manual"
+                : src == 3 ? "live"
+                           : "none",
+                sw, sh, optTanH, optTanV);
+        float liveTanH = 0.0f, liveTanV = 0.0f;
+        unsigned long long liveAge = 0;
+        if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge))
+            BVR_LOG("[b2r] fovaudit live: rendered tanH=%.4f tanV=%.4f (%.1f deg) "
+                    "age=%llums | mismatch=%d cineActive=%d",
+                    liveTanH, liveTanV, 2.0f * atanf(liveTanH) * kRadToDeg, liveAge,
+                    bvr::hud::fov_mismatch() ? 1 : 0,
+                    bvr::vr::cinematic_active() ? 1 : 0);
+        else
+            BVR_LOG("[b2r] fovaudit live: no decoded scene tangents yet");
+    } else if (strcmp(cmd, "fsweep") == 0) {
+        float flo = 0.0f, fhi = 0.0f;
+        if (sscanf_s(args, "%x %u %f %f", &addr, &len, &flo, &fhi) == 4)
+            bvr::value_scan::float_sweep(addr, len, flo, fhi);
+        else
+            BVR_LOG("[b2r] usage: fsweep <hexaddr> <len> <lo> <hi>");
+    } else if (strcmp(cmd, "memscan") == 0) {
+        if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::scan_f32(v);
+    } else if (strcmp(cmd, "memrescan") == 0) {
+        if (sscanf_s(args, "%f", &v) == 1) bvr::value_scan::rescan_f32(v);
+    } else if (strcmp(cmd, "memscani") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::scan_u32(n);
+    } else if (strcmp(cmd, "memrescani") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::rescan_u32(n);
+    } else if (strcmp(cmd, "memlist") == 0) {
+        bvr::value_scan::list(sscanf_s(args, "%u", &n) == 1 ? n : 32);
+    } else if (strcmp(cmd, "memread") == 0) {
+        if (sscanf_s(args, "%u", &n) == 1) bvr::value_scan::read_at(n);
+    } else if (strcmp(cmd, "mempoke") == 0) {
+        if (sscanf_s(args, "%u-%u %f", &lo, &hi, &v) == 3)
+            bvr::value_scan::poke_range(lo, hi, v);
+        else if (sscanf_s(args, "%u %f", &n, &v) == 2)
+            bvr::value_scan::poke(n, v);
+    } else if (strcmp(cmd, "mempokei") == 0) {
+        unsigned iv = 0;
+        if (sscanf_s(args, "%u-%u %u", &lo, &hi, &iv) == 3)
+            bvr::value_scan::poke_range_u32(lo, hi, iv);
+        else if (sscanf_s(args, "%u %u", &n, &iv) == 2)
+            bvr::value_scan::poke_u32(n, iv);
+    } else if (strcmp(cmd, "memrestore") == 0) {
+        bvr::value_scan::restore_all();
+    } else if (strcmp(cmd, "memptr") == 0) {
+        unsigned maxDelta = 0x400;
+        if (sscanf_s(args, "%u %x", &n, &maxDelta) >= 1)
+            bvr::value_scan::ptr_scan(n, maxDelta);
+    } else if (strcmp(cmd, "pokeaddr") == 0) {
+        if (sscanf_s(args, "%x %f", &addr, &v) == 2)
+            bvr::value_scan::poke_addr(addr, v);
+    } else if (strcmp(cmd, "pokeaddri") == 0) {
+        unsigned iv = 0;
+        if (sscanf_s(args, "%x %u", &addr, &iv) == 2)
+            bvr::value_scan::poke_addr_u32(addr, iv);
+    } else if (strcmp(cmd, "hexdump") == 0) {
+        if (sscanf_s(args, "%x %u", &addr, &len) >= 1)
+            bvr::value_scan::hexdump(addr, len ? len : 64);
+    } else if (strcmp(cmd, "strscan") == 0) {
+        char text[96];
+        if (sscanf_s(args, "%95s", text, static_cast<unsigned>(sizeof text)) == 1)
+            bvr::value_scan::log_string_scan(text);
+    } else if (strcmp(cmd, "membases") == 0) {
+        bvr::value_scan::log_module_bases();
+    } else if (strcmp(cmd, "dumpframe") == 0) {
+        // dumpframe [full] [n] - n > 1 records consecutive present windows
+        // (files suffixed _qN). Same core frame inspector as BS1; the dump
+        // lands in this game's data dir via log::data_dir().
+        bool full = strncmp(args, "full", 4) == 0;
+        int count = 1;
+        sscanf_s(full ? args + 4 : args, " %d", &count);
+        bvr::frame_inspector::arm(full ? 2 : 1, count);
+    } else if (strcmp(cmd, "vtscan") == 0) {
+        // vtscan <hexRva> [needBytesHex] - one-shot candidate-vtable verifier:
+        // logs every live object whose dword0 == base + RVA. The accept
+        // callback never chooses, so the census covers ALL matches; the
+        // summary's chosen=00000000 is expected. EXPENSIVE (full 4 GB walk) -
+        // probe use only, never wire onto a cadence.
+        unsigned needBytes = 0x100;
+        if (sscanf_s(args, "%x %x", &addr, &needBytes) >= 1) {
+            uint32_t rva = addr;
+            patterns::scan_for_vtable_object(
+                rva, needBytes,
+                [](void* obj, void* user) -> bool {
+                    BVR_LOG("[b2r] vtscan 0x%X match @ %p",
+                            *static_cast<const uint32_t*>(user), obj);
+                    return false;
+                },
+                &rva, "vtscan", nullptr);
+        } else {
+            BVR_LOG("[b2r] usage: vtscan <hexRva> [needBytesHex]");
+        }
     } else {
-        BVR_LOG("[b2r] unknown command: %s (M3 seam - BS1's wider vocabulary has not "
-                "been ported; see camera.cpp)",
+        BVR_LOG("[b2r] unknown command: %s (see the vocabulary comment in camera.cpp; "
+                "BS1-only levers like vrstereo/vraim/reentry/exec are not ported yet)",
                 cmd);
     }
 }
@@ -286,6 +478,17 @@ void calcview_tail(void* self, CalcViewParams* p) {
     }
 
     uint64_t now = GetTickCount64();
+    g_lastCalcViewMs = now;
+
+    // FOV readback (session 25): claim what the game actually renders, every
+    // call, menus included - BS1 shape. Null option object -> claim 0, which
+    // core treats exactly like "no readback yet" (falls back to the headset
+    // target, src=fallback), so nothing regresses before the first scan
+    // lands. While the write block below holds the option, the readback
+    // echoes the written value - correct, the renderer really renders it.
+    int32_t* optionFov = patterns::hfov_option_ptr();
+    g_lastOptionFov.store(optionFov ? *optionFov : 0, std::memory_order_relaxed);
+    bvr::vr::set_rendered_hfov(optionFov ? static_cast<float>(*optionFov) : 0.0f);
 
     // Gameplay verdict + candidate-RVA self-diagnosis. Published every call:
     // core's cinematic fallback keys on this verdict AND its staleness, so a
@@ -321,6 +524,9 @@ void calcview_tail(void* self, CalcViewParams* p) {
             s_lastViewState = viewState;
             BVR_LOG("[b2r] view state: %s",
                     strictGameplay ? "GAMEPLAY (ShockPlayer view)" : "menu/cutscene");
+            // A view-state change is the cheap signal that the object world
+            // changed under us - the moment to retry a dormant settings scan.
+            patterns::hfov_scan_rearm("view state change");
         }
     }
 
@@ -415,6 +621,37 @@ void calcview_tail(void* self, CalcViewParams* p) {
     // Stick-pitch-kill gate for the core input bridge, same funnel BS1 feeds.
     bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
 
+    // FOV write (session 25, BS1 write-block shape): strict gameplay only,
+    // VR wants it only while the HMD actually drives, manual lever for flat
+    // tests. One-shot save/restore of the user's option value around the
+    // whole written span; leaving gameplay restores immediately, and the
+    // stale-restore in the ProcessEvent detour covers CalcView-silent
+    // scripted scenes. No clamp needed: derivation showed the renderer
+    // consumes at least up to 150 unclamped, and suggested_hfov_deg caps at
+    // 160 on its own.
+    if (optionFov) {
+        float vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
+                          ? bvr::vr::suggested_hfov_deg()
+                          : 0.0f;
+        bool wantVr = strictGameplay && vrDrove && vrFov > 0.0f;
+        bool wantManual =
+            strictGameplay && g_gameFovWrite.load(std::memory_order_relaxed);
+        if (wantVr || wantManual) {
+            if (!g_wasWritingGameFov) {
+                g_savedGameFov = *optionFov;
+                g_wasWritingGameFov = true;
+                BVR_LOG("[b2r] game fov write ON (saved option %d)", g_savedGameFov);
+            }
+            float want = wantVr ? vrFov : g_gameFovDeg.load(std::memory_order_relaxed);
+            int32_t wantInt = static_cast<int32_t>(want + 0.5f);
+            if (*optionFov != wantInt) *optionFov = wantInt;
+        } else if (g_wasWritingGameFov) {
+            *optionFov = g_savedGameFov;
+            g_wasWritingGameFov = false;
+            BVR_LOG("[b2r] game fov write OFF (restored option %d)", g_savedGameFov);
+        }
+    }
+
     // Debug camera offset - the cheapest "the block is writable on this game
     // too" proof, log-measurable via the heartbeat.
     loc->x += g_offsetX.load(std::memory_order_relaxed);
@@ -430,11 +667,10 @@ void calcview_tail(void* self, CalcViewParams* p) {
             g_lastHeartbeatMs = now;
             g_heartbeatBaseCount = count;
         } else if (now - g_lastHeartbeatMs >= 1000) {
-            // No fov field: BS2 has no verified FOV source yet (the
-            // UShockUserSettings candidate is unconsumed at M3).
-            BVR_LOG("[b2r] camera: loc=(%.1f %.1f %.1f) rot=(%d %d %d) "
+            BVR_LOG("[b2r] camera: loc=(%.1f %.1f %.1f) rot=(%d %d %d) fov=%d "
                     "headOff=(%.1f %.1f %.1f) drive=%d (%u calls/s)",
                     loc->x, loc->y, loc->z, rot->pitch, rot->yaw, rot->roll,
+                    g_lastOptionFov.load(std::memory_order_relaxed),
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed), vrDrove ? 1 : 0,
@@ -445,6 +681,25 @@ void calcview_tail(void* self, CalcViewParams* p) {
     } else {
         g_lastHeartbeatMs = 0;
     }
+}
+
+// The CalcView-silent hole (BS1 session-22 lesson, bathysphere descent):
+// scripted cameras can stop PlayerCalcView entirely, so the write block's
+// OFF edge never runs and the user's option would stay overwritten. BS1
+// restores from its scene-build detour; BS2 has no scenedraw hook, but
+// ProcessEvent keeps firing for every script event, so the restore ticks
+// from the detour below. Game thread only.
+void restore_game_fov_if_stale(uint64_t staleMs) {
+    if (!g_wasWritingGameFov) return; // steady-state cost: one bool read
+    uint64_t now = GetTickCount64();
+    if (g_lastCalcViewMs == 0 || now - g_lastCalcViewMs < staleMs) return;
+    int32_t* optionFov = patterns::hfov_option_ptr();
+    if (!optionFov) return;
+    *optionFov = g_savedGameFov;
+    g_wasWritingGameFov = false;
+    BVR_LOG("[b2r] game fov write OFF (restored option %d - calcview silent %llu ms)",
+            g_savedGameFov,
+            static_cast<unsigned long long>(now - g_lastCalcViewMs));
 }
 
 // --- the detours -------------------------------------------------------------
@@ -475,6 +730,7 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
 
     static uint32_t s_pollGate = 0; // game thread only
     if ((++s_pollGate & 0xFF) == 0) poll_command_file(GetTickCount64());
+    if ((s_pollGate & 0x3F) == 0) restore_game_fov_if_stale(400);
 
     if (fn && parms && fn == g_calcViewFn.load(std::memory_order_relaxed))
         calcview_tail(self, static_cast<CalcViewParams*>(parms));
@@ -534,6 +790,15 @@ bool install(const patterns::Symbols& symbols) {
 
 bool hook_live() {
     return g_hookLive.load(std::memory_order_relaxed);
+}
+
+void set_fov_override(float hfovDeg) {
+    if (hfovDeg > 0.0f) {
+        g_gameFovDeg.store(hfovDeg, std::memory_order_relaxed);
+        g_gameFovWrite.store(true, std::memory_order_relaxed);
+    } else {
+        g_gameFovWrite.store(false, std::memory_order_relaxed);
+    }
 }
 
 void draw_debug_ui() {
@@ -600,6 +865,9 @@ void draw_debug_ui() {
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
+        bool forceFov = g_forceHeadsetFov.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Force headset FOV (off = game FOV, narrower)", &forceFov))
+            g_forceHeadsetFov.store(forceFov, std::memory_order_relaxed);
     }
 
     if (ImGui::CollapsingHeader("Camera debug")) {
@@ -609,6 +877,16 @@ void draw_debug_ui() {
         bool logCam = g_logCamera.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Log camera (1 Hz to file)", &logCam))
             g_logCamera.store(logCam, std::memory_order_relaxed);
+        int32_t optFov = g_lastOptionFov.load(std::memory_order_relaxed);
+        if (optFov > 0)
+            ImGui::Text("fov option: %d (readback claims it)", optFov);
+        else
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
+                               "fov option: settings object not located yet");
+        bool gfovOn = g_gameFovWrite.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Game FOV write (manual)", &gfovOn))
+            g_gameFovWrite.store(gfovOn, std::memory_order_relaxed);
+        atomic_slider("Game FOV (deg)", g_gameFovDeg, 60.0f, 150.0f);
     }
 }
 

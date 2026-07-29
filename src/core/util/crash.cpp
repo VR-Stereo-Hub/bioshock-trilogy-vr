@@ -125,6 +125,43 @@ LONG CALLBACK VectoredFilter(EXCEPTION_POINTERS* info) {
 void report(EXCEPTION_POINTERS* info, const char* reason) {
     // A fault inside MiniDumpWriteDump used to recurse straight back into here.
     if (InterlockedCompareExchange(&g_inFilter, 1, 0) != 0) return;
+
+    // Repeat-fault suppressor (session 25): a chained filter (BS2's
+    // CSERHelper) can CONTINUE_EXECUTION a persistent fault, re-executing the
+    // faulting instruction forever - observed as one 55 MB dump per second
+    // for 40 minutes (2083 dumps, 115 GB) on one BS2 crash. The first report
+    // of an address has full detail + dump; repeats at the SAME address log a
+    // heartbeat line only. Statics are safe: the g_inFilter latch makes this
+    // section single-flight.
+    static void* s_lastEip = nullptr;
+    static unsigned s_repeats = 0;
+    void* eip = info && info->ExceptionRecord ? info->ExceptionRecord->ExceptionAddress
+                                              : nullptr;
+    if (eip && eip == s_lastEip) {
+        ++s_repeats;
+        if (s_repeats == 1)
+            BVR_LOG("crash: same fault at %p again - suppressing repeat dumps and detail "
+                    "(a chained filter is retrying the faulting instruction)",
+                    eip);
+        else if (s_repeats % 500 == 0)
+            BVR_LOG("crash: fault at %p repeated %u times", eip, s_repeats);
+        InterlockedExchange(&g_inFilter, 0);
+        return;
+    }
+    s_lastEip = eip;
+    s_repeats = 0;
+
+    // Distinct-fault dump cap: a cascade of different crash addresses (heap
+    // corruption walking) must not fill the disk either. Crash LINES keep
+    // logging; only the minidump writes stop.
+    static unsigned s_dumpsWritten = 0;
+    const bool wantDump = s_dumpsWritten < 3;
+    if (s_dumpsWritten == 3) {
+        ++s_dumpsWritten; // log the cap notice once
+        BVR_LOG("crash: dump cap (3 per session) reached - further faults are logged "
+                "without minidumps");
+    }
+
     BVR_LOG("crash: caught via %s", reason);
 
     wchar_t dir[MAX_PATH];
@@ -142,17 +179,21 @@ void report(EXCEPTION_POINTERS* info, const char* reason) {
         type = static_cast<MINIDUMP_TYPE>(MiniDumpWithFullMemory | MiniDumpWithHandleData |
                                           MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
 
-    HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
     BOOL wrote = FALSE;
-    if (file != INVALID_HANDLE_VALUE) {
-        MINIDUMP_EXCEPTION_INFORMATION mei{};
-        mei.ThreadId = GetCurrentThreadId();
-        mei.ExceptionPointers = info;
-        mei.ClientPointers = FALSE;
-        wrote = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, type, &mei,
-                                  nullptr, nullptr);
-        CloseHandle(file);
+    if (wantDump) {
+        ++s_dumpsWritten; // count attempts, not successes - a failing write
+                          // storm must hit the cap too
+        HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION mei{};
+            mei.ThreadId = GetCurrentThreadId();
+            mei.ExceptionPointers = info;
+            mei.ClientPointers = FALSE;
+            wrote = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, type,
+                                      &mei, nullptr, nullptr);
+            CloseHandle(file);
+        }
     }
 
     const EXCEPTION_RECORD* rec = info ? info->ExceptionRecord : nullptr;
@@ -176,7 +217,8 @@ void report(EXCEPTION_POINTERS* info, const char* reason) {
     }
 
     BVR_LOG("crash: %s (code 0x%08X at %p [%s], fault addr 0x%08X%s) tid=%u build %s (%s)",
-            wrote ? "minidump written" : "MINIDUMP WRITE FAILED",
+            wrote ? "minidump written"
+                  : (wantDump ? "MINIDUMP WRITE FAILED" : "minidump skipped (session cap)"),
             rec ? rec->ExceptionCode : 0, addr, where, static_cast<unsigned>(faultAddr), access,
             GetCurrentThreadId(), BVR_VERSION, BVR_BUILD_ID);
     if (wrote) {
