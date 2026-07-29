@@ -61,9 +61,10 @@ docs/bioshock2/ENGINE_NOTES.md. Bonus banked: any BS2 script event is now hookab
 ### 4. Known BS2 gaps (deliberate, next M10 sessions)
 
 - NO FOV readback/write: projection claims headset FOV over the game's rendered FOV -
-  expected distortion in-headset, THE first follow-up. BS2 has a native FOV slider
-  (Graphics Options, default 100) - likely UShockUserSettings; candidate vtable 0x11523D8
-  unconsumed, offset must be derived fresh.
+  confirmed in-headset as fisheye + the world dragging with head turns (user report,
+  session 24). THE first follow-up. BS2 has a native FOV slider (Graphics Options, default
+  100) - likely UShockUserSettings; candidate vtable 0x11523D8 unconsumed, offset must be
+  derived fresh.
 - Mono only (M4 stereo not started): no scene-reentry scan, no 1t substrate on BS2 yet.
 - No aim/hands/bones/body/input-drive/console-exec; BS1's wider command vocabulary
   (memscan family, vrstereo, vraim, reentry, exec) not ported.
@@ -2542,7 +2543,10 @@ final-camera heartbeat. Tools grew -Game bs1|bs2; docs split into per-game folde
 (docs/bioshock1/, docs/bioshock2/); seam-leak inventory + three design decisions recorded in
 the ARCHITECTURE log. Known gaps left deliberately: no FOV readback (expected in-headset
 distortion - first follow-up), mono only, no aim/hands, BS1 command vocabulary not ported.
-In-headset M3 verdict: PENDING-MARKER.
+In-headset M3 verdict (user, Quest 3 / VDXR): PASSED - 6DOF head camera tracks in BS2.
+Expected artifacts confirmed present: fisheye AND the world dragging with head turns - both
+the one FOV-claim mismatch (no BS2 FOV readback yet), which makes the FOV work the clear next
+step. Scale judgment deferred to stereo (cannot judge scale in mono - user's call).
 
 ### Session 23 - 2026-07-29 - clean-machine new-user flow + crash capture
 

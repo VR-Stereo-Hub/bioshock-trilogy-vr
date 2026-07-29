@@ -590,8 +590,9 @@ kill. Both prerequisites below are now MET.):**
       because BS2 inlined the event dispatch, see docs/bioshock2/ENGINE_NOTES.md)
 - [~] **Done when:** M3-level (6DOF mono) within one session of scan work; M4-level stereo within
       the milestone. Every core/adapter seam leak found → ARCHITECTURE decision log.
-      (M3-level: session 24, one session as budgeted - flat 6DOF integer-exact; seam-leak
-      inventory in the decision log. Still open: M4-level stereo, FOV readback/write.)
+      (M3-level: session 24, one session as budgeted - flat 6DOF integer-exact, in-headset
+      PASSED (fisheye/world-drag = the expected FOV-claim gap); seam-leak inventory in the
+      decision log. Still open: M4-level stereo, FOV readback/write.)
 
 ## Post-v1 backlog (not scheduled)
 
