@@ -324,26 +324,6 @@ void calcview_tail(void* self, CalcViewParams* p) {
         }
     }
 
-    if (g_logCamera.load(std::memory_order_relaxed)) {
-        if (g_lastHeartbeatMs == 0) {
-            g_lastHeartbeatMs = now;
-            g_heartbeatBaseCount = count;
-        } else if (now - g_lastHeartbeatMs >= 1000) {
-            // No fov field: BS2 has no verified FOV source yet (the
-            // UShockUserSettings candidate is unconsumed at M3).
-            BVR_LOG("[b2r] camera: loc=(%.1f %.1f %.1f) rot=(%d %d %d) "
-                    "headOff=(%.1f %.1f %.1f) (%u calls/s)",
-                    loc->x, loc->y, loc->z, rot->pitch, rot->yaw, rot->roll,
-                    g_headOffX.load(std::memory_order_relaxed),
-                    g_headOffY.load(std::memory_order_relaxed),
-                    g_headOffZ.load(std::memory_order_relaxed), count - g_heartbeatBaseCount);
-            g_lastHeartbeatMs = now;
-            g_heartbeatBaseCount = count;
-        }
-    } else {
-        g_lastHeartbeatMs = 0;
-    }
-
     // M3: drive the camera from the HMD pose. Pitch/roll are absolute (head
     // owns them); yaw is additive on the game's yaw so stick/mouse turning
     // still works; position adds the recenter-relative head offset, rotated
@@ -440,6 +420,31 @@ void calcview_tail(void* self, CalcViewParams* p) {
     loc->x += g_offsetX.load(std::memory_order_relaxed);
     loc->y += g_offsetY.load(std::memory_order_relaxed);
     loc->z += g_offsetZ.load(std::memory_order_relaxed);
+
+    // Heartbeat LAST so it reports the FINAL camera handed back to the game -
+    // drive, offsets and all. This is what the flat 6DOF checks measure
+    // (offset -> exact UU delta; simhead -> exact rotator units; sim position
+    // -> headOff), so it must not read the pre-drive values.
+    if (g_logCamera.load(std::memory_order_relaxed)) {
+        if (g_lastHeartbeatMs == 0) {
+            g_lastHeartbeatMs = now;
+            g_heartbeatBaseCount = count;
+        } else if (now - g_lastHeartbeatMs >= 1000) {
+            // No fov field: BS2 has no verified FOV source yet (the
+            // UShockUserSettings candidate is unconsumed at M3).
+            BVR_LOG("[b2r] camera: loc=(%.1f %.1f %.1f) rot=(%d %d %d) "
+                    "headOff=(%.1f %.1f %.1f) drive=%d (%u calls/s)",
+                    loc->x, loc->y, loc->z, rot->pitch, rot->yaw, rot->roll,
+                    g_headOffX.load(std::memory_order_relaxed),
+                    g_headOffY.load(std::memory_order_relaxed),
+                    g_headOffZ.load(std::memory_order_relaxed), vrDrove ? 1 : 0,
+                    count - g_heartbeatBaseCount);
+            g_lastHeartbeatMs = now;
+            g_heartbeatBaseCount = count;
+        }
+    } else {
+        g_lastHeartbeatMs = 0;
+    }
 }
 
 // --- the detours -------------------------------------------------------------
