@@ -3,6 +3,7 @@
 #include "core/util/log.h"
 #include "game/bioshock2r/camera.h"
 #include "game/bioshock2r/patterns.h"
+#include "game/bioshock2r/scenedraw.h"
 
 namespace bvr::b2r {
 
@@ -17,6 +18,7 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     patterns::Symbols symbols{};
     if (!patterns::resolve(image, symbols)) return false; // resolve() logged why
     camera::init_image(image); // vtable-RVA identity checks need the bounds
+    scenedraw::init(image);    // RVA math for the discovery instruments
     if (!camera::install(symbols)) return false;
     BVR_LOG("[b2r] adapter ready, capabilities 0x%X", capabilities());
     return true;
@@ -28,6 +30,7 @@ void Bioshock2RAdapter::setFov(float hfovDeg) {
 
 void Bioshock2RAdapter::drawDebugUi() {
     camera::draw_debug_ui();
+    scenedraw::draw_debug_ui();
 }
 
 bvr::game::IGameAdapter* create_adapter() {

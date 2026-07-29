@@ -70,6 +70,31 @@ constexpr uint32_t kProcessEventVtblByteOffset = 0xC;
 //   UGameEngine        0x10BD7DC / 0x10BD9E8 (BS1's console_exec used the
 //   second of the pair - expect the same here, but verify before calling).
 
+// --- render-substrate discovery (session 26) --------------------------------
+// The engine's ONLY static path to kernel32!SetEvent is the event-object
+// signal ("Trigger") method below: `push [ecx+4]; call [IAT SetEvent]; ret` -
+// a 10-byte __thiscall with the HANDLE at object+4 (the same event-object
+// shape BS1 documented on its submit kick). It has ZERO static E8 callers
+// (virtual dispatch), so the submit is derived LIVE: `reentry kick2` hooks
+// this method and samples _ReturnAddress() = the engine-side call site.
+// Session-25 recon CORRECTIONS (offline capstone census, 2026-07-29 s26):
+// 0xB81020 (E9 stub 0xF01A) is SuspendThread/ResumeThread on a thread object,
+// 0xCDB917 (stub 0xD9BD) is a crit-section once-init helper, the second FF15
+// SetEvent site 0xCDB9BB is CRT encoded-pointer once-init machinery, and the
+// FF25 import jmp-thunks (SetEvent's at 0xF3E494) have zero callers - none of
+// these are render seams. Sync-primitive census + derivations in
+// docs/bioshock2/ENGINE_NOTES.md. Recorded there, comment-only here until a
+// consumer lands: ReleaseSemaphore FF15 cluster 0x5C98CE/0x5C9A1B/0x5C9B84/
+// 0x5C9DB8 (job-system shape); WFSO(INFINITE, handlePair[i<2]) helper
+// 0x7C3E40 over the global handle pair at RVA 0x1803A14 (pump-wait
+// candidate); CreateSemaphoreW ctor 0xCF3EE0 (session-25 "pump candidate"
+// label was wrong - it is a semaphore-object constructor).
+constexpr uint32_t kEventTriggerRva = 0xB81050;
+// Opcode bytes only: the FF15 operand embeds the ASLR-rebased IAT VA, so the
+// last 4 bytes of the instruction differ from the disk image at runtime.
+constexpr uint8_t kEventTriggerPrologue[] = {0xFF, 0x71, 0x04, 0xFF, 0x15};
+// push dword ptr [ecx+4]; call dword ptr [imm32]
+
 // --- UShockUserSettings: the FOV option (session 25) ------------------------
 // Vtable RVA runtime-VERIFIED 2026-07-29: vtscan found a live heap object
 // whose dword0 == base + RVA (the two other matches were stack slots holding
