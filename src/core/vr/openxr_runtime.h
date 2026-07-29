@@ -27,7 +27,10 @@ void on_present_begin(IDXGISwapChain* swapchain);
 void on_present_end(IDXGISwapChain* swapchain);
 
 // ResizeBuffers: drop backbuffer-size-dependent resources (quad swapchain).
-void on_resize();
+// width/height/format are the game's ResizeBuffers arguments (0 = unchanged in
+// DXGI's own convention). A same-size resize keeps the XR swapchains alive -
+// see the session-23 note at the implementation.
+void on_resize(unsigned width, unsigned height, unsigned format);
 
 // Status + controls section for the overlay.
 void draw_debug_ui();

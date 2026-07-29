@@ -120,7 +120,7 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
 HRESULT WINAPI ResizeBuffersDetour(IDXGISwapChain* swapchain, UINT bufferCount,
                                    UINT width, UINT height, DXGI_FORMAT format,
                                    UINT swapchainFlags) {
-    vr::on_resize();
+    vr::on_resize(width, height, static_cast<unsigned>(format));
     overlay::on_resize();
     hud::release_resources(); // recreated lazily at the new size
     HRESULT hr = g_origResizeBuffers(swapchain, bufferCount, width, height, format, swapchainFlags);
