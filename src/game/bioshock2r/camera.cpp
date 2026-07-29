@@ -60,7 +60,10 @@ std::atomic<bool> g_logCamera{true};
 std::atomic<int32_t> g_lastOptionFov{0}; // telemetry: 0 = object not located
 std::atomic<bool> g_forceHeadsetFov{false};
 std::atomic<bool> g_gameFovWrite{false};
-std::atomic<float> g_gameFovDeg{100.0f};
+// Manual-lever default 130 = BS1 parity (user request, session 25 in-headset
+// pass: the headset-derived vrfov wrote 131 on the Quest 3 / VD rig and was
+// judged good, so the manual lever defaults to match that neighborhood).
+std::atomic<float> g_gameFovDeg{130.0f};
 
 // M3 VR camera drive. worldScale default follows BS1's in-headset calibration
 // (100 UU/m, session 16) as the starting point - BS2 gets its own verdict
