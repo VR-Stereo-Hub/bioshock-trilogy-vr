@@ -221,18 +221,31 @@ std::atomic<bool> g_loggedFirstPair{false};
 // has been FOCUSED, losing FOCUSED switches pacing to SKIP: presents stop
 // calling the blocking wait entirely and the game runs free, while
 // pump_events keeps running every present so the return to FOCUSED is acted
-// on immediately. A low-cadence keepalive still runs one real paced frame in
-// case the runtime wants to see frames before re-granting FOCUSED -
-// event-driven recovery is the primary path, the keepalive is insurance.
+// on immediately.
 // The guard NEVER engages before the first FOCUSED: during bring-up
 // (SYNCHRONIZED -> VISIBLE -> FOCUSED) the runtime needs submitted frames to
 // advance its own state machine, so a naive "skip whenever not FOCUSED"
 // would deadlock session start.
-constexpr uint64_t kPaceKeepaliveMs = 5000;
+//
+// Session 26 - THE LOW-CADENCE KEEPALIVE IS GONE, and removing it is a HANG
+// FIX, not a tuning change. It used to let one real paced frame through every
+// 5 s while unfocused, as insurance in case a runtime wanted to see frames
+// before re-granting FOCUSED. But xrWaitFrame takes no timeout, so that one
+// frame is an UNBOUNDED block, and it bit in the field (2026-07-29, BS2 in
+// stereo, VDXR): the session dropped to VISIBLE with the headset idle, the
+// FIRST keepalive fired immediately (g_nextKeepaliveMs started at 0) and
+// never returned - the render thread stalled inside Present, back-pressured
+// the game thread through the command ring, and the process wedged at 0 CPU
+// with 'Not Responding' (kill required, no crash, no dump). Recovery never
+// depended on the keepalive: pump_events runs every present ABOVE this guard
+// and the return to FOCUSED arrives as a session EVENT, not something the app
+// earns by submitting frames. Worst case without it is "stays unfocused",
+// which is visible, recoverable and infinitely better than a wedged game.
+// `vrpace off` still restores the old always-pace behavior for A/B.
 std::atomic<bool> g_paceGuard{true};      // A/B knob (`vrpace off` = old behavior)
 std::atomic<bool> g_everFocused{false};   // written on the present thread
-uint64_t g_nextKeepaliveMs = 0;           // present thread only
-std::atomic<uint32_t> g_paceSkips{0}, g_paceKeepalives{0};
+uint64_t g_unfocusedSinceMs = 0;          // present thread only; 0 = not skipping
+std::atomic<uint32_t> g_paceSkips{0};
 std::atomic<uint32_t> g_lastWaitMs{0}; // last xrWaitFrame block, telemetry
 std::atomic<bool> g_simIdle{false};    // flat stand-in (`vrpace simidle on`)
 
@@ -307,13 +320,14 @@ bool pace_should_skip(XrSessionState state, bool everFocused, uint64_t now) {
     if (!g_paceGuard.load(std::memory_order_relaxed)) return false;
     if (state == XR_SESSION_STATE_FOCUSED) return false;
     if (!everFocused) return false; // bring-up: frames are how we REACH focused
-    if (now >= g_nextKeepaliveMs) {
-        g_nextKeepaliveMs = now + kPaceKeepaliveMs;
-        g_paceKeepalives.fetch_add(1, std::memory_order_relaxed);
-        BVR_LOG("xr: pace keepalive while %s (one paced frame so the runtime can "
-                "re-grant FOCUSED; skips so far %u)",
-                state_str(state), g_paceSkips.load(std::memory_order_relaxed));
-        return false;
+    // Unfocused after having held FOCUSED: skip the blocking wait ALWAYS (see
+    // the keepalive post-mortem above). One line per unfocused episode.
+    if (g_unfocusedSinceMs == 0) {
+        g_unfocusedSinceMs = now;
+        BVR_LOG("xr: pacing SKIPPED while %s (headset idle) - the game keeps "
+                "running; recovery is event-driven, no paced frame is issued "
+                "until the runtime re-grants FOCUSED",
+                state_str(state));
     }
     g_paceSkips.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -520,7 +534,7 @@ void teardown_session(const char* why) {
     g_system = XR_NULL_SYSTEM_ID;
     g_state = XR_SESSION_STATE_UNKNOWN;
     g_everFocused = false;
-    g_nextKeepaliveMs = 0;
+    g_unfocusedSinceMs = 0;
     g_framesSubmitted = 0;
     g_nextRetryMs = GetTickCount64() + 5000; // cooldown before the next attempt
 }
@@ -770,14 +784,14 @@ void pump_events() {
                     break;
                 }
                 case XR_SESSION_STATE_FOCUSED:
-                    if (g_everFocused &&
-                        g_paceSkips.load(std::memory_order_relaxed) > 0)
-                        BVR_LOG("xr: FOCUSED again - full pacing resumes (guard "
-                                "skipped %u presents, %u keepalives)",
-                                g_paceSkips.load(std::memory_order_relaxed),
-                                g_paceKeepalives.load(std::memory_order_relaxed));
+                    if (g_everFocused && g_unfocusedSinceMs != 0)
+                        BVR_LOG("xr: FOCUSED again after %llu ms unfocused - full "
+                                "pacing resumes (guard skipped %u presents)",
+                                static_cast<unsigned long long>(GetTickCount64() -
+                                                                g_unfocusedSinceMs),
+                                g_paceSkips.load(std::memory_order_relaxed));
                     g_everFocused = true;
-                    g_nextKeepaliveMs = 0;
+                    g_unfocusedSinceMs = 0;
                     break;
                 case XR_SESSION_STATE_STOPPING:
                     if (g_sessionBegun) {
@@ -897,6 +911,21 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             g_projectionReady.store(false, std::memory_order_relaxed);
             return;
         }
+    }
+
+    // Belt and braces (session 26): never wait with an XR frame still begun.
+    // The pair-hold is the ONLY intended open-frame state and it returns far
+    // above this point, so reaching here with g_frameOpen set means a frame
+    // leaked - and waiting on a leaked frame is the other way a runtime can
+    // block forever. Close it and take the dropped frame instead.
+    if (g_frameOpen) {
+        XrFrameEndInfo leaked{XR_TYPE_FRAME_END_INFO};
+        leaked.displayTime = g_frameState.predictedDisplayTime;
+        leaked.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        xrEndFrame(g_session, &leaked);
+        g_frameOpen = false;
+        g_srPairOpen = false;
+        BVR_LOG("xr: closed a leaked open frame before waiting (pair aborted?)");
     }
 
     XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
@@ -1809,8 +1838,7 @@ void draw_debug_ui() {
                            "projection NOT ready - drive is held off (see log)");
     uint32_t paceSkips = g_paceSkips.load(std::memory_order_relaxed);
     if (paceSkips)
-        ImGui::Text("pace guard: skipped %u waits, %u keepalives, last wait %u ms",
-                    paceSkips, g_paceKeepalives.load(std::memory_order_relaxed),
+        ImGui::Text("pace guard: skipped %u waits, last wait %u ms", paceSkips,
                     g_lastWaitMs.load(std::memory_order_relaxed));
     uint32_t mirrorBlits = g_mirrorBlits.load(std::memory_order_relaxed);
     if (mirrorBlits)
@@ -1936,12 +1964,12 @@ void handle_pace_command(const char* args) {
                    : "");
     } else {
         BVR_LOG("xr: pace guard %s | session %s everFocused=%d | skips %u "
-                "keepalives %u lastWait %u ms | simidle %s "
+                "lastWait %u ms | simidle %s (keepalive retired session 26 - it "
+                "was an unbounded xrWaitFrame block) "
                 "(vrpace on|off|simidle on|off|status)",
                 g_paceGuard.load(std::memory_order_relaxed) ? "ON" : "off",
                 state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? 1 : 0,
                 g_paceSkips.load(std::memory_order_relaxed),
-                g_paceKeepalives.load(std::memory_order_relaxed),
                 g_lastWaitMs.load(std::memory_order_relaxed),
                 g_simIdle.load(std::memory_order_relaxed) ? "ON" : "off");
     }
