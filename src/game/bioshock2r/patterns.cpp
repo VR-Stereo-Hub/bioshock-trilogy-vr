@@ -170,6 +170,31 @@ void hfov_scan_rearm(const char* why) {
     }
 }
 
+bool verify_draw_chain(const bvr::pattern_scan::ProcessImage& image) {
+    using namespace bvr::pattern_scan;
+    const uint8_t* slot = image.base + kGameEngineVtableRva + kDrawVtblByteOffset;
+    if (!is_memory_valid(slot, sizeof(void*))) {
+        BVR_LOG("[b2r] engine vtable Draw slot unreadable (RVA 0x%X+0x%X)",
+                kGameEngineVtableRva, kDrawVtblByteOffset);
+        return false;
+    }
+    const uint8_t* stub = *reinterpret_cast<const uint8_t* const*>(slot);
+    const uint8_t* draw = follow_jmp_stub(stub);
+    if (draw != image.base + kSceneBuildRva) {
+        BVR_LOG("[b2r] Draw via engine vtbl+0x%X = %p (stub %p) does NOT match expected "
+                "RVA 0x%X - build differs, refusing",
+                kDrawVtblByteOffset, draw, stub, kSceneBuildRva);
+        return false;
+    }
+    if (!prologue_matches(draw, kSceneBuildPrologue, sizeof(kSceneBuildPrologue),
+                          "UGameEngine::Draw"))
+        return false;
+    BVR_LOG("[b2r] UGameEngine::Draw chain VERIFIED: vtbl 0x%X slot +0x%X -> stub %p -> "
+            "body %p (RVA 0x%X)",
+            kGameEngineVtableRva, kDrawVtblByteOffset, stub, draw, kSceneBuildRva);
+    return true;
+}
+
 bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     using namespace bvr::pattern_scan;
 

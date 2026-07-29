@@ -594,3 +594,36 @@ runtime.
   option re-lensed the drill viewmodel WITH the world (screenshots, ENGINE_NOTES) - so
   fovA/fovB/kFgEyeComp/vrfgfov stay unported, and BS2's FOV milestone is readback +
   write + nothing else.
+
+- **2026-07-29 (session 26, M10): BS2 SequentialReentry runs on the THREADED
+  substrate - none of BS1's single-threading machinery ports.** The policy gate
+  ("check whether BS2 needs the BS1 workaround before porting it") ran against the
+  derived substrate and returned no: BS1 forces the renderer inline because its game
+  thread enters a racy kick-and-wait event handshake per frame (the 0x61D38E deadlock
+  class); BS2's `UGameEngine::Draw` fills a cursor-based command ring with no
+  handshake, and the per-tick render sync runs once AFTER the doubled call - so a
+  second Draw just enqueues a second scene + present. Flat-proven: pulse + continuous
+  + stereo all clean, `presents/s == 2 x draws/s` exact, zero faults. Consequences:
+  no flush-point hook, no drain guard, no hw-thread quotient poke, no watchdog (the
+  deadlock class it detects cannot form without the handshake; one gets added only if
+  a hang is ever observed), and `vrstereo` sequences just camera mode -> stereo. The
+  render-thread sync pair (FEventWin globals 0x1A69294/98) is banked in ENGINE_NOTES
+  UNCONSUMED as the 1t-fallback derivation entry point if long soaks ever disprove
+  this. Load safety replaces BS1's structural-1t discipline with a deny-by-default
+  caller gate: pass 2 doubles only Draws whose return RVA is the single census-verified
+  gameplay dispatcher (0xCD5D7B) plus the calcview-silent and present-stall skips.
+
+- **2026-07-29 (session 26, M10): BS2 pass-2 camera enters via the ProcessEvent seam
+  replay, and commands can never execute mid-Draw.** The doubled Draw re-dispatches
+  PlayerCalcView exactly once (live: 2nd-pass hits == second calls, 655/655), so the
+  BS1 replay design transfers onto the ProcessEvent filter: the fn-match branch checks
+  `second_pass_for_current_thread` and runs `second_pass_replay` (cached pass-1 base +
+  +IPD/2, absolute writes = idempotent, no telemetry/drive/FOV/heartbeat side effects,
+  and no `g_lastCalcViewMs` update so staleness keeps meaning "the NORMAL pass went
+  silent") instead of `calcview_tail`. Hardening the BS1 shape improved on it: the
+  command poller and FOV stale-restore now defer while `inside_hooked_call()` holds
+  (BS1 polls from inside the hooked build; on BS2 a `vtscan` landing mid-Draw would
+  freeze the pair and a hook toggle mid-Draw would be UB - the deferred tick lands
+  milliseconds later given ProcessEvent traffic), and the overlay's vrstereo checkbox
+  posts a request that the same outside-hooked-calls lane applies (also the only lane
+  that works at BS2's menu, which never runs PlayerCalcView).

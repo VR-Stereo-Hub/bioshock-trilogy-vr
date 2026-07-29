@@ -61,8 +61,44 @@ session 25 also the FOV levers (`vrfov on|off|status`, `gfov <deg>|off`, `fovaud
 full discovery family (`memscan(i)/memrescan(i)/memlist/memread/mempoke(i)/memrestore/memptr/
 pokeaddr(i)/hexdump/fsweep/strscan/membases/dumpframe`, plus the b2r-first
 `vtscan <hexRva> [needBytesHex]` candidate-vtable verifier - one-shot, walks the full 4 GB,
-~3 s Debug in gameplay, EXPECTED to freeze the game for that long). BS1's vrstereo/vraim/
-reentry/exec are NOT ported yet.
+~3 s Debug in gameplay, EXPECTED to freeze the game for that long). Since session 26 also
+the stereo family: `vrstereo on|off` (one toggle: camera mode + stereo - NO 1t rung on
+this game) and `reentry vrstereo|stereo|pulse|on|off|yaw|reset|hook [draw|stream]|unhook|
+dump <n>|kick on|off|kick2 on|off|calcstack|status`. Still unported from BS1: vraim/
+vrhands/vrbones/exec.
+
+## Stereo flat acceptance (session 26 - all PASSED, log-measured; stereo-only policy)
+
+| step | expected |
+|---|---|
+| `reentry hook` in gameplay | `UGameEngine::Draw chain VERIFIED` + `draw hook ENABLED`; beat line shows `draws/s == presents/s`, `calc in == draws`, single caller `CD5D7B` |
+| `reentry pulse 3` | 3x `second draw ok` (call2 ~5 ms vs ~0.7 ms pass-through); that beat shows `presents == draws + 3` |
+| `reentry on` (yaw 30) | `2nd/s == draws/s`, `presents/s == 2x draws/s`, tick halves; `reentry off` recovers 1:1 instantly. Do NOT expect a yawed flat screenshot - PrintWindow catches the FIRST present of each pair on this game |
+| `reentry stereo on` | beat `2nd/s == draws/s`, `presents == 2x`; 1 Hz `[b2r] sr eyes: ... |d|=6.30 UU (expect 6.30)` - the per-eye delta must equal ipd/1000 x worldScale |
+| `reentry status` | `2ndHits == seconds`, `skips=0 foreign=0 poisoned=0` in steady gameplay |
+| `vrstereo on` | `VRSTEREO READY` (camera mode + stereo sequence) |
+| load crossing (user drives the menu) | with vrstereo armed: quit-to-menu / reload - zero faults, `foreign` may tick (loader draws skipped by the caller gate), stereo re-engages in gameplay without re-arm |
+
+## In-headset stereo checklist (session 26 - the M10 depth acceptance)
+
+1. Quest 3 + Virtual Desktop (VDXR), launch BS2, load a save.
+2. `vrstereo on` (overlay "VR stereo" checkbox in the BS2 reentry section, or
+   `.\tools\game-cmd.ps1 -Game bs2 "vrstereo on"`). Log must say `VRSTEREO READY`.
+3. Depth check: nearby geometry (railings, the drill) must read at DIFFERENT depths
+   than the far wall - real parallax, not a flat screen. If everything fuses but feels
+   inside-out/eye-swapped, note it (core has a swap-eyes diagnostic).
+4. Head motion comfort: look around + lean - the SR pair pacing (one xrWaitFrame per
+   L/R pair) ships ON; report any "eyes feel weird" shear on head turns (BS1 session-7
+   symptom; the fix is already active, this verifies it transfers).
+5. World scale: NOW judge it (mono could not show scale) - tune the overlay
+   "World scale" slider until the drill/hands/architecture read life-sized, note the
+   number (BS1 calibrated 100).
+6. IPD slider (overlay): verify it visibly changes eye separation.
+7. Esc pause + resume: quad screen on pause, stereo re-engages on resume.
+8. Quit to menu, CONTINUE back in: stereo must re-engage without re-arm, no crash.
+9. Report: depth correct? eye swap? comfort on head motion? world-scale number?
+   pause/load edges clean? fps feel (expect the tick to halve - ~100 pairs/s in the
+   Adonis spawn flat).
 
 ## FOV flat acceptance (session 25 - log + img-diff measured)
 

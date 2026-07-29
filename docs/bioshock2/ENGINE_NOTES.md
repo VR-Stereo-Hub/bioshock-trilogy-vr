@@ -180,30 +180,99 @@ included; null object claims 0 = core's explicit fallback signal); the gated wri
 stale-restore from the ProcessEvent detour because BS2 has no scenedraw hook); the 1 Hz
 heartbeat's `fov=` field; `fovaudit`.
 
-## M4 stereo candidates (session 25 stretch - offline recon ONLY, nothing hooked)
+## Scene-draw architecture (session 26) - SequentialReentry WITHOUT single-threading
 
-Shape-search of the exe against BS1's three render-architecture functions (frame submit:
-TLS-prologue + ret 0xC + SetEvent near tail; render pump: WaitForSingleObject(INFINITE) loop;
-scene build: aligned-stack prologue + ret 0x10). Findings:
+**The headline: BS2's SequentialReentry runs on the THREADED substrate.** BS1 needed
+structural single-threading (the flush-point hook) because its game thread parks in a
+racy kick-and-wait handshake per frame; BS2's Draw path has NO such handshake - the
+game thread fills a cursor-based command ring and the per-tick sync runs once AFTER the
+doubled call - so a second Draw simply enqueues a second scene + present command.
+Flat-proven: pulse and continuous doubling, `presents/s == 2 x draws/s` exact, per-eye
+camera delta IPD-exact, zero faults. None of BS1's 1t/flush-point/drain-guard machinery
+ports. (Second applied case of the "BS2 is not bound by BS1's methods" directive, after
+the session-25 fg verdict.)
 
-- **BS1's static submit-finding method is DEAD on BS2**: the exe has only two `FF 15`
-  SetEvent call sites, both inside wrapper functions (0xB81020, 0xCDB917). The 0xCDB917
-  wrapper (reached via E9 stub 0xD9BD) has ~1954 static callers - a general-purpose sync
-  utility, census-useless. The 0xB81020 wrapper (stub 0xF01A) has ZERO static E8 callers -
-  virtual/register dispatch. No TLS-prologue ret-0xC SetEvent-calling function exists
-  statically. Conclusion: find the submit LIVE, the way BS1 originally did - a kernel32
-  SetEvent caller sampler on the game thread (BS1's `reentry kick` instrument), then walk
-  the sampled return RVA back to the enclosing entry offline.
-- **Render-pump candidates** (WFSO(INFINITE) with a backward-jump loop shape): entries
-  0x7C3E40 and 0xCF3EE0. Unverified; the pump confirms itself live by
-  GetCurrentThreadId-registration + once-per-Present drain cadence.
-- **Scene build**: the aligned-stack + ret 0x10 shape has 300+ static matches - not rankable
-  offline. Derive it from the live submit's gameplay caller ret RVA (BS1 session-6 recipe:
-  hook the submit, log callers, capstone-walk backward past decoy SEH entries; remember the
-  frameless-prologue and 11-byte-CC-run lessons).
-- Per the standing policy: before building SequentialReentry's exact BS1 shape, first check
-  whether BS2's renderer offers a less invasive doubling path (the ProcessEvent-by-name seam
-  may expose per-view script events BS1 never had; unexplored).
+### The derived render substrate (all RVAs live-verified 2026-07-29, session 26)
+
+| symbol | RVA | role + derivation |
+|---|---|---|
+| `UGameEngine::Draw` | **0x4EE8D0** | THE SequentialReentry seam ("build"). Aligned-stack + SEH prologue `53 8B DC 83 EC 08 83 E4 F0` (BS1's build family), `ret 0x10`, ECX = engine this (stored [ebp-0x84]), arg1 = viewport -> edi (+0x48 read at tail). Render-command ring cursors at `this+0x118/+0x11C` (BS1's exact offsets). Derivation: live kick2 deep-chains -> offline capstone walk -> the fn sits at **engine vtable 0x10BD7DC slot +0x118** (stub 0x139D -> body; the session-24 RTTI candidate, now consumed) - the install path re-verifies that whole chain from the image every time. ZERO static E8 callers (virtual dispatch). Live: draws/s == presents/s == calcIn/s exactly; ~0.6-0.8 ms pass-through. |
+| gameplay Draw caller | ret **0xCD5D7B** | the ONLY caller observed over every gameplay beat (count == presents): the 13-instr virtual-dispatch fn at 0xCD5D60 (`call [vtbl+0x118]`, ret 4), called from the viewport iterator 0xCD2C40 (IsWindow-gated, viewport type == 1). Pass 2's deny-by-default gate: double ONLY Draws from this ret. |
+| `FContentStreamingManager` view hand-off | 0x5C7C80 | **NOT a frame submit** - it wears BS1's submit shape exactly (TLS frame-id spin-wait head, camera globals, `ret 0xC`, tail event kick) and that shape-match was session 25's mislabel. `this` = the streaming mgr global; called from the Draw tail (ret 0x4EF541, gated on mgr non-null + ring cursors unequal) and from the no-world frame fn (ret 0x4F9AB9 in fn 0x4F6E70 - the load/menu path). Prologue `55 8B EC 64 A1 2C 00 00 00`. Hooked as telemetry only (fires 1:1 with draws in gameplay). |
+| `FEventWin::Trigger` | 0xB81050 | the event class's signal: `push [ecx+4]; call [IAT SetEvent]; ret` - handle at +4, vtable 0x11E4FAC slot 2 (slot 4 = Pulse, +0x14 = timed wait, +0x18 = wait INFINITE). The engine's ONLY static kernel32!SetEvent path; virtually dispatched everywhere. `reentry kick2` hooks it to sample engine-side call sites. |
+| Flash/FMOD lock-step runnables | Run = 0x67DAD0 | `FThreadLockStepRunnable::Run` (vtable 0x10D53D4 slot 1; abstract work virtual at +0x14): `while (![this+0xC]) { [this+4]->wait(); vtbl[+0x14](); [this+4]->signal(); }`. Shared by `FFlashUpdateRunnable` (vtbl 0x10D53F8) and `FFMODUpdateThread` (vtbl 0x11FB574) - THESE are the two once-per-present SetEvent threads the kick sampler sees, NOT render threads. Flash kick fn 0x67DB30 (gate obj [0x17F7794], work at +0x10, dt at +0x14, wake via 0xBB1950); gate methods: 0xBB1400 wait, 0xBB1610 signal-done, 0xBB1420 execute-INLINE-if-no-thread. |
+| hw-thread quotient | num **0x149760C** / div **0x1497798** | BS1's quotient family, ONE out-of-line copy at 0x67DAB0 (`return [num]/[div] > 1`), gating the Flash kick in the engine-tick fn (~0x500452 region, ret site 0x500546). Not consumed by the mod - kept for the record. |
+| streaming camera globals | loc 0x17F5D7C, rot 0x17F5D90 | live-verified via hexdump: mirror the CalcView camera exactly (the streamer's view info). Frame-id pair 0x17F5D8C/0x17F5DA0 with BS1's high-bit-done convention (`0x800000BA` parked in steady state - backpressure slots, not per-frame counters); streaming mgr global 0x17F5D54; its FEventWin kick obj global 0x17F5D60. |
+| render-thread sync pair | FEventWin globals 0x1A69294 / 0x1A69298 | the endframe fn 0x501EA0 Triggers [0x1A69294] once per present (kick2 site 0x5029BA); static reader 0xB929F2 = render-thread loop candidate. Presents run on a dedicated thread (presentTid != drawTid, live). BANKED, UNCONSUMED - only needed if threaded doubling ever proves unstable and a 1t fallback must be derived. |
+| Draw camera-source probe | viewport+0x48 -> camActor +0x1EC loc / +0x1F8 rot | the Draw head copies these cached fields into its locals (telemetry probe in the detour). NOT the final view camera (loc differs from CalcView's output) - the live camera enters via the CalcView dispatch below. |
+
+### Frame protocol (live-measured)
+
+Game thread per tick: engine tick fn (~0x500452, SEH state machine) -> viewport iterator
+0xCD2C40 -> dispatcher 0xCD5D60 -> **virtual `UGameEngine::Draw`** (fills the command
+ring; **PlayerCalcView dispatches EXACTLY ONCE inside every Draw** - live: calcIn ==
+draws every beat; the script-VM chain 0x4D3400 -> 0x4D06F0 -> 0x4D1080 carries the
+inlined dispatch, 0x4D1080 references the FName index global 0x17D9A08) -> Draw tail:
+streaming view hand-off + Flash kick-if-idle -> back in the tick fn: threaded Flash
+kick + endframe 0x501EA0 (render event Trigger + FMOD kicks + QPC stats). A dedicated
+render thread drains the ring and Presents (~200/s == draws/s); Flash + FMOD lock-step
+threads each SetEvent once per present. PlayerCalcView also dispatches ~3x per frame
+OUTSIDE Draw (other consumers).
+
+### SequentialReentry results (flat gates, 2026-07-29)
+
+- **Pulse** (3x): second Draw does real work (call2 4.5-5.0 ms vs 0.6-0.8 ms
+  pass-through), presents == draws + seconds exactly in the same beat, zero faults,
+  instant 1:1 recovery.
+- **Continuous** (yaw 30): every gameplay Draw doubled - 107/107, presents 214/s == 2x,
+  game tick halves (204 -> 107 draws/s), `reentry off` recovers instantly. 2nd-pass
+  CalcView hits == seconds exactly (655/655): the doubled Draw re-dispatches CalcView
+  once and the ProcessEvent-seam replay applies the pass-2 camera. (PrintWindow
+  phase-determinism catches the FIRST present of each pair on this game - the yawed
+  frame never appears in flat screenshots; the numeric gates carry the proof.)
+- **Stereo**: `2nd/s == draws/s`, `presents/s == 2x draws/s` (99->198 ... 105->210),
+  per-eye camera delta `|d| = 6.30 UU == ipd/1000 x worldScale` EXACT, L/R symmetric
+  around the base along the full-rotation right axis, zero skips/faults/tag-ring
+  resyncs. `vrstereo on` one-toggle (camera mode -> stereo, NO 1t rung) logs READY.
+- Load safety: pass 2 is deny-by-default on the single gameplay caller ret 0xCD5D7B +
+  `calcview_silent(400)` skip + present-stall skip; loaders/menus can never double.
+
+### Frame inspector on BS2 (dumpframe decode-check, session 26)
+
+`dumpframe full 2` under live stereo captured both halves of an SR pair - two
+consecutive present windows, each a FULL depth-tested scene (~808/812 draws, ~630 cb0
+blocks) - dump-level corroboration of the double render. KNOWN GAP: BS1's
+`tools/decode-framedump.ps1` tangent recovery (cb0 floats 12..18 layout) decodes ZERO
+screen-ray blocks on BS2's cb0 layout, so `hud::fov_watch` / `fovaudit`'s "rendered"
+side stays `no decoded scene tangents` on this game. The BS2 cb0 view-proj layout needs
+its own derivation pass when something consumes it (the fov readback claim is already
+verified by other means; the script's $fgBakeRvas are also BS1-only - fgBakeStacks
+reads 0 here, cosmetic).
+
+### Session-25 recon corrections (banked so nobody re-trusts them)
+
+- 0xB81020 (E9 stub 0xF01A) = thread-object Suspend/Resume (tail-jmps
+  SuspendThread/ResumeThread by flag), not a SetEvent wrapper.
+- 0xCDB917 (stub 0xD9BD) = crit-section once-init helper; the second FF15 SetEvent
+  site 0xCDB9BB is CRT encoded-pointer once-init machinery.
+- "Pump candidates": 0xCF3EE0 = CreateSemaphoreW object ctor; 0x7C3E40 = a
+  WFSO(INFINITE) helper over the handle pair at 0x1803A14 with callers
+  0x7A3FD6/0x7A4563 - neither is the render pump.
+- The FF25 import jmp-thunks (SetEvent's at 0xF3E494) have zero callers (dead linker
+  thunks) - an E8-to-thunk census finds nothing.
+
+### Live-sampling instruments that produced all of this (b2r scenedraw.cpp)
+
+`reentry kick` = process-wide kernel32!SetEvent sampler, BS1's shape + a BS2 extension:
+on FIRST insertion of a (tid, ret-RVA) key the slot deep-captures up to 3 further
+call-preceded exe return RVAs from the sampling thread's stack (the FF15 wrapper
+methods mask the direct caller on this game); reports include the window's presents
+delta so cadence reads as a ratio. `reentry kick2` = the same sampler hooked on
+`FEventWin::Trigger` itself - its return address IS the engine-side virtual call site
+(this one split the game thread's five per-frame kicks and cracked the architecture).
+`reentry calcstack` = one-shot call-preceded stack scan at the next CalcView dispatch.
+Menu-controller note: the 0x106EE20 view-actor vtable is plain **APlayerController**
+(RTTI, session 26) - the menu scene runs the base class, closing the session-24 gap.
 
 ## Derivation recipes (shared with BS1 - short form)
 

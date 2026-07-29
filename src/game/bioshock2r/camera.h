@@ -31,6 +31,11 @@ bool hook_live();
 // value (strict gameplay only, save/restore-gated), <= 0 disarms it.
 void set_fov_override(float hfovDeg);
 
+// True when no normal-pass PlayerCalcView dispatch landed within maxAgeMs -
+// the scripted-camera signal (scenedraw's second-draw skip + the FOV
+// stale-restore both key on it). Game thread only.
+bool calcview_silent(uint64_t maxAgeMs);
+
 // Full ImGui section: hook status, telemetry, and the M3 camera controls.
 // Called from the overlay through IGameAdapter::drawDebugUi().
 void draw_debug_ui();

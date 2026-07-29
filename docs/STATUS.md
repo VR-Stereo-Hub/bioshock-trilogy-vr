@@ -2,7 +2,93 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-29, session 25 - M10: BS2 FOV DONE flat - readback claim == rendered, forced-headset-FOV write default OFF, discovery tooling ported, crash-dump loop fixed - branch s25-m10-bs2-fov)
+## Current state (2026-07-29, session 26 - M10: BS2 STEREO FLAT-COMPLETE on the THREADED substrate - no 1t needed, presents == 2x draws exact, per-eye delta IPD-exact, vrstereo one-toggle READY - branch s26-m10-bs2-stereo)
+
+**BS2 SequentialReentry is flat-green, and the headline is what it does NOT need: none of
+BS1's single-threading machinery.** The substrate was derived in one session (live
+kick/kick2 samplers -> offline capstone walks -> `UGameEngine::Draw` = RVA 0x4EE8D0,
+engine vtable 0x10BD7DC slot +0x118 - the session-24 RTTI candidate, now consumed), and
+the policy gate returned its biggest win yet: BS2's Draw path has no kick-and-wait
+handshake (BS1's deadlock class cannot form), so the double Draw runs on the THREADED
+renderer as-is. Flat gates all passed: pulse (call2 ~5 ms real work, presents == draws +
+pulses), continuous (2nd/s == draws/s, presents/s == 2x exact, off recovers instantly),
+stereo (per-eye camera delta 6.30 UU == ipd/1000 x worldScale EXACT, 2nd-pass CalcView
+replay 655/655, zero skips/faults), `vrstereo on` -> READY, ~5 min stereo soak clean.
+Every lever DEFAULT OFF; pass 2 is deny-by-default on the single gameplay caller ret
+0xCD5D7B. In-headset depth verdict + world-scale calibration = the user checklist in
+docs/bioshock2/TESTING.md (world scale was blocked on stereo since session 24 - now
+unblocked).
+
+### 1. THE HEADLINE: threaded-substrate SequentialReentry (the policy's second big payout)
+
+BS1 forces the renderer inline (structural 1t via the flush-point hook) because its
+game thread parks in a racy per-frame event handshake. Session 26 checked whether BS2
+even has that defect before porting the cure: it does not. `UGameEngine::Draw` fills a
+cursor-based command ring; the render-thread sync runs once per tick AFTER Draw
+returns; a doubled Draw enqueues a second scene + present command and the dedicated
+render thread (presentTid != drawTid, live-attributed) just drains both. No flush-point
+derivation, no drain guard, no hw-thread poke, no watchdog. The 1t-fallback entry
+points (render sync FEventWin pair 0x1A69294/98) are banked UNCONSUMED in ENGINE_NOTES
+in case long soaks ever disprove this.
+
+### 2. The derivation (session 26; full chains in docs/bioshock2/ENGINE_NOTES.md "Scene-draw architecture")
+
+- Live instruments first: `reentry kick` (BS1's SetEvent sampler + a BS2 deep-caller
+  extension - the FF15 wrapper methods mask direct callers here) and `reentry kick2`
+  (sampler ON `FEventWin::Trigger` 0xB81050 itself - its ret addr IS the virtual call
+  site). kick2 split the game thread's five once-per-present kicks and cracked the
+  protocol: they are Flash/FMOD lock-step and endframe signals, NOT render submits.
+- Session-25 recon CORRECTED: the "SetEvent wrappers" were thread Suspend/Resume +
+  CRT once-init; the "pump candidates" were a semaphore ctor + an unrelated wait
+  helper; 0x5C7C80 wears BS1's submit shape but is the CONTENT-STREAMING view hand-off
+  (RTTI: FContentStreamingManager). The never-copy rule extends to shapes: a
+  shape-match on the wrong game is a mislabel waiting to happen.
+- PlayerCalcView dispatches EXACTLY once inside every Draw (live: calcIn == draws every
+  beat) - so BS1's pass-2 replay design transferred unchanged onto the ProcessEvent
+  seam. camSrc probe + streaming camera globals live-verified via hexdump.
+
+### 3. What landed in code (branch s26-m10-bs2-stereo, 3 commits)
+
+- b2r `scenedraw.{h,cpp}` (new): kick/kick2/calcstack instruments, prologue-gated
+  HookSlot infra with the vtable-chain build-identity gate (`verify_draw_chain`),
+  pass-through Draw/stream hooks + beat telemetry, `maybe_second_draw` (poison latch,
+  gameplay-caller gate, calcview-silent + present-stall skips, SEH-guarded second call),
+  `vrstereo` one-toggle + overlay checkbox request lane.
+- b2r camera.cpp: `apply_eye_offset` (full-rotation right axis), AER wiring + inter-eye
+  delta log, SR pass-1 base cache + pass-2 `second_pass_replay` on the ProcessEvent
+  fn-match branch, poll-gate hardening (commands NEVER execute mid-Draw - a BS2
+  improvement over BS1), `vrstereo` command, `calcview_silent` export.
+- core (one-liner): `d3d11_hook::last_present_tid()` - the single- vs multi-threaded
+  render attribution that decided the whole design.
+- Adapter advertises CAP_SCENE_REENTRY while reentry hooks are live.
+
+### 4. Carries closed
+
+- Menu controller vtable 0x106EE20 RTTI-identified: plain `APlayerController` (the
+  menu scene runs the base class) - session-24 gap closed.
+- Idle-gameplay crash 0x4FF0FE TRIAGED (offline disasm): a focus-poll path reads
+  `[[0x1A638F0]+0x4C]+0x44` (viewport window object) and it was transiently NULL after
+  ~11 min idle - then the code compares a virtual result against `GetFocus()`. A rare
+  idle/focus race, one-off class, dump cap already ships; no fix attempted.
+- FOV slider endpoints: still unrecorded (needs the user in Graphics Options - on
+  their checklist).
+
+## Next steps
+
+1. **User in-headset run** (checklist: docs/bioshock2/TESTING.md "In-headset stereo
+   checklist"): depth verdict (L/R fused, not swapped), head-motion comfort (pair
+   pacing ships ON), THE WORLD-SCALE CALIBRATION (unblocked at last), IPD slider
+   verify, pause/load edges. Plus the load-crossing pass (quit-to-menu, CONTINUE) -
+   the menu needs a human driver on BS2.
+2. If the user reports instability under stereo: the 1t fallback derivation entry
+   points are banked in ENGINE_NOTES (render sync pair 0x1A69294/98, endframe fn
+   0x501EA0, reader 0xB929F2).
+3. BS2 combat-scene stereo perf profile (needs a combat save).
+4. Record the BS2 FOV slider min/max endpoints when someone is in Graphics Options.
+5. BS1 carries: v0.4.1 to the external tester, 2K-account lead, seated recenter
+   designs, letterbox investigation.
+
+## Previous state (2026-07-29, session 25 - M10: BS2 FOV DONE flat - readback claim == rendered, forced-headset-FOV write default OFF, discovery tooling ported, crash-dump loop fixed - branch s25-m10-bs2-fov)
 
 **The BS2 FOV-claim mismatch is CLOSED - in-headset ACCEPTED (user, Quest 3 / VDXR).**
 `UShockUserSettings.HorizontalFOV` derived fresh at **+0x4C** (BS1's +0x8C reads 3 on BS2 -
@@ -74,7 +160,7 @@ the fault, so our chained filter re-dumped the SAME fault once per second for 40
 at 3/session. The crash itself is UNTRIAGED - dump kept, RVA 0x4FF0FE, registers in the log
 around 18:20:15.
 
-## Next steps
+### Next steps as of session 25 (superseded - the stereo item became session 26; live items carried into the list above)
 
 **STANDING POLICY (user directive, session 24): BS2 is not bound by BS1's methods** - check
 native first, test whether the BS1 problem exists, port only what is proven necessary. Full
@@ -2539,6 +2625,44 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 26 - 2026-07-29 - BS2 stereo: substrate derived and SR flat-green on the THREADED renderer, no 1t
+
+Branched s26-m10-bs2-stereo off main. Commit 1 shipped the discovery instruments (BS1's
+kick sampler + a BS2 deep-caller extension, and kick2 - the sampler hooked on
+FEventWin::Trigger itself since the FF15 wrappers mask direct callers) plus the
+AlternateEye offset wiring. The pre-derivation offline pass immediately CORRECTED the
+session-25 recon: the "SetEvent wrappers" were thread Suspend/Resume + CRT once-init
+machinery, the "pump candidates" were a semaphore ctor + an unrelated wait helper.
+Live sampling then cracked the frame protocol in two windows: kick2 split the game
+thread's five once-per-present Trigger sites and the deep chains + capstone walks
+resolved them into Flash/FMOD lock-step kicks and the endframe signal - and the walk
+from the Draw-tail chain landed on an aligned-stack ret-0x10 function at 0x4EE8D0 whose
+identity fell out beautifully: it sits at slot +0x118 of the session-24 UGameEngine
+vtable candidate 0x10BD7DC = UGameEngine::Draw, with BS1's exact ring-cursor offsets
+(this+0x118/0x11C) and a tail gate into what session 25 had mislabeled the submit -
+actually the FContentStreamingManager view hand-off (its BS1-submit shape match was the
+mislabel; RTTI told the truth). Live hexdumps through the command seam verified the
+streaming camera globals mirror the CalcView camera and the frame-id pair uses BS1's
+high-bit-done convention. Commit 2's pass-through hooks then answered the two live
+questions in one beat line: draws/s == presents/s == calcIn/s exactly (PlayerCalcView
+runs ONCE inside every Draw - the static "it's tick-side" read was wrong, live wins),
+single gameplay caller 0xCD5D7B, and presentTid != drawTid (threaded renderer). The
+decisive design call followed the standing policy: BS2's Draw path has NO kick-and-wait
+handshake, so commit 3 built SequentialReentry directly on the THREADED substrate -
+maybe_second_draw (poison latch, deny-by-default caller gate, calcview-silent +
+present-stall skips, SEH-guarded second call), pass-2 replay on the ProcessEvent
+fn-match branch, pass-1 base cache + eye offsets, poll-gate hardening (commands never
+execute mid-Draw), vrstereo one-toggle = camera mode -> stereo, NO 1t rung. Flat gates
+all green first try: pulse call2 ~5 ms real work with presents == draws + pulses;
+continuous 107/107 doubled at presents 214/s == 2x with instant off-recovery; stereo
+per-eye delta 6.30 UU == expected EXACT with 2nd-pass replay 655/655 and zero
+skips/faults; VRSTEREO READY; ~5 min stereo soak clean (monitor caught nothing, crash
+dir unchanged). Carries closed: 0x106EE20 = plain APlayerController (RTTI); the
+0x4FF0FE idle crash triaged to a transient-null viewport-window read in a focus-poll
+path (rare idle race, dump cap already ships). Handoff: the in-headset depth +
+world-scale checklist is in docs/bioshock2/TESTING.md - world-scale tuning is
+unblocked for the first time.
 
 ### Session 25 - 2026-07-29 - BS2 FOV: readback + write landed flat, fg apparatus proven unnecessary
 

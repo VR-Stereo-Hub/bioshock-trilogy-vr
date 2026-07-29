@@ -15,4 +15,8 @@ bool install();
 // Lifetime Present count (telemetry: presents-per-frame-root ratios etc.).
 uint64_t present_count();
 
+// Thread id observed on the most recent Present (telemetry: single- vs
+// multi-threaded render attribution - session 26, BS2 substrate work).
+uint32_t last_present_tid();
+
 } // namespace bvr::d3d11_hook

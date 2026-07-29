@@ -71,6 +71,8 @@ add_library(bioshockvr SHARED
     game/bioshock2r/camera.h
     game/bioshock2r/patterns.cpp
     game/bioshock2r/patterns.h
+    game/bioshock2r/scenedraw.cpp
+    game/bioshock2r/scenedraw.h
     game/shared/ue_math.h
 )
 set_target_properties(bioshockvr PROPERTIES PREFIX "")
