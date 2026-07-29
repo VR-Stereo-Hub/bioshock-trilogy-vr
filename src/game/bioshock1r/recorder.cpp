@@ -12,7 +12,7 @@
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/camera.h"
-#include "game/bioshock1r/ue_math.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 

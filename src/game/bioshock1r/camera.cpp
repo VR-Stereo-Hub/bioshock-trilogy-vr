@@ -20,7 +20,7 @@
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
-#include "game/bioshock1r/ue_math.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 #include <MinHook.h>

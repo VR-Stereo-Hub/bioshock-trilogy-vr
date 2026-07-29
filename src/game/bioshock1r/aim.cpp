@@ -18,7 +18,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/hands.h"
-#include "game/bioshock1r/ue_math.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 #include <MinHook.h>

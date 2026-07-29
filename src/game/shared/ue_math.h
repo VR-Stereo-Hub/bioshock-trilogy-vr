@@ -1,20 +1,23 @@
 #pragma once
-// XR <-> Unreal (Vengeance/UE2.5) conventions for this adapter. ONE copy,
-// shared by the camera drive (camera.cpp) and the aim ray (aim.cpp): if these
-// ever disagree the crosshair and the bullet disagree, which is exactly the
-// bug M6 exists to fix.
+// XR <-> Unreal (Vengeance/UE2.5) conventions, shared by every adapter of this
+// engine family (bioshock1r, bioshock2r). ONE copy, shared by the camera drive
+// (camera.cpp) and the aim ray (aim.cpp): if these ever disagree the crosshair
+// and the bullet disagree, which is exactly the bug M6 exists to fix.
 //
 // XR LOCAL space: right +X, up +Y, forward -Z, meters, right-handed.
 // UE2.5: forward +X, right +Y, up +Z; FRotator 65536 units per turn, positive
 // yaw turns toward +Y (right), positive pitch looks up, positive roll tilts
 // clockwise (right).
+//
+// No game addresses or offsets belong here - those live in each game's
+// patterns.h. This file is pure math and struct-shape convention.
 
 #include "core/util/xr_math.h"
 
 #include <cmath>
 #include <cstdint>
 
-namespace bvr::b1r {
+namespace bvr::ue {
 
 // The quat helpers were promoted to core (session 20) so the laser (core/vr)
 // composes trims with the SAME algebra as the game-side ray and model.
@@ -159,4 +162,10 @@ inline FRotator ue_dir_to_rot(const float d[3]) {
     return r;
 }
 
-} // namespace bvr::b1r
+} // namespace bvr::ue
+
+// Per-game spelling aliases: adapter code keeps its unqualified FVector /
+// wrap_rot / ... spellings. Temporary until a shared game-layer namespace
+// convention lands (ARCHITECTURE decision log, M10).
+namespace bvr::b1r { using namespace bvr::ue; }
+namespace bvr::b2r { using namespace bvr::ue; }

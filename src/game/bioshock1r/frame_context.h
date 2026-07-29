@@ -8,7 +8,7 @@
 // milestone exists to remove - so the context and the XR-pose-to-game-space
 // mapping live here, once, in the same spirit as ue_math.h.
 
-#include "game/bioshock1r/ue_math.h"
+#include "game/shared/ue_math.h"
 
 namespace bvr::b1r {
 

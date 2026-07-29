@@ -3,7 +3,7 @@
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/patterns.h"
-#include "game/bioshock1r/ue_math.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 
