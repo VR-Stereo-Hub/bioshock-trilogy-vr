@@ -7,9 +7,10 @@
 namespace bvr::b2r {
 
 uint32_t Bioshock2RAdapter::capabilities() const {
-    // No CAP_FOV_WRITE: BS2 has no runtime-verified FOV source yet (the
-    // UShockUserSettings candidate is unconsumed at M3).
-    return camera::hook_live() ? game::CAP_CAMERA_OVERRIDE : 0u;
+    // CAP_FOV_WRITE since session 25: the UShockUserSettings HorizontalFOV
+    // offset is runtime-verified and the write is save/restore-gated
+    // (camera.cpp write block; patterns.h has the derivation).
+    return camera::hook_live() ? (game::CAP_CAMERA_OVERRIDE | game::CAP_FOV_WRITE) : 0u;
 }
 
 bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
@@ -21,8 +22,8 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     return true;
 }
 
-void Bioshock2RAdapter::setFov(float) {
-    // No FOV lever on this game yet - see capabilities().
+void Bioshock2RAdapter::setFov(float hfovDeg) {
+    camera::set_fov_override(hfovDeg); // <= 0 turns the manual write off
 }
 
 void Bioshock2RAdapter::drawDebugUi() {
