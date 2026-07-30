@@ -9,10 +9,15 @@ the dot is perfect. Everything is very good."** Subtitles were reported wrong in
 are now fixed and confirmed good.
 
 **v0.5.0 is BUILT AS RELEASE AND PACKAGED** (`dist/bioshock-vr-v0.5.0.zip`, sha256
-`5C2FD1C29E6E821118C3BA91455D3292110073DB146036EF9532A5BE2BF19C4B`), and the RelWithDebInfo
-DLLs are installed in the game so the user's remaining testing soaks the actual shipping binary
-rather than Debug. **NOT merged to main and NOT tagged - the user is testing first and will give
-the final go.** Do not merge or publish without it.
+`1BAB7C5BEFA961CD135722099990024FA110CC6D4E7E30F2E7306240DA06838B`). **NOT merged to main and
+NOT tagged - the user is testing first and will give the final go.** Do not merge or publish
+without it.
+
+**THE INSTALLED GAME DLL IS OLDER THAN THE FIX.** The user asked not to restart mid-test, so the
+game is still running the 17:54 build, which contains the save-load hang in 0d-bis. The fix is
+built and packaged but NOT installed. **First action next session: `tools/install.ps1 -Release`
+and relaunch**, then re-test a save load, which is the one thing the fix changes and the one
+thing not yet verified.
 
 ### 0a. THE BUG THAT ONLY THE HEADSET COULD SHOW: the HUD redirect was eating the bar draw
 
@@ -75,6 +80,26 @@ images are captured per eye, and under SequentialReentry the two eyes come from 
 frames, so two text states superimpose. User report: "impossible to read". They now default to
 the head-locked panel (one image in both eyes) and the user confirmed them good. `vrcine subs
 frame` / the overlay checkbox restores the old behaviour.
+
+### 0d-bis. A SAVE-LOAD HANG, found and fixed in-headset - and it is the important lesson
+
+A save load hung the game (`responding=False`, log dead). Root cause was mine, from earlier the
+same session: `bones::release()` was being called from the CAMERA-side cine-edge block, which
+sits ABOVE `hands::on_calcview` - and that is what detects a world change and calls
+`bones::on_world_change()`. So the release wrote ~1.8 KB through the PREVIOUS level's skeleton,
+already freed and already reused by the loading level.
+
+**`write_n` is SEH-guarded, which is exactly why it hung instead of crashing**: the pages were
+still mapped, just owned by something else, so the guard converted a fault into silent heap
+corruption. A safety net that makes a failure quieter is not a safety net.
+
+**The rule was already written in the tree** - `hands.cpp`'s world-change block says "recycled
+heap addresses must never be written to ... restore would write into a stranger". This was a new
+call site bypassing a documented invariant. Full write-up in ENGINE_NOTES session 29 section 9.
+
+Fixed three overlapping ways (camera block no longer writes bones; `release()` interlocks on a
+live skeleton from ANY call site; `on_world_change()` clears the hoisted sleeve latch). **The
+in-headset-accepted cutscene behaviour is unaffected - only the call site moved.**
 
 ### 0e. Known characteristic, user-accepted: `authored+look` still pans with the director
 
