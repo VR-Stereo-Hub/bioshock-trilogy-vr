@@ -2112,6 +2112,13 @@ void draw_debug_ui() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Skips the WidescreenBars gameswf draw. The picture under "
                               "the bars is really there - nothing is cropped or stretched.");
+        bool fxFrame = bvr::hud::effects_in_frame();
+        if (ImGui::Checkbox("Full-screen effects across the view", &fxFrame))
+            bvr::hud::set_effects_in_frame(fxFrame);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Water, the alcohol tint and damage flashes are textureless "
+                              "fills with no texture, so they used to land on the HUD panel.\n"
+                              "Untick if scene content ever goes black behind one.");
         bool subsFrame = bvr::hud::cine_subs_in_frame();
         if (ImGui::Checkbox("Cutscene subtitles in-frame (off = readable panel)", &subsFrame))
             bvr::hud::set_cine_subs_in_frame(subsFrame);
@@ -2399,6 +2406,10 @@ void handle_cine_command(const char* args) {
         bvr::hud::set_bars_hidden(true);
     } else if (strncmp(args, "bars show", 9) == 0) {
         bvr::hud::set_bars_hidden(false);
+    } else if (strncmp(args, "effects frame", 13) == 0) {
+        bvr::hud::set_effects_in_frame(true);
+    } else if (strncmp(args, "effects panel", 13) == 0) {
+        bvr::hud::set_effects_in_frame(false);
     } else if (strncmp(args, "subs panel", 10) == 0) {
         bvr::hud::set_cine_subs_in_frame(false);
     } else if (strncmp(args, "subs frame", 10) == 0) {

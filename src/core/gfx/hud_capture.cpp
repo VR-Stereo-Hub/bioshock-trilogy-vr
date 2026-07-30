@@ -228,6 +228,10 @@ std::atomic<unsigned> g_barVerts{29};
 // head-locked HUD panel (readable in stereo), true = in-frame (session 22
 // round 4). See the on_draw comment.
 std::atomic<bool> g_cineSubsInFrame{false};
+// Full-screen textureless gameswf fills (water, alcohol tint, damage flash):
+// in-frame so they cover the whole view, instead of riding the HUD panel.
+std::atomic<bool> g_effectsInFrame{true};
+std::atomic<unsigned> g_cEffectsInFrame{0};
 // Every OTHER textureless gameswf count, logged once each. These are the
 // fades and dims that session 22 round 4 mistook for bars and blacked the
 // scene out with - so they are data we want, not noise.
@@ -822,6 +826,24 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
                 return kPass;
             }
             note_textureless_count(vertexCount);
+            // NOT the bars: a textureless gameswf fill is a FULL-SCREEN effect
+            // (water, the alcohol tint, damage flashes). Measured: the draw is
+            // 5 vertices with srv0 unbound, so the post-FX rule below cannot
+            // catch it - that rule needs a texture the size of the target, and
+            // this has no texture at all. It therefore fell through to the
+            // gameswf branch and rendered onto the HUD panel, which is why
+            // effects appeared in a small window instead of across the view.
+            //
+            // Session 22 round 3 tried exactly this and round 4 reverted it,
+            // because back then "textureless fill" also meant the letterbox
+            // bars - rendering those in-frame blacked out scene content. That
+            // conflation is gone: the bars are identified by vertex count and
+            // handled above, so what reaches here is only the effects.
+            // Reversible, because round 4's regression is the known risk.
+            if (g_effectsInFrame.load(std::memory_order_relaxed)) {
+                g_cEffectsInFrame.fetch_add(1, std::memory_order_relaxed);
+                return kPass;
+            }
         }
     }
 
@@ -1066,6 +1088,16 @@ void set_cine_subs_in_frame(bool on) {
 }
 
 bool cine_subs_in_frame() { return g_cineSubsInFrame.load(std::memory_order_relaxed); }
+
+void set_effects_in_frame(bool on) {
+    if (g_effectsInFrame.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[hud] full-screen effects -> %s (%u routed so far)",
+                on ? "IN FRAME (across the whole view)"
+                   : "the HUD panel (session 22 round 4 behaviour)",
+                g_cEffectsInFrame.load(std::memory_order_relaxed));
+}
+
+bool effects_in_frame() { return g_effectsInFrame.load(std::memory_order_relaxed); }
 bool bar_draw_active() { return g_barActive.load(std::memory_order_relaxed); }
 
 bool cinematic_hold() {

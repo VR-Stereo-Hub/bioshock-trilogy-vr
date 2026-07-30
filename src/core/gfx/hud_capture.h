@@ -107,6 +107,14 @@ unsigned bar_verts();
 void set_cine_subs_in_frame(bool on);
 bool cine_subs_in_frame();
 
+// Full-screen effects (water, alcohol tint, damage flash) are textureless
+// gameswf fills with no texture at all, so the post-FX rule - which needs a
+// texture matching the target size - cannot catch them, and they used to ride
+// the HUD panel. In-frame by default so they cover the whole view.
+// `vrcine effects frame|panel`; panel is session 22 round 4's behaviour.
+void set_effects_in_frame(bool on);
+bool effects_in_frame();
+
 // True while THIS interval contained a bar draw. This is the primary cinematic
 // signal and it is strictly better than the pixel watch: no async staging map,
 // no 5-sample hysteresis (so neither edge lags ~6 presents), and - the reason
