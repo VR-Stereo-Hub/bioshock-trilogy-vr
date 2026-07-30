@@ -86,7 +86,30 @@ backbuffer already renders exactly 100x100 deg, and 130 over-widens by 30 deg (a
 lens to ~141 deg with it). The preset no longer arms the write; the global default was already
 false, that line was the only thing turning it on. `gfov <deg>` still arms it manually.
 
-### 3. Alt-tab is NOT fixed, and the new instrument named the real cause
+### 3. Alt-tab: FIXED per the measurement, needs the in-headset confirm
+
+`xrWaitFrame` now runs on a dedicated pace thread. The present thread posts one request at a time
+(keeping wait:begin at 1:1) and waits on the result with a deadline - 200 ms while FOCUSED so the
+headset still paces the game, 20 ms otherwise so an unresponsive runtime cannot drag the flat window
+down; on timeout it gives up and a later present consumes the same outstanding result.
+`pace_should_skip` no longer skips merely for being unfocused, which is what lets FOCUSED be
+re-granted. `teardown_session` refuses to destroy a session while a wait is in flight on it (a
+use-after-free inside the runtime) and defers instead. `vrpace thread off` restores the exact
+pre-session-28 inline behaviour; `vrpace status` reports handoffs and timeouts.
+
+**Flat coverage is regression-only** - with no XR session flat the off-thread path never runs
+(`handoffs 0`), so the fix itself needs the headset. Expect on alt-tab away and back:
+`xr: FOCUSED again after N ms`, the headset image resuming by itself, and NO
+`SUBMISSION IDLE` heartbeat persisting. This is the third attempt at this bug class and the first
+one built on a measurement of it rather than a hypothesis.
+
+**Why this design and not a smaller one:** the minimal fix (submit while unfocused, but skip when
+waits get slow) needs a periodic probe wait, and an unbounded probe wait IS the session-26 keepalive
+that hung. Moving the call off the present thread is the only shape that fixes alt-tab without
+reinstating that hang class - and it retires the hang class permanently, because an unbounded block
+can no longer reach the thread the game depends on.
+
+### 3a. The measurement that named it (kept - it refuted my own first fix)
 
 My pair-hold hypothesis was **wrong** - the log says `pairOpen=0`. The actual state:
 
