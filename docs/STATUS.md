@@ -384,13 +384,22 @@ both of its blocking measurements landed this session. What remains:
 
 ### 1. Stage 2 leftovers (small, and one is a policy decision, not a bug)
 
-- **The VR PRESET FOV policy is now UNSET, deliberately, and wants a decision.** The preset used to
-  force option 130 from the "129.5 circumscribing" arithmetic, which was derived from the lens law
-  session 28 disproved; it no longer writes any FOV, so the render FOV is whatever the user's ini
-  says (100 at 2048x2048 = exactly 100x100 deg, which is close to ideal for a Quest-class eye, and
-  is what the user tested and accepted). The principled version is to set the option from the
-  HEADSET's own horizontal FOV, which needs item 2. Until then the current behaviour is correct by
-  accident-free reasoning rather than by measurement of the specific headset.
+- **The VR PRESET FOV policy is CLOSED, by the user's call 2026-07-30, and the reasoning matters.**
+  The preset no longer writes any FOV and should not. The user's account of WHY they had been
+  raising it: *"I was just changing the FOV since I wasn't able to put the screen in full view and
+  have no black bars. But now since I can change the resolution however I want then it's good."*
+  **Those black bars were an ASPECT problem, not a FOV problem, and cranking the option was
+  compensating for the wrong axis.** A headset eye is roughly square; a 16:9 render claimed at 16:9
+  fills a wide short rectangle inside it and leaves unfilled bands top and bottom, and the only way
+  to cover them by widening FOV is to over-render horizontally and throw the pixels away. Matching
+  the render ASPECT to the eye instead - a square backbuffer - makes the claimed frustum the right
+  shape, and then a sane FOV fills the eye exactly. Under the corrected world law option 100 at
+  2048x2048 renders exactly 100x100 deg against a Quest 3 eye of roughly 100x96, which is very
+  nearly an exact fill: the reason 100 + square works is arithmetic, not luck.
+  So the standing policy is **set the aspect with the resolution lane, leave the FOV alone**, and
+  the old "crank the option to 130" reflex is retired along with the law it came from.
+  `vrfov`/`gfov` remain as manual levers, default off. This also means the resolution lane was not
+  just a sharpness feature - it is the mechanism that made the FOV write unnecessary.
 - **`xrEnumerateViewConfigurationViews` is still never called.** It is the missing input for both a
   correct FOV policy and a derived render target (`recommendedImageRect`), and its absence is why a
   runtime-side resolution slider does nothing for this mod (the Dream Air user datapoint).
@@ -420,11 +429,20 @@ VR at all (stage 1 now says so in the log). Real fix is a native OpenVR backend 
 WMR, sticks/triggers/grips/face buttons are all dead even when a session does start. Add those
 profiles - that is a contained win worth doing before the backend.
 
-### 4. Release
+### 4. Release - HELD until stage 3 is finished (user's call 2026-07-30)
 
-Gate per the user: stages 2 and 3 done, then bump off 0.4.1 and build **Release** - everything
-tested this session and last has been Debug. Worth one soak on the Release build before packaging,
-because the pace thread is new and Debug timing is not Release timing.
+The user considered releasing at the end of session 28 and then explicitly deferred: *"let's hold
+off on the release till we finish stage 3 that way I can make sure everything also works and not
+weird for example in cinematics and the like."* The reasoning is sound and worth honouring rather
+than re-litigating: session 28 changed the projection claim, the foreground lens and the frame
+pacing, and **cinematics are the one place those three interact that has NOT been exercised** - the
+cinematic path has its own claim substitution branch, its own letterbox gating of the head drive,
+and its own quad fallback. Shipping before stage 3 would put an untested combination of the three
+in front of an external tester.
+
+So: stage 3 first, in-headset, then bump off 0.4.1 and build **Release** - everything tested in
+sessions 27 and 28 has been Debug. Worth one soak on the Release build before packaging, because
+the pace thread is new and Debug timing is not Release timing.
 
 ### 5. Carried diagnostics / follow-ups
 
