@@ -45,6 +45,20 @@ void last_xr_pad(Gamepad* pad, bool* active);
 // publishing stops, failing open to stock behavior.
 void publish_vr_gameplay(bool on);
 
+// Session 30. The pitch kill stops the stick fighting the HMD, but it also
+// freezes the ENGINE's own view pitch forever - and camera.cpp writes the
+// rendered pitch absolutely from the head, so nothing reads the engine's value
+// either. Anything the engine aims for itself then uses a stale number; the
+// wrench's melee phantom is one, and in-headset it was frozen at -89 degrees,
+// putting every swing into the floor.
+//
+// The game layer publishes (head pitch - engine pitch) in degrees once per
+// CalcView and the bridge feeds a proportional stick value instead of a hard
+// zero, so the game steers its own pitch through its own input path. No engine
+// memory is written. A stale publisher fails open to the old ry = 0 behaviour.
+// `vrinput pitchservo on|off|invert|status`.
+void publish_pitch_error(float headMinusEngineDeg);
+
 // Master toggle for the stick-pitch kill (default ON; `vrinput pitchkill`).
 void set_pitch_kill(bool on);
 bool pitch_kill();

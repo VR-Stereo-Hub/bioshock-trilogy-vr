@@ -140,10 +140,31 @@ Firing the game from the harness - the gotchas that cost a session:
    for melee no matter how it connects - not a bug, and not a useful control.
    The only save in the tree spawns with wrench + Electro Bolt; testing the
    WEAPON seam needs a ranged weapon (external trainer loadout).
-3. Aim at something within range. A cast into open air still runs the ability
+   **CONFIRMED BY MEASUREMENT, session 30** (this had been an untested session-10
+   assertion that two other documents contradicted): in-headset with the wrench
+   equipped and both seams hooked read-only, the weapon-seam counter did not move
+   once across a whole wrench session and every ability-seam call carried
+   `cls='ElectricBoltThreeAbility'`. So melee cannot be affected by `vraim seam
+   weapon off`, by `vraim origin off`, or by any melee carve-out in
+   `substitute()`. See ENGINE_NOTES session 30 section 1.
+3. **Driving a swing from the harness DOES work**, and it is worth knowing because
+   this file used to imply melee could not be exercised flat at all:
+   `vrinput test trig r 255 400` twice, ~2 s apart (the first pull only switches
+   hands). What CANNOT be driven is the weapon SWITCH - all four D-pad directions
+   were tried in session 30 and `vraim weapon` never left `active='Shotgun'`, so
+   a human has to equip the weapon under test first.
+4. **`vraim scanimpl <rva> <args>`: `args` must equal the target's `ret imm / 4`.**
+   Both `InitiateDamage` implementations are `ret 8`, so `args` is **2**. Passing
+   the wrong count returns with a misaligned stack and pops a
+   `Run-Time Check Failure #0 - ESP was not properly saved` modal dialog. It writes
+   NO crash dump (RTC is a Debug compiler check, not an SEH fault), and
+   force-killing the game while that dialog is up can leave the display mode
+   unrestored - press Abort on the dialog instead. Verified `ret` immediates for
+   the four fire-flow implementations are tabulated in ENGINE_NOTES session 30.
+5. Aim at something within range. A cast into open air still runs the ability
    fire-start seam; damage-side natives (`CanHit`, `InitiateDamage` on the
    weapon) only run on a hit.
-4. After a force-kill the game shows a **"revert Options?" dialog** on the next
+6. After a force-kill the game shows a **"revert Options?" dialog** on the next
    launch and its window title is `Message`, not `Bioshock`; answer No by
    `BM_CLICK`-ing the `&No` button (scratchpad `boot2.ps1` does this). The game
    window can also report a 0x0 rect for a few seconds after it appears -

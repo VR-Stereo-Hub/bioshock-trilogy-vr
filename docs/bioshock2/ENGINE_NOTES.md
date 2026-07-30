@@ -371,3 +371,131 @@ CalcView, the bone solve reads it per solve, and the XR claim derives from the r
 dims. A user changing resolution mid-session or via the ini therefore needs no relaunch for the
 lens math to follow. BS2's `SETRES` situation may differ; BS1's viewport-Exec `SETRES` FAULTS, so
 its ini lane is primary.
+
+### THE SETTLED POLICY that came out of all this (BS1, 2026-07-30) - the part to actually apply
+
+The section above is the mechanism and the checks. This is the conclusion, and it is the single
+most valuable thing to carry, because it retires a reflex rather than adding a feature.
+
+**Set the ASPECT with the resolution lane, and leave the FOV option alone.**
+
+The user had been raising FOV for sessions, and their own account of why says it best: *"I was
+just changing the FOV since I wasn't able to put the screen in full view and have no black bars.
+But now since I can change the resolution however I want then it's good."* **Those black bars were
+an ASPECT problem and cranking the FOV was compensating on the wrong axis.** A headset eye is
+roughly square; a 16:9 render claimed at 16:9 fills a wide short rectangle inside it and leaves
+unfilled bands top and bottom, and the only way to cover them by widening FOV is to over-render
+horizontally and throw the pixels away.
+
+Match the render ASPECT to the eye instead - a square backbuffer - and the claimed frustum is the
+right SHAPE, so a sane FOV fills the eye exactly. Under the corrected world law, option **100 at
+2048x2048 renders 100x100 deg against a Quest 3 eye of roughly 100x96**, which is very nearly an
+exact fill. **That works by arithmetic, not by luck**, and it is why the preset now writes no FOV
+at all. `vrfov`/`gfov` survive as manual levers, default off.
+
+So the resolution lane is not just a sharpness feature - **it is the mechanism that made the FOV
+write unnecessary.** Carry the policy, not the numbers: derive BS2's own world law first (check 3
+above), because if BS2's option is a 16:9-referenced horizontal rather than a true horizontal, the
+same square backbuffer gives a different FOV answer.
+
+**Corollary for the viewmodel/model trims.** Once the lenses are MATCHED, the per-hand model trims
+and the bone solve's aspect terms are correct at every resolution rather than only at the one they
+were tuned at - which is why BS1's hands stopped drifting with the head. If BS2 needs any trim
+values, tune them AFTER the lens question is settled, or you bake the lens error into the trims
+and they stop being portable across resolutions. `xrEnumerateViewConfigurationViews` is still
+never called on either game; it is the missing input for a derived render target
+(`recommendedImageRect`) and is why a runtime-side resolution slider does nothing for this mod.
+
+## Carries from BS1 session 30 (2026-07-30) - one of these is a LIVE LATENT BUG in BS2
+
+### 1. BS2 HAS THE FROZEN-PITCH BUG TODAY. Six lines fix it.
+
+BS1's game-breaking wrench bug was that the ENGINE's own view pitch froze and melee aimed with it.
+**BS2 reproduces the exact preconditions and lacks the fix.** Both halves are present:
+
+- `src/game/bioshock2r/camera.cpp` writes the rotation with the SAME asymmetry as BS1:
+
+```cpp
+int32_t gameYawUnits = rot->yaw;
+rot->pitch = a.pitchRad * kRotUnitsPerRadian;   // ABSOLUTE from the head
+rot->yaw   = gameYawUnits + residualUnits;      // RELATIVE to the engine's own
+```
+
+  Yaw keeps the engine's value; pitch discards it unread.
+- The same file calls `bvr::input::publish_vr_gameplay(...)`, which arms the **shared core** pitch
+  kill in `xinput_bridge.cpp` - so BS2's composed right-stick Y is zeroed exactly as BS1's was.
+
+Together those mean BS2's engine-side view pitch can never change and nothing ever reads it. It
+parks at whatever value it last held, for the whole session.
+
+**BS2 has a DRILL**, which is melee. Expect the same symptom: hits landing on the floor, worse
+when looking down, fine against a wall approached level, guns unaffected.
+
+**The fix is already in shared core** - the servo replaces the hard zero with a proportional term
+whenever a `publish_pitch_error()` is fresh, and **fails open to `ry = 0` when nobody publishes**,
+which is precisely why BS2 silently gets the old behaviour today. BS2 needs only the publisher,
+mirroring BS1's block and placed the same way - immediately BEFORE the `rot->pitch` overwrite,
+because one line later the error is identically zero:
+
+```cpp
+int32_t headPitchUnits = lroundf(a.pitchRad * kRotUnitsPerRadian);
+int32_t errUnits = wrap_rot(headPitchUnits - rot->pitch);
+bvr::input::publish_pitch_error(errUnits / kRotUnitsPerDegree);
+```
+
+This is NOT a case where "BS2 is not bound by BS1's methods" argues for a different design. It is
+the same defect, in shared code, with a fix that writes no engine memory. Verify the sign
+in-headset (`vrinput pitchservo invert` flips it) and check the residual, which on BS1 settles at
+4-8 degrees because the proportional stick falls under the game's own deadzone near convergence -
+BS2's deadzone may differ.
+
+**How to confirm it before fixing:** the `camera:` heartbeat prints `rot` before the overwrite, so
+it reports the engine's own belief. Turn your head up and down for thirty seconds. If the pitch
+field never moves, the bug is live.
+
+### 2. The gameswf classifier changes are SHARED, so BS2 inherits them untested
+
+`src/core/gfx/hud_capture.cpp` is core, so both fixes below already apply to BS2 with no BS2-side
+testing at all. Check them the first time BS2 renders a HUD in stereo:
+
+- **Post-FX is now discriminated by BIND FLAGS, not by a size match.** The old rule passed a
+  post-tonemap draw in-frame when `srv0 dims == target dims`, which is degenerate at a square
+  render target - and the policy above makes a square backbuffer the RECOMMENDED configuration, so
+  BS2 will hit this the moment it follows the resolution advice. Measured on BS1 at 2048x2048:
+  `postFxRejected=1604161` against `postFx=2` genuine, ~30 HUD draws per interval leaking
+  in-frame, 43% of them stranded onto the panel and 57% into the eye image - routed by draw ORDER,
+  not by the classifier. Now requires `BIND_RENDER_TARGET` on the source. `vrcine postfx size|rt`
+  restores the old rule for an A/B.
+- **Full-screen effects default to the PANEL again**, and the reason generalises: the health and
+  EVE bar COLOUR fills are textureless 5-vertex gameswf quads, identical to the "effect" fill by
+  every test the classifier can apply, so routing effects in-frame sent the bar fills into the eye
+  image and left the bars looking empty. **If BS2's HUD has bar-style fills, it has the same
+  collision.** Watch `effectsInFrame` in `vrcine status`: a count advancing by a small fixed number
+  every interval with nothing on screen is HUD, not an effect. On BS1 it was exactly 2. Two bars.
+
+Carry the deeper point too: these draws are authored in gameswf **stage space**, so routing one
+in-frame can never make it cover the eye - it makes it stage-sized inside it. Any BS2 attempt at
+full-screen effects has to change GEOMETRY, not the render target.
+
+### 3. `-> HANDLED` from an engine `Exec` proves nothing about whether a `set` landed
+
+BS1's `console_exec` builds an `FOutputDevice` stub that returns 0 from the engine's log filter to
+suppress output. A `set` naming a wrong class or property, or writing a class default the live
+object never re-reads, therefore logs **identically** to one that works. This cost BS1 a whole
+false belief: `set GamepadPlayerInput SoftLockOnRadius 0` had been logged as HANDLED every five
+minutes since session 22 and was never doing anything - proven by setting the radius to 5000
+instead of 0 and feeling no difference.
+
+**If BS2 ever gains an engine-SET path, verify by EFFECT, not by the return value.** The technique
+that worked: set the value absurdly rather than to the target, and see whether behaviour changes
+at all. BS2's ProcessEvent-by-name seam may be a better route than `Exec` here - worth checking
+before porting the Exec machinery at all.
+
+### 4. Probe hooks: the arg count must equal `ret imm / 4`
+
+Hooking an implementation with the wrong stack-arg count returns with a misaligned stack and pops
+a `Run-Time Check Failure #0 - ESP was not properly saved` dialog. It writes **no crash dump** (RTC
+is a Debug compiler check, not an SEH fault, so it bypasses the crash handler), and force-killing
+the game while that modal dialog is up can leave the display mode unrestored - press Abort on the
+dialog instead. Disassemble and read the first `ret` before hooking anything new; BS1's verified
+table is in `docs/bioshock1/ENGINE_NOTES.md` session 30.

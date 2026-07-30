@@ -51,6 +51,48 @@ std::atomic<bool> g_vrGameplay{false};
 std::atomic<uint64_t> g_vrGameplayLastMs{0};
 constexpr uint64_t kVrGameplayStaleMs = 500;
 
+// ---- Session 30: the pitch SERVO, and why zeroing the stick was not enough ---
+//
+// Killing the stick's pitch stops it fighting the HMD, but it also means the
+// engine's OWN view pitch can never change again - and camera.cpp writes
+// rot->pitch ABSOLUTELY from the head, so nothing ever reads the engine's value
+// either. It therefore freezes at whatever it last held and stays there for the
+// session. Measured in-headset: frozen at 49350 units, which is -89 degrees,
+// straight down, unmoving for fifty seconds.
+//
+// That is invisible until something the engine owns aims with it. The wrench
+// does: the comment above already said melee "aims the wrench's melee phantom at
+// the body pitch instead of the hand", which is why the kill exists - but a
+// frozen pitch is just a differently-wrong pitch. In-headset the swings landed
+// on the FLOOR, and the occasional kill was catching a leg on the way down.
+// Also explains the reports of misses on the opening rocks with no combat at
+// all: rocks are on the floor, so you look down at them.
+//
+// So instead of zeroing the stick, DRIVE it: feed a proportional term that
+// steers the engine's pitch toward the head's. This goes through the game's own
+// input path, so it writes no engine memory (none of the session-29 world-change
+// hazards apply), it inherits the game's own pitch clamps, and it is invisible -
+// the rendered pitch is overwritten from the head either way. The head keeps
+// owning what you SEE; the engine finally learns where you are looking.
+//
+// Fails open: the game layer publishes the error each CalcView and a stale
+// publisher reverts to the plain kill (ry = 0), which is the old behaviour.
+std::atomic<bool> g_pitchServo{true};
+std::atomic<bool> g_pitchServoInvert{false}; // if a build's look axis is flipped
+std::atomic<float> g_pitchErrDeg{0.0f};      // head pitch - engine pitch
+std::atomic<uint64_t> g_pitchErrMs{0};
+std::atomic<int16_t> g_pitchServoLast{0}; // last stick value, for `vrinput status`
+// Deadzone stops the stick chattering once it has converged - a permanently
+// nonzero look axis is the kind of thing a game can read as "the player is
+// looking around". 1.5 deg is well inside melee tolerance.
+constexpr float kPitchServoDeadDeg = 1.5f;
+// Proportional gain in stick-units per degree, and a deliberate ceiling well
+// under full deflection: this must never out-run a real player's own look, and
+// a wrong SIGN must saturate at something recoverable rather than slam the view
+// to the clamp. Worst case with the sign inverted is the pitch we already had.
+constexpr float kPitchServoGain = 900.0f;
+constexpr int16_t kPitchServoMax = 8000; // ~24% deflection
+
 // Session 22 turn controls. Smooth scale multiplies the composed stick X
 // (turn speed); snap mode instead consumes stick-X edges into queued steps
 // the camera adapter applies to the recenter composite (the M7.5 transfer
@@ -153,6 +195,24 @@ Gamepad compose_synthetic(uint64_t now) {
     return merge(syn, test);
 }
 
+// The stick value the pitch kill substitutes for a hard zero. See the block
+// comment at g_pitchServo. Returns 0 whenever it should behave exactly as the
+// old kill did: servo off, no fresh error published, or already converged.
+int16_t pitch_servo_stick(uint64_t now) {
+    if (!g_pitchServo.load(std::memory_order_relaxed)) return 0;
+    uint64_t stamp = g_pitchErrMs.load(std::memory_order_relaxed);
+    // A stopped publisher (world unload, drive off, menu) fails OPEN to the
+    // plain kill rather than holding the last error and steering blind.
+    if (!stamp || now - stamp > kVrGameplayStaleMs) return 0;
+    float errDeg = g_pitchErrDeg.load(std::memory_order_relaxed);
+    if (errDeg > -kPitchServoDeadDeg && errDeg < kPitchServoDeadDeg) return 0;
+    if (g_pitchServoInvert.load(std::memory_order_relaxed)) errDeg = -errDeg;
+    float v = errDeg * kPitchServoGain;
+    if (v > kPitchServoMax) v = kPitchServoMax;
+    if (v < -kPitchServoMax) v = -kPitchServoMax;
+    return static_cast<int16_t>(lroundf(v));
+}
+
 // Compose synthetic state over a completed GetState-shaped call. May run on
 // any thread; no allocation, no logging except the one-shot first-compose
 // line. userIndex 0 is the only slot the game plays on; other indices pass
@@ -206,7 +266,10 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
                         kVrGameplayStaleMs &&
                     !(out.buttons &
                       (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER));
-    if (g_pitchKill.load(std::memory_order_relaxed) && turnGate) out.ry = 0;
+    if (g_pitchKill.load(std::memory_order_relaxed) && turnGate) {
+        out.ry = pitch_servo_stick(now);
+        g_pitchServoLast.store(out.ry, std::memory_order_relaxed);
+    }
 
     // Session 22 turn controls (same gate cluster as the pitch kill; radial
     // states keep the raw stick).
@@ -537,6 +600,11 @@ void publish_vr_gameplay(bool on) {
     g_vrGameplayLastMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
+void publish_pitch_error(float headMinusEngineDeg) {
+    g_pitchErrDeg.store(headMinusEngineDeg, std::memory_order_relaxed);
+    g_pitchErrMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
 void set_pitch_kill(bool on) {
     bool was = g_pitchKill.exchange(on, std::memory_order_relaxed);
     if (was != on)
@@ -628,6 +696,34 @@ void handle_command(const char* args) {
                     g_pitchKill.load(std::memory_order_relaxed) ? "ON" : "off",
                     g_vrGameplay.load(std::memory_order_relaxed) ? "ACTIVE" : "inactive",
                     static_cast<unsigned long long>(age));
+        }
+    } else if (strcmp(verb, "pitchservo") == 0) {
+        // "pitchservo on|off|invert|status"
+        if (strncmp(rest, "on", 2) == 0 || strncmp(rest, "off", 3) == 0) {
+            bool on = strncmp(rest, "on", 2) == 0;
+            g_pitchServo.store(on, std::memory_order_relaxed);
+            BVR_LOG("input: pitch servo %s - %s", on ? "ON" : "off",
+                    on ? "the stick steers the ENGINE's own view pitch toward your head, so "
+                         "melee stops swinging at a frozen pitch"
+                       : "back to the plain kill (ry=0): the engine's pitch freezes where it "
+                         "is and melee aims there");
+        } else if (strncmp(rest, "invert", 6) == 0) {
+            bool inv = !g_pitchServoInvert.load(std::memory_order_relaxed);
+            g_pitchServoInvert.store(inv, std::memory_order_relaxed);
+            BVR_LOG("input: pitch servo sign %s - flip this if the engine pitch runs AWAY from "
+                    "your head instead of toward it (an inverted look axis)",
+                    inv ? "INVERTED" : "normal");
+        } else {
+            uint64_t age = GetTickCount64() - g_pitchErrMs.load(std::memory_order_relaxed);
+            BVR_LOG("input: pitch servo %s%s | err=%.1f deg (published %llu ms ago) stick=%d "
+                    "| deadzone %.1f deg gain %.0f max %d "
+                    "(vrinput pitchservo on|off|invert|status)",
+                    g_pitchServo.load(std::memory_order_relaxed) ? "ON" : "off",
+                    g_pitchServoInvert.load(std::memory_order_relaxed) ? " INVERTED" : "",
+                    g_pitchErrDeg.load(std::memory_order_relaxed),
+                    static_cast<unsigned long long>(age),
+                    g_pitchServoLast.load(std::memory_order_relaxed), kPitchServoDeadDeg,
+                    kPitchServoGain, kPitchServoMax);
         }
     } else if (strcmp(verb, "turnscale") == 0) {
         float s = 0.0f;

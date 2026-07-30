@@ -107,13 +107,61 @@ unsigned bar_verts();
 void set_cine_subs_in_frame(bool on);
 bool cine_subs_in_frame();
 
-// Full-screen effects (water, alcohol tint, damage flash) are textureless
-// gameswf fills with no texture at all, so the post-FX rule - which needs a
-// texture matching the target size - cannot catch them, and they used to ride
-// the HUD panel. In-frame by default so they cover the whole view.
-// `vrcine effects frame|panel`; panel is session 22 round 4's behaviour.
+// Full-screen effects (water, damage flash) are gameswf fills with no texture at
+// all, so the post-FX rule - which needs a texture matching the target size -
+// cannot catch them. Session 29 routed them in-frame; session 30 defaults them
+// back to the PANEL, confirmed in-headset: the health and EVE bar COLOUR fills
+// carry the identical fingerprint (textureless, 5 vertices), so in-frame sent
+// the bar fills into the eye image and left the bars looking empty. These draws
+// are also authored in gameswf STAGE space, so in-frame never made them cover
+// the view in the first place - it made them stage-sized inside it.
+// `vrcine effects frame|panel`, default panel.
 void set_effects_in_frame(bool on);
 bool effects_in_frame();
+// Session 30: the in-frame effect test is bounded by vertex count instead of
+// being the residual of the bar test. A fill is 5 verts; the census had already
+// recorded a 1493-vert textureless draw that the residual rule was sending into
+// the eye image. `vrcine effects verts <n>`, default 8.
+void set_effect_max_verts(unsigned n);
+unsigned effect_max_verts();
+
+// Session 30: the post-FX rule's size test (srv0 dims == target dims) is
+// degenerate at a square render target, where the game's own 2048x2048 UI
+// atlases match it. The bind flags are the resolution-independent
+// discriminator: a post-FX source was RENDERED, a UI atlas never was.
+// `vrcine postfx rt|size`, default rt.
+void set_postfx_rt_only(bool on);
+bool postfx_rt_only();
+
+// ---- Session 30: routing telemetry -----------------------------------------
+// PassThrough is the absence of a routing instruction, so where a passed draw
+// LANDS depends on whether an earlier draw in the same gameswf batch left our
+// substitution bound (the redirect goes through the ORIGINAL SetRT, so
+// on_setrt never sees it and g_curRt keeps naming the game's target). A
+// non-zero `stranded` count means the classifier believed a draw was in-frame
+// while the device had the HUD capture RT bound. Entirely flat-testable via
+// `vrhud force on`.
+enum RoutePass {
+    kRouteTonemap,   // the tonemap draw itself
+    kRouteNotHud,    // a different render target entirely
+    kRouteBarsShown, // the bar draw, in-frame because bars are not hidden
+    kRouteEffect,    // a textureless fill routed in-frame on purpose
+    kRouteCineSubs,  // the whole flash layer in-frame during a cinematic
+    kRoutePostFx,    // the engine's own post effects
+    kRouteUnarmed,   // gameswf, but the redirect is not armed
+    kRoutePassCount
+};
+struct RouteStats {
+    unsigned pass[kRoutePassCount];
+    unsigned stranded[kRoutePassCount];
+    unsigned postFx;          // draws left in-frame by the post-FX rule
+    unsigned postFxRejected;  // would have passed under the old size-only rule
+    unsigned effectsInFrame;  // textureless fills routed in-frame
+    unsigned effectsRejected; // textureless draws over the vertex bound
+    bool squareTarget;        // the degenerate condition, live
+};
+void get_route_stats(RouteStats* out);
+const char* route_reason_name(int reason);
 
 // True while THIS interval contained a bar draw. This is the primary cinematic
 // signal and it is strictly better than the pixel watch: no async staging map,

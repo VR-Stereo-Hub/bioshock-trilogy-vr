@@ -726,3 +726,54 @@ runtime.
   is inside `xrWaitFrame` on it, so `teardown_session` defers and retries rather than handing
   the runtime a freed handle - "stays up but idle" is an acceptable worst case, a
   use-after-free is not.
+
+- **2026-07-30 (session 30): a size coincidence is not a discriminator, and at a square render
+  target the post-FX rule stopped being one.** Session 22 routed a post-tonemap draw in-frame
+  when `srv0 dims == target dims`, on the stated premise that post effects sample a
+  BACKBUFFER-SIZED texture while gameswf samples 2048x2048 UI atlases. The user runs 2048x2048,
+  where the backbuffer IS 2048x2048 and the premise inverts: measured, `postFxRejected=1604161`
+  against `postFx=2` genuine, i.e. about 30 gameswf HUD draws per interval taking the in-frame
+  exit. The rule is now structural - a post-FX source is something the engine RENDERED
+  (`BIND_RENDER_TARGET`), a UI atlas never is - which is stronger at every resolution rather
+  than only at square ones, and `vrcine postfx size|rt` keeps the old rule for a one-command
+  A/B. The general form worth carrying: a discriminator built from a numeric coincidence
+  between two quantities silently dies the day the two quantities coincide for another reason,
+  and it dies without an error. Prefer a property that is true BY CONSTRUCTION of the thing
+  being discriminated.
+
+- **2026-07-30 (session 30): `PassThrough` was a verdict with no owner, so it is now measured
+  rather than assumed.** The redirect binds our RTV through the ORIGINAL `OMSetRenderTargets`,
+  so `hud::on_setrt` never sees it and `g_curRt` keeps naming the game's target. The classifier
+  could therefore return "in frame" while the device had the HUD capture RT bound, and which
+  draws that happened to depends on batch ORDER, not on the classifier. `hud_capture.h` had
+  stated the contract in prose since session 19; session 30 turned it into per-reason pass and
+  STRANDED counters plus a one-shot `OMGetRenderTargets` check that proves the belief against
+  the device. The measurement then REFUTED the hypothesis it was built for - effect fills read
+  `effect=127010/0`, never stranded - while a positive control (`vrcine postfx size`) made the
+  same counter read 36140, proving it can fire. That combination, self-check plus positive
+  control, is what makes a negative result trustworthy; a zero from an instrument that has
+  never been seen to fire is not evidence of anything.
+
+- **2026-07-30 (session 30): a residual classification rule has no upper bound, and one had
+  already shipped.** The in-frame effect test was "textureless AND not the bar vertex count",
+  which is the complement of two things rather than a description of one. The live census had
+  already recorded a 1493-vertex textureless draw - a tessellated vector shape, not a
+  full-screen fill - and the residual rule was rendering it into the eye image. It is now a
+  positive bound (`vertexCount <= 8`, retunable via `vrcine effects verts <n>`), and anything
+  outside it goes back to the panel. Same shape as the session-29 bar fingerprint decision: the
+  vertex count is a named, live-retunable constant and every other count still logs once, so a
+  wrong bound shows up as data instead of as a silent miss.
+
+- **2026-07-30 (session 30): measuring first killed the fix we were about to build.** The
+  release-blocking wrench bug had a well-argued leading hypothesis - the wrench is an `AWeapon`,
+  our origin substitution moves its fire start, melee is a short trace - and a designed fix
+  behind two levers. Measured in-headset with the wrench equipped: the weapon seam took ZERO
+  calls and every ability-seam call was a plasmid. Melee reaches neither seam, so `vraim seam
+  weapon off`, `vraim origin off` and a melee carve-out in `substitute()` would all have done
+  exactly nothing. The measurement cost one read-only console command and one play session; the
+  fix would have cost a build, an in-headset round, and a false belief that the bug was closed.
+  The corollary that made it cheap: `vraim probe on` + `vraim off` installs the hooks with
+  substitution refused, so the diagnostic run cannot change the behaviour it is measuring. Any
+  future "is this seam involved at all" question should start there. Note the one trap - VR
+  PRESET 1 re-arms `aim on` and `origin on`, so read-only mode has to be re-armed after a preset
+  press.

@@ -2116,9 +2116,41 @@ void draw_debug_ui() {
         if (ImGui::Checkbox("Full-screen effects across the view", &fxFrame))
             bvr::hud::set_effects_in_frame(fxFrame);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Water, the alcohol tint and damage flashes are textureless "
-                              "fills with no texture, so they used to land on the HUD panel.\n"
-                              "Untick if scene content ever goes black behind one.");
+            ImGui::SetTooltip("Water and damage flashes are gameswf fills with no texture, so "
+                              "they used to land on the HUD panel.\n"
+                              "UNTICK to put them back on the panel. Does NOT affect the "
+                              "alcohol blur, which is a textured engine post effect on the "
+                              "checkbox below.\n"
+                              "Suspected session-30 side effect: the health and EVE bar COLOUR "
+                              "fills carry the same fingerprint, so ticked may be sending them "
+                              "into the world and leaving the bars looking empty.");
+        // Session 30: the post-FX discriminator, in the menu because the alcohol
+        // blur is the one draw this rule exists to protect and the A/B has to be
+        // done in the headset while drunk.
+        bool fxRt = bvr::hud::postfx_rt_only();
+        if (ImGui::Checkbox("Post effects: source must be a render target", &fxRt))
+            bvr::hud::set_postfx_rt_only(fxRt);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("TICKED (session 30 default): the alcohol blur stays in the "
+                              "frame because it samples something the engine RENDERED.\n"
+                              "UNTICKED: the old size-only rule, which at a square render "
+                              "target also matched the game's own UI atlases and sent about 30 "
+                              "HUD draws per interval into the eye image.\n"
+                              "If the alcohol blur looks wrong, UNTICK to revert session 30.");
+        {
+            bvr::hud::RouteStats rs{};
+            bvr::hud::get_route_stats(&rs);
+            unsigned strandedTotal = 0;
+            for (int i = 0; i < bvr::hud::kRoutePassCount; ++i) strandedTotal += rs.stranded[i];
+            ImGui::Text("  routing: postFx %u (rejected %u) | effects in-frame %u (over bound "
+                        "%u) | stranded %u",
+                        rs.postFx, rs.postFxRejected, rs.effectsInFrame, rs.effectsRejected,
+                        strandedTotal);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("postFx should CLIMB while you are drunk and sit still "
+                                  "otherwise. effects in-frame climbs by 2 every frame, which "
+                                  "is the count that made the bar-fill theory.");
+        }
         bool subsFrame = bvr::hud::cine_subs_in_frame();
         if (ImGui::Checkbox("Cutscene subtitles in-frame (off = readable panel)", &subsFrame))
             bvr::hud::set_cine_subs_in_frame(subsFrame);
@@ -2406,10 +2438,21 @@ void handle_cine_command(const char* args) {
         bvr::hud::set_bars_hidden(true);
     } else if (strncmp(args, "bars show", 9) == 0) {
         bvr::hud::set_bars_hidden(false);
+    } else if (strncmp(args, "effects verts", 13) == 0) {
+        unsigned n = 0;
+        if (sscanf_s(args + 13, "%u", &n) == 1 && n >= 3)
+            bvr::hud::set_effect_max_verts(n);
+        else
+            BVR_LOG("xr: usage: vrcine effects verts <n>  (current %u)",
+                    bvr::hud::effect_max_verts());
     } else if (strncmp(args, "effects frame", 13) == 0) {
         bvr::hud::set_effects_in_frame(true);
     } else if (strncmp(args, "effects panel", 13) == 0) {
         bvr::hud::set_effects_in_frame(false);
+    } else if (strncmp(args, "postfx rt", 9) == 0) {
+        bvr::hud::set_postfx_rt_only(true);
+    } else if (strncmp(args, "postfx size", 11) == 0) {
+        bvr::hud::set_postfx_rt_only(false);
     } else if (strncmp(args, "subs panel", 10) == 0) {
         bvr::hud::set_cine_subs_in_frame(false);
     } else if (strncmp(args, "subs frame", 10) == 0) {
@@ -2466,10 +2509,26 @@ void handle_cine_command(const char* args) {
                 : bvr::hud::bars_hidden()
                     ? "differ (expected: bars hidden, so nothing black to see)"
                     : "DIFFER - unexpected with bars shown");
+        // Session 30 routing. `stranded` is the number that decides whether
+        // "in-frame" ever meant it: a pass issued while our capture RT was
+        // still bound landed on the HUD panel regardless of the verdict.
+        bvr::hud::RouteStats rs{};
+        bvr::hud::get_route_stats(&rs);
+        unsigned strandedTotal = 0;
+        for (int i = 0; i < bvr::hud::kRoutePassCount; ++i) strandedTotal += rs.stranded[i];
+        BVR_LOG("xr: cine effects=%s bound=%u verts (inFrame %u, over-bound %u) | "
+                "stranded effect=%u total=%u | postFx=%u (rejected by the bind test %u, "
+                "square target=%d, rule=%s)",
+                bvr::hud::effects_in_frame() ? "IN-FRAME" : "panel",
+                bvr::hud::effect_max_verts(), rs.effectsInFrame, rs.effectsRejected,
+                rs.stranded[bvr::hud::kRouteEffect], strandedTotal, rs.postFx,
+                rs.postFxRejected, rs.squareTarget ? 1 : 0,
+                bvr::hud::postfx_rt_only() ? "render-target" : "size-only");
         BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
                 "published strict=%d age=%llums | WORLD tanH=%.4f age=%llums "
                 "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|bars "
-                "hide|show|status)",
+                "hide|show|effects frame|panel|effects verts <n>|postfx rt|size|subs "
+                "panel|frame|status)",
                 g_cineEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_cineStereo.load(std::memory_order_relaxed) ? "stereo" : "quad",
                 g_cineActive.load(std::memory_order_relaxed) ? 1 : 0,

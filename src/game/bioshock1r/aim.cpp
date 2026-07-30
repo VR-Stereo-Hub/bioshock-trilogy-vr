@@ -49,6 +49,16 @@ std::atomic<bool> g_subWeapon{true};  // right hand aims weapons
 std::atomic<bool> g_subAbility{true}; // left hand aims plasmids
 std::atomic<bool> g_handOrigin{true}; // hand origin + direction (user's choice)
 std::atomic<bool> g_probe{false};     // telemetry mode
+// Session 30 (the wrench-miss investigation). `vraim dump`/`probe` is BUDGET
+// gated - a fixed number of lines - and it logs every call including every AI
+// weapon and AI ability. In a firefight that budget is spent by splicer shots
+// long before the one melee swing that matters, so the mod could not see its
+// own bug in the exact condition the bug was reported in. The watch is RATE
+// limited instead (one line per seam per interval), player-owned calls only,
+// and it prints the two things the budget dump does not: what the engine's own
+// fire start was against what we substituted, and HOW the hand was chosen.
+std::atomic<bool> g_watch{true};
+std::atomic<uint32_t> g_watchMinMs{200};
 // The overlay runs on the RENDER thread and must never install a MinHook itself
 // (same rule as scenedraw's vrstereo checkbox): it posts a request here and the
 // game thread applies it from on_calcview, outside any hooked engine call.
@@ -147,6 +157,10 @@ struct Ray {
 Ray g_ray[2]; // 0 = left (plasmid), 1 = right (weapon)
 uint64_t g_rayStampMs = 0;
 bool g_gameplayView = false;
+// Copied out of the frame context each CalcView so the detours - which run far
+// above g_lastCtx's definition - can turn Unreal units into centimetres for the
+// watch line. A displacement is only meaningful next to the scale it lives in.
+float g_worldScaleCache = 100.0f;
 
 // Self-expiring synthetic aim, mirroring the xinput_bridge test slots: the
 // command file is polled at 1 Hz, so a hold has to outlive its command inside
@@ -177,7 +191,16 @@ struct Slot {
     std::atomic<uint32_t> calls{0};
     std::atomic<uint32_t> subs{0};
     std::atomic<uint32_t> skips{0}; // ran, but not ours to touch (AI, no ray)
+    // Session 30 (the wrench-miss investigation): a cumulative record of WHICH
+    // HAND each substitution used and how that hand was decided. A rate-limited
+    // log line can be missed; a counter cannot, so after a real fight these
+    // three numbers either confirm or refute "melee is being aimed with the
+    // left controller" without needing the log at all.
+    std::atomic<uint32_t> subsR{0};
+    std::atomic<uint32_t> subsL{0};
+    std::atomic<uint32_t> fallbacks{0}; // no trigger evidence: took the default
     int32_t dumpLeft = 0;
+    uint64_t lastWatchMs = 0; // rate gate for the session-30 watch line
 };
 Slot g_weaponFire{"weapon"};  // AWeapon::GetPerfectFireStart impl
 Slot g_abilityFire{"ability"}; // UAttackAbility::GetPerfectFireStart impl
@@ -259,9 +282,24 @@ bool trigger_held(bool right) {
     return (right ? rt : lt) >= 64; // ~25% pull, same ballpark as the game's own
 }
 
+// How a hand was decided. Session 30: without this the log cannot tell
+// "learned Left" from "fell back to Left", and that distinction is the whole
+// of the melee hypothesis - a swing whose anim notify fires after the player
+// has already released the trigger has no evidence to learn from and takes the
+// seam default, which for the ability seam is the LEFT hand and its +37 deg
+// yaw trim.
+enum class HandSrc { Learned, LearnedNow, Fallback };
+HandSrc g_lastHandSrc = HandSrc::Fallback;
+const char* hand_src_name(HandSrc s) {
+    return s == HandSrc::Learned ? "learned"
+         : s == HandSrc::LearnedNow ? "learned-now"
+                                    : "fallback";
+}
+
 // `fallback` is the hand this seam belongs to when there is no trigger
 // evidence yet (weapons right, abilities left).
 Hand hand_for_object(void* obj, Hand fallback) {
+    g_lastHandSrc = HandSrc::Learned;
     if (obj && obj == g_objRight) return Hand::Right;
     if (obj && obj == g_objLeft) return Hand::Left;
 
@@ -278,6 +316,7 @@ Hand hand_for_object(void* obj, Hand fallback) {
             g_objRight = obj;
             if (g_objLeft == obj) g_objLeft = nullptr;
             g_learnEvents.fetch_add(1, std::memory_order_relaxed);
+            g_lastHandSrc = HandSrc::LearnedNow;
             BVR_LOG("[aim] learned RIGHT-hand (weapon) object %p", obj);
             return Hand::Right;
         }
@@ -285,10 +324,12 @@ Hand hand_for_object(void* obj, Hand fallback) {
             g_objLeft = obj;
             if (g_objRight == obj) g_objRight = nullptr;
             g_learnEvents.fetch_add(1, std::memory_order_relaxed);
+            g_lastHandSrc = HandSrc::LearnedNow;
             BVR_LOG("[aim] learned LEFT-hand (plasmid) object %p", obj);
             return Hand::Left;
         }
     }
+    g_lastHandSrc = HandSrc::Fallback;
     return fallback; // no trigger evidence yet
 }
 
@@ -364,6 +405,68 @@ void log_call(Slot& slot, void* self, const float* a, const float* b, const floa
             slot_kind_name(classify_slot(c)), c[0], c[1], c[2], note);
 }
 
+// Session 30: which hand a substitution actually used, and whether the choice
+// came from evidence or from the seam's default. Cumulative, so a whole fight
+// collapses to three numbers in `vraim status`.
+void note_hand(Slot& slot, Hand h) {
+    if (h == Hand::Right)
+        slot.subsR.fetch_add(1, std::memory_order_relaxed);
+    else
+        slot.subsL.fetch_add(1, std::memory_order_relaxed);
+    if (g_lastHandSrc == HandSrc::Fallback)
+        slot.fallbacks.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Session 30: the rate-limited counterpart to log_call. Everything it prints
+// is chosen to answer one of the four live hypotheses about the wrench:
+//   cls/wkey   WHICH class made the call - this settles whether melee reaches
+//              a seam at all, and which one. Three documents in this tree give
+//              three different answers, so the log has to be the tiebreak.
+//   hand/src   the hand and how it was decided. "L" with src=fallback on a
+//              melee call is hypothesis H2 confirmed outright: the left trims
+//              are pitch -7.5, yaw +37.0 deg, which at melee range is a miss.
+//   lt/rt      the composed triggers AT the anim notify, which is the test of
+//              "the player already let go before the swing landed".
+//   engine vs ours + d
+//              how far we moved the shot's start. For a bullet at range this
+//              is invisible; for a short melee it is the whole question.
+void watch_call(Slot& slot, void* self, const float* a, const float* b, const float* c,
+                Hand h, bool subbed) {
+    if (!g_watch.load(std::memory_order_relaxed)) return;
+    uint64_t now = GetTickCount64();
+    uint32_t minMs = g_watchMinMs.load(std::memory_order_relaxed);
+    if (slot.lastWatchMs && now - slot.lastWatchMs < minMs) return;
+    slot.lastWatchMs = now;
+
+    // The engine's own fire start is whichever pre-substitution slot classified
+    // as a POSITION (the index differs between the two signatures, which is why
+    // substitute() is value-driven rather than index-driven).
+    const float* eng = nullptr;
+    const float* slots[3] = {a, b, c};
+    for (const float* s : slots) {
+        if (classify_slot(s) == kPosition) { eng = s; break; }
+    }
+    const Ray& r = g_ray[static_cast<int>(h)];
+    float dUu = -1.0f;
+    if (eng && r.valid) {
+        float dx = r.origin.x - eng[0], dy = r.origin.y - eng[1], dz = r.origin.z - eng[2];
+        dUu = sqrtf(dx * dx + dy * dy + dz * dz);
+    }
+    uint8_t lt = 0, rt = 0;
+    bvr::input::last_composed_triggers(&lt, &rt);
+    const wchar_t* cls = patterns::object_class_name(self);
+    float uuPerCm = g_worldScaleCache / 100.0f;
+    BVR_LOG("[aim] watch %s cls='%S' wkey='%s' this=%p hand=%c src=%s lt=%u rt=%u sub=%d "
+            "origin=%d | engine=(%.1f %.1f %.1f) ours=(%.1f %.1f %.1f) d=%.1f UU (%.1f cm)",
+            slot.name, cls ? cls : L"?", g_weaponKey.empty() ? "-" : g_weaponKey.c_str(), self,
+            h == Hand::Right ? 'R' : 'L', hand_src_name(g_lastHandSrc), lt, rt, subbed ? 1 : 0,
+            g_handOrigin.load(std::memory_order_relaxed) ? 1 : 0,
+            eng ? eng[0] : 0.0f, eng ? eng[1] : 0.0f, eng ? eng[2] : 0.0f,
+            r.valid ? r.origin.x : 0.0f, r.valid ? r.origin.y : 0.0f,
+            r.valid ? r.origin.z : 0.0f, dUu, dUu >= 0.0f && uuPerCm > 0.0f ? dUu / uuPerCm
+                                                                           : -1.0f);
+}
+
 // The two out-params are a POSITION (thousands of Unreal units) and a unit
 // DIRECTION, and which slot holds which differs between the weapon and the
 // ability signature. Rather than trust the disassembly's labels, decide per
@@ -436,8 +539,12 @@ void __fastcall WeaponFireDetour(void* self, void* edx, float* outA, float* outB
     if (g_subWeapon.load(std::memory_order_relaxed) && owner_is_player_pawn(self)) {
         Hand h = hand_for_object(self, Hand::Right);
         float* outs[3] = {outA, outB, outC};
-        if (substitute(g_weaponFire, h, outs, 3))
+        bool subbed = substitute(g_weaponFire, h, outs, 3);
+        if (subbed) {
             note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
+            note_hand(g_weaponFire, h);
+        }
+        watch_call(g_weaponFire, self, a, b, c, h, subbed);
     }
     log_call(g_weaponFire, self, a, b, c, note);
 }
@@ -464,8 +571,12 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
         // first time it swings.
         Hand h = hand_for_object(self, Hand::Left);
         float* outs[3] = {outA, outB, outC};
-        if (substitute(g_abilityFire, h, outs, 3))
+        bool subbed = substitute(g_abilityFire, h, outs, 3);
+        if (subbed) {
             note = (h == Hand::Right) ? "SUB(R)" : "SUB(L)";
+            note_hand(g_abilityFire, h);
+        }
+        watch_call(g_abilityFire, self, a, b, c, h, subbed);
     }
     log_call(g_abilityFire, self, a, b, c, note);
 }
@@ -777,19 +888,29 @@ void log_status() {
             g_posFwdCm[1].load(std::memory_order_relaxed),
             g_posRightCm[1].load(std::memory_order_relaxed),
             g_posUpCm[1].load(std::memory_order_relaxed));
-    BVR_LOG("[aim] status: %s | seams weapon=%d ability=%d | handOrigin=%d probe=%d",
+    BVR_LOG("[aim] status: %s | seams weapon=%d ability=%d | handOrigin=%d probe=%d watch=%d"
+            "(%ums)",
             g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
             g_subWeapon.load(std::memory_order_relaxed) ? 1 : 0,
             g_subAbility.load(std::memory_order_relaxed) ? 1 : 0,
             g_handOrigin.load(std::memory_order_relaxed) ? 1 : 0,
-            g_probe.load(std::memory_order_relaxed) ? 1 : 0);
+            g_probe.load(std::memory_order_relaxed) ? 1 : 0,
+            g_watch.load(std::memory_order_relaxed) ? 1 : 0,
+            g_watchMinMs.load(std::memory_order_relaxed));
     Slot* all[] = {&g_weaponFire, &g_abilityFire};
     for (Slot* s : all) {
-        BVR_LOG("[aim]   %-8s hook=%s calls=%u subs=%u skips=%u", s->name,
+        // subsR/subsL/fallbacks are session 30. subsL dominating on the ability
+        // seam after a melee-heavy fight is the wrench hypothesis confirmed;
+        // subsR dominating refutes it, which is the point of shipping them.
+        BVR_LOG("[aim]   %-8s hook=%s calls=%u subs=%u skips=%u | subsR=%u subsL=%u "
+                "fallbacks=%u", s->name,
                 s->enabled.load(std::memory_order_relaxed) ? "on " : "off",
                 s->calls.load(std::memory_order_relaxed),
                 s->subs.load(std::memory_order_relaxed),
-                s->skips.load(std::memory_order_relaxed));
+                s->skips.load(std::memory_order_relaxed),
+                s->subsR.load(std::memory_order_relaxed),
+                s->subsL.load(std::memory_order_relaxed),
+                s->fallbacks.load(std::memory_order_relaxed));
     }
     uint64_t now = GetTickCount64();
     for (int i = 0; i < 2; ++i) {
@@ -1096,6 +1217,7 @@ void on_calcview(const FrameContext& ctx) {
     g_rayStampMs = now;
     g_lastCtx = ctx;
     g_haveCtx = true;
+    g_worldScaleCache = ctx.worldScale > 1.0f ? ctx.worldScale : 100.0f;
 
     // Apply an overlay request from THIS thread (see g_pendingEnable).
     int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
@@ -1521,6 +1643,21 @@ void handle_command(const char* args) {
         g_handOrigin.store(on, std::memory_order_relaxed);
         BVR_LOG("[aim] hand origin %s (off = engine's own origin, direction only)",
                 on ? "ON" : "off");
+    } else if (strcmp(verb, "watch") == 0) {
+        // "watch on|off|<minMs>"
+        unsigned ms = 0;
+        if (sscanf_s(rest, "%u", &ms) == 1 && ms > 0) {
+            g_watchMinMs.store(ms, std::memory_order_relaxed);
+            g_watch.store(true, std::memory_order_relaxed);
+            BVR_LOG("[aim] watch ON, at most one line per seam per %u ms", ms);
+        } else {
+            bool on = strncmp(rest, "on", 2) == 0;
+            g_watch.store(on, std::memory_order_relaxed);
+            BVR_LOG("[aim] watch %s (rate-limited per-substitution line: class, hand and how "
+                    "it was chosen, triggers, engine origin vs ours). Unlike 'dump' this "
+                    "survives a whole firefight - vraim watch on|off|<minMs>",
+                    on ? "ON" : "off");
+        }
     } else if (strcmp(verb, "seam") == 0) {
         char name[16] = {};
         char state[8] = {};

@@ -1,8 +1,155 @@
-# Project status
+﻿# Project status
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-30, session 29 - STAGE 3 ACCEPTED IN-HEADSET, v0.5.0 PACKAGED, awaiting the user's final go - branch s29-b1r-cinematics-and-aim-dot)
+## Current state (2026-07-30, session 30 - THE WRENCH IS FIXED AND ACCEPTED IN-HEADSET, the bar-colour regression is fixed, effects still open - branch s30-b1r-wrench-and-effects)
+
+**Release still held. v0.5.0 stays untagged.** The game-breaking item is CLOSED. Of the three,
+one is fixed and accepted, one is partly fixed with the real cause now identified, one is untested.
+
+### 0. THE WRENCH: FIXED. The engine's own view pitch was frozen at -89 degrees.
+
+**In-headset verdict: "it's working and I was able to hit him consistently."**
+
+Two individually reasonable things met. **Pitch kill** (session 19) zeroes the composed
+right-stick Y so the stick cannot fight the HMD - but zeroing an INPUT does not set a value, it
+means the engine's own view pitch can never change again. And **the camera write is asymmetric**:
+`rot->yaw` is written RELATIVE (the engine's own yaw plus a head residual, so it stays real) while
+`rot->pitch` is written ABSOLUTE from the head, discarding the engine's value unread. Nothing
+corrects it, nothing notices, and the rendered view is the head's either way.
+
+So the engine's pitch parked at -88.9 degrees - straight down - and stayed there for fifty
+seconds of the heartbeat while yaw moved freely. Melee aims with that number. The user confirmed
+it visually with `vrhands off`, which returns the viewmodel to engine placement: *"this revealed
+that the hands were pointing downwards ... I saw the hits hitting the floor."*
+
+Every part of the report follows: walls hit (approached level), fights missed (frozen steeply
+down), the opening rocks other players reported miss with no combat at all (rocks are on the
+floor), and guns were fine because we substitute the whole fire ray at a seam melee lacks.
+
+**Fixed by SERVOING instead of zeroing.** The game layer publishes `head pitch - engine pitch`
+once per CalcView, before the overwrite, and the bridge feeds a proportional stick value in place
+of the hard zero. The game steers its own pitch through its own input path: **no engine memory is
+written**, so none of the session-29 world-change hazards apply; it inherits the game's own
+clamps; it is invisible because the rendered pitch is the head's regardless; and a stale publisher
+fails open to `ry = 0`, the old behaviour. `vrinput pitchservo on|off|invert|status`.
+
+**Known residual, measured:** the engine pitch went from -88.9 to -6.6 deg, then stalls at
+`err=4.3 deg stick=3876`, because near convergence the proportional value falls under the GAME's
+own stick deadzone. Roughly 4-8 degrees, not zero. Inside melee tolerance (consistent hits) but
+not perfect. Closing it needs a minimum stick magnitude clearing the game's deadzone, at the risk
+of a limit cycle - measure the game's deadzone first.
+
+### 0b. Two hypotheses died on the way, both of them ours
+
+- **Soft lock-on** was the user's leading theory and their own test killed it: setting the radius
+  ABSURDLY high (`exece set GamepadPlayerInput SoftLockOnRadius 5000`) felt no different from 0,
+  so that write never reaches the live object. **Rule that comes out of it: `-> HANDLED` proves
+  only that `Exec` recognised the command.** `console_exec`'s output-device stub suppresses all
+  engine output, so a `set` naming a wrong class or property logs identically to one that works.
+- **The aim substitution**, which was session 29's leading hypothesis - see section 1.
+
+### 1. The aim-seam lane is CLOSED by measurement (this is what saved the session)
+
+Session 29's leading hypothesis - the wrench is an `AWeapon`, our origin substitution moves its
+short melee trace - is **refuted by direct measurement in-headset with the wrench equipped**:
+
+| seam | calls across the whole wrench period | classes seen |
+|---|---|---|
+| `AWeapon::GetPerfectFireStart` | **0** (counter sat at 4 throughout, all four from a Shotgun test 15 min earlier) | `Shotgun` only |
+| `UAttackAbility::GetPerfectFireStart` | 6 | `ElectricBoltThreeAbility` only |
+
+So `vraim seam weapon off`, `vraim origin off` and the melee carve-out in `substitute()` that
+was designed and about to be built **cannot affect the wrench at all**. `ENGINE_NOTES`'s
+session-10 note - melee damage is a Havok phantom (`Wrench.CreateCollisionPhantom`), no aim seam
+exists for it - is now CONFIRMED rather than asserted. Two other documents in the tree had
+contradicted it; they are corrected.
+
+Measurement mode that made this cheap and safe: **`vraim probe on` + `vraim off`** installs both
+hooks with `ray_for()` refusing, so the diagnostic run cannot change the behaviour it measures.
+It held through a whole live play session. One trap: **VR PRESET 1 re-arms `aim on` + `origin
+on`** (`camera.cpp:862-864`), which is what turned substitution back on mid-run here.
+
+The candidate list that followed from it is now resolved: candidate 2, "positional head/pawn
+decoupling", was the right neighbourhood and the wrong axis - it is PITCH, and the mechanism is
+ours rather than the engine's. Candidate 1 (`vrhands off`) turned out to be the diagnostic that
+made the frozen pitch visible rather than a cause. Candidate 3 (lock-on) is dead, see 0b.
+
+### 2. Two things measured for free on the way, both worth keeping
+
+- **Hand attribution in real play is ALWAYS the seam default, never learned.** Five plasmid casts
+  out of five: `hand=L src=fallback lt=0 rt=0`. The anim notify fires after the player releases
+  the trigger, so `trigger_held()` never sees evidence. Not a live bug (Left is correct for
+  plasmids) but the object-learning map is dead weight on that seam, and anything else arriving
+  there would take the left trims - pitch -7.5, yaw **+37 deg**.
+- **We displace the fire origin by 40-47 cm** on every substituted call (measured, `worldScale`
+  100 so UU == cm). Invisible at range, decisive at contact range. That is exactly why the wrench
+  theory was plausible.
+
+### 3. EFFECTS: routing is clean, and a REAL shipped HUD regression was found instead
+
+The instrument built to test the routing hypothesis **refuted it**: with the redirect armed the
+effect fills read `effect=127010/0` (passes/stranded). They are never stranded and genuinely
+reach the frame. Trustworthy because both checks passed - a one-shot device read
+(`bound rtv0 resource=92DB3E64, our capture RT=92DB3E64 - CORRECT`) and a positive control
+(`vrcine postfx size` made the same counter read 36140).
+
+What the same run DID find, and it was shipping in v0.5.0: **the post-FX size rule is degenerate
+at a square render target.** At 2048x2048 the backbuffer IS 2048x2048, so the game's own UI
+atlases match `srv0 dims == target dims`. Measured `postFxRejected=1604161` against `postFx=2`
+genuine - about **30 gameswf HUD draws per interval** taking the in-frame exit. Worse than a
+leak: under the old rule 43% of them were stranded onto the panel and 57% reached the eye image,
+so HUD elements were routed **non-deterministically by draw order**. Fixed structurally - a
+post-FX source is something the engine RENDERED (`BIND_RENDER_TARGET`), a UI atlas never is -
+which is stronger at every resolution, not just square ones.
+
+### 3b. AND THE "EFFECT" DRAW WAS THE HEALTH AND EVE BARS - a shipped regression, now fixed
+
+**In-headset verdict: "the health bar is filled and colored which is perfect."**
+
+The user reported the health bar had lost its colour. It is the same draw. `effectsInFrame`
+advances by **exactly 2 per interval, every interval, with nothing on screen** - a fact measured
+earlier this same session and written up as "the fill is always drawn and usually transparent".
+It is two bars. Health and EVE bar COLOUR fills are textureless 5-vertex gameswf quads, identical
+to the effect fill by every test this classifier can apply, so session 29 had been sending the bar
+fills into the eye image while their frames stayed on the panel. A/B'd both ways in-headset:
+untick restores the colour, re-tick removes it.
+
+**And this explains the effects item too, which is the important part.** The user's description of
+the water tint - *"either the size of the HUD or the size of the old resolution"* - identifies the
+real error: **these draws are authored in gameswf STAGE space.** Routing one in-frame cannot make
+it cover the eye; it makes it stage-sized in the middle of the view. Session 29's fix could never
+have worked. Covering the view needs different GEOMETRY, not a different render target.
+
+Default is therefore back to the panel (pre-session-29 behaviour, v0.4.1 behaviour). Nothing
+accepted in session 29 is affected: bars are matched by vertex count and skipped above this test,
+subtitles are textured and never reach it, menus take the screen-only path, and the alcohol blur
+is a textured engine post effect on the branch below. The alcohol blur was A/B'd in-headset
+against the new post-FX rule and is unaffected.
+
+**Still open: making effects actually cover the view.** Now correctly scoped - it is a geometry
+problem, not a routing one. `img-diff.ps1 -Grid/-Bands` is built and self-tested for measuring
+coverage but the screenshots were never taken. Also still unanswered, and it decides whether the
+remaining cause is the fill or the projection claim: **in the headset, does the effect stop before
+the scene picture stops, or do they end at the same edge?**
+
+### 4. HANDS: untested this session
+
+`vrbones status` now prints the drive residue on demand (`cacheAge`, `wasCollapsed`,
+`collapsedHand`, `reapplies`, `cineHold`, `cineDrive`) instead of only at a cine edge, which is
+what the regression check needs. The checklist itself was not run.
+
+### 5. What broke, and the rule that comes out of it
+
+`vraim scanimpl 226050 1` crashed the game with `Run-Time Check Failure #0 - ESP was not properly
+saved`. **`scanimpl`'s arg count must equal the target's `ret imm / 4`**, and both
+`InitiateDamage` implementations are `ret 8`, so the correct value is **2**. Verified for all
+four fire-flow implementations by capstone; the table is in ENGINE_NOTES session 30. Two
+after-effects worth knowing: RTC writes **no crash dump** (it is a Debug compiler check, not an
+SEH fault), and force-killing the game while that modal dialog is up left the display mode
+unrestored. Press Abort on the dialog rather than `Stop-Process -Force`.
+
+## Previous state (2026-07-30, session 29 - STAGE 3 ACCEPTED IN-HEADSET, v0.5.0 PACKAGED, awaiting the user's final go - branch s29-b1r-cinematics-and-aim-dot)
 
 **IN-HEADSET VERDICT (user, Quest 3 / VDXR): "bars are gone, hands and head are correct now and
 the dot is perfect. Everything is very good."** Subtitles were reported wrong in the same run and
@@ -591,7 +738,88 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### 0. RELEASE IS HELD AGAIN - three open items, one of them game-breaking
+### 0. FIRST ACTIONS NEXT SESSION
+
+The game-breaking item is closed and accepted. What is left before the release is verification
+breadth, not new investigation.
+
+1. **A proper soak on the wrench fix.** It was accepted on one enemy. The servo is a new input
+   path that runs on every gameplay frame, so it wants a real play session: melee at different
+   heights, on stairs, underwater, against a Big Daddy, and across a save load. Watch for the
+   view feeling like it is fighting you (that would be the servo sign or gain) and for the
+   `[b1r] camera:` heartbeat pitch tracking the head instead of freezing.
+2. **Verify the classifier and bar fixes in-headset with breadth.** Both were accepted on a
+   single check. Confirm: HUD art on the panel and not in the eye image, menus and the
+   Gatherer's Garden readable, hack minigame unchanged, cutscene bars still gone, subtitles still
+   readable, alcohol blur still full-frame (it was A/B'd and is fine, but re-check after a soak).
+   `vrhud status` should show `stranded=0` and `postFxRejected` climbing with `postFx` low.
+3. **The hands regression checklist** (section 3 below), which is the last untouched open item.
+4. **Then the effects geometry**, now correctly scoped - see section 2.
+
+### 1. THE WRENCH - CLOSED, with two lanes permanently shut behind it
+
+Fixed by the pitch servo (Current state 0). Do not re-open either dead lane:
+
+- **The aim seams.** Measured: melee reaches neither. No `vraim seam weapon off`, no
+  `vraim origin off`, no melee carve-out in `substitute()`.
+- **Lock-on.** The absurd-radius test showed 5000 feels identical to 0, so that write never
+  reaches the live object. **`-> HANDLED` proves only that `Exec` recognised the command** - the
+  output-device stub suppresses the error a failed `set` would print. If lock-on ever needs
+  disabling for real, that is a fresh derivation, not a retry.
+
+Open refinement, low priority: the servo's steady-state residual is 4-8 degrees because the
+proportional stick falls under the game's own deadzone near convergence. Closing it needs a
+minimum stick magnitude, which risks a limit cycle. Measure the game's deadzone first.
+
+If a damage-side seam is ever wanted: `AWeapon::InitiateDamage` is RVA `0x226050` and
+`UAttackAbility::InitiateDamage` is `0x1BBD80`, **both `ret 8`, so `vraim scanimpl <rva> 2`**.
+Getting that number wrong is what crashed the game this session.
+
+### 2. EFFECTS - it is a GEOMETRY problem, not a routing one
+
+Two things are now excluded by measurement: routing (the stranded counters, with a device check
+and a positive control) and "put it on a different render target" (session 29 tried exactly that
+and it could not work). The remaining cause is the fill's own extent, and the user's report names
+it: the effect is *"the size of the HUD or the size of the old resolution"*, i.e. the gameswf
+STAGE rectangle.
+
+So the fix has to change the geometry. Ranked:
+
+1. **Patch the dynamic vertex buffer in flight.** Most likely to work. Scope it to
+   `textureless && verts <= 8 && bbox is a proper sub-rect` so bars, subtitles, menus and HUD art
+   are untouched by construction - and note the bar fills share that fingerprint, so the bbox test
+   is doing real work and must come first.
+2. **Draw our own full-screen quad** in the fill's colour. Blocked today: the colour is in a PIXEL
+   shader constant buffer and the dump records only VS b0..b2.
+3. **Edit the SWF.** Precedent exists (the Nexus mod is a one-byte scale edit) but it ships a
+   modified game asset, which this project has avoided.
+
+Measure before any of it. `img-diff.ps1 -Grid`/`-Bands` is built and self-tested: `vrhud force
+off`, screenshot dry, hold the effect, screenshot wet, then `vrcine effects panel` and again;
+`diff(dry,wet)` bbox is the coverage number and `diff(dry,panel)` gives the panel footprint in the
+same image space. The flat window shows the whole square render stretched to the client area, so
+band FRACTIONS map linearly to the frame and the measurement is valid. And ask the free question
+first: does the effect stop before the picture stops, or do they end at the same edge? If they end
+together the fill is fine and the defect is the projection claim, which is a different fix
+entirely and one flat cannot measure.
+
+If the bands come back ambiguous, the vertex-buffer capture is the next instrument: insert after
+the srv0 block in `capture_draw_state` (`frame_inspector.cpp:400`), full mode and non-indexed
+draws only, reusing the cb0 staging pattern but with `CopySubresourceRegion` and a byte-valued
+`D3D11_BOX`, calling `g_origCopySubRes`/`g_origMap` so the hooked slots do not pollute the
+census. Calibrate the decode against the 29-vertex BAR draw, whose on-screen extent the pixel
+watch measured independently (313/350 px of 2048).
+
+### 3. HANDS - the checklist, unrun
+
+`vrbones status` now prints the residue on demand. Steps: gameplay, into a cutscene (expect
+`[bones] released to the engine (hands gated for cinematic)` then `hiddenHand=-1`), out of it,
+across a save load (`[bones] world changed` must precede any release - this is the session-29
+hang path), `vrcine drive off` mid-cutscene and back, then `authored+look`. Plus the blind spot:
+`vrhands off` mid-cutscene skips `bones::release()` entirely, because `hands.cpp:605` sits above
+the cinematic gate.
+
+### Previously: three open items, one of them game-breaking
 
 Session 29 is MERGED TO MAIN. v0.5.0 is built and packaged but **deliberately untagged**: the
 user's call after in-headset testing was *"Don't release yet till the above notes are done and
@@ -3498,11 +3726,150 @@ and it resumes.
   line, still dead) and key-bound commands are inert. The mod issues engine
   commands via the console-command seam (`exec` -> engine Exec dispatchers).
 - Adapter VRAM logs as "3072 MB" - DXGI_ADAPTER_DESC.DedicatedVideoMemory is a 32-bit SIZE_T in
-  our process, so values â‰¥4 GB truncate. Cosmetic; ignore.
+  our process, so values Ã¢â€°Â¥4 GB truncate. Cosmetic; ignore.
 - itsloopyo's headtracking mod also installs as `xinput1_3.dll` - mutually exclusive with ours
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 30 part 2 - 2026-07-30 - the wrench is FIXED, and the user's own observations found it
+
+Part 1 closed the aim-seam lane by measurement and left three candidates. The user then came back
+with four observations from playing the build, and three of them were better than anything on my
+list.
+
+**"The health bar has no colour."** That one landed on a fact I had measured the same session and
+misread. `effectsInFrame` advances by exactly 2 per interval, every interval, with nothing on
+screen - which I wrote up as "the fill is always drawn and usually transparent". It is two bars.
+The health and EVE bar colour fills are textureless 5-vertex gameswf quads, which is the identical
+fingerprint to the "full-screen effect fill" session 29 identified, so session 29 had been sending
+the bar fills into the eye image while their frames stayed on the panel. One F10 toggle each way
+confirmed it. The counter had been saying so since the change shipped.
+
+**"It's either the size of the HUD or the size of the old resolution."** This is the one that
+reframed the whole effects item. Those draws are authored in gameswf STAGE space, so routing one
+in-frame cannot make it cover the eye - it makes it stage-sized inside it. Session 29's fix could
+never have worked, and the open item is a GEOMETRY problem, not a routing one. Default is back to
+the panel.
+
+**"Is the water effect different from the alcohol effect?"** Yes, and asking was right: the
+alcohol blur is a textured engine post effect and the water tint is a textureless gameswf fill,
+different branches entirely. It also caught a real gap in my own work - I had rewritten the
+post-FX rule that night and validated everything except the one draw it exists to protect, because
+nobody was drunk while I measured. A/B'd in-headset: unaffected.
+
+**"I'm almost sure it's the lock-on."** Wrong, and their own test killed it. Rather than trusting
+the reasoning either way, we set the radius ABSURDLY high instead of to zero - 5000 felt identical
+to 0, so that write never reaches the live object. Which also means `-> HANDLED` in the log proves
+only that `Exec` recognised the command: `console_exec`'s output-device stub suppresses the error
+a failed `set` would print, so a wrong class or property logs exactly like a success.
+
+**The actual cause.** The camera heartbeat had the engine's own view pitch pinned at 49350 units -
+-88.9 degrees, straight down - unmoving for fifty seconds while yaw ran freely. Two things met.
+Pitch kill zeroes the composed right-stick Y so the stick cannot fight the HMD, but zeroing an
+INPUT does not set a value: the engine's pitch can then never change again. And the camera write
+is asymmetric - yaw is written RELATIVE (the engine's own plus a head residual, so it stays real)
+while pitch is written ABSOLUTE from the head, discarding the engine's value unread. Nothing
+corrects it, nothing notices, and the rendered view is the head's either way.
+
+The user confirmed it visually before I had finished arguing it: `vrhands off` returns the
+viewmodel to engine placement, and "this revealed that the hands were pointing downwards ... I saw
+the hits hitting the floor". The lucky kills had been catching a leg on the way down.
+
+Every part of the original report falls out: walls connect because you approach them level, fights
+miss because the frozen value was steeply down, the opening rocks other players reported miss with
+no combat at all because rocks are on the floor, and guns were always fine because we substitute
+the whole fire ray at a seam melee lacks.
+
+**The fix is a servo, not a write.** The game layer publishes head-pitch-minus-engine-pitch once
+per CalcView, before the overwrite, and the bridge feeds a proportional stick value instead of the
+hard zero. The game steers its own pitch through its own input path, so no engine memory is
+written at all - none of the session-29 world-change hazards apply - it inherits the game's own
+clamps, it is invisible because the rendered pitch is the head's regardless, and a stale publisher
+fails open to ry = 0. Measured after: the engine pitch moved from -88.9 to -6.6 degrees. Verdict:
+"it's working and I was able to hit him consistently."
+
+Residual, stated because it is not zero: it stalls at err=4.3 deg because near convergence the
+proportional stick falls under the game's own deadzone. Inside melee tolerance, not perfect.
+
+**Method note.** Everything decisive this session came from a lever A/B that needed no rebuild,
+and the two theories that died were killed by tests designed to kill them - the absurd radius
+rather than a plausible-sounding argument, and a positive control on the stranded counter rather
+than trusting a zero. Two of the three theories that died were mine and one was the user's; the
+tests did not care which.
+
+### Session 30 - 2026-07-30 - the wrench hypothesis dies to one read-only command, and a shipped HUD regression surfaces
+
+Three release-blocking items. The wrench came first because it is game-breaking, and the brief
+was explicit: disprove or confirm the leading hypothesis by measurement before any code.
+
+**The wrench.** The hypothesis was well argued - the wrench is an `AWeapon`, our aim substitution
+rewrites `GetPerfectFireStart` for `AWeapon` too, melee is a short trace, so an origin moved to
+the controller starts it past the target. The designed fix was a melee carve-out behind two
+levers. Before writing it, three documents in the tree were compared and they disagreed:
+`aim.cpp:462` says the wrench's melee lands on the ABILITY seam, `ENGINE_NOTES:616` says no aim
+seam fires for melee at all, and STATUS assumed the weapon seam. Three claims, so the first
+measurement was simply "which seam does a swing reach".
+
+`vraim probe on` + `vraim off` installs both hooks with `ray_for()` refusing, so the run cannot
+change what it measures. The user drove a live session in the headset with the wrench equipped
+(confirmed twice by `[aim] weapon profile 'Wrench' applied`). Result: the weapon-seam counter
+never moved - it sat at 4 all session, all four from a Shotgun test fifteen minutes earlier - and
+all six ability-seam calls carried `cls='ElectricBoltThreeAbility'`. **Melee reaches neither
+seam.** The session-10 note was right and had simply never been re-tested. The carve-out, the
+`vraim seam weapon off` A/B, and the `vraim origin off` A/B would all have done exactly nothing.
+That is the whole value of the session's first hour.
+
+Two things fell out for free. Every substituted plasmid cast read `hand=L src=fallback lt=0
+rt=0`: the anim notify fires after the trigger is released, so the object-learning map never
+learns and always takes the seam default. Harmless today because Left is correct for plasmids -
+but it means anything else arriving on that seam would be aimed with the left trims, yaw +37 deg.
+And the watch line put a number on the substitution for the first time: we move the fire origin
+**40-47 cm**, every call. Invisible at rifle range, decisive at contact range, which is precisely
+why the wrench theory was so plausible.
+
+**Effects.** Session 29 routed the effect fill in-frame and the user reported "better, but still
+not the whole view". The offline dumps suggested a second mechanism: `PassThrough` is the absence
+of a routing instruction, and because the redirect binds our RTV through the ORIGINAL SetRT,
+`on_setrt` never sees it and the classifier can believe a draw is in-frame while the device has
+the capture RT bound. Shipped that as per-reason pass/STRANDED counters plus a one-shot
+`OMGetRenderTargets` check - the instrument that could refute the diagnosis, in the same build.
+
+It refuted it. Effect fills read `effect=127010/0`, never stranded. The device check confirmed
+the flag is faithful (`our capture RT=92DB3E64 - CORRECT`), and a positive control proved the
+counter can fire (restoring the old post-FX rule produced 36140 stranded passes). So routing is
+excluded and the remaining explanation is the fill's extent or the projection claim.
+
+The same run found something that was actually shipping. At the user's 2048x2048 square render
+the post-FX rule (`srv0 dims == target dims`) is degenerate: the backbuffer IS 2048x2048, so the
+game's own UI atlases match it. `postFxRejected=1604161` against `postFx=2` genuine - roughly 30
+gameswf HUD draws per interval taking the in-frame exit, and under the old rule 43% of them were
+stranded onto the panel while 57% reached the eye image. HUD elements routed by draw order. Fixed
+structurally on bind flags rather than size, which is stronger at every resolution. Also bounded
+the effect test by vertex count - it had been the residual "textureless and not 29", which was
+sending the census's 1493-vertex vector shape into the eye image.
+
+**What broke.** Probing `InitiateDamage` with `vraim scanimpl 226050 1` popped `Run-Time Check
+Failure #0 - ESP was not properly saved`: the arg count must equal `ret imm / 4`, and both
+`InitiateDamage` implementations are `ret 8`, so the right answer is 2. Disassembled all four
+fire-flow implementations with capstone afterwards and tabulated them so the next attempt is a
+one-liner. Two secondary lessons: RTC writes no crash dump (a Debug compiler check, not an SEH
+fault, so it bypasses the crash handler entirely - the same shape as session 29's `write_n`
+guard, where the safety net only made the failure quieter), and force-killing the game while that
+modal dialog is up left the display mode unrestored.
+
+**Not done:** the effect coverage screenshots (the `img-diff.ps1 -Grid/-Bands` extension is built
+and self-tested against synthetic images, but the measurement was never taken), and the hands
+regression checklist. `vrbones status` now prints the drive residue on demand, which is what that
+checklist needs.
+
+**Method notes worth carrying.** Measuring first killed a fix that was ready to build. The
+instrument that can refute the diagnosis has now earned its keep twice - session 29 on the sticky
+bone state, session 30 on effect routing. A negative result from an instrument that has never
+been seen to fire is worth nothing, so the positive control (`vrcine postfx size`) matters as
+much as the counter did. And a discriminator built from a numeric coincidence between two
+quantities dies silently the day they coincide for another reason - which is the whole post-FX
+story.
 
 ### Session 28 - 2026-07-30 - the yaw warp: TWO lenses, and the instrument was reading the wrong one
 
@@ -5273,15 +5640,15 @@ THEN arm 1t):**
 - Researched game installation (32-bit DX11 Vengeance/UE2.5, no DRM, gameswf Flash UI), engine
   family (BS2R same engine; Infinite UE3-6829), modding ecosystem, prior VR art (vorpX G3D works;
   itsloopyo headtracking hook proven; REFramework MIT reference), and the VR injection stack
-  (OpenXR-first for VDXR+SteamVR). Full findings â†’ RESEARCH.md.
-- Decided architecture (C++20/x86, xinput proxy â†’ bioshockvr.dll, core+adapter split, stereo
-  ladder with SequentialReentry as primary bet) â†’ ARCHITECTURE.md decision log.
+  (OpenXR-first for VDXR+SteamVR). Full findings Ã¢â€ â€™ RESEARCH.md.
+- Decided architecture (C++20/x86, xinput proxy Ã¢â€ â€™ bioshockvr.dll, core+adapter split, stereo
+  ladder with SequentialReentry as primary bet) Ã¢â€ â€™ ARCHITECTURE.md decision log.
 - Built: repo + docs suite, CMake (VS2022 `-A Win32`, submodules minhook/imgui/OpenXR-SDK pinned),
   xinput proxy (ordinals verified against the real SysWOW64 DLL with dumpbin - game imports @2/@3),
   mod DLL (deferred init, logger, minidump handler, MinHook, kiero-style Present/ResizeBuffers
   hooks, ImGui overlay), tools scripts.
 - **In-game smoke test passed** on first run (full init chain + D3D11 device info in log).
-  Found + fixed: logger file locking (fopen_s denies sharing â†’ switched to `_wfsopen` with
+  Found + fixed: logger file locking (fopen_s denies sharing Ã¢â€ â€™ switched to `_wfsopen` with
   `_SH_DENYNO`), non-ASCII mojibake in log lines, missing `-Install` passthrough in build.ps1.
 - Verified: LAA=YES; D3D11 confirmed at runtime; user ini path confirmed after first launch.
 - Repo created and pushed: https://github.com/mohamad-balouza/bioshock-vr (public, MIT).

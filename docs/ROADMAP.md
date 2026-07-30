@@ -516,6 +516,26 @@ kill. Both prerequisites below are now MET.):**
       (per-weapon foregrip offsets; the weapon skeletons may carry foregrip bones).
       Per-weapon engage radius + offsets tuned by eye.
 
+- [x] **THE WRENCH SOMETIMES DOES NOT HIT** - DONE session 30 (2026-07-30), accepted
+      in-headset: *"it's working and I was able to hit him consistently."* **The engine's own
+      view pitch was frozen at -88.9 degrees, straight down.** Pitch kill zeroes the composed
+      right-stick Y so the stick cannot fight the HMD - but zeroing an INPUT does not set a
+      value, so the engine's pitch could never change again; and the camera write is
+      asymmetric, yaw RELATIVE (engine's own plus a head residual, so it stays real) and
+      pitch ABSOLUTE from the head, discarding the engine's value unread. Nothing corrects
+      it and nothing notices, because the rendered view is the head's either way. Melee aims
+      with that number, which is why walls connected (approached level), fights missed into
+      the floor, the opening rocks miss with no combat at all (rocks are on the floor), and
+      guns were fine (we substitute the whole fire ray at a seam melee lacks).
+      Fixed by SERVOING instead of zeroing: the game layer publishes head-pitch minus
+      engine-pitch each CalcView and the bridge feeds a proportional stick value, so the game
+      steers its own pitch through its own input path and no engine memory is written.
+      `vrinput pitchservo on|off|invert|status`. Two hypotheses died first, both by
+      measurement: the aim seams (melee reaches neither) and soft lock-on (radius 5000 feels
+      identical to 0, so that write never reaches the live object).
+      *Residual, measured: converges to within 4-8 deg rather than 0, because near
+      convergence the proportional stick falls under the GAME's own deadzone. Inside melee
+      tolerance; closing it needs a minimum stick magnitude and risks a limit cycle.*
 - [ ] **Wrench swing gesture (user's call 2026-07-28)**: trigger the melee hit from the
       physical SWING instead of (or in addition to) the trigger - velocity threshold on
       the right controller while the wrench is equipped -> pulse RT, cooldown against
@@ -548,6 +568,42 @@ kill. Both prerequisites below are now MET.):**
       composite (post-tonemap draw sampling a backbuffer-sized texture) now stays
       IN-FRAME per eye, never on the panel (postFx=0 false positives in gameplay).
       In-headset verdict pending (incl. the Big Daddy FMV, no flat repro exists).
+      *Session 30 correction: (c)'s size test is DEGENERATE at a square render
+      target and the "postFx=0 false positives" claim only held at 16:9. At
+      2048x2048 the backbuffer IS 2048x2048, so the game's own UI atlases matched
+      it - measured `postFxRejected=1604161` against `postFx=2` genuine, ~30 HUD
+      draws per interval leaking in-frame, 43% of them stranded onto the panel and
+      57% into the eye image, i.e. routed by draw order. Now discriminated on bind
+      flags (a post-FX source was RENDERED, an atlas never is), which holds at
+      every resolution. `vrcine postfx size|rt` keeps the old rule for an A/B.*
+- [ ] **Full-screen effects still do not cover the whole view** (user, in-headset,
+      after session 29 routed the fill in-frame). Session 30 excluded BOTH routing
+      hypotheses and re-scoped it as a GEOMETRY problem. Routing: per-reason
+      pass/STRANDED counters read `effect=127010/0` with the redirect armed,
+      validated by a one-shot device check and a positive control that made the
+      same counter read 36140. And "put it on a different render target" cannot
+      work at all - the user's report that the effect is *"the size of the HUD or
+      the size of the old resolution"* identifies these as gameswf STAGE-space
+      draws, so routing one in-frame makes it stage-sized INSIDE the view rather
+      than covering it. Session 29's fix is therefore reverted to the panel by
+      default, which also fixed the health/EVE bar colour regression it had caused
+      (the bar fills carry the identical fingerprint - see the entry above).
+      Remaining fix candidates, in order: patch the dynamic vertex buffer in flight
+      (scoped by bbox so the bar fills cannot be caught); our own full-screen quad
+      (blocked - the fill colour is in a PS constant buffer and the dump records
+      only VS b0..b2); an SWF edit (precedent exists but ships a modified asset).
+      Measure first with `img-diff.ps1 -Grid/-Bands`, which is built and
+      self-tested, and ask the free question: does the effect stop before the
+      picture stops, or do they end at the same edge? If together, the fill is fine
+      and the defect is the projection claim - a different fix, unmeasurable flat.
+- [x] **HUD health/EVE bars lost their colour** - DONE session 30, a regression
+      shipped by session 29's effects change and caught by the user. The bar COLOUR
+      fills are textureless 5-vertex gameswf quads, identical to the "effect" fill
+      by every test the classifier can apply, so in-frame routing sent them into
+      the eye image while their frames stayed on the panel. The counter had been
+      saying so all along - `effectsInFrame` advances by exactly 2 per interval,
+      every interval, with nothing on screen. Two bars. Default back to panel;
+      accepted in-headset.
 - [x] **Head-ROLL eye separation bug** - DONE session 22: apply_eye_offset offsets along
       the FULL rotation's right axis (ue_rot_basis) and the AER path shares the one
       implementation. Eye delta measured (6.3,0,0)/(4.455,0,-4.454)/(0,0,-6.3) UU at

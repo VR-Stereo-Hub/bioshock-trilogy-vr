@@ -17,3 +17,34 @@ They matter only if you ALREADY have your own tuning in
                            for the per-weapon aim profiles), or even
                            single key=value lines between files - every
                            line stands alone.
+
+
+IF THE GAME CRASHES OR MISBEHAVES: DELETE YOUR SETTINGS FIRST
+=============================================================
+
+Your saved settings live in
+
+  %LOCALAPPDATA%\BioshockVR\
+
+Paste that into the Explorer address bar (or press Win+R and paste it).
+You should see vrpreset.ini, hands.ini, weapons.ini and bioshockvr.log.
+
+Before reporting anything, try this - it fixes most odd behaviour and
+costs you only your tuning:
+
+  1. Close the game.
+  2. Delete (or better, MOVE somewhere safe) vrpreset.ini, hands.ini
+     and weapons.ini.
+  3. Also delete command.txt if it is there - a leftover command file
+     is re-applied at the next launch and can re-break things.
+  4. Start the game and press VR PRESET 1.
+
+Why it helps: your files override the mod's built-in defaults key by
+key, so a value saved by an older version - or one saved while you were
+mid-experiment - keeps applying even after an update fixes the default.
+Deleting them puts you back on the shipped defaults, which are the ones
+that get tested.
+
+Keep bioshockvr.log. If the problem survives a clean settings folder,
+that file is what makes it diagnosable - and crash dumps, if any, land
+in %LOCALAPPDATA%\BioshockVR\crash\.
