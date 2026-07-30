@@ -51,6 +51,16 @@ bool stereo_active();
 // Safe from any thread (the overlay checkbox draws on the render thread).
 void request_vrstereo(bool on);
 
+// Session 28: stereo-ONLY request - toggles the scene doubling and leaves 1t and
+// the head-driven camera exactly as they are. The one-toggle above cannot be
+// used as a stereo A/B because it also drops the head drive, and a
+// non-head-driven camera makes the compositor reproject a static image as you
+// turn - indistinguishable from the warping it was being used to test for.
+// Safe from any thread. `doubling_on` reports the doubling alone, for the
+// overlay checkbox state.
+void request_stereo_only(bool on);
+bool doubling_on();
+
 // Session 21 discovery instrument: "vrfgnode on|off|dump" - read-only hook on
 // the engine's per-frame FOREGROUND SCENE NODE ctor (patterns.h "FOREGROUND
 // SCENE NODE"); dump logs the parent-view/node snapshots taken at ctor tail

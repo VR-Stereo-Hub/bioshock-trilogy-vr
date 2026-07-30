@@ -650,3 +650,48 @@ runtime.
   milliseconds later given ProcessEvent traffic), and the overlay's vrstereo checkbox
   posts a request that the same outside-hooked-calls lane applies (also the only lane
   that works at BS2's menu, which never runs PlayerCalcView).
+
+- **2026-07-30 (session 28): a measured value must carry the identity of WHAT it
+  measured, not just its freshness.** The yaw warp was a live instrument reporting the
+  foreground lens as the world lens. The value was fresh, structurally valid, correctly
+  decoded, and labelled `src=live` at the point of use - and it was 1.84x wrong because
+  it came from the wrong pass. Two habits caused it and both are now rules. (a) A
+  cross-check must discriminate the thing that can actually be confused. The decode
+  verified `2tanH` against `-tanH` and `-2tanV` against `tanV` - intra-axis, so it proved
+  each triple self-consistent and carried zero information about which lens or axis it
+  belonged to. The three structural zero slots that DO disambiguate were in the offline
+  decoder from day one and never ported. (b) A single sample is an assumption about
+  homogeneity. The frame is not homogeneous: it holds two lenses that agree only at
+  16:9, so "the first decodable draw" silently encoded "whichever pass draws first".
+  Sampling is now strided across the whole pass and voted, with the runner-up published
+  as a named second lens - the ambiguity is a reported quantity instead of an invisible
+  coin flip - and a round that lacks a clear majority or that failed to span its pass is
+  REFUSED rather than published, on the principle that holding a stale value the age gate
+  will expire beats publishing a confident wrong one. Corollary for consumers: a source
+  tag (`src=live`) says where a number came from, never that it is right, and the
+  session-27 elimination of the FOV hypothesis rested on exactly that confusion.
+
+- **2026-07-30 (session 28): an instrument that cannot fail its own hypothesis is not
+  evidence.** `fovaudit pose on` was built to check that the submitted layer pose matches
+  the pose the frame was rendered from, and it compares `projViews[0].pose.orientation`
+  against `g_consumedHeadQuat` - both stamped from the same `xrLocateViews` generation.
+  `delta 0.00 deg` through real head sweeps was therefore guaranteed by construction, and
+  it was written up as having eliminated the pose hypothesis. Rule: before trusting a null
+  result, name the two sources and check they are independent. Where the render-side truth
+  already exists (here: `g_eyeCamRot[eye]`, the rotator the drive actually wrote, stashed
+  per eye per tick), the audit must compare against THAT.
+
+- **2026-07-30 (session 28): a bounded promise must be enforced with a deadline, and a
+  latch must never sit above the event pump.** The SR pair-hold leaves an XR frame open
+  across two presents on the promise that the sibling present arrives within one build
+  (~1-4 ms measured). Its early return sat ABOVE `pump_events()`, so for as long as the
+  promise went unkept nothing polled XR events: session state froze, every guard below
+  became unreachable, and the only escape left in the whole function was the VR-disable
+  teardown. Alt-tab stops presenting mid-pair, so the promise went unkept indefinitely.
+  Two structural rules now: state that gates an early return is refreshed BEFORE that
+  return, and any "the next call will finish this" state carries a timestamp and a
+  force-abort path (500 ms here, ~125x the measured need). Also: recovery diagnostics must
+  not be gated on the same variables the failure corrupts - `pacing SKIPPED` required
+  `g_unfocusedSinceMs == 0` and `FOCUSED again` required it non-zero AND `g_everFocused`,
+  which STOPPING cleared, so after one stop the log went silent in both directions and a
+  stuck user's log read as "nothing happened".

@@ -2403,6 +2403,14 @@ followed, so the resolution change never began. Notes:
 
 ### RETRACTED - the "Hor+ with a fixed vertical" law below is NOT established
 
+> **RESOLVED in session 28 - see "Session 28: two lenses, and the one the watch was reading"
+> at the end of this file.** Both readings in the table below were real, fresh and correct
+> measurements *of different lenses*: the frame carries a world lens AND a foreground lens, and
+> off 16:9 they differ by `(16/9)*(h/w)`. `2.1445` is the world lens at 1:1 option 130 and
+> `1.2063` is the foreground lens at the same moment. Staleness was never the explanation. The
+> retraction was right to refuse the law; the session-27 un-retraction was wrong; the ORIGINAL
+> assumption (option is a true horizontal) is what the world pass actually does.
+
 **Read this before acting on the section that follows.** A third reading contradicts it. Same
 backbuffer (2048x2048), same `option=130`, two different results:
 
@@ -2508,6 +2516,170 @@ eye: 17.6 MP useful out of 33.2 MP rendered, ~53% efficiency, matching the ~54% 
 already recorded above. The same sharpness is available near-square for ~18 MP. It also caps
 how aggressively a derived target may clamp: 33 MP is a resolution a real user is happily
 running, so any total-pixel ceiling must be generous and overridable.
+
+## Session 28: two lenses, and the one the watch was reading
+
+**This closes OPEN BUG 2 (yaw warping at non-16:9) and settles both lens laws.** Everything
+below is measured, not derived: `dumpframe full` at 2750x2850 decoded by
+`tools/decode-framedump.ps1` (which has always applied the structural zero-slot validation the
+live watch did not), at two FOV options, on both SR eyes, plus a `vrfgfov on/off` A/B that
+identifies the clusters by which one moves.
+
+### 1. THE HEADLINE: a frame carries TWO perspective lenses, and off 16:9 they DIFFER
+
+At 16:9 they coincide exactly, which is why every measurement from session 21 to session 27 saw
+a single cluster and why every "law" derived from a single reading was a coin flip.
+
+```
+WORLD pass:      tanH = tan(option/2)          <- aspect-INDEPENDENT
+                 tanV = tanH * (h/w)           <- vertical follows the window ("Vert+")
+
+FOREGROUND pass: tanV = tan(fgFov/2) * 3/4     <- aspect-INDEPENDENT (the 4:3 spec)
+                 tanH = tanV * (w/h)           <- horizontal follows the window ("Hor+")
+```
+
+The two conventions are exact opposites, and their ratio is `(16/9)*(h/w)` - 1.0 at 16:9,
+1.7778 at 1:1, 1.8425 at 2750x2850.
+
+Measured, 2750x2850 (aspect 0.964912), `decode-framedump.ps1` cluster output:
+
+| option | vrfgfov | world cluster (draws) | fg cluster (draws) |
+|---:|---|---|---|
+| 100 | on | tanH **1.1918** tanV **1.2351** (154) | tanH 0.6468 tanV 0.6704 (24) |
+| 100 | off | tanH **1.1918** tanV **1.2351** (138) | tanH 0.4178 tanV **0.4330** (24) |
+| 130 | on | tanH **2.1445** tanV **2.2225** (163) | tanH 1.1640 tanV 1.2063 (24) |
+
+Every number is exact: `tan(50) = 1.191754`, `1.191754 * 2850/2750 = 1.235090`,
+`tan(65) = 2.144507`, `2.144507 * 2850/2750 = 2.222514`. The `vrfgfov off` row is the identifier
+- **only the second cluster moved**, and it landed on `0.4330127`, the native foreground vertical
+already hardcoded in `patterns.h`'s `kFgCbFingerprint[6]` (`tan(30)*3/4`). Both eye windows (q0
+and q1) are identical, so this is not an eye-attribution artifact.
+
+**So the world lens is what this project originally assumed, and what BioVRDev assume too.** The
+submission formula in `openxr_runtime.cpp` (`halfV = atan(tan(halfH) * swapH/swapW)`) has been
+correct at every aspect all along, and it was correct to revert all three session-27 rewrites.
+
+### 2. THE BUG: the live watch was reading the foreground lens, and the claim followed it
+
+`core/gfx/hud_capture.cpp` sampled the cb0 head of the **first** DSV-bound `DrawIndexed` of each
+present interval whose VS b0 was >= 320 bytes. Three facts make that the viewmodel:
+
+- the foreground draws are **the first draws of the main pass** (recorded since session 21);
+- the foreground tier is **576 bytes** (`patterns.h` `kFgCbBytes`), which clears the 320 gate;
+- the foreground block carries the screen-ray helper at the **same floats 12..18**, so the
+  decode cannot tell it apart - and the two cross-checks the decode did run (`f[12]/2` against
+  `-f[14]`, `-f[17]/2` against `f[18]`) are **intra-axis**: they confirm each triple is
+  self-consistent and carry no information about which lens or which axis it belongs to. The
+  three structural zero slots that *would* disambiguate (`f[13]`, `f[15]`, `f[16]`) were never
+  tested, although the offline decoder has always tested them.
+
+Consequences, in order:
+
+1. `fov_mismatch()` compared the FOREGROUND tangent against `tan(option/2)`. Off 16:9 that ratio
+   is 0.54, far outside the +-10% window, so **the verdict latched ON during normal gameplay**
+   and stayed on - visible in the session-27 log as one `[hud] rendered-fov mismatch ON` line at
+   03:50:56 and no `off` line for the rest of the session.
+2. A latched `fovMm` with `g_cineStereo` (default true) routes the projection claim through the
+   `fovMm && stereoCine` branch in `on_present_end`, which replaces the option-derived claim with
+   **the live watch's tangent** - i.e. with the viewmodel frustum. That is the `src=live` on the
+   session-27 submit line: `tanH=0.646840 tanV=0.670361 ... src=live swap=2750x2850`, over a
+   world actually rendering `tanH=1.1918`. **A 1.842x under-claim of the submitted frustum.**
+3. The compositor was therefore told the image spans +-32.9 deg horizontally when it spans
+   +-50 deg. Everything reads magnified by 1.84x in tangent space, and every head rotation is
+   mis-reprojected: a feature dead ahead at display time is displaced by
+   `atan(k*tan(delta)) - delta`, several degrees at ordinary turn rates, snapping back the moment
+   the head stops. **That is the warp.**
+
+Why the observed signature is exactly this and nothing else:
+
+- **FOV-slider independent** (the strongest constraint in the report): the error is
+  `k = (16/9)*(h/w)`, which has no option term at all. Sweeping the slider changes the visible
+  extent and never the distortion.
+- **Aspect-gated**: at 16:9 the two lenses coincide, the verdict never latches, the claim stays
+  `src=readback` and is correct. 1920x1080 is clean *by construction*.
+- **Yaw-dominant, pitch clean**: the tangent error is uniform, but yaw excursions in play are far
+  larger and faster than pitch, so the reprojection error is felt on yaw.
+- **BioVRDev do not warp at the same 2750x2850**: they submit the option-derived claim and have
+  no mismatch detector, so nothing ever substitutes the fg lens - and under the law above their
+  claim is simply correct. The contradiction that made this look unexplainable was the clue.
+
+Why the two session-27 eliminations, both honestly measured, could not catch it:
+
+- **`src=live` was read as proof of correctness.** The reasoning was "live means derived from the
+  measured rendered tangent, therefore it tracks the render by construction". The label was true;
+  the lens it tracked was the wrong one. A source tag is not a correctness proof.
+- **The pose audit is structurally blind.** It compares `projViews[0].pose.orientation` against
+  `g_consumedHeadQuat`, and `g_consumedHeadQuat` is stamped inside `get_head_pose()` from the same
+  `xrLocateSpace`/`xrLocateViews` generation the tag comes from. `delta 0.00 deg` was guaranteed
+  by construction. It proves the locate-to-tag plumbing is intact and says nothing about whether
+  the tag matches the pose the frame was RENDERED from. Recorded here so the next reader does not
+  re-derive it: **that audit cannot eliminate the pose hypothesis, and the session-27 write-up
+  over-claimed when it said pose latching was ruled out.**
+
+### 3. Two suspects killed by measurement along the way
+
+- **Head roll is NOT erased between tick and render.** BioVRDev record that this engine erases
+  camera roll and ship a render-thread roll re-write; BS1R does not need one. `simhead 0 0 40`
+  then `reentry dump`: the engine's own render submit receives
+  `rot=(0,28303,7281)=(0.0,155.5,40.0)deg` - roll intact - and the screenshot shows the world
+  rolled 40 deg. So the layer pose (which carries roll) matches the render, and roll is not a
+  claim/render mismatch on this game.
+- **Per-eye render orientation is provably identical.** The same dump shows both SR passes
+  submitting `rot=(0,28303,0)` bit-identical, with locations 6.36 UU apart laterally
+  (`ipd 63.4 mm` at worldScale 100 = 6.34 UU) and `dz = 0` at roll 0, becoming
+  `dz = 4.1 UU` at roll 40 - the session-22 full-rotation right axis working as designed.
+
+### 4. What shipped
+
+- **`hud_capture.cpp` rewritten to vote, not to guess.** Up to 8 cb0 heads per interval into one
+  640-byte staging buffer, sampled at a **stride** derived from the previous interval's distinct
+  cb0 count so the samples span the whole pass (a first-8 sample is dominated by the foreground:
+  measured 5/8 votes for the viewmodel at 2048x2048 before the stride went in). Clusters are
+  voted; the winner is published as the world lens and the runner-up as the fg lens.
+  `decode_ray_block` now enforces the offline decoder's structural zero slots, absolute
+  0.001 pair agreement, and bounds on both axes. Two guards refuse a round rather than publish a
+  marginal one: **majority** (a winner must exceed half the decoded samples) and **coverage** (a
+  round whose stride was stale, so it only spanned the head of the pass, is discarded - this is
+  the scene-change transient, and it fires exactly once entering gameplay).
+- **The age gate moved into `fov_watch()`**, default 500 ms, `0` meaning "give it to me anyway
+  and I will label it". Every printed line now says `FRESH` or
+  `STALE - DO NOT CONCLUDE` in words. `fovaudit live` reports both lenses, the vote split, the
+  stride, the sample count and the backbuffer aspect on one line, plus a `laws` line stating the
+  expectation for the live aspect - no conclusion needs two log lines cross-referenced again.
+- **The `fovaudit` option-derived column no longer falls back to a hardcoded 9/16** when there is
+  no XR session. It uses the real backbuffer dims (`bvr::hud::backbuffer_dims`). Flat is where
+  the measuring happens, and that fallback was wrong at every aspect but 16:9.
+- **The claim substitution announces itself** once per session with the age and the reason, so an
+  unexplained `src=live` can never hide a lens swap again.
+
+Flat verification at 2048x2048 (the resolution the README recommends and the bug was reported
+at): `WORLD tanH=1.191754 tanV=1.191754 (hfov 100.00 deg, 6/8 votes)`,
+`FG tanH=0.670361 tanV=0.670361`, `lenses=2 mismatch=0 cineActive=0`, both ages 15 ms FRESH,
+`ambiguous rounds 1` (the coverage guard doing its job at the menu->gameplay transition), and
+**no `rendered-fov mismatch ON` line anywhere in the run** where session 27 had one within
+seconds of reaching gameplay.
+
+### 5. The foreground-lens aspect law, and the `0.75` it condemns
+
+Stage 2's blocked measurement (b) is answered by the same dumps. `camera.cpp`'s foreground match
+writes `fg = 2*atan(tan(worldHalf) * 0.75)`. Matching the world needs the fg VERTICAL to equal
+the world vertical:
+
+```
+tan(fgHalf) * 3/4 = tan(option/2) * (h/w)
+  =>  tan(fgHalf) = tan(option/2) * (4/3) * (h/w)
+  =>  the constant is (4/3)*(h/w), which is 0.75 ONLY at 16:9
+```
+
+Checked against the measurement at 2750x2850 option 100: `tan(50)*1.3333*1.03636 = 1.64676`,
+`fgFov = 117.4 deg`, `fg tanV = 1.64676*0.75 = 1.23507` == the world's `1.2351`, and
+`fg tanH = 1.23507*0.96491 = 1.19175` == the world's `1.1918`. Exact.
+
+So the shipped `0.75` under-lenses the viewmodel by `1.7778/aspect` - **1.78x at a square
+backbuffer, which is what the README tells users to run**, and 1.84x at 2750x2850. That is the
+"hands look huge" report, quantified. The fix reduces to `0.75` exactly at 16:9, so it cannot
+invalidate the session-16 in-headset calibration. NOT shipped yet: it changes viewmodel scale
+visibly and must not confound the warp re-test.
 
 ### Superseded: the earlier "still unmeasured" note on the world lens aspect law
 

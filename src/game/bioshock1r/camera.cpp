@@ -459,14 +459,23 @@ void apply_command(const char* cmd, const char* args) {
             int src = -1;
             unsigned sw = 0, sh = 0;
             bvr::vr::fov_audit(&tanH, &tanV, &src, &sw, &sh);
-            // Option-derived expectation. Flat there is no session (swap dims
-            // 0x0) - assume the 16:9 render aspect the dumps confirm per draw.
+            // Option-derived expectation, from the WORLD lens law measured in
+            // session 28: tanH = tan(option/2) (aspect-independent), tanV =
+            // tanH * (h/w). Flat there is no XR session, so fall back to the
+            // real BACKBUFFER dims - never to a hardcoded 9/16, which is right
+            // only at 16:9 and is how a 1.84x error stayed invisible.
+            unsigned bbW = 0, bbH = 0;
+            bool haveBb = bvr::hud::backbuffer_dims(&bbW, &bbH);
+            unsigned aw = (sw && sh) ? sw : bbW;
+            unsigned ah = (sw && sh) ? sh : bbH;
             float optTanH = 0.0f, optTanV = 0.0f;
             if (opt) {
                 optTanH = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
-                optTanV = optTanH * ((sw && sh) ? (static_cast<float>(sh) / static_cast<float>(sw))
-                                                : (9.0f / 16.0f));
+                optTanV = optTanH * ((aw && ah) ? (static_cast<float>(ah) /
+                                                   static_cast<float>(aw))
+                                                : 1.0f);
             }
+            (void)haveBb;
             BVR_LOG("[b1r] fovaudit: option=%d gfovWrite=%s(%.1f) | submitted tanH=%.6f "
                     "tanV=%.6f src=%s swap=%ux%u | option-derived tanH=%.6f tanV=%.6f",
                     opt ? *opt : -1,
@@ -478,18 +487,44 @@ void apply_command(const char* cmd, const char* args) {
                     : src == 3 ? "live"
                                : "none",
                     sw, sh, optTanH, optTanV);
-            // Session 22 live fov watch: what the game is ACTUALLY rendering
-            // right now (decoded per present from the first scene draw's cb0).
+            // Session 22 live fov watch, session 28: BOTH lenses, each labelled
+            // FRESH or STALE in words. maxAge 0 so a stale value still prints -
+            // several session-27 conclusions were taken from samples that
+            // printed age>9000ms, stale by the rule the same line printed, so
+            // the word is now on the line and nothing has to be inferred.
             float liveTanH = 0.0f, liveTanV = 0.0f;
             unsigned long long liveAge = 0;
-            if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge))
-                BVR_LOG("[b1r] fovaudit live: rendered tanH=%.4f tanV=%.4f (%.1f deg) "
-                        "age=%llums | mismatch=%d cineActive=%d",
+            if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge, 0)) {
+                float fgH = 0.0f, fgV = 0.0f;
+                unsigned long long fgAge = 0;
+                bool haveFg = bvr::hud::fov_watch_fg(&fgH, &fgV, &fgAge, 0);
+                BVR_LOG("[b1r] fovaudit live: WORLD tanH=%.6f tanV=%.6f (%.2f deg) "
+                        "age=%llums %s | FG tanH=%.6f tanV=%.6f age=%llums %s | "
+                        "lenses=%d mismatch=%d cineActive=%d",
                         liveTanH, liveTanV, 2.0f * atanf(liveTanH) * kRadToDeg,
-                        liveAge, bvr::hud::fov_mismatch() ? 1 : 0,
+                        liveAge, liveAge <= 500 ? "FRESH" : "STALE - DO NOT CONCLUDE",
+                        haveFg ? fgH : 0.0f, haveFg ? fgV : 0.0f, fgAge,
+                        !haveFg ? "n/a (single lens - 16:9)"
+                                : (fgAge <= 500 ? "FRESH" : "STALE"),
+                        bvr::hud::fov_lens_count(),
+                        bvr::hud::fov_mismatch() ? 1 : 0,
                         bvr::vr::cinematic_active() ? 1 : 0);
-            else
+                // The two laws, spelled out against this backbuffer so the
+                // reader never has to redo the arithmetic (session 28 measured:
+                // world is horizontal-anchored, fg is vertical-anchored).
+                if (opt && aw && ah) {
+                    float a = static_cast<float>(aw) / static_cast<float>(ah);
+                    BVR_LOG("[b1r] fovaudit laws (aspect %.5f from %ux%u): world "
+                            "expects tanH=tan(opt/2)=%.6f tanV=tanH*h/w=%.6f | fg "
+                            "matches the world when the 0.75 becomes "
+                            "(4/3)*h/w=%.6f (shipped 0.75 is that only at 16:9; "
+                            "here it under-lenses the viewmodel by %.4fx)",
+                            a, aw, ah, optTanH, optTanV,
+                            (4.0f / 3.0f) / a, (4.0f / 3.0f) / a / 0.75f);
+                }
+            } else {
                 BVR_LOG("[b1r] fovaudit live: no decoded scene tangents yet");
+            }
         }
     } else if (strcmp(cmd, "fsweep") == 0) {
         float lo = 0.0f, hi = 0.0f;
