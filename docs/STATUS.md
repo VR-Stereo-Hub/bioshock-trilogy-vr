@@ -211,7 +211,36 @@ angular extent, never the distortion. That property is the most valuable constra
   exactly like warping. Stereo is therefore neither confirmed nor eliminated. A clean test
   needs stereo off with camera mode still ON.
 
-**Strongest remaining hypothesis: the submitted POSE, not the submitted FOV.** A projection
+**ELIMINATED BY MEASUREMENT (end of session 27):**
+
+- **FOV mismatch is NOT the cause.** At BioVRDev's exact config (2750x2850, ini FOV 100, both
+  locks pinned) the submit line read `src=live`, meaning the claim is derived from the MEASURED
+  rendered tangent and therefore tracks the render by construction - and the warping persisted
+  anyway. Checking `src=` on that line hours earlier would have ruled FOV out before three
+  formula rewrites. (That run also confirmed the law a third time and exactly:
+  `tanV = 0.670361 = tan(50)*9/16`, `tanV/tanH = 1.0364 = 2850/2750`. So the law is real, the
+  last revert was wrong, and it is ALSO irrelevant to this bug because the live path was
+  already keeping claim and render aligned.)
+- **Pose latching is NOT the cause.** `fovaudit pose on` during head sweeps reported
+  `delta 0.00 deg` on every sample with real yaw motion (61 -> 1 -> -2 -> 11 deg). The
+  comparison is not vacuous: it diffs `projViews[0].pose` against `g_consumedHeadQuat`, which
+  the game-thread camera drive publishes independently. `g_viewsContent` already holds the
+  previous locate generation deliberately, with a comment describing this exact artifact.
+
+**NEXT AND MOST SPECIFIC: the two eyes may be tagged with different ORIENTATIONS.**
+
+The pose audit only inspects `projViews[0]` - the left eye. Nothing checks eye 1. Under
+SequentialReentry both eyes are rendered in ONE game tick from ONE head sample, differing only
+by an IPD position offset, so both layers must carry the SAME orientation. But the stereo
+branch tags each eye with `g_eyePose[eye]`, a pose stored at THAT eye's capture, and the two
+captures happen on different presents. If those orientations differ, the compositor reprojects
+the two eyes differently, the images disagree during a turn, and that reads exactly as the
+world warping - independent of FOV, and consistent with the left eye's pose being provably
+correct. Check: log `projViews[0].pose` vs `projViews[1].pose` orientation during a turn; a
+non-zero orientation delta is the bug. Fix shape: tag both eyes with the single orientation the
+tick was rendered from, keeping only the position offset per eye.
+
+**Superseded hypothesis (kept for the record): the submitted POSE, not the submitted FOV.** A projection
 layer is submitted with both a pose and an fov; if the pose handed to the compositor does not
 match the pose the frame was actually rendered from, the compositor reprojects incorrectly and
 the world swims as the head turns - and that error is completely independent of the FOV value,
