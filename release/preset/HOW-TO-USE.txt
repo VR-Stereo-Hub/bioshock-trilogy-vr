@@ -1,4 +1,4 @@
-The bundled calibration (v0.4.1)
+The bundled calibration (v0.5.0)
 ================================
 
 You do NOT need these files for a fresh install: the mod's built-in

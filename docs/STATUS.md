@@ -2,10 +2,87 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-30, session 29 - STAGE 3 CODE-COMPLETE: the cutscene bars were a gameswf DRAW all along, session 22's reading retracted - branch s29-b1r-cinematics-and-aim-dot)
+## Current state (2026-07-30, session 29 - STAGE 3 ACCEPTED IN-HEADSET, v0.5.0 PACKAGED, awaiting the user's final go - branch s29-b1r-cinematics-and-aim-dot)
 
-**All three stage-3 items are built, flat-measured where flat can measure them, committed and
-pushed. The release stays HELD until the in-headset verdict.**
+**IN-HEADSET VERDICT (user, Quest 3 / VDXR): "bars are gone, hands and head are correct now and
+the dot is perfect. Everything is very good."** Subtitles were reported wrong in the same run and
+are now fixed and confirmed good.
+
+**v0.5.0 is BUILT AS RELEASE AND PACKAGED** (`dist/bioshock-vr-v0.5.0.zip`, sha256
+`5C2FD1C29E6E821118C3BA91455D3292110073DB146036EF9532A5BE2BF19C4B`), and the RelWithDebInfo
+DLLs are installed in the game so the user's remaining testing soaks the actual shipping binary
+rather than Debug. **NOT merged to main and NOT tagged - the user is testing first and will give
+the final go.** Do not merge or publish without it.
+
+### 0a. THE BUG THAT ONLY THE HEADSET COULD SHOW: the HUD redirect was eating the bar draw
+
+The first in-headset run of stage 3 came back "bars still present, hands still wrong" while every
+flat test passed. One root cause for both, and it is a genuine trap worth remembering:
+
+**With an XR session live, `hud::armed()` is true, so gameswf draws are REDIRECTED to the
+offscreen HUD RT. The bars ARE a gameswf draw - so in-headset they never reach the backbuffer,
+which is exactly the surface `letterbox_sample` reads.** The watch therefore never fired,
+`cinematic_hold()` never became true, the suppression branch and every drive gate hanging off it
+were never entered, and the bars rode the HUD panel into the headset. Flat, the redirect is
+unarmed, the bars land in the backbuffer, and detection works every single time.
+
+**Why it survived since session 22:** round 4 moved the sampler from the present TAIL to the HEAD
+to kill the sampler-feedback trap. Correct fix - but the tail sample had been reading our own HUD
+composite, which was the ONLY path by which redirected bars reached the sampled surface with a
+session live. It silently broke in-headset detection at that moment, and every test of the
+detector since has been flat. The user's "before, the scene was locking the head" dates the
+regression exactly.
+
+**Fixed by removing the dependency entirely:** the bar draw is now identified where it is issued,
+BEFORE the redirect decision, by its measured fingerprint - a textureless gameswf draw on the HUD
+target with the WidescreenBars vertex count (29). Textureless alone is NOT safe: the log
+immediately proved it (`textureless gameswf draw, 5 verts (bars are 29) - NOT treated as bars`),
+and treating all of them as bars is what blacked out the scene in session 22 round 4. The count
+is retunable live (`vrcine bars verts <n>`) and every other textureless count is logged once, so
+a wrong value shows up as data rather than a silent miss.
+
+### 0b. The sticky bone state was REAL - measured, not argued
+
+Flat could not test it (no XR session means no bone drive, so `hiddenHand=-1 refValid=0` always).
+In-headset the cine-edge instrument caught it on the first cutscene frame:
+
+```
+[b1r] cine edge ENTER (barDraw=1 letterbox=0 cineQuad=0) | drives: vrDriving=0 strict=1
+      aimArmed=1 | bones: hiddenHand=0 cacheAge=16ms refValid=1
+[bones] released to the engine (cinematic started): hidden hand 0 restored, ...
+```
+
+`hiddenHand=0` = the left cluster collapsed, `cacheAge=16ms` = `reapply()` actively repainting,
+`refValid=1` = the frozen reference held. Exactly the state predicted from reading the code, and
+`release()` undid it on the same frame. Note also `barDraw=1 letterbox=0`: the two cinematic
+sources disagreeing in precisely the way section 0a predicts.
+
+### 0c. A second bug the instrument found, from the user toggling modes mid-scene
+
+Switching drive mode to `off` mid-cutscene resumes the drive (collapsing the inactive hand), and
+switching back gates the only code that can restore it - `restore_hidden()` lives inside
+`drive()`, and `release()` only fired on the cinematic ENTER edge. Measured: the exit line read
+`hiddenHand=0 cacheAge=32578ms`, and 32.5 s before that exit is exactly when the gate re-closed.
+Fixed by releasing WHERE the suppression happens (the hands gate) rather than on an edge;
+`release()` is idempotent so it self-limits to one real pass.
+
+### 0d. Subtitles: the round-4 all-or-nothing rule had to go
+
+Session 22 round 4 sent the WHOLE flash layer in-frame during a letterbox so the frame could not
+differ from flat. That rule existed only because the bars could not be identified. With the bars
+skipped precisely, sending the rest in-frame actively hurts: subtitles rendered into the eye
+images are captured per eye, and under SequentialReentry the two eyes come from DIFFERENT game
+frames, so two text states superimpose. User report: "impossible to read". They now default to
+the head-locked panel (one image in both eyes) and the user confirmed them good. `vrcine subs
+frame` / the overlay checkbox restores the old behaviour.
+
+### 0e. Known characteristic, user-accepted: `authored+look` still pans with the director
+
+The head delta is added ON TOP of the authored rotation, so when the scene pans, the view pans
+too. User's call: *"everything was perfect except the head movement during authored + headlock
+but I think it's fine and the user can choose for now."* The alternative - head fully owns
+rotation, the scene owns only position - is a small change and is NOT built. Recorded as
+available, not needed.
 
 ### 0. THE HEADLINE: the bars are a flash sprite, and that retracts session 22
 
@@ -489,9 +566,20 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### 0. THE ONLY THING BLOCKING THE RELEASE: the in-headset verdict on stage 3
+### 0. THE ONLY THING BLOCKING THE RELEASE: the user's final go
 
-Everything in stage 3 is built, committed and pushed. Three things need a headset, in this order:
+Stage 3 is accepted in-headset and v0.5.0 is packaged. The user is soaking the Release build
+before giving the final thumbs up: *"Don't release and merge to main yet since I wanna test
+stuff out first just in case - will give you the final thumbs up."* **Do not merge or publish
+without it.**
+
+When it comes: merge to main, `git tag v0.5.0`, publish `dist/bioshock-vr-v0.5.0.zip` with
+`docs/RELEASE_NOTES.md` as the body. The zip is already built from this tree and its version,
+DLL banner and tag are guaranteed consistent by `tools/package.ps1`.
+
+Carried, not blocking: the harness debt below, and the `authored+look` alternative in 0e.
+
+### Superseded by the in-headset run - the checklist that got us here
 
 1. **Bars.** Load the Gatherer's Garden Electro Bolt save, take the plasmid. Expect the bars to
    flash briefly at the start (the pixel watch needs ~6 presents to arm the hold) and then go,
@@ -5133,3 +5221,27 @@ THEN arm 1t):**
   `_SH_DENYNO`), non-ASCII mojibake in log lines, missing `-Install` passthrough in build.ps1.
 - Verified: LAA=YES; D3D11 confirmed at runtime; user ini path confirmed after first launch.
 - Repo created and pushed: https://github.com/mohamad-balouza/bioshock-vr (public, MIT).
+
+## Session log
+
+### 2026-07-30 - session 29 (branch s29-b1r-cinematics-and-aim-dot): stage 3, accepted in-headset
+
+Cutscene bars, cinematic drive modes, subtitles and the aim dot. v0.5.0 packaged, awaiting the
+user's final go before merge and tag.
+
+- **The bars were never a squeeze.** Retracted session 22's reading with two measurements taken
+  before writing any code: the Nexus mod is a ONE-BYTE SWF edit zeroing the `WidescreenBars`
+  PlaceObject2 scale, and a framedump inside the letterbox shows a full-frame tonemap with a
+  textureless 29-vertex gameswf draw after it. `blit::stretch_band` deleted.
+- **The in-headset failure was the HUD redirect eating the bar draw** before the pixel watch
+  could see it - one root cause for "bars still present" AND "hands still wrong". Detection no
+  longer depends on the pixel watch at all.
+- **Both bone bugs were found by the instrument, not by reasoning**: the sticky collapse at
+  cutscene entry (`hiddenHand=0 cacheAge=16ms`) and the stuck collapse from a mid-scene mode
+  switch (`cacheAge=32578ms`, exactly when the gate re-closed).
+- **The aim dot round-trips to 0.0000 UU** (80 nanometres) through the new `game_point_to_xr`,
+  so dot == shot by shared data rather than shared algebra.
+- Methodology that paid: measuring the mechanism before coding (the SWF diff cost minutes and
+  killed a whole wrong approach); shipping the refuting instrument with the fix (the vertex-count
+  log immediately proved "textureless = bars" would have been wrong); and stating plainly which
+  claims flat could not test - all three of those turned out to matter in headset.
