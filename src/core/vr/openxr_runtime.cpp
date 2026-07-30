@@ -2391,6 +2391,12 @@ void handle_cine_command(const char* args) {
         bvr::hud::set_bars_hidden(true);
     } else if (strncmp(args, "bars show", 9) == 0) {
         bvr::hud::set_bars_hidden(false);
+    } else if (strncmp(args, "bars verts", 10) == 0) {
+        unsigned n = 0;
+        if (sscanf_s(args + 10, "%u", &n) == 1 && n >= 3)
+            bvr::hud::set_bar_verts(n);
+        else
+            BVR_LOG("xr: usage: vrcine bars verts <n>  (current %u)", bvr::hud::bar_verts());
     } else if (strncmp(args, "unsqueeze", 9) == 0) {
         // Session 29: RETIRED, not merely defaulted off. The unsqueeze assumed
         // the cinematic content was anamorphically squeezed into a middle band
@@ -2428,10 +2434,11 @@ void handle_cine_command(const char* args) {
         // The two cinematic sources, side by side and never merged. With bars
         // hidden the pixel watch SHOULD read 0 while the draw signal holds -
         // that is the design working, not the sources disagreeing.
-        BVR_LOG("xr: cine bars=%s | barDraw=%d (skipped %u, intervals %u, %u verts) | "
-                "pixelWatch=%d (top %u bot %u) | sources %s",
-                bvr::hud::bars_hidden() ? "HIDDEN" : "shown", barDraw ? 1 : 0, barsSkipped,
-                barIntervals, barVerts, lbPix ? 1 : 0, lbTop, lbBot,
+        BVR_LOG("xr: cine bars=%s (looking for %u verts) | barDraw=%d (skipped %u, "
+                "intervals %u, last %u verts) | pixelWatch=%d (top %u bot %u) | sources %s",
+                bvr::hud::bars_hidden() ? "HIDDEN" : "shown", bvr::hud::bar_verts(),
+                barDraw ? 1 : 0, barsSkipped, barIntervals, barVerts, lbPix ? 1 : 0, lbTop,
+                lbBot,
                 barDraw == lbPix ? "AGREE"
                 : bvr::hud::bars_hidden()
                     ? "differ (expected: bars hidden, so nothing black to see)"

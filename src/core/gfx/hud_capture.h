@@ -94,6 +94,11 @@ bool force();
 // that draw by zeroing the sprite's PlaceObject2 scale.
 void set_bars_hidden(bool on);
 bool bars_hidden();
+// The bar shape's vertex count (29 measured). Retunable live - a shot whose
+// bars tessellate differently would otherwise be a silent miss, and every
+// other textureless count is logged once so a wrong value shows up as data.
+void set_bar_verts(unsigned n);
+unsigned bar_verts();
 
 // True while THIS interval contained a bar draw. This is the primary cinematic
 // signal and it is strictly better than the pixel watch: no async staging map,

@@ -220,6 +220,24 @@ std::atomic<bool> g_barActive{false};       // last interval's verdict
 std::atomic<unsigned> g_cBarsSkipped{0};
 std::atomic<unsigned> g_cBarIntervals{0};
 std::atomic<unsigned> g_lastBarVerts{0};    // for the flat gate: 29 when measured
+// The measured WidescreenBars vertex count (framedump_132749, both intervals).
+// Retunable live because a differently-tessellated shot would otherwise be a
+// silent miss, and one number in a log beats a rebuild.
+std::atomic<unsigned> g_barVerts{29};
+// Every OTHER textureless gameswf count, logged once each. These are the
+// fades and dims that session 22 round 4 mistook for bars and blacked the
+// scene out with - so they are data we want, not noise.
+unsigned g_seenCounts[16] = {};
+int g_seenCountN = 0;
+
+void note_textureless_count(unsigned n) {
+    for (int i = 0; i < g_seenCountN; ++i)
+        if (g_seenCounts[i] == n) return;
+    if (g_seenCountN >= static_cast<int>(_countof(g_seenCounts))) return;
+    g_seenCounts[g_seenCountN++] = n;
+    BVR_LOG("[hud] textureless gameswf draw, %u verts (bars are %u) - NOT treated as bars",
+            n, g_barVerts.load(std::memory_order_relaxed));
+}
 
 bool ensure_lb_staging(ID3D11DeviceContext* ctx, UINT h) {
     if (g_lbStaging && g_lbH == h) return true;
@@ -761,32 +779,53 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
     // cannot differ from flat, and the unsqueeze then crops the bars. The
     // panel stays empty for the duration (no redirected content = the quad
     // copy and window composite idle on their own gates).
-    // Session 29: the hold is the pixel watch OR the previous interval's bar
-    // draw, and the OR is load-bearing. Gating this on black pixels alone
-    // would be circular the moment suppression works: no bars painted -> watch
-    // drops -> branch not entered -> bars painted again, flapping every other
-    // interval. The pixel watch BOOTSTRAPS the hold (it needs ~6 presents of
-    // real bars), the draw signal SUSTAINS it, and when the cutscene stops
-    // issuing the draw both go quiet on the next interval.
+    // ---- Session 29 (corrected in-headset): identify the BARS first --------
+    //
+    // This test must run BEFORE the redirect below and must NOT depend on the
+    // pixel watch, because in-headset the two are circular in a way that is
+    // invisible flat. With an XR session live the redirect is armed, so the
+    // bar draw is sent to the offscreen HUD RT and never reaches the
+    // backbuffer at all - which is exactly the surface letterbox_sample reads.
+    // The watch therefore never fires, cinematic_hold() never becomes true,
+    // and the branch that would have suppressed the bars is never entered. The
+    // bars meanwhile ride the HUD panel into the headset, which is the
+    // session-22 round-3 report ("the cinematic bars sat ON the HUD panel")
+    // arriving by a route nobody had traced. Flat, the redirect is unarmed,
+    // the bars land in the backbuffer and every test passes.
+    //
+    // Fingerprint, measured (framedump_132749, both intervals): a gameswf draw
+    // on the HUD target with NO texture bound and exactly the measured vertex count.
+    // Textures alone are not enough - fades and dims are textureless too, and
+    // session 22 round 4 blacked out the scene by treating all of them as
+    // bars. The vertex count is what separates them; it is a named constant
+    // and every OTHER textureless count is logged once so a shot whose bars
+    // tessellate differently shows up as data rather than as a silent miss.
+    {
+        UINT sw = 0, sh = 0;
+        bool textureless = !srv0_size(ctx, &sw, &sh);
+        if (textureless) {
+            if (vertexCount == g_barVerts.load(std::memory_order_relaxed)) {
+                g_barSeenThisInterval = true;
+                g_lastBarVerts.store(vertexCount, std::memory_order_relaxed);
+                if (bars_hidden()) {
+                    g_cBarsSkipped.fetch_add(1, std::memory_order_relaxed);
+                    DrawDecision d;
+                    d.verdict = DrawVerdict::Skip;
+                    return d;
+                }
+                // Shown: keep it IN FRAME rather than letting it redirect onto
+                // the HUD panel - that is the defect, not the baseline.
+                return kPass;
+            }
+            note_textureless_count(vertexCount);
+        }
+    }
+
+    // The whole flash layer renders in-frame while a cinematic holds (session
+    // 22 round 4): the frame cannot then differ from flat.
     if (cinematic_hold()) {
         g_cLbFills.fetch_add(1, std::memory_order_relaxed);
-        // The letterbox BARS are one of these draws. Measured on
-        // the Electro Bolt sequence (framedump_132749, both intervals): after
-        // the tonemap the HUD movie issues exactly ONE textureless draw
-        // (srv0 unbound, 29 vertices) followed by textured 5-vertex quads, and
-        // the Nexus mod - which zeroes the WidescreenBars PlaceObject2 scale -
-        // is a one-byte edit to that sprite's placement. Textures are the
-        // discriminator: every other flash element (subtitles, HUD art, fades
-        // that matter) samples a UI atlas.
-        if (!bars_hidden()) return kPass;
-        UINT sw = 0, sh = 0;
-        if (srv0_size(ctx, &sw, &sh)) return kPass; // has a texture: not the bars
-        g_barSeenThisInterval = true;
-        g_lastBarVerts.store(vertexCount, std::memory_order_relaxed);
-        g_cBarsSkipped.fetch_add(1, std::memory_order_relaxed);
-        DrawDecision d;
-        d.verdict = DrawVerdict::Skip;
-        return d;
+        return kPass;
     }
 
     {
@@ -994,6 +1033,15 @@ void set_bars_hidden(bool on) {
 }
 
 bool bars_hidden() { return g_barsHidden.load(std::memory_order_relaxed); }
+
+void set_bar_verts(unsigned n) {
+    g_barVerts.store(n, std::memory_order_relaxed);
+    g_seenCountN = 0; // re-learn the other counts against the new target
+    BVR_LOG("[hud] bar vertex count = %u (the WidescreenBars shape; other textureless "
+            "gameswf counts are logged once each so a mis-set value is visible)", n);
+}
+
+unsigned bar_verts() { return g_barVerts.load(std::memory_order_relaxed); }
 bool bar_draw_active() { return g_barActive.load(std::memory_order_relaxed); }
 
 bool cinematic_hold() {
