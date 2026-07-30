@@ -695,3 +695,34 @@ runtime.
   `g_unfocusedSinceMs == 0` and `FOCUSED again` required it non-zero AND `g_everFocused`,
   which STOPPING cleared, so after one stop the log went silent in both directions and a
   stuck user's log read as "nothing happened".
+
+- **2026-07-30 (session 28): the pair-hold rules above stand, but the pair-hold was NOT
+  the alt-tab cause - and shipping it as one is the lesson.** The entry above reasoned from
+  code structure to a plausible mechanism and fixed it. The instrument shipped alongside it
+  then measured the real thing: `SUBMISSION IDLE (reason=pace guard: session not FOCUSED |
+  state=VISIBLE everFocused=1 pairOpen=0 ...)` repeating with no FOCUSED line until the VR
+  toggle. `pairOpen=0` on every line - the hold was never set. The structural fixes remain
+  correct and worth having; the attribution was wrong, and it was wrong for the same reason
+  the FOV hypothesis was wrong two commits earlier: a mechanism that explains the symptom is
+  not evidence that it caused it. Rule: when a fix is derived from reading code rather than
+  from a measurement, say so in the commit and ship the instrument that can refute it in the
+  same build. That is what made the third attempt at this bug class the one that worked.
+
+- **2026-07-30 (session 28): a guard must key on the hazard it exists to avoid, not on a
+  proxy for it - and an unbounded call belongs off the thread that must not block.** The M8
+  pace guard existed to dodge a blocking `xrWaitFrame`, but it keyed on SESSION STATE: any
+  present while not FOCUSED submitted nothing. Measured cost: 5772 presents skipped with
+  ZERO `xrWaitFrame blocked` lines in the whole session - not one slow wait to justify any of
+  it. Worse, it was self-sustaining: VDXR will not re-grant FOCUSED to an app that submits
+  nothing, so the guard's own effect kept its own precondition true. A circular wait, and the
+  reason the alt-tab freeze was permanent while flat rendering continued. It also falsifies
+  the session-26 note that recovery "is not something an app earns by submitting frames" - on
+  this runtime it is earned. The fix is structural rather than a better predicate:
+  `xrWaitFrame` takes no timeout and never can, so it now runs on a dedicated pace thread and
+  the present thread waits on the result with a deadline (200 ms FOCUSED so the headset still
+  paces the game, 20 ms otherwise). An unbounded block can no longer reach the thread the
+  game depends on, which retires the session-26 hang class permanently instead of trading it
+  for the freeze. Consequence to respect: a session must never be destroyed while that thread
+  is inside `xrWaitFrame` on it, so `teardown_session` defers and retries rather than handing
+  the runtime a freed handle - "stays up but idle" is an acceptable worst case, a
+  use-after-free is not.

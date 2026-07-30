@@ -86,7 +86,13 @@ backbuffer already renders exactly 100x100 deg, and 130 over-widens by 30 deg (a
 lens to ~141 deg with it). The preset no longer arms the write; the global default was already
 false, that line was the only thing turning it on. `gfov <deg>` still arms it manually.
 
-### 3. Alt-tab: FIXED per the measurement, needs the in-headset confirm
+### 3. Alt-tab: FIXED AND ACCEPTED IN-HEADSET ("the alt tab is working again")
+
+Both of session 27's open bugs are now closed and confirmed on the real headset. Details of the
+fix below; the thing to carry forward is that it took three attempts and only the one built on a
+measurement worked - the first two (retiring the keepalive in session 26, the pair-hold ordering
+earlier this session) were both derived from reading the code, and both were wrong about the cause
+while being correct as hardening.
 
 `xrWaitFrame` now runs on a dedicated pace thread. The present thread posts one request at a time
 (keeping wait:begin at 1:1) and waits on the result with a deadline - 200 ms while FOCUSED so the
@@ -370,32 +376,67 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### THE ONE THING BLOCKING EVERYTHING: in-headset re-test of the session-28 build
+### BOTH session-27 open bugs are CLOSED and in-headset accepted. Nothing is blocked.
 
-The warp fix and the alt-tab fix are both flat-verified but neither symptom is flat-observable.
-One run answers both. Checklist (user drives; report back from the log):
+Stage 1 (stability), the resolution lane, the yaw warp, the viewmodel/head coupling and the
+alt-tab freeze are all done and confirmed on the real headset. Stage 2 is substantially complete -
+both of its blocking measurements landed this session. What remains:
 
-1. Launch, VR PRESET 1, get to gameplay at **2048x2048** (the ini is already set).
-2. Turn your head left/right deliberately, fast and slow. **Expected: no warping.**
-3. Pitch sweeps, then head-TILT sweeps (roll has never been tried in-headset; the horizon should
-   stay level - flat says roll reaches the render, so this should already be right).
-4. If any warping remains: untick **"...stereo doubling ONLY (A/B - keeps the head drive)"** in
-   the overlay. That is the un-confounded stereo A/B, new this session. If the warp survives with
-   doubling off, it is not the stereo path at all.
-5. **Alt-tab away for ~10 s, then back.** Expected: the headset image resumes on its own. In the
-   log expect `xr: FOCUSED again after N ms`, or - if it still freezes - one
-   `xr: SUBMISSION IDLE (reason=...)` line every 5 s naming the exact guard, which pins it
-   outright.
-6. Log gates for me afterwards: `mismatch=0` in `fovaudit`, no `[hud] rendered-fov mismatch ON`
-   line, `lenses=2` with the WORLD tangent equal to `tan(option/2)`, and the submit line reading
-   `src=readback` (NOT `src=live`).
-7. Optional short control leg at **1920x1080** - yaw sweeps only - to confirm 16:9 was always
-   clean for the reason now understood rather than by luck.
+### 1. Stage 2 leftovers (small, and one is a policy decision, not a bug)
 
-Then: land the foreground `0.75 -> (4/3)*(h/w)` fix (measured, held back so it cannot confound
-this run), and the VR PRESET FOV policy correction.
+- **The VR PRESET FOV policy is now UNSET, deliberately, and wants a decision.** The preset used to
+  force option 130 from the "129.5 circumscribing" arithmetic, which was derived from the lens law
+  session 28 disproved; it no longer writes any FOV, so the render FOV is whatever the user's ini
+  says (100 at 2048x2048 = exactly 100x100 deg, which is close to ideal for a Quest-class eye, and
+  is what the user tested and accepted). The principled version is to set the option from the
+  HEADSET's own horizontal FOV, which needs item 2. Until then the current behaviour is correct by
+  accident-free reasoning rather than by measurement of the specific headset.
+- **`xrEnumerateViewConfigurationViews` is still never called.** It is the missing input for both a
+  correct FOV policy and a derived render target (`recommendedImageRect`), and its absence is why a
+  runtime-side resolution slider does nothing for this mod (the Dream Air user datapoint).
+- Overlay device-identity and hwnd-identity checks, and `input_drive`'s `g_armed` re-arm on a
+  client/viewport rebuild - without the latter, motion controllers die silently after a live
+  resolution change.
+- `SETRES` through the viewport Exec seam still FAULTS (`exe+0x4C2353`); the ini lane is primary and
+  works, so this is a diagnostic curiosity rather than a blocker.
 
-### OPEN BUG 1 (FIXED session 28, needs the headset confirm): VR freezes permanently after alt-tab (user-reported, session 27)
+### 2. Stage 3: cutscenes and the aim dot (the next real milestone)
+
+Measure the black-bar mechanism FIRST - the Nexus "Fullscreen Cutscenes" mod is a `HUDPC.swf` edit
+zeroing a sprite named `WidescreenBars`, which contradicts our own session-22 dump reading (engine
+clears to black and draws a vertically shrunken tonemap quad). Install it, replay the Gatherer's
+Garden Electro Bolt sequence, and see whether the bars go and whether the content is squeezed. Then
+either suppress that one gameswf draw or fix the unsqueeze. Then `vrcine off|authored|authored+look`
+with the hands, aim and laser drives gated on the letterbox exactly as the head drive already is
+(closes ROADMAP's session-22 round-5 item - authored cinematic hands currently only survive when the
+controllers are idle). Then a single toggleable aim dot on the verified aim ray.
+
+### 3. Stage 4: SteamVR/OpenVR and the dead interaction profiles
+
+SteamVR has never shipped a 32-bit OpenXR runtime, so Lighthouse and Steam Link users cannot start
+VR at all (stage 1 now says so in the log). Real fix is a native OpenVR backend behind the
+`bvr::vr` facade. Independently and much cheaper: `openxr_input.cpp` suggests bindings for only
+`oculus/touch_controller` and `khr/simple_controller`, so on SteamVR with Index or Vive wands, or on
+WMR, sticks/triggers/grips/face buttons are all dead even when a session does start. Add those
+profiles - that is a contained win worth doing before the backend.
+
+### 4. Release
+
+Gate per the user: stages 2 and 3 done, then bump off 0.4.1 and build **Release** - everything
+tested this session and last has been Debug. Worth one soak on the Release build before packaging,
+because the pace thread is new and Debug timing is not Release timing.
+
+### 5. Carried diagnostics / follow-ups
+
+- Root-cause the `SETRES` fault; an `offsets.ini` override so a non-Steam user can supply RVAs
+  without a release; deriving `GObjObjects` to retire object scanning entirely; the config echo
+  block, proxy breadcrumb and OpenXR API-layer enumeration from the diagnostics list.
+- BS2 carries are unchanged (viewmodel-in-stereo diagnostic, input/motion controllers, FOV slider
+  endpoints) - plus the new session-28 lens/resolution checklist now banked in
+  `docs/bioshock2/ENGINE_NOTES.md`, which should be run BEFORE any BS2 non-16:9 support.
+- v0.4.1 to the external tester; 2K-account lead; seated recenter designs.
+
+### OPEN BUG 1 (CLOSED session 28, in-headset accepted): VR freezes permanently after alt-tab (user-reported, session 27)
 
 > **Session 28: root-caused and fixed - `pace_should_skip` was NOT the culprit.** The real defect
 > was ordering: `if (g_srPairOpen) return;` sat ABOVE `pump_events()`, so while an SR pair-hold was
@@ -441,7 +482,7 @@ Also note the engine pauses CalcView while the window is unfocused (the harness 
 depend on this), so the game thread may stop driving the camera - check whether that starves
 something the submit path needs.
 
-### OPEN BUG 2 (ROOT-CAUSED AND FIXED session 28, needs the headset confirm): yaw warping on head turn at non-16:9 resolutions
+### OPEN BUG 2 (CLOSED session 28, in-headset accepted): yaw warping on head turn at non-16:9 resolutions
 
 > **Session 28: the frame carries TWO lenses and the watch was reading the viewmodel's.** World
 > pass is `tanH = tan(option/2)`, `tanV = tanH*(h/w)`; foreground pass is
@@ -3206,6 +3247,63 @@ hold aged at 500 ms with a force-abort through the existing leaked-frame close, 
 closed before the pace guard can return, `g_unfocusedSinceMs` cleared on STOPPING and
 `g_paceSkips` made per-episode (those two gates had silenced the only two lines that would have
 explained anything), plus a 5 s `SUBMISSION IDLE (reason=...)` heartbeat naming the firing guard.
+
+---
+
+**IN-HEADSET ROUND 1: the warp was GONE, and two things came back with it.** The user had to turn
+"Game FOV Write" off, alt-tab was still stuck, and - the important one - **the hand/gun model
+started moving with the headset**, the thing sessions 13-16 were spent fixing.
+
+**The hands were not a regression. They were the same defect from the other side.** One projection
+layer carries ONE fov claim for the whole eye image, and the world and viewmodel were rendered
+through different frustums, so only one could be geometrically correct at a time: the old bug
+claimed the fg lens (hands right, world warping) and fixing the world moved the same 1.78x error
+onto the hands. Only MATCHED lenses make both right - which is the `(4/3)*(h/w)` constant measured
+earlier the same session and deliberately held back so it could not confound the warp test. It
+became required rather than optional, and it landed. A second, coupled cause was in `bones.cpp`,
+whose `render_lock_delta` asserted that with the match armed "k collapses to 1" - true at 16:9 only,
+so at a square backbuffer the depth constraint AND the head-split lateral cancel were mis-scaled,
+and that cancel is exactly the term that stops the rig sliding under head motion. `world_ndc` had
+the same hardcoded `9/16` for the WORLD lens. Both read the live aspect now.
+
+The user's instruction to use "the previous version and the other repo as research" paid off
+directly: `docs/RESEARCH.md` has recorded since session 20 that BioVRDev use
+`2*atan(tan(fov/2)*(4/3)/aspect)` - exactly this fix, written down and never acted on. Our `0.75`
+is that expression evaluated at 16:9.
+
+Flat gate, same instrument that found the original bug: the dump went from two clusters to **ONE**,
+with the 576-byte fg tier now inside the world cluster. `vrfgfov legacy on|off` restores and removes
+the split, both directions verified, giving an instant in-headset A/B.
+
+**IN-HEADSET ROUND 2: "without changing anything it's perfect, both the world and the gun/hand
+models."** No re-tune. That closed an open question in the process: the session-16 hand offsets were
+suspected of having absorbed part of the 1.78x lens error while being tuned against it, and they had
+not - they were correct all along, which retroactively validates the sessions 13-16 method as having
+solved for the rig rather than papering over a projection error. It also confirms the bone-solve half
+that flat could not reach (no XR session means no controller poses, so `render_lock_delta` is never
+entered flat).
+
+**Alt-tab, third attempt, and the first one built on a measurement.** The instrument shipped in
+round 1 refuted round 1's own fix: `pairOpen=0` on every `SUBMISSION IDLE` line, so the pair-hold was
+never the cause. The real one is a circular wait - VDXR drops to VISIBLE on alt-tab and will not
+re-grant FOCUSED to an app that submits nothing, and the M8 guard made us submit nothing, so the
+guard's effect kept its own precondition true. Corroborating: ZERO `xrWaitFrame blocked` lines in the
+whole session, i.e. 5772 presents skipped without one slow wait to justify any of it - the guard
+keyed on session STATE when the hazard is a slow WAIT. Since `xrWaitFrame` takes no timeout and never
+can, it moved to a dedicated pace thread with the present thread waiting on the result behind a
+deadline (200 ms FOCUSED, 20 ms otherwise). That retires the session-26 hang class permanently
+instead of trading it for the freeze, and `teardown_session` now defers rather than hand the runtime
+a freed session handle. **User: "the alt tab is working again".** Both session-27 open bugs closed.
+
+**Two user questions answered with measurements rather than assurances.** Is it dynamic across
+resolutions? Verified at two aspects: 2048x2048 -> `k=1.333333` / fg 115.6 deg, and 1920x1080 ->
+`k=0.750000` / fg 83.6 deg - exactly the old hardcoded constant at 16:9, which is what protects the
+sessions 13-16 calibration by construction. Checking it also found and closed a fragility: the
+backbuffer dims were published only inside the letterbox watch's RGBA8 format whitelist and
+staging-allocation success, so a user on another format would have silently reverted to the 16:9
+constants and got the 1.78x viewmodel error back. And the whole defect class is now banked for
+BioShock 2 in its ENGINE_NOTES as an ordered CHECKLIST rather than constants to copy - starting with
+"does BS2 even have two lenses", which session 25's native-fg finding suggests it may not.
 
 **Plus:** `vrstereo stereoonly on|off` and an overlay checkbox that drop only the doubling and
 leave 1t and the head drive alone - the A/B that was confounded every previous time, verified
