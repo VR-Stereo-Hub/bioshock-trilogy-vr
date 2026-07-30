@@ -224,6 +224,10 @@ std::atomic<unsigned> g_lastBarVerts{0};    // for the flat gate: 29 when measur
 // Retunable live because a differently-tessellated shot would otherwise be a
 // silent miss, and one number in a log beats a rebuild.
 std::atomic<unsigned> g_barVerts{29};
+// Where the non-bar flash layer goes during a cinematic: false = the
+// head-locked HUD panel (readable in stereo), true = in-frame (session 22
+// round 4). See the on_draw comment.
+std::atomic<bool> g_cineSubsInFrame{false};
 // Every OTHER textureless gameswf count, logged once each. These are the
 // fades and dims that session 22 round 4 mistook for bars and blacked the
 // scene out with - so they are data we want, not noise.
@@ -821,9 +825,20 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
         }
     }
 
-    // The whole flash layer renders in-frame while a cinematic holds (session
-    // 22 round 4): the frame cannot then differ from flat.
-    if (cinematic_hold()) {
+    // Session 22 round 4 sent the WHOLE flash layer in-frame while a cinematic
+    // held, so the frame could not differ from flat. That rule existed only
+    // because the bars could not be identified: it was all-or-nothing. Now the
+    // bars are skipped precisely, and sending the REST in-frame actively hurts
+    // - subtitles rendered into the eye images get captured per eye, and under
+    // SequentialReentry the two eyes come from DIFFERENT game frames, so two
+    // text states superimpose and the result is unreadable (user report,
+    // session 29 in-headset). On the head-locked panel they are one image in
+    // both eyes.
+    //
+    // Default is therefore PANEL. `vrcine subs frame` restores the round-4
+    // behaviour - this is a judgement about readability, so it ships as a lever
+    // rather than a decision, and the A/B takes five seconds in the headset.
+    if (cinematic_hold() && g_cineSubsInFrame.load(std::memory_order_relaxed)) {
         g_cLbFills.fetch_add(1, std::memory_order_relaxed);
         return kPass;
     }
@@ -1042,6 +1057,15 @@ void set_bar_verts(unsigned n) {
 }
 
 unsigned bar_verts() { return g_barVerts.load(std::memory_order_relaxed); }
+
+void set_cine_subs_in_frame(bool on) {
+    if (g_cineSubsInFrame.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[hud] cinematic flash layer -> %s",
+                on ? "IN FRAME (session 22 round 4; per-eye capture can double the text)"
+                   : "the head-locked HUD panel (one image in both eyes)");
+}
+
+bool cine_subs_in_frame() { return g_cineSubsInFrame.load(std::memory_order_relaxed); }
 bool bar_draw_active() { return g_barActive.load(std::memory_order_relaxed); }
 
 bool cinematic_hold() {

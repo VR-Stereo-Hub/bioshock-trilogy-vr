@@ -733,6 +733,7 @@ void save_vr_preset() {
     fprintf(f, "laserOn=%d\n", aim::laser_enabled() ? 1 : 0);
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
     fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
+    fprintf(f, "cineSubsInFrame=%d\n", bvr::hud::cine_subs_in_frame() ? 1 : 0);
     fprintf(f, "aimDotOn=%d\n", aim::dot_enabled() ? 1 : 0);
     fprintf(f, "aimDotDistM=%.2f\n", aim::dot_dist_m());
     fprintf(f, "aimDotSizeDeg=%.2f\n", aim::dot_size_deg());
@@ -800,6 +801,8 @@ void load_vr_preset_values() {
             aim::handle_command(v != 0.0f ? "laser on" : "laser off");
         else if (strcmp(key, "cineBarsHidden") == 0)
             bvr::hud::set_bars_hidden(v != 0.0f);
+        else if (strcmp(key, "cineSubsInFrame") == 0)
+            bvr::hud::set_cine_subs_in_frame(v != 0.0f);
         else if (strcmp(key, "cineDrive") == 0) {
             int m = static_cast<int>(v);
             if (m >= 0 && m <= 2) bvr::vr::set_cine_drive(static_cast<bvr::vr::CineDrive>(m));

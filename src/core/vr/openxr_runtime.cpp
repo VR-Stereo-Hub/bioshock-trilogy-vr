@@ -2112,6 +2112,14 @@ void draw_debug_ui() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Skips the WidescreenBars gameswf draw. The picture under "
                               "the bars is really there - nothing is cropped or stretched.");
+        bool subsFrame = bvr::hud::cine_subs_in_frame();
+        if (ImGui::Checkbox("Cutscene subtitles in-frame (off = readable panel)", &subsFrame))
+            bvr::hud::set_cine_subs_in_frame(subsFrame);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("OFF (default): subtitles ride the head-locked HUD panel - one "
+                              "image in both eyes.\n"
+                              "ON: they render into the frame, where each eye is captured "
+                              "from a different game frame and the text can double.");
         {
             static const char* kDriveNames[] = {"off (VR drives run through cutscenes)",
                                                 "authored (camera + hands as flat)",
@@ -2391,6 +2399,10 @@ void handle_cine_command(const char* args) {
         bvr::hud::set_bars_hidden(true);
     } else if (strncmp(args, "bars show", 9) == 0) {
         bvr::hud::set_bars_hidden(false);
+    } else if (strncmp(args, "subs panel", 10) == 0) {
+        bvr::hud::set_cine_subs_in_frame(false);
+    } else if (strncmp(args, "subs frame", 10) == 0) {
+        bvr::hud::set_cine_subs_in_frame(true);
     } else if (strncmp(args, "bars verts", 10) == 0) {
         unsigned n = 0;
         if (sscanf_s(args + 10, "%u", &n) == 1 && n >= 3)

@@ -100,6 +100,13 @@ bool bars_hidden();
 void set_bar_verts(unsigned n);
 unsigned bar_verts();
 
+// Where the non-bar flash layer (subtitles) goes during a cinematic:
+// false (default) = the head-locked HUD panel, one image in both eyes;
+// true = in-frame, which under SequentialReentry captures each eye from a
+// different game frame and can double the text. `vrcine subs panel|frame`.
+void set_cine_subs_in_frame(bool on);
+bool cine_subs_in_frame();
+
 // True while THIS interval contained a bar draw. This is the primary cinematic
 // signal and it is strictly better than the pixel watch: no async staging map,
 // no 5-sample hysteresis (so neither edge lags ~6 presents), and - the reason
