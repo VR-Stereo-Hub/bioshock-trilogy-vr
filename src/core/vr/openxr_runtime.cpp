@@ -53,6 +53,10 @@ XrSwapchain g_swapchains[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
 std::vector<XrSwapchainImageD3D11KHR> g_images[2];
 uint32_t g_swapW = 0, g_swapH = 0;
 uint32_t g_backbufferFmt = 0; // DXGI format the live swapchains were built for
+// Set by on_resize (which runs inside the game's ResizeBuffersDetour, at an
+// arbitrary point in the frame) and consumed by the frame loop at a point where
+// no XR frame is open. See the long note in on_resize.
+std::atomic<bool> g_resizePending{false};
 
 ID3D11Device* g_device = nullptr;          // game device, AddRef'd
 ID3D11DeviceContext* g_context = nullptr;  // immediate context, AddRef'd
@@ -197,6 +201,9 @@ std::atomic<int8_t> g_srRing[kSrRingSize] = {};
 std::atomic<uint32_t> g_srPushed{0}, g_srPopped{0}, g_srDropped{0},
     g_srCleared{0};
 std::atomic<bool> g_loggedFirstSr{false};
+// Session 28: a live-lens claim substitution must announce itself once. An
+// unexplained src=live is what let the yaw warp hide for a session.
+std::atomic<bool> g_loggedLiveClaim{false};
 
 // M4 rung 2 polish (session 7, after the first in-headset stereo test):
 // xr-frame-per-pair pacing. Per-present xrWaitFrame gave the two presents of
@@ -211,6 +218,14 @@ std::atomic<bool> g_loggedFirstSr{false};
 // blocking wait per game tick. Kill switch in the overlay for live A/B.
 std::atomic<bool> g_srPairPacing{true};
 bool g_srPairOpen = false; // present thread only
+uint64_t g_srPairOpenMs = 0; // when the hold was armed (present thread only)
+uint64_t g_lastIdleLogMs = 0; // rate limit for the SUBMISSION IDLE heartbeat
+// Session 28: the hold is a bounded promise, not a latch. The right eye follows
+// its sibling within the time the game takes to BUILD one frame - ~1-4 ms
+// measured, and the whole pair fits inside one compositor period. 500 ms is
+// three orders of magnitude of slack and still bounds the alt-tab case, where
+// presents stop mid-pair and no sibling is ever coming.
+constexpr uint32_t kPairHoldMaxMs = 500;
 std::atomic<uint32_t> g_srPairs{0}, g_srPairAborts{0};
 std::atomic<bool> g_loggedFirstPair{false};
 
@@ -248,6 +263,51 @@ uint64_t g_unfocusedSinceMs = 0;          // present thread only; 0 = not skippi
 std::atomic<uint32_t> g_paceSkips{0};
 std::atomic<uint32_t> g_lastWaitMs{0}; // last xrWaitFrame block, telemetry
 std::atomic<bool> g_simIdle{false};    // flat stand-in (`vrpace simidle on`)
+
+// ---- Session 28: xrWaitFrame OFF the present thread ------------------------
+// The alt-tab freeze, measured. Alt-tab drops the session FOCUSED -> VISIBLE and
+// VDXR never re-grants FOCUSED, because the M8 guard makes us submit NOTHING
+// while unfocused and a runtime will not promote an app that submits nothing.
+// That is a circular wait, and the log named it outright: `SUBMISSION IDLE
+// (reason=pace guard: session not FOCUSED | state=VISIBLE ... pairOpen=0)`
+// repeating with no FOCUSED line until the VR toggle tore the session down. It
+// also refutes the session-26 claim that "recovery is event-driven, not
+// something an app earns by submitting frames" - on VDXR it IS earned.
+//
+// We cannot simply keep waiting while unfocused: xrWaitFrame takes no timeout,
+// with the headset idle it never returns, and on the present thread that wedged
+// the process in the field twice. The only design that satisfies both is to move
+// the unbounded call OFF the present thread, so the present thread can give up
+// on a wait without being stuck by it. Corroboration from the same log: ZERO
+// `xrWaitFrame blocked` lines all session, so 5772 presents were skipped without
+// a single slow wait to justify it - the guard keys on session STATE when the
+// thing it must actually avoid is a slow WAIT.
+//
+// Protocol - strictly ONE wait per begin, so the frame sequence stays matched:
+//   present thread  no request outstanding -> post one; then wait on `done` with
+//                   a deadline. Signalled -> consume the frame state and go on to
+//                   xrBeginFrame. Timed out -> return, leaving the request
+//                   outstanding to be consumed by a later present.
+//   pace thread     park on `req`, call xrWaitFrame, publish, signal `done`.
+// The deadline is generous while FOCUSED (the headset still paces the game) and
+// short otherwise (an unresponsive runtime must not drag the flat window down).
+// `vrpace thread off` restores the exact pre-session-28 inline behaviour.
+std::atomic<bool> g_paceOffThread{true};
+HANDLE g_paceThread = nullptr;
+HANDLE g_paceReq = nullptr;  // auto-reset, present -> pace
+HANDLE g_paceDone = nullptr; // auto-reset, pace -> present
+std::atomic<bool> g_paceRun{false};
+bool g_paceOutstanding = false; // present thread only
+XrFrameState g_paceFrameState{XR_TYPE_FRAME_STATE}; // handed over via g_paceDone
+std::atomic<int> g_paceResult{0};
+std::atomic<uint32_t> g_paceTimeouts{0}, g_paceHandoffs{0};
+// Teardown deferral: destroying a session while the pace thread is parked inside
+// xrWaitFrame on it is a use-after-free inside the runtime. If a wait will not
+// come back, we keep the session alive (which is exactly today's behaviour) and
+// retry from the present loop rather than crash.
+const char* g_teardownPending = nullptr;
+constexpr uint32_t kPaceDeadlineFocusedMs = 200;
+constexpr uint32_t kPaceDeadlineIdleMs = 20;
 
 // M8 release blocker (b): the desktop mirror. Under SequentialReentry every
 // Present alternates the backbuffer between the two eyes, so the flat window
@@ -316,10 +376,67 @@ const char* state_str(XrSessionState s) {
 // The stall-guard decision for one present, shared verbatim by the real pace
 // path and the flat simulation (which forces state/everFocused). True = this
 // present must NOT run the blocking pacing. Present thread only.
+// The pace thread body: park, wait a frame, publish, signal. The ONLY place
+// xrWaitFrame is called once g_paceOffThread is on. It may block forever without
+// consequence - nothing else runs on this thread.
+DWORD WINAPI pace_thread_proc(void*) {
+    while (g_paceRun.load(std::memory_order_relaxed)) {
+        if (WaitForSingleObject(g_paceReq, INFINITE) != WAIT_OBJECT_0) break;
+        if (!g_paceRun.load(std::memory_order_relaxed)) break;
+        XrSession s = g_session; // a request is only posted with a live session
+        XrFrameState fs{XR_TYPE_FRAME_STATE};
+        XrResult r = XR_ERROR_SESSION_LOST;
+        uint64_t t0 = GetTickCount64();
+        if (s != XR_NULL_HANDLE) {
+            XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
+            r = xrWaitFrame(s, &fwi, &fs);
+        }
+        uint32_t ms = static_cast<uint32_t>(GetTickCount64() - t0);
+        g_lastWaitMs.store(ms, std::memory_order_relaxed);
+        if (ms > 1000) {
+            static uint64_t lastStallLogMs = 0;
+            if (t0 - lastStallLogMs > 5000) {
+                lastStallLogMs = t0;
+                BVR_LOG("xr: xrWaitFrame blocked %u ms on the pace thread (state "
+                        "%s) - the present thread was NOT held by it",
+                        ms, state_str(g_state));
+            }
+        }
+        g_paceFrameState = fs; // handed over by the SetEvent below
+        g_paceResult.store(static_cast<int>(r), std::memory_order_relaxed);
+        SetEvent(g_paceDone);
+    }
+    return 0;
+}
+
+bool pace_thread_start() {
+    if (g_paceThread) return true;
+    if (!g_paceReq) g_paceReq = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g_paceDone) g_paceDone = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g_paceReq || !g_paceDone) return false;
+    g_paceRun.store(true, std::memory_order_relaxed);
+    g_paceThread = CreateThread(nullptr, 0, &pace_thread_proc, nullptr, 0, nullptr);
+    if (!g_paceThread) {
+        g_paceRun.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    BVR_LOG("xr: pace thread started - xrWaitFrame no longer runs on the present "
+            "thread, so an unbounded block cannot wedge the game (session 28)");
+    return true;
+}
+
 bool pace_should_skip(XrSessionState state, bool everFocused, uint64_t now) {
     if (!g_paceGuard.load(std::memory_order_relaxed)) return false;
     if (state == XR_SESSION_STATE_FOCUSED) return false;
     if (!everFocused) return false; // bring-up: frames are how we REACH focused
+    // SESSION 28: with the wait off the present thread there is no reason to stop
+    // submitting, and a strong reason not to - VDXR will not re-grant FOCUSED to
+    // an app that submits nothing, so skipping here is what made the alt-tab
+    // freeze permanent (measured: state stuck VISIBLE, FOCUSED never returning,
+    // and zero slow waits all session to justify the skip). The unbounded wait
+    // that this guard existed to dodge can no longer reach the present thread,
+    // so the deadline in on_present_begin replaces the skip entirely.
+    if (g_paceOffThread.load(std::memory_order_relaxed)) return false;
     // Unfocused after having held FOCUSED: skip the blocking wait ALWAYS (see
     // the keepalive post-mortem above). One line per unfocused episode.
     if (g_unfocusedSinceMs == 0) {
@@ -434,6 +551,8 @@ void destroy_swapchains() {
     destroy_hud_swapchain();
     g_swapW = g_swapH = 0;
     g_backbufferFmt = 0;
+    // Whatever a queued rebuild was for, it has just happened.
+    g_resizePending.store(false, std::memory_order_relaxed);
     reset_aer(); // the held eye images died with the swapchains
 }
 
@@ -512,6 +631,26 @@ void composite_hud(IDXGISwapChain* swapchain) {
 }
 
 void teardown_session(const char* why) {
+    // SESSION 28: never call xrDestroySession while the pace thread is parked
+    // inside xrWaitFrame on that session - that is a use-after-free inside the
+    // runtime. Give an outstanding wait a bounded chance to come back; if it
+    // will not, keep the session alive and retry from the present loop. Worst
+    // case is "the session stays up but idle", which is exactly the pre-session-28
+    // behaviour, and strictly better than a crash.
+    if (g_paceOutstanding) {
+        if (WaitForSingleObject(g_paceDone, 200) == WAIT_OBJECT_0) {
+            g_paceOutstanding = false;
+        } else {
+            if (g_teardownPending != why)
+                BVR_LOG("xr: teardown (%s) DEFERRED - a wait is still in flight on "
+                        "the pace thread; retrying each present rather than "
+                        "destroying a session the runtime is still inside",
+                        why);
+            g_teardownPending = why;
+            return;
+        }
+    }
+    g_teardownPending = nullptr;
     BVR_LOG("xr: session teardown (%s)", why);
     input_on_session_teardown(); // action spaces are session children
     destroy_swapchains();
@@ -784,14 +923,20 @@ void pump_events() {
                     break;
                 }
                 case XR_SESSION_STATE_FOCUSED:
-                    if (g_everFocused && g_unfocusedSinceMs != 0)
+                    // Session 28: log the resume whenever there WAS an unfocused
+                    // episode, without also requiring g_everFocused - STOPPING
+                    // clears that latch, so the old condition silently swallowed
+                    // the first resume after every stop.
+                    if (g_unfocusedSinceMs != 0)
                         BVR_LOG("xr: FOCUSED again after %llu ms unfocused - full "
-                                "pacing resumes (guard skipped %u presents)",
+                                "pacing resumes (guard skipped %u presents this "
+                                "episode)",
                                 static_cast<unsigned long long>(GetTickCount64() -
                                                                 g_unfocusedSinceMs),
                                 g_paceSkips.load(std::memory_order_relaxed));
                     g_everFocused = true;
                     g_unfocusedSinceMs = 0;
+                    g_paceSkips.store(0, std::memory_order_relaxed);
                     break;
                 case XR_SESSION_STATE_STOPPING:
                     if (g_sessionBegun) {
@@ -800,6 +945,17 @@ void pump_events() {
                         // The next bring-up must pace freely again (bring-up
                         // needs frames), so the focus latch resets with it.
                         g_everFocused = false;
+                        // Session 28: clear the unfocused stamp too. It used to
+                        // survive STOPPING, and both of the lines that would
+                        // tell a stuck user what happened are gated on it: the
+                        // "pacing SKIPPED" line only prints when the stamp is 0,
+                        // and the "FOCUSED again" line needs the stamp non-zero
+                        // AND g_everFocused, which STOPPING just cleared. So
+                        // after one STOPPING episode the log went silent in both
+                        // directions and the alt-tab freeze looked like nothing
+                        // happening at all.
+                        g_unfocusedSinceMs = 0;
+                        g_paceSkips.store(0, std::memory_order_relaxed);
                         BVR_LOG("xr: session stopped (headset idle?) - waiting for READY again");
                     }
                     break;
@@ -848,7 +1004,24 @@ void init_instance() {
     ici.enabledExtensionNames = enabled;
     r = xrCreateInstance(&ici, &g_instance);
     if (XR_FAILED(r)) {
-        BVR_LOG("xr: xrCreateInstance failed: %s - VR disabled", res_str(r));
+        BVR_LOG("xr: xrCreateInstance failed: %s - VR disabled, game runs flat", res_str(r));
+        // XR_ERROR_RUNTIME_UNAVAILABLE from a 32-bit process is very rarely a
+        // broken install: SteamVR has never shipped a 32-bit OpenXR runtime, and
+        // BioShock is a 32-bit game. Anyone on Lighthouse hardware (Index, Vive)
+        // or running Steam Link, i.e. with SteamVR as the active runtime, lands
+        // here every single time. Saying so turns "the mod does nothing" into an
+        // actionable report - and it is a whole class of them.
+        if (r == XR_ERROR_RUNTIME_UNAVAILABLE) {
+            BVR_LOG("xr: -----------------------------------------------------------");
+            BVR_LOG("xr: The active OpenXR runtime has no 32-bit support. This game is");
+            BVR_LOG("xr: 32-bit, so VR cannot start. SteamVR is the usual cause: it has");
+            BVR_LOG("xr: never shipped a 32-bit OpenXR runtime, which also covers Index,");
+            BVR_LOG("xr: Vive and Steam Link setups.");
+            BVR_LOG("xr: Workaround today: set a runtime that does ship 32-bit - Virtual");
+            BVR_LOG("xr: Desktop (VDXR) or the Oculus/Meta runtime - as the active OpenXR");
+            BVR_LOG("xr: runtime, then relaunch.");
+            BVR_LOG("xr: -----------------------------------------------------------");
+        }
         g_instance = XR_NULL_HANDLE;
         return;
     }
@@ -879,15 +1052,17 @@ void on_present_begin(IDXGISwapChain* swapchain) {
 
     if (g_instance == XR_NULL_HANDLE) return;
 
+    // A teardown that had to be deferred (pace thread still inside xrWaitFrame)
+    // retries here, first thing, every present.
+    if (g_teardownPending && g_session != XR_NULL_HANDLE) {
+        teardown_session(g_teardownPending);
+        if (g_session != XR_NULL_HANDLE) return; // still deferred
+    }
+
     if (!g_enabled.load(std::memory_order_relaxed)) {
         if (g_session != XR_NULL_HANDLE) teardown_session("disabled in overlay");
         return;
     }
-
-    // Pair pacing: the previous (LEFT-tagged) present left the XR frame open;
-    // this present completes the pair at its tail. No second waitFrame, no
-    // re-locate - the pair shares one prediction and one pose set.
-    if (g_srPairOpen) return;
 
     if (g_session == XR_NULL_HANDLE) {
         if (GetTickCount64() < g_nextRetryMs) return;
@@ -895,13 +1070,65 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         if (g_session == XR_NULL_HANDLE) return;
     }
 
+    // SESSION 28 - pump_events() now runs ABOVE the pair-hold return, and the
+    // hold is aged. This is OPEN BUG 1 (VR freezes permanently after alt-tab).
+    // The pair-hold used to return before the pump, so while it was set no XR
+    // events were polled at all: g_state could never update, the pace guard
+    // could never see FOCUSED again, and nothing below could re-arm. Alt-tab
+    // stops the game presenting mid-pair, so a LEFT-tagged hold survived the
+    // whole unfocused window with no sibling coming, and the only path in this
+    // function that cleared anything was the `!g_enabled` teardown just above -
+    // which is exactly why the VR off/on toggle was the sole recovery.
+    // Pumping first costs one extra xrPollEvent on the completing present and
+    // preserves the hold's invariant, which is about waitFrame and locateViews,
+    // not events: neither runs on this path.
     pump_events();
-    if (g_session == XR_NULL_HANDLE || !g_sessionBegun) return;
+    if (g_session == XR_NULL_HANDLE || !g_sessionBegun) {
+        g_srPairOpen = false; // never strand a hold across a stopped session
+        return;
+    }
+
+    // Pair pacing: the previous (LEFT-tagged) present left the XR frame open;
+    // this present completes the pair at its tail. No second waitFrame, no
+    // re-locate - the pair shares one prediction and one pose set.
+    if (g_srPairOpen) {
+        if (GetTickCount64() - g_srPairOpenMs <= kPairHoldMaxMs) return;
+        // The sibling never came. Drop the hold and fall through so the
+        // leaked-frame close below reclaims the open frame.
+        BVR_LOG("xr: pair hold outlived %u ms with no right-eye present - "
+                "aborting it (presents stopped mid-pair? alt-tab/level load)",
+                kPairHoldMaxMs);
+        g_srPairOpen = false;
+        g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // M8 (a): headset idle (session left FOCUSED after having held it) - skip
     // the blocking pacing so the flat window keeps running. Events were
     // already pumped above, so recovery needs no paced frame to be seen.
-    if (pace_should_skip(g_state, g_everFocused, GetTickCount64())) return;
+    // Session 28: close any leaked frame BEFORE the guard can return, so a
+    // frame cannot sit open for the whole unfocused episode either.
+    if (pace_should_skip(g_state, g_everFocused, GetTickCount64())) {
+        if (g_frameOpen) {
+            XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+            idle.displayTime = g_frameState.predictedDisplayTime;
+            idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+            xrEndFrame(g_session, &idle);
+            g_frameOpen = false;
+            g_srPairOpen = false;
+        }
+        return;
+    }
+
+    // Deferred swapchain teardown for a real size change (see on_resize). This
+    // is the safe point: past the pair-hold early return, before any wait, so no
+    // XR frame is open and the compositor is not holding an image we are about
+    // to free. Both flags are checked anyway - the cost is two atomic loads and
+    // the failure mode it prevents is a use-after-free inside the runtime.
+    if (g_resizePending.load(std::memory_order_acquire) && !g_frameOpen && !g_srPairOpen) {
+        g_resizePending.store(false, std::memory_order_relaxed);
+        BVR_LOG("xr: performing the queued XR swapchain rebuild (no frame open)");
+        destroy_swapchains();
+    }
 
     // A mid-session ResizeBuffers destroys the swapchains; recreate them at
     // the new backbuffer size (and recompute the fov, which depends on aspect).
@@ -928,21 +1155,45 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         BVR_LOG("xr: closed a leaked open frame before waiting (pair aborted?)");
     }
 
-    XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
-    g_frameState = {XR_TYPE_FRAME_STATE};
-    uint64_t waitStart = GetTickCount64();
-    XrResult r = xrWaitFrame(g_session, &fwi, &g_frameState);
-    uint32_t waitMs = static_cast<uint32_t>(GetTickCount64() - waitStart);
-    g_lastWaitMs.store(waitMs, std::memory_order_relaxed);
-    // Telemetry for the disconnect stall: a healthy wait is one display
-    // period. Long blocks with their session state tell us how THIS runtime
-    // behaves when the headset idles (rate-limited: keepalives are expected
-    // to block while unfocused).
-    if (waitMs > 1000) {
-        static uint64_t lastStallLogMs = 0;
-        if (waitStart - lastStallLogMs > 5000) {
-            lastStallLogMs = waitStart;
-            BVR_LOG("xr: xrWaitFrame blocked %u ms (state %s)", waitMs, state_str(g_state));
+    XrResult r;
+    if (g_paceOffThread.load(std::memory_order_relaxed) && pace_thread_start()) {
+        // One request outstanding at a time keeps wait:begin at 1:1.
+        if (!g_paceOutstanding) {
+            g_paceOutstanding = true;
+            SetEvent(g_paceReq);
+        }
+        uint32_t deadline = g_state == XR_SESSION_STATE_FOCUSED
+                                ? kPaceDeadlineFocusedMs
+                                : kPaceDeadlineIdleMs;
+        if (WaitForSingleObject(g_paceDone, deadline) != WAIT_OBJECT_0) {
+            // The runtime has not come back yet. Give up on THIS present only -
+            // the request stays outstanding and a later present consumes it. The
+            // game keeps running either way, which is the whole point.
+            g_paceTimeouts.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        g_paceOutstanding = false;
+        g_paceHandoffs.fetch_add(1, std::memory_order_relaxed);
+        g_frameState = g_paceFrameState;
+        r = static_cast<XrResult>(g_paceResult.load(std::memory_order_relaxed));
+    } else {
+        XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
+        g_frameState = {XR_TYPE_FRAME_STATE};
+        uint64_t waitStart = GetTickCount64();
+        r = xrWaitFrame(g_session, &fwi, &g_frameState);
+        uint32_t waitMs = static_cast<uint32_t>(GetTickCount64() - waitStart);
+        g_lastWaitMs.store(waitMs, std::memory_order_relaxed);
+        // Telemetry for the disconnect stall: a healthy wait is one display
+        // period. Long blocks with their session state tell us how THIS runtime
+        // behaves when the headset idles.
+        if (waitMs > 1000) {
+            static uint64_t lastStallLogMs = 0;
+            if (waitStart - lastStallLogMs > 5000) {
+                lastStallLogMs = waitStart;
+                BVR_LOG("xr: xrWaitFrame blocked %u ms INLINE on the present "
+                        "thread (state %s) - `vrpace thread on` moves it off",
+                        waitMs, state_str(g_state));
+            }
         }
     }
     if (XR_FAILED(r)) {
@@ -1333,8 +1584,32 @@ void on_present_end(IDXGISwapChain* swapchain) {
         // keep draining the tag ring and keep the window pinned to one eye.
         mirror_present(swapchain, sr_pop_eye());
         composite_hud(swapchain); // the window keeps its HUD even with no session
+        // SESSION 28: name the guard, on a heartbeat, while submission is idle.
+        // "Present keeps running but the headset is frozen" was diagnosable only
+        // by reading the source and guessing which early return had fired, and
+        // two of the lines that would have said so were suppressed. Now one line
+        // every 5 s names the actual reason for as long as it lasts.
+        uint64_t now = GetTickCount64();
+        if (g_session != XR_NULL_HANDLE && now - g_lastIdleLogMs >= 5000) {
+            g_lastIdleLogMs = now;
+            const char* why = !g_enabled.load(std::memory_order_relaxed)
+                                  ? "VR disabled in overlay"
+                              : !g_sessionBegun ? "session not begun (waiting "
+                                                  "for READY after a STOPPING)"
+                              : g_state != XR_SESSION_STATE_FOCUSED
+                                  ? "pace guard: session not FOCUSED"
+                              : g_swapchains[0] == XR_NULL_HANDLE
+                                  ? "no XR swapchains (rebuild pending?)"
+                                  : "frame not begun (waitFrame/beginFrame path)";
+            BVR_LOG("xr: SUBMISSION IDLE (reason=%s | state=%s everFocused=%d "
+                    "pairOpen=%d skips=%u frames=%u) - flat rendering continues",
+                    why, state_str(g_state), g_everFocused ? 1 : 0,
+                    g_srPairOpen ? 1 : 0,
+                    g_paceSkips.load(std::memory_order_relaxed), g_framesSubmitted);
+        }
         return;
     }
+    g_lastIdleLogMs = 0; // submitting again - re-arm the idle heartbeat
     bool pairSecond = g_srPairOpen; // this present completes an open pair
     g_srPairOpen = false;
     g_frameOpen = false; // the pair-hold path below re-arms both
@@ -1410,11 +1685,33 @@ void on_present_end(IDXGISwapChain* swapchain) {
         } else if (fovMm && stereoCine) {
             // Claim-fix stereo cinematics: tag the layer with the fov the
             // game ACTUALLY renders (live watch), not the ignored option.
+            //
+            // SESSION 28 - this branch caused the yaw warp, and the reason is
+            // worth stating where it happened. `fov_watch` used to return the
+            // FOREGROUND lens off 16:9, which also latched fovMm permanently ON
+            // during normal gameplay, so normal gameplay came through here and
+            // the projection layer was tagged with the viewmodel frustum -
+            // tanH 0.6468 over a world rendered at tanH 1.1918 at 2750x2850, a
+            // 1.84x under-claim. `src=live` on the audit line was TRUE and the
+            // inference drawn from it ("live means it tracks the render") was
+            // false, because it was tracking the wrong lens.
+            // The watch now votes for the world lens, so fovMm no longer latches
+            // off 16:9 and this branch is back to being what it was designed
+            // for: a genuine scripted-camera fov change (the bathysphere
+            // descent renders 104 while the option reads 130). It is logged on
+            // entry from now on - a substitution must never again be invisible.
             float t = 0.0f;
             unsigned long long age = 0;
-            if (bvr::hud::fov_watch(&t, nullptr, &age) && age < 500 && t > 0.05f) {
+            if (bvr::hud::fov_watch(&t, nullptr, &age, 500) && t > 0.05f) {
                 hfovDeg = 2.0f * atanf(t) * 57.29578f;
                 hfovSrc = 3; // "live"
+                if (!g_loggedLiveClaim.exchange(true))
+                    BVR_LOG("xr: claim substituted from the live WORLD lens "
+                            "(hfov %.2f deg, age %llums) - the fov-mismatch "
+                            "verdict is latched, which off 16:9 used to mean the "
+                            "watch had picked the viewmodel lens; verify with "
+                            "`fovaudit` that lenses/votes look right",
+                            hfovDeg, age);
             }
         }
     } else {
@@ -1511,6 +1808,7 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     // from this frame's single locate (g_views is untouched
                     // until the next waitFrame).
                     g_srPairOpen = true;
+                    g_srPairOpenMs = GetTickCount64(); // aged; see kPairHoldMaxMs
                     g_frameOpen = true;
                     if (!g_loggedFirstPair.exchange(true))
                         BVR_LOG("xr: pair pacing live (one waitFrame per eye "
@@ -1749,8 +2047,22 @@ void on_resize(unsigned width, unsigned height, unsigned format) {
                 width, height, format);
         return;
     }
-    // Recreated at the new backbuffer size on the next frame.
-    destroy_swapchains();
+
+    // A REAL size change used to destroy the swapchains right here. This
+    // function runs inside the game's ResizeBuffersDetour, which can land
+    // anywhere - including between xrBeginFrame and xrEndFrame, with the
+    // compositor still holding images from the frame in flight. That is the
+    // documented-open half of the session-23 crash (the same-size case above got
+    // its guard then; the real-size case did not), and the captured dump for it
+    // is 22 frames of VDXR calling into d3d11 through 0xDEDEDEDE pointers.
+    //
+    // So only QUEUE it. The frame loop performs the destroy at a point where it
+    // can prove no XR frame is open, and the existing null-swapchain branch in
+    // on_present_begin then rebuilds at the new size.
+    g_resizePending.store(true, std::memory_order_release);
+    BVR_LOG("xr: real ResizeBuffers (%ux%u fmt %u) - XR swapchain rebuild QUEUED for a safe "
+            "point in the frame loop",
+            width, height, format);
 }
 
 void draw_debug_ui() {
@@ -1955,6 +2267,15 @@ void handle_pace_command(const char* args) {
         g_paceGuard.store(false, std::memory_order_relaxed);
         BVR_LOG("xr: pace guard OFF (pre-M8 behavior: every present waits, the "
                 "flat window stalls when the headset idles)");
+    } else if (strcmp(verb, "thread") == 0) {
+        bool on = strncmp(rest, "off", 3) != 0;
+        g_paceOffThread.store(on, std::memory_order_relaxed);
+        BVR_LOG("xr: xrWaitFrame %s (session 28: off-thread is what lets us keep "
+                "submitting while VISIBLE, which is how FOCUSED gets re-granted "
+                "after an alt-tab; inline is the pre-session-28 behaviour and "
+                "reinstates the skip guard)",
+                on ? "OFF the present thread (deadline 200 ms focused / 20 ms idle)"
+                   : "INLINE on the present thread");
     } else if (strcmp(verb, "simidle") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_simIdle.store(on, std::memory_order_relaxed);
@@ -1963,14 +2284,16 @@ void handle_pace_command(const char* args) {
                      "with the guard off, commands crawl at ~1/s until it lands)"
                    : "");
     } else {
-        BVR_LOG("xr: pace guard %s | session %s everFocused=%d | skips %u "
-                "lastWait %u ms | simidle %s (keepalive retired session 26 - it "
-                "was an unbounded xrWaitFrame block) "
-                "(vrpace on|off|simidle on|off|status)",
+        BVR_LOG("xr: pace guard %s | wait %s | session %s everFocused=%d | skips %u "
+                "lastWait %u ms | handoffs %u timeouts %u | simidle %s "
+                "(vrpace on|off|thread on|off|simidle on|off|status)",
                 g_paceGuard.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_paceOffThread.load(std::memory_order_relaxed) ? "off-thread" : "inline",
                 state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? 1 : 0,
                 g_paceSkips.load(std::memory_order_relaxed),
                 g_lastWaitMs.load(std::memory_order_relaxed),
+                g_paceHandoffs.load(std::memory_order_relaxed),
+                g_paceTimeouts.load(std::memory_order_relaxed),
                 g_simIdle.load(std::memory_order_relaxed) ? "ON" : "off");
     }
 }
@@ -2044,9 +2367,9 @@ void handle_cine_command(const char* args) {
         uint64_t ageMs = pv ? GetTickCount64() - (pv >> 1) : 0;
         float t = 0.0f, tv = 0.0f;
         unsigned long long fovAge = 0;
-        bool haveFov = bvr::hud::fov_watch(&t, &tv, &fovAge);
+        bool haveFov = bvr::hud::fov_watch(&t, &tv, &fovAge, 0); // print stale too
         BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
-                "published strict=%d age=%llums | rendered tanH=%.4f age=%llums "
+                "published strict=%d age=%llums | WORLD tanH=%.4f age=%llums "
                 "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|status)",
                 g_cineEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_cineStereo.load(std::memory_order_relaxed) ? "stereo" : "quad",

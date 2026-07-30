@@ -116,6 +116,9 @@ std::atomic<uint32_t> g_savedNumHwThreads{0};
 // install hooks from the render thread, so it posts a request here and the
 // game thread applies it from note_calcview (outside any hooked call).
 std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
+// Session 28: the same request lane for the stereo-ONLY toggle (doubling on/off
+// with 1t and the head drive left alone) - the un-confounded A/B.
+std::atomic<int> g_stereoOnlyPending{-1};
 // Deadlock watchdog (session 6): the doubled render strands the engine's
 // command-queue event protocol - game thread parked mid-build waiting for
 // "render done" while the render thread waits for more work; a lost wakeup
@@ -1286,6 +1289,25 @@ void apply_vrstereo(bool on) {
     }
 }
 
+// Session 28: drop ONLY the scene doubling and leave 1t and the head-driven
+// camera exactly as they are. The one-toggle above cannot serve as a stereo A/B
+// because it also turns the head drive off, and with the head not driving the
+// camera the compositor reprojects an unchanging image as you turn - which looks
+// exactly like the warping being diagnosed. Every "is it stereo?" test through
+// the one-toggle was therefore confounded. This is additive: the one-toggle
+// keeps its behaviour and its label.
+void apply_stereo_only(bool on) {
+    BVR_LOG("[reentry] STEREO-ONLY %s: doubling %s, 1t and camera mode left "
+            "UNTOUCHED (this is the un-confounded A/B - the one-toggle also "
+            "drops the head drive, which mimics warping)",
+            on ? "ON" : "off", on ? "on" : "off");
+    handle_command(on ? "stereo on" : "stereo off");
+    BVR_LOG("[reentry] stereo-only now: 1t=%d stereo=%d cameraMode=%d",
+            g_forceInline.load(std::memory_order_relaxed) ? 1 : 0,
+            g_stereo.load(std::memory_order_relaxed) ? 1 : 0,
+            bvr::vr::vr_camera_mode() ? 1 : 0);
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -1518,7 +1540,11 @@ void handle_command(const char* args) {
             }
         }
     } else if (strcmp(verb, "vrstereo") == 0) {
-        apply_vrstereo(strncmp(rest, "on", 2) == 0);
+        // `vrstereo stereoonly on|off` = doubling only, head drive untouched.
+        if (strncmp(rest, "stereoonly", 10) == 0)
+            apply_stereo_only(strstr(rest + 10, "off") == nullptr);
+        else
+            apply_vrstereo(strncmp(rest, "on", 2) == 0);
     } else if (strcmp(verb, "wdkick") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_wdKickEnabled.store(on, std::memory_order_relaxed);
@@ -1618,6 +1644,12 @@ bool stereo_active() {
 void request_vrstereo(bool on) {
     g_vrstereoPending.store(on ? 1 : 0, std::memory_order_relaxed);
 }
+
+void request_stereo_only(bool on) {
+    g_stereoOnlyPending.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+bool doubling_on() { return g_stereo.load(std::memory_order_relaxed); }
 
 void handle_fgnode_command(const char* args) {
     if (strncmp(args, "fova", 4) == 0) {
@@ -1757,6 +1789,11 @@ void note_calcview() {
                 g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
             if (pending >= 0) apply_vrstereo(pending == 1);
         }
+        if (g_stereoOnlyPending.load(std::memory_order_relaxed) >= 0) {
+            int pending =
+                g_stereoOnlyPending.exchange(-1, std::memory_order_relaxed);
+            if (pending >= 0) apply_stereo_only(pending == 1);
+        }
     }
     if (g_calcstackPending.load(std::memory_order_relaxed) > 0 &&
         g_calcstackPending.exchange(0, std::memory_order_relaxed) > 0)
@@ -1781,6 +1818,18 @@ void draw_debug_ui() {
     if (ImGui::Checkbox("VR stereo (1t + camera mode + stereo)", &vrToggle) &&
         vrToggle != vrOn)
         request_vrstereo(vrToggle);
+    // Session 28: the A/B that the one-toggle above cannot do. Unticking this
+    // drops ONLY the doubling - the head keeps driving the camera, so if the
+    // image still misbehaves it is not the stereo path. Unticking the toggle
+    // above instead also kills the head drive, and a static image reprojected
+    // as you turn looks exactly like warping, which confounded every previous
+    // attempt at this test.
+    bool dblOn = g_stereo.load(std::memory_order_relaxed);
+    bool dblToggle = dblOn;
+    if (ImGui::Checkbox("...stereo doubling ONLY (A/B - keeps the head drive)",
+                        &dblToggle) &&
+        dblToggle != dblOn)
+        request_stereo_only(dblToggle);
     bool hook1t = g_forceInline.load(std::memory_order_relaxed);
     bool poke1t = g_savedNumHwThreads.load(std::memory_order_relaxed) != 0;
     ImGui::Text("render %s  1t %s  hooks: build %s, submit %s, drain %s, "

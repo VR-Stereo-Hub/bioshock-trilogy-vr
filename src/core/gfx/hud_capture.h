@@ -85,13 +85,39 @@ void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
 // (DO_NOT_WAIT, zero pipeline stalls); tangents decode from the screen-ray
 // block at floats 12..18 (the session-21 layout that decode-framedump.ps1
 // verifies offline).
-//   fov_watch     latest decoded tangents; false until the first decode
-//   fov_mismatch  hysteresis'd rendered-vs-option verdict (compares against
-//                 bvr::vr::rendered_hfov_deg(), logs transitions - the
-//                 flat-testable instrument; the VR runtime keys the cinematic
-//                 quad fallback on it)
-bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs);
+//
+// SESSION 28: a frame carries TWO perspective lenses and off 16:9 they DIFFER -
+// the world pass is horizontal-anchored (tanH = tan(option/2), tanV follows the
+// window aspect) while the foreground/viewmodel pass is vertical-anchored
+// (tanV = tan(fgFov/2)*3/4, tanH follows the window). They coincide exactly at
+// 16:9. The watch therefore samples SEVERAL distinct cb0 buffers per interval
+// and publishes the cluster the majority agree on as the world lens, with the
+// minority available as the fg lens. Taking the first decodable draw instead
+// reported the viewmodel lens as the world lens (the fg draws come first, on a
+// tier that clears the size gate), which latched the mismatch verdict ON during
+// normal gameplay and dragged the projection claim onto the viewmodel frustum -
+// a 1.84x under-claim at 2750x2850, and the session-27 yaw-warp bug.
+//
+//   fov_watch      latest WORLD-lens tangents. maxAgeMs is enforced here (the
+//                  gate used to be left to callers and half of them skipped it);
+//                  pass 0 only to print a value you will label STALE yourself.
+//   fov_watch_fg   the other lens, when there is one (false at 16:9)
+//   fov_lens_count distinct perspective clusters in the last decoded round
+//   fov_mismatch   hysteresis'd WORLD-rendered-vs-option verdict (compares
+//                  against bvr::vr::rendered_hfov_deg(), logs transitions - the
+//                  flat-testable instrument; the VR runtime keys the cinematic
+//                  quad fallback on it)
+bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs,
+               unsigned long long maxAgeMs = 500);
+bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
+                  unsigned long long maxAgeMs = 500);
+int fov_lens_count();
 bool fov_mismatch();
+// Backbuffer dims (letterbox-watch sample). The lens laws are
+// aspect-parameterised, so anything printing an expectation must use these
+// rather than assume 16:9 - flat there is no XR session to read swap dims from,
+// and flat is where the measuring happens.
+bool backbuffer_dims(unsigned* w, unsigned* h);
 
 // Session 22 per-kind routing:
 //   screen_only   true while intervals are PURE gameswf with the world pass

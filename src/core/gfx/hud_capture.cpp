@@ -68,20 +68,65 @@ bool g_hadHudLastInterval = false;
 std::atomic<unsigned> g_cHudDraws{0}, g_cRedirects{0}, g_cLeaks{0}, g_cIntervals{0};
 
 // ---- Session 22: live rendered-FOV watch (see hud_capture.h) ----------------
-// One 80-byte staging buffer: the first scene draw of an interval copies the
-// head of its VS b0 into it (CopySubresourceRegion, async); the copy is
-// mapped on a LATER present with DO_NOT_WAIT, so the pipeline never stalls.
-// Tangent layout (session 21, dump-verified): floats 12..18 hold the
-// screen-ray helper (2tanH, 0, -tanH, 0, 0, -2tanV, tanV); the two
-// derivations must agree or the block is not a perspective pass.
+// Staging buffer of kFovSlots x 80 bytes: through one present interval, each
+// scene draw whose VS b0 buffer OBJECT differs from the last copies the head of
+// that buffer into the next slot (CopySubresourceRegion, async); the whole
+// staging buffer is mapped on a LATER present with DO_NOT_WAIT, so the pipeline
+// never stalls. Tangent layout (session 21, dump-verified): floats 12..18 hold
+// the screen-ray helper (2tanH, 0, -tanH, 0, 0, -2tanV, tanV).
+//
+// SESSION 28 - WHY THIS SAMPLES MANY BLOCKS AND VOTES, instead of taking the
+// first one. A frame carries TWO perspective lenses, and off 16:9 they DIFFER:
+// the world pass is horizontal-anchored (tanH = tan(option/2), tanV follows the
+// window) while the FOREGROUND/viewmodel pass is vertical-anchored (tanV =
+// tan(fgFov/2)*3/4, tanH follows the window). At 16:9 the two coincide exactly,
+// which is why every measurement up to session 27 saw one cluster. Off 16:9 they
+// split by (16/9)*(h/w) - 1.84x at 2750x2850.
+// The old watch took the FIRST decodable draw of the interval, and the fg draws
+// are the first draws of the main pass on a 576-byte tier that clears the >=320
+// gate - so it reported the VIEWMODEL lens as the world lens, the mismatch
+// verdict latched permanently ON during normal gameplay, and the projection
+// layer was then tagged with the viewmodel frustum (openxr_runtime's
+// fovMm && stereoCine claim substitution). That 1.84x under-claim WAS the
+// session-27 yaw-warp bug. Measured: dumpframe at 2750x2850 option 100 ->
+// world 1.1918/1.2351 on 154 draws, fg 0.6468/0.6704 on 24 draws (20 of them
+// the 576-byte fg tier); `vrfgfov off` moved only the second cluster, to the
+// documented native fg pair 0.4178/0.4330.
+// So: sample several distinct blocks, cluster them, and publish the cluster the
+// MOST distinct buffers agree on. The world pass outnumbers the foreground pass
+// roughly 6:1, exactly as tools/decode-framedump.ps1 clusters it offline.
 constexpr UINT kFovCbBytes = 80; // floats 0..19
+constexpr int kFovSlots = 8;
 ID3D11Buffer* g_fovStaging = nullptr;
 bool g_fovPending = false; // copied, not yet mapped
 int g_fovPendingAge = 0;   // presents since the copy
-int g_fovTriesThisInterval = 0;
-bool g_fovCapturedThisInterval = false;
+int g_fovSlots = 0;        // slots filled in the round being collected
+int g_fovPendingSlots = 0; // slots the outstanding map must decode
+// STRIDE sampling (session 28, second cut). Taking the first kFovSlots distinct
+// buffers is NOT representative: the foreground pass draws FIRST, so 5 of the
+// first 8 distinct buffers were fg and the majority vote picked the viewmodel
+// lens anyway (measured at 2048x2048: "WORLD tanH=0.670361 ... 5/8 votes", which
+// is the fg pair). Spread the slots across the WHOLE pass instead, using the
+// previous interval's distinct-buffer count to pick the stride. The world pass
+// feeds ~300 distinct buffers to the foreground's ~24, so a spread sample wins
+// it by better than 10:1.
+int g_fovDistinct = 0;     // distinct cb0 objects seen this interval
+int g_fovDistinctPrev = 0; // ...and in the previous one, for the stride
+int g_fovStrideUsed = 1;   // stride the collected round actually used
+int g_fovCollectDistinct = 0; // distinct count of the interval it was collected in
+int g_fovAmbiguous = 0;    // rounds refused for want of a clear majority
+int g_fovUnspanned = 0;    // rounds refused because the sample missed the pass
+// Identity only - never dereferenced. A recycled pointer costs one skipped
+// sample, nothing more.
+ID3D11Buffer* g_fovLastCb = nullptr;
 std::atomic<float> g_fovTanH{0.0f}, g_fovTanV{0.0f};
 std::atomic<unsigned long long> g_fovStampMs{0};
+// The minority (foreground) lens, published for telemetry and for the fg-lens
+// aspect law. 0 = only one lens seen this round.
+std::atomic<float> g_fovFgTanH{0.0f}, g_fovFgTanV{0.0f};
+std::atomic<unsigned long long> g_fovFgStampMs{0};
+std::atomic<int> g_fovLenses{0}; // distinct perspective clusters last round
+float g_fovLoggedH = 0.0f, g_fovLoggedFgH = 0.0f;
 // Mismatch verdict (render thread writes; hysteresis over present intervals).
 std::atomic<bool> g_fovMismatchOn{false};
 int g_fovMismatchStreak = 0;
@@ -250,18 +295,32 @@ void letterbox_watch(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
         }
     }
 
-    // Queue this present's copy: three 1-px columns at 1/4, 1/2, 3/4 width.
-    if (g_lbPending || !swapchain) return;
+    if (!swapchain) return;
     ID3D11Texture2D* bb = nullptr;
     if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&bb))) || !bb) return;
     D3D11_TEXTURE2D_DESC bd{};
     bb->GetDesc(&bd);
+
+    // Session 28: publish the backbuffer dims UNCONDITIONALLY, before any of the
+    // letterbox watch's own gates. Both lens laws are aspect-parameterised and
+    // read these (the foreground match constant in camera.cpp, the world and fg
+    // models in bones.cpp), so a user on a backbuffer format outside the watch's
+    // RGBA8 whitelist - or one where the staging allocation failed - would have
+    // silently fallen back to the 16:9 constants and got the 1.78x viewmodel
+    // error back. Correct lens geometry must not depend on whether an unrelated
+    // black-bar detector could allocate.
+    g_lbSrcW = bd.Width;
+    g_lbSrcH = bd.Height;
+
+    // Queue this present's copy: three 1-px columns at 1/4, 1/2, 3/4 width.
+    if (g_lbPending) {
+        bb->Release();
+        return;
+    }
     if ((bd.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
          bd.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
          bd.Format == DXGI_FORMAT_B8G8R8A8_UNORM) &&
         ensure_lb_staging(ctx, bd.Height)) {
-        g_lbSrcW = bd.Width;
-        g_lbSrcH = bd.Height;
         for (int c = 0; c < kLbCols; ++c) {
             UINT x = bd.Width * (c + 1) / 4;
             D3D11_BOX box{x, 0, 0, x + 1, bd.Height, 1};
@@ -280,12 +339,36 @@ bool ensure_fov_staging(ID3D11DeviceContext* ctx) {
     ctx->GetDevice(&dev);
     if (!dev) return false;
     D3D11_BUFFER_DESC sd{};
-    sd.ByteWidth = kFovCbBytes;
+    sd.ByteWidth = kFovCbBytes * kFovSlots;
     sd.Usage = D3D11_USAGE_STAGING;
     sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     HRESULT hr = dev->CreateBuffer(&sd, nullptr, &g_fovStaging);
     dev->Release();
     return SUCCEEDED(hr) && g_fovStaging;
+}
+
+// One screen-ray block -> tangents, with the STRUCTURAL validation that makes
+// the two axes unambiguous. The block is (2tanH, 0, -tanH, 0, 0, -2tanV, tanV)
+// at floats 12..18, so f[13], f[15] and f[16] must be zero; those three tests
+// are the whole axis-disambiguation, and the shipped watch omitted them until
+// session 28 (the two cross-checks it did run are intra-axis - H against H and
+// V against V - and carry no axis information at all). Ported from the offline
+// decoder tools/decode-framedump.ps1, which has always applied them.
+bool decode_ray_block(const float* f, float* tanH, float* tanV) {
+    float h1 = f[12] * 0.5f, h2 = -f[14];
+    float v1 = -f[17] * 0.5f, v2 = f[18];
+    if (!std::isfinite(h1) || !std::isfinite(h2) || !std::isfinite(v1) ||
+        !std::isfinite(v2))
+        return false;
+    if (fabsf(f[13]) > 0.001f || fabsf(f[15]) > 0.001f || fabsf(f[16]) > 0.001f)
+        return false; // not the ray block (or a non-perspective all-zero pass)
+    // 8.0 = tan(rather more than 160 deg half-angle); the offline decoder uses
+    // 4.0, loosened only because a forced claim can legitimately go wider.
+    if (h1 <= 0.05f || h1 >= 8.0f || v1 <= 0.05f || v1 >= 8.0f) return false;
+    if (fabsf(h1 - h2) > 0.001f || fabsf(v1 - v2) > 0.001f) return false;
+    *tanH = h1;
+    *tanV = v1;
+    return true;
 }
 
 // Map attempt + mismatch bookkeeping, once per present (from on_present).
@@ -296,32 +379,137 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
         HRESULT hr = ctx->Map(g_fovStaging, 0, D3D11_MAP_READ,
                               D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
         if (SUCCEEDED(hr)) {
-            const float* f = static_cast<const float*>(m.pData);
-            float tanH1 = f[12] * 0.5f, tanH2 = -f[14];
-            float tanV1 = -f[17] * 0.5f, tanV2 = f[18];
+            // Decode every slot, then cluster. Votes are per distinct cb0
+            // buffer object, which is what makes the world pass win: it feeds
+            // far more distinct buffers than the foreground pass does.
+            float h[kFovSlots], v[kFovSlots];
+            int votes[kFovSlots] = {};
+            int n = 0;
+            for (int s = 0; s < g_fovPendingSlots && s < kFovSlots; ++s) {
+                const float* f = reinterpret_cast<const float*>(
+                    static_cast<const uint8_t*>(m.pData) + s * kFovCbBytes);
+                if (decode_ray_block(f, &h[n], &v[n])) ++n;
+            }
             ctx->Unmap(g_fovStaging, 0);
             g_fovPending = false;
-            bool ok = std::isfinite(tanH1) && std::isfinite(tanH2) &&
-                      std::isfinite(tanV1) && std::isfinite(tanV2) &&
-                      tanH1 > 0.05f && tanH1 < 20.0f && tanV1 > 0.05f &&
-                      fabsf(tanH1 - tanH2) <= 0.02f * tanH1 &&
-                      fabsf(tanV1 - tanV2) <= 0.02f * tanV1;
-            if (ok) {
-                g_fovTanH.store(tanH1, std::memory_order_relaxed);
-                g_fovTanV.store(tanV1, std::memory_order_relaxed);
-                g_fovStampMs.store(GetTickCount64(), std::memory_order_relaxed);
+            g_fovPendingSlots = 0;
+            g_fovSlots = 0;
+            g_fovLastCb = nullptr;
+
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j)
+                    if (fabsf(h[i] - h[j]) <= 0.01f * h[i] &&
+                        fabsf(v[i] - v[j]) <= 0.01f * v[i])
+                        ++votes[i];
+            int win = -1;
+            for (int i = 0; i < n; ++i)
+                // Tie-break on the WIDER pair: the world frustum contains the
+                // viewmodel's in every case measured so far (1.1918 vs 0.6468 at
+                // option 100, 2.1445 vs 1.1640 at 130). A heuristic, and only
+                // ever consulted on an exact vote tie.
+                if (win < 0 || votes[i] > votes[win] ||
+                    (votes[i] == votes[win] && h[i] > h[win]))
+                    win = i;
+            // A round only publishes on a CLEAR majority. Without this the
+            // instrument would silently swap lenses on a marginal split, which
+            // is the whole failure mode being fixed - better to hold the last
+            // good value and let the age gate expire it. Ambiguity is counted
+            // and surfaced by `fovaudit`, never swallowed.
+            if (win >= 0 && n > 1 && votes[win] * 2 <= n) {
+                ++g_fovAmbiguous;
+                win = -1;
             }
-            // Non-perspective/zero blocks fail silently - the stamp just ages.
+            // COVERAGE guard. The stride comes from the PREVIOUS interval, so
+            // the first round after a scene change can be collected with a
+            // stale (too small) stride and then only span the head of the pass
+            // - which is the foreground. Measured: entering gameplay from the
+            // menu carried stride 1 into a 148-buffer pass and that one round
+            // published the viewmodel lens (5/8 votes) before the next round
+            // corrected it. Refuse a round whose samples did not reach across
+            // the pass it was collected in.
+            if (win >= 0 && g_fovCollectDistinct >
+                                kFovSlots * g_fovStrideUsed * 2) {
+                ++g_fovUnspanned;
+                win = -1;
+            }
+            if (win >= 0) {
+                g_fovTanH.store(h[win], std::memory_order_relaxed);
+                g_fovTanV.store(v[win], std::memory_order_relaxed);
+                g_fovStampMs.store(GetTickCount64(), std::memory_order_relaxed);
+                // The widest cluster that is NOT the winner is the other lens
+                // (the foreground pass off 16:9). Published for the fg aspect
+                // law; at 16:9 the lenses coincide so there is only one cluster.
+                int other = -1;
+                for (int i = 0; i < n; ++i) {
+                    if (fabsf(h[i] - h[win]) <= 0.01f * h[win] &&
+                        fabsf(v[i] - v[win]) <= 0.01f * v[win])
+                        continue;
+                    if (other < 0 || h[i] > h[other]) other = i;
+                }
+                int lenses = 1;
+                if (other >= 0) {
+                    lenses = 2;
+                    g_fovFgTanH.store(h[other], std::memory_order_relaxed);
+                    g_fovFgTanV.store(v[other], std::memory_order_relaxed);
+                    g_fovFgStampMs.store(GetTickCount64(),
+                                         std::memory_order_relaxed);
+                }
+                g_fovLenses.store(lenses, std::memory_order_relaxed);
+                // One line, on change, carrying everything a conclusion needs -
+                // no cross-referencing two log lines ever again (session 28).
+                float fgH = other >= 0 ? h[other] : 0.0f;
+                if (fabsf(h[win] - g_fovLoggedH) > 0.002f ||
+                    fabsf(fgH - g_fovLoggedFgH) > 0.002f) {
+                    g_fovLoggedH = h[win];
+                    g_fovLoggedFgH = fgH;
+                    BVR_LOG("[hud] fov watch: %d lens(es) | WORLD tanH=%.6f "
+                            "tanV=%.6f (hfov %.2f deg, %d/%d votes) | FG "
+                            "tanH=%.6f tanV=%.6f | backbuffer %ux%u aspect %.5f "
+                            "| sampled %d of %d distinct cb0 (stride %d), "
+                            "ambiguous rounds %d",
+                            lenses, h[win], v[win],
+                            2.0f * atanf(h[win]) * 57.29578f, votes[win], n,
+                            other >= 0 ? h[other] : 0.0f,
+                            other >= 0 ? v[other] : 0.0f, g_lbSrcW, g_lbSrcH,
+                            g_lbSrcH ? static_cast<float>(g_lbSrcW) /
+                                           static_cast<float>(g_lbSrcH)
+                                     : 0.0f,
+                            n, g_fovCollectDistinct, g_fovStrideUsed,
+                            g_fovAmbiguous + g_fovUnspanned);
+                }
+            }
+            // No decodable block: the stamp just ages, and the age gate in
+            // fov_watch() then refuses the stale sample outright.
         } else if (g_fovPendingAge > 8) {
             g_fovPending = false; // copy stuck (device weirdness) - recapture
+            g_fovPendingSlots = 0;
+            g_fovSlots = 0;
+            g_fovLastCb = nullptr;
         }
+    } else if (!g_fovPending && g_fovSlots > 0) {
+        // Round collected during the interval just ended - arm the map. No new
+        // copies start until it resolves, so a round is never half-overwritten.
+        g_fovPendingSlots = g_fovSlots;
+        g_fovPending = true;
+        g_fovPendingAge = 0;
+        g_fovSlots = 0;
+        g_fovCollectDistinct = g_fovDistinct; // for the coverage guard
     }
-    g_fovCapturedThisInterval = false;
-    g_fovTriesThisInterval = 0;
+    // Per-interval roll: this interval's distinct-buffer count becomes the next
+    // interval's stride, and the identity cursor restarts so the first draw of
+    // the new interval counts.
+    if (g_fovDistinct > 0) g_fovDistinctPrev = g_fovDistinct;
+    g_fovDistinct = 0;
+    g_fovLastCb = nullptr;
 
     // Rendered-vs-option verdict with a 3-interval hysteresis, logged on
     // transition. Session-independent by design: this is the flat-testable
     // instrument (the descent shows ON with no headset attached).
+    // Session 28: this compares the WORLD lens against the option, and the two
+    // now agree at every aspect (world tanH == tan(option/2), measured). Before
+    // the vote fix it was comparing the FOREGROUND lens against the option, so
+    // off 16:9 it latched ON during normal gameplay and dragged the projection
+    // claim onto the viewmodel frustum. Keep it comparing world-vs-option only.
     unsigned long long stamp = g_fovStampMs.load(std::memory_order_relaxed);
     bool fresh = stamp && GetTickCount64() - stamp < 500;
     float optHfov = bvr::vr::rendered_hfov_deg();
@@ -476,23 +664,39 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
     }
     if (!g_curDsvBound) return;
 
-    // Session 22 fov watch: grab the first decodable scene draw's cb0 head
-    // (bounded attempts - early depth-only passes can bind small buffers).
-    if (!g_fovCapturedThisInterval && !g_fovPending && ctx &&
-        g_fovTriesThisInterval < 8) {
-        ++g_fovTriesThisInterval;
+    // Session 22 fov watch, session 28 rewrite: sample the cb0 head of every
+    // draw whose VS b0 buffer OBJECT changed, up to kFovSlots per interval, and
+    // let the majority decide which lens is the world (see the block comment at
+    // the state declarations - taking only the FIRST draw reported the
+    // viewmodel lens as the world lens and that was the yaw-warp bug).
+    if (ctx) {
         ID3D11Buffer* cb0 = nullptr;
         ctx->VSGetConstantBuffers(0, 1, &cb0);
         if (cb0) {
-            D3D11_BUFFER_DESC bd{};
-            cb0->GetDesc(&bd);
-            // 320 = the smallest world-pass cb tier that carries the ray block.
-            if (bd.ByteWidth >= 320 && ensure_fov_staging(ctx)) {
-                D3D11_BOX box{0, 0, 0, kFovCbBytes, 1, 1};
-                ctx->CopySubresourceRegion(g_fovStaging, 0, 0, 0, 0, cb0, 0, &box);
-                g_fovPending = true;
-                g_fovPendingAge = 0;
-                g_fovCapturedThisInterval = true;
+            if (cb0 != g_fovLastCb) {
+                D3D11_BUFFER_DESC bd{};
+                cb0->GetDesc(&bd);
+                // 320 = the smallest world-pass cb tier that carries the ray
+                // block. The 576-byte foreground tier also clears this gate on
+                // purpose: the vote needs to SEE both lenses to report the fg
+                // one and to know how many there are.
+                if (bd.ByteWidth >= 320) {
+                    g_fovLastCb = cb0;
+                    // Count EVERY distinct buffer (that is what sets the next
+                    // interval's stride), copy only every stride-th one.
+                    int idx = g_fovDistinct++;
+                    int stride = g_fovDistinctPrev / kFovSlots;
+                    if (stride < 1) stride = 1;
+                    if (!g_fovPending && g_fovSlots < kFovSlots &&
+                        idx % stride == 0 && ensure_fov_staging(ctx)) {
+                        D3D11_BOX box{0, 0, 0, kFovCbBytes, 1, 1};
+                        ctx->CopySubresourceRegion(g_fovStaging, 0,
+                                                   g_fovSlots * kFovCbBytes, 0, 0,
+                                                   cb0, 0, &box);
+                        if (g_fovSlots == 0) g_fovStrideUsed = stride;
+                        ++g_fovSlots;
+                    }
+                }
             }
             cb0->Release();
         }
@@ -666,12 +870,51 @@ void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
     if (intervalsWithHud) *intervalsWithHud = g_cIntervals.load(std::memory_order_relaxed);
 }
 
-bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs) {
+// Session 28: the age gate is enforced HERE, not left to each caller. It used
+// to return true for any sample ever taken - no decay, no max age - while only
+// two of four consumers applied 500 ms themselves, and the human-facing
+// `fovaudit live` line applied none. Several session-27 conclusions were drawn
+// from samples that printed age>9000ms, stale by the rule the same line printed.
+// maxAgeMs == 0 means "give me the sample whatever its age" and exists only so
+// the audit command can PRINT a stale value while labelling it STALE.
+bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs,
+               unsigned long long maxAgeMs) {
     unsigned long long s = g_fovStampMs.load(std::memory_order_relaxed);
     if (!s) return false;
+    unsigned long long age = GetTickCount64() - s;
+    if (ageMs) *ageMs = age;
+    if (maxAgeMs && age > maxAgeMs) return false;
     if (tanH) *tanH = g_fovTanH.load(std::memory_order_relaxed);
     if (tanV) *tanV = g_fovTanV.load(std::memory_order_relaxed);
-    if (ageMs) *ageMs = GetTickCount64() - s;
+    return true;
+}
+
+// The other lens in the frame (the foreground/viewmodel pass). Only non-zero
+// off 16:9, where the two lenses split - at 16:9 they coincide exactly and the
+// vote sees a single cluster. Same age contract as fov_watch.
+bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
+                  unsigned long long maxAgeMs) {
+    unsigned long long s = g_fovFgStampMs.load(std::memory_order_relaxed);
+    if (!s || g_fovLenses.load(std::memory_order_relaxed) < 2) return false;
+    unsigned long long age = GetTickCount64() - s;
+    if (ageMs) *ageMs = age;
+    if (maxAgeMs && age > maxAgeMs) return false;
+    if (tanH) *tanH = g_fovFgTanH.load(std::memory_order_relaxed);
+    if (tanV) *tanV = g_fovFgTanV.load(std::memory_order_relaxed);
+    return true;
+}
+
+int fov_lens_count() { return g_fovLenses.load(std::memory_order_relaxed); }
+
+// Backbuffer dims as last sampled by the letterbox watch. Exposed because the
+// lens laws are aspect-parameterised and the audit used to fall back to a
+// hardcoded 9/16 whenever no XR session was up - i.e. flat, which is where all
+// the measuring happens. That fallback is wrong at every aspect but 16:9 and it
+// is exactly the kind of silent assumption session 28 was spent unpicking.
+bool backbuffer_dims(unsigned* w, unsigned* h) {
+    if (!g_lbSrcW || !g_lbSrcH) return false;
+    if (w) *w = g_lbSrcW;
+    if (h) *h = g_lbSrcH;
     return true;
 }
 
@@ -767,7 +1010,9 @@ void release_resources() {
     g_processedThisInterval = false;
     if (g_fovStaging) { g_fovStaging->Release(); g_fovStaging = nullptr; }
     g_fovPending = false;
-    g_fovCapturedThisInterval = false;
+    g_fovPendingSlots = 0;
+    g_fovSlots = 0;
+    g_fovLastCb = nullptr;
     if (g_lbStaging) { g_lbStaging->Release(); g_lbStaging = nullptr; }
     g_lbH = 0;
     g_lbPending = false;

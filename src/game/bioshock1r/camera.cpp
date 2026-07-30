@@ -14,6 +14,7 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
+#include "game/bioshock1r/game_ini.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
@@ -32,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <share.h>
 
 namespace bvr::b1r::camera {
@@ -75,6 +77,11 @@ std::atomic<float> g_headOffFwdUu{0.0f};
 // run on the game thread next frame.
 std::atomic<bool> g_vrPresetPending{false};
 std::atomic<bool> g_vrPresetSavePending{false};
+// Render-resolution request from the overlay. The overlay runs on the RENDER
+// thread and this does file I/O plus a read-back, so it goes through the
+// established pending-atomic seam and is performed on the game thread, next to
+// the preset consumers. Packed as one 64-bit value so the pair cannot tear.
+std::atomic<uint64_t> g_resWritePending{0};
 
 // M8 session 18 part 2: the flat-screen crosshair, DEFAULT HIDDEN (user ask).
 // The lever is `ShockPlayer.bReticleDisabled` - the game's own RenderReticle
@@ -141,6 +148,13 @@ std::atomic<void*>    g_lastViewActor{nullptr}; // *view_actor out-param (the pa
 std::atomic<bool>  g_fgFovMatch{true};
 std::atomic<float> g_fgFovSaved{0.0f};   // engine value to restore on disable
 std::atomic<float> g_fgFovWritten{0.0f}; // telemetry: what we wrote last
+// Session 28: `vrfgfov legacy on` restores the pre-session-28 hardcoded 0.75
+// match constant, which is (4/3)*(9/16) - correct at 16:9 and 1.7778/aspect too
+// narrow everywhere else. Kept as an instant in-headset A/B for the viewmodel,
+// because the aspect correction is the change that made the hands and the world
+// geometrically correct AT THE SAME TIME and that pairing needs confirming.
+std::atomic<bool>  g_fgFovLegacy{false};
+std::atomic<float> g_fgFovK{0.75f};      // telemetry: the match constant used
 
 using CalcViewFn = void(__fastcall*)(void* self, void* edx, void** viewActor,
                                      FVector* loc, FRotator* rot);
@@ -154,6 +168,27 @@ bool g_wasOverridingFov = false;
 float g_savedFov = 0.0f;
 bool g_wasWritingGameFov = false;
 int32_t g_savedGameFov = 0;
+// WHICH object g_savedGameFov was captured from (session 27). Without this the
+// restore could write object A's saved value into object B after a re-scan
+// picked a different instance, and a value restored into the wrong object is
+// indistinguishable from corruption. Also gates the write itself: the pointer
+// must still be the one we bound to.
+const int32_t* g_savedGameFovOwner = nullptr;
+
+// SEH-guarded write of the settings FOV int. The pointer comes from an object
+// search, and while the search is now stack-safe and liveness-checked
+// (heap_scan.h), "the address passed two identity predicates" is still not the
+// same as "the engine owns this and it is safe to poke". A fault here must
+// never take the game down; it disarms the writer instead. Logging happens at
+// the call site, never inside the guard.
+bool write_option_fov(int32_t* dst, int32_t value) {
+    __try {
+        if (*dst != value) *dst = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 uint64_t g_lastHeartbeatMs = 0;
 uint32_t g_heartbeatBaseCount = 0;
 bool g_haveRecenter = false;
@@ -315,6 +350,23 @@ void apply_command(const char* cmd, const char* args) {
             g_gameFovWrite.store(true, std::memory_order_relaxed);
             BVR_LOG("[b1r] command: gfov %.1f", v);
         }
+    } else if (strcmp(cmd, "buildgate") == 0) {
+        patterns::handle_buildgate_command(args);
+    } else if (strcmp(cmd, "vrres") == 0) {
+        // The eye render IS the game's backbuffer, so the game's resolution is
+        // the VR resolution. `SETRES` faults (ENGINE_NOTES session 27), so the
+        // game's own ini is the only working lever and a change lands on the
+        // next launch. Deliberately explicit rather than automatic.
+        unsigned rw = 0, rh = 0;
+        if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
+            game_ini::write_viewport(rw, rh);
+        } else if (sscanf_s(args, "%u %u", &rw, &rh) == 2 && rw && rh) {
+            game_ini::write_viewport(rw, rh);
+        } else {
+            unsigned bw = 0, bh = 0;
+            bvr::vr::fov_audit(nullptr, nullptr, nullptr, &bw, &bh);
+            game_ini::log_status(bw, bh);
+        }
     } else if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
         BVR_LOG("[b1r] command: recenter");
@@ -374,10 +426,25 @@ void apply_command(const char* cmd, const char* args) {
                 "callstacks",
                 shots);
     } else if (strcmp(cmd, "vrfgfov") == 0) {
+        // Session 28: `legacy on|off` flips the match constant between the
+        // aspect-correct (4/3)*(h/w) and the pre-session-28 hardcoded 0.75, for
+        // an instant in-headset viewmodel A/B. Identical at 16:9.
+        if (strncmp(args, "legacy", 6) == 0) {
+            bool leg = strstr(args + 6, "off") == nullptr;
+            g_fgFovLegacy.store(leg, std::memory_order_relaxed);
+            BVR_LOG("[b1r] fg lens match constant: %s (last k=%.6f, last written "
+                    "%.1f deg) - legacy 0.75 is (4/3)*(9/16), correct at 16:9 only",
+                    leg ? "LEGACY 0.75" : "aspect-correct (4/3)*(h/w)",
+                    g_fgFovK.load(std::memory_order_relaxed),
+                    g_fgFovWritten.load(std::memory_order_relaxed));
+            return;
+        }
         bool on = strncmp(args, "off", 3) != 0;
         g_fgFovMatch.store(on, std::memory_order_relaxed);
-        BVR_LOG("[b1r] fg lens match %s (last written %.1f)", on ? "ON" : "off",
-                g_fgFovWritten.load(std::memory_order_relaxed));
+        BVR_LOG("[b1r] fg lens match %s (last written %.1f deg, k=%.6f)",
+                on ? "ON" : "off",
+                g_fgFovWritten.load(std::memory_order_relaxed),
+                g_fgFovK.load(std::memory_order_relaxed));
     } else if (strcmp(cmd, "fginfo") == 0) {
         BVR_LOG("[b1r] fginfo: pc=%p viewActor=%p hands=%p weapon=%p (fsweep/hexdump "
                 "targets)",
@@ -414,14 +481,23 @@ void apply_command(const char* cmd, const char* args) {
             int src = -1;
             unsigned sw = 0, sh = 0;
             bvr::vr::fov_audit(&tanH, &tanV, &src, &sw, &sh);
-            // Option-derived expectation. Flat there is no session (swap dims
-            // 0x0) - assume the 16:9 render aspect the dumps confirm per draw.
+            // Option-derived expectation, from the WORLD lens law measured in
+            // session 28: tanH = tan(option/2) (aspect-independent), tanV =
+            // tanH * (h/w). Flat there is no XR session, so fall back to the
+            // real BACKBUFFER dims - never to a hardcoded 9/16, which is right
+            // only at 16:9 and is how a 1.84x error stayed invisible.
+            unsigned bbW = 0, bbH = 0;
+            bool haveBb = bvr::hud::backbuffer_dims(&bbW, &bbH);
+            unsigned aw = (sw && sh) ? sw : bbW;
+            unsigned ah = (sw && sh) ? sh : bbH;
             float optTanH = 0.0f, optTanV = 0.0f;
             if (opt) {
                 optTanH = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
-                optTanV = optTanH * ((sw && sh) ? (static_cast<float>(sh) / static_cast<float>(sw))
-                                                : (9.0f / 16.0f));
+                optTanV = optTanH * ((aw && ah) ? (static_cast<float>(ah) /
+                                                   static_cast<float>(aw))
+                                                : 1.0f);
             }
+            (void)haveBb;
             BVR_LOG("[b1r] fovaudit: option=%d gfovWrite=%s(%.1f) | submitted tanH=%.6f "
                     "tanV=%.6f src=%s swap=%ux%u | option-derived tanH=%.6f tanV=%.6f",
                     opt ? *opt : -1,
@@ -433,18 +509,44 @@ void apply_command(const char* cmd, const char* args) {
                     : src == 3 ? "live"
                                : "none",
                     sw, sh, optTanH, optTanV);
-            // Session 22 live fov watch: what the game is ACTUALLY rendering
-            // right now (decoded per present from the first scene draw's cb0).
+            // Session 22 live fov watch, session 28: BOTH lenses, each labelled
+            // FRESH or STALE in words. maxAge 0 so a stale value still prints -
+            // several session-27 conclusions were taken from samples that
+            // printed age>9000ms, stale by the rule the same line printed, so
+            // the word is now on the line and nothing has to be inferred.
             float liveTanH = 0.0f, liveTanV = 0.0f;
             unsigned long long liveAge = 0;
-            if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge))
-                BVR_LOG("[b1r] fovaudit live: rendered tanH=%.4f tanV=%.4f (%.1f deg) "
-                        "age=%llums | mismatch=%d cineActive=%d",
+            if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge, 0)) {
+                float fgH = 0.0f, fgV = 0.0f;
+                unsigned long long fgAge = 0;
+                bool haveFg = bvr::hud::fov_watch_fg(&fgH, &fgV, &fgAge, 0);
+                BVR_LOG("[b1r] fovaudit live: WORLD tanH=%.6f tanV=%.6f (%.2f deg) "
+                        "age=%llums %s | FG tanH=%.6f tanV=%.6f age=%llums %s | "
+                        "lenses=%d mismatch=%d cineActive=%d",
                         liveTanH, liveTanV, 2.0f * atanf(liveTanH) * kRadToDeg,
-                        liveAge, bvr::hud::fov_mismatch() ? 1 : 0,
+                        liveAge, liveAge <= 500 ? "FRESH" : "STALE - DO NOT CONCLUDE",
+                        haveFg ? fgH : 0.0f, haveFg ? fgV : 0.0f, fgAge,
+                        !haveFg ? "n/a (single lens - 16:9)"
+                                : (fgAge <= 500 ? "FRESH" : "STALE"),
+                        bvr::hud::fov_lens_count(),
+                        bvr::hud::fov_mismatch() ? 1 : 0,
                         bvr::vr::cinematic_active() ? 1 : 0);
-            else
+                // The two laws, spelled out against this backbuffer so the
+                // reader never has to redo the arithmetic (session 28 measured:
+                // world is horizontal-anchored, fg is vertical-anchored).
+                if (opt && aw && ah) {
+                    float a = static_cast<float>(aw) / static_cast<float>(ah);
+                    BVR_LOG("[b1r] fovaudit laws (aspect %.5f from %ux%u): world "
+                            "expects tanH=tan(opt/2)=%.6f tanV=tanH*h/w=%.6f | fg "
+                            "matches the world when the 0.75 becomes "
+                            "(4/3)*h/w=%.6f (shipped 0.75 is that only at 16:9; "
+                            "here it under-lenses the viewmodel by %.4fx)",
+                            a, aw, ah, optTanH, optTanV,
+                            (4.0f / 3.0f) / a, (4.0f / 3.0f) / a / 0.75f);
+                }
+            } else {
                 BVR_LOG("[b1r] fovaudit live: no decoded scene tangents yet");
+            }
         }
     } else if (strcmp(cmd, "fsweep") == 0) {
         float lo = 0.0f, hi = 0.0f;
@@ -708,7 +810,20 @@ void apply_vr_preset() {
     bvr::vr::set_camera_mode(true);    // 6DOF head drive
     bvr::vr::set_sr_pair_pacing(true); // one waitFrame per eye pair
     input::handle_command("on");       // motion controllers as gamepad
-    g_gameFovWrite.store(true, std::memory_order_relaxed);
+    // SESSION 28: the preset no longer forces the game-FOV write ON.
+    //
+    // It used to push option 130, and 130 came from the "129.5 circumscribing"
+    // arithmetic, which solved `tan(option/2)*9/16*aspect = tan(H/2)` - i.e. it
+    // was derived from the WRONG world-lens law. The measured law is
+    // `tanH = tan(option/2)` with no aspect term, so at a square backbuffer
+    // option 100 already renders exactly 100x100 deg - close to ideal for a
+    // Quest-class eye - and 130 over-widens the render by 30 deg, wasting pixels
+    // and shrinking the world inside the eye's actual FOV. It also drags the
+    // foreground lens out with it (~141 deg at option 130 square).
+    // The user confirmed in-headset that the write had to be turned OFF, which
+    // is what the corrected law predicts. `gfov <deg>` still arms it manually,
+    // and the global default was already false - this line was the only thing
+    // turning it on.
     aim::handle_command("on");         // controller aim (R weapon / L plasmid)
     aim::handle_command("pose aim");   // the runtime AIM pose
     aim::handle_command("origin on");  // ray starts at the hand
@@ -724,13 +839,23 @@ void apply_vr_preset() {
     BVR_LOG("[b1r] VR PRESET 1 armed (unwind: vrstereo off + overlay checkboxes)");
 }
 
+// Re-assert interval for the engine-exec upkeep below. Was 15 s, which meant a
+// shipping session made two calls into the engine's SET handler through a
+// hand-built FOutputDevice stub every 15 seconds forever - five times in the 85 s
+// of the session-27 crash report. The stub is now measured and self-disabling
+// (console_exec.cpp), but the exposure was still 20x more than the job needs:
+// the state is re-asserted on the events that can actually undo it (entering
+// gameplay, a pawn or level change - see note_world_event) and this timer is only
+// a slow safety net for a script-side caller we have not identified.
+constexpr uint64_t kExecReassertMs = 300000; // 5 minutes
+
 // Crosshair upkeep (see the globals): push the wanted state through the
-// engine's SET handler on change, and re-assert every 15 s while hidden in
-// case script-side EnableReticle callers exist somewhere. Game thread.
+// engine's SET handler on change, on a world event, and on the slow safety
+// net. Game thread.
 void assert_crosshair(uint64_t now) {
     int want = g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0;
     bool due = want != g_crosshairApplied ||
-               (want == 0 && now - g_crosshairAssertMs >= 15000);
+               (want == 0 && now - g_crosshairAssertMs >= kExecReassertMs);
     if (!due) return;
     g_crosshairApplied = want;
     g_crosshairAssertMs = now;
@@ -744,7 +869,7 @@ void assert_crosshair(uint64_t now) {
 void assert_lockon(uint64_t now) {
     int want = g_lockOnDisabled.load(std::memory_order_relaxed) ? 1 : 0;
     bool due = want != g_lockOnApplied ||
-               (want == 1 && now - g_lockOnAssertMs >= 15000);
+               (want == 1 && now - g_lockOnAssertMs >= kExecReassertMs);
     if (!due) return;
     bool first = g_lockOnApplied != want;
     g_lockOnApplied = want;
@@ -754,6 +879,15 @@ void assert_lockon(uint64_t now) {
     else if (first)
         BVR_LOG("[b1r] pad lock-on re-enabled: the game's own radius returns "
                 "on the next game restart");
+}
+
+// One engine-state re-assert, driven by an event rather than a timer. Called on
+// the gameplay-view transition, which is the point a new pawn or a fresh level
+// can have reset the properties we set.
+void note_world_event(const char* why) {
+    g_crosshairApplied = -1; // sentinel: forces one assert on the next tick
+    g_lockOnApplied = -1;
+    BVR_LOG("[b1r] engine-state re-assert queued (%s)", why);
 }
 
 void poll_command_file(uint64_t now) {
@@ -868,6 +1002,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // the render thread and only sets the pending flags).
     if (g_vrPresetPending.exchange(false, std::memory_order_relaxed)) apply_vr_preset();
     if (g_vrPresetSavePending.exchange(false, std::memory_order_relaxed)) save_vr_preset();
+    if (uint64_t req = g_resWritePending.exchange(0, std::memory_order_relaxed)) {
+        game_ini::write_viewport(static_cast<uint32_t>(req >> 32),
+                                 static_cast<uint32_t>(req & 0xFFFFFFFFu));
+    }
     // M5: pump the engine's own pad pipeline against the synthetic gamepad
     // (self-throttles to once per present; no-op while vrinput is off).
     input_drive::on_frame(now);
@@ -1047,16 +1185,41 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         if (wantVr || wantManual) {
             if (!g_wasWritingGameFov) {
                 g_savedGameFov = *optionFov;
+                g_savedGameFovOwner = optionFov;
                 g_wasWritingGameFov = true;
-                BVR_LOG("[b1r] game fov write ON (saved option %d)", g_savedGameFov);
+                BVR_LOG("[b1r] game fov write ON (saved option %d from %p)", g_savedGameFov,
+                        optionFov);
+            } else if (optionFov != g_savedGameFovOwner) {
+                // The scan re-bound to a different instance while we were
+                // writing. The old object's saved value means nothing here, so
+                // re-seed rather than carrying it across.
+                BVR_LOG("[b1r] game fov owner changed %p -> %p - re-seeding the saved option "
+                        "(was %d, now %d)",
+                        static_cast<const void*>(g_savedGameFovOwner), optionFov, g_savedGameFov,
+                        *optionFov);
+                g_savedGameFov = *optionFov;
+                g_savedGameFovOwner = optionFov;
             }
             float want = wantVr ? vrFov : g_gameFovDeg.load(std::memory_order_relaxed);
             int32_t wantInt = static_cast<int32_t>(want + 0.5f);
-            if (*optionFov != wantInt) *optionFov = wantInt;
+            if (!write_option_fov(optionFov, wantInt)) {
+                BVR_LOG("[b1r] game fov write FAULTED at %p - disarming the FOV writer", optionFov);
+                g_wasWritingGameFov = false;
+                g_savedGameFovOwner = nullptr;
+                g_gameFovWrite.store(false, std::memory_order_relaxed);
+                g_forceHeadsetFov.store(false, std::memory_order_relaxed);
+            }
         } else if (g_wasWritingGameFov) {
-            *optionFov = g_savedGameFov;
+            // Only restore into the object the value came from.
+            if (optionFov == g_savedGameFovOwner && write_option_fov(optionFov, g_savedGameFov))
+                BVR_LOG("[b1r] game fov write OFF (restored option %d)", g_savedGameFov);
+            else
+                BVR_LOG("[b1r] game fov write OFF (saved %d NOT restored - object is %p, the "
+                        "value came from %p)",
+                        g_savedGameFov, optionFov,
+                        static_cast<const void*>(g_savedGameFovOwner));
             g_wasWritingGameFov = false;
-            BVR_LOG("[b1r] game fov write OFF (restored option %d)", g_savedGameFov);
+            g_savedGameFovOwner = nullptr;
         }
     }
     g_vrDriving.store(vrDrove, std::memory_order_relaxed);
@@ -1123,6 +1286,17 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             s_lastViewState = viewState;
             BVR_LOG("[b1r] view state: %s",
                     strictGameplay ? "GAMEPLAY (ShockPlayer view)" : "menu/cutscene");
+            // The object scanners latch dormant after repeated misses rather
+            // than rescanning forever (session 27); entering gameplay is the
+            // event that plausibly created what they were looking for, so it is
+            // the one place allowed to wake them.
+            if (strictGameplay) {
+                patterns::hfov_scan_rearm("entered gameplay view");
+                aim::weapon_scan_rearm("entered gameplay view");
+                // Same event drives the engine-property re-assert, which used to
+                // run off a 15 s timer forever (session 27).
+                note_world_event("entered gameplay view");
+            }
         }
 
         // Radial-wheel pitch guard (session 19 part 2): the stick-pitch kill
@@ -1199,9 +1373,49 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                 if (g_fgFovSaved.load(std::memory_order_relaxed) == 0.0f)
                     g_fgFovSaved.store(*fgFov, std::memory_order_relaxed);
                 float tanW = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
-                float fg = 2.0f * atanf(tanW * 0.75f) * kRadToDeg;
+                // SESSION 28: the match constant is (4/3)*(h/w), NOT 0.75.
+                //
+                // The two passes anchor OPPOSITE axes (ENGINE_NOTES "Session
+                // 28", dump-measured): the world pass fixes the horizontal
+                // (tanH = tan(option/2), tanV = tanH*h/w) and the foreground
+                // pass fixes the vertical (tanV = tan(fgFov/2)*3/4, tanH =
+                // tanV*w/h). Equating the two verticals:
+                //     tan(fgHalf)*3/4 = tan(option/2)*(h/w)
+                //  => tan(fgHalf)    = tan(option/2)*(4/3)*(h/w)
+                // 0.75 IS (4/3)*(9/16), i.e. that expression at 16:9 and
+                // nowhere else. Off 16:9 the shipped constant left the fg lens
+                // 1.7778/aspect narrower than the world - 1.78x at the square
+                // backbuffer the README recommends.
+                //
+                // Why this is load-bearing rather than cosmetic: ONE projection
+                // layer claim serves the whole eye image, so while the two
+                // lenses differ only one of {world, viewmodel} can be
+                // geometrically correct. Before the session-28 watch fix the
+                // claim accidentally carried the FG lens - hands right, world
+                // warping. Fixing the world moved the error onto the hands
+                // ("the gun moves when the headset moves"). Matching the lenses
+                // is what makes both correct at once, and it also makes
+                // bones.cpp's render-lock assumption ("k collapses to 1") TRUE
+                // off 16:9, which it silently was not.
+                //
+                // Independent corroboration: BioVRDev use exactly
+                // 2*atan(tan(fov/2)*(4/3)/aspect) - recorded in
+                // docs/RESEARCH.md since session 20 and never acted on.
+                //
+                // At 16:9 this is bit-identical to the shipped 0.75, so the
+                // session-16 in-headset calibration is preserved by
+                // construction. `vrfgfov legacy on` restores the old constant
+                // for an instant A/B.
+                float k = 0.75f;
+                unsigned bbW = 0, bbH = 0;
+                if (!g_fgFovLegacy.load(std::memory_order_relaxed) &&
+                    bvr::hud::backbuffer_dims(&bbW, &bbH) && bbW && bbH)
+                    k = (4.0f / 3.0f) * (static_cast<float>(bbH) /
+                                         static_cast<float>(bbW));
+                float fg = 2.0f * atanf(tanW * k) * kRadToDeg;
                 *fgFov = fg;
                 g_fgFovWritten.store(fg, std::memory_order_relaxed);
+                g_fgFovK.store(k, std::memory_order_relaxed);
             }
         } else {
             float saved = g_fgFovSaved.load(std::memory_order_relaxed);
@@ -1371,10 +1585,20 @@ void restore_game_fov_if_stale(uint64_t staleMs) {
     if (!g_wasWritingGameFov || !calcview_silent(staleMs)) return;
     int32_t* optionFov = patterns::hfov_option_ptr();
     if (!optionFov) return;
-    *optionFov = g_savedGameFov;
+    // Same ownership rule as the CalcView path: never write a value back into an
+    // object it did not come from (session 27).
+    if (optionFov != g_savedGameFovOwner) {
+        BVR_LOG("[b1r] game fov stale-restore SKIPPED - object is %p, the saved %d came from %p",
+                optionFov, g_savedGameFov, static_cast<const void*>(g_savedGameFovOwner));
+        g_wasWritingGameFov = false;
+        g_savedGameFovOwner = nullptr;
+        return;
+    }
+    bool ok = write_option_fov(optionFov, g_savedGameFov);
     g_wasWritingGameFov = false;
-    BVR_LOG("[b1r] game fov write OFF (restored option %d - calcview silent %llu ms)",
-            g_savedGameFov,
+    g_savedGameFovOwner = nullptr;
+    BVR_LOG("[b1r] game fov write OFF (%s option %d - calcview silent %llu ms)",
+            ok ? "restored" : "FAULTED restoring", g_savedGameFov,
             static_cast<unsigned long long>(GetTickCount64() - g_lastCalcViewMs));
 }
 
@@ -1481,6 +1705,101 @@ void draw_debug_ui() {
         bool lockoff = g_lockOnDisabled.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Lock-on disabled (pad aim magnetism off)", &lockoff))
             g_lockOnDisabled.store(lockoff, std::memory_order_relaxed);
+        // ---- render resolution ------------------------------------------
+        // This is the sharpness control, and it is the game's own resolution
+        // because the eye render IS the backbuffer. It cannot be applied live:
+        // the engine's SETRES faults (ENGINE_NOTES session 27), so the only
+        // working lever is the config the engine reads at startup. Say so
+        // plainly rather than letting a slider imply an instant effect.
+        if (ImGui::CollapsingHeader("Render resolution (applies on next launch)")) {
+            static bool s_read = false;
+            static int s_w = 0, s_h = 0;
+            unsigned liveW = 0, liveH = 0;
+            bvr::vr::fov_audit(nullptr, nullptr, nullptr, &liveW, &liveH);
+            game_ini::Viewport v = game_ini::read_viewport();
+            if (!s_read && v.valid) {
+                s_read = true;
+                s_w = static_cast<int>(v.windowedW);
+                s_h = static_cast<int>(v.windowedH);
+            }
+            if (!v.valid) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                   "Bioshock.ini not found - cannot set the resolution");
+            } else {
+                ImGui::Text("ini: %ux%u   live backbuffer: %ux%u", v.windowedW, v.windowedH,
+                            liveW, liveH);
+                if (liveW && liveH) {
+                    // A headset eye is near square. A 16:9 buffer spends most of
+                    // its width outside the lenses, which is the whole reason
+                    // this control exists - quantify it instead of asserting it.
+                    float aspect = static_cast<float>(liveW) / static_cast<float>(liveH);
+                    ImGui::Text("aspect %.3f (1.000 is ideal; a headset eye is near square)",
+                                aspect);
+                    if (aspect > 1.25f || aspect < 0.8f)
+                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                           "far from square: much of this render falls "
+                                           "outside the lenses");
+                }
+                // A dropdown of named modes with a Custom escape hatch - the
+                // shape every game's video options uses, so it needs no
+                // explaining. The list is square-first because a headset eye is
+                // near square, with one 16:9 entry for playing flat. The top end
+                // is deliberately generous: a user on a Dream Air runs 7680x4320
+                // happily, so clamping low would be the bug, not the safety.
+                struct Mode {
+                    const char* name;
+                    int w, h;
+                };
+                static const Mode kModes[] = {
+                    {"1920 x 1080  (16:9, for flat play)", 1920, 1080},
+                    {"2048 x 2048  (4.2 MPx, balanced)", 2048, 2048},
+                    {"2560 x 2560  (6.6 MPx, sharper)", 2560, 2560},
+                    {"3072 x 3072  (9.4 MPx, high-end GPU)", 3072, 3072},
+                    {"4096 x 4096  (16.8 MPx, very demanding)", 4096, 4096},
+                    {"Custom...", 0, 0},
+                };
+                const int kCustom = static_cast<int>(std::size(kModes)) - 1;
+
+                // Preselect whatever the ini already says, so the dropdown opens
+                // showing the truth rather than a default.
+                static int s_sel = -1;
+                if (s_sel < 0) {
+                    s_sel = kCustom;
+                    for (int i = 0; i < kCustom; ++i)
+                        if (kModes[i].w == s_w && kModes[i].h == s_h) s_sel = i;
+                }
+                const char* preview = kModes[s_sel].name;
+                if (ImGui::BeginCombo("Resolution", preview)) {
+                    for (int i = 0; i < static_cast<int>(std::size(kModes)); ++i) {
+                        if (ImGui::Selectable(kModes[i].name, s_sel == i)) {
+                            s_sel = i;
+                            if (i != kCustom) {
+                                s_w = kModes[i].w;
+                                s_h = kModes[i].h;
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (s_sel == kCustom) {
+                    ImGui::InputInt("width", &s_w, 64, 256);
+                    ImGui::InputInt("height", &s_h, 64, 256);
+                    if (s_w < 1024) s_w = 1024;
+                    if (s_h < 1024) s_h = 1024;
+                    if (s_w > 8192) s_w = 8192;
+                    if (s_h > 8192) s_h = 8192;
+                }
+                ImGui::Text("selected: %d x %d, %.1f MPx per eye", s_w, s_h,
+                            static_cast<double>(s_w) * s_h / 1.0e6);
+                if (ImGui::Button("Write to Bioshock.ini")) {
+                    g_resWritePending.store((static_cast<uint64_t>(s_w) << 32) |
+                                                static_cast<uint32_t>(s_h),
+                                            std::memory_order_relaxed);
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("restart the game for it to take effect");
+            }
+        }
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);

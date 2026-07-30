@@ -5,6 +5,10 @@
 # reads the file.
 # Usage: .\tools\game-cmd.ps1 "memscani 123" "memlist"
 #        .\tools\game-cmd.ps1 -Game bs2 "recenter"
+# PositionalBinding=$false so -Game can never swallow a command: as a positional
+# parameter it did, and every bare `game-cmd.ps1 "vrinput on"` call failed
+# validation, which silently broke boot.ps1's menu-press loop.
+[CmdletBinding(PositionalBinding=$false)]
 param(
     [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
     [Parameter(ValueFromRemainingArguments=$true)][string[]]$Lines

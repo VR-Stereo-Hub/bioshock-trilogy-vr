@@ -25,6 +25,8 @@ add_library(bioshockvr SHARED
     core/gfx/hud_capture.h
     core/hooks/d3d11_hook.cpp
     core/hooks/d3d11_hook.h
+    core/hooks/heap_scan.cpp
+    core/hooks/heap_scan.h
     core/hooks/pattern_scan.cpp
     core/hooks/pattern_scan.h
     core/input/xinput_bridge.cpp
@@ -37,6 +39,8 @@ add_library(bioshockvr SHARED
     core/vr/openxr_runtime.h
     core/util/log.cpp
     core/util/log.h
+    core/util/module_id.cpp
+    core/util/module_id.h
     core/util/crash.cpp
     core/util/crash.h
     game/adapter_registry.cpp
@@ -53,6 +57,8 @@ add_library(bioshockvr SHARED
     game/bioshock1r/camera.cpp
     game/bioshock1r/camera.h
     game/bioshock1r/console_exec.cpp
+    game/bioshock1r/game_ini.cpp
+    game/bioshock1r/game_ini.h
     game/bioshock1r/console_exec.h
     game/bioshock1r/frame_context.h
     game/bioshock1r/hands.cpp

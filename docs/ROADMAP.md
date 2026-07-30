@@ -388,6 +388,26 @@ controller, like a native VR game. Explicitly NOT wanted: bent arms, elbows, IK,
 
 ## M8 - Release quick phase + HUD usability (~1–2 sessions)
 
+> **Session 28 (2026-07-30) closed both of session 27's open bugs, in-headset accepted.**
+> - [x] **Yaw warping on head turn at non-16:9 resolutions (RELEASE BLOCKER)** - the live
+>       rendered-FOV watch was reporting the FOREGROUND lens as the world lens (a frame carries
+>       two lenses with opposite aspect conventions that coincide only at 16:9), so the mismatch
+>       verdict latched during normal gameplay and the projection claim was substituted with the
+>       viewmodel frustum - a 1.84x under-claim. The watch now stride-samples across the whole
+>       pass and votes. Measured, not inferred: ENGINE_NOTES "Session 28".
+> - [x] **Viewmodel/hands moving with the head at non-16:9** - the SAME defect from the other
+>       side: one claim cannot serve two different lenses, so fixing the world moved the error
+>       onto the hands. The fg match constant is now `(4/3)*(h/w)` instead of a hardcoded `0.75`
+>       (which is that expression at 16:9), and `bones.cpp`'s world and fg lens models read the
+>       live aspect. Accepted in-headset with NO re-tune of the session-16 offsets.
+> - [x] **VR freezes permanently after alt-tab (RELEASE BLOCKER)** - a circular wait: the M8
+>       pace guard submitted nothing while unfocused, and VDXR will not re-grant FOCUSED to an
+>       app that submits nothing. `xrWaitFrame` moved to a dedicated pace thread with a deadline
+>       on the present thread, which also retires the session-26 hang class instead of trading it
+>       for this freeze. Third attempt at this bug class, first one built on a measurement.
+> - [x] Lens math verified DYNAMIC across resolutions (k=1.333333 at 2048x2048, exactly
+>       0.750000 at 1920x1080), so 16:9 is bit-identical to prior releases by construction.
+
 > **Restructured 2026-07-27 (session 16 part 4, user's call):** the selection wheels moved
 > to post-v1 (the current switching UI is good enough); in their place, a QUICK RELEASE
 > phase right after session 17, then HUD usability.

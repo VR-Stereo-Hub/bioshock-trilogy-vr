@@ -4,11 +4,44 @@
 // ARCHITECTURE.md). Every entry is documented in docs/bioshock1/ENGINE_NOTES.md with
 // its derivation method.
 
+#include "core/hooks/heap_scan.h"
 #include "core/hooks/pattern_scan.h"
 
 #include <cstdint>
 
 namespace bvr::b1r::patterns {
+
+// ---- host build identity (session 27) ---------------------------------------
+// Every RVA in this header was derived from ONE build of BioshockHD.exe:
+// 2022-04-13, PE TimeDateStamp 0x6256F776, SizeOfImage 0x01677000, 21214720
+// bytes on disk (measured from the live Steam install; the exe carries no PE
+// checksum, so that field is not part of the test).
+//
+// The adapter is chosen by exe BASENAME, and every storefront ships this same
+// file name - so an Epic, GOG or repatched build is not rejected, it is accepted
+// and then mis-addressed. Hook installs survive that (they are prologue- and
+// vtable-gated and refuse), but the object-scan KEYS degrade to "search memory
+// for an arbitrary constant, then write to whatever passes a plausibility
+// test". Those are gated on rva_trusted() instead.
+inline constexpr uint32_t kHostTimeDateStamp = 0x6256F776;
+inline constexpr uint32_t kHostSizeOfImage = 0x01677000;
+inline constexpr uint64_t kHostFileBytes = 21214720;
+
+// False when the running exe is not the build the addresses came from. Features
+// that depend on a raw RVA must stand down; anything pattern-derived (the
+// CalcView seam, the FName chain) is build-independent and keeps working.
+bool rva_trusted();
+
+// Force the gate closed at RUNTIME, for testing the stand-down path.
+//
+// This exists because the alternative bit me: the only way to exercise the
+// unverified-build path used to be editing kHostTimeDateStamp and rebuilding,
+// and a sabotaged DLL then got left installed in the game folder. The symptoms
+// (no FOV control, viewmodel not following the controllers) read exactly like a
+// regression, because every object scan refuses. A runtime switch means the test
+// never produces a binary that can be mistaken for a real one.
+// `buildgate off|on|status` on the command seam. Game thread.
+void handle_buildgate_command(const char* args);
 
 // Live horizontal FOV in degrees (float) inside APlayerController.
 // Derivation: itsloopyo/bioshock-remastered-headtracking (MIT)
@@ -28,6 +61,25 @@ inline constexpr uint32_t kFovLiveOffset = 0xE0;
 // it by scanning the heap for its fixed-RVA vtable and caching the instance.
 inline constexpr uint32_t kUserSettingsVtableRva = 0xDA3878;  // .?AVUShockUserSettings@@
 inline constexpr uint32_t kUserSettingsHfovOffset = 0x8C;     // int32, degrees
+
+// Plausibility window for the accept filter. The options UI clamps to 75-130,
+// so anything outside that is debris rather than a settings object. The scanner
+// this replaced accepted 40-170, which let a great deal more through - and the
+// consumer writes to whatever is accepted (session 27).
+inline constexpr int32_t kUserSettingsHfovMin = 75;
+inline constexpr int32_t kUserSettingsHfovMax = 130;
+
+// ---- object-scan policy (session 27) ----------------------------------------
+// Wall clock one sliced sweep slice may spend on the game thread. 4 ms at ~90
+// CalcView/s is a visible frame cost while a sweep is running and nothing at
+// all once the object is bound; the alternative it replaced was a single 1-4 s
+// blocking pass, which is what users reported as the game freezing.
+inline constexpr uint32_t kScanSliceBudgetUs = 4000;
+// Gap between search attempts once one has completed without finding anything.
+inline constexpr uint64_t kScanRetryMs = 2000;
+// Consecutive completed-but-empty searches before the scanner latches dormant.
+// A rate limit alone rescans forever on a save where the object never appears.
+inline constexpr int kScanMissesBeforeDormant = 3;
 
 // Render command-queue functions (DR-5 / SequentialReentry). Derivation
 // (ENGINE_NOTES "Scene-draw architecture"): draw-callstack RVA histogram from
@@ -633,24 +685,61 @@ void resolve_aim_natives(const bvr::pattern_scan::ProcessImage& image, Symbols& 
 
 // The live HorizontalFOV field of the UShockUserSettings singleton, or null.
 // Lazy by design: the object exists only after engine init, so this validates
-// on every call (null global / dead memory / foreign vtable all return null)
-// instead of caching at resolve() time. Game thread only.
+// on every call (null global / dead memory / foreign vtable / dead UObject
+// class chain all return null) instead of caching at resolve() time. Goes
+// dormant after repeated misses; hfov_scan_rearm() is the only way back.
+// Game thread only.
 int32_t* hfov_option_ptr();
 
+// Clear the miss counter and wake a dormant settings scan. Call on any event
+// that plausibly created the object: a view-state change, a pawn change, a
+// level load. `why` is logged.
+void hfov_scan_rearm(const char* why);
+
+// True once the settings object is bound, for status lines.
+bool settings_bound();
+
+// ---- live-object search -----------------------------------------------------
 // Find a live object by its class vtable. There is no static pointer to most
-// engine singletons, so we scan committed private memory for the fixed-RVA
-// vtable dword - the technique that found UShockUserSettings, reused for the
-// M7 AHands viewmodel.
+// engine singletons, so the object is located by its fixed-RVA vtable dword.
+// The generic, stack-safe, budgeted machinery is core/hooks/heap_scan.h; this
+// wraps it with the two-phase policy every callsite here wants.
 //
 // `accept` is called for every object whose first dword is that vtable and
 // decides whether this instance is the one wanted: every UClass also has a
 // default object carrying the same vtable, so a plausibility test on the
-// object's own fields is mandatory. It runs inside the scan's SEH guard, may
-// read up to `needBytes` from the object, and must not throw. The first
-// accepted instance wins; `outMatches` reports how many vtable hits were seen
-// (0 = the class is not instantiated yet, many = the filter is doing real work).
-using ObjectAccept = bool (*)(void* obj, void* user);
-void* scan_for_vtable_object(uint32_t vtableRva, uint32_t needBytes, ObjectAccept accept,
-                             void* user, const char* what, int* outMatches);
+// object's own fields is mandatory. It runs inside an SEH guard, may read up to
+// `needBytes` from the object, must not throw, and MUST NOT LOG OR ALLOCATE -
+// MSVC does not run C++ destructors during SEH unwinding, so a fault taken
+// while the log mutex is held would wedge logging for the life of the process.
+// Hand diagnostics back through `probe` instead and format them afterwards.
+using ObjectAccept = bvr::heap_scan::Accept;
+
+// Caller-owned search state. One static per callsite; zero-initialize and keep.
+struct ObjectScan {
+    bvr::heap_scan::Sweep sweep;
+    bool sweeping = false; // in the sliced fallback rather than the heap path
+};
+
+struct ScanResult {
+    void* object = nullptr; // the accepted instance, or null
+    int matches = 0;        // vtable hits
+    int accepted = 0;       // accept() said yes; >1 means ambiguous, fail closed
+    const char* path = "-"; // "heap" (fast path) or "sweep" (fallback)
+    bool disabled = false;  // refused before searching (unverified build)
+};
+
+// Advance one search. Returns true when a search COMPLETED this call and `out`
+// is meaningful; false means a sliced sweep is still running, so call again
+// next frame. Tries the live-heap-block fast path first and only falls back to
+// the region sweep if the object is not in a Win32 heap block.
+bool run_object_scan(ObjectScan& scan, uint32_t vtableRva, uint32_t needBytes,
+                     ObjectAccept accept, void* user, ScanResult& out);
+
+// Log a one-line summary of a completed search, and with `candidates` every
+// recorded candidate and its probe values. Call after run_object_scan returns
+// true - never from inside an accept filter.
+void log_scan_result(const char* what, const ObjectScan& scan, const ScanResult& r,
+                     bool candidates);
 
 } // namespace bvr::b1r::patterns

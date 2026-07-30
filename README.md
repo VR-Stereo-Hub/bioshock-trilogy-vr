@@ -161,6 +161,17 @@ BioShock Remastered is required. Free and open source, forever.
   technique on this exact game; this project ports and extends those techniques.
 - [praydog/REFramework](https://github.com/praydog/REFramework) (MIT) - reference implementation
   for OpenXR/D3D11 VR integration in a closed-source engine.
+- **[BioVRDev/Bioshock-Remastered-VR](https://github.com/BioVRDev/Bioshock-Remastered-VR)** - a
+  parallel native VR mod for the same game, and a genuinely friendly one. The two projects have
+  swapped findings in both directions: their README credits this one for the
+  reticle-via-console-Exec technique, the arm bone indices and the render-target HUD capture,
+  and their author has given explicit permission to reuse their code and concepts here. Ideas
+  taken from them so far: rendering at a near-square resolution matched to the headset panel
+  instead of widening the game's FOV, the "report the game's own symmetric FOV to the
+  compositor, never the headset's canted one" invariant, per-feature build guarding that logs
+  and stands down instead of trusting an address, and the startup config echo block. Files that
+  adapt their code carry an attribution comment naming the source. Worth a look, and worth
+  trying if this mod does not suit your setup.
 - Third-party libraries: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License

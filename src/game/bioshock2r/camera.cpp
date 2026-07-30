@@ -378,16 +378,27 @@ void apply_command(const char* cmd, const char* args) {
                 : src == 3 ? "live"
                            : "none",
                 sw, sh, optTanH, optTanV);
+        // Session 28 (core change, shared): both lenses, age labelled in words.
+        // BS2's own lens laws are UNMEASURED - per the never-copy rule this line
+        // reports what the watch sees and asserts nothing about BS2's fg pass.
         float liveTanH = 0.0f, liveTanV = 0.0f;
         unsigned long long liveAge = 0;
-        if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge))
-            BVR_LOG("[b2r] fovaudit live: rendered tanH=%.4f tanV=%.4f (%.1f deg) "
-                    "age=%llums | mismatch=%d cineActive=%d",
+        if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge, 0)) {
+            float fgH = 0.0f, fgV = 0.0f;
+            unsigned long long fgAge = 0;
+            bool haveFg = bvr::hud::fov_watch_fg(&fgH, &fgV, &fgAge, 0);
+            BVR_LOG("[b2r] fovaudit live: WORLD tanH=%.6f tanV=%.6f (%.2f deg) "
+                    "age=%llums %s | 2nd-lens tanH=%.6f tanV=%.6f age=%llums | "
+                    "lenses=%d mismatch=%d cineActive=%d",
                     liveTanH, liveTanV, 2.0f * atanf(liveTanH) * kRadToDeg, liveAge,
+                    liveAge <= 500 ? "FRESH" : "STALE - DO NOT CONCLUDE",
+                    haveFg ? fgH : 0.0f, haveFg ? fgV : 0.0f, fgAge,
+                    bvr::hud::fov_lens_count(),
                     bvr::hud::fov_mismatch() ? 1 : 0,
                     bvr::vr::cinematic_active() ? 1 : 0);
-        else
+        } else {
             BVR_LOG("[b2r] fovaudit live: no decoded scene tangents yet");
+        }
     } else if (strcmp(cmd, "fsweep") == 0) {
         float flo = 0.0f, fhi = 0.0f;
         if (sscanf_s(args, "%x %u %f %f", &addr, &len, &flo, &fhi) == 4)
