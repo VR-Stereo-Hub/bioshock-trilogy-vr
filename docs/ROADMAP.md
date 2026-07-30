@@ -536,12 +536,25 @@ kill. Both prerequisites below are now MET.):**
       *Residual, measured: converges to within 4-8 deg rather than 0, because near
       convergence the proportional stick falls under the GAME's own deadzone. Inside melee
       tolerance; closing it needs a minimum stick magnitude and risks a limit cycle.*
-- [ ] **Wrench swing gesture (user's call 2026-07-28)**: trigger the melee hit from the
-      physical SWING instead of (or in addition to) the trigger - velocity threshold on
-      the right controller while the wrench is equipped -> pulse RT, cooldown against
-      double-fires. The user play-tested timing the trigger to their swing and it felt
-      right, so the gesture only needs to reproduce that timing. Hand poses per frame
-      already exist (velocity = dP/dt); keep the trigger working as-is.
+- [x] **Wrench swing gesture (user's call 2026-07-28)** - DONE session 31 (2026-07-31),
+      **accepted in-headset: "I tested it and it's perfect."** A fast right-hand motion composes a
+      full RT pulse while the wrench is equipped, IN ADDITION to the trigger (user's call -
+      the trigger keeps working unchanged, so there is no regression to roll back).
+      `core/input/swing.{h,cpp}`, gate published each CalcView as
+      `strictGameplay && aim::weapon_key_is("Wrench")`, velocity by finite difference of
+      the hand-pose funnel (head-relative by default), fire on the rising edge of the
+      speed threshold, hysteresis re-arm + cooldown against double-fires.
+      `vrinput swing on|off|status|threshold|rearm|cooldown|pulse|delay|rel|log|sim`,
+      persisted in vrpreset.ini, overlay checkbox + sliders.
+      *Flat-measured: a 120 ms RT pulse fires the weapon (two pulses = two shots), and every
+      `[swing] FIRE` was followed 8-11 ms later by the engine's own weapon-fire seam at
+      rt=255. Gate closed with a gun equipped, cooldown, re-arm hysteresis, wheel
+      suppression, off-switch and the ini round-trip all pass.*
+      *Shipped defaults after the headset run: **ON**, fire threshold **3.6 m/s** (the user's
+      own call, replacing the 2.2 guess that shipped to that run - high enough that walking,
+      turning your body or reaching for something never registers), re-arm 1.0 m/s, cooldown
+      300 ms, pulse 120 ms, delay 0.* No further tuning was asked for; `swing delay <ms>`
+      remains if the contact point ever wants moving.
 - [x] **Kill the first-boot restart** - DONE session 22 (2026-07-29): compose_over answers
       a failed slot-0 GetState with a neutral connected pad while vrinput is off. Virgin
       gate PASSED: menu prompts stayed KB/M with the phantom pad idle; `vrinput on`

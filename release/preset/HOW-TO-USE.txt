@@ -1,9 +1,15 @@
-The bundled calibration (v0.5.0)
+The bundled calibration (v0.6.0)
 ================================
 
 You do NOT need these files for a fresh install: the mod's built-in
 defaults are identical to them. Install the two DLLs, press VR PRESET 1,
 play.
+
+IF YOU ADOPTED THE v0.5.0 BUNDLE: that vrpreset.ini shipped
+effectsInFrame=1, which is what empties the health and EVE bars. Either
+replace vrpreset.ini with this one, or just change that single line to
+  effectsInFrame=0
+and restart. Nothing else about your tuning is affected.
 
 They matter only if you ALREADY have your own tuning in
   %LOCALAPPDATA%\BioshockVR\

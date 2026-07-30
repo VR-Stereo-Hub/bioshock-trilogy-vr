@@ -54,6 +54,14 @@ Rules that keep the seam clean:
 - Core never touches UObject/FName - core speaks poses, meters, and D3D11. Adapters own all
   engine semantics, including units (meters ↔ Unreal units, FRotator 65536/turn ↔ radians;
   `worldScale` config-overridable).
+- **Adapter -> core state travels as SELF-EXPIRING PUBLISHES, never as a query.** Core cannot call
+  into the adapter mid-frame (wrong thread, wrong lifetime, and it would invert the dependency), so
+  the adapter pushes a bool or a float from its CalcView tail and core reads a timestamped slot:
+  `publish_vr_gameplay` (the stick-pitch-kill gate), `publish_pitch_error` (the pitch servo),
+  `swing::publish_gate` (is the wrench equipped). All three share one discipline - a 500 ms
+  staleness budget, and the stale state is the SAFE one, so a publisher that stops disarms the
+  feature rather than freezing it on its last value. New cross-layer state should copy this shape
+  rather than inventing a fourth.
 
 ## Per-frame orchestration
 
@@ -144,6 +152,53 @@ to VR conventions (jump on the lower-right button) instead of passing through.
 | Left stick click | LS click | crouch |
 | Left menu, short press (<500 ms, pulsed on release) | START | pause menu |
 | Left menu, hold (>=500 ms) | BACK | map/objectives |
+### Motion gestures: the pattern (session 31, `core/input/swing.{h,cpp}`)
+
+Swing-to-attack is the first gesture that turns physical motion into a game input, and it is
+built as a reusable shape rather than a one-off. Anything else of that kind - a shove, a
+throw, a reload flick, a two-handed brace - should follow it.
+
+**Layering.** The detector is CORE (`core/input/`), not the XR layer, and not the adapter:
+
+| piece | where | why there |
+|---|---|---|
+| pose sample in, once per XR frame | `core/vr/openxr_input.cpp`, one call | it is the only place that has the frame's poses and its predicted display time |
+| threshold / hysteresis / cooldown / pulse | `core/input/swing.cpp` | the only layer that runs with AND without a headset, so the whole decision path is testable flat |
+| "would this input be legitimate right now" | the game adapter, published per CalcView | only the adapter knows what is equipped and what view is up |
+| the synthetic input itself | `core/input/xinput_bridge.cpp`, one line in `compose_synthetic` | gestures are just another producer over the same merge |
+
+The temptation is to put the detector where its data is born, in the XR layer. Do not: that
+file compiles only under `BVR_WITH_OPENXR` and its per-frame entry point never runs without a
+headset, so a detector there cannot be tested at all until someone puts a headset on.
+
+**Four rules the first one established.**
+
+1. **Read poses through the funnel** (`input_get_hand_pose`), never off the slot behind it. The
+   funnel is what the session-20 recorder's sim overlay injects onto, so a replayed session
+   drives the gesture exactly as it drives the ray, the viewmodel and the laser. Runtime
+   velocity (`XrSpaceVelocity`) would be marginally more accurate and invisible to every replay
+   tool we own; finite-differencing the funnel poses is worth more than the accuracy.
+2. **Gate on IDENTITY, not plausibility.** A synthetic input means whatever the game currently
+   binds it to - the swing composes RT, and RT with a gun in hand is a *shot*. The gate is
+   therefore "the equipped holdable's class name is X", reusing an identity the mod already
+   maintains, never a heuristic like "that motion looked like melee". Every gate fails CLOSED
+   and expires on a staleness budget, so a publisher that stops (world unload, drive off)
+   disarms the gesture rather than latching it open.
+3. **Hysteresis AND a cooldown, because they catch different things.** One motion accelerates
+   and decelerates through the threshold, so without a re-arm latch a single gesture fires
+   twice; the cooldown bounds a shake. Report one verdict per GESTURE, not per sample - the
+   first build logged 106 identical "blocked" lines for one simulated swing.
+4. **Ship a `sim` command that drives the real decision core**, and give it a repetition count.
+   One synthetic gesture crosses the threshold once, and the command seam polls at 1 Hz, so no
+   pair of commands can ever land inside a sub-second cooldown: without repetitions the
+   cooldown is untestable flat. With it, every threshold, gate, latch and cooldown was verified
+   before the feature ever reached a headset, and only the tuning constants needed a human.
+
+**Tuning constants are the only thing a headset is required for.** Ship them as named
+constants, expose them as commands + persisted preset keys + overlay sliders, and have `status`
+report the PEAK measured value since the last call - that is the number that replaces the
+guess. Swing-to-attack shipped to its first headset run at 2.2 m/s and came back at 3.6.
+
 - **Lane 2 - engine-level**: console-exec dispatcher for discrete actions (weapon/plasmid
   switch, ToggleHUD, SetFOV - one high-value hook makes dozens of features one-liners); direct
   hooks for continuous aim.
@@ -777,3 +832,31 @@ runtime.
   future "is this seam involved at all" question should start there. Note the one trap - VR
   PRESET 1 re-arms `aim on` and `origin on`, so read-only mode has to be re-armed after a preset
   press.
+
+- **2026-07-31 (session 31): a gesture detector belongs where it can be TESTED, not where its
+  data is born.** The wrench swing detector's inputs (hand poses, per-frame timing) all live in
+  `core/vr/openxr_input.cpp`, which is the obvious home - and the wrong one: that file compiles
+  only under `BVR_WITH_OPENXR` and `input_sync` never runs without a headset, so a detector there
+  could not be exercised flat at all. It lives in `core/input/swing.{h,cpp}` instead, next to the
+  bridge that owns the composed pad, with the XR layer reduced to "here is a sample". The whole
+  decision core is then reachable from a `sim` command that runs on the game's own XInput poll,
+  and every threshold, gate, latch and cooldown was verified flat before the feature ever reached
+  a headset. The XR layer keeps exactly one line of the feature.
+  *Corollary that shaped the test seam: `sim` takes a REPETITION COUNT.* One synthetic swing
+  crosses the threshold once, and the command seam polls at 1 Hz, so no pair of commands can ever
+  land inside a 300 ms cooldown - the cooldown was untestable until the sim itself could produce
+  two swings 400 ms apart.
+
+- **2026-07-31 (session 31): read the poses through the funnel, not the slot behind it.** The
+  detector could have differenced `g_hands[1]` directly, or asked the runtime for
+  `XrSpaceVelocity`. It reads `input_get_hand_pose()` instead - the same accessor the fire ray,
+  the viewmodel and the laser use - so the session-20 recorder's sim overlay drives the gesture
+  exactly as it drives everything else and a replayed swing is one consistent world. Runtime
+  velocity would have been marginally more accurate and invisible to every replay tool we own.
+
+- **2026-07-31 (session 31): a synthetic input needs an identity gate, not a plausibility gate.**
+  A swing composes a full right trigger, and RT with a gun in hand is a SHOT. The gate is
+  therefore the equipped holdable's class name (`aim::weapon_key_is("Wrench")`, reusing the
+  per-weapon profile key rather than resolving the holdable a second time), never a heuristic
+  like "the hand is moving like melee". Everything else about the gesture is a comfort tuning
+  knob; that one line is the safety property, and it is the first thing the flat checklist tests.

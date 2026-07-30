@@ -72,6 +72,7 @@ there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
 
 | Input | Action |
 |---|---|
+| **Swing your right hand** | **swing the wrench** - only while the wrench is equipped; the trigger still works too |
 | Right trigger | fire weapon (first pull raises it) |
 | Left trigger | cast plasmid (first pull raises it) |
 | Right grip | switch/cycle weapon (hold for the radial) |
@@ -125,6 +126,13 @@ Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrprese
   *off* leaves your head and hands driving straight through the scene.
 - **Cutscene subtitles** ride the head-locked panel so they stay readable in stereo. The
   "Cutscene subtitles in-frame" checkbox puts them back in the world if you prefer.
+- **Swing to attack** ("Swing the wrench to attack", on by default) - a fast right-hand motion
+  swings the wrench, in addition to the trigger. Only while the wrench is equipped: the gesture
+  composes a trigger pull, and a trigger pull with a gun in hand is a shot, so it is gated on
+  what you are actually holding. "Swing speed needed" (3.6 m/s) is the bar your hand has to
+  clear - lower it if swings are being missed, raise it if ordinary movement triggers one. Note
+  it changes *when* the attack fires, not where it lands: the game aims melee from your view, so
+  a sideways swing while you look forward still hits forward, exactly as the trigger always did.
 - **Aim dot** ("Aim dot", off by default) - a single dot on the ray the bullet actually uses,
   not a reconstruction of it, so where the dot sits is where the shot goes. Set "aim dot
   distance" to roughly your calibration wall's distance before tuning: a dot and a bullet hole

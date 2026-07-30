@@ -89,6 +89,62 @@ Verified flat procedure (2026-07-25, no physical pad connected):
    ENGINE_NOTES "Gamepad architecture"), xi14/xi13 are diagnostic hooks on
    the system DLLs.
 
+## Wrench swing-to-attack (session 31 `vrinput swing`) - flat verification
+
+A fast right-hand motion composes a full RT pulse while the wrench is equipped,
+in addition to the trigger. The detector lives in `core/input/swing.cpp` (core,
+not the XR layer) precisely so it can be driven with no headset: `vrinput swing
+sim <peak m/s> [humpMs] [reps]` pushes half-sine speed humps through the REAL
+decision path - same thresholds, same gates, same pulse - with an equal
+zero-speed gap between humps, which is what re-arms the detector and makes the
+cooldown observable.
+
+Two things flat cannot do, and the workarounds: (a) **live hand samples need an
+XR session**, so `sim` is the only driver; (b) **weapon switching cannot be
+driven flat** (the radial needs a human - session 30), so force the gate with
+`vraim wkey sim Wrench`, which sets the same per-weapon profile key the gate
+reads. With a pistol actually in hand the pulse then fires the pistol, and the
+ammo counter is the proof that the pulse reached the game. `vraim wkey real`
+restores live tracking - do not leave it forced.
+
+Verified flat procedure (2026-07-31, no headset, `vrpreset` applied):
+1. Boot to gameplay, `vrpreset`, `vrinput swing log on`. `vrinput swing status`
+   must print `gate closed` with a gun equipped.
+2. **Pulse width (the pre-req everything rests on)**: two
+   `vrinput test trig r 255 120` a second apart -> ammo drops by 2. If a 120 ms
+   pulse ever stops firing, raise `swing pulse` before debugging anything else.
+3. **The safety gate**: with a gun equipped, `vrinput swing sim 4 200 3` ->
+   `fires now 0`, three `BLOCKED ... gate closed` lines, ammo unchanged.
+4. **Fire**: `vraim wkey sim Wrench`, then `vrinput swing sim 4 200 3` -> three
+   `[swing] FIRE` lines ~400 ms apart, and each one followed 8-11 ms later by
+   `[aim] watch weapon ... rt=255` (the engine's own fire path running off our
+   pulse).
+5. **Cooldown**: `vrinput swing cooldown 600` + `sim 4 200 3` -> FIRE, then
+   `BLOCKED ... cooldown` on the middle swing (400 ms gap < 600), then FIRE.
+6. **Weapon wheel**: `vrinput test press RB 2000` and `sim 4 200 2` in the SAME
+   game-cmd call -> both swings `BLOCKED ... a grip is held`.
+7. **Off switch**: `vrinput swing off` + `sim 4 200` -> fires unchanged,
+   `BLOCKED ... gesture off`.
+8. **Persistence**: set distinctive values, `vrpreset save`, **clear
+   `command.txt`**, relaunch, `vrpreset`, `vrinput swing status` -> the values
+   come back. Skipping the clear re-runs `vrpreset save` at the menu on the next
+   boot and overwrites the file with defaults (this produced a false negative
+   the first time round).
+9. Restore: `vrinput swing cooldown 300`, `delay 0`, `log off`,
+   `vraim wkey real`, `vrpreset save`, clear `command.txt`.
+
+One BLOCKED line per SWING, not per sample - the latch clears when the hand
+slows below the re-arm level. If you see a flood, that latch has regressed.
+
+**In-headset (2026-07-31, accepted - "I tested it and it's perfect"):** the
+shipped threshold is **3.6 m/s**, the user's own call after the live run,
+replacing the 2.2 m/s guess that shipped to it. 3.6 clears a walk, a body turn
+and a reach, so ordinary play produces no stray swings; delay stayed at 0
+because the rising-edge fire already lands the hit where the arm is going. If
+the threshold ever needs re-tuning on another player or another controller,
+`vrinput swing status` reports the peak hand speed since the last call - collect
+that over a few real swings and set the threshold under it.
+
 ## Decoupled aim (M6 `vraim`) - flat verification
 
 Commands (all through the seam, so they work with no headset):

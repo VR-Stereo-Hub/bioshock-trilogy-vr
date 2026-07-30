@@ -3,6 +3,56 @@
 Newest first. The version is read from `CMakeLists.txt` by `tools/package.ps1`, so the zip
 name, the DLL banner and the tag cannot disagree.
 
+## v0.6.0 - swing the wrench to swing the wrench
+
+**Melee is a motion now.** Swing your right hand and Jack swings the wrench. The trigger still
+works exactly as before - this is in addition to it, not instead of it, so nothing you already
+do stops working and you can fall back to the trigger any time your arm is tired or the room is
+tight.
+
+It only arms while the **wrench** is equipped, and that is deliberate rather than cautious: the
+gesture works by composing a trigger pull, and a trigger pull with a gun in hand is a shot. So
+the mod checks what you are actually holding, not whether the motion looked like melee.
+
+One honest limit, because it will otherwise read as a bug: the gesture changes **when** the
+attack happens, never **where** it lands. BioShock aims melee from your view, through machinery
+no hook of ours can reach, so a sideways swing while you look forward still hits forward -
+exactly as the trigger has always behaved. Point at what you want to hit.
+
+**Tuning** ("Swing speed needed", default 3.6 m/s, in the F10 overlay): that is the speed your
+hand has to clear, calibrated in a headset so that walking, turning your body or reaching for
+something never registers. Lower it if swings get missed, raise it if ordinary movement sets one
+off. There is also a cooldown and a fire delay if you want to shape the feel, and
+**`vrinput swing off`** or the overlay checkbox disables the whole thing.
+
+### Fixed: the bundled preset was re-breaking the health and EVE bars
+
+If you copied v0.5.0's `preset/vrpreset.ini` into `%LOCALAPPDATA%\BioshockVR\`, your health and
+EVE bars have been reading as empty ever since - that file shipped `effectsInFrame=1` after the
+built-in default had already been corrected to `0`, and your file wins over the default. v0.5.0's
+own notes said this was fixed; for anyone who adopted the bundle, it was not.
+
+**A fresh install was never affected**, and neither was anyone who kept their own tuning. If it
+hit you, either take the new `preset/vrpreset.ini` or change that single line to
+`effectsInFrame=0` and restart. Nothing else about your tuning is touched.
+
+### Still known, unchanged from v0.5.0
+
+- **Full-screen effects sit on the HUD panel.** Water and damage tints ride the floating panel
+  rather than covering your view. This is the same key as the fix above, and turning it on is
+  what empties the bars - the real fix needs different geometry, since the game authors these at
+  HUD size, and that is the next piece of work.
+- **Cutscenes sit low with black borders.** Ticking "Game FOV write" in the overlay makes them
+  fill the view, still not recommended for normal play.
+
+### Upgrading
+
+Copy both DLLs over the old ones - the install steps are unchanged. Your own tuning in
+`%LOCALAPPDATA%\BioshockVR\` still wins key by key, and swing-to-attack arrives as new keys with
+working defaults, so an existing install picks it up without touching anything you calibrated.
+The one exception is the bar fix above, which is a value in *your* file and so needs the one-line
+change.
+
 ## v0.5.0 - cutscenes, and an aim dot you can trust
 
 **Cutscenes are the headline.** Session 28 changed the projection claim, the foreground lens

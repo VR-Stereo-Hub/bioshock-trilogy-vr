@@ -499,3 +499,74 @@ is a Debug compiler check, not an SEH fault, so it bypasses the crash handler), 
 the game while that modal dialog is up can leave the display mode unrestored - press Abort on the
 dialog instead. Disassemble and read the first `ret` before hooking anything new; BS1's verified
 table is in `docs/bioshock1/ENGINE_NOTES.md` session 30.
+
+## Carries from BS1 session 31 (2026-07-31): swing-to-attack, and what BS2 gets free
+
+The gesture ships on BS1 and is accepted in-headset ("I tested it and it's perfect"): a fast
+right-hand motion composes a full RT pulse while the wrench is equipped, in addition to the
+trigger. Threshold 3.6 m/s, re-arm 1.0, cooldown 300 ms, pulse 120 ms, delay 0.
+
+### 1. Most of it is CORE, so BS2 inherits it by existing
+
+`core/input/swing.{h,cpp}` is game-agnostic: the sample intake, the velocity differencing, the
+threshold/hysteresis/cooldown, the pulse, the `vrinput swing` command surface and the overlay
+block are all shared. `core/vr/openxr_input.cpp` publishes the sample, and
+`core/input/xinput_bridge.cpp` composes the pulse. **None of that needs touching for BS2.**
+
+**What the BS2 adapter has to supply is exactly one line**, next to its existing
+`publish_vr_gameplay` call in `b2r/camera.cpp` (session 26 put that at the CalcView tail):
+
+```cpp
+bvr::input::swing::publish_gate(strictGameplay && <the melee weapon is equipped>);
+```
+
+The gate fails closed and expires after 500 ms, so **until that line exists BS2 simply has no
+gesture** - nothing to disable, no risk, no half-state. That is the whole port.
+
+### 2. The gate is the ONLY hard part, and BS1's answer probably does not port
+
+BS1 gates on `aim::weapon_key_is("Wrench")`, which reuses the per-weapon profile key that
+`update_weapon_profile` maintains off `Hands.CurrentHoldable`. **Do not assume BS2 has that
+rig read** - the per-weapon profile machinery is BS1 aim work that BS2 has not needed.
+
+Take the "BS2 is not bound by BS1's methods" directive here: BS2 has a **ProcessEvent-by-name
+seam** (the session-24 finding), which is a far more natural place to learn the equipped
+weapon than a heap read - a weapon-change or equip event by name gives the identity directly.
+Look there before porting any of BS1's holdable resolver.
+
+**Whatever source you use, the gate must be an IDENTITY test.** A swing composes RT, and RT
+with a gun in hand is a shot. BS2 makes this sharper than BS1, not softer:
+
+- **BS2 has native DUAL WIELD** - a plasmid in the left hand and a weapon in the right, at the
+  same time. So "which hand swung" matters in a way it never did on BS1, and a left-hand
+  gesture must not compose the right trigger.
+- **BS2's melee is the DRILL, and the drill also has a sustained fire mode.** A pulse that is
+  right for a discrete wrench swing may read as a stutter on a spin-up weapon. Measure what a
+  drill attack actually wants before reusing 120 ms.
+- BS2 has more melee-ish states than BS1's single wrench, so enumerate them before writing the
+  predicate rather than assuming one class name covers it.
+
+### 3. Two BS1 measurements that are probably NOT true on BS2 - re-derive, do not copy
+
+- **A 120 ms synthetic RT pulse fires the weapon** (BS1, flat-measured: two pulses took the ammo
+  6 -> 4), and the pulse reached the engine's fire path 8-11 ms later. BS2's input pipeline is a
+  different link of the same engine tree; re-measure with `vrinput test trig r 255 <ms>` and the
+  ammo counter before trusting any pulse width.
+- **`XENON_RT = SwitchAndFireWeapon`** on BS1 means the first trigger pull can switch hands
+  rather than fire. BS2's bindings are its own; check `User.ini` before assuming.
+
+### 4. The threshold is per-PLAYER, not per-game
+
+3.6 m/s is this user's swing on Quest 3 Touch. It is not a BS2 constant, and it is not a
+constant for anyone else either. Ship the shared default, then read `vrinput swing status`'s
+peak-speed-since-last-call over a few real swings and set the threshold under it.
+
+### 5. The flat test seam ports for free, and one BS1 trick may not
+
+`vrinput swing sim <peak> [humpMs] [reps]` is core, so BS2 gets the whole flat suite (gate,
+cooldown, hysteresis, wheel suppression, off switch) with no headset. What may not port is
+BS1's gate-forcing trick: `vraim wkey sim Wrench` sets the profile key the BS1 gate reads, which
+is how the detector was verified flat with a pistol in hand. If BS2's gate reads something else,
+give it its own forcing command - flat coverage of the gesture depends on being able to open the
+gate without a human equipping a weapon (weapon switching still cannot be driven flat on either
+game; the radial needs a person).

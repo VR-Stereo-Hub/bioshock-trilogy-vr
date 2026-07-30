@@ -3377,3 +3377,44 @@ NOT VERIFIED: a full playthrough. Every fix in this session was accepted on a si
 two of tonight's three regressions were found by the user playing rather than by any check we ran.
 The classifier changes touch every HUD frame in the game, so menus, the hack minigame, vending
 machines, the Gatherer's Garden and Big Daddy FMVs are all untested against them.
+
+## Session 31: what a synthetic trigger actually does, measured
+
+Built for the wrench swing gesture (`core/input/swing.{h,cpp}`); all of it flat, no headset.
+
+### 1. A 120 ms synthetic RT pulse FIRES the weapon - the "first pull only switches hands"
+### caveat does not apply once the weapon hand is already active
+
+Session 10 recorded `XENON_RT = SwitchAndFireWeapon`: the first trigger pull switches hands
+("SwitchToWeapons") and only the second fires, and session 30's harness notes used
+`vrinput test trig r 255 400` accordingly. Measured 2026-07-31 with the pistol equipped in
+gameplay, hands already on weapons: **two consecutive `vrinput test trig r 255 120` commands
+took the ammo counter 6 -> 4.** Two pulses, two shots, no swallowed first pull. So 120 ms is
+enough to be seen by the game's per-tick edge detection (it sits between the 150 ms already
+proven by the ammo flick and the START pulse), and the hand-switch caveat is about WHICH HAND
+IS RAISED, not about the first pulse of a session.
+
+### 2. The synthetic pad reaches the engine's own fire path, timed
+
+Every `[swing] FIRE` line was followed **8-11 ms later** by `[aim] watch weapon ... rt=255` -
+the mod's own fire-seam instrument seeing the engine run a real weapon fire. Five fires, five
+matching seam events, no misses. That is the whole chain measured end to end: detector ->
+pulse deadline -> `compose_synthetic` -> the game's XInput poll -> `UWindowsViewport::UpdateInput`
+-> the engine's fire flow.
+
+### 3. `vraim wkey sim <Class>` doubles as a gate-forcing seam for flat tests
+
+Weapon switching still cannot be driven flat (session 30 part 1: all four D-pad directions
+tried, the radial needs a human). But the swing gate reads the per-weapon PROFILE KEY, and
+`vraim wkey sim Wrench` sets that key directly - so the gate can be forced open with a pistol
+in hand and the pulse's effect observed on the ammo counter. `vraim wkey real` restores live
+tracking. This makes every gate except "the wrench is really equipped" testable without a
+human, and it is the reason the whole detector could be verified flat.
+
+### 4. Harness trap, bitten again: a stale `command.txt` re-applies at boot
+
+Documented since session 7, and it produced a false negative here. A `vrpreset save` left as
+the last line of `command.txt` re-ran on the next launch - at the menu, before the preset load -
+and overwrote the tuned ini with startup DEFAULTS. The persistence load path looked broken and
+was not. **Clear `command.txt` before closing the game, not only before launching it**, whenever
+the last command wrote a file.
