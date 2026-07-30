@@ -107,11 +107,15 @@ unsigned bar_verts();
 void set_cine_subs_in_frame(bool on);
 bool cine_subs_in_frame();
 
-// Full-screen effects (water, alcohol tint, damage flash) are textureless
-// gameswf fills with no texture at all, so the post-FX rule - which needs a
-// texture matching the target size - cannot catch them, and they used to ride
-// the HUD panel. In-frame by default so they cover the whole view.
-// `vrcine effects frame|panel`; panel is session 22 round 4's behaviour.
+// Full-screen effects (water, damage flash) are gameswf fills with no texture at
+// all, so the post-FX rule - which needs a texture matching the target size -
+// cannot catch them. Session 29 routed them in-frame; session 30 defaults them
+// back to the PANEL, confirmed in-headset: the health and EVE bar COLOUR fills
+// carry the identical fingerprint (textureless, 5 vertices), so in-frame sent
+// the bar fills into the eye image and left the bars looking empty. These draws
+// are also authored in gameswf STAGE space, so in-frame never made them cover
+// the view in the first place - it made them stage-sized inside it.
+// `vrcine effects frame|panel`, default panel.
 void set_effects_in_frame(bool on);
 bool effects_in_frame();
 // Session 30: the in-frame effect test is bounded by vertex count instead of

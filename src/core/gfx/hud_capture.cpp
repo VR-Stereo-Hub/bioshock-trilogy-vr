@@ -255,9 +255,28 @@ std::atomic<unsigned> g_barVerts{29};
 // head-locked HUD panel (readable in stereo), true = in-frame (session 22
 // round 4). See the on_draw comment.
 std::atomic<bool> g_cineSubsInFrame{false};
-// Full-screen textureless gameswf fills (water, alcohol tint, damage flash):
-// in-frame so they cover the whole view, instead of riding the HUD panel.
-std::atomic<bool> g_effectsInFrame{true};
+// Full-screen textureless gameswf fills (water, damage flash): session 29 sent
+// these in-frame so they would cover the whole view instead of riding the HUD
+// panel.
+//
+// SESSION 30, CONFIRMED IN-HEADSET: default back to the PANEL, because the
+// fingerprint cannot tell an effect from a HUD element. The health and EVE bar
+// COLOUR fills are textureless 5-vertex gameswf quads too - identical to the
+// effect fill by every test this classifier can apply - so in-frame sent the bar
+// fills into the eye image while their frames stayed on the panel, and the bars
+// read as empty. A/B'd both ways in the headset: untick restores the colour,
+// re-tick removes it. The counter had been saying so all along and was misread -
+// it advances by exactly 2 per interval, every interval, with no effect on
+// screen. Two bars.
+//
+// Session 29's premise was wrong anyway: these draws are authored in gameswf
+// STAGE space, so routing one in-frame does not make it cover the eye, it makes
+// it stage-sized in the middle of the view - which is the user's "it is the size
+// of the HUD" report. Covering the view needs different geometry, not a
+// different render target.
+//
+// `vrcine effects frame` / the overlay checkbox restores session 29's behaviour.
+std::atomic<bool> g_effectsInFrame{false};
 std::atomic<unsigned> g_cEffectsInFrame{0};
 // SESSION 30: the effect test used to be RESIDUAL - "textureless and not the
 // bar count" - with no upper bound, so every textureless shape went in-frame.

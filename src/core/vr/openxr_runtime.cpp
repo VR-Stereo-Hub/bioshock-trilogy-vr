@@ -2116,9 +2116,41 @@ void draw_debug_ui() {
         if (ImGui::Checkbox("Full-screen effects across the view", &fxFrame))
             bvr::hud::set_effects_in_frame(fxFrame);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Water, the alcohol tint and damage flashes are textureless "
-                              "fills with no texture, so they used to land on the HUD panel.\n"
-                              "Untick if scene content ever goes black behind one.");
+            ImGui::SetTooltip("Water and damage flashes are gameswf fills with no texture, so "
+                              "they used to land on the HUD panel.\n"
+                              "UNTICK to put them back on the panel. Does NOT affect the "
+                              "alcohol blur, which is a textured engine post effect on the "
+                              "checkbox below.\n"
+                              "Suspected session-30 side effect: the health and EVE bar COLOUR "
+                              "fills carry the same fingerprint, so ticked may be sending them "
+                              "into the world and leaving the bars looking empty.");
+        // Session 30: the post-FX discriminator, in the menu because the alcohol
+        // blur is the one draw this rule exists to protect and the A/B has to be
+        // done in the headset while drunk.
+        bool fxRt = bvr::hud::postfx_rt_only();
+        if (ImGui::Checkbox("Post effects: source must be a render target", &fxRt))
+            bvr::hud::set_postfx_rt_only(fxRt);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("TICKED (session 30 default): the alcohol blur stays in the "
+                              "frame because it samples something the engine RENDERED.\n"
+                              "UNTICKED: the old size-only rule, which at a square render "
+                              "target also matched the game's own UI atlases and sent about 30 "
+                              "HUD draws per interval into the eye image.\n"
+                              "If the alcohol blur looks wrong, UNTICK to revert session 30.");
+        {
+            bvr::hud::RouteStats rs{};
+            bvr::hud::get_route_stats(&rs);
+            unsigned strandedTotal = 0;
+            for (int i = 0; i < bvr::hud::kRoutePassCount; ++i) strandedTotal += rs.stranded[i];
+            ImGui::Text("  routing: postFx %u (rejected %u) | effects in-frame %u (over bound "
+                        "%u) | stranded %u",
+                        rs.postFx, rs.postFxRejected, rs.effectsInFrame, rs.effectsRejected,
+                        strandedTotal);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("postFx should CLIMB while you are drunk and sit still "
+                                  "otherwise. effects in-frame climbs by 2 every frame, which "
+                                  "is the count that made the bar-fill theory.");
+        }
         bool subsFrame = bvr::hud::cine_subs_in_frame();
         if (ImGui::Checkbox("Cutscene subtitles in-frame (off = readable panel)", &subsFrame))
             bvr::hud::set_cine_subs_in_frame(subsFrame);
