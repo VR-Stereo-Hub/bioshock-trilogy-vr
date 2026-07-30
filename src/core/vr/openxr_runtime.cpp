@@ -2273,6 +2273,19 @@ bool get_head_pose(HeadPose& out) {
     return true;
 }
 
+bool peek_head_pose(HeadPose& out) {
+    // Same read as get_head_pose WITHOUT the pose-tag audit stamp. That stamp
+    // means "the orientation the game thread actually consumed", and a second
+    // reader on the present thread would quietly make the audit lie about both
+    // its count and its value. Session 31's swing detector needs the head's
+    // position (to subtract the head's own motion from the hand's) and has no
+    // business in that instrument.
+    std::lock_guard<std::mutex> lock(g_poseMutex);
+    if (!g_poseValid) return false;
+    out = g_headPose;
+    return true;
+}
+
 bool get_hand_pose(int hand, bool aimPose, HeadPose& out) {
     float p[3], q[4];
     if (!input_get_hand_pose(hand, aimPose, p, q)) return false;
@@ -2625,6 +2638,7 @@ void on_present_end(IDXGISwapChain*) {}
 void on_resize(unsigned, unsigned, unsigned) {}
 void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
+bool peek_head_pose(HeadPose&) { return false; }
 bool get_hand_pose(int, bool, HeadPose&) { return false; }
 void set_sim_hand_pose(int, bool, bool, const float[3], const float[4]) {}
 void clear_sim_hand_poses() {}

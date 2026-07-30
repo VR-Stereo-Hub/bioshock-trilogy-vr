@@ -48,6 +48,11 @@ struct HeadPose {
 // display time). False while not tracking.
 bool get_head_pose(HeadPose& out);
 
+// The same read WITHOUT the pose-tag audit stamp, for readers that are not the
+// camera drive. get_head_pose records "what the game thread consumed" for the
+// submitted-vs-consumed audit; a second caller would corrupt that instrument.
+bool peek_head_pose(HeadPose& out);
+
 // --- M6: controller poses for decoupled aim ---------------------------------
 // Latest predicted GRIP pose of a hand (0 = left, 1 = right), located at the
 // SAME predicted display time as the head pose above, so an aim ray built from

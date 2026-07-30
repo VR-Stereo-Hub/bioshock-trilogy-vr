@@ -777,3 +777,31 @@ runtime.
   future "is this seam involved at all" question should start there. Note the one trap - VR
   PRESET 1 re-arms `aim on` and `origin on`, so read-only mode has to be re-armed after a preset
   press.
+
+- **2026-07-31 (session 31): a gesture detector belongs where it can be TESTED, not where its
+  data is born.** The wrench swing detector's inputs (hand poses, per-frame timing) all live in
+  `core/vr/openxr_input.cpp`, which is the obvious home - and the wrong one: that file compiles
+  only under `BVR_WITH_OPENXR` and `input_sync` never runs without a headset, so a detector there
+  could not be exercised flat at all. It lives in `core/input/swing.{h,cpp}` instead, next to the
+  bridge that owns the composed pad, with the XR layer reduced to "here is a sample". The whole
+  decision core is then reachable from a `sim` command that runs on the game's own XInput poll,
+  and every threshold, gate, latch and cooldown was verified flat before the feature ever reached
+  a headset. The XR layer keeps exactly one line of the feature.
+  *Corollary that shaped the test seam: `sim` takes a REPETITION COUNT.* One synthetic swing
+  crosses the threshold once, and the command seam polls at 1 Hz, so no pair of commands can ever
+  land inside a 300 ms cooldown - the cooldown was untestable until the sim itself could produce
+  two swings 400 ms apart.
+
+- **2026-07-31 (session 31): read the poses through the funnel, not the slot behind it.** The
+  detector could have differenced `g_hands[1]` directly, or asked the runtime for
+  `XrSpaceVelocity`. It reads `input_get_hand_pose()` instead - the same accessor the fire ray,
+  the viewmodel and the laser use - so the session-20 recorder's sim overlay drives the gesture
+  exactly as it drives everything else and a replayed swing is one consistent world. Runtime
+  velocity would have been marginally more accurate and invisible to every replay tool we own.
+
+- **2026-07-31 (session 31): a synthetic input needs an identity gate, not a plausibility gate.**
+  A swing composes a full right trigger, and RT with a gun in hand is a SHOT. The gate is
+  therefore the equipped holdable's class name (`aim::weapon_key_is("Wrench")`, reusing the
+  per-weapon profile key rather than resolving the holdable a second time), never a heuristic
+  like "the hand is moving like melee". Everything else about the gesture is a comfort tuning
+  knob; that one line is the safety property, and it is the first thing the flat checklist tests.

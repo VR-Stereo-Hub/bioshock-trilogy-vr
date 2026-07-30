@@ -117,6 +117,7 @@ bool hijack_import_slot(void** slot);
 //   on | off | status
 //   pitchkill on|off|status
 //   turnscale <0.1..4> | snap on|off | snapangle <deg> | sticklog on|off
+//   swing ...                         wrench swing-to-attack (core/input/swing.h)
 //   test stick l|r <x> <y> [holdMs]   raw -32768..32767
 //   test trig  l|r <0..255> [holdMs]
 //   test press <A|B|X|Y|LB|RB|START|BACK|LS|RS|DU|DD|DL|DR> [holdMs]

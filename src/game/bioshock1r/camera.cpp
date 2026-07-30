@@ -8,6 +8,7 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
+#include "core/input/swing.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshock1r/aim.h"
@@ -769,6 +770,13 @@ void save_vr_preset() {
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
+    fprintf(f, "swingOn=%d\n", bvr::input::swing::enabled() ? 1 : 0);
+    fprintf(f, "swingThreshold=%.2f\n", bvr::input::swing::threshold_ms());
+    fprintf(f, "swingRearm=%.2f\n", bvr::input::swing::rearm_ms());
+    fprintf(f, "swingCooldownMs=%u\n", bvr::input::swing::cooldown_ms());
+    fprintf(f, "swingPulseMs=%u\n", bvr::input::swing::pulse_ms());
+    fprintf(f, "swingDelayMs=%u\n", bvr::input::swing::delay_ms());
+    fprintf(f, "swingHeadRel=%d\n", bvr::input::swing::head_relative() ? 1 : 0);
     fprintf(f, "laserOn=%d\n", aim::laser_enabled() ? 1 : 0);
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
     fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
@@ -839,6 +847,17 @@ void load_vr_preset_values() {
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
+        else if (strcmp(key, "swingOn") == 0) bvr::input::swing::set_enabled(v != 0.0f);
+        else if (strcmp(key, "swingThreshold") == 0) bvr::input::swing::set_threshold_ms(v);
+        else if (strcmp(key, "swingRearm") == 0) bvr::input::swing::set_rearm_ms(v);
+        else if (strcmp(key, "swingCooldownMs") == 0)
+            bvr::input::swing::set_cooldown_ms(static_cast<uint32_t>(v));
+        else if (strcmp(key, "swingPulseMs") == 0)
+            bvr::input::swing::set_pulse_ms(static_cast<uint32_t>(v));
+        else if (strcmp(key, "swingDelayMs") == 0)
+            bvr::input::swing::set_delay_ms(static_cast<uint32_t>(v));
+        else if (strcmp(key, "swingHeadRel") == 0)
+            bvr::input::swing::set_head_relative(v != 0.0f);
         else if (strcmp(key, "laserOn") == 0)
             aim::handle_command(v != 0.0f ? "laser on" : "laser off");
         else if (strcmp(key, "cineBarsHidden") == 0)
@@ -1417,6 +1436,15 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // and logged on transition - the harness's generic "in gameplay"
         // signal (boot.ps1 watches for this line; any save, any level).
         bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
+
+        // Session 31: the swing-to-attack gate. A swing composes a full right
+        // trigger, so the ONE thing that must never happen is a pulse reaching a
+        // gun - hence the equipped-class test, not a "melee-ish" heuristic.
+        // Deliberately NOT gated on vrDrove: hand samples only exist with a live
+        // XR session anyway, and leaving it out is what lets `vrinput swing sim`
+        // exercise the whole decision path flat.
+        bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench"));
+
         static int s_lastViewState = -1;
         int viewState = strictGameplay ? 1 : 0;
         if (viewState != s_lastViewState) {

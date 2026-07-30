@@ -2,8 +2,10 @@
 
 #include "core/vr/openxr_input.h"
 
+#include "core/input/swing.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 
 #include <windows.h>
 #include <Xinput.h> // button bit constants only
@@ -397,6 +399,22 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     locate_hand(session, g_poseR, g_gripSpaceR, predictedDisplayTime, g_hands[1]);
     locate_hand(session, g_aimL, g_aimSpaceL, predictedDisplayTime, g_aims[0]);
     locate_hand(session, g_aimR, g_aimSpaceR, predictedDisplayTime, g_aims[1]);
+
+    // Session 31 swing-to-attack: feed the right hand's motion to the detector.
+    // Read through input_get_hand_pose rather than off g_hands[1] directly, so
+    // the session-20 sim overlay (vrrec replay, `vrrec hand`) drives the gesture
+    // exactly as it drives the ray, the viewmodel and the laser - one injected
+    // world for every consumer. The GRIP pose is the hand itself; the aim pose
+    // is where it points, which is not what a swing is made of.
+    {
+        float hand[3], handQ[4];
+        const bool handOk = input_get_hand_pose(1, false, hand, handQ);
+        bvr::vr::HeadPose head{};
+        const bool headOk = bvr::vr::peek_head_pose(head);
+        const float headPos[3] = {head.px, head.py, head.pz};
+        bvr::input::swing::publish_sample(hand, headPos, handOk, headOk,
+                                          static_cast<int64_t>(predictedDisplayTime));
+    }
 
     bvr::input::Gamepad pad{};
 

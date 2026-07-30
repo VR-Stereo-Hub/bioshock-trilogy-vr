@@ -1,6 +1,7 @@
 #include "core/input/xinput_bridge.h"
 
 #include "core/hooks/pattern_scan.h"
+#include "core/input/swing.h"
 #include "core/util/log.h"
 
 #include <windows.h>
@@ -192,6 +193,14 @@ Gamepad compose_synthetic(uint64_t now) {
     for (int i = 0; i < 16; ++i)
         if (now < g_testBtnDeadline[i]) test.buttons |= static_cast<uint16_t>(1u << i);
 
+    // Session 31: a physical wrench swing composes as a full right trigger, on
+    // the same self-expiring-slot principle as the test injections above. It
+    // ADDS to the trigger rather than replacing it - merge() takes the trigger
+    // maximum, so pulling RT during a swing is indistinguishable from pulling it
+    // on its own, and the gesture is invisible while the wrench is stowed
+    // (swing.cpp's gate is closed for every other holdable).
+    if (bvr::input::swing::rt_pulse(now)) test.rt = 255;
+
     return merge(syn, test);
 }
 
@@ -219,6 +228,12 @@ int16_t pitch_servo_stick(uint64_t now) {
 // through untouched.
 void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     if (userIndex != 0) return;
+    // The swing detector's flat test seam. Live samples arrive from the XR
+    // frame loop, which does not run without a headset, so `vrinput swing sim`
+    // needs some in-process clock to advance it - and this is the one path the
+    // game itself drives at a high rate whether or not the bridge is enabled.
+    // No-op (one relaxed load) while no sim is armed.
+    bvr::input::swing::sim_tick(GetTickCount64());
     g_lastRealResult.store(*result, std::memory_order_relaxed);
     if (!g_enabled.load(std::memory_order_relaxed)) {
         // Publish the real pad's triggers anyway: the M6 aim path reads them to
@@ -757,6 +772,8 @@ void handle_command(const char* args) {
                 m == AmmoMod::Click       ? "CLICK (hold right stick click)"
                 : m == AmmoMod::Thumbrest ? "THUMBREST (rest left thumb)"
                                           : "BOTH (either)");
+    } else if (strcmp(verb, "swing") == 0) {
+        bvr::input::swing::handle_command(rest); // logs its own echoes
     } else if (strcmp(verb, "sticklog") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_stickLog.store(on, std::memory_order_relaxed);
@@ -870,6 +887,11 @@ void draw_debug_ui() {
                           "ammo slot.\nThe thumbrest is the pad above the buttons - it is "
                           "the LEFT one,\nbecause your right thumb cannot rest and push the "
                           "right stick at once.");
+
+    // Session 31 swing-to-attack (its own module; see core/input/swing.h).
+    ImGui::Separator();
+    bvr::input::swing::draw_debug_ui();
+    ImGui::Separator();
 
     // GetState poll rate, sampled ~1/s (render thread only).
     static uint64_t lastMs = 0;

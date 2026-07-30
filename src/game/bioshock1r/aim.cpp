@@ -1760,6 +1760,14 @@ void* learned_weapon_object() {
     return g_objRight;
 }
 
+bool weapon_key_is(const char* name) {
+    // The profile key IS the equipped holdable's class name, maintained by
+    // update_weapon_profile off Hands.CurrentHoldable. Session 31 reuses it as
+    // the swing gesture's "is this the wrench" test rather than resolving the
+    // holdable a second time: one identity source, one place to be wrong.
+    return name && g_weaponKey == name;
+}
+
 float trim_pitch_deg(int hand) {
     return g_pitchOffsetDeg[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
 }

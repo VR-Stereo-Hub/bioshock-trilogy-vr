@@ -2,7 +2,67 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-30, session 30 - THE WRENCH IS FIXED AND ACCEPTED IN-HEADSET, the bar-colour regression is fixed, effects still open - branch s30-b1r-wrench-and-effects)
+## Current state (2026-07-31, session 31 - SWING-TO-ATTACK IS BUILT AND FLAT-GREEN, awaiting the in-headset verdict - branch s31-b1r-swing-to-attack)
+
+**Release still held. v0.5.0 stays untagged.** Session 30's three items are unchanged (one fixed
+and accepted, one fixed with the cause identified, one untested). This session adds one feature on
+top of them and nothing else moved.
+
+### 0. THE FEATURE: swinging the wrench now swings the wrench
+
+The user's ask, straight from their own play-test: *"I tested it by pressing the trigger at the
+right time and it felt amazing. So let's try to replicate it where it gets triggered when the user
+swings the wrench."* This was already ROADMAP line 539, written from that same play-test.
+
+A fast right-hand motion composes a full RT pulse while the wrench is equipped. **In addition to
+the trigger, not instead of it** (user's call) - the trigger path is untouched, so there is nothing
+to roll back if the gesture disappoints. Any fast motion counts (speed threshold only; no direction
+or wind-up requirement) and it fires on the RISING EDGE of the threshold, so the game's own wind-up
+animation plays while your arm is still travelling.
+
+**Note what this is NOT: aiming.** Session 30 measured that melee reaches neither fire-start seam -
+damage is a Havok phantom aimed by the engine's own view - so the gesture changes WHEN the attack
+happens, never WHERE it lands. A sideways swing while you look forward still hits forward, exactly
+as the trigger already did.
+
+New module `src/core/input/swing.{h,cpp}`. It is in `core/input/`, NOT in the XR layer where the
+poses live, and that is the design decision that mattered: `openxr_input.cpp` compiles only under
+`BVR_WITH_OPENXR` and `input_sync` never runs flat, so a detector there could not have been tested
+without a headset. Here the whole decision core is reachable from `vrinput swing sim`, and every
+threshold, gate, latch and cooldown was verified flat before the feature ever saw a headset. The XR
+layer keeps one line: publish the right grip pose + head pose per frame, read through
+`input_get_hand_pose` so the session-20 recorder's sim overlay drives the gesture too.
+
+### 0b. What flat actually proved (all measured 2026-07-31, no headset)
+
+| check | result |
+|---|---|
+| **A 120 ms RT pulse fires the weapon** | two `test trig r 255 120` took the ammo 6 -> 4. The session-10 "first pull only switches hands" caveat is about which hand is RAISED, not the first pulse |
+| **The pulse reaches the engine's fire path** | all 5 `[swing] FIRE` lines followed 8-11 ms later by `[aim] watch weapon ... rt=255` |
+| **Gate closed with a gun equipped** | 3 simulated swings, `fires 0`, ammo unchanged. This is the safety property - RT with a gun in hand is a SHOT |
+| **Cooldown** | cooldown 600 + 3 swings 400 ms apart -> FIRE, `BLOCKED ... cooldown`, FIRE |
+| **Re-arm hysteresis** | one swing = one fire, never two, across every run |
+| **Weapon wheel** | RB held across 2 swings -> both `BLOCKED ... a grip is held` |
+| **Off switch** | `swing off` -> fires unchanged |
+| **vrpreset.ini round-trip** | 7 keys saved; distinctive values came back after a relaunch |
+
+Two defects were found and fixed by the flat run itself: the BLOCKED line logged once per SAMPLE
+(106 lines for one simulated swing - now latched to one per swing), and the cooldown was untestable
+until `sim` grew a repetition count (one hump crosses the threshold once, and the command seam
+polls at 1 Hz, so no two commands can land inside a 300 ms cooldown).
+
+### 0c. WHAT IS NOT VERIFIED, and it is the part that decides the feature
+
+**No real swing has ever been measured.** The defaults - **2.2 m/s** fire, 1.0 m/s re-arm, 300 ms
+cooldown, 120 ms pulse, 0 ms delay - are guesses. `vrinput swing status` reports the peak hand
+speed since the last call; that number replaces the threshold on the first headset run. Also
+unanswered: whether the timing feels like the manual-trigger play-test (the `delay` knob exists for
+this), and whether ordinary play produces false swings (head-relative velocity is on by default to
+stop body turns reading as swings, but that is reasoning, not measurement).
+
+The in-headset checklist is in `docs/bioshock1/TESTING.md` under "Wrench swing-to-attack".
+
+## Previous state (2026-07-30, session 30 - THE WRENCH IS FIXED AND ACCEPTED IN-HEADSET, the bar-colour regression is fixed, effects still open - branch s30-b1r-wrench-and-effects)
 
 **Release still held. v0.5.0 stays untagged.** The game-breaking item is CLOSED. Of the three,
 one is fixed and accepted, one is partly fixed with the real cause now identified, one is untested.
@@ -741,8 +801,16 @@ in case long soaks ever disprove this.
 ### 0. FIRST ACTIONS NEXT SESSION
 
 The game-breaking item is closed and accepted. What is left before the release is verification
-breadth, not new investigation.
+breadth, not new investigation - plus one new feature that is flat-green and needs a headset.
 
+0. **The swing gesture's in-headset run** (session 31, checklist in `TESTING.md`). It is the only
+   thing in the tree whose acceptance criteria cannot be reached flat at all. The single most
+   valuable output is `vrinput swing status`'s **peak speed after a few real swings** - the 2.2 m/s
+   threshold is a guess and that number replaces it. Then: does one swing fire exactly once, does
+   normal play (walking, turning your body, using the weapon wheel) ever fire a stray one, and does
+   the timing match the manual-trigger play-test (`swing delay <ms>` moves the contact point).
+   `vrinput swing off` disables it instantly if it is annoying - the trigger is untouched either
+   way, so this cannot block anything else in the checklist.
 1. **A proper soak on the wrench fix.** It was accepted on one enemy. The servo is a new input
    path that runs on every gameplay frame, so it wants a real play session: melee at different
    heights, on stairs, underwater, against a Big Daddy, and across a save load. Watch for the
@@ -3731,6 +3799,40 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 31 - 2026-07-31 - swing the wrench to swing the wrench, built and flat-green
+
+Branch `s31-b1r-swing-to-attack` off `main`. The user asked for their own play-test to become a
+feature: trigger the melee hit from the physical swing. It was already ROADMAP line 539.
+
+**Shipped:** `core/input/swing.{h,cpp}` - a speed threshold on the right hand, gated on the wrench
+being the equipped holdable, composing a 120 ms RT pulse. Rising-edge fire, hysteresis re-arm,
+cooldown, head-relative velocity, weapon-wheel suppression. `vrinput swing
+on|off|status|threshold|rearm|cooldown|pulse|delay|rel|log|sim`, seven keys in vrpreset.ini, a
+checkbox and three sliders in the overlay. Supporting changes: `aim::weapon_key_is()` (reuses the
+per-weapon profile key as the identity source rather than resolving the holdable twice),
+`bvr::vr::peek_head_pose()` (the same read as `get_head_pose` without the pose-tag audit stamp - a
+second reader would have made that instrument lie), one line in `input_sync`, one gate publish in
+CalcView beside `publish_vr_gameplay`.
+
+**Three decisions worth keeping** (all in ARCHITECTURE's decision log): the detector lives where it
+can be TESTED rather than where its data is born; it reads poses through the funnel so replays
+drive it; and the gate is an identity test (the class name is `Wrench`) not a plausibility test,
+because RT with a gun in hand is a shot.
+
+**Flat run found two defects in its own feature** - a per-sample BLOCKED log (106 lines for one
+swing) and a cooldown that could not be isolated until `sim` grew a repetition count - and both are
+fixed and re-verified. It also measured two engine facts now in ENGINE_NOTES: a 120 ms synthetic RT
+pulse fires the weapon (the "first pull only switches hands" caveat is about which hand is raised),
+and the pulse reaches the engine's own fire path 8-11 ms later.
+
+**Not verified, and it is the part that decides the feature:** no real swing has been measured, so
+every threshold is a guess. In-headset checklist in TESTING.md; `swing status`'s peak-speed readout
+is the first thing to collect.
+
+**Harness note:** the stale-`command.txt`-at-boot trap bit again and produced a false negative -
+`vrpreset save` left as the last command re-ran at the menu on the next launch and overwrote the
+tuned ini with defaults. Clear `command.txt` before CLOSING the game, not only before launching it.
 
 ### Session 30 part 2 - 2026-07-30 - the wrench is FIXED, and the user's own observations found it
 
