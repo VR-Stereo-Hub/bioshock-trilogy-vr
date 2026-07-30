@@ -167,6 +167,26 @@ std::atomic<unsigned> g_cPostFx{0};
 // the leak. Reported by `vrhud status`.
 std::atomic<unsigned> g_cPostFxRejected{0};
 std::atomic<bool> g_postFxRtOnly{true};
+// SESSION 30: fall back to the size-only rule WHILE A CINEMATIC HOLDS.
+//
+// The bind-flag rule exists to keep gameswf HUD art out of the eye image, and
+// at a square render target that is worth ~30 draws per interval. During a
+// cutscene there is essentially no HUD art, so the rule buys almost nothing -
+// and it costs something real: with it on, a cutscene puts a floating screen
+// in the middle of the view (user report, in-headset). Root cause not yet
+// established; what IS established is that `vrcine postfx size` removes it,
+// verified in the headset, with subtitles still readable.
+//
+// So this is a scoped fallback keyed on a signal we trust rather than a global
+// revert: cinematic_hold() is the bar-draw gate, which fired at 23:59:50.798
+// and released at 00:00:04.506 in the measured run. Outside a cutscene the
+// bind-flag rule still holds and the HUD still stays off the eye image.
+//
+// It is a WORKAROUND, deliberately: the honest fix needs a frame dump taken
+// INSIDE the scene (auto-fired on the cinematic edge), which is the next
+// instrument to build. `vrcine postfx cine on|off` disables the exception.
+std::atomic<bool> g_postFxCineSize{true};
+bool g_postFxCineLogged = false;
 bool g_squareWarned = false;
 struct SrvCacheEntry { ID3D11Resource* res; UINT w, h, bind; };
 SrvCacheEntry g_srvCache[8] = {};
@@ -298,6 +318,19 @@ std::atomic<unsigned> g_cPass[kRoutePassCount]{};
 std::atomic<unsigned> g_cStranded[kRoutePassCount]{};
 bool g_strandedLogged[kRoutePassCount] = {};
 bool g_subProofDone = false;
+// The game's own binding, so a stranded pass can be un-stranded. UNREFERENCED
+// identity pointers, same rule as g_curRt - see the note in on_setrt.
+ID3D11RenderTargetView* g_gameRtv = nullptr;
+ID3D11DepthStencilView* g_gameDsv = nullptr;
+// Default OFF pending attribution: the first Release build carrying this
+// crashed on a loading screen (0xC0000005 in d3d11 with a null `this`, on a
+// `screen-only interval ON` transition), and the Debug build carrying
+// everything else from this session hit that same transition seven times
+// without faulting. That is suggestive, not proof - Virtual Desktop's runtime
+// is in the stack too - so the default is off until one controlled run says
+// which. `vrcine restorert on` enables it.
+std::atomic<bool> g_restoreRt{false};
+std::atomic<unsigned> g_cRestored{0};
 // Every OTHER textureless gameswf count, logged once each. These are the
 // fades and dims that session 22 round 4 mistook for bars and blacked the
 // scene out with - so they are data we want, not noise.
@@ -715,6 +748,24 @@ void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
     // substitution goes through the ORIGINAL SetRT and never reaches here,
     // which is exactly the asymmetry that makes a stranded pass possible.
     g_subActive = false;
+    // Keep the game's own binding so a stranded pass can be undone.
+    //
+    // IDENTITY ONLY, NO REFERENCE - the same rule g_curRt follows two lines
+    // below, and violating it is what crashed a Release build on a loading
+    // screen. The first version of this AddRef'd both views, reasoning that the
+    // game could release one between its SetRT and the draw. That reasoning was
+    // wrong twice over: the game holds its own reference for its own binding
+    // for exactly as long as it is bound, and taking references to engine
+    // objects from inside a detour that runs ~18 million times a session -
+    // while a level load is destroying and recreating targets - is a far larger
+    // hazard than the one it was guarding against. Two different d3d11 faults
+    // on the `screen-only interval ON` transition, and the file already said
+    // not to do this.
+    //
+    // The pointers are only ever used between a redirect and the next game
+    // SetRT: same thread, same gameswf batch, a few draw calls apart.
+    g_gameRtv = (numViews && rtvs) ? rtvs[0] : nullptr;
+    g_gameDsv = dsv;
     g_curRt = nullptr;
     g_curRtLdr = false;
     g_curDsvBound = dsv != nullptr;
@@ -884,8 +935,35 @@ DrawDecision pass_verdict(ID3D11DeviceContext* ctx, RoutePass r) {
         if (!g_strandedLogged[r]) {
             g_strandedLogged[r] = true;
             BVR_LOG("[hud] STRANDED pass-through (%s): the classifier says IN FRAME but our "
-                    "capture RT is still bound, so this draw lands on the HUD panel",
-                    pass_reason_name(r));
+                    "capture RT is still bound%s",
+                    pass_reason_name(r),
+                    g_restoreRt.load(std::memory_order_relaxed)
+                        ? " - handing the game's binding back before the draw"
+                        : " - this draw lands on the HUD panel (vrcine restorert on to fix)");
+        }
+        // SESSION 30, second pass: actually UNDO it rather than only counting.
+        //
+        // The first pass shipped the counter and left the fix gated on the
+        // EFFECT bucket, which read zero - so it looked unnecessary. Hardening
+        // the post-FX rule the same session then moved ~950k draws per session
+        // from pass to redirect, and a redirect leaves our RT bound. In a
+        // cutscene a UI atlas now redirects FIRST and the full-screen scene
+        // draw that follows passes the post-FX test correctly and lands on the
+        // panel anyway - a copy of the scene on the floating HUD, with the
+        // subtitles that redirect after it. Reported in-headset, and the
+        // counter named it outright: post-fx=41124/28184.
+        //
+        // Restore lazily, on the transition, rather than after every redirected
+        // draw: the condition arises tens of thousands of times per session
+        // where redirects happen tens of millions of times, so this is three
+        // orders of magnitude fewer device calls for the same result.
+        if (g_restoreRt.load(std::memory_order_relaxed) && g_gameRtv) {
+            g_cRestored.fetch_add(1, std::memory_order_relaxed);
+            g_subActive = false; // the caller is about to undo the substitution
+            DrawDecision d;
+            d.restoreRtv = g_gameRtv;
+            d.restoreDsv = g_gameDsv;
+            return d;
         }
     }
     return DrawDecision{};
@@ -1029,7 +1107,17 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
                         "(vrcine postfx size restores the old rule).",
                         g_curW, g_curH, g_curW, g_curH);
             }
-            if (rendered || !g_postFxRtOnly.load(std::memory_order_relaxed)) {
+            // The cutscene exception - see the g_postFxCineSize comment.
+            bool cineSize =
+                g_postFxCineSize.load(std::memory_order_relaxed) && cinematic_hold();
+            if (cineSize && !g_postFxCineLogged) {
+                g_postFxCineLogged = true;
+                BVR_LOG("[hud] cinematic: post-FX falling back to the SIZE-only rule for the "
+                        "duration (there is no HUD art to protect during a cutscene, and the "
+                        "bind rule puts a floating screen in the view). vrcine postfx cine off "
+                        "disables this.");
+            }
+            if (rendered || cineSize || !g_postFxRtOnly.load(std::memory_order_relaxed)) {
                 g_cPostFx.fetch_add(1, std::memory_order_relaxed);
                 return pass_verdict(ctx, kRoutePostFx);
             }
@@ -1181,6 +1269,15 @@ void set_postfx_rt_only(bool on) {
 
 bool postfx_rt_only() { return g_postFxRtOnly.load(std::memory_order_relaxed); }
 
+void set_postfx_cine_size(bool on) {
+    bool was = g_postFxCineSize.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[hud] cutscene post-FX exception %s - during a cinematic the rule is %s",
+                on ? "ON" : "off", on ? "SIZE-only" : "whatever the global setting says");
+}
+
+bool postfx_cine_size() { return g_postFxCineSize.load(std::memory_order_relaxed); }
+
 void set_effect_max_verts(unsigned n) {
     if (n < 3) return; // a triangle is the smallest thing that can be drawn
     g_effectMaxVerts.store(n, std::memory_order_relaxed);
@@ -1192,8 +1289,19 @@ void set_effect_max_verts(unsigned n) {
 
 unsigned effect_max_verts() { return g_effectMaxVerts.load(std::memory_order_relaxed); }
 
+void set_restore_rt(bool on) {
+    bool was = g_restoreRt.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[hud] stranded-pass restore %s - %s", on ? "ON" : "off",
+                on ? "a pass-through after a redirect gets the game's binding back first"
+                   : "a pass-through after a redirect lands on the HUD panel (pre-session-30)");
+}
+
+bool restore_rt() { return g_restoreRt.load(std::memory_order_relaxed); }
+
 void get_route_stats(RouteStats* out) {
     if (!out) return;
+    out->restored = g_cRestored.load(std::memory_order_relaxed);
     for (int i = 0; i < kRoutePassCount; ++i) {
         out->pass[i] = g_cPass[i].load(std::memory_order_relaxed);
         out->stranded[i] = g_cStranded[i].load(std::memory_order_relaxed);
@@ -1404,6 +1512,13 @@ void release_resources() {
     if (g_lbStaging) { g_lbStaging->Release(); g_lbStaging = nullptr; }
     g_lbH = 0;
     g_lbPending = false;
+    // Session 30: forget the game's binding. These are unreferenced identity
+    // pointers (see on_setrt), so this is a null, not a release - but it has to
+    // happen here, because a device-loss or resize teardown is exactly when a
+    // stale one could still be handed to OMSetRenderTargets.
+    g_gameRtv = nullptr;
+    g_gameDsv = nullptr;
+    g_subActive = false;
 }
 
 } // namespace bvr::hud

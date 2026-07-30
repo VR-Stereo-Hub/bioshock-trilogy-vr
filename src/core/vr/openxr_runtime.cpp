@@ -2449,10 +2449,18 @@ void handle_cine_command(const char* args) {
         bvr::hud::set_effects_in_frame(true);
     } else if (strncmp(args, "effects panel", 13) == 0) {
         bvr::hud::set_effects_in_frame(false);
+    } else if (strncmp(args, "postfx cine on", 14) == 0) {
+        bvr::hud::set_postfx_cine_size(true);
+    } else if (strncmp(args, "postfx cine off", 15) == 0) {
+        bvr::hud::set_postfx_cine_size(false);
     } else if (strncmp(args, "postfx rt", 9) == 0) {
         bvr::hud::set_postfx_rt_only(true);
     } else if (strncmp(args, "postfx size", 11) == 0) {
         bvr::hud::set_postfx_rt_only(false);
+    } else if (strncmp(args, "restorert on", 12) == 0) {
+        bvr::hud::set_restore_rt(true);
+    } else if (strncmp(args, "restorert off", 13) == 0) {
+        bvr::hud::set_restore_rt(false);
     } else if (strncmp(args, "subs panel", 10) == 0) {
         bvr::hud::set_cine_subs_in_frame(false);
     } else if (strncmp(args, "subs frame", 10) == 0) {
@@ -2517,13 +2525,17 @@ void handle_cine_command(const char* args) {
         unsigned strandedTotal = 0;
         for (int i = 0; i < bvr::hud::kRoutePassCount; ++i) strandedTotal += rs.stranded[i];
         BVR_LOG("xr: cine effects=%s bound=%u verts (inFrame %u, over-bound %u) | "
-                "stranded effect=%u total=%u | postFx=%u (rejected by the bind test %u, "
-                "square target=%d, rule=%s)",
+                "stranded effect=%u total=%u restored=%u (restorert %s) | postFx=%u "
+                "(rejected by the bind test %u, square target=%d, rule=%s)",
                 bvr::hud::effects_in_frame() ? "IN-FRAME" : "panel",
                 bvr::hud::effect_max_verts(), rs.effectsInFrame, rs.effectsRejected,
-                rs.stranded[bvr::hud::kRouteEffect], strandedTotal, rs.postFx,
+                rs.stranded[bvr::hud::kRouteEffect], strandedTotal, rs.restored,
+                bvr::hud::restore_rt() ? "ON" : "off", rs.postFx,
                 rs.postFxRejected, rs.squareTarget ? 1 : 0,
-                bvr::hud::postfx_rt_only() ? "render-target" : "size-only");
+                bvr::hud::postfx_rt_only()
+                    ? (bvr::hud::postfx_cine_size() ? "render-target (size-only in cutscenes)"
+                                                    : "render-target")
+                    : "size-only");
         BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
                 "published strict=%d age=%llums | WORLD tanH=%.4f age=%llums "
                 "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|bars "

@@ -48,6 +48,14 @@ enum class DrawVerdict {
 struct DrawDecision {
     DrawVerdict verdict = DrawVerdict::PassThrough;
     ID3D11RenderTargetView* rtv = nullptr; // valid only for Redirect
+    // Session 30: non-null on PassThrough when an EARLIER draw in this batch
+    // redirected and the game has not rebound since - bind these before the
+    // draw or it lands on the HUD panel despite the verdict. See the block
+    // comment above pass_verdict in the .cpp. Blend state deliberately is NOT
+    // restored: our variant differs from the game's only in the alpha ops and
+    // the alpha write mask, so a passed-through draw renders identical RGB.
+    ID3D11RenderTargetView* restoreRtv = nullptr;
+    ID3D11DepthStencilView* restoreDsv = nullptr;
 };
 // `ctx` is used to lazily create the RT and to inspect srv0 for the tonemap
 // check. For Redirect, bind `rtv` together with capture_dsv() - gameswf masks
@@ -132,6 +140,12 @@ unsigned effect_max_verts();
 // `vrcine postfx rt|size`, default rt.
 void set_postfx_rt_only(bool on);
 bool postfx_rt_only();
+// Session 30: while a cinematic holds, fall back to the size-only rule. There
+// is no HUD art to protect during a cutscene, and the bind rule puts a floating
+// screen in the view there (in-headset report; `postfx size` verified to remove
+// it). Scoped workaround, not a root-cause fix. `vrcine postfx cine on|off`.
+void set_postfx_cine_size(bool on);
+bool postfx_cine_size();
 
 // ---- Session 30: routing telemetry -----------------------------------------
 // PassThrough is the absence of a routing instruction, so where a passed draw
@@ -151,9 +165,16 @@ enum RoutePass {
     kRouteUnarmed,   // gameswf, but the redirect is not armed
     kRoutePassCount
 };
+// Session 30: hand the game's binding back before a pass-through that would
+// otherwise land on our capture RT. Default on. `vrcine restorert on|off` -
+// off is the pre-session-30 behaviour, kept so the fix itself can be A/B'd.
+void set_restore_rt(bool on);
+bool restore_rt();
+
 struct RouteStats {
     unsigned pass[kRoutePassCount];
     unsigned stranded[kRoutePassCount];
+    unsigned restored; // stranded passes we handed the binding back for
     unsigned postFx;          // draws left in-frame by the post-FX rule
     unsigned postFxRejected;  // would have passed under the old size-only rule
     unsigned effectsInFrame;  // textureless fills routed in-frame
