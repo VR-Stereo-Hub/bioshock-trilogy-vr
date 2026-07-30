@@ -46,6 +46,20 @@ session. No game files are modified and no game assets are distributed.
 
 To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 
+### If it crashes or misbehaves: clear your settings first
+
+The mod's saved settings live in **`%LOCALAPPDATA%\BioshockVR\`** (paste that into the Explorer
+address bar). Close the game, then delete or move `vrpreset.ini`, `hands.ini`, `weapons.ini` and
+`command.txt` if present, and relaunch.
+
+Those files override the built-in defaults **key by key**, so a value written by an older version -
+or one saved mid-experiment - keeps applying even after an update fixes the default. Clearing them
+puts you back on the shipped defaults, which are the ones that get tested. You only lose your own
+tuning, and pressing **VR PRESET 1** restores a working configuration immediately.
+
+Keep `bioshockvr.log` from the same folder if you want to report the problem; crash dumps, when
+there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
+
 ## Playing in VR
 
 1. Load into the game flat first (menus are still flat-screen for now).
