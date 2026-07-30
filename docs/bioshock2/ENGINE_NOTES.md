@@ -288,3 +288,86 @@ Menu-controller note: the 0x106EE20 view-actor vtable is plain **APlayerControll
   that cracked the dead-thunk mystery; do it BEFORE hooking, not after.)
 - **Scan hygiene** (LAA: actors allocate above 2 GB, so any future heap scan walks the full 4 GB
   range; no scans on a cadence - BS1 needed backoff AND dormancy; prologue-gate every hook).
+
+## Resolution, lens laws and the viewmodel: what BS1 hit, and how to check BS2 (banked session 28)
+
+**Nothing here is a BS2 measurement.** It is the BS1 defect class written up as a checklist,
+because all three of BS1's session-27/28 bugs came from ONE cause and BS2 is likely to have the
+same shape. Per the standing policy (BS2 is not bound by BS1's methods): check whether the defect
+EXISTS before porting any of the cure, and **derive every number fresh** - the never-copy rule
+applies to lens constants exactly as it does to addresses.
+
+### The BS1 cause, in one sentence
+
+A frame carried TWO perspective lenses with OPPOSITE aspect conventions - the world pass fixed its
+HORIZONTAL half-tangent (`tanH = tan(option/2)`, `tanV = tanH*h/w`) and the foreground/viewmodel
+pass fixed its VERTICAL (`tanV = tan(fgFov/2)*3/4`, `tanH = tanV*w/h`) - and because they coincide
+EXACTLY at 16:9, every measurement taken at 1920x1080 for six sessions saw one lens and could not
+tell the two laws apart.
+
+### The three symptoms it produced, all the same defect
+
+1. **World warps on head turn at non-16:9.** The live fov watch sampled the FIRST decodable scene
+   draw, the fg draws come first, so off 16:9 it reported the VIEWMODEL lens as the world lens. The
+   mismatch verdict then latched ON during normal gameplay and the projection claim was substituted
+   with the viewmodel frustum - a 1.84x under-claim, so the compositor mis-reprojected every
+   rotation by `atan(k*tan(d)) - d`.
+2. **Viewmodel moves with the head.** ONE projection layer carries ONE fov claim for the whole eye
+   image, so while the two lenses differ only one of {world, viewmodel} can be geometrically
+   correct. Fixing (1) moved the same 1.78x error from the world onto the hands. Only MATCHED
+   lenses make both right.
+3. **A FOV policy derived from the wrong law.** BS1's "129.5 circumscribing" preset value solved
+   `tan(option/2)*9/16*aspect = tan(H/2)`, which is the law that turned out to be the FOREGROUND's.
+   Under the real world law the option needs no aspect term at all.
+
+### The checks for BS2, in order, each cheap
+
+1. **Does BS2 even have two lenses?** Run `dumpframe full` at a NON-16:9 backbuffer and decode with
+   `tools/decode-framedump.ps1` (it applies the structural zero-slot validation; the live watch is
+   the thing that got this wrong on BS1). **One cluster = BS2 does not have the split and symptoms
+   1-2 cannot occur.** There is real reason to expect this: session 25 measured that BS2's
+   foreground follows the world FOV NATIVELY (poking the option re-lensed the drill viewmodel with
+   the world), which is why none of BS1's fg counter-model was ported. If that holds off 16:9 too,
+   BS2 is already in the state BS1 had to be fixed into.
+2. **If there are two clusters**, identify which is the foreground before believing either: toggle
+   whatever writes the fg lens (BS1 used `vrfgfov on/off`) and re-dump. The cluster that MOVES is
+   the foreground. Do not infer it from draw counts or cb tier alone - on BS1 the 576/832 tiers were
+   shared between both clusters.
+3. **Derive BS2's world law from two backbuffers, not one.** Sweep the FOV option at 16:9 AND at a
+   square-ish backbuffer. If `tanH` is unchanged by aspect the option is a true horizontal (BS1's
+   world law); if `tanV` is unchanged, it is a 16:9-referenced horizontal. A single aspect cannot
+   distinguish them - that is the trap that cost BS1 two sessions.
+4. **Check the claim against the WORLD lens with a live session.** The submitted side does not exist
+   flat (`swap=0x0`, `submitted tanH=0.000000`), so this needs the headset. And note the BS1 lesson:
+   `src=live` on the audit line means "this came from the watch", NOT "this is correct". A source
+   tag is not a correctness proof.
+5. **If BS2 needs a fg match at all**, the aspect-general constant is `(4/3)*(h/w)`, NOT `0.75`.
+   `0.75` is that expression evaluated at 16:9. BioVRDev reached the same generalization
+   independently for BS1 (`2*atan(tan(fov/2)*(4/3)/aspect)`, RESEARCH.md) - but the `4/3` and `3/4`
+   in it are BS1's foreground spec, measured from its cb0 fingerprint. **Measure BS2's own fg spec
+   from its own dump before reusing those numbers.**
+6. **Grep BS2 for hardcoded aspect constants** before shipping any non-16:9 support. On BS1 the
+   coupled ones were the fg match constant, the bone solve's world model AND its fg model, and the
+   audit's option-derived fallback - four places, all `9/16` or `0.75`, all silently correct at
+   16:9. `bioshock2r/camera.cpp`'s `fovaudit` already carries the same `9/16` flat fallback.
+
+### Infrastructure BS2 inherits for free (core, already shared)
+
+`core/gfx/hud_capture.cpp`'s watch is game-agnostic and already fixed: it stride-samples up to 8
+cb0 heads across the whole pass, clusters them, publishes the majority as the world lens and the
+runner-up as the fg lens, enforces the structural zero-slot checks and a 500 ms age gate at the
+source, and refuses a round that lacks a clear majority or failed to span its pass.
+`bvr::hud::fov_watch_fg` / `fov_lens_count` / `backbuffer_dims` are available to b2r now.
+**So on BS2, `fovaudit` reporting `lenses=2` off 16:9 is the alarm, and `lenses=1` is the
+all-clear** - the diagnosis BS1 lacked is already in place before BS2 needs it.
+
+### Resolution changes are dynamic on BS1 - keep it that way on BS2
+
+Everything aspect-dependent reads the live backbuffer every frame rather than caching at init:
+`backbuffer_dims` is published unconditionally at the head of the present detour (deliberately
+BEFORE the letterbox watch's format whitelist and staging allocation, so lens correctness cannot
+depend on an unrelated detector managing to allocate), the fg match constant is recomputed per
+CalcView, the bone solve reads it per solve, and the XR claim derives from the rebuilt swapchain
+dims. A user changing resolution mid-session or via the ini therefore needs no relaunch for the
+lens math to follow. BS2's `SETRES` situation may differ; BS1's viewport-Exec `SETRES` FAULTS, so
+its ini lane is primary.

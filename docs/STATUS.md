@@ -49,6 +49,34 @@ Corroboration from the other repo, and it was already in our own notes: `docs/RE
 BioVRDev's fg fov as `2*atan(tan(fov/2)*(4/3)/aspect)` - i.e. `(4/3)*(h/w)`, exactly this fix,
 noted since session 20 and never acted on. Our `0.75` is that expression evaluated at 16:9.
 
+### 1b. It is dynamic: the lens math follows any resolution, no relaunch needed for the math
+
+Everything aspect-dependent reads the LIVE backbuffer every frame instead of caching at init:
+`bvr::hud::backbuffer_dims` is published at the head of the present detour, the fg match constant
+is recomputed per CalcView, `bones.cpp` reads it per solve, and the XR claim derives from the
+rebuilt swapchain dims. One fragility was found and closed while checking this: the dims used to be
+published only INSIDE the letterbox watch's RGBA8 format whitelist and staging-allocation success,
+so a user on another backbuffer format would have silently fallen back to the 16:9 constants and got
+the 1.78x viewmodel error back. Correct lens geometry must not depend on whether an unrelated
+black-bar detector could allocate, so the dims read is now unconditional and first.
+
+At 16:9 the corrected constant evaluates to exactly `0.75`, so 16:9 rendering is bit-identical to
+everything that shipped before - which is what protects the sessions 13-16 calibration by
+construction rather than by luck.
+
+### 1c. Banked for BioShock 2 (user ask): `docs/bioshock2/ENGINE_NOTES.md`
+
+A new section records the BS1 defect class as an ordered CHECKLIST for BS2 rather than a set of
+constants to copy: does BS2 even have two lenses (session 25's native-fg finding says it may not),
+how to identify which cluster is the foreground (toggle the fg write and see which one moves - not
+by draw count or cb tier, both of which were shared on BS1), why two backbuffers are needed to
+distinguish the two candidate world laws at all, that `src=live` is a provenance tag and not a
+correctness proof, that the aspect-general fg constant is `(4/3)*(h/w)` but its `4/3` and `3/4` are
+BS1's measured foreground spec and must be re-measured, and a grep list of the four places BS1 had
+hardcoded aspect constants that were all silently correct at 16:9. The fixed watch is core and
+game-agnostic, so on BS2 `fovaudit` reporting `lenses=2` off 16:9 is already the alarm - the
+diagnosis BS1 lacked is in place before BS2 needs it.
+
 ### 2. Game FOV Write had to be turned off in-headset - and the corrected law says why
 
 `apply_vr_preset` forced it ON, pushing option 130. That 130 came from the "129.5 circumscribing"

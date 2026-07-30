@@ -295,18 +295,32 @@ void letterbox_watch(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
         }
     }
 
-    // Queue this present's copy: three 1-px columns at 1/4, 1/2, 3/4 width.
-    if (g_lbPending || !swapchain) return;
+    if (!swapchain) return;
     ID3D11Texture2D* bb = nullptr;
     if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&bb))) || !bb) return;
     D3D11_TEXTURE2D_DESC bd{};
     bb->GetDesc(&bd);
+
+    // Session 28: publish the backbuffer dims UNCONDITIONALLY, before any of the
+    // letterbox watch's own gates. Both lens laws are aspect-parameterised and
+    // read these (the foreground match constant in camera.cpp, the world and fg
+    // models in bones.cpp), so a user on a backbuffer format outside the watch's
+    // RGBA8 whitelist - or one where the staging allocation failed - would have
+    // silently fallen back to the 16:9 constants and got the 1.78x viewmodel
+    // error back. Correct lens geometry must not depend on whether an unrelated
+    // black-bar detector could allocate.
+    g_lbSrcW = bd.Width;
+    g_lbSrcH = bd.Height;
+
+    // Queue this present's copy: three 1-px columns at 1/4, 1/2, 3/4 width.
+    if (g_lbPending) {
+        bb->Release();
+        return;
+    }
     if ((bd.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
          bd.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
          bd.Format == DXGI_FORMAT_B8G8R8A8_UNORM) &&
         ensure_lb_staging(ctx, bd.Height)) {
-        g_lbSrcW = bd.Width;
-        g_lbSrcH = bd.Height;
         for (int c = 0; c < kLbCols; ++c) {
             UINT x = bd.Width * (c + 1) / 4;
             D3D11_BOX box{x, 0, 0, x + 1, bd.Height, 1};
