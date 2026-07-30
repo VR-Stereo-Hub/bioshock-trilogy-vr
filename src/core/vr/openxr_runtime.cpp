@@ -83,6 +83,19 @@ std::atomic<float> g_laserModelPitchTrim{0.0f}, g_laserModelYawTrim{0.0f},
 std::atomic<uint32_t> g_laserLayersSubmitted{0};
 std::atomic<bool> g_loggedFirstLaser{false};
 
+// Session 29 aim dot: one more quad off the SAME tiny swapchain, positioned
+// from a point the game thread already converted into XR space (see
+// AimDotConfig). Stamped so a stale publish cannot leave a dot hanging in the
+// world after the ray stops being substituted.
+std::atomic<bool> g_dotOn{false};
+std::atomic<bool> g_dotValid{false};
+std::atomic<float> g_dotX{0.0f}, g_dotY{0.0f}, g_dotZ{0.0f};
+std::atomic<float> g_dotSizeDeg{0.5f};
+std::atomic<uint64_t> g_dotStampMs{0};
+std::atomic<uint32_t> g_dotLayersSubmitted{0};
+std::atomic<bool> g_loggedFirstDot{false};
+constexpr uint64_t kDotStaleMs = 250; // matches aim.cpp's ray_for() freshness gate
+
 // Controls (overlay writes, render thread reads).
 std::atomic<bool> g_enabled{true};        // kill switch: tears the session down
 std::atomic<float> g_screenDistM{1.75f};  // quad distance in meters
@@ -154,6 +167,9 @@ std::atomic<bool> g_cineActive{false}; // written by the render thread only
 // quad - a 2D board has no stereo content). DEFAULT per the user's call
 // 2026-07-29: stereo; "vrcine mode quad" / the overlay toggle is the A/B.
 std::atomic<bool> g_cineStereo{true};
+// Session 29: what the VR rig does while a cinematic holds (see CineDrive).
+// Default Authored - the authored camera and hands play exactly as flat.
+std::atomic<int> g_cineDrive{static_cast<int>(CineDrive::Authored)};
 int g_cineStreak = 0;                  // render thread only (hysteresis)
 std::atomic<uint32_t> g_cineEnters{0}, g_cineExits{0}, g_cinePresents{0};
 constexpr uint64_t kCineStaleMs = 300;
@@ -1455,22 +1471,77 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
         ++built;
     }
 
-    if (built) {
-        // One acquire/copy/release per frame feeds every dot layer: they all
-        // reference this swapchain's most recently released image.
-        uint32_t index = 0;
-        XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-        if (XR_FAILED(xrAcquireSwapchainImage(g_laserSwapchain, &ai, &index))) return 0;
-        XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-        wi.timeout = XR_INFINITE_DURATION;
-        if (XR_SUCCEEDED(xrWaitSwapchainImage(g_laserSwapchain, &wi)))
-            g_context->CopyResource(g_laserImages[index].texture, g_laserDot);
-        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        xrReleaseSwapchainImage(g_laserSwapchain, &ri);
-        if (!g_loggedFirstLaser.exchange(true))
-            BVR_LOG("xr: aim laser live (%u dot layers, hand %c)", built, hand ? 'R' : 'L');
-    }
+    if (built && !g_loggedFirstLaser.exchange(true))
+        BVR_LOG("xr: aim laser live (%u dot layers, hand %c)", built, hand ? 'R' : 'L');
     return built;
+}
+
+// Session 29: the acquire/copy/release used to live inside build_laser_layers,
+// under `if (built)`. The aim dot references the SAME swapchain, and two
+// acquires on one swapchain in a single frame is a spec violation - so the
+// publish is hoisted here and called ONCE per present if either consumer built
+// anything. Every quad then references this most recently released image.
+bool publish_laser_image() {
+    if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot) return false;
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_FAILED(xrAcquireSwapchainImage(g_laserSwapchain, &ai, &index))) return false;
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wi.timeout = XR_INFINITE_DURATION;
+    if (XR_SUCCEEDED(xrWaitSwapchainImage(g_laserSwapchain, &wi)))
+        g_context->CopyResource(g_laserImages[index].texture, g_laserDot);
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    xrReleaseSwapchainImage(g_laserSwapchain, &ri);
+    return true;
+}
+
+// Fill one quad with the aim dot and return 1 if it was built.
+//
+// Unlike the laser this computes NO ray: the point arrived from the game
+// thread already in XR space, converted from the exact fire-seam ray by
+// game_point_to_xr. All that happens here is billboarding and sizing, so
+// there is no second algebra that can drift from the first.
+uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
+    if (!g_dotOn.load(std::memory_order_relaxed)) return 0;
+    if (!g_dotValid.load(std::memory_order_relaxed)) return 0;
+    if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
+    // A publish that stopped arriving must not leave a dot floating: the ray
+    // going stale is exactly the state ray_for() refuses to substitute in.
+    uint64_t stamp = g_dotStampMs.load(std::memory_order_relaxed);
+    if (stamp == 0 || GetTickCount64() - stamp > kDotStaleMs) return 0;
+
+    float p[3] = {g_dotX.load(std::memory_order_relaxed),
+                  g_dotY.load(std::memory_order_relaxed),
+                  g_dotZ.load(std::memory_order_relaxed)};
+    float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
+                     (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
+                     (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
+    float toHead[3] = {head[0] - p[0], head[1] - p[1], head[2] - p[2]};
+    float len = sqrtf(toHead[0] * toHead[0] + toHead[1] * toHead[1] + toHead[2] * toHead[2]);
+    if (len < 0.02f) return 0; // inside the head
+    toHead[0] /= len; toHead[1] /= len; toHead[2] /= len;
+
+    constexpr float kDegToRad = 3.14159265f / 180.0f;
+    float sizeRad = g_dotSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+
+    XrCompositionLayerQuad& q = *quad;
+    q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    q.space = g_space;
+    q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    q.subImage.swapchain = g_laserSwapchain;
+    q.subImage.imageRect = {
+        {0, 0}, {static_cast<int32_t>(kLaserTexSize), static_cast<int32_t>(kLaserTexSize)}};
+    q.pose.position = {p[0], p[1], p[2]};
+    q.pose.orientation = quat_facing(toHead);
+    float side = 2.0f * len * tanf(sizeRad * 0.5f);
+    q.size = {side, side};
+
+    if (!g_loggedFirstDot.exchange(true))
+        BVR_LOG("xr: aim dot live (xr %.3f %.3f %.3f, %.2f m from the head) - this is the "
+                "fire-seam ray point, not a reconstruction",
+                p[0], p[1], p[2], len);
+    return 1;
 }
 
 // Yaw of an XR-space orientation (forward = -Z, right = +X), for the pose
@@ -1481,99 +1552,23 @@ float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
     return atan2f(-f[0], -f[2]) * 57.29578f;
 }
 
-// Session 22 letterbox unsqueeze (see capture_frame): engine cinematics
-// squeeze the scene into a middle band over black; runtimes proved
-// unreliable with projection-layer imageRect crops (VDXR kept the bars),
-// so the eye capture un-letterboxes the frame ITSELF - band stretched
-// across the full image by our own blit, plain copy everywhere else.
-// v0.4.0 ships the unsqueeze DEFAULT OFF ("vrcine unsqueeze on" re-arms):
-// three in-headset rounds could not make it remove the bars (mechanism
-// unresolved - parked for the next release) and a mistimed crop is a
-// content-loss risk. Detection, the drive suspension and the flash-native
-// frame all stay live - they are the parts the user verified.
-std::atomic<bool> g_lbUnsqueeze{false};
-ID3D11Texture2D* g_lbScratch = nullptr;        // backbuffer copy, SRV source
-ID3D11ShaderResourceView* g_lbScratchSrv = nullptr;
-ID3D11Texture2D* g_lbStretched = nullptr;      // our RTV target, then copied
-ID3D11RenderTargetView* g_lbStretchedRtv = nullptr;
-std::atomic<bool> g_loggedLbStretch{false};
-std::atomic<bool> g_loggedLbFail{false};
-
-void release_lb_scratch() {
-    if (g_lbScratchSrv) { g_lbScratchSrv->Release(); g_lbScratchSrv = nullptr; }
-    if (g_lbScratch) { g_lbScratch->Release(); g_lbScratch = nullptr; }
-    if (g_lbStretchedRtv) { g_lbStretchedRtv->Release(); g_lbStretchedRtv = nullptr; }
-    if (g_lbStretched) { g_lbStretched->Release(); g_lbStretched = nullptr; }
-}
-
-// The stretch never touches the RUNTIME's image with a view: backbuffer ->
-// scratch (SRV) -> stretch-blit -> OUR stretched tex (RTV) -> CopyResource
-// into the XR image - the same copy the normal path has always used (same
-// R8G8B8A8 typeless family as the swapchain's SRGB format, bit-preserving,
-// no double-encode). Every failure logs ONCE and falls back to the plain
-// copy (bars visible but nothing worse).
+// SESSION 29 - the session-22 letterbox UNSQUEEZE lived here and is GONE.
+//
+// It assumed the engine squeezed cinematic content into a middle band over
+// black, so the eye capture stretched that band back across the full image.
+// Three in-headset rounds could not make it remove the bars, and the reason is
+// that the premise was false: the bars are a gameswf DRAW (character 292,
+// "WidescreenBars") painted over a FULL-FRAME tonemap. Proven twice over -
+// the Nexus "Fullscreen Cutscenes" mod is a one-byte edit zeroing that
+// sprite's PlaceObject2 scale, and a framedump taken inside the letterbox
+// shows the tonemap covering the whole 2048x2048 viewport with the bar draw
+// after it (ENGINE_NOTES session 29).
+//
+// So the stretch could only ever have CROPPED real picture and distorted the
+// aspect. It is deleted rather than defaulted off: a content-destroying lever
+// with a disproven rationale is a hazard, not an option. The fix is not to
+// issue the draw - see hud_capture's DrawVerdict::Skip and `vrcine bars`.
 void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
-    unsigned lbTop = 0, lbBot = 0;
-    if (g_lbUnsqueeze.load(std::memory_order_relaxed) &&
-        bvr::hud::letterbox(&lbTop, &lbBot) && lbTop + lbBot < g_swapH) {
-        D3D11_TEXTURE2D_DESC bd{};
-        backbuffer->GetDesc(&bd);
-        if (g_lbScratch) {
-            D3D11_TEXTURE2D_DESC sd{};
-            g_lbScratch->GetDesc(&sd);
-            if (sd.Width != bd.Width || sd.Height != bd.Height ||
-                sd.Format != bd.Format)
-                release_lb_scratch();
-        }
-        if (!g_lbScratch && g_device) {
-            D3D11_TEXTURE2D_DESC sd = bd;
-            sd.Usage = D3D11_USAGE_DEFAULT;
-            sd.CPUAccessFlags = 0;
-            sd.MiscFlags = 0;
-            sd.MipLevels = 1;
-            sd.ArraySize = 1;
-            sd.SampleDesc.Count = 1;
-            sd.SampleDesc.Quality = 0;
-            sd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            HRESULT h1 = g_device->CreateTexture2D(&sd, nullptr, &g_lbScratch);
-            HRESULT h2 = g_lbScratch ? g_device->CreateShaderResourceView(
-                                           g_lbScratch, nullptr, &g_lbScratchSrv)
-                                     : E_FAIL;
-            sd.BindFlags = D3D11_BIND_RENDER_TARGET;
-            HRESULT h3 = SUCCEEDED(h2)
-                             ? g_device->CreateTexture2D(&sd, nullptr, &g_lbStretched)
-                             : E_FAIL;
-            HRESULT h4 = g_lbStretched ? g_device->CreateRenderTargetView(
-                                             g_lbStretched, nullptr, &g_lbStretchedRtv)
-                                       : E_FAIL;
-            if (FAILED(h1) || FAILED(h2) || FAILED(h3) || FAILED(h4)) {
-                if (!g_loggedLbFail.exchange(true))
-                    BVR_LOG("xr: letterbox stretch resources FAILED "
-                            "(fmt %d, hr %08X/%08X/%08X/%08X) - bars stay",
-                            static_cast<int>(bd.Format),
-                            static_cast<unsigned>(h1), static_cast<unsigned>(h2),
-                            static_cast<unsigned>(h3), static_cast<unsigned>(h4));
-                release_lb_scratch();
-            }
-        }
-        if (g_lbScratch && g_lbScratchSrv && g_lbStretched && g_lbStretchedRtv) {
-            g_context->CopyResource(g_lbScratch, backbuffer);
-            float h = static_cast<float>(g_swapH);
-            bool ok = bvr::blit::stretch_band(
-                g_context, g_lbStretchedRtv, g_lbScratchSrv, g_swapW, g_swapH,
-                static_cast<float>(lbTop) / h,
-                static_cast<float>(g_swapH - lbTop - lbBot) / h);
-            if (ok) {
-                g_context->CopyResource(dst, g_lbStretched);
-                if (!g_loggedLbStretch.exchange(true))
-                    BVR_LOG("xr: letterbox unsqueeze live (band %u..%u of %u)",
-                            lbTop, g_swapH - lbBot, g_swapH);
-                return;
-            }
-            if (!g_loggedLbFail.exchange(true))
-                BVR_LOG("xr: letterbox stretch blit FAILED - bars stay");
-        }
-    }
     g_context->CopyResource(dst, backbuffer);
 }
 
@@ -1620,10 +1615,12 @@ void on_present_end(IDXGISwapChain* swapchain) {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerQuad laserQuads[kMaxLaserDots] = {};
+    XrCompositionLayerQuad dotQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     // The game frame is layer 0; the aim laser adds one quad per dot on top,
-    // the HUD quad one more (worst case 10 of the 16 runtimes must accept).
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 1] = {};
+    // the session-29 aim dot one more, the HUD quad one more (worst case 11 of
+    // the 16 runtimes must accept).
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 2] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -1935,12 +1932,21 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // ("cinema screen") mode there is no world for it to point into.
     if (layerCount && projectionMode) {
         uint32_t dots = build_laser_layers(laserQuads);
+        uint32_t aimDot = build_aim_dot_layer(&dotQuad);
+        // ONE acquire feeds every quad that referenced this swapchain, laser
+        // and aim dot alike - two acquires in a frame would be invalid.
+        if ((dots || aimDot) && !publish_laser_image()) { dots = 0; aimDot = 0; }
         for (uint32_t i = 0; i < dots; ++i)
             layers[layerCount++] =
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&laserQuads[i]);
+        if (aimDot)
+            layers[layerCount++] =
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dotQuad);
         g_laserLayersSubmitted.store(dots, std::memory_order_relaxed);
+        g_dotLayersSubmitted.store(aimDot, std::memory_order_relaxed);
     } else {
         g_laserLayersSubmitted.store(0, std::memory_order_relaxed);
+        g_dotLayersSubmitted.store(0, std::memory_order_relaxed);
     }
 
     // HUD floating quad (session 19): head-locked, fed from the gameswf
@@ -2021,7 +2027,6 @@ void on_resize(unsigned width, unsigned height, unsigned format) {
     // ResizeBuffers call outright while anyone still holds a buffer reference.
     // Our own copy textures are merely size-tied and recreate lazily - cheap.
     release_mirror();
-    release_lb_scratch(); // size-tied; also self-heals on desc mismatch
     if (g_backbufferRtv) {
         g_backbufferRtv->Release();
         g_backbufferRtv = nullptr;
@@ -2099,6 +2104,22 @@ void draw_debug_ui() {
             if (ImGui::Checkbox("Cinematics as stereo projection (off = big screen)",
                                 &stereoC))
                 g_cineStereo.store(stereoC, std::memory_order_relaxed);
+        }
+        // Session 29 cinematic behaviour.
+        bool barsHide = bvr::hud::bars_hidden();
+        if (ImGui::Checkbox("Hide cutscene black bars", &barsHide))
+            bvr::hud::set_bars_hidden(barsHide);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Skips the WidescreenBars gameswf draw. The picture under "
+                              "the bars is really there - nothing is cropped or stretched.");
+        {
+            static const char* kDriveNames[] = {"off (VR drives run through cutscenes)",
+                                                "authored (camera + hands as flat)",
+                                                "authored + head look"};
+            int dm = g_cineDrive.load(std::memory_order_relaxed);
+            if (dm < 0 || dm > 2) dm = 1;
+            if (ImGui::Combo("During cutscenes", &dm, kDriveNames, 3))
+                set_cine_drive(static_cast<CineDrive>(dm));
         }
         if (aer) {
             ImGui::SameLine();
@@ -2341,13 +2362,44 @@ void publish_gameplay_view(bool strictGameplay) {
                          std::memory_order_relaxed);
 }
 
+CineDrive cine_drive() {
+    return static_cast<CineDrive>(g_cineDrive.load(std::memory_order_relaxed));
+}
+
+const char* cine_drive_name(CineDrive mode) {
+    switch (mode) {
+        case CineDrive::Off: return "off (VR drives run through cutscenes)";
+        case CineDrive::AuthoredLook: return "authored+look (authored camera + head look)";
+        default: return "authored (authored camera and hands, VR drives suspended)";
+    }
+}
+
+void set_cine_drive(CineDrive mode) {
+    int v = static_cast<int>(mode);
+    if (g_cineDrive.exchange(v, std::memory_order_relaxed) != v)
+        BVR_LOG("xr: cinematic drive = %s", cine_drive_name(mode));
+}
+
 void handle_cine_command(const char* args) {
-    if (strncmp(args, "unsqueeze on", 12) == 0) {
-        g_lbUnsqueeze.store(true, std::memory_order_relaxed);
-        BVR_LOG("xr: letterbox unsqueeze ON (experimental - bars mechanism unresolved)");
-    } else if (strncmp(args, "unsqueeze off", 13) == 0) {
-        g_lbUnsqueeze.store(false, std::memory_order_relaxed);
-        BVR_LOG("xr: letterbox unsqueeze off");
+    if (strncmp(args, "drive off", 9) == 0) {
+        set_cine_drive(CineDrive::Off);
+    } else if (strncmp(args, "drive authored+look", 19) == 0) {
+        set_cine_drive(CineDrive::AuthoredLook);
+    } else if (strncmp(args, "drive authored", 14) == 0) {
+        set_cine_drive(CineDrive::Authored);
+    } else if (strncmp(args, "bars hide", 9) == 0) {
+        bvr::hud::set_bars_hidden(true);
+    } else if (strncmp(args, "bars show", 9) == 0) {
+        bvr::hud::set_bars_hidden(false);
+    } else if (strncmp(args, "unsqueeze", 9) == 0) {
+        // Session 29: RETIRED, not merely defaulted off. The unsqueeze assumed
+        // the cinematic content was anamorphically squeezed into a middle band
+        // (session 22's reading). It is not: the bars are a gameswf draw
+        // painted OVER a full-frame tonemap (SWF byte-diff + framedump, see
+        // ENGINE_NOTES session 29), so stretching a band would crop real
+        // picture and distort the aspect. `vrcine bars hide|show` replaces it.
+        BVR_LOG("xr: 'vrcine unsqueeze' is RETIRED - the bars are a gameswf draw over a "
+                "full-frame image, never a squeeze; use 'vrcine bars hide|show'");
     } else if (strncmp(args, "mode stereo", 11) == 0) {
         g_cineStereo.store(true, std::memory_order_relaxed);
         BVR_LOG("xr: cinematic mode STEREO (fov-mismatch scenes keep the projection, "
@@ -2368,9 +2420,26 @@ void handle_cine_command(const char* args) {
         float t = 0.0f, tv = 0.0f;
         unsigned long long fovAge = 0;
         bool haveFov = bvr::hud::fov_watch(&t, &tv, &fovAge, 0); // print stale too
+        unsigned barsSkipped = 0, barIntervals = 0, barVerts = 0;
+        bvr::hud::get_bar_stats(&barsSkipped, &barIntervals, &barVerts);
+        unsigned lbTop = 0, lbBot = 0;
+        bool lbPix = bvr::hud::letterbox(&lbTop, &lbBot);
+        bool barDraw = bvr::hud::bar_draw_active();
+        // The two cinematic sources, side by side and never merged. With bars
+        // hidden the pixel watch SHOULD read 0 while the draw signal holds -
+        // that is the design working, not the sources disagreeing.
+        BVR_LOG("xr: cine bars=%s | barDraw=%d (skipped %u, intervals %u, %u verts) | "
+                "pixelWatch=%d (top %u bot %u) | sources %s",
+                bvr::hud::bars_hidden() ? "HIDDEN" : "shown", barDraw ? 1 : 0, barsSkipped,
+                barIntervals, barVerts, lbPix ? 1 : 0, lbTop, lbBot,
+                barDraw == lbPix ? "AGREE"
+                : bvr::hud::bars_hidden()
+                    ? "differ (expected: bars hidden, so nothing black to see)"
+                    : "DIFFER - unexpected with bars shown");
         BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
                 "published strict=%d age=%llums | WORLD tanH=%.4f age=%llums "
-                "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|status)",
+                "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|bars "
+                "hide|show|status)",
                 g_cineEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_cineStereo.load(std::memory_order_relaxed) ? "stereo" : "quad",
                 g_cineActive.load(std::memory_order_relaxed) ? 1 : 0,
@@ -2414,6 +2483,17 @@ void set_laser(const LaserConfig& cfg) {
     g_laserModelPitchTrim.store(cfg.modelPitchTrimDeg, std::memory_order_relaxed);
     g_laserModelYawTrim.store(cfg.modelYawTrimDeg, std::memory_order_relaxed);
     g_laserModelRollTrim.store(cfg.modelRollTrimDeg, std::memory_order_relaxed);
+}
+
+void set_aim_dot(const AimDotConfig& cfg) {
+    g_dotOn.store(cfg.enabled, std::memory_order_relaxed);
+    g_dotSizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
+    g_dotValid.store(cfg.valid, std::memory_order_relaxed);
+    if (!cfg.valid) return; // keep the last point; the stamp is what expires it
+    g_dotX.store(cfg.posXr[0], std::memory_order_relaxed);
+    g_dotY.store(cfg.posXr[1], std::memory_order_relaxed);
+    g_dotZ.store(cfg.posXr[2], std::memory_order_relaxed);
+    g_dotStampMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
 void set_hud_quad(float distM, float widthM, float upM) {
@@ -2480,10 +2560,14 @@ void set_pose_audit(bool) {}
 void publish_gameplay_view(bool) {}
 void handle_cine_command(const char*) {}
 bool cinematic_active() { return false; }
+CineDrive cine_drive() { return CineDrive::Authored; }
+void set_cine_drive(CineDrive) {}
+const char* cine_drive_name(CineDrive) { return "authored"; }
 float rendered_hfov_deg() { return 0.0f; }
 int current_eye_sign() { return 0; }
 void sr_push_eye(int) {}
 void set_laser(const LaserConfig&) {}
+void set_aim_dot(const AimDotConfig&) {}
 void set_hud_quad(float, float, float) {}
 void get_hud_quad(float* d, float* w, float* u) {
     if (d) *d = 0;

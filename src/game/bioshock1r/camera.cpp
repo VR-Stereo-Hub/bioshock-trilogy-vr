@@ -234,6 +234,14 @@ FRotator g_srBaseRot{};
 // between its two source presents would jitter it).
 uint64_t g_srBaseStampMs = 0;
 bool g_srBaseEyed = false;
+
+// Session 29 authored+look: the head orientation the cutscene STARTED at.
+// Deltas are measured from here, so the opening frame of every shot is framed
+// exactly as authored no matter where the player happened to be looking.
+// Invalidated on both cinematic edges - carrying it across shots would make
+// the next one open at whatever angle the last one ended on.
+bool g_cineLookValid = false;
+int32_t g_cineLookPitch = 0, g_cineLookYaw = 0, g_cineLookRoll = 0;
 // Last normal-pass CalcView tick (game thread). Scripted cameras bypass
 // CalcView entirely, so staleness here is the cutscene signal for the
 // BuildDetour-side FOV restore and the second-build skip.
@@ -723,6 +731,11 @@ void save_vr_preset() {
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
     fprintf(f, "laserOn=%d\n", aim::laser_enabled() ? 1 : 0);
+    fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
+    fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
+    fprintf(f, "aimDotOn=%d\n", aim::dot_enabled() ? 1 : 0);
+    fprintf(f, "aimDotDistM=%.2f\n", aim::dot_dist_m());
+    fprintf(f, "aimDotSizeDeg=%.2f\n", aim::dot_size_deg());
     fprintf(f, "lockOnDisabled=%d\n",
             g_lockOnDisabled.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "crosshairVisible=%d\n",
@@ -785,7 +798,23 @@ void load_vr_preset_values() {
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
         else if (strcmp(key, "laserOn") == 0)
             aim::handle_command(v != 0.0f ? "laser on" : "laser off");
-        else if (strcmp(key, "lockOnDisabled") == 0)
+        else if (strcmp(key, "cineBarsHidden") == 0)
+            bvr::hud::set_bars_hidden(v != 0.0f);
+        else if (strcmp(key, "cineDrive") == 0) {
+            int m = static_cast<int>(v);
+            if (m >= 0 && m <= 2) bvr::vr::set_cine_drive(static_cast<bvr::vr::CineDrive>(m));
+        }
+        else if (strcmp(key, "aimDotOn") == 0)
+            aim::handle_command(v != 0.0f ? "dot on" : "dot off");
+        else if (strcmp(key, "aimDotDistM") == 0) {
+            char cmd[48];
+            sprintf_s(cmd, "dot dist %.2f", v);
+            aim::handle_command(cmd);
+        } else if (strcmp(key, "aimDotSizeDeg") == 0) {
+            char cmd[48];
+            sprintf_s(cmd, "dot size %.2f", v);
+            aim::handle_command(cmd);
+        } else if (strcmp(key, "lockOnDisabled") == 0)
             g_lockOnDisabled.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "crosshairVisible") == 0)
             g_crosshairVisible.store(v != 0.0f, std::memory_order_relaxed);
@@ -1050,6 +1079,15 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
     bvr::vr::publish_gameplay_view(strictGameplay);
 
+    // Session 29: the cinematic drive policy (vrcine drive off|authored|
+    // authored+look). `cineHold` is the draw-based signal ORed with the pixel
+    // watch - it must NOT be plain letterbox(), because with the bars
+    // suppressed there are no black pixels left to detect.
+    bool cineHold = bvr::hud::cinematic_hold();
+    bvr::vr::CineDrive cineMode = bvr::vr::cine_drive();
+    bool cineSuspend = cineHold && cineMode == bvr::vr::CineDrive::Authored;
+    bool cineLook = cineHold && cineMode == bvr::vr::CineDrive::AuthoredLook;
+
     bvr::vr::HeadPose hp{};
     bool driveHead = false;
     bool liveHead = false;
@@ -1072,8 +1110,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         hp.qz = q[2];
         hp.qw = q[3];
         driveHead = true;
-    } else if (strictGameplay && !bvr::vr::cinematic_active() &&
-               !bvr::hud::letterbox(nullptr, nullptr) &&
+    } else if (strictGameplay && !bvr::vr::cinematic_active() && !cineSuspend &&
                bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
         // Session 22: the live lane is gated on the strict view AND the
         // cinematic fallback - the HMD must not steer scripted/menu cameras
@@ -1095,6 +1132,40 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             body::on_reset("recentered");
             BVR_LOG("[b1r] vr camera recentered (yaw %.1f deg)", a.yawRad * 57.29578f);
         }
+
+        // Session 29 authored+look: the head adds a rotation DELTA on top of
+        // the authored camera and nothing else.
+        //
+        // This cannot reuse the gameplay path. Two lines below write pitch and
+        // roll ABSOLUTELY from the head - fine when the head owns the camera,
+        // fatal here, because it would erase the authored choreography (the
+        // session-22 heartbeat measured authored roll walking -7773..-8189
+        // through the wake-up shot). The reference is the head orientation at
+        // the moment the cutscene began, so the first cinematic frame is
+        // framed exactly as authored and the player's own motion accumulates
+        // from there. No positional term at all: the camera can never be
+        // dollied out of the authored shot or into geometry.
+        if (cineLook) {
+            int32_t hp_ = static_cast<int32_t>(lroundf(a.pitchRad * kRotUnitsPerRadian));
+            int32_t hy_ = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
+            int32_t hr_ = static_cast<int32_t>(lroundf(a.rollRad * kRotUnitsPerRadian));
+            if (!g_cineLookValid) {
+                g_cineLookPitch = hp_;
+                g_cineLookYaw = hy_;
+                g_cineLookRoll = hr_;
+                g_cineLookValid = true;
+                BVR_LOG("[b1r] authored+look reference captured (head pitch %.1f yaw %.1f "
+                        "roll %.1f deg) - the authored shot starts unmodified",
+                        a.pitchRad * 57.29578f, a.yawRad * 57.29578f, a.rollRad * 57.29578f);
+            }
+            rot->pitch += wrap_rot(hp_ - g_cineLookPitch);
+            rot->yaw += wrap_rot(hy_ - g_cineLookYaw);
+            rot->roll += wrap_rot(hr_ - g_cineLookRoll);
+            // residualUnits stays 0: the look must not reach body::on_calcview
+            // or the pawn silently rotates under the authored camera.
+            driveYawOffsetRad = 0.0f;
+            vrDrove = true;
+        } else {
 
         // Integer all the way through: the head-look residual is the ONLY
         // thing added to the game's own yaw, and the M7.5 transfer subtracts
@@ -1169,6 +1240,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                         g_recenterPose.py, g_recenterPose.pz, ox, oy, oz);
             }
         }
+        } // else (not cineLook)
     }
 
     // Game-FOV write via the settings object (the renderer's real per-frame
@@ -1296,6 +1368,56 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                 // Same event drives the engine-property re-assert, which used to
                 // run off a 15 s timer forever (session 27).
                 note_world_event("entered gameplay view");
+            }
+        }
+
+        // Session 29: the cinematic edge instrument.
+        //
+        // The roadmap item says "the hands/aim/laser drives are ungated during
+        // cinematics". Reading the code says the opposite - driveHead is false
+        // under a letterbox, so vrDrove is false, and all three consumers
+        // already bail on ctx.vrDriving - which would make the real defect our
+        // STICKY bone state rather than a missing gate. That distinction comes
+        // from reading, not measuring, so this line exists to refute it: it
+        // reports, at each edge, whether the drives were actually live and what
+        // the bone drive left behind. Believe the line, not the paragraph.
+        {
+            bool lb = bvr::hud::letterbox(nullptr, nullptr);
+            bool bars = bvr::hud::bar_draw_active();
+            bool cine = bvr::vr::cinematic_active();
+            int cineState = (lb || bars || cine) ? 1 : 0;
+            static int s_lastCine = -1;
+            // s_lastCine < 0 is the startup baseline, not an edge - adopting it
+            // silently keeps the log honest about what a transition means.
+            if (s_lastCine < 0 && cineState == 0) {
+                s_lastCine = 0;
+            } else if (cineState != s_lastCine) {
+                bool entering = s_lastCine != 1 && cineState == 1;
+                s_lastCine = cineState;
+                int hidden = -1;
+                unsigned long long cacheAge = 0;
+                bool refValid = false;
+                bones::debug_state(&hidden, &cacheAge, &refValid);
+                // Both cinematic sources are reported separately and never
+                // merged into one verdict: they are independent measurements
+                // (a draw-call fingerprint vs a backbuffer readback), so
+                // agreement is evidence and disagreement is a bug worth
+                // seeing. With bars hidden, barDraw=1 lb=0 is the EXPECTED
+                // steady state, not a fault.
+                BVR_LOG("[b1r] cine edge %s (barDraw=%d letterbox=%d cineQuad=%d) | drives: "
+                        "vrDriving=%d strict=%d aimArmed=%d | bones: hiddenHand=%d "
+                        "cacheAge=%llums refValid=%d",
+                        cineState ? "ENTER" : "exit", bars ? 1 : 0, lb ? 1 : 0, cine ? 1 : 0,
+                        vrDrove ? 1 : 0, strictGameplay ? 1 : 0, aim::active() ? 1 : 0, hidden,
+                        cacheAge, refValid ? 1 : 0);
+                // Entering is where the release has to happen: reapply() would
+                // otherwise keep repainting our pose over the authored
+                // animation for another ~6 frames, dirty flag included.
+                if (entering && cineMode != bvr::vr::CineDrive::Off)
+                    bones::release("cinematic started");
+                // Both edges drop the look reference so the next shot opens
+                // framed as authored rather than wherever this one ended.
+                g_cineLookValid = false;
             }
         }
 

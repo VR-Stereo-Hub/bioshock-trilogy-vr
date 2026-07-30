@@ -213,6 +213,14 @@ std::atomic<uint32_t> g_lbBars{0};         // packed top<<16 | bot, 0 = inactive
 std::atomic<unsigned> g_cLbIntervals{0};
 std::atomic<unsigned> g_cLbFills{0}; // bar/fade fills kept in-frame (round 3)
 
+// Session 29 bar suppression + the draw-based cinematic signal.
+std::atomic<bool> g_barsHidden{true};
+bool g_barSeenThisInterval = false;         // render thread, rolled in on_present
+std::atomic<bool> g_barActive{false};       // last interval's verdict
+std::atomic<unsigned> g_cBarsSkipped{0};
+std::atomic<unsigned> g_cBarIntervals{0};
+std::atomic<unsigned> g_lastBarVerts{0};    // for the flat gate: 29 when measured
+
 bool ensure_lb_staging(ID3D11DeviceContext* ctx, UINT h) {
     if (g_lbStaging && g_lbH == h) return true;
     if (g_lbStaging) {
@@ -717,27 +725,28 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
     }
 }
 
-ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
-    if (!g_curRt || !g_curRtLdr) return nullptr;
+DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
+    const DrawDecision kPass{};
+    if (!g_curRt || !g_curRtLdr) return kPass;
     ++g_swfDrawsThisInterval; // session 22: screen-only interval detector
 
     if (!g_hudTarget) {
         // Tonemap check: first non-indexed draw on an LDR target sampling the
         // scene-vote leader marks this target as the HUD host.
         ID3D11Resource* leader = scene_leader();
-        if (!leader) return nullptr;
+        if (!leader) return kPass;
         ID3D11ShaderResourceView* srv0 = nullptr;
         ctx->PSGetShaderResources(0, 1, &srv0);
-        if (!srv0) return nullptr;
+        if (!srv0) return kPass;
         ID3D11Resource* srvRes = nullptr;
         srv0->GetResource(&srvRes);
         srv0->Release();
         if (srvRes) srvRes->Release(); // identity compare only
         if (srvRes == leader) g_hudTarget = g_curRt;
-        return nullptr; // the tonemap itself always passes through
+        return kPass; // the tonemap itself always passes through
     }
 
-    if (g_curRt != g_hudTarget) return nullptr;
+    if (g_curRt != g_hudTarget) return kPass;
 
     // Session 22 kind (c): the engine's own post effects (alcohol blur) are
     // also post-tonemap non-indexed draws here, but they sample a
@@ -752,29 +761,55 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
     // cannot differ from flat, and the unsqueeze then crops the bars. The
     // panel stays empty for the duration (no redirected content = the quad
     // copy and window composite idle on their own gates).
-    if (letterbox(nullptr, nullptr)) {
+    // Session 29: the hold is the pixel watch OR the previous interval's bar
+    // draw, and the OR is load-bearing. Gating this on black pixels alone
+    // would be circular the moment suppression works: no bars painted -> watch
+    // drops -> branch not entered -> bars painted again, flapping every other
+    // interval. The pixel watch BOOTSTRAPS the hold (it needs ~6 presents of
+    // real bars), the draw signal SUSTAINS it, and when the cutscene stops
+    // issuing the draw both go quiet on the next interval.
+    if (cinematic_hold()) {
         g_cLbFills.fetch_add(1, std::memory_order_relaxed);
-        return nullptr;
+        // The letterbox BARS are one of these draws. Measured on
+        // the Electro Bolt sequence (framedump_132749, both intervals): after
+        // the tonemap the HUD movie issues exactly ONE textureless draw
+        // (srv0 unbound, 29 vertices) followed by textured 5-vertex quads, and
+        // the Nexus mod - which zeroes the WidescreenBars PlaceObject2 scale -
+        // is a one-byte edit to that sprite's placement. Textures are the
+        // discriminator: every other flash element (subtitles, HUD art, fades
+        // that matter) samples a UI atlas.
+        if (!bars_hidden()) return kPass;
+        UINT sw = 0, sh = 0;
+        if (srv0_size(ctx, &sw, &sh)) return kPass; // has a texture: not the bars
+        g_barSeenThisInterval = true;
+        g_lastBarVerts.store(vertexCount, std::memory_order_relaxed);
+        g_cBarsSkipped.fetch_add(1, std::memory_order_relaxed);
+        DrawDecision d;
+        d.verdict = DrawVerdict::Skip;
+        return d;
     }
 
     {
         UINT sw = 0, sh = 0;
         if (srv0_size(ctx, &sw, &sh) && sw == g_curW && sh == g_curH) {
             g_cPostFx.fetch_add(1, std::memory_order_relaxed);
-            return nullptr;
+            return kPass;
         }
     }
 
     // A non-indexed draw on the HUD target after the tonemap = gameswf.
     g_cHudDraws.fetch_add(1, std::memory_order_relaxed);
     g_hudThisInterval = true;
-    if (!armed()) return nullptr;
-    if (!ensure_rt(ctx, g_curW, g_curH, g_curFmt)) return nullptr;
+    if (!armed()) return kPass;
+    if (!ensure_rt(ctx, g_curW, g_curH, g_curFmt)) return kPass;
     g_cRedirects.fetch_add(1, std::memory_order_relaxed);
     // Returned for EVERY redirected draw - the caller re-binds each time
     // (cheap, self-healing against mid-stream game binds) and swaps the
     // blend state to its alpha-corrected variant.
-    return g_rtv;
+    DrawDecision d;
+    d.verdict = DrawVerdict::Redirect;
+    d.rtv = g_rtv;
+    return d;
 }
 
 void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
@@ -800,6 +835,23 @@ void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
         }
         g_swfDrawsThisInterval = 0;
         g_srvCacheCount = 0;
+    }
+
+    // Session 29: roll the draw-based cinematic signal. Published every
+    // interval so a cutscene that stops issuing the bar draw releases on the
+    // very next present - no hysteresis, because unlike a pixel readback a
+    // draw call is not a noisy measurement.
+    {
+        bool was = g_barActive.exchange(g_barSeenThisInterval, std::memory_order_relaxed);
+        if (g_barSeenThisInterval) g_cBarIntervals.fetch_add(1, std::memory_order_relaxed);
+        if (was != g_barSeenThisInterval)
+            BVR_LOG("[hud] bar draw %s (WidescreenBars sprite, %u verts) - cinematic signal "
+                    "%s; pixel watch says %s",
+                    g_barSeenThisInterval ? "ON" : "off",
+                    g_lastBarVerts.load(std::memory_order_relaxed),
+                    g_barSeenThisInterval ? "held" : "released",
+                    g_lbBars.load(std::memory_order_relaxed) ? "bars" : "no bars");
+        g_barSeenThisInterval = false;
     }
 
     if (g_hudThisInterval) g_cIntervals.fetch_add(1, std::memory_order_relaxed);
@@ -932,6 +984,27 @@ bool letterbox(unsigned* topPx, unsigned* botPx) {
     if (topPx) *topPx = packed >> 16;
     if (botPx) *botPx = packed & 0xFFFF;
     return true;
+}
+
+void set_bars_hidden(bool on) {
+    bool was = g_barsHidden.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[hud] cinematic bars %s (the WidescreenBars gameswf draw is %s)",
+                on ? "HIDDEN" : "shown", on ? "skipped" : "issued");
+}
+
+bool bars_hidden() { return g_barsHidden.load(std::memory_order_relaxed); }
+bool bar_draw_active() { return g_barActive.load(std::memory_order_relaxed); }
+
+bool cinematic_hold() {
+    return g_barActive.load(std::memory_order_relaxed) || letterbox(nullptr, nullptr);
+}
+
+void get_bar_stats(unsigned* skipped, unsigned* intervalsWithBars,
+                   unsigned* lastVertexCount) {
+    if (skipped) *skipped = g_cBarsSkipped.load(std::memory_order_relaxed);
+    if (intervalsWithBars) *intervalsWithBars = g_cBarIntervals.load(std::memory_order_relaxed);
+    if (lastVertexCount) *lastVertexCount = g_lastBarVerts.load(std::memory_order_relaxed);
 }
 
 void letterbox_sample(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {

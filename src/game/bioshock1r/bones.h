@@ -47,6 +47,25 @@ void reapply();
 // The old actors died with the old world; drop every cached pointer.
 void on_world_change();
 
+// Session 29: hand the skeleton back to the engine, deliberately.
+//
+// Stopping the drive is NOT enough to restore an authored animation, and that
+// asymmetry is the suspected cause of "the controllable rig hands instead of
+// the cinematic ones". Three pieces of our state outlive the last drive() call:
+// reapply() keeps repainting the cached pose for up to 100 ms AND keeps
+// clearing the dirty flag while it does (so it actively suppresses the engine
+// re-evaluation that would undo us); restore_hidden() is only ever called from
+// inside drive(), so a collapsed inactive hand stays collapsed and the
+// weapon-attach bone stays parked far below; and the frozen sway reference
+// survives, so the first frame after the cutscene rebuilds from a pre-cutscene
+// pose. release() undoes all three and sets the dirty flag so the engine takes
+// the skeleton back on its next evaluation. Idempotent; game thread.
+void release(const char* why);
+
+// Snapshot for the session-29 cinematic-edge instrument: what our drive left
+// behind at the moment a cutscene started or ended. Game thread.
+void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid);
+
 // Session 19: collapse the whole INACTIVE hand's cluster + sleeve while the
 // other hand drives (default ON; `vrhands hideinactive on|off`). The
 // weapon-attach bone hides by translation, never scale - the attach path

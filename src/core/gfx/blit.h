@@ -28,11 +28,15 @@ bool alpha_premul(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
 bool process(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
              ID3D11ShaderResourceView* src, UINT dstW, UINT dstH);
 
-// Session 22: stretch a horizontal BAND of src ([topFrac .. topFrac +
-// heightFrac] in v) across the FULL destination, blending off. The
-// engine-cinematic letterbox unsqueeze: runtimes proved unreliable with
-// projection-layer imageRect crops (VDXR showed the bars regardless), so the
-// eye capture un-letterboxes the frame itself before submission.
+// Stretch a horizontal BAND of src ([topFrac .. topFrac + heightFrac] in v)
+// across the FULL destination, blending off.
+//
+// UNUSED since session 29, and do NOT reintroduce it as a letterbox fix. It
+// was written as the cinematic "unsqueeze" on session 22's reading that the
+// engine squeezed cutscene content into a middle band. That reading is
+// disproven: the bars are a gameswf draw over a FULL-FRAME image (ENGINE_NOTES
+// session 29), so stretching a band crops real picture. Kept only as a generic
+// UV-remap blit for some future caller that genuinely wants one.
 bool stretch_band(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* dst,
                   ID3D11ShaderResourceView* src, UINT dstW, UINT dstH,
                   float topFrac, float heightFrac);

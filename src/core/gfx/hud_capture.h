@@ -33,11 +33,26 @@ namespace bvr::hud {
 void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
               ID3D11DepthStencilView* dsv);
 void on_draw_indexed(ID3D11DeviceContext* ctx);
-// Returns the RTV to substitute for this draw (bind it together with
-// capture_dsv() - gameswf masks stencil against it), or null to leave the
-// game's binding alone. `ctx` is used to lazily create the RT and to inspect
-// srv0 for the tonemap check.
-ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx);
+
+// Session 29: the verdict widened from "substitute this RTV / leave it alone"
+// to include SKIP, because the cinematic letterbox bars turned out to be a
+// gameswf DRAW (character 292 "WidescreenBars" in HUDPC.swf) painted over a
+// full-frame tonemap - not unpainted clear behind a shrunken quad, which is
+// what session 22 recorded. Nothing can be redirected or stretched to fix a
+// draw; the only honest answer is not to issue it.
+enum class DrawVerdict {
+    PassThrough, // leave the game's binding alone and draw normally
+    Redirect,    // draw into `rtv` instead (the HUD panel capture)
+    Skip,        // do not issue this draw at all
+};
+struct DrawDecision {
+    DrawVerdict verdict = DrawVerdict::PassThrough;
+    ID3D11RenderTargetView* rtv = nullptr; // valid only for Redirect
+};
+// `ctx` is used to lazily create the RT and to inspect srv0 for the tonemap
+// check. For Redirect, bind `rtv` together with capture_dsv() - gameswf masks
+// stencil against it.
+DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount);
 // Our depth-stencil for redirected draws (flash masks are stencil-based).
 ID3D11DepthStencilView* capture_dsv();
 // Swap the bound blend state for its alpha-corrected variant (gameswf states
@@ -70,6 +85,31 @@ bool enabled();
 void set_gate(bool stereoActive);
 void set_force(bool on);
 bool force();
+
+// ---- Session 29: cinematic letterbox bars ----------------------------------
+// `vrcine bars hide|show` (default hide). While a cinematic holds, the one
+// textureless gameswf draw on the HUD target is the WidescreenBars sprite -
+// measured: the stock frame draws it at 29 vertices with srv0 unbound, right
+// after the tonemap, and the Nexus "Fullscreen Cutscenes" mod removes exactly
+// that draw by zeroing the sprite's PlaceObject2 scale.
+void set_bars_hidden(bool on);
+bool bars_hidden();
+
+// True while THIS interval contained a bar draw. This is the primary cinematic
+// signal and it is strictly better than the pixel watch: no async staging map,
+// no 5-sample hysteresis (so neither edge lags ~6 presents), and - the reason
+// it has to exist - it SURVIVES suppression. Keying the drive gates on black
+// pixels would turn them off the moment we stopped painting the bars.
+bool bar_draw_active();
+
+// THE cinematic gate every consumer should use: the pixel watch OR the bar
+// draw. Use this, not letterbox(), anywhere behaviour must hold for the whole
+// cutscene - with bars hidden the pixel watch reports nothing, by design.
+bool cinematic_hold();
+// The pixel watch's verdict, kept as an INDEPENDENT cross-check rather than a
+// fallback: one reads draw calls, the other reads back the backbuffer, so
+// agreement between them is real evidence. `vrcine status` reports both.
+void get_bar_stats(unsigned* skipped, unsigned* intervalsWithBars, unsigned* lastVertexCount);
 
 // Telemetry for `vrhud status` (per second, reset on read... no - lifetime).
 void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
