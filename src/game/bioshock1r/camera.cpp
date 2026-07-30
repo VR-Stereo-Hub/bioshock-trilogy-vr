@@ -1225,6 +1225,20 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         int32_t headYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
         residualUnits = wrap_rot(headYawUnits - g_recenterYawUnits);
         float gameYawRad = static_cast<float>(gameYawUnits) / kRotUnitsPerRadian;
+        // Session 30: publish how far the ENGINE's own pitch is from the head's
+        // BEFORE we overwrite it, so the pitch servo can steer it through the
+        // pad. This read has to happen here and only here - one line below,
+        // rot->pitch is the head's value and the error is identically zero,
+        // which is exactly why nobody noticed the engine's pitch was frozen.
+        // Yaw needs no equivalent: it is written RELATIVE just below (the
+        // engine's own yaw plus a residual), so the engine's yaw stays real.
+        {
+            int32_t headPitchUnits =
+                static_cast<int32_t>(lroundf(a.pitchRad * kRotUnitsPerRadian));
+            int32_t errUnits = wrap_rot(headPitchUnits - rot->pitch);
+            bvr::input::publish_pitch_error(static_cast<float>(errUnits) /
+                                            kRotUnitsPerDegree);
+        }
         rot->pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian);
         rot->roll = static_cast<int32_t>(a.rollRad * kRotUnitsPerRadian);
         driveYawOffsetRad = static_cast<float>(residualUnits) / kRotUnitsPerRadian;
