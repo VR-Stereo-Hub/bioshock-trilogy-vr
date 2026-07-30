@@ -7,6 +7,14 @@
 **IN-HEADSET (user, Quest 3 / VDXR): the warping is FIXED.** Two things came back with it, and one
 of them is the important one.
 
+### 0. IN-HEADSET VERDICT: ACCEPTED - "without changing anything it's perfect, both the world and the gun/hand models"
+
+**Both are geometrically correct at the same time, on the first try, with NO re-tune.** That last
+part is a real finding, not just good news: the session-16 hand offsets in `vrpreset.ini` were
+suspected of having absorbed some of the 1.78x lens error, and they had not. They were correct all
+along and the fg lens was the only thing wrong - so the calibration work from sessions 13-16
+stands unmodified, and the `vrfgfov legacy on` A/B was not needed.
+
 ### 1. "The hand and gun move when the headset moves" - the SAME defect, other side
 
 Not a regression in the hands machinery. **One projection layer carries ONE fov claim for the whole

@@ -2711,10 +2711,18 @@ session there are no controller poses, so the hands drive never engages (`inst=0
 solves=0`) and `render_lock_delta` is never entered. The lens geometry it depends on is proven;
 the solve itself needs the headset.
 
-**Carry:** the session-16 hand offsets in `vrpreset.ini` were tuned in-headset against the OLD,
-1.78x-narrow fg lens at a square backbuffer, so part of those numbers may have been compensating
-for the lens error. They may want a re-tune now that the projection is honest. `vrfgfov legacy on`
-is the comparison lever.
+**IN-HEADSET: ACCEPTED, and the carry closed itself.** User verdict: "without changing anything
+it's perfect, both the world and the gun/hand models". The open question was whether the
+session-16 hand offsets in `vrpreset.ini` had absorbed part of the 1.78x lens error while being
+tuned against it - **they had not.** No re-tune, no offset change, no need for the
+`vrfgfov legacy on` comparison. The offsets were right all along and the fg lens was the only thing
+wrong, which retroactively validates the sessions 13-16 calibration method: it was solving for the
+rig, not papering over a projection error.
+
+This also confirms the bone-solve half that flat could not reach. `render_lock_delta`'s head-split
+lateral cancel is the term that stops the rig sliding under head motion, and it depends on
+`k == 1`; the rig is now stable in-headset, so `k` really does collapse to 1 with the lenses
+matched and the live-aspect model is right.
 
 ### 5. The foreground-lens aspect law, and the `0.75` it condemns
 
