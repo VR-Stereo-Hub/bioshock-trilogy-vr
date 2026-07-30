@@ -558,16 +558,39 @@ kill. Both prerequisites below are now MET.):**
       sticklog on` logs the FINAL composed pad at 10 Hz (post merge/pitchkill/turn) and
       last_composed_sticks() exists for the recorder; pair with `vrbody probe on` resid
       lines on a real headset walk. The capture + analysis are still open.
-- [ ] **Cinematic letterbox BARS (parked 2026-07-29, session 22 round 5, user's call:
-      ship without, fix next cycle)**: three in-headset rounds failed to remove the
-      bars (VDXR ignores projection imageRect; the capture-side unsqueeze provably
-      executed yet bars stayed - mechanism unresolved). Unsqueeze ships DEFAULT OFF
-      (`vrcine unsqueeze on`). Next tools: dump the EYE SWAPCHAIN content during
-      letterbox, rule out VD-side compositing, tight in-headset A/Bs per toggle.
-- [ ] **Suspend hands/aim/laser drives during cinematics (session 22 round 5)**: with
-      controllers awake the controllable rig overrides the authored cinematic hands
-      (authored hands only showed when the controllers were idle). Gate the drives on
-      the letterbox like the head drive; re-arm on exit.
+- [x] **Cinematic letterbox BARS** - DONE session 29 (2026-07-30), and the mechanism was
+      the problem all along: the bars are a gameswf DRAW (`WidescreenBars`, character 292
+      in HUDPC.swf) painted over a FULL-FRAME tonemap, not unpainted clear behind a
+      shrunken quad. Proven twice without a headset - the Nexus mod is a one-byte SWF
+      edit zeroing that sprite's PlaceObject2 scale, and a framedump inside the letterbox
+      shows the tonemap at full 2048x2048 with a textureless 29-vertex flash draw after
+      it. So the unsqueeze was undoing a squeeze that does not exist; `blit::stretch_band`
+      and `vrcine unsqueeze` are DELETED. Shipped: `hud::on_draw` gained a Skip verdict,
+      `vrcine bars hide|show` (default hide), and - because suppression would otherwise
+      blind the pixel watch that detects the bars - the bar draw itself is now the primary
+      cinematic signal, with the watch kept as an independent cross-check.
+      *Also retired: the three failed in-headset rounds were confounded twice over (all at
+      1920x1080, where the claim leaves ~12 deg of permanent black band inside a Quest 3
+      eye; and the only evidence the stretch ran was a process-lifetime one-shot log).*
+      **In-headset verdict pending.**
+- [x] **Suspend hands/aim/laser drives during cinematics** - DONE session 29: the drives
+      turned out to be suspended ALREADY, but only as a side effect of `vrDriving` going
+      false with the head drive - an accident, not a contract, and `authored+look` breaks
+      it by driving the head again. Explicit gates now in `hands.cpp` and `aim.cpp`, plus
+      `bones::release()` on the cinematic edge (stopping the drive is not the same as
+      handing the skeleton back: `reapply()` repaints for another 100 ms while clearing
+      the dirty flag, and `restore_hidden()` only ever ran from inside `drive()`).
+      Shipped with `vrcine drive off|authored|authored+look`. **In-headset verdict
+      pending; the sticky-state half of the diagnosis is unconfirmed flat (no XR session
+      means no bone drive to leave anything behind).**
+- [x] **Aim dot on the verified aim ray (stage 3)** - DONE session 29: `vraim dot on|off`,
+      default OFF, with distance and size sliders, persisted. Placed from the FINAL
+      fire-seam ray point via a new `game_point_to_xr` (the exact inverse of
+      `xr_pose_to_game`'s affine position half), so dot == shot by shared DATA rather than
+      the laser's shared algebra. Published only when `ray_for()` would succeed, so the
+      dot doubles as proof that the fire substitution is live. No trace exists in the mod,
+      so the distance is a slider - same shape and same limitation as BioVRDev's dot.
+      **In-headset calibration pending.**
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
 - [ ] **World/viewmodel scale SPLIT (parked here 2026-07-27, session 16 part 3, user's

@@ -23,6 +23,7 @@
 
 #include "game/bioshock1r/hands.h"
 
+#include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -612,6 +613,26 @@ void on_calcview(const FrameContext& ctx) {
             gameplayView = (to_rva(vtbl) == patterns::kShockPlayerVtableRva);
         if (!gameplayView && ctx.viewActor == ctx.pc) gameplayView = true;
     }
+    // Session 29: the cinematic gate, made EXPLICIT. Until now the hands
+    // stopped during a cutscene only as a side effect of ctx.vrDriving going
+    // false with the head drive - an accident, not a contract, and one that
+    // authored+look breaks by design (it drives the head again, which would
+    // hand the controllable rig straight back over the authored animation).
+    if (gameplayView && bvr::hud::cinematic_hold() &&
+        bvr::vr::cine_drive() != bvr::vr::CineDrive::Off) {
+        gameplayView = false;
+        // Release HERE, not only on the cinematic entry edge. Measured in
+        // headset (session 29): switching drive mode to `off` mid-cutscene
+        // resumes the drive, which collapses the inactive hand - and switching
+        // back gates the only code that can restore it, because
+        // restore_hidden() lives inside drive(). The hand then stays collapsed
+        // for the rest of the scene (log: hiddenHand=0 cacheAge=32578ms at the
+        // exit edge, 32.5 s being exactly the moment the gate re-closed).
+        // Releasing where the suppression happens closes that by construction,
+        // and release() is idempotent - it self-limits to one real pass.
+        bones::release("hands gated for cinematic");
+    }
+
     if (!gameplayView) return;
 
     bool gunMode = g_mode.load(std::memory_order_relaxed) == 0;

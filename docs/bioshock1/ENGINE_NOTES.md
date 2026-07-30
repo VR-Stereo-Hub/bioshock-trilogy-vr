@@ -2754,3 +2754,238 @@ render aspect. But 9/16 IS the render aspect here, so this run cannot distinguis
 "vertical derived from aspect" from "vertical hardcoded to 9/16". Discriminating it needs a
 non-16:9 backbuffer, and with `SETRES` dead that now requires an ini change plus a
 relaunch. Until then the foreground-lens aspect correction is unproven and must not ship.
+
+## Session 29: the cinematic bars are a gameswf DRAW - session 22's reading retracted
+
+### 1. THE HEADLINE: `WidescreenBars` is a flash sprite painted OVER a full-frame image
+
+Session 22 round 2 recorded that the engine "CLEARS the final target to opaque black and draws
+the tonemap as a vertically SHRUNKEN quad", making the bars *unpainted clear* and the band
+content *anamorphically squeezed*. **That is wrong.** The bars are a normal gameswf draw on top
+of a full-frame tonemap, and nothing is squeezed. Two independent measurements, neither needing
+a headset:
+
+**(a) The Nexus mod is a one-byte SWF edit, and the byte says what the bars are.** The
+"Fullscreen Cutscenes" mod ships a `HUDPC.swf` exactly **one byte larger** than stock
+(12,322,709 vs 12,322,708). Byte-diffed against the stock file: the SWF header length field +1,
+and a single edited tag at file offset ~0x0B750DE - a **`PlaceObject2` (tag code 26, body
+length 25 -> 26)** that places **character id 292 at depth 256 under the name
+`WidescreenBars`**. Stock MATRIX is translate-only (`HasScale=0, HasRotate=0`, 5 bytes); the
+mod's is 6 bytes with **`HasScale=1` and `NScaleBits=0`, i.e. ScaleX = ScaleY = 0**, translate
+preserved. It scales the sprite to nothing. A sprite is a draw.
+
+Corroborating strings, all read-only from the shipped files: `HUDPC.swf` contains
+`WidescreenBars` (4 hits) plus `ShowWidescreenBars` / `HideWidescreenBars`, and **both function
+names are also in `ShockGame.U`'s name table**, adjacent to `UpdateRadialAxis` /
+`CheckForRightRadialChange` - i.e. they are HUD-class UnrealScript functions driving the movie.
+(Reaching those directly would need a ProcessEvent seam, which BS1 does not have - that is BS2's
+design. Recorded as the alternative route, not taken.)
+
+**(b) A framedump taken inside the letterbox shows the full-frame tonemap and the bar draw
+after it.** `dumpframe full 2` fired automatically on the `[hud] letterbox ON` transition
+during the Gatherer's Garden Electro Bolt sequence at 2048x2048 (bars measured 313 px top /
+350 px bottom). Both captured intervals are identical in structure. On the final target `T0`:
+
+```
+00262 ClearRTV  rtv0=T0  color=(0.000 0.000 0.000 1.000)   <- opaque black clear
+00263 Draw      a=6   rtv0=T0  vp=2048x2048  srv0=T2       <- tonemap, FULL viewport
+00267 Draw      a=29  rtv0=T0  vp=2048x2048  srv0=T-1      <- textureless: the BARS
+00268 Draw      a=5   rtv0=T0  vp=2048x2048  srv0=T44      <- textured flash quads
+```
+
+Events 267+ all carry the gameswf batch-flush RVA `0x7B8EB5` in their stack, so they are the
+flash layer, issued AFTER the tonemap. Exactly one of them is textureless.
+
+**Why session 22 got it wrong, and the lesson:** the frame dump captures no vertex buffers, so
+"shrunken GEOMETRY" was never a measurement - it was an inference from seeing a black clear and
+black bars with no draw identified in between. The tonemap's `cb0` is `[1.0, 0, 0, ...]` and
+carries no vertical scale term at all, so cb0 could not have supported it either. Round 3's
+"texture-less fills = bars" fingerprint, retracted in round 4, was **right about what the bars
+are**; round 4's regression came from re-rendering those fills with raw flash blend states,
+which is a different operation from not issuing them.
+
+### 2. What this retires
+
+- **`blit::stretch_band` / `vrcine unsqueeze` is DELETED, not defaulted off.** It stretched a
+  measured band across the full image to undo a squeeze that does not exist, so on real content
+  it could only ever have cropped picture and distorted the aspect. Three in-headset rounds
+  failed to remove the bars with it, and the premise is why.
+- The two confounds that made those rounds uninformative are worth recording, because both
+  would have repeated: (i) all three ran at **1920x1080**, where the layer claim is
+  `halfV = atan(tan(halfH)*9/16)` - at the measured 104 deg horizontal that is a **71.6 deg
+  vertical claim inside a ~96 deg Quest 3 eye, i.e. ~12 deg of permanent black band top and
+  bottom whether or not a cutscene is playing**. That is the same ambient banding the user was
+  raising FOV to chase in session 28, and "bars stayed" may have been measuring it.
+  (ii) The only evidence the stretch ever ran was `xr: letterbox unsqueeze live`, a
+  **process-lifetime one-shot**; the boot attract also letterboxes (222/285 px, session 22), so
+  that line could fire at boot and prove nothing about the cutscene. **Rule: a one-shot log can
+  establish that a path ran once, never that it covered an episode.**
+
+### 3. What replaced it
+
+`hud::on_draw`'s verdict widened from `RTV* | nullptr` to `PassThrough | Redirect | Skip`, and
+`DrawDetour` (frame_inspector.cpp) gained the only early-return in the mod that drops a draw.
+Skipping is safe where redirecting is not: it changes no device state, so the gameswf batch's
+own state machine is untouched and the next draw behaves exactly as it would have.
+
+Discriminator, while a cinematic holds: **a gameswf draw on the HUD target with no texture bound
+(`srv0` unresolvable)**. Every other flash element - subtitles, HUD art - samples a UI atlas.
+Measured vertex count is 29, reported by `vrcine status` rather than hardcoded, since a
+tessellated shape's count is not guaranteed stable across shots.
+
+**The circularity this creates, and the fix.** Keying the cinematic gate on black pixels stops
+working the moment suppression does: no bars painted -> `letterbox_sample` sees nothing -> the
+branch is not entered -> the bars are painted again, flapping every other interval. So the
+**bar draw itself is now the primary cinematic signal** (`hud::bar_draw_active()`), and
+`hud::cinematic_hold()` = that OR the pixel watch. The pixel watch BOOTSTRAPS the hold (it needs
+~6 presents of real bars: async staging map + 5-sample hysteresis), the draw signal SUSTAINS it,
+and both go quiet one interval after the draw stops. The two are kept as **independent**
+sources and reported separately by `vrcine status` - one reads draw calls, the other reads back
+the backbuffer, so their agreement is evidence. With bars hidden, `barDraw=1 pixelWatch=0` is
+the expected steady state, not a fault.
+
+Every consumer that must hold for a whole cutscene now calls `hud::cinematic_hold()`, never
+`hud::letterbox()` - with the bars suppressed there are no black pixels left to detect.
+
+### 4. `bones::release()` - stopping the drive is not handing the skeleton back
+
+Three pieces of drive state outlive the last `drive()` call, and all three were suspected in the
+session-22 round-5 report ("the controllable rig hands instead of the authored cinematic ones"):
+
+- `reapply()` keeps repainting the cached pose for up to 100 ms **and calls `set_dirty(0)` while
+  doing it**, so it actively suppresses the engine re-evaluation that would restore the authored
+  animation - roughly 6 frames into the cutscene.
+- `restore_hidden()` is called from exactly one place, inside `drive()`. Stop calling `drive()`
+  and the collapsed inactive hand stays collapsed, with the weapon-attach bone parked at
+  `{0,0,-5000}`.
+- The sleeve-collapse latch was a **function-static inside `drive()`** - a latch only `drive()`
+  could see was a latch only `drive()` could clear, which is the shape of the bug itself. Hoisted
+  to file scope.
+
+`release()` restores both, clears the reapply cache, calls `set_dirty(1)` to hand the skeleton
+back actively, and drops `g_refValid` so the next drive re-adopts a FRESH engine pose (the same
+reasoning as `set_sway_kill(false)`) - otherwise the first post-cutscene frame rebuilds the rig,
+and the barrel axis the laser and aim dot ride, from a pre-cutscene pose. **Order matters:** both
+restores read `g_ref`, so `g_refValid` must be cleared last or `restore_hidden()` silently
+becomes a no-op and the hand stays collapsed.
+
+**Status: this diagnosis is from reading code and is still UNCONFIRMED.** The flat run measured
+`vrDriving=0` at the cutscene edge, which does show the drives were already suspended - but with
+no XR session `vrDriving` is false always, so it cannot distinguish "gated by the letterbox" from
+"gated by no headset", and `hiddenHand=-1 refValid=0` merely means the bone drive never ran. The
+`[b1r] cine edge` line exists to settle it in-headset.
+
+### 5. The drives were already gated - by accident, not by contract
+
+The roadmap item said the hands/aim/laser drives run ungated through cutscenes. They do not:
+`driveHead` is false under a letterbox, so `vrDrove`/`ctx.vrDriving` is false, and all three
+consumers bail on it (`hands.cpp` live lane, `aim.cpp` per-hand loop, the laser publish). That is
+a side effect of the head gate, not a stated contract - and `authored+look` breaks it by design,
+because it drives the head again. The gates are now EXPLICIT in both `hands.cpp` and `aim.cpp`.
+The one line in `aim.cpp` covers three things at once, since all three read `g_gameplayView`: the
+fire-seam substitution (via `ray_for`), the per-weapon profile heap scans, and the laser publish.
+
+`authored+look` adds the head's rotation DELTA since the shot began, with **no positional term**.
+It cannot reuse the gameplay path: `camera.cpp` writes `rot->pitch` and `rot->roll` ABSOLUTELY
+from the head, which would erase the authored choreography (session 22 measured authored roll
+walking -7773..-8189 through the wake-up shot). The reference is captured at the cinematic edge
+and dropped on both edges, so every shot opens framed exactly as authored.
+
+### 6. Cinematic FOV: the scene animates its own lens
+
+During the Electro Bolt sequence the live watch reports **two lenses**, with the WORLD lens
+SWEEPING while the foreground stays fixed:
+
+```
+WORLD tanH 1.215944 -> 1.272701  (hfov 101.13 -> 103.68 deg, 6-7/8 votes)
+FG    tanH 1.191754               (100.00 deg, constant)
+```
+
+The scene dollies/zooms its own camera. The option is 100, so the sweep stays inside
+`fov_mismatch()`'s +-10% band, the mismatch never latches, and `cinematic_active()` stayed 0
+through the whole sequence - the session-28 claim-substitution branch correctly never fired.
+Worth knowing for BS2: a cutscene is a place where the two lenses legitimately differ, so a
+`lenses=2` report there is not automatically the session-28 defect.
+
+### 7. The aim dot: dot == shot by shared DATA, not shared algebra
+
+The laser re-derives its ray on the RENDER thread from the controller pose; the fire seam
+substitutes `g_ray` built on the GAME thread in game space. Those agree by shared algebra
+(`xr_math.h`) but differ in pose instant and origin-offset basis. The aim dot closes that gap by
+converting the FINAL fire-seam ray point back into XR space with `game_point_to_xr` - the exact
+inverse of `xr_pose_to_game`'s position half, which is affine and yaw-only:
+
+```
+forward: loc = base + Rot(gameYaw - recenterYaw) * xr_to_ue(pos - recenterP) * scale
+inverse: pos = recenterP + ue_to_xr( Rot(recenterYaw - gameYaw) * (loc - base) / scale )
+```
+
+The dot is published only when `ray_for()` would succeed, so its presence proves the fire
+substitution is live - the sight is also an instrument. The first publish logs the forward/inverse
+round-trip error in UU and says in words whether it is exact, because a transform wrong by a yaw
+term looks entirely plausible in the headset until you fire.
+
+No trace exists anywhere in the mod (`kExpectedActorTraceRva = 0x547BD0` in patterns.h is
+declared and never referenced), so the distance is a slider. BioVRDev's dot has the same shape
+and the same limitation. A dot and a bullet hole only fuse in stereo at matching depth, so the
+calibration flow is: set the distance to the wall, fire, nudge the trim onto the hole.
+
+### 8. Harness notes
+
+- The A-press loop in `boot.ps1` does **not** activate the main menu on this build, and
+  `game-click.ps1` hovers the entry without activating it either. Menu navigation currently
+  needs a human; in-game triggers (`vrinput test press A`) are unaffected.
+- The revert-Options `#32770` "Message" dialog blocks the first Present entirely - the game
+  reports alive and responding with `presents=0/s` until it is dismissed.
+- `presents=0/s` with `calcview in=~2800/s` is the normal UNFOCUSED state, not a hang. Focused,
+  the same scene reads `presents=443/s 2nd=222/s`.
+- The Electro Bolt sequence is many short letterbox phases (313/350, 380/401, 313/298, 313/345
+  px of 2048), not one - so an edge-triggered capture fires repeatedly through it.
+
+### 9. The save-load hang: releasing bones from the wrong call site (session 29, in-headset)
+
+A save load hung the game. `responding=False`, log dead. The last four lines name the defect
+without ambiguity - all in the SAME millisecond, with the camera already at the NEW level's
+coordinates:
+
+```
+19:13:33.618 [b1r] camera: loc=(-24927.1 4802.5 8275.3)   <- new world
+19:13:33.618 [b1r] cine edge ENTER (barDraw=0 letterbox=0 cineQuad=1) | bones: hiddenHand=0
+                    cacheAge=3281ms refValid=1
+19:13:33.618 [bones] released to the engine (cinematic started): hidden hand 0 restored ...
+19:13:33.618 [hands] world changed - actor caches cleared
+19:13:33.618 [bones] world changed - skeleton cache cleared
+```
+
+`bones::release()` ran from the CAMERA-side cine-edge block, which sits ABOVE
+`hands::on_calcview` - and `hands::on_calcview` is what detects a world change and calls
+`bones::on_world_change()`. So the release wrote `restore_hidden()`'s ~1.8 KB (cluster + sleeve,
+12+16+12 bytes per bone over ~47 bones) plus `set_dirty(1)` through the PREVIOUS level's
+skeleton, which the engine had already freed and the loading level had already reused.
+
+**Why it hung instead of crashing, and why that is the trap.** `write_n` is `__try/__except`
+guarded, so a write to unmapped memory returns false harmlessly. That guard is worthless here:
+the pages were still MAPPED, just owned by something else. SEH catches access violations, not
+silent corruption - so the safety net made the failure quieter, not less likely.
+
+**The rule was already written down.** `hands.cpp`'s world-change block says it verbatim: *"the
+old actors died with the old world, and recycled heap addresses must never be written to. The
+scale bookkeeping is dropped, not restored - restore would write into a stranger."* The bug was
+not a missing insight; it was a new call site that bypassed the insight. **Any function that
+writes engine memory must be called only from below the world-change check, or must interlock
+against it itself.**
+
+Fixed three ways, deliberately overlapping:
+
+1. The camera-side edge block no longer writes bones at all - it only logs. `hands.cpp` releases
+   at its gate, which runs AFTER the world-change check.
+2. `release()` now refuses to write unless `g_skelInst && g_bones && g_boneCount > 0`, and in
+   that case clears its own bookkeeping instead. `on_world_change()` nulls those, so the
+   interlock holds from ANY call site, including ones not yet written.
+3. `on_world_change()` also clears `g_wasCollapsed`/`g_collapsedHand`. Hoisting that latch out of
+   `drive()` (so `release()` could reach it) silently made it outlive a world change; a stale
+   `true` would have written a dead world's sleeve from a dead world's reference.
+
+**Carry for BS2 and for any future drive:** the pattern "stop driving" and "hand state back" are
+different operations with different safety requirements. Stopping is always safe. Handing back
+writes, and writes need a live-world interlock.

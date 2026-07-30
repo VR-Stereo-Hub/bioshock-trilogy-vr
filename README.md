@@ -102,6 +102,19 @@ Tuning (all in the overlay, all persisted by **"Save preset values"** / `vrprese
   screens and FMVs are auto-detected. Cutscenes play as a full stereo projection with
   head-look by default; untick "Cinematics as stereo projection" to watch them on a big
   virtual screen instead. Flat 2D screens (hacking, loading) always use the readable screen.
+- **Cutscene black bars are gone** ("Hide cutscene black bars", on by default). The game's
+  widescreen bars are a flash sprite drawn over the full picture, so hiding them reveals the
+  image that was always underneath - nothing is cropped, stretched or lost.
+- **What the rig does during a cutscene** - the "During cutscenes" dropdown:
+  *authored* (default) plays the director's camera and the authored hand animation exactly as
+  the flat game does; *authored + head look* keeps the choreography but lets you look around;
+  *off* leaves your head and hands driving straight through the scene.
+- **Cutscene subtitles** ride the head-locked panel so they stay readable in stereo. The
+  "Cutscene subtitles in-frame" checkbox puts them back in the world if you prefer.
+- **Aim dot** ("Aim dot", off by default) - a single dot on the ray the bullet actually uses,
+  not a reconstruction of it, so where the dot sits is where the shot goes. Set "aim dot
+  distance" to roughly your calibration wall's distance before tuning: a dot and a bullet hole
+  only line up in stereo when they are at the same depth.
 - **`vrbody off`** - live A/B for the body-follows-head transfer (instant 1:1 by default)
 
 ### The bundled preset (v0.3.0+)

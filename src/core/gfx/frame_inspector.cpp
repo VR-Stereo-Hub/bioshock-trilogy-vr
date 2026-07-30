@@ -483,12 +483,19 @@ void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UI
     // stencil against it) and the blend state swaps to its alpha-corrected
     // variant (checked per draw - gameswf changes states mid-stream).
     if (t_suppress == 0) {
-        if (ID3D11RenderTargetView* sub = bvr::hud::on_draw(ctx)) {
+        bvr::hud::DrawDecision d = bvr::hud::on_draw(ctx, vertexCount);
+        if (d.verdict == bvr::hud::DrawVerdict::Redirect && d.rtv) {
             ++t_suppress;
             ID3D11DepthStencilView* dsv = bvr::hud::capture_dsv();
-            g_origOMSetRenderTargets(ctx, 1, &sub, dsv);
+            g_origOMSetRenderTargets(ctx, 1, &d.rtv, dsv);
             bvr::hud::fix_blend_alpha(ctx);
             --t_suppress;
+        } else if (d.verdict == bvr::hud::DrawVerdict::Skip) {
+            // Session 29: the ONLY place a draw is dropped. Skipping is safe
+            // where redirecting is not - we change no device state, so the
+            // gameswf batch's own state machine is untouched and the next draw
+            // in the batch behaves exactly as it would have.
+            return;
         }
     }
     g_origDraw(ctx, vertexCount, startVertex);

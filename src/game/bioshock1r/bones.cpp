@@ -112,6 +112,12 @@ struct CachedHidden {
 CachedHidden g_cacheHidden[32];
 int g_cacheHiddenCount = 0;
 int g_hiddenHand = -1; // whose cluster is collapsed right now (game thread)
+// Session 29: hoisted out of drive() (it was a function-static there) so
+// release() can restore a collapsed sleeve. A latch only drive() could see was
+// a latch only drive() could ever clear - which is precisely the shape of bug
+// release() exists to fix.
+bool g_wasCollapsed = false;
+int g_collapsedHand = -1; // whose sleeve g_wasCollapsed refers to
 
 void* g_cacheSkelInst = nullptr;
 uint64_t g_cacheMs = 0;
@@ -624,6 +630,88 @@ void on_world_change() {
     g_cacheMs = 0;
     g_hiddenHand = -1; // the collapsed bones died with the old world
     g_cacheHiddenCount = 0;
+    // Session 29: the sleeve latch dies with the world too. It was hoisted out
+    // of drive() so release() could reach it, which also means it now has to be
+    // cleared here - a stale `true` would make release() write a dead world's
+    // sleeve bones back from a dead world's reference.
+    g_wasCollapsed = false;
+    g_collapsedHand = -1;
+}
+
+void release(const char* why) {
+    // NEVER write without a live skeleton. on_world_change() nulls these the
+    // moment a level swap is seen, so this is the interlock that makes the
+    // call safe from any site: without it, a release on the world-change frame
+    // writes ~1.8 KB through the PREVIOUS level's bone array. write_n is
+    // SEH-guarded, so that does not fault - it silently corrupts whatever the
+    // engine has since allocated over those pages (session 29: a save load
+    // hung the game exactly this way).
+    if (!g_skelInst || !g_bones || g_boneCount <= 0) {
+        g_hiddenHand = -1;
+        g_wasCollapsed = false;
+        g_collapsedHand = -1;
+        g_cacheSkelInst = nullptr;
+        g_cacheMs = 0;
+        g_cacheCount = g_cacheSleeveCount = g_cacheHiddenCount = 0;
+        g_refValid = false;
+        g_hasWritten[0] = g_hasWritten[1] = false;
+        return;
+    }
+
+    // Nothing driven means nothing to hand back. Cheap and idempotent, so the
+    // edge detector that calls this can fire freely.
+    if (g_hiddenHand < 0 && !g_wasCollapsed && !g_cacheSkelInst && !g_refValid) return;
+
+    // ORDER MATTERS: both restores read g_ref, so g_refValid must still be
+    // true here. Clearing it first would silently turn restore_hidden() into a
+    // no-op and leave the hand collapsed - the exact failure this fixes.
+    int hidden = g_hiddenHand;
+    if (hidden >= 0) restore_hidden(hidden);
+    if (g_wasCollapsed && g_collapsedHand >= 0 && g_bones && g_refValid) {
+        const int* sleeve =
+            g_collapsedHand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        const size_t sleeveCount = g_collapsedHand == 1 ? _countof(patterns::kBoneRSleeve)
+                                                        : _countof(patterns::kBoneLSleeve);
+        for (size_t k = 0; k < sleeveCount; ++k) {
+            int idx = sleeve[k];
+            if (idx >= g_boneCount) continue;
+            write_n(g_bones[idx].p, g_ref[idx].p, 12);
+            write_n(g_bones[idx].s, g_ref[idx].s, 12);
+        }
+    }
+    g_hiddenHand = -1;
+    g_wasCollapsed = false;
+    g_collapsedHand = -1;
+
+    // Stop reapply() dead. Its only brakes are the instance check and a 100 ms
+    // cache age, so without this it keeps repainting - and re-clearing the
+    // dirty flag - for ~6 frames into the cutscene.
+    g_cacheSkelInst = nullptr;
+    g_cacheMs = 0;
+    g_cacheCount = 0;
+    g_cacheSleeveCount = 0;
+    g_cacheHiddenCount = 0;
+
+    // Hand the skeleton back actively rather than waiting for the engine to
+    // notice, then drop the frozen reference so the next drive re-adopts a
+    // FRESH engine pose (same reasoning as set_sway_kill(false)) - otherwise
+    // the first post-cutscene frame rebuilds the rig, and the muzzle axis the
+    // laser and aim dot ride, from a pre-cutscene pose.
+    if (g_skelInst) set_dirty(1);
+    g_refValid = false;
+    g_hasWritten[0] = g_hasWritten[1] = false;
+    g_lastBigDeltaMs = 0;
+
+    BVR_LOG("[bones] released to the engine (%s): hidden hand %d restored, reapply cache "
+            "cleared, dirty flag handed back", why ? why : "?", hidden);
+}
+
+void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid) {
+    if (hiddenHand) *hiddenHand = g_hiddenHand;
+    if (cacheAgeMs)
+        *cacheAgeMs = g_cacheMs ? static_cast<unsigned long long>(GetTickCount64() - g_cacheMs)
+                                : 0ULL;
+    if (refValid) *refValid = g_refValid;
 }
 
 void set_sway_kill(bool on) {
@@ -890,7 +978,6 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // written back explicitly - the engine cannot be relied on to re-evaluate
     // while the drive keeps clearing the dirty flag.
     bool collapse = g_collapse.load(std::memory_order_relaxed);
-    static bool s_wasCollapsed = false;
     const int* sleeve = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
     const size_t sleeveCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
                                          : _countof(patterns::kBoneLSleeve);
@@ -908,7 +995,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 memcpy(cs.s, kZero, 12);
             }
         }
-    } else if (s_wasCollapsed) {
+    } else if (g_wasCollapsed) {
         for (size_t k = 0; k < sleeveCount; ++k) {
             int idx = sleeve[k];
             if (idx >= g_boneCount) continue;
@@ -916,7 +1003,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             write_n(g_bones[idx].s, g_ref[idx].s, 12);
         }
     }
-    s_wasCollapsed = collapse;
+    g_wasCollapsed = collapse;
+    g_collapsedHand = collapse ? hand : -1;
 
     // Collapse the whole INACTIVE hand: cluster + its sleeve (session 19).
     // Zero scale hides the skin exactly like the sleeve collapse; positions

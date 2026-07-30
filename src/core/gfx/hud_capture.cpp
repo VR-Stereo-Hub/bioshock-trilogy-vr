@@ -213,6 +213,40 @@ std::atomic<uint32_t> g_lbBars{0};         // packed top<<16 | bot, 0 = inactive
 std::atomic<unsigned> g_cLbIntervals{0};
 std::atomic<unsigned> g_cLbFills{0}; // bar/fade fills kept in-frame (round 3)
 
+// Session 29 bar suppression + the draw-based cinematic signal.
+std::atomic<bool> g_barsHidden{true};
+bool g_barSeenThisInterval = false;         // render thread, rolled in on_present
+std::atomic<bool> g_barActive{false};       // last interval's verdict
+std::atomic<unsigned> g_cBarsSkipped{0};
+std::atomic<unsigned> g_cBarIntervals{0};
+std::atomic<unsigned> g_lastBarVerts{0};    // for the flat gate: 29 when measured
+// The measured WidescreenBars vertex count (framedump_132749, both intervals).
+// Retunable live because a differently-tessellated shot would otherwise be a
+// silent miss, and one number in a log beats a rebuild.
+std::atomic<unsigned> g_barVerts{29};
+// Where the non-bar flash layer goes during a cinematic: false = the
+// head-locked HUD panel (readable in stereo), true = in-frame (session 22
+// round 4). See the on_draw comment.
+std::atomic<bool> g_cineSubsInFrame{false};
+// Full-screen textureless gameswf fills (water, alcohol tint, damage flash):
+// in-frame so they cover the whole view, instead of riding the HUD panel.
+std::atomic<bool> g_effectsInFrame{true};
+std::atomic<unsigned> g_cEffectsInFrame{0};
+// Every OTHER textureless gameswf count, logged once each. These are the
+// fades and dims that session 22 round 4 mistook for bars and blacked the
+// scene out with - so they are data we want, not noise.
+unsigned g_seenCounts[16] = {};
+int g_seenCountN = 0;
+
+void note_textureless_count(unsigned n) {
+    for (int i = 0; i < g_seenCountN; ++i)
+        if (g_seenCounts[i] == n) return;
+    if (g_seenCountN >= static_cast<int>(_countof(g_seenCounts))) return;
+    g_seenCounts[g_seenCountN++] = n;
+    BVR_LOG("[hud] textureless gameswf draw, %u verts (bars are %u) - NOT treated as bars",
+            n, g_barVerts.load(std::memory_order_relaxed));
+}
+
 bool ensure_lb_staging(ID3D11DeviceContext* ctx, UINT h) {
     if (g_lbStaging && g_lbH == h) return true;
     if (g_lbStaging) {
@@ -717,27 +751,28 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
     }
 }
 
-ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
-    if (!g_curRt || !g_curRtLdr) return nullptr;
+DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
+    const DrawDecision kPass{};
+    if (!g_curRt || !g_curRtLdr) return kPass;
     ++g_swfDrawsThisInterval; // session 22: screen-only interval detector
 
     if (!g_hudTarget) {
         // Tonemap check: first non-indexed draw on an LDR target sampling the
         // scene-vote leader marks this target as the HUD host.
         ID3D11Resource* leader = scene_leader();
-        if (!leader) return nullptr;
+        if (!leader) return kPass;
         ID3D11ShaderResourceView* srv0 = nullptr;
         ctx->PSGetShaderResources(0, 1, &srv0);
-        if (!srv0) return nullptr;
+        if (!srv0) return kPass;
         ID3D11Resource* srvRes = nullptr;
         srv0->GetResource(&srvRes);
         srv0->Release();
         if (srvRes) srvRes->Release(); // identity compare only
         if (srvRes == leader) g_hudTarget = g_curRt;
-        return nullptr; // the tonemap itself always passes through
+        return kPass; // the tonemap itself always passes through
     }
 
-    if (g_curRt != g_hudTarget) return nullptr;
+    if (g_curRt != g_hudTarget) return kPass;
 
     // Session 22 kind (c): the engine's own post effects (alcohol blur) are
     // also post-tonemap non-indexed draws here, but they sample a
@@ -752,29 +787,105 @@ ID3D11RenderTargetView* on_draw(ID3D11DeviceContext* ctx) {
     // cannot differ from flat, and the unsqueeze then crops the bars. The
     // panel stays empty for the duration (no redirected content = the quad
     // copy and window composite idle on their own gates).
-    if (letterbox(nullptr, nullptr)) {
+    // ---- Session 29 (corrected in-headset): identify the BARS first --------
+    //
+    // This test must run BEFORE the redirect below and must NOT depend on the
+    // pixel watch, because in-headset the two are circular in a way that is
+    // invisible flat. With an XR session live the redirect is armed, so the
+    // bar draw is sent to the offscreen HUD RT and never reaches the
+    // backbuffer at all - which is exactly the surface letterbox_sample reads.
+    // The watch therefore never fires, cinematic_hold() never becomes true,
+    // and the branch that would have suppressed the bars is never entered. The
+    // bars meanwhile ride the HUD panel into the headset, which is the
+    // session-22 round-3 report ("the cinematic bars sat ON the HUD panel")
+    // arriving by a route nobody had traced. Flat, the redirect is unarmed,
+    // the bars land in the backbuffer and every test passes.
+    //
+    // Fingerprint, measured (framedump_132749, both intervals): a gameswf draw
+    // on the HUD target with NO texture bound and exactly the measured vertex count.
+    // Textures alone are not enough - fades and dims are textureless too, and
+    // session 22 round 4 blacked out the scene by treating all of them as
+    // bars. The vertex count is what separates them; it is a named constant
+    // and every OTHER textureless count is logged once so a shot whose bars
+    // tessellate differently shows up as data rather than as a silent miss.
+    {
+        UINT sw = 0, sh = 0;
+        bool textureless = !srv0_size(ctx, &sw, &sh);
+        if (textureless) {
+            if (vertexCount == g_barVerts.load(std::memory_order_relaxed)) {
+                g_barSeenThisInterval = true;
+                g_lastBarVerts.store(vertexCount, std::memory_order_relaxed);
+                if (bars_hidden()) {
+                    g_cBarsSkipped.fetch_add(1, std::memory_order_relaxed);
+                    DrawDecision d;
+                    d.verdict = DrawVerdict::Skip;
+                    return d;
+                }
+                // Shown: keep it IN FRAME rather than letting it redirect onto
+                // the HUD panel - that is the defect, not the baseline.
+                return kPass;
+            }
+            note_textureless_count(vertexCount);
+            // NOT the bars: a textureless gameswf fill is a FULL-SCREEN effect
+            // (water, the alcohol tint, damage flashes). Measured: the draw is
+            // 5 vertices with srv0 unbound, so the post-FX rule below cannot
+            // catch it - that rule needs a texture the size of the target, and
+            // this has no texture at all. It therefore fell through to the
+            // gameswf branch and rendered onto the HUD panel, which is why
+            // effects appeared in a small window instead of across the view.
+            //
+            // Session 22 round 3 tried exactly this and round 4 reverted it,
+            // because back then "textureless fill" also meant the letterbox
+            // bars - rendering those in-frame blacked out scene content. That
+            // conflation is gone: the bars are identified by vertex count and
+            // handled above, so what reaches here is only the effects.
+            // Reversible, because round 4's regression is the known risk.
+            if (g_effectsInFrame.load(std::memory_order_relaxed)) {
+                g_cEffectsInFrame.fetch_add(1, std::memory_order_relaxed);
+                return kPass;
+            }
+        }
+    }
+
+    // Session 22 round 4 sent the WHOLE flash layer in-frame while a cinematic
+    // held, so the frame could not differ from flat. That rule existed only
+    // because the bars could not be identified: it was all-or-nothing. Now the
+    // bars are skipped precisely, and sending the REST in-frame actively hurts
+    // - subtitles rendered into the eye images get captured per eye, and under
+    // SequentialReentry the two eyes come from DIFFERENT game frames, so two
+    // text states superimpose and the result is unreadable (user report,
+    // session 29 in-headset). On the head-locked panel they are one image in
+    // both eyes.
+    //
+    // Default is therefore PANEL. `vrcine subs frame` restores the round-4
+    // behaviour - this is a judgement about readability, so it ships as a lever
+    // rather than a decision, and the A/B takes five seconds in the headset.
+    if (cinematic_hold() && g_cineSubsInFrame.load(std::memory_order_relaxed)) {
         g_cLbFills.fetch_add(1, std::memory_order_relaxed);
-        return nullptr;
+        return kPass;
     }
 
     {
         UINT sw = 0, sh = 0;
         if (srv0_size(ctx, &sw, &sh) && sw == g_curW && sh == g_curH) {
             g_cPostFx.fetch_add(1, std::memory_order_relaxed);
-            return nullptr;
+            return kPass;
         }
     }
 
     // A non-indexed draw on the HUD target after the tonemap = gameswf.
     g_cHudDraws.fetch_add(1, std::memory_order_relaxed);
     g_hudThisInterval = true;
-    if (!armed()) return nullptr;
-    if (!ensure_rt(ctx, g_curW, g_curH, g_curFmt)) return nullptr;
+    if (!armed()) return kPass;
+    if (!ensure_rt(ctx, g_curW, g_curH, g_curFmt)) return kPass;
     g_cRedirects.fetch_add(1, std::memory_order_relaxed);
     // Returned for EVERY redirected draw - the caller re-binds each time
     // (cheap, self-healing against mid-stream game binds) and swaps the
     // blend state to its alpha-corrected variant.
-    return g_rtv;
+    DrawDecision d;
+    d.verdict = DrawVerdict::Redirect;
+    d.rtv = g_rtv;
+    return d;
 }
 
 void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
@@ -800,6 +911,23 @@ void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
         }
         g_swfDrawsThisInterval = 0;
         g_srvCacheCount = 0;
+    }
+
+    // Session 29: roll the draw-based cinematic signal. Published every
+    // interval so a cutscene that stops issuing the bar draw releases on the
+    // very next present - no hysteresis, because unlike a pixel readback a
+    // draw call is not a noisy measurement.
+    {
+        bool was = g_barActive.exchange(g_barSeenThisInterval, std::memory_order_relaxed);
+        if (g_barSeenThisInterval) g_cBarIntervals.fetch_add(1, std::memory_order_relaxed);
+        if (was != g_barSeenThisInterval)
+            BVR_LOG("[hud] bar draw %s (WidescreenBars sprite, %u verts) - cinematic signal "
+                    "%s; pixel watch says %s",
+                    g_barSeenThisInterval ? "ON" : "off",
+                    g_lastBarVerts.load(std::memory_order_relaxed),
+                    g_barSeenThisInterval ? "held" : "released",
+                    g_lbBars.load(std::memory_order_relaxed) ? "bars" : "no bars");
+        g_barSeenThisInterval = false;
     }
 
     if (g_hudThisInterval) g_cIntervals.fetch_add(1, std::memory_order_relaxed);
@@ -932,6 +1060,55 @@ bool letterbox(unsigned* topPx, unsigned* botPx) {
     if (topPx) *topPx = packed >> 16;
     if (botPx) *botPx = packed & 0xFFFF;
     return true;
+}
+
+void set_bars_hidden(bool on) {
+    bool was = g_barsHidden.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[hud] cinematic bars %s (the WidescreenBars gameswf draw is %s)",
+                on ? "HIDDEN" : "shown", on ? "skipped" : "issued");
+}
+
+bool bars_hidden() { return g_barsHidden.load(std::memory_order_relaxed); }
+
+void set_bar_verts(unsigned n) {
+    g_barVerts.store(n, std::memory_order_relaxed);
+    g_seenCountN = 0; // re-learn the other counts against the new target
+    BVR_LOG("[hud] bar vertex count = %u (the WidescreenBars shape; other textureless "
+            "gameswf counts are logged once each so a mis-set value is visible)", n);
+}
+
+unsigned bar_verts() { return g_barVerts.load(std::memory_order_relaxed); }
+
+void set_cine_subs_in_frame(bool on) {
+    if (g_cineSubsInFrame.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[hud] cinematic flash layer -> %s",
+                on ? "IN FRAME (session 22 round 4; per-eye capture can double the text)"
+                   : "the head-locked HUD panel (one image in both eyes)");
+}
+
+bool cine_subs_in_frame() { return g_cineSubsInFrame.load(std::memory_order_relaxed); }
+
+void set_effects_in_frame(bool on) {
+    if (g_effectsInFrame.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[hud] full-screen effects -> %s (%u routed so far)",
+                on ? "IN FRAME (across the whole view)"
+                   : "the HUD panel (session 22 round 4 behaviour)",
+                g_cEffectsInFrame.load(std::memory_order_relaxed));
+}
+
+bool effects_in_frame() { return g_effectsInFrame.load(std::memory_order_relaxed); }
+bool bar_draw_active() { return g_barActive.load(std::memory_order_relaxed); }
+
+bool cinematic_hold() {
+    return g_barActive.load(std::memory_order_relaxed) || letterbox(nullptr, nullptr);
+}
+
+void get_bar_stats(unsigned* skipped, unsigned* intervalsWithBars,
+                   unsigned* lastVertexCount) {
+    if (skipped) *skipped = g_cBarsSkipped.load(std::memory_order_relaxed);
+    if (intervalsWithBars) *intervalsWithBars = g_cBarIntervals.load(std::memory_order_relaxed);
+    if (lastVertexCount) *lastVertexCount = g_lastBarVerts.load(std::memory_order_relaxed);
 }
 
 void letterbox_sample(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {

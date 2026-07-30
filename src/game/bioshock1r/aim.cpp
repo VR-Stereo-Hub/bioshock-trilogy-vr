@@ -13,6 +13,7 @@
 
 #include "game/bioshock1r/aim.h"
 
+#include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -122,6 +123,17 @@ bool g_presetBaselineValid = false;
 std::atomic<bool> g_laser{false};
 std::atomic<int> g_laserDots{6};
 std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
+// Session 29 aim dot: ONE lever, default OFF. Unlike the laser it is not a
+// beam reconstruction - it is the fire-seam ray's own point, pushed back into
+// XR space (see AimDotConfig and frame_context.h's game_point_to_xr).
+// The distance is a slider because nothing in this mod can trace: a dot and a
+// wall only fuse in stereo at matching depth, so the calibration flow is "set
+// the distance to the wall, fire, nudge the trim until the dot sits on the
+// hole". BioVRDev's dot has the same shape and the same limitation.
+std::atomic<bool> g_dot{false};
+std::atomic<float> g_dotDistM{5.0f};
+std::atomic<float> g_dotSizeDeg{0.5f};
+constexpr float kIdentQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 std::atomic<int32_t> g_dumpBudget{0}; // per-seam detailed log budget
 
 // Per-frame aim rays, game thread only (built in on_calcview, read in the
@@ -1127,6 +1139,16 @@ void on_calcview(const FrameContext& ctx) {
             g_gameplayView = true; // menu attract scene views through the PC itself
     }
 
+    // Session 29: made explicit here for the same reason as in hands.cpp. This
+    // ONE line covers three things at once, because they all read
+    // g_gameplayView: the fire-seam substitution (via ray_for), the per-weapon
+    // profile heap scans, and the laser publish. The aim path fails safe by
+    // construction - `out = {}` below leaves valid=false, so the engine's own
+    // GetPerfectFireStart values survive untouched.
+    if (g_gameplayView && bvr::hud::cinematic_hold() &&
+        bvr::vr::cine_drive() != bvr::vr::CineDrive::Off)
+        g_gameplayView = false;
+
     // Per-weapon profile hot-swap (session 21): the active R-hand trim/offsets
     // follow the equipped weapon's class (gameplay view only - see the guard).
     update_weapon_profile(ctx);
@@ -1221,6 +1243,42 @@ void on_calcview(const FrameContext& ctx) {
         }
     }
     bvr::vr::set_laser(lc);
+
+    // Session 29: publish the aim DOT from the finished ray, not from a second
+    // derivation of it. Gated on exactly what ray_for() checks, so the dot is
+    // visible if and only if a shot fired right now would be substituted -
+    // which makes the dot an instrument as well as a sight.
+    bvr::vr::AimDotConfig dc{};
+    dc.enabled = g_dot.load(std::memory_order_relaxed);
+    dc.sizeDeg = g_dotSizeDeg.load(std::memory_order_relaxed);
+    const Ray& dr = g_ray[lh];
+    if (dc.enabled && g_enabled.load(std::memory_order_relaxed) && g_gameplayView && dr.valid) {
+        float dir[3];
+        ue_rot_to_dir(dr.rot, dir);
+        float distUu = g_dotDistM.load(std::memory_order_relaxed) * ctx.worldScale;
+        FVector at{dr.origin.x + dir[0] * distUu, dr.origin.y + dir[1] * distUu,
+                   dr.origin.z + dir[2] * distUu};
+        game_point_to_xr(ctx, at, dc.posXr);
+        dc.valid = true;
+
+        // The inverse is only worth trusting if it round-trips. Check it ONCE
+        // against the forward map on real data and say so in words - a
+        // transform that is wrong by a yaw term looks perfectly plausible in
+        // the headset until you fire.
+        static bool s_checked = false;
+        if (!s_checked) {
+            s_checked = true;
+            GamePose back = xr_pose_to_game(ctx, dc.posXr, kIdentQuat);
+            float ex = back.loc.x - at.x, ey = back.loc.y - at.y, ez = back.loc.z - at.z;
+            float err = sqrtf(ex * ex + ey * ey + ez * ez);
+            BVR_LOG("[aim] dot transform round-trip error %.4f UU (%.5f mm at worldScale "
+                    "%.0f) - %s",
+                    err, err * 10.0f / (ctx.worldScale / 100.0f), ctx.worldScale,
+                    err < 0.05f ? "EXACT, the dot is the fire-seam point"
+                                : "NOT EXACT - do not trust the dot as calibration");
+        }
+    }
+    bvr::vr::set_aim_dot(dc);
 }
 
 // ---- synccheck (session 20): ray-vs-barrel divergence sweep -----------------
@@ -1429,6 +1487,35 @@ void handle_command(const char* args) {
             BVR_LOG("[aim] laser %s (dots along the aim ray, XR quad layers)",
                     on ? "ON" : "off");
         }
+    } else if (strcmp(verb, "dot") == 0) {
+        // "dot on|off" | "dot dist <m>" | "dot size <deg>"
+        if (strncmp(rest, "dist", 4) == 0) {
+            float m = 0.0f;
+            if (sscanf_s(rest + 4, "%f", &m) == 1 && m > 0.05f) {
+                g_dotDistM.store(m, std::memory_order_relaxed);
+                BVR_LOG("[aim] aim dot distance %.2f m (set this to the WALL's distance "
+                        "before calibrating - a dot and a bullet hole only fuse in stereo "
+                        "at matching depth)", m);
+            } else {
+                BVR_LOG("[aim] usage: vraim dot dist <meters>");
+            }
+        } else if (strncmp(rest, "size", 4) == 0) {
+            float d = 0.0f;
+            if (sscanf_s(rest + 4, "%f", &d) == 1 && d > 0.01f) {
+                g_dotSizeDeg.store(d, std::memory_order_relaxed);
+                BVR_LOG("[aim] aim dot size %.2f deg (angular, so it reads the same at any "
+                        "distance)", d);
+            } else {
+                BVR_LOG("[aim] usage: vraim dot size <degrees>");
+            }
+        } else {
+            bool on = strncmp(rest, "on", 2) == 0;
+            g_dot.store(on, std::memory_order_relaxed);
+            BVR_LOG("[aim] aim dot %s (%.2f m, %.2f deg) - placed from the FIRE-SEAM ray "
+                    "point, so it shows only while a shot would actually be substituted",
+                    on ? "ON" : "off", g_dotDistM.load(std::memory_order_relaxed),
+                    g_dotSizeDeg.load(std::memory_order_relaxed));
+        }
     } else if (strcmp(verb, "origin") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_handOrigin.store(on, std::memory_order_relaxed);
@@ -1545,6 +1632,9 @@ float trim_yaw_deg(int hand) {
 }
 
 bool laser_enabled() { return g_laser.load(std::memory_order_relaxed); }
+bool dot_enabled() { return g_dot.load(std::memory_order_relaxed); }
+float dot_dist_m() { return g_dotDistM.load(std::memory_order_relaxed); }
+float dot_size_deg() { return g_dotSizeDeg.load(std::memory_order_relaxed); }
 
 void weapon_scan_rearm(const char* why) {
     g_weaponScanMisses = 0;
@@ -1656,6 +1746,23 @@ void draw_debug_ui() {
     float sizeDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("laser dot size (deg)", &sizeDeg, 0.1f, 3.0f))
         g_laserSizeDeg.store(sizeDeg, std::memory_order_relaxed);
+
+    // Session 29: the aim dot. Separate from the laser on purpose - the laser
+    // reconstructs the ray on the render thread, this is the fire-seam point.
+    bool dot = g_dot.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Aim dot (on the fire-seam ray)", &dot))
+        g_dot.store(dot, std::memory_order_relaxed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("One quad at the exact point the bullet starts from, extended "
+                          "along the exact rotator the engine is handed.\n"
+                          "Set the distance to your calibration wall: a dot and a bullet "
+                          "hole only fuse in stereo at matching depth.");
+    float dotDist = g_dotDistM.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("aim dot distance (m)", &dotDist, 0.5f, 20.0f))
+        g_dotDistM.store(dotDist, std::memory_order_relaxed);
+    float dotSize = g_dotSizeDeg.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("aim dot size (deg)", &dotSize, 0.1f, 3.0f))
+        g_dotSizeDeg.store(dotSize, std::memory_order_relaxed);
 
     ImGui::Text("fire seams (subs/calls): weapon %u/%u  plasmid %u/%u",
                 g_weaponFire.subs.load(std::memory_order_relaxed),

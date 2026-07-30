@@ -63,6 +63,46 @@ inline GamePose xr_pose_to_game(const FrameContext& ctx, const float pos[3],
     return out;
 }
 
+// The INVERSE of xr_pose_to_game's position half (session 29, for the aim dot).
+//
+// Why this exists: the fire seam substitutes g_ray (game space, built on the
+// game thread), while the laser RE-DERIVES its ray from the controller pose in
+// XR space on the render thread. Those two are congruent - same trim algebra,
+// same pose funnel - but NOT identical: different pose instant, different
+// origin-offset basis. A dot placed the laser's way would inherit that gap and
+// "dot == shot" would be an argument rather than a fact. Mapping the FINAL
+// game-space ray point back into XR closes it by construction, so the dot is
+// the exact point the bullet starts from, extended along the exact rotator the
+// engine is handed.
+//
+// The forward map's position half is affine and yaw-only, so this is its exact
+// algebraic inverse - not an approximation:
+//   forward: loc = base + Rot(gameYaw - recenterYaw) * xr_to_ue(pos - recenterP) * scale
+//   inverse: pos = recenterP + ue_to_xr( Rot(recenterYaw - gameYaw) * (loc - base) / scale )
+// Pass the SAME ctx the ray was built from or the two disagree by whatever the
+// camera did in between.
+inline void game_point_to_xr(const FrameContext& ctx, const FVector& loc, float out[3]) {
+    float gameYawRad =
+        static_cast<float>(ctx.camYaw) / kRotUnitsPerRadian - ctx.driveYawOffsetRad;
+    float scale = ctx.worldScale != 0.0f ? ctx.worldScale : 100.0f;
+
+    float ux = (loc.x - ctx.baseX) / scale;
+    float uy = (loc.y - ctx.baseY) / scale;
+    float uz = (loc.z - ctx.baseZ) / scale;
+
+    // Undo the net yaw the forward map applied.
+    float th = ctx.recenterYawRad - gameYawRad;
+    float c = cosf(th), s = sinf(th);
+    float dx = ux * c - uy * s;
+    float dy = ux * s + uy * c;
+
+    // ue_to_xr: the exact inverse of xr_to_ue (UE +X fwd -> XR -Z, +Y -> +X,
+    // +Z -> +Y), then back out of the recenter-relative frame.
+    out[0] = dy + ctx.recenterPx;
+    out[1] = uz + ctx.recenterPy;
+    out[2] = -dx + ctx.recenterPz;
+}
+
 // ---- The two trimmed pose->rot chains, as PURE functions (session 20) -------
 // Production (hands.cpp / aim.cpp) and the `vraim synccheck` sweep call the
 // SAME code, so the sweep measures the real thing. Since the session-20

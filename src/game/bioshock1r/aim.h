@@ -96,6 +96,13 @@ void set_pos_offset(int hand, float fwdCm, float rightCm, float upCm);
 // persisted vrpreset.ini choice (`laserOn`), so opting back in sticks.
 bool laser_enabled();
 
+// Session 29 aim dot (default OFF, persisted as aimDot*/vrpreset.ini). The dot
+// is placed from the FIRE-SEAM ray itself, so unlike the laser it cannot drift
+// from the bullet - see AimDotConfig.
+bool dot_enabled();
+float dot_dist_m();
+float dot_size_deg();
+
 // True while substitution is armed (master switch + a usable hand ray).
 bool active();
 

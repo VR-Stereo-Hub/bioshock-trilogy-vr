@@ -154,6 +154,28 @@ void set_pose_audit(bool on);
 // fov instead (stereo cinematics - opt-in experiment, default quad).
 void publish_gameplay_view(bool strictGameplay);
 void handle_cine_command(const char* args);
+
+// --- Session 29: what the VR rig does while a cinematic holds ----------------
+// `vrcine drive off|authored|authored+look` (default authored). The verb is
+// `drive` and not `mode` because `vrcine mode` already means quad-vs-stereo,
+// and its parser is a strncmp chain that would silently accept a wrong value.
+//
+//   Off          - no cinematic special-casing: head/hands/aim keep driving
+//                  straight through the cutscene, overriding the authored
+//                  camera. The pre-session-22 behaviour, kept as the A/B.
+//   Authored     - the authored camera and the authored hands play, exactly as
+//                  flat. Every VR drive is suspended and the bone drive is
+//                  RELEASED (see bones::release - stopping the drive is not the
+//                  same as handing the skeleton back).
+//   AuthoredLook - authored choreography, but the head may look around: the
+//                  head's rotation DELTA since the cutscene began is added on
+//                  top of the authored rotation, with no positional offset at
+//                  all, so the shot cannot be dollied into geometry and the
+//                  authored pitch/roll survives.
+enum class CineDrive { Off = 0, Authored = 1, AuthoredLook = 2 };
+CineDrive cine_drive();
+void set_cine_drive(CineDrive mode);
+const char* cine_drive_name(CineDrive mode);
 // True while the quad fallback is ACTIVE (render thread state). The adapter
 // suppresses the per-eye offsets while it holds (both presents must carry
 // the same image or the quad jitters by an IPD - the renderer consumes
@@ -221,6 +243,30 @@ struct LaserConfig {
 // Publish the laser state (game thread, once per frame). The render thread
 // builds the layers from it at submit time.
 void set_laser(const LaserConfig& cfg);
+
+// --- Session 29: the aim dot -----------------------------------------------
+// One quad on the ray the BULLET uses, not on a reconstruction of it.
+//
+// The laser above re-derives its ray on the RENDER thread from the controller
+// pose (fresher, but a parallel computation), so beam and bullet agree by
+// shared algebra rather than by shared data. The dot takes the other trade
+// deliberately: the game thread converts the FINAL fire-seam ray point - the
+// same FVector/FRotator that gets written into GetPerfectFireStart - back into
+// XR space and publishes the finished point. One frame older than the laser,
+// and exactly where the shot starts. That is what makes "fire at a wall, nudge
+// the dot onto the bullet hole" an exact calibration rather than a close one.
+//
+// posXr is already in XR LOCAL space (meters); the render thread only
+// billboards it at the head and sizes it. `valid` false = publish nothing,
+// which is also how the dot reports that the fire substitution is not live.
+struct AimDotConfig {
+    bool enabled = false;
+    bool valid = false;      // the ray passed the same gate ray_for() applies
+    float posXr[3] = {0.0f, 0.0f, 0.0f};
+    float sizeDeg = 0.5f;    // angular diameter, like the laser's dots
+};
+
+void set_aim_dot(const AimDotConfig& cfg);
 
 // Session 19 HUD floating quad placement (meters; head-locked). Persisted by
 // the VR preset; sliders in the VR overlay section.

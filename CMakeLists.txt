@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 # VERSION is the single source of truth for the version the mod logs and shows.
 # Bump it here and nowhere else; src/CMakeLists.txt generates bvr_version.h from
 # it at build time, stamped with `git describe`.
-project(BioshockVR VERSION 0.4.1 LANGUAGES C CXX)
+project(BioshockVR VERSION 0.5.0 LANGUAGES C CXX)
 
 # BioshockHD.exe is 32-bit x86. Everything we inject must be too.
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
