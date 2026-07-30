@@ -2,7 +2,7 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-31, session 31 - SWING-TO-ATTACK IS BUILT AND FLAT-GREEN, awaiting the in-headset verdict - branch s31-b1r-swing-to-attack)
+## Current state (2026-07-31, session 31 - SWING-TO-ATTACK IS DONE AND ACCEPTED IN-HEADSET - branch s31-b1r-swing-to-attack)
 
 **Release still held. v0.5.0 stays untagged.** Session 30's three items are unchanged (one fixed
 and accepted, one fixed with the cause identified, one untested). This session adds one feature on
@@ -51,16 +51,22 @@ Two defects were found and fixed by the flat run itself: the BLOCKED line logged
 until `sim` grew a repetition count (one hump crosses the threshold once, and the command seam
 polls at 1 Hz, so no two commands can land inside a 300 ms cooldown).
 
-### 0c. WHAT IS NOT VERIFIED, and it is the part that decides the feature
+### 0c. IN-HEADSET VERDICT: **"I tested it and it's perfect."**
 
-**No real swing has ever been measured.** The defaults - **2.2 m/s** fire, 1.0 m/s re-arm, 300 ms
-cooldown, 120 ms pulse, 0 ms delay - are guesses. `vrinput swing status` reports the peak hand
-speed since the last call; that number replaces the threshold on the first headset run. Also
-unanswered: whether the timing feels like the manual-trigger play-test (the `delay` knob exists for
-this), and whether ordinary play produces false swings (head-relative velocity is on by default to
-stop body turns reading as swings, but that is reasoning, not measurement).
+The one thing flat could not answer is answered. The user's call on the tuning, applied as the
+shipped defaults and written into their vrpreset.ini:
 
-The in-headset checklist is in `docs/bioshock1/TESTING.md` under "Wrench swing-to-attack".
+- **ON by default**, and **fire threshold 3.6 m/s** - replacing the 2.2 m/s guess that shipped to
+  that run. 3.6 sits well clear of a walk, a body turn or a reach, which is why ordinary play does
+  not produce stray swings.
+- Everything else stayed where it was: re-arm 1.0 m/s, cooldown 300 ms, pulse 120 ms, **delay 0**.
+  The rising-edge fire needed no delay - the game's own wind-up animation lands the hit where the
+  arm is going, which was the whole bet.
+
+Nothing further was asked for. `vrinput swing delay <ms>` remains if the contact point ever wants
+moving, and `vrinput swing off` still disables it instantly.
+
+The flat + in-headset procedure is in `docs/bioshock1/TESTING.md` under "Wrench swing-to-attack".
 
 ## Previous state (2026-07-30, session 30 - THE WRENCH IS FIXED AND ACCEPTED IN-HEADSET, the bar-colour regression is fixed, effects still open - branch s30-b1r-wrench-and-effects)
 
@@ -803,14 +809,9 @@ in case long soaks ever disprove this.
 The game-breaking item is closed and accepted. What is left before the release is verification
 breadth, not new investigation - plus one new feature that is flat-green and needs a headset.
 
-0. **The swing gesture's in-headset run** (session 31, checklist in `TESTING.md`). It is the only
-   thing in the tree whose acceptance criteria cannot be reached flat at all. The single most
-   valuable output is `vrinput swing status`'s **peak speed after a few real swings** - the 2.2 m/s
-   threshold is a guess and that number replaces it. Then: does one swing fire exactly once, does
-   normal play (walking, turning your body, using the weapon wheel) ever fire a stray one, and does
-   the timing match the manual-trigger play-test (`swing delay <ms>` moves the contact point).
-   `vrinput swing off` disables it instantly if it is annoying - the trigger is untouched either
-   way, so this cannot block anything else in the checklist.
+0. ~~The swing gesture's in-headset run~~ - DONE and accepted, threshold 3.6 m/s, default ON. Fold
+   it into the soak below rather than testing it separately: it fires the same melee the servo aims,
+   so a wrench soak now exercises both at once.
 1. **A proper soak on the wrench fix.** It was accepted on one enemy. The servo is a new input
    path that runs on every gameplay frame, so it wants a real play session: melee at different
    heights, on stairs, underwater, against a Big Daddy, and across a save load. Watch for the
@@ -3800,7 +3801,15 @@ and it resumes.
 
 ## Session log (newest first)
 
-### Session 31 - 2026-07-31 - swing the wrench to swing the wrench, built and flat-green
+### Session 31 - 2026-07-31 - swing the wrench to swing the wrench, ACCEPTED IN-HEADSET
+
+**Verdict: "I tested it and it's perfect."** Shipped default ON with a **3.6 m/s** fire threshold -
+the user's own number after the live run, replacing the 2.2 m/s guess that shipped to it. Nothing
+else needed tuning: delay stayed 0, which is the rising-edge bet paying off (the game's own wind-up
+animation lands the hit where the arm is already going). Both values are the code defaults AND
+written into the user's vrpreset.ini.
+
+### Session 31 (build phase) - 2026-07-31 - the feature, and what flat could and could not prove
 
 Branch `s31-b1r-swing-to-attack` off `main`. The user asked for their own play-test to become a
 feature: trigger the melee hit from the physical swing. It was already ROADMAP line 539.

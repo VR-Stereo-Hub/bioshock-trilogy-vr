@@ -536,8 +536,8 @@ kill. Both prerequisites below are now MET.):**
       *Residual, measured: converges to within 4-8 deg rather than 0, because near
       convergence the proportional stick falls under the GAME's own deadzone. Inside melee
       tolerance; closing it needs a minimum stick magnitude and risks a limit cycle.*
-- [x] **Wrench swing gesture (user's call 2026-07-28)** - BUILT session 31 (2026-07-31),
-      flat-verified, **in-headset verdict pending**. A fast right-hand motion composes a
+- [x] **Wrench swing gesture (user's call 2026-07-28)** - DONE session 31 (2026-07-31),
+      **accepted in-headset: "I tested it and it's perfect."** A fast right-hand motion composes a
       full RT pulse while the wrench is equipped, IN ADDITION to the trigger (user's call -
       the trigger keeps working unchanged, so there is no regression to roll back).
       `core/input/swing.{h,cpp}`, gate published each CalcView as
@@ -550,9 +550,11 @@ kill. Both prerequisites below are now MET.):**
       `[swing] FIRE` was followed 8-11 ms later by the engine's own weapon-fire seam at
       rt=255. Gate closed with a gun equipped, cooldown, re-arm hysteresis, wheel
       suppression, off-switch and the ini round-trip all pass.*
-      **The defaults (2.2 m/s fire, 1.0 m/s re-arm, 300 ms cooldown) are still GUESSES** -
-      no real swing has been measured. `swing status` reports the peak speed seen since the
-      last call, which is the number that replaces them on the first headset run.
+      *Shipped defaults after the headset run: **ON**, fire threshold **3.6 m/s** (the user's
+      own call, replacing the 2.2 guess that shipped to that run - high enough that walking,
+      turning your body or reaching for something never registers), re-arm 1.0 m/s, cooldown
+      300 ms, pulse 120 ms, delay 0.* No further tuning was asked for; `swing delay <ms>`
+      remains if the contact point ever wants moving.
 - [x] **Kill the first-boot restart** - DONE session 22 (2026-07-29): compose_over answers
       a failed slot-0 GetState with a neutral connected pad while vrinput is off. Virgin
       gate PASSED: menu prompts stayed KB/M with the phantom pad idle; `vrinput on`

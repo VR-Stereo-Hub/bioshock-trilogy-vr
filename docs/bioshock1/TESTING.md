@@ -136,11 +136,14 @@ Verified flat procedure (2026-07-31, no headset, `vrpreset` applied):
 One BLOCKED line per SWING, not per sample - the latch clears when the hand
 slows below the re-arm level. If you see a flood, that latch has regressed.
 
-**Still needs a headset** (nothing below has been run): whether a real swing
-crosses 2.2 m/s, whether the timing feels like the manual-trigger play-test, and
-whether normal play produces false swings. `vrinput swing status` reports the
-peak speed since the last call - that is the number the threshold should be
-tuned from.
+**In-headset (2026-07-31, accepted - "I tested it and it's perfect"):** the
+shipped threshold is **3.6 m/s**, the user's own call after the live run,
+replacing the 2.2 m/s guess that shipped to it. 3.6 clears a walk, a body turn
+and a reach, so ordinary play produces no stray swings; delay stayed at 0
+because the rising-edge fire already lands the hit where the arm is going. If
+the threshold ever needs re-tuning on another player or another controller,
+`vrinput swing status` reports the peak hand speed since the last call - collect
+that over a few real swings and set the threshold under it.
 
 ## Decoupled aim (M6 `vraim`) - flat verification
 

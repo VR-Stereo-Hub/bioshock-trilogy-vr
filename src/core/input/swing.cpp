@@ -27,19 +27,23 @@ constexpr uint64_t kGateStaleMs = 500;
 constexpr double kMinDtMs = 4.0;
 constexpr double kMaxDtMs = 100.0;
 
-// Defaults. THESE ARE GUESSES until a headset run measures a real swing
-// (`swing status` reports the peak speed seen, which is the number that
-// replaces them). The pulse width follows the two synthetic pulses already
-// proven against this game's per-tick edge detection - the ammo flick and the
-// START pulse are both 150 ms - with a little taken off because a melee swing
-// should not hold fire across two ticks.
-constexpr float kDefaultThreshold = 2.2f; // m/s, hand speed that counts as a swing
+// Defaults. The FIRE THRESHOLD is no longer a guess: 3.6 m/s is the user's own
+// in-headset call after the first live run (2026-07-31, verdict "it's perfect"),
+// replacing the 2.2 that shipped to that run. It sits well above a walk, a body
+// turn or a reach, so the gesture stays quiet during ordinary play, and a real
+// swing clears it comfortably. The gesture is ON by default off the back of the
+// same verdict.
+// The pulse width follows the two synthetic pulses already proven against this
+// game's per-tick edge detection - the ammo flick and the START pulse are both
+// 150 ms - with a little taken off because a melee swing should not hold fire
+// across two ticks; flat-measured, 120 ms does fire the weapon.
+constexpr float kDefaultThreshold = 3.6f; // m/s, hand speed that counts as a swing
 constexpr float kDefaultRearm = 1.0f;     // m/s, must fall below this to re-arm
 constexpr uint32_t kDefaultCooldownMs = 300;
 constexpr uint32_t kDefaultPulseMs = 120;
 constexpr uint32_t kDefaultDelayMs = 0;
 
-std::atomic<bool> g_enabled{true};
+std::atomic<bool> g_enabled{true}; // ON by default - accepted in-headset, session 31
 std::atomic<float> g_threshold{kDefaultThreshold};
 std::atomic<float> g_rearm{kDefaultRearm};
 std::atomic<uint32_t> g_cooldownMs{kDefaultCooldownMs};
@@ -433,7 +437,7 @@ void draw_debug_ui() {
                           "attack fires, not where it lands - the game aims melee itself.");
 
     float t = g_threshold.load(std::memory_order_relaxed);
-    if (ImGui::SliderFloat("Swing speed needed (m/s)", &t, 0.5f, 6.0f, "%.2f"))
+    if (ImGui::SliderFloat("Swing speed needed (m/s)", &t, 0.5f, 8.0f, "%.2f"))
         set_threshold_ms(t);
     int cd = static_cast<int>(g_cooldownMs.load(std::memory_order_relaxed));
     if (ImGui::SliderInt("Swing cooldown (ms)", &cd, 0, 1000))
