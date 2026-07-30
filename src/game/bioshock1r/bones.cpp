@@ -630,9 +630,34 @@ void on_world_change() {
     g_cacheMs = 0;
     g_hiddenHand = -1; // the collapsed bones died with the old world
     g_cacheHiddenCount = 0;
+    // Session 29: the sleeve latch dies with the world too. It was hoisted out
+    // of drive() so release() could reach it, which also means it now has to be
+    // cleared here - a stale `true` would make release() write a dead world's
+    // sleeve bones back from a dead world's reference.
+    g_wasCollapsed = false;
+    g_collapsedHand = -1;
 }
 
 void release(const char* why) {
+    // NEVER write without a live skeleton. on_world_change() nulls these the
+    // moment a level swap is seen, so this is the interlock that makes the
+    // call safe from any site: without it, a release on the world-change frame
+    // writes ~1.8 KB through the PREVIOUS level's bone array. write_n is
+    // SEH-guarded, so that does not fault - it silently corrupts whatever the
+    // engine has since allocated over those pages (session 29: a save load
+    // hung the game exactly this way).
+    if (!g_skelInst || !g_bones || g_boneCount <= 0) {
+        g_hiddenHand = -1;
+        g_wasCollapsed = false;
+        g_collapsedHand = -1;
+        g_cacheSkelInst = nullptr;
+        g_cacheMs = 0;
+        g_cacheCount = g_cacheSleeveCount = g_cacheHiddenCount = 0;
+        g_refValid = false;
+        g_hasWritten[0] = g_hasWritten[1] = false;
+        return;
+    }
+
     // Nothing driven means nothing to hand back. Cheap and idempotent, so the
     // edge detector that calls this can fire freely.
     if (g_hiddenHand < 0 && !g_wasCollapsed && !g_cacheSkelInst && !g_refValid) return;

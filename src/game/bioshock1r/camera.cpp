@@ -1416,11 +1416,21 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                         cineState ? "ENTER" : "exit", bars ? 1 : 0, lb ? 1 : 0, cine ? 1 : 0,
                         vrDrove ? 1 : 0, strictGameplay ? 1 : 0, aim::active() ? 1 : 0, hidden,
                         cacheAge, refValid ? 1 : 0);
-                // Entering is where the release has to happen: reapply() would
-                // otherwise keep repainting our pose over the authored
-                // animation for another ~6 frames, dirty flag included.
-                if (entering && cineMode != bvr::vr::CineDrive::Off)
-                    bones::release("cinematic started");
+                // NO bone writes from here. This block runs BEFORE
+                // hands::on_calcview, which is what detects a world change and
+                // clears the skeleton cache - so releasing here can write
+                // through pointers belonging to a level that has already been
+                // freed. Measured (session 29, in-headset): a save load hung
+                // the game, and the log ordering is unambiguous -
+                //   cine edge ENTER -> bones released -> world changed
+                // all in the same millisecond, with the camera already at the
+                // NEW level's coordinates. write_n is SEH-guarded so it never
+                // faults, which is precisely the trap: the freed pages had
+                // been reused by the loading level, so ~1.8 KB of bone writes
+                // landed as silent heap corruption instead of an exception.
+                // hands.cpp releases at its gate, AFTER the world-change
+                // check, which is the only safe place for it.
+                (void)entering;
                 // Both edges drop the look reference so the next shot opens
                 // framed as authored rather than wherever this one ended.
                 g_cineLookValid = false;

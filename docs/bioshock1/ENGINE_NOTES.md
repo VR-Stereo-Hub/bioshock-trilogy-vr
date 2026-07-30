@@ -2941,3 +2941,51 @@ calibration flow is: set the distance to the wall, fire, nudge the trim onto the
   the same scene reads `presents=443/s 2nd=222/s`.
 - The Electro Bolt sequence is many short letterbox phases (313/350, 380/401, 313/298, 313/345
   px of 2048), not one - so an edge-triggered capture fires repeatedly through it.
+
+### 9. The save-load hang: releasing bones from the wrong call site (session 29, in-headset)
+
+A save load hung the game. `responding=False`, log dead. The last four lines name the defect
+without ambiguity - all in the SAME millisecond, with the camera already at the NEW level's
+coordinates:
+
+```
+19:13:33.618 [b1r] camera: loc=(-24927.1 4802.5 8275.3)   <- new world
+19:13:33.618 [b1r] cine edge ENTER (barDraw=0 letterbox=0 cineQuad=1) | bones: hiddenHand=0
+                    cacheAge=3281ms refValid=1
+19:13:33.618 [bones] released to the engine (cinematic started): hidden hand 0 restored ...
+19:13:33.618 [hands] world changed - actor caches cleared
+19:13:33.618 [bones] world changed - skeleton cache cleared
+```
+
+`bones::release()` ran from the CAMERA-side cine-edge block, which sits ABOVE
+`hands::on_calcview` - and `hands::on_calcview` is what detects a world change and calls
+`bones::on_world_change()`. So the release wrote `restore_hidden()`'s ~1.8 KB (cluster + sleeve,
+12+16+12 bytes per bone over ~47 bones) plus `set_dirty(1)` through the PREVIOUS level's
+skeleton, which the engine had already freed and the loading level had already reused.
+
+**Why it hung instead of crashing, and why that is the trap.** `write_n` is `__try/__except`
+guarded, so a write to unmapped memory returns false harmlessly. That guard is worthless here:
+the pages were still MAPPED, just owned by something else. SEH catches access violations, not
+silent corruption - so the safety net made the failure quieter, not less likely.
+
+**The rule was already written down.** `hands.cpp`'s world-change block says it verbatim: *"the
+old actors died with the old world, and recycled heap addresses must never be written to. The
+scale bookkeeping is dropped, not restored - restore would write into a stranger."* The bug was
+not a missing insight; it was a new call site that bypassed the insight. **Any function that
+writes engine memory must be called only from below the world-change check, or must interlock
+against it itself.**
+
+Fixed three ways, deliberately overlapping:
+
+1. The camera-side edge block no longer writes bones at all - it only logs. `hands.cpp` releases
+   at its gate, which runs AFTER the world-change check.
+2. `release()` now refuses to write unless `g_skelInst && g_bones && g_boneCount > 0`, and in
+   that case clears its own bookkeeping instead. `on_world_change()` nulls those, so the
+   interlock holds from ANY call site, including ones not yet written.
+3. `on_world_change()` also clears `g_wasCollapsed`/`g_collapsedHand`. Hoisting that latch out of
+   `drive()` (so `release()` could reach it) silently made it outlive a world change; a stale
+   `true` would have written a dead world's sleeve from a dead world's reference.
+
+**Carry for BS2 and for any future drive:** the pattern "stop driving" and "hand state back" are
+different operations with different safety requirements. Stopping is always safe. Handing back
+writes, and writes need a live-world interlock.
