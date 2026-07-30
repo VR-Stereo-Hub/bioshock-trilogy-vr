@@ -591,7 +591,46 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### 0. THE ONLY THING BLOCKING THE RELEASE: the user's final go
+### 0. RELEASE IS HELD AGAIN - three open items, one of them game-breaking
+
+Session 29 is MERGED TO MAIN. v0.5.0 is built and packaged but **deliberately untagged**: the
+user's call after in-headset testing was *"Don't release yet till the above notes are done and
+tested."* In priority order:
+
+**1. THE WRENCH SOMETIMES DOES NOT HIT (game-breaking, user's ASAP).** Reported in-headset:
+melee misses often *while fighting an enemy*, rarely outside combat. Other players have
+reported it while breaking the rocks at the start where there is no combat, though the user has
+not seen that case themselves. Cause unknown.
+
+*Leading hypothesis, and it is ours to disprove first:* the aim substitution. `substitute()`
+rewrites `GetPerfectFireStart`'s out-params for BOTH `AWeapon` and `UAttackAbility`, and the
+wrench is an `AWeapon`. Melee is a SHORT trace, so an origin moved from the camera to the
+controller (plus `vraim pos` offsets, up to several cm) can start the trace past or beside the
+target in a way a bullet at range would never show. That would also explain "worse in combat":
+close-quarters geometry is where a few cm of origin error decides a hit. **First measurement:
+`vraim seam weapon off` (the per-seam substitution toggle already exists) and see whether the
+misses stop.** If they do, the wrench needs excluding from the origin substitution - direction
+only, or engine origin - keyed on the equipped weapon class, which `update_weapon_profile`
+already resolves. The user also wonders about soft lock-on; note we force
+`GamepadPlayerInput SoftLockOnRadius 0` at every world event (`console_exec`), so backing THAT
+out is the second A/B and is one command.
+
+**2. FULL-SCREEN EFFECTS ARE STILL NOT FULL-SCREEN.** Session 29 identified the effect draw
+(textureless 5-vertex gameswf fill, framedump_175024) and routed it in-frame
+(`effectsInFrame=1`). User verdict: better but **still not covering the whole view**. So the
+draw we found is not the whole story - there is at least one more contributor, or the fill is
+geometrically smaller than the viewport. Next step is measurement, not another guess: dump with
+an effect held and read the fill's VERTEX BUFFER (the dump does not capture geometry today -
+that is the gap), or compare a flat screenshot with the effect against one without to see how
+much of the frame it actually covers. Must not regress cinematics, HUD elements, menus or
+subtitles - all four share this classifier, and the subtitle routing in 0d is one flip away.
+
+**3. HANDS CONSISTENCY PASS.** The user reports the hand behaviour is "not consistent either
+way" and wants confirmation nothing was broken. Session 29 changed the gating and added
+`bones::release()`, so this is a targeted regression check rather than an investigation: hands
+during gameplay, across a cutscene, across a save load, and after switching drive modes.
+
+### Previously: the user's final go
 
 Stage 3 is accepted in-headset and v0.5.0 is packaged. The user is soaking the Release build
 before giving the final thumbs up: *"Don't release and merge to main yet since I wanna test
