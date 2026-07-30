@@ -675,6 +675,45 @@ void apply_command(const char* cmd, const char* args) {
                     bvr::hud::enabled() ? "ON" : "off", bvr::hud::force() ? 1 : 0, hd, rd,
                     lk, iv, bvr::hud::postfx_count(), bvr::hud::screen_only() ? 1 : 0,
                     lb ? 1 : 0, lbT, lbB);
+            // Session 30: the per-reason routing breakdown, and the one number
+            // that says whether a PassThrough verdict ever reached the frame.
+            // Printed as a second line so the first stays byte-comparable with
+            // every earlier log in the tree.
+            bvr::hud::RouteStats rs{};
+            bvr::hud::get_route_stats(&rs);
+            char buf[320];
+            int n = 0;
+            for (int i = 0; i < bvr::hud::kRoutePassCount && n >= 0 && n < 300; ++i) {
+                if (!rs.pass[i] && !rs.stranded[i]) continue;
+                n += _snprintf_s(buf + n, sizeof buf - n, _TRUNCATE, "%s=%u/%u ",
+                                 bvr::hud::route_reason_name(i), rs.pass[i], rs.stranded[i]);
+            }
+            BVR_LOG("[hud] routes (pass/STRANDED): %s| postFxRejected=%u effectsInFrame=%u "
+                    "effectsOverBound=%u square=%d",
+                    n > 0 ? buf : "(none) ", rs.postFxRejected, rs.effectsInFrame,
+                    rs.effectsRejected, rs.squareTarget ? 1 : 0);
+        }
+    } else if (strcmp(cmd, "vrlockon") == 0) {
+        // Session 30: lock-on was overlay-checkbox-only, and the wrench-miss
+        // investigation needs it as a one-command A/B (the user asked for
+        // exactly that). Mirrors vrxhair, plus the caveat that makes the A/B
+        // honest: turning the assert OFF does not restore the game's radius in
+        // this session, because a SET edit is memory-only and the stock value
+        // is not readable back through the Exec seam. Persist and restart.
+        if (strncmp(args, "on", 2) == 0 || strncmp(args, "off", 3) == 0) {
+            bool disabled = strncmp(args, "off", 3) == 0;
+            g_lockOnDisabled.store(disabled, std::memory_order_relaxed);
+            g_lockOnApplied = -1; // force assert_lockon to act on the next tick
+            BVR_LOG("[b1r] pad lock-on %s. %s", disabled ? "DISABLED (SoftLockOnRadius 0)"
+                                                         : "requested ON",
+                    disabled ? "Takes effect on the next tick."
+                             : "The game's own radius only returns after a RESTART - "
+                               "`vrpreset save` then relaunch, or this A/B proves nothing.");
+        } else {
+            BVR_LOG("[b1r] pad lock-on %s (applied=%d) - vrlockon on|off|status. 'on' needs a "
+                    "restart to take effect; 'off' is immediate.",
+                    g_lockOnDisabled.load(std::memory_order_relaxed) ? "DISABLED" : "on",
+                    g_lockOnApplied);
         }
     } else if (strcmp(cmd, "vrxhair") == 0) {
         // M8 part 2: the flat-screen crosshair. Default HIDDEN; "on" re-shows.
@@ -735,6 +774,8 @@ void save_vr_preset() {
     fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
     fprintf(f, "cineSubsInFrame=%d\n", bvr::hud::cine_subs_in_frame() ? 1 : 0);
     fprintf(f, "effectsInFrame=%d\n", bvr::hud::effects_in_frame() ? 1 : 0);
+    fprintf(f, "effectMaxVerts=%u\n", bvr::hud::effect_max_verts());
+    fprintf(f, "postFxRtOnly=%d\n", bvr::hud::postfx_rt_only() ? 1 : 0);
     fprintf(f, "aimDotOn=%d\n", aim::dot_enabled() ? 1 : 0);
     fprintf(f, "aimDotDistM=%.2f\n", aim::dot_dist_m());
     fprintf(f, "aimDotSizeDeg=%.2f\n", aim::dot_size_deg());
@@ -804,6 +845,10 @@ void load_vr_preset_values() {
             bvr::hud::set_bars_hidden(v != 0.0f);
         else if (strcmp(key, "effectsInFrame") == 0)
             bvr::hud::set_effects_in_frame(v != 0.0f);
+        else if (strcmp(key, "effectMaxVerts") == 0)
+            bvr::hud::set_effect_max_verts(static_cast<unsigned>(v));
+        else if (strcmp(key, "postFxRtOnly") == 0)
+            bvr::hud::set_postfx_rt_only(v != 0.0f);
         else if (strcmp(key, "cineSubsInFrame") == 0)
             bvr::hud::set_cine_subs_in_frame(v != 0.0f);
         else if (strcmp(key, "cineDrive") == 0) {

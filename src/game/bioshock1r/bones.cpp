@@ -20,6 +20,7 @@
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h" // backbuffer_dims: the lens laws are aspect-parameterised
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h" // cine_drive/name for the vrbones status residue line
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/patterns.h"
@@ -1101,6 +1102,19 @@ void handle_command(const char* args) {
                 g_lastHand.load(std::memory_order_relaxed), g_refValid ? 1 : 0,
                 g_collapse.load(std::memory_order_relaxed) ? 1 : 0,
                 g_hideInactive.load(std::memory_order_relaxed) ? 1 : 0, g_hiddenHand);
+        // Session 30: the drive-residue state, on demand. Until now cacheAge
+        // existed only on the `[b1r] cine edge` line and the sleeve latch was
+        // printed nowhere at all, so a hands regression check had to provoke a
+        // cutscene edge to read the state it wanted to verify. These are the
+        // three things release() clears, plus the gate that decides whether it
+        // runs, so one command answers "did the hands get handed back".
+        BVR_LOG("[bones] drive residue: cacheAge=%llums wasCollapsed=%d collapsedHand=%d "
+                "reapplies=%u | cineHold=%d cineDrive=%s",
+                static_cast<unsigned long long>(g_cacheMs ? GetTickCount64() - g_cacheMs : 0),
+                g_wasCollapsed ? 1 : 0, g_collapsedHand,
+                g_reapplies.load(std::memory_order_relaxed),
+                bvr::hud::cinematic_hold() ? 1 : 0,
+                bvr::vr::cine_drive_name(bvr::vr::cine_drive()));
         int lockMode = g_renderLock.load(std::memory_order_relaxed);
         BVR_LOG("[bones] render lock: %s |delta|=%.2f UU gain=%.2f dgain=%.2f solves=%u "
                 "skips=%u",
