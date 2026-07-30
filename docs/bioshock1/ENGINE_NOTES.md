@@ -2401,7 +2401,39 @@ followed, so the resolution change never began. Notes:
 - This is also the first real exercise of the exec failure latch: the fault disabled the
   seam for the session with one clear line, instead of being retried every 15 s.
 
-### MEASURED: the world lens is Hor+ with a fixed vertical, and the option is 16:9-referenced
+### RETRACTED - the "Hor+ with a fixed vertical" law below is NOT established
+
+**Read this before acting on the section that follows.** A third reading contradicts it. Same
+backbuffer (2048x2048), same `option=130`, two different results:
+
+| sample | rendered tanH | tanV | age |
+|---|---:|---:|---|
+| in gameplay, right after boot | 1.2063 | 1.2063 | 16 ms (fresh) |
+| later, same session | **2.1445** | **2.1445** | 9016 ms (STALE) |
+
+`2.1445 = tan(65)` exactly, which is what the ORIGINAL assumption predicts (option is a true
+horizontal, vertical follows aspect). So the rendered projection is not a clean function of
+(option, aspect) - something else varies between samples, and the 9 s stale age means the
+second one may not be a gameplay world draw at all.
+
+The law below was derived from a single pair of readings and does not survive the third. The
+code changes it motivated (submission claim, suggested-option formula, and the fov-mismatch
+verdict) were written, built, and then **reverted unbuilt-upon** rather than shipping a
+plausible-but-unproven formula into the submission path - the mismatch verdict in particular
+feeds `vr::cinematic_active()`, so getting it wrong drops normal gameplay onto the big-screen
+quad.
+
+What went wrong methodologically: every sample was taken through `fovaudit live`, whose value
+can be stale, and the state at sample time (gameplay world draw vs menu vs scripted camera)
+was not pinned. A correct measurement needs the sample age checked (<500 ms), the view state
+confirmed as strict gameplay, and - crucially - a LIVE XR SESSION, because the submitted side
+of the comparison does not exist flat (`swap=0x0`, `submitted tanH=0.000000`). Flat testing
+cannot close this one.
+
+Keep from below: the ini lane and the square-backbuffer results are independently verified and
+stand. The pixel-efficiency arithmetic stands. The FOV law does not.
+
+### UNPROVEN (see retraction above): the world lens is Hor+ with a fixed vertical
 
 Two `fovaudit live` readings of the rendered projection, same `option=130`, different
 backbuffer, taken through the ini lane below:
