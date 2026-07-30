@@ -327,20 +327,9 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
     float optHfov = bvr::vr::rendered_hfov_deg();
     bool mm = false;
     if (fresh && optHfov > 1.0f) {
-        // Compare the VERTICAL. Under the measured law the option fixes
-        // tanV = tan(option/2)*9/16 and the horizontal is derived from the render
-        // aspect, so the vertical is the aspect-FREE primitive: this needs no
-        // aspect input at all. Comparing the horizontal against tan(option/2) is
-        // only valid at 16:9, and on a near-square resolution it read as a
-        // permanent mismatch - which this verdict feeds to cinematic_active(), so
-        // it would latch normal gameplay onto the big-screen quad. Dividing by a
-        // live aspect is worse: the aspect would come from whichever render
-        // target happens to be bound, which flickers between the scene and HUD
-        // targets and made the verdict oscillate. A scripted camera still moves
-        // tanV, so the detector keeps doing its original job.
-        float expectTanV = tanf(optHfov * 0.5f * 3.14159265f / 180.0f) * (9.0f / 16.0f);
-        if (expectTanV > 0.01f) {
-            float r = g_fovTanV.load(std::memory_order_relaxed) / expectTanV;
+        float optTan = tanf(optHfov * 0.5f * 3.14159265f / 180.0f);
+        if (optTan > 0.01f) {
+            float r = g_fovTanH.load(std::memory_order_relaxed) / optTan;
             mm = r < 0.90f || r > 1.10f;
         }
     }

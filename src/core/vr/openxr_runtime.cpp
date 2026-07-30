@@ -1050,19 +1050,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             maxHalfV = fmaxf(maxHalfV, fmaxf(-v.fov.angleDown, v.fov.angleUp));
         }
         float aspect = static_cast<float>(g_swapW) / static_cast<float>(g_swapH);
-        // Which OPTION value makes the render cover both headset half-angles,
-        // under the measured law (tanV = tan(option/2)*9/16, tanH = tanV*aspect):
-        //   tanV        >= tan(maxHalfV) -> tan(option/2) >= tan(maxHalfV)*16/9
-        //   tanV*aspect >= tan(maxHalfH) -> tan(option/2) >= tan(maxHalfH)*16/(9*aspect)
-        // The old form solved the inverted law: right at 16:9, and badly
-        // under-asking elsewhere. At aspect 1.0 with a 54/55 deg eye it suggested
-        // 110, which this engine renders as roughly 73 deg.
-        float needTan = fmaxf(tanf(maxHalfV), tanf(maxHalfH) / aspect);
-        float deg = 2.0f * atanf(needTan * (16.0f / 9.0f)) * 57.29578f;
-        if (deg > 160.0f) deg = 160.0f;
+        float halfH = fmaxf(maxHalfH, atanf(tanf(maxHalfV) * aspect));
+        float deg = fminf(halfH * 2.0f * 57.29578f, 160.0f);
         g_hfovDeg.store(deg, std::memory_order_relaxed);
-        BVR_LOG("xr: headset fov half-angles h=%.1f v=%.1f deg -> game fov option %.1f "
-                "(aspect %.3f; the option is 16:9-referenced and sets the VERTICAL)",
+        BVR_LOG("xr: headset fov half-angles h=%.1f v=%.1f deg -> game hfov %.1f deg "
+                "(aspect %.3f)",
                 maxHalfH * 57.29578f, maxHalfV * 57.29578f, deg, aspect);
     }
 
@@ -1568,34 +1560,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
                                  {static_cast<int32_t>(g_swapW), static_cast<int32_t>(g_swapH)}};
 
                 if (projectionMode) {
-                    // fov = the symmetric fov the game ACTUALLY rendered with.
-                    //
-                    // MEASURED, three readings, one of them exact:
-                    //   16:9,   option 130 -> rendered tanH 2.1445 = tan(65)
-                    //   1:1,    option 130 -> rendered tanH 1.2063 = tan(65)*9/16
-                    //   1:1,    option 100 -> rendered tanH 0.6704 = tan(50)*9/16
-                    //                                    (predicted 0.67036)
-                    // So the option is a 16:9-REFERENCED value whose real effect
-                    // is on the VERTICAL, and the horizontal follows the render
-                    // aspect (Hor+):
-                    //     tanV = tan(option/2) * 9/16
-                    //     tanH = tanV * (render aspect)
-                    // This code assumed the inverse. The two agree EXACTLY at
-                    // 16:9, which is why the assumption survived - every earlier
-                    // measurement was taken at 16:9.
-                    //
-                    // Confirmed by submitting and rendering side by side in one
-                    // live session at 2048x2048: submitted tanH 1.2063 against
-                    // rendered 0.6704, a ratio of 1.80 == 16/9. That mismatch is
-                    // the compositor reprojecting horizontal content by the wrong
-                    // factor: yaw warps, pitch stays clean - reported in-headset,
-                    // and independent of the FOV slider, which is the property
-                    // that discriminates this law from the alternative (both
-                    // scale with tan(option/2), so the aspect factor is a CONSTANT
-                    // stretch at any option value).
-                    float halfV = atanf(tanf(hfovDeg * 0.5f / 57.29578f) * (9.0f / 16.0f));
-                    float halfH = atanf(tanf(halfV) * static_cast<float>(g_swapW) /
-                                        static_cast<float>(g_swapH));
+                    // fov = the symmetric fov the game rendered with (hfov
+                    // written by the adapter, vfov via aspect).
+                    float halfH = hfovDeg * 0.5f / 57.29578f;
+                    float halfV = atanf(tanf(halfH) * static_cast<float>(g_swapH) /
+                                        static_cast<float>(g_swapW));
                     // FOV audit (session 21): the tangents this layer is
                     // TAGGED with, logged on change. The flat gate compares
                     // them against tangents recovered from dumpframe cb0.
