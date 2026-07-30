@@ -3159,3 +3159,124 @@ was not properly saved across a function call`** modal dialog: the detour return
   it does NOT survive: **pressing VR PRESET 1 re-arms `aim on` and `origin on`**
   (`camera.cpp:862-864`), which is what turned substitution back on mid-run here. Any read-only
   measurement has to be re-armed after a preset press.
+
+## Session 30 part 2: THE WRENCH IS FIXED - the engine's own view pitch was frozen
+
+Part 1 above closed the aim-seam lane by measurement (melee reaches neither fire-start seam).
+This is the actual cause, found and fixed in-headset the same session.
+
+### 1. The mechanism: two things that were each individually reasonable
+
+**(a) Pitch kill freezes the engine's pitch rather than setting it.** Session 19 zeroes the
+composed right-stick Y while the VR camera drives a gameplay view, so the stick cannot fight the
+HMD for pitch. Its own comment already named the stake: *"a stick-pitched body drags the viewmodel
+with it and aims the wrench's melee phantom at the body pitch instead of the hand."* But zeroing
+an INPUT does not set the value - it means the engine's own view pitch can never change again.
+
+**(b) The camera write is asymmetric, and only one half was ever noticed.**
+`camera.cpp` (session 30 line numbers):
+
+```cpp
+int32_t gameYawUnits = rot->yaw;
+rot->pitch = a.pitchRad * kRotUnitsPerRadian;   // ABSOLUTE from the head
+rot->roll  = a.rollRad  * kRotUnitsPerRadian;   // ABSOLUTE from the head
+rot->yaw   = gameYawUnits + residualUnits;      // RELATIVE to the engine's own
+```
+
+Yaw keeps the engine's value and adds the head residual on top, so the engine's yaw stays real.
+Pitch DISCARDS the engine's value. Nothing reads it, nothing corrects it, and the rendered view is
+the head's either way - so a wrong value there is completely invisible.
+
+Together: the engine's view pitch parks at whatever it last held and stays there for the session,
+and anything the engine aims for ITSELF uses that stale number.
+
+### 2. The measurement
+
+The `[b1r] camera:` heartbeat prints `rot` BEFORE the write above, so it reports the engine's own
+belief. In-headset, over fifty seconds while the user turned freely:
+
+```
+rot=(49350 22991 0) -> (49350 32820 0) -> (49350 42651 0) -> (49350 53290 0)
+```
+
+Yaw moving, **pitch pinned at 49350 = -88.9 degrees. Straight down.**
+
+Corroborated by the user with `vrhands off`, which returns the viewmodel to engine placement and
+therefore makes the engine's aim visible: *"this revealed that the hands were pointing downwards -
+hitting the wall it was hitting straight, but when I entered a fight it was hitting downwards ...
+I saw the hits hitting the floor when I looked down while hitting with the hammer in a fight."*
+The occasional kill was catching a leg on the way down.
+
+Every part of the original report follows:
+
+- **Wall:** you approach it facing level, so a frozen-near-level pitch connects.
+- **In a fight:** the frozen value was steeply down, so swings went into the floor.
+- **The opening rocks other players reported, with no combat:** rocks are on the floor. You look
+  down at them.
+- **Guns unaffected:** we substitute the whole fire ray, pitch included, at a seam melee lacks.
+
+### 3. Two hypotheses this killed, both of them ours
+
+- **Soft lock-on.** The user's own leading theory, tested by setting the radius ABSURDLY high
+  instead of to zero: `exece set GamepadPlayerInput SoftLockOnRadius 5000` produced no perceptible
+  difference from 0. So that write never reaches the live object and the whole lock-on suppression
+  has been a no-op. **Note for any future engine SET: `-> HANDLED` proves only that `Exec`
+  recognised the command.** `console_exec`'s FOutputDevice stub returns 0 from the engine's log
+  filter specifically to suppress output, so a `set` that names a wrong class or property, or that
+  writes a class default the live object never re-reads, logs exactly the same line as one that
+  works. The reticle SET happens to work; do not generalise from it.
+- **Positional head/pawn decoupling** (part 1's candidate 2). Right neighbourhood, wrong axis. It
+  is pitch, not position, and the mechanism is ours rather than the engine's.
+
+### 4. The fix: servo the pitch through the game's own input
+
+Instead of `out.ry = 0`, feed a proportional term that steers the engine's pitch toward the
+head's. The game layer publishes `head pitch - engine pitch` once per CalcView **before** the
+overwrite (one line later the error is identically zero, which is exactly why nobody saw this),
+and `xinput_bridge` turns it into a stick value.
+
+Why this shape rather than writing the rotation directly:
+
+- **It writes no engine memory.** None of the session-29 world-change or recycled-heap hazards
+  apply, because the value travels through the game's own input path.
+- **It inherits the game's own pitch clamps** instead of needing its own.
+- **It is invisible.** The rendered pitch is overwritten from the head regardless, so the head
+  still owns what you see; only the engine's internal belief catches up.
+- **It fails open.** A stale publisher (world unload, drive off, menu) reverts to `ry = 0`, the
+  pre-session-30 behaviour, with no special case.
+
+Guards: 1.5 deg deadzone so the stick stops chattering once converged (a permanently nonzero look
+axis is the kind of thing a game reads as "the player is looking around"); gain capped at ~24%
+deflection so it can never out-run a real player's look, and so a wrong SIGN saturates somewhere
+recoverable rather than slamming to the clamp. `vrinput pitchservo on|off|invert|status`.
+
+**In-headset verdict: "it's working and I was able to hit him consistently."** Measured after:
+the engine pitch moved from -88.9 deg to **-6.6 deg**.
+
+### 5. Known residual, measured - do not treat this as exact
+
+`err=4.3 deg stick=3876` at steady state. The servo converges to within a few degrees and then
+stalls, because near convergence the proportional stick value falls under the **game's own** stick
+deadzone and stops moving anything. So expect a residual of roughly 4-8 degrees, not zero. That is
+inside melee tolerance (confirmed by consistent hits) but it is not perfect.
+
+Closing it needs a minimum stick magnitude that clears the game's deadzone, which risks a limit
+cycle - overshoot, reverse, buzz. Measure the game's actual deadzone before adding one.
+
+### 6. The health and EVE bar fills are not full-screen effects
+
+Session 29 routed textureless gameswf fills in-frame. Confirmed in-headset that this also sends
+the **health and EVE bar COLOUR fills** into the eye image while their frames stay on the panel,
+so the bars read as empty. They are textureless 5-vertex gameswf quads - identical to the effect
+fill by every test the classifier can apply. A/B'd both ways by the user: untick restores the
+colour, re-tick removes it.
+
+**The counter had been saying so since the change shipped and was misread.** `effectsInFrame`
+advances by exactly 2 per interval, every interval, with nothing on screen. Two bars. Part 1 of
+this session recorded that as "the fill is always drawn and usually transparent".
+
+And the user's description of the effect - *"either the size of the HUD or the size of the old
+resolution"* - identifies the deeper error. **These draws are authored in gameswf STAGE space.**
+Routing one in-frame cannot make it cover the eye; it makes it stage-sized in the middle of the
+view. So session 29's fix could never have worked, and the open "effects are not full-screen" item
+needs different GEOMETRY, not a different render target. Default is back to the panel.
