@@ -158,6 +158,70 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
+### OPEN BUG 1: VR freezes permanently after alt-tab (user-reported, session 27)
+
+Alt-tab out of the game and the headset image freezes; the game keeps rendering flat
+normally. Recovery requires toggling the VR enable off and back on. So Present keeps
+running but XR submission stops and never resumes.
+
+Prime suspect: `pace_should_skip` (openxr_runtime.cpp), from the M8 unfocused-pace guard as
+hardened by `22ed1b0` - once `everFocused` latches, unfocused presents ALWAYS skip the
+blocking `xrWaitFrame`, which returns early from `on_present_begin`, so nothing is submitted.
+That part is deliberate and is what fixed the session-26 hard hang. The bug is that it never
+RESUMES. Check in order:
+
+1. What actually changes on a Windows alt-tab: does the XR session leave FOCUSED, or does it
+   stay FOCUSED while only the Win32 window loses focus? `pump_events` runs above the guard,
+   so state should update either way - confirm against the session-state log lines.
+2. Whether anything the guard latches (`g_unfocusedSinceMs`, `g_everFocused`) fails to clear
+   on return, or whether the guard consults Windows focus rather than XR state.
+3. Whether a leaked open frame (`g_frameOpen` / `g_srPairOpen`) survives the skip: there is a
+   leaked-frame close before the wait, but the pair-hold returns EARLIER than that.
+4. Why the VR off/on toggle recovers. That path tears the session down, so diffing what it
+   clears against what the resume path clears should name the stuck variable outright.
+
+Also note the engine pauses CalcView while the window is unfocused (the harness scripts
+depend on this), so the game thread may stop driving the camera - check whether that starves
+something the submit path needs.
+
+### OPEN BUG 2: yaw warping on head turn at non-16:9 resolutions
+
+Reported in-headset at 2048x2048. Turning the head makes the world warp; pitch is reportedly
+clean. **Independent of the FOV slider** - sweeping the whole range changed only the visible
+angular extent, never the distortion. That property is the most valuable constraint we have.
+
+**What has been ruled out, and what is merely unproven:**
+
+- The FOV formula was changed three times this session and reverted all three times. The
+  cause was NOT the engine changing behaviour but the rendered-FOV watch being untrustworthy:
+  at the same option and the same aspect it reported values differing by exactly 9/16 (1:1 at
+  option 130 gave both 2.1445 and 1.2063; 1:1 at option 100 gave both 1.1918 and 0.6704).
+  9/16 is the 16:9 vertical factor, so the watch is sometimes decoding the VERTICAL tangent
+  into its horizontal slot. **Fix the instrument before touching projection math again**: the
+  cb0 layout has a built-in cross-check (`2tanH, 0, -tanH` against `-2tanV, tanV`) that should
+  make the two unambiguous and is evidently not being enforced. Several samples were also
+  accepted despite printing `age>9000ms`, i.e. stale by the rule the same line prints.
+- BioVRDev use the ORIGINAL formula (`halfV = atan(tan(halfH)*h/w)`) at a near-square
+  2750x2850 and report no warping. That is strong evidence the formula shape was never the
+  bug, and it should have been treated as a red flag against each derived "law" rather than as
+  an anomaly.
+- A stereo A/B was attempted and is CONFOUNDED: the overlay toggle is labelled
+  "1t + camera mode + stereo" and disables the head-driven camera too. With the head not
+  driving the camera, the compositor reprojects an unchanging image as you turn, which looks
+  exactly like warping. Stereo is therefore neither confirmed nor eliminated. A clean test
+  needs stereo off with camera mode still ON.
+
+**Strongest remaining hypothesis: the submitted POSE, not the submitted FOV.** A projection
+layer is submitted with both a pose and an fov; if the pose handed to the compositor does not
+match the pose the frame was actually rendered from, the compositor reprojects incorrectly and
+the world swims as the head turns - and that error is completely independent of the FOV value,
+which is exactly the observed signature. Look at `projViews[eye].pose` versus the pose the
+camera drive used for that frame, including staleness across the pair-hold.
+
+Secondary: the claim's source was observed as `src=live`, meaning it latched a measured
+tangent instead of deriving from the option, and was still reporting the option-130 value
+after the slider moved to 100. Stale regardless of which formula is correct.
+
 **Session 27 stage plan** (branch `s27-b1r-stability-and-resolution`; stage 1 done):
 
 1. **In-headset re-test of stage 1** (user, BS1). This is the release gate for a stability
