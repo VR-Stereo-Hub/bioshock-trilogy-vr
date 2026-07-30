@@ -2,7 +2,120 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-30, session 28 - the warp is FIXED IN-HEADSET; the hands moving with the head was the same defect from the other side, now lens-matched - branch s27-b1r-stability-and-resolution)
+## Current state (2026-07-30, session 29 - STAGE 3 CODE-COMPLETE: the cutscene bars were a gameswf DRAW all along, session 22's reading retracted - branch s29-b1r-cinematics-and-aim-dot)
+
+**All three stage-3 items are built, flat-measured where flat can measure them, committed and
+pushed. The release stays HELD until the in-headset verdict.**
+
+### 0. THE HEADLINE: the bars are a flash sprite, and that retracts session 22
+
+The whole letterbox investigation was chasing the wrong mechanism for three in-headset rounds.
+**The bars are a gameswf DRAW painted over a FULL-FRAME tonemap** - not unpainted clear behind a
+vertically shrunken quad, which is what session 22 round 2 recorded. Two independent
+measurements, and neither needed a headset:
+
+- **The Nexus "Fullscreen Cutscenes" mod is a one-byte SWF edit.** Its `HUDPC.swf` is exactly
+  one byte larger than stock (12,322,709 vs 12,322,708). Byte-diffed: the SWF header length
+  field +1, and a single edited tag at ~0x0B750DE - a `PlaceObject2` (code 26, body 25 -> 26)
+  placing **character 292 at depth 256 named `WidescreenBars`**, its matrix rewritten from
+  translate-only to `HasScale=1, NScaleBits=0` (ScaleX = ScaleY = **0**). It scales the sprite
+  to nothing. A sprite is a draw.
+- **A framedump inside the letterbox shows it.** Auto-fired on the `letterbox ON` transition
+  during the Electro Bolt sequence at 2048x2048 (bars 313/350 px). Both intervals identical:
+  `ClearRTV (0,0,0,1)` -> tonemap `Draw a=6` over the **full 2048x2048 viewport** -> a
+  **textureless `Draw a=29`** -> textured 5-vertex flash quads, all carrying the gameswf flush
+  RVA `0x7B8EB5`. Exactly one textureless draw. That is the bars.
+
+**Why session 22 got it wrong, and it is a reusable lesson:** the frame dump captures no vertex
+buffers, so "shrunken GEOMETRY" was never a measurement - it was an inference from a black clear
+plus black bars with no draw identified between them. The tonemap's `cb0` is `[1.0, 0, 0, ...]`
+with no scale term, so cb0 could not have supported it either.
+
+**Consequences.** `blit::stretch_band` / `vrcine unsqueeze` was undoing a squeeze that does not
+exist; on real content it could only ever have cropped picture and distorted the aspect. It is
+**deleted, not defaulted off**. Round 3's "texture-less fills = bars" fingerprint, retracted in
+round 4, was right about what the bars are - round 4's regression came from re-rendering those
+fills with raw flash blend states, a different operation from not issuing them.
+
+### 0b. And the three failed in-headset rounds were confounded TWICE
+
+Do not read them as evidence about the mechanism. (i) All three ran at **1920x1080**, where the
+layer claim is `halfV = atan(tan(halfH)*9/16)` - at the measured 104 deg horizontal that is a
+**71.6 deg vertical claim inside a ~96 deg Quest 3 eye, i.e. ~12 deg of permanent black band top
+and bottom, cutscene or not**. That is the same ambient banding the user was raising FOV to chase
+in session 28. (ii) The only evidence the stretch ever ran was `xr: letterbox unsqueeze live`, a
+**process-lifetime one-shot** - and the boot attract letterboxes too, so it could fire at boot
+and prove nothing. **Rule worth keeping: a one-shot log establishes that a path ran once, never
+that it covered an episode.**
+
+### 1. What shipped
+
+- **Bar suppression.** `hud::on_draw`'s verdict widened from `RTV*|nullptr` to
+  `PassThrough|Redirect|Skip`; `DrawDetour` gained the mod's only draw-dropping early return.
+  Skipping is safe where redirecting is not - it changes no device state, so the gameswf batch's
+  state machine is untouched. Discriminator while a cinematic holds: a gameswf draw on the HUD
+  target with **no texture bound**. `vrcine bars hide|show`, default hide, overlay + ini.
+- **The cinematic signal moved off pixels, and had to.** Suppressing the bars blinds the pixel
+  watch that detects them - key the gate on black pixels and it flaps every other interval. The
+  **bar draw is now the primary signal**; `hud::cinematic_hold()` = draw OR pixel watch. The
+  watch bootstraps the hold (~6 presents: async map + 5-sample hysteresis), the draw sustains
+  it. The two stay **independent** and `vrcine status` prints both, so agreement is evidence.
+  Every consumer that must hold for a whole cutscene now calls `cinematic_hold()`, never
+  `letterbox()`.
+- **`vrcine drive off|authored|authored+look`** (default authored). `off` means no cinematic
+  special-casing at all (the pre-session-22 behaviour, kept as a real A/B) rather than being a
+  near-duplicate of `authored`.
+- **`bones::release()`** on the cinematic entry edge, plus `[b1r] cine edge` telemetry.
+- **The aim dot**, `vraim dot on|off` (default off) + distance/size sliders, persisted.
+
+### 2. The roadmap item about the drives was wrong, and the correction matters
+
+It said the hands/aim/laser drives run ungated through cutscenes. They do not: `driveHead` is
+false under a letterbox, so `vrDriving` is false and all three consumers already bail on it.
+**But that is a side effect of the head gate, not a contract** - and `authored+look` breaks it by
+design, because it drives the head again. Hence explicit gates in `hands.cpp` and `aim.cpp`; the
+one line in `aim.cpp` covers three things at once (fire-seam substitution via `ray_for`, the
+per-weapon heap scans, and the laser publish).
+
+So the real suspect for "controllable rig hands instead of authored" is **sticky state**:
+`reapply()` repaints the cached pose for 100 ms *while clearing the dirty flag*, so it actively
+suppresses the engine re-evaluation that would restore the authored animation; and
+`restore_hidden()` only ever ran from inside `drive()`, so a collapsed inactive hand stays
+collapsed. `bones::release()` undoes all of it. **This came from reading code, not measuring** -
+see the honest limits in section 4.
+
+### 3. `authored+look` = rotation delta, no positional term (user's call)
+
+The head's rotation delta **since the shot began** is added on top of the authored rotation. It
+cannot reuse the gameplay path: `camera.cpp` writes `rot->pitch`/`rot->roll` ABSOLUTELY from the
+head, which would erase the authored choreography (session 22 measured authored roll walking
+-7773..-8189 through the wake-up shot). The reference is captured at the cinematic edge and
+dropped on both edges, so every shot opens framed exactly as authored. No positional offset at
+all, so the camera can never be dollied into geometry, and the residual never reaches
+`body::on_calcview` (which would silently rotate the pawn under the authored camera).
+
+### 4. What is NOT confirmed - read this before trusting the above
+
+- **The sticky-state diagnosis is unconfirmed.** The flat `cine edge` line read
+  `vrDriving=0 ... hiddenHand=-1 cacheAge=0ms refValid=0` at the cutscene edge. That confirms the
+  drives were suspended, but with **no XR session `vrDriving` is false always**, so it cannot
+  distinguish "gated by the letterbox" from "gated by no headset" - and `hiddenHand=-1` merely
+  means the bone drive never ran at all. Only a headset can test the release.
+- **Bar suppression has not been seen working yet.** The code is in and the frame that proves the
+  bars are a draw is captured, but the suppression run itself did not happen before the session
+  paused. First thing to do next.
+- **The aim dot has never been rendered.** No XR session flat means no quad layers at all.
+
+### 5. Cinematic FOV, measured: the scene animates its own lens
+
+During the sequence the WORLD lens **sweeps** `tanH 1.215944 -> 1.272701` (hfov 101.13 ->
+103.68 deg) while the FG lens sits at `1.191754` (100.00 deg) - the scene dollies its own camera.
+The option is 100, so it stays inside `fov_mismatch()`'s +-10% band, the mismatch never latches,
+and `cineQuad=0` throughout: the session-28 claim-substitution branch correctly never fired.
+Note for BS2: a cutscene is a place where two lenses legitimately differ, so `lenses=2` there is
+not automatically the session-28 defect.
+
+## Previous state (2026-07-30, session 28 - the warp is FIXED IN-HEADSET; the hands moving with the head was the same defect from the other side, now lens-matched - branch s27-b1r-stability-and-resolution)
 
 **IN-HEADSET (user, Quest 3 / VDXR): the warping is FIXED.** Two things came back with it, and one
 of them is the important one.
@@ -376,7 +489,45 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### BOTH session-27 open bugs are CLOSED and in-headset accepted. Nothing is blocked.
+### 0. THE ONLY THING BLOCKING THE RELEASE: the in-headset verdict on stage 3
+
+Everything in stage 3 is built, committed and pushed. Three things need a headset, in this order:
+
+1. **Bars.** Load the Gatherer's Garden Electro Bolt save, take the plasmid. Expect the bars to
+   flash briefly at the start (the pixel watch needs ~6 presents to arm the hold) and then go,
+   with the picture underneath **intact** - not cropped, not stretched. A/B with
+   `vrcine bars hide|show`, 30 s per verdict. `vrcine status` prints `barDraw` and `pixelWatch`
+   side by side; with bars hidden, `barDraw=1 pixelWatch=0` is the DESIGN, not a fault.
+   *Watch for over-suppression:* if a fade-to-black stops working, the textureless discriminator
+   is catching a fade too, and the fix is to narrow it by vertex count (`vrcine status` reports
+   the count it last skipped - 29 when measured).
+2. **Drives.** `vrcine drive authored` (default) with the controllers AWAKE - this is the exact
+   condition that produced the session-22 round-5 report. The authored hands should play. Then
+   `authored+look`: the authored camera choreography must survive while the head can look around,
+   and the pawn must not rotate under it. Then `off` as the A/B. The `[b1r] cine edge` line is
+   what settles the sticky-state question flat measurement could not (see Current state 4).
+3. **Aim dot.** `vraim dot on`, set `vraim dot dist <m>` to a wall's distance, fire, and check
+   the dot sits on the hole. The dot should vanish exactly when substitution would refuse.
+   Also confirm the `[aim] dot transform round-trip error` line says EXACT.
+
+Also worth one pass while in there: **alt-tab mid-cutscene**. The session-28 pace thread has
+never met a cinematic, and that intersection is the whole reason the release was held.
+
+### Then, and only then: the release
+
+Merge to main, bump `project(BioshockVR VERSION ...)` in `CMakeLists.txt:6` off 0.4.1 (single
+source of truth; `bvr_version.h` is generated), build **Release** - everything in sessions 27-29
+has been Debug - soak once because the pace thread is new and Debug timing is not Release timing,
+then `tools/package.ps1`, tag, publish.
+
+### Harness debt found this session (costs a human every run)
+
+`boot.ps1`'s A-press loop does **not** activate the main menu on this build, and
+`game-click.ps1` hovers the entry without activating it. Menu navigation currently needs a human,
+which makes every replay a round trip. In-game triggers (`vrinput test press A`) are unaffected.
+Worth fixing before the next investigation that needs repeated loads.
+
+### Previously: BOTH session-27 open bugs are CLOSED and in-headset accepted.
 
 Stage 1 (stability), the resolution lane, the yaw warp, the viewmodel/head coupling and the
 alt-tab freeze are all done and confirmed on the real headset. Stage 2 is substantially complete -
