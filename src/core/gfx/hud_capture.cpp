@@ -142,17 +142,40 @@ int g_fovMismatchStreak = 0;
 // non-indexed draw from the engine's post path sampling a BACKBUFFER-SIZED
 // texture (dump-proven), while gameswf HUD samples 2048x2048 UI atlases -
 // srv0 size is the discriminator; those draws stay in the frame.
+//
+// SESSION 30: the size test above is DEGENERATE at a square render target, and
+// the user runs 2048x2048. Measured in framedump_175024_q0 (2048x2048): the
+// tonemap target T4 and the scene source T6 are both 2048x2048, and so are
+// twenty-odd of the gameswf UI atlases (T106 fmt=71, T107 fmt=77, T113) - so
+// `srv0 dims == target dims` matched 20 of the 113 draws in that batch. The
+// rule's own premise, written above, is exactly what inverts: it assumes
+// post-FX samples a BACKBUFFER-SIZED texture while gameswf samples 2048x2048
+// atlases, which stops discriminating the moment the backbuffer IS 2048x2048.
+//
+// The structural difference survives any resolution: a post-FX source is
+// always something the engine RENDERED (bind RENDER_TARGET|SHADER_RESOURCE,
+// 0x28 for T4/T6), a UI atlas never is (bind 0x8, and BC-compressed with
+// mips). So the discriminator is the bind flags, and the size test stays only
+// as the cheap first half. `vrcine postfx rt|size` restores the old rule for a
+// one-command A/B.
 int g_swfDrawsThisInterval = 0;
 std::atomic<bool> g_screenOnlyOn{false};
 int g_screenOnlyStreak = 0;
 std::atomic<unsigned> g_cPostFx{0};
-struct SrvCacheEntry { ID3D11Resource* res; UINT w, h; };
+// Draws the OLD size-only rule would have passed in-frame and the bind test
+// rejects. On a 16:9 render this should stay 0; at 2048x2048 it is the size of
+// the leak. Reported by `vrhud status`.
+std::atomic<unsigned> g_cPostFxRejected{0};
+std::atomic<bool> g_postFxRtOnly{true};
+bool g_squareWarned = false;
+struct SrvCacheEntry { ID3D11Resource* res; UINT w, h, bind; };
 SrvCacheEntry g_srvCache[8] = {};
 int g_srvCacheCount = 0;
 
-// srv0 dimensions with the same per-interval identity cache the RT descs use
-// (the HUD run rebinds the same few atlases dozens of times per interval).
-bool srv0_size(ID3D11DeviceContext* ctx, UINT* w, UINT* h) {
+// srv0 dimensions and bind flags, with the same per-interval identity cache the
+// RT descs use (the HUD run rebinds the same few atlases dozens of times per
+// interval). `bind` may be null when only the size matters.
+bool srv0_size(ID3D11DeviceContext* ctx, UINT* w, UINT* h, UINT* bind = nullptr) {
     ID3D11ShaderResourceView* srv = nullptr;
     ctx->PSGetShaderResources(0, 1, &srv);
     if (!srv) return false;
@@ -165,16 +188,18 @@ bool srv0_size(ID3D11DeviceContext* ctx, UINT* w, UINT* h) {
         if (g_srvCache[i].res == res) {
             *w = g_srvCache[i].w;
             *h = g_srvCache[i].h;
+            if (bind) *bind = g_srvCache[i].bind;
             return true;
         }
     }
-    UINT tw = 0, th = 0;
+    UINT tw = 0, th = 0, tb = 0;
     ID3D11Texture2D* tex = nullptr;
     if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
         D3D11_TEXTURE2D_DESC d{};
         tex->GetDesc(&d);
         tw = d.Width;
         th = d.Height;
+        tb = d.BindFlags;
         tex->Release();
     }
     if (g_srvCacheCount < static_cast<int>(_countof(g_srvCache))) {
@@ -182,10 +207,12 @@ bool srv0_size(ID3D11DeviceContext* ctx, UINT* w, UINT* h) {
         e.res = res;
         e.w = tw;
         e.h = th;
+        e.bind = tb;
     }
     if (!tw) return false;
     *w = tw;
     *h = th;
+    if (bind) *bind = tb;
     return true;
 }
 
@@ -232,6 +259,26 @@ std::atomic<bool> g_cineSubsInFrame{false};
 // in-frame so they cover the whole view, instead of riding the HUD panel.
 std::atomic<bool> g_effectsInFrame{true};
 std::atomic<unsigned> g_cEffectsInFrame{0};
+// SESSION 30: the effect test used to be RESIDUAL - "textureless and not the
+// bar count" - with no upper bound, so every textureless shape went in-frame.
+// The live census has already recorded a 1493-vertex textureless draw, which is
+// a tessellated vector shape, not a full-screen fill: a residual rule was
+// rendering it into the eye image. A fill is 5 vertices (a strip; D3D11 has no
+// triangle fan, so 5 is one quad plus a degenerate). Bound it, and let every
+// count outside the bound go back to the panel, which is the pre-session-29
+// behaviour for those shapes. Retunable live for the same reason `bars verts`
+// is: a wrong bound must show up as data, not as a silent miss.
+std::atomic<unsigned> g_effectMaxVerts{8};
+std::atomic<unsigned> g_cEffectsRejected{0};
+
+// Session 30 routing telemetry - see the block comment above pass_verdict().
+// Declared here because on_setrt(), which clears g_subActive, comes first.
+// Render thread only, same as the rest of the classifier state.
+bool g_subActive = false;
+std::atomic<unsigned> g_cPass[kRoutePassCount]{};
+std::atomic<unsigned> g_cStranded[kRoutePassCount]{};
+bool g_strandedLogged[kRoutePassCount] = {};
+bool g_subProofDone = false;
 // Every OTHER textureless gameswf count, logged once each. These are the
 // fades and dims that session 22 round 4 mistook for bars and blacked the
 // scene out with - so they are data we want, not noise.
@@ -643,6 +690,12 @@ int g_descCacheCount = 0;
 
 void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
               ID3D11DepthStencilView* dsv) {
+    // Session 30: this IS the moment the substitution dies - hud_capture.h has
+    // always said so in prose, and g_subActive turns that prose into state.
+    // Declared here rather than at the top of DrawDetour because our own
+    // substitution goes through the ORIGINAL SetRT and never reaches here,
+    // which is exactly the asymmetry that makes a stranded pass possible.
+    g_subActive = false;
     g_curRt = nullptr;
     g_curRtLdr = false;
     g_curDsvBound = dsv != nullptr;
@@ -751,8 +804,79 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
     }
 }
 
+// ---- Session 30: where does a PassThrough draw actually LAND? ----------------
+//
+// `PassThrough` is not a routing instruction, it is the absence of one: the
+// caller leaves the binding alone. But the redirect binds our RTV through the
+// ORIGINAL OMSetRenderTargets, so `on_setrt` never sees it and `g_curRt` keeps
+// naming the game's target. hud_capture.h states the contract in prose - "the
+// game's next OMSetRenderTargets clears the substitution" - and until now that
+// was the whole of it: nothing measured whether a draw the classifier believed
+// was in-frame actually reached the frame.
+//
+// It matters because the answer is order-dependent. The effect fill is the
+// FIRST gameswf draw in every dump so far, so it passes onto the game's target;
+// a frame where a HUD element flushed first would silently put the same
+// "in-frame" effect onto the head-locked panel, and the user would report
+// exactly what they reported - better, but not covering the view.
+//
+// So: count passes by reason, and count the ones issued while our substitution
+// is still live. STRANDED > 0 means the classifier is lying to itself.
+// (The state lives further up, next to the rest of the routing knobs, because
+// on_setrt - which clears it - is defined before this point.)
+const char* pass_reason_name(int r) {
+    switch (r) {
+        case kRouteTonemap: return "tonemap";
+        case kRouteNotHud: return "not-hud";
+        case kRouteBarsShown: return "bars-shown";
+        case kRouteEffect: return "effect";
+        case kRouteCineSubs: return "cine-subs";
+        case kRoutePostFx: return "post-fx";
+        case kRouteUnarmed: return "unarmed";
+        default: return "?";
+    }
+}
+
+DrawDecision pass_verdict(ID3D11DeviceContext* ctx, RoutePass r) {
+    g_cPass[r].fetch_add(1, std::memory_order_relaxed);
+    if (g_subActive) {
+        g_cStranded[r].fetch_add(1, std::memory_order_relaxed);
+        // `g_subActive` is our BELIEF about the device, not a reading of it.
+        // Prove it once against the device itself, because every number under
+        // it is void if the belief is wrong. One-shot for the mechanism, the
+        // counters for the episode - session 29's rule about one-shot logs.
+        if (!g_subProofDone && ctx) {
+            g_subProofDone = true;
+            ID3D11RenderTargetView* bound = nullptr;
+            ID3D11DepthStencilView* dsv = nullptr;
+            ctx->OMGetRenderTargets(1, &bound, &dsv);
+            ID3D11Resource* res = nullptr;
+            if (bound) bound->GetResource(&res);
+            BVR_LOG("[hud] stranded-pass PROOF: bound rtv0 resource=%p, our capture RT=%p - "
+                    "the substitution belief is %s",
+                    static_cast<void*>(res), static_cast<void*>(g_tex),
+                    (res && res == static_cast<ID3D11Resource*>(g_tex)) ? "CORRECT"
+                                                                       : "WRONG (ignore the "
+                                                                         "stranded counters)");
+            if (res) res->Release();
+            if (bound) bound->Release();
+            if (dsv) dsv->Release();
+        }
+        if (!g_strandedLogged[r]) {
+            g_strandedLogged[r] = true;
+            BVR_LOG("[hud] STRANDED pass-through (%s): the classifier says IN FRAME but our "
+                    "capture RT is still bound, so this draw lands on the HUD panel",
+                    pass_reason_name(r));
+        }
+    }
+    return DrawDecision{};
+}
+
 DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
     const DrawDecision kPass{};
+    // The two early-outs stay uncounted on purpose: they are the hot path for
+    // every non-indexed draw in the frame, and neither can be stranded (our
+    // substitution only ever survives on the HUD target itself).
     if (!g_curRt || !g_curRtLdr) return kPass;
     ++g_swfDrawsThisInterval; // session 22: screen-only interval detector
 
@@ -769,10 +893,10 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
         srv0->Release();
         if (srvRes) srvRes->Release(); // identity compare only
         if (srvRes == leader) g_hudTarget = g_curRt;
-        return kPass; // the tonemap itself always passes through
+        return pass_verdict(ctx, kRouteTonemap); // the tonemap always passes through
     }
 
-    if (g_curRt != g_hudTarget) return kPass;
+    if (g_curRt != g_hudTarget) return pass_verdict(ctx, kRouteNotHud);
 
     // Session 22 kind (c): the engine's own post effects (alcohol blur) are
     // also post-tonemap non-indexed draws here, but they sample a
@@ -823,7 +947,7 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
                 }
                 // Shown: keep it IN FRAME rather than letting it redirect onto
                 // the HUD panel - that is the defect, not the baseline.
-                return kPass;
+                return pass_verdict(ctx, kRouteBarsShown);
             }
             note_textureless_count(vertexCount);
             // NOT the bars: a textureless gameswf fill is a FULL-SCREEN effect
@@ -840,9 +964,16 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
             // conflation is gone: the bars are identified by vertex count and
             // handled above, so what reaches here is only the effects.
             // Reversible, because round 4's regression is the known risk.
-            if (g_effectsInFrame.load(std::memory_order_relaxed)) {
+            //
+            // SESSION 30: bounded by vertex count, so this is now a POSITIVE
+            // test rather than "everything that is not the bars". See the
+            // g_effectMaxVerts comment - the 1493-vertex textureless draw the
+            // census already recorded was going in-frame under the old rule.
+            if (vertexCount > g_effectMaxVerts.load(std::memory_order_relaxed)) {
+                g_cEffectsRejected.fetch_add(1, std::memory_order_relaxed);
+            } else if (g_effectsInFrame.load(std::memory_order_relaxed)) {
                 g_cEffectsInFrame.fetch_add(1, std::memory_order_relaxed);
-                return kPass;
+                return pass_verdict(ctx, kRouteEffect);
             }
         }
     }
@@ -862,26 +993,43 @@ DrawDecision on_draw(ID3D11DeviceContext* ctx, UINT vertexCount) {
     // rather than a decision, and the A/B takes five seconds in the headset.
     if (cinematic_hold() && g_cineSubsInFrame.load(std::memory_order_relaxed)) {
         g_cLbFills.fetch_add(1, std::memory_order_relaxed);
-        return kPass;
+        return pass_verdict(ctx, kRouteCineSubs);
     }
 
+    // The post-FX rule. Size alone is degenerate at a square target - see the
+    // block comment at g_postFxRtOnly - so the real discriminator is that the
+    // source was RENDERED. `vrcine postfx size` restores the old rule for an A/B.
     {
-        UINT sw = 0, sh = 0;
-        if (srv0_size(ctx, &sw, &sh) && sw == g_curW && sh == g_curH) {
-            g_cPostFx.fetch_add(1, std::memory_order_relaxed);
-            return kPass;
+        UINT sw = 0, sh = 0, sbind = 0;
+        if (srv0_size(ctx, &sw, &sh, &sbind) && sw == g_curW && sh == g_curH) {
+            bool rendered = (sbind & D3D11_BIND_RENDER_TARGET) != 0;
+            if (g_curW == g_curH && !g_squareWarned) {
+                g_squareWarned = true;
+                BVR_LOG("[hud] post-FX SIZE rule is degenerate at a square target (%ux%u): a "
+                        "%ux%u UI atlas matches it exactly. Using the bind-flag test instead "
+                        "(vrcine postfx size restores the old rule).",
+                        g_curW, g_curH, g_curW, g_curH);
+            }
+            if (rendered || !g_postFxRtOnly.load(std::memory_order_relaxed)) {
+                g_cPostFx.fetch_add(1, std::memory_order_relaxed);
+                return pass_verdict(ctx, kRoutePostFx);
+            }
+            // Would have passed under the size-only rule. On a 16:9 render this
+            // stays 0; at 2048x2048 it is the size of the leak.
+            g_cPostFxRejected.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
     // A non-indexed draw on the HUD target after the tonemap = gameswf.
     g_cHudDraws.fetch_add(1, std::memory_order_relaxed);
     g_hudThisInterval = true;
-    if (!armed()) return kPass;
-    if (!ensure_rt(ctx, g_curW, g_curH, g_curFmt)) return kPass;
+    if (!armed()) return pass_verdict(ctx, kRouteUnarmed);
+    if (!ensure_rt(ctx, g_curW, g_curH, g_curFmt)) return pass_verdict(ctx, kRouteUnarmed);
     g_cRedirects.fetch_add(1, std::memory_order_relaxed);
     // Returned for EVERY redirected draw - the caller re-binds each time
     // (cheap, self-healing against mid-stream game binds) and swaps the
     // blend state to its alpha-corrected variant.
+    g_subActive = true; // cleared by the game's next OMSetRenderTargets
     DrawDecision d;
     d.verdict = DrawVerdict::Redirect;
     d.rtv = g_rtv;
@@ -911,6 +1059,10 @@ void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
         }
         g_swfDrawsThisInterval = 0;
         g_srvCacheCount = 0;
+        // A present ends the batch whether or not the game rebound. Leaving the
+        // flag set would attribute the NEXT interval's first pass to a
+        // substitution that no longer exists.
+        g_subActive = false;
     }
 
     // Session 29: roll the draw-based cinematic signal. Published every
@@ -996,6 +1148,46 @@ void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
     if (redirects) *redirects = g_cRedirects.load(std::memory_order_relaxed);
     if (leaks) *leaks = g_cLeaks.load(std::memory_order_relaxed);
     if (intervalsWithHud) *intervalsWithHud = g_cIntervals.load(std::memory_order_relaxed);
+}
+
+// ---- Session 30 route telemetry ---------------------------------------------
+
+void set_postfx_rt_only(bool on) {
+    bool was = g_postFxRtOnly.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[hud] post-FX discriminator = %s",
+                on ? "RENDER-TARGET source (size alone is degenerate at a square target)"
+                   : "size only (session 22 rule - restored for an A/B)");
+}
+
+bool postfx_rt_only() { return g_postFxRtOnly.load(std::memory_order_relaxed); }
+
+void set_effect_max_verts(unsigned n) {
+    if (n < 3) return; // a triangle is the smallest thing that can be drawn
+    g_effectMaxVerts.store(n, std::memory_order_relaxed);
+    g_seenCountN = 0; // re-log every textureless count against the new bound
+    BVR_LOG("[hud] full-screen effect bound = %u verts (textureless counts above it go to the "
+            "panel; every count re-logs from here)",
+            n);
+}
+
+unsigned effect_max_verts() { return g_effectMaxVerts.load(std::memory_order_relaxed); }
+
+void get_route_stats(RouteStats* out) {
+    if (!out) return;
+    for (int i = 0; i < kRoutePassCount; ++i) {
+        out->pass[i] = g_cPass[i].load(std::memory_order_relaxed);
+        out->stranded[i] = g_cStranded[i].load(std::memory_order_relaxed);
+    }
+    out->postFx = g_cPostFx.load(std::memory_order_relaxed);
+    out->postFxRejected = g_cPostFxRejected.load(std::memory_order_relaxed);
+    out->effectsInFrame = g_cEffectsInFrame.load(std::memory_order_relaxed);
+    out->effectsRejected = g_cEffectsRejected.load(std::memory_order_relaxed);
+    out->squareTarget = g_curW == g_curH && g_curW != 0;
+}
+
+const char* route_reason_name(int reason) {
+    return pass_reason_name(reason);
 }
 
 // Session 28: the age gate is enforced HERE, not left to each caller. It used
