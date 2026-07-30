@@ -496,6 +496,15 @@ void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UI
             // gameswf batch's own state machine is untouched and the next draw
             // in the batch behaves exactly as it would have.
             return;
+        } else if (d.restoreRtv) {
+            // Session 30: an earlier draw in this batch redirected and the game
+            // has not rebound since, so "pass through" would still land on our
+            // capture RT. Hand the game's own binding back first, through the
+            // ORIGINAL SetRT for the same reason the substitution uses it - so
+            // the classifier's own binding state does not roll.
+            ++t_suppress;
+            g_origOMSetRenderTargets(ctx, 1, &d.restoreRtv, d.restoreDsv);
+            --t_suppress;
         }
     }
     g_origDraw(ctx, vertexCount, startVertex);

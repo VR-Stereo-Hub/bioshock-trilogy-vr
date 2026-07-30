@@ -205,6 +205,37 @@ the scene picture stops, or do they end at the same edge?**
 `collapsedHand`, `reapplies`, `cineHold`, `cineDrive`) instead of only at a cine edge, which is
 what the regression check needs. The checklist itself was not run.
 
+### 4b. THE CLASSIFIER HARDENING'S OWN FALLOUT - all found by the user PLAYING, not by our checks
+
+Three regressions came out of part 1's post-FX change, in the order they were found. All are
+fixed; one is fixed by a workaround rather than a diagnosis. Full write-up in ENGINE_NOTES
+session 30 part 3.
+
+1. **Health/EVE bar colour** - see 3b. Fixed, accepted.
+2. **A floating screen in cutscenes** showing the scene plus subtitles. **Fixed by a WORKAROUND
+   and the code says so:** while `cinematic_hold()` is true the post-FX rule falls back to
+   size-only, and the bind-flag rule returns when the scene releases (`vrcine postfx cine
+   on|off`, default on). Defensible scoping - the bind rule exists to keep HUD art out of the eye
+   image and a cutscene has none - and verified in-headset with the exception logging inside the
+   measured window (bar draw ON 00:06:32.211, exception 00:06:45.004, off 00:08:22.216). **But
+   the root cause is NOT known.** The missing measurement is a frame dump taken INSIDE the scene;
+   the one attempt landed 1.1 s early and captured ordinary gameplay. **Next instrument: auto-fire
+   `frame_inspector::arm(2,2)` on the `bar_draw_active()` rising edge** - session 29 did exactly
+   this, and `arm()` has only two call sites today so it is additive.
+3. **A crash on load, twice, in Release.** Mine. The stranded-pass restore's first version
+   `AddRef`'d the game's RTV/DSV; `hud_capture.cpp` already stated the rule it broke (`g_curRt` is
+   stored "identity only from here on") and the game holds its own reference for as long as its
+   own binding is live, so there was nothing to guard against. Taking references from a detour
+   that runs ~18M times a session while a level load recreates targets is the larger hazard. Same
+   shape as session 29's `write_n` lesson: **a guard that creates a worse failure than the one it
+   prevents.** Two of those in two sessions.
+
+The stranded-pass restore itself is shipped and measured working (`stranded=0` in every bucket),
+but it did NOT fix the cutscene screen - that draw is in the REJECTED population, not the
+stranded one. Reading the wrong half of that one status line is what cost the second wrong
+diagnosis; a third came from a "controlled" test whose lever gated only the consumer of the
+change, not the change. **A counter is not evidence until you know which population it counts.**
+
 ### 5. What broke, and the rule that comes out of it
 
 `vraim scanimpl 226050 1` crashed the game with `Run-Time Check Failure #0 - ESP was not properly
@@ -807,12 +838,18 @@ in case long soaks ever disprove this.
 ### 0. FIRST ACTIONS NEXT SESSION
 
 The game-breaking item is closed and accepted. What is left before the release is verification
-breadth, not new investigation - plus one new feature that is flat-green and needs a headset.
+breadth, not new investigation.
 
-0. ~~The swing gesture's in-headset run~~ - DONE and accepted, threshold 3.6 m/s, default ON. Fold
-   it into the soak below rather than testing it separately: it fires the same melee the servo aims,
-   so a wrench soak now exercises both at once.
-1. **A proper soak on the wrench fix.** It was accepted on one enemy. The servo is a new input
+0. **A FULL PLAYTHROUGH IS THE GATE, and session 30 part 3 earned that the hard way.** Every fix
+   there was accepted on a single check, and **two of the three regressions were found by the user
+   playing, not by any check we ran**. The classifier changes touch every HUD frame in the game.
+   Untested against them: menus, the hack minigame, vending machines, the Gatherer's Garden, Big
+   Daddy FMVs, and every cutscene other than the first-plasmid one.
+1. **Build the auto-fire frame dump** (see 4b) and get a capture from INSIDE a cutscene. The
+   cutscene workaround is shipping without a diagnosis; this is what closes it.
+2. **A proper soak on the wrench fix** - and the session-31 swing gesture rides along with it, since
+   the gesture fires the same melee the servo aims, so one wrench soak exercises both. It was
+   accepted on one enemy. The servo is a new input
    path that runs on every gameplay frame, so it wants a real play session: melee at different
    heights, on stairs, underwater, against a Big Daddy, and across a save load. Watch for the
    view feeling like it is fighting you (that would be the servo sign or gain) and for the

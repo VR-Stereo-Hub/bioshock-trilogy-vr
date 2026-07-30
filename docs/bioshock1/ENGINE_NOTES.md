@@ -3281,6 +3281,103 @@ Routing one in-frame cannot make it cover the eye; it makes it stage-sized in th
 view. So session 29's fix could never have worked, and the open "effects are not full-screen" item
 needs different GEOMETRY, not a different render target. Default is back to the panel.
 
+## Session 30 part 3: the classifier hardening's own fallout, and three wrong diagnoses
+
+Part 1 hardened the post-FX rule; part 2 fixed the wrench and the bar colour. This is what the
+hardening then broke, how it was chased, and what is still not understood. It is written at
+length because the process failed repeatedly here and the failures are the useful part.
+
+### 1. A floating screen in cutscenes, and a WORKAROUND rather than a fix
+
+**Symptom** (user, in-headset): during the first-plasmid cinematic, once subtitles appear, a
+screen floats in the middle of the view showing the same scene that is playing behind it, with
+the subtitles on it. Enabling `vrcine subs frame` removed it (and made subtitles unreadable).
+`vrcine postfx size` also removed it, with subtitles still fine.
+
+**What shipped:** while `cinematic_hold()` is true, the post-FX rule falls back to SIZE-only; the
+bind-flag rule returns the moment the scene releases. `vrcine postfx cine on|off`, default on.
+
+**Why that scoping is defensible rather than arbitrary:** the bind-flag rule exists to keep
+gameswf HUD art out of the eye image, which at a square render target is worth ~30 draws per
+interval. A cutscene has essentially no HUD art, so the rule buys almost nothing there while
+costing a visible defect. The gate is the bar draw, the most reliable edge in the mod - measured
+firing at 00:06:32.211 and releasing at 00:08:22.216, with the exception logging inside that
+window. Verified in-headset.
+
+**It is still a workaround and the code says so.** We know the fallback removes the screen and we
+know why the scoping is safe. We do NOT know which draw the user was seeing or why it lands on the
+panel. **The missing measurement is a frame dump taken INSIDE the scene** - the one attempt landed
+1.1 s early (dump at 23:59:49.704, `bar draw ON` at 23:59:50.798) and captured ordinary gameplay.
+
+**Next instrument, and it is small:** auto-fire `frame_inspector::arm(2, 2)` on the
+`bar_draw_active()` rising edge. Session 29 used exactly this and it is why that session got a
+dump inside a letterbox. `arm()` has only two call sites today (the two adapters' `dumpframe`
+commands), so this is additive.
+
+### 2. NEVER take a reference to an engine D3D object from inside a detour
+
+**This crashed a Release build on the loading screen, twice, with two DIFFERENT d3d11 faults**
+(`d3d11+0x19B7EB` reading `[null+0xE5]` with `ecx=0`, then `d3d11+0x78F54` reading `[null+0x38]`
+with `eax=0`), both immediately after `screen-only interval ON ... world pass absent`.
+
+The cause was a four-line "safety" measure: the stranded-pass restore needs the game's RTV/DSV,
+and the first version `AddRef`'d both on the reasoning that the game might release a view between
+its `SetRT` and the draw. That reasoning was wrong twice over:
+
+- **The game holds its own reference for its own binding**, for exactly as long as it is bound.
+  There was nothing to guard against in the window the pointers are used - same thread, same
+  gameswf batch, a few draw calls apart.
+- **`hud_capture.cpp` already states the rule and had followed it everywhere else.** `g_curRt` is
+  stored with `res->Release(); // identity only from here on`. Taking references to engine objects
+  from a detour that runs ~18 million times a session, while a level load destroys and recreates
+  render targets, is a far larger hazard than the one being guarded against.
+
+Removing the refcounting entirely (raw identity pointers, nulled in `on_setrt` and
+`release_resources`) fixed it. **Same shape as the session-29 `write_n` lesson: a safety measure
+that creates a worse failure than the one it prevents.** Two of those in two sessions - when
+adding a guard, ask what the guard itself can break.
+
+### 3. The stranded-pass restore: shipped, measured, and NOT the cutscene fix
+
+`PassThrough` is the absence of a routing instruction, so a pass issued after a redirect lands on
+the capture RT because the redirect goes through the ORIGINAL `OMSetRenderTargets` and the game
+does not rebind until the batch ends. `hud_capture.h` had stated that contract as prose since
+session 19; it is now enforced. The classifier hands the game's binding back before a pass that
+would otherwise be stranded, lazily (on the transition, ~28k times a session) rather than after
+every redirect (~10M times).
+
+Blend state deliberately is NOT restored: the alpha-corrected variant differs from the game's
+state only in the alpha ops and the alpha write mask, so a passed-through draw renders identical
+RGB. Verified by reading `fix_blend_alpha`, not assumed.
+
+Measured working: `routes: tonemap=11010/0 post-fx=3798/0 unarmed=2340/0` - stranded zero in every
+bucket with it on. It fixes a real defect. **It did not fix the cutscene screen**, which is how we
+learned the cutscene draw is in the REJECTED population, not the stranded one.
+
+### 4. Three wrong diagnoses in a row, and what actually caused each
+
+Worth recording because the pattern is more instructive than any single error.
+
+| # | Claim | Why it was wrong |
+|---|---|---|
+| 1 | The cutscene draw's source is backbuffer-sized but not a render target, so the bind test rejects it | Right in shape, never confirmed - no dump from inside the scene exists |
+| 2 | It is a stranded pass; the restore will fix it | Read `post-fx=41124/28184` as covering the offending draw. That counter describes draws that PASSED the test; the offending one is in `postFxRejected`, a different population. **Two counters on one line, and the wrong one was read.** |
+| 3 | The crash test isolates my change | The lever gated only the CONSUMER of the stored views. The `AddRef`/`Release` ran regardless, so the "controlled" build changed nothing relevant and cost two loads. **Before claiming one variable, check which code the variable actually reaches.** |
+
+The one that generalises: **a counter is not evidence until you know which population it counts.**
+The stranded/rejected split was designed into the instrument deliberately and then misread by its
+own author within the hour.
+
+### 5. What is verified and what is not, going into the release
+
+VERIFIED IN-HEADSET: the wrench fix, the health/EVE bar colour, the alcohol blur unaffected by the
+post-FX change, the cutscene screen gone with subtitles readable, no crash on load.
+
+NOT VERIFIED: a full playthrough. Every fix in this session was accepted on a single check, and
+two of tonight's three regressions were found by the user playing rather than by any check we ran.
+The classifier changes touch every HUD frame in the game, so menus, the hack minigame, vending
+machines, the Gatherer's Garden and Big Daddy FMVs are all untested against them.
+
 ## Session 31: what a synthetic trigger actually does, measured
 
 Built for the wrench swing gesture (`core/input/swing.{h,cpp}`); all of it flat, no headset.
