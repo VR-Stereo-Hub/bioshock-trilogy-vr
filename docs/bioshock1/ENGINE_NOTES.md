@@ -2659,6 +2659,63 @@ at): `WORLD tanH=1.191754 tanV=1.191754 (hfov 100.00 deg, 6/8 votes)`,
 **no `rendered-fov mismatch ON` line anywhere in the run** where session 27 had one within
 seconds of reaching gameplay.
 
+### 4b. The hands moving with the head was the SAME defect, seen from the other side
+
+Reported immediately after the warp fix landed in-headset: the world stopped warping and **the
+hand/gun model started moving with the headset** - the thing sessions 13-16 were spent fixing.
+It is not a regression in the hands machinery. It is one claim serving two lenses.
+
+**One projection layer carries ONE fov claim for the whole eye image, and the world and the
+viewmodel were rendered through DIFFERENT frustums.** So only one of them can be geometrically
+correct at a time:
+
+| claim | world | viewmodel |
+|---|---|---|
+| fg lens `0.6704` (the pre-session-28 bug) | 1.78x wrong -> **warps** | correct |
+| world lens `1.1918` (after the watch fix) | correct | 1.78x wrong -> **moves with the head** |
+| lenses MATCHED, either claim | correct | correct |
+
+The error is angular gain: a viewmodel feature at fg-angle `t` is displayed at
+`atan(tan(t)*1.7778)`, so it swings 1.78x too far as the head turns - which reads exactly as the
+gun sliding off the hand. Fixing the world did not break the hands; it moved a pre-existing 1.78x
+error from the world onto the hands, and the only state where both are right is matched lenses.
+
+**Second, coupled cause, in the bone solve.** `bones.cpp render_lock_delta` carried the comment
+"with the lens match armed the rig renders through the WORLD lens ... the lens ratio k collapses
+to 1". That was TRUE at 16:9 and false everywhere else: with the shipped `0.75` the real ratio at
+a square backbuffer is 1.7778, so the depth constraint `wStar = k*df` and the head-split lateral
+cancel were both mis-scaled - and the lateral cancel is precisely the term that stops the rig
+sliding under head motion. `world_ndc` had the same hardcoded `9/16` for the WORLD lens, which is
+independently wrong off 16:9. Both now read the live backbuffer aspect via
+`bvr::hud::backbuffer_dims`, and with the matched fg write `k` genuinely collapses to 1 - the
+assumption is earned rather than asserted.
+
+**Flat gate, and it is the same instrument that found the original bug.** At 2048x2048,
+`decode-framedump.ps1` went from two clusters to **ONE**:
+
+```
+before:  cluster tanH=1.1918 tanV=1.1918  draws=154  b0tiers[320:47 576:42 832:65]
+         cluster tanH=0.6704 tanV=0.6704  draws=24   b0tiers[576:20 832:4]
+after:   cluster tanH=1.1918 tanV=1.1918  draws=132  b0tiers[320:57 576:39 832:36]
+```
+
+The 576-byte foreground tier is now INSIDE the world cluster - the fg draws carry the world's
+tangents. `fovaudit` agrees: `lenses=1`, `fg lens match ON (last written 115.6 deg, k=1.333333)`.
+The engine accepted the wider write without clamping (115.6 deg at option 100 square; measured
+`tan(57.8)*0.75 = 1.1918` == the world vertical, exact). `vrfgfov legacy on` puts the second
+cluster back and `legacy off` removes it again, verified both directions - an instant in-headset
+A/B.
+
+**What flat CANNOT confirm**, stated so nobody assumes it was: the bone-solve half. With no XR
+session there are no controller poses, so the hands drive never engages (`inst=0 writes=0
+solves=0`) and `render_lock_delta` is never entered. The lens geometry it depends on is proven;
+the solve itself needs the headset.
+
+**Carry:** the session-16 hand offsets in `vrpreset.ini` were tuned in-headset against the OLD,
+1.78x-narrow fg lens at a square backbuffer, so part of those numbers may have been compensating
+for the lens error. They may want a re-tune now that the projection is honest. `vrfgfov legacy on`
+is the comparison lever.
+
 ### 5. The foreground-lens aspect law, and the `0.75` it condemns
 
 Stage 2's blocked measurement (b) is answered by the same dumps. `camera.cpp`'s foreground match

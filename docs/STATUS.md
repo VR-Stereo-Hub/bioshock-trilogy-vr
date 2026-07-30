@@ -2,7 +2,77 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-30, session 28 - OPEN BUG 2 ROOT-CAUSED AND FIXED: there are TWO lenses and the watch was reading the wrong one - branch s27-b1r-stability-and-resolution)
+## Current state (2026-07-30, session 28 - the warp is FIXED IN-HEADSET; the hands moving with the head was the same defect from the other side, now lens-matched - branch s27-b1r-stability-and-resolution)
+
+**IN-HEADSET (user, Quest 3 / VDXR): the warping is FIXED.** Two things came back with it, and one
+of them is the important one.
+
+### 1. "The hand and gun move when the headset moves" - the SAME defect, other side
+
+Not a regression in the hands machinery. **One projection layer carries ONE fov claim for the whole
+eye image, and the world and viewmodel were rendered through DIFFERENT frustums**, so only one
+could be right at a time: the old bug claimed the fg lens (hands right, world warping); fixing the
+world moved the same 1.78x error onto the hands. The only state where both are correct is MATCHED
+lenses - which is the `(4/3)*(h/w)` fix that was measured last session and deliberately held back
+so it could not confound the warp test. It is now required, and it landed.
+
+Second, coupled cause: `bones.cpp` asserted that with the lens match armed "k collapses to 1".
+True at 16:9 only - at a square backbuffer the real ratio was 1.7778, so the render lock's depth
+constraint AND its head-split lateral cancel were mis-scaled, and that cancel is exactly the term
+that stops the rig sliding under head motion. `world_ndc` had the same hardcoded `9/16` for the
+world lens. Both now read the live aspect; `k` genuinely collapses to 1.
+
+**Flat gate - the same instrument that found the original bug.** At 2048x2048 the dump went from
+TWO tangent clusters to **ONE**, with the 576-byte foreground tier now inside the world cluster
+(`tanH=1.1918 tanV=1.1918`, b0tiers `[320:57 576:39 832:36]`). `fovaudit` reports `lenses=1` and
+`fg lens match ON (last written 115.6 deg, k=1.333333)`; the engine accepted the wider write
+without clamping. `vrfgfov legacy on|off` restores/removes the split, verified both directions -
+an instant in-headset A/B.
+
+**Not confirmable flat, and not assumed:** the bone-solve half. No XR session means no controller
+poses, so the hands drive never engages (`inst=0 writes=0 solves=0`) and `render_lock_delta` is
+never entered. Its lens geometry is proven; the solve needs the headset.
+
+**Carry:** the session-16 hand offsets in `vrpreset.ini` were tuned against the OLD 1.78x-narrow fg
+lens at a square backbuffer, so some of those numbers may have been compensating for the lens
+error. A re-tune may be wanted now the projection is honest.
+
+Corroboration from the other repo, and it was already in our own notes: `docs/RESEARCH.md` records
+BioVRDev's fg fov as `2*atan(tan(fov/2)*(4/3)/aspect)` - i.e. `(4/3)*(h/w)`, exactly this fix,
+noted since session 20 and never acted on. Our `0.75` is that expression evaluated at 16:9.
+
+### 2. Game FOV Write had to be turned off in-headset - and the corrected law says why
+
+`apply_vr_preset` forced it ON, pushing option 130. That 130 came from the "129.5 circumscribing"
+arithmetic, which solved `tan(option/2)*9/16*aspect = tan(H/2)` - **derived from the disproved
+law**. Under the measured law `tanH = tan(option/2)` with no aspect term, so option 100 at a square
+backbuffer already renders exactly 100x100 deg, and 130 over-widens by 30 deg (and drags the fg
+lens to ~141 deg with it). The preset no longer arms the write; the global default was already
+false, that line was the only thing turning it on. `gfov <deg>` still arms it manually.
+
+### 3. Alt-tab is NOT fixed, and the new instrument named the real cause
+
+My pair-hold hypothesis was **wrong** - the log says `pairOpen=0`. The actual state:
+
+```
+xr: session state VISIBLE
+xr: SUBMISSION IDLE (reason=pace guard: session not FOCUSED | state=VISIBLE everFocused=1
+                     pairOpen=0 skips=5772 frames=5022)
+```
+
+and **no `FOCUSED` line ever follows** until `session teardown (disabled in overlay)`. So VDXR drops
+the session to VISIBLE on alt-tab and never re-grants FOCUSED, because **we stop submitting frames
+while unfocused and the runtime will not promote an app that submits nothing** - a circular wait.
+This directly contradicts the session-26 comment that "recovery is event-driven, not something an
+app earns by submitting frames": measured, on VDXR, it IS earned. Note also **zero
+`xrWaitFrame blocked` lines in the entire session**, so the guard skipped 5000-9000 presents
+without a single slow wait to justify it - it keys on session state when the thing it must avoid is
+a slow wait. Fix shape (user deferred it: hands first): keep submitting while VISIBLE but run
+`xrWaitFrame` on a dedicated thread so the present thread waits with a timeout and can never be
+wedged - which also permanently retires the session-26 hang class. Nothing in `src/` reads Win32
+focus, so alt-tab reaches us only through the runtime's own state.
+
+## Previous state (2026-07-30, session 28 part 1 - OPEN BUG 2 ROOT-CAUSED: there are TWO lenses and the watch was reading the wrong one)
 
 **The yaw warp is not a pose bug, not a formula bug, and not a stereo bug. The instrument was
 reading the viewmodel's lens and the projection claim was following it.** Full derivation with

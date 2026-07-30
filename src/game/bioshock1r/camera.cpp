@@ -148,6 +148,13 @@ std::atomic<void*>    g_lastViewActor{nullptr}; // *view_actor out-param (the pa
 std::atomic<bool>  g_fgFovMatch{true};
 std::atomic<float> g_fgFovSaved{0.0f};   // engine value to restore on disable
 std::atomic<float> g_fgFovWritten{0.0f}; // telemetry: what we wrote last
+// Session 28: `vrfgfov legacy on` restores the pre-session-28 hardcoded 0.75
+// match constant, which is (4/3)*(9/16) - correct at 16:9 and 1.7778/aspect too
+// narrow everywhere else. Kept as an instant in-headset A/B for the viewmodel,
+// because the aspect correction is the change that made the hands and the world
+// geometrically correct AT THE SAME TIME and that pairing needs confirming.
+std::atomic<bool>  g_fgFovLegacy{false};
+std::atomic<float> g_fgFovK{0.75f};      // telemetry: the match constant used
 
 using CalcViewFn = void(__fastcall*)(void* self, void* edx, void** viewActor,
                                      FVector* loc, FRotator* rot);
@@ -419,10 +426,25 @@ void apply_command(const char* cmd, const char* args) {
                 "callstacks",
                 shots);
     } else if (strcmp(cmd, "vrfgfov") == 0) {
+        // Session 28: `legacy on|off` flips the match constant between the
+        // aspect-correct (4/3)*(h/w) and the pre-session-28 hardcoded 0.75, for
+        // an instant in-headset viewmodel A/B. Identical at 16:9.
+        if (strncmp(args, "legacy", 6) == 0) {
+            bool leg = strstr(args + 6, "off") == nullptr;
+            g_fgFovLegacy.store(leg, std::memory_order_relaxed);
+            BVR_LOG("[b1r] fg lens match constant: %s (last k=%.6f, last written "
+                    "%.1f deg) - legacy 0.75 is (4/3)*(9/16), correct at 16:9 only",
+                    leg ? "LEGACY 0.75" : "aspect-correct (4/3)*(h/w)",
+                    g_fgFovK.load(std::memory_order_relaxed),
+                    g_fgFovWritten.load(std::memory_order_relaxed));
+            return;
+        }
         bool on = strncmp(args, "off", 3) != 0;
         g_fgFovMatch.store(on, std::memory_order_relaxed);
-        BVR_LOG("[b1r] fg lens match %s (last written %.1f)", on ? "ON" : "off",
-                g_fgFovWritten.load(std::memory_order_relaxed));
+        BVR_LOG("[b1r] fg lens match %s (last written %.1f deg, k=%.6f)",
+                on ? "ON" : "off",
+                g_fgFovWritten.load(std::memory_order_relaxed),
+                g_fgFovK.load(std::memory_order_relaxed));
     } else if (strcmp(cmd, "fginfo") == 0) {
         BVR_LOG("[b1r] fginfo: pc=%p viewActor=%p hands=%p weapon=%p (fsweep/hexdump "
                 "targets)",
@@ -788,7 +810,20 @@ void apply_vr_preset() {
     bvr::vr::set_camera_mode(true);    // 6DOF head drive
     bvr::vr::set_sr_pair_pacing(true); // one waitFrame per eye pair
     input::handle_command("on");       // motion controllers as gamepad
-    g_gameFovWrite.store(true, std::memory_order_relaxed);
+    // SESSION 28: the preset no longer forces the game-FOV write ON.
+    //
+    // It used to push option 130, and 130 came from the "129.5 circumscribing"
+    // arithmetic, which solved `tan(option/2)*9/16*aspect = tan(H/2)` - i.e. it
+    // was derived from the WRONG world-lens law. The measured law is
+    // `tanH = tan(option/2)` with no aspect term, so at a square backbuffer
+    // option 100 already renders exactly 100x100 deg - close to ideal for a
+    // Quest-class eye - and 130 over-widens the render by 30 deg, wasting pixels
+    // and shrinking the world inside the eye's actual FOV. It also drags the
+    // foreground lens out with it (~141 deg at option 130 square).
+    // The user confirmed in-headset that the write had to be turned OFF, which
+    // is what the corrected law predicts. `gfov <deg>` still arms it manually,
+    // and the global default was already false - this line was the only thing
+    // turning it on.
     aim::handle_command("on");         // controller aim (R weapon / L plasmid)
     aim::handle_command("pose aim");   // the runtime AIM pose
     aim::handle_command("origin on");  // ray starts at the hand
@@ -1338,9 +1373,49 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                 if (g_fgFovSaved.load(std::memory_order_relaxed) == 0.0f)
                     g_fgFovSaved.store(*fgFov, std::memory_order_relaxed);
                 float tanW = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
-                float fg = 2.0f * atanf(tanW * 0.75f) * kRadToDeg;
+                // SESSION 28: the match constant is (4/3)*(h/w), NOT 0.75.
+                //
+                // The two passes anchor OPPOSITE axes (ENGINE_NOTES "Session
+                // 28", dump-measured): the world pass fixes the horizontal
+                // (tanH = tan(option/2), tanV = tanH*h/w) and the foreground
+                // pass fixes the vertical (tanV = tan(fgFov/2)*3/4, tanH =
+                // tanV*w/h). Equating the two verticals:
+                //     tan(fgHalf)*3/4 = tan(option/2)*(h/w)
+                //  => tan(fgHalf)    = tan(option/2)*(4/3)*(h/w)
+                // 0.75 IS (4/3)*(9/16), i.e. that expression at 16:9 and
+                // nowhere else. Off 16:9 the shipped constant left the fg lens
+                // 1.7778/aspect narrower than the world - 1.78x at the square
+                // backbuffer the README recommends.
+                //
+                // Why this is load-bearing rather than cosmetic: ONE projection
+                // layer claim serves the whole eye image, so while the two
+                // lenses differ only one of {world, viewmodel} can be
+                // geometrically correct. Before the session-28 watch fix the
+                // claim accidentally carried the FG lens - hands right, world
+                // warping. Fixing the world moved the error onto the hands
+                // ("the gun moves when the headset moves"). Matching the lenses
+                // is what makes both correct at once, and it also makes
+                // bones.cpp's render-lock assumption ("k collapses to 1") TRUE
+                // off 16:9, which it silently was not.
+                //
+                // Independent corroboration: BioVRDev use exactly
+                // 2*atan(tan(fov/2)*(4/3)/aspect) - recorded in
+                // docs/RESEARCH.md since session 20 and never acted on.
+                //
+                // At 16:9 this is bit-identical to the shipped 0.75, so the
+                // session-16 in-headset calibration is preserved by
+                // construction. `vrfgfov legacy on` restores the old constant
+                // for an instant A/B.
+                float k = 0.75f;
+                unsigned bbW = 0, bbH = 0;
+                if (!g_fgFovLegacy.load(std::memory_order_relaxed) &&
+                    bvr::hud::backbuffer_dims(&bbW, &bbH) && bbW && bbH)
+                    k = (4.0f / 3.0f) * (static_cast<float>(bbH) /
+                                         static_cast<float>(bbW));
+                float fg = 2.0f * atanf(tanW * k) * kRadToDeg;
                 *fgFov = fg;
                 g_fgFovWritten.store(fg, std::memory_order_relaxed);
+                g_fgFovK.store(k, std::memory_order_relaxed);
             }
         } else {
             float saved = g_fgFovSaved.load(std::memory_order_relaxed);

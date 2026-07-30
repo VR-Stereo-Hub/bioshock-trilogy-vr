@@ -18,6 +18,7 @@
 #include "game/bioshock1r/bones.h"
 
 #include "core/gfx/frame_inspector.h"
+#include "core/gfx/hud_capture.h" // backbuffer_dims: the lens laws are aspect-parameterised
 #include "core/util/log.h"
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/hands.h"
@@ -376,6 +377,17 @@ bool solve_fg(const float M[12], float ndcX, float ndcY, float w, float outP[3])
 // NDC of the world target through a pinhole at the camera position with the
 // given rotation and the world option FOV. outDf = the target's forward
 // distance from the camera - the "true distance" the depth constraint uses.
+// Session 28: h/w of the live backbuffer, defaulting to 16:9. The world lens is
+// tanV = tanH*(h/w) (dump-measured, ENGINE_NOTES "Session 28"), so every model
+// of it here has to read the real aspect. It was hardcoded 9/16, which is right
+// only at 16:9 - and the resolutions people actually run in VR are square-ish.
+float live_inv_aspect() {
+    unsigned w = 0, h = 0;
+    if (bvr::hud::backbuffer_dims(&w, &h) && w && h)
+        return static_cast<float>(h) / static_cast<float>(w);
+    return 9.0f / 16.0f;
+}
+
 bool world_ndc(const FrameContext& ctx, const GamePose& gp, const FRotator& rot, float tanH,
                float* outX, float* outY, float* outDf) {
     float fwd[3], right[3], up[3];
@@ -385,7 +397,7 @@ bool world_ndc(const FrameContext& ctx, const GamePose& gp, const FRotator& rot,
     if (df < 4.0f) return false; // target at/behind the eye: no stable pixel
     float dr = d[0] * right[0] + d[1] * right[1] + d[2] * right[2];
     float du = d[0] * up[0] + d[1] * up[1] + d[2] * up[2];
-    float tanV = tanH * (9.0f / 16.0f); // 16:9 window (matches the option's meaning)
+    float tanV = tanH * live_inv_aspect(); // world lens: vertical follows the window
     *outX = dr / (df * tanH);
     *outY = du / (df * tanV);
     *outDf = df;
@@ -436,9 +448,19 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
     // live world tanH and the lens ratio k collapses to 1, so the depth
     // constraint w* = k*df becomes simply the true distance. Without the
     // match, the legacy 60-deg constants apply (kept for A/B).
+    // Session 28: the vertical model reads the LIVE aspect. This comment's claim
+    // that "the rig renders through the WORLD lens, so k collapses to 1" was
+    // TRUE only at 16:9 - the shipped match constant (0.75) left the fg lens
+    // 1.7778/aspect narrower than the world everywhere else, so at a square
+    // backbuffer k was really 1.7778 while this code assumed 1. That mis-scaled
+    // the depth constraint AND the head-split lateral cancel, which is what
+    // "the hand and gun move when the headset moves" looks like. With the
+    // aspect-correct fg write in camera.cpp the lenses genuinely match and k
+    // genuinely collapses to 1 - the assumption is now earned, not asserted.
     bool matched = camera::fg_fov_match_active();
     float invTanHFg = matched ? 1.0f / tanH : patterns::kFgInvTanH;
-    float invTanVFg = matched ? 1.0f / (tanH * (9.0f / 16.0f)) : patterns::kFgInvTanV;
+    float invTanVFg =
+        matched ? 1.0f / (tanH * live_inv_aspect()) : patterns::kFgInvTanV;
     float k = tanH * invTanHFg;
     float wStar = k * df;
     if (wStar < 4.0f) return false; // hand at/behind the face: no stable solve
