@@ -1,4 +1,4 @@
-# Release notes
+﻿# Release notes
 
 Newest first. The version is read from `CMakeLists.txt` by `tools/package.ps1`, so the zip
 name, the DLL banner and the tag cannot disagree.
@@ -8,6 +8,36 @@ name, the DLL banner and the tag cannot disagree.
 **Cutscenes are the headline.** Session 28 changed the projection claim, the foreground lens
 and the frame pacing, and cutscenes are the one place all three meet - so this release exists
 to make that intersection right rather than to add features around it.
+
+### The wrench hits again
+
+Melee had been unreliable in a way that looked random and was not: the engine's own idea of where
+you were aiming had frozen pointing at the floor, and swings went there. Worst when you looked
+down, which is why fights and the rocks at the start were the bad cases, and why a wall you walked
+up to squarely still worked. Guns were never affected.
+
+The chase for this went through two wrong answers first, both eliminated by measurement rather
+than argument, and both are recorded so nobody repeats them: the aim substitution (melee never
+reaches it) and pad lock-on (that setting was never taking effect at all).
+
+### The health and EVE bars have their colour back
+
+A change in this release cycle was sending the bars' colour fills into the world instead of onto
+the HUD panel, so the bars read as empty. Same fix reverts full-screen effects to the HUD panel,
+which is where they were in v0.4.1 - see the known issue below.
+
+### Known issue: full-screen effects sit on the HUD panel
+
+Water and damage effects ride the floating HUD panel rather than covering your view. Routing them
+into the world was tried and is what emptied the health bars, and it could not have worked anyway:
+the game authors them at HUD size, so moving them into the frame just puts a HUD-sized rectangle in
+the middle of your view. Covering the view needs different geometry, which is the next piece of
+work rather than a switch.
+
+### Known issue: cutscenes sit low with black borders
+
+Ticking **Game FOV write** in the F10 overlay makes them fill the view, but it is not recommended
+for normal play yet.
 
 ### Cutscene black bars are gone
 
