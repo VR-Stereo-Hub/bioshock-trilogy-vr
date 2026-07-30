@@ -516,6 +516,18 @@ kill. Both prerequisites below are now MET.):**
       (per-weapon foregrip offsets; the weapon skeletons may carry foregrip bones).
       Per-weapon engage radius + offsets tuned by eye.
 
+- [ ] **THE WRENCH SOMETIMES DOES NOT HIT (game-breaking, holds the release)**. Session 30
+      MEASURED the leading hypothesis and REFUTED it: in-headset with the wrench equipped
+      and both fire-start seams hooked read-only, the weapon seam took ZERO calls and every
+      ability-seam call was a plasmid. **Melee reaches neither aim seam**, confirming the
+      session-10 finding that damage goes through a Havok collision phantom. So `vraim seam
+      weapon off`, `vraim origin off` and a melee carve-out in `substitute()` are all dead
+      ends - do not re-open that lane. Remaining candidates, in order: (1) the rig drive
+      positions the phantom - `vrhands off` A/B, armed but not yet run; (2) positional
+      head/pawn decoupling - we drive the camera to the headset pose and transfer only YAW
+      to the pawn, so leaning in moves the view and the viewmodel but not the pawn, which
+      fits "worse in combat" AND the opening-rocks report with no combat; (3) lock-on
+      (`vrlockon on|off`, new) - cannot explain the rocks, so it is third.
 - [ ] **Wrench swing gesture (user's call 2026-07-28)**: trigger the melee hit from the
       physical SWING instead of (or in addition to) the trigger - velocity threshold on
       the right controller while the wrench is equipped -> pulse RT, cooldown against
@@ -548,6 +560,27 @@ kill. Both prerequisites below are now MET.):**
       composite (post-tonemap draw sampling a backbuffer-sized texture) now stays
       IN-FRAME per eye, never on the panel (postFx=0 false positives in gameplay).
       In-headset verdict pending (incl. the Big Daddy FMV, no flat repro exists).
+      *Session 30 correction: (c)'s size test is DEGENERATE at a square render
+      target and the "postFx=0 false positives" claim only held at 16:9. At
+      2048x2048 the backbuffer IS 2048x2048, so the game's own UI atlases matched
+      it - measured `postFxRejected=1604161` against `postFx=2` genuine, ~30 HUD
+      draws per interval leaking in-frame, 43% of them stranded onto the panel and
+      57% into the eye image, i.e. routed by draw order. Now discriminated on bind
+      flags (a post-FX source was RENDERED, an atlas never is), which holds at
+      every resolution. `vrcine postfx size|rt` keeps the old rule for an A/B.*
+- [ ] **Full-screen effects still do not cover the whole view** (user, in-headset,
+      after session 29 routed the fill in-frame). Session 30 EXCLUDED routing as
+      the cause: per-reason pass/STRANDED counters read `effect=127010/0` with the
+      redirect armed, validated by a one-shot device check and by a positive
+      control that made the same counter read 36140. Also measured: the fill is
+      TWO textureless 5-vertex draws per interval, drawn every interval, and the
+      in-frame test is now a positive vertex bound (`vrcine effects verts <n>`,
+      default 8) instead of the residual "textureless and not 29" that was sending
+      a 1493-vertex vector shape into the eye image. What remains is the fill's own
+      extent or the projection layer's FOV claim. `img-diff.ps1 -Grid/-Bands` is
+      built and self-tested for the coverage measurement; the screenshots were not
+      taken. First: ask whether the effect stops before the picture stops, or they
+      end at the same edge - that answer picks which of the two remaining causes.
 - [x] **Head-ROLL eye separation bug** - DONE session 22: apply_eye_offset offsets along
       the FULL rotation's right axis (ue_rot_basis) and the AER path shares the one
       implementation. Eye delta measured (6.3,0,0)/(4.455,0,-4.454)/(0,0,-6.3) UU at

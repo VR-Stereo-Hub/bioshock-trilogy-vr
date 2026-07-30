@@ -2989,3 +2989,173 @@ Fixed three ways, deliberately overlapping:
 **Carry for BS2 and for any future drive:** the pattern "stop driving" and "hand state back" are
 different operations with different safety requirements. Stopping is always safe. Handing back
 writes, and writes need a live-world interlock.
+
+## Session 30: the wrench reaches NO aim seam, and the post-FX rule was leaking the HUD
+
+### 1. THE HEADLINE: melee runs neither fire-start seam. The aim substitution is innocent.
+
+`docs/STATUS.md`'s leading hypothesis for the game-breaking wrench misses was that our origin
+substitution moves the melee trace, because "the wrench IS an `AWeapon`". **Measured in-headset,
+with the wrench actually equipped, and it is false.** The run (2026-07-30, live XR session, user
+driving; wrench confirmed by `[aim] weapon profile 'Wrench' applied` at two separate swaps):
+
+| seam | calls across the whole wrench period | classes seen |
+|---|---|---|
+| `AWeapon::GetPerfectFireStart` | **0** (the counter sat at 4 throughout - all four from a Shotgun test 15 minutes earlier) | `Shotgun` only |
+| `UAttackAbility::GetPerfectFireStart` | 6 | `ElectricBoltThreeAbility` only |
+
+Not one melee call at either seam. So the session-10 note in this file - *"the wrench does not
+trace at all: `Wrench.CreateCollisionPhantom`, melee damage is a Havok phantom, so no aim seam
+exists for it"* - is **CONFIRMED by direct measurement**, not merely asserted. It had never been
+re-tested, and two other documents in the tree disagreed with it.
+
+**Consequences that save real work:** `vraim seam weapon off` cannot affect the wrench.
+`vraim origin off` cannot affect the wrench. Excluding melee from the origin substitution, which
+was the planned fix, would have changed nothing. Anything that fixes the wrench has to act on
+whatever positions the collision phantom, which is NOT a seam we hook today.
+
+Remaining live candidates for the wrench, in the order they should be tested:
+
+1. **The rig drive** (`vrhands off` A/B). The phantom must be positioned from something; if it
+   rides the `AHands` actor or a rig bone, we rewrite that every frame. The A/B was armed but the
+   session ended before a verdict - see section 7.
+2. **Positional head/pawn decoupling.** We drive the CAMERA to the headset pose but transfer only
+   YAW to the pawn (`body::on_calcview`); there is no positional transfer. Leaning in to hit
+   something moves the view and the viewmodel but not the pawn, so a phantom spawned from the
+   pawn transform would sit where the pawn is, not where the wrench is drawn. This fits every
+   part of the report: worse in combat (more leaning and strafing), and present on the opening
+   rocks (you lean in to smash them) with no combat at all.
+3. **`SoftLockOnRadius 0`**, which we force at every world event. Cannot explain the rocks (they
+   are not targets), so it is third. `vrlockon on|off|status` now exists for that A/B; note that
+   `on` needs `vrpreset save` plus a RESTART, because a SET edit is memory-only and the stock
+   radius is not readable back through the Exec seam.
+
+### 2. Hand attribution in real play is ALWAYS the seam default, never learned
+
+Every substituted plasmid cast in the run logged the same thing:
+
+```
+[aim] watch ability cls='ElectricBoltThreeAbility' this=50F59040 hand=L src=fallback lt=0 rt=0
+      sub=1 origin=1 | engine=(-25069.7 4185.3 8275.3) ours=(-25064.0 4153.8 8241.0)
+      d=46.9 UU (46.9 cm)
+```
+
+`lt=0 rt=0` **at the anim notify**, five casts out of five (`subsL=5 fallbacks=5 subsR=0`). The
+notify that actually fires the ability arrives AFTER the player has released the trigger, so
+`trigger_held()` (>= 64, ~25% pull) has nothing to see and `hand_for_object` returns the seam's
+compile-time default. `g_objLeft` was never learned at all across the whole session.
+
+The contrast is the discriminator: the Shotgun logs `rt=255 src=learned`, because a gun fires on
+the trigger frame while a plasmid has a wind-up animation.
+
+**This is not a live bug** - the ability seam's default is `Hand::Left` and plasmids are the left
+hand, so the fallback lands correctly every time. It matters for two reasons. The object-learning
+map is effectively dead code on that seam, and **anything else that ever arrives on the ability
+seam would be attributed to the LEFT hand with the left trims (pitch -7.5, yaw +37.0 deg)**. That
+was the mechanism behind the melee hypothesis, and it would have been real if melee had shown up
+there. It did not.
+
+### 3. Measured: we move the fire origin 40-47 cm
+
+Every cast in the run, at `worldScale` 100 so UU == cm: `d = 46.9 / 42.5 / 44.0 / 40.2 / 40.3 UU`.
+That is the distance between the engine's own fire start and the origin we write.
+
+Worth keeping for any future short-range seam: at rifle range 45 cm of origin error is invisible,
+which is why the substitution has looked correct since M6; at contact range it would be decisive.
+This is exactly why the wrench theory was plausible, and why measuring first was the right call.
+
+### 4. The post-FX size rule is DEGENERATE at a square render target - a shipped regression
+
+`hud_capture.cpp`'s session-22 rule passed a post-tonemap draw in-frame when
+`srv0 dims == target dims`. Its stated premise: post-FX samples a BACKBUFFER-SIZED texture while
+gameswf samples 2048x2048 UI atlases. At the user's 2048x2048 square render **the premise
+inverts** - the backbuffer IS 2048x2048, so the game's own UI atlases match the rule exactly.
+
+Measured live at that resolution (`vrhud status` / `vrcine status`, session 30):
+
+- `postFxRejected=1604161` against `postFx=2`. Two draws in the whole session were genuine
+  post-FX; ~1.6 M were UI atlases the old rule would have passed in-frame - about **30 gameswf
+  HUD draws per interval** (~9200/s at ~307 intervals/s).
+- Restoring the old rule as a positive control (`vrcine postfx size`) gave
+  `post-fx=83402/36140`: **43% of those draws were stranded onto the HUD panel by an earlier
+  redirect and 57% reached the eye image.** So the old rule did not merely leak the HUD into the
+  frame, it routed it **non-deterministically by draw order within the batch**.
+
+Corroborated offline in `framedump_175024_q0` (2048x2048): the `T4` tonemap target and the `T6`
+scene source are `bind=0x28` (RENDER_TARGET|SHADER_RESOURCE), while the atlases `T106` (fmt 71),
+`T107` and `T113` (fmt 77) are `bind=0x8`, shader-resource only and BC-compressed. **The bind
+flags are the resolution-independent discriminator**: a post-FX source is always something the
+engine RENDERED, a UI atlas never is. That is now the test; `vrcine postfx size|rt` keeps the old
+rule for a one-command A/B.
+
+### 5. Where a PassThrough draw actually LANDS, and the theory it refuted
+
+`PassThrough` is the absence of a routing instruction, and the redirect binds our RTV through the
+ORIGINAL `OMSetRenderTargets` - so `hud::on_setrt` never sees it and `g_curRt` keeps naming the
+game's target. The classifier can therefore believe a draw is in-frame while the device has the
+HUD capture RT bound. Session 30 turned that prose contract (`hud_capture.h:22`) into counters.
+
+**The instrument refuted the diagnosis it was built to test.** With the redirect armed, the effect
+fills read `effect=127010/0` - passes/stranded. They are NOT stranded; they genuinely reach the
+frame. Two checks make that trustworthy rather than a false negative:
+
+- **The self-refutation clause fired and passed:** `[hud] stranded-pass PROOF: bound rtv0
+  resource=92DB3E64, our capture RT=92DB3E64 - the substitution belief is CORRECT`. The flag is a
+  faithful reading of the device, not a guess.
+- **A positive control proved the counter can fire:** under `vrcine postfx size` the same run
+  produced 36140 stranded post-FX passes.
+
+So routing is not why full-screen effects do not cover the view. What remains is the fill's own
+extent, or the projection layer's FOV claim (which is outside `hud_capture.cpp` entirely and which
+flat testing cannot measure at all).
+
+### 6. The effect is TWO textureless 5-vertex fills per interval, drawn EVERY interval
+
+`effectsInFrame` advances at exactly 2 per present interval, continuously, in ordinary gameplay
+with no effect visible. So the fill is a permanent gameswf element whose colour/alpha changes, not
+a draw that appears when an effect starts. `note_textureless_count` logs each COUNT once, so the
+second draw was invisible in the log and this was never apparent before. Confirms the
+`framedump_175024_q0/q1` reading (events 00806 and 00807, both `a=5 srv0=T-1`) live.
+
+`effectsOverBound=0` at the test location: nothing textureless above the 8-vertex bound occurred
+there. The 1493-vertex textureless draw the census recorded earlier is elsewhere in the game, and
+under the old residual rule ("textureless and not 29 verts") it was being rendered into the eye
+image. The effect test is now a positive vertex-count bound.
+
+### 7. `vraim scanimpl` arg count MUST equal the target's `ret imm / 4`, and getting it wrong is loud
+
+Verified with capstone against the shipped exe (first `ret` in each implementation):
+
+| implementation | RVA | `ret` imm | `scanimpl` args |
+|---|---|---|---|
+| `AWeapon::InitiateDamage` | `0x226050` | 8 | **2** |
+| `UAttackAbility::InitiateDamage` | `0x1BBD80` | 8 | **2** |
+| `AWeapon::GetPerfectFireStart` | `0x226840` | 0xC | 3 |
+| `UAttackAbility::GetPerfectFireStart` | `0x1BC220` | 0x10 | 4 |
+
+The last two match the shipped detours' signatures exactly, which is what validates the method.
+
+Passing `1` for either `InitiateDamage` produced a **`Run-Time Check Failure #0 - The value of ESP
+was not properly saved across a function call`** modal dialog: the detour returned with the stack
+4 bytes off. Two things worth knowing about that failure mode:
+
+- **It produces NO crash dump.** RTC is a Debug-build compiler check, not an SEH fault, so it
+  never reaches the crash handler and `%LOCALAPPDATA%\BioshockVR\crash\` stays empty. In a Release
+  build the same mistake would corrupt the stack silently instead - the same shape as the
+  session-29 `write_n` lesson: a check that only exists in Debug is not a safety net.
+- **Force-killing the game while that modal dialog is up leaves the display mode unrestored.** The
+  desktop did not come back until the user reset it. Prefer Abort on the dialog over
+  `Stop-Process -Force`.
+
+### 8. Harness facts
+
+- **Weapon switching still cannot be driven flat.** All four D-pad directions were tried
+  (`vrinput test press DU|DD|DL|DR`); `vraim weapon` reported `active='Shotgun'` throughout. The
+  radial needs a human, so any per-weapon measurement needs the user to equip first.
+- `vrinput test trig r|l 255 400` DOES drive a shot, and two pulls ~2 s apart are needed (the
+  first switches hands - `XENON_RT = SwitchAndFireWeapon`).
+- **`vraim probe on` + `vraim off` is a genuinely read-only measurement mode** and it held for a
+  whole live play session: hooks installed, `ray_for()` refusing, `subs=0 skips=N`. Note the trap
+  it does NOT survive: **pressing VR PRESET 1 re-arms `aim on` and `origin on`**
+  (`camera.cpp:862-864`), which is what turned substitution back on mid-run here. Any read-only
+  measurement has to be re-armed after a preset press.

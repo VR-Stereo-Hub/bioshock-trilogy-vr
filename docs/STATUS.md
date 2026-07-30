@@ -1,8 +1,104 @@
-# Project status
+﻿# Project status
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-30, session 29 - STAGE 3 ACCEPTED IN-HEADSET, v0.5.0 PACKAGED, awaiting the user's final go - branch s29-b1r-cinematics-and-aim-dot)
+## Current state (2026-07-30, session 30 - the wrench hypothesis is REFUTED by measurement, a shipped HUD regression is found and fixed - branch s30-b1r-wrench-and-effects)
+
+**Release still held. v0.5.0 stays untagged.** Of the three open items, one is measured and
+redirected, one is half solved, one is untested.
+
+### 1. THE WRENCH: melee reaches NEITHER aim seam. The planned fix would have done nothing.
+
+Session 29's leading hypothesis - the wrench is an `AWeapon`, our origin substitution moves its
+short melee trace - is **refuted by direct measurement in-headset with the wrench equipped**:
+
+| seam | calls across the whole wrench period | classes seen |
+|---|---|---|
+| `AWeapon::GetPerfectFireStart` | **0** (counter sat at 4 throughout, all four from a Shotgun test 15 min earlier) | `Shotgun` only |
+| `UAttackAbility::GetPerfectFireStart` | 6 | `ElectricBoltThreeAbility` only |
+
+So `vraim seam weapon off`, `vraim origin off` and the melee carve-out in `substitute()` that
+was designed and about to be built **cannot affect the wrench at all**. `ENGINE_NOTES`'s
+session-10 note - melee damage is a Havok phantom (`Wrench.CreateCollisionPhantom`), no aim seam
+exists for it - is now CONFIRMED rather than asserted. Two other documents in the tree had
+contradicted it; they are corrected.
+
+Measurement mode that made this cheap and safe: **`vraim probe on` + `vraim off`** installs both
+hooks with `ray_for()` refusing, so the diagnostic run cannot change the behaviour it measures.
+It held through a whole live play session. One trap: **VR PRESET 1 re-arms `aim on` + `origin
+on`** (`camera.cpp:862-864`), which is what turned substitution back on mid-run here.
+
+**Where the wrench investigation goes next**, in priority order (nothing here is guesswork about
+the aim path any more - that lane is closed):
+1. **The rig drive** - `vrhands off` A/B. The phantom is positioned from something, and we
+   rewrite the `AHands` actor and its bones every frame. This A/B was armed when the session
+   ended; no verdict yet.
+2. **Positional head/pawn decoupling.** We drive the CAMERA to the headset pose and transfer
+   only YAW to the pawn - there is no positional transfer. Leaning in to hit something moves the
+   view and the viewmodel but not the pawn, so a phantom spawned from the pawn transform sits
+   where the pawn is, not where the wrench is drawn. **This fits every part of the report**:
+   worse in combat (more leaning and strafing), and present on the opening rocks with no combat.
+3. **Lock-on** (`vrlockon on|off|status`, new). Cannot explain the rocks, so it is third. `on`
+   needs `vrpreset save` and a RESTART to take effect.
+
+### 2. Two things measured for free on the way, both worth keeping
+
+- **Hand attribution in real play is ALWAYS the seam default, never learned.** Five plasmid casts
+  out of five: `hand=L src=fallback lt=0 rt=0`. The anim notify fires after the player releases
+  the trigger, so `trigger_held()` never sees evidence. Not a live bug (Left is correct for
+  plasmids) but the object-learning map is dead weight on that seam, and anything else arriving
+  there would take the left trims - pitch -7.5, yaw **+37 deg**.
+- **We displace the fire origin by 40-47 cm** on every substituted call (measured, `worldScale`
+  100 so UU == cm). Invisible at range, decisive at contact range. That is exactly why the wrench
+  theory was plausible.
+
+### 3. EFFECTS: routing is clean, and a REAL shipped HUD regression was found instead
+
+The instrument built to test the routing hypothesis **refuted it**: with the redirect armed the
+effect fills read `effect=127010/0` (passes/stranded). They are never stranded and genuinely
+reach the frame. Trustworthy because both checks passed - a one-shot device read
+(`bound rtv0 resource=92DB3E64, our capture RT=92DB3E64 - CORRECT`) and a positive control
+(`vrcine postfx size` made the same counter read 36140).
+
+What the same run DID find, and it was shipping in v0.5.0: **the post-FX size rule is degenerate
+at a square render target.** At 2048x2048 the backbuffer IS 2048x2048, so the game's own UI
+atlases match `srv0 dims == target dims`. Measured `postFxRejected=1604161` against `postFx=2`
+genuine - about **30 gameswf HUD draws per interval** taking the in-frame exit. Worse than a
+leak: under the old rule 43% of them were stranded onto the panel and 57% reached the eye image,
+so HUD elements were routed **non-deterministically by draw order**. Fixed structurally - a
+post-FX source is something the engine RENDERED (`BIND_RENDER_TARGET`), a UI atlas never is -
+which is stronger at every resolution, not just square ones.
+
+Also measured: **the effect is TWO textureless 5-vertex fills per interval, drawn EVERY
+interval** (so it is a permanent element whose alpha changes, not a draw that appears with the
+effect). And the in-frame effect test is no longer residual: it was "textureless and not 29
+verts" with no upper bound, which was sending the census's 1493-vertex textureless vector shape
+into the eye image. Now bounded at 8 verts, `vrcine effects verts <n>`.
+
+**Still open: why effects do not cover the whole view.** Routing is excluded. What remains is the
+fill's own extent or the projection layer's FOV claim. `img-diff.ps1 -Grid/-Bands` is built and
+tested for that measurement (a 16:9 stage inside a square target reads as flat top and bottom
+rows with every column changed) but the coverage screenshots were never taken - the session ended
+first. The zero-cost question that would halve the search is still unanswered: **in the headset,
+does the effect stop before the scene picture stops, or do they end at the same edge?**
+
+### 4. HANDS: untested this session
+
+`vrbones status` now prints the drive residue on demand (`cacheAge`, `wasCollapsed`,
+`collapsedHand`, `reapplies`, `cineHold`, `cineDrive`) instead of only at a cine edge, which is
+what the regression check needs. The checklist itself was not run.
+
+### 5. What broke, and the rule that comes out of it
+
+`vraim scanimpl 226050 1` crashed the game with `Run-Time Check Failure #0 - ESP was not properly
+saved`. **`scanimpl`'s arg count must equal the target's `ret imm / 4`**, and both
+`InitiateDamage` implementations are `ret 8`, so the correct value is **2**. Verified for all
+four fire-flow implementations by capstone; the table is in ENGINE_NOTES session 30. Two
+after-effects worth knowing: RTC writes **no crash dump** (it is a Debug compiler check, not an
+SEH fault), and force-killing the game while that modal dialog is up left the display mode
+unrestored. Press Abort on the dialog rather than `Stop-Process -Force`.
+
+## Previous state (2026-07-30, session 29 - STAGE 3 ACCEPTED IN-HEADSET, v0.5.0 PACKAGED, awaiting the user's final go - branch s29-b1r-cinematics-and-aim-dot)
 
 **IN-HEADSET VERDICT (user, Quest 3 / VDXR): "bars are gone, hands and head are correct now and
 the dot is perfect. Everything is very good."** Subtitles were reported wrong in the same run and
@@ -591,7 +687,59 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### 0. RELEASE IS HELD AGAIN - three open items, one of them game-breaking
+### 0. FIRST ACTIONS NEXT SESSION
+
+1. **Verify the classifier fix in-headset.** The post-FX change is the biggest behavioural
+   change in this build and it has only been measured flat by counters. Check: HUD elements sit
+   on the panel and not in the eye image, menus and the Gatherer's Garden are readable, cutscene
+   bars are still gone, subtitles still readable. `vrhud status` should show `stranded=0` and
+   `postFxRejected` climbing while `postFx` stays near 0. `vrcine postfx size` restores the old
+   rule for a one-command A/B.
+2. **Run the wrench A/B that was armed when the session ended:** `vrhands off`, then swing at
+   an enemy and at a static target, ten each. If melee starts connecting reliably, the rig drive
+   positions the phantom and that is the bug.
+3. **Then test the positional hypothesis**, which needs no command at all: recenter, stand
+   exactly at the recenter point and swing; then lean in / step sideways and swing the same way.
+   If misses correlate with head-away-from-pawn, the phantom rides the pawn transform while the
+   viewmodel rides the head, and the fix is a positional transfer (or a melee-time pawn nudge).
+4. **Answer the effects edge question** (see Current state 3), then take the coverage
+   screenshots with `img-diff.ps1 -Bands 16`.
+
+### 1. THE WRENCH - the aim lane is CLOSED, see Current state 1
+
+Do not re-open `vraim seam weapon off` / `vraim origin off` / a melee carve-out in
+`substitute()`. Measured: melee reaches neither seam. The remaining candidates are the rig drive,
+positional head/pawn decoupling, and lock-on, in that order.
+
+If a damage-side seam is ever wanted: `AWeapon::InitiateDamage` is RVA `0x226050` and
+`UAttackAbility::InitiateDamage` is `0x1BBD80`, **both `ret 8`, so `vraim scanimpl <rva> 2`**.
+Getting that number wrong is what crashed the game this session.
+
+### 2. EFFECTS - routing excluded, coverage unmeasured
+
+`img-diff.ps1 -Grid`/`-Bands` is built and self-tested. The sequence is in the plan: `vrhud force
+off`, screenshot dry, hold the effect, screenshot wet, `vrcine effects panel`, screenshot again;
+`diff(dry,wet)` bbox is the coverage number and `diff(dry,panel)` gives the panel footprint in
+the same image space. Note the flat window shows the whole square render stretched to the client
+area, so band FRACTIONS map linearly to the frame and the measurement is valid.
+
+If the bands come back ambiguous, the vertex-buffer capture is the next instrument: insert after
+the srv0 block in `capture_draw_state` (`frame_inspector.cpp:400`), full mode and non-indexed
+draws only, reusing the cb0 staging pattern but with `CopySubresourceRegion` and a byte-valued
+`D3D11_BOX`, calling `g_origCopySubRes`/`g_origMap` so the hooked slots do not pollute the
+census. Calibrate the decode against the 29-vertex BAR draw, whose on-screen extent the pixel
+watch measured independently (313/350 px of 2048).
+
+### 3. HANDS - the checklist, unrun
+
+`vrbones status` now prints the residue on demand. Steps: gameplay, into a cutscene (expect
+`[bones] released to the engine (hands gated for cinematic)` then `hiddenHand=-1`), out of it,
+across a save load (`[bones] world changed` must precede any release - this is the session-29
+hang path), `vrcine drive off` mid-cutscene and back, then `authored+look`. Plus the blind spot:
+`vrhands off` mid-cutscene skips `bones::release()` entirely, because `hands.cpp:605` sits above
+the cinematic gate.
+
+### Previously: three open items, one of them game-breaking
 
 Session 29 is MERGED TO MAIN. v0.5.0 is built and packaged but **deliberately untagged**: the
 user's call after in-headset testing was *"Don't release yet till the above notes are done and
@@ -3498,11 +3646,84 @@ and it resumes.
   line, still dead) and key-bound commands are inert. The mod issues engine
   commands via the console-command seam (`exec` -> engine Exec dispatchers).
 - Adapter VRAM logs as "3072 MB" - DXGI_ADAPTER_DESC.DedicatedVideoMemory is a 32-bit SIZE_T in
-  our process, so values â‰¥4 GB truncate. Cosmetic; ignore.
+  our process, so values Ã¢â€°Â¥4 GB truncate. Cosmetic; ignore.
 - itsloopyo's headtracking mod also installs as `xinput1_3.dll` - mutually exclusive with ours
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 30 - 2026-07-30 - the wrench hypothesis dies to one read-only command, and a shipped HUD regression surfaces
+
+Three release-blocking items. The wrench came first because it is game-breaking, and the brief
+was explicit: disprove or confirm the leading hypothesis by measurement before any code.
+
+**The wrench.** The hypothesis was well argued - the wrench is an `AWeapon`, our aim substitution
+rewrites `GetPerfectFireStart` for `AWeapon` too, melee is a short trace, so an origin moved to
+the controller starts it past the target. The designed fix was a melee carve-out behind two
+levers. Before writing it, three documents in the tree were compared and they disagreed:
+`aim.cpp:462` says the wrench's melee lands on the ABILITY seam, `ENGINE_NOTES:616` says no aim
+seam fires for melee at all, and STATUS assumed the weapon seam. Three claims, so the first
+measurement was simply "which seam does a swing reach".
+
+`vraim probe on` + `vraim off` installs both hooks with `ray_for()` refusing, so the run cannot
+change what it measures. The user drove a live session in the headset with the wrench equipped
+(confirmed twice by `[aim] weapon profile 'Wrench' applied`). Result: the weapon-seam counter
+never moved - it sat at 4 all session, all four from a Shotgun test fifteen minutes earlier - and
+all six ability-seam calls carried `cls='ElectricBoltThreeAbility'`. **Melee reaches neither
+seam.** The session-10 note was right and had simply never been re-tested. The carve-out, the
+`vraim seam weapon off` A/B, and the `vraim origin off` A/B would all have done exactly nothing.
+That is the whole value of the session's first hour.
+
+Two things fell out for free. Every substituted plasmid cast read `hand=L src=fallback lt=0
+rt=0`: the anim notify fires after the trigger is released, so the object-learning map never
+learns and always takes the seam default. Harmless today because Left is correct for plasmids -
+but it means anything else arriving on that seam would be aimed with the left trims, yaw +37 deg.
+And the watch line put a number on the substitution for the first time: we move the fire origin
+**40-47 cm**, every call. Invisible at rifle range, decisive at contact range, which is precisely
+why the wrench theory was so plausible.
+
+**Effects.** Session 29 routed the effect fill in-frame and the user reported "better, but still
+not the whole view". The offline dumps suggested a second mechanism: `PassThrough` is the absence
+of a routing instruction, and because the redirect binds our RTV through the ORIGINAL SetRT,
+`on_setrt` never sees it and the classifier can believe a draw is in-frame while the device has
+the capture RT bound. Shipped that as per-reason pass/STRANDED counters plus a one-shot
+`OMGetRenderTargets` check - the instrument that could refute the diagnosis, in the same build.
+
+It refuted it. Effect fills read `effect=127010/0`, never stranded. The device check confirmed
+the flag is faithful (`our capture RT=92DB3E64 - CORRECT`), and a positive control proved the
+counter can fire (restoring the old post-FX rule produced 36140 stranded passes). So routing is
+excluded and the remaining explanation is the fill's extent or the projection claim.
+
+The same run found something that was actually shipping. At the user's 2048x2048 square render
+the post-FX rule (`srv0 dims == target dims`) is degenerate: the backbuffer IS 2048x2048, so the
+game's own UI atlases match it. `postFxRejected=1604161` against `postFx=2` genuine - roughly 30
+gameswf HUD draws per interval taking the in-frame exit, and under the old rule 43% of them were
+stranded onto the panel while 57% reached the eye image. HUD elements routed by draw order. Fixed
+structurally on bind flags rather than size, which is stronger at every resolution. Also bounded
+the effect test by vertex count - it had been the residual "textureless and not 29", which was
+sending the census's 1493-vertex vector shape into the eye image.
+
+**What broke.** Probing `InitiateDamage` with `vraim scanimpl 226050 1` popped `Run-Time Check
+Failure #0 - ESP was not properly saved`: the arg count must equal `ret imm / 4`, and both
+`InitiateDamage` implementations are `ret 8`, so the right answer is 2. Disassembled all four
+fire-flow implementations with capstone afterwards and tabulated them so the next attempt is a
+one-liner. Two secondary lessons: RTC writes no crash dump (a Debug compiler check, not an SEH
+fault, so it bypasses the crash handler entirely - the same shape as session 29's `write_n`
+guard, where the safety net only made the failure quieter), and force-killing the game while that
+modal dialog is up left the display mode unrestored.
+
+**Not done:** the effect coverage screenshots (the `img-diff.ps1 -Grid/-Bands` extension is built
+and self-tested against synthetic images, but the measurement was never taken), and the hands
+regression checklist. `vrbones status` now prints the drive residue on demand, which is what that
+checklist needs.
+
+**Method notes worth carrying.** Measuring first killed a fix that was ready to build. The
+instrument that can refute the diagnosis has now earned its keep twice - session 29 on the sticky
+bone state, session 30 on effect routing. A negative result from an instrument that has never
+been seen to fire is worth nothing, so the positive control (`vrcine postfx size`) matters as
+much as the counter did. And a discriminator built from a numeric coincidence between two
+quantities dies silently the day they coincide for another reason - which is the whole post-FX
+story.
 
 ### Session 28 - 2026-07-30 - the yaw warp: TWO lenses, and the instrument was reading the wrong one
 
@@ -5273,15 +5494,15 @@ THEN arm 1t):**
 - Researched game installation (32-bit DX11 Vengeance/UE2.5, no DRM, gameswf Flash UI), engine
   family (BS2R same engine; Infinite UE3-6829), modding ecosystem, prior VR art (vorpX G3D works;
   itsloopyo headtracking hook proven; REFramework MIT reference), and the VR injection stack
-  (OpenXR-first for VDXR+SteamVR). Full findings â†’ RESEARCH.md.
-- Decided architecture (C++20/x86, xinput proxy â†’ bioshockvr.dll, core+adapter split, stereo
-  ladder with SequentialReentry as primary bet) â†’ ARCHITECTURE.md decision log.
+  (OpenXR-first for VDXR+SteamVR). Full findings Ã¢â€ â€™ RESEARCH.md.
+- Decided architecture (C++20/x86, xinput proxy Ã¢â€ â€™ bioshockvr.dll, core+adapter split, stereo
+  ladder with SequentialReentry as primary bet) Ã¢â€ â€™ ARCHITECTURE.md decision log.
 - Built: repo + docs suite, CMake (VS2022 `-A Win32`, submodules minhook/imgui/OpenXR-SDK pinned),
   xinput proxy (ordinals verified against the real SysWOW64 DLL with dumpbin - game imports @2/@3),
   mod DLL (deferred init, logger, minidump handler, MinHook, kiero-style Present/ResizeBuffers
   hooks, ImGui overlay), tools scripts.
 - **In-game smoke test passed** on first run (full init chain + D3D11 device info in log).
-  Found + fixed: logger file locking (fopen_s denies sharing â†’ switched to `_wfsopen` with
+  Found + fixed: logger file locking (fopen_s denies sharing Ã¢â€ â€™ switched to `_wfsopen` with
   `_SH_DENYNO`), non-ASCII mojibake in log lines, missing `-Install` passthrough in build.ps1.
 - Verified: LAA=YES; D3D11 confirmed at runtime; user ini path confirmed after first launch.
 - Repo created and pushed: https://github.com/mohamad-balouza/bioshock-vr (public, MIT).
