@@ -158,11 +158,104 @@ name-addressable. The seam to build against is **BS2's design, not BS1's**: hook
 parameter block after calling the original. That is the standard UE3 anchor and it is far more
 discoverable here than on either remaster.
 
-**What may not carry.** BS1's single fastest instrument was the engine's name-based **native
-function table** (1822 entries of `{ "int<Class>exec<Function>", impl, 0 }` in `.data`), which
-resolved natives with zero hardcoded addresses and found the aim seam in minutes. **UE3 favours
-indexed natives**, so budget for losing that lane and leaning harder on ProcessEvent-by-name plus
-RTTI. Whether the table exists here is an I0/I2 question.
+## The native function table EXISTS (session 34, offline, and it is the best news so far)
+
+BS1's single fastest instrument was the engine's name-based native function table, which resolves
+natives with **zero hardcoded addresses** and found BS1's aim seam in minutes. The concern was that
+UE3 favours indexed natives and the lane would be lost. **It is not lost.**
+
+| | BioShock 1 (Vengeance) | BioShock Infinite (UE3) |
+|---|---|---|
+| entry | 12 bytes `{ const TCHAR* name; Native impl; 0 }` | **8 bytes `{ const ANSICHAR* name; Native impl; }`** |
+| name encoding | UTF-16 | **ASCII** |
+| name form | `int<Class>exec<Function>` | **`<Class>exec<Function>`** (no `int` prefix) |
+| count | 1822 | **2647** |
+| location | `.data`, names in `.rdata` | same |
+
+Enumerated offline with `scratchpad/dump-natives.ps1` (read-only, disk image; the dump is
+game-derived and stays in the scratchpad - only the findings come here). Top classes by native
+count: `AXPlayerController` 231, `AXPawn` 188, `UObject` 179, `AActor` 104, `AXWeapon` 68,
+`APlayerController` 46, `USkeletalMeshComponent` 43, `UXGFXMovie` 26.
+
+**Runtime resolution is therefore the same recipe as BS1**: find the ASCII name string, find the
+dword that references it, read the *next* dword. Relocation-transparent, patch-tolerant, no
+hardcoded address. `pattern_scan::find_native_function` needs only an ASCII/8-byte-stride variant.
+
+**Caveat that cost BS1 real time and applies verbatim here:** the linker pools string literals by
+suffix, so a substring match proves nothing. Require the null terminator at the expected end.
+
+### Exec thunks are NOT the seam - independently reproduced on Infinite
+
+BS1 hooked all four aim `exec` thunks and caught **zero** calls across a live session of shooting,
+because native C++ callers bypass the script thunks entirely. The same is true here, and it was
+measurable offline before any hook was installed. Static `E8` caller census over `.text`:
+
+| target | E8 callers |
+|---|---|
+| `APlayerController::execGetPlayerViewPoint` (thunk, RVA `0x129280`) | **0** |
+| `APlayerController::execXGetPlayerFloatingViewPoint` (thunk, RVA `0x1292C0`) | **0** |
+| `APawn::execGetBaseAimRotation` (thunk, RVA `0x12BF30`) | **0** |
+| `AXPlayerController::execCalcFOV` (thunk, RVA `0x4FC060`) | **0** |
+| **`APlayerController::GetPlayerViewPoint` (IMPLEMENTATION, RVA `0x1E10C0`)** | **14** |
+
+One of those 14 is the thunk itself at `0x1292B3`, so 13 are native call sites. **Hook
+implementations, not thunks** - and the thunk is how you *find* the implementation: disassemble it,
+and the last `call` before the epilogue is the real function.
+
+## The camera seam (derived offline, session 34 - NOT yet confirmed live)
+
+`APlayerController::GetPlayerViewPoint`, **implementation RVA `0x1E10C0`**, reached from the thunk
+at `0x129280`.
+
+- Signature: `thiscall`, `this` in `ecx`, **2 stack args** `(FVector* out_Location,
+  FRotator* out_Rotation)`, `ret 8`.
+- **`ret imm / 4 == 2`, so any probe hook takes 2 args.** Getting this wrong pops the RTC dialog
+  that writes no dump (see the rules preamble).
+
+Decoded control flow, which is the single most useful thing to know before writing the hook. It has
+**four** paths, and only the first is a cheap cached read:
+
+1. `test byte ptr [this+0x248], 1` -> if clear, copy `[this+0x24C]` (FVector) and `[this+0x258]`
+   (FRotator) straight to the out-params and return. A **cached POV** fast path.
+2. Otherwise, `[this+0x240]` holds a lazily-created camera object (created via `0x111360`,
+   initialised via `0x1107E0`). If non-null, the POV is read from `[cam+0x3B8]` (FVector) and
+   `[cam+0x3C4]` (FRotator).
+3. Otherwise a virtual call through **vtable slot `+0x2C0`** (this is `GetViewTarget()`) returns an
+   actor, and the POV is read from `[actor+0x44]` / `[actor+0x50]`.
+4. Otherwise it falls back to the controller's own `[this+0x44]` / `[this+0x50]`.
+
+Then all four paths converge at `0x1E11C8`, which copies **0x40 bytes from `[this+0x430]`** and
+runs a full **4x4 SSE matrix multiply** against the POV. So the returned view is a *transformed*
+result, not a raw field read - budget for that when injecting an HMD pose.
+
+**Two layout facts fall out of paths 3 and 4**, which use identical offsets on two different
+objects, which is what makes the reading credible rather than a guess:
+
+- **`AActor::Location` at `+0x44`** (FVector, 12 bytes)
+- **`AActor::Rotation` at `+0x50`** (FRotator, 3x int32, 12 bytes)
+
+**Confidence.** The RVAs, the `ret` imm, the caller counts and the offsets *as read by this
+function* are structural facts from the binary. The *names* attached to them (`+0x240` is the
+camera, slot `+0x2C0` is `GetViewTarget`) are inference from shape and must be confirmed live in
+I2. Nothing here has been observed executing yet.
+
+## RTTI is present but USELESS here (confirmed negative, session 34)
+
+BS1 and BS2 both lean on an RTTI walk (`.?AVClassName@@` TypeDescriptor -> COL+12 -> vtable-4) to
+name classes and resolve vtables. **That lane is dead on Infinite.**
+
+The exe has 270 RTTI type descriptors, and **not one of them is a UE3 engine or XGame class.**
+Checked explicitly and all absent: `UObject`, `AActor`, `APlayerController`, `UEngine`, `UWorld`,
+`ULevel`, `UClass`, `UFunction`, `APawn`, `UCanvas`, `UGameEngine`, `XConsole`, `FSceneView`,
+`FViewport`, plus every `XPlayer`/`XGame` spelling.
+
+What the 270 actually are: third-party libraries compiled with `/GR` - Wwise audio (`CAk*`, ~150 of
+them), Bullet physics (`bt*`), FaceFX (`Fx*`), Beast/JRT lightmapping, and `std::`. UE3 itself is
+built `/GR-` because it has its own reflection.
+
+**Consequence:** class identification must come from the native table (above) and from
+`GNames`/`GObjObjects` enumeration, not from RTTI. That is a real loss relative to the remasters,
+and it is exactly why the native table existing matters so much.
 
 ## Console, cheats and the Exec seam (the biggest single win over the remasters)
 
@@ -353,9 +446,9 @@ must hold in all of them.
 
 | folder | size | content |
 |---|---|---|
-| `DLC\DLCA` | 5.8 GB | (Clash in the Clouds / Burial at Sea - map to titles in I0) |
-| `DLC\DLCB` | 7.5 GB | |
-| `DLC\DLCC` | 11.8 GB | |
+| `DLC\DLCA` | 5.8 GB | **Clash in the Clouds** - identified session 34 from package names: `DCLA_ZEP_Wave1..14`, `DLCA_Arc_BlueRibbons`, `DLCA_ARMORY_WEAPONS` (wave arena, Blue Ribbon challenges, the armory) |
+| `DLC\DLCB` | 7.5 GB | **Burial at Sea Ep. 1** - `DLCB_BookersOff` (Booker's office), `DLCB_Attrium`, `DLCB_Appliances`, `DLCB_Arc_Chameleon` |
+| `DLC\DLCC` | 11.8 GB | **Burial at Sea Ep. 2** - the remaining story pack, largest of the three; carries `Columbia_Billboards_DLCC` and its own subtitle font set |
 | `BirdsEye`, `ChinaBroom`, `IndustrialRevolution`, `SeasonPass`, `UpgradePack` | ~1 MB each | entitlement stubs |
 
 Burial at Sea adds weapons and a Vigor (Old Man Winter) the base game does not have, so per-weapon
@@ -413,9 +506,8 @@ and every value here must also exist in `src/game/bioshockinf/patterns.h/.cpp` a
 |---|---|---|---|---|
 | `IDXGISwapChain::Present` | vtable slot | frame boundary, XR pacing, overlay, mirror | kiero-style throwaway device (core, game-agnostic) | pending I1 |
 | `IDXGISwapChain::ResizeBuffers` | vtable slot | RT cache invalidation | same | pending I1 |
-| `UObject::ProcessEvent` | - | the universal UE3 seam: camera, command poll tick | vtable slot off a known object + prologue gate | pending I2 |
-| `UObject::FindFunctionChecked` | - | cache the `UFunction*` for the camera event by FName index | FName-chain scan + caller census | pending I2 |
-| camera event (`GetPlayerViewPoint` / `CalcCamera` / `UpdateViewTarget`) | - | 6DoF camera override | ProcessEvent filter by cached FName index | pending I2 |
+| `UObject::ProcessEvent` | - | script-event seam; a fallback if the direct camera hook disappoints | vtable slot off a known object + prologue gate | pending I2 |
+| **`APlayerController::GetPlayerViewPoint`** | **impl RVA `0x1E10C0`** (thunk `0x129280`) | **the camera seam**: 6DoF override. thiscall, 2 stack args, `ret 8`, 13 native callers | native table -> disasm thunk -> last call before epilogue -> caller census | **derived, unconfirmed live** |
 | scene build / draw root | - | SequentialReentry stereo seam | frame inspector callstack RVAs + capstone | pending I2/I6 |
 | `XInputGetState` | game IAT RVA `0xCD4814` (XINPUT1_3 ord 2) | synthetic gamepad | import table parse (**done**, session 34) | confirmed, unhooked |
 | Draw / DrawIndexed / OMSetRenderTargets / Map+Unmap | context vtable | HUD classification, frame dumps, lens watch | core `frame_inspector` | pending I2 |
@@ -423,12 +515,70 @@ and every value here must also exist in `src/game/bioshockinf/patterns.h/.cpp` a
 
 # Symbol / offset table
 
-Nothing derived yet. Format matches the sibling files: symbol, RVA or offset, type, derivation
-method, session.
+All from session 34, offline, read-only. **Nothing here has been observed executing yet** - every
+row is a structural fact from the disk image plus, where noted, an inference from shape.
+Everything must also live in `src/game/bioshockinf/patterns.h/.cpp` and nowhere else once used.
+
+## Functions (RVA, image base `0x00400000`, ASLR off)
+
+| symbol | RVA | notes |
+|---|---|---|
+| `APlayerController::GetPlayerViewPoint` **(impl)** | `0x1E10C0` | thiscall, 2 stack args, `ret 8`, 13 native callers. **The camera seam.** |
+| `APlayerController::execGetPlayerViewPoint` (thunk) | `0x129280` | 0 callers - do not hook |
+| `APlayerController::execXGetPlayerFloatingViewPoint` | `0x1292C0` | Irrational addition; 0 callers |
+| `APlayerController::execXGetMatineeViewTarget` | `0x129240` | of interest for I11 cinematics |
+| `APlayerController::execSetViewTarget` | `0x1291A0` | |
+| `APlayerController::execGetFOVAngle` | `0x1290A0` | |
+| `ACamera::execGetFOVAngle` | `0x127A00` | |
+| `ACamera::execAdvanceFOV` | `0x127910` | |
+| `ACamera::execSetViewTarget` | `0x127BB0` | |
+| `AXPlayerController::execCalcFOV` | `0x4FC060` | Irrational's own FOV path - the first FOV lever to try |
+| `AXCamera::execCalcFOVSpeed` | `0x503AA0` | |
+| `UXPostProcessingEffect::execCalcFOV` | (in dump) | a *third* FOV consumer - assume multiple lenses until disproven |
+| `APawn::execGetBaseAimRotation` | `0x12BF30` | aim seam starting point for I8 |
+| `UGameViewportClient::execGetViewportSize` | `0x124B90` | |
+
+Note the FOV picture: `APlayerController`, `ACamera`, `AXPlayerController` and
+`UXPostProcessingEffect` all have FOV entry points. **That is three or four consumers before a
+single frame has been dumped**, which is exactly the multi-lens situation I5 is built to expect.
+
+## Offsets
+
+| object | offset | field | confidence |
+|---|---|---|---|
+| `AActor` | `+0x44` | `Location` (FVector) | high - two independent paths in `GetPlayerViewPoint` read it off different objects |
+| `AActor` | `+0x50` | `Rotation` (FRotator, 3x int32) | high - same |
+| `APlayerController` | `+0x248` bit 0 | "use cached POV" flag | structural |
+| `APlayerController` | `+0x24C` | cached POV Location (FVector) | structural |
+| `APlayerController` | `+0x258` | cached POV Rotation (FRotator) | structural |
+| `APlayerController` | `+0x240` | camera object pointer, lazily created | **inferred** from shape |
+| camera object | `+0x3B8` / `+0x3C4` | POV Location / Rotation | structural |
+| `APlayerController` vtable | `+0x2C0` | `GetViewTarget()` | **inferred** from shape |
+| `APlayerController` | `+0x430` | 0x40-byte block fed to a 4x4 SSE transform applied to the POV | structural, purpose unknown |
+
+## Data tables
+
+| table | location | shape |
+|---|---|---|
+| native function registry | `.data`, names in `.rdata` | 2647 x 8-byte `{ const ANSICHAR* name; Native impl; }`, names `<Class>exec<Func>` ASCII |
 
 # Dead ends
 
 Recorded here as they happen, with the address, so nobody re-walks them. BS1's list saved real
 time; start this one early.
 
-- (none yet)
+- **RTTI walk - DEAD.** 270 type descriptors exist but every one belongs to a third-party library
+  (Wwise `CAk*`, Bullet `bt*`, FaceFX `Fx*`, Beast/JRT, `std::`). Zero UE3 or XGame classes. UE3 is
+  built `/GR-`. Do not try to name an engine class this way; use the native table or
+  `GNames`/`GObjObjects`. *(Session 34, offline.)*
+- **`exec` thunks - not a seam.** Confirmed by static caller census: 0 `E8` callers on every thunk
+  checked. Native C++ callers bypass them entirely, exactly as on BS1. Use them to *locate* the
+  implementation, never as a hook target. *(Session 34, offline.)*
+- **Native stereo - no script surface.** Zero natives match `*Stereo*` across all 2647 entries, and
+  no `bStereo`/`EyeSeparation`/`StereoDevice` names exist in the exe. Combined with
+  `AllowNvidiaStereo3d=False` in the ini, the shipped "Stereoscopic3D" is almost certainly
+  driver-side 3D Vision. Plan for SequentialReentry. *(Session 34, offline - still worth one live
+  confirmation in DR-I4, but do not budget hope for it.)*
+- **`UCheatManager` natives - none.** The cheats (`god`, `ghost`, `walk`, `preventdeath`) are
+  engine `Exec` commands, not script natives, so they will not appear in the native table. Reach
+  them through the Exec seam. *(Session 34, offline.)*

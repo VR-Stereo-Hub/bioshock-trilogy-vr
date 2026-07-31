@@ -51,14 +51,28 @@ Goal: know what we are actually working with before any code runs inside the pro
       from the shipped ini, which is likely why public guides report "no console")
 - [ ] Establish the **test-loadout path**: full weapons/Vigors/money for calibration work, by
       whichever of the surfaces above actually works
-- [ ] Map `DLC\DLCA` / `DLCB` / `DLCC` to their titles (Clash in the Clouds, Burial at Sea 1, 2)
+- [x] Map `DLC\DLCA` / `DLCB` / `DLCC` to their titles
+      *2026-07-31: DLCA = **Clash in the Clouds** (`DCLA_ZEP_Wave1..14`, `Arc_BlueRibbons`,
+      `ARMORY_WEAPONS`), DLCB = **Burial at Sea Ep. 1** (`BookersOff`, `Attrium`, `Appliances`),
+      DLCC = **Burial at Sea Ep. 2**.*
+- [x] Offline: determine whether a **name-based native function table** exists
+      *2026-07-31: **IT EXISTS** - 2647 entries, 8-byte `{ const ANSICHAR* name; Native impl; }`,
+      names `<Class>exec<Func>` in ASCII (BS1's was 12-byte and UTF-16). BS1's fastest instrument
+      ports. Enumerated offline; the dump stays in the scratchpad, findings in ENGINE_NOTES.*
+- [x] Check whether **RTTI is present** in this build
+      *2026-07-31: **present but useless** - all 270 type descriptors belong to third-party libs
+      (Wwise, Bullet, FaceFX, Beast, std). Zero UE3/XGame classes; UE3 is built `/GR-`. The
+      RTTI-walk lane that BS1 and BS2 rely on is DEAD here. Recorded as a dead end.*
+- [x] Locate the camera seam offline
+      *2026-07-31: `APlayerController::GetPlayerViewPoint` impl at **RVA 0x1E10C0** (thunk
+      `0x129280`), thiscall, 2 stack args, `ret 8`, **13 native callers**. Every `exec` thunk
+      checked has **0** callers, independently reproducing BS1's "hook implementations, not
+      thunks". Control flow decoded (4 paths + a 4x4 SSE transform); `AActor::Location` `+0x44`
+      and `Rotation` `+0x50` fall out of it. Unconfirmed live.*
 - [ ] Offline: run UELib / UE Explorer against the Infinite packages in the gitignored
       `tools/uscript/` workspace (UELib explicitly supports package version 6829)
-- [ ] Offline: dump the FName pool with capstone; determine whether a **name-based native function
-      table** exists (BS1's single fastest instrument; UE3 favours indexed natives, so this may be
-      a loss to plan around)
-- [ ] Check whether **RTTI is present** in this build. If stripped, the vtable-identification lane
-      dies and `GObjObjects` enumeration replaces it.
+- [ ] Offline: locate `GNames` / `GObjObjects` (now the primary class-identification lane, since
+      RTTI is out)
 - [ ] **Done when:** [ENGINE_NOTES.md](ENGINE_NOTES.md) records the verified build fingerprint, the
       live renderer, and a **working cheat and test-loadout path with the exact command used** -
       including any surface that turned out inert.
