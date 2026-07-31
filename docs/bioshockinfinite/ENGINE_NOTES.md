@@ -636,11 +636,63 @@ single frame has been dumped**, which is exactly the multi-lens situation I5 is 
 | `APlayerController` vtable | `+0x2C0` | `GetViewTarget()` | **inferred** from shape |
 | `APlayerController` | `+0x430` | 0x40-byte block fed to a 4x4 SSE transform applied to the POV | structural, purpose unknown |
 
+## Globals
+
+| global | RVA | how derived |
+|---|---|---|
+| **`GNames.Data`** (`FNameEntry**`) | **`0xF9DFEC`** | traced from the hardcoded `UnNames.h` string run |
+| **`GNames.Num`** | **`0xF9DFF0`** | same function, the grow path |
+| **`GNames.Max`** | **`0xF9DFF4`** | same |
+| **name hash table** | **`0xF58BF8`** | `mov [eax*4 + 0xF58BF8], ebp` after `and eax, 0xfff` -> **4096 buckets** |
+| **`GNatives`** (bytecode opcode dispatch) | **`0xF6DCB0`** | `movzx edx, byte ptr [eax]` (opcode from the script stream) then `mov edx,[edx*4 + 0xF6DCB0]; call edx` in every exec thunk |
+| **`GMalloc`** | **`0xF71CC8`** | `mov ecx,[0xF71CC8]; mov eax,[ecx]; mov edx,[eax+8]; call edx` = vtable Malloc |
+| `__security_cookie` | `0xF4BD60` | standard MSVC prologue |
+| empty-string constant | `0xECD640` | substituted whenever a string's length field is 0 |
+
 ## Data tables
 
 | table | location | shape |
 |---|---|---|
 | native function registry | `.data`, names in `.rdata` | 2647 x 8-byte `{ const ANSICHAR* name; Native impl; }`, names `<Class>exec<Func>` ASCII |
+| `GNames` | `0xF9DFEC` | UE3 `TArray<FNameEntry*>`, the classic 12-byte `{ Data, Num, Max }` triple |
+
+## Struct layouts
+
+**`FNameEntry`** - decoded from the pool allocator and the registration function:
+
+| offset | field |
+|---|---|
+| `+0x8` | **`(index << 1) | isWide`** - the index is `[entry+8] >> 1`, and **bit 0 selects ASCII vs UTF-16 text** (two different hash functions are called on it, `0x80C70` vs `0x80C10`) |
+| `+0xC` | hash-chain next pointer |
+| `+0x10` | **the name text**, ASCII or UTF-16 per the bit-0 flag |
+
+**This differs from BS1 in a way that will bite a naive port.** BS1's `FNameEntry` text at `+0x10`
+is always UTF-16; here it is **ASCII by default** (the allocator copies 5 bytes for `"None"`) with
+wide as the exception. Any `fname_text()` must read the flag, not assume an encoding.
+
+**`FFrame`** (the script execution frame passed to every exec thunk):
+
+| offset | field |
+|---|---|
+| `+0x14` | `Object` (the `UObject*` the bytecode is running on) |
+| `+0x18` | `Code` (instruction pointer into the bytecode stream; thunks `inc` it as they parse) |
+
+**`UObject`**: `Class` at **`+0x20`** (from `execIsA`: `mov eax,[edi+0x20]`).
+
+**`UClass`**: carries two `WORD`s at **`+0xC0`** and **`+0xC2`** used for a **constant-time `IsA`**
+via an interval/nested-set test (`execIsA` compares `child.start >= parent.start` and
+`child.start <= parent.start + parent.range` with 16-bit math, no vtable walk, no loop). Worth
+reusing rather than walking `SuperStruct` chains.
+
+## Not found (recorded so it is not re-hunted blindly)
+
+- **`GObjObjects`** - the linear global object array. `UObject::StaticFindObject` (`0xC6250`) goes
+  through the **object hash**, not a linear walk, so the array does not fall out of it. Unresolved
+  globals seen on that path: `0xF8BF04`, `0xF79D30`, `0xF83EA0` - **not** identified, do not guess.
+  **Deprioritised on purpose**: BS2's design acquires live objects from *hook parameters* (the
+  `this` of the camera hook, the `Object` field of an `FFrame`) rather than by scanning, which is
+  both cheaper and safer - BS1's object scanner caused a 3.8 s game-thread stall and probably a
+  crash. Pick this up only if a use case appears that hook parameters cannot serve.
 
 # Dead ends
 

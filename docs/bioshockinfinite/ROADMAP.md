@@ -80,8 +80,18 @@ Goal: know what we are actually working with before any code runs inside the pro
       and `Rotation` `+0x50` fall out of it. Unconfirmed live.*
 - [ ] Offline: run UELib / UE Explorer against the Infinite packages in the gitignored
       `tools/uscript/` workspace (UELib explicitly supports package version 6829)
-- [ ] Offline: locate `GNames` / `GObjObjects` (now the primary class-identification lane, since
-      RTTI is out)
+- [x] Offline: locate `GNames`
+      *2026-07-31: **`GNames` TArray at RVA `0xF9DFEC`** (Data/Num/Max), name hash table at
+      `0xF58BF8` with 4096 buckets, and `FNameEntry` decoded: `+0x8` = `(index<<1)|isWide`,
+      `+0xC` = chain, `+0x10` = text. **Text is ASCII by default here, not UTF-16 as on BS1** -
+      a naive port of `fname_text()` would read garbage. Also fell out: `GNatives` (bytecode
+      dispatch) at `0xF6DCB0`, `GMalloc` at `0xF71CC8`, `FFrame` `+0x14` Object / `+0x18` Code,
+      `UObject::Class` at `+0x20`, and a constant-time `IsA` via 16-bit interval fields at
+      `UClass+0xC0/+0xC2`.*
+- [ ] Offline: `GObjObjects` **deprioritised** - `StaticFindObject` uses the object hash, not a
+      linear walk, so it did not fall out. BS2's design takes live objects from hook parameters
+      rather than scanning, which is cheaper and avoids the class of stall/crash BS1's object
+      scanner caused. Revisit only if a use case needs it.
 - [ ] **Done when:** [ENGINE_NOTES.md](ENGINE_NOTES.md) records the verified build fingerprint, the
       live renderer, and a **working cheat and test-loadout path with the exact command used** -
       including any surface that turned out inert.
