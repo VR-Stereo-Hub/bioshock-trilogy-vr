@@ -138,7 +138,6 @@ int g_fovOffsetCandidateHits = 0;
 int g_fovDistinct = 0;     // distinct cb0 objects seen this interval
 int g_fovDistinctPrev = 0; // ...and in the previous one, for the stride
 int g_fovStrideUsed = 1;   // stride the collected round actually used
-int g_fovPhase = 0;        // rotates per interval so the stride covers everything
 int g_fovCollectDistinct = 0; // distinct count of the interval it was collected in
 int g_fovAmbiguous = 0;    // rounds refused for want of a clear majority
 int g_fovUnspanned = 0;    // rounds refused because the sample missed the pass
@@ -781,10 +780,6 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
     if (g_fovDistinct > 0) g_fovDistinctPrev = g_fovDistinct;
     g_fovDistinct = 0;
     g_fovLastCb = nullptr;
-    // Advance the sampling phase. Coprime-ish step so consecutive intervals do
-    // not revisit the same residues in lockstep with any stride the pass size
-    // happens to produce.
-    g_fovPhase = (g_fovPhase + 7) & 0x3FFFFFFF;
 
     // Rendered-vs-option verdict with a 3-interval hysteresis, logged on
     // transition. Session-independent by design: this is the flat-testable
@@ -991,35 +986,40 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
                 if (bd.ByteWidth >= 320) {
                     g_fovLastCb = cb0;
                     // Count EVERY distinct buffer (that is what sets the next
-                    // interval's stride), copy only every stride-th one - with
-                    // the PHASE ROTATED each interval so consecutive intervals
-                    // sample disjoint positions.
+                    // interval's stride), copy only every stride-th one.
                     //
-                    // SESSION 33, and this replaces a wrong fix of my own. The
-                    // foreground pass is ~17 buffers of 480+, so a fixed-phase
-                    // stride of 40 sees it only by luck: `lenses` flickered
-                    // between 1 and 2 with nothing changing, and a poke A/B read
-                    // "the second lens is gone" as SUCCESS when the sampler had
-                    // simply missed it. The first attempt at a fix reserved the
-                    // first few slots for the HEAD of the pass, because two
-                    // captures put the fg run at blocks 2..12. THAT PREMISE IS
-                    // FALSE: in a later capture of the same scene the fg run sat
-                    // at blocks 369..377 and 456..463 of 482. Its position is
-                    // not stable, so NO fixed set of positions can be relied on.
+                    // SESSION 33 - TWO of my own attempts at "cover the whole
+                    // pass" are recorded here as things NOT to try again.
                     //
-                    // Rotating the phase makes coverage a matter of TIME instead
-                    // of luck: 12 slots over ~480 buffers is a stride of 40, so
-                    // every position is visited within 40 intervals - a few
-                    // hundred ms at present rate. The world vote is untouched
-                    // (it wins any sample overwhelmingly, being 96% of the
-                    // pass); what changes is that a second lens is now certain
-                    // to be SEEN, and the verdict below remembers it for
-                    // kFovFgSeenWindowMs rather than demanding it every round.
+                    // The problem is real: the foreground pass is ~17 buffers of
+                    // 480+, so a fixed-phase stride sees it only by luck, and
+                    // `lenses` flickers between 1 and 2 with nothing changing.
+                    //
+                    // (1) Reserving the first slots for the HEAD of the pass.
+                    //     Dead: two captures put the fg run at blocks 2..12, a
+                    //     third put it at 369..377 and 456..463 of 482. Its
+                    //     position is not stable.
+                    // (2) ROTATING THE STRIDE PHASE per interval so coverage
+                    //     becomes a matter of time. Correct in principle and
+                    //     MEASURED AT 10 FPS: draws/s 10, presents/s 10, with
+                    //     drawUs=800 - i.e. 0.8 ms of each 100 ms frame inside
+                    //     the scene build, so the stall is on the render thread,
+                    //     where these copies run. Copying from a DIFFERENT set
+                    //     of dynamic constant buffers each interval defeats
+                    //     whatever the driver does to make a repeated copy of
+                    //     the same handles cheap. Same scene at a fixed phase:
+                    //     1031 CalcView/s. A 20x cost for a status field.
+                    //
+                    // So: fixed phase, the shape that has always run fast. The
+                    // consequence is stated where it matters (hud_capture.h and
+                    // the BS2 testing doc): a live `lenses=2` is trustworthy,
+                    // `lenses=1` is NOT proof of a match, and the acceptance
+                    // instrument is `dumpframe` + tools/decode-framedump.ps1,
+                    // which sees every block and has no sampling question at all.
                     int idx = g_fovDistinct++;
                     int stride = g_fovDistinctPrev / kFovSlots;
                     if (stride < 1) stride = 1;
-                    bool take = (idx % stride) == (g_fovPhase % stride);
-                    if (!g_fovPending && g_fovSlots < kFovSlots && take &&
+                    if (!g_fovPending && g_fovSlots < kFovSlots && idx % stride == 0 &&
                         ensure_fov_staging(ctx)) {
                         // Clamp to the SOURCE size: the box must lie inside the
                         // source buffer, and the gate admits buffers smaller

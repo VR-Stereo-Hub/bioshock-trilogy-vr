@@ -253,6 +253,19 @@ bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs,
                unsigned long long maxAgeMs = 500);
 bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
                   unsigned long long maxAgeMs = 500);
+// How many distinct perspective lenses the watch has seen recently.
+//
+// READ THIS BEFORE USING IT AS A GATE (session 33). The watch samples ~12 of
+// 400-600 distinct constant buffers per interval on a fixed stride, and a
+// foreground/viewmodel pass is only ~17 of those - so whether it lands in a
+// given sample is luck. `lenses == 2` is therefore TRUSTWORTHY (a second lens
+// was really decoded), but `lenses == 1` IS NOT PROOF that the lenses match; it
+// is the ordinary outcome of not sampling the fg pass. Covering the whole pass
+// was tried twice and both attempts failed - a head-slot reservation (the fg
+// pass moves) and a rotating stride phase (measured at 10 fps, because copying
+// from a different set of dynamic buffers each interval stalls the render
+// thread). The acceptance instrument for a lens match is `dumpframe full` +
+// tools/decode-framedump.ps1, which sees every block.
 int fov_lens_count();
 bool fov_mismatch();
 // Session 33: the winning lens's LETTERBOX factor, i.e. the ray block's
