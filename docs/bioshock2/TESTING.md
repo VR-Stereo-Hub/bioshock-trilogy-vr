@@ -196,6 +196,63 @@ tools\decode-framedump.ps1 -Path <dump> -ScanLayout -RayOffset 16 -FgBakeRvas @(
 - `fovaudit` prints the live watch's verdict including `lenses=`. On BS2 expect **`lenses=2`** in
   gameplay: a world lens following the FOV option, and a fixed 60 deg one that does not.
 
+## THE VIEWMODEL LENS MATCH (`fgfov`, session 33) - IN-HEADSET CALL OWED
+
+**What it does.** BS2 renders the world with the FOV option and the viewmodel with a lens pinned
+at 60 deg. One projection layer carries one FOV claim, so the weapon is displayed with an angular
+gain of `tan(option/2)/tan(30)` - 2.06x at option 100. That is the "the weapon moves with my head"
+report. `fgfov on` writes the live world FOV into the viewmodel lens every frame, so both match.
+
+**Default OFF** until this checklist passes. `fgfov off` is the A/B and restores instantly.
+
+### Flat first (30 s, no headset)
+
+```powershell
+.\tools\game-batch.ps1 -Game bs2 -Delay 3 "fgfov on" "fovaudit" "dumpframe full"
+```
+
+`fovaudit live` should read **`lenses=1`**, and the dump decoded with
+`decode-framedump.ps1 -RayOffset 16 -FgBakeRvas @()` should show **ONE cluster**. Sweep the option
+(`gfov 80`, `gfov 130`) and it must STAY one cluster at every value - a match that only holds at one
+option is a baked constant, which is the failure mode. `fgfov off` must bring back TWO clusters
+(world + `tanH 0.5774`) and restore `60.000` exactly.
+
+**Trust the DUMP over `lenses`.** The dump captures every cb0 block; the live watch samples 12 of
+~480 with a rotating phase, so it needs up to ~1.5 s to notice a second lens. `lenses` is a
+convenience, the dump is the evidence.
+
+### In-headset (the part flat cannot answer)
+
+Flat CANNOT judge this and must not be used to. On a monitor the matched viewmodel looks enormous,
+because a 100-deg render squeezed into a small window magnifies anything near the camera. In the
+headset that same render is stretched across your whole view. **Only the headset can say.**
+
+1. VR, gameplay, weapon out. FOV option at its normal 100.
+2. `fgfov off` - the CURRENT behaviour. Turn your head side to side and look up and down. Note how
+   the weapon slides/swims relative to your hands, and how big it looks.
+3. `fgfov on` - turn your head the same way.
+   - **The question that decides it: does the weapon stop swimming?** That is what the lens match
+     is for and it is the only thing being claimed.
+   - Second question, separate: is the SIZE right, or is the Big Daddy helmet too big now?
+4. If the size is wrong but the swimming is fixed, `fgfov <deg>` writes a manual value - try 85,
+   then 75. Report which value looks right; that is a measurement, not a failure.
+5. Compare against `gfov 60` + `fgfov off`, which is the known-good reference from session 32
+   ("the weapon looks correct now and doesn't move"). The match at option 100 should feel like
+   that did, with a much wider world.
+
+**Known open question.** The viewmodel rig's apparent SIZE is coupled to this FOV value, not only
+its lens - widening the lens also moves the foreground eye, so the rig grows. Whether the matched
+state is geometrically correct or needs a second compensation is exactly what step 3's second
+question decides. Do NOT tune any per-weapon or per-hand offsets before it is answered: a trim
+fitted against a wrong lens stops being portable, which is the mistake BS1 made.
+
+### Only after the above passes
+
+Re-judge **world scale** and **IPD** (`worldscale 100` is the current value, accepted in session 26
+- but that predates knowing the viewmodel lens was wrong, so treat it as unconfirmed). Then
+`vrpreset save` so the verdict survives a relaunch - BS2 had no persistence at all before session
+33, which is why no previous verdict could be re-checked against the same numbers.
+
 ## Frozen engine pitch (session 32) - IN-HEADSET CHECK STILL OWED
 
 The fix (`publish_pitch_error` before the `rot->pitch` overwrite) is in, but its SIGN is unverified

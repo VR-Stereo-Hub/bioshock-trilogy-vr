@@ -102,16 +102,15 @@ std::atomic<unsigned> g_cHudDraws{0}, g_cRedirects{0}, g_cLeaks{0}, g_cIntervals
 // same 1344 bytes the offline frame dump captures, so the live watch and
 // tools/decode-framedump.ps1 now see identical data. Cost is 10.5 KB of staging.
 constexpr UINT kFovCbBytes = 1344; // floats 0..335, matching frame_inspector
-// 12, not 8 (session 33). With 3 slots reserved for the head, 8 total left only
-// 5 for the world - and measured live that came out 4 fg / 4 world, a TIE that
-// the majority guard correctly refuses, so the watch published nothing at all.
-// 12 keeps the same 3-deep head and gives the world 9, a decisive 9/12.
+// 12, not 8 (session 33): more slots is more coverage per interval, and the
+// staging cost is 12 x 1344 B.
 constexpr int kFovSlots = 12;
-// Slots reserved for the HEAD of the pass, where the foreground/viewmodel pass
-// lives on both games (session 33 - see the sampling site). The rest stride
-// across the world pass, so the world still wins the majority vote while the fg
-// lens is guaranteed to be seen at all.
-constexpr int kFovHeadSlots = 3;
+// How long a sighting of a second lens keeps counting (session 33). The
+// foreground pass is ~17 buffers of 480+, so NO single interval's sample can be
+// relied on to contain it - see the phase rotation at the sampling site. The
+// verdict is therefore "was a second lens seen RECENTLY", which the rotation
+// makes true within a few hundred ms, rather than "is one in this round".
+constexpr unsigned long long kFovFgSeenWindowMs = 1500;
 ID3D11Buffer* g_fovStaging = nullptr;
 bool g_fovPending = false; // copied, not yet mapped
 int g_fovPendingAge = 0;   // presents since the copy
@@ -139,6 +138,7 @@ int g_fovOffsetCandidateHits = 0;
 int g_fovDistinct = 0;     // distinct cb0 objects seen this interval
 int g_fovDistinctPrev = 0; // ...and in the previous one, for the stride
 int g_fovStrideUsed = 1;   // stride the collected round actually used
+int g_fovPhase = 0;        // rotates per interval so the stride covers everything
 int g_fovCollectDistinct = 0; // distinct count of the interval it was collected in
 int g_fovAmbiguous = 0;    // rounds refused for want of a clear majority
 int g_fovUnspanned = 0;    // rounds refused because the sample missed the pass
@@ -677,7 +677,7 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
             // published the viewmodel lens (5/8 votes) before the next round
             // corrected it. Refuse a round whose samples did not reach across
             // the pass it was collected in.
-            int spanned = kFovHeadSlots + (kFovSlots - kFovHeadSlots) * g_fovStrideUsed;
+            int spanned = kFovSlots * g_fovStrideUsed;
             if (win >= 0 && g_fovCollectDistinct > spanned * 2) {
                 ++g_fovUnspanned;
                 win = -1;
@@ -697,14 +697,22 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                         continue;
                     if (other < 0 || h[i] > h[other]) other = i;
                 }
-                int lenses = 1;
+                unsigned long long nowMs = GetTickCount64();
                 if (other >= 0) {
-                    lenses = 2;
                     g_fovFgTanH.store(h[other], std::memory_order_relaxed);
                     g_fovFgTanV.store(v[other], std::memory_order_relaxed);
-                    g_fovFgStampMs.store(GetTickCount64(),
-                                         std::memory_order_relaxed);
+                    g_fovFgStampMs.store(nowMs, std::memory_order_relaxed);
                 }
+                // TIME-WINDOWED, not per-round. A 17-buffer pass cannot be
+                // guaranteed to appear in any one 12-slot sample, so "no second
+                // lens this round" is not evidence of a match - it is the
+                // ordinary case. With the phase rotating, a second lens that
+                // exists WILL be sampled within a few hundred ms, so absence
+                // across the whole window is the evidence. Getting this wrong is
+                // what let a poke A/B report six false positives in a row.
+                unsigned long long fgStamp =
+                    g_fovFgStampMs.load(std::memory_order_relaxed);
+                int lenses = (fgStamp && nowMs - fgStamp <= kFovFgSeenWindowMs) ? 2 : 1;
                 g_fovLenses.store(lenses, std::memory_order_relaxed);
                 // One line, on change, carrying everything a conclusion needs -
                 // no cross-referencing two log lines ever again (session 28).
@@ -753,6 +761,10 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
     if (g_fovDistinct > 0) g_fovDistinctPrev = g_fovDistinct;
     g_fovDistinct = 0;
     g_fovLastCb = nullptr;
+    // Advance the sampling phase. Coprime-ish step so consecutive intervals do
+    // not revisit the same residues in lockstep with any stride the pass size
+    // happens to produce.
+    g_fovPhase = (g_fovPhase + 7) & 0x3FFFFFFF;
 
     // Rendered-vs-option verdict with a 3-interval hysteresis, logged on
     // transition. Session-independent by design: this is the flat-testable
@@ -959,36 +971,34 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
                 if (bd.ByteWidth >= 320) {
                     g_fovLastCb = cb0;
                     // Count EVERY distinct buffer (that is what sets the next
-                    // interval's stride), copy only every stride-th one - PLUS
-                    // the first kFovHeadSlots unconditionally.
+                    // interval's stride), copy only every stride-th one - with
+                    // the PHASE ROTATED each interval so consecutive intervals
+                    // sample disjoint positions.
                     //
-                    // SESSION 33: the head reservation is the fix for an
-                    // instrument that could not answer its own question. The
-                    // foreground pass is a CONTIGUOUS RUN AT THE HEAD - dump
-                    // block indices 2..12 of 249 at 16:9, 2..9 of 534 at
-                    // 2048x2048 - about 19 buffers against the world's 600+. A
-                    // pure stride of 615/8 = 77 therefore sampled the fg pass
-                    // only when index 0 happened to land in it, so `lenses`
-                    // flickered between 1 and 2 with nothing changing, and a
-                    // poke A/B read "the second lens is gone" as a SUCCESS when
-                    // the sampler had simply missed it. Session 28's stride
-                    // exists to stop the fg WINNING the vote (5/8 once); it
-                    // overcorrected into never seeing it. Reserving the head
-                    // keeps both properties: the fg is always represented, and
-                    // with 3 of 8 slots at the head (one of which is the world
-                    // block that precedes the fg run) the world still takes
-                    // >= 6/8 and the majority guard is untouched.
+                    // SESSION 33, and this replaces a wrong fix of my own. The
+                    // foreground pass is ~17 buffers of 480+, so a fixed-phase
+                    // stride of 40 sees it only by luck: `lenses` flickered
+                    // between 1 and 2 with nothing changing, and a poke A/B read
+                    // "the second lens is gone" as SUCCESS when the sampler had
+                    // simply missed it. The first attempt at a fix reserved the
+                    // first few slots for the HEAD of the pass, because two
+                    // captures put the fg run at blocks 2..12. THAT PREMISE IS
+                    // FALSE: in a later capture of the same scene the fg run sat
+                    // at blocks 369..377 and 456..463 of 482. Its position is
+                    // not stable, so NO fixed set of positions can be relied on.
+                    //
+                    // Rotating the phase makes coverage a matter of TIME instead
+                    // of luck: 12 slots over ~480 buffers is a stride of 40, so
+                    // every position is visited within 40 intervals - a few
+                    // hundred ms at present rate. The world vote is untouched
+                    // (it wins any sample overwhelmingly, being 96% of the
+                    // pass); what changes is that a second lens is now certain
+                    // to be SEEN, and the verdict below remembers it for
+                    // kFovFgSeenWindowMs rather than demanding it every round.
                     int idx = g_fovDistinct++;
-                    int stride = (g_fovDistinctPrev - kFovHeadSlots) /
-                                 (kFovSlots - kFovHeadSlots);
+                    int stride = g_fovDistinctPrev / kFovSlots;
                     if (stride < 1) stride = 1;
-                    // The strided lane starts one FULL stride past the head, not
-                    // at the head boundary: the fg run is ~19 buffers long, so
-                    // sampling at idx == kFovHeadSlots would just take a fourth
-                    // fg buffer and eat into the world's majority.
-                    bool take = idx < kFovHeadSlots ||
-                                (idx > kFovHeadSlots &&
-                                 (idx - kFovHeadSlots) % stride == 0);
+                    bool take = (idx % stride) == (g_fovPhase % stride);
                     if (!g_fovPending && g_fovSlots < kFovSlots && take &&
                         ensure_fov_staging(ctx)) {
                         // Clamp to the SOURCE size: the box must lie inside the
