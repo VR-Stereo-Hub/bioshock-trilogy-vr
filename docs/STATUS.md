@@ -947,7 +947,49 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### 0. SESSION 33 OPENER (BS2) - written with the verdicts that shape it
+### 0a. THE USER'S PRIORITY ORDER (directive, 2026-07-31, session 32 - supersedes ROADMAP ordering)
+
+Verbatim intent: **core experience first, nice-to-haves last.** Swing-to-attack is explicitly
+"a far away thing, it's a nice to have" - it drops to the bottom of the queue on BOTH games.
+
+1. **Custom resolution** (BS2 lane ships; the aspect bisection is what is left)
+2. **Correct scale, and the viewmodel not moving with the headset**
+3. **Motion controls**: weapons, movement, and aim being right
+4. **Normal controls**: weapon and plasmid switching
+5. **HUD, effects, cinematics and menu elements**
+6. Everything else core to the experience
+7. ...then nice-to-haves (swing-to-attack lives here)
+
+### 0b. ITEM 2 IS DIAGNOSED AND CONFIRMED IN-HEADSET (2026-07-31)
+
+The two-lens magnitude mismatch (Current state 3) is **confirmed as the cause of the viewmodel
+defect by an in-headset A/B that tested a QUANTITATIVE prediction**, not just a direction.
+
+Predicted: the angular-gain error is `k = tan(option/2) / tan(30)`, so 2.06x at option 100 and
+3.99x at option 130. Predicted consequence: the defect should get markedly worse at 130.
+**User's verdict: "I just did the test and it very clearly got a lot worse at 130 FOV."**
+
+This is much stronger evidence than the callstack/draw-count circumstantials, and it converts the
+lens split from "leading hypothesis" to the working diagnosis.
+
+**The clincher still to run, and it is free:** the same arithmetic predicts the error VANISHES at
+option **60**, where `k = tan(30)/tan(30) = 1.0` and the world lens exactly equals the fixed
+60-deg lens. So `gfov 60` should make the viewmodel look CORRECT (in a uselessly narrow view - it
+is a diagnostic, not a shipping config). If it does, the diagnosis is airtight and the fix is
+unambiguous. If it does not, something else is also in play and the fix must not be built yet.
+
+**Immediate zero-code mitigation for the user:** keep the FOV option LOW (100 or below, and note
+`gfov` defaults to 130 when enabled - leave it off). Lower option = smaller `k` = less viewmodel
+error, until the real fix lands.
+
+**The real fix, once the clincher passes:** make the two lenses MATCH, because one projection layer
+carries one fov claim and only matched lenses make both world and viewmodel right (BS1's session-28
+conclusion, and the one piece of BS1 reasoning that DOES transfer - the mechanism differs, the
+consequence is identical). Direction: raise the 60-deg lens to the world's value rather than
+dropping the world to 60. That needs BS2's second-lens FOV field, which is UNDERIVED. Per the
+standing policy, check for a native BS2 route before porting BS1's fg-bake machinery.
+
+### 0c. SESSION 33 OPENER (BS2) - written with the verdicts that shape it
 
 Session 32 answered the lens question and killed the square-backbuffer plan. Steps 3-4 of the
 session-32 brief were NOT reached; they are re-scoped below by what was measured.

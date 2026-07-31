@@ -211,3 +211,91 @@ construction.
 5. Drill an enemy while looking DOWN - the BS1 symptom was hits landing on the floor.
 6. Residual: BS1 settles at 4-8 deg because the proportional term falls under the game's own
    deadzone. **BS2's deadzone is its own - measure it, do not assume BS1's number.**
+
+## Test loadouts: getting weapons and plasmids on BS2 (researched session 32, UNTESTED)
+
+**The console is not usable on either game** (user, session 32 - same as BS1 despite
+`-allowconsole` being documented). So the working mechanism is the one BS1 already uses: **bind a
+cheat command to an unbound key in `User.ini`.** Everything below is prepared, not proven - nothing
+here has been run on BS2 yet.
+
+### The mechanism, from BS1's working precedent
+
+BS1's `User.ini.bvr-bak-cheatkeys` diff is the ground truth - these lines are live and working on
+BS1 today:
+
+```
+F7=stat fps
+F11=givebioshockweapons
+F12=testAddAvailablePlasmid ElectricBolt
+```
+
+Format is `<KEY>=<command>`, one per line, in a key-binding section. Press the key in game, the
+command runs. A Steam community post confirms the same approach for both remasters and notes that
+making `User.ini` read-only is NOT necessary.
+
+### THE SECTION TRAP - the same class of bug as the viewport keys
+
+BS2's `User.ini` carries the same key names in **at least seven sections**: `[Default]` (133),
+`[RadialActive]` (477), `[RadialActive_TriggerSwap]` (760),
+`[RadialActive_SouthpawTriggerSwap]` (1044), `[GathererChoice]` (1328), `[RescueVentChoice]`
+(1629), and more. **Binding in the wrong one silently does nothing in normal gameplay** - exactly
+how `Bioshock2SP.ini`'s five viewport sections would have swallowed a resolution write. The
+gameplay binds are the ones in **`[Default]`**.
+
+**Free keys on BS2 today: `F9` and `F12`** (both `F9=` and `F12=` are empty at lines 249 and 253),
+plus `F23`/`F24` at 424-425. Note BS2's layout differs from BS1's: BS2 uses F7/F8 for
+EquipAbility7/8 and puts QuickLoad/QuickSave on F10/F11, so **do not copy BS1's key choices**.
+
+### Command ladder - try in this order, broadest first
+
+Names collected from community sources; **none verified on this install.**
+
+| command | expected effect |
+|---|---|
+| `GiveAll` | all obtainable weapons + 999 of every ammo type |
+| `IGBigBucks` | money (sources disagree: 500 or 600 dollars) |
+| `GiveWeapon Weapons.PlayerDrill` | one weapon; also `PlayerMachineGun`, `PlayerShotgun`, `PlayerSpeargun` |
+| `GiveItem Plasmids.ElectroBoltBasicPlasmid` | one plasmid; `...MasterPlasmid` for level 3 |
+| `GiveItem ShockGame.ActiveGeneticSlotUpgrade` | an extra plasmid slot |
+| `exec fulleverything.debug` | everything: items, research, upgrades (the nuclear option) |
+| `testAddAvailablePlasmid <name>` | BS1's plasmid command - may not exist on BS2, try it anyway |
+
+### VERIFY BY EFFECT, NOT BY THE BIND EXISTING
+
+This session's most expensive lesson applies directly: **a write that reports success proves
+nothing.** A key bind that saves cleanly into `User.ini` is not evidence the command ran, and a
+command name that is wrong for this game will fail exactly as silently as one that is right.
+
+For each command, the acceptance is an observable change:
+
+- weapon appears in the wheel / ammo counter moves -> `game-shot -Game bs2` before and after, and
+  diff the two with `tools/img-diff.ps1`
+- plasmid appears in the radial
+- money changes on the HUD
+
+If the effect cannot be observed, record the command as UNPROVEN. Do not build a test procedure on
+a command that was never seen to do anything.
+
+**Harness gap to close first:** `vrinput test press` composes XInput PAD buttons, not keyboard
+keys, so nothing in the harness can press F9/F12 today. Either ask the user to press the key (they
+are at the machine anyway, and this is a one-off per test session) or add a SendInput keyboard poke
+to the harness. Ask before building the second.
+
+### The authoritative source for item names is LOCAL, not the web
+
+Both link targets that would carry a full item table are unreachable to tooling: the BioShock Wiki
+console-commands page and the Scribd cheat sheet both return HTTP 402. Do not sink more time into
+scraping them.
+
+The real source is the game's own scripts: `BakedScripts/` in the BS2 install, via the existing
+`tools/uscript/` decompile workspace (gitignored - and per the hard rule, **summarise findings
+here, never paste game script into the repo**). That gives exact class names rather than
+community-transcribed ones, which is what the `GiveItem`/`GiveWeapon` paths need.
+
+### Fallback if no command lands: a prepared save
+
+Exactly what BS1 fell back to. Saves are fair game (standing permission) and BS2's live in
+`Documents\BioshockHD\BioShock2\SaveGames`. Make one save with everything unlocked in an open area
+and reuse it as the test fixture - it also removes the per-session save-loading step that currently
+needs a human.
