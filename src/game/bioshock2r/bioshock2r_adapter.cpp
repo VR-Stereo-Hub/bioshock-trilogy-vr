@@ -2,6 +2,7 @@
 
 #include "core/gfx/hud_capture.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/camera.h"
 #include "game/bioshock2r/patterns.h"
 #include "game/bioshock2r/scenedraw.h"
@@ -30,6 +31,13 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // BS1's, so without this the live fov watch decodes nothing on BS2 -
     // which is exactly the state session 26 recorded.
     bvr::hud::set_ray_block_offset(patterns::kRayBlockCb0FloatIndex);
+    // Session 34: an OpenXR session that is running but not FOCUSED paced this
+    // game at the runtime's not-visible cadence (~10 Hz measured flat, and every
+    // alt-tab reproduced it), which made VR unplayable. Detached pacing hands
+    // the frame loop to the pace thread whenever the session is not FOCUSED.
+    // Core ships it OFF so BioShock 1 - the headset-accepted baseline - is
+    // untouched; BS2 opts in here. `vrpace detach off` is the live A/B.
+    bvr::vr::set_pace_detach(true);
     if (!camera::install(symbols)) return false;
     BVR_LOG("[b2r] adapter ready, capabilities 0x%X", capabilities());
     return true;

@@ -103,12 +103,27 @@ void set_sr_pair_pacing(bool on);
 // keeps running while the headset idles; a 5 s keepalive still paces one real
 // frame so the runtime can re-grant FOCUSED even if it wants to see frames.
 //   on | off          the guard (off = pre-M8 stall behavior, live A/B)
+//   thread on|off     xrWaitFrame off the present thread (session 28)
+//   detach on|off     SESSION 34: while the session is not FOCUSED, the pace
+//                     thread owns the WHOLE frame loop and the present thread
+//                     makes no blocking XR call, so the runtime's not-visible
+//                     cadence (~10 Hz measured) cannot pace the game. Frames
+//                     keep being submitted, so FOCUSED can still be re-granted -
+//                     session 28's requirement is preserved, not undone.
+//                     Live A/B: with it off the 10 Hz comes straight back.
 //   simidle on|off    flat stand-in for a headset idle: the same guard
 //                     decision runs with the state forced VISIBLE and a 1 s
 //                     sleep in place of the runtime's blocked wait (flat has
 //                     no XR session, so this is how the guard is verified)
-//   status            guard state + skip/keepalive/last-wait telemetry
+//   status            guard state, detach state, skip/handoff/last-wait
+//                     telemetry, and the per-phase present-path timings
 void handle_pace_command(const char* args);
+
+// Detached pacing, set by the game adapter at init. DEFAULT OFF in core: the
+// project rule is that a core change must not move a BioShock 1 path, and BS1
+// is the headset-accepted baseline. The BS2 adapter turns it on; BS1 can opt in
+// later on its own in-headset test.
+void set_pace_detach(bool on);
 
 // --- M8: desktop mirror ------------------------------------------------------
 // "vrmirror ..." seam (game thread). Under SequentialReentry stereo the flat
@@ -122,6 +137,13 @@ void handle_mirror_command(const char* args);
 // FOV at the backbuffer aspect - what the game should render with in camera
 // mode. 0 until the first views are located.
 float suggested_hfov_deg();
+
+// The headset eye's own HALF-angles in degrees (Quest 3 via VDXR: 54 x 55 - an
+// essentially square eye). False until the first xrLocateViews. An adapter uses
+// this to report how much of the eye its render actually fills: a 16:9 render
+// leaves the vertical short, and that shortfall IS the black bands the user
+// sees, not any kind of letterbox.
+bool headset_half_fov_deg(float* halfHDeg, float* halfVDeg);
 
 // The adapter reports the horizontal FOV the game is actually rendering with
 // (read back from the engine every frame). Projection-layer submission claims
