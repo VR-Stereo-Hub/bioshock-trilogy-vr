@@ -257,12 +257,30 @@ bool core_command(const char* cmd, const char* args) {
         else
             BVR_LOG("[cmd] usage: fsweep <hexaddr> <len> <lo> <hi>");
     } else if (strcmp(cmd, "dumpframe") == 0) {
-        // dumpframe [full] [n] - n > 1 records consecutive present windows
+        // dumpframe [full|cb] [n] - n > 1 records consecutive present windows
         // (files suffixed _qN); the dump lands in this game's data dir.
-        bool full = strncmp(args, "full", 4) == 0;
+        //
+        // `cb` (mode 3, session 36) is `full` plus constant-buffer UPLOAD
+        // capture: every UpdateSubresource into a CB, at full size, plus the
+        // per-draw VS/PS constant-buffer identities. Needed on engines that
+        // rewrite one buffer object rather than renaming it per upload, where
+        // mode 2's once-per-object readback both under-samples and misattributes.
+        //
+        // The old inputs are preserved BY INSPECTION: strncmp(args,"cb",2)
+        // cannot match "", "full" or a digit. BioShock 1 and 2 also route
+        // `dumpframe` through their own adapter copies, not this one.
+        int mode = 1;
+        const char* rest = args;
+        if (strncmp(args, "full", 4) == 0) {
+            mode = 2;
+            rest = args + 4;
+        } else if (strncmp(args, "cb", 2) == 0) {
+            mode = 3;
+            rest = args + 2;
+        }
         int count = 1;
-        sscanf_s(full ? args + 4 : args, " %d", &count);
-        bvr::frame_inspector::arm(full ? 2 : 1, count);
+        sscanf_s(rest, " %d", &count);
+        bvr::frame_inspector::arm(mode, count);
     } else if (strcmp(cmd, "vrinput") == 0) {
         bvr::input::handle_command(args); // logs its own echoes
     } else if (strcmp(cmd, "vrpace") == 0) {

@@ -230,6 +230,35 @@ runtime.
 
 ## Decision log
 
+- **2026-07-31 (session 36) · The game-thread command pump holds a LEASE, not an eviction.**
+  Session 35 made `poll_from_game_thread` silence the Present pump permanently, on the reasoning
+  that a resume-on-stall rule would hand the render thread a dispatch exactly during a load, "the
+  worst moment available". That hazard is real, but it was stated too broadly: what must not happen
+  during a load is an *engine-touching* dispatch, not any dispatch at all. As written, an adapter
+  whose hook went quiet (level load, Scaleform menu, scripted camera) lost its command surface
+  entirely, with no log line saying so and no way back. The pump now resumes after a 3 s lease in a
+  **degraded** mode that refuses `mempoke*`/`pokeaddr*`/`memrestore` and dispatches everything else,
+  and the game thread reclaims it on its next call. This also made the handover testable on demand,
+  which the original was not. Inert for BS1/BS2 by construction: neither includes
+  `core/framework/command.h`.
+- **2026-07-31 (session 36) · `frame_inspector` gains a third arm mode rather than widening mode 2.**
+  Mode 2 reads back the bound VS b0 once per distinct *buffer object*, which is correct for a
+  Map/WRITE_DISCARD engine that renames its constant buffer on every upload. UE3 titles need not
+  behave that way - BioShock Infinite reuses a handful of objects and rewrites them with
+  `UpdateSubresource` - so mode 2 both under-samples and misattributes there. Mode 3 (`dumpframe
+  cb`) captures the payload from the `UpdateSubresource` call parameter instead: no staging buffer,
+  no `Map` stall, no readback race, every stage and slot, at the buffer's real size. Kept strictly
+  additive (new mode word, appended dump sections, event-line tail after `stk=`) because BS2 is
+  developed in these files in parallel; the additivity is *tested* by running the previous decoder
+  against a mode-3 dump, not asserted.
+- **2026-07-31 (session 36) · Core's `decode_ray_block` shape does not generalise past Vengeance,
+  and the replacement is offline-first.** The `(2tanH, 0, -tanH, 0, 0, -2tanV, tanV)` helper is a
+  BioShock 1 and 2 fact. UE3 hands the shader a 4x4, so `decode-framedump.ps1 -ScanMatrix` recovers
+  the tangents from column norms (`tanH = |c3|/|c0|`), where the object scale cancels and a
+  per-object constant buffer is therefore usable. A live equivalent inside `hud_capture` is
+  deliberately NOT built yet: it would be core machinery with no consumer until the Infinite offset
+  is actually known. Revisit at I5.
+
 - **2026-07-23 · C++20 / MSVC / Win32-x86.** REFramework (MIT) is the biggest reusable code
   body and it's C++; the whole toolkit (MinHook, imgui, OpenXR loader) is C/C++. itsloopyo's
   Rust mod contributes techniques (~300 lines to port with attribution), and doubling the

@@ -390,6 +390,120 @@ installed anywhere. Two consequences specific to Infinite:
   file's write time and logs what it ignored. This is the trap TESTING.md records as having bitten
   BS1 three times. BS1 and BS2 still run their own pollers and still have the old behaviour.
 
+## DR-I3: the frame map - PASS offline, the lens question is still OPEN
+
+### The deferred pass order, derived from the banked session-35 lite dump
+
+No game needed for any of this. Reconstructed by walking the `SetRT` sequence and attributing each
+draw, its viewport and its VS b0 size tier to the pass that was bound.
+
+| ev | target | dsv | draws | b0 tier | what it is |
+|---|---|---|---|---|---|
+| 00002 | T1 `R8G8B8A8_TYPELESS` | T2 | 1 | 640 | depth/G-buffer prime |
+| 00011 | **T9 `2560x1440 R8G8B8A8_UNORM RT\|SRV`** | T2 | **26** | **1280** | **main G-buffer opaque pass** (4 RTVs) |
+| 00102 | T21 `R32_FLOAT` | - | 1 | 1280 | depth linearise (`srv0=T2`) |
+| 00114-00146 | T28/T30/T31/T34/T35 `128x96`, `128x288` | - | 10 | 160 | bloom / eye adaptation chain |
+| 00162 | - | **T39 `2048x2048 R32_TYPELESS`** | 1 | 640 | shadow atlas, `vp=2038x2038` |
+| 00169-00181 | T40, T1 | T2 | 3 | 160/640 | pre-lighting (`srv0=T21`) |
+| **00186** | **T41 `2560x1440 R11G11B10_FLOAT`** | T2 | 4 | **160** | **deferred lighting** (`srv0=T9`,`T40`) |
+| **00206** | **T22 `2560x1440 R16G16B16A16_FLOAT`** | T2 | **41** | 640x29, 1280x11, 2560x1 | **main HDR scene pass** |
+| 00382 | T57 `256x16` | - | 16 | 160 | colour-grading LUT build (16 slices) |
+| 00402-00438 | T58/T59 `1280x720`, T60-T65 `640x360` | - | 6 | 160 | bloom chain |
+| **00440** | **T9** | T2 | 1 | 160 | **tonemap resolve** (`srv0=T50`) |
+| **00444** | **T0 backbuffer** | - | 1 | 160 | **final blit**, `DrawIndexed a=6 srv0=T9` |
+| 00451 | T0 | T2 | **9** | 160 | **Scaleform HUD**, `srv0=T66`/`T67` |
+
+Formats seen: `10` R16G16B16A16_FLOAT, `26` R11G11B10_FLOAT, `27` R8G8B8A8_TYPELESS, `28`
+R8G8B8A8_UNORM, `39` R32_TYPELESS, `41` R32_FLOAT, `44` R24G8_TYPELESS, `77` BC3_UNORM.
+Bind flags: `0x20` RT, `0x28` RT|SRV, `0xA8` UAV|RT|SRV, `0x48` SRV|DSV.
+
+### TRAP: T9 is REUSED, so the BS1 tonemap rule cannot work here
+
+T9 is bound as `rtv0` **three times** - it is the G-buffer albedo target at event 11 *and* the
+tonemap output at event 440. `hud_capture`'s `g_curRtLdr` predicate (R8G8B8A8_UNORM, large enough,
+RT|SRV) matches T9, T36 and T38 alike, so **a descriptor-based rule cannot pick the tonemap target
+on this game**. Any Infinite rule must be **positional**: *the `srv0` of the last full-screen draw
+into the backbuffer*. That is event 00449, `DrawIndexed a=6 srv0=T9`.
+
+### Free half-answer for DR-I7 (Scaleform), recorded now so it is not re-derived
+
+The HUD is a contiguous run of **9 draws at the very end of the frame, on the backbuffer, AFTER the
+tonemap blit**, sampling BC3 atlases (T66 `2052x620`, T67 `4x16`), with index counts all divisible
+by 6 and exactly two engine call-site RVAs: `0x492284` (DrawIndexed) and `0x4920FF` (Draw). This is
+structurally cleaner than the remasters' gameswf: **T9 is HUD-free by construction**, so the eye
+image can be taken from T9 with no classifier at all.
+
+### Instrument gap: the dump records rtv0 only
+
+Every world `SetRT` on this game binds **4 RTVs**, and the dump records `rtv0` alone. On a deferred
+renderer that discards three quarters of the frame map. `OMSetRenderTargetsDetour` already receives
+the full array; only the recording throws it away. Worth fixing before I6.
+
+### The lens: a scoped NEGATIVE, and why the instrument was rebuilt
+
+**The experiment has already been run once, and it failed with a statable scope.** Core's live FOV
+watch is `CopySubresourceRegion`-based and it *was* actively sampling on Infinite - the banked dump
+shows 8 staging copies per frame at `a = 0, 1344, 2688 ... 9408` (exactly `kFovCbBytes * slot`) from
+3 distinct source buffers. Across **19,602 presents** it never adopted an offset, and
+`decode_ray_block` brute-forces after 400 consecutive misses and adopts after 8 corroborating hits.
+
+So the negative is real and precisely bounded: **no `(2tanH, 0, -tanH, 0, 0, -2tanV, tanV)` block
+exists in floats 0..335 of any VS b0 buffer of >= 320 bytes.** It has exactly three holes, all in
+code we own:
+
+1. `hud_capture.cpp` gates the watch on `bd.ByteWidth >= 320`, and **Infinite's deferred lighting
+   pass uses the 160-byte tier** - 52 of the 130 sized draws in the banked frame. The pass that most
+   needs an inverse-projection constant is the one the gate has always filtered out.
+2. `kFovCbBytes = 1344` truncates the 2560-byte tier.
+3. It is VS-only.
+
+**And a plain `dumpframe full` would not have closed them.** `frame_inspector` gates its cb0
+readback on the VS b0 **buffer object changing**, which is right for a Map/WRITE_DISCARD engine that
+renames its buffer per upload. Infinite reuses a handful of objects and rewrites them with
+`UpdateSubresource` (15.3 M lifetime calls, **251 in a single frame**), so mode 2 emits a block only
+at object transitions and then attributes many draws to a block whose contents were overwritten in
+between. That is worse than an empty dump, because it looks like data.
+
+### What was built instead (session 36)
+
+- **`dumpframe cb` (frame_inspector mode 3)** captures every `UpdateSubresource` into a constant
+  buffer, **at its real size**, from the call parameter - no staging buffer, no `Map` stall, no
+  readback race, every stage and slot, and the 160-byte tier included. Plus per-draw VS/PS
+  constant-buffer identities (the first `PSGetConstantBuffers` call in the codebase). Strictly
+  additive: modes 1 and 2 are untouched, so BS1 and BS2 cannot move.
+- **`decode-framedump.ps1 -ScanMatrix`.** UE3 ships a 4x4, not a Vengeance 7-float ray block. For
+  row-vector `M = W*V*P`, column 3 is forward times object scale `s`, `|c0| = s/tanH` and
+  `|c1| = s/tanV`, so **`tanH = |c3|/|c0|`, `tanV = |c3|/|c1|` and the object scale CANCELS** -
+  which is what makes it work on a per-object constant buffer where nothing else is constant.
+- The old `-ScanLayout`/`-Diff` hardcoded 336 floats in three places. The worst was a block
+  terminator that truncated any buffer over 1344 bytes and then **silently dropped** the remaining
+  continuation lines, producing a plausible wrong block. All three are gone.
+- `-BlockBytes` (restrict to one cb size tier - essential when b0 is per-object and the modal value
+  at most indices is object noise), `-MinModeShare`, `-DiffAspects` (an independent diff axis where
+  one of the two tangents is PINNED, and the identification is the cross-product with `-DiffFovs`),
+  and `-SelfTest`.
+
+### The controls, run before any of it is trusted
+
+| control | result |
+|---|---|
+| `-SelfTest`: plant a known lens in a synthetic block | **PASS** - both decoders recover tanH/tanV exactly, with the object scale cancelling |
+| `-ScanLayout` regression on a BS1 dump (known answer: offset 12) | **PASS** - still offset 12, tanH 1.1918 / tanV 1.2351 across 133 blocks. The count-agnostic rewrite broke nothing. |
+| `-ScanMatrix` cross-check on the same BS1 dump | **PASS and independent** - finds `f40` transposed, tanH **1.1917** / tanV **1.2350**, matching the ray block to four decimals by a completely different decode. It finds BS1's *second* lens too (0.6470/0.6706 vs the ray block's 0.6468/0.6704). |
+| `-ScanMatrix` on a BS2 dump where `-ScanLayout` finds NOTHING | **PASS, and this is the new capability** - that dump is the 2048x2048 square-aspect case that cost BS2 a session. `-ScanMatrix` recovers tanH = tanV = 0.6703, i.e. 68.4 deg at aspect 1.0, against the 67.7 deg BS2's notes record for that configuration. |
+
+**Honest limitation of `-ScanMatrix`, found by its own control and recorded rather than papered
+over:** it produces false positives on degenerate matrices. On the BS1 dump, `f22` transposed with
+tanH=0.5000 / tanV=1.0000 scored **156 blocks and outvoted the true answer's 83**. So *plurality of
+blocks alone is NOT sufficient* - the aspect cross-check is load-bearing, and a candidate is only
+believable when `tanH/tanV` matches the backbuffer aspect. Suspiciously round pairs (0.5/1.0,
+1.0/1.0) are the tell.
+
+**Still owed, and it needs the game:** a `dumpframe cb` in gameplay, then `-ScanMatrix` first,
+`-ScanLayout` second, then the FOV and aspect diffs. Until then the cb0 ray-block offset for
+Infinite is **UNKNOWN**, `bioshockinf` publishes no `set_ray_block_offset`, and core's default of
+12 (a BioShock 1 fact) is what would be used - which is precisely why nothing consumes it yet.
+
 ## UE3 reflection is intact (evidence, session 34)
 
 ASCII strings present in `.rdata` (the UE3 FName pool stores names as plain ASCII), byte-scanned

@@ -75,7 +75,7 @@ void dispatch_line(const char* line);
 //               memrestore  memptr <idx> [maxDeltaHex]  pokeaddr <hex> <f>
 //               pokeaddri <hex> <u>  hexdump <hex> [len]  strscan <text>
 //               membases  fsweep <hexaddr> <len> <lo> <hi>
-//   frame:      dumpframe [full] [n]
+//   frame:      dumpframe [full|cb] [n]   (cb = full + CB upload payloads)
 //   input:      vrinput <args>
 //   vr:         vrpace <args>  vrmirror <args>  vrcine <args>
 //   ui:         vroverlay on|off

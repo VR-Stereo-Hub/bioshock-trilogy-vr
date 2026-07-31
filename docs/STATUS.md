@@ -17,7 +17,88 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 35
+### Infinite: current state after session 36 (I2 part 1 - branch `si36-inf-derisk`)
+
+**DR-I1 is CLOSED and passed. DR-I2 and DR-I3 are written, built and installed, and both are
+waiting on one live run.** BioShock 2 held the machine for the whole session, so this was the
+offline half by design - and DR-I1 turned out to need no game at all.
+
+**What landed:**
+
+- **DR-I1, PASS.** `UObject::ProcessEvent` **`0xCFE70`** (vtable slot **`+0x7C`**, thiscall,
+  3 stack args, `ret 0xC`), `AActor::ProcessEvent` **`0x19A150`**, `UObject::FindFunctionChecked`
+  **`0xD1090`** (426 callers), `UObject::FindFunction` at vtable slot **`+0x54`**. Derived by
+  three routes that agree, and **every census prediction written down before the run held**:
+  FindFunctionChecked 426 E8 callers / 0 abs refs, ProcessEvent 1 / 2144. The base/override split
+  is settled by structure rather than vote count - the runner-up tail-calls the mode.
+- **`tools/pe-xref.ps1`**, the static caller census, is committed. Sessions 34 and earlier ran it
+  from throwaway scripts, which is exactly why their numbers could not be reproduced.
+- **A correction:** `ConsoleCommand 0x136070`, `AXPawn::SetWeapon 0x4F9ED0` and
+  `AXWeapon::AddAmmo 0x5017D0` were recorded as "impl RVA". All three have **0 E8 callers** - they
+  are exec thunks. The test loadout should go by name through `ProcessEvent` instead, which now
+  exists and needs no further addresses.
+- **DR-I2's camera hook is written**: read-only by construction, gated on the live 12-byte prologue
+  AND on finding `ret 8` in the body before the detour is created, fail-soft on every refusal. It
+  takes over the command poll on first fire.
+- **DR-I3's frame map is done offline** from the banked lite dump: the full deferred pass order,
+  the scene RTs, the tonemap target, and a free Scaleform half-answer for DR-I7.
+
+**Two findings that changed the plan, both verified rather than assumed:**
+
+1. **`GNames` is empty at adapter-init time.** Our DLL loads from the proxy's `DllMain` during the
+   exe's import resolution, before the exe's CRT static initializers. Every GNames reader is
+   therefore command-driven and fails soft with "not populated yet" rather than "not found".
+2. **DR-I3's experiment had already been run and failed, with a statable scope.** Core's live FOV
+   watch *was* sampling on Infinite - the banked dump shows 8 staging copies per frame from 3
+   distinct buffers - and across **19,602 presents** it never adopted an offset. The negative is
+   real and precisely bounded, and it has exactly three holes, all in our own code: the `>= 320`
+   byte tier gate (and Infinite's deferred lighting pass uses the **160-byte** tier), the 1344-byte
+   truncation, and VS-only. A plain `dumpframe full` would not have closed them either, because it
+   gates on the buffer OBJECT changing while Infinite rewrites one object via `UpdateSubresource`
+   (15.3 M lifetime calls). So the instrument was rebuilt before spending a live session on it.
+
+**New instruments, all controls passing:**
+
+- `dumpframe cb` (frame_inspector mode 3): captures every `UpdateSubresource` into a constant
+  buffer at its real size, plus per-draw VS/PS constant-buffer identities.
+- `decode-framedump.ps1 -ScanMatrix`: recovers `tanH = |c3|/|c0|` from a 4x4, **with the object
+  scale cancelling**, which is what makes it work on a per-object constant buffer. Plus
+  `-BlockBytes`, `-MinModeShare`, `-DiffAspects`, `-SelfTest`, and the removal of three hardcoded
+  336-float limits (one of which silently truncated large buffers and dropped the rest).
+- Controls: `-SelfTest` passes; `-ScanLayout` still reproduces BS1's known offset 12; `-ScanMatrix`
+  independently finds the same BS1 lens (1.1917/1.2350 vs the ray block's 1.1918/1.2351) by a
+  different decode; and **it recovers BS2's lens from a dump where `-ScanLayout` finds nothing** -
+  the 2048x2048 square-aspect case that cost BS2 a session.
+- Recorded honestly: `-ScanMatrix` produces false positives on degenerate matrices. On the BS1
+  control a 0.5/1.0 pair scored 156 blocks and **outvoted the true answer's 83**, so plurality alone
+  is not sufficient and the aspect cross-check is load-bearing.
+
+**BS1 and BS2 are provably unaffected** (user directive). Their sources are byte-untouched;
+`git diff` over `src/game/bioshock1r` and `bioshock2r` is empty. The three shared changes are inert
+for them by construction, and it was checked rather than assumed: neither adapter includes
+`core/framework/command.h` (so the pump lease cannot reach them); both compute `full ? 2 : 1` when
+arming a frame dump (so mode 3 is unreachable); `pattern_scan`'s UE2 entry point keeps its exact
+body. **The additive dump format was tested, not asserted**: the OLD decoder run against a
+synthetic mode-3 dump gives a byte-identical answer to the original, while the new one additionally
+reads a 640-float upload block the old 336 cap would have truncated.
+
+**NEXT SESSION = the live battery.** The full ordered checklist is in
+`docs/bioshockinfinite/TESTING.md` under "I2 battery". Menu first, deliberately. Headlines:
+
+1. Does the camera hook fire at all, at the menu and in gameplay, and at what rate.
+2. `vrcmd` must print `pump=game` - that is the handover acceptance, not the log echo.
+3. The pump-lease positive control: `bsicam off` -> 4 s -> `pump=render(degraded)` -> `bsicam on`
+   -> `pump=game`.
+4. `bsireflect selftest` - the gate on every reflection result.
+5. Three launches of `dumpframe cb` at two FOVs and two aspects, then `-ScanMatrix` first.
+
+**Still owed / known gaps:** the camera hook has never dispatched; the GNames readers have never
+run against a populated pool; the Infinite ray-block offset is UNKNOWN so `bioshockinf` publishes
+no `set_ray_block_offset`; and `frame_inspector` still records `rtv0` only, which on a 4-RTV
+deferred renderer discards three quarters of the frame map (worth fixing before I6). DR-I4 through
+DR-I8 are untouched, as scoped.
+
+### Infinite: current state after session 35 (superseded - kept for the derivation trail)
 
 **I1 IS CLOSED - our code runs inside `BioShockInfinite.exe`.** Branch `bioshock-infinite`. The
 adapter exists (`src/game/bioshockinf/`), the mod loads, logs, draws its overlay and takes commands,
@@ -4185,6 +4266,87 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 36 - 2026-07-31 - I2 part 1: DR-I1 CLOSED offline; DR-I2 and DR-I3 built and waiting on the headset
+
+Branch `si36-inf-derisk`. **BioShock 2 owned the machine for the entire session**, so nothing was
+run live. That turned out to matter less than expected: DR-I1 needed no game at all, and the DR-I3
+work that did need one was reshaped by evidence that made a live run premature anyway.
+
+**DR-I1 is a PASS.** `UObject::ProcessEvent` `0xCFE70` (vtable slot `+0x7C`, thiscall, 3 stack args,
+`ret 0xC`), `AActor::ProcessEvent` `0x19A150`, `UObject::FindFunctionChecked` `0xD1090`,
+`UObject::FindFunction` at slot `+0x54`. Route: the UTF-16 `Failed to find function` literal gives
+an address inside FindFunctionChecked; its 426 callers are the generated event stubs; the call that
+follows each one is ProcessEvent, and 407 of 420 agree on slot `+0x7C`; reading that slot from 1582
+candidate vtables gives 1038 votes for `0xCFE70` and 175 for `0x19A150`.
+
+**Two methods paid for here that generalise.** First, the set of every `E8` call target in `.text`
+(38,638 of them) *is* the list of function entry points, so "the function containing X" is a binary
+search - no prologue heuristic, which matters because `find_function_start`'s backward walk returns
+the **previous** function on this exe rather than failing. Second, and it cost a wrong answer before
+it was caught: MSVC hoists the vtable pointer, so a UE3 event stub is `mov edi,[esi]` ... `call
+FindFunctionChecked` ... `mov edx,[edi+0x7C]` / `call edx`. Searching for `call [reg+disp]` finds
+**0 of 426**. The first histogram happily reported a nonsense negative disp8; disassembling an
+actual caller is what exposed it.
+
+**The census is now a committed tool** (`tools/pe-xref.ps1`) rather than a throwaway script, with
+its predictions written down before the run. All of them held, and two unpredicted corroborations
+came free: ProcessEvent's single `E8` caller is exactly the tail-call inside `AActor::ProcessEvent`,
+and `GetPlayerViewPoint` has **0** absolute refs, so it is in no vtable - closing off a
+"hook it through a vtable instead" alternative before anyone spent a session on it.
+
+**A correction that matters for I2's test loadout:** `ConsoleCommand 0x136070`,
+`AXPawn::SetWeapon 0x4F9ED0` and `AXWeapon::AddAmmo 0x5017D0` were recorded as implementation RVAs.
+All three have 0 `E8` callers - they are exec thunks. Going by name through `ProcessEvent` is both
+correct and cheaper, and needs no addresses beyond what DR-I1 just landed.
+
+**DR-I2's hook is written but has never dispatched**, and the milestone box stays open because of
+it. It is read-only by construction (out-params copied into `const` locals; no assignment through
+them exists in the translation unit), and it refuses to install unless the live 12-byte prologue
+matches *and* a `C2 08 00` is found in the body - an independent confirmation of the 2-stack-arg
+count before the detour exists, because getting that wrong pops the RTC dialog that writes no dump.
+
+**The command-pump handover became a lease.** Session 35 made it permanent, reasoning that resuming
+on a stall would dispatch on the render thread during a load. The hazard is real but was stated too
+broadly: what must not happen then is an *engine-touching* dispatch. As written, a camera hook that
+went quiet left the mod with no command surface and no line saying so. Now the Present pump resumes
+after 3 s in degraded mode, refusing only `mempoke*`/`pokeaddr*`/`memrestore`. It is also testable
+on demand, which the original was not - `bsicam off`, wait, `vrcmd`.
+
+**DR-I3 was reshaped by a banked negative nobody had noticed.** Core's live FOV watch *was* sampling
+on Infinite (the session-35 dump shows 8 staging copies per frame from 3 distinct buffers) and
+across **19,602 presents** it adopted nothing. That negative is real and bounded, and its three
+holes are all in our own code: the `>= 320` byte tier gate - and Infinite's deferred lighting pass
+uses the **160-byte** tier - plus the 1344-byte truncation and VS-only capture. Worse, a plain
+`dumpframe full` would not have closed them: it gates on the buffer *object* changing, while
+Infinite rewrites one object via `UpdateSubresource` 251 times a frame, so it both under-samples and
+misattributes what it does capture. Spending the scarce live session on that instrument would have
+produced a plausible wrong answer.
+
+So the instrument was rebuilt first: `dumpframe cb` (mode 3) captures every `UpdateSubresource` into
+a constant buffer at full size from the call parameter, and `-ScanMatrix` recovers `tanH = |c3|/|c0|`
+from a 4x4 **with the object scale cancelling**, which is what makes it viable on a per-object
+buffer. Every control passes, including two that are genuinely informative: `-ScanMatrix`
+independently reproduces BS1's known lens by a different decode than the ray block, and it recovers
+BS2's lens from the 2048x2048 dump where `-ScanLayout` finds nothing at all - the square-aspect case
+that cost BS2 a session. Recorded honestly against it: on the BS1 control a degenerate 0.5/1.0 pair
+scored 156 blocks and outvoted the true answer's 83, so plurality is not sufficient and the aspect
+cross-check is load-bearing.
+
+**The frame map itself is done offline** from the banked dump - the full deferred pass order, the
+scene RTs, the shadow atlas, and the tonemap target. One trap recorded: **T9 is reused** as both the
+G-buffer albedo and the tonemap output, so no descriptor-based rule can pick it and the Infinite
+rule must be positional. A free DR-I7 half-answer fell out too: the Scaleform HUD is a contiguous
+9-draw run on the backbuffer *after* the tonemap blit, which means T9 is HUD-free by construction
+and the eye image needs no classifier at all.
+
+**BS1 and BS2 verified unaffected rather than assumed so** (user directive): their sources are
+byte-untouched, neither includes the core command header, both compute `full ? 2 : 1` when arming a
+dump so mode 3 is unreachable, and the dump format's additivity was *tested* - the old decoder run
+against a synthetic mode-3 dump returns a byte-identical answer.
+
+**Next session is the live battery**, checklist in `docs/bioshockinfinite/TESTING.md` under
+"I2 battery", menu first.
 
 ### Session 35 - 2026-07-31 - I1 CLOSED: our code runs inside BioShock Infinite, and the command seam works with nothing hooked
 

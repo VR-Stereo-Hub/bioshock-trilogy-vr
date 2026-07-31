@@ -158,19 +158,42 @@ Goal: retire the UE3-specific unknowns before building on them. **Every DR gets 
 entry whether it passes or fails** - a recorded negative is worth as much as a positive, and BS1's
 dead-end list saved real time.
 
-- [ ] **DR-I1 UE3 reflection.** Locate `GNames`, `GObjObjects`, `UObject::ProcessEvent`,
+- [x] **DR-I1 UE3 reflection.** Locate `GNames`, `GObjObjects`, `UObject::ProcessEvent`,
       `UObject::FindFunctionChecked`. Re-derive the `FNameEntry` layout (UE3 differs from UE2.5:
       ANSI/wide union). **Run the static caller census before hooking anything** - the check that
       cracked BS2 after a hook was installed that never fired.
+      *2026-07-31 session 36: **PASS, entirely offline.** `UObject::ProcessEvent` `0xCFE70` (vtable
+      slot `+0x7C`, thiscall, 3 args, `ret 0xC`), `AActor::ProcessEvent` `0x19A150`,
+      `UObject::FindFunctionChecked` `0xD1090` (426 callers), `UObject::FindFunction` slot `+0x54`.
+      Two independent routes agree and every census prediction held. The census tool is committed as
+      `tools/pe-xref.ps1`. UE3 `fname_text` written (reads the ASCII/wide flag, self-validates on
+      the entry's own index). `GObjObjects` stays deprioritised by design. Also corrected three
+      ENGINE_NOTES rows: `ConsoleCommand`/`SetWeapon`/`AddAmmo` are exec thunks, not
+      implementations. **Live confirmation of the GNames readers is owed** - they cannot be called
+      before the engine's static initializers have run.*
 - [ ] **DR-I2 The camera seam.** `GetPlayerViewPoint` / `CalcCamera` / `Camera.UpdateViewTarget`,
       hooked BS2-style: filter ProcessEvent by cached FName index, mutate the param block after
       calling the original. Confirm it fires in gameplay *and* at the menu, and measure the
       dispatch rate (BS2 sees ~850/s in gameplay, spiking to ~4500/s on load - the fast path must
       stay tiny).
+      *2026-07-31 session 36: read-only detour WRITTEN and building, gated on the live prologue AND
+      on finding `ret 8` in the body before the hook is created. Takes over the command poll on
+      first fire. **NOT yet observed firing** - BioShock 2 held the machine, and a hook is not real
+      until it dispatches. Checklist in TESTING.md.*
 - [ ] **DR-I3 Frame map.** `dumpframe` / `dumpframe full`. Infinite is a **deferred** renderer, so
       the BS1/BS2 forward fingerprints do not apply. Find the tonemap target, the scene RTs, and
       the cb0 screen-ray block offset (BS1 = 12, BS2 = 16, here unknown) using
       `decode-framedump.ps1 -ScanLayout` and `-Diff` across two FOV values.
+      *2026-07-31 session 36: **frame map DONE offline** from the banked lite dump - full deferred
+      pass order, scene RTs, and the tonemap target (T9, which must be identified POSITIONALLY
+      because T9 is reused as the G-buffer albedo and no descriptor rule can separate them), plus a
+      free Scaleform half-answer for DR-I7. **The lens offset is still UNKNOWN**, and the old
+      instrument could not have found it: core's live watch had already run 19,602 presents with no
+      hit, its `>= 320` byte gate excludes the 160-byte tier Infinite's deferred lighting pass uses,
+      and `dumpframe full` under-samples an engine that uploads via `UpdateSubresource`. Built
+      `dumpframe cb` (mode 3) and `-ScanMatrix`/`-BlockBytes`/`-DiffAspects`/`-SelfTest`; all
+      controls pass, including recovering BS2's lens from a dump where `-ScanLayout` finds nothing.
+      Needs one live gameplay session.*
 - [ ] **DR-I4 Native stereo - TIMEBOXED to one session slice.** Is there any usable engine-side
       per-eye render path? Current evidence says no: `[Stereoscopic3D]` exists in the ini but no
       `bStereo` / `EyeSeparation` / `StereoDevice` names appear in the exe, which points at

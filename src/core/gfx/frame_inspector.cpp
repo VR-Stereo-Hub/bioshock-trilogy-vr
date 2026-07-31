@@ -102,7 +102,46 @@ struct Event {
     uint32_t retRva = 0;             // _ReturnAddress mapped into the exe (0 if foreign)
     uint32_t stack[kMaxStack] = {};  // exe RVAs, 0-terminated
     float clearColor[4] = {};        // ClearRtv only
+    // Mode 3 only; left at -1/0 by modes 1 and 2, and only ever PRINTED in
+    // mode 3, so a lite or full dump is byte-identical to before.
+    int vsCbId[3] = {-1, -1, -1};
+    int psCbId[4] = {-1, -1, -1, -1};
+    uint32_t psCbBytes[4] = {0, 0, 0, 0};
 };
+
+// ---- mode 3: constant-buffer UPLOAD capture (session 36) -------------------
+//
+// WHY A THIRD MODE RATHER THAN WIDENING MODE 2. Mode 2 reads back the bound VS
+// b0 once per distinct BUFFER OBJECT. That is right for a Map/WRITE_DISCARD
+// engine, where every upload renames the buffer. BioShock Infinite is not one:
+// it reuses a handful of buffer objects and rewrites them with
+// UpdateSubresource (15.3 M lifetime calls, 251 in a single frame), so mode 2
+// emits a block only at object transitions and the decoder then attributes many
+// draws to a block whose contents were overwritten in between. That is worse
+// than an empty dump, because it looks like data.
+//
+// UpdateSubresource hands us the payload AS A CALL PARAMETER. No staging
+// buffer, no CopyResource, no Map stall, no readback race - and it captures
+// EVERY constant buffer regardless of which stage or slot it is later bound to,
+// including the 160-byte tier that carries Infinite's deferred lighting pass and
+// that hud_capture's `>= 320` tier gate has always filtered out.
+//
+// Strictly additive: everything below is reachable only from mode 3, which
+// needs the new `cb` word. Modes 1 and 2 are untouched, so BioShock 1 and 2
+// cannot move.
+struct CbUpload {
+    int evIdx = -1;        // index into g_events, or -1
+    int resId = -1;        // resource-table id of the destination buffer
+    uint32_t realBytes = 0;// the buffer's full ByteWidth
+    uint32_t byteOff = 0;  // pDstBox->left, or 0
+    uint32_t arenaOff = 0; // index into g_cbArena
+    uint32_t floats = 0;
+};
+// 8 MB ceiling. A frame uploads roughly 160 K floats, so this has ~50x headroom
+// and costs one comparison per upload.
+constexpr size_t kCbArenaFloats = 2u << 20;
+std::vector<CbUpload> g_cbUploads;
+std::vector<float> g_cbArena;
 
 std::vector<Event> g_events;
 std::map<ID3D11Resource*, ResourceInfo> g_resources;
@@ -362,6 +401,26 @@ void capture_draw_state(ID3D11DeviceContext* ctx, Event& ev) {
         ev.cbBytes[i] = bd.ByteWidth;
     }
     ev.cb0Object = cbs[0];
+
+    // Mode 3 only: record WHICH buffers this draw reads, so the upload table
+    // can be joined to the draws that consumed it. On a deferred renderer the
+    // inverse-projection terms are commonly a PIXEL-shader constant, and this
+    // is the first PSGetConstantBuffers call in the codebase - modes 1 and 2
+    // never reach it.
+    if (g_mode == 3) {
+        for (int i = 0; i < 3; ++i)
+            if (cbs[i]) ev.vsCbId[i] = register_resource_raw(cbs[i]);
+        ID3D11Buffer* pcbs[4] = {};
+        ctx->PSGetConstantBuffers(0, 4, pcbs);
+        for (int i = 0; i < 4; ++i) {
+            if (!pcbs[i]) continue;
+            D3D11_BUFFER_DESC pd{};
+            pcbs[i]->GetDesc(&pd);
+            ev.psCbBytes[i] = pd.ByteWidth;
+            ev.psCbId[i] = register_resource_raw(pcbs[i]);
+            pcbs[i]->Release();
+        }
+    }
 
     // Full mode: read back VS b0 contents, once per distinct buffer object
     // in a row (the engine reuses one big CB - capturing every draw would
@@ -647,6 +706,45 @@ void STDMETHODCALLTYPE UpdateSubResDetour(ID3D11DeviceContext* ctx, ID3D11Resour
         Event& ev = push_event(EventKind::UpdateSubRes, _ReturnAddress(),
                                _AddressOfReturnAddress());
         ev.rtv0 = register_resource_raw(dst);
+        // Mode 3: keep the payload. This runs BEFORE the original, which is the
+        // only unconditionally correct ordering - after it, `data` is the
+        // caller's to reuse.
+        if (g_mode == 3 && data && dst) {
+            ID3D11Buffer* buf = nullptr;
+            if (SUCCEEDED(dst->QueryInterface(__uuidof(ID3D11Buffer),
+                                              reinterpret_cast<void**>(&buf)))) {
+                D3D11_BUFFER_DESC bd{};
+                buf->GetDesc(&bd);
+                buf->Release();
+                // Constant buffers only - vertex and index streams would swamp
+                // the dump with megabytes of geometry.
+                if (bd.BindFlags & D3D11_BIND_CONSTANT_BUFFER) {
+                    // ON A BUFFER, pDstBox addresses BYTES in left/right, and
+                    // SrcRowPitch is IGNORED by D3D. Engines pass junk in it -
+                    // never trust it here. No box means the whole buffer.
+                    uint32_t off = box ? box->left : 0u;
+                    uint32_t len = box ? (box->right - box->left) : bd.ByteWidth;
+                    if (off > bd.ByteWidth) {
+                        len = 0;
+                    } else if (off + len > bd.ByteWidth) {
+                        len = bd.ByteWidth - off;
+                    }
+                    const uint32_t floats = len / 4;
+                    if (floats > 0 && g_cbArena.size() + floats <= kCbArenaFloats) {
+                        CbUpload u{};
+                        u.evIdx = static_cast<int>(g_events.size()) - 1;
+                        u.resId = ev.rtv0;
+                        u.realBytes = bd.ByteWidth;
+                        u.byteOff = off;
+                        u.arenaOff = static_cast<uint32_t>(g_cbArena.size());
+                        u.floats = floats;
+                        const float* src = static_cast<const float*>(data);
+                        g_cbArena.insert(g_cbArena.end(), src, src + floats);
+                        g_cbUploads.push_back(u);
+                    }
+                }
+            }
+        }
         --t_suppress;
     }
     g_origUpdateSubRes(ctx, dst, dstSub, box, data, rowPitch, depthPitch);
@@ -710,8 +808,12 @@ void write_dump() {
         return;
     }
 
+    // The mode token is the decoder's machine-readable branch key, and an old
+    // dump keeps saying lite/full, so an old decoder reading a new dump is a
+    // no-op rather than a misparse.
+    const char* modeName = g_mode == 3 ? "cb" : (g_mode == 2 ? "full" : "lite");
     fprintf(f, "frame dump: %u events, mode=%s, exe base 0x%08X\n",
-            static_cast<unsigned>(g_events.size()), g_mode == 2 ? "full" : "lite",
+            static_cast<unsigned>(g_events.size()), modeName,
             static_cast<unsigned>(g_exeBase));
     fprintf(f, "lifetime call census: DrawIndexed=%u Draw=%u DrawIdxInst=%u DrawInst=%u "
                "SetRT=%u ClearRTV=%u ClearDSV=%u DrawAuto=%u Dispatch=%u CopySubRes=%u "
@@ -755,12 +857,41 @@ void write_dump() {
         if (ev.kind == EventKind::ClearRtv)
             fprintf(f, " color=(%.3f %.3f %.3f %.3f)", ev.clearColor[0], ev.clearColor[1],
                     ev.clearColor[2], ev.clearColor[3]);
+        // Mode 3 tail. APPENDED AFTER stk= ON PURPOSE: the decoder's event regex
+        // is anchored from ^ through stk=(\S*) and is a PARTIAL match, so
+        // anything added after that point is invisible to it, while anything
+        // inserted before it would break every BioShock 1 and 2 dump parse. The
+        // existing ClearRtv `color=` tail already relies on this.
+        if (g_mode == 3) {
+            fprintf(f, " vscb=T%d,T%d,T%d pscb=T%d,T%d,T%d,T%d pscbb=%u/%u/%u/%u", ev.vsCbId[0],
+                    ev.vsCbId[1], ev.vsCbId[2], ev.psCbId[0], ev.psCbId[1], ev.psCbId[2],
+                    ev.psCbId[3], ev.psCbBytes[0], ev.psCbBytes[1], ev.psCbBytes[2],
+                    ev.psCbBytes[3]);
+        }
         fputc('\n', f);
         if (ev.cb0Captured) {
             fprintf(f, "      cb0:");
             for (size_t i = 0; i < kCbFloats; ++i) {
                 fprintf(f, " %.4f", ev.cb0Data[i]);
                 if ((i & 7) == 7 && i + 1 < kCbFloats) fprintf(f, "\n          ");
+            }
+            fputc('\n', f);
+        }
+    }
+
+    // Mode 3: the constant-buffer upload table. Records are prefixed U%05d so
+    // they can collide with neither an event line (digit at column 0) nor a
+    // cb0 continuation (6-space indent), and the whole section is only reachable
+    // by a decoder that opts into it.
+    if (g_mode == 3 && !g_cbUploads.empty()) {
+        fprintf(f, "\n== cb uploads ==\n");
+        int uidx = 0;
+        for (const CbUpload& u : g_cbUploads) {
+            fprintf(f, "U%05d ev=%05d dst=T%-3d bytes=%u off=%u n=%u\n", uidx++, u.evIdx,
+                    u.resId, u.realBytes, u.byteOff, u.floats);
+            for (uint32_t i = 0; i < u.floats; ++i) {
+                fprintf(f, "%s%.4f", (i & 7) ? " " : "       ", g_cbArena[u.arenaOff + i]);
+                if ((i & 7) == 7 && i + 1 < u.floats) fputc('\n', f);
             }
             fputc('\n', f);
         }
@@ -931,9 +1062,10 @@ void arm(int mode, int count) {
     if (count < 1) count = 1;
     if (count > 8) count = 8;
     g_armCount.store(count, std::memory_order_relaxed);
-    g_armMode.store(mode == 2 ? 2 : 1, std::memory_order_relaxed);
-    BVR_LOG("[gfx] frame dump armed (%s, %d window%s)", mode == 2 ? "full" : "lite", count,
-            count == 1 ? "" : "s");
+    if (mode < 1 || mode > 3) mode = 1;
+    g_armMode.store(mode, std::memory_order_relaxed);
+    const char* name = mode == 3 ? "cb" : (mode == 2 ? "full" : "lite");
+    BVR_LOG("[gfx] frame dump armed (%s, %d window%s)", name, count, count == 1 ? "" : "s");
 }
 
 void on_present(IDXGISwapChain*) {
@@ -945,6 +1077,10 @@ void on_present(IDXGISwapChain*) {
         g_resources.clear();
         g_nextResourceId = 0;
         g_lastCb0Captured = nullptr;
+        g_cbUploads.clear();
+        g_cbUploads.shrink_to_fit();
+        g_cbArena.clear();
+        g_cbArena.shrink_to_fit();
         // Consecutive-window capture (session 19): a command armed at CalcView
         // always opens on the SAME phase of the stereo pair, so a single
         // window can never see what the other pair half draws (the HUD hunt
@@ -959,7 +1095,10 @@ void on_present(IDXGISwapChain*) {
     if (pending) {
         g_mode = pending;
         g_events.reserve(4096);
-        sprintf_s(g_status, "recording (%s)...", pending == 2 ? "full" : "lite");
+        // Fixed literals only - the Debug CRT's sprintf_s pops a MODAL dialog
+        // that freezes the game on overflow (TESTING.md).
+        sprintf_s(g_status, "recording (%s)...",
+                  pending == 3 ? "cb" : (pending == 2 ? "full" : "lite"));
         g_recording.store(true, std::memory_order_relaxed);
     }
 }

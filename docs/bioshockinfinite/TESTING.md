@@ -214,6 +214,83 @@ Start-Process "steam://rungameid/8870"
 7. **The game is otherwise normal**, and a menu quit logs
    `shutdown: DLL_PROCESS_DETACH (orderly process exit)`.
 
+**One I1 line changes at I2**: step 3's `vrcmd` now prints `pump=game` rather than `pump=render`
+once the camera hook has fired, because the hook takes over the poll. `pump=render` after gameplay
+has started means the hook is NOT firing, which is a real result and not a harness fault.
+
+## I2 battery (session 36 - the camera hook's first live run)
+
+**Menu first, deliberately.** The process cannot reach gameplay without passing the menu, so a
+gameplay-first plan tests the menu anyway, just without observing it. The two riskiest single events
+in the milestone are the hook's **first fire** and the **command-pump handover**, and both happen at
+whichever state comes first - doing them at the menu means the handover lands while nothing is
+loading, and a wrong result costs a relaunch rather than a save. A UE3 main menu may have no
+`APlayerController` at all; if so we learn that before loading anything.
+
+```powershell
+Get-Process Bioshock2HD -ErrorAction SilentlyContinue   # MUST be empty
+.\tools\build.ps1 -Release -Install -Game bsi
+Remove-Item "$env:LOCALAPPDATA\BioshockVR\bsi\command.txt" -ErrorAction SilentlyContinue
+Start-Process "steam://rungameid/8870"
+.\tools\tail-log.ps1 -Game bsi
+```
+
+**If a "Run-Time Check Failure #0 - ESP was not properly saved" dialog appears, press Abort. Never
+force-kill** - that can leave the display mode unrestored. It writes no crash dump, so the log is
+the only evidence; capture it before dismissing.
+
+1. **At launch**, expect `[bsi] camera: READ-ONLY hook installed ... prologue and `ret 8` both
+   verified` BEFORE `first Present`. A `prologue MISMATCH` or `no ret 8` line means the hook
+   refused, which is the fail-soft path working, not a bug.
+2. **At the main menu**, read the heartbeat burst. Record: does it fire at all; `calls/s`; the
+   latched tid; the path census; whether `returned-minus-cached` is zero (raw copy) or not
+   (TRANSFORMED); and the one-shot `[this+0x430] 4x4` line.
+3. `game-cmd -Game bsi "vrcmd"` -> **`pump=game` is the handover acceptance**, not the log echo of
+   the call. `pump=render` here is the menu answer being "the hook does not fire at the menu".
+4. `bsicam status`, `bsicam paths`, `bsicam tid`, then `bsireflect selftest`.
+   **The selftest is the gate on every reflection result**: it must report the four positive
+   resolutions, the prefix/suffix/absent negatives all rejecting, a 2647-entry table walk,
+   scan-and-walk agreement, and `GNames[0] == "None"`.
+5. **The pump-lease positive control, at the menu, before any save is at risk:**
+   `bsicam off` -> wait 4 s -> `vrcmd` must print **`pump=render(degraded)`** and the log must carry
+   `RESUMING in DEGRADED mode`. Then `bsicam on` -> `vrcmd` must print `pump=game` and the log must
+   carry `game thread resumed`.
+6. **Controls on the instrument itself:** `bsicam heartbeat off` must stop the lines. `bsicam off`
+   then two `bsicam status` five seconds apart must show an **unchanged call count** - an instrument
+   that cannot be made to fail is not evidence.
+7. Load a save; capture the calls/s spike across the transition.
+8. **In gameplay**: 30 s standing still, then 30 s walking and turning. `loc` must move, and one
+   full mouse turn must sweep `rot.yaw` through the full 16-bit range - that single motion falsifies
+   both the field-ordering and the 65536-units-per-turn assumptions at once.
+9. `bsivtable` - slot `+0x7C` on an `APlayerController` should hold **`0x19A150`**
+   (`AActor::ProcessEvent`), NOT the `UObject` base at `0xCFE70`. Either is informative; neither is
+   a failure. The `UClass` fixpoint in the selftest should now pass too.
+10. Trigger a cutscene or a door transition and watch for `camera: RESUMED after N ms silent`.
+11. **DR-I3 dumps** (three launches, same save and same spot each time, weapon drawn, NOT aiming
+    down sights, somewhere with open sky and depth):
+    - Launch 1, 2560x1440, FOV slider 0.0: `dumpframe cb 2`, then turn ~90 degrees without moving
+      and `dumpframe cb 1` (the orientation control - a projection term is identical between the
+      two, a view term is not).
+    - Launch 2, FOV slider at maximum via the in-game Options: `dumpframe cb 2`.
+    - Launch 3, `XEngine.ini` `ResX=1600` `ResY=1200`: **acceptance is the log line
+      `first Present: backbuffer 1600x1200`**, which incidentally answers DR-I8. Then
+      `dumpframe cb 2`. Back up both config files first and restore them after.
+12. **Non-regression:** re-run the I1 smoke checklist above, play 2-3 minutes, confirm no new crash
+    dump and an orderly `DLL_PROCESS_DETACH`. Clear `command.txt` before closing.
+13. **Offline decode**, in this order: `-SelfTest` (prove the scanners still work), then
+    `-ScanMatrix` (the likeliest shape for UE3), then `-ScanLayout`, then the diffs:
+    `-Diff <L2> -DiffFovs 70,80.5 -BlockBytes 160` (then 640, then 1280), and
+    `-Diff <L3> -DiffAspects 2560x1440,1600x1200`. **The identification is the cross-product**: an
+    index that moves under FOV and is pinned under aspect is a horizontal projection term.
+    Believe a `-ScanMatrix` row only when `tanH/tanV` matches the backbuffer aspect - plurality of
+    blocks alone is NOT enough, because on a BS1 control dump a degenerate 0.5/1.0 pair outvoted
+    the true answer 156 to 83.
+
+**New at I2: commands run on the GAME thread.** Once the camera hook fires it owns the poll, so a
+long `memscan` or `fsweep` now freezes the GAME rather than stalling presents. If the game thread
+goes quiet for 3 s the Present pump resumes in degraded mode and refuses `mempoke*`/`pokeaddr*`/
+`memrestore` until it returns.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

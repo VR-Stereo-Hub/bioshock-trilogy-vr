@@ -18,11 +18,19 @@ namespace bvr::frame_inspector {
 bool install(void** ctxVtable);
 
 // Arm a one-shot dump of the NEXT full Present-to-Present frame.
-// mode 1 = lite (no constant-buffer readback), 2 = full.
-// Arm a frame dump: mode 1 = lite, 2 = full (cb bytes). count > 1 records
-// that many CONSECUTIVE present windows (files suffixed _qN) - required to see
-// both halves of a stereo pair, since a game-thread arm always opens on the
-// same pair phase.
+//   mode 1 = lite  - events and resources only, no constant-buffer readback
+//   mode 2 = full  - plus a staging readback of the bound VS b0, ONCE PER
+//                    DISTINCT BUFFER OBJECT. Correct for an engine that renames
+//                    its constant buffer on every upload (Map/WRITE_DISCARD).
+//   mode 3 = cb    - full, plus every UpdateSubresource into a constant buffer
+//                    captured at its real size, plus the per-draw VS/PS
+//                    constant-buffer identities. For engines that REUSE one
+//                    buffer object and rewrite it, where mode 2 both
+//                    under-samples and misattributes what it does capture.
+//                    Added session 36 for BioShock Infinite (UE3, deferred).
+// count > 1 records that many CONSECUTIVE present windows (files suffixed _qN)
+// - required to see both halves of a stereo pair, since a game-thread arm
+// always opens on the same pair phase.
 void arm(int mode, int count = 1);
 
 // Frame boundary, called at the head of the Present detour: finalizes and
