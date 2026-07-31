@@ -1704,9 +1704,25 @@ void draw_debug_ui() {
         ImGui::TextWrapped(
             "On this game the FOV option is the only thing that adds VERTICAL "
             "view: its vertical is locked to a 16:9 reference, so a squarer "
-            "resolution only narrows the horizontal. Widening the lens also "
-            "widens the weapon's lens, which is what brings the helmet into "
-            "frame - use the rig control below for that.");
+            "resolution only narrows the horizontal.");
+
+        ImGui::Separator();
+        // The helmet, right here rather than in a rig section of its own,
+        // because it is the OTHER HALF OF THE SAME TRADE: filling the eye
+        // widens the weapon's lens too, and that is what brings the porthole
+        // into frame. Measured, not guessed - the foreground eye does not move
+        // with the fov on BS2 (BS1's zoom-pull does not exist here), so a wider
+        // lens simply reveals a mesh that was always inches away. There is no
+        // "push it to the edge" position at that distance; not drawing it is
+        // the only lever that returns the view.
+        bool hideRig = scenedraw::rig_hidden();
+        if (ImGui::Checkbox("Hide the Big Daddy helmet (gives the view back)", &hideRig))
+            scenedraw::set_rig_hidden(hideRig);
+        ImGui::TextWrapped(
+            "At a wide FOV the helmet's porthole ring surrounds the view and "
+            "takes most of it. Untick to put it back - it costs you the "
+            "periphery, but it is the authored look.");
+
         if (ImGui::Button("Save these settings (survives a relaunch)##fillview"))
             save_vr_preset();
     }

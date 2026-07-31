@@ -147,6 +147,26 @@ constexpr uint32_t kSceneBuildGameplayRetRva = 0xCD5D7B;
 // a wrong offset - see ENGINE_NOTES "BS2 does not render non-16:9 cleanly".
 constexpr int kRayBlockCb0FloatIndex = 16;
 
+// ---- THE FIRST-PERSON RIG (the Big Daddy helmet), session 34 ----------------
+// DrawIndexed index counts of the helmet's meshes. Derived 2026-07-31 from the
+// FOREGROUND cluster of a full frame dump (`dumpframe full` +
+// `decode-framedump.ps1 -RayOffset 16 -FgBakeRvas @() -ShowDraws 20`), and each
+// one CONFIRMED by making it disappear: `reentry rig skip <n>` + `rig hide` and
+// a flat screenshot A/B. Never inferred from draw counts - BS1's rule, and the
+// reason it exists is that draw counts are exactly what got the foreground pass
+// misidentified twice on this project.
+//
+// Why an index count at all: inside one pass nothing else separates two meshes.
+// The helmet and the weapon share the lens, the render target and the callstack
+// (session 33 retracted `0xAECACF` as a foreground signature for that reason).
+// The count is a property of the mesh's geometry, so it is stable across
+// frames, positions and FOV values.
+//
+// These are BS2 numbers. BS1's rig is a different mesh set in a different
+// build - derive fresh, never copy.
+constexpr uint32_t kRigMeshIndexCounts[] = {23766};
+constexpr uint32_t kRigMeshCount = sizeof(kRigMeshIndexCounts) / sizeof(kRigMeshIndexCounts[0]);
+
 // Render-thread sync pair (banked for the 1t fallback, unconsumed): the
 // endframe fn 0x501EA0 triggers FEventWin global [0x1A69294] once per
 // present (kick2 site 0x5029BA) and reads its sibling [0x1A69298]; static

@@ -13,6 +13,7 @@
 
 #include "game/bioshock2r/scenedraw.h"
 
+#include "core/gfx/frame_inspector.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -93,6 +94,46 @@ std::atomic<bool> g_poisoned{false};
 std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
 std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
+
+// ---- Session 34: THE RIG. Hiding the Big Daddy helmet. ----------------------
+// Measured, not guessed. An A/B/A frame-dump triple at foreground FOV
+// 60 / 137 / 60 from one standing position (docs/bioshock2/ENGINE_NOTES.md)
+// showed that the ONLY foreground constants that move with the fov are the
+// projection tangents and the terms that scale with them. The near plane holds
+// at 10 UU and nothing resembling an eye position moves.
+//
+// So BS1'S ZOOM-PULL DOES NOT EXIST HERE. The foreground eye is fixed and a
+// wider lens simply reveals more of a mesh that was always a few inches in
+// front of it - the helmet's porthole ring. Screenshots confirm it: at fg 60
+// the helmet is off-screen entirely, at fg 137 you are looking through the
+// porthole and it owns most of the frame. There is no "push it to the
+// periphery" position available, because at that distance the periphery IS
+// most of the view; the only lever that gives the user their FOV back is not
+// drawing it.
+//
+// Identified by INDEX COUNT, because inside one pass nothing else separates
+// two meshes - the weapon and the helmet share the lens, the render target and
+// the callstack. Counts are per-mesh and stable. They are DERIVED VALUES and
+// live here with their derivation, per the never-copy rule.
+constexpr uint32_t kRigMaxCounts = 8;
+std::atomic<uint32_t> g_rigCounts[kRigMaxCounts]{};
+std::atomic<bool> g_rigHide{false};
+std::atomic<uint32_t> g_rigSkips{0};
+
+// Render thread, once per DrawIndexed. Integer compares only - no device
+// calls, no logging: this is the hottest callback in the process.
+bool rig_mesh_skip(unsigned indexCount) {
+    if (!g_rigHide.load(std::memory_order_relaxed)) return false;
+    for (uint32_t i = 0; i < kRigMaxCounts; ++i) {
+        uint32_t want = g_rigCounts[i].load(std::memory_order_relaxed);
+        if (want == 0) continue;
+        if (want == indexCount) {
+            g_rigSkips.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+    }
+    return false;
+}
 // Draw (game) thread only: present count at the previous depth-0 entry -
 // doubling is skipped while presents are stalled (unfocused window).
 uint32_t g_lastDrawPresentLow = 0;
@@ -660,6 +701,15 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     g_imageSize = image.size;
     g_image = image;
+    // The rig veto is registered unconditionally but does nothing until
+    // g_rigHide is set - core's hook is a null check per draw otherwise.
+    bvr::frame_inspector::set_mesh_skip(&rig_mesh_skip);
+    // The helmet's meshes, derived from the foreground pass of a full frame
+    // dump and confirmed by screenshot A/B (patterns.h carries the numbers and
+    // their derivation). Preloaded but with hiding OFF, so the user's first
+    // in-headset judgement is one overlay tick away and needs nothing typed.
+    for (uint32_t i = 0; i < patterns::kRigMeshCount && i < kRigMaxCounts; ++i)
+        g_rigCounts[i].store(patterns::kRigMeshIndexCounts[i], std::memory_order_relaxed);
 }
 
 void handle_command(const char* args) {
@@ -675,6 +725,49 @@ void handle_command(const char* args) {
 
     if (strcmp(verb, "vrstereo") == 0) {
         apply_vrstereo(strncmp(rest, "on", 2) == 0);
+    } else if (strcmp(verb, "rig") == 0) {
+        // rig hide|show | skip <indexCount> | clear | status
+        // `skip` is the identification lane: nominate an index count from a
+        // frame dump's foreground cluster, then look. Nothing here is guessed
+        // from a draw count - the only honest way to name a mesh is to make it
+        // disappear and see what went with it.
+        if (strncmp(rest, "hide", 4) == 0 || strncmp(rest, "show", 4) == 0) {
+            bool hide = strncmp(rest, "hide", 4) == 0;
+            g_rigHide.store(hide, std::memory_order_relaxed);
+            BVR_LOG("[reentry] rig %s", hide ? "HIDDEN" : "shown");
+        } else if (strncmp(rest, "skip", 4) == 0) {
+            unsigned n = 0;
+            if (sscanf_s(rest + 4, "%u", &n) == 1 && n > 0) {
+                bool placed = false;
+                for (uint32_t i = 0; i < kRigMaxCounts && !placed; ++i) {
+                    if (g_rigCounts[i].load(std::memory_order_relaxed) == 0) {
+                        g_rigCounts[i].store(n, std::memory_order_relaxed);
+                        placed = true;
+                    }
+                }
+                BVR_LOG("[reentry] rig skip %u %s", n,
+                        placed ? "armed (`rig hide` to apply)" : "REFUSED - list full");
+            } else {
+                BVR_LOG("[reentry] usage: rig skip <indexCount>");
+            }
+        } else if (strncmp(rest, "clear", 5) == 0) {
+            for (uint32_t i = 0; i < kRigMaxCounts; ++i)
+                g_rigCounts[i].store(0, std::memory_order_relaxed);
+            BVR_LOG("[reentry] rig list cleared");
+        } else {
+            char list[128] = {};
+            int n = 0;
+            for (uint32_t i = 0; i < kRigMaxCounts; ++i) {
+                uint32_t v = g_rigCounts[i].load(std::memory_order_relaxed);
+                if (v && n >= 0 && n < static_cast<int>(sizeof(list)) - 16)
+                    n += sprintf_s(list + n, sizeof(list) - n, "%u ", v);
+            }
+            BVR_LOG("[reentry] rig %s | index counts: %s| skipped %u draws (core %u)",
+                    g_rigHide.load(std::memory_order_relaxed) ? "HIDDEN" : "shown",
+                    list[0] ? list : "(none) ",
+                    g_rigSkips.load(std::memory_order_relaxed),
+                    bvr::frame_inspector::mesh_skips());
+        }
     } else if (strcmp(verb, "stereo") == 0) {
         if (strncmp(rest, "on", 2) == 0) {
             if (g_poisoned.load(std::memory_order_relaxed)) {
@@ -844,6 +937,14 @@ void apply_pending_vrstereo() {
         int pending = g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
         if (pending >= 0) apply_vrstereo(pending == 1);
     }
+}
+
+bool rig_hidden() {
+    return g_rigHide.load(std::memory_order_relaxed);
+}
+
+void set_rig_hidden(bool on) {
+    g_rigHide.store(on, std::memory_order_relaxed);
 }
 
 void draw_debug_ui() {

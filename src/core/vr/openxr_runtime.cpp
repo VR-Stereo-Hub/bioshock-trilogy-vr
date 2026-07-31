@@ -364,6 +364,13 @@ std::atomic<bool> g_paceSelfDriving{false};     // ack: pace thread has it
 HANDLE g_paceIdle = nullptr; // manual-reset, SET while the pace thread is NOT self-driving
 bool g_detachedNow = false;  // present thread only
 std::atomic<uint32_t> g_detachFrames{0}, g_detachEpisodes{0};
+// Guards the OWNERSHIP TRANSITION only - never held in the frame loop itself.
+// Without it there is a real use-after-free: between the pace thread reading
+// `wanted` and announcing `selfDriving`, teardown would see selfDriving=false
+// and g_paceIdle still signalled, destroy the session, and leave the pace
+// thread entering its loop on a dead handle. That is precisely the crash class
+// session 28 documented, so it does not get to come back through the new door.
+std::mutex g_paceOwnerMutex;
 
 // ---- Session 34: present-path PHASE TIMING ---------------------------------
 // Session 33 concluded that the frame HANDOFF paces the game thread. Its own
@@ -514,9 +521,8 @@ const char* state_str(XrSessionState s) {
 // Returns when the present thread asks for the loop back, the session dies, or
 // the runtime errors. Any frame still open is closed before yielding, because
 // the present thread must never inherit one it did not begin.
+// Ownership is taken under g_paceOwnerMutex by the caller; this runs outside it.
 void pace_self_drive() {
-    g_paceSelfDriving.store(true, std::memory_order_release);
-    ResetEvent(g_paceIdle);
     g_detachEpisodes.fetch_add(1, std::memory_order_relaxed);
     uint32_t frames0 = g_detachFrames.load(std::memory_order_relaxed);
     BVR_LOG("xr: DETACHED - the pace thread took the frame loop (session %s). The "
@@ -560,8 +566,13 @@ void pace_self_drive() {
         fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         xrEndFrame(g_session, &fei);
     }
-    g_paceSelfDriving.store(false, std::memory_order_release);
-    SetEvent(g_paceIdle); // teardown and the handover both key on this
+    {
+        // Releasing ownership takes the same lock as taking it, so teardown
+        // never observes a half-finished transition in either direction.
+        std::lock_guard<std::mutex> lock(g_paceOwnerMutex);
+        g_paceSelfDriving.store(false, std::memory_order_release);
+        SetEvent(g_paceIdle); // teardown and the handover both key on this
+    }
     BVR_LOG("xr: detached episode ended after %u frames (session %s)",
             g_detachFrames.load(std::memory_order_relaxed) - frames0, state_str(g_state));
 }
@@ -572,8 +583,20 @@ DWORD WINAPI pace_thread_proc(void*) {
         if (!g_paceRun.load(std::memory_order_relaxed)) break;
         // The mode switch happens HERE, at the thread's own park point, so a
         // handoff in flight is always completed rather than stranded and no
-        // stale g_paceDone can leak across the boundary.
-        if (g_paceSelfDriveWanted.load(std::memory_order_acquire)) {
+        // stale g_paceDone can leak across the boundary. Taking ownership is
+        // done under the lock together with announcing it, so teardown cannot
+        // slip a xrDestroySession between the two.
+        bool took = false;
+        {
+            std::lock_guard<std::mutex> lock(g_paceOwnerMutex);
+            if (g_paceSelfDriveWanted.load(std::memory_order_acquire) &&
+                g_session != XR_NULL_HANDLE) {
+                g_paceSelfDriving.store(true, std::memory_order_release);
+                ResetEvent(g_paceIdle);
+                took = true;
+            }
+        }
+        if (took) {
             pace_self_drive();
             continue;
         }
@@ -860,8 +883,16 @@ void teardown_session(const char* why) {
     // session continuously. Same use-after-free hazard as the outstanding wait
     // below, and the same answer: ask for the loop back, give it a bounded
     // chance, and defer rather than destroy a session the runtime is inside.
-    if (g_paceSelfDriving.load(std::memory_order_acquire)) {
+    bool paceOwnsLoop = false;
+    {
+        // Under the lock: revoke the request AND read whether it was already
+        // taken. Either we win (the pace thread never enters) or it won (and
+        // g_paceIdle is already reset, so the wait below is real).
+        std::lock_guard<std::mutex> lock(g_paceOwnerMutex);
         g_paceSelfDriveWanted.store(false, std::memory_order_release);
+        paceOwnsLoop = g_paceSelfDriving.load(std::memory_order_acquire);
+    }
+    if (paceOwnsLoop) {
         if (g_paceIdle && WaitForSingleObject(g_paceIdle, 200) != WAIT_OBJECT_0) {
             if (g_teardownPending != why)
                 BVR_LOG("xr: teardown (%s) DEFERRED - the pace thread still owns the "

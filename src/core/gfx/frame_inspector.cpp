@@ -42,6 +42,11 @@ thread_local int t_suppress = 0;
 // Lifetime call census per hooked slot (diagnostic): are the detours even
 // being called? Indexed by EventKind order below.
 std::atomic<uint32_t> g_callCensus[13]{};
+
+// Session 34: the adapter mesh veto (see the header). Atomic because it is set
+// from the game thread and read on the render thread.
+std::atomic<MeshSkipFn> g_meshSkip{nullptr};
+std::atomic<unsigned> g_meshSkips{0};
 enum CensusIdx {
     CxDrawIndexed,
     CxDraw,
@@ -455,6 +460,16 @@ void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCou
                                          UINT startIndex, INT baseVertex) {
     g_callCensus[CxDrawIndexed].fetch_add(1, std::memory_order_relaxed);
     if (t_suppress == 0) bvr::hud::on_draw_indexed(ctx);
+    // Session 34: adapter mesh veto. Checked BEFORE recording on purpose - a
+    // dropped draw did not happen, and a dump that lists it would be describing
+    // a frame the GPU never saw. Null unless a game registered one.
+    if (t_suppress == 0) {
+        MeshSkipFn skip = g_meshSkip.load(std::memory_order_relaxed);
+        if (skip && skip(indexCount)) {
+            g_meshSkips.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
     if (should_record()) {
         ++t_suppress; // our own Get* calls must not recurse into recording
         Event& ev = push_event(EventKind::DrawIndexed, _ReturnAddress(),
@@ -926,6 +941,14 @@ bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs) {
 }
 
 std::atomic<int> g_armCount{0}; // windows left to record (consecutive presents)
+
+void set_mesh_skip(MeshSkipFn fn) {
+    g_meshSkip.store(fn, std::memory_order_relaxed);
+}
+
+unsigned mesh_skips() {
+    return g_meshSkips.load(std::memory_order_relaxed);
+}
 
 void arm(int mode, int count) {
     if (count < 1) count = 1;
