@@ -148,13 +148,27 @@ constexpr uint32_t kSceneBuildGameplayRetRva = 0xCD5D7B;
 constexpr int kRayBlockCb0FloatIndex = 16;
 
 // ---- THE FIRST-PERSON RIG (the Big Daddy helmet), session 34 ----------------
-// DrawIndexed index counts of the helmet's meshes. Derived 2026-07-31 from the
-// FOREGROUND cluster of a full frame dump (`dumpframe full` +
-// `decode-framedump.ps1 -RayOffset 16 -FgBakeRvas @() -ShowDraws 20`), and each
-// one CONFIRMED by making it disappear: `reentry rig skip <n>` + `rig hide` and
-// a flat screenshot A/B. Never inferred from draw counts - BS1's rule, and the
-// reason it exists is that draw counts are exactly what got the foreground pass
-// misidentified twice on this project.
+// DrawIndexed index count of the helmet's PORTHOLE RING - the mesh that
+// surrounds the view and takes most of it once the viewmodel lens is wide.
+//
+// Derived 2026-07-31 from the FOREGROUND cluster of a full frame dump
+// (`dumpframe full` + `decode-framedump.ps1 -RayOffset 16 -FgBakeRvas @()
+// -ShowDraws 20`), which lists nine meshes: 3810, 3477, 23766, 12366, 10512,
+// 2778 (10512 and 2778 twice each) and 90. CONFIRMED THE ONLY WAY THAT WORKS -
+// by making it disappear. `reentry rig skip <n>` + `rig hide` + a flat
+// screenshot, one candidate at a time:
+//
+//   23766, 12366, 10512  removed nothing visible (occluded or depth-only)
+//   all nine together    removed the porthole AND the drill - so the ring IS
+//                        in this pass, which is what justified bisecting
+//   {3810, 3477}         removed the porthole, KEPT the drill
+//   3477 alone           porthole intact
+//   3810 alone           porthole GONE, drill kept, world fills the frame  <--
+//
+// Size is NOT the clue: the ring is 3810 indices while three larger meshes in
+// the same pass are invisible. Guessing "biggest mesh = the thing filling the
+// screen" was wrong on the first try, and it is exactly the draw-count
+// inference BS1's rule forbids.
 //
 // Why an index count at all: inside one pass nothing else separates two meshes.
 // The helmet and the weapon share the lens, the render target and the callstack
@@ -162,9 +176,8 @@ constexpr int kRayBlockCb0FloatIndex = 16;
 // The count is a property of the mesh's geometry, so it is stable across
 // frames, positions and FOV values.
 //
-// These are BS2 numbers. BS1's rig is a different mesh set in a different
-// build - derive fresh, never copy.
-constexpr uint32_t kRigMeshIndexCounts[] = {23766};
+// This is a BS2 number for the BS2 Delta rig. Derive fresh, never copy.
+constexpr uint32_t kRigMeshIndexCounts[] = {3810};
 constexpr uint32_t kRigMeshCount = sizeof(kRigMeshIndexCounts) / sizeof(kRigMeshIndexCounts[0]);
 
 // Render-thread sync pair (banked for the 1t fallback, unconsumed): the

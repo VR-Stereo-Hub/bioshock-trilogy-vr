@@ -113,8 +113,16 @@ std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
 //
 // Identified by INDEX COUNT, because inside one pass nothing else separates
 // two meshes - the weapon and the helmet share the lens, the render target and
-// the callstack. Counts are per-mesh and stable. They are DERIVED VALUES and
-// live here with their derivation, per the never-copy rule.
+// the callstack. Counts are per-mesh and stable. The numbers and their
+// derivation live in patterns.h, per the never-copy rule.
+//
+// KNOWN LIMITATION, stated rather than discovered later: an index count is a
+// GLOBAL key, not a foreground-pass one. Any world mesh anywhere in the game
+// that happens to carry the same count would be skipped too. Nothing of the
+// sort was visible at the test location - the world renders complete and
+// correct with the ring gone - but "not visible here" is not "cannot happen",
+// which is why this ships DEFAULT OFF behind a toggle. Tightening the key to
+// the foreground pass is the follow-up.
 constexpr uint32_t kRigMaxCounts = 8;
 std::atomic<uint32_t> g_rigCounts[kRigMaxCounts]{};
 std::atomic<bool> g_rigHide{false};
@@ -733,6 +741,11 @@ void handle_command(const char* args) {
         // disappear and see what went with it.
         if (strncmp(rest, "hide", 4) == 0 || strncmp(rest, "show", 4) == 0) {
             bool hide = strncmp(rest, "hide", 4) == 0;
+            // Zero the counter on every arm, so `status` reports THIS episode.
+            // A cumulative total across a whole identification sweep is not an
+            // instrument - it answered "is 3810 over-skipping?" with a number
+            // that was mostly other candidates' draws.
+            g_rigSkips.store(0, std::memory_order_relaxed);
             g_rigHide.store(hide, std::memory_order_relaxed);
             BVR_LOG("[reentry] rig %s", hide ? "HIDDEN" : "shown");
         } else if (strncmp(rest, "skip", 4) == 0) {
