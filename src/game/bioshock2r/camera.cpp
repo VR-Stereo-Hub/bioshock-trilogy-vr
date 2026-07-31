@@ -234,8 +234,21 @@ bool is_gameplay_view_rva(uint32_t vtblRva) {
 // turn out to use different aspect conventions (BS1's situation, and BS2's
 // square-backbuffer dump hints at it), the aspect term is one more factor on
 // this line rather than a redesign.
+// Where the field lives: the DERIVED offset off the live PlayerController by
+// default (patterns::kPcForegroundFovOffset), or a manually nominated address
+// when one is set. The manual lane is what derived the offset in the first
+// place and stays as the re-derivation path for another build - but nobody has
+// to type an address to use the feature.
+uintptr_t fg_fov_addr() {
+    uintptr_t manual = g_fgFovAddr.load(std::memory_order_relaxed);
+    if (manual) return manual;
+    void* pc = g_playerController.load(std::memory_order_relaxed);
+    if (!pc) return 0;
+    return reinterpret_cast<uintptr_t>(pc) + patterns::kPcForegroundFovOffset;
+}
+
 void apply_fg_fov_match(const int32_t* optionFov, bool strictGameplay) {
-    uintptr_t addr = g_fgFovAddr.load(std::memory_order_relaxed);
+    uintptr_t addr = fg_fov_addr();
     if (!addr) return;
     float* fg = reinterpret_cast<float*>(addr);
     float manual = g_fgFovManual.load(std::memory_order_relaxed);
@@ -247,9 +260,27 @@ void apply_fg_fov_match(const int32_t* optionFov, bool strictGameplay) {
         float probe = 0.0f;
         if (!bvr::value_scan::safe_read_f32(addr, &probe)) {
             g_fgFovAddr.store(0, std::memory_order_relaxed);
+            g_fgFovMatch.store(false, std::memory_order_relaxed);
             g_wasWritingFgFov = false;
             BVR_LOG("[b2r] fgfov: address 0x%08X went unreadable - disarming",
                     static_cast<unsigned>(addr));
+            return;
+        }
+        // Only ARM on something that already looks like a FOV. If the offset is
+        // wrong on some other build this refuses instead of writing into
+        // unrelated memory every frame; once armed the check is skipped, since
+        // by then the field holds OUR value and would fail its own gate.
+        if (!g_wasWritingFgFov &&
+            (probe < patterns::kFgFovMinDeg || probe > patterns::kFgFovMaxDeg)) {
+            static bool s_warned = false; // game thread only
+            if (!s_warned) {
+                s_warned = true;
+                BVR_LOG("[b2r] fgfov: 0x%08X reads %.3f, not a plausible FOV - REFUSING "
+                        "to write. The offset (0x%X off the PlayerController) may not "
+                        "hold on this build; re-derive with pcinfo + `fgfov addr`.",
+                        static_cast<unsigned>(addr), probe,
+                        patterns::kPcForegroundFovOffset);
+            }
             return;
         }
         if (!g_wasWritingFgFov) {
@@ -529,7 +560,7 @@ void apply_command(const char* cmd, const char* args) {
                 BVR_LOG("[b2r] usage: fgfov addr <hexaddr>");
             }
         } else if (strncmp(args, "status", 6) == 0) {
-            uintptr_t a = g_fgFovAddr.load(std::memory_order_relaxed);
+            uintptr_t a = fg_fov_addr();
             float cur = 0.0f;
             bool ok = a && bvr::value_scan::safe_read_f32(a, &cur);
             BVR_LOG("[b2r] fgfov status: match=%s addr=0x%08X current=%s%.4f "
@@ -547,8 +578,10 @@ void apply_command(const char* cmd, const char* args) {
             g_fgFovManual.store(0.0f, std::memory_order_relaxed);
             g_fgFovMatch.store(true, std::memory_order_relaxed);
             BVR_LOG("[b2r] command: fgfov on - matching the LIVE world option "
-                    "(addr 0x%08X)",
-                    static_cast<unsigned>(g_fgFovAddr.load(std::memory_order_relaxed)));
+                    "(addr 0x%08X, %s)",
+                    static_cast<unsigned>(fg_fov_addr()),
+                    g_fgFovAddr.load(std::memory_order_relaxed) ? "manual"
+                                                                : "derived off the PC");
         } else if (sscanf_s(args, "%f", &v) == 1 && v > 0.0f) {
             // Manual degrees: the calibration lane. Poke 2-3 values and read
             // the resulting fg tangent out of `fovaudit` to MEASURE the
@@ -669,8 +702,8 @@ void apply_command(const char* cmd, const char* args) {
         // before the head-slot reservation a round could easily miss it and
         // report lenses=1 with nothing having changed.
         {
-            float sh[8] = {}, sv[8] = {};
-            int n = bvr::hud::fov_slots(sh, sv, 8);
+            float sh[16] = {}, sv[16] = {};
+            int n = bvr::hud::fov_slots(sh, sv, 16);
             char buf[256];
             int off = 0;
             for (int i = 0; i < n && off < 200; ++i)

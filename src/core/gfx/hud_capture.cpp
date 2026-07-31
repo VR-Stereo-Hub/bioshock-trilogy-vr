@@ -102,11 +102,15 @@ std::atomic<unsigned> g_cHudDraws{0}, g_cRedirects{0}, g_cLeaks{0}, g_cIntervals
 // same 1344 bytes the offline frame dump captures, so the live watch and
 // tools/decode-framedump.ps1 now see identical data. Cost is 10.5 KB of staging.
 constexpr UINT kFovCbBytes = 1344; // floats 0..335, matching frame_inspector
-constexpr int kFovSlots = 8;
+// 12, not 8 (session 33). With 3 slots reserved for the head, 8 total left only
+// 5 for the world - and measured live that came out 4 fg / 4 world, a TIE that
+// the majority guard correctly refuses, so the watch published nothing at all.
+// 12 keeps the same 3-deep head and gives the world 9, a decisive 9/12.
+constexpr int kFovSlots = 12;
 // Slots reserved for the HEAD of the pass, where the foreground/viewmodel pass
 // lives on both games (session 33 - see the sampling site). The rest stride
-// across the world pass, so the world still wins the majority vote 6/8 or
-// better while the fg lens is guaranteed to be seen at all.
+// across the world pass, so the world still wins the majority vote while the fg
+// lens is guaranteed to be seen at all.
 constexpr int kFovHeadSlots = 3;
 ID3D11Buffer* g_fovStaging = nullptr;
 bool g_fovPending = false; // copied, not yet mapped
@@ -978,8 +982,13 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
                     int stride = (g_fovDistinctPrev - kFovHeadSlots) /
                                  (kFovSlots - kFovHeadSlots);
                     if (stride < 1) stride = 1;
+                    // The strided lane starts one FULL stride past the head, not
+                    // at the head boundary: the fg run is ~19 buffers long, so
+                    // sampling at idx == kFovHeadSlots would just take a fourth
+                    // fg buffer and eat into the world's majority.
                     bool take = idx < kFovHeadSlots ||
-                                ((idx - kFovHeadSlots) % stride == 0);
+                                (idx > kFovHeadSlots &&
+                                 (idx - kFovHeadSlots) % stride == 0);
                     if (!g_fovPending && g_fovSlots < kFovSlots && take &&
                         ensure_fov_staging(ctx)) {
                         // Clamp to the SOURCE size: the box must lie inside the
