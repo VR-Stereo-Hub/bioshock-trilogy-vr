@@ -198,6 +198,42 @@ bool verify_draw_chain(const bvr::pattern_scan::ProcessImage& image);
 constexpr uint32_t kUserSettingsVtableRva = 0x11523D8;
 constexpr uint32_t kUserSettingsHfovOffset = 0x4C;
 
+// ---- The FOREGROUND (viewmodel) lens, session 33 ---------------------------
+// A float in DEGREES on the PLAYERCONTROLLER - the `self` of the PlayerCalcView
+// ProcessEvent dispatch, which b2r already holds every frame, so this needs no
+// scan and no vtable revalidation of its own.
+//
+// BS1's equivalent is PC+0x460. THIS IS +0x694. Same engine family, same shape
+// (a 75.0/60.0 pair), different link - derived fresh, as the hard rule demands.
+//
+// Derivation (2026-07-31, live save "Adonis Luxury Resort", option 100):
+//  1. `pcinfo` swept the live PC and pawn for floats in [55,65]: 3 hits on the
+//     PC (+0x488, +0x694, +0x69C), 3 on the pawn (+0x5CC, +0x850, +0xF08).
+//  2. THE DISCRIMINATOR, in ONE dump: poke each candidate to a DIFFERENT
+//     distinctive FOV (70/80/90/110/120/130) and see which value the fg
+//     cluster's tangent lands on. It read tanH = 0.8391 = tan(40) = exactly
+//     80.0 deg - the value written to +0x694 - on the same 17 blocks and the
+//     same cb tiers as the 60-deg cluster it replaced. One capture, no
+//     bisection, and immune to the "did the cluster vanish or did we stop
+//     sampling it" ambiguity that a lens COUNT cannot resolve.
+//  3. Confirmed as a lens rather than a coincidence by a full sweep with the
+//     live match armed: ONE cluster at every option value tested (100 ->
+//     1.1918, 130 -> 2.1445, 80 -> 0.8391) and TWO again the moment it is
+//     disarmed, restoring 60.0 exactly.
+//
+// +0x690 IS THE WORLD LENS - DO NOT WRITE IT. Poking it to 125 took the WORLD
+// pass to tanH 3.7320 (150 deg) while the fg stayed where it was put. The
+// adjacent 75.0/60.0 pair looks exactly like BS1's fovA/fovB, and it is NOT:
+// on BS2 the first member drives the world. A second 75.0/60.0 pair sits at
+// +0x698/+0x69C and is inert (poking it to 90 changed nothing) - defaults.
+// Unlike BS1's fovA, +0x690 is NOT restamped every frame; a poke sticks.
+constexpr uint32_t kPcForegroundFovOffset = 0x694;
+// Sanity band for the field before we write it: a plausible FOV in degrees.
+// Cheap protection against a wrong offset on some other build writing into
+// unrelated memory every frame - the check costs one compare.
+constexpr float kFgFovMinDeg = 10.0f;
+constexpr float kFgFovMaxDeg = 179.0f;
+
 // Live pointer to the HorizontalFOV int, or null while the settings object
 // is not located. Cache + revalidate by vtable dword every call; a miss
 // falls through to the heap scan (rate-limited, DORMANT after 3 straight

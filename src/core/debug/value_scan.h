@@ -46,6 +46,12 @@ size_t restore_all();
 bool poke_addr(uintptr_t addr, float value);
 bool poke_addr_u32(uintptr_t addr, uint32_t value);
 
+// SEH-guarded read of an arbitrary address. For per-frame liveness probes on a
+// candidate address a scan nominated: a heap object can be freed between
+// rounds, and writing through a stale pointer every frame is a wild write.
+// False means "do not touch this address again".
+bool safe_read_f32(uintptr_t addr, float* out);
+
 // Log a hex+ascii dump of [addr, addr+len), len capped at 1024.
 void hexdump(uintptr_t addr, size_t len);
 

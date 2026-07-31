@@ -643,7 +643,8 @@ renders a full square image and is the recommended VR configuration. On BS2 the 
   (confirmed in a screenshot, with the HUD drawn over the black band);
 - a world horizontal that **collapses from 100 deg to 67.7 deg** (tanH 1.1918 -> 0.6704, which is
   `tan(50)*9/16`);
-- a ray block whose two vertical encodings **stop agreeing** (`-f[21]/2 = 0.9662` vs
+- **[RETRACTED session 33 - this was a DECODER bug, see the session-33 section]** a ray block
+  whose two vertical encodings **stop agreeing** (`-f[21]/2 = 0.9662` vs
   `f[22] = 0.6704`, a 0.296 disagreement against a 0.001 tolerance) - the frustum is no longer a
   consistent symmetric perspective at all.
 
@@ -693,8 +694,9 @@ Measured at 1920x1080 (`decode-framedump.ps1 -ScanLayout -RayOffset 16`):
 | **second** | tanH **0.5774** (60.0 deg) | tanH **0.5774** | 19 | `0xBE9E68,0xAECACF,...` |
 
 `0.5774 = tan(30)` to five decimals, and it is **unchanged by the FOV option** while the world lens
-tracks it. The two clusters are separated by a distinct callstack (the third frame differs:
-`0xAECACF` vs `0xAEC7B4`), not merely by tangent, so this is a structurally different pass. Both
+tracks it. ~~The two clusters are separated by a distinct callstack (the third frame differs:
+`0xAECACF` vs `0xAEC7B4`)~~ **- WRONG, retracted session 33: those are two call sites of the SAME
+draw dispatch, and 62 draws carry `0xAECACF` against the fg cluster's 19.** Both
 lenses share the same aspect convention (tanH/tanV = 16/9 at 16:9), so the difference is purely
 magnitude.
 
@@ -779,3 +781,147 @@ mirroring BS1. Two notes for whoever verifies it:
 - Flat, with `drive=0`, `pitchErr` is 0 by construction (the not-driving branch keeps it fresh
   rather than stale). A meaningful reading needs the HMD driving, so **the sign check is still
   outstanding and needs the headset** - `vrinput pitchservo status|invert`, now reachable.
+
+## Session 33 (2026-07-31): the viewmodel lens is PlayerController+0x694, and the VR pacing bug
+
+### 1. THE FIX, ACCEPTED IN-HEADSET: the foreground FOV is a float on the PLAYERCONTROLLER
+
+`kPcForegroundFovOffset = 0x694`, float, DEGREES. BS1's equivalent is PC+0x460 - same engine
+family, same 75.0/60.0 shape, different link. Derived fresh, as the rule demands.
+
+User's verdict, same day: *"I tested the match viewmodel lens to the world and it worked, the
+weapon was not moving anymore."* Shipped DEFAULT ON.
+
+Derivation, and the method is the transferable part:
+
+1. `pcinfo` (new) swept the live PC and pawn for floats in [55,65]: 3 hits on the PC
+   (+0x488, +0x694, +0x69C), 3 on the pawn (+0x5CC, +0x850, +0xF08).
+2. **Poke each candidate to a DIFFERENT distinctive FOV in ONE dump** (70/80/90/110/120/130) and
+   read which value the fg cluster lands on: `tanH = 0.8391 = tan(40)` = exactly the 80.0 written
+   to +0x694, on the same 17 blocks and cb tiers as the 60-deg cluster it replaced. One capture,
+   no bisection, and immune to the ambiguity that sank the first attempt (see 6).
+3. Confirmed by an option sweep with the live match armed: ONE cluster at 100 -> 1.1918,
+   130 -> 2.1445, 80 -> 0.8391; TWO again the moment it is disarmed, restoring 60.0 exactly.
+
+**+0x690 IS THE WORLD LENS - DO NOT WRITE IT.** Poking it to 125 took the WORLD pass to tanH
+3.7320 (150 deg) while the fg stayed put. The adjacent 75/60 pair looks exactly like BS1's
+fovA/fovB and is NOT: here the first member drives the world. A second, inert 75/60 pair sits at
++0x698/+0x69C (poking it to 90 changed nothing) - defaults. Unlike BS1's fovA, +0x690 is not
+restamped per frame; a poke sticks.
+
+**Open, and it is what the user wants next:** with the lens matched, the first-person rig (the Big
+Daddy helmet) takes much more of the view, plus black bars at the bottom. The rig's apparent SIZE
+is coupled to this FOV value and not only to its lens - widening the lens also moves the foreground
+eye, so the rig grows. A distinct defect from the swimming that the match fixes.
+
+### 2. The world FOV law is SETTLED, and it is the OPPOSITE of BS1's
+
+```
+tanV = tan(option/2) * 9/16        <- aspect-INVARIANT
+tanH = tanV * (backbufferW / backbufferH)
+```
+
+i.e. the option is a **16:9-referenced** horizontal, not a true one. Session 32 measured
+`tanH = tan(option/2)` at 16:9 and correctly refused to promote it, because the two candidate laws
+coincide exactly there. The square dumps separate them: Law A predicts tanV 1.1918 at 2048x2048,
+the dump says 0.6704 = tan(50)*9/16, and again at option 130, 1.2063 = tan(65)*9/16. Verified at
+two aspects x two options, all from dumps already on disk - no relaunch spent.
+
+**BS1's law is the true horizontal.** Same engine tree, different link. The FOV LAW is now a third
+instance of "never copy a number between these games", after the ini keys and the cb0 offset.
+
+Consequence, now shipped: b2r claims `2*atan(tan(option/2) * 9/16 * bbW/bbH)` to OpenXR rather than
+the raw option. Identical at 16:9, so nothing shipping moved; correct the moment a second aspect
+ships. A claim that disagrees with the render is BS1's yaw-warp bug.
+
+### 3. RETRACTED: "BS2's projection degenerates off 16:9" was a DECODER bug
+
+Session 32 read the ray block's two vertical encodings as an equality, saw them disagree at
+2048x2048, and concluded the frustum was no longer a frustum. It is. The helper's UV runs over the
+RENDER TARGET, so a letterboxed viewport scales the SLOPE term and leaves the OFFSET alone: `tanV`
+is the offset, and slope/offset is the letterbox factor. That ratio was **1.4413 = 2048/1421
+exactly** in every block of both square dumps, world and foreground alike.
+
+Two further corrections follow:
+
+- `-ScanLayout` over the square dump now finds offset 16 across 533 blocks. Session 32 got nothing
+  there and read it as "a different layout shape" - that was this same check rejecting every block.
+- The real non-16:9 defect is **ANAMORPHIC**: the frustum takes the BACKBUFFER aspect while the
+  scene renders into a letterboxed VIEWPORT, so the image is stretched. Separate from the black
+  band, and both decoders now report it (`lb=` and a square-pixels/stretched verdict).
+
+### 4. `0xAECACF` is NOT the foreground's callstack signature
+
+Session 32 recorded the two lenses as "separated by callstack". They are not. `0xAECACF` and the
+world's `0xAEC7B4` are two call sites of the SAME `call [renderer+0x134]` draw dispatch, and 62
+draws in the 16:9 dump carry `0xAECACF` against the fg cluster's 19. Offline disassembly (new
+`tools/disasm-rva.py`). Also established: there is no `tan(30)` constant and no deg-to-rad constant
+in the image, so the fg tangent is computed at runtime from a per-object field - which is what
++0x694 turned out to be.
+
+### 5. THE PACING BUG - the game is paced by a headset that is not presenting
+
+**This is the "it hangs a couple of seconds after enabling VR stereo" the user hit repeatedly, and
+it is not a hang, not stereo, and not the fov watch.**
+
+```
+xr: pace guard ON | wait off-thread | session SYNCHRONIZED everFocused=0
+    | skips 0 lastWait 0 ms | handoffs 12747 timeouts 0
+```
+
+Nothing is blocked. The mod opens an OpenXR session whenever a runtime is present and logs
+"session running - game is now paced by the headset". When the session is not FOCUSED the runtime
+paces its not-visible cadence - measured about **10 Hz** - and the game inherits it: `draws/s 10`,
+and `call2Us 99765` for the doubled stereo draw against session 26's 4.5-5.0 ms. In a headset that
+reads as a freeze. **Alt-tab reproduces it** (user-confirmed) because alt-tab drops the session out
+of FOCUSED.
+
+`vrcam off` was the escape hatch and did not work: `on` called `set_enabled(true)`, `off` only
+cleared the camera mode, so once a session ran nothing could stop the pacing. FIXED - `off` now
+disables VR. The b2r heartbeat carries `xr=<state>/neverFocused` so this is one glance next time.
+
+**NOT FIXED, and it is the top priority:** a session that is running but not FOCUSED should not
+pace the game at all. Session 28 deliberately stopped SKIPPING frames while unfocused (skipping
+made the alt-tab freeze permanent - a runtime will not re-grant FOCUSED to an app that submits
+nothing) and moved the wait off the present thread so a block could not wedge the game. That
+reasoning holds, but it treated "not blocked" as "not harmed": the frame HANDOFF still paces the
+game thread to the runtime's cadence.
+
+### 6. The live lens watch cannot be a gate, and two attempts to make it one failed
+
+The fov watch samples ~12 of 400-600 distinct cb0 buffers on a fixed stride; the foreground pass is
+~17 of them. So **`lenses == 2` is trustworthy and `lenses == 1` IS NOT PROOF of a match.** A poke
+A/B that read the second as the first reported SIX false positives in a row.
+
+- Reserving the head of the pass: DEAD. The fg run moves - blocks 2..12 in two captures, 369..377
+  and 456..463 of 482 in a third.
+- Rotating the stride phase: DEAD, and expensively. Correct in principle, measured at **10 fps** -
+  copying from a different set of dynamic constant buffers each interval defeats whatever the
+  driver does to make a repeated copy of the same handles cheap.
+
+The acceptance instrument is `dumpframe full` + `tools/decode-framedump.ps1`, which sees every
+block. Every conclusion in this session came from dumps. `vrhud fovwatch off` disables the watch
+outright (built to bisect the pacing bug; it cleared the watch as a suspect).
+
+### 7. BS2 animates its own FOV
+
+The option ramped 73 -> 96 deg over ~1.4 s during normal play (there is a `UFOVScaleManager` class
+in the binary). The lens match reads the option live every CalcView, so it follows - but any future
+work that caches the option is wrong on this game.
+
+### 8. Harness lessons that cost real time
+
+- **A `game-shot` loop wedges BS2 under stereo.** PrintWindow with PW_RENDERFULLCONTENT forces a
+  full re-render; a loop of them during a poke hunt left the game unresponsive with no crash dump.
+  `tools/game-batch.ps1` runs a command sequence with delays and no screenshots.
+- **`Process.Responding` is not a liveness test in VR.** The window pump is starved while the game
+  renders to the HMD, so it reads False on a healthy run - it refused a whole A/B. Log advancement
+  is the real signal, and it is what caught the genuine freeze.
+- **Do not steal focus during a headset session.** `SetForegroundWindow` drops the XR session out
+  of FOCUSED, which is the pacing bug above. `game-batch.ps1 -NoFocus`, or better, use the F10
+  overlay and do not touch the harness at all.
+- **A guard that only prints is not a guard.** The pre-launch "is BioShock Infinite running" check
+  was a `Write-Output` next to an unconditional `Start-Process`; it duly reported Infinite was up
+  and launched anyway, on top of another session's work. `tools/launch-game.ps1` throws.
+- **Anything the user judges by eye belongs in the F10 overlay, not in a seam command.** Reaching a
+  keyboard means alt-tabbing, and alt-tab is the pacing bug.

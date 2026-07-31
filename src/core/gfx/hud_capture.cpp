@@ -102,7 +102,15 @@ std::atomic<unsigned> g_cHudDraws{0}, g_cRedirects{0}, g_cLeaks{0}, g_cIntervals
 // same 1344 bytes the offline frame dump captures, so the live watch and
 // tools/decode-framedump.ps1 now see identical data. Cost is 10.5 KB of staging.
 constexpr UINT kFovCbBytes = 1344; // floats 0..335, matching frame_inspector
-constexpr int kFovSlots = 8;
+// 12, not 8 (session 33): more slots is more coverage per interval, and the
+// staging cost is 12 x 1344 B.
+constexpr int kFovSlots = 12;
+// How long a sighting of a second lens keeps counting (session 33). The
+// foreground pass is ~17 buffers of 480+, so NO single interval's sample can be
+// relied on to contain it - see the phase rotation at the sampling site. The
+// verdict is therefore "was a second lens seen RECENTLY", which the rotation
+// makes true within a few hundred ms, rather than "is one in this round".
+constexpr unsigned long long kFovFgSeenWindowMs = 1500;
 ID3D11Buffer* g_fovStaging = nullptr;
 bool g_fovPending = false; // copied, not yet mapped
 int g_fovPendingAge = 0;   // presents since the copy
@@ -138,12 +146,38 @@ int g_fovUnspanned = 0;    // rounds refused because the sample missed the pass
 ID3D11Buffer* g_fovLastCb = nullptr;
 std::atomic<float> g_fovTanH{0.0f}, g_fovTanV{0.0f};
 std::atomic<unsigned long long> g_fovStampMs{0};
+// Session 33: the winning lens's LETTERBOX factor - the ray block's vertical
+// slope over its offset, which equals RTheight/viewportHeight. 1.0 means the
+// scene viewport fills the render target; > 1 means the engine letterboxed and
+// the frustum's aspect should be checked against the VIEWPORT's, not the
+// backbuffer's (they disagree on BS2 off 16:9, which is what stretches it).
+std::atomic<float> g_fovVpRatio{1.0f};
+// Session 33 bisection switch. The fov watch is the biggest thing that changed
+// on the render path since SequentialReentry stereo was proven stable in
+// session 26: the cb0 copy went from 80 to 1344 bytes (session 32) and the slot
+// count from 8 to 12 (session 33), and under SR every one of those runs at
+// TWICE the present rate. `vrhud fovwatch off` takes the whole thing - copies
+// and map - out of the frame so the stereo hang can be attributed or cleared.
+std::atomic<bool> g_fovWatchEnabled{true};
 // The minority (foreground) lens, published for telemetry and for the fg-lens
 // aspect law. 0 = only one lens seen this round.
 std::atomic<float> g_fovFgTanH{0.0f}, g_fovFgTanV{0.0f};
 std::atomic<unsigned long long> g_fovFgStampMs{0};
 std::atomic<int> g_fovLenses{0}; // distinct perspective clusters last round
+// Session 33: the RAW decoded slots of the last published round. `lenses` alone
+// cannot distinguish "the second lens is gone" from "the sampler missed it",
+// and a poke hunt that reads the first as the second concludes the opposite of
+// the truth. This is the readout that makes that distinction visible.
+std::atomic<int> g_fovSlotCount{0};
+std::atomic<float> g_fovSlotH[kFovSlots];
+std::atomic<float> g_fovSlotV[kFovSlots];
 float g_fovLoggedH = 0.0f, g_fovLoggedFgH = 0.0f;
+int g_fovLoggedLenses = 0;
+// Hard floor between fov-watch log lines. This runs on the PRESENT path, so a
+// change test that can flicker turns into a per-frame file write - which is
+// exactly what wedged BS2 (200 lines/s, 40 fps, then unresponsive). Any change
+// test above this is a policy; this is the safety net.
+unsigned long long g_fovLoggedMs = 0;
 // Mismatch verdict (render thread writes; hysteresis over present intervals).
 std::atomic<bool> g_fovMismatchOn{false};
 int g_fovMismatchStreak = 0;
@@ -509,21 +543,39 @@ bool ensure_fov_staging(ID3D11DeviceContext* ctx) {
 // never-copy rule covers cb layouts exactly as it covers addresses. 12 is
 // BS1's, measured in session 21; an adapter publishes its own via
 // set_ray_block_offset().
-bool decode_ray_block_at(const float* f, int floatCount, int o, float* tanH, float* tanV) {
+//
+// SESSION 33: the V pair is NOT an equality. The helper's UV runs over the
+// RENDER TARGET, so when the scene viewport is shorter than the RT (BS2
+// letterboxes every non-16:9 backbuffer) the SLOPE term carries a factor of
+// RTheight/viewportHeight and the OFFSET term does not. tanV is the offset;
+// slope/offset is the letterbox factor. The old equality REJECTED every
+// letterboxed block, which is why this watch went blind - and published
+// nothing - at every aspect but 16:9 on BS2. The H pair stays an equality: no
+// pillarbox case has been observed on either game, so if one ever appears this
+// fails loudly rather than silently halving a tangent.
+bool decode_ray_block_at(const float* f, int floatCount, int o, float* tanH, float* tanV,
+                         float* letterbox) {
     if (o < 0 || o + 7 > floatCount) return false;
     float h1 = f[o] * 0.5f, h2 = -f[o + 2];
-    float v1 = -f[o + 5] * 0.5f, v2 = f[o + 6];
-    if (!std::isfinite(h1) || !std::isfinite(h2) || !std::isfinite(v1) ||
-        !std::isfinite(v2))
+    float vSlope = -f[o + 5] * 0.5f, v = f[o + 6];
+    if (!std::isfinite(h1) || !std::isfinite(h2) || !std::isfinite(vSlope) ||
+        !std::isfinite(v))
         return false;
     if (fabsf(f[o + 1]) > 0.001f || fabsf(f[o + 3]) > 0.001f || fabsf(f[o + 4]) > 0.001f)
         return false; // not the ray block (or a non-perspective all-zero pass)
     // 8.0 = tan(rather more than 160 deg half-angle); the offline decoder uses
     // 4.0, loosened only because a forced claim can legitimately go wider.
-    if (h1 <= 0.05f || h1 >= 8.0f || v1 <= 0.05f || v1 >= 8.0f) return false;
-    if (fabsf(h1 - h2) > 0.001f || fabsf(v1 - v2) > 0.001f) return false;
+    if (h1 <= 0.05f || h1 >= 8.0f || v <= 0.05f || v >= 8.0f) return false;
+    if (fabsf(h1 - h2) > 0.001f) return false;
+    float lb = vSlope / v;
+    // A viewport is never TALLER than its render target, so the factor is >= 1;
+    // the 4.0 ceiling keeps the signature specific (it still matches at exactly
+    // one offset out of ~100,000 candidates over a BS1 dump, and over BS2's
+    // square dump - which the old check rejected entirely).
+    if (lb < 0.999f || lb > 4.0f) return false;
     *tanH = h1;
-    *tanV = v1;
+    *tanV = v;
+    if (letterbox) *letterbox = lb;
     return true;
 }
 
@@ -539,15 +591,16 @@ bool decode_ray_block_at(const float* f, int floatCount, int o, float* tanH, flo
 // Measured basis for trusting a hit: run offline over a BS1 dump, this
 // signature matched at exactly ONE offset out of ~100,000 candidate positions
 // across 333 blocks. It is a specific test, not a loose one.
-bool decode_ray_block(const float* f, int floatCount, float* tanH, float* tanV) {
-    if (decode_ray_block_at(f, floatCount, g_fovRayOffset, tanH, tanV)) {
+bool decode_ray_block(const float* f, int floatCount, float* tanH, float* tanV,
+                      float* letterbox) {
+    if (decode_ray_block_at(f, floatCount, g_fovRayOffset, tanH, tanV, letterbox)) {
         g_fovOffsetMisses = 0;
         return true;
     }
     if (++g_fovOffsetMisses < 400) return false;
     for (int o = 0; o + 7 <= floatCount; ++o) {
         if (o == g_fovRayOffset) continue;
-        if (!decode_ray_block_at(f, floatCount, o, tanH, tanV)) continue;
+        if (!decode_ray_block_at(f, floatCount, o, tanH, tanV, letterbox)) continue;
         if (o == g_fovOffsetCandidate) {
             if (++g_fovOffsetCandidateHits >= 8) {
                 BVR_LOG("[hud] fov watch: ray block decodes at float %d, not the configured "
@@ -570,6 +623,15 @@ bool decode_ray_block(const float* f, int floatCount, float* tanH, float* tanV) 
 
 // Map attempt + mismatch bookkeeping, once per present (from on_present).
 void fov_watch_on_present(ID3D11DeviceContext* ctx) {
+    if (!g_fovWatchEnabled.load(std::memory_order_relaxed)) {
+        // Drop any half-collected round so re-arming starts clean.
+        g_fovPending = false;
+        g_fovPendingSlots = 0;
+        g_fovSlots = 0;
+        g_fovDistinct = 0;
+        g_fovLastCb = nullptr;
+        return;
+    }
     if (g_fovPending && ctx && g_fovStaging) {
         ++g_fovPendingAge;
         D3D11_MAPPED_SUBRESOURCE m{};
@@ -579,7 +641,7 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
             // Decode every slot, then cluster. Votes are per distinct cb0
             // buffer object, which is what makes the world pass win: it feeds
             // far more distinct buffers than the foreground pass does.
-            float h[kFovSlots], v[kFovSlots];
+            float h[kFovSlots], v[kFovSlots], lb[kFovSlots];
             int votes[kFovSlots] = {};
             int n = 0;
             for (int s = 0; s < g_fovPendingSlots && s < kFovSlots; ++s) {
@@ -589,8 +651,16 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                 // tier gate admits anything >= 320 bytes, so the tail of a
                 // slot can be stale from an earlier round.
                 int floats = static_cast<int>(g_fovSlotBytes[s] / 4);
-                if (decode_ray_block(f, floats, &h[n], &v[n])) ++n;
+                if (decode_ray_block(f, floats, &h[n], &v[n], &lb[n])) ++n;
             }
+            // Publish the raw slots BEFORE any vote or guard can reject the
+            // round - the question "did we even see the fg lens?" must be
+            // answerable in exactly the rounds the verdict refuses.
+            for (int i = 0; i < n; ++i) {
+                g_fovSlotH[i].store(h[i], std::memory_order_relaxed);
+                g_fovSlotV[i].store(v[i], std::memory_order_relaxed);
+            }
+            g_fovSlotCount.store(n, std::memory_order_relaxed);
             ctx->Unmap(g_fovStaging, 0);
             g_fovPending = false;
             g_fovPendingSlots = 0;
@@ -628,14 +698,15 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
             // published the viewmodel lens (5/8 votes) before the next round
             // corrected it. Refuse a round whose samples did not reach across
             // the pass it was collected in.
-            if (win >= 0 && g_fovCollectDistinct >
-                                kFovSlots * g_fovStrideUsed * 2) {
+            int spanned = kFovSlots * g_fovStrideUsed;
+            if (win >= 0 && g_fovCollectDistinct > spanned * 2) {
                 ++g_fovUnspanned;
                 win = -1;
             }
             if (win >= 0) {
                 g_fovTanH.store(h[win], std::memory_order_relaxed);
                 g_fovTanV.store(v[win], std::memory_order_relaxed);
+                g_fovVpRatio.store(lb[win], std::memory_order_relaxed);
                 g_fovStampMs.store(GetTickCount64(), std::memory_order_relaxed);
                 // The widest cluster that is NOT the winner is the other lens
                 // (the foreground pass off 16:9). Published for the fg aspect
@@ -647,31 +718,54 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                         continue;
                     if (other < 0 || h[i] > h[other]) other = i;
                 }
-                int lenses = 1;
+                unsigned long long nowMs = GetTickCount64();
                 if (other >= 0) {
-                    lenses = 2;
                     g_fovFgTanH.store(h[other], std::memory_order_relaxed);
                     g_fovFgTanV.store(v[other], std::memory_order_relaxed);
-                    g_fovFgStampMs.store(GetTickCount64(),
-                                         std::memory_order_relaxed);
+                    g_fovFgStampMs.store(nowMs, std::memory_order_relaxed);
                 }
+                // TIME-WINDOWED, not per-round. A 17-buffer pass cannot be
+                // guaranteed to appear in any one 12-slot sample, so "no second
+                // lens this round" is not evidence of a match - it is the
+                // ordinary case. With the phase rotating, a second lens that
+                // exists WILL be sampled within a few hundred ms, so absence
+                // across the whole window is the evidence. Getting this wrong is
+                // what let a poke A/B report six false positives in a row.
+                unsigned long long fgStamp =
+                    g_fovFgStampMs.load(std::memory_order_relaxed);
+                int lenses = (fgStamp && nowMs - fgStamp <= kFovFgSeenWindowMs) ? 2 : 1;
                 g_fovLenses.store(lenses, std::memory_order_relaxed);
                 // One line, on change, carrying everything a conclusion needs -
                 // no cross-referencing two log lines ever again (session 28).
-                float fgH = other >= 0 ? h[other] : 0.0f;
-                if (fabsf(h[win] - g_fovLoggedH) > 0.002f ||
-                    fabsf(fgH - g_fovLoggedFgH) > 0.002f) {
+                //
+                // SESSION 33: the change test compares the PUBLISHED (sticky)
+                // fg value, never this round's `other`. With the phase rotating,
+                // `other` alternates between the fg tangent and "not sampled
+                // this round" every few intervals - so a test on it fired at
+                // PRESENT RATE and flooded the log with ~200 lines/s, which
+                // dropped the game to 40 fps and then wedged it outright
+                // (Responding=False, force-kill). A rate limit backs it up: no
+                // future change to what is logged can turn this line into a
+                // per-frame write again.
+                float fgH = g_fovFgTanH.load(std::memory_order_relaxed);
+                float fgV = g_fovFgTanV.load(std::memory_order_relaxed);
+                bool changed = lenses != g_fovLoggedLenses ||
+                               fabsf(h[win] - g_fovLoggedH) > 0.002f ||
+                               fabsf(fgH - g_fovLoggedFgH) > 0.002f;
+                if (changed && nowMs - g_fovLoggedMs >= 500) {
+                    g_fovLoggedMs = nowMs;
+                    g_fovLoggedLenses = lenses;
                     g_fovLoggedH = h[win];
                     g_fovLoggedFgH = fgH;
                     BVR_LOG("[hud] fov watch: %d lens(es) | WORLD tanH=%.6f "
                             "tanV=%.6f (hfov %.2f deg, %d/%d votes) | FG "
-                            "tanH=%.6f tanV=%.6f | backbuffer %ux%u aspect %.5f "
+                            "tanH=%.6f tanV=%.6f | letterbox %.4f | backbuffer "
+                            "%ux%u aspect %.5f "
                             "| sampled %d of %d distinct cb0 (stride %d), "
                             "ambiguous rounds %d",
                             lenses, h[win], v[win],
-                            2.0f * atanf(h[win]) * 57.29578f, votes[win], n,
-                            other >= 0 ? h[other] : 0.0f,
-                            other >= 0 ? v[other] : 0.0f, g_lbSrcW, g_lbSrcH,
+                            2.0f * atanf(h[win]) * 57.29578f, votes[win], n, fgH, fgV,
+                            lb[win], g_lbSrcW, g_lbSrcH,
                             g_lbSrcH ? static_cast<float>(g_lbSrcW) /
                                            static_cast<float>(g_lbSrcH)
                                      : 0.0f,
@@ -894,7 +988,7 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
     // let the majority decide which lens is the world (see the block comment at
     // the state declarations - taking only the FIRST draw reported the
     // viewmodel lens as the world lens and that was the yaw-warp bug).
-    if (ctx) {
+    if (ctx && g_fovWatchEnabled.load(std::memory_order_relaxed)) {
         ID3D11Buffer* cb0 = nullptr;
         ctx->VSGetConstantBuffers(0, 1, &cb0);
         if (cb0) {
@@ -909,11 +1003,40 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
                     g_fovLastCb = cb0;
                     // Count EVERY distinct buffer (that is what sets the next
                     // interval's stride), copy only every stride-th one.
+                    //
+                    // SESSION 33 - TWO of my own attempts at "cover the whole
+                    // pass" are recorded here as things NOT to try again.
+                    //
+                    // The problem is real: the foreground pass is ~17 buffers of
+                    // 480+, so a fixed-phase stride sees it only by luck, and
+                    // `lenses` flickers between 1 and 2 with nothing changing.
+                    //
+                    // (1) Reserving the first slots for the HEAD of the pass.
+                    //     Dead: two captures put the fg run at blocks 2..12, a
+                    //     third put it at 369..377 and 456..463 of 482. Its
+                    //     position is not stable.
+                    // (2) ROTATING THE STRIDE PHASE per interval so coverage
+                    //     becomes a matter of time. Correct in principle and
+                    //     MEASURED AT 10 FPS: draws/s 10, presents/s 10, with
+                    //     drawUs=800 - i.e. 0.8 ms of each 100 ms frame inside
+                    //     the scene build, so the stall is on the render thread,
+                    //     where these copies run. Copying from a DIFFERENT set
+                    //     of dynamic constant buffers each interval defeats
+                    //     whatever the driver does to make a repeated copy of
+                    //     the same handles cheap. Same scene at a fixed phase:
+                    //     1031 CalcView/s. A 20x cost for a status field.
+                    //
+                    // So: fixed phase, the shape that has always run fast. The
+                    // consequence is stated where it matters (hud_capture.h and
+                    // the BS2 testing doc): a live `lenses=2` is trustworthy,
+                    // `lenses=1` is NOT proof of a match, and the acceptance
+                    // instrument is `dumpframe` + tools/decode-framedump.ps1,
+                    // which sees every block and has no sampling question at all.
                     int idx = g_fovDistinct++;
                     int stride = g_fovDistinctPrev / kFovSlots;
                     if (stride < 1) stride = 1;
-                    if (!g_fovPending && g_fovSlots < kFovSlots &&
-                        idx % stride == 0 && ensure_fov_staging(ctx)) {
+                    if (!g_fovPending && g_fovSlots < kFovSlots && idx % stride == 0 &&
+                        ensure_fov_staging(ctx)) {
                         // Clamp to the SOURCE size: the box must lie inside the
                         // source buffer, and the gate admits buffers smaller
                         // than the window. Remember what was copied so the
@@ -1428,6 +1551,28 @@ bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
 }
 
 int fov_lens_count() { return g_fovLenses.load(std::memory_order_relaxed); }
+
+float fov_vp_ratio() { return g_fovVpRatio.load(std::memory_order_relaxed); }
+
+void set_fov_watch(bool on) {
+    bool was = g_fovWatchEnabled.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[hud] fov watch %s%s", on ? "ON" : "OFF",
+                on ? "" : " - no cb0 copies, no staging map; fovaudit's live "
+                          "line and the cinematic fov-mismatch gate go blind");
+}
+
+bool fov_watch_enabled() { return g_fovWatchEnabled.load(std::memory_order_relaxed); }
+
+int fov_slots(float* tanH, float* tanV, int maxSlots) {
+    int n = g_fovSlotCount.load(std::memory_order_relaxed);
+    if (n > maxSlots) n = maxSlots;
+    for (int i = 0; i < n; ++i) {
+        if (tanH) tanH[i] = g_fovSlotH[i].load(std::memory_order_relaxed);
+        if (tanV) tanV[i] = g_fovSlotV[i].load(std::memory_order_relaxed);
+    }
+    return n;
+}
 
 void set_ray_block_offset(int cb0FloatIndex) {
     if (cb0FloatIndex < 0 || cb0FloatIndex + 7 > static_cast<int>(kFovCbBytes / 4)) {
