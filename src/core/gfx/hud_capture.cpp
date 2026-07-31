@@ -95,13 +95,30 @@ std::atomic<unsigned> g_cHudDraws{0}, g_cRedirects{0}, g_cLeaks{0}, g_cIntervals
 // So: sample several distinct blocks, cluster them, and publish the cluster the
 // MOST distinct buffers agree on. The world pass outnumbers the foreground pass
 // roughly 6:1, exactly as tools/decode-framedump.ps1 clusters it offline.
-constexpr UINT kFovCbBytes = 80; // floats 0..19
+// SESSION 32: the copy window used to be 80 bytes (floats 0..19), which is
+// exactly wide enough for BS1's ray block at float 12 and nothing else. That is
+// a per-GAME fact, and BS2's layout is its own - so a game whose block sits past
+// float 19 was not merely mis-decoded, it was never even COPIED. Widened to the
+// same 1344 bytes the offline frame dump captures, so the live watch and
+// tools/decode-framedump.ps1 now see identical data. Cost is 10.5 KB of staging.
+constexpr UINT kFovCbBytes = 1344; // floats 0..335, matching frame_inspector
 constexpr int kFovSlots = 8;
 ID3D11Buffer* g_fovStaging = nullptr;
 bool g_fovPending = false; // copied, not yet mapped
 int g_fovPendingAge = 0;   // presents since the copy
 int g_fovSlots = 0;        // slots filled in the round being collected
 int g_fovPendingSlots = 0; // slots the outstanding map must decode
+// Bytes actually copied into each slot. Source buffers vary in size (the tier
+// gate admits anything >= 320), so a slot may be partly stale from an earlier
+// round - the decode must never read past this.
+UINT g_fovSlotBytes[kFovSlots] = {};
+// Float index of the screen-ray helper inside cb0. PER-GAME: 12 is BS1's
+// (session 21). An adapter overrides it via set_ray_block_offset(); the
+// self-correcting hunt in decode_ray_block() is the backstop.
+int g_fovRayOffset = 12;
+int g_fovOffsetMisses = 0;         // consecutive decode failures at that offset
+int g_fovOffsetCandidate = -1;     // offset the hunt is currently corroborating
+int g_fovOffsetCandidateHits = 0;
 // STRIDE sampling (session 28, second cut). Taking the first kFovSlots distinct
 // buffers is NOT representative: the foreground pass draws FIRST, so 5 of the
 // first 8 distinct buffers were fg and the majority vote picked the viewmodel
@@ -487,13 +504,19 @@ bool ensure_fov_staging(ID3D11DeviceContext* ctx) {
 // session 28 (the two cross-checks it did run are intra-axis - H against H and
 // V against V - and carry no axis information at all). Ported from the offline
 // decoder tools/decode-framedump.ps1, which has always applied them.
-bool decode_ray_block(const float* f, float* tanH, float* tanV) {
-    float h1 = f[12] * 0.5f, h2 = -f[14];
-    float v1 = -f[17] * 0.5f, v2 = f[18];
+//
+// SESSION 32: the OFFSET is a per-GAME constant, not a core fact - the
+// never-copy rule covers cb layouts exactly as it covers addresses. 12 is
+// BS1's, measured in session 21; an adapter publishes its own via
+// set_ray_block_offset().
+bool decode_ray_block_at(const float* f, int floatCount, int o, float* tanH, float* tanV) {
+    if (o < 0 || o + 7 > floatCount) return false;
+    float h1 = f[o] * 0.5f, h2 = -f[o + 2];
+    float v1 = -f[o + 5] * 0.5f, v2 = f[o + 6];
     if (!std::isfinite(h1) || !std::isfinite(h2) || !std::isfinite(v1) ||
         !std::isfinite(v2))
         return false;
-    if (fabsf(f[13]) > 0.001f || fabsf(f[15]) > 0.001f || fabsf(f[16]) > 0.001f)
+    if (fabsf(f[o + 1]) > 0.001f || fabsf(f[o + 3]) > 0.001f || fabsf(f[o + 4]) > 0.001f)
         return false; // not the ray block (or a non-perspective all-zero pass)
     // 8.0 = tan(rather more than 160 deg half-angle); the offline decoder uses
     // 4.0, loosened only because a forced claim can legitimately go wider.
@@ -502,6 +525,47 @@ bool decode_ray_block(const float* f, float* tanH, float* tanV) {
     *tanH = h1;
     *tanV = v1;
     return true;
+}
+
+// The configured offset first; only if that has been failing for a while, hunt
+// for the block elsewhere in the copied window and adopt an offset that proves
+// itself across several samples. The hunt exists so that a wrong or unset
+// per-game constant NAMES ITS OWN CORRECTION in the log instead of silently
+// publishing nothing - the same house pattern as the view-actor vtable RVA
+// line. It costs a game with the right constant nothing, because it only runs
+// after a failure, and it can never fire on BS1 (offset 12 validates on the
+// first sample of every round).
+//
+// Measured basis for trusting a hit: run offline over a BS1 dump, this
+// signature matched at exactly ONE offset out of ~100,000 candidate positions
+// across 333 blocks. It is a specific test, not a loose one.
+bool decode_ray_block(const float* f, int floatCount, float* tanH, float* tanV) {
+    if (decode_ray_block_at(f, floatCount, g_fovRayOffset, tanH, tanV)) {
+        g_fovOffsetMisses = 0;
+        return true;
+    }
+    if (++g_fovOffsetMisses < 400) return false;
+    for (int o = 0; o + 7 <= floatCount; ++o) {
+        if (o == g_fovRayOffset) continue;
+        if (!decode_ray_block_at(f, floatCount, o, tanH, tanV)) continue;
+        if (o == g_fovOffsetCandidate) {
+            if (++g_fovOffsetCandidateHits >= 8) {
+                BVR_LOG("[hud] fov watch: ray block decodes at float %d, not the configured "
+                        "%d - adopting %d. The adapter should publish this as its own "
+                        "constant (hud::set_ray_block_offset) with the derivation written "
+                        "into its ENGINE_NOTES.",
+                        o, g_fovRayOffset, o);
+                g_fovRayOffset = o;
+                g_fovOffsetMisses = 0;
+                g_fovOffsetCandidateHits = 0;
+            }
+        } else {
+            g_fovOffsetCandidate = o;
+            g_fovOffsetCandidateHits = 1;
+        }
+        return true;
+    }
+    return false;
 }
 
 // Map attempt + mismatch bookkeeping, once per present (from on_present).
@@ -521,7 +585,11 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
             for (int s = 0; s < g_fovPendingSlots && s < kFovSlots; ++s) {
                 const float* f = reinterpret_cast<const float*>(
                     static_cast<const uint8_t*>(m.pData) + s * kFovCbBytes);
-                if (decode_ray_block(f, &h[n], &v[n])) ++n;
+                // Only what THIS slot's source buffer actually supplied: the
+                // tier gate admits anything >= 320 bytes, so the tail of a
+                // slot can be stale from an earlier round.
+                int floats = static_cast<int>(g_fovSlotBytes[s] / 4);
+                if (decode_ray_block(f, floats, &h[n], &v[n])) ++n;
             }
             ctx->Unmap(g_fovStaging, 0);
             g_fovPending = false;
@@ -846,10 +914,18 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
                     if (stride < 1) stride = 1;
                     if (!g_fovPending && g_fovSlots < kFovSlots &&
                         idx % stride == 0 && ensure_fov_staging(ctx)) {
-                        D3D11_BOX box{0, 0, 0, kFovCbBytes, 1, 1};
+                        // Clamp to the SOURCE size: the box must lie inside the
+                        // source buffer, and the gate admits buffers smaller
+                        // than the window. Remember what was copied so the
+                        // decode cannot read a neighbouring slot's leftovers.
+                        UINT copyBytes =
+                            bd.ByteWidth < kFovCbBytes ? bd.ByteWidth : kFovCbBytes;
+                        copyBytes &= ~3u; // whole floats only
+                        D3D11_BOX box{0, 0, 0, copyBytes, 1, 1};
                         ctx->CopySubresourceRegion(g_fovStaging, 0,
                                                    g_fovSlots * kFovCbBytes, 0, 0,
                                                    cb0, 0, &box);
+                        g_fovSlotBytes[g_fovSlots] = copyBytes;
                         if (g_fovSlots == 0) g_fovStrideUsed = stride;
                         ++g_fovSlots;
                     }
@@ -1352,6 +1428,23 @@ bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
 }
 
 int fov_lens_count() { return g_fovLenses.load(std::memory_order_relaxed); }
+
+void set_ray_block_offset(int cb0FloatIndex) {
+    if (cb0FloatIndex < 0 || cb0FloatIndex + 7 > static_cast<int>(kFovCbBytes / 4)) {
+        BVR_LOG("[hud] fov watch: refusing ray block offset %d (outside 0..%d)", cb0FloatIndex,
+                static_cast<int>(kFovCbBytes / 4) - 7);
+        return;
+    }
+    if (cb0FloatIndex == g_fovRayOffset) return;
+    BVR_LOG("[hud] fov watch: ray block offset %d -> %d (per-game constant)", g_fovRayOffset,
+            cb0FloatIndex);
+    g_fovRayOffset = cb0FloatIndex;
+    g_fovOffsetMisses = 0;
+    g_fovOffsetCandidate = -1;
+    g_fovOffsetCandidateHits = 0;
+}
+
+int ray_block_offset() { return g_fovRayOffset; }
 
 // Backbuffer dims as last sampled by the letterbox watch. Exposed because the
 // lens laws are aspect-parameterised and the audit used to fall back to a

@@ -1,5 +1,6 @@
 #include "game/bioshock2r/bioshock2r_adapter.h"
 
+#include "core/gfx/hud_capture.h"
 #include "core/util/log.h"
 #include "game/bioshock2r/camera.h"
 #include "game/bioshock2r/patterns.h"
@@ -24,6 +25,11 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     if (!patterns::resolve(image, symbols)) return false; // resolve() logged why
     camera::init_image(image); // vtable-RVA identity checks need the bounds
     scenedraw::init(image);    // RVA math for the discovery instruments
+    // BS2's cb0 ray block sits at float 16, not BS1's 12 (session 32; the
+    // derivation is in patterns.h next to the constant). Core defaults to
+    // BS1's, so without this the live fov watch decodes nothing on BS2 -
+    // which is exactly the state session 26 recorded.
+    bvr::hud::set_ray_block_offset(patterns::kRayBlockCb0FloatIndex);
     if (!camera::install(symbols)) return false;
     BVR_LOG("[b2r] adapter ready, capabilities 0x%X", capabilities());
     return true;
