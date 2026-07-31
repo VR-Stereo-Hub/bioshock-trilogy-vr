@@ -97,6 +97,12 @@ void set_camera_mode(bool on);
 void set_enabled(bool on);
 void set_sr_pair_pacing(bool on);
 
+// AlternateEye stereo: one eye per frame, the compositor reprojecting the other.
+// Judders, but it is REAL stereo and it never re-enters the engine's draw -
+// which is the difference that matters on BioShock 2, where draw re-entrancy is
+// the measured cause of the hard freeze (session 34).
+void set_alternate_eye(bool on);
+
 // --- M8: headset-disconnect stall guard --------------------------------------
 // "vrpace ..." seam (game thread). When the session leaves FOCUSED after
 // having held it, presents skip the blocking xrWaitFrame so the flat window

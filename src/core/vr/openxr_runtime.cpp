@@ -3131,6 +3131,18 @@ void set_enabled(bool on) {
     if (was != on) BVR_LOG("xr: VR %s (preset/programmatic)", on ? "ENABLED" : "disabled");
 }
 
+// Session 34: AlternateEye armable programmatically. It is the only stereo path
+// on BS2 that does NOT re-enter the engine's Draw, and draw re-entrancy is the
+// measured freeze - so this needs to be soak-testable from the command surface,
+// not just from a checkbox nobody can reach while the game is wedged.
+void set_alternate_eye(bool on) {
+    g_aerEnabled.store(on, std::memory_order_relaxed);
+    BVR_LOG("xr: AlternateEye stereo %s (per-eye images on alternate frames; the "
+            "compositor reprojects the stale eye - judders, but never re-enters "
+            "the game's draw)",
+            on ? "ON" : "off");
+}
+
 void set_sr_pair_pacing(bool on) {
     g_srPairPacing.store(on, std::memory_order_relaxed);
 }
@@ -3530,6 +3542,7 @@ bool session_live() { return false; }
 int64_t last_predicted_time() { return 0; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
+void set_alternate_eye(bool) {}
 void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}

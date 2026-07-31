@@ -909,6 +909,16 @@ void apply_command(const char* cmd, const char* args) {
         else apply_vr_preset();
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args);
+    } else if (strcmp(cmd, "vraer") == 0) {
+        // Camera mode + AlternateEye: stereo WITHOUT draw re-entrancy, which is
+        // the freeze. One toggle so it can be soaked the same way vrstereo is.
+        bool on = strncmp(args, "on", 2) == 0;
+        if (on) {
+            bvr::vr::set_enabled(true);
+            bvr::vr::set_camera_mode(true);
+        }
+        bvr::vr::set_alternate_eye(on);
+        BVR_LOG("[b2r] command: vraer %s", on ? "on" : "off");
     } else if (strcmp(cmd, "vrstereo") == 0) {
         // Top-level alias for the one-toggle (BS1 parity). The poller only
         // ticks outside hooked calls, so applying directly here is safe.
