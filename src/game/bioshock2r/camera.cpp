@@ -196,6 +196,36 @@ bool is_gameplay_view_rva(uint32_t vtblRva) {
     return vtblRva == patterns::kShockPlayerVtableRva;
 }
 
+// BS2's WORLD lens law -> the horizontal half-angle the game is ACTUALLY
+// rendering, in degrees. Settled session 33 from frame dumps at two backbuffer
+// aspects x two FOV options (derivation in docs/bioshock2/ENGINE_NOTES.md):
+//
+//     tanV = tan(option/2) * 9/16        <- aspect-INVARIANT, the fixed axis
+//     tanH = tanV * (bbW / bbH)          <- horizontal follows the BACKBUFFER
+//
+// i.e. the option is a 16:9-REFERENCED horizontal, not a true one. Session 32
+// measured `tanH = tan(option/2)` and correctly refused to promote it, because
+// the two laws coincide exactly at 16:9; the square dumps separate them (Law A
+// predicts tanV 1.1918 at 2048x2048, the dump says 0.6704 = tan(50)*9/16, and
+// again at option 130: 1.2063 = tan(65)*9/16).
+//
+// NOTE the horizontal follows the BACKBUFFER aspect even though the scene is
+// rendered into a LETTERBOXED viewport - that mismatch is what stretches a
+// non-16:9 BS2 render, and it is an engine defect, not something this claim
+// should try to correct. We claim what is rendered.
+//
+// BS1's law is the opposite (a true horizontal). Same engine tree, different
+// link: never copy one game's law to the other.
+float rendered_hfov_for_option(int32_t optionDeg) {
+    if (optionDeg <= 0) return 0.0f;
+    unsigned bw = 0, bh = 0;
+    if (!bvr::hud::backbuffer_dims(&bw, &bh) || !bw || !bh)
+        return static_cast<float>(optionDeg); // pre-first-present: the 16:9 answer
+    float tanV = tanf(static_cast<float>(optionDeg) * 0.5f / kRadToDeg) * (9.0f / 16.0f);
+    float tanH = tanV * (static_cast<float>(bw) / static_cast<float>(bh));
+    return 2.0f * atanf(tanH) * kRadToDeg;
+}
+
 // Half-IPD shift along view-right of `rot`, sign -1 = left eye. Shared by the
 // AER path now and both SequentialReentry passes later - ONE implementation,
 // exactly like BS1 (its session-22 lesson: a yaw-only right axis keeps the
@@ -386,13 +416,18 @@ void apply_command(const char* cmd, const char* args) {
             bh = sh;
         }
         if (opt) {
-            optTanH = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
-            // BS2's world law measured at 16:9 (session 32): tanH = tan(opt/2),
-            // vertical follows the window. NOT confirmed at a second CLEAN
-            // aspect - BS2 letterboxes non-16:9 and its projection degenerates
-            // there, so the two candidate laws remain indistinguishable. Do not
-            // promote this to settled without a clean second aspect.
-            optTanV = optTanH * ((bw && bh) ? (static_cast<float>(bh) / static_cast<float>(bw))
+            // BS2's world law, SETTLED session 33 against two aspects x two FOV
+            // options (see ENGINE_NOTES): the option fixes the VERTICAL through
+            // a 16:9 reference, and the horizontal follows the BACKBUFFER
+            // aspect. Session 32 could not tell this from "tanH = tan(opt/2)"
+            // because the two laws coincide exactly at 16:9; the square dumps
+            // separate them (Law A predicts tanV 1.1918 there, measured 0.6704).
+            //   tanV = tan(opt/2) * 9/16          <- aspect-INVARIANT
+            //   tanH = tanV * (bbW / bbH)
+            // NOTE this is the OPPOSITE of BS1's law, which is a true horizontal
+            // - same engine tree, different link. Never copy the other game's.
+            optTanV = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg) * (9.0f / 16.0f);
+            optTanH = optTanV * ((bw && bh) ? (static_cast<float>(bw) / static_cast<float>(bh))
                                             : 0.0f);
         }
         BVR_LOG("[b2r] fovaudit: option=%d gfovWrite=%s(%.1f) vrfov=%s | submitted "
@@ -410,23 +445,36 @@ void apply_command(const char* cmd, const char* args) {
                            : "none",
                 sw, sh, optTanH, optTanV);
         // Session 28 (core change, shared): both lenses, age labelled in words.
-        // BS2's own lens laws are UNMEASURED - per the never-copy rule this line
-        // reports what the watch sees and asserts nothing about BS2's fg pass.
+        // Session 33 adds the LETTERBOX factor and the two aspects it compares:
+        // the frustum's own (tanH/tanV) against the scene VIEWPORT's. When the
+        // engine letterboxes, those two disagree and the render is stretched -
+        // which is a different defect from the black band and the one that
+        // decides whether an aspect is usable at all. `lenses=1` is the
+        // viewmodel-match gate; `stretch` is the resolution gate.
         float liveTanH = 0.0f, liveTanV = 0.0f;
         unsigned long long liveAge = 0;
         if (bvr::hud::fov_watch(&liveTanH, &liveTanV, &liveAge, 0)) {
             float fgH = 0.0f, fgV = 0.0f;
             unsigned long long fgAge = 0;
             bool haveFg = bvr::hud::fov_watch_fg(&fgH, &fgV, &fgAge, 0);
+            float lb = bvr::hud::fov_vp_ratio();
+            // The scene viewport is the backbuffer scaled down by the letterbox
+            // factor vertically - so its aspect is bbW/(bbH/lb).
+            float vpAr = (bw && bh) ? (static_cast<float>(bw) * lb / static_cast<float>(bh))
+                                    : 0.0f;
+            float frustumAr = liveTanV > 0.0f ? liveTanH / liveTanV : 0.0f;
             BVR_LOG("[b2r] fovaudit live: WORLD tanH=%.6f tanV=%.6f (%.2f deg) "
                     "age=%llums %s | 2nd-lens tanH=%.6f tanV=%.6f age=%llums | "
-                    "lenses=%d mismatch=%d cineActive=%d",
+                    "lenses=%d mismatch=%d cineActive=%d | letterbox=%.4f "
+                    "vpAspect=%.4f frustumAspect=%.4f -> %s",
                     liveTanH, liveTanV, 2.0f * atanf(liveTanH) * kRadToDeg, liveAge,
                     liveAge <= 500 ? "FRESH" : "STALE - DO NOT CONCLUDE",
                     haveFg ? fgH : 0.0f, haveFg ? fgV : 0.0f, fgAge,
                     bvr::hud::fov_lens_count(),
                     bvr::hud::fov_mismatch() ? 1 : 0,
-                    bvr::vr::cinematic_active() ? 1 : 0);
+                    bvr::vr::cinematic_active() ? 1 : 0, lb, vpAr, frustumAr,
+                    fabsf(frustumAr - vpAr) < 0.005f ? "square pixels"
+                                                     : "STRETCHED (anamorphic)");
         } else {
             BVR_LOG("[b2r] fovaudit live: no decoded scene tangents yet");
         }
@@ -617,7 +665,18 @@ void calcview_tail(void* self, CalcViewParams* p) {
     // echoes the written value - correct, the renderer really renders it.
     int32_t* optionFov = patterns::hfov_option_ptr();
     g_lastOptionFov.store(optionFov ? *optionFov : 0, std::memory_order_relaxed);
-    bvr::vr::set_rendered_hfov(optionFov ? static_cast<float>(*optionFov) : 0.0f);
+    // Session 33: the claim is the RENDERED horizontal, and on BS2 that is NOT
+    // the option except at 16:9. The settled law (two aspects x two options,
+    // ENGINE_NOTES) fixes the vertical through a 16:9 reference and lets the
+    // horizontal follow the backbuffer:
+    //     tanV = tan(opt/2) * 9/16 ;  tanH = tanV * (bbW/bbH)
+    // At 16:9 that collapses to hfov == opt, so this changes nothing about the
+    // shipping configuration - it stops the claim being wrong the moment a
+    // non-16:9 aspect ships. A claim that disagrees with the render is BS1's
+    // yaw-warp bug: the compositor mis-reprojects every head rotation.
+    // No backbuffer yet (before the first present) -> claim the option, which
+    // is the 16:9 answer and the old behaviour.
+    bvr::vr::set_rendered_hfov(optionFov ? rendered_hfov_for_option(*optionFov) : 0.0f);
 
     // Gameplay verdict + candidate-RVA self-diagnosis. Published every call:
     // core's cinematic fallback keys on this verdict AND its staleness, so a

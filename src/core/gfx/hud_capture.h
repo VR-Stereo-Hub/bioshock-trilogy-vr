@@ -255,6 +255,16 @@ bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
                   unsigned long long maxAgeMs = 500);
 int fov_lens_count();
 bool fov_mismatch();
+// Session 33: the winning lens's LETTERBOX factor, i.e. the ray block's
+// vertical slope divided by its offset, which the engine sets to
+// RTheight/viewportHeight because the helper's UV runs over the render target.
+// 1.0 = the scene viewport fills the backbuffer. Anything above that means the
+// engine letterboxed, and the frustum's aspect (tanH/tanV) must then be
+// compared against the VIEWPORT's aspect rather than the backbuffer's - on BS2
+// off 16:9 those disagree and the render comes out stretched. Reading the V
+// pair as an equality (pre-session-33) rejected every letterboxed block, so the
+// whole watch published nothing at those aspects.
+float fov_vp_ratio();
 // Backbuffer dims (letterbox-watch sample). The lens laws are
 // aspect-parameterised, so anything printing an expectation must use these
 // rather than assume 16:9 - flat there is no XR session to read swap dims from,

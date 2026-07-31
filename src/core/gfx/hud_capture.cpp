@@ -138,6 +138,12 @@ int g_fovUnspanned = 0;    // rounds refused because the sample missed the pass
 ID3D11Buffer* g_fovLastCb = nullptr;
 std::atomic<float> g_fovTanH{0.0f}, g_fovTanV{0.0f};
 std::atomic<unsigned long long> g_fovStampMs{0};
+// Session 33: the winning lens's LETTERBOX factor - the ray block's vertical
+// slope over its offset, which equals RTheight/viewportHeight. 1.0 means the
+// scene viewport fills the render target; > 1 means the engine letterboxed and
+// the frustum's aspect should be checked against the VIEWPORT's, not the
+// backbuffer's (they disagree on BS2 off 16:9, which is what stretches it).
+std::atomic<float> g_fovVpRatio{1.0f};
 // The minority (foreground) lens, published for telemetry and for the fg-lens
 // aspect law. 0 = only one lens seen this round.
 std::atomic<float> g_fovFgTanH{0.0f}, g_fovFgTanV{0.0f};
@@ -509,21 +515,39 @@ bool ensure_fov_staging(ID3D11DeviceContext* ctx) {
 // never-copy rule covers cb layouts exactly as it covers addresses. 12 is
 // BS1's, measured in session 21; an adapter publishes its own via
 // set_ray_block_offset().
-bool decode_ray_block_at(const float* f, int floatCount, int o, float* tanH, float* tanV) {
+//
+// SESSION 33: the V pair is NOT an equality. The helper's UV runs over the
+// RENDER TARGET, so when the scene viewport is shorter than the RT (BS2
+// letterboxes every non-16:9 backbuffer) the SLOPE term carries a factor of
+// RTheight/viewportHeight and the OFFSET term does not. tanV is the offset;
+// slope/offset is the letterbox factor. The old equality REJECTED every
+// letterboxed block, which is why this watch went blind - and published
+// nothing - at every aspect but 16:9 on BS2. The H pair stays an equality: no
+// pillarbox case has been observed on either game, so if one ever appears this
+// fails loudly rather than silently halving a tangent.
+bool decode_ray_block_at(const float* f, int floatCount, int o, float* tanH, float* tanV,
+                         float* letterbox) {
     if (o < 0 || o + 7 > floatCount) return false;
     float h1 = f[o] * 0.5f, h2 = -f[o + 2];
-    float v1 = -f[o + 5] * 0.5f, v2 = f[o + 6];
-    if (!std::isfinite(h1) || !std::isfinite(h2) || !std::isfinite(v1) ||
-        !std::isfinite(v2))
+    float vSlope = -f[o + 5] * 0.5f, v = f[o + 6];
+    if (!std::isfinite(h1) || !std::isfinite(h2) || !std::isfinite(vSlope) ||
+        !std::isfinite(v))
         return false;
     if (fabsf(f[o + 1]) > 0.001f || fabsf(f[o + 3]) > 0.001f || fabsf(f[o + 4]) > 0.001f)
         return false; // not the ray block (or a non-perspective all-zero pass)
     // 8.0 = tan(rather more than 160 deg half-angle); the offline decoder uses
     // 4.0, loosened only because a forced claim can legitimately go wider.
-    if (h1 <= 0.05f || h1 >= 8.0f || v1 <= 0.05f || v1 >= 8.0f) return false;
-    if (fabsf(h1 - h2) > 0.001f || fabsf(v1 - v2) > 0.001f) return false;
+    if (h1 <= 0.05f || h1 >= 8.0f || v <= 0.05f || v >= 8.0f) return false;
+    if (fabsf(h1 - h2) > 0.001f) return false;
+    float lb = vSlope / v;
+    // A viewport is never TALLER than its render target, so the factor is >= 1;
+    // the 4.0 ceiling keeps the signature specific (it still matches at exactly
+    // one offset out of ~100,000 candidates over a BS1 dump, and over BS2's
+    // square dump - which the old check rejected entirely).
+    if (lb < 0.999f || lb > 4.0f) return false;
     *tanH = h1;
-    *tanV = v1;
+    *tanV = v;
+    if (letterbox) *letterbox = lb;
     return true;
 }
 
@@ -539,15 +563,16 @@ bool decode_ray_block_at(const float* f, int floatCount, int o, float* tanH, flo
 // Measured basis for trusting a hit: run offline over a BS1 dump, this
 // signature matched at exactly ONE offset out of ~100,000 candidate positions
 // across 333 blocks. It is a specific test, not a loose one.
-bool decode_ray_block(const float* f, int floatCount, float* tanH, float* tanV) {
-    if (decode_ray_block_at(f, floatCount, g_fovRayOffset, tanH, tanV)) {
+bool decode_ray_block(const float* f, int floatCount, float* tanH, float* tanV,
+                      float* letterbox) {
+    if (decode_ray_block_at(f, floatCount, g_fovRayOffset, tanH, tanV, letterbox)) {
         g_fovOffsetMisses = 0;
         return true;
     }
     if (++g_fovOffsetMisses < 400) return false;
     for (int o = 0; o + 7 <= floatCount; ++o) {
         if (o == g_fovRayOffset) continue;
-        if (!decode_ray_block_at(f, floatCount, o, tanH, tanV)) continue;
+        if (!decode_ray_block_at(f, floatCount, o, tanH, tanV, letterbox)) continue;
         if (o == g_fovOffsetCandidate) {
             if (++g_fovOffsetCandidateHits >= 8) {
                 BVR_LOG("[hud] fov watch: ray block decodes at float %d, not the configured "
@@ -579,7 +604,7 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
             // Decode every slot, then cluster. Votes are per distinct cb0
             // buffer object, which is what makes the world pass win: it feeds
             // far more distinct buffers than the foreground pass does.
-            float h[kFovSlots], v[kFovSlots];
+            float h[kFovSlots], v[kFovSlots], lb[kFovSlots];
             int votes[kFovSlots] = {};
             int n = 0;
             for (int s = 0; s < g_fovPendingSlots && s < kFovSlots; ++s) {
@@ -589,7 +614,7 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                 // tier gate admits anything >= 320 bytes, so the tail of a
                 // slot can be stale from an earlier round.
                 int floats = static_cast<int>(g_fovSlotBytes[s] / 4);
-                if (decode_ray_block(f, floats, &h[n], &v[n])) ++n;
+                if (decode_ray_block(f, floats, &h[n], &v[n], &lb[n])) ++n;
             }
             ctx->Unmap(g_fovStaging, 0);
             g_fovPending = false;
@@ -636,6 +661,7 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
             if (win >= 0) {
                 g_fovTanH.store(h[win], std::memory_order_relaxed);
                 g_fovTanV.store(v[win], std::memory_order_relaxed);
+                g_fovVpRatio.store(lb[win], std::memory_order_relaxed);
                 g_fovStampMs.store(GetTickCount64(), std::memory_order_relaxed);
                 // The widest cluster that is NOT the winner is the other lens
                 // (the foreground pass off 16:9). Published for the fg aspect
@@ -665,13 +691,14 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                     g_fovLoggedFgH = fgH;
                     BVR_LOG("[hud] fov watch: %d lens(es) | WORLD tanH=%.6f "
                             "tanV=%.6f (hfov %.2f deg, %d/%d votes) | FG "
-                            "tanH=%.6f tanV=%.6f | backbuffer %ux%u aspect %.5f "
+                            "tanH=%.6f tanV=%.6f | letterbox %.4f | backbuffer "
+                            "%ux%u aspect %.5f "
                             "| sampled %d of %d distinct cb0 (stride %d), "
                             "ambiguous rounds %d",
                             lenses, h[win], v[win],
                             2.0f * atanf(h[win]) * 57.29578f, votes[win], n,
                             other >= 0 ? h[other] : 0.0f,
-                            other >= 0 ? v[other] : 0.0f, g_lbSrcW, g_lbSrcH,
+                            other >= 0 ? v[other] : 0.0f, lb[win], g_lbSrcW, g_lbSrcH,
                             g_lbSrcH ? static_cast<float>(g_lbSrcW) /
                                            static_cast<float>(g_lbSrcH)
                                      : 0.0f,
@@ -1428,6 +1455,8 @@ bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
 }
 
 int fov_lens_count() { return g_fovLenses.load(std::memory_order_relaxed); }
+
+float fov_vp_ratio() { return g_fovVpRatio.load(std::memory_order_relaxed); }
 
 void set_ray_block_offset(int cb0FloatIndex) {
     if (cb0FloatIndex < 0 || cb0FloatIndex + 7 > static_cast<int>(kFovCbBytes / 4)) {
