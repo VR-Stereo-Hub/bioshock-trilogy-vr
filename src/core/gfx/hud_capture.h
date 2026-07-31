@@ -236,6 +236,19 @@ void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
 //                  against bvr::vr::rendered_hfov_deg(), logs transitions - the
 //                  flat-testable instrument; the VR runtime keys the cinematic
 //                  quad fallback on it)
+// SESSION 32: the float index of the screen-ray helper inside cb0 is a PER-GAME
+// constant, not a core one - the never-copy rule covers cb layouts exactly as it
+// covers addresses. Core defaults to BS1's 12 (measured session 21); an adapter
+// publishes its own from its patterns header at init, with the derivation
+// written into that game's ENGINE_NOTES. Deriving a new game's: take a
+// `dumpframe full` and run tools/decode-framedump.ps1 -ScanLayout; if that finds
+// nothing, the layout is a different SHAPE and -Diff (two dumps at different FOV
+// options) identifies the projection terms with no layout assumption at all.
+// If the configured value is wrong the watch says so in the log and adopts what
+// it finds, rather than silently publishing nothing.
+void set_ray_block_offset(int cb0FloatIndex);
+int ray_block_offset();
+
 bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs,
                unsigned long long maxAgeMs = 500);
 bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,

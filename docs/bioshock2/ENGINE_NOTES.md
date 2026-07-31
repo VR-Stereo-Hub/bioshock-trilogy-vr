@@ -570,3 +570,186 @@ is how the detector was verified flat with a pistol in hand. If BS2's gate reads
 give it its own forcing command - flat coverage of the gesture depends on being able to open the
 gate without a human equipping a weapon (weapon switching still cannot be driven flat on either
 game; the radial needs a person).
+
+## Session 32 (2026-07-31): the resolution lane, and BS2 does NOT render non-16:9
+
+Everything below is measured on BS2, this session, with the derivation named. **Three BS1 beliefs
+died here**, all of them the kind the never-copy rule exists to catch: the ini file, the cb0
+layout, and - the expensive one - the square-backbuffer policy.
+
+### 1. The resolution lever is `Shared.ini`, NOT the `[WinDrv.WindowsClient]` viewport keys
+
+BS1's whole lane writes `%APPDATA%\BioshockHD\Bioshock\Bioshock.ini` `[WinDrv.WindowsClient]`'s
+`Windowed/FullscreenViewportX/Y`. **BS2 has those keys, in a file with the same section name, and
+IGNORES them.** The file that governs is `%APPDATA%\BioshockHD\Bioshock2\Shared.ini`, section
+`[SharedOptions]`, keys `ViewportX`/`ViewportY` - a file BS1 does not have at all.
+
+Measured over three relaunches, changing one variable at a time:
+
+| Bioshock2SP.ini WinDrv | Shared.ini SharedOptions | rendered backbuffer |
+|---|---|---|
+| 2048x2048 | 1920x1080 | 1920x1080 |
+| 2048x2048 | 2048x2048 | 2048x2048 |
+| 1920x1080 | 2048x2048 | **2048x2048** (decisive: Shared alone) |
+
+**The trap this sprang, and it is worth internalising:** the BS1-shaped port wrote its four keys,
+re-read them, logged `viewport set to 2048x2048 ... verified`, and the engine rendered 1920x1080
+anyway. **A verified write is not an honoured one.** The read-back proves the FILE took the value
+and nothing more; the only acceptance that means anything is the backbuffer at first Present after
+a relaunch. This is the same shape of mistake as trusting `-> HANDLED` from the Exec seam
+(session 30).
+
+Other BS2 deltas found while deriving this:
+
+- **FIVE sections carry the viewport key names**, not BS1's four: `[WinDrv.WindowsClient]` (470),
+  `[XeDrv.XenonClient]` (509), **`[PS3Drv.PS3Client]` (541)**, `[DurangoDrv.DurangoClient]` (573),
+  `[OrbisDrv.OrbisClient]` (605). BS2 adds the PS3 one. Section-scoping is therefore more
+  load-bearing here, not less; an unscoped replacement hits the Xenon section first (line 510).
+  `PS3Drv` is also the marker that tells the two games' configs apart - BS1 ships `GNMDrv`, never
+  `PS3Drv`.
+- **The game itself rewrites `Bioshock2SP.ini`'s WinDrv keys from its live state.** Observed: the
+  file was hand-set to 1920x1080 with the game closed, and read back 2048x2048 after a run driven
+  by Shared.ini. Those keys are an OUTPUT, not an input. `game_ini.cpp` keeps them in sync anyway -
+  not because the engine reads them, but so a config regeneration cannot silently revert the
+  resolution.
+- **A clean quit does NOT clobber the write.** `WM_CLOSE` (the orderly shutdown path) from the main
+  menu left `Shared.ini` byte-identical, hash unchanged. This closes the question BS1 left open,
+  but only for the menu-quit path - a quit from gameplay, or one made after touching the in-game
+  graphics options, is still untested and is exactly where the game would write its own settings.
+- No live `SETRES` path was attempted, deliberately. BS2 has no engine `Exec` seam at all, so the
+  question cannot be asked without first deriving one, against a BS1 precedent where it faults. If
+  it is ever wanted, the BS2-native route is the ProcessEvent-by-name seam reaching
+  `PlayerController.ConsoleCommand` (FString param block: ptr/count/max).
+
+### 2. THE BIG ONE: BS2 letterboxes non-16:9, and its projection degenerates there
+
+**Do not port BS1's settled square-backbuffer policy to BS2.** On BS1 a 2048x2048 backbuffer
+renders a full square image and is the recommended VR configuration. On BS2 the same setting gives:
+
+- a scene viewport of **2048x1421** inside the 2048x2048 backbuffer - the bottom ~30% is BLACK
+  (confirmed in a screenshot, with the HUD drawn over the black band);
+- a world horizontal that **collapses from 100 deg to 67.7 deg** (tanH 1.1918 -> 0.6704, which is
+  `tan(50)*9/16`);
+- a ray block whose two vertical encodings **stop agreeing** (`-f[21]/2 = 0.9662` vs
+  `f[22] = 0.6704`, a 0.296 disagreement against a 0.001 tolerance) - the frustum is no longer a
+  consistent symmetric perspective at all.
+
+At 1920x1080 all three are clean: viewport 1920x1080 full, tanH = 1.1918 = `tan(50)` exactly,
+tanV = 0.6704 = `tanH * 9/16`, centre (0,0), both encodings agreeing to four decimals.
+
+**Consequence for the VR policy.** BS1's chain was: black bars are an ASPECT problem -> match the
+render aspect to the (roughly square) headset eye -> a sane FOV then fills the eye -> no FOV write
+needed. **On BS2 the first link breaks**: asking for a square aspect produces a letterbox and a
+broken projection rather than a square image. So on BS2 today, 16:9 is the only aspect proven to
+render correctly, and the resolution lane's value is SHARPNESS (a bigger 16:9 buffer), not aspect
+matching.
+
+**Unresolved, and it is the next session's first job:** which aspects BS2 will render full-height.
+2048x1421 is 1.4413:1; where that comes from is underived, and it does NOT depend on the FOV option
+(the viewport was identical at option 100 and 130). Bisect it - the squarest aspect that still
+renders full-height is the best VR configuration available, and finding it is a handful of
+relaunches. `[Engine.RenderConfig] HorizontalFOVLock=True` and `ShockUserSettings`
+`bHorizontalFOVLock=False` / `LockHorizontalFOV=False` are unexamined suspects.
+
+### 3. The world FOV law - PARTIALLY derived, and honestly so
+
+At 1920x1080, option 100, world cluster: **tanH = 1.1918 = tan(50) exactly**, tanV = 0.6704 =
+tanH * (h/w). Sweeping the option to 130 moved it to tanH = 2.1445 = `tan(65)`, so the option is
+consumed as a horizontal half-angle.
+
+**But this does NOT settle the law**, and the reason is the trap that cost BS1 two sessions: the
+"true horizontal" and "16:9-referenced horizontal" laws COINCIDE EXACTLY at 16:9. Distinguishing
+them needs a second, CLEAN aspect - and BS2 does not currently provide one, because every non-16:9
+render measured is letterboxed and internally inconsistent (section 2). The decoder now prints both
+laws side by side and, at 1920x1080, **both PASS** - the tool correctly reporting the ambiguity
+rather than manufacturing a conclusion.
+
+So: `tanH = tan(option/2)` is confirmed AT 16:9 and must not be promoted to a general law until a
+clean second aspect exists. Whatever comes out of the section-2 bisection is that second aspect.
+
+### 4. BS2 HAS TWO LENSES, they differ AT 16:9, and the second one ignores the FOV option
+
+BS1's split was aspect-gated: two conventions that coincide exactly at 16:9, so the symptom could
+only appear off 16:9. **BS2's split is a MAGNITUDE difference and is present at 16:9.**
+
+Measured at 1920x1080 (`decode-framedump.ps1 -ScanLayout -RayOffset 16`):
+
+| cluster | option 100 | option 130 | blocks | callstack head |
+|---|---|---|---|---|
+| **world** | tanH 1.1918 (100.0 deg) | tanH 2.1445 | 229 | `0xBE9E68,0xAEC7B4,...` |
+| **second** | tanH **0.5774** (60.0 deg) | tanH **0.5774** | 19 | `0xBE9E68,0xAECACF,...` |
+
+`0.5774 = tan(30)` to five decimals, and it is **unchanged by the FOV option** while the world lens
+tracks it. The two clusters are separated by a distinct callstack (the third frame differs:
+`0xAECACF` vs `0xAEC7B4`), not merely by tangent, so this is a structurally different pass. Both
+lenses share the same aspect convention (tanH/tanV = 16/9 at 16:9), so the difference is purely
+magnitude.
+
+**This is the leading explanation for the user's stereo viewmodel report** ("wrong depth",
+"moves/slides with the head", possibly "wrong size"), and it fits better than BS1's mechanism ever
+could:
+
+- One projection layer carries ONE fov claim for the whole eye image. With the claim matching the
+  world, a feature in the 60-deg layer at angle `t` is displayed at `atan(tan(t) * k)` where
+  `k = tan(50)/tan(30) = 2.06` at option 100 - it swings ~2x too far as the head turns, which reads
+  exactly as the weapon sliding off the hand, and it sits at the wrong apparent size and depth.
+- **It is NOT aspect-gated**, so it is present at 1920x1080 - which is where the user tested. BS1's
+  aspect-gated split could not have produced a symptom at 16:9, which is why the BS1 story never
+  quite fit this report.
+- **It gets WORSE with FOV**: k = 2.06 at option 100, 3.99 at option 130. The manual `gfov` lever
+  defaults to 130, and raising FOV was a habit carried over from BS1.
+
+**NOT yet proven: that the 60-deg cluster IS the viewmodel.** The evidence is circumstantial though
+consistent (distinct pass, small draw count, FOV-independent, same viewport). BS1's rule applies -
+identify it by making it MOVE, never by draw counts. Since BS2 has no fg-lens lever, the test to
+run first is: holster or switch the weapon and re-dump, and see whether the 19-block cluster
+disappears or changes. Until that is done, "second lens" is the honest name for it.
+
+Note this does NOT contradict session 25's finding that BS2's foreground follows the world FOV
+natively - that was measured in mono by poking the option and watching the drill re-lens visually.
+Both can be true if the drill viewmodel rides the world lens while some OTHER fixed-60-deg pass is
+what the dump is showing. Resolving that is the same holster test.
+
+### 5. BS2's cb0 ray block is at float 16 (BS1's is 12) - same shape, different offset
+
+`constexpr int kRayBlockCb0FloatIndex = 16` in `patterns.h`, published to core at adapter init via
+`bvr::hud::set_ray_block_offset`. The layout is BS1's exactly, four floats later:
+`(2tanH, 0, -tanH, 0, 0, -2tanV, tanV)` at floats 16..22.
+
+Derivation, and the ORDER matters because the first attempt misled:
+
+1. `-ScanLayout` over a **2048x2048** dump found NOTHING at any offset across 534 blocks, which
+   looked like "BS2's layout is a different shape". **That conclusion was wrong** - it was the
+   square-aspect projection degeneracy (section 2) breaking the vertical pair check, not a
+   different layout. The lesson: derive layouts at an aspect the game renders CORRECTLY.
+2. `-Diff` between dumps at option 100 and 130 - which assumes no layout at all - flagged floats
+   16, 18, 21, 22 as scaling exactly with `tan(opt/2)`, pointing straight at the block.
+3. `-ScanLayout` over a **1920x1080** dump then matched at exactly ONE offset - 16 - across 249
+   blocks, with both clusters decoding cleanly.
+4. Cross-checked live and independently: core's self-correcting hunt logged `ray block decodes at
+   float 16, not the configured 12 - adopting 16`.
+
+The signature is specific, not loose: over a BS1 dump the same scan matches only offset 12, out of
+roughly 100,000 candidate positions tested.
+
+### 6. BS2 had no `vrinput` command at all (fixed)
+
+`bvr::input::handle_command` is core and BS1 dispatches to it; b2r never did. So the synthetic
+gamepad, `pitchkill`, `pitchservo` AND the entire core swing-gesture flat test suite were
+unreachable on BS2. One line in `apply_command` fixes all of it. Worth remembering as a CLASS of
+bug: **core growing a feature does not give an adapter access to it** when the adapter owns the
+command surface. Worth auditing the rest of b2r's vocabulary against BS1's for the same gap.
+
+### 7. The frozen-pitch fix landed, and the brief's confirmation method did not work
+
+`publish_pitch_error` now fires immediately before the `rot->pitch` overwrite (b2r `camera.cpp`),
+mirroring BS1. Two notes for whoever verifies it:
+
+- **The heartbeat could not have shown the bug.** It runs LAST by design, reporting the FINAL
+  camera handed back to the game - so its `rot` is the head's pitch, never the engine's. The
+  "look for the pitch field not moving" check would have shown a moving value either way. The
+  heartbeat now carries `enginePitch=` (sampled pre-overwrite) and `pitchErr=`, which is an
+  instrument that can actually show it.
+- Flat, with `drive=0`, `pitchErr` is 0 by construction (the not-driving branch keeps it fresh
+  rather than stale). A meaningful reading needs the HMD driving, so **the sign check is still
+  outstanding and needs the headset** - `vrinput pitchservo status|invert`, now reachable.

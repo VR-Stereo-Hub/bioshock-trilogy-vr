@@ -126,6 +126,27 @@ constexpr uint32_t kCamActorRotOffset = 0x1F8; // 3 int32 rotator units
 // counted, so doubling can never run inside a loader.
 constexpr uint32_t kSceneBuildGameplayRetRva = 0xCD5D7B;
 
+// Float index of the screen-ray helper inside the scene VS cb0 (session 32).
+// BS1's is 12; this is BS2's OWN, derived fresh - the never-copy rule covers cb
+// layouts exactly as it covers addresses. Same SHAPE as BS1's
+// (2tanH, 0, -tanH, 0, 0, -2tanV, tanV), four floats later.
+//
+// DERIVATION: `dumpframe full` in gameplay at 1920x1080, then
+// `tools/decode-framedump.ps1 -ScanLayout`, which validates the structural
+// signature (the three zero slots plus both pair checks) at every offset of
+// every captured block. It matched at exactly ONE offset - 16 - across 249
+// blocks, yielding tanH=1.1918 (= tan(50), the option-100 horizontal) for the
+// world cluster. The same scan over a BS1 dump finds only offset 12, so the
+// test is specific, not loose. Cross-checked live: the core watch's
+// self-correcting hunt independently reported "ray block decodes at float 16".
+//
+// CAVEAT worth keeping: this validates at 16:9. At a 2048x2048 backbuffer BS2
+// letterboxes the scene into 2048x1421 and the block's two vertical encodings
+// stop agreeing (-f[21]/2 = 0.9662 vs f[22] = 0.6704), so the structural check
+// REJECTS it there. That is the engine's projection degenerating off 16:9, not
+// a wrong offset - see ENGINE_NOTES "BS2 does not render non-16:9 cleanly".
+constexpr int kRayBlockCb0FloatIndex = 16;
+
 // Render-thread sync pair (banked for the 1t fallback, unconsumed): the
 // endframe fn 0x501EA0 triggers FEventWin global [0x1A69294] once per
 // present (kick2 site 0x5029BA) and reads its sibling [0x1A69298]; static
