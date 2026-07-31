@@ -944,3 +944,58 @@ runtime.
   overlay renders into the backbuffer, which IS the eye image. Driving an in-headset A/B by typing
   requires alt-tab, and alt-tab is the pacing bug - so command-driven headset testing is both
   slower and actively destabilising. Build the control before asking for the test.
+
+### 2026-08-01 (session 34) - a simulated Quest 3, so agents can test their own VR work
+
+- **Why a purpose-built runtime and not an off-the-shelf simulator.** BioShock is 32-bit, and
+  essentially nothing ships a 32-bit OpenXR runtime: Meta XR Simulator is x64 (built for Unity
+  and Unreal editors), OpenXR-Simulator is x64 and keyboard-driven, `ox` has no D3D11. An OpenXR
+  API LAYER cannot substitute either - a layer needs a working runtime underneath, and with no
+  headset VDXR returns FORM_FACTOR_UNAVAILABLE, so there is no session to intercept. Writing one
+  was tractable because the mod's whole OpenXR surface is 39 entry points, one extension
+  (XR_KHR_D3D11_enable) and one interaction profile.
+- **Selected per-process by XR_RUNTIME_JSON, never by the registry.** The loader checks that env
+  var before the registry (verified in the vendored SDK, manifest_file.cpp), so
+  `tools\xrsim-launch.ps1` sets it, starts BioshockHD.exe DIRECTLY, and restores it in a finally.
+  The machine's ActiveRuntime stays on VDXR, so the two coexist with zero switching and a normal
+  launch is untouched. Cost: the game cannot be started through Steam in sim mode, because Steam
+  launches the process itself and the variable would have to be machine-wide.
+  **Zero lines of the mod changed** - `bioshockvr.dll` and the proxy are byte-identical, and the
+  sim is a separate target that links nothing from them.
+- **Two silent-failure traps, both guarded by a thrown error rather than a warning.** An elevated
+  shell makes the loader ignore XR_RUNTIME_JSON (it reads it through a secure-env path), and a
+  bad manifest path or 64-bit dll makes it skip the manifest. Both fall back to VDXR *silently*,
+  so every later measurement would be taken against the wrong runtime while the transcript said
+  otherwise. `xrsim-launch.ps1` asserts the runtime NAME out of the mod's own log and throws on
+  anything that is not `bvr-xrsim`; `xrsim-install.ps1` checks the dll's PE machine is 0x014C.
+  This is the same lesson as session 33's launch guard: a check that only prints is not a check.
+- **A separate launcher, with the guards SHARED rather than copied.** `xrsim-launch.ps1` calls
+  `launch-game.ps1 -PreflightOnly` instead of reimplementing the another-BioShock-is-running and
+  stale-command.txt checks, so the two launchers cannot drift apart. `boot.ps1 -Attach` is
+  mandatory in sim mode: without it Steam does not know about a directly launched process and
+  starts a SECOND game on the real runtime.
+- **The compositor is the payload, and the projection pass is a real reprojection.** The layer's
+  tagged pose and tagged fov both differ from the eye's, so compositing per eye means resampling
+  through that difference - which makes a claimed-fov mismatch VISIBLE as magnification instead of
+  something to be inferred. The capture JSON exposes it as one number, `derived.claimRatioH`;
+  session 28's yaw warp was a 1.84x under-claim that took three sessions to pin down. First
+  measured value on BS1 with stereo armed: 0.98.
+- **This retires a documented limitation.** XR quad layers - the aim laser, the aim dot, the HUD
+  panel - exist only in the compositor and have never appeared in a window screenshot, which
+  TESTING.md has recorded as un-checkable outside a headset since M8. The sim composites and
+  counts them, so "is the laser on screen" is now an assertion.
+- **Fidelity is a model, and the FOCUSED policy is the sharpest edge.** Session 28's finding that
+  VDXR will not re-grant FOCUSED to an app submitting nothing is one runtime's behaviour observed
+  once. Baking it in as the only truth would manufacture confidence, so `focus policy
+  vdxr|permissive` models both and the default is stated, not assumed. Standing rule: a pacing bug
+  that reproduces in the sim is real; one that does not may still exist on VDXR.
+- **No wait in the sim is ever unbounded.** Every wait takes a finite timeout, no lock is held
+  across one, and step mode grants a frame after 30 s of starvation. An agent that walks away
+  mid-step leaves a slow game, never a hung one - which matters because an unbounded stall on the
+  present thread is precisely the failure this project has already been bitten by twice.
+- **Compositing is off except on capture frames.** A test instrument that costs frame time becomes
+  the pacing bug it was built to find.
+- **What it deliberately does not model, and never will:** lens distortion, chromatic aberration,
+  timewarp/reprojection, real display cadence, VDXR's Wi-Fi encode path. It proves geometry,
+  content and protocol. Comfort, judder and world-scale remain the user's verdict in the headset,
+  and still belong in the F10 overlay per the session-33 entry above.

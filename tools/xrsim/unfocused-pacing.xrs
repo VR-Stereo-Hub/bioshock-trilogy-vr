@@ -1,0 +1,17 @@
+# unfocused-pacing.xrs - the session-33 regression, on a desk.
+#
+# Losing FOCUSED is what collapsed the frame rate in session 33. The sim can
+# command that transition, so the bug is now a repeatable test instead of an
+# accident that needed a headset to reproduce.
+#
+# Watch the MOD log while this runs: expect "xr: session state VISIBLE" and then
+# "xr: SUBMISSION IDLE (reason=...)" within about 5 s, then "FOCUSED again".
+reset
+@frames 30
+@assert sessionState eq FOCUSED
+focus lose
+@wait 6000
+@assert sessionState eq VISIBLE
+focus regain
+@wait 2000
+@assert sessionState eq FOCUSED

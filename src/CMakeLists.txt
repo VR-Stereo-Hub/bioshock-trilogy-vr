@@ -133,3 +133,38 @@ if(BIOSHOCKVR_WITH_OPENXR)
     add_executable(xr_hello32 tools/xr_hello32/main.cpp)
     target_link_libraries(xr_hello32 PRIVATE openxr_loader d3d11 dxgi)
 endif()
+
+# --- bvr_xrsim32 - the simulated OpenXR runtime -------------------------------
+# A Quest-3-shaped 32-bit OpenXR runtime so an agent can test the mod with no
+# headset. NOT part of the mod and NOT in the release zip (tools/package.ps1
+# stages an explicit two-file list, so there is nothing to exclude there).
+#
+# It links NOTHING from bioshockvr and must not link openxr_loader either - it
+# IS the runtime the loader loads, so it takes the OpenXR headers only. Keeping
+# it behind an option makes the "the mod DLLs are byte-identical" claim checkable
+# by configuring once with -DBIOSHOCKVR_WITH_XRSIM=OFF and comparing hashes.
+option(BIOSHOCKVR_WITH_XRSIM "Build the simulated OpenXR runtime (test tool)" ON)
+if(BIOSHOCKVR_WITH_OPENXR AND BIOSHOCKVR_WITH_XRSIM)
+    add_library(bvr_xrsim32 SHARED
+        tools/xrsim/xrsim_common.h
+        tools/xrsim/xrsim_internal.h
+        tools/xrsim/xrsim_math.h
+        tools/xrsim/xrsim_log.cpp
+        tools/xrsim/xrsim_instance.cpp
+        tools/xrsim/xrsim_session.cpp
+        tools/xrsim/xrsim_frame.cpp
+        tools/xrsim/xrsim_actions.cpp
+        tools/xrsim/xrsim_control.cpp
+        tools/xrsim/xrsim_compositor.cpp
+        tools/xrsim/xrsim.def
+    )
+    set_target_properties(bvr_xrsim32 PROPERTIES PREFIX "" OUTPUT_NAME "bvr_xrsim32")
+    target_include_directories(bvr_xrsim32 PRIVATE
+        tools/xrsim
+        "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include")
+    target_link_libraries(bvr_xrsim32 PRIVATE d3d11 dxgi d3dcompiler windowscodecs)
+    # The SEH shims around every entry point need unwind semantics off; /EHsc and
+    # __try in the same function is what the compiler warns about, and the shims
+    # deliberately hold no unwindable objects.
+    target_compile_options(bvr_xrsim32 PRIVATE /EHa)
+endif()

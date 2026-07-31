@@ -1,0 +1,15 @@
+# laser.xrs - the aim laser is a quad layer, so it is INVISIBLE to game-shot.ps1.
+# This is the only way to check it without a headset.
+#
+# Expect layersLastFrame to jump by the number of laser dots plus the aim dot.
+# Compare against a game-shot of the same moment: the laser must be ABSENT there
+# and PRESENT here. That contrast is the proof the capability is new.
+reset
+@mod vraim on
+@mod vraim laser on
+@frames 60
+@assert layersLastFrame ge 3
+@shot laser_on
+@mod vraim laser off
+@frames 60
+@shot laser_off
