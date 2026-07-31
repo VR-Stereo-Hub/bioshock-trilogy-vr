@@ -117,20 +117,40 @@ Goal: know what we are actually working with before any code runs inside the pro
 Goal: our code runs inside `BioShockInfinite.exe`, and we can talk to it - before any engine hook
 exists.
 
-- [ ] `src/game/bioshockinf/` adapter; `HostGame::Infinite` in the registry; data subdir `bsi`
-- [ ] CMake file list updated (one DLL, all adapters, runtime dispatch by host exe name)
-- [ ] Host build fingerprint gate wired to the I0 values
-- [ ] **Move the command-file poller into core, ticked from Present.** On BS1 and BS2 it lives in
+- [x] `src/game/bioshockinf/` adapter; `HostGame::Infinite` in the registry; data subdir `bsi`
+      *2026-07-31 session 35: `bvr::bsi::BioshockInfAdapter`, capabilities 0x0 by design (a bit is
+      earned by a hook observed firing, never by an address being derived).*
+- [x] CMake file list updated (one DLL, all adapters, runtime dispatch by host exe name)
+- [x] Host build fingerprint gate wired to the I0 values
+      *All four fields matched live: pe-timestamp `0x627BE455`, size-of-image `0x0124F000`,
+      checksum `0x011590C3` (Infinite's exe carries a real one, unlike BS1's), 18,368,840 bytes.
+      `buildgate off|on|status` exercises the stand-down path without a sabotaged DLL.*
+- [x] **Move the command-file poller into core, ticked from Present.** On BS1 and BS2 it lives in
       the adapter and ticks off an engine hook, so a skeleton adapter has no command surface at all
       until its first hook fires. That made the early sessions on both games materially harder.
       This also moves the ~70 lines of core-owned command vocabulary (`memscan`, `dumpframe`,
       `vrinput`, `vrpace`, `vrmirror`, `vrcine`, `vroverlay`, `vrhud`) that each adapter currently
       re-forwards by hand.
-- [ ] `-Game bsi` through the harness scripts, plus the BS2 conflict guard
-- [ ] Verify d3d11/dxgi being dynamically loaded does not break `framework::init()` ordering
-- [ ] **Done when:** the game launches with both DLLs, the log shows the init chain plus D3D11
+      *2026-07-31: `core/framework/command`, ticked from the Present detour, **opt-in** per adapter
+      so BS1/BS2 keep their own pollers untouched (user directive - a parallel BS2 session was live
+      in the same file). The core vocabulary is the canonical copy; **folding BS1 and BS2 into it is
+      deferred to a consolidation pass**. Also fixed a real trap: a pre-existing `command.txt` is
+      now skipped at startup rather than executed.*
+- [x] `-Game bsi` through the harness scripts, plus the BS2 conflict guard
+      *Landed session 34; exercised end to end this session (cmd/shot/img-diff against the modded
+      process).*
+- [x] Verify d3d11/dxgi being dynamically loaded does not break `framework::init()` ordering
+      *It does not, and the reason is structural: `bioshockvr.dll` links `d3d11` itself, so OUR
+      import table loads it before any of our code runs and the throwaway device pulls DXGI in
+      turn. Hooks installed T+0.4 s, first Present T+8.5 s, no retry needed.*
+- [x] **Done when:** the game launches with both DLLs, the log shows the init chain plus D3D11
       device and swapchain info, F10 toggles the overlay, the game is otherwise normal, and
       `game-cmd.ps1 -Game bsi <cmd>` dispatches **with no engine hook installed**.
+      ***I1 CLOSED 2026-07-31.** Backbuffer 2560x1440 `R8G8B8A8_UNORM` windowed, feature level
+      11_0, RTX 4060; frame inspector 15/15 context slots. F10 measured at 5.7 % channels changed
+      vs a 0.54 % ambient floor; `vroverlay on|off` through the seam at 4.6 %. `dumpframe` wrote
+      482 events / 68 resources. Orderly `DLL_PROCESS_DETACH` on a menu quit. Full checklist in
+      [TESTING.md](TESTING.md).*
 
 ## I2 - De-risk battery (~2 sessions)
 

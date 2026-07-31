@@ -169,6 +169,78 @@ more.
   (pid 24588, and again 22136) and allowed once BS2 closed. Positive and negative control both
   observed.
 
+## First code inside the process (session 35, I1 - LIVE, and it changes the confidence table)
+
+Everything above this line was derived from the disk image or observed from outside. This section is
+the first set of facts measured **from inside `BioShockInfinite.exe`** by our own DLL.
+
+### Injection and identity
+
+| fact | evidence |
+|---|---|
+| **The `xinput1_3.dll` proxy works verbatim** | the mod ran at all. `input: bridge registered with proxy seam (module 74B30000)`. No change to `src/proxy/` was needed, exactly as the import-table parse predicted. |
+| **Host build fingerprint matches on all four fields** | `pe-timestamp 0x627BE455 size-of-image 0x0124F000 checksum 0x011590C3 file-bytes 18368840`, read from the live PE headers. Note Infinite's exe **does** carry a real checksum, unlike BS1's. |
+| **ImageBase 0x00400000 confirmed live** | `[bsi] main module: base 00400000 size 0x124F000`. ASLR really is off. RVAs are still what `patterns.h` stores. |
+| **The Steam overlay does not block injection** | `GameOverlayRenderer.dll` is loaded (session 34) and the mod still loaded and ran: the proxy pulls `bioshockvr.dll` in from its own `DllMain`, long before anything calls `XInputGetState`. Whether the overlay eats the *input* thunk is still open and belongs to I7. |
+| **`CSERHelper.dll` displaces our unhandled-exception filter here too** | `crash: our exception filter had been displaced by CSERHelper.dll+0x12571 - re-armed (chaining to it)` at the first Present. 2K's crash reporter behaves exactly as it does on the remasters, so core's periodic re-arm is load-bearing on this game as well. |
+
+### The renderer, from inside
+
+`d3d11.dll` and `dxgi.dll` being **absent from Infinite's import table changes nothing** for us, and
+the reason is worth writing down so it is not re-investigated: `bioshockvr.dll` links `d3d11` itself,
+so *our* import table loads it before any of our code runs, and `d3d11_hook`'s throwaway device pulls
+DXGI in turn. The swapchain vtable is process-wide, so the game's later-created swapchain dispatches
+straight into our detour. Ordering verified live - hooks installed at T+0.4 s, first Present at
+T+8.5 s, no gap and no retry needed.
+
+| measured at the first Present | value |
+|---|---|
+| backbuffer | **2560 x 1440**, `DXGI_FORMAT_R8G8B8A8_UNORM` (28), `Windowed=1` |
+| feature level | `0xB000` = **D3D_FEATURE_LEVEL_11_0** |
+| adapter | NVIDIA GeForce RTX 4060 |
+| frame inspector | **15/15 context vtable slots hooked** on the game's own immediate context |
+| one lite frame dump | 482 events, 68 resources |
+| lifetime draw census after ~22k presents | DrawIndexed 7,002,643 · Draw 524,784 · DrawIndexedInstanced 807,738 · DrawInstanced 0 · SetRenderTargets 1,409,381 · ClearRTV 398,619 · ClearDSV 225,272 |
+
+**A free half-answer for DR-I8.** The live `XEngine.ini` says `ResX=2560` / `ResY=1440`, and the
+backbuffer at first Present is 2560x1440. So Infinite's config resolution **is** honoured by the
+renderer - which is more than BS2 could say for its viewport keys. This does **not** yet prove that
+*writing* a new value lands; that still needs a write plus a relaunch, and acceptance is still the
+backbuffer, never the read-back.
+
+**Observation for I10, recorded now so it is not mistaken for a bug later:** core's letterbox
+detector (BS1-tuned) fires on Infinite's loading/cinematic bars and produces incoherent readings
+(`top 1440 px, bottom 0 px of 1440`). The detector needs re-deriving for this game; nothing consumes
+it yet.
+
+### The camera seam, probed read-only (still not hooked)
+
+`patterns::resolve` reads the first bytes at the two session-34 RVAs and logs them. No hook, no
+write, no scan - this only promotes "the disk image says there is a function here" to "the live image
+has these bytes here":
+
+| RVA | live VA | first bytes | reading |
+|---|---|---|---|
+| `0x1E10C0` (impl) | `0x005E10C0` | `55 8B EC 83 E4 F0 81 EC A4 00 00 00 53 56 8B 75` | `push ebp; mov ebp,esp; and esp,-0x10; sub esp,0xA4; push ebx; push esi; mov esi,[ebp+..]` - an **aligned-stack MSVC prologue**, which is exactly what a function containing the documented 4x4 SSE transform should have. |
+| `0x129280` (exec thunk) | `0x00529280` | `83 EC 1C 56 8B F1 8D 44` | `sub esp,0x1C; push esi; mov esi,ecx` - **frameless**. Independently confirms the recipe caveat that the `CC CC CC 55 8B EC` prologue heuristic cannot find functions like this one. |
+
+Still unproven: that the implementation is called with the shape we think, and that hooking it is
+safe. That is DR-I2.
+
+### The command seam is core and Present-driven on this game
+
+`%LOCALAPPDATA%\BioshockVR\bsi\command.txt` is polled at 1 Hz **from the Present detour**, not from an
+engine hook, so it worked from the first frame with `capabilities() == 0` and no engine hook
+installed anywhere. Two consequences specific to Infinite:
+
+- **Commands run on the RENDER thread** while the Present pump owns the poller. Long scans
+  (`memscan`, `fsweep`) stall presents rather than the game thread. When I2's camera hook lands it
+  calls `command::poll_from_game_thread`, which latches a **one-way** handover and silences the
+  Present pump for the life of the process.
+- **A pre-existing `command.txt` is skipped at startup**, not executed - the first poll adopts the
+  file's write time and logs what it ignored. This is the trap TESTING.md records as having bitten
+  BS1 three times. BS1 and BS2 still run their own pollers and still have the old behaviour.
+
 ## UE3 reflection is intact (evidence, session 34)
 
 ASCII strings present in `.rdata` (the UE3 FName pool stores names as plain ASCII), byte-scanned
@@ -618,10 +690,11 @@ and every value here must also exist in `src/game/bioshockinf/patterns.h/.cpp` a
 
 | Hook | RVA / locator | Purpose | Derivation | Status |
 |---|---|---|---|---|
-| `IDXGISwapChain::Present` | vtable slot | frame boundary, XR pacing, overlay, mirror | kiero-style throwaway device (core, game-agnostic) | pending I1 |
-| `IDXGISwapChain::ResizeBuffers` | vtable slot | RT cache invalidation | same | pending I1 |
+| `IDXGISwapChain::Present` | vtable slot | frame boundary, XR pacing, overlay, mirror, **the command poller** | kiero-style throwaway device (core, game-agnostic) | **LIVE (session 35)** - installs at T+0.4 s, first Present T+8.5 s |
+| `IDXGISwapChain::ResizeBuffers` | vtable slot | RT cache invalidation | same | **installed (session 35)**, not yet observed firing |
+| context Draw/DrawIndexed/SetRT/Map/Unmap | context vtable | frame dumps, HUD classification | core `frame_inspector`, game's own immediate context | **LIVE (session 35)** - 15/15 slots, one dump taken |
 | `UObject::ProcessEvent` | - | script-event seam; a fallback if the direct camera hook disappoints | vtable slot off a known object + prologue gate | pending I2 |
-| **`APlayerController::GetPlayerViewPoint`** | **impl RVA `0x1E10C0`** (thunk `0x129280`) | **the camera seam**: 6DoF override. thiscall, 2 stack args, `ret 8`, 13 native callers | native table -> disasm thunk -> last call before epilogue -> caller census | **derived, unconfirmed live** |
+| **`APlayerController::GetPlayerViewPoint`** | **impl RVA `0x1E10C0`** (thunk `0x129280`) | **the camera seam**: 6DoF override. thiscall, 2 stack args, `ret 8`, 13 native callers | native table -> disasm thunk -> last call before epilogue -> caller census | **derived; bytes READ live (session 35, aligned-stack prologue as predicted) - never hooked, never called. I2.** |
 | scene build / draw root | - | SequentialReentry stereo seam | frame inspector callstack RVAs + capstone | pending I2/I6 |
 | `XInputGetState` | game IAT RVA `0xCD4814` (XINPUT1_3 ord 2) | synthetic gamepad | import table parse (**done**, session 34) | confirmed, unhooked |
 | Draw / DrawIndexed / OMSetRenderTargets / Map+Unmap | context vtable | HUD classification, frame dumps, lens watch | core `frame_inspector` | pending I2 |

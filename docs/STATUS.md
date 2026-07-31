@@ -17,10 +17,54 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 34
+### Infinite: current state after session 35
 
-**I0 IS CLOSED.** Branch `bioshock-infinite`, pushed. No adapter code exists yet - `src/` is
-untouched. Docs are in `docs/bioshockinfinite/`.
+**I1 IS CLOSED - our code runs inside `BioShockInfinite.exe`.** Branch `bioshock-infinite`. The
+adapter exists (`src/game/bioshockinf/`), the mod loads, logs, draws its overlay and takes commands,
+and **not one engine hook is installed**. I0 stays closed; its recon is in `ENGINE_NOTES.md`.
+
+What is now confirmed **live, from inside the process** (the whole session-34 table was outside-in
+until today):
+
+- **The `xinput1_3.dll` proxy works verbatim** - no proxy change was needed, and the Steam overlay
+  does not interfere with injection (the proxy loads the mod from its own `DllMain`, long before
+  anything calls `XInputGetState`; whether the overlay eats the *input* thunk is still an I7
+  question).
+- **The build fingerprint matches on all four fields** and **ImageBase really is `0x00400000`**.
+- **D3D11, from the inside:** backbuffer **2560x1440 `R8G8B8A8_UNORM`, windowed**, feature level
+  **11_0**, RTX 4060; frame inspector attached to the game's own context on **15/15** slots and
+  wrote a real dump (482 events / 68 resources).
+- **d3d11/dxgi being absent from Infinite's import table changes nothing**, and the reason is
+  structural rather than lucky: `bioshockvr.dll` links `d3d11` itself, so our import table loads it
+  before any of our code runs. Hooks in at T+0.4 s, first Present at T+8.5 s.
+- **A free half-answer for DR-I8:** the live `XEngine.ini` says 2560x1440 and the backbuffer at
+  first Present *is* 2560x1440, so the config resolution is honoured by the renderer - which is more
+  than BS2 could say. It does **not** yet prove a *write* lands; that still needs a write, a
+  relaunch, and the backbuffer as acceptance.
+- **`CSERHelper.dll` displaces our exception filter here too**, exactly as on the remasters. Core's
+  periodic re-arm caught it at the first Present, so it is load-bearing on this game as well.
+- The camera seam was **probed read-only, never hooked**: `0x1E10C0` holds an aligned-stack MSVC
+  prologue (consistent with the 4x4 SSE transform derived offline) and the exec thunk at `0x129280`
+  is **frameless**, which independently confirms why the `CC CC CC 55 8B EC` prologue heuristic
+  cannot find it. Hooking is I2.
+
+**The command seam is core now, and Present-driven.** `core/framework/command` owns the poller and
+the shared vocabulary (`mem*`, `fsweep`, `dumpframe`, `vrinput`, `vrpace`, `vrmirror`, `vrcine`,
+`vroverlay`, `vrhud`, plus a new `vrcmd` status). Adapters get first refusal via
+`IGameAdapter::handleCommand`. Three things worth carrying forward:
+
+- **BS1 and BS2 are byte-untouched** (user directive, this session): the Present pump is opt-in, so
+  they keep their own pollers and their own copies of the vocabulary. **Folding them in is a
+  deferred consolidation task** - see "Deferred" below.
+- While the Present pump owns the poller, **commands run on the render thread**. A long `memscan`
+  stalls presents, not the game thread. I2's camera hook takes over the poll one-way and
+  permanently.
+- **A pre-existing `command.txt` is skipped at startup** rather than executed - the trap that bit
+  BS1 three times. Found and fixed a subtlety live: prime on the first POLL, not the first sighting
+  of a file, or a game that starts with no command file swallows the first real command (the first
+  build did exactly that).
+
+The session-34 recon that all of this rests on, unchanged:
 
 Closed at the end of the session once BS2 freed the machine: **the renderer is D3D11, confirmed
 live** (`nvwgf2um.dll`, the DX10/11 UMD, is loaded and the DX9 UMD is not - `d3d9.dll` alone proves
@@ -35,29 +79,31 @@ content** (not a black frame, which was not guaranteed), `game-cmd -Game bsi` wr
 `command.txt`, and the conflict guard was exercised in **both** directions - refused with BS2 up,
 allowed with it down.
 
-Everything derived so far is offline and **unconfirmed live**. Confidence is stated per row in
-`ENGINE_NOTES.md`; treat every RVA as a hypothesis until a hook fires on it.
+Everything else derived so far is still offline and **unconfirmed live**. Confidence is stated per
+row in `ENGINE_NOTES.md`; treat every RVA as a hypothesis until a hook fires on it.
 
-**Next session (35) = I1, the adapter skeleton.** In order:
+**Next session (36) = I2, the de-risk battery** (DR-I1 through DR-I8 in the roadmap). The order that
+buys the most:
 
-1. `src/game/bioshockinf/` + `HostGame::Infinite` in `adapter_registry` + data subdir `bsi` +
-   the CMake file list. Host build fingerprint gate wired to the session-34 PE values.
-2. **Move the command-file poller into core and tick it from Present**, not from an engine hook.
-   On BS1 and BS2 it lives in the adapter and ticks off the camera hook, so a skeleton adapter has
-   no command surface until its first hook fires - which made early sessions on both games harder
-   than they needed to be. Doing it first means `game-cmd -Game bsi` works before any engine hook
-   exists.
-3. Verify d3d11/dxgi being **dynamically loaded** (they are not in Infinite's import table) does
-   not break `framework::init()` ordering.
-4. Smoke test: DLL loads, log shows the init chain and device info, F10 overlay toggles, game
-   otherwise normal, `game-cmd -Game bsi` dispatches.
+1. **DR-I2, the camera seam.** Hook `GetPlayerViewPoint`'s IMPLEMENTATION (RVA `0x1E10C0`), never
+   the thunk - 2 stack args, `ret 8`, and the arg count must equal `ret imm / 4` or the RTC dialog
+   that writes no dump is the result. Confirm it fires in gameplay *and* at the menu, and measure
+   the dispatch rate. **The moment it is live, call `bvr::command::poll_from_game_thread` from it**
+   - that is the one-way handover that moves commands off the render thread.
+2. **DR-I1, UE3 reflection.** `GNames` / `ProcessEvent` / `FindFunctionChecked`, plus an
+   ASCII/8-byte-stride variant of `pattern_scan::find_native_function` for this game's 2647-entry
+   native table. Run the static caller census BEFORE hooking anything.
+3. **DR-I3, the frame map.** Infinite is deferred-rendered, so the BS1/BS2 forward fingerprints do
+   not apply and the cb0 ray-block offset must be re-derived. `dumpframe` already works and one
+   dump is banked in the `bsi` data dir.
 
 **Blocked on the user / the headset:**
 
 - **`Bioshock2HD.exe` must not be running.** Enforced for `-Game bsi` by
   `tools/lib/assert-no-conflict.ps1`; building and installing are deliberately unguarded. BS2 was
   running for the whole of session 34, which is why nothing live was attempted beyond the six-key
-  check the user ran themselves.
+  check the user ran themselves. In session 35 the machine was free and the check was run before
+  every launch.
 - The user's save (`TWN`, Columbia town) has **no weapons or combat** yet, and that is
   **deliberate** (user directive, 2026-07-31). They will produce the combat/weapons save at **I9**,
   not earlier, because they want the viewmodel and scale work verified **from the start of the game
@@ -68,6 +114,17 @@ Everything derived so far is offline and **unconfirmed live**. Confidence is sta
 **Deferred, deliberately:** UELib/UE Explorer decompile workspace. It is most useful aimed at a
 specific script question (the fire path for I8), not swept speculatively. `GObjObjects`, for the
 reasons in the session log.
+
+**Deferred consolidation task (session 35, user directive): fold BS1 and BS2 into the core command
+seam.** Both adapters still carry their own `poll_command_file` and their own copy of the ~70 lines
+of core-owned vocabulary that now live in `core/framework/command`. The migration is mechanical -
+delete those branches, override `handleCommand`, and call `bvr::command::poll_from_game_thread`
+where `poll_command_file` was called - but it was **deliberately not done this session** because a
+parallel BS2 session was live in `bioshock2r/camera.cpp` and neither shipped game could be
+smoke-tested from this branch. Do it in a healing/refactor pass with both games launchable. Two
+details to carry: core's `vroverlay` uses BS2's argument reading (an explicit `off` is off, anything
+else is on - BS1's bare `vroverlay` currently means off), and core primes the command file at
+startup where BS1/BS2 still execute a stale one.
 
 **Two things to carry into I1 that were bought expensively elsewhere:** hook implementations and
 never thunks (offline census proves the thunks are dead here), and read the `FNameEntry` encoding
@@ -4128,6 +4185,67 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 35 - 2026-07-31 - I1 CLOSED: our code runs inside BioShock Infinite, and the command seam works with nothing hooked
+
+Branch `bioshock-infinite`. The first session in which anything of ours executed inside
+`BioShockInfinite.exe`. **Everything below was measured live**, not derived - which matters, because
+every Infinite fact before today came from the disk image or from outside the process.
+
+**What shipped.** `src/game/bioshockinf/` (adapter + patterns), `HostGame::Infinite`, data subdir
+`bsi`, the build-fingerprint gate wired to the session-34 PE values, and a new core module
+`core/framework/command` that owns the command-file poller and the shared vocabulary. The adapter
+advertises **capabilities 0x0** and that is deliberate: a capability bit is earned by a hook observed
+firing, never by an address being derived.
+
+**The design change, and why it was worth doing first.** On BS1 and BS2 the `command.txt` poller
+lives in the adapter and ticks off the camera hook, so a skeleton adapter has no way to talk to the
+mod until the very thing being debugged works. Core now polls from the **Present** detour instead,
+and Infinite was drivable from frame one with nothing hooked. The pump is **opt-in**
+(`command::enable_present_pump()`), which is what let BS1 and BS2 stay **byte-untouched** - a
+parallel BS2 session was live in `bioshock2r/camera.cpp` and neither shipped game could be
+smoke-tested from this branch (user directive: consolidate later, in a healing pass). Handover to a
+game-thread pump is **one-way**: engine-touching commands belong on the game thread, and a
+"resume when the game thread goes quiet" rule would hand the render thread a dispatch during a load.
+
+**A trap fixed, and the fix's own trap found by running it.** A pre-existing `command.txt` is now
+skipped at startup rather than executed - the thing TESTING.md records as having bitten BS1 three
+times, once producing a false result that was then chased as real. The first build primed on the
+first *sighting* of the file, so on a game that starts with no command file (the documented hygiene)
+the first real command was swallowed. Observed live, fixed, and both directions re-verified: a stale
+file is skipped and named in the log; a fresh write dispatches.
+
+**Live confirmations, all first-time:**
+
+- **The `xinput1_3.dll` proxy works verbatim** and the Steam overlay does not interfere with
+  injection - the proxy loads the mod from its own `DllMain`, long before anything calls
+  `XInputGetState`. Whether the overlay eats the *input* thunk is still an I7 question.
+- **The build fingerprint matches on all four fields**, and Infinite's exe carries a real PE
+  checksum (`0x011590C3`) unlike BS1's. **ImageBase really is `0x00400000`.**
+- **D3D11 from the inside**: backbuffer 2560x1440 `R8G8B8A8_UNORM` windowed, feature level 11_0,
+  RTX 4060, frame inspector on 15/15 context slots, one real dump (482 events / 68 resources).
+- **d3d11/dxgi being absent from the import table is a non-issue**, and structurally so:
+  `bioshockvr.dll` links `d3d11` itself, so our own import table loads it before any of our code
+  runs. Hooks at T+0.4 s, first Present at T+8.5 s, no retry path needed.
+- **`CSERHelper.dll` displaces our unhandled-exception filter here too**, exactly as on the
+  remasters - core's periodic re-arm is load-bearing on this game as well.
+- **DR-I8 gets a free half-answer**: `XEngine.ini` says 2560x1440 and the backbuffer *is*
+  2560x1440, so the config resolution is honoured by the renderer. That is more than BS2 could say -
+  but it does not prove a *write* lands, which still needs a write, a relaunch, and the backbuffer
+  as acceptance.
+- The camera seam was **probed read-only and never hooked**: `0x1E10C0` holds an aligned-stack MSVC
+  prologue (`push ebp; mov ebp,esp; and esp,-0x10; sub esp,0xA4`), consistent with the 4x4 SSE
+  transform derived offline, and the exec thunk at `0x129280` is **frameless** - which independently
+  explains why the `CC CC CC 55 8B EC` prologue heuristic could never find it.
+
+**Acceptance was measured, never asserted.** F10 moved 5.7 % of channels against a 0.54 % ambient
+floor (two shots with nothing between them); `vroverlay on|off` through the seam moved 4.6 %. The
+screenshot is the acceptance, not the log echo. `dumpframe` wrote a real dump; an unknown command
+logged one line; a menu quit logged `DLL_PROCESS_DETACH`.
+
+**Recorded for later, not acted on:** core's letterbox detector (BS1-tuned) fires on Infinite's
+cinematic bars and produces incoherent readings (`top 1440 px of 1440`); it needs re-deriving at
+I10, and nothing consumes it yet.
 
 ### Session 34 part 2 - 2026-07-31 - I0 offline recon complete; the console is dead, the reflection lane is wide open
 

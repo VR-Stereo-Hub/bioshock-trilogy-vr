@@ -44,6 +44,7 @@ struct IGameAdapter {
     virtual void setHandsPose(Hand h, const Pose&) = 0;
     virtual bool renderSceneReentrant(const EyeRenderParams&) = 0;
     virtual GameState queryState() = 0;    // in-menu? paused? weapon/plasmid inventory
+    virtual bool handleCommand(const char*, const char*) { return false; } // command seam (s35)
 };
 ```
 
@@ -906,3 +907,36 @@ runtime.
   NOT yet proven and must be settled by making it move (holster/switch the weapon and re-dump),
   never by draw counts - BS1's rule, which is in the notes because inferring it from counts is what
   went wrong there.
+- **2026-07-31 - session 35 - the command-file poller belongs to CORE and ticks from Present, not
+  from an engine hook.** On BS1 and BS2 the poller lives in the adapter and ticks off the camera
+  hook, so a skeleton adapter has no command surface at all until its first engine hook fires: the
+  only way to talk to the mod is the thing that is not working yet. Both games paid for that in
+  their early sessions. `core/framework/command` now owns the poller and `d3d11_hook`'s Present
+  detour ticks it, which is why the Infinite adapter could be driven from frame one with
+  `capabilities() == 0` and nothing hooked. The Present pump is **opt-in**
+  (`command::enable_present_pump()`, called by the adapter) precisely so an adapter that polls for
+  itself can never end up with two pollers racing over one file - BS1 and BS2 are byte-untouched
+  and see one atomic load per present. Handover is **one-way**: the first
+  `poll_from_game_thread()` silences the Present pump for the life of the process, because
+  engine-touching commands belong on the game thread and a "resume when the game thread goes quiet"
+  rule would hand the render thread a dispatch during a load, which is the worst possible moment.
+  The trade, stated plainly: while the Present pump owns the poller, every command runs on the
+  render thread, so a long `memscan` stalls presents instead of the game thread.
+- **2026-07-31 - session 35 - `IGameAdapter::handleCommand` is a control-plane call, and that is
+  not a violation of publish-don't-query.** The rule above ("core cannot call into the adapter
+  mid-frame") is about per-frame STATE: wrong thread, wrong lifetime, inverted dependency. A
+  command dispatch is once a second, on whichever thread owns the poller, and carries no engine
+  state either way - the same shape as the overlay calling `drawDebugUi()` on the render thread.
+  Dispatch order is adapter first, then the shared core vocabulary, so a game can deliberately
+  shadow a core command; the virtual is defaulted to `return false` so adapters that own their own
+  dispatcher need no change. The ~70 lines of core-owned vocabulary that BS1 and BS2 each forward
+  by hand now exist in core as the canonical copy; **folding the two adapters into it is deliberately
+  deferred** to a consolidation pass, because a parallel BS2 session was live in the same file and
+  neither shipped game could be smoke-tested from the Infinite branch.
+- **2026-07-31 - session 35 - a pre-existing `command.txt` is skipped at startup, not executed.**
+  The poller's first poll adopts the file's write time and logs what it ignored. A command file
+  left over from a previous run is stale by definition, and applying it at boot is a trap the
+  testing notes record as having bitten BS1 three times, once producing a false result that was
+  then chased as a real one. The subtlety, found by running it: prime on the FIRST POLL, not on the
+  first sighting of a file - a game that starts with no `command.txt` (the documented hygiene) would
+  otherwise swallow the first real command, which is exactly what the first build did.

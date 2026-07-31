@@ -157,9 +157,13 @@ Carried from BS1/BS2 and expected to apply here until proven otherwise:
 - **The game pauses while unfocused**, so a command written to `command.txt` may sit undispatched.
   Follow every `game-cmd` with a `game-shot` (which holds focus ~2.5 s) when the poll does not
   land.
-- **Stale `command.txt` re-applies at boot.** This bit BS1 three times, once producing a false
-  negative when a `vrpreset save` re-ran at the menu and overwrote a tuned ini with defaults.
-  **Clear `command.txt` before closing the game, not only before launching it.**
+- **Stale `command.txt` does NOT re-apply at boot on Infinite (session 35).** This bit BS1 three
+  times, once producing a false negative when a `vrpreset save` re-ran at the menu and overwrote a
+  tuned ini with defaults. The core poller's first poll now adopts the file's write time and logs
+  `skipping pre-existing command.txt (last written ...)` instead of running it - verified in both
+  directions live. **Still clear `command.txt` before closing the game, not only before launching**:
+  the habit costs nothing, keeps the file honest for a human reader, and BS1/BS2 keep the old
+  behaviour until they fold into the core poller.
 - **Never write `command.txt` with `Set-Content -Encoding utf8`** - PowerShell 5.1 adds a BOM which
   silently corrupts the first token. `game-cmd.ps1` uses `[System.IO.File]::WriteAllText`.
 - **`img-diff.ps1` noise floors** (BS1-calibrated, re-calibrate for this game): standing-still
@@ -168,10 +172,47 @@ Carried from BS1/BS2 and expected to apply here until proven otherwise:
 - **Loading the same save reproduces the same spawn viewpoint**, which is what makes A/B render
   comparisons valid.
 
-Planned for I1 and worth knowing early: **the command poller moves into core and ticks from
-Present**, not from an engine hook. On BS1 and BS2 it lives in the adapter and ticks off the camera
-hook, so a skeleton adapter has no command surface at all until its first engine hook fires. On
-Infinite it should work from the first launch.
+**The command poller is core and ticks from Present on this game (landed I1, session 35).** On BS1
+and BS2 it lives in the adapter and ticks off the camera hook, so a skeleton adapter has no command
+surface until its first engine hook fires. Here it works from the first frame, with no engine hook
+installed anywhere. Two things follow:
+
+- Commands run on the **render thread**, so a long `memscan`/`fsweep` stalls presents rather than
+  the game thread. `vrcmd` prints which pump is live. When the I2 camera hook lands it takes over
+  the poll, one-way and permanently.
+- The **core** vocabulary (`mem*`, `fsweep`, `dumpframe`, `vrinput`, `vrpace`, `vrmirror`, `vrcine`,
+  `vroverlay`, `vrhud`, `vrcmd`) is available on Infinite immediately; adapter-specific commands are
+  `bsi` and `buildgate off|on|status`.
+
+## I1 smoke test (the acceptance, session 35 - repeat it after any core change)
+
+```powershell
+Get-Process Bioshock2HD -ErrorAction SilentlyContinue   # MUST be empty - if not, postpone
+.\tools\build.ps1 -Game bsi -Install
+Remove-Item "$env:LOCALAPPDATA\BioshockVR\bsi\command.txt" -ErrorAction SilentlyContinue
+Start-Process "steam://rungameid/8870"
+.\tools\tail-log.ps1 -Game bsi
+```
+
+1. **Init chain, in this order and with no gap:** `bioshockvr starting` -> `host exe: pe-timestamp
+   0x627BE455 ...` -> `MinHook initialized` -> `[registry] host BioShockInfinite.exe ->
+   bioshockinf adapter` -> `[bsi] host build VERIFIED` -> `[bsi] camera-seam probe (READ-ONLY...)`
+   -> `[cmd] Present-thread command pump ARMED` -> `D3D11 swapchain hooks installed` ->
+   `first Present: backbuffer 2560x1440 format 28` -> `overlay initialized`.
+2. **F10 toggles the overlay.** Measured, not eyeballed: `game-shot` before and after, then
+   `img-diff`. Session-35 numbers - **5.7 %** of channels changed against a **0.54 %** ambient
+   floor (two shots with nothing between them).
+3. **The command seam with no engine hook** - the whole point of the milestone:
+   `game-cmd -Game bsi "vrcmd"` prints the pump, then `"vroverlay on"` / `"vroverlay off"` moves the
+   screenshot (4.6 % vs the same 0.54 % floor). **The screenshot is the acceptance, not the log
+   echo.**
+4. `"dumpframe"` writes `framedump_HHMMSS_q0.txt` into the `bsi` data dir (482 events / 68
+   resources in gameplay at 2560x1440).
+5. `"nosuchcommand"` logs one unknown-command line - proves the dispatcher's fallthrough.
+6. **Stale-file behaviour, both directions:** leave a command in `command.txt`, restart, and it must
+   log `skipping pre-existing command.txt`; then write it again and it must dispatch.
+7. **The game is otherwise normal**, and a menu quit logs
+   `shutdown: DLL_PROCESS_DETACH (orderly process exit)`.
 
 ## Testing discipline
 
