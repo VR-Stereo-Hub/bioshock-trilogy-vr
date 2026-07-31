@@ -39,11 +39,21 @@ Goal: know what we are actually working with before any code runs inside the pro
       *2026-07-31: recorded in ENGINE_NOTES. Headline: the shipped `DefaultInput.ini` has a live
       "Debug binds" block (`god`, `ghost`, `preventdeath`, `walk`, `viewmode`, `shot`, and a
       `set <class> <prop> <value>` bind), which is a working cheat path the remasters never had.*
-- [ ] **User: launch the game flat once**, clear the first-boot flow, reach gameplay, save a
-      checkpoint or two. This creates `%USERPROFILE%\Documents\My Games\BioShock Infinite\` and
-      gives a known-good baseline before any DLL touches the process.
-- [ ] Confirm the live renderer is **D3D11**, not the D3D9 path (a D3D11 prerequisite installer
-      ships alongside, and `d3d9.dll` is also referenced)
+- [x] **User: launch the game flat once**, clear the first-boot flow, reach gameplay, save
+      *2026-07-31: done. Generated the UE3 user config, which is what made the console question
+      answerable. Saves are in Steam cloud userdata, not My Games. Latest is `TWN` (Columbia
+      town), pre-combat.*
+- [x] Confirm the live renderer is **D3D11**, not the D3D9 path
+      *2026-07-31: **D3D11 CONFIRMED live.** `d3d11.dll` + `DXGI.dll` loaded, and decisively
+      `nvwgf2um.dll` (NVIDIA DX10/11 UMD) is present while `nvd3dum.dll` (the DX9 UMD) is absent -
+      `d3d9.dll` alone proves nothing since the launcher and Bink pull it in. Also confirmed live:
+      `XINPUT1_3.dll` loaded (injection vector real at runtime) and **`GameOverlayRenderer.dll`
+      loaded**, so expect BS1's Steam-overlay thunk problem and plan for the IAT-hijack lane.
+      Module list needs **32-bit** PowerShell; a 64-bit host sees only the WOW64 shim.*
+- [x] Harness verified against the live process
+      *2026-07-31: `game-shot -Game bsi` captures real D3D content via PrintWindow (not a black
+      frame - not guaranteed on D3D11), `game-cmd -Game bsi` writes a BOM-free command.txt, and the
+      conflict guard was exercised in both directions (refused with BS2 up, allowed with it down).*
 - [x] **Verify the debug binds fire**
       *2026-07-31, user-tested: **all six inert**, including the console on both `~` and `Tab`.
       Corroborated by positive control - `F9`=`shot` produced no screenshot anywhere. The binds are
@@ -92,9 +102,15 @@ Goal: know what we are actually working with before any code runs inside the pro
       linear walk, so it did not fall out. BS2's design takes live objects from hook parameters
       rather than scanning, which is cheaper and avoids the class of stall/crash BS1's object
       scanner caused. Revisit only if a use case needs it.
-- [ ] **Done when:** [ENGINE_NOTES.md](ENGINE_NOTES.md) records the verified build fingerprint, the
+- [x] **Done when:** [ENGINE_NOTES.md](ENGINE_NOTES.md) records the verified build fingerprint, the
       live renderer, and a **working cheat and test-loadout path with the exact command used** -
       including any surface that turned out inert.
+      ***I0 CLOSED 2026-07-31.** Build fingerprint recorded; renderer confirmed D3D11 live; the
+      cheat path is recorded as a **negative** (every key bind inert, corroborated by the absent
+      screenshot) together with the reflection route that replaces it
+      (`ConsoleCommand` `0x136070`, `AXPawn::SetWeapon` `0x4F9ED0`, `AXWeapon::AddAmmo` `0x5017D0`,
+      `AXPawn::AddInvulnerableFlag`), which is **I2 work** because it needs the adapter. Only
+      deferred item is the UELib workspace, held until a specific script question needs it.*
 
 ## I1 - Skeleton: inject, log, overlay, command seam (~1 session)
 

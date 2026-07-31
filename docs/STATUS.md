@@ -19,8 +19,21 @@ section below, so the two projects' handoffs do not fight over the same lines wh
 
 ### Infinite: current state after session 34
 
-**I0 is complete except one live check.** Branch `bioshock-infinite`, 6 commits, pushed. No adapter
-code exists yet - `src/` is untouched. Docs are in `docs/bioshockinfinite/`.
+**I0 IS CLOSED.** Branch `bioshock-infinite`, pushed. No adapter code exists yet - `src/` is
+untouched. Docs are in `docs/bioshockinfinite/`.
+
+Closed at the end of the session once BS2 freed the machine: **the renderer is D3D11, confirmed
+live** (`nvwgf2um.dll`, the DX10/11 UMD, is loaded and the DX9 UMD is not - `d3d9.dll` alone proves
+nothing). Two further live facts that change I1/I7: **`XINPUT1_3.dll` is loaded**, so the injection
+vector is real at runtime, and **`GameOverlayRenderer.dll` is loaded**, so expect BS1's
+Steam-overlay thunk problem and plan for the IAT-hijack lane (slot RVA `0xCD4814`) rather than
+trusting the proxy seam alone. Reading a 32-bit process's modules needs **32-bit** PowerShell; a
+64-bit host sees only the WOW64 shim and reports 6 modules instead of 123.
+
+The harness was also verified against the live process: `game-shot -Game bsi` captures **real D3D
+content** (not a black frame, which was not guaranteed), `game-cmd -Game bsi` writes a BOM-free
+`command.txt`, and the conflict guard was exercised in **both** directions - refused with BS2 up,
+allowed with it down.
 
 Everything derived so far is offline and **unconfirmed live**. Confidence is stated per row in
 `ENGINE_NOTES.md`; treat every RVA as a hypothesis until a hook fires on it.
@@ -41,8 +54,6 @@ Everything derived so far is offline and **unconfirmed live**. Confidence is sta
 
 **Blocked on the user / the headset:**
 
-- The one remaining I0 item: **confirm the live renderer is D3D11**, not the D3D9 path. One log line
-  once the DLL loads, so it folds into I1's smoke test.
 - **`Bioshock2HD.exe` must not be running.** Enforced for `-Game bsi` by
   `tools/lib/assert-no-conflict.ps1`; building and installing are deliberately unguarded. BS2 was
   running for the whole of session 34, which is why nothing live was attempted beyond the six-key

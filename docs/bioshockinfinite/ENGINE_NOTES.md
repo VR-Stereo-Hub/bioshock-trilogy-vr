@@ -132,8 +132,42 @@ Consequences:
   init time. `core/hooks/d3d11_hook`'s throwaway-device vtable grab does not depend on the game's
   imports and is unaffected, but the *ordering* in `framework::init()` needs a live check.
 - The game selects its renderer at runtime (a D3D11 prerequisite installer ships in
-  `Binaries\Prerequisites\D3D11Install_2010\`, and `d3d9.dll` is also referenced). **Confirm the
-  live device is D3D11 in I0** before assuming the D3D11 hook path applies.
+  `Binaries\Prerequisites\D3D11Install_2010\`, and `d3d9.dll` is also referenced).
+  **CONFIRMED LIVE, session 34: the renderer is D3D11.**
+
+### Live process facts (session 34, game running, no mod)
+
+Module list read with **32-bit** PowerShell - this matters: a 64-bit host enumerating a 32-bit
+process sees only the WOW64 shim layer (`ntdll`, `wow64*`), and both `Get-Process().Modules` and
+`tasklist /m` return a useless 6-module answer. Use `SysWOW64\WindowsPowerShell\v1.0\powershell.exe`.
+123 modules total.
+
+| module | state | meaning |
+|---|---|---|
+| `d3d11.dll`, `DXGI.dll` | LOADED | the D3D11 path is live |
+| **`nvwgf2um.dll`** | LOADED | NVIDIA's **DX10/11** user-mode driver. `nvd3dum.dll` (the DX9 UMD) is **absent** - this is the decisive evidence, since `d3d9.dll` alone proves nothing (the launcher and Bink pull it in) |
+| `d3dx11_43.dll`, `d3dx9_43.dll` | LOADED | helper libs, both present regardless |
+| **`XINPUT1_3.dll`** | LOADED | the injection vector is live at runtime, not merely an import-table entry |
+| **`GameOverlayRenderer.dll`** | LOADED | **the Steam overlay is present.** This is what code-hooks the proxy's export thunk on BS1 and eats `XInputGetState` before the proxy body runs. Expect to need the IAT-hijack lane (slot RVA `0xCD4814`), not the proxy seam alone. |
+| `nvapi.dll` | LOADED | consistent with the read that "Stereoscopic3D" is driver-side 3D Vision rather than an engine per-eye path |
+| `binkw32.dll`, `PhysX3_x86.dll` | LOADED | FMV and physics as expected |
+| `d3dcompiler_43.dll` | absent | shaders are precompiled; `core/gfx/blit`'s lazy `D3DCompile` path will pull it in itself |
+
+**Window geometry:** `2566 x 1469` outer, so a **2560x1440 client** - matching `XEngine.ini`
+`ResX`/`ResY` exactly, and windowed (title bar present, `DisplayMode=0`). Note this is *not* yet
+backbuffer-at-first-Present acceptance for DR-I8; it is the window, which is a strong hint and no
+more.
+
+**Harness verified against the live process** (no mod installed):
+
+- `game-shot.ps1 -Game bsi` captures **real D3D content** via `PrintWindow` +
+  `PW_RENDERFULLCONTENT` - not a black frame, which was not guaranteed on a D3D11 title. The
+  conflict guard passed, and the capture is usable for `img-diff` A/B work from day one.
+- `game-cmd.ps1 -Game bsi` passed the guard, created `%LOCALAPPDATA%\BioshockVR\bsi\` and wrote
+  `command.txt` with no BOM. Nothing reads it yet - that arrives with I1's core poller.
+- The conflict guard was exercised in **both** directions: it refused while BS2 was running
+  (pid 24588, and again 22136) and allowed once BS2 closed. Positive and negative control both
+  observed.
 
 ## UE3 reflection is intact (evidence, session 34)
 
