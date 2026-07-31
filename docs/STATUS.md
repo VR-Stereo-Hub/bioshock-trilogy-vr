@@ -947,7 +947,54 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### 0. SESSION 33 OPENER (BS2) - written with the verdicts that shape it
+### 0a. THE USER'S PRIORITY ORDER (directive, 2026-07-31, session 32 - supersedes ROADMAP ordering)
+
+Verbatim intent: **core experience first, nice-to-haves last.** Swing-to-attack is explicitly
+"a far away thing, it's a nice to have" - it drops to the bottom of the queue on BOTH games.
+
+1. **Custom resolution** (BS2 lane ships; the aspect bisection is what is left)
+2. **Correct scale, and the viewmodel not moving with the headset**
+3. **Motion controls**: weapons, movement, and aim being right
+4. **Normal controls**: weapon and plasmid switching
+5. **HUD, effects, cinematics and menu elements**
+6. Everything else core to the experience
+7. ...then nice-to-haves (swing-to-attack lives here)
+
+### 0b. ITEM 2 IS DIAGNOSED AND CONFIRMED IN-HEADSET (2026-07-31)
+
+The two-lens magnitude mismatch (Current state 3) is **confirmed as the cause of the viewmodel
+defect by an in-headset A/B that tested a QUANTITATIVE prediction**, not just a direction.
+
+Predicted: the angular-gain error is `k = tan(option/2) / tan(30)`, so 2.06x at option 100 and
+3.99x at option 130. Predicted consequence: the defect should get markedly worse at 130.
+**User's verdict: "I just did the test and it very clearly got a lot worse at 130 FOV."**
+
+This is much stronger evidence than the callstack/draw-count circumstantials, and it converts the
+lens split from "leading hypothesis" to the working diagnosis.
+
+**THE CLINCHER PASSED.** The same arithmetic predicted the error VANISHES at option 60, where
+`k = tan(30)/tan(30) = 1.0` and the world lens exactly equals the fixed 60-deg lens. User, same
+session: **"gfov 60 test done, the weapon looks correct now and doesn't move."**
+
+Two predictions, at two different input values, both confirmed. **The diagnosis is closed.** A pass
+that were not the viewmodel could not make the VIEWMODEL correct at exactly the option matching its
+own tangent - so this also identifies the cluster, and the queued holster test is RETIRED as
+unnecessary. It further retracts session 25's "BS2's foreground follows the world FOV natively"
+(see the retraction in ENGINE_NOTES near line 126) - **BS2 does have a fixed foreground lens, just
+like BS1.** The defect class ports; that does not license porting BS1's specific machinery.
+
+**Immediate zero-code mitigation for the user:** keep the FOV option LOW (100 or below, and note
+`gfov` defaults to 130 when enabled - leave it off). Lower option = smaller `k` = less viewmodel
+error, until the real fix lands.
+
+**The real fix, once the clincher passes:** make the two lenses MATCH, because one projection layer
+carries one fov claim and only matched lenses make both world and viewmodel right (BS1's session-28
+conclusion, and the one piece of BS1 reasoning that DOES transfer - the mechanism differs, the
+consequence is identical). Direction: raise the 60-deg lens to the world's value rather than
+dropping the world to 60. That needs BS2's second-lens FOV field, which is UNDERIVED. Per the
+standing policy, check for a native BS2 route before porting BS1's fg-bake machinery.
+
+### 0c. SESSION 33 OPENER (BS2) - written with the verdicts that shape it
 
 Session 32 answered the lens question and killed the square-backbuffer plan. Steps 3-4 of the
 session-32 brief were NOT reached; they are re-scoped below by what was measured.
@@ -962,17 +1009,36 @@ configuration**, and it doubles as the clean second aspect that settles the worl
 4 above). `[Engine.RenderConfig] HorizontalFOVLock=True` is an unexamined suspect for the
 mechanism.
 
-**B. Prove what the 60-deg lens IS (one dump).** It is the leading explanation for the viewmodel
-report but it is NOT confirmed to be the viewmodel. Identify it by making it MOVE, never by draw
-counts (BS1's rule, learned the hard way): holster or switch weapon, re-dump at 16:9, and see
-whether the 19-block `...AECACF...` cluster disappears or changes. If it IS the viewmodel, BS1's
-conclusion applies - MATCH the lenses, because one claim cannot serve two - and the fix is a BS2
-fg-lens write, which is underived. If it is NOT, the viewmodel cause is still open and the two
-zero-code in-headset A/Bs (sweep IPD ~20 vs ~120 mm, sweep world scale) are the next instrument.
+**B. ~~Prove what the 60-deg lens IS~~ - DONE, retired.** The two in-headset FOV A/Bs identified it
+conclusively (see 0b). It is the viewmodel. No dump needed.
 
-Note this must be reconciled with session 25, which measured BS2's foreground following the world
-FOV natively in mono. Both can be true if the drill rides the world lens and the 60-deg cluster is
-some other pass. The holster test distinguishes them.
+**B'. THE FIX: find BS2's foreground lens FOV and write the world's value into it.** This is now
+priority 2 on the user's list and the diagnosis is closed, so it is the main event.
+
+- **Direction: raise the fg lens to the world, do NOT drop the world to 60.** Matching at 60 works
+  (proven) but a 60-deg world is unusable in VR. Matching at the world's value gives a wide world
+  AND a correct viewmodel - the only state where both are right, because one projection layer
+  carries one fov claim.
+- **The field is UNDERIVED.** Leads, cheapest first:
+  1. The value is exactly `tan(30)`, i.e. **60.0 degrees** - a round number, so likely a stored
+     property or a class default rather than a computed one.
+  2. **The fg draw callstacks are already captured**: `0xBE9E68,0xAECACF,0x646054` and
+     `0xBE9E68,0xAECACF,0x6926FD` (session-32 dumps, 16:9). `0xAECACF` is the fg-specific frame -
+     the world pass goes through `0xAEC7B4` instead. Disassemble around these offline (capstone is
+     installed) to find where 60 enters the cb build. This is the highest-value lead and needs no
+     game.
+  3. b2r already has the full discovery command set (`memscan`/`memscani`/`mempoke`/`fsweep`/
+     `hexdump`/`pokeaddr`) - scan for the float `60.0` or `0.57735` and poke, watching the
+     viewmodel. Expect many candidates; use the option sweep as the discriminator (the right one
+     does NOT change when the option does).
+  4. Check for a NATIVE route first, per the standing policy: BS2 has an exposed FOV concept BS1
+     lacked, so a viewmodel/weapon FOV property may exist in `BakedScripts` or be reachable
+     through the ProcessEvent-by-name seam. Look before porting BS1's fg-bake machinery.
+- **Acceptance:** `fovaudit` reports `lenses=1` in gameplay at 16:9 (the two clusters collapse),
+  and in-headset the weapon is stable at option 100+ rather than only at 60.
+- **Interim guidance for the user until it lands:** keep the FOV option LOW. The error is
+  `k = tan(option/2)/tan(30)`, so lower is better; 60 is perfect but narrow. There is likely a
+  tolerable middle (try 75-85) trading a little world width for a much steadier weapon.
 
 **C. In-headset: the pitch servo's sign (30 s, owed).** Checklist in `docs/bioshock2/TESTING.md`.
 `enginePitch=` in the heartbeat must MOVE while looking up and down; `vrinput pitchservo invert` if
