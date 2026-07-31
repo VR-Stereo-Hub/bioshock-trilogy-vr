@@ -166,6 +166,12 @@ std::atomic<int> g_fovSlotCount{0};
 std::atomic<float> g_fovSlotH[kFovSlots];
 std::atomic<float> g_fovSlotV[kFovSlots];
 float g_fovLoggedH = 0.0f, g_fovLoggedFgH = 0.0f;
+int g_fovLoggedLenses = 0;
+// Hard floor between fov-watch log lines. This runs on the PRESENT path, so a
+// change test that can flicker turns into a per-frame file write - which is
+// exactly what wedged BS2 (200 lines/s, 40 fps, then unresponsive). Any change
+// test above this is a policy; this is the safety net.
+unsigned long long g_fovLoggedMs = 0;
 // Mismatch verdict (render thread writes; hysteresis over present intervals).
 std::atomic<bool> g_fovMismatchOn{false};
 int g_fovMismatchStreak = 0;
@@ -716,9 +722,24 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                 g_fovLenses.store(lenses, std::memory_order_relaxed);
                 // One line, on change, carrying everything a conclusion needs -
                 // no cross-referencing two log lines ever again (session 28).
-                float fgH = other >= 0 ? h[other] : 0.0f;
-                if (fabsf(h[win] - g_fovLoggedH) > 0.002f ||
-                    fabsf(fgH - g_fovLoggedFgH) > 0.002f) {
+                //
+                // SESSION 33: the change test compares the PUBLISHED (sticky)
+                // fg value, never this round's `other`. With the phase rotating,
+                // `other` alternates between the fg tangent and "not sampled
+                // this round" every few intervals - so a test on it fired at
+                // PRESENT RATE and flooded the log with ~200 lines/s, which
+                // dropped the game to 40 fps and then wedged it outright
+                // (Responding=False, force-kill). A rate limit backs it up: no
+                // future change to what is logged can turn this line into a
+                // per-frame write again.
+                float fgH = g_fovFgTanH.load(std::memory_order_relaxed);
+                float fgV = g_fovFgTanV.load(std::memory_order_relaxed);
+                bool changed = lenses != g_fovLoggedLenses ||
+                               fabsf(h[win] - g_fovLoggedH) > 0.002f ||
+                               fabsf(fgH - g_fovLoggedFgH) > 0.002f;
+                if (changed && nowMs - g_fovLoggedMs >= 500) {
+                    g_fovLoggedMs = nowMs;
+                    g_fovLoggedLenses = lenses;
                     g_fovLoggedH = h[win];
                     g_fovLoggedFgH = fgH;
                     BVR_LOG("[hud] fov watch: %d lens(es) | WORLD tanH=%.6f "
@@ -728,9 +749,8 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                             "| sampled %d of %d distinct cb0 (stride %d), "
                             "ambiguous rounds %d",
                             lenses, h[win], v[win],
-                            2.0f * atanf(h[win]) * 57.29578f, votes[win], n,
-                            other >= 0 ? h[other] : 0.0f,
-                            other >= 0 ? v[other] : 0.0f, lb[win], g_lbSrcW, g_lbSrcH,
+                            2.0f * atanf(h[win]) * 57.29578f, votes[win], n, fgH, fgV,
+                            lb[win], g_lbSrcW, g_lbSrcH,
                             g_lbSrcH ? static_cast<float>(g_lbSrcW) /
                                            static_cast<float>(g_lbSrcH)
                                      : 0.0f,
