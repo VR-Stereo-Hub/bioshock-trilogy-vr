@@ -101,9 +101,40 @@ Infinite's shipped `XGame\Config\DefaultInput.ini` contains a live `; --- Debug 
 | `F1` / `F2` / `F3` | `viewmode wireframe` / `unlit` / `lit` | render instruments |
 | `F7` / `F8` | `set D3DRenderDevice bUsePostProcessEffects False` / `True` | proves `set` works |
 
+**All of those binds survived into the live `XInput.ini`** (verified session 34 after the first
+launch), and the live file additionally carries **`[Engine.Console] ConsoleKey=Tilde` /
+`TypeKey=Tab`**, which the shipped template does not. If the console opens, test loadouts stop
+being a problem.
+
 A second surface exists in `XGame\Config\DefaultDesignerControlPresets.ini` (base64 `Data=`), which
 lists `God Mode`, `Ghost`, `Prevent Death`, `GiveAmmo`, `Slomo 10/50/100/200/1000%`, `QuickSave`,
 `QuickLoad` and the viewmodes.
+
+### I0 live checklist (about 3 minutes, no mod installed, no headset needed)
+
+Run this the next time Infinite can have the machine, i.e. **with `Bioshock2HD.exe` closed**. Load
+any save; combat is not required for most of it.
+
+1. **Console.** Press `~` (tilde), then `Tab`. Does a console open? If yes, type `god` and note
+   whether it echoes something like "God mode on". *This one question decides how much of BS1's
+   Exec-seam machinery we ever need to build.*
+2. **`PageUp` (ghost).** You should detach and fly through geometry - unmistakable, and needs no
+   combat. `PageDown` (walk) puts you back.
+3. **`F3` then `F1` (viewmode lit / wireframe).** Wireframe is unmistakable. Put it back with `F3`.
+   This also proves the `viewmode` family, which is a useful render instrument later.
+4. **`F9` (shot).** Check for a new screenshot file; report where it landed.
+5. **`Delete` (god).** Only verifiable once something can hurt you, so skip if there is no combat
+   yet - or confirm via the console echo from step 1.
+6. **`F7` then `F8`** (post-process off/on). A visible change confirms that `set <class> <prop>
+   <value>` reaches a live object, which is the UE3 universal knob.
+
+Report which of the six did something observable and which did nothing. **A bind that is wired but
+inert is exactly as important to record as one that works** - BS1 spent eight sessions believing a
+`set` was landing because the return value said `HANDLED`.
+
+If the console works, the loadout question is solved by conjuring one rather than by playing to a
+combat area. If it does not, the fallback is to play as far as the raffle (first Sky-Hook, then the
+Machine Gun) and save there as the permanent test anchor.
 
 `[Engine.Console]`'s autocomplete list additionally names `SaveCheckpoint`, `LoadCheckpoint`,
 `ArchiveLastCheckpoint`, `DisplayLastCheckpointInfo` and `GIVELOCKPICKS`.

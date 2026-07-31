@@ -310,10 +310,36 @@ Additional surfaces found:
   `Toggle Zoom`, `Debug_InvertY`, `DebugSkylineCone`. A second, independent debug surface.
   `Slomo`, `QuickSave` and `QuickLoad` are directly useful to the flat harness.
 
-**Caveat, and it is the important one.** None of the above has been confirmed *live* yet. All of it
-is read out of the shipped config files and the exe's string tables. Per the standing rule, a
-config entry is a claim, not an effect. **I0 verifies each by observable behaviour** (press
-`Delete`, take damage, survive) and records the result here - including any that turn out inert.
+### The live user config confirms it survived the template (session 34, after the first launch)
+
+The shipped `XGame\Config\Default*.ini` files are *templates*. What the engine actually reads is
+`%USERPROFILE%\Documents\My Games\BioShock Infinite\XGame\Config\X*.ini`, generated on first
+launch. So the real question was never "is it in DefaultInput.ini" but "did it survive into
+XInput.ini". **It did**, verified by reading the generated file:
+
+- Every debug bind is present in the live `XInput.ini`: `Delete`=`god`, `End`=`preventdeath`,
+  `PageDown`=`walk`, `PageUp`=`ghost`, `Backslash`=`behindview`, `F1/F2/F3`=`viewmode ...`,
+  `F9`=`shot`, `F7/F8`=`set D3DRenderDevice bUsePostProcessEffects False/True`.
+- **`[Engine.Console]` in the live file carries `ConsoleKey=Tilde` and `TypeKey=Tab`** (lines
+  220-222). Neither key appears in the shipped `DefaultInput.ini` - the engine merged them in from
+  `Engine\Config\BaseInput.ini`. **This is the single biggest quality-of-life difference from the
+  remasters, where the console is compiled out and key-bound commands are inert.** If the console
+  opens, the entire `Exec`-seam apparatus BS1 needed becomes optional rather than mandatory, and
+  test loadouts stop being a mini-saga.
+
+**Caveat, and it is the important one.** This is still config, not behaviour. A bind existing in
+the live ini is a claim that the key is *wired*, not proof the command *does* anything - which is
+precisely the distinction that cost BS1 eight sessions on a `set` that logged `HANDLED` and did
+nothing. **I0 verifies each by observable behaviour** and records the result here, including any
+that turn out inert.
+
+### Save data location
+
+Saves are **not** under `My Games`. They live in Steam cloud-synced userdata:
+`C:\Program Files (x86)\Steam\userdata\<steamid>\8870\remote\SaveData\`, as `.sav` plus a `.bkm`
+bookmark sibling, named `<MapTag>-0_<M_D_YYYY_H_M_S>_<n>.sav` (e.g. `Light_Top-...` for the opening
+lighthouse, `TWN-...` for Columbia town). Back one up before any destructive test - and note Steam
+Cloud will re-sync, so a "deleted" save can come back.
 
 ## Renderer, resolution and FOV (config-level findings, unverified live)
 
@@ -326,6 +352,22 @@ config entry is a claim, not an effect. **I0 verifies each by observable behavio
 | `MinSmoothedFrameRate` / `MaxSmoothedFrameRate` | `BaseEngine.ini:193-194` | 22 / 124 | |
 | `RenderThreadJobQueuePriority` | `XGame\Config\DefaultEngine.ini:456` | 7 | |
 | `AllowD3D11` | `BaseEngine.ini:733` | `True` | |
+
+### Live values after the first launch (session 34)
+
+Read from the generated user config, so these are what the engine is actually running with:
+
+| key | file | value | note |
+|---|---|---|---|
+| `ResX` / `ResY` | `XEngine.ini:877-878` | **2560 / 1440** | matches `XUserOptions.ini` `ResolutionX/Y`, so **`XEngine.ini` is the resolution lane** and the options UI writes through to it. Still needs backbuffer-at-first-Present acceptance (DR-I8). |
+| `DisplayMode` | `XUserOptions.ini:152` | **0 = windowed** | good news for the harness - `PrintWindow` capture and synthetic clicks behave far better windowed than exclusive fullscreen |
+| `bSmoothFrameRate` | `XEngine.ini:152` | **FALSE** | already off. The shipped `BaseEngine.ini` says TRUE; the generated config disagrees, so one VR blocker is pre-cleared. |
+| `MaxSmoothedFrameRate` | `XEngine.ini:154` | 120 | moot while smoothing is off |
+| `OneFrameThreadLag` | `XEngine.ini:808` | **True** | still on. This is the config-level `reentry 1t` candidate - the lever to flip in DR-I5. |
+| `AllowD3D11` | `XEngine.ini:814` | True | renderer still needs live confirmation (D3D11 vs the D3D9 path) |
+| `AllowNvidiaStereo3d` | `XEngine.ini:157` | False | consistent with the "no engine per-eye path" reading |
+| `FieldOfView` | `XUserOptions.ini:138` | 0.000000 | the native slider at its default, i.e. base FOV with no offset |
+| `FOVAngle` | `XEngine.ini:502` | 70.0 | |
 
 ### Resolution
 
