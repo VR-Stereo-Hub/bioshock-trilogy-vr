@@ -56,11 +56,24 @@ std::atomic<float> g_offsetX{0.0f}, g_offsetY{0.0f}, g_offsetZ{0.0f};
 std::atomic<bool> g_logCamera{true};
 
 // FOV (session 25). The readback claims whatever the game renders (honest
-// projection = no fisheye/world-drag); both WRITE levers ship DEFAULT OFF
-// per the every-lever-off rule. `vrfov` asks for the headset-suggested hfov
-// in strict gameplay while the HMD drives; `gfov` is the manual test lever.
+// projection = no fisheye/world-drag). `vrfov` asks for the headset-suggested
+// hfov in strict gameplay while the HMD drives; `gfov` is the manual test lever.
+//
+// SESSION 34 - `vrfov` NOW SHIPS DEFAULT ON, and that is a deliberate override
+// of the every-lever-off rule, at the user's explicit instruction ("I want the
+// visual space to be the whole screen/FOV"). The measurement behind it: the
+// Quest 3 eye is 108 x 110 deg (log: `headset fov half-angles h=54.0 v=55.0`)
+// while the game at option 100 renders 100 x 67.7 - so 38% of the eye's height
+// was black, top and bottom, and THAT is the "black bars" report. It is not a
+// letterbox: every session-33 dump shows the viewport at full backbuffer height
+// and `letterbox 1.0000`.
+//
+// On BS2 the FOV option is the ONLY lever that adds vertical view, because the
+// law fixes tanV against a 16:9 reference regardless of aspect - a squarer
+// backbuffer only narrows the horizontal. That is the exact opposite of BS1,
+// where a square backbuffer was the answer and no FOV write was needed.
 std::atomic<int32_t> g_lastOptionFov{0}; // telemetry: 0 = object not located
-std::atomic<bool> g_forceHeadsetFov{false};
+std::atomic<bool> g_forceHeadsetFov{true};
 std::atomic<bool> g_gameFovWrite{false};
 // Manual-lever default 130 = BS1 parity (user request, session 25 in-headset
 // pass: the headset-derived vrfov wrote 131 on the Quest 3 / VD rig and was
@@ -335,6 +348,31 @@ float rendered_hfov_for_option(int32_t optionDeg) {
     float tanV = tanf(static_cast<float>(optionDeg) * 0.5f / kRadToDeg) * (9.0f / 16.0f);
     float tanH = tanV * (static_cast<float>(bw) / static_cast<float>(bh));
     return 2.0f * atanf(tanH) * kRadToDeg;
+}
+
+// The law RUN BACKWARDS: the option value that makes the game render a given
+// true horizontal fov. Needed because the option is NOT a true horizontal on
+// BS2 - core asks for a horizontal (suggested_hfov_deg), and writing that
+// number straight into the option is only correct at 16:9. Identity at 16:9, so
+// nothing shipping moves; correct the moment a second aspect ships. Same shape
+// of correction as session 33 made to the CLAIM, for the same reason.
+float option_for_rendered_hfov(float hfovDeg) {
+    if (hfovDeg <= 0.0f) return 0.0f;
+    unsigned bw = 0, bh = 0;
+    if (!bvr::hud::backbuffer_dims(&bw, &bh) || !bw || !bh) return hfovDeg;
+    float tanH = tanf(hfovDeg * 0.5f / kRadToDeg);
+    float tanV = tanH * (static_cast<float>(bh) / static_cast<float>(bw));
+    return 2.0f * atanf(tanV * (16.0f / 9.0f)) * kRadToDeg;
+}
+
+// The VERTICAL the game renders for an option value. Aspect-INVARIANT on BS2 -
+// which is exactly why a squarer backbuffer cannot buy vertical view here (it
+// only narrows the horizontal), and why the FOV option is the only lever that
+// fills a square headset eye. The opposite of BS1, where aspect was the lever.
+float rendered_vfov_for_option(int32_t optionDeg) {
+    if (optionDeg <= 0) return 0.0f;
+    float tanV = tanf(static_cast<float>(optionDeg) * 0.5f / kRadToDeg) * (9.0f / 16.0f);
+    return 2.0f * atanf(tanV) * kRadToDeg;
 }
 
 // Half-IPD shift along view-right of `rot`, sign -1 = left eye. Shared by the
@@ -915,6 +953,11 @@ void save_vr_preset() {
     fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
     fprintf(f, "gameFovDeg=%.1f\n", g_gameFovDeg.load(std::memory_order_relaxed));
     fprintf(f, "fgFovMatch=%d\n", g_fgFovMatch.load(std::memory_order_relaxed) ? 1 : 0);
+    // Session 34: persisted as a VALUE for the same reason fgFovMatch is - it is
+    // under judgement, and a verdict that cannot be re-checked against the same
+    // numbers next launch is not a verdict.
+    fprintf(f, "fillHeadsetFov=%d\n", g_forceHeadsetFov.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "fgFovManual=%.1f\n", g_fgFovManual.load(std::memory_order_relaxed));
     fclose(f);
     BVR_LOG("[b2r] VR preset values saved to %ls", path);
 }
@@ -945,6 +988,10 @@ void load_vr_preset_values() {
             g_gameFovDeg.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "fgFovMatch") == 0)
             g_fgFovMatch.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "fillHeadsetFov") == 0)
+            g_forceHeadsetFov.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "fgFovManual") == 0 && v >= 0.0f)
+            g_fgFovManual.store(v, std::memory_order_relaxed);
         else
             --n;
     }
@@ -1224,8 +1271,11 @@ void calcview_tail(void* self, CalcViewParams* p) {
     // consumes at least up to 150 unclamped, and suggested_hfov_deg caps at
     // 160 on its own.
     if (optionFov) {
+        // Session 34: core asks for a true HORIZONTAL fov; the option is not
+        // one on BS2, so run the law backwards to get the option that renders
+        // it. Identity at 16:9 - nothing shipping moves.
         float vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
-                          ? bvr::vr::suggested_hfov_deg()
+                          ? option_for_rendered_hfov(bvr::vr::suggested_hfov_deg())
                           : 0.0f;
         bool wantVr = strictGameplay && vrDrove && vrFov > 0.0f;
         bool wantManual =
@@ -1621,6 +1671,46 @@ void draw_debug_ui() {
             save_vr_preset();
     }
 
+    // ---- FILL THE VIEW: the black bands, with the measurement on screen -----
+    // The user's report was "there's black bars at the bottom". The cause is not
+    // a letterbox - it is that a 16:9 render does not reach the top and bottom
+    // of an essentially square headset eye. The numbers below ARE the diagnosis,
+    // so the A/B explains itself in the headset instead of needing a log read.
+    if (ImGui::CollapsingHeader("FILL THE VIEW  <-- the black bands",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool fill = g_forceHeadsetFov.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Fill the headset FOV (widen the game's lens to the eye)",
+                            &fill))
+            g_forceHeadsetFov.store(fill, std::memory_order_relaxed);
+
+        int32_t opt = g_lastOptionFov.load(std::memory_order_relaxed);
+        float rh = rendered_hfov_for_option(opt), rv = rendered_vfov_for_option(opt);
+        float halfH = 0.0f, halfV = 0.0f;
+        if (bvr::vr::headset_half_fov_deg(&halfH, &halfV)) {
+            ImGui::Text("rendered %.0f x %.0f deg   |   your eye %.0f x %.0f deg", rh, rv,
+                        halfH * 2.0f, halfV * 2.0f);
+            float shortV = halfV * 2.0f - rv;
+            if (shortV > 1.0f)
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                   "%.0f deg of vertical view missing - %.0f%% of the "
+                                   "eye's height is black",
+                                   shortV, 100.0f * shortV / (halfV * 2.0f));
+            else
+                ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
+                                   "vertical view fills the eye");
+        } else {
+            ImGui::Text("rendered %.0f x %.0f deg (no headset geometry yet)", rh, rv);
+        }
+        ImGui::TextWrapped(
+            "On this game the FOV option is the only thing that adds VERTICAL "
+            "view: its vertical is locked to a 16:9 reference, so a squarer "
+            "resolution only narrows the horizontal. Widening the lens also "
+            "widens the weapon's lens, which is what brings the helmet into "
+            "frame - use the rig control below for that.");
+        if (ImGui::Button("Save these settings (survives a relaunch)##fillview"))
+            save_vr_preset();
+    }
+
     if (ImGui::CollapsingHeader("VR camera (M3)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text(g_vrDriving.load(std::memory_order_relaxed)
                         ? "camera: driven by HMD pose"
@@ -1641,9 +1731,10 @@ void draw_debug_ui() {
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
         atomic_slider("IPD (mm, AER + stereo)", g_ipdMm, 50.0f, 75.0f);
-        bool forceFov = g_forceHeadsetFov.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Force headset FOV (off = game FOV, narrower)", &forceFov))
-            g_forceHeadsetFov.store(forceFov, std::memory_order_relaxed);
+        // The headset-FOV write moved to its own "FILL THE VIEW" section above,
+        // where the numbers that justify it are on screen next to it. One flag,
+        // one control - two checkboxes for the same atomic is how a user ends up
+        // unable to say which one they were judging.
     }
 
     if (ImGui::CollapsingHeader("Camera debug")) {
