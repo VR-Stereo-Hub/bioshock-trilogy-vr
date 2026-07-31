@@ -26,6 +26,7 @@
 
 #include <imgui.h>
 
+#include <tlhelp32.h>
 #include <share.h>
 #include <atomic>
 #include <cmath>
@@ -493,6 +494,7 @@ std::atomic<const char*> g_presentStage{nullptr};
 std::atomic<int64_t> g_presentStageT0{0};
 std::atomic<const char*> g_drawStage{nullptr};
 std::atomic<int64_t> g_drawStageT0{0};
+std::atomic<uint32_t> g_drawStageTid{0};
 
 // Records on every return path, which is what makes the two whole-half timers
 // trustworthy - on_present_begin alone has nine early returns.
@@ -748,6 +750,185 @@ void trace_write(const char* line) {
     fflush(g_traceFile); // the process may be killed at any moment
 }
 
+// ---- Session 34: THE STALL WATCHDOG ----------------------------------------
+// The freeze is a call inside the game that never returns, and the mod is not
+// on that stack - so no amount of our own logging can name it. This suspends
+// the wedged thread, reads its instruction pointer, and scans its stack for
+// return addresses that fall inside the game image. Those RVAs, run through
+// tools/disasm-rva.py, are what turn "secondDraw never returned" into a named
+// engine function.
+//
+// Suspending a thread from another thread is only safe because we do nothing
+// that can allocate or take a lock while it is suspended: read the context,
+// copy raw dwords, resume. The formatting happens afterwards.
+uintptr_t g_exeLo = 0, g_exeHi = 0;
+
+void capture_exe_bounds() {
+    if (g_exeLo) return;
+    HMODULE exe = GetModuleHandleW(nullptr);
+    if (!exe) return;
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(exe);
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<uint8_t*>(exe) +
+                                                   dos->e_lfanew);
+    g_exeLo = reinterpret_cast<uintptr_t>(exe);
+    g_exeHi = g_exeLo + nt->OptionalHeader.SizeOfImage;
+}
+
+// Resolve an address to "module+offset" (a DLL name is not game-derived).
+void describe_addr(uintptr_t a, char* out, size_t cap) {
+    out[0] = 0;
+    if (!a) return;
+    HMODULE hm = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(a), &hm) &&
+        hm) {
+        wchar_t wpath[MAX_PATH] = {};
+        GetModuleFileNameW(hm, wpath, MAX_PATH);
+        const wchar_t* b = wcsrchr(wpath, L'\\');
+        b = b ? b + 1 : wpath;
+        char nm[64] = {};
+        WideCharToMultiByte(CP_UTF8, 0, b, -1, nm, sizeof(nm), nullptr, nullptr);
+        sprintf_s(out, cap, "%s+0x%X", nm,
+                  static_cast<unsigned>(a - reinterpret_cast<uintptr_t>(hm)));
+    } else {
+        sprintf_s(out, cap, "%08X", static_cast<unsigned>(a));
+    }
+}
+
+// Snapshot EVERY thread in the process, one at a time. A deadlock has two
+// sides, and naming only the side that stopped first cannot distinguish "waits
+// on the render thread" from "waits on something nobody will ever signal".
+// Suspends one thread at a time and formats afterwards, so the watchdog can
+// never be holding a CRT lock that a suspended thread needs.
+void watchdog_all_threads() {
+    capture_exe_bounds();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    DWORD self = GetCurrentThreadId();
+    DWORD pid = GetCurrentProcessId();
+    int reported = 0;
+    if (Thread32First(snap, &te)) {
+        do {
+            if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+            HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE,
+                                   te.th32ThreadID);
+            if (!th) continue;
+            CONTEXT ctx{};
+            ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+            uintptr_t eip = 0, esp = 0;
+            uintptr_t fr[6] = {};
+            int nf = 0;
+            if (SuspendThread(th) != static_cast<DWORD>(-1)) {
+                if (GetThreadContext(th, &ctx)) {
+                    eip = ctx.Eip;
+                    esp = ctx.Esp;
+                    const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(esp);
+                    for (int i = 0; i < 1024 && nf < 6; ++i) {
+                        uintptr_t v = 0;
+                        __try {
+                            v = sp[i];
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            break;
+                        }
+                        if (v >= g_exeLo && v < g_exeHi) fr[nf++] = v;
+                    }
+                }
+                ResumeThread(th);
+            }
+            CloseHandle(th);
+            if (!eip) continue;
+            // Only threads with game code on the stack are interesting; the
+            // rest are Steam/driver worker pools and would bury the signal.
+            if (nf == 0) continue;
+            char where[96];
+            describe_addr(eip, where, sizeof(where));
+            char msg[320];
+            int n = sprintf_s(msg, "  thread %5u at %-28s exe:", te.th32ThreadID, where);
+            for (int i = 0; i < nf && n > 0 && n < static_cast<int>(sizeof(msg)) - 12; ++i)
+                n += sprintf_s(msg + n, sizeof(msg) - n, " %X",
+                               static_cast<unsigned>(fr[i] - g_exeLo));
+            trace_write(msg);
+            if (++reported >= 12) break;
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+}
+
+void watchdog_capture(uint32_t tid, const char* what, int64_t stuckMs) {
+    capture_exe_bounds();
+    if (!g_exeLo || !tid) return;
+    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                           FALSE, tid);
+    if (!th) {
+        char msg[128];
+        sprintf_s(msg, "WATCHDOG: OpenThread(%u) failed (%lu)", tid, GetLastError());
+        trace_write(msg);
+        return;
+    }
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    uintptr_t frames[24] = {};
+    int nFrames = 0;
+    uintptr_t eip = 0, esp = 0, ebp = 0;
+    if (SuspendThread(th) != static_cast<DWORD>(-1)) {
+        if (GetThreadContext(th, &ctx)) {
+            eip = ctx.Eip;
+            esp = ctx.Esp;
+            ebp = ctx.Ebp;
+            // Raw stack scan: every dword in the first 8 KB that lands inside
+            // the game image is a plausible return address. Crude, but it needs
+            // no symbols and no unwind data, and the histogram is unambiguous.
+            const uintptr_t* p = reinterpret_cast<const uintptr_t*>(esp);
+            for (int i = 0; i < 2048 && nFrames < 24; ++i) {
+                uintptr_t v = 0;
+                __try {
+                    v = p[i];
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    break;
+                }
+                if (v >= g_exeLo && v < g_exeHi) frames[nFrames++] = v;
+            }
+        }
+        ResumeThread(th);
+    }
+    CloseHandle(th);
+
+    // WHICH MODULE is the wedged thread actually inside? This is the datum that
+    // separates "blocked in the graphics driver" from "blocked on a lock", and
+    // those need opposite fixes. A DLL name is not game-derived content.
+    char mod[64] = "?";
+    if (eip) {
+        HMODULE hm = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(eip), &hm) &&
+            hm) {
+            wchar_t wpath[MAX_PATH] = {};
+            GetModuleFileNameW(hm, wpath, MAX_PATH);
+            const wchar_t* base = wcsrchr(wpath, L'\\');
+            base = base ? base + 1 : wpath;
+            WideCharToMultiByte(CP_UTF8, 0, base, -1, mod, sizeof(mod), nullptr, nullptr);
+            sprintf_s(mod + strlen(mod), sizeof(mod) - strlen(mod), "+0x%X",
+                      static_cast<unsigned>(eip - reinterpret_cast<uintptr_t>(hm)));
+        }
+    }
+
+    char msg[640];
+    int n = sprintf_s(msg, "WATCHDOG %s stuck %lld ms tid=%u eip=%08X in %s esp=%08X ebp=%08X rva:",
+                      what, static_cast<long long>(stuckMs), tid,
+                      static_cast<unsigned>(eip), mod, static_cast<unsigned>(esp),
+                      static_cast<unsigned>(ebp));
+    for (int i = 0; i < nFrames && n > 0 && n < static_cast<int>(sizeof(msg)) - 16; ++i)
+        n += sprintf_s(msg + n, sizeof(msg) - n, " %X",
+                       static_cast<unsigned>(frames[i] - g_exeLo));
+    trace_write(msg);
+    trace_write("WATCHDOG all threads with game code on the stack:");
+    watchdog_all_threads();
+}
+
 DWORD WINAPI trace_thread_proc(void*) {
     uint32_t lastPresents = 0;
     uint32_t lastSubmitted = 0;
@@ -784,6 +965,27 @@ DWORD WINAPI trace_thread_proc(void*) {
         lastSkips = skips;
 
         bool stalled = seenAny && dPresents == 0;
+
+        // Once per stall episode, and only after it is clearly not a hitch,
+        // photograph the wedged thread's stack. This is the step that names the
+        // engine function; everything before it could only say "stopped".
+        {
+            static bool fired = false;
+            if (!stalled) {
+                fired = false;
+            } else if (!fired) {
+                const char* dw = g_drawStage.load(std::memory_order_relaxed);
+                uint32_t dtid = g_drawStageTid.load(std::memory_order_relaxed);
+                int64_t dms = g_qpcFreq ? (phase_now() -
+                                           g_drawStageT0.load(std::memory_order_relaxed)) *
+                                              1000 / g_qpcFreq
+                                        : 0;
+                if (dw && dtid && dms >= 4000) {
+                    fired = true;
+                    watchdog_capture(dtid, dw, dms);
+                }
+            }
+        }
         if (g_session == XR_NULL_HANDLE && !g_simIdle.load(std::memory_order_relaxed) &&
             !stalled)
             continue;
@@ -3055,6 +3257,7 @@ void set_present_stage(const char* name) {
 
 void set_draw_stage(const char* name) {
     g_drawStageT0.store(phase_now(), std::memory_order_relaxed);
+    g_drawStageTid.store(name ? GetCurrentThreadId() : 0u, std::memory_order_relaxed);
     g_drawStage.store(name, std::memory_order_relaxed);
 }
 

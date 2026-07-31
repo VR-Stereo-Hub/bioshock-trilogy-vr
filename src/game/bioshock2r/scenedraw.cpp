@@ -95,6 +95,44 @@ std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
 std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
 
+// ---- Session 34: THE FREEZE - WHAT IT IS, AND WHAT IT IS NOT --------------
+// Localised end to end with the stall watchdog (suspend the wedged thread,
+// read its context, scan its stack for game-image return addresses, resolve
+// the module of eip), then disassembled offline:
+//
+//   secondDraw stuck 4218 ms, eip in ntdll!NtWaitForSingleObject+0xC
+//   nearest game frame returns into a thiscall wrapper that is literally
+//       push [ebp+8] ; push [ecx+4] ; call KERNEL32!WaitForSingleObject
+//   and its CALLER is:
+//       mov esi, ecx                 ; this
+//       cmp dword ptr [esi+8], 0     ; completion flag
+//       jne  skip                    ; already done -> no wait
+//       mov ecx, [esi+0x10]          ; event object
+//       push -1                      ; INFINITE
+//       call [eax+0x14]              ; virtual Wait(INFINITE)
+//
+// So the re-entered draw blocks in a CROSS-THREAD COMPLETION HANDSHAKE with an
+// INFINITE timeout, guarded by a "already finished" flag - the classic shape in
+// which a wakeup delivered between the flag test and the wait is lost forever.
+// SequentialReentry doubles these handshakes per frame and shifts their timing,
+// which is why the freeze is non-deterministic, stereo-only, and reproduces
+// with no headset and no XR session. It is the engine's own race; VR makes it
+// fire. It is NOT a VR bug and NOT caused by anything this session changed
+// (reproduced identically on main).
+//
+// REFUTED, and the refutation is the useful part: the wrapper sitting next to
+// the Wait one calls KERNEL32!PulseEvent, whose documented lost-wakeup
+// behaviour fits the symptom exactly. Redirecting that import to SetEvent (which
+// latches) was implemented, armed at init, and MEASURED: `PulseEvent calls 0`.
+// The engine never calls it on this path. Adjacency in the binary is not a
+// calling relationship, and the fix was inert - removed rather than left in as
+// dead code that would look like a safeguard.
+//
+// The principled fix is to remove the cross-thread handshake from the doubled
+// draw entirely - i.e. render single-threaded while stereo is armed, which is
+// exactly what BioShock 1 does (`reentry 1t`) and why BS1 does not hang here.
+// Session 26 deliberately did not port that rung to BS2; this evidence is the
+// reason to revisit that decision.
 // ---- Session 34: THE RIG. Hiding the Big Daddy helmet. ----------------------
 // Measured, not guessed. An A/B/A frame-dump triple at foreground FOV
 // 60 / 137 / 60 from one standing position (docs/bioshock2/ENGINE_NOTES.md)
