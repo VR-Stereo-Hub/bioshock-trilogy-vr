@@ -141,6 +141,11 @@ function Parse-Dump($file) {
                     rtv  = [int]$m.Groups[5].Value; dsv = [int]$m.Groups[6].Value
                     vpw  = [int]$m.Groups[7].Value; vph = [int]$m.Groups[8].Value
                     cb0b = [uint32]$m.Groups[9].Value
+                    # srv0 is the draw's first texture. Session 34: this is how a
+                    # single mesh is told apart from its neighbours inside one
+                    # pass - the foreground pass is ~17 draws carrying the weapon
+                    # AND the rig, and a lens or a draw count cannot separate them.
+                    srv0 = [int]$m.Groups[12].Value
                     stk  = $m.Groups[14].Value
                     blk  = -1
                 })
@@ -363,7 +368,8 @@ foreach ($file in $files) {
         if ($ShowDraws -gt 0) {
             $c.sample | Select-Object -First $ShowDraws | ForEach-Object {
                 $stkHead = ($_.stk -split ',' | Select-Object -First 4) -join ','
-                Write-Output ("    #{0:D5} {1} a={2} b0={3} stk={4}" -f $_.idx, $_.kind, $_.a, $_.cb0b, $stkHead)
+                Write-Output ("    #{0:D5} {1} a={2} b0={3} srv0=T{4} stk={5}" -f `
+                    $_.idx, $_.kind, $_.a, $_.cb0b, $_.srv0, $stkHead)
             }
         }
         # ---- per-cluster cb0 rows (-Cb0Range) --------------------------------

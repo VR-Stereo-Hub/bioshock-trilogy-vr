@@ -944,3 +944,44 @@ runtime.
   overlay renders into the backbuffer, which IS the eye image. Driving an in-headset A/B by typing
   requires alt-tab, and alt-tab is the pacing bug - so command-driven headset testing is both
   slower and actively destabilising. Build the control before asking for the test.
+
+### 2026-07-31 (session 34) - who owns the frame loop, and whose code a core fix may move
+
+- **THE PER-GAME MODS STAY DECOUPLED; duplicate code is the cheap option (user directive).**
+  Copying a BS1 behaviour into `bioshock2r/` beats promoting it to `core/` or parameterising the
+  BS1 version. BS1 is the headset-accepted baseline, and a BS1 regression costs headset time even
+  to *detect* - so an abstraction extracted mid-flight turns every BS2 change into a possible BS1
+  regression. Consolidation is a dedicated session in the polish milestone. The same was said for
+  the BioShock Infinite mod. **Corollary, and it shaped this session's fix: when a change to
+  `src/core/` is unavoidable, it must be purely ADDITIVE - new state defaulted to today's
+  behaviour, switched on by the adapter that wants it.** Detached pacing is core code that only
+  BS2 turns on; BS1's path is byte-identical until BS1 opts in on its own test.
+- **A DIAGNOSIS THAT THE TELEMETRY REFUSES IS NOT A DIAGNOSIS.** Session 33 concluded the frame
+  handoff paced the game and wrote it into three documents. The evidence quoted in the same
+  breath - `lastWait 0 ms`, `timeouts 0` - says the wait returned instantly and the handoff never
+  reached its deadline, so neither call could have cost the measured 100 ms. The failure was not
+  the guess; it was promoting a guess to a finding while the contradicting numbers sat in the same
+  log line. **Before fixing a stall, time every phase of the path it is on**, and prefer a fix
+  whose correctness does not depend on which phase turns out to be guilty.
+- **An unfocused session must not own the game thread's frame loop.** The two duties are separable
+  and belong on different threads: SUBMISSION (keep a live frame loop so the runtime can re-grant
+  FOCUSED - session 28's requirement, preserved) and PACING (the game thread must never block on a
+  runtime whose cadence is not the display's). Splitting them is what makes "keep submitting, stop
+  waiting" implementable without choosing between a freeze and a permanent unfocus.
+- **BS2 fills the headset eye by FOV, never by aspect - the exact opposite of BS1's policy.** BS2's
+  law fixes `tanV` against a 16:9 reference regardless of backbuffer aspect, so a squarer
+  backbuffer only narrows the horizontal and buys no vertical view at all; the FOV option is the
+  only lever. BS1's square-backbuffer policy exists because its law is a true horizontal, where
+  aspect *is* the lever and no FOV write is needed. Fourth never-copy instance after the ini keys,
+  the cb0 offset and the FOV law - and the first where what would have been copied is a *policy*
+  rather than a number or a formula.
+- **The default-OFF rule for render levers is overridable, by the user, on the record.** `vrfov`
+  ships DEFAULT ON on BS2 because the user asked for the outcome it produces ("I want the visual
+  space to be the whole screen/FOV") after the defect was measured. The rule exists so an unjudged
+  lever cannot silently change a headset-accepted configuration; it does not exist to overrule the
+  person doing the judging. Flipping a default needs a measurement and an instruction, and this
+  had both.
+- **Ship the number that justifies the toggle NEXT TO the toggle.** The FILL THE VIEW control shows
+  rendered fov, eye fov and the missing degrees. In-headset the user cannot read a log, so a
+  control without its measurement is a control they can only judge by vibe - and "black bars"
+  versus "38% of the eye's height is unfilled" are very different bug reports.
