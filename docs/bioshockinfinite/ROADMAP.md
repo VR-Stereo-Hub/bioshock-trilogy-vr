@@ -321,6 +321,11 @@ gate before writing a line of compensation code.**
       objects and effects follow for free; render-side matrix patches leave separate objects
       behind** - the Vigor hand FX above all.
 - [ ] World scale calibration, and the world/viewmodel scale split if it proves necessary
+- [ ] **Test from the START of the game, not only from a loaded-out save** (user directive,
+      2026-07-31). A reflection-conjured arsenal is convenient but unrepresentative: the opening
+      hours have no weapon at all, then the Sky-Hook alone, then one gun. Calibration that only
+      holds with a full loadout is not calibration. The user will produce the combat/weapons save
+      at this milestone rather than earlier, precisely so both ends get covered.
 - [ ] **Done when:** the weapon is one with the right controller and the Vigor hand one with the
       left, inspectable from any angle, believable size, effects attached, and **they do not move
       with the head** - user-verified in the headset.

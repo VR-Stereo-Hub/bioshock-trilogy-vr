@@ -58,10 +58,12 @@ Everything derived so far is offline and **unconfirmed live**. Confidence is sta
   `tools/lib/assert-no-conflict.ps1`; building and installing are deliberately unguarded. BS2 was
   running for the whole of session 34, which is why nothing live was attempted beyond the six-key
   check the user ran themselves.
-- The user's save (`TWN`, Columbia town) has **no weapons or combat** yet. Fine for I1 and most of
-  I2 - the loadout comes from reflection (`SetWeapon`/`AddAmmo`/`AddInvulnerableFlag`) once the
-  adapter can call natives. If that route disappoints, the fallback is to play to the raffle and
-  save there as the permanent combat anchor.
+- The user's save (`TWN`, Columbia town) has **no weapons or combat** yet, and that is
+  **deliberate** (user directive, 2026-07-31). They will produce the combat/weapons save at **I9**,
+  not earlier, because they want the viewmodel and scale work verified **from the start of the game
+  as well as from a loaded-out save**. The opening hours have no weapon, then the Sky-Hook alone,
+  then one gun - calibration that only holds with a full arsenal is not calibration. Do not treat
+  the missing loadout as a blocker to be worked around; it is a test condition.
 
 **Deferred, deliberately:** UELib/UE Explorer decompile workspace. It is most useful aimed at a
 specific script question (the fire path for I8), not swept speculatively. `GObjObjects`, for the
