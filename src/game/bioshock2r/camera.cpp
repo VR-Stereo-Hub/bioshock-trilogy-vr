@@ -15,6 +15,7 @@
 #include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock2r/game_ini.h"
 #include "game/bioshock2r/scenedraw.h"
 #include "game/shared/ue_math.h"
 
@@ -140,6 +141,13 @@ uint32_t g_heartbeatBaseCount = 0;
 bool g_wasWritingGameFov = false;
 int32_t g_savedGameFov = 0;
 uint64_t g_lastCalcViewMs = 0;
+// Session 32: the ENGINE's own view pitch, sampled BEFORE the drive overwrites
+// it, and the error handed to the core pitch servo. These exist because the
+// heartbeat below runs LAST and prints the FINAL rot by design - so it reports
+// the head's pitch, never the engine's, and could not have shown the engine's
+// pitch frozen. Game thread only.
+int32_t g_enginePitchUnits = 0;
+float g_pitchErrDeg = 0.0f;
 bool g_haveRecenter = false;
 bvr::vr::HeadPose g_recenterPose{};
 // The seated frame's yaw zero, in ROTATOR UNITS (65536/turn), integer for the
@@ -219,11 +227,19 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   camlog on|off                1 Hz heartbeat
 //   vroverlay on|off             core overlay visibility (bring-up A/B)
 //   vrcine <args>                core cinematic-fallback A/B (vrcine status..)
+//   vrinput <args>               core input surface (session 32): synthetic
+//                                gamepad `test stick|trig|press|clear`,
+//                                `pitchkill`, `pitchservo on|off|invert|status`,
+//                                `swing ...` - all core, all previously
+//                                unreachable on BS2 for want of this branch
 // FOV (session 25; both write levers DEFAULT OFF):
 //   vrfov on|off|status          forced headset FOV write (strict gameplay +
 //                                HMD driving only; save/restore of the option)
 //   gfov <deg>|off               manual game FOV write (flat test lever)
 //   fovaudit                     option vs submitted claim vs rendered fov
+// Resolution (session 32; the eye render IS the backbuffer):
+//   vrres <w>x<h> | <w> <h>      write the game's own viewport keys (next
+//                                launch); bare `vrres` reports current vs live
 // Discovery commands (route to core/debug/value_scan; game thread only),
 // ported from BS1's dispatcher for the session-25 FOV derivation - the
 // duplicate-now seam policy applies (see the ARCHITECTURE decision log):
@@ -356,13 +372,28 @@ void apply_command(const char* cmd, const char* args) {
         int src = -1;
         unsigned sw = 0, sh = 0;
         bvr::vr::fov_audit(&tanH, &tanV, &src, &sw, &sh);
-        // Option-derived expectation. Flat there is no session (swap dims
-        // 0x0) - assume the 16:9 render aspect.
+        // Option-derived expectation. Session 32: the old fallback assumed 16:9
+        // whenever there was no XR session - i.e. always, flat, which is where
+        // the measuring happens, and wrong at every aspect but one. Use the
+        // real backbuffer (published every present, headset or not) and fall
+        // back to the swap dims, not to a constant. BS1 made the same fix in
+        // session 28 for the same reason.
         float optTanH = 0.0f, optTanV = 0.0f;
+        unsigned bw = 0, bh = 0;
+        bvr::hud::backbuffer_dims(&bw, &bh);
+        if (!bw || !bh) {
+            bw = sw;
+            bh = sh;
+        }
         if (opt) {
             optTanH = tanf(static_cast<float>(*opt) * 0.5f / kRadToDeg);
-            optTanV = optTanH * ((sw && sh) ? (static_cast<float>(sh) / static_cast<float>(sw))
-                                            : (9.0f / 16.0f));
+            // BS2's world law measured at 16:9 (session 32): tanH = tan(opt/2),
+            // vertical follows the window. NOT confirmed at a second CLEAN
+            // aspect - BS2 letterboxes non-16:9 and its projection degenerates
+            // there, so the two candidate laws remain indistinguishable. Do not
+            // promote this to settled without a clean second aspect.
+            optTanV = optTanH * ((bw && bh) ? (static_cast<float>(bh) / static_cast<float>(bw))
+                                            : 0.0f);
         }
         BVR_LOG("[b2r] fovaudit: option=%d gfovWrite=%s(%.1f) vrfov=%s | submitted "
                 "tanH=%.6f tanV=%.6f src=%s swap=%ux%u | option-derived tanH=%.6f "
@@ -478,6 +509,36 @@ void apply_command(const char* cmd, const char* args) {
         } else {
             BVR_LOG("[b2r] usage: vtscan <hexRva> [needBytesHex]");
         }
+    } else if (strcmp(cmd, "vrres") == 0) {
+        // The eye render IS the game's backbuffer, so the game's resolution is
+        // the VR resolution - and a headset eye is roughly square, which is why
+        // this lane comes BEFORE any FOV or viewmodel tuning (BS1's settled
+        // policy, sessions 27-28). BS2 has no engine Exec seam at all, so there
+        // is no live path to try; the game's own ini is the only lever and a
+        // change lands on the next launch. Deliberately explicit, never
+        // automatic - this writes the user's config file.
+        unsigned rw = 0, rh = 0;
+        if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
+            game_ini::write_viewport(rw, rh);
+        } else if (sscanf_s(args, "%u %u", &rw, &rh) == 2 && rw && rh) {
+            game_ini::write_viewport(rw, rh);
+        } else {
+            // The REAL backbuffer, not the XR swapchain: flat there is no
+            // session, so fov_audit's swap dims are 0x0 and the status line
+            // could never do its one job (compare the config against what is
+            // actually being rendered). backbuffer_dims is published every
+            // present, headset or not.
+            unsigned bw = 0, bh = 0;
+            bvr::hud::backbuffer_dims(&bw, &bh);
+            game_ini::log_status(bw, bh);
+        }
+    } else if (strcmp(cmd, "vrinput") == 0) {
+        // Session 32: the whole core input surface was unreachable on BS2 -
+        // b2r never dispatched here, so the synthetic gamepad, the pitch servo
+        // (`vrinput pitchservo on|off|invert|status`, which is how step 0's
+        // sign gets checked) and the swing detector's entire flat test suite
+        // had no way in. One line, all of it core, none of it BS1-specific.
+        bvr::input::handle_command(args); // logs its own echoes
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args);
     } else if (strcmp(cmd, "vrstereo") == 0) {
@@ -642,6 +703,25 @@ void calcview_tail(void* self, CalcViewParams* p) {
         int32_t headYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
         int32_t residualUnits = wrap_rot(headYawUnits - g_recenterYawUnits);
         float gameYawRad = static_cast<float>(gameYawUnits) / kRotUnitsPerRadian;
+        // Session 32 (BS1 session 30, same defect in shared code): publish how
+        // far the ENGINE's own pitch is from the head's BEFORE we overwrite it,
+        // so the core pitch servo can steer the engine's value back through the
+        // pad. This read has to happen here and ONLY here - one line below,
+        // rot->pitch is the head's value and the error is identically zero,
+        // which is exactly why nobody notices the engine's pitch is frozen.
+        // Yaw needs no equivalent: it is written RELATIVE just below (the
+        // engine's own yaw plus a residual), so the engine's yaw stays real.
+        // Without this, publish_vr_gameplay below arms the shared pitch kill,
+        // the engine's view pitch never changes again for the session, and
+        // melee - BS2's DRILL - aims with it.
+        {
+            int32_t headPitchUnits =
+                static_cast<int32_t>(lroundf(a.pitchRad * kRotUnitsPerRadian));
+            int32_t errUnits = wrap_rot(headPitchUnits - rot->pitch);
+            g_enginePitchUnits = rot->pitch;
+            g_pitchErrDeg = static_cast<float>(errUnits) / kRotUnitsPerDegree;
+            bvr::input::publish_pitch_error(g_pitchErrDeg);
+        }
         rot->pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian);
         rot->roll = static_cast<int32_t>(a.rollRad * kRotUnitsPerRadian);
         rot->yaw = gameYawUnits + residualUnits;
@@ -698,6 +778,11 @@ void calcview_tail(void* self, CalcViewParams* p) {
         g_headOffX.store(0.0f, std::memory_order_relaxed);
         g_headOffY.store(0.0f, std::memory_order_relaxed);
         g_headOffZ.store(0.0f, std::memory_order_relaxed);
+        // Not driving means the pitch kill is not armed either, so the engine
+        // owns its pitch outright and the error is zero by definition. Kept
+        // fresh rather than stale so the heartbeat never shows a leftover.
+        g_enginePitchUnits = rot->pitch;
+        g_pitchErrDeg = 0.0f;
     }
     // Stick-pitch-kill gate for the core input bridge, same funnel BS1 feeds.
     bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
@@ -768,13 +853,19 @@ void calcview_tail(void* self, CalcViewParams* p) {
             g_lastHeartbeatMs = now;
             g_heartbeatBaseCount = count;
         } else if (now - g_lastHeartbeatMs >= 1000) {
+            // enginePitch is the value the engine believed BEFORE the drive
+            // overwrote it, so a frozen engine pitch shows up here as a number
+            // that never moves while `rot` does. pitchErr is what the servo is
+            // being fed; it should shrink as the servo converges.
             BVR_LOG("[b2r] camera: loc=(%.1f %.1f %.1f) rot=(%d %d %d) fov=%d "
-                    "headOff=(%.1f %.1f %.1f) drive=%d (%u calls/s)",
+                    "headOff=(%.1f %.1f %.1f) drive=%d enginePitch=%d "
+                    "pitchErr=%.1f deg (%u calls/s)",
                     loc->x, loc->y, loc->z, rot->pitch, rot->yaw, rot->roll,
                     g_lastOptionFov.load(std::memory_order_relaxed),
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed), vrDrove ? 1 : 0,
+                    g_enginePitchUnits, g_pitchErrDeg,
                     count - g_heartbeatBaseCount);
             // SR flat measure (G6): live inter-eye camera delta from the two
             // passes of the current pair. Expect |d| == ipdMm/1000 x
