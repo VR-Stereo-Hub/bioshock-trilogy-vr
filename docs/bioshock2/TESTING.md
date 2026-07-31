@@ -217,26 +217,48 @@ report. `fgfov on` writes the live world FOV into the viewmodel lens every frame
 option is a baked constant, which is the failure mode. `fgfov off` must bring back TWO clusters
 (world + `tanH 0.5774`) and restore `60.000` exactly.
 
-**Trust the DUMP over `lenses`.** The dump captures every cb0 block; the live watch samples 12 of
-~480 with a rotating phase, so it needs up to ~1.5 s to notice a second lens. `lenses` is a
-convenience, the dump is the evidence.
+**`lenses=1` IS NOT PROOF - use the dump.** The live watch samples ~12 of 400-600 constant buffers
+on a fixed stride, and the foreground pass is only ~17 of them, so whether it lands in a given
+sample is luck. `lenses=2` is trustworthy (a second lens really was decoded); `lenses=1` is the
+ordinary outcome of not sampling the fg pass. Session 33 tried twice to fix that and both attempts
+failed - reserving the head of the pass (the fg run MOVES: blocks 2..12 in two captures, 369..377
+and 456..463 in a third) and rotating the stride phase (correct in principle, measured at **10
+fps** - copying from a different set of dynamic buffers each interval stalls the render thread).
+The dump sees every block and has no sampling question at all. Every conclusion in session 33 came
+from dumps.
 
-### In-headset (the part flat cannot answer)
+### In-headset (the part flat cannot answer) - USE THE F10 OVERLAY, NOT COMMANDS
+
+**Press F10.** The overlay renders into the game's backbuffer, which IS the eye image, so it is
+visible and usable in the headset. The first section is **"VIEWMODEL LENS  <-- TEST THIS"**: a
+match on/off checkbox, a manual FOV slider, a live readout of the world/viewmodel angles, and a
+save button.
+
+Do NOT drive an in-headset A/B through `command.txt`. Two reasons, both learned the hard way in
+session 33: the user has to reach a keyboard, and **alt-tabbing drops the XR session
+`FOCUSED -> VISIBLE`, which preceded a hard freeze by 17 s**. `game-batch.ps1` asserts foreground
+by default for exactly the same reason the poll needs it flat - **pass `-NoFocus` during any
+headset session**, or better, do not use it at all and use the overlay.
+
+Anything the user must judge by eye belongs in `draw_debug_ui()`, built BEFORE the test is asked
+for.
+
+### What to look for
 
 Flat CANNOT judge this and must not be used to. On a monitor the matched viewmodel looks enormous,
 because a 100-deg render squeezed into a small window magnifies anything near the camera. In the
 headset that same render is stretched across your whole view. **Only the headset can say.**
 
-1. VR, gameplay, weapon out. FOV option at its normal 100.
-2. `fgfov off` - the CURRENT behaviour. Turn your head side to side and look up and down. Note how
-   the weapon slides/swims relative to your hands, and how big it looks.
-3. `fgfov on` - turn your head the same way.
+1. VR, gameplay, weapon out. FOV option at its normal 100. F10 for the overlay.
+2. Match checkbox OFF - the CURRENT behaviour. Turn your head side to side and look up and down.
+   Note how the weapon slides/swims relative to your hands, and how big it looks.
+3. Match checkbox ON - turn your head the same way.
    - **The question that decides it: does the weapon stop swimming?** That is what the lens match
      is for and it is the only thing being claimed.
    - Second question, separate: is the SIZE right, or is the Big Daddy helmet too big now?
-4. If the size is wrong but the swimming is fixed, `fgfov <deg>` writes a manual value - try 85,
-   then 75. Report which value looks right; that is a measurement, not a failure.
-5. Compare against `gfov 60` + `fgfov off`, which is the known-good reference from session 32
+4. If the size is wrong but the swimming is fixed, tick "use a manual value" and drag the slider -
+   try 85, then 75. The number that looks right IS the measurement, not a failure.
+5. Compare against `gfov 60` + match OFF, which is the known-good reference from session 32
    ("the weapon looks correct now and doesn't move"). The match at option 100 should feel like
    that did, with a much wider world.
 
@@ -248,9 +270,10 @@ fitted against a wrong lens stops being portable, which is the mistake BS1 made.
 
 ### Only after the above passes
 
-Re-judge **world scale** and **IPD** (`worldscale 100` is the current value, accepted in session 26
-- but that predates knowing the viewmodel lens was wrong, so treat it as unconfirmed). Then
-`vrpreset save` so the verdict survives a relaunch - BS2 had no persistence at all before session
+Re-judge **world scale** and **IPD** - both are sliders in the overlay's "VR camera (M3)" section,
+so this is also a headset-only, no-typing job. (`worldscale 100` is the current value, accepted in
+session 26 - but that predates knowing the viewmodel lens was wrong, so treat it as unconfirmed.)
+Then hit the overlay's save button so the verdict survives a relaunch - BS2 had no persistence at all before session
 33, which is why no previous verdict could be re-checked against the same numbers.
 
 ## Frozen engine pitch (session 32) - IN-HEADSET CHECK STILL OWED

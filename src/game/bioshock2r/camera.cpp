@@ -1539,6 +1539,62 @@ void draw_debug_ui() {
                 pitch / kRotUnitsPerDegree, yaw / kRotUnitsPerDegree,
                 roll / kRotUnitsPerDegree);
 
+    // ---- VIEWMODEL LENS: the thing currently under test -------------------
+    // FIRST and open by default, because this is driven IN THE HEADSET. The
+    // overlay renders into the game's backbuffer, which IS the eye image, so
+    // everything here is reachable with F10 without taking the headset off.
+    // Typing seam commands for an in-headset A/B does not work: reaching a
+    // keyboard means alt-tabbing, and alt-tab drops the XR session out of
+    // FOCUSED - which is the transition that preceded a hard freeze in session
+    // 33. Anything the user has to judge by eye belongs here, not in a command.
+    if (ImGui::CollapsingHeader("VIEWMODEL LENS  <-- TEST THIS",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool match = g_fgFovMatch.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Match viewmodel lens to the world  (the fix)", &match))
+            g_fgFovMatch.store(match, std::memory_order_relaxed);
+        ImGui::TextWrapped(
+            "OFF = the game's own behaviour: the world uses your FOV option but "
+            "the weapon is drawn through a fixed 60 deg lens, so it swings about "
+            "twice as far as your head does. ON = both match.");
+
+        float manual = g_fgFovManual.load(std::memory_order_relaxed);
+        bool useManual = manual > 0.0f;
+        if (ImGui::Checkbox("Use a manual value instead of following the FOV option",
+                            &useManual))
+            g_fgFovManual.store(useManual ? 90.0f : 0.0f, std::memory_order_relaxed);
+        if (useManual) {
+            float v = manual;
+            if (ImGui::SliderFloat("Viewmodel FOV (deg)", &v, 40.0f, 140.0f, "%.0f"))
+                g_fgFovManual.store(v, std::memory_order_relaxed);
+            ImGui::TextWrapped("Drag until the weapon looks right, then note the "
+                               "number - that IS the measurement.");
+        }
+
+        uintptr_t addr = fg_fov_addr();
+        float cur = 0.0f;
+        bool ok = addr && bvr::value_scan::safe_read_f32(addr, &cur);
+        ImGui::Text("field @0x%08X = %s%.1f deg   |   world FOV option = %d",
+                    static_cast<unsigned>(addr), ok ? "" : "?", ok ? cur : 0.0f,
+                    g_lastOptionFov.load(std::memory_order_relaxed));
+
+        float wH = 0.0f, wV = 0.0f, fH = 0.0f, fV = 0.0f;
+        unsigned long long age = 0;
+        if (bvr::hud::fov_watch(&wH, &wV, &age, 0)) {
+            bool haveFg = bvr::hud::fov_watch_fg(&fH, &fV, &age, 0);
+            int lenses = bvr::hud::fov_lens_count();
+            ImGui::Text("rendered: world %.1f deg | viewmodel %.1f deg | lenses=%d",
+                        2.0f * atanf(wH) * kRadToDeg,
+                        haveFg ? 2.0f * atanf(fH) * kRadToDeg : 0.0f, lenses);
+            // Say what the number is worth: lenses==1 is NOT proof (the watch
+            // samples ~12 of 500 buffers and the viewmodel pass is ~17 of them).
+            if (lenses == 1)
+                ImGui::TextDisabled("(lenses=1 is a hint, not proof - the dump is "
+                                    "the evidence)");
+        }
+        if (ImGui::Button("Save these settings (survives a relaunch)"))
+            save_vr_preset();
+    }
+
     if (ImGui::CollapsingHeader("VR camera (M3)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text(g_vrDriving.load(std::memory_order_relaxed)
                         ? "camera: driven by HMD pose"
