@@ -482,10 +482,20 @@ void apply_command(const char* cmd, const char* args) {
             }
         }
     } else if (strcmp(cmd, "vrcam") == 0) {
+        // SESSION 33: `off` now disables VR as well as the camera mode. The
+        // asymmetry was a trap with no escape hatch: `on` calls set_enabled(),
+        // `off` did not, so once a session was running the game stayed PACED BY
+        // THE HEADSET forever. With the headset idle the runtime paces its
+        // not-visible cadence - measured ~10 fps, with the pace thread showing
+        // lastWait 0 ms and timeouts 0, i.e. not blocked, just throttled - and
+        // nothing in the command surface could undo it. That is what read as
+        // "the game hangs a few seconds after turning on VR stereo".
         bool on = strncmp(args, "off", 3) != 0;
-        if (on) bvr::vr::set_enabled(true);
+        bvr::vr::set_enabled(on);
         bvr::vr::set_camera_mode(on);
-        BVR_LOG("[b2r] command: vrcam %s", on ? "on (VR enabled + camera mode)" : "off");
+        BVR_LOG("[b2r] command: vrcam %s", on ? "on (VR enabled + camera mode)"
+                                              : "off (VR DISABLED + camera mode off - "
+                                                "the game stops being paced by the headset)");
     } else if (strcmp(cmd, "camlog") == 0) {
         g_logCamera.store(strncmp(args, "off", 3) != 0, std::memory_order_relaxed);
         BVR_LOG("[b2r] command: camlog %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
@@ -832,7 +842,9 @@ void apply_command(const char* cmd, const char* args) {
         // Same gap again: the HUD capture module is core and fully implemented
         // (b2r's own fovaudit and vrres already read from it), but with no
         // control surface it could not be toggled or A/B'd on BS2 at all.
-        if (strncmp(args, "status", 6) == 0) {
+        if (strncmp(args, "fovwatch", 8) == 0) {
+            bvr::hud::set_fov_watch(strstr(args, "off") == nullptr);
+        } else if (strncmp(args, "status", 6) == 0) {
             unsigned bw = 0, bh = 0;
             bvr::hud::backbuffer_dims(&bw, &bh);
             BVR_LOG("[b2r] vrhud status: backbuffer %ux%u screenOnly=%d letterbox=%d "
@@ -841,6 +853,8 @@ void apply_command(const char* cmd, const char* args) {
                     bvr::hud::letterbox(nullptr, nullptr) ? 1 : 0,
                     bvr::hud::cinematic_hold() ? 1 : 0, bvr::hud::fov_lens_count(),
                     bvr::hud::fov_vp_ratio(), bvr::hud::ray_block_offset());
+            BVR_LOG("[b2r] vrhud status: fovWatch=%s",
+                    bvr::hud::fov_watch_enabled() ? "on" : "OFF");
         } else {
             bvr::hud::set_enabled(strncmp(args, "off", 3) != 0);
             BVR_LOG("[b2r] command: vrhud %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
@@ -1269,15 +1283,20 @@ void calcview_tail(void* self, CalcViewParams* p) {
             // overwrote it, so a frozen engine pitch shows up here as a number
             // that never moves while `rot` does. pitchErr is what the servo is
             // being fed; it should shrink as the servo converges.
+            // xr=<state> is here because "why is it suddenly 10 fps" cost an
+            // hour: a running session that never reached FOCUSED still PACES
+            // the game at the runtime's not-visible cadence. One field answers
+            // it at a glance.
             BVR_LOG("[b2r] camera: loc=(%.1f %.1f %.1f) rot=(%d %d %d) fov=%d "
                     "headOff=(%.1f %.1f %.1f) drive=%d enginePitch=%d "
-                    "pitchErr=%.1f deg (%u calls/s)",
+                    "pitchErr=%.1f deg xr=%s%s (%u calls/s)",
                     loc->x, loc->y, loc->z, rot->pitch, rot->yaw, rot->roll,
                     g_lastOptionFov.load(std::memory_order_relaxed),
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed), vrDrove ? 1 : 0,
-                    g_enginePitchUnits, g_pitchErrDeg,
+                    g_enginePitchUnits, g_pitchErrDeg, bvr::vr::session_state_name(),
+                    bvr::vr::ever_focused() ? "" : "/neverFocused",
                     count - g_heartbeatBaseCount);
             // SR flat measure (G6): live inter-eye camera delta from the two
             // passes of the current pair. Expect |d| == ipdMm/1000 x

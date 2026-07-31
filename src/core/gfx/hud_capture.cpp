@@ -152,6 +152,13 @@ std::atomic<unsigned long long> g_fovStampMs{0};
 // the frustum's aspect should be checked against the VIEWPORT's, not the
 // backbuffer's (they disagree on BS2 off 16:9, which is what stretches it).
 std::atomic<float> g_fovVpRatio{1.0f};
+// Session 33 bisection switch. The fov watch is the biggest thing that changed
+// on the render path since SequentialReentry stereo was proven stable in
+// session 26: the cb0 copy went from 80 to 1344 bytes (session 32) and the slot
+// count from 8 to 12 (session 33), and under SR every one of those runs at
+// TWICE the present rate. `vrhud fovwatch off` takes the whole thing - copies
+// and map - out of the frame so the stereo hang can be attributed or cleared.
+std::atomic<bool> g_fovWatchEnabled{true};
 // The minority (foreground) lens, published for telemetry and for the fg-lens
 // aspect law. 0 = only one lens seen this round.
 std::atomic<float> g_fovFgTanH{0.0f}, g_fovFgTanV{0.0f};
@@ -616,6 +623,15 @@ bool decode_ray_block(const float* f, int floatCount, float* tanH, float* tanV,
 
 // Map attempt + mismatch bookkeeping, once per present (from on_present).
 void fov_watch_on_present(ID3D11DeviceContext* ctx) {
+    if (!g_fovWatchEnabled.load(std::memory_order_relaxed)) {
+        // Drop any half-collected round so re-arming starts clean.
+        g_fovPending = false;
+        g_fovPendingSlots = 0;
+        g_fovSlots = 0;
+        g_fovDistinct = 0;
+        g_fovLastCb = nullptr;
+        return;
+    }
     if (g_fovPending && ctx && g_fovStaging) {
         ++g_fovPendingAge;
         D3D11_MAPPED_SUBRESOURCE m{};
@@ -972,7 +988,7 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
     // let the majority decide which lens is the world (see the block comment at
     // the state declarations - taking only the FIRST draw reported the
     // viewmodel lens as the world lens and that was the yaw-warp bug).
-    if (ctx) {
+    if (ctx && g_fovWatchEnabled.load(std::memory_order_relaxed)) {
         ID3D11Buffer* cb0 = nullptr;
         ctx->VSGetConstantBuffers(0, 1, &cb0);
         if (cb0) {
@@ -1537,6 +1553,16 @@ bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
 int fov_lens_count() { return g_fovLenses.load(std::memory_order_relaxed); }
 
 float fov_vp_ratio() { return g_fovVpRatio.load(std::memory_order_relaxed); }
+
+void set_fov_watch(bool on) {
+    bool was = g_fovWatchEnabled.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("[hud] fov watch %s%s", on ? "ON" : "OFF",
+                on ? "" : " - no cb0 copies, no staging map; fovaudit's live "
+                          "line and the cinematic fov-mismatch gate go blind");
+}
+
+bool fov_watch_enabled() { return g_fovWatchEnabled.load(std::memory_order_relaxed); }
 
 int fov_slots(float* tanH, float* tanV, int maxSlots) {
     int n = g_fovSlotCount.load(std::memory_order_relaxed);

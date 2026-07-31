@@ -278,6 +278,12 @@ bool fov_mismatch();
 // pair as an equality (pre-session-33) rejected every letterboxed block, so the
 // whole watch published nothing at those aspects.
 float fov_vp_ratio();
+// Bisection switch for the whole fov watch (session 33): no cb0 copies, no
+// staging map, nothing on the render path. The watch is the biggest change to
+// that path since SequentialReentry stereo was proven stable, and under SR it
+// runs at twice the present rate. `vrhud fovwatch off`.
+void set_fov_watch(bool on);
+bool fov_watch_enabled();
 // Session 33: the RAW decoded tangent slots of the last sampled round, before
 // the majority vote and the guards. `fov_lens_count()` alone cannot separate
 // "the second lens is gone" from "the sampler did not sample it", and a poke

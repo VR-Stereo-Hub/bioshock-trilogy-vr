@@ -2610,6 +2610,13 @@ void set_aim_dot(const AimDotConfig& cfg) {
     g_dotStampMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
+const char* session_state_name() {
+    if (g_session == XR_NULL_HANDLE) return "none";
+    return state_str(g_state);
+}
+
+bool ever_focused() { return g_everFocused.load(std::memory_order_relaxed); }
+
 void set_hud_quad(float distM, float widthM, float upM) {
     g_hudDistM.store(distM, std::memory_order_relaxed);
     g_hudWidthM.store(widthM, std::memory_order_relaxed);

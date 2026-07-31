@@ -278,4 +278,16 @@ void set_aim_dot(const AimDotConfig& cfg);
 void set_hud_quad(float distM, float widthM, float upM);
 void get_hud_quad(float* distM, float* widthM, float* upM);
 
+// Session 33: the session's state as a short string ("FOCUSED", "SYNCHRONIZED",
+// "none"...) and whether it has EVER been FOCUSED. Cheap, for a heartbeat.
+//
+// This exists because "the game hangs a few seconds after enabling VR" took an
+// hour to attribute, and the answer was one line of state: a running session
+// that never reached FOCUSED still PACES the game, and the runtime's
+// not-visible cadence is around 10 Hz. Nothing was blocked - lastWait 0 ms,
+// timeouts 0 - so every wedge-shaped hypothesis was wrong. Put the state where
+// it is read every second and the next person spends a second on it.
+const char* session_state_name();
+bool ever_focused();
+
 } // namespace bvr::vr
