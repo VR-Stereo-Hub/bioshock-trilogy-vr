@@ -320,6 +320,138 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE CONFIRMATION (session 36, second half - the game was finally free)
+
+Everything in the two sections below was measured inside a running
+`BioShockInfinite.exe`. Where a live number contradicts an offline one, the live number wins and
+the offline claim is corrected in place.
+
+### DR-I2: the camera hook FIRES. PASS.
+
+| measurement | result |
+|---|---|
+| install | `prologue and ret 8 both verified`, at T+0.036 s, before the first Present |
+| first fire | `this=3D4C3800 tid=13120`, during the intro/attract sequence |
+| dispatch rate | **9681 calls/s** peak during the intro, settling to **~800/s** parked. BS2 sees ~850/s, so the ceiling here is an order of magnitude higher and **the fast path must stay tiny** |
+| lifetime | 317,737 calls with **`foreign-tid-calls=0`** - a single dispatching thread |
+| **thread split** | **camera tid 13120, present tid 1992 - SEPARATE game and render threads.** Free DR-I5 evidence |
+| handover | `[cmd] status: pump=game (present=armed gameThread=OWNS)` - the seam's own status, not a log echo |
+
+**Path census: 40 of 40 samples took path 2** (`[this+0x248]` bit 0 CLEAR, `[this+0x240]`
+NON-NULL). So `+0x240` is promoted from **inferred** to **observed**: it really is a live,
+lazily-created camera object, and the cached-POV fast path was never taken in this sample.
+
+**The lease positive control passed in both directions, on demand:**
+
+```
+22:26:11.533  bsicam off
+22:26:14.534  [cmd] game-thread pump silent for >3000 ms - Present pump RESUMING in DEGRADED mode
+22:26:16.538  [cmd] status: pump=render(degraded)      <- and this command DISPATCHED, which is the point
+22:26:21.537  bsicam on
+22:26:21.539  [cmd] game thread resumed - Present pump standing down again
+22:26:25.537  [cmd] status: pump=game
+```
+
+Without the lease, `bsicam off` would have bricked the command seam for the life of the process.
+
+**One instrument defect found and recorded rather than papered over.** The heartbeat's
+`returned-minus-cached` line compares the returned location against `[this+0x24C]`, the **cached
+POV** - which is path 1's source. Under path 2 the POV comes from `[cam+0x3B8]` instead, so the
+comparison is against the wrong field and its `identical, this path is a raw copy` verdict is
+**not evidence about the transform**. The transform question is therefore still OPEN, and the
+comparison needs to be path-aware before it means anything. Also noted: `[this+0x430]` read as
+**all zeros** at first fire, which is consistent with the 4x4 not being populated that early.
+
+**Still owed for DR-I2:** the motion test. Only two distinct `loc` values and three `yaw` values
+were observed because nobody was driving the game - the camera sat parked through the intro. A
+deliberate walk plus a full 360 turn is what falsifies the field ordering and the
+65536-units-per-turn assumption in one motion.
+
+### DR-I1 confirmed live, and the table shape corrected
+
+`bsireflect selftest`: **12 passed, 3 failed, and all three failures were one wrong assertion of
+mine, not a broken instrument** (see below).
+
+| control | result |
+|---|---|
+| 4 positive resolutions | **PASS** - `0x129280`, `0x1292C0`, `0x12BF30`, `0x4FC060`, all exact |
+| negative, prefix | **PASS** - `strings=1 terminatorRejects=1`, rejected by the terminator guard |
+| negative, pooled suffix | **PASS** - `strings=1 tableRefs=0`, rejected by the reference step |
+| negative, absent | **PASS** |
+| `GNames[0] == "None"` | **PASS**, with `Num=69718`. The UE3 `fname_text` works on a populated pool |
+| `fname_find("None") == 0` | **PASS** |
+| UClass fixpoint | **PASS** - `Class=13FA4508`, `Class->Class = ->Class = 0A4DFA80` |
+| FNameEntry wide path | **UNTESTED, reported as such** - 0 wide entries in the first 4096, so the UTF-16 branch is not proven working. Not counted as a pass |
+
+**The vtable read confirms the offline derivation exactly:**
+
+```
++0x54 [21] rva 0xD1030   <== FindFunction   (offline predicted slot +0x54)
++0x7C [31] rva 0x19A150  <== ProcessEvent   (offline predicted slot +0x7C)
++0x80 [32] rva 0xD9960
+```
+
+Slot `+0x7C` on an `APlayerController` holds **`AActor::ProcessEvent`**, exactly as predicted for
+an AActor subclass rather than the `UObject` base at `0xCFE70` - which is the prediction only the
+base/override split made possible. `0xD1030` is `UObject::FindFunction`, immediately preceding
+`FindFunctionChecked` at `0xD1090`. And slot `+0x80` is `0xD9960`, the by-name dispatch helper
+disassembled during the offline pass (it calls `FindFunctionChecked` then `[edi+0x7C]`).
+
+**CORRECTION - the native registry is NOT one contiguous 2647-entry table.** The walk returned 46
+entries, which looked like a failure and was not. Reading the live-seeded region shows the layout
+is the classic `AutoRegisterNatives` shape: **one block per class, separated by `{0, 0}` sentinel
+entries.**
+
+```
+0xF32560  {0,0}                                      <- sentinel
+0xF32568  APlayerControllerexecClientControlMovieTexture  0x129730
+   ...    (44 more)
+0xF325C0  APlayerControllerexecGetPlayerViewPoint         0x129280   <- seed index 11
+   ...
+0xF326D8  {0,0}                                      <- sentinel
+0xF326E0  AGameReplicationInfoexecFindPlayerByID          0x1138A0
+```
+
+**46 is exactly `APlayerController`'s native count from the session-34 per-class census.** The
+2647 figure is the total across every class and was never a contiguous run. So
+`native_table_bounds` returns the seed's **own class block**, which is still a falsifiable
+per-class check - and the table-walk cross-check must be seeded from the class it is about to look
+up, since a block from another class cannot contain the name. Fixed in code and in the selftest
+assertion.
+
+### DR-I3: the lens is FOUND
+
+`dumpframe cb` in gameplay wrote **7.1 MB** (against 104 KB for a lite dump) with **1891 constant-
+buffer uploads** captured, in tiers `80 B x231, 160 B x156, 640 B x186, 1280 B x493, 2560 B x788,
+3360 B x37`. Both of the instrument's blind spots were real and are now covered: the **160-byte
+tier** (156 uploads) that `hud_capture`'s `>= 320` gate always excluded, and the **3360-byte** tier
+that the old 336-float cap would have truncated at 40 %.
+
+Sweeping every offset of every block for an orthogonal 4x4 gives **139 candidates**, and filtering
+on the aspect discriminator leaves exactly **one**:
+
+| | |
+|---|---|
+| location | **float 0 of the 80-byte constant buffer**, row-major |
+| tangents | **tanH = 0.7674, tanV = 0.4317** |
+| aspect | **1.7776** vs the backbuffer's 1.7778 - 0.01 % |
+| rendered FOV | **hFOV 75.01 deg**, vFOV 46.67 deg |
+| support | 93 blocks, **identical in both consecutive dumps** |
+
+The aspect filter is what makes this credible, and the raw histogram shows why: the top four
+candidates by block count are all degenerate `tanH == tanV` pairs at aspect 1.0000, one of them
+with 108 blocks - more support than the true answer's 93. **Plurality is not evidence here; the
+aspect match is.** That is the same failure mode the BS1 control predicted.
+
+Worth flagging for I5: the rendered horizontal is **75.0 deg** while `XEngine.ini` says
+`FOVAngle=70` and the user FOV slider is at 0. A config value is a claim, not a measurement.
+
+**Still owed:** the falsifiable confirmation that this block *responds* to the FOV slider by the
+predicted `tan(a/2)/tan(b/2)` ratio, and the aspect cross-check at a second backbuffer size. Until
+then the offset is a strong candidate rather than a published constant, and
+`bioshockinf` deliberately still calls no `set_ray_block_offset` - core's `decode_ray_block`
+expects the Vengeance 7-float shape and cannot consume a 4x4 anyway.
+
 ## DR-I2: the camera seam - hook WRITTEN, live confirmation OWED
 
 The read-only detour is implemented in `src/game/bioshockinf/camera.cpp` and builds clean. It has

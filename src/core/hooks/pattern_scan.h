@@ -142,9 +142,18 @@ bool find_native_function_ex(const ProcessImage& img, const NativeTableShape& sh
                              NativeScanResult& out, bool verifyNeighbours = true);
 
 // From any verified entry, walk both directions while entries stay well formed.
-// Yields the table base and count, which is a FALSIFIABLE check on the whole
-// shape: the offline dump says 2647 entries for BioShock Infinite, so a live
-// walk that disagrees means the shape is wrong, not that the table moved.
+//
+// WHAT THIS ACTUALLY RETURNS, established live session 36: engines that register
+// natives this way emit ONE BLOCK PER CLASS, separated by `{0, 0}` sentinel
+// entries - the classic `AutoRegisterNatives` layout. So the walk yields the
+// seed's OWN CLASS block, not the whole registry. On BioShock Infinite,
+// seeding from any `APlayerController` native returns exactly **46**, which is
+// that class's native count from the offline per-class census; the image's 2647
+// is the total across every class and is NOT a contiguous run.
+//
+// That makes this a real falsifiable check, just a per-class one: a count that
+// disagrees with the class's known native count means the stride or the
+// well-formedness test is wrong.
 struct NativeTableBounds {
     const uint8_t* base = nullptr;
     size_t count = 0;
@@ -157,7 +166,11 @@ bool native_table_bounds(const ProcessImage& img, const NativeTableShape& shape,
 // O(count) with one compare each, versus two full-image sweeps for the scan
 // above - and, more importantly, a SECOND INDEPENDENT INSTRUMENT answering the
 // same question. The two must agree; when they do not, both are suspect.
-// ASCII shapes only (wideNames == false).
+//
+// `table` must be the block for the CLASS being looked up (see above) - a block
+// seeded from a different class cannot contain the name and will report a
+// miss, which is a property of the layout and not a failure of either
+// instrument. ASCII shapes only (wideNames == false).
 bool find_native_in_table(const ProcessImage& img, const NativeTableShape& shape,
                           const NativeTableBounds& table, const char* className,
                           const char* funcName, NativeScanResult& out);

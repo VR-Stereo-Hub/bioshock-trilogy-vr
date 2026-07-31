@@ -17,8 +17,23 @@ using bvr::pattern_scan::NativeScanResult;
 using bvr::pattern_scan::NativeTableBounds;
 
 bvr::pattern_scan::ProcessImage g_image{};
-NativeTableBounds g_table{};
+NativeTableBounds g_table{};   // the APlayerController block, for status only
 bool g_tableTried = false;
+
+// Native registration is segmented into ONE BLOCK PER CLASS, separated by
+// {0,0} sentinels (established live, session 36). So a table-walk cross-check
+// must be seeded from the SAME class it is about to look up - a block seeded
+// elsewhere simply cannot contain the name.
+bool bounds_for(const char* cls, const char* fn, NativeTableBounds& out) {
+    out = {};
+    NativeScanResult seed{};
+    if (!bvr::pattern_scan::find_native_function_ex(g_image, bvr::pattern_scan::kNativeTableUE3,
+                                                    cls, fn, seed))
+        return false;
+    return bvr::pattern_scan::native_table_bounds(g_image, bvr::pattern_scan::kNativeTableUE3,
+                                                  static_cast<const uint8_t*>(seed.tableEntry),
+                                                  out);
+}
 
 uint32_t rva_of(const void* p) {
     const uint8_t* base = patterns::image_base();
@@ -51,10 +66,13 @@ bool ensure_table() {
         BVR_LOG("[bsi] reflect: native table bounds walk failed from a verified entry");
         return false;
     }
-    BVR_LOG("[bsi] reflect: native table base RVA 0x%X, %zu entries (seed index %zu). "
-            "Offline enumeration said 2647 - %s",
+    // 46 is APlayerController's native count from the offline per-class census,
+    // and the block is bounded by {0,0} sentinels rather than running into the
+    // next class. The image's 2647 is the TOTAL across all classes.
+    BVR_LOG("[bsi] reflect: APlayerController native block at RVA 0x%X, %zu entries (seed index "
+            "%zu). Offline per-class census said 46 - %s",
             rva_of(g_table.base), g_table.count, g_table.seedIndex,
-            g_table.count == 2647 ? "MATCH" : "MISMATCH, the 8-byte shape is suspect");
+            g_table.count == 46 ? "MATCH" : "MISMATCH, the 8-byte shape is suspect");
     return true;
 }
 
@@ -78,10 +96,11 @@ void cmd_native(const char* args) {
             cls, fn, okScan ? "FOUND" : "not found", rva_of(scan.function), scan.stringMatches,
             scan.tableRefs, scan.terminatorRejects, scan.neighbourRejects, scan.implRejects);
 
-    if (!ensure_table()) return;
+    NativeTableBounds blk{};
+    if (!bounds_for(cls, fn, blk)) return;
     NativeScanResult walk{};
     const bool okWalk = bvr::pattern_scan::find_native_in_table(
-        g_image, bvr::pattern_scan::kNativeTableUE3, g_table, cls, fn, walk);
+        g_image, bvr::pattern_scan::kNativeTableUE3, blk, cls, fn, walk);
     BVR_LOG("[bsi] reflect: walk  %sexec%s -> %s (rva 0x%X)", cls, fn,
             okWalk ? "FOUND" : "not found", rva_of(walk.function));
     if (okScan != okWalk || scan.function != walk.function) {
@@ -267,27 +286,32 @@ void cmd_selftest() {
     }
 
     // --- shape: a falsifiable check on the 8-byte stride itself --------------
+    // Registration is segmented per class by {0,0} sentinels, so a walk seeded
+    // from an APlayerController native must yield exactly that class's 46.
     {
         const bool ok = ensure_table();
-        _snprintf_s(detail, sizeof detail, _TRUNCATE, "count=%zu (offline said 2647)",
+        _snprintf_s(detail, sizeof detail, _TRUNCATE,
+                    "APlayerController block = %zu entries (per-class census says 46)",
                     g_table.count);
-        c.note(ok && g_table.count == 2647, "shape: native table walks to 2647 entries", detail);
+        c.note(ok && g_table.count == 46, "shape: per-class native block walks to its census",
+               detail);
     }
 
     // --- cross-instrument agreement -----------------------------------------
-    if (g_table.base) {
-        for (const Known& k : kKnown) {
-            NativeScanResult a{}, b{};
-            bvr::pattern_scan::find_native_function_ex(g_image,
-                                                       bvr::pattern_scan::kNativeTableUE3, k.cls,
-                                                       k.fn, a);
+    // Each lookup seeds its OWN class's block; a block from another class
+    // cannot contain the name, which is the layout talking, not a failure.
+    for (const Known& k : kKnown) {
+        NativeTableBounds blk{};
+        NativeScanResult a{}, b{};
+        bvr::pattern_scan::find_native_function_ex(g_image, bvr::pattern_scan::kNativeTableUE3,
+                                                   k.cls, k.fn, a);
+        if (bounds_for(k.cls, k.fn, blk))
             bvr::pattern_scan::find_native_in_table(g_image, bvr::pattern_scan::kNativeTableUE3,
-                                                    g_table, k.cls, k.fn, b);
-            _snprintf_s(detail, sizeof detail, _TRUNCATE, "%s::%s scan=0x%X walk=0x%X", k.cls,
-                        k.fn, rva_of(a.function), rva_of(b.function));
-            c.note(a.function != nullptr && a.function == b.function,
-                   "cross-check: scan and table-walk agree", detail);
-        }
+                                                    blk, k.cls, k.fn, b);
+        _snprintf_s(detail, sizeof detail, _TRUNCATE, "%s::%s scan=0x%X walk=0x%X (block %zu)",
+                    k.cls, k.fn, rva_of(a.function), rva_of(b.function), blk.count);
+        c.note(a.function != nullptr && a.function == b.function,
+               "cross-check: scan and table-walk agree", detail);
     }
 
     // --- GNames: the UE3 invariant ------------------------------------------
