@@ -140,6 +140,35 @@ uint32_t g_heartbeatBaseCount = 0;
 // property and must survive every path out of gameplay.
 bool g_wasWritingGameFov = false;
 int32_t g_savedGameFov = 0;
+
+// ---- The foreground (viewmodel) lens match, session 33 ---------------------
+// BS2 renders TWO lenses. The world tracks the FOV option; the foreground is
+// pinned at 60 deg and ignores it, so the viewmodel is displayed at an angular
+// gain of tan(option/2)/tan(30) - 2.06x at option 100, and the user's "the
+// weapon moves with my head" report. Confirmed in-headset twice by numeric
+// prediction (worse at 130, gone at option 60 where the gain is exactly 1).
+//
+// The lever raises the FOREGROUND to the world's value rather than dropping the
+// world to 60: a 60-deg world is unusable in VR, and one projection layer
+// carries one FOV claim, so matched lenses is the only state where the wide
+// world AND the weapon are both right.
+//
+// THE ADDRESS IS SETTABLE AT RUNTIME (`fgfov addr <hex>`) because the field is
+// still being derived. That is deliberate: it makes the whole live hunt - scan,
+// nominate, watch fovaudit's second cluster collapse - a zero-rebuild loop. Once
+// the object+offset is derived it becomes a patterns.h constant resolved the
+// same way hfov_option_ptr() resolves the settings object, and this manual lane
+// stays as the A/B.
+//
+// It is a LIVE EQUALITY, never a stored tangent: the value written is derived
+// from the option READ THIS FRAME. A tangent measured at one aspect or one
+// option is exactly the constant that stopped porting on BS1.
+std::atomic<uintptr_t> g_fgFovAddr{0};   // nominated candidate field
+std::atomic<bool> g_fgFovMatch{false};   // default OFF until in-headset accepted
+std::atomic<float> g_fgFovManual{0.0f};  // >0 = write this instead of the option
+float g_fgFovSaved = 0.0f;
+bool g_wasWritingFgFov = false;
+std::atomic<float> g_fgFovLastWritten{0.0f};
 uint64_t g_lastCalcViewMs = 0;
 // Session 32: the ENGINE's own view pitch, sampled BEFORE the drive overwrites
 // it, and the error handed to the core pitch servo. These exist because the
@@ -194,6 +223,50 @@ uint32_t observed_vtable_rva(void* viewActor) {
 
 bool is_gameplay_view_rva(uint32_t vtblRva) {
     return vtblRva == patterns::kShockPlayerVtableRva;
+}
+
+// Write the world's FOV into the nominated foreground-lens field, once per
+// CalcView. Save-once / restore-on-disable exactly like the option write above,
+// and the same strict-gameplay gate: a scripted camera must never be left with
+// our value, which is what restore_game_fov_if_stale covers.
+//
+// `want` is a FOV IN DEGREES read live, not a tangent. If the two lenses ever
+// turn out to use different aspect conventions (BS1's situation, and BS2's
+// square-backbuffer dump hints at it), the aspect term is one more factor on
+// this line rather than a redesign.
+void apply_fg_fov_match(const int32_t* optionFov, bool strictGameplay) {
+    uintptr_t addr = g_fgFovAddr.load(std::memory_order_relaxed);
+    if (!addr) return;
+    float* fg = reinterpret_cast<float*>(addr);
+    float manual = g_fgFovManual.load(std::memory_order_relaxed);
+    bool want = strictGameplay && g_fgFovMatch.load(std::memory_order_relaxed) &&
+                (manual > 0.0f || (optionFov && *optionFov > 0));
+    if (want) {
+        // Probe before trusting the pointer: a nominated address from a scan
+        // can be freed between rounds, and a stale one would be a wild write.
+        float probe = 0.0f;
+        if (!bvr::value_scan::safe_read_f32(addr, &probe)) {
+            g_fgFovAddr.store(0, std::memory_order_relaxed);
+            g_wasWritingFgFov = false;
+            BVR_LOG("[b2r] fgfov: address 0x%08X went unreadable - disarming",
+                    static_cast<unsigned>(addr));
+            return;
+        }
+        if (!g_wasWritingFgFov) {
+            g_fgFovSaved = probe;
+            g_wasWritingFgFov = true;
+            BVR_LOG("[b2r] fgfov write ON at 0x%08X (saved %.3f)",
+                    static_cast<unsigned>(addr), g_fgFovSaved);
+        }
+        float value = manual > 0.0f ? manual : static_cast<float>(*optionFov);
+        if (*fg != value) *fg = value;
+        g_fgFovLastWritten.store(value, std::memory_order_relaxed);
+    } else if (g_wasWritingFgFov) {
+        *fg = g_fgFovSaved;
+        g_wasWritingFgFov = false;
+        g_fgFovLastWritten.store(0.0f, std::memory_order_relaxed);
+        BVR_LOG("[b2r] fgfov write OFF (restored %.3f)", g_fgFovSaved);
+    }
 }
 
 // BS2's WORLD lens law -> the horizontal half-angle the game is ACTUALLY
@@ -266,7 +339,28 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   vrfov on|off|status          forced headset FOV write (strict gameplay +
 //                                HMD driving only; save/restore of the option)
 //   gfov <deg>|off               manual game FOV write (flat test lever)
-//   fovaudit                     option vs submitted claim vs rendered fov
+//   fovaudit                     option vs submitted claim vs rendered fov,
+//                                plus both lenses, the letterbox factor and
+//                                the square-pixels/stretched verdict
+//   fgfov addr <hex>|on|off|<deg>|status
+//                                session 33: the FOREGROUND (viewmodel) lens
+//                                match. BS2 pins the fg lens at 60 deg while
+//                                the world tracks the option, so the weapon is
+//                                displayed at tan(option/2)/tan(30) angular
+//                                gain. `on` writes the LIVE option into the
+//                                nominated field every CalcView; `<deg>` is the
+//                                manual calibration lane. DEFAULT OFF. The
+//                                address is settable because the field is being
+//                                derived - that makes the hunt zero-rebuild.
+//   pcinfo                       live PC / view actor / settings pointers, and
+//                                a 55-65 float sweep of both objects - the
+//                                first move of the fg-field hunt
+// Core features that b2r simply never dispatched to (session 32 found the
+// first, session 33 the rest - core growing a feature does NOT give an adapter
+// access to it when the adapter owns the command table):
+//   vrpace <args>                M8 stall guard
+//   vrmirror <args>              M8 desktop mirror
+//   vrhud on|off|status          HUD capture control + the lens/letterbox state
 // Resolution (session 32; the eye render IS the backbuffer):
 //   vrres <w>x<h> | <w> <h>      write the game's own viewport keys (next
 //                                launch); bare `vrres` reports current vs live
@@ -390,6 +484,73 @@ void apply_command(const char* cmd, const char* args) {
         } else {
             BVR_LOG("[b2r] usage: gfov <deg> | gfov off");
         }
+    } else if (strcmp(cmd, "fgfov") == 0) {
+        // The foreground/viewmodel lens match (session 33). The field address
+        // is settable while it is being derived, so the whole live hunt is a
+        // zero-rebuild loop: nominate a candidate, arm, and watch whether
+        // fovaudit's second cluster collapses onto the world's.
+        unsigned addr = 0;
+        if (strncmp(args, "addr", 4) == 0) {
+            if (sscanf_s(args + 4, "%x", &addr) == 1) {
+                // Disarm before repointing so the OLD address is restored -
+                // otherwise a hunt leaves a trail of poked fields behind it.
+                if (g_wasWritingFgFov) g_fgFovMatch.store(false, std::memory_order_relaxed);
+                g_fgFovAddr.store(addr, std::memory_order_relaxed);
+                float cur = 0.0f;
+                bool ok = bvr::value_scan::safe_read_f32(addr, &cur);
+                BVR_LOG("[b2r] command: fgfov addr 0x%08X (currently %s%.4f) - "
+                        "arm with `fgfov on`",
+                        addr, ok ? "" : "UNREADABLE ", ok ? cur : 0.0f);
+            } else {
+                BVR_LOG("[b2r] usage: fgfov addr <hexaddr>");
+            }
+        } else if (strncmp(args, "status", 6) == 0) {
+            uintptr_t a = g_fgFovAddr.load(std::memory_order_relaxed);
+            float cur = 0.0f;
+            bool ok = a && bvr::value_scan::safe_read_f32(a, &cur);
+            BVR_LOG("[b2r] fgfov status: match=%s addr=0x%08X current=%s%.4f "
+                    "manual=%.1f writing=%d saved=%.4f lastWritten=%.1f option=%d",
+                    g_fgFovMatch.load(std::memory_order_relaxed) ? "on" : "off",
+                    static_cast<unsigned>(a), ok ? "" : "UNREADABLE ", ok ? cur : 0.0f,
+                    g_fgFovManual.load(std::memory_order_relaxed),
+                    g_wasWritingFgFov ? 1 : 0, g_fgFovSaved,
+                    g_fgFovLastWritten.load(std::memory_order_relaxed),
+                    g_lastOptionFov.load(std::memory_order_relaxed));
+        } else if (strncmp(args, "off", 3) == 0) {
+            g_fgFovMatch.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: fgfov off (restores on the next CalcView)");
+        } else if (strncmp(args, "on", 2) == 0) {
+            g_fgFovManual.store(0.0f, std::memory_order_relaxed);
+            g_fgFovMatch.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: fgfov on - matching the LIVE world option "
+                    "(addr 0x%08X)",
+                    static_cast<unsigned>(g_fgFovAddr.load(std::memory_order_relaxed)));
+        } else if (sscanf_s(args, "%f", &v) == 1 && v > 0.0f) {
+            // Manual degrees: the calibration lane. Poke 2-3 values and read
+            // the resulting fg tangent out of `fovaudit` to MEASURE the
+            // field's law instead of assuming it is degrees-in-degrees-out.
+            g_fgFovManual.store(v, std::memory_order_relaxed);
+            g_fgFovMatch.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: fgfov %.1f (manual - overrides the option match)", v);
+        } else {
+            BVR_LOG("[b2r] usage: fgfov addr <hex> | on | off | <deg> | status");
+        }
+    } else if (strcmp(cmd, "pcinfo") == 0) {
+        // The anchors a live field hunt needs, without digging a pointer out
+        // of a one-shot log line from an hour ago.
+        void* pc = g_playerController.load(std::memory_order_relaxed);
+        void* va = g_lastViewActor.load(std::memory_order_relaxed);
+        BVR_LOG("[b2r] pcinfo: playerController=%p viewActor=%p vtblRva=0x%X "
+                "settings=%p option=%d | fsweep those for a 60.0 float, then "
+                "`fgfov addr <hit>` + `fgfov on` + `fovaudit`",
+                pc, va, g_lastVtblRva.load(std::memory_order_relaxed),
+                patterns::hfov_option_ptr(),
+                g_lastOptionFov.load(std::memory_order_relaxed));
+        if (pc) bvr::value_scan::float_sweep(reinterpret_cast<uintptr_t>(pc), 0x1000,
+                                             55.0f, 65.0f);
+        if (va && va != pc)
+            bvr::value_scan::float_sweep(reinterpret_cast<uintptr_t>(va), 0x1000, 55.0f,
+                                         65.0f);
     } else if (strcmp(cmd, "fovaudit") == 0) {
         // The three fov truths side by side (BS1 session-21 instrument, minus
         // the pose/eyes stereo sub-forms BS2 does not have yet): the engine
@@ -587,6 +748,31 @@ void apply_command(const char* cmd, const char* args) {
         // sign gets checked) and the swing detector's entire flat test suite
         // had no way in. One line, all of it core, none of it BS1-specific.
         bvr::input::handle_command(args); // logs its own echoes
+    } else if (strcmp(cmd, "vrpace") == 0) {
+        // Session 33 audit, same class of gap as vrinput was: core owns the M8
+        // stall guard and BS1 dispatches to it; b2r never did, so a fully built
+        // feature was unreachable on this game. Core growing a feature does not
+        // give an adapter access to it when the adapter owns the command table.
+        bvr::vr::handle_pace_command(args);
+    } else if (strcmp(cmd, "vrmirror") == 0) {
+        bvr::vr::handle_mirror_command(args); // same gap, M8 desktop mirror
+    } else if (strcmp(cmd, "vrhud") == 0) {
+        // Same gap again: the HUD capture module is core and fully implemented
+        // (b2r's own fovaudit and vrres already read from it), but with no
+        // control surface it could not be toggled or A/B'd on BS2 at all.
+        if (strncmp(args, "status", 6) == 0) {
+            unsigned bw = 0, bh = 0;
+            bvr::hud::backbuffer_dims(&bw, &bh);
+            BVR_LOG("[b2r] vrhud status: backbuffer %ux%u screenOnly=%d letterbox=%d "
+                    "cineHold=%d lenses=%d vpRatio=%.4f rayOffset=%d",
+                    bw, bh, bvr::hud::screen_only() ? 1 : 0,
+                    bvr::hud::letterbox(nullptr, nullptr) ? 1 : 0,
+                    bvr::hud::cinematic_hold() ? 1 : 0, bvr::hud::fov_lens_count(),
+                    bvr::hud::fov_vp_ratio(), bvr::hud::ray_block_offset());
+        } else {
+            bvr::hud::set_enabled(strncmp(args, "off", 3) != 0);
+            BVR_LOG("[b2r] command: vrhud %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
+        }
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args);
     } else if (strcmp(cmd, "vrstereo") == 0) {
@@ -876,6 +1062,11 @@ void calcview_tail(void* self, CalcViewParams* p) {
             BVR_LOG("[b2r] game fov write OFF (restored option %d)", g_savedGameFov);
         }
     }
+
+    // Foreground lens match. Runs AFTER the option write above, so when gfov or
+    // vrfov is holding the option we match the value the world is actually
+    // rendering rather than the user's saved one.
+    apply_fg_fov_match(optionFov, strictGameplay);
 
     // Debug camera offset - the cheapest "the block is writable on this game
     // too" proof, log-measurable via the heartbeat.
