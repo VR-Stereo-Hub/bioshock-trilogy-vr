@@ -739,8 +739,15 @@ kill. Both prerequisites below are now MET.):**
 - [ ] **BS2 aspect bisection** - find the squarest aspect BS2 renders full-height with a consistent
       frustum. That is BS2's best VR configuration AND the clean second aspect needed to settle its
       world FOV law (the two candidate laws coincide at 16:9).
-- [ ] **Identify BS2's 60-deg lens** by making it MOVE (holster/switch weapon, re-dump), never by
-      draw counts. Decides whether the viewmodel fix is a lens match or something else entirely.
+- [x] **Identify BS2's 60-deg lens** - DONE session 32 by two in-headset FOV A/Bs rather than a
+      dump: the defect worsens at option 130 and VANISHES at option 60, exactly as
+      `k = tan(option/2)/tan(30)` predicts. It is the viewmodel. Session 25's "foreground follows
+      the world FOV natively" is retracted; BS2 has a fixed fg lens like BS1.
+- [ ] **BS2 viewmodel lens match (USER PRIORITY 2)** - find BS2's foreground FOV field and write
+      the world's value into it, so the world stays wide AND the weapon is correct. Leads: the fg
+      callstack frame `0xAECACF` (vs the world's `0xAEC7B4`), the round 60.0 value, b2r's existing
+      memscan set, and a native BS2 route checked first. Acceptance: `lenses=1` at 16:9 and a
+      stable weapon at option 100+.
 - [ ] **BS2 pitch-servo sign check in-headset** - the one thing flat cannot answer about the
       session-32 fix.
 - [ ] **BS2 swing-to-attack** - one `swing::publish_gate` line plus the melee-equipped predicate

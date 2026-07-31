@@ -125,11 +125,24 @@ change, so a wrong candidate names its own correction from any session log. Obse
   ProcessEvent detour instead.
 - The graphics-options first-boot screen has a native **Field Of View slider (default 100)** -
   BS2 has an exposed FOV concept BS1 lacked. Session 25 confirmed it is the
-  `UShockUserSettings.HorizontalFOV` int (offset below) - and, decisively: **BS2's foreground
-  viewmodel follows the world FOV natively** (poking the option re-lensed the drill WITH the
-  world, screenshot-verified). BS1's entire fg counter-model (fovA/fovB, kFgEyeComp, vrfgfov)
-  exists because BS1's fg rig has a FIXED lens; BS2 does not have that defect, so none of that
-  machinery ports. First applied case of the "BS2 is not bound by BS1's methods" directive.
+  `UShockUserSettings.HorizontalFOV` int (offset below).
+- **RETRACTED 2026-07-31 (session 32): "BS2's foreground viewmodel follows the world FOV
+  natively" is WRONG.** Session 25 read it that way from a mono screenshot A/B (poking the option
+  appeared to re-lens the drill with the world), and it was the stated reason none of BS1's fg
+  machinery was ported. Two independent measurements kill it:
+  - The fg cluster's tangent is **fixed at tan(30) = 0.5774 across option 100 AND 130** while the
+    world lens tracks the option (frame-dump clusters, session 32). A lens that followed the
+    option could not be constant.
+  - In-headset A/B: the viewmodel defect scales exactly as `k = tan(option/2)/tan(30)` - markedly
+    worse at 130 - and at `gfov 60`, where `k` collapses to 1.0, the user reports **"the weapon
+    looks correct now and doesn't move"**.
+
+  What session 25 most likely saw was the WORLD re-lensing around a viewmodel that did not move.
+  **So BS2 DOES have a fixed foreground lens, exactly like BS1** - the defect class ports even
+  though (per the standing policy) none of BS1's specific machinery should be assumed to. This is
+  a useful corrective to the directive, not a contradiction of it: check whether the DEFECT
+  exists before porting the CURE, and a mono screenshot is not a sufficient check for a
+  lens question.
 - Flat 6DOF checks (session 24, log-measured via the final-camera heartbeat): `offset 0 0 50` ->
   z +50.0 exact; `simhead 0 20 0` -> pitch 3640; roll 15 -> 2730; yaw residual integer-exact
   (16450 -> 10989 = -5461 = -30.0 deg); sim position (0.10, 0.20, -0.30) m at worldscale 100 ->
@@ -705,10 +718,23 @@ identify it by making it MOVE, never by draw counts. Since BS2 has no fg-lens le
 run first is: holster or switch the weapon and re-dump, and see whether the 19-block cluster
 disappears or changes. Until that is done, "second lens" is the honest name for it.
 
-Note this does NOT contradict session 25's finding that BS2's foreground follows the world FOV
-natively - that was measured in mono by poking the option and watching the drill re-lens visually.
-Both can be true if the drill viewmodel rides the world lens while some OTHER fixed-60-deg pass is
-what the dump is showing. Resolving that is the same holster test.
+**CLOSED, same day, by the FOV sweep rather than the holster test.** The holster test was never
+needed: the option sweep identifies the cluster more decisively than a dump could, because it
+tests a QUANTITATIVE prediction rather than a correlation.
+
+- Predicted `k = tan(option/2)/tan(30)`: 2.06x at option 100, 3.99x at 130 -> the defect should
+  worsen sharply at 130. User: *"it very clearly got a lot worse at 130 FOV."*
+- Predicted `k = 1.0` at option 60, where the world lens exactly equals the fixed lens -> the
+  defect should VANISH. User: *"gfov 60 test done, the weapon looks correct now and doesn't
+  move."*
+
+A pass that is not the viewmodel cannot make the VIEWMODEL look correct at exactly the option
+where its own tangent is matched. **The 60-deg cluster is the viewmodel**, and session 25's
+"foreground follows the world FOV natively" is retracted (see the retraction near line 126).
+
+Method note worth keeping: two zero-code in-headset A/Bs beat a queued frame-dump investigation
+here, because the model made a numeric prediction at a specific input value. Prefer a falsifiable
+prediction over another capture whenever the arithmetic offers one.
 
 ### 5. BS2's cb0 ray block is at float 16 (BS1's is 12) - same shape, different offset
 
