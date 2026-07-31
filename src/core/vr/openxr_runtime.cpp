@@ -376,13 +376,31 @@ constexpr uint32_t kPaceDeadlineIdleMs = 20;
 // properly needs the XR session on its own device with shared textures, which
 // is a bigger change than a pacing fix should carry.
 //
-// WHAT SHIPS INSTEAD: the frame loop stays on the present thread, and while the
-// session is not FOCUSED it runs at most once per kPaceKeepaliveMs. The game
-// still eats one ~100 ms xrEndFrame per keepalive, but between them it runs
-// free, so the cost falls from "every frame" to "one frame per interval" - at
-// the 1 s default that is roughly 90% of full rate instead of 10%. Submission
-// continues, so session 28's requirement (a runtime will not re-grant FOCUSED
-// to an app that submits nothing) is still met.
+// THE RATE-LIMITED KEEPALIVE IS ALSO A DEAD END, and this one was measured in
+// the field rather than reasoned about. Running the frame loop once a second
+// while unfocused survived four intervals and wedged on the fifth:
+//
+//   19:45:09 VISIBLE -> DETACHED (keepalive 1000 ms)
+//   19:45:09/10/11/12  SUBMISSION IDLE, frames=5896   <- alive, one loop per second
+//   19:45:13           nothing, ever again; present thread blocked in a wait
+//
+// So while unfocused xrEndFrame does not block for ~100 ms - it eventually
+// blocks FOREVER, exactly as session 28 found for xrWaitFrame with the headset
+// idle. Rate-limiting only chooses which call wedges.
+//
+// WHAT SHIPS: while the session is not FOCUSED the present thread makes NO
+// blocking OpenXR call at all - no wait, no begin, no end. Recovery is by
+// EVENT: pump_events runs first thing every present, is non-blocking, and needs
+// no submission to see FOCUSED come back.
+//
+// This looks like session 28's rejected "skip", and the difference matters:
+// session 28 rejected it because FOCUSED never returned, but its real bug was
+// that the pair-hold returned ABOVE pump_events so no events were polled at
+// all - fixed since, separately. Tonight's log settles it directly: FOCUSED was
+// re-granted after an episode of 755 unpaced presents carrying just 4 submitted
+// frames, so this runtime plainly does not require a frame stream to hand focus
+// back. `vrpace keepalive <ms>` can put submission back for anyone whose
+// runtime does; it defaults to 0 because 0 is the setting that survived.
 //
 // DEFAULT OFF IN CORE, ON PER GAME. BioShock 1 is the headset-accepted baseline
 // and the project rule is that a core change must not move a BS1 path; the BS2
@@ -394,7 +412,9 @@ std::atomic<bool> g_paceDetach{false};
 // unfocused session is now one blocking xrEndFrame per interval instead of one
 // per present. Tunable live (`vrpace keepalive <ms>`) because the right value
 // is a judgement about hitch-versus-recovery that only the headset can settle.
-std::atomic<uint32_t> g_paceKeepaliveMs{1000};
+// 0 = NEVER touch the frame loop while unfocused, which is the default and the
+// only setting shown to survive. Non-zero is kept as an experiment lever only.
+std::atomic<uint32_t> g_paceKeepaliveMs{0};
 uint64_t g_lastKeepaliveMs = 0; // present thread only
 bool g_detachedNow = false;     // present thread only
 std::atomic<uint32_t> g_detachSkips{0}, g_detachKeepalives{0}, g_detachEpisodes{0};
@@ -696,7 +716,8 @@ DWORD WINAPI trace_thread_proc(void*) {
     while (g_traceRun.load(std::memory_order_relaxed)) {
         Sleep(1000);
         if (!g_traceRun.load(std::memory_order_relaxed)) break;
-        if (g_session == XR_NULL_HANDLE) continue;
+        if (g_session == XR_NULL_HANDLE && !g_simIdle.load(std::memory_order_relaxed))
+            continue;
 
         uint32_t presents = g_presentsSeen.load(std::memory_order_relaxed);
         uint32_t submitted = g_framesSubmitted;
@@ -741,6 +762,47 @@ void trace_thread_start() {
     if (g_traceThread)
         BVR_LOG("xr: pace trace started - 1 Hz from its OWN thread, so it keeps "
                 "reporting while the present thread is blocked");
+}
+
+// The DETACHED-PACING decision for one present, factored out so the flat
+// simulation below runs the IDENTICAL logic against a forced state. True = this
+// present must make no blocking OpenXR call. Present thread only.
+//
+// Being able to run this flat matters more than it looks: VDXR creates no
+// session without a headset, so the real path is unreachable on a desk, and
+// three builds went to the user unverified because of it.
+bool detach_skip_decision(uint64_t now, bool focused) {
+    if (!g_paceDetach.load(std::memory_order_relaxed)) {
+        g_detachedNow = false; // never leave the flag set behind a disabled lever
+        return false;
+    }
+    if (focused) {
+        if (g_detachedNow) {
+            g_detachedNow = false;
+            BVR_LOG("xr: ATTACHED - session FOCUSED again, full-rate pacing resumes "
+                    "(%u presents ran unpaced, %u keepalive frames submitted)",
+                    g_detachSkips.load(std::memory_order_relaxed),
+                    g_detachKeepalives.load(std::memory_order_relaxed));
+        }
+        return false;
+    }
+    uint32_t every = g_paceKeepaliveMs.load(std::memory_order_relaxed);
+    if (!g_detachedNow) {
+        g_detachedNow = true;
+        g_lastKeepaliveMs = now;
+        g_detachEpisodes.fetch_add(1, std::memory_order_relaxed);
+        BVR_LOG("xr: DETACHED (session %s) - the present thread now makes NO blocking "
+                "OpenXR call (keepalive %u ms; 0 = none). Recovery is by EVENT: "
+                "pump_events runs first thing every present and needs no submission.",
+                state_str(g_state), every);
+    }
+    if (every == 0 || now - g_lastKeepaliveMs < every) {
+        g_detachSkips.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    g_lastKeepaliveMs = now;
+    g_detachKeepalives.fetch_add(1, std::memory_order_relaxed);
+    return false;
 }
 
 // One line per 5 s, and ONLY while unfocused with some phase over the alarm -
@@ -1361,6 +1423,7 @@ void init_instance() {
 void on_present_begin(IDXGISwapChain* swapchain) {
     PhaseScope psBegin(kPhPresentBegin); // records on every return path
     g_presentsSeen.fetch_add(1, std::memory_order_relaxed);
+    trace_thread_start(); // idempotent; the flat simulation needs it too
     // Flat stand-in for the headset-idle stall (flat has no XR session, so the
     // real path below never runs): the SAME guard decision runs with the state
     // forced VISIBLE and the focus latch forced, and a 1 s sleep stands in for
@@ -1369,8 +1432,19 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // the free-running rate (one 1 s keepalive hitch per 5 s); with the guard
     // OFF it collapses under 1/s - the stall being fixed, reproduced.
     if (g_simIdle.load(std::memory_order_relaxed)) {
-        if (!pace_should_skip(XR_SESSION_STATE_VISIBLE, true, GetTickCount64()))
-            Sleep(1000);
+        // SESSION 34: this now runs the SHIPPED decision (detach_skip_decision)
+        // against a forced not-FOCUSED state, with a 1 s sleep standing in for
+        // the blocking xrEndFrame the runtime performs while unfocused - which
+        // is the call the phase timers measured at 101.8 ms and which, left
+        // long enough, never returns at all.
+        //
+        // Flat acceptance, runnable on a desk with no headset:
+        //   vrpace simidle on              -> presents/s must stay at the free
+        //                                     running rate (detach ON, keepalive 0)
+        //   vrpace detach off + simidle on -> presents/s must collapse to ~1
+        // If those two do not differ, the fix is not doing anything, and no
+        // amount of headset time will tell you that any faster.
+        if (!detach_skip_decision(GetTickCount64(), false)) Sleep(1000);
         return;
     }
 
@@ -1420,47 +1494,18 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // this thread returns immediately (so the game keeps its frame rate).
     // pump_events above stays here and is non-blocking, which is what lets the
     // return to FOCUSED be seen at all.
-    if (g_paceDetach.load(std::memory_order_relaxed)) {
-        if (g_state != XR_SESSION_STATE_FOCUSED) {
-            uint64_t now = GetTickCount64();
-            uint32_t every = g_paceKeepaliveMs.load(std::memory_order_relaxed);
-            if (!g_detachedNow) {
-                g_detachedNow = true;
-                g_lastKeepaliveMs = now; // the transition itself counts as one
-                g_detachEpisodes.fetch_add(1, std::memory_order_relaxed);
-                BVR_LOG("xr: DETACHED (session %s) - the frame loop now runs at most "
-                        "once per %u ms, so the runtime's not-visible cadence costs "
-                        "the game one blocking xrEndFrame per interval instead of "
-                        "one per present",
-                        state_str(g_state), every);
-            }
-            if (now - g_lastKeepaliveMs < every) {
-                // The ordinary case: no OpenXR call at all this present, so
-                // nothing the runtime does can reach the game thread. A frame
-                // must never be left open across this return.
-                if (g_frameOpen) {
-                    XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
-                    idle.displayTime = g_frameState.predictedDisplayTime;
-                    idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-                    xrEndFrame(g_session, &idle);
-                    g_frameOpen = false;
-                }
-                g_srPairOpen = false;
-                g_detachSkips.fetch_add(1, std::memory_order_relaxed);
-                return;
-            }
-            // Keepalive present: fall through and run ONE full frame loop, so
-            // the app keeps submitting and the runtime can re-grant FOCUSED.
-            // Session 28's requirement, at 1/1000th of its old cost.
-            g_lastKeepaliveMs = now;
-            g_detachKeepalives.fetch_add(1, std::memory_order_relaxed);
-        } else if (g_detachedNow) {
-            g_detachedNow = false;
-            BVR_LOG("xr: ATTACHED - session FOCUSED again, full-rate pacing resumes "
-                    "(%u presents ran unpaced, %u keepalive frames submitted)",
-                    g_detachSkips.load(std::memory_order_relaxed),
-                    g_detachKeepalives.load(std::memory_order_relaxed));
+    if (detach_skip_decision(GetTickCount64(), g_state == XR_SESSION_STATE_FOCUSED)) {
+        // No OpenXR call at all this present. A frame must never be left open
+        // across this return.
+        if (g_frameOpen) {
+            XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+            idle.displayTime = g_frameState.predictedDisplayTime;
+            idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+            xrEndFrame(g_session, &idle);
+            g_frameOpen = false;
         }
+        g_srPairOpen = false;
+        return;
     }
 
     // Pair pacing: the previous (LEFT-tagged) present left the XR frame open;
@@ -1974,9 +2019,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
                               : !g_sessionBegun ? "session not begun (waiting "
                                                   "for READY after a STOPPING)"
                               : g_detachedNow
-                                  ? "DETACHED: session not FOCUSED, so the pace "
-                                    "thread owns the frame loop and the game is "
-                                    "not being paced by it (session 34)"
+                                  ? "DETACHED: session not FOCUSED, so the present "
+                                    "thread makes no blocking OpenXR call at all; "
+                                    "recovery is by event (session 34)"
                               : g_state != XR_SESSION_STATE_FOCUSED
                                   ? "pace guard: session not FOCUSED"
                               : g_swapchains[0] == XR_NULL_HANDLE
