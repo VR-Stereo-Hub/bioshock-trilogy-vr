@@ -19,9 +19,31 @@ section below, so the two projects' handoffs do not fight over the same lines wh
 
 ### Infinite: current state after session 36 (I2 part 1 - branch `si36-inf-derisk`)
 
-**DR-I1 is CLOSED and passed. DR-I2 and DR-I3 are written, built and installed, and both are
-waiting on one live run.** BioShock 2 held the machine for the whole session, so this was the
-offline half by design - and DR-I1 turned out to need no game at all.
+**DR-I1, DR-I2 and DR-I3 all PASS. Three of the eight de-risks are closed, and I2 is half done in
+one session.** BioShock 2 held the machine for the first half, so the offline derivation came
+first; the machine freed up and the whole live battery ran.
+
+**THE HEADLINES, all measured live:**
+
+- **The camera hook fires.** 9681 calls/s peak, ~3600/s idle gameplay, 4.07 M lifetime calls,
+  **0 foreign-thread dispatches**. `vrcmd` reports `pump=game`, so the handover works.
+- **Game and render threads are SEPARATE** (tid 13120 vs 1992). Free DR-I5 evidence.
+- **The motion test passes**: one 360-degree turn swept yaw **-32392..+32640 = 99.2 % of a full
+  16-bit range**, falsifying the field ordering and the 65536-units-per-turn assumption in one
+  motion. **FRotator is SIGNED** - a naive unsigned read would be wrong for half the circle.
+- **DR-I1 confirmed on a live object**: vtable slot `+0x7C` holds `AActor::ProcessEvent`
+  (`0x19A150`), not the `UObject` base - the prediction only the base/override split made possible.
+  GNames works (`Num=69718`, `[0]=="None"`), the UClass fixpoint passes.
+- **THE LENS IS FOUND AND CONFIRMED.** Float 0 of the 80-byte constant buffer, row-major 4x4.
+  Of 139 candidate 4x4s only one matched the backbuffer aspect. Promoted from candidate to fact by
+  a falsifiable prediction: the FOV slider min-to-max moved **both axes by the same ratio**
+  (1.14282 / 1.14269) with the aspect held to 0.002 %, 75.01 -> 82.50 degrees horizontal.
+
+**AND THE INI LIED, which nearly poisoned I5.** Session 34 read `FOVAngle=70` +
+`MaxUserFOVOffsetPercent=15` as "the slider spans 70 to 80.5 degrees". The rendered frustum spans
+**75.01 to 82.50**, and the measured tangent ratio is **1.1428** against the **1.2094** that
+70-to-80.5 predicts. Neither endpoint nor the ratio matches. **I5 must derive the FOV law from the
+frustum, not the config** - third instance of "a verified value is not an honoured one".
 
 **What landed:**
 
@@ -82,21 +104,28 @@ body. **The additive dump format was tested, not asserted**: the OLD decoder run
 synthetic mode-3 dump gives a byte-identical answer to the original, while the new one additionally
 reads a 640-float upload block the old 336 cap would have truncated.
 
-**NEXT SESSION = the live battery.** The full ordered checklist is in
-`docs/bioshockinfinite/TESTING.md` under "I2 battery". Menu first, deliberately. Headlines:
+**NEXT SESSION = I2 part 2**, the remaining de-risks: **DR-I5** (render substrate - and the
+thread-split measurement above is already half of it), **DR-I6** (the `set` Exec seam), **DR-I7**
+(Scaleform - and the frame map already hands over a large free head start), **DR-I8** (resolution,
+which the aspect cross-check below settles as a side effect), and **DR-I4** (native stereo,
+timeboxed, evidence already says no).
 
-1. Does the camera hook fire at all, at the menu and in gameplay, and at what rate.
-2. `vrcmd` must print `pump=game` - that is the handover acceptance, not the log echo.
-3. The pump-lease positive control: `bsicam off` -> 4 s -> `pump=render(degraded)` -> `bsicam on`
-   -> `pump=game`.
-4. `bsireflect selftest` - the gate on every reflection result.
-5. Three launches of `dumpframe cb` at two FOVs and two aspects, then `-ScanMatrix` first.
+**Still owed / known gaps, in priority order:**
 
-**Still owed / known gaps:** the camera hook has never dispatched; the GNames readers have never
-run against a populated pool; the Infinite ray-block offset is UNKNOWN so `bioshockinf` publishes
-no `set_ray_block_offset`; and `frame_inspector` still records `rtv0` only, which on a 4-RTV
-deferred renderer discards three quarters of the frame map (worth fixing before I6). DR-I4 through
-DR-I8 are untouched, as scoped.
+1. **The TRANSFORM question is still OPEN, and my own instrument is why.** The heartbeat's
+   `returned-minus-cached` line compares against `[this+0x24C]`, which is path 1's source - but
+   every observed sample took path 2, which reads `[cam+0x3B8]`. It compared the wrong field, so
+   its "raw copy" verdict is not evidence either way. Make it path-aware before trusting it. This
+   decides where an I4 HMD pose has to be injected.
+2. **The aspect cross-check** at a second backbuffer size (1600x1200), which also answers DR-I8 for
+   free via `first Present: backbuffer WxH`. One relaunch.
+3. **The FNameEntry UTF-16 branch is UNTESTED**, reported as such rather than as a pass - the pool
+   has no wide entries in its first 4096.
+4. `frame_inspector` records **`rtv0` only**, and every world `SetRT` on this game binds 4 RTVs, so
+   three quarters of the deferred frame map is discarded. Worth fixing before I6.
+5. A **4x4-shaped live lens decoder** behind `hud::fov_watch`. Core's `decode_ray_block` is
+   Vengeance-shaped and cannot consume this game's lens, which is why the adapter publishes no
+   `set_ray_block_offset` even though the offset is now known. I5 work.
 
 ### Infinite: current state after session 35 (superseded - kept for the derivation trail)
 
@@ -4345,8 +4374,44 @@ byte-untouched, neither includes the core command header, both compute `full ? 2
 dump so mode 3 is unreachable, and the dump format's additivity was *tested* - the old decoder run
 against a synthetic mode-3 dump returns a byte-identical answer.
 
-**Next session is the live battery**, checklist in `docs/bioshockinfinite/TESTING.md` under
-"I2 battery", menu first.
+**The machine freed up and the live battery ran in the same session.** All three de-risks pass.
+
+The hook fires and the numbers are not BS2's: **9681 calls/s** peak against BS2's ~850, 4.07 M
+lifetime calls, zero foreign-thread dispatches, and **separate game and render threads** (13120 vs
+1992) - which is half of DR-I5 for free. The path census came back 100 % path 2, promoting
+`[this+0x240]` from inferred to observed. The pump lease passed its positive control in both
+directions on demand, and it earned its place: `bsicam status` **dispatched while degraded**, which
+without the lease would have been impossible for the life of the process.
+
+**The motion test is the cleanest single result of the session.** One slow 360-degree turn swept
+yaw from -32392 to +32640 - **65032 of 65536 units, 99.2 % of a full 16-bit range** - which
+falsifies the field ordering and the units-per-turn assumption in one motion rather than two
+experiments. It also showed FRotator is **signed**, wrapping into `[-32768, +32767]`; a naive
+unsigned read would have been wrong for half the circle, and that is exactly the class of bug the
+read-only phase exists to catch.
+
+**DR-I1's offline derivation survived contact with a live object.** Vtable slot `+0x7C` holds
+`AActor::ProcessEvent`, not the `UObject` base - which is the prediction that only the
+base/override split made available, and the one thing a vote count alone could never have produced.
+
+**DR-I3's lens went from unknown to confirmed in one session.** `dumpframe cb` captured 1891
+uploads including the 160-byte tier the old watch's gate had always excluded; sweeping every offset
+gave 139 candidate 4x4s and the aspect filter left exactly one. Then the falsifiable prediction
+closed it: the FOV slider min-to-max moved both axes by the same ratio to five significant figures
+with the aspect preserved to 0.002 %. Worth stressing how close this came to going wrong - the top
+four candidates by block count were all degenerate `tanH==tanV` pairs, and the best of them had
+**more** support than the truth. Plurality would have picked the wrong one.
+
+**A third instance of "a config value is a claim".** The ini predicted a 70-to-80.5 degree slider
+and a 1.2094 tangent ratio. The frustum measures 75.01 to 82.50 and 1.1428. Nothing matched, and
+had I5 started from the ini it would have modelled a lens the game does not render.
+
+**Two things recorded against ourselves rather than glossed:** the heartbeat's
+`returned-minus-cached` verdict compares path 1's source field while every sample took path 2, so
+the transform question is still open and the line is misleading as written; and the selftest's
+three "failures" were a wrong assertion of mine, not a broken instrument - the native registry is
+per-class blocks separated by `{0,0}` sentinels, and the 46 it found is exactly
+`APlayerController`'s census count.
 
 ### Session 35 - 2026-07-31 - I1 CLOSED: our code runs inside BioShock Infinite, and the command seam works with nothing hooked
 

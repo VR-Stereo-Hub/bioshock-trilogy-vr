@@ -362,10 +362,19 @@ comparison is against the wrong field and its `identical, this path is a raw cop
 comparison needs to be path-aware before it means anything. Also noted: `[this+0x430]` read as
 **all zeros** at first fire, which is consistent with the 4x4 not being populated that early.
 
-**Still owed for DR-I2:** the motion test. Only two distinct `loc` values and three `yaw` values
-were observed because nobody was driving the game - the camera sat parked through the intro. A
-deliberate walk plus a full 360 turn is what falsifies the field ordering and the
-65536-units-per-turn assumption in one motion.
+**The motion test PASSES.** With the user driving: **12 distinct positions**, and one slow 360-degree
+turn swept yaw from **-32392 to +32640 = 65032 units**, which is **99.2 % of a full 16-bit range**.
+That single motion falsifies both open assumptions at once - the field at that offset really is
+yaw, and 65536 rotator units really is one full turn. Roll also went non-zero (`-8`), so all three
+components are live and distinct.
+
+**FRotator is SIGNED**, and this matters for the I4 write: the values wrap into roughly
+`[-32768, +32767]`, not `[0, 65535]`. A naive unsigned read would be wrong for half the circle.
+Print with `%d` and convert with `* 360.0 / 65536.0`; never reinterpret the int32 as a float (the
+result is a denormal that prints as `0.000`, the trap that cost BioShock 1 a long detour).
+
+Observed dispatch rates, for the I4 budget: **9681/s** peak during the intro, **~3600/s** idle in
+gameplay, **~1150/s** in a quieter scene. All far above BS2's ~850/s.
 
 ### DR-I1 confirmed live, and the table shape corrected
 
@@ -443,14 +452,37 @@ candidates by block count are all degenerate `tanH == tanV` pairs at aspect 1.00
 with 108 blocks - more support than the true answer's 93. **Plurality is not evidence here; the
 aspect match is.** That is the same failure mode the BS1 control predicted.
 
-Worth flagging for I5: the rendered horizontal is **75.0 deg** while `XEngine.ini` says
-`FOVAngle=70` and the user FOV slider is at 0. A config value is a claim, not a measurement.
+#### CONFIRMED by the falsifiable prediction - DR-I3's lens question is CLOSED
 
-**Still owed:** the falsifiable confirmation that this block *responds* to the FOV slider by the
-predicted `tan(a/2)/tan(b/2)` ratio, and the aspect cross-check at a second backbuffer size. Until
-then the offset is a strong candidate rather than a published constant, and
-`bioshockinf` deliberately still calls no `set_ray_block_offset` - core's `decode_ray_block`
-expects the Vengeance 7-float shape and cannot consume a 4x4 anyway.
+Moving the in-game FOV slider from minimum to maximum and re-dumping moved that block, and only
+that block, exactly as a projection must:
+
+| | tanH | tanV | hFOV | vFOV | aspect |
+|---|---|---|---|---|---|
+| slider min | 0.7674 | 0.4317 | 75.01 deg | 46.67 deg | 1.77762 |
+| slider max | 0.8770 | 0.4933 | 82.50 deg | 52.63 deg | 1.77782 |
+| **ratio** | **1.14282** | **1.14269** | | | held at 16:9 |
+
+**Both axes scaled by the same ratio to five significant figures, with the aspect preserved to
+0.002 %.** That is the signature of a FOV change and of nothing else - a view or object term could
+not do it, and a coincidence could not do it twice on the same float offset in the same byte tier.
+Same offset, same layout, same tier across all three dumps.
+
+**A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT - a third instance, and this one nearly poisoned
+I5.** Session 34 read `FOVAngle=70` plus `MaxUserFOVOffsetPercent=15` as "the native slider spans
+roughly 70 to 80.5 degrees". The rendered frustum spans **75.01 to 82.50 degrees**. Neither
+endpoint matches, and the measured tangent ratio of **1.1428** is nowhere near the **1.2094** that
+a 70-to-80.5 span predicts. **I5 must derive the FOV law from the frustum, not from the ini** - and
+still at two aspects, since one aspect cannot separate the horizontal and vertical conventions.
+
+The constant lives in `src/game/bioshockinf/patterns.h` as `kLensCbBytes` / `kLensFloatIndex` /
+`kLensRowMajor`. It is deliberately **NOT** published through `hud::set_ray_block_offset`: core's
+`decode_ray_block` encodes the Vengeance 7-float shape and cannot consume a 4x4, so pointing it at
+float 0 would fail or, worse, false-positive. A 4x4-shaped live decoder behind the same
+`hud::fov_watch` API is I5 work.
+
+**Still owed (small):** the aspect cross-check at a second backbuffer size, which also settles
+DR-I8 for free via `first Present: backbuffer WxH`.
 
 ## DR-I2: the camera seam - hook WRITTEN, live confirmation OWED
 

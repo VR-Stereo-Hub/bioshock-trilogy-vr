@@ -159,6 +159,45 @@ inline constexpr size_t kFNameTextBufMin = 64;
 // UObject::Class, from execIsA (`mov eax,[edi+0x20]`).
 inline constexpr uint32_t kUObjectClassOffset = 0x20;
 
+// ---- the lens (DR-I3, derived live session 36) -----------------------------
+//
+// Infinite does NOT carry BS1's and BS2's 7-float screen-ray helper
+// (2tanH, 0, -tanH, 0, 0, -2tanV, tanV). It ships a 4x4, so core's
+// hud::set_ray_block_offset / decode_ray_block CANNOT consume this and the
+// adapter deliberately publishes nothing to them - a Vengeance-shaped decoder
+// pointed at float 0 would either fail or, worse, false-positive.
+//
+// DERIVATION. `dumpframe cb` (frame_inspector mode 3) captured 1891 constant-
+// buffer uploads in gameplay. Sweeping every offset of every block for a 4x4
+// whose three columns are mutually orthogonal yields 139 candidates; filtering
+// on `tanH/tanV == backbuffer aspect` leaves exactly ONE. That filter is
+// load-bearing, not decoration: the top four candidates by block count are all
+// degenerate tanH==tanV pairs, and the best of them had MORE support (108
+// blocks) than the true answer (93). Plurality is not evidence here.
+//
+// CONFIRMED BY A FALSIFIABLE PREDICTION, which is what promotes it from
+// candidate to fact. Moving the in-game FOV slider from minimum to maximum
+// moved this block and nothing else about it:
+//     slider min:  tanH 0.7674  tanV 0.4317  hFOV 75.01 deg  aspect 1.77762
+//     slider max:  tanH 0.8770  tanV 0.4933  hFOV 82.50 deg  aspect 1.77782
+// Both axes scaled by the SAME ratio (1.14282 vs 1.14269) with the aspect held
+// at 16:9 to 0.002 % - the signature of a FOV change and of nothing else.
+//
+// tanH = |c3| / |c0| and tanV = |c3| / |c1| for the column triples of the
+// row-major 4x4, so the object scale cancels. That is what makes this readable
+// from a PER-OBJECT constant buffer, where nothing else is constant.
+inline constexpr uint32_t kLensCbBytes = 80;      // the tier that carries it
+inline constexpr uint32_t kLensFloatIndex = 0;    // float offset within it
+inline constexpr bool kLensRowMajor = true;
+
+// **A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT.** `XEngine.ini` says
+// `FOVAngle=70` and `MaxUserFOVOffsetPercent=15`, which session 34 read as "the
+// native slider spans roughly 70 to 80.5 degrees". The RENDERED frustum spans
+// **75.01 to 82.50 degrees horizontal** at 16:9. Neither endpoint matches, and
+// the tangent ratio across the slider is 1.1428 rather than the 1.2094 that
+// 70-to-80.5 predicts. Do not build I5's FOV law on the ini numbers; derive it
+// from the frustum, and at two aspects rather than one.
+
 // False when the running exe is not the build the addresses came from. Anything
 // consuming a raw RVA must check this first.
 bool rva_trusted();

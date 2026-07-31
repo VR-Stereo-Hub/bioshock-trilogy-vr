@@ -171,16 +171,22 @@ dead-end list saved real time.
       ENGINE_NOTES rows: `ConsoleCommand`/`SetWeapon`/`AddAmmo` are exec thunks, not
       implementations. **Live confirmation of the GNames readers is owed** - they cannot be called
       before the engine's static initializers have run.*
-- [ ] **DR-I2 The camera seam.** `GetPlayerViewPoint` / `CalcCamera` / `Camera.UpdateViewTarget`,
+- [x] **DR-I2 The camera seam.** `GetPlayerViewPoint` / `CalcCamera` / `Camera.UpdateViewTarget`,
       hooked BS2-style: filter ProcessEvent by cached FName index, mutate the param block after
       calling the original. Confirm it fires in gameplay *and* at the menu, and measure the
       dispatch rate (BS2 sees ~850/s in gameplay, spiking to ~4500/s on load - the fast path must
       stay tiny).
-      *2026-07-31 session 36: read-only detour WRITTEN and building, gated on the live prologue AND
-      on finding `ret 8` in the body before the hook is created. Takes over the command poll on
-      first fire. **NOT yet observed firing** - BioShock 2 held the machine, and a hook is not real
-      until it dispatches. Checklist in TESTING.md.*
-- [ ] **DR-I3 Frame map.** `dumpframe` / `dumpframe full`. Infinite is a **deferred** renderer, so
+      *2026-07-31 session 36: **PASS, confirmed live.** Fires at the intro AND in gameplay.
+      **9681 calls/s** peak (BS2 ~850), ~3600/s idle gameplay; 4.07 M lifetime calls with
+      **0 foreign-thread dispatches**. `vrcmd` reports `pump=game` - the handover works. **Game and
+      render threads are SEPARATE** (tid 13120 vs 1992), which is free DR-I5 evidence. Path census
+      100 % path 2, promoting `[this+0x240]` from inferred to observed. Motion test passes: 12
+      positions, and one 360 turn swept yaw **-32392..+32640 = 99.2 % of a full 16-bit range**,
+      falsifying the field ordering and the 65536-units-per-turn assumption together. **FRotator is
+      SIGNED.** The pump lease passed its positive control in both directions on demand. Still
+      open: the returned-view TRANSFORM question - the heartbeat compared against `+0x24C`, which
+      is path 1's source, so it said nothing about path 2.*
+- [x] **DR-I3 Frame map.** `dumpframe` / `dumpframe full`. Infinite is a **deferred** renderer, so
       the BS1/BS2 forward fingerprints do not apply. Find the tonemap target, the scene RTs, and
       the cb0 screen-ray block offset (BS1 = 12, BS2 = 16, here unknown) using
       `decode-framedump.ps1 -ScanLayout` and `-Diff` across two FOV values.
@@ -193,7 +199,16 @@ dead-end list saved real time.
       and `dumpframe full` under-samples an engine that uploads via `UpdateSubresource`. Built
       `dumpframe cb` (mode 3) and `-ScanMatrix`/`-BlockBytes`/`-DiffAspects`/`-SelfTest`; all
       controls pass, including recovering BS2's lens from a dump where `-ScanLayout` finds nothing.
-      Needs one live gameplay session.*
+      **THE LENS IS FOUND AND CONFIRMED**: float 0 of the 80-byte constant buffer, row-major 4x4,
+      `tanH=|c3|/|c0|` so the object scale cancels. Of 139 candidate 4x4s only one matched the
+      backbuffer aspect (the top four by block count are degenerate `tanH==tanV` pairs, one with
+      MORE support than the truth - plurality is not evidence). Promoted from candidate to fact by
+      a falsifiable prediction: the FOV slider min-to-max moved both axes by the SAME ratio
+      (1.14282 / 1.14269) with the aspect held to 0.002 %, 75.01 -> 82.50 deg horizontal. Recorded
+      as `kLensFloatIndex` in patterns.h and deliberately NOT wired to core's Vengeance-shaped
+      `decode_ray_block`. **And the ini lied**: `FOVAngle=70` + 15 % predicts 70-80.5 deg and a
+      1.2094 ratio; the frustum says 75.01-82.50 and 1.1428. I5 must use the frustum.
+      Still owed: the aspect cross-check at a second backbuffer size.*
 - [ ] **DR-I4 Native stereo - TIMEBOXED to one session slice.** Is there any usable engine-side
       per-eye render path? Current evidence says no: `[Stereoscopic3D]` exists in the ini but no
       `bStereo` / `EyeSeparation` / `StereoDevice` names appear in the exe, which points at
