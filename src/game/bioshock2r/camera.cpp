@@ -501,9 +501,24 @@ void apply_command(const char* cmd, const char* args) {
         unsigned addr = 0;
         if (strncmp(args, "addr", 4) == 0) {
             if (sscanf_s(args + 4, "%x", &addr) == 1) {
-                // Disarm before repointing so the OLD address is restored -
-                // otherwise a hunt leaves a trail of poked fields behind it.
-                if (g_wasWritingFgFov) g_fgFovMatch.store(false, std::memory_order_relaxed);
+                // Restore the OLD address HERE, synchronously, before
+                // repointing. Deferring it to the next CalcView (which is what
+                // clearing the match flag would do) writes the saved value to
+                // the NEW address instead - so the previous candidate keeps our
+                // value forever. That defect made a six-candidate sweep report
+                // a hit on ALL SIX: the first write was never undone, so every
+                // later reading was measuring candidate 1 still being held.
+                if (g_wasWritingFgFov) {
+                    uintptr_t old = g_fgFovAddr.load(std::memory_order_relaxed);
+                    float probe = 0.0f;
+                    if (old && bvr::value_scan::safe_read_f32(old, &probe)) {
+                        *reinterpret_cast<float*>(old) = g_fgFovSaved;
+                        BVR_LOG("[b2r] fgfov: restored 0x%08X to %.3f before repointing",
+                                static_cast<unsigned>(old), g_fgFovSaved);
+                    }
+                    g_wasWritingFgFov = false;
+                    g_fgFovMatch.store(false, std::memory_order_relaxed);
+                }
                 g_fgFovAddr.store(addr, std::memory_order_relaxed);
                 float cur = 0.0f;
                 bool ok = bvr::value_scan::safe_read_f32(addr, &cur);
@@ -647,6 +662,21 @@ void apply_command(const char* cmd, const char* args) {
                                                      : "STRETCHED (anamorphic)");
         } else {
             BVR_LOG("[b2r] fovaudit live: no decoded scene tangents yet");
+        }
+        // The raw slots, always - this is the line that says whether the fg
+        // lens was SAMPLED, which `lenses` cannot. The fg pass is a short
+        // contiguous run at the head of the pass (~19 buffers of 600+), so
+        // before the head-slot reservation a round could easily miss it and
+        // report lenses=1 with nothing having changed.
+        {
+            float sh[8] = {}, sv[8] = {};
+            int n = bvr::hud::fov_slots(sh, sv, 8);
+            char buf[256];
+            int off = 0;
+            for (int i = 0; i < n && off < 200; ++i)
+                off += sprintf_s(buf + off, sizeof(buf) - off, "%s%.4f", i ? " " : "", sh[i]);
+            if (!n) sprintf_s(buf, "(none)");
+            BVR_LOG("[b2r] fovaudit slots: %d decoded | tanH: %s", n, buf);
         }
     } else if (strcmp(cmd, "fsweep") == 0) {
         float flo = 0.0f, fhi = 0.0f;

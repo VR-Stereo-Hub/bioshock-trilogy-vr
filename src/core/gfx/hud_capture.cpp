@@ -103,6 +103,11 @@ std::atomic<unsigned> g_cHudDraws{0}, g_cRedirects{0}, g_cLeaks{0}, g_cIntervals
 // tools/decode-framedump.ps1 now see identical data. Cost is 10.5 KB of staging.
 constexpr UINT kFovCbBytes = 1344; // floats 0..335, matching frame_inspector
 constexpr int kFovSlots = 8;
+// Slots reserved for the HEAD of the pass, where the foreground/viewmodel pass
+// lives on both games (session 33 - see the sampling site). The rest stride
+// across the world pass, so the world still wins the majority vote 6/8 or
+// better while the fg lens is guaranteed to be seen at all.
+constexpr int kFovHeadSlots = 3;
 ID3D11Buffer* g_fovStaging = nullptr;
 bool g_fovPending = false; // copied, not yet mapped
 int g_fovPendingAge = 0;   // presents since the copy
@@ -149,6 +154,13 @@ std::atomic<float> g_fovVpRatio{1.0f};
 std::atomic<float> g_fovFgTanH{0.0f}, g_fovFgTanV{0.0f};
 std::atomic<unsigned long long> g_fovFgStampMs{0};
 std::atomic<int> g_fovLenses{0}; // distinct perspective clusters last round
+// Session 33: the RAW decoded slots of the last published round. `lenses` alone
+// cannot distinguish "the second lens is gone" from "the sampler missed it",
+// and a poke hunt that reads the first as the second concludes the opposite of
+// the truth. This is the readout that makes that distinction visible.
+std::atomic<int> g_fovSlotCount{0};
+std::atomic<float> g_fovSlotH[kFovSlots];
+std::atomic<float> g_fovSlotV[kFovSlots];
 float g_fovLoggedH = 0.0f, g_fovLoggedFgH = 0.0f;
 // Mismatch verdict (render thread writes; hysteresis over present intervals).
 std::atomic<bool> g_fovMismatchOn{false};
@@ -616,6 +628,14 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
                 int floats = static_cast<int>(g_fovSlotBytes[s] / 4);
                 if (decode_ray_block(f, floats, &h[n], &v[n], &lb[n])) ++n;
             }
+            // Publish the raw slots BEFORE any vote or guard can reject the
+            // round - the question "did we even see the fg lens?" must be
+            // answerable in exactly the rounds the verdict refuses.
+            for (int i = 0; i < n; ++i) {
+                g_fovSlotH[i].store(h[i], std::memory_order_relaxed);
+                g_fovSlotV[i].store(v[i], std::memory_order_relaxed);
+            }
+            g_fovSlotCount.store(n, std::memory_order_relaxed);
             ctx->Unmap(g_fovStaging, 0);
             g_fovPending = false;
             g_fovPendingSlots = 0;
@@ -653,8 +673,8 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
             // published the viewmodel lens (5/8 votes) before the next round
             // corrected it. Refuse a round whose samples did not reach across
             // the pass it was collected in.
-            if (win >= 0 && g_fovCollectDistinct >
-                                kFovSlots * g_fovStrideUsed * 2) {
+            int spanned = kFovHeadSlots + (kFovSlots - kFovHeadSlots) * g_fovStrideUsed;
+            if (win >= 0 && g_fovCollectDistinct > spanned * 2) {
                 ++g_fovUnspanned;
                 win = -1;
             }
@@ -935,12 +955,33 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
                 if (bd.ByteWidth >= 320) {
                     g_fovLastCb = cb0;
                     // Count EVERY distinct buffer (that is what sets the next
-                    // interval's stride), copy only every stride-th one.
+                    // interval's stride), copy only every stride-th one - PLUS
+                    // the first kFovHeadSlots unconditionally.
+                    //
+                    // SESSION 33: the head reservation is the fix for an
+                    // instrument that could not answer its own question. The
+                    // foreground pass is a CONTIGUOUS RUN AT THE HEAD - dump
+                    // block indices 2..12 of 249 at 16:9, 2..9 of 534 at
+                    // 2048x2048 - about 19 buffers against the world's 600+. A
+                    // pure stride of 615/8 = 77 therefore sampled the fg pass
+                    // only when index 0 happened to land in it, so `lenses`
+                    // flickered between 1 and 2 with nothing changing, and a
+                    // poke A/B read "the second lens is gone" as a SUCCESS when
+                    // the sampler had simply missed it. Session 28's stride
+                    // exists to stop the fg WINNING the vote (5/8 once); it
+                    // overcorrected into never seeing it. Reserving the head
+                    // keeps both properties: the fg is always represented, and
+                    // with 3 of 8 slots at the head (one of which is the world
+                    // block that precedes the fg run) the world still takes
+                    // >= 6/8 and the majority guard is untouched.
                     int idx = g_fovDistinct++;
-                    int stride = g_fovDistinctPrev / kFovSlots;
+                    int stride = (g_fovDistinctPrev - kFovHeadSlots) /
+                                 (kFovSlots - kFovHeadSlots);
                     if (stride < 1) stride = 1;
-                    if (!g_fovPending && g_fovSlots < kFovSlots &&
-                        idx % stride == 0 && ensure_fov_staging(ctx)) {
+                    bool take = idx < kFovHeadSlots ||
+                                ((idx - kFovHeadSlots) % stride == 0);
+                    if (!g_fovPending && g_fovSlots < kFovSlots && take &&
+                        ensure_fov_staging(ctx)) {
                         // Clamp to the SOURCE size: the box must lie inside the
                         // source buffer, and the gate admits buffers smaller
                         // than the window. Remember what was copied so the
@@ -1457,6 +1498,16 @@ bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
 int fov_lens_count() { return g_fovLenses.load(std::memory_order_relaxed); }
 
 float fov_vp_ratio() { return g_fovVpRatio.load(std::memory_order_relaxed); }
+
+int fov_slots(float* tanH, float* tanV, int maxSlots) {
+    int n = g_fovSlotCount.load(std::memory_order_relaxed);
+    if (n > maxSlots) n = maxSlots;
+    for (int i = 0; i < n; ++i) {
+        if (tanH) tanH[i] = g_fovSlotH[i].load(std::memory_order_relaxed);
+        if (tanV) tanV[i] = g_fovSlotV[i].load(std::memory_order_relaxed);
+    }
+    return n;
+}
 
 void set_ray_block_offset(int cb0FloatIndex) {
     if (cb0FloatIndex < 0 || cb0FloatIndex + 7 > static_cast<int>(kFovCbBytes / 4)) {

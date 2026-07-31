@@ -265,6 +265,13 @@ bool fov_mismatch();
 // pair as an equality (pre-session-33) rejected every letterboxed block, so the
 // whole watch published nothing at those aspects.
 float fov_vp_ratio();
+// Session 33: the RAW decoded tangent slots of the last sampled round, before
+// the majority vote and the guards. `fov_lens_count()` alone cannot separate
+// "the second lens is gone" from "the sampler did not sample it", and a poke
+// hunt that reads the first as the second concludes the exact opposite of the
+// truth - which is what happened before the head-slot reservation landed.
+// Returns the number written (at most 8).
+int fov_slots(float* tanH, float* tanV, int maxSlots);
 // Backbuffer dims (letterbox-watch sample). The lens laws are
 // aspect-parameterised, so anything printing an expectation must use these
 // rather than assume 16:9 - flat there is no XR session to read swap dims from,
