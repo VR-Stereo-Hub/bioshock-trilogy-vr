@@ -1,8 +1,12 @@
 # Write one or more commands to the mod's command.txt seam, retrying past the
 # transient share-lock when the game's 1 Hz poller has the file open.
-# Foregrounds the game first: the poller runs inside the CalcView hook, which
-# the engine pauses while the window is unfocused, so an unfocused game never
-# reads the file.
+# Foregrounds the game first: on bs1/bs2 the poller runs inside the CalcView
+# hook, which the engine pauses while the window is unfocused, so an unfocused
+# game never reads the file. On bsi the poller is core and ticks from Present
+# (session 35), which does not stop on focus loss - foregrounding is kept anyway
+# because it costs nothing and keeps the three games' flows identical.
+# NOTE for bsi: a command.txt that already exists when the game starts is
+# SKIPPED, not run. Write it again once the game is up.
 # Usage: .\tools\game-cmd.ps1 "memscani 123" "memlist"
 #        .\tools\game-cmd.ps1 -Game bs2 "recenter"
 #        .\tools\game-cmd.ps1 -Game bsi "recenter"

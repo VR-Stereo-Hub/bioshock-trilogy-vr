@@ -1,5 +1,6 @@
 #include "d3d11_hook.h"
 
+#include "core/framework/command.h"
 #include "core/gfx/frame_inspector.h"
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
@@ -79,6 +80,12 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
             device->Release();
         }
     }
+    // Command seam, for adapters with no engine hook to poll from (session 35).
+    // No-op unless an adapter armed the Present pump, so BS1 and BS2 - which
+    // poll from their own camera hooks - see one atomic load and nothing else.
+    // Ahead of the frame boundary so a `dumpframe` arms for the NEXT frame
+    // rather than half of this one.
+    command::poll_from_present(GetTickCount64());
     // Frame boundary first: finalize any armed dump, then suppress our own
     // overlay/VR draws for the rest of the detour so they never enter a dump.
     frame_inspector::on_present(swapchain);

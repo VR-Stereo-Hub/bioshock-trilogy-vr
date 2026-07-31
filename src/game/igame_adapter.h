@@ -35,6 +35,21 @@ struct IGameAdapter {
     // ImGui widgets for the overlay's adapter section. Engine-semantic UI
     // (units, offsets) stays behind the seam this way.
     virtual void drawDebugUi() = 0;
+
+    // Adapter-owned commands from the command.txt seam. core/framework/command
+    // calls this BEFORE its own shared vocabulary, so a game can deliberately
+    // shadow a core command. Return false for "not mine" and core logs one
+    // consistent unknown-command line.
+    //
+    // This is a CONTROL-PLANE call - once a second, on whichever thread owns the
+    // poller - not the per-frame state query the publish-don't-query rule above
+    // forbids; same shape as the overlay's drawDebugUi() call. Defaulted so an
+    // adapter that polls for itself (BS1, BS2) needs no change at all.
+    virtual bool handleCommand(const char* cmd, const char* args) {
+        (void)cmd;
+        (void)args;
+        return false;
+    }
 };
 
 // Fail-soft: any scan/hook failure is logged and the adapter reports zero

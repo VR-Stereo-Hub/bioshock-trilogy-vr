@@ -10,8 +10,10 @@ set_target_properties(xinput_proxy PROPERTIES
     PREFIX ""
 )
 
-# --- bioshockvr.dll — the mod -------------------------------------------------
+# --- bioshockvr.dll - the mod -------------------------------------------------
 add_library(bioshockvr SHARED
+    core/framework/command.cpp
+    core/framework/command.h
     core/framework/dllmain.cpp
     core/framework/framework.cpp
     core/framework/framework.h
