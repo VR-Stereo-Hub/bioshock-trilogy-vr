@@ -112,11 +112,13 @@ timeboxed, evidence already says no).
 
 **Still owed / known gaps, in priority order:**
 
-1. **The TRANSFORM question is still OPEN, and my own instrument is why.** The heartbeat's
-   `returned-minus-cached` line compares against `[this+0x24C]`, which is path 1's source - but
-   every observed sample took path 2, which reads `[cam+0x3B8]`. It compared the wrong field, so
-   its "raw copy" verdict is not evidence either way. Make it path-aware before trusting it. This
-   decides where an I4 HMD pose has to be injected.
+1. **The TRANSFORM question is still OPEN, but the instrument is FIXED and installed.** The
+   heartbeat used to compare against `[this+0x24C]` (path 1's source) while every observed sample
+   took path 2 reading `[cam+0x3B8]` - it compared the wrong field, so its "raw copy" verdict was
+   worthless. It is now path-aware: `returned-minus-source` binds the comparison to whichever path
+   actually ran, names the field it used, and **refuses to make a claim at all** on paths 3 and 4
+   (whose source we decline to resolve from inside a detour). **This needs only a launch and one
+   heartbeat to read.** It decides where an I4 HMD pose has to be injected, so do it first.
 2. **The aspect cross-check** at a second backbuffer size (1600x1200), which also answers DR-I8 for
    free via `first Present: backbuffer WxH`. One relaunch.
 3. **The FNameEntry UTF-16 branch is UNTESTED**, reported as such rather than as a pass - the pool

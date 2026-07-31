@@ -88,8 +88,14 @@ constexpr uint64_t kSilenceReportMs = 2000;
 struct Snapshot {
     FVector loc{};
     FRotator rot{};
-    FVector cachedLoc{};  // [this+0x24C], the pre-transform cached POV
-    bool cachedRead = false;
+    // The PRE-TRANSFORM source for whichever internal path actually ran, and
+    // its name. Session 36 shipped this comparing only against [this+0x24C],
+    // which is path 1's source - while every observed sample took path 2 and
+    // read [cam+0x3B8]. It compared the wrong field and its "raw copy" verdict
+    // was worthless. Now the source follows the path.
+    FVector sourceLoc{};
+    const char* sourceName = "";
+    bool sourceValid = false;
     bool valid = false;
 };
 Snapshot g_last;
@@ -108,7 +114,9 @@ struct Probe {
     bool ok = false;
     bool cachedFlag = false;
     bool cameraNonNull = false;
-    FVector cachedLoc{};
+    FVector cachedLoc{};  // [this+0x24C], path 1's source
+    FVector camLoc{};     // [cam+0x3B8],  path 2's source
+    bool camLocRead = false;
     float matrix[16] = {};
     bool matrixOk = false;
 };
@@ -118,11 +126,20 @@ Probe probe_self(void* self) {
     if (!self) return p;
     __try {
         const uint8_t* base = static_cast<const uint8_t*>(self);
-        p.cachedFlag = (*reinterpret_cast<const uint8_t*>(base + 0x248) & 1u) != 0;
-        p.cameraNonNull = *reinterpret_cast<void* const*>(base + 0x240) != nullptr;
-        memcpy(&p.cachedLoc, base + 0x24C, sizeof p.cachedLoc);
-        memcpy(p.matrix, base + 0x430, sizeof p.matrix);
+        p.cachedFlag =
+            (*reinterpret_cast<const uint8_t*>(base + patterns::kPcCachedPovFlagOffset) & 1u) != 0;
+        const uint8_t* cam =
+            *reinterpret_cast<const uint8_t* const*>(base + patterns::kPcCameraOffset);
+        p.cameraNonNull = cam != nullptr;
+        memcpy(&p.cachedLoc, base + patterns::kPcCachedLocOffset, sizeof p.cachedLoc);
+        memcpy(p.matrix, base + patterns::kPcViewTransformOffset, sizeof p.matrix);
         p.matrixOk = true;
+        // Second-level dereference, and the reason the whole probe is SEH
+        // guarded: `cam` is an engine pointer we neither created nor own.
+        if (cam) {
+            memcpy(&p.camLoc, cam + patterns::kCameraPovLocOffset, sizeof p.camLoc);
+            p.camLocRead = true;
+        }
         p.ok = true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         p.ok = false;
@@ -164,8 +181,24 @@ void throttled(void* self, uint64_t now) {
         g_pathTarget.fetch_add(1, std::memory_order_relaxed);
     }
     if (p.ok) {
-        g_last.cachedLoc = p.cachedLoc;
-        g_last.cachedRead = true;
+        // Bind the comparison to the path that ACTUALLY RAN. Getting this wrong
+        // is not a cosmetic bug: it is the difference between "the returned
+        // view is a raw copy" and "the returned view is transformed", which is
+        // what decides where I4 injects an HMD pose.
+        if (p.cachedFlag) {
+            g_last.sourceLoc = p.cachedLoc;
+            g_last.sourceName = "cached POV [this+0x24C]";
+            g_last.sourceValid = true;
+        } else if (p.cameraNonNull && p.camLocRead) {
+            g_last.sourceLoc = p.camLoc;
+            g_last.sourceName = "camera POV [cam+0x3B8]";
+            g_last.sourceValid = true;
+        } else {
+            // Paths 3 and 4 read off the view target, which we refuse to
+            // resolve from inside a detour. No source, so no claim.
+            g_last.sourceValid = false;
+            g_last.sourceName = "view target (not resolved - no claim made)";
+        }
         log_matrix_once(p);
     }
 
@@ -199,17 +232,21 @@ void throttled(void* self, uint64_t now) {
             g_last.loc.x, g_last.loc.y, g_last.loc.z, g_last.rot.pitch, g_last.rot.yaw,
             g_last.rot.roll, g_last.rot.pitch * kRotToDeg, g_last.rot.yaw * kRotToDeg,
             g_last.rot.roll * kRotToDeg, perSec, count);
-    if (g_last.cachedRead) {
-        // The delta between the cached POV at +0x24C and the value actually
-        // handed back. Non-zero means the documented 4x4 transform really is
-        // applied on the way out - measured, not assumed.
-        BVR_LOG("[bsi] camera: returned-minus-cached d=(%.3f %.3f %.3f)%s",
-                g_last.loc.x - g_last.cachedLoc.x, g_last.loc.y - g_last.cachedLoc.y,
-                g_last.loc.z - g_last.cachedLoc.z,
-                (g_last.loc.x == g_last.cachedLoc.x && g_last.loc.y == g_last.cachedLoc.y &&
-                 g_last.loc.z == g_last.cachedLoc.z)
-                    ? "  <- identical, this path is a raw copy"
-                    : "  <- TRANSFORMED");
+    if (g_last.sourceValid) {
+        // The delta between the source the ACTIVE path read and the value
+        // actually handed back. Non-zero means the documented 4x4 transform is
+        // really applied on the way out - measured, not assumed, and now
+        // measured against the right field.
+        const float dx = g_last.loc.x - g_last.sourceLoc.x;
+        const float dy = g_last.loc.y - g_last.sourceLoc.y;
+        const float dz = g_last.loc.z - g_last.sourceLoc.z;
+        BVR_LOG("[bsi] camera: returned-minus-source d=(%.3f %.3f %.3f) vs %s%s", dx, dy, dz,
+                g_last.sourceName,
+                (dx == 0.0f && dy == 0.0f && dz == 0.0f)
+                    ? "  <- identical, this path hands back its source unchanged"
+                    : "  <- TRANSFORMED on the way out");
+    } else {
+        BVR_LOG("[bsi] camera: returned-minus-source SKIPPED - %s", g_last.sourceName);
     }
     g_lastBeatMs = now;
     g_beatBaseCount = count;

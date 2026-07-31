@@ -70,6 +70,26 @@ inline constexpr uint8_t kGetPlayerViewPointPrologue[] = {0x55, 0x8B, 0xEC, 0x83
 // MUST declare. Verified at install time by finding C2 08 00 in the body.
 inline constexpr uint8_t kGetPlayerViewPointRetImm = 8;
 
+// ---- APlayerController / camera object layout ------------------------------
+// Decoded from GetPlayerViewPoint's four internal paths (session 34, offline).
+// Session 36 promoted +0x240 from INFERRED to OBSERVED: 40 of 40 live path
+// samples found the flag clear and this pointer non-null, i.e. every sample
+// took path 2 and read the POV out of the camera object.
+//
+// These live here rather than in camera.cpp because of the standing rule that
+// engine offsets exist in patterns.h and nowhere else.
+inline constexpr uint32_t kPcCachedPovFlagOffset = 0x248;  // bit 0: use the cached POV
+inline constexpr uint32_t kPcCameraOffset = 0x240;         // lazily-created camera object
+inline constexpr uint32_t kPcCachedLocOffset = 0x24C;      // FVector, path 1's source
+inline constexpr uint32_t kPcCachedRotOffset = 0x258;      // FRotator, path 1's source
+inline constexpr uint32_t kPcViewTransformOffset = 0x430;  // 0x40 bytes -> a 4x4 SSE transform
+inline constexpr uint32_t kCameraPovLocOffset = 0x3B8;     // FVector, path 2's source
+inline constexpr uint32_t kCameraPovRotOffset = 0x3C4;     // FRotator, path 2's source
+// AActor, from paths 3 and 4 reading identical offsets off two different
+// objects - which is what made the reading credible rather than a guess.
+inline constexpr uint32_t kActorLocationOffset = 0x44;
+inline constexpr uint32_t kActorRotationOffset = 0x50;
+
 // ---- UE3 reflection (derived offline session 36, DR-I1) --------------------
 //
 // Derivation, in full, because it is reusable and it is what made the frameless
