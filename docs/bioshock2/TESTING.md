@@ -148,3 +148,66 @@ view)`, heartbeat `drive=1`, and moving `headOff` values are the acceptance sign
    (save/restore leak check). While there, note the slider's min/max endpoints - they are
    still unrecorded in ENGINE_NOTES.
 8. Report: fisheye gone? world-drag gone? viewmodel correct with vrfov on? slider endpoints?
+
+## Resolution (`vrres`, session 32)
+
+**BS2's lever is `Shared.ini`, not the file BS1 uses.** See ENGINE_NOTES section 1 - the
+`[WinDrv.WindowsClient]` keys exist on BS2 and are ignored.
+
+```
+vrres                 # status: Shared.ini (governs) | Bioshock2SP.ini (synced) | live backbuffer
+vrres 2048x2048       # or `vrres 2048 2048`; takes effect on the NEXT launch
+```
+
+Acceptance, end to end - **the only acceptance that counts is the backbuffer**, because the write
+verifies its own read-back even when the engine ignores it:
+
+1. `vrres 1600x1200` -> expect `viewport set to 1600x1200 in Shared.ini [SharedOptions] (verified)`
+   and, on the first write, two `original backed up to ...bvr-bak-res` lines.
+2. Relaunch. Grep the log for the startup line: `first Present: backbuffer 1600x1200`.
+   **If it says something else, the write did not take effect regardless of what `vrres` logged.**
+3. Safety check: `diff Shared.ini.bvr-bak-res Shared.ini` should show ONLY `ViewportX`/`ViewportY`,
+   and the Bioshock2SP.ini diff ONLY the four keys in `[WinDrv.WindowsClient]` (lines 471-474).
+   Any change inside `[XeDrv.XenonClient]` (509), `[PS3Drv.PS3Client]` (541),
+   `[DurangoDrv.DurangoClient]` (573) or `[OrbisDrv.OrbisClient]` (605) is a section-scoping bug.
+
+**WARNING - do not set a square resolution on BS2.** At 2048x2048 the scene renders into a
+2048x1421 viewport with a black band across the bottom ~30%, and the projection degenerates
+(horizontal collapses 100 -> 67.7 deg). This is a real BS2 difference from BS1, where square is the
+RECOMMENDED VR setting. Until the aspect bisection in ENGINE_NOTES section 2 is done, stay at 16:9
+and use the lane for sharpness (e.g. 2560x1440, 3840x2160).
+
+## Lens / FOV measurement (session 32)
+
+```
+dumpframe full 2                                    # in GAMEPLAY - the menu has no world pass
+tools\decode-framedump.ps1 -Path <dump> -ScanLayout -RayOffset 16 -FgBakeRvas @() `
+    -OptionFov 100 -Aspect 1920x1080
+```
+
+- `-RayOffset 16` is BS2's (BS1's is 12, the default). `-FgBakeRvas @()` because the fg-bake RVAs
+  are BS1-only.
+- `-ScanLayout` brute-forces every offset and validates the structural signature - use it to
+  re-derive after a game patch. **Derive at 16:9**: at square aspect the check fails for a real
+  reason (the projection is degenerate there), which reads as "no layout found".
+- `-Diff <other dump> -DiffFovs 100,130` compares two dumps taken at different FOV options and
+  flags the floats that scale as `tan(fov/2)`. It assumes NOTHING about layout - the instrument to
+  reach for when `-ScanLayout` finds nothing.
+- `fovaudit` prints the live watch's verdict including `lenses=`. On BS2 expect **`lenses=2`** in
+  gameplay: a world lens following the FOV option, and a fixed 60 deg one that does not.
+
+## Frozen engine pitch (session 32) - IN-HEADSET CHECK STILL OWED
+
+The fix (`publish_pitch_error` before the `rot->pitch` overwrite) is in, but its SIGN is unverified
+because a meaningful `pitchErr` needs the HMD actually driving - flat, with `drive=0`, it is 0 by
+construction.
+
+1. In VR, gameplay, `camlog on`. The heartbeat now prints `enginePitch=<units> pitchErr=<deg>`.
+2. Look up and down for ~30 s. **`enginePitch` must MOVE.** If it parks at one value while `rot`
+   changes, the servo is not steering and the drill will aim where the engine last believed.
+3. `vrinput pitchservo status` (now reachable on BS2 - it was not before this session).
+4. If the view fights you or the error grows instead of shrinking, the sign is inverted:
+   `vrinput pitchservo invert`.
+5. Drill an enemy while looking DOWN - the BS1 symptom was hits landing on the floor.
+6. Residual: BS1 settles at 4-8 deg because the proportional term falls under the game's own
+   deadzone. **BS2's deadzone is its own - measure it, do not assume BS1's number.**

@@ -2,7 +2,119 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-31, session 31 - SWING-TO-ATTACK IS DONE AND ACCEPTED IN-HEADSET - branch s31-b1r-swing-to-attack)
+## Current state (2026-07-31, session 32 - BS2: RESOLUTION LANE SHIPS, AND BS1'S SQUARE-BACKBUFFER POLICY IS DEAD ON BS2 - branch s32-b2r-resolution-and-lens)
+
+All BS2 work. **Three BS1 assumptions died**, each caught by an acceptance test rather than by
+reading code, and the second one changes the plan for BS2's VR configuration.
+
+### 0. Step 0 - the frozen engine pitch is FIXED (sign check still owed in-headset)
+
+Confirmed open by reading the code, not assumed: b2r armed the shared core pitch kill via
+`publish_vr_gameplay` and never published a pitch error, so BS2's engine-side view pitch was frozen
+and the DRILL aimed with it - BS1's session-30 wrench bug, same shared code. `publish_pitch_error`
+now fires immediately before the `rot->pitch` overwrite.
+
+Two corrections to the session brief, both verified in the tree:
+
+- **The brief's confirmation method could not have worked.** It said the `[b2r] camera:` heartbeat
+  prints `rot` before the overwrite; it does not - the heartbeat runs LAST by design and reports
+  the FINAL camera, so its pitch is the head's, never the engine's. The heartbeat now carries
+  `enginePitch=` (sampled pre-overwrite) and `pitchErr=`.
+- **BS2 had no `vrinput` command at all.** `bvr::input::handle_command` is core and BS1 dispatches
+  to it; b2r never did, so the synthetic gamepad, `pitchservo` AND the whole core swing-gesture
+  flat suite were unreachable on BS2. One line fixed it - and it is a CLASS of bug worth auditing
+  (core growing a feature does not give an adapter access to it).
+
+**Still owed:** the servo's SIGN, which needs the headset - flat, with `drive=0`, `pitchErr` is 0
+by construction. Checklist in `docs/bioshock2/TESTING.md`.
+
+### 1. Step 1 - `vrres` ships on BS2, and the file is NOT the one BS1 uses
+
+`vrres <w>x<h>` writes **`%APPDATA%\BioshockHD\Bioshock2\Shared.ini` `[SharedOptions]
+ViewportX/Y`**. BS1's entire lane writes `[WinDrv.WindowsClient]`'s viewport keys - **BS2 has those
+keys and IGNORES them.** Proven by changing one variable at a time across three relaunches; the
+decisive row is SP-ini 1920x1080 + Shared 2048x2048 -> renders 2048x2048.
+
+**The lesson, and it now has two instances so it is a standing rule:** the BS1-shaped port wrote
+its four keys, re-read them, logged `verified`, and the engine rendered 1920x1080 anyway. **A
+verified write is not an honoured one** - same failure class as trusting `-> HANDLED` from the Exec
+seam. Acceptance must be a downstream EFFECT (the backbuffer at first Present), never the write's
+own confirmation.
+
+Verified end to end through the shipped path: write -> relaunch -> `first Present: backbuffer
+2048x2048`; both files backed up once to `.bvr-bak-res`; diff shows ONLY the intended keys, with
+all four decoy sections byte-unchanged. **BS2 has FIVE viewport-carrying sections, not BS1's four**
+(it adds `[PS3Drv.PS3Client]`), so section-scoping matters more here, not less. Also answered, a
+question BS1 left open: **a clean quit (`WM_CLOSE`) does not clobber the write** - byte-identical,
+hash unchanged. Scope: menu-quit path only.
+
+### 2. THE HEADLINE: BS2 does NOT render non-16:9. Do not port the square-backbuffer policy.
+
+BS1's settled policy is that a square backbuffer matches the roughly-square headset eye, which is
+what made its FOV write unnecessary. **On BS2 the premise fails.** At 2048x2048:
+
+- the scene renders into a **2048x1421 viewport** - the bottom ~30% of the backbuffer is BLACK
+  (screenshot-confirmed, HUD drawn over the band);
+- the world horizontal **collapses from 100 to 67.7 deg**;
+- the ray block's two vertical encodings stop agreeing - the frustum is no longer a consistent
+  perspective at all.
+
+At 1920x1080 all three are clean. So on BS2 today the resolution lane is a SHARPNESS lever at 16:9,
+not an aspect-matching one. **Next session's first job** is to bisect which aspects BS2 will render
+full-height; the squarest one that does is the best VR configuration available.
+
+### 3. Step 2 - the lens verdict: TWO lenses, differing AT 16:9
+
+Unlike BS1, whose split was two aspect CONVENTIONS that coincide exactly at 16:9 (so its symptoms
+were aspect-gated), BS2 carries a MAGNITUDE difference that is present at 1920x1080:
+
+| cluster | option 100 | option 130 | blocks | callstack head |
+|---|---|---|---|---|
+| **world** | tanH 1.1918 (100.0 deg) | tanH 2.1445 | 229 | `...AEC7B4...` |
+| **second** | tanH **0.5774** (60.0 deg) | **0.5774 unchanged** | 19 | `...AECACF...` |
+
+`0.5774 = tan(30)` to five decimals and it **ignores the FOV option** while the world lens tracks
+it. One projection layer carries one fov claim, so whichever layer the claim does not match is
+displayed at `k = 2.06x` angular gain at option 100 - rising to **3.99x at option 130**.
+
+**This is the leading explanation for the user's stereo viewmodel report** ("wrong depth",
+"moves/slides with the head", maybe "wrong size") and it fits where BS1's mechanism could not: it
+is NOT aspect-gated, so it is present at 16:9, which is where the user tested. It also predicts
+that raising FOV makes it worse.
+
+**NOT proven: that the 60-deg cluster IS the viewmodel.** Evidence is circumstantial (distinct
+pass, small draw count, FOV-independent). BS1's rule applies - identify it by making it MOVE, never
+by draw counts. The test is one dump: holster/switch the weapon and see whether the 19-block
+cluster changes.
+
+### 4. The world FOV law is only PARTIALLY derived, deliberately
+
+`tanH = tan(option/2)` measured exactly at 1920x1080 (and tracks the option 100 -> 130). But the
+two candidate laws COINCIDE at 16:9 - that is the trap that cost BS1 two sessions - and BS2 gives
+no clean second aspect because every non-16:9 render measured is degenerate. The decoder now prints
+both laws and **both PASS at 16:9**, which is the tool reporting the ambiguity honestly rather than
+manufacturing a verdict. Not settled; the section-2 bisection is what would settle it.
+
+### 5. Tooling: both decoders parameterised, BS2's cb0 offset derived
+
+BS2's ray block is at **cb0 float 16** (BS1's is 12) - same shape, four floats later. The offset is
+now a per-game constant in `bioshock2r/patterns.h`, published to core via
+`bvr::hud::set_ray_block_offset`. Core also widened its cb0 copy from **80 to 1344 bytes** (a block
+past float 19 was previously not even COPIED, so no offset could have rescued it) and gained a hunt
+that runs only after the configured offset fails and LOGS what it adopts - it found float 16 live,
+independently of the offline derivation.
+
+`tools/decode-framedump.ps1` gained `-RayOffset`, `-Aspect` (killing a hardcoded `9/16`),
+`-FgBakeRvas`, `-ScanLayout` and `-Diff`. **`-Diff` is the instrument that cracked it**: comparing
+two dumps at different FOV options assumes nothing about layout, which is what was needed after
+`-ScanLayout` came back empty on the square dump. That empty result was itself a false lead - the
+square-aspect degeneracy, not a different layout shape.
+
+**BS1 no-regression PASSED**: `WORLD tanH=1.191754 tanV=1.191754` at 2048x2048, bit-identical to
+the banked session-28 value, with the offset hunt never firing. The last hardcoded aspect constant
+in b2r (`fovaudit`'s `9/16` flat fallback) is gone.
+
+## Previous state (2026-07-31, session 31 - SWING-TO-ATTACK IS DONE AND ACCEPTED IN-HEADSET - branch s31-b1r-swing-to-attack)
 
 **Release still held. v0.5.0 stays untagged.** Session 30's three items are unchanged (one fixed
 and accepted, one fixed with the cause identified, one untested). This session adds one feature on
@@ -835,7 +947,49 @@ in case long soaks ever disprove this.
 
 ## Next steps
 
-### 0. FIRST ACTIONS NEXT SESSION
+### 0. SESSION 33 OPENER (BS2) - written with the verdicts that shape it
+
+Session 32 answered the lens question and killed the square-backbuffer plan. Steps 3-4 of the
+session-32 brief were NOT reached; they are re-scoped below by what was measured.
+
+**A. Bisect BS2's usable aspects (30-60 min, unblocks everything else).** BS2 renders 2048x2048 as
+a letterboxed 2048x1421 with a degenerate projection, and 1920x1080 cleanly. The question is where
+the boundary is. Each data point is `vrres <w>x<h>` -> relaunch -> load a save -> `dumpframe full`
+-> check the `vp=` field and whether the ray block's vertical pair agrees. Suggested ladder:
+2560x1440 (16:9 control, expect clean), 1920x1440 (4:3), 1920x1200 (16:10), 1920x1600. **The
+squarest aspect that renders full-height with a consistent frustum is BS2's best VR
+configuration**, and it doubles as the clean second aspect that settles the world FOV law (section
+4 above). `[Engine.RenderConfig] HorizontalFOVLock=True` is an unexamined suspect for the
+mechanism.
+
+**B. Prove what the 60-deg lens IS (one dump).** It is the leading explanation for the viewmodel
+report but it is NOT confirmed to be the viewmodel. Identify it by making it MOVE, never by draw
+counts (BS1's rule, learned the hard way): holster or switch weapon, re-dump at 16:9, and see
+whether the 19-block `...AECACF...` cluster disappears or changes. If it IS the viewmodel, BS1's
+conclusion applies - MATCH the lenses, because one claim cannot serve two - and the fix is a BS2
+fg-lens write, which is underived. If it is NOT, the viewmodel cause is still open and the two
+zero-code in-headset A/Bs (sweep IPD ~20 vs ~120 mm, sweep world scale) are the next instrument.
+
+Note this must be reconciled with session 25, which measured BS2's foreground following the world
+FOV natively in mono. Both can be true if the drill rides the world lens and the 60-deg cluster is
+some other pass. The holster test distinguishes them.
+
+**C. In-headset: the pitch servo's sign (30 s, owed).** Checklist in `docs/bioshock2/TESTING.md`.
+`enginePitch=` in the heartbeat must MOVE while looking up and down; `vrinput pitchservo invert` if
+the view fights you. Measure BS2's own stick deadzone rather than assuming BS1's 4-8 deg residual.
+
+**D. Swing-to-attack on BS2 (its own session).** Still exactly one line
+(`swing::publish_gate(...)`) plus the melee-equipped predicate, which is the hard part. Step 0's
+`vrinput` dispatch removed the blocker that would have made the flat suite untestable. Hazards
+unchanged and BS2-specific: native dual wield (a left-hand gesture must not compose the right
+trigger), the drill's sustained fire mode (a 120 ms discrete pulse may read as a stutter), more
+melee-ish states than BS1's single wrench. Re-measure the pulse width and threshold - 3.6 m/s is
+per-PLAYER.
+
+**E. Do not tune any BS2 viewmodel trims yet.** The reason is unchanged and now better evidenced:
+trims tuned before the lens question is closed bake the lens error in and stop being portable.
+
+### 0b. FIRST ACTIONS NEXT SESSION (BS1 - unchanged from session 31)
 
 The game-breaking item is closed and accepted. What is left before the release is verification
 breadth, not new investigation.
@@ -3837,6 +3991,54 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 32 - 2026-07-31 - BS2 resolution lane + the lens verdict; three BS1 assumptions died
+
+Branch `s32-b2r-resolution-and-lens`. All BS2. Steps 0-2 of the brief completed; steps 3-4 not
+reached and re-scoped in "Next steps 0".
+
+**What shipped:** the frozen-pitch fix (`publish_pitch_error`), a `vrinput` dispatch that BS2 never
+had, `vrres` + a BS2-specific `game_ini` module, BS2's cb0 ray-block offset as a per-game constant,
+a widened + parameterised core fov watch, and five new instruments in `decode-framedump.ps1`.
+
+**The three dead assumptions, all caught by acceptance tests rather than by reading code:**
+
+1. **The ini file.** BS1's lane writes `[WinDrv.WindowsClient]` viewport keys. BS2 has them and
+   ignores them; `Shared.ini [SharedOptions] ViewportX/Y` governs. Caught only because the
+   acceptance criterion was the backbuffer at first Present - the write itself had logged
+   `verified`. **A verified write is not an honoured one**, now a standing rule in the decision log
+   alongside the `-> HANDLED` lesson.
+2. **The square-backbuffer policy.** BS1's biggest banked conclusion does not transfer: BS2 renders
+   2048x2048 as a letterboxed 2048x1421 with a black band and a degenerate projection (horizontal
+   collapses 100 -> 67.7 deg, the ray block's vertical encodings disagree). 16:9 is the only aspect
+   proven to render correctly. This inverted the session's own plan mid-flight.
+3. **The cb0 layout.** BS2's ray block is at float 16, not 12 - and core was only COPYING 80 bytes,
+   so no offset could have rescued it. Now a per-game constant with a self-correcting, logging
+   hunt as backstop.
+
+**The lens verdict (the thing that unblocks the viewmodel work):** BS2 has TWO lenses and, unlike
+BS1's aspect-gated split, they differ AT 16:9 - a world lens tracking the FOV option and a second
+fixed at tan(30) = 60 deg that ignores it, separated by callstack. That is a 2.06x angular-gain
+error at option 100 and 3.99x at 130, present at the aspect the user actually tested, which matches
+their "wrong depth / moves with the head" report where BS1's mechanism could not. **Not yet proven
+to BE the viewmodel** - the holster test is queued and must be the identification, not draw counts.
+
+**Method note worth carrying:** the first `-ScanLayout` run came back empty and looked like "BS2's
+layout is a different shape". It was not - it was the square-aspect degeneracy breaking the check.
+`-Diff` (two dumps at different FOV options, assuming nothing about layout) is what cracked it, and
+re-scanning at 16:9 then found the offset cleanly. **Derive layouts at an aspect the game renders
+correctly.**
+
+**Regression gate:** BS1 `WORLD tanH=1.191754 tanV=1.191754` at 2048x2048, bit-identical to the
+banked session-28 value, hunt never fired.
+
+**Incident:** one black-screen hang after a force-kill mid-gameplay plus a resolution change; a
+clean restart fixed it, and the same DLL had rendered fine minutes earlier, so it was not a mod
+regression. Also re-confirmed the stale-`command.txt` trap - an old `vrres 2048x2048` re-applied at
+boot.
+
+**Still owed:** the pitch servo's sign (needs the headset; flat `pitchErr` is 0 by construction
+with `drive=0`).
 
 ### Session 31 - 2026-07-31 - swing the wrench to swing the wrench, ACCEPTED IN-HEADSET
 

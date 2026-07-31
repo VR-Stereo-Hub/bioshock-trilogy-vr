@@ -860,3 +860,49 @@ runtime.
   per-weapon profile key rather than resolving the holdable a second time), never a heuristic
   like "the hand is moving like melee". Everything else about the gesture is a comfort tuning
   knob; that one line is the safety property, and it is the first thing the flat checklist tests.
+- **2026-07-31 Â· session 32 Â· BS1's square-backbuffer policy does NOT apply to BS2, and the
+  resolution lane is per-game in FILE as well as in shape.** BS1's settled policy (set the ASPECT
+  with the resolution lane, leave the FOV option alone, because a square backbuffer fills a
+  roughly-square headset eye) is now explicitly scoped to BS1. Measured on BS2: a 2048x2048
+  backbuffer renders the scene into a 2048x1421 viewport with a black band, collapses the world
+  horizontal from 100 to 67.7 deg, and produces a ray block whose two vertical encodings disagree -
+  i.e. the projection stops being a consistent perspective off 16:9. On BS2 the resolution lane is
+  therefore a SHARPNESS lever at 16:9, not an aspect-matching one, until a bisection finds which
+  aspects (if any) BS2 renders full-height. Also per-game: BS2's viewport lives in `Shared.ini`
+  `[SharedOptions] ViewportX/Y`, and the `[WinDrv.WindowsClient]` keys BS1's whole lane writes are
+  IGNORED by BS2 (they are an output the game rewrites from its live state). `game_ini` is
+  duplicated per adapter rather than shared, following the recorded duplicate-now seam policy - a
+  third consumer should trigger the extraction, and the generic part (section-scoped ini editing
+  with backup + temp + ReplaceFileW + read-back) is what would move.
+- **2026-07-31 Â· session 32 Â· A verified write is not an honoured one; acceptance is the
+  observable effect.** The BS1-shaped BS2 resolution port wrote its keys, re-read them, and logged
+  "verified" while the engine rendered a different resolution entirely. Read-back proves the FILE
+  took the value and nothing more. This is the same failure class as `-> HANDLED` from the Exec
+  seam (session 30) and it now has two instances, so treat it as a standing rule: for any write
+  that leaves our address space, the acceptance criterion must be a measured downstream EFFECT (the
+  backbuffer at first Present, the ammo counter, the visible behaviour), never the write's own
+  confirmation.
+- **2026-07-31 Â· session 32 Â· cb0 layout offsets are PER-GAME constants, published by the adapter,
+  with a self-correcting hunt as backstop.** The screen-ray helper's float index was hardcoded to
+  BS1's 12 in both core (`hud_capture.cpp`) and the offline decoder. BS2's is 16 - same shape, four
+  floats later - so the live watch decoded nothing on BS2 and the offline decoder decoded zero
+  blocks. The offset is now `bvr::hud::set_ray_block_offset()`, published from
+  `bioshock2r/patterns.h` at adapter init, keeping engine constants in the per-game patterns header
+  as the project rule requires. Core also widened its cb0 copy window from 80 to 1344 bytes (a
+  block past float 19 was previously not even COPIED, so no offset could have rescued it) with
+  per-slot length tracking, and gained a hunt that only runs after the configured offset fails
+  repeatedly, adopting and LOGGING what it finds so a wrong constant names its own correction. BS1
+  is unaffected by construction (offset 12 validates on the first sample, so the hunt never runs)
+  and was regression-checked: WORLD tanH=1.191754 at 2048x2048, bit-identical to the banked
+  session-28 value.
+- **2026-07-31 Â· session 32 Â· BS2's two lenses differ in MAGNITUDE at every aspect, unlike BS1's.**
+  BS1's split was two aspect CONVENTIONS that coincide exactly at 16:9, so its symptoms were
+  aspect-gated. BS2 carries a world lens that follows the FOV option and a second lens fixed at
+  tan(30) = 60 deg that ignores it, distinguished by callstack, and they differ at 1920x1080. Since
+  one projection layer carries one fov claim, that is a 2.06x angular-gain error on whichever layer
+  the claim does not match, at 16:9, growing to 3.99x at option 130 - which matches the reported
+  stereo viewmodel symptoms (wrong depth, moves with the head) far better than BS1's mechanism,
+  which could not produce a symptom at 16:9 at all. Whether that 60-deg cluster IS the viewmodel is
+  NOT yet proven and must be settled by making it move (holster/switch the weapon and re-dump),
+  never by draw counts - BS1's rule, which is in the notes because inferring it from counts is what
+  went wrong there.

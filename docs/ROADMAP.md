@@ -725,6 +725,27 @@ kill. Both prerequisites below are now MET.):**
       M4-level stereo within the milestone, in-headset verified). Carried forward, not
       blocking: the stereo viewmodel blemish, a user-driven load-crossing pass, and a
       combat-scene perf profile.)
+- [x] **Session 32 - BS2 resolution lane + lens verdict.** `vrres` ships on BS2 (writes
+      `Shared.ini [SharedOptions]`, NOT the `[WinDrv.WindowsClient]` keys BS1 uses - BS2 ignores
+      those), verified end to end through a relaunch. The frozen engine-pitch bug is fixed
+      (`publish_pitch_error`), and `vrinput` is dispatched on BS2 for the first time. BS2's cb0
+      ray block derived at float 16 and parameterised into both the live watch and the offline
+      decoder; BS1 regression-checked bit-identical.
+      **Two findings that change the plan:** (1) BS1's square-backbuffer policy does NOT transfer -
+      BS2 letterboxes 2048x2048 into a 2048x1421 viewport and its projection degenerates off 16:9;
+      (2) BS2 carries TWO lenses that differ AT 16:9 (world tracks the FOV option, a second is
+      fixed at 60 deg), a 2.06x gain error at option 100 rising to 3.99x at 130 - the leading
+      explanation for the stereo viewmodel report.
+- [ ] **BS2 aspect bisection** - find the squarest aspect BS2 renders full-height with a consistent
+      frustum. That is BS2's best VR configuration AND the clean second aspect needed to settle its
+      world FOV law (the two candidate laws coincide at 16:9).
+- [ ] **Identify BS2's 60-deg lens** by making it MOVE (holster/switch weapon, re-dump), never by
+      draw counts. Decides whether the viewmodel fix is a lens match or something else entirely.
+- [ ] **BS2 pitch-servo sign check in-headset** - the one thing flat cannot answer about the
+      session-32 fix.
+- [ ] **BS2 swing-to-attack** - one `swing::publish_gate` line plus the melee-equipped predicate
+      (the hard part; prefer the ProcessEvent-by-name seam). Unblocked now that `vrinput` reaches
+      core's flat test suite on BS2.
 
 ## Post-v1 backlog (not scheduled)
 
