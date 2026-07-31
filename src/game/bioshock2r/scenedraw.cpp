@@ -545,13 +545,36 @@ void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void*
         g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-
+    // SESSION 34 - THE FREEZE IS IN HERE, AND FOCUS IS NOT THE GATE.
+    // The pace trace caught the wedge in the act, flat, no headset, xr=none:
+    //
+    //   TRACE ... presents/s 0 | phase: - | stage: - | draw: secondDraw for 18105 ms
+    //
+    // `stage: -` means the Present detour had fully exited, so the wedge is
+    // upstream of Present entirely - the game's own RE-ENTERED Draw never
+    // returns. Every "hang after alt-tab" in this project is this, including
+    // the one session 33 attributed to XR pacing (it reproduces with no XR
+    // session at all).
+    //
+    // A foreground gate was tried here and REMOVED: the freeze reproduces with
+    // the window focused (trace line above carries fg=1, recorded ~20 s before
+    // the test even defocused the game). The alt-tab correlation that motivated
+    // it was coincidence. Session 26's presentDelta guard is the same shape of
+    // guess and does not prevent it either.
+    //
+    // Still unknown: WHY the second call blocks. It is not a deadlock on
+    // anything this mod holds - the mod is not in the stack at that point.
     if (g_stereo.load(std::memory_order_relaxed)) bvr::vr::sr_push_eye(+1);
     g_secondPassTid.store(GetCurrentThreadId(), std::memory_order_relaxed);
     LARGE_INTEGER t0, t1, freq;
     QueryPerformanceCounter(&t0);
+    // Session 34: the BS2 stereo freeze wedges with the Present detour fully
+    // exited, so it is upstream of Present. This marker is what lets the pace
+    // trace say whether the game is sitting inside the RE-ENTERED scene draw.
+    bvr::vr::set_draw_stage("secondDraw");
     bool ok = call_draw_guarded(reinterpret_cast<DrawFn>(g_draw.original), ecx, edx, a1,
                                 a2, a3, a4);
+    bvr::vr::set_draw_stage(nullptr);
     QueryPerformanceCounter(&t1);
     QueryPerformanceFrequency(&freq);
     g_secondPassTid.store(0, std::memory_order_relaxed);

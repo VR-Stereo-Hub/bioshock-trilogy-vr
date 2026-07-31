@@ -81,11 +81,17 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
     }
     // Frame boundary first: finalize any armed dump, then suppress our own
     // overlay/VR draws for the rest of the detour so they never enter a dump.
+    // Session 34: stamp every segment of this detour. The BS2 stereo hang wedges
+    // the present thread OUTSIDE the VR module's own spans, so the pace trace
+    // could see only "-" and said nothing at all. These names are what turn a
+    // silent freeze into a named one.
+    vr::set_present_stage("inspector");
     frame_inspector::on_present(swapchain);
     frame_inspector::ScopedSuppress suppress;
     // Letterbox sampling BEFORE any of our additions touch the backbuffer
     // (overlay draw, mirror re-blit, window HUD composite) - the frame here
     // is pure game pixels (session 22 round 3).
+    vr::set_present_stage("letterbox");
     {
         ID3D11Device* device = nullptr;
         if (SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&device))) && device) {
@@ -98,9 +104,13 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
             device->Release();
         }
     }
+    vr::set_present_stage("vrBegin");
     vr::on_present_begin(swapchain); // xrWaitFrame paces the game while a session runs
+    vr::set_present_stage("overlay");
     overlay::on_present(swapchain);
+    vr::set_present_stage("vrEnd");
     vr::on_present_end(swapchain);   // copies the finished frame (incl. overlay) to the quad
+    vr::set_present_stage("hudPresent");
     // HUD capture rolls LAST: every consumer of the redirected HUD RT (eye
     // capture, window composite, quad copy - all inside on_present_end) has
     // run by now; this clears the RT and resets the interval classifier.
@@ -116,7 +126,10 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
             device->Release();
         }
     }
-    return g_origPresent(swapchain, syncInterval, flags);
+    vr::set_present_stage("gamePresent"); // the game's own Present - not our code
+    HRESULT hr = g_origPresent(swapchain, syncInterval, flags);
+    vr::set_present_stage(nullptr);
+    return hr;
 }
 
 HRESULT WINAPI ResizeBuffersDetour(IDXGISwapChain* swapchain, UINT bufferCount,

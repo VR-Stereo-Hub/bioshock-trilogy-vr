@@ -26,6 +26,7 @@
 
 #include <imgui.h>
 
+#include <share.h>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -485,6 +486,13 @@ void phase_record(int ph, int64_t t0) {
 // trace thread; relaxed is fine because a torn read only misnames one sample.
 std::atomic<int> g_curPhase{-1};
 std::atomic<int64_t> g_curPhaseT0{0};
+// Which segment of the Present detour we are in, including the segments this
+// file does not own (overlay, HUD capture, frame inspector, the game's own
+// Present). String literals only.
+std::atomic<const char*> g_presentStage{nullptr};
+std::atomic<int64_t> g_presentStageT0{0};
+std::atomic<const char*> g_drawStage{nullptr};
+std::atomic<int64_t> g_drawStageT0{0};
 
 // Records on every return path, which is what makes the two whole-half timers
 // trustworthy - on_present_begin alone has nine early returns.
@@ -702,10 +710,42 @@ HANDLE g_traceThread = nullptr;
 std::atomic<bool> g_traceRun{false};
 std::atomic<uint32_t> g_presentsAtTrace{0};
 
-bool app_is_foreground() {
+// Sampled ON THE PRESENT THREAD and read by the trace. USER32 calls can block
+// on a wedged UI thread, and the trace must touch nothing that the freeze can
+// hold - a stale flag is honest, a blocked tracer is not.
+std::atomic<bool> g_appForeground{false};
+
+void sample_foreground() {
     DWORD pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    return pid == GetCurrentProcessId();
+    g_appForeground.store(pid == GetCurrentProcessId(), std::memory_order_relaxed);
+}
+
+// The trace writes to its OWN file with its OWN handle. BVR_LOG serialises on a
+// process-global std::mutex, so a thread wedged anywhere near a log call takes
+// the tracer down with it - which is exactly what happened: the BS2 stereo
+// freeze produced ZERO trace lines because the tracer was queued behind the
+// very stall it was built to describe. An instrument that shares a lock with
+// its subject is not an instrument.
+FILE* g_traceFile = nullptr;
+
+void trace_write(const char* line) {
+    if (!g_traceFile) {
+        wchar_t path[MAX_PATH];
+        const wchar_t* base = bvr::log::data_dir();
+        if (!base || !base[0]) return;
+        swprintf_s(path, L"%s\\pacetrace.log", base);
+        // _SH_DENYWR so the file can be tailed WHILE the game is frozen -
+        // the default deny-all open made the trace unreadable at exactly the
+        // moment it mattered.
+        g_traceFile = _wfsopen(path, L"a", _SH_DENYWR);
+        if (!g_traceFile) return;
+    }
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    fprintf(g_traceFile, "[%02u:%02u:%02u.%03u] %s\n", st.wHour, st.wMinute, st.wSecond,
+            st.wMilliseconds, line);
+    fflush(g_traceFile); // the process may be killed at any moment
 }
 
 DWORD WINAPI trace_thread_proc(void*) {
@@ -716,13 +756,37 @@ DWORD WINAPI trace_thread_proc(void*) {
     while (g_traceRun.load(std::memory_order_relaxed)) {
         Sleep(1000);
         if (!g_traceRun.load(std::memory_order_relaxed)) break;
-        if (g_session == XR_NULL_HANDLE && !g_simIdle.load(std::memory_order_relaxed))
-            continue;
-
+        // Session 34: report with NO session at all, and detect the stall from
+        // PRESENTS HAVING STOPPED rather than from one of our own phases being
+        // open. The first cut keyed on g_curPhase and stayed silent through the
+        // real hang, because the present thread was wedged OUTSIDE every span
+        // this file wraps - the same "silence reads as calm" failure the trace
+        // exists to remove, reintroduced one level up.
+        //
+        // The BOOKKEEPING BELOW MUST RUN EVERY TICK. The first cut did the
+        // `continue` above the `lastPresents = presents` update at the bottom of
+        // the loop, so lastPresents stayed 0 forever, `stalled` could never
+        // become true, and the tracer was structurally incapable of firing -
+        // which is why the freeze produced no trace file at all. Deltas are
+        // computed and the baselines rolled BEFORE any decision to skip.
         uint32_t presents = g_presentsSeen.load(std::memory_order_relaxed);
         uint32_t submitted = g_framesSubmitted;
         uint32_t keepalives = g_detachKeepalives.load(std::memory_order_relaxed);
         uint32_t skips = g_detachSkips.load(std::memory_order_relaxed);
+        uint32_t dPresents = presents - lastPresents;
+        uint32_t dSubmitted = submitted - lastSubmitted;
+        uint32_t dKeepalives = keepalives - lastKeepalives;
+        uint32_t dSkips = skips - lastSkips;
+        bool seenAny = lastPresents > 0;
+        lastPresents = presents;
+        lastSubmitted = submitted;
+        lastKeepalives = keepalives;
+        lastSkips = skips;
+
+        bool stalled = seenAny && dPresents == 0;
+        if (g_session == XR_NULL_HANDLE && !g_simIdle.load(std::memory_order_relaxed) &&
+            !stalled)
+            continue;
 
         // Is a call still in flight, and for how long?
         char stuck[96] = "-";
@@ -735,22 +799,42 @@ DWORD WINAPI trace_thread_proc(void*) {
                           static_cast<long long>(ms));
         }
 
-        BVR_LOG("xr: TRACE %s%s detached=%d fg=%d | presents/s %u submitted/s %u | "
-                "keepalive %u ms (unpaced %u/s, ka %u/s) | lastEnd %u ms lastWait %u ms "
-                "shouldRender=%d | present thread: %s",
-                state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? "" : "/never",
-                g_detachedNow ? 1 : 0, app_is_foreground() ? 1 : 0,
-                presents - lastPresents, submitted - lastSubmitted,
-                g_paceKeepaliveMs.load(std::memory_order_relaxed), skips - lastSkips,
-                keepalives - lastKeepalives,
-                g_phaseLastUs[kPhEndFrame].load(std::memory_order_relaxed) / 1000,
-                g_lastWaitMs.load(std::memory_order_relaxed),
-                g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0, stuck);
+        char draw[128] = "-";
+        {
+            const char* nm = g_drawStage.load(std::memory_order_relaxed);
+            if (nm && g_qpcFreq) {
+                int64_t ms = (phase_now() - g_drawStageT0.load(std::memory_order_relaxed)) *
+                             1000 / g_qpcFreq;
+                sprintf_s(draw, "%s for %lld ms", nm, static_cast<long long>(ms));
+            }
+        }
+        char stage[128] = "-";
+        {
+            const char* nm = g_presentStage.load(std::memory_order_relaxed);
+            if (nm && g_qpcFreq) {
+                int64_t ms = (phase_now() - g_presentStageT0.load(std::memory_order_relaxed)) *
+                             1000 / g_qpcFreq;
+                sprintf_s(stage, "%s for %lld ms", nm, static_cast<long long>(ms));
+            }
+        }
+        char line[640];
+        sprintf_s(line,
+                  "TRACE %s%s detached=%d fg=%d | presents/s %u submitted/s %u | "
+                  "keepalive %u ms (unpaced %u/s, ka %u/s) | lastEnd %u ms lastWait %u ms "
+                  "shouldRender=%d | phase: %s | stage: %s | draw: %s",
+                  state_str(g_state),
+                  g_everFocused.load(std::memory_order_relaxed) ? "" : "/never",
+                  g_detachedNow ? 1 : 0,
+                  g_appForeground.load(std::memory_order_relaxed) ? 1 : 0,
+                  dPresents, dSubmitted,
+                  g_paceKeepaliveMs.load(std::memory_order_relaxed), dSkips,
+                  dKeepalives,
+                  g_phaseLastUs[kPhEndFrame].load(std::memory_order_relaxed) / 1000,
+                  g_lastWaitMs.load(std::memory_order_relaxed),
+                  g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0, stuck, stage,
+                  draw);
+        trace_write(line);
 
-        lastPresents = presents;
-        lastSubmitted = submitted;
-        lastKeepalives = keepalives;
-        lastSkips = skips;
     }
     return 0;
 }
@@ -1424,6 +1508,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     PhaseScope psBegin(kPhPresentBegin); // records on every return path
     g_presentsSeen.fetch_add(1, std::memory_order_relaxed);
     trace_thread_start(); // idempotent; the flat simulation needs it too
+    sample_foreground();  // USER32 on THIS thread, never on the tracer's
     // Flat stand-in for the headset-idle stall (flat has no XR session, so the
     // real path below never runs): the SAME guard decision runs with the state
     // forced VISIBLE and the focus latch forced, and a 1 s sleep stands in for
@@ -2963,6 +3048,16 @@ void set_rendered_hfov(float hfovDeg) {
     g_renderedHfov.store(hfovDeg, std::memory_order_relaxed);
 }
 
+void set_present_stage(const char* name) {
+    g_presentStageT0.store(phase_now(), std::memory_order_relaxed);
+    g_presentStage.store(name, std::memory_order_relaxed);
+}
+
+void set_draw_stage(const char* name) {
+    g_drawStageT0.store(phase_now(), std::memory_order_relaxed);
+    g_drawStage.store(name, std::memory_order_relaxed);
+}
+
 void set_pace_detach(bool on) {
     if (g_paceDetach.exchange(on, std::memory_order_relaxed) == on) return;
     BVR_LOG("xr: detached pacing %s by the game adapter (an unfocused session "
@@ -3236,6 +3331,8 @@ void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}
 void set_pace_detach(bool) {}
+void set_present_stage(const char*) {}
+void set_draw_stage(const char*) {}
 void handle_mirror_command(const char*) {}
 float suggested_hfov_deg() { return 0.0f; }
 bool headset_half_fov_deg(float* halfH, float* halfV) {

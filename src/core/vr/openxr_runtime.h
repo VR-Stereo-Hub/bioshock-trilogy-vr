@@ -119,6 +119,21 @@ void set_sr_pair_pacing(bool on);
 //                     telemetry, and the per-phase present-path timings
 void handle_pace_command(const char* args);
 
+// --- Session 34: present-detour stage marker ---------------------------------
+// The pace trace can only name a stall inside code it wraps. The BS2 stereo
+// hang turned out to sit OUTSIDE all of it - our phases had exited and the
+// trace stayed silent, which is the same "silence reads as calm" trap the trace
+// existed to remove. The Present detour therefore stamps which segment it is
+// in; `name` must be a string literal (stored by pointer, read cross-thread).
+// Null clears it.
+void set_present_stage(const char* name);
+
+// Same, for the GAME/DRAW thread. The BS2 stereo freeze turned out to wedge
+// with the present detour fully exited (stage null), i.e. upstream of Present
+// entirely - so the draw path needs its own marker or the trace can only say
+// "everything stopped" without saying where.
+void set_draw_stage(const char* name);
+
 // Detached pacing, set by the game adapter at init. DEFAULT OFF in core: the
 // project rule is that a core change must not move a BioShock 1 path, and BS1
 // is the headset-accepted baseline. The BS2 adapter turns it on; BS1 can opt in
