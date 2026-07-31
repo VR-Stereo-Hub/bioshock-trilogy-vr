@@ -44,13 +44,22 @@ Goal: know what we are actually working with before any code runs inside the pro
       gives a known-good baseline before any DLL touches the process.
 - [ ] Confirm the live renderer is **D3D11**, not the D3D9 path (a D3D11 prerequisite installer
       ships alongside, and `d3d9.dll` is also referenced)
-- [ ] **Verify the debug binds fire.** Press `Delete` (god) and take damage; press `F9` (shot) and
-      look for the screenshot; try `F1`/`F3` (viewmode wireframe/lit). Record each as working or
-      inert. A config entry is a claim, not an effect.
-- [ ] Determine whether the console key can be enabled (`[Engine.Console] ConsoleKey` is absent
-      from the shipped ini, which is likely why public guides report "no console")
-- [ ] Establish the **test-loadout path**: full weapons/Vigors/money for calibration work, by
-      whichever of the surfaces above actually works
+- [x] **Verify the debug binds fire**
+      *2026-07-31, user-tested: **all six inert**, including the console on both `~` and `Tab`.
+      Corroborated by positive control - `F9`=`shot` produced no screenshot anywhere. The binds are
+      all present in the live `XInput.ini` and `ConsoleKey=Tilde` is set, so this is a dispatch
+      failure in Infinite's custom `XCore.XPlayerInput` parser, not a missing command: `SHOT`,
+      `SETRES` and `FULLSCREEN` all still exist as C++ `Exec` literals in the exe. Recorded as a
+      dead end - do not spend another session on binds, launch flags or ini edits.*
+- [x] Determine whether the console key can be enabled
+      *2026-07-31: `ConsoleKey=Tilde` / `TypeKey=Tab` ARE set in the live ini and neither works.
+      Closed.*
+- [x] Establish the **test-loadout path**
+      *2026-07-31: not via the console. `UXCheatManager` is in the shipped build, and the route in
+      is reflection: `APlayerController::ConsoleCommand` (native, impl RVA `0x136070`), or better,
+      straight to `AXPawn::SetWeapon` (`0x4F9ED0`), `AXWeapon::AddAmmo` (`0x5017D0`) and
+      `AXPawn::AddInvulnerableFlag`. **Deferred to I2** - it needs the adapter to exist. Until
+      then, a combat-ready save must be reached by playing to the raffle.*
 - [x] Map `DLC\DLCA` / `DLCB` / `DLCC` to their titles
       *2026-07-31: DLCA = **Clash in the Clouds** (`DCLA_ZEP_Wave1..14`, `Arc_BlueRibbons`,
       `ARMORY_WEAPONS`), DLCB = **Burial at Sea Ep. 1** (`BookersOff`, `Attrium`, `Appliances`),

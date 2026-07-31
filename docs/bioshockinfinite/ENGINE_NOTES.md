@@ -327,11 +327,49 @@ XInput.ini". **It did**, verified by reading the generated file:
   opens, the entire `Exec`-seam apparatus BS1 needed becomes optional rather than mandatory, and
   test loadouts stop being a mini-saga.
 
-**Caveat, and it is the important one.** This is still config, not behaviour. A bind existing in
-the live ini is a claim that the key is *wired*, not proof the command *does* anything - which is
-precisely the distinction that cost BS1 eight sessions on a `set` that logged `HANDLED` and did
-nothing. **I0 verifies each by observable behaviour** and records the result here, including any
-that turn out inert.
+### VERDICT: the key-bind lane is DEAD. The reflection lane is not. (I0, session 34, user-tested)
+
+**All six binds did nothing.** Console (`~` and `Tab`), `PageUp` ghost, `F1` wireframe, `F9` shot,
+`F7`/`F8` post-process, `Delete` god - every one inert, verified in-game by the user.
+
+Corroborated rather than taken on trust: `F9` = `shot` should drop a file, and there is **no
+screenshot anywhere** - not in `My Games\...\Binaries\Win32` (the directory exists and is empty),
+not in the game folder, not in Steam's screenshot userdata. The instrument was seen not to fire.
+
+**So the config was a claim, and the claim was false.** This is the same lesson BS1 and BS2 each
+learned the expensive way, arriving here for free: a shipped ini entry proves a key is *wired*, not
+that anything is *listening*. The templates were never stripped because an ini is data, not code.
+
+**But the diagnosis is narrower and much better than "cheats are gone", and the difference matters:**
+
+| evidence | reading |
+|---|---|
+| `SETRES`, `FULLSCREEN`, **`SHOT`** all present as UTF-16 `Exec` literals in the exe | the C++ `Exec` handlers **are compiled in**. `shot` exists; pressing F9 simply never reached it. |
+| `GOD`, `GHOST`, `WALK`, `SLOMO`, `VIEWMODE`, `BEHINDVIEW` absent as literals | expected - in UE3 these are UnrealScript exec functions on `CheatManager`, not C++, so they live in the `.u` package and would never appear here. Their absence is **not** evidence of removal. |
+| **`UXCheatManager` exists** as a class with registered natives | Irrational's cheat manager is **in the shipped build** |
+| `ConsoleCommand` registered as a native on `AActor`, `APlayerController`, `AXPlayerController` (impl RVA `0x136070`) and `UGameViewportClient` (`0x137150`) | **there is a reflection-callable console entry point**, independent of any console UI |
+
+**The broken link is input dispatch, not the commands.** Infinite uses `XCore.XPlayerInput` with a
+custom binding parser (the shipped ini documents its own approved `XInputHandler` chain mechanism),
+and that parser evidently does not forward arbitrary console strings in the retail build.
+
+**Consequence for the plan.** Infinite lands in the same place as BS1 and BS2 - the mod must issue
+commands itself rather than through a key - but with a materially better hand, because these are
+*registered natives with known implementation addresses* rather than addresses to be hunted:
+
+| want | native | impl RVA |
+|---|---|---|
+| run any console command | `APlayerController::ConsoleCommand` | `0x136070` |
+| god mode | `AXPawn::AddInvulnerableFlag` / `RemoveInvulnerableFlag` / `HasInvulnerableFlag` | in the dump |
+| give a weapon | `AXPawn::SetWeapon` | `0x4F9ED0` |
+| give ammo | `AXWeapon::AddAmmo` | `0x5017D0` |
+
+So a test loadout does not even require the console: `SetWeapon` + `AddAmmo` + `AddInvulnerableFlag`
+by reflection is a more direct route than the console ever was, and it sidesteps whatever gates
+`bCheatsEnabled`. **This is I2 work** - it needs the adapter to exist first.
+
+**Confidence:** the natives and their RVAs are structural facts from the binary. That calling them
+from injected code works, and that nothing gates them, is unproven. Verify by effect.
 
 ### Save data location
 
@@ -621,6 +659,11 @@ time; start this one early.
   `AllowNvidiaStereo3d=False` in the ini, the shipped "Stereoscopic3D" is almost certainly
   driver-side 3D Vision. Plan for SequentialReentry. *(Session 34, offline - still worth one live
   confirmation in DR-I4, but do not budget hope for it.)*
-- **`UCheatManager` natives - none.** The cheats (`god`, `ghost`, `walk`, `preventdeath`) are
-  engine `Exec` commands, not script natives, so they will not appear in the native table. Reach
-  them through the Exec seam. *(Session 34, offline.)*
+- **Key-bound console commands - DEAD, user-tested.** All six shipped debug binds (`~`/`Tab`
+  console, `PageUp` ghost, `F1` wireframe, `F9` shot, `F7`/`F8` post-process, `Delete` god) do
+  nothing in the retail build, despite all being present in the live `XInput.ini` and despite
+  `ConsoleKey=Tilde` being set. Confirmed by positive control: `F9`=`shot` produced no screenshot
+  anywhere. The custom `XCore.XPlayerInput` binding parser does not forward console strings.
+  **Do not spend another session on key binds, launch flags or ini edits to enable the console.**
+  Go through `APlayerController::ConsoleCommand` (native, impl RVA `0x136070`) or straight to the
+  gameplay natives. *(Session 34, user-verified in-game.)*
