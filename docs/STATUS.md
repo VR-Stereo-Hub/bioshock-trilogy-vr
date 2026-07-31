@@ -14,8 +14,51 @@ running, and vice versa. Only one game can own the headset at a time. Building, 
 packaging and tailing logs do not contend and must keep working while either game runs. Enforced
 for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 
-The Infinite "Current state" lives in its session-log entry rather than displacing the section
-below, so the two projects' handoffs do not fight over the same lines while both are active.
+The Infinite "Current state" lives here and in its session-log entry rather than displacing the
+section below, so the two projects' handoffs do not fight over the same lines while both are active.
+
+### Infinite: current state after session 34
+
+**I0 is complete except one live check.** Branch `bioshock-infinite`, 6 commits, pushed. No adapter
+code exists yet - `src/` is untouched. Docs are in `docs/bioshockinfinite/`.
+
+Everything derived so far is offline and **unconfirmed live**. Confidence is stated per row in
+`ENGINE_NOTES.md`; treat every RVA as a hypothesis until a hook fires on it.
+
+**Next session (35) = I1, the adapter skeleton.** In order:
+
+1. `src/game/bioshockinf/` + `HostGame::Infinite` in `adapter_registry` + data subdir `bsi` +
+   the CMake file list. Host build fingerprint gate wired to the session-34 PE values.
+2. **Move the command-file poller into core and tick it from Present**, not from an engine hook.
+   On BS1 and BS2 it lives in the adapter and ticks off the camera hook, so a skeleton adapter has
+   no command surface until its first hook fires - which made early sessions on both games harder
+   than they needed to be. Doing it first means `game-cmd -Game bsi` works before any engine hook
+   exists.
+3. Verify d3d11/dxgi being **dynamically loaded** (they are not in Infinite's import table) does
+   not break `framework::init()` ordering.
+4. Smoke test: DLL loads, log shows the init chain and device info, F10 overlay toggles, game
+   otherwise normal, `game-cmd -Game bsi` dispatches.
+
+**Blocked on the user / the headset:**
+
+- The one remaining I0 item: **confirm the live renderer is D3D11**, not the D3D9 path. One log line
+  once the DLL loads, so it folds into I1's smoke test.
+- **`Bioshock2HD.exe` must not be running.** Enforced for `-Game bsi` by
+  `tools/lib/assert-no-conflict.ps1`; building and installing are deliberately unguarded. BS2 was
+  running for the whole of session 34, which is why nothing live was attempted beyond the six-key
+  check the user ran themselves.
+- The user's save (`TWN`, Columbia town) has **no weapons or combat** yet. Fine for I1 and most of
+  I2 - the loadout comes from reflection (`SetWeapon`/`AddAmmo`/`AddInvulnerableFlag`) once the
+  adapter can call natives. If that route disappoints, the fallback is to play to the raffle and
+  save there as the permanent combat anchor.
+
+**Deferred, deliberately:** UELib/UE Explorer decompile workspace. It is most useful aimed at a
+specific script question (the fire path for I8), not swept speculatively. `GObjObjects`, for the
+reasons in the session log.
+
+**Two things to carry into I1 that were bought expensively elsewhere:** hook implementations and
+never thunks (offline census proves the thunks are dead here), and read the `FNameEntry` encoding
+flag rather than assuming UTF-16 like BS1.
 
 ## Current state (2026-07-31, session 32 - BS2: RESOLUTION LANE SHIPS, AND BS1'S SQUARE-BACKBUFFER POLICY IS DEAD ON BS2 - branch s32-b2r-resolution-and-lens)
 
@@ -4072,6 +4115,64 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 34 part 2 - 2026-07-31 - I0 offline recon complete; the console is dead, the reflection lane is wide open
+
+Branch `bioshock-infinite`. Still no adapter code. All findings are in
+`docs/bioshockinfinite/ENGINE_NOTES.md` with per-row confidence; **nothing has been observed
+executing** - every value is a structural fact from the disk image or, where marked, an inference
+from shape.
+
+**The one live test of the session, and it was a negative.** All six shipped debug binds are inert:
+console on both `~` and `Tab`, `PageUp` ghost, `F1` wireframe, `F9` shot, `F7`/`F8` post-process,
+`Delete` god. This **retracts part 1's optimistic reading**, which was drawn from config and
+explicitly flagged unconfirmed. Corroborated rather than trusted: `F9`=`shot` produced no
+screenshot anywhere, and `My Games\...\Binaries\Win32` exists and is empty - the instrument was
+seen not to fire.
+
+**But the diagnosis is narrower than "cheats are gone", and that decides the plan.** `SHOT`,
+`SETRES` and `FULLSCREEN` are all still present as UTF-16 `Exec` literals, so the C++ handlers are
+compiled in and F9 simply never reached one. `GOD`/`GHOST`/`WALK` being absent is *expected* - in
+UE3 those are UnrealScript functions on `CheatManager`, so they live in the `.u` package. And
+`UXCheatManager` is in the shipped build. The broken link is Infinite's custom `XCore.XPlayerInput`
+binding parser, which does not forward console strings. **Recorded as a dead end so no future
+session burns time on binds, launch flags or ini edits.**
+
+The way in is reflection, and it is better than a console: `APlayerController::ConsoleCommand`
+(native, impl RVA `0x136070`), or straight past it to `AXPawn::SetWeapon` (`0x4F9ED0`),
+`AXWeapon::AddAmmo` (`0x5017D0`) and `AXPawn::AddInvulnerableFlag`. A test loadout therefore needs
+no console at all - but it does need the adapter, so it moves to **I2**.
+
+**The four offline questions, answered:**
+
+1. **The native function table EXISTS** - the open risk, since UE3 favours indexed natives and
+   BS1's fastest instrument looked lost. 2647 entries, 8-byte `{ const ANSICHAR* name; Native
+   impl; }`, names `<Class>exec<Func>` in ASCII (BS1's were 12-byte and UTF-16). Same resolver
+   recipe, zero hardcoded addresses.
+2. **RTTI is present but useless** - all 270 type descriptors belong to third-party libraries
+   (Wwise, Bullet, FaceFX, Beast, std); not one UE3 or XGame class. UE3 is built `/GR-`. The
+   RTTI-walk lane both remaster adapters lean on is dead here, which is exactly why (1) matters.
+3. **The camera seam is located**: `APlayerController::GetPlayerViewPoint`, **impl RVA
+   `0x1E10C0`**, thiscall, 2 stack args, `ret 8` (so a probe hook takes 2 args - the RTC rule).
+   Four internal paths converging on a 4x4 SSE transform, so the returned view is *transformed*,
+   not a raw field read. `AActor::Location +0x44` / `Rotation +0x50` fall out of it.
+   **Exec thunks are not the seam, reproduced offline**: every thunk checked has **0** `E8`
+   callers, the implementation has 14. BS1 learned this by hooking four thunks and catching nothing
+   across a live session of shooting; here it cost one scan.
+4. **`GNames` at RVA `0xF9DFEC`** (Data/Num/Max), name hash at `0xF58BF8` (4096 buckets),
+   `GNatives` at `0xF6DCB0`, `GMalloc` at `0xF71CC8`, `FFrame` `+0x14` Object / `+0x18` Code,
+   `UObject::Class` `+0x20`, and a constant-time `IsA` via 16-bit interval fields at
+   `UClass+0xC0/+0xC2`. **`FNameEntry` text is ASCII by default here, not UTF-16 as on BS1** - a
+   `fname_text()` ported without reading the flag at `+0x8` bit 0 returns garbage.
+
+**`GObjObjects` NOT found, and deprioritised on purpose.** `StaticFindObject` goes through the
+object hash, not a linear walk. BS2's design takes live objects from hook parameters instead of
+scanning, which is cheaper and avoids the class of stall and crash BS1's object scanner caused.
+Three globals seen on that path are recorded as unidentified rather than guessed at.
+
+Also identified: DLCA = Clash in the Clouds, DLCB = Burial at Sea Ep. 1, DLCC = Ep. 2. Saves live
+in Steam cloud userdata (`userdata\<id>\8870\remote\SaveData\`), not under My Games, and Steam
+Cloud will resurrect a deleted one.
 
 ### Session 34 - 2026-07-31 - BioShock Infinite project bootstrapped (planning only, no adapter code)
 
