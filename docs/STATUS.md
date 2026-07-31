@@ -2,6 +2,21 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Active projects (two, running in parallel)
+
+| Project | Branch | Handoff |
+|---|---|---|
+| **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | Session 34 in the log, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I13) |
+
+**Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
+running, and vice versa. Only one game can own the headset at a time. Building, installing,
+packaging and tailing logs do not contend and must keep working while either game runs. Enforced
+for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
+
+The Infinite "Current state" lives in its session-log entry rather than displacing the section
+below, so the two projects' handoffs do not fight over the same lines while both are active.
+
 ## Current state (2026-07-31, session 32 - BS2: RESOLUTION LANE SHIPS, AND BS1'S SQUARE-BACKBUFFER POLICY IS DEAD ON BS2 - branch s32-b2r-resolution-and-lens)
 
 All BS2 work. **Three BS1 assumptions died**, each caught by an acceptance test rather than by
@@ -4057,6 +4072,78 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 34 - 2026-07-31 - BioShock Infinite project bootstrapped (planning only, no adapter code)
+
+Branch `bioshock-infinite`, off `main`. A **planning session**: the deliverable is the project
+scaffolding and the recon that de-risks it, not code. `src/` is untouched; the adapter skeleton is
+milestone I1.
+
+**Recon, all read-only, all verified against the shipped game files:**
+
+- **32-bit x86**, fixed `ImageBase 0x00400000` with **ASLR OFF** (both remasters are rebased), LAA
+  yes, `SizeOfImage 0x124F000`, TimeDateStamp 2022-05-11 18:29:09 UTC. Full fingerprint table in
+  `docs/bioshockinfinite/ENGINE_NOTES.md`.
+- **The injection vector is closed before a line of code**: the exe imports `XINPUT1_3.dll` by
+  **ordinal 2 and 3**, identical to BS1 and BS2, so `src/proxy/` works verbatim. The game IAT slot
+  for ordinal 2 is at RVA `0xCD4814`, so BS1's IAT-hijack lane (the Steam-overlay workaround)
+  transfers directly too. `d3d11`/`dxgi` are NOT imported - they load dynamically, which
+  `framework::init()` ordering must not assume away.
+- **Full UE3 reflection is intact** (FName pool carries `PlayerController`, `GetPlayerViewPoint`,
+  `UpdateRotation`, `PlayerCamera`, `CheatManager`, `MatineeCamera`, `Scaleform`, `GFxMovie`,
+  `XHud`). So **BS2's ProcessEvent-by-name design is the seam to build**, not BS1's. No `CalcView`
+  name exists - that is the Vengeance spelling.
+- **A working cheat path exists, unlike either remaster.** The shipped `DefaultInput.ini` has a
+  live `; --- Debug binds` block: `Delete`=`god`, `PageUp`=`ghost`, `End`=`preventdeath`,
+  `PageDown`=`walk`, `F9`=`shot`, `F1/F2/F3`=`viewmode ...`, and `F7/F8`=
+  `set D3DRenderDevice bUsePostProcessEffects False/True` - which is direct evidence that UE3's
+  `set <class> <prop> <value>` works here. A second surface (base64 `DefaultDesignerControlPresets.ini`)
+  lists God Mode, Ghost, GiveAmmo, Slomo, QuickSave/QuickLoad. **Public guides claim Infinite has
+  no console; the game's own files disagree.** None of it confirmed live yet - that is I0, and the
+  standing rule applies: verify by effect, never by return value.
+- `OneFrameThreadLag=True` in `BaseEngine.ini` is a **config-level analogue of BS1's `reentry 1t`**,
+  potentially buying single-threaded render without a flush-point hook. `bSmoothFrameRate=TRUE`
+  must go for VR.
+- Native FOV slider exists but caps at **+15%** (~70 to ~80.5 deg), so a lever is still needed -
+  but the property chain is named, so `set`-by-name comes before any memory scan.
+- `[Stereoscopic3D]` exists in the ini, but **no `bStereo`/`EyeSeparation`/`StereoDevice` names are
+  in the exe**, which points at driver-side 3D Vision rather than an engine per-eye path. Planning
+  for SequentialReentry; the native check is timeboxed to one slice in I2 so it cannot become a
+  rabbit hole.
+- UI is **Scaleform GFx**, not gameswf, so `core/gfx/hud_capture` is a worked example here, not a
+  library. Cinematics split into two classes BS1 never had: Bink FMV (`binkw32.dll`, 100+ `.bik`)
+  and engine-rendered Matinee.
+- All three DLC installed (~25 GB). **In scope for tuning** by user directive: bring-up on the base
+  campaign, but aim/scale/HUD/viewmodel calibration must hold in Burial at Sea 1 and 2 and Clash in
+  the Clouds.
+
+**Decisions taken with the user:** DLC in scope for tuning; milestones resequenced by engineering
+dependency rather than by the stated priority order (the priorities became acceptance criteria);
+the user does the first flat launch to create the UE3 user-config dir and a baseline; and the
+BS2-conflict guard blocks only what actually contends for the headset.
+
+**Shipped this session:** the `bioshock-infinite` branch; `docs/bioshockinfinite/{ROADMAP,
+ENGINE_NOTES,TESTING}.md`; `tools/lib/assert-no-conflict.ps1`; `-Game bsi` wired through
+`build`/`install`/`uninstall`/`tail-log`/`game-cmd`/`game-shot`/`game-click`; and root-doc updates
+(CLAUDE.md, RESEARCH.md, ROADMAP.md).
+
+**The BS2-conflict rule, now enforced.** BS2 development runs in parallel and only one game can own
+the headset. `game-cmd`/`game-shot`/`game-click` with `-Game bsi` abort naming the offending
+process and pid. `build`/`install`/`uninstall`/`package`/`tail-log` are deliberately NOT guarded -
+they touch the disk, never the headset, and must keep working while BS2 runs. **Verified against a
+real conflict**: BS2 was live (pid 24588) during this session, and the guard refused.
+
+**The three things the BS1/BS2 history says to front-load, now written into the ladder:**
+
+1. **The lens/projection-claim question is the highest-leverage thing in the project** - it caused
+   BS1's M3 swim, blocked M4, produced the cinematic fisheye and the release-blocking warp, and is
+   still BS2's open blocker at session 33. I5 builds a stride-sampled, majority-voted,
+   structurally-validated **multi-lens** decoder before anything is tuned, and derives the law from
+   two aspects because the conventions coincide exactly at 16:9.
+2. **The flat harness is what made the remasters tractable**, and its two highest-payoff tools
+   (`simhead`, `vrrec`) arrived at sessions 12 and 20 - far too late. Both are scheduled into I4.
+3. **The policy gate** - check native, test whether the defect exists, only then port the cure -
+   paid out three times on BS2 and is the preamble of the new ENGINE_NOTES.
 
 ### Session 32 - 2026-07-31 - BS2 resolution lane + the lens verdict; three BS1 assumptions died
 

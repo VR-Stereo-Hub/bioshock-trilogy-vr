@@ -39,7 +39,9 @@ Verified on disk (this machine):
   `.blk` bulk textures, FSB5 sound banks, `ConfigINI.IBF` bundle (contains Weapons.ini,
   Plasmids.ini, Bindings.ini, Gui.ini…).
 - The game has never been launched on this machine - no user ini/save folder exists yet.
-- BioShock 2 / Infinite are not installed in any local Steam library.
+- ~~BioShock 2 / Infinite are not installed in any local Steam library.~~ **Superseded**: BioShock 2
+  Remastered was installed for M10 (session 24), and **BioShock Infinite is installed** at
+  `D:\SteamLibrary\steamapps\common\BioShock Infinite` with all DLC (verified session 34).
 
 ## Engine family (for future ports)
 
@@ -50,6 +52,27 @@ Verified on disk (this machine):
   replacements (deferred renderer, AI, animation). Concepts carry over; offsets/hooks do not.
   https://www.shacknews.com/article/66321/irrational-details-bioshock-infinite-engine ·
   https://www.pcgamingwiki.com/wiki/BioShock_Infinite
+  **PROMOTED to an active project 2026-07-31 (session 34)** - branch `bioshock-infinite`, see
+  [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) and
+  [bioshockinfinite/ENGINE_NOTES.md](bioshockinfinite/ENGINE_NOTES.md). Session-34 recon,
+  read-only, all verified against the shipped files:
+  - x86 32-bit, **fixed ImageBase 0x00400000 with ASLR OFF** (both remasters are rebased), LAA yes.
+  - Imports `XINPUT1_3.dll` **by ordinal 2 and 3**, same as both remasters, so `src/proxy/` works
+    verbatim; game IAT slot for ord 2 at RVA `0xCD4814`. `d3d11`/`dxgi` are loaded dynamically.
+  - Full UE3 reflection intact (FName pool carries `PlayerController`, `GetPlayerViewPoint`,
+    `CheatManager`, `Scaleform`, `MatineeCamera`, ...), so **BS2's ProcessEvent-by-name seam is the
+    natural camera hook**. No `CalcView` name - that is the Vengeance spelling.
+  - **A working cheat path exists**, unlike both remasters: the shipped `DefaultInput.ini` has a
+    live "Debug binds" block (`god`, `ghost`, `preventdeath`, `walk`, `viewmode`, `shot`) and a
+    bind proving `set <class> <prop> <value>` works. Not yet confirmed live.
+  - `OneFrameThreadLag=True` in `BaseEngine.ini` is a **config-level analogue of BS1's
+    `reentry 1t`**, potentially without a flush-point hook.
+  - Native FOV slider exists but caps at +15% (~70 to ~80.5 deg), so a lever is still needed.
+  - `[Stereoscopic3D]` exists in the ini, but **no `bStereo`/`EyeSeparation`/`StereoDevice` names
+    are in the exe**, pointing at driver-side 3D Vision rather than an engine per-eye path. Plan
+    for SequentialReentry; timebox the check.
+  - UI is **Scaleform GFx**, not gameswf, so `hud_capture` is a worked example, not a library.
+    Cinematics split into Bink FMV (`binkw32.dll`, 100+ `.bik`) and engine Matinee.
 
 ## Prior art
 
