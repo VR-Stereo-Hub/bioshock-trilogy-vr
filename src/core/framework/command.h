@@ -16,12 +16,28 @@
 //                               for itself can never get a second poller racing
 //                               its own.
 //   - poll_from_game_thread() - the game thread, from an adapter's engine hook.
-//                               The first call latches the handover and silences
-//                               the Present pump PERMANENTLY: engine-touching
-//                               commands belong on the game thread, and a
-//                               "resume on stall" rule would hand the render
-//                               thread a dispatch exactly during a load, which
-//                               is the worst moment available.
+//                               The first call latches the handover: from then
+//                               on the game thread is the pump, because
+//                               engine-touching commands belong there.
+//
+// THE LEASE (revised session 36). The handover used to silence the Present pump
+// permanently, reasoning that a "resume on stall" rule would hand the render
+// thread a dispatch exactly during a load - the worst moment available. That
+// hazard is real but it was stated too broadly: what must not happen during a
+// load is an ENGINE-TOUCHING dispatch, not any dispatch. As written, a camera
+// hook that went quiet (level load, Scaleform menu, scripted camera) left the
+// mod with no command surface at all and no line saying why.
+//
+// So the handover is now a lease. If the game thread has not called in for
+// kGamePumpLeaseMs, the Present pump resumes in DEGRADED mode: the commands
+// that write engine memory (mempoke*, pokeaddr*, memrestore) are refused with
+// one explanatory line, and everything else - reads, adapter commands, vrcmd,
+// vroverlay - dispatches normally. The game thread reclaims the pump on its
+// next call. Both transitions are logged.
+//
+// This also made the handover testable on demand, which the original was not:
+// silence the hook, wait out the lease, and `vrcmd` must report the degraded
+// render pump. An instrument that cannot be made to fail is not evidence.
 //
 // THREAD WARNING. While the Present pump owns the poller, every command runs on
 // the RENDER thread. The mem*/fsweep scans are multi-second in the worst case,
@@ -44,6 +60,10 @@ void enable_present_pump();
 // 1 Hz poll of <data_dir>\command.txt. Both are safe to call every frame.
 void poll_from_present(uint64_t nowMs);
 void poll_from_game_thread(uint64_t nowMs);
+
+// True while the Present pump has taken back over because the game thread went
+// silent. Engine-writing commands are refused in this state.
+bool degraded();
 
 // Dispatch one line: adapter first (so a game may deliberately shadow a core
 // command), then the shared vocabulary, else one unknown-command line.

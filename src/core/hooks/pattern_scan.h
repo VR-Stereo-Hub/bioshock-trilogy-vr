@@ -73,6 +73,14 @@ struct NativeScanResult {
     size_t tableRefs = 0;      // dword references to it (candidate table entries)
     const void* tableEntry = nullptr;
     void* function = nullptr;  // resolved execFoo implementation
+    // Filled by find_native_function_ex only; the UE2 entry point below leaves
+    // them 0. These exist so a NEGATIVE result names its own stage - an
+    // instrument that reports nothing but "not found" cannot be shown to have
+    // failed correctly, and this project's rule is that such an instrument is
+    // not evidence.
+    size_t terminatorRejects = 0;  // occurrence whose own NUL was missing
+    size_t neighbourRejects = 0;   // ref whose neighbouring entries were malformed
+    size_t implRejects = 0;        // ref whose impl pointer was not code in the image
 };
 
 // UE2 native-function lookup: every `native` UnrealScript function implemented
@@ -88,6 +96,70 @@ struct NativeScanResult {
 // function table"). Nothing here is game-specific - it is how the engine
 // registers name-based natives, so BioShock 2 will resolve the same way.
 bool find_native_function(const ProcessImage& img, const char* className,
+                          const char* funcName, NativeScanResult& out);
+
+// ---- generalised native-table lookup (added session 36 for UE3) ------------
+//
+// Shape of one entry in an engine's name-based native registration table. Both
+// UE2.5 and UE3 register every C++-implemented UnrealScript native through a
+// static table of { const CHAR* name; Native impl; ... }, but the stride, the
+// name encoding and the name SPELLING all differ between them. Nothing here is
+// game-specific: this is how the engine registers name-based natives.
+struct NativeTableShape {
+    size_t entryStride = 12;                 // bytes between consecutive entries
+    size_t implOffset = 4;                   // byte offset of the impl pointer
+    bool wideNames = true;                   // true = UTF-16LE names, false = ASCII
+    const char* nameFormat = "int%sexec%s";  // printf(className, funcName)
+};
+
+// UE2.5 / Vengeance (BioShock 1 + 2 Remastered): 12-byte
+// { const TCHAR* name; Native impl; 0 }, names "int<Class>exec<Func>" UTF-16.
+inline constexpr NativeTableShape kNativeTableUE2{12, 4, true, "int%sexec%s"};
+
+// UE3 build 6829 (BioShock Infinite): 8-byte { const ANSICHAR* name; Native
+// impl; }, names "<Class>exec<Func>" in ASCII with NO "int" prefix, 2647
+// entries. Derived offline 2026-07-31 (session 34) by dumping the registration
+// strings out of .rdata and following their .data references.
+//
+// The impl pointer is the exec THUNK, not the C++ implementation. Confirmed by
+// static caller census (session 36): every thunk has 0 E8 callers. Use this to
+// FIND an implementation - disassemble the thunk, take the last call before the
+// epilogue - never as a hook target.
+inline constexpr NativeTableShape kNativeTableUE3{8, 4, false, "%sexec%s"};
+
+// Generalised native-function lookup: `shape` selects the table layout, so a
+// new engine costs a NativeTableShape rather than a fork of the scan.
+//
+// ADDITIVE. find_native_function() above keeps its exact body and its exact UE2
+// behaviour; nothing BioShock 1 or 2 calls changes.
+//
+// `verifyNeighbours` matters at an 8-byte stride and should stay on for UE3: a
+// chance dword match somewhere in 18 MB of image is far likelier when entries
+// are 8 bytes rather than 12. A table is contiguous, so a real entry always has
+// a well-formed neighbour and a coincidence almost never does.
+bool find_native_function_ex(const ProcessImage& img, const NativeTableShape& shape,
+                             const char* className, const char* funcName,
+                             NativeScanResult& out, bool verifyNeighbours = true);
+
+// From any verified entry, walk both directions while entries stay well formed.
+// Yields the table base and count, which is a FALSIFIABLE check on the whole
+// shape: the offline dump says 2647 entries for BioShock Infinite, so a live
+// walk that disagrees means the shape is wrong, not that the table moved.
+struct NativeTableBounds {
+    const uint8_t* base = nullptr;
+    size_t count = 0;
+    size_t seedIndex = 0;
+};
+bool native_table_bounds(const ProcessImage& img, const NativeTableShape& shape,
+                         const uint8_t* seedEntry, NativeTableBounds& out);
+
+// Direct table walk: strcmp every entry name against "<Class>exec<Func>".
+// O(count) with one compare each, versus two full-image sweeps for the scan
+// above - and, more importantly, a SECOND INDEPENDENT INSTRUMENT answering the
+// same question. The two must agree; when they do not, both are suspect.
+// ASCII shapes only (wideNames == false).
+bool find_native_in_table(const ProcessImage& img, const NativeTableShape& shape,
+                          const NativeTableBounds& table, const char* className,
                           const char* funcName, NativeScanResult& out);
 
 } // namespace bvr::pattern_scan

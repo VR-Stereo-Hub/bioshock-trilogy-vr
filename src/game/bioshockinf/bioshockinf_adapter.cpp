@@ -3,7 +3,9 @@
 #include "core/framework/command.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
+#include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/patterns.h"
+#include "game/bioshockinf/reflect.h"
 
 #include <imgui.h>
 
@@ -17,21 +19,24 @@ std::atomic<bool> g_loggedFovRequest{false};
 
 void log_status() {
     const patterns::Symbols& s = patterns::symbols();
-    BVR_LOG("[bsi] status: build %s (rva_trusted=%s) | image %p size 0x%zX | camera-seam probe "
-            "%s | presents %llu | capabilities 0x0 (no engine hook until I2)",
+    BVR_LOG("[bsi] status: build %s (rva_trusted=%s) | image %p size 0x%zX | camera hook %s, "
+            "fired %s | GNames Num=%d | presents %llu",
             s.buildVerified ? "VERIFIED" : "NOT RECOGNISED",
             patterns::rva_trusted() ? "yes" : "no", s.imageBase, s.imageSize,
-            s.viewPointReadable ? "readable" : "not read",
+            camera::hook_live() ? "installed" : "NOT installed",
+            camera::has_fired() ? "YES" : "no", patterns::fname_count(),
             static_cast<unsigned long long>(bvr::d3d11_hook::present_count()));
 }
 
 } // namespace
 
 uint32_t BioshockInfAdapter::capabilities() const {
-    // Nothing yet, and that is the honest answer: I1 installs no engine hook at
-    // all. A bit here is earned by a hook observed firing (I2), never by an
-    // address being derived.
-    return 0;
+    // A bit is earned by a hook OBSERVED FIRING, never by an address resolving
+    // or even by a successful install - a deliberate divergence from BS1 and
+    // BS2, which both key this off hook_live(). On this game the camera hook is
+    // read-only in I2, so the bit advertises that the seam is real and reached,
+    // which is exactly what a later milestone needs to know.
+    return camera::has_fired() ? bvr::game::CAP_CAMERA_OVERRIDE : 0u;
 }
 
 bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
@@ -43,8 +48,18 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // BS2 the poller lives in the adapter and ticks off the camera hook, which
     // means no way to talk to the mod until the thing being debugged works.
     bvr::command::enable_present_pump();
-    BVR_LOG("[bsi] adapter ready - command seam live on the Present thread, no engine hook "
-            "required. Build gate %s.", verified ? "PASSED" : "CLOSED (features stand down)");
+
+    reflect::init(image);
+
+    // DR-I2. Read-only, prologue-gated, and fail-soft: a refusal logs and the
+    // game runs flat. Once it fires it takes over the command poll from the
+    // Present pump (see the lease in core/framework/command).
+    const bool hooked = camera::install(image);
+
+    BVR_LOG("[bsi] adapter ready - build gate %s, camera hook %s. Command seam is live either "
+            "way (Present pump), and hands over to the game thread on the hook's first fire.",
+            verified ? "PASSED" : "CLOSED (features stand down)",
+            hooked ? "INSTALLED (read-only)" : "not installed");
     return verified;
 }
 
@@ -78,10 +93,13 @@ void BioshockInfAdapter::drawDebugUi() {
                     s.viewPointBytes[2], s.viewPointBytes[3], s.viewPointBytes[4],
                     s.viewPointBytes[5], s.viewPointBytes[6], s.viewPointBytes[7]);
     }
-    ImGui::Text("presents: %llu   capabilities: 0x0",
-                static_cast<unsigned long long>(bvr::d3d11_hook::present_count()));
-    ImGui::TextDisabled("no engine hook installed - camera seam is I2 (DR-I2)");
-    ImGui::TextDisabled("seam: bsi | buildgate off|on|status | vrcmd | vroverlay off");
+    ImGui::Text("presents: %llu   capabilities: 0x%X",
+                static_cast<unsigned long long>(bvr::d3d11_hook::present_count()),
+                capabilities());
+    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsireflect | bsinative | vrcmd");
+
+    camera::draw_debug_ui();
+    reflect::draw_debug_ui();
 }
 
 bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
@@ -93,6 +111,13 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
         patterns::handle_buildgate_command(args);
         return true;
     }
+    if (strcmp(cmd, "bsicam") == 0) {
+        if (!camera::handle_command(args))
+            BVR_LOG("[bsi] camera: unknown subcommand. bsicam status|paths|tid|matrix|"
+                    "heartbeat on|off|on|off");
+        return true;
+    }
+    if (reflect::handle_command(cmd, args)) return true;
     return false; // core's shared vocabulary gets a look next
 }
 

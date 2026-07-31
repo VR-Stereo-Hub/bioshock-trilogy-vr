@@ -20,8 +20,34 @@ namespace bvr::command {
 namespace {
 
 std::atomic<bool> g_presentPumpEnabled{false};
-std::atomic<bool> g_gameThreadPump{false}; // one-way handover latch
+std::atomic<bool> g_gameThreadPump{false}; // handover latch, never cleared
 std::atomic<bool> g_inPoll{false};
+
+// ---- the game-thread pump's LEASE (session 36) -----------------------------
+//
+// The handover is still one-way in the sense that matters - the game thread
+// stays the preferred pump forever - but it is now a LEASE rather than an
+// eviction. If the hook the game-thread pump rides on goes quiet (a level load,
+// a Scaleform menu, a scripted camera), the Present pump resumes in DEGRADED
+// mode instead of leaving the mod with no command surface and no line saying so.
+//
+// This answers the original objection (see command.h) more precisely rather
+// than overriding it. What must not happen during a load is an ENGINE-TOUCHING
+// dispatch on the render thread - not any dispatch at all. So the degraded pump
+// refuses exactly the vocabulary that writes engine memory and runs the rest.
+//
+// It is also TESTABLE ON DEMAND, which the alternative was not: `bsicam off`
+// silences the camera deliberately, `vrcmd` must then report the degraded
+// render pump, and `bsicam on` must hand back. An instrument that cannot be
+// made to fail is not evidence.
+//
+// INERT FOR BS1 AND BS2 BY CONSTRUCTION: neither includes this header, neither
+// calls enable_present_pump() or poll_from_game_thread(), and poll_from_present
+// returns immediately unless an adapter armed the pump. Verified by grep,
+// session 36 - the only callers anywhere are bioshockinf's.
+std::atomic<uint64_t> g_lastGamePollMs{0};
+std::atomic<bool> g_presentTookBack{false};
+constexpr uint64_t kGamePumpLeaseMs = 3000;
 std::atomic<uint64_t> g_lastPollMs{0};
 std::atomic<uint64_t> g_polls{0};
 std::atomic<uint64_t> g_dispatched{0};
@@ -106,15 +132,36 @@ void enable_present_pump() {
 
 void poll_from_present(uint64_t nowMs) {
     if (!g_presentPumpEnabled.load(std::memory_order_relaxed)) return;
-    if (g_gameThreadPump.load(std::memory_order_relaxed)) return;
-    poll(nowMs, "render");
+    if (g_gameThreadPump.load(std::memory_order_relaxed)) {
+        const uint64_t lastGame = g_lastGamePollMs.load(std::memory_order_relaxed);
+        if (nowMs - lastGame < kGamePumpLeaseMs) return; // lease healthy, stand down
+        if (!g_presentTookBack.exchange(true))
+            BVR_LOG("[cmd] game-thread pump silent for >%llu ms - Present pump RESUMING in "
+                    "DEGRADED mode. Commands that write engine memory are refused until the "
+                    "game thread returns; everything else dispatches normally.",
+                    static_cast<unsigned long long>(kGamePumpLeaseMs));
+    }
+    poll(nowMs, g_presentTookBack.load(std::memory_order_relaxed) ? "render(degraded)"
+                                                                 : "render");
 }
 
 void poll_from_game_thread(uint64_t nowMs) {
+    // Stamped on EVERY call, not just the ones that pass the 1 Hz gate inside
+    // poll(): the lease measures whether the game thread is alive, which is a
+    // different question from whether it polled.
+    g_lastGamePollMs.store(nowMs, std::memory_order_relaxed);
+    if (g_presentTookBack.exchange(false))
+        BVR_LOG("[cmd] game thread resumed - Present pump standing down again");
     if (!g_gameThreadPump.exchange(true))
-        BVR_LOG("[cmd] game-thread pump took over - the Present pump is now silent for the "
-                "life of the process");
+        BVR_LOG("[cmd] game-thread pump took over - commands now run on the game thread, where "
+                "anything touching the engine belongs. The Present pump stands down, but keeps "
+                "a %llu ms lease so a silent game thread cannot strand the command surface.",
+                static_cast<unsigned long long>(kGamePumpLeaseMs));
     poll(nowMs, "game");
+}
+
+bool degraded() {
+    return g_presentTookBack.load(std::memory_order_relaxed);
 }
 
 void dispatch_line(const char* line) {
@@ -125,6 +172,23 @@ void dispatch_line(const char* line) {
     while (*args == ' ' || *args == '\t') ++args;
     g_dispatched.fetch_add(1, std::memory_order_relaxed);
     g_lastDispatchMs.store(GetTickCount64(), std::memory_order_relaxed);
+
+    // Degraded mode: the game thread is silent, so we are dispatching from the
+    // render thread during whatever silenced it - most likely a level load.
+    // Refuse the vocabulary that WRITES ENGINE MEMORY and let the rest through.
+    // This is the precise form of the original "never resume" rule: the hazard
+    // was always an engine-touching dispatch at the worst moment, not reading a
+    // counter. Costs nothing while the game thread is healthy.
+    if (g_presentTookBack.load(std::memory_order_relaxed)) {
+        static const char* const kEngineWriters[] = {"mempoke", "mempokei", "memrestore",
+                                                     "pokeaddr", "pokeaddri"};
+        for (const char* w : kEngineWriters) {
+            if (strcmp(cmd, w) != 0) continue;
+            BVR_LOG("[cmd] '%s' REFUSED - the game thread is silent (loading?) and this command "
+                    "writes engine memory. Retry once the game thread resumes.", cmd);
+            return;
+        }
+    }
 
     // Adapter FIRST: a game may deliberately shadow a core command, and this
     // ordering is what lets BS1/BS2 keep their divergent branches when they

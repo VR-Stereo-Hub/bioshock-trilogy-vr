@@ -14,6 +14,8 @@ namespace {
 bool g_rvaTrusted = false;
 bool g_buildGateForcedOff = false;
 Symbols g_symbols{};
+const uint8_t* g_imageBase = nullptr;
+size_t g_imageSize = 0;
 
 // One hex line of up to 16 bytes, for the read-only probes.
 void format_bytes(const uint8_t* bytes, size_t n, char* out, size_t outSize) {
@@ -49,6 +51,8 @@ bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     out = Symbols{};
     out.imageBase = image.base;
     out.imageSize = image.size;
+    g_imageBase = image.base;
+    g_imageSize = image.size;
 
     BVR_LOG("[bsi] main module: base %p size 0x%zX", image.base, image.size);
     // ASLR is off on this exe, so the base is expected to be the link-time one.
@@ -126,6 +130,127 @@ bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
 
 const Symbols& symbols() {
     return g_symbols;
+}
+
+const uint8_t* image_base() {
+    return g_imageBase;
+}
+
+size_t image_size() {
+    return g_imageSize;
+}
+
+const uint8_t* rva_to_address(uint32_t rva, size_t needBytes) {
+    if (!rva_trusted() || !g_imageBase) return nullptr;
+    if (static_cast<size_t>(rva) + needBytes > g_imageSize) return nullptr;
+    const uint8_t* p = g_imageBase + rva;
+    if (!bvr::pattern_scan::is_memory_valid(p, needBytes)) return nullptr;
+    return p;
+}
+
+// ---- GNames ---------------------------------------------------------------
+
+namespace {
+
+// Reads the { Data, Num, Max } triple. Returns false when the gate is closed,
+// when resolve() has not run, or when the array is not yet populated - which is
+// the NORMAL state until the engine's static initializers have run, and is why
+// nothing here may be called from init().
+bool gnames(const uint8_t* const** dataOut, int32_t* numOut) {
+    const uint8_t* p = rva_to_address(kGNamesDataRva, 12);
+    if (!p) return false;
+    const uint8_t* const* data = *reinterpret_cast<const uint8_t* const* const*>(p);
+    int32_t num = *reinterpret_cast<const int32_t*>(p + 4);
+    if (!data || num <= 0) return false;
+    if (!bvr::pattern_scan::is_memory_valid(data, sizeof(void*))) return false;
+    if (dataOut) *dataOut = data;
+    if (numOut) *numOut = num;
+    return true;
+}
+
+// The entry for `index`, validated against its OWN recorded index. UE3 packs
+// (index << 1) | isWide at +0x8, so a slot that disagrees means the layout
+// assumption broke or the slot is recycled garbage - refuse rather than read.
+const uint8_t* fname_entry(int32_t index, bool* wideOut) {
+    const uint8_t* const* data = nullptr;
+    int32_t num = 0;
+    if (!gnames(&data, &num)) return nullptr;
+    if (index < 0 || index >= num) return nullptr;
+    if (!bvr::pattern_scan::is_memory_valid(data + index, sizeof(void*))) return nullptr;
+    const uint8_t* entry = data[index];
+    if (!entry) return nullptr;
+    if (!bvr::pattern_scan::is_memory_valid(entry, kFNameEntryTextOffset + 2)) return nullptr;
+    const uint32_t packed =
+        *reinterpret_cast<const uint32_t*>(entry + kFNameEntryIndexFlagsOffset);
+    if (static_cast<int32_t>(packed >> 1) != index) return nullptr;
+    if (wideOut) *wideOut = (packed & kFNameEntryWideBit) != 0;
+    return entry;
+}
+
+char printable(uint32_t c) {
+    return (c >= 0x20 && c <= 0x7E) ? static_cast<char>(c) : '?';
+}
+
+} // namespace
+
+int32_t fname_count() {
+    int32_t num = 0;
+    return gnames(nullptr, &num) ? num : 0;
+}
+
+int32_t fname_max() {
+    const uint8_t* p = rva_to_address(kGNamesMaxRva, 4);
+    return p ? *reinterpret_cast<const int32_t*>(p) : 0;
+}
+
+bool fname_is_wide(int32_t index, bool& outWide) {
+    bool wide = false;
+    if (!fname_entry(index, &wide)) return false;
+    outWide = wide;
+    return true;
+}
+
+bool fname_text(int32_t index, char* out, size_t outSize) {
+    if (!out || outSize < kFNameTextBufMin) return false;
+    out[0] = '\0';
+    bool wide = false;
+    const uint8_t* entry = fname_entry(index, &wide);
+    if (!entry) return false;
+
+    const uint8_t* text = entry + kFNameEntryTextOffset;
+    const size_t charBytes = wide ? 2u : 1u;
+    const size_t cap = (outSize - 1 < kFNameMaxChars) ? outSize - 1 : kFNameMaxChars;
+
+    size_t n = 0;
+    for (; n < cap; ++n) {
+        const uint8_t* c = text + n * charBytes;
+        if (!bvr::pattern_scan::is_memory_valid(c, charBytes)) {
+            out[0] = '\0';
+            return false;
+        }
+        const uint32_t ch = wide ? static_cast<uint32_t>(c[0] | (c[1] << 8)) : c[0];
+        if (ch == 0) {
+            out[n] = '\0';
+            return true;
+        }
+        out[n] = printable(ch);
+    }
+    // No terminator inside the window: refuse rather than hand back a truncated
+    // name, which would silently mis-key any per-name filter built on it.
+    out[0] = '\0';
+    return false;
+}
+
+int32_t fname_find(const char* text) {
+    if (!text || !*text) return -1;
+    const int32_t num = fname_count();
+    if (num <= 0) return -1;
+    char buf[256];
+    for (int32_t i = 0; i < num; ++i) {
+        if (!fname_text(i, buf, sizeof buf)) continue;
+        if (_stricmp(buf, text) == 0) return i;
+    }
+    return -1;
 }
 
 } // namespace bvr::bsi::patterns

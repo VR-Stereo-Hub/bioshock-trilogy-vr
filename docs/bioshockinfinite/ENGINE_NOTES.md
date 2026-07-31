@@ -227,6 +227,155 @@ has these bytes here":
 Still unproven: that the implementation is called with the shape we think, and that hooking it is
 safe. That is DR-I2.
 
+## DR-I1: UE3 reflection - PASS (session 36, offline)
+
+`UObject::ProcessEvent`, `UObject::FindFunctionChecked` and the ProcessEvent vtable slot are all
+derived, with two independent instruments agreeing and a caller census whose every prediction held.
+**No game was running for any of this** - it is all disk-image analysis, which is what made it the
+right work to do while BioShock 2 held the machine.
+
+| symbol | RVA / locator | signature | derivation |
+|---|---|---|---|
+| **`UObject::ProcessEvent`** | **`0xCFE70`** | thiscall, **3 stack args, `ret 0xC`** | vtable slot `+0x7C` read from 1582 candidate vtables: **1038 votes**. 672 bytes, single `ret 0xC`, `int3`-padded. |
+| **`AActor::ProcessEvent`** | **`0x19A150`** | thiscall, `ret 0xC` | the same histogram's **runner-up, 175 votes**. A thin override: two global checks, `test [esi+8],0x200`, then `call 0x4CFE70`. |
+| **`UObject::FindFunctionChecked`** | **`0xD1090`** | thiscall, **3 stack args, `ret 0xC`** | UTF-16 `Failed to find function` at `.rdata 0xD07CC0`; its only code xref `0xD1131` resolves to this function. 304 bytes, single `ret 0xC`. |
+| **`UObject::FindFunction`** | **vtable slot `+0x54`** | virtual | read out of FindFunctionChecked's own body: `mov eax,[esi]; mov edx,[eax+0x54]; call edx`, then the null test that reaches the `appErrorf`. Recorded, not consumed. |
+| **ProcessEvent vtable slot** | **`+0x7C`** (index 31) | | **407 of 420** decodable callers of FindFunctionChecked agree. |
+
+### Why this is believed, rather than merely plausible
+
+**The census predictions were written down before the run** (that is what makes it an instrument
+and not a readout) **and every one held**:
+
+| target | predicted E8 callers | actual | predicted abs dword refs | actual |
+|---|---|---|---|---|
+| `GetPlayerViewPoint` impl `0x1E10C0` | 14 | **14** | small | **0** |
+| every exec thunk checked | 0 | **0** | 1-2 | 2 |
+| `FindFunctionChecked` | many (>= 100) | **426** | ~0 | **0** |
+| `UObject::ProcessEvent` | few (virtually dispatched) | **1** | hundreds | **2144 in .rdata** |
+| `AActor::ProcessEvent` | few, fewer refs than the base | **0** | many but fewer | **268** |
+
+Two further corroborations that were not predicted and are therefore worth more:
+
+- ProcessEvent's **single** E8 caller is `0x19A189` - which is exactly the `call 0x4cfe70` inside
+  `AActor::ProcessEvent`. Nothing else in 10 MB of `.text` calls it directly.
+- **The base/override split is settled by structure, not by vote count**: the runner-up tail-calls
+  the mode. A histogram alone could never have told us which of the top two is the base class, and
+  this is the one thing the plan flagged as needing a separate method.
+
+`GetPlayerViewPoint` having **0** absolute dword references is also a real finding: it is not in
+any vtable, so it is a non-virtual member reachable only by address. That closes off a
+"hook it through a vtable instead" alternative before anyone spends a session on it.
+
+### The two methods worth reusing
+
+**1. The E8-target set replaces every prologue heuristic.** Collect every `E8` call target in
+`.text` - 38,638 of them - and that set *is* the list of known function entry points. "The function
+containing address X" becomes "greatest entry <= X" by binary search. No `CC CC CC 55 8B EC`
+backward walk, and therefore none of its silent failure mode: on this exe that walk returns the
+**previous** function rather than failing, because the exec thunk at `0x129280` is frameless
+(`83 EC 1C 56 8B F1`). This is why the bsi lane must never call
+`pattern_scan::find_event_function`, and the header now says so.
+
+**2. MSVC hoists the vtable pointer, and that broke the first attempt.** A UE3 generated event stub
+reads:
+
+```
+mov edi, [esi]              ; vtable, hoisted well before it is used
+...
+call FindFunctionChecked    ; E8
+mov edx, [edi+0x7C]         ; the slot
+call edx                    ; ProcessEvent
+```
+
+Searching for `call [reg+disp]` (`FF /2`) finds **0 of 426**. A decoder must track register loads
+and resolve `call reg` through them. The first pass of this analysis reported a nonsense negative
+disp8 for exactly this reason, and it was only caught by disassembling a caller instead of trusting
+the histogram.
+
+### CORRECTION to the table below: three "impl RVA" rows are exec thunks
+
+`APlayerController::ConsoleCommand 0x136070`, `AXPawn::SetWeapon 0x4F9ED0` and
+`AXWeapon::AddAmmo 0x5017D0` were recorded in session 34 as implementation RVAs. The caller census
+says otherwise: **all three have 0 `E8` callers** and a handful of absolute dword references, which
+is the exact signature of an exec thunk. The native table's second dword is always the thunk, never
+the C++ implementation.
+
+Consequence for the I2 test-loadout path: it cannot be "call these three addresses". A thunk *is*
+callable, but its signature is `execFoo(FFrame& Stack, void* Result)` and calling it means building
+an `FFrame`. **The better route now exists and needs no new addresses at all**: go through
+`ProcessEvent` by name, which is BS2's design.
+
+Incidental: a thunk carries exactly **2** absolute references (its native-table entry plus one
+more), so `ConsoleCommand`'s **6** and `SetWeapon`'s **4** mean those names are registered on
+several classes - `AActor`, `APlayerController`, `AXPlayerController` and `UGameViewportClient` all
+register `ConsoleCommand`, which is 4 of the 6.
+
+### Recorded negatives (do not re-hunt these)
+
+Absent from the exe in **both** ASCII and UTF-16: `Runaway loop detected`, `Infinite script
+recursion`, `Missing native function`, `Stack overflow`, `ProcessEvent`, `FindFunctionChecked`,
+`ProcessInternal`, `CallFunction`, `ProcessRemoteFunction`. Absence is **not** evidence of removal -
+a shipping build folds or strips most `appErrorf` format strings. Only two anchors survive the link:
+`Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
+`0xD80B0`, 1 caller - the script VM's null-property path).
+
+## DR-I2: the camera seam - hook WRITTEN, live confirmation OWED
+
+The read-only detour is implemented in `src/game/bioshockinf/camera.cpp` and builds clean. It has
+**not been observed firing** - BioShock 2 held the machine for the whole of session 36's coding
+half, and this project's rule is that a hook is not real until it is seen to dispatch. The bit
+`CAP_CAMERA_OVERRIDE` is therefore wired to `has_fired()`, not to a successful install: a
+deliberate divergence from BS1 and BS2, which both key it off the install.
+
+What the install refuses on, all fail-soft (log and let the game run flat):
+
+- build gate closed (`patterns::rva_trusted()`);
+- the 12-byte live prologue at `0x1E10C0` not matching
+  `55 8B EC 83 E4 F0 81 EC A4 00 00 00`;
+- **no `C2 08 00` (`ret 8`) in the first 0x400 bytes.** This is an independent confirmation of the
+  argument count *before* the detour is created, because getting it wrong pops the RTC dialog that
+  writes no crash dump. One typedef serves both the trampoline pointer and the detour so the two
+  cannot disagree about arity.
+
+Read-only by construction: the out-params are copied into `const` locals and **no assignment
+through them exists anywhere in the translation unit**. The I4 write seam will be a new function,
+not a loosening of this one.
+
+Measurements the hook is built to take on its first live run, each answering an open question:
+
+| measurement | question it settles |
+|---|---|
+| first-fire line, then sustained `calls/s` at the menu **and** in gameplay | does the seam exist in both states; what is the dispatch budget |
+| path census (`[this+0x248]` bit 0, `[this+0x240]` non-null) | promotes the **inferred** `+0x240` to observed. Paths 3 and 4 are ONE bucket on purpose - separating them needs a virtual call through slot `+0x2C0` out of a detour, which can lazily create engine objects |
+| one-shot 16-float dump of `[this+0x430]`, plus per-beat `returned-minus-cached` delta | is the returned view really **transformed**, or is the fast path a raw copy - measured, not assumed |
+| camera tid vs `d3d11_hook::last_present_tid()` | UE3's game/render thread split, which is free DR-I5 evidence. Deliberately on the throttled path, not the first-fire line: the hook installs at ~T+0.4 s and the first Present lands at ~T+8.5 s, so `last_present_tid()` can still be 0 when the detour first runs |
+
+### The command pump is now a LEASE, not an eviction (core change, session 36)
+
+The moment the detour fires it calls `bvr::command::poll_from_game_thread`, moving the command
+poller off the render thread - the whole reason the core seam was built pump-agnostic in session 35.
+
+That handover used to silence the Present pump **permanently**, on the reasoning that a
+resume-on-stall rule would hand the render thread a dispatch during a load, "the worst moment
+available". The hazard is real but was stated too broadly: what must not happen during a load is an
+**engine-touching** dispatch, not any dispatch. As written, a camera hook that went quiet (level
+load, Scaleform menu, scripted camera) left the mod with no command surface **and no line saying
+so**.
+
+So `poll_from_game_thread` now stamps a timestamp on every call, and after a 3 s lease expires the
+Present pump resumes in **degraded** mode: `mempoke*`, `pokeaddr*` and `memrestore` are refused with
+one explanatory line, everything else dispatches. Both transitions are logged.
+
+**This is inert for BS1 and BS2 by construction**, verified by grep rather than assumed: neither
+adapter includes `core/framework/command.h`, neither calls `enable_present_pump()` or
+`poll_from_game_thread()`, and `poll_from_present` returns immediately unless an adapter armed it.
+The only callers anywhere in the tree are `bioshockinf`'s.
+
+It also made the handover **testable on demand**, which the original was not: `bsicam off` silences
+the detour body deliberately, `vrcmd` must then report `pump=render(degraded)`, and `bsicam on` must
+hand back. An instrument that cannot be made to fail is not evidence.
+
 ### The command seam is core and Present-driven on this game
 
 `%LOCALAPPDATA%\BioshockVR\bsi\command.txt` is polled at 1 Hz **from the Present detour**, not from an
@@ -463,12 +612,19 @@ and that parser evidently does not forward arbitrary console strings in the reta
 commands itself rather than through a key - but with a materially better hand, because these are
 *registered natives with known implementation addresses* rather than addresses to be hunted:
 
-| want | native | impl RVA |
+| want | native | **exec thunk** RVA (NOT the implementation - see below) |
 |---|---|---|
 | run any console command | `APlayerController::ConsoleCommand` | `0x136070` |
 | god mode | `AXPawn::AddInvulnerableFlag` / `RemoveInvulnerableFlag` / `HasInvulnerableFlag` | in the dump |
 | give a weapon | `AXPawn::SetWeapon` | `0x4F9ED0` |
 | give ammo | `AXWeapon::AddAmmo` | `0x5017D0` |
+
+> **CORRECTED session 36.** These were recorded as "impl RVA". The static caller census says all
+> three have **0 `E8` callers**, which is the signature of an exec thunk, not an implementation -
+> the native table's second dword is always the thunk. Calling one directly means constructing an
+> `FFrame`. Since DR-I1 landed `ProcessEvent` (`0xCFE70`, `ret 0xC`) and `FindFunctionChecked`
+> (`0xD1090`), **the test loadout should go by name through ProcessEvent instead**, which is BS2's
+> design and needs no further addresses.
 
 So a test loadout does not even require the console: `SetWeapon` + `AddAmmo` + `AddInvulnerableFlag`
 by reflection is a more direct route than the console ever was, and it sidesteps whatever gates
@@ -648,10 +804,23 @@ Short form. The full versions, with worked examples and the traps, are in
 [../bioshock1/ENGINE_NOTES.md](../bioshock1/ENGINE_NOTES.md) and
 [../bioshock2/ENGINE_NOTES.md](../bioshock2/ENGINE_NOTES.md).
 
-- **Static caller census - run this BEFORE hooking anything.** For any absolute-addressed function,
-  scan the exe for `E8` opcodes whose rel32 lands on it. Zero callers on a function the engine
-  "must" call every frame means the dispatch is inlined or dynamic. This is the check that cracked
-  BS2's dead-thunk mystery after a hook was installed that never fired.
+- **Static caller census - run this BEFORE hooking anything.** `tools/pe-xref.ps1` (committed
+  session 36; the earlier sessions used throwaway scratchpad scripts, which is exactly why their
+  numbers could not be reproduced). For any absolute-addressed function, scan the exe for `E8`
+  opcodes whose rel32 lands on it. Zero callers on a function the engine "must" call every frame
+  means the dispatch is inlined, virtual or dynamic. This is the check that cracked BS2's dead-thunk
+  mystery after a hook was installed that never fired.
+  Its `AbsRef` mode counts 4-aligned dwords equal to `ImageBase+rva`, histogrammed by section, which
+  is the **vtable detector**: a virtual has FEW `E8` callers and MANY `.rdata` dwords, and that
+  inversion is itself the identification. `-FollowStubs` catches callers routed through an `E9`
+  jump stub - without it a census can report a false zero, which is the most expensive kind of wrong
+  answer here. **Write the predictions down before running it**, and require the tool to reproduce a
+  known number first; on Infinite that control is `GetPlayerViewPoint 0x1E10C0 == 14 callers`.
+- **Function start without a prologue heuristic (session 36).** Collect every `E8` call target in
+  `.text`; that set is the complete list of entry points anyone calls, so "the function containing
+  X" is "greatest target <= X". Use this instead of `find_function_start`'s
+  `CC CC CC 55 8B EC` backward walk, which on this exe returns the **previous** function rather
+  than failing, because Infinite has frameless functions.
 - **FName-chain event scan** (`core/hooks/pattern_scan`, game-agnostic): name string -> imm32 xref
   -> forward to the `E8` FName-ctor call -> past it to the `89 0D` store = cached index global ->
   global xrefs (minus the init site +/-200 bytes) -> backward prologue walk `CC CC CC 55 8B EC`.
@@ -693,8 +862,10 @@ and every value here must also exist in `src/game/bioshockinf/patterns.h/.cpp` a
 | `IDXGISwapChain::Present` | vtable slot | frame boundary, XR pacing, overlay, mirror, **the command poller** | kiero-style throwaway device (core, game-agnostic) | **LIVE (session 35)** - installs at T+0.4 s, first Present T+8.5 s |
 | `IDXGISwapChain::ResizeBuffers` | vtable slot | RT cache invalidation | same | **installed (session 35)**, not yet observed firing |
 | context Draw/DrawIndexed/SetRT/Map/Unmap | context vtable | frame dumps, HUD classification | core `frame_inspector`, game's own immediate context | **LIVE (session 35)** - 15/15 slots, one dump taken |
-| `UObject::ProcessEvent` | - | script-event seam; a fallback if the direct camera hook disappoints | vtable slot off a known object + prologue gate | pending I2 |
-| **`APlayerController::GetPlayerViewPoint`** | **impl RVA `0x1E10C0`** (thunk `0x129280`) | **the camera seam**: 6DoF override. thiscall, 2 stack args, `ret 8`, 13 native callers | native table -> disasm thunk -> last call before epilogue -> caller census | **derived; bytes READ live (session 35, aligned-stack prologue as predicted) - never hooked, never called. I2.** |
+| `UObject::ProcessEvent` | **impl RVA `0xCFE70`**, vtable slot **`+0x7C`** | script-event seam; the route to the test loadout and to named-event work | FindFunctionChecked's callers -> slot histogram -> vtable-candidate histogram (session 36, offline) | **derived, `ret 0xC` (3 args). Not hooked.** |
+| `AActor::ProcessEvent` | impl RVA `0x19A150` | the override an AActor subclass actually carries in slot `+0x7C` | same histogram's runner-up; confirmed by its tail-call into the base | derived, not hooked |
+| `UObject::FindFunctionChecked` | impl RVA `0xD1090` | resolve a `UFunction*` by FName before a ProcessEvent call | UTF-16 `Failed to find function` xref -> enclosing function via the E8-target set | **derived, `ret 0xC` (3 args), 426 callers. Not hooked.** |
+| **`APlayerController::GetPlayerViewPoint`** | **impl RVA `0x1E10C0`** (thunk `0x129280`) | **the camera seam**: 6DoF override. thiscall, 2 stack args, `ret 8`, 13 native callers | native table -> disasm thunk -> last call before epilogue -> caller census | **READ-ONLY detour WRITTEN (session 36), prologue- and `ret 8`-gated. NOT yet observed firing - live confirmation owed.** |
 | scene build / draw root | - | SequentialReentry stereo seam | frame inspector callstack RVAs + capstone | pending I2/I6 |
 | `XInputGetState` | game IAT RVA `0xCD4814` (XINPUT1_3 ord 2) | synthetic gamepad | import table parse (**done**, session 34) | confirmed, unhooked |
 | Draw / DrawIndexed / OMSetRenderTargets / Map+Unmap | context vtable | HUD classification, frame dumps, lens watch | core `frame_inspector` | pending I2 |
@@ -710,7 +881,10 @@ Everything must also live in `src/game/bioshockinf/patterns.h/.cpp` and nowhere 
 
 | symbol | RVA | notes |
 |---|---|---|
-| `APlayerController::GetPlayerViewPoint` **(impl)** | `0x1E10C0` | thiscall, 2 stack args, `ret 8`, 13 native callers. **The camera seam.** |
+| `APlayerController::GetPlayerViewPoint` **(impl)** | `0x1E10C0` | thiscall, 2 stack args, `ret 8`, 13 native callers, **0 absolute refs (not in any vtable)**. **The camera seam.** |
+| **`UObject::ProcessEvent`** | **`0xCFE70`** | thiscall, **3 stack args, `ret 0xC`**. Vtable slot `+0x7C`. 1 E8 caller, 2144 `.rdata` refs - the signature of a virtually-dispatched function. |
+| **`AActor::ProcessEvent`** | **`0x19A150`** | thiscall, `ret 0xC`. Thin override that tail-calls the base. 0 E8 callers, 268 refs. This is what an AActor subclass carries in slot `+0x7C`. |
+| **`UObject::FindFunctionChecked`** | **`0xD1090`** | thiscall, **3 stack args, `ret 0xC`**. 426 E8 callers (the generated event stubs), 0 absolute refs. |
 | `APlayerController::execGetPlayerViewPoint` (thunk) | `0x129280` | 0 callers - do not hook |
 | `APlayerController::execXGetPlayerFloatingViewPoint` | `0x1292C0` | Irrational addition; 0 callers |
 | `APlayerController::execXGetMatineeViewTarget` | `0x129240` | of interest for I11 cinematics |
@@ -812,7 +986,24 @@ time; start this one early.
   `GNames`/`GObjObjects`. *(Session 34, offline.)*
 - **`exec` thunks - not a seam.** Confirmed by static caller census: 0 `E8` callers on every thunk
   checked. Native C++ callers bypass them entirely, exactly as on BS1. Use them to *locate* the
-  implementation, never as a hook target. *(Session 34, offline.)*
+  implementation, never as a hook target. *(Session 34, offline; re-confirmed session 36 with
+  `tools/pe-xref.ps1`, which also showed `ConsoleCommand`/`SetWeapon`/`AddAmmo` are thunks too.)*
+- **`pattern_scan::find_event_function` - DO NOT USE on this game.** Three independent reasons, all
+  fatal: it searches UTF-16 only; it ends in `find_function_start`'s `CC CC CC 55 8B EC` backward
+  walk, which cannot see a frameless function and silently returns the **previous** one rather than
+  failing; and on BS2 the same call already produced dead code. The bsi lane decodes **forward**
+  from an xref instead, which sidesteps the problem entirely. *(Session 36.)*
+- **UE3 script-VM error strings - mostly absent.** `Runaway loop detected`, `Infinite script
+  recursion`, `Missing native function`, `Stack overflow`, and the literal symbol names
+  `ProcessEvent` / `FindFunctionChecked` / `ProcessInternal` / `CallFunction` /
+  `ProcessRemoteFunction` do not exist in the exe in either ASCII or UTF-16. Only
+  `Failed to find function` and `Accessed None` survive the link. Absence is not evidence of
+  removal - a shipping build folds most `appErrorf` format strings. *(Session 36, offline.)*
+- **`call [reg+disp]` is the WRONG shape to search for a UE3 virtual dispatch.** MSVC hoists the
+  vtable pointer into a register, so the code reads `mov edi,[esi]` ... `mov edx,[edi+SLOT]` /
+  `call edx`. Searching for `FF /2` found 0 of 426 event stubs. Any decoder must track register
+  loads and resolve `call reg` through them. *(Session 36 - cost one wrong answer before it was
+  caught by disassembling a caller instead of trusting the histogram.)*
 - **Native stereo - no script surface.** Zero natives match `*Stereo*` across all 2647 entries, and
   no `bStereo`/`EyeSeparation`/`StereoDevice` names exist in the exe. Combined with
   `AllowNvidiaStereo3d=False` in the ini, the shipped "Stereoscopic3D" is almost certainly
