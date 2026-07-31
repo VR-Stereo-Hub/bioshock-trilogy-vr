@@ -361,6 +361,12 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   vrpace <args>                M8 stall guard
 //   vrmirror <args>              M8 desktop mirror
 //   vrhud on|off|status          HUD capture control + the lens/letterbox state
+//   vrpreset [save]              arm the full VR configuration / persist the
+//                                tuned sliders to this game's own
+//                                vrpreset.ini. b2r had NO persistence at all
+//                                before session 33, so every in-headset
+//                                verdict had to be re-tuned by hand after a
+//                                relaunch - which makes a verdict unrepeatable
 // Resolution (session 32; the eye render IS the backbuffer):
 //   vrres <w>x<h> | <w> <h>      write the game's own viewport keys (next
 //                                launch); bare `vrres` reports current vs live
@@ -381,6 +387,9 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //                                substrate - BS2's primary bet, no 1t rung)
 //   reentry vrstereo|stereo|pulse|on|off|yaw|reset|hook [draw|stream]|
 //           unhook|dump <n>|kick on|off|kick2 on|off|calcstack|status
+
+void save_vr_preset();
+void apply_vr_preset();
 
 void apply_command(const char* cmd, const char* args) {
     float v = 0.0f, x = 0.0f, y = 0.0f, z = 0.0f;
@@ -773,6 +782,9 @@ void apply_command(const char* cmd, const char* args) {
             bvr::hud::set_enabled(strncmp(args, "off", 3) != 0);
             BVR_LOG("[b2r] command: vrhud %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
         }
+    } else if (strcmp(cmd, "vrpreset") == 0) {
+        if (strncmp(args, "save", 4) == 0) save_vr_preset();
+        else apply_vr_preset();
     } else if (strcmp(cmd, "reentry") == 0) {
         scenedraw::handle_command(args);
     } else if (strcmp(cmd, "vrstereo") == 0) {
@@ -785,6 +797,93 @@ void apply_command(const char* cmd, const char* args) {
                 "BS1-only levers like vrstereo/vraim/exec are not ported yet)",
                 cmd);
     }
+}
+
+// ---- VR preset (ported from b1r, session 33) -------------------------------
+// b2r had NO persistence at all: every worldscale / headoff / ipd the user
+// tuned had to be re-issued after each launch, which makes an in-headset
+// verdict unrepeatable - "worldscale 100 was accepted in session 26" could
+// never be re-checked against the same numbers. The file lives in THIS game's
+// data dir (%LOCALAPPDATA%\BioshockVR\bs2\), so the two games can never read
+// each other's calibration.
+//
+// Deliberately much smaller than b1r's: b2r has no aim/hands/bones/body
+// modules, so only the sliders that exist here are persisted. Toggles are
+// implied ON by `vrpreset` apply, except fgFovMatch, which is persisted as a
+// VALUE because it is the thing currently under test.
+
+void vr_preset_path(wchar_t* out, size_t count) {
+    swprintf_s(out, count, L"%s\\vrpreset.ini", bvr::log::data_dir());
+}
+
+void save_vr_preset() {
+    wchar_t path[MAX_PATH];
+    vr_preset_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f) {
+        BVR_LOG("[b2r] could not write vrpreset.ini");
+        return;
+    }
+    fprintf(f, "# BioShock 2 VR - tuned slider values (toggles are implied ON)\n");
+    fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
+    fprintf(f, "headUpUu=%.1f\n", g_headOffUpUu.load(std::memory_order_relaxed));
+    fprintf(f, "headFwdUu=%.1f\n", g_headOffFwdUu.load(std::memory_order_relaxed));
+    fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
+    fprintf(f, "gameFovDeg=%.1f\n", g_gameFovDeg.load(std::memory_order_relaxed));
+    fprintf(f, "fgFovMatch=%d\n", g_fgFovMatch.load(std::memory_order_relaxed) ? 1 : 0);
+    fclose(f);
+    BVR_LOG("[b2r] VR preset values saved to %ls", path);
+}
+
+void load_vr_preset_values() {
+    wchar_t path[MAX_PATH];
+    vr_preset_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f) return; // no file = shipped defaults
+    char line[128];
+    int n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char key[64] = {};
+        float v = 0.0f;
+        if (sscanf_s(line, "%63[^=]=%f", key, static_cast<unsigned>(sizeof(key)), &v) != 2)
+            continue;
+        ++n;
+        if (strcmp(key, "worldScale") == 0 && v > 0.0f)
+            g_worldScale.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "headUpUu") == 0)
+            g_headOffUpUu.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "headFwdUu") == 0)
+            g_headOffFwdUu.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "ipdMm") == 0 && v > 0.0f)
+            g_ipdMm.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "gameFovDeg") == 0 && v > 0.0f)
+            g_gameFovDeg.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "fgFovMatch") == 0)
+            g_fgFovMatch.store(v != 0.0f, std::memory_order_relaxed);
+        else
+            --n;
+    }
+    fclose(f);
+    if (n) BVR_LOG("[b2r] VR preset: %d value(s) loaded from vrpreset.ini", n);
+}
+
+void apply_vr_preset() {
+    BVR_LOG("[b2r] VR PRESET: arming the full VR configuration");
+    bvr::vr::set_enabled(true);
+    bvr::vr::set_camera_mode(true);
+    bvr::vr::set_sr_pair_pacing(true);
+    // BS2's stereo is ONE toggle and has no 1t rung (session 26) - the
+    // threaded substrate is this game's primary bet, so the preset arms the
+    // same sequence `vrstereo on` does rather than BS1's ladder.
+    scenedraw::handle_command("vrstereo on");
+    BVR_LOG("[b2r] VR PRESET: worldscale %.1f headoff up %.1f fwd %.1f ipd %.1f "
+            "fgfov %s",
+            g_worldScale.load(std::memory_order_relaxed),
+            g_headOffUpUu.load(std::memory_order_relaxed),
+            g_headOffFwdUu.load(std::memory_order_relaxed),
+            g_ipdMm.load(std::memory_order_relaxed),
+            g_fgFovMatch.load(std::memory_order_relaxed) ? "on" : "off");
 }
 
 void poll_command_file(uint64_t now) {
@@ -1305,6 +1404,7 @@ bool install(const patterns::Symbols& symbols) {
         return false;
     }
 
+    load_vr_preset_values(); // tuned sliders, before anything reads them
     g_peTarget = symbols.processEvent;
     g_hookLive.store(true, std::memory_order_relaxed);
     BVR_LOG("[b2r] calcview seam installed (ProcessEvent %p + FindFunctionChecked %p)",
