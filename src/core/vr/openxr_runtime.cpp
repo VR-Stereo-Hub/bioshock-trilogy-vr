@@ -456,15 +456,57 @@ void phase_record(int ph, int64_t t0) {
         g_phaseMaxUs[ph].store(us, std::memory_order_relaxed);
 }
 
+// ---- WHAT IS THE PRESENT THREAD INSIDE, RIGHT NOW? -------------------------
+// The timers above only record a span once it RETURNS. A call that never
+// returns is exactly the case we care about, and it makes them silent - which
+// is indistinguishable from "nothing happened". These two say what the present
+// thread entered and when, so the trace thread below can report a call that is
+// still running after N seconds. Written by the present thread, read by the
+// trace thread; relaxed is fine because a torn read only misnames one sample.
+std::atomic<int> g_curPhase{-1};
+std::atomic<int64_t> g_curPhaseT0{0};
+
 // Records on every return path, which is what makes the two whole-half timers
 // trustworthy - on_present_begin alone has nine early returns.
 struct PhaseScope {
     int ph;
     int64_t t0;
-    explicit PhaseScope(int p) : ph(p), t0(phase_now()) {}
-    ~PhaseScope() { phase_record(ph, t0); }
+    int prevPh;
+    int64_t prevT0;
+    explicit PhaseScope(int p) : ph(p), t0(phase_now()) {
+        prevPh = g_curPhase.load(std::memory_order_relaxed);
+        prevT0 = g_curPhaseT0.load(std::memory_order_relaxed);
+        g_curPhaseT0.store(t0, std::memory_order_relaxed);
+        g_curPhase.store(p, std::memory_order_relaxed);
+    }
+    ~PhaseScope() {
+        phase_record(ph, t0);
+        g_curPhase.store(prevPh, std::memory_order_relaxed);
+        g_curPhaseT0.store(prevT0, std::memory_order_relaxed);
+    }
     PhaseScope(const PhaseScope&) = delete;
     PhaseScope& operator=(const PhaseScope&) = delete;
+};
+
+
+// Names the exact call in flight for the trace thread, restoring the enclosing
+// span on the way out. Used only around calls that can actually block, so the
+// trace can say "IN endFrame for 4200 ms" instead of the containing half.
+struct PhaseMark {
+    int prevPh;
+    int64_t prevT0;
+    explicit PhaseMark(int p) {
+        prevPh = g_curPhase.load(std::memory_order_relaxed);
+        prevT0 = g_curPhaseT0.load(std::memory_order_relaxed);
+        g_curPhaseT0.store(phase_now(), std::memory_order_relaxed);
+        g_curPhase.store(p, std::memory_order_relaxed);
+    }
+    ~PhaseMark() {
+        g_curPhase.store(prevPh, std::memory_order_relaxed);
+        g_curPhaseT0.store(prevT0, std::memory_order_relaxed);
+    }
+    PhaseMark(const PhaseMark&) = delete;
+    PhaseMark& operator=(const PhaseMark&) = delete;
 };
 
 // A phase that blocks for longer than this while the session is NOT focused is
@@ -612,6 +654,93 @@ bool pace_should_skip(XrSessionState state, bool everFocused, uint64_t now) {
     }
     g_paceSkips.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+// ---- THE PACE TRACE, on its OWN thread -------------------------------------
+// Every other log line in this file is written by the present thread. When that
+// thread is blocked - which is the entire failure mode under investigation -
+// the log goes silent, and silence reads exactly like "nothing is wrong". Three
+// sessions have now been spent inferring from that silence.
+//
+// This thread reports once a second regardless of what the game is doing, and
+// carries the four facts that separate the candidate explanations:
+//
+//   presents/s     is the GAME still presenting? BS2 pauses presenting when its
+//                  window loses focus - documented in this repo's own harness
+//                  scripts - so an alt-tab freeze may be the game's own
+//                  behaviour and not the XR session at all. Nothing so far has
+//                  told these two apart.
+//   fg             is our window foreground? The above only means anything
+//                  alongside this.
+//   submitted/s    are frames reaching the headset? A live game with a frozen
+//                  headset image and a frozen game look identical from inside
+//                  the headset, and they need opposite fixes.
+//   IN <phase>     what the present thread entered and has not come back from.
+//                  This is the one the after-the-fact timers structurally
+//                  cannot report.
+HANDLE g_traceThread = nullptr;
+std::atomic<bool> g_traceRun{false};
+std::atomic<uint32_t> g_presentsAtTrace{0};
+
+bool app_is_foreground() {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    return pid == GetCurrentProcessId();
+}
+
+DWORD WINAPI trace_thread_proc(void*) {
+    uint32_t lastPresents = 0;
+    uint32_t lastSubmitted = 0;
+    uint32_t lastKeepalives = 0;
+    uint32_t lastSkips = 0;
+    while (g_traceRun.load(std::memory_order_relaxed)) {
+        Sleep(1000);
+        if (!g_traceRun.load(std::memory_order_relaxed)) break;
+        if (g_session == XR_NULL_HANDLE) continue;
+
+        uint32_t presents = g_presentsSeen.load(std::memory_order_relaxed);
+        uint32_t submitted = g_framesSubmitted;
+        uint32_t keepalives = g_detachKeepalives.load(std::memory_order_relaxed);
+        uint32_t skips = g_detachSkips.load(std::memory_order_relaxed);
+
+        // Is a call still in flight, and for how long?
+        char stuck[96] = "-";
+        int ph = g_curPhase.load(std::memory_order_relaxed);
+        if (ph >= 0 && ph < kPhCount && g_qpcFreq) {
+            int64_t t0 = g_curPhaseT0.load(std::memory_order_relaxed);
+            int64_t ms = (phase_now() - t0) * 1000 / g_qpcFreq;
+            if (ms >= 200)
+                sprintf_s(stuck, "IN %s for %lld ms", kPhaseNames[ph],
+                          static_cast<long long>(ms));
+        }
+
+        BVR_LOG("xr: TRACE %s%s detached=%d fg=%d | presents/s %u submitted/s %u | "
+                "keepalive %u ms (unpaced %u/s, ka %u/s) | lastEnd %u ms lastWait %u ms "
+                "shouldRender=%d | present thread: %s",
+                state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? "" : "/never",
+                g_detachedNow ? 1 : 0, app_is_foreground() ? 1 : 0,
+                presents - lastPresents, submitted - lastSubmitted,
+                g_paceKeepaliveMs.load(std::memory_order_relaxed), skips - lastSkips,
+                keepalives - lastKeepalives,
+                g_phaseLastUs[kPhEndFrame].load(std::memory_order_relaxed) / 1000,
+                g_lastWaitMs.load(std::memory_order_relaxed),
+                g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0, stuck);
+
+        lastPresents = presents;
+        lastSubmitted = submitted;
+        lastKeepalives = keepalives;
+        lastSkips = skips;
+    }
+    return 0;
+}
+
+void trace_thread_start() {
+    if (g_traceThread) return;
+    g_traceRun.store(true, std::memory_order_relaxed);
+    g_traceThread = CreateThread(nullptr, 0, &trace_thread_proc, nullptr, 0, nullptr);
+    if (g_traceThread)
+        BVR_LOG("xr: pace trace started - 1 Hz from its OWN thread, so it keeps "
+                "reporting while the present thread is blocked");
 }
 
 // One line per 5 s, and ONLY while unfocused with some phase over the alarm -
@@ -1111,6 +1240,7 @@ void pump_events() {
                     } else {
                         g_sessionBegun = true;
                         BVR_LOG("xr: session running - game is now paced by the headset");
+                        trace_thread_start();
                     }
                     break;
                 }
@@ -1411,7 +1541,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         uint32_t deadline = g_state == XR_SESSION_STATE_FOCUSED
                                 ? kPaceDeadlineFocusedMs
                                 : kPaceDeadlineIdleMs;
-        bool signalled = WaitForSingleObject(g_paceDone, deadline) == WAIT_OBJECT_0;
+        bool signalled;
+        {
+            PhaseMark mark(kPhWait);
+            signalled = WaitForSingleObject(g_paceDone, deadline) == WAIT_OBJECT_0;
+        }
         phase_record(kPhWait, tPhase);
         if (!signalled) {
             // The runtime has not come back yet. Give up on THIS present only -
@@ -2026,7 +2160,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
             if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_swapchains[target], &ai, &index))) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
-                bool imageReady = XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi));
+                bool imageReady;
+                {
+                    PhaseMark mark(kPhAcquire); // XR_INFINITE_DURATION lives here
+                    imageReady = XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi));
+                }
                 phase_record(kPhAcquire, tAcq);
                 if (imageReady) {
                     // Same size + same typeless family (guaranteed at creation),
@@ -2263,7 +2401,11 @@ void on_present_end(IDXGISwapChain* swapchain) {
     fei.layerCount = layerCount;
     fei.layers = layerCount ? layers : nullptr;
     int64_t tEnd = phase_now();
-    XrResult r = xrEndFrame(g_session, &fei);
+    XrResult r;
+    {
+        PhaseMark mark(kPhEndFrame); // the measured pacer - name it while in flight
+        r = xrEndFrame(g_session, &fei);
+    }
     phase_record(kPhEndFrame, tEnd);
     if (XR_FAILED(r)) {
         BVR_LOG("xr: xrEndFrame failed: %s", res_str(r));
