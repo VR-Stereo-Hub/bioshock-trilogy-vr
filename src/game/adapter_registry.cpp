@@ -3,6 +3,7 @@
 #include "core/util/log.h"
 #include "game/bioshock1r/bioshock1r_adapter.h"
 #include "game/bioshock2r/bioshock2r_adapter.h"
+#include "game/bioshockinf/bioshockinf_adapter.h"
 #include "game/igame_adapter.h"
 
 #include <windows.h>
@@ -26,6 +27,7 @@ HostGame detect_host_game() {
         const wchar_t* exe = host_exe_basename();
         if (_wcsicmp(exe, L"BioshockHD.exe") == 0) return HostGame::Bioshock1;
         if (_wcsicmp(exe, L"Bioshock2HD.exe") == 0) return HostGame::Bioshock2;
+        if (_wcsicmp(exe, L"BioShockInfinite.exe") == 0) return HostGame::Infinite;
         return HostGame::Unknown;
     }();
     return cached;
@@ -33,7 +35,14 @@ HostGame detect_host_game() {
 
 const wchar_t* host_data_subdir() {
     // BioShock 1 keeps the released flat layout; only new games get subdirs.
-    return detect_host_game() == HostGame::Bioshock2 ? L"bs2" : L"";
+    switch (detect_host_game()) {
+    case HostGame::Bioshock2:
+        return L"bs2";
+    case HostGame::Infinite:
+        return L"bsi";
+    default:
+        return L"";
+    }
 }
 
 void init_adapter() {
@@ -47,6 +56,10 @@ void init_adapter() {
     case HostGame::Bioshock2:
         instance = b2r::create_adapter();
         name = "bioshock2r";
+        break;
+    case HostGame::Infinite:
+        instance = bsi::create_adapter();
+        name = "bioshockinf";
         break;
     case HostGame::Unknown:
         break;
