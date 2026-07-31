@@ -5,27 +5,43 @@
 # reads the file.
 # Usage: .\tools\game-cmd.ps1 "memscani 123" "memlist"
 #        .\tools\game-cmd.ps1 -Game bs2 "recenter"
+#        .\tools\game-cmd.ps1 -Game bsi "recenter"
 # PositionalBinding=$false so -Game can never swallow a command: as a positional
 # parameter it did, and every bare `game-cmd.ps1 "vrinput on"` call failed
 # validation, which silently broke boot.ps1's menu-press loop.
 [CmdletBinding(PositionalBinding=$false)]
 param(
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1",
+    [switch]$Force,
     [Parameter(ValueFromRemainingArguments=$true)][string[]]$Lines
 )
+# One game owns the headset at a time (see tools\lib\assert-no-conflict.ps1).
+if ($Game -eq "bsi") {
+    . (Join-Path $PSScriptRoot "lib\assert-no-conflict.ps1")
+    Assert-NoConflictingGame -Game $Game -Force:$Force
+}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class Cmd { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
 '@
-if ($Game -eq "bs2") { $procName = "Bioshock2HD" } else { $procName = "BioshockHD" }
+switch ($Game) {
+    "bs2" { $procName = "Bioshock2HD" }
+    "bsi" { $procName = "BioShockInfinite" }
+    default { $procName = "BioshockHD" }
+}
 $p = Get-Process $procName -ErrorAction SilentlyContinue
 if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
     [Cmd]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
     Start-Sleep -Milliseconds 400
 }
-if ($Game -eq "bs2") { $cmd = "$env:LOCALAPPDATA\BioshockVR\bs2\command.txt" }
-else { $cmd = "$env:LOCALAPPDATA\BioshockVR\command.txt" }
+switch ($Game) {
+    "bs2" { $cmd = "$env:LOCALAPPDATA\BioshockVR\bs2\command.txt" }
+    "bsi" { $cmd = "$env:LOCALAPPDATA\BioshockVR\bsi\command.txt" }
+    default { $cmd = "$env:LOCALAPPDATA\BioshockVR\command.txt" }
+}
+$cmdDir = Split-Path -Parent $cmd
+if (-not (Test-Path $cmdDir)) { New-Item -ItemType Directory -Force $cmdDir | Out-Null }
 $text = ($Lines -join "`n")
 for ($i = 0; $i -lt 30; $i++) {
     try {

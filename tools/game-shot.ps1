@@ -1,11 +1,17 @@
 # Capture the BioshockHD window itself to a PNG (PrintWindow + PW_RENDERFULLCONTENT,
 # which grabs D3D content on Win10/11) - not the whole desktop. Foregrounds the window
 # first and waits, because the game pauses presenting while unfocused.
-# Usage: .\tools\game-shot.ps1 -Out C:\path\shot.png [-Game bs2]
+# Usage: .\tools\game-shot.ps1 -Out C:\path\shot.png [-Game bs2|bsi]
 param(
     [Parameter(Mandatory=$true)][string]$Out,
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1"
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1",
+    [switch]$Force
 )
+# One game owns the headset at a time (see tools\lib\assert-no-conflict.ps1).
+if ($Game -eq "bsi") {
+    . (Join-Path $PSScriptRoot "lib\assert-no-conflict.ps1")
+    Assert-NoConflictingGame -Game $Game -Force:$Force
+}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -17,7 +23,11 @@ public static class W {
 }
 '@
 Add-Type -AssemblyName System.Drawing
-if ($Game -eq "bs2") { $procName = "Bioshock2HD" } else { $procName = "BioshockHD" }
+switch ($Game) {
+    "bs2" { $procName = "Bioshock2HD" }
+    "bsi" { $procName = "BioShockInfinite" }
+    default { $procName = "BioshockHD" }
+}
 $p = Get-Process $procName -ErrorAction Stop
 $h = $p.MainWindowHandle
 if ($h -eq [IntPtr]::Zero) { throw "no main window" }
