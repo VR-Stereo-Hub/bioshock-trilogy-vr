@@ -353,24 +353,51 @@ constexpr uint32_t kPaceDeadlineIdleMs = 20;
 // means the headset image holds still during the seconds the desktop has focus,
 // which is the alt-tab-to-type case this exists to fix.
 //
+// WHICH CALL BLOCKS - MEASURED, not inferred (session 34, and the whole reason
+// the phase timers went in first). At the FOCUSED -> VISIBLE transition:
+//
+//   presentBegin=152417 presentEnd=101853 wait=10782 beginFrame=29 locate=15
+//   acquire=11 capture=4 endFrame=101847 composite=47      (max us)
+//
+// **xrEndFrame is the pacer at 101.8 ms** - one not-visible period, matching
+// the 10 Hz and `call2Us 99765` exactly. NOT the frame handoff, which session
+// 33 named and which maxes at 10.8 ms; not xrWaitSwapchainImage at 11 us.
+//
+// WHY THE FRAME LOOP IS NOT MOVED OFF THE PRESENT THREAD - a dead end, recorded
+// so nobody re-walks it. The first cut of this fix had the pace thread run the
+// whole loop (wait/begin/end, zero layers) while unfocused. It works, and the
+// log shows it handing over and back cleanly - but it CRASHED the game nine
+// milliseconds into the second detach: a write to NULL inside game code, then a
+// chained handler retrying the faulting instruction 86000 times. The reason is
+// structural: xrEndFrame touches the D3D11 device, the present thread keeps
+// running composite_hud/mirror_present on the same IMMEDIATE CONTEXT, and a
+// D3D11 immediate context is not thread-safe. Session 28 got away with moving
+// xrWaitFrame off-thread precisely because that call touches no D3D. Doing this
+// properly needs the XR session on its own device with shared textures, which
+// is a bigger change than a pacing fix should carry.
+//
+// WHAT SHIPS INSTEAD: the frame loop stays on the present thread, and while the
+// session is not FOCUSED it runs at most once per kPaceKeepaliveMs. The game
+// still eats one ~100 ms xrEndFrame per keepalive, but between them it runs
+// free, so the cost falls from "every frame" to "one frame per interval" - at
+// the 1 s default that is roughly 90% of full rate instead of 10%. Submission
+// continues, so session 28's requirement (a runtime will not re-grant FOCUSED
+// to an app that submits nothing) is still met.
+//
 // DEFAULT OFF IN CORE, ON PER GAME. BioShock 1 is the headset-accepted baseline
 // and the project rule is that a core change must not move a BS1 path; the BS2
 // adapter opts in via set_pace_detach(), BS1 keeps byte-identical behaviour and
 // can opt in later on its own test. `vrpace detach on|off` is the live A/B, and
 // proving causation with it is part of the acceptance.
 std::atomic<bool> g_paceDetach{false};
-std::atomic<bool> g_paceSelfDriveWanted{false}; // request: pace thread, take it
-std::atomic<bool> g_paceSelfDriving{false};     // ack: pace thread has it
-HANDLE g_paceIdle = nullptr; // manual-reset, SET while the pace thread is NOT self-driving
-bool g_detachedNow = false;  // present thread only
-std::atomic<uint32_t> g_detachFrames{0}, g_detachEpisodes{0};
-// Guards the OWNERSHIP TRANSITION only - never held in the frame loop itself.
-// Without it there is a real use-after-free: between the pace thread reading
-// `wanted` and announcing `selfDriving`, teardown would see selfDriving=false
-// and g_paceIdle still signalled, destroy the session, and leave the pace
-// thread entering its loop on a dead handle. That is precisely the crash class
-// session 28 documented, so it does not get to come back through the new door.
-std::mutex g_paceOwnerMutex;
+// While unfocused, run the frame loop at most this often. The whole cost of an
+// unfocused session is now one blocking xrEndFrame per interval instead of one
+// per present. Tunable live (`vrpace keepalive <ms>`) because the right value
+// is a judgement about hitch-versus-recovery that only the headset can settle.
+std::atomic<uint32_t> g_paceKeepaliveMs{1000};
+uint64_t g_lastKeepaliveMs = 0; // present thread only
+bool g_detachedNow = false;     // present thread only
+std::atomic<uint32_t> g_detachSkips{0}, g_detachKeepalives{0}, g_detachEpisodes{0};
 
 // ---- Session 34: present-path PHASE TIMING ---------------------------------
 // Session 33 concluded that the frame HANDOFF paces the game thread. Its own
@@ -516,90 +543,10 @@ const char* state_str(XrSessionState s) {
 // The pace thread body: park, wait a frame, publish, signal. The ONLY place
 // xrWaitFrame is called once g_paceOffThread is on. It may block forever without
 // consequence - nothing else runs on this thread.
-// The pace thread OWNS the whole frame loop for as long as this runs, and the
-// present thread is out of it entirely (see the detached-pacing block above).
-// Returns when the present thread asks for the loop back, the session dies, or
-// the runtime errors. Any frame still open is closed before yielding, because
-// the present thread must never inherit one it did not begin.
-// Ownership is taken under g_paceOwnerMutex by the caller; this runs outside it.
-void pace_self_drive() {
-    g_detachEpisodes.fetch_add(1, std::memory_order_relaxed);
-    uint32_t frames0 = g_detachFrames.load(std::memory_order_relaxed);
-    BVR_LOG("xr: DETACHED - the pace thread took the frame loop (session %s). The "
-            "game thread is no longer paced by the runtime; frames keep being "
-            "submitted so FOCUSED can be re-granted.",
-            state_str(g_state));
-
-    bool frameOpen = false;
-    XrTime lastDisplayTime = 0;
-    while (g_paceRun.load(std::memory_order_relaxed) &&
-           g_paceSelfDriveWanted.load(std::memory_order_acquire)) {
-        XrSession s = g_session; // teardown cannot run while g_paceSelfDriving
-        if (s == XR_NULL_HANDLE) break;
-        XrFrameState fs{XR_TYPE_FRAME_STATE};
-        XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
-        uint64_t t0 = GetTickCount64();
-        XrResult r = xrWaitFrame(s, &fwi, &fs);
-        g_lastWaitMs.store(static_cast<uint32_t>(GetTickCount64() - t0),
-                           std::memory_order_relaxed);
-        if (XR_FAILED(r)) break;
-        lastDisplayTime = fs.predictedDisplayTime;
-        g_lastShouldRender.store(fs.shouldRender != XR_FALSE, std::memory_order_relaxed);
-
-        XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
-        if (XR_FAILED(xrBeginFrame(s, &fbi))) break;
-        frameOpen = true;
-
-        XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
-        fei.displayTime = lastDisplayTime;
-        fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-        fei.layerCount = 0;
-        fei.layers = nullptr;
-        if (XR_FAILED(xrEndFrame(s, &fei))) break;
-        frameOpen = false;
-        g_detachFrames.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    if (frameOpen && g_session != XR_NULL_HANDLE) {
-        XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
-        fei.displayTime = lastDisplayTime;
-        fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-        xrEndFrame(g_session, &fei);
-    }
-    {
-        // Releasing ownership takes the same lock as taking it, so teardown
-        // never observes a half-finished transition in either direction.
-        std::lock_guard<std::mutex> lock(g_paceOwnerMutex);
-        g_paceSelfDriving.store(false, std::memory_order_release);
-        SetEvent(g_paceIdle); // teardown and the handover both key on this
-    }
-    BVR_LOG("xr: detached episode ended after %u frames (session %s)",
-            g_detachFrames.load(std::memory_order_relaxed) - frames0, state_str(g_state));
-}
-
 DWORD WINAPI pace_thread_proc(void*) {
     while (g_paceRun.load(std::memory_order_relaxed)) {
         if (WaitForSingleObject(g_paceReq, INFINITE) != WAIT_OBJECT_0) break;
         if (!g_paceRun.load(std::memory_order_relaxed)) break;
-        // The mode switch happens HERE, at the thread's own park point, so a
-        // handoff in flight is always completed rather than stranded and no
-        // stale g_paceDone can leak across the boundary. Taking ownership is
-        // done under the lock together with announcing it, so teardown cannot
-        // slip a xrDestroySession between the two.
-        bool took = false;
-        {
-            std::lock_guard<std::mutex> lock(g_paceOwnerMutex);
-            if (g_paceSelfDriveWanted.load(std::memory_order_acquire) &&
-                g_session != XR_NULL_HANDLE) {
-                g_paceSelfDriving.store(true, std::memory_order_release);
-                ResetEvent(g_paceIdle);
-                took = true;
-            }
-        }
-        if (took) {
-            pace_self_drive();
-            continue;
-        }
         XrSession s = g_session; // a request is only posted with a live session
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         XrResult r = XR_ERROR_SESSION_LOST;
@@ -630,11 +577,7 @@ bool pace_thread_start() {
     if (g_paceThread) return true;
     if (!g_paceReq) g_paceReq = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!g_paceDone) g_paceDone = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    // Manual-reset and STARTS SIGNALLED: "the pace thread is not self-driving"
-    // is the initial truth, and teardown must not block on a state that never
-    // began.
-    if (!g_paceIdle) g_paceIdle = CreateEventW(nullptr, TRUE, TRUE, nullptr);
-    if (!g_paceReq || !g_paceDone || !g_paceIdle) return false;
+    if (!g_paceReq || !g_paceDone) return false;
     g_paceRun.store(true, std::memory_order_relaxed);
     g_paceThread = CreateThread(nullptr, 0, &pace_thread_proc, nullptr, 0, nullptr);
     if (!g_paceThread) {
@@ -878,31 +821,6 @@ void composite_hud(IDXGISwapChain* swapchain) {
 }
 
 void teardown_session(const char* why) {
-    // SESSION 34: the pace thread may OWN the frame loop (detached pacing), in
-    // which case it is inside xrWaitFrame/xrBeginFrame/xrEndFrame on this
-    // session continuously. Same use-after-free hazard as the outstanding wait
-    // below, and the same answer: ask for the loop back, give it a bounded
-    // chance, and defer rather than destroy a session the runtime is inside.
-    bool paceOwnsLoop = false;
-    {
-        // Under the lock: revoke the request AND read whether it was already
-        // taken. Either we win (the pace thread never enters) or it won (and
-        // g_paceIdle is already reset, so the wait below is real).
-        std::lock_guard<std::mutex> lock(g_paceOwnerMutex);
-        g_paceSelfDriveWanted.store(false, std::memory_order_release);
-        paceOwnsLoop = g_paceSelfDriving.load(std::memory_order_acquire);
-    }
-    if (paceOwnsLoop) {
-        if (g_paceIdle && WaitForSingleObject(g_paceIdle, 200) != WAIT_OBJECT_0) {
-            if (g_teardownPending != why)
-                BVR_LOG("xr: teardown (%s) DEFERRED - the pace thread still owns the "
-                        "frame loop; retrying each present rather than destroying a "
-                        "session the runtime is still inside",
-                        why);
-            g_teardownPending = why;
-            return;
-        }
-    }
     g_detachedNow = false;
 
     // SESSION 28: never call xrDestroySession while the pace thread is parked
@@ -1372,41 +1290,46 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // this thread returns immediately (so the game keeps its frame rate).
     // pump_events above stays here and is non-blocking, which is what lets the
     // return to FOCUSED be seen at all.
-    if (g_paceDetach.load(std::memory_order_relaxed) &&
-        g_paceOffThread.load(std::memory_order_relaxed)) {
+    if (g_paceDetach.load(std::memory_order_relaxed)) {
         if (g_state != XR_SESSION_STATE_FOCUSED) {
-            if (!g_detachedNow && pace_thread_start()) {
-                // Close what this thread still owns WHILE it still owns it - the
-                // pace thread must never inherit a frame it did not begin.
+            uint64_t now = GetTickCount64();
+            uint32_t every = g_paceKeepaliveMs.load(std::memory_order_relaxed);
+            if (!g_detachedNow) {
+                g_detachedNow = true;
+                g_lastKeepaliveMs = now; // the transition itself counts as one
+                g_detachEpisodes.fetch_add(1, std::memory_order_relaxed);
+                BVR_LOG("xr: DETACHED (session %s) - the frame loop now runs at most "
+                        "once per %u ms, so the runtime's not-visible cadence costs "
+                        "the game one blocking xrEndFrame per interval instead of "
+                        "one per present",
+                        state_str(g_state), every);
+            }
+            if (now - g_lastKeepaliveMs < every) {
+                // The ordinary case: no OpenXR call at all this present, so
+                // nothing the runtime does can reach the game thread. A frame
+                // must never be left open across this return.
                 if (g_frameOpen) {
-                    XrFrameEndInfo handover{XR_TYPE_FRAME_END_INFO};
-                    handover.displayTime = g_frameState.predictedDisplayTime;
-                    handover.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-                    xrEndFrame(g_session, &handover);
+                    XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+                    idle.displayTime = g_frameState.predictedDisplayTime;
+                    idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+                    xrEndFrame(g_session, &idle);
                     g_frameOpen = false;
                 }
                 g_srPairOpen = false;
-                g_paceOutstanding = false; // present-thread bookkeeping only
-                g_detachedNow = true;
-                g_paceSelfDriveWanted.store(true, std::memory_order_release);
-                SetEvent(g_paceReq); // wake it out of its park into self-drive
+                g_detachSkips.fetch_add(1, std::memory_order_relaxed);
+                return;
             }
-            if (g_detachedNow) return;
+            // Keepalive present: fall through and run ONE full frame loop, so
+            // the app keeps submitting and the runtime can re-grant FOCUSED.
+            // Session 28's requirement, at 1/1000th of its old cost.
+            g_lastKeepaliveMs = now;
+            g_detachKeepalives.fetch_add(1, std::memory_order_relaxed);
         } else if (g_detachedNow) {
-            // FOCUSED again: ask for the loop back, but NEVER block waiting for
-            // it. Until the pace thread is out of the runtime we simply skip -
-            // one more unpaced present costs nothing, a wait here would be the
-            // bug all over again.
-            g_paceSelfDriveWanted.store(false, std::memory_order_release);
-            if (g_paceSelfDriving.load(std::memory_order_acquire)) return;
-            // Drain any handoff signal left over from before the switch so
-            // wait:begin stays 1:1 on the way back in.
-            while (WaitForSingleObject(g_paceDone, 0) == WAIT_OBJECT_0) {
-            }
             g_detachedNow = false;
-            BVR_LOG("xr: ATTACHED - the present thread has the frame loop back "
-                    "(session FOCUSED after %u detached frames)",
-                    g_detachFrames.load(std::memory_order_relaxed));
+            BVR_LOG("xr: ATTACHED - session FOCUSED again, full-rate pacing resumes "
+                    "(%u presents ran unpaced, %u keepalive frames submitted)",
+                    g_detachSkips.load(std::memory_order_relaxed),
+                    g_detachKeepalives.load(std::memory_order_relaxed));
         }
     }
 
@@ -2458,12 +2381,17 @@ void draw_debug_ui() {
         if (g_detachedNow)
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
                                "DETACHED right now - the game is NOT being paced");
-        else if (!focused && detach)
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
-                               "handing the frame loop over...");
-        ImGui::Text("detached episodes %u, frames submitted while detached %u",
+        ImGui::Text("episodes %u | unpaced presents %u | keepalive frames %u",
                     g_detachEpisodes.load(std::memory_order_relaxed),
-                    g_detachFrames.load(std::memory_order_relaxed));
+                    g_detachSkips.load(std::memory_order_relaxed),
+                    g_detachKeepalives.load(std::memory_order_relaxed));
+        int ka = static_cast<int>(g_paceKeepaliveMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("Keepalive every (ms)", &ka, 250, 5000))
+            g_paceKeepaliveMs.store(static_cast<uint32_t>(ka), std::memory_order_relaxed);
+        ImGui::TextWrapped(
+            "How often the frame loop runs while unfocused. Each one costs a "
+            "single ~100 ms hitch; between them the game runs free. Too rare and "
+            "the headset may be slower to hand focus back.");
 
         // The phase table. This is the instrument that named the blocking call;
         // it stays visible because "which call owns the frame time" is the only
@@ -2757,6 +2685,15 @@ void handle_pace_command(const char* args) {
                 "reinstates the skip guard)",
                 on ? "OFF the present thread (deadline 200 ms focused / 20 ms idle)"
                    : "INLINE on the present thread");
+    } else if (strcmp(verb, "keepalive") == 0) {
+        unsigned ms = 0;
+        if (sscanf_s(rest, "%u", &ms) == 1 && ms >= 100 && ms <= 10000) {
+            g_paceKeepaliveMs.store(ms, std::memory_order_relaxed);
+            BVR_LOG("xr: unfocused keepalive every %u ms", ms);
+        } else {
+            BVR_LOG("xr: usage: vrpace keepalive <100..10000 ms>  (current %u)",
+                    g_paceKeepaliveMs.load(std::memory_order_relaxed));
+        }
     } else if (strcmp(verb, "detach") == 0) {
         bool on = strncmp(rest, "off", 3) != 0;
         g_paceDetach.store(on, std::memory_order_relaxed);
@@ -2764,10 +2701,9 @@ void handle_pace_command(const char* args) {
                 "pace thread %s. This is the session-34 A/B: with it off the game "
                 "runs at the runtime's not-visible cadence (~10 Hz measured).",
                 on ? "ON" : "off",
-                on ? "owns the whole frame loop and the present thread makes no "
-                     "blocking XR call"
-                   : "only serves handoffs, so the present thread walks the frame "
-                     "loop itself");
+                on ? "runs the frame loop at most once per keepalive interval, so "
+                     "the blocking xrEndFrame costs one hitch per interval"
+                   : "runs the frame loop every present, at the runtime's cadence");
     } else if (strcmp(verb, "simidle") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_simIdle.store(on, std::memory_order_relaxed);
@@ -2787,12 +2723,13 @@ void handle_pace_command(const char* args) {
                 g_paceHandoffs.load(std::memory_order_relaxed),
                 g_paceTimeouts.load(std::memory_order_relaxed),
                 g_simIdle.load(std::memory_order_relaxed) ? "ON" : "off");
-        BVR_LOG("xr: detach %s | detachedNow=%d selfDriving=%d | episodes %u frames %u",
+        BVR_LOG("xr: detach %s (keepalive every %u ms) | detachedNow=%d | episodes %u "
+                "| unpaced presents %u, keepalive frames %u",
                 g_paceDetach.load(std::memory_order_relaxed) ? "ON" : "off",
-                g_detachedNow ? 1 : 0,
-                g_paceSelfDriving.load(std::memory_order_relaxed) ? 1 : 0,
+                g_paceKeepaliveMs.load(std::memory_order_relaxed), g_detachedNow ? 1 : 0,
                 g_detachEpisodes.load(std::memory_order_relaxed),
-                g_detachFrames.load(std::memory_order_relaxed));
+                g_detachSkips.load(std::memory_order_relaxed),
+                g_detachKeepalives.load(std::memory_order_relaxed));
         // The phase table is the whole point of the instrument: it says WHICH
         // call owns the frame time, which is the question session 33 answered
         // by inference and got wrong.
