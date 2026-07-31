@@ -128,6 +128,19 @@ std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
 // calling relationship, and the fix was inert - removed rather than left in as
 // dead code that would look like a safeguard.
 //
+// ALSO REFUTED, by turning the freeze into something worse: bounding that
+// INFINITE wait (IAT-clamp KERNEL32!WaitForSingleObject, scoped by a
+// thread_local to exactly the re-entered call) stops the hang and the game
+// CRASHES instead - `fault at 101E1A4B` repeated 86000 times. The caller
+// ignores the wait's return value, so the timeout is not itself fatal; the
+// engine simply proceeds to use a resource that is genuinely not ready. The
+// wait cannot be shortcut, which also confirms it IS the freeze point.
+//
+// Session 26's premise is refuted too. Its comment above claims "the Draw path
+// has no submit handshake (that spin-wait belongs to the streaming manager)",
+// and that is the reason 1t was never ported to BS2. The doubled draw plainly
+// reaches a blocking cross-thread wait.
+//
 // The principled fix is to remove the cross-thread handshake from the doubled
 // draw entirely - i.e. render single-threaded while stereo is armed, which is
 // exactly what BioShock 1 does (`reentry 1t`) and why BS1 does not hang here.
