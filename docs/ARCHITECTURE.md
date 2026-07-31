@@ -906,3 +906,41 @@ runtime.
   NOT yet proven and must be settled by making it move (holster/switch the weapon and re-dump),
   never by draw counts - BS1's rule, which is in the notes because inferring it from counts is what
   went wrong there.
+
+### 2026-07-31 (session 33) - BS2 viewmodel lens, and what an instrument may be trusted to say
+
+- **The FOV LAW is per-game, like every address.** BS2's option is a 16:9-referenced horizontal
+  (`tanV = tan(opt/2)*9/16`, aspect-invariant; `tanH = tanV * bbW/bbH`); BS1's is a true
+  horizontal. Opposite conventions, same engine tree. Third instance of never-copy after the ini
+  keys and the cb0 offset - and the first where the thing copied would have been a FORMULA rather
+  than a number. Adapters publish their own law; core holds none.
+- **A lens match is written as a LIVE FOV-DEGREES EQUALITY, never a measured tangent.** The value
+  written is derived from the option read THIS frame. BS2 also animates its own FOV (73 -> 96 deg
+  during play), so anything that caches the option is wrong here regardless.
+- **`lenses == 1` is not an acceptance criterion, and a sampled instrument must say so.** The fov
+  watch sees ~12 of 400-600 constant buffers; the foreground pass is ~17 of them. Absence of a
+  second lens is the ordinary case, not evidence of a match - reading it as evidence produced six
+  false positives in a row. The header now states what the number is worth, and acceptance is a
+  frame dump, which sees every block. **Generally: an instrument that reports the SUCCESS state
+  when it fails to measure is worse than no instrument**, so where a cheap check cannot be made
+  sound, say what it is worth rather than making it look sound.
+- **Two fixes to that sampler were tried and both are recorded as dead ends in the code**: a
+  head-slot reservation (the fg pass moves between captures) and a rotating stride phase (correct,
+  and 20x the frame time - copying from a different set of dynamic buffers each interval defeats
+  the driver's fast path). Coverage was the wrong goal; honesty about coverage was the right one.
+- **A diagnostic on the present path gets a hard rate limit, not just a change test.** The
+  fov-watch log line's change test could flicker once sampling became intermittent, so it fired at
+  present rate, took the game to 40 fps and then wedged it. Change tests are policy and policies
+  get edited; the floor is the safety net.
+- **VR ENABLE/DISABLE MUST BE SYMMETRIC.** `vrcam on` enabled VR, `vrcam off` only cleared the
+  camera mode - so once an OpenXR session was running, nothing in the command surface could stop
+  the game being paced by it. With the session not FOCUSED the runtime paces its not-visible
+  cadence (~10 Hz) and the game inherits it, which reads as a hang. Every toggle that starts a
+  subsystem must be able to stop it.
+- **"Not blocked" is not "not harmed" (correction to session 28).** Moving xrWaitFrame off the
+  present thread stopped an unbounded wait from wedging the game, and that holds. It did not stop
+  the frame HANDOFF from pacing the game thread to the runtime's cadence. Open.
+- **Anything the user must judge by eye belongs in the F10 overlay, not in a seam command.** The
+  overlay renders into the backbuffer, which IS the eye image. Driving an in-headset A/B by typing
+  requires alt-tab, and alt-tab is the pacing bug - so command-driven headset testing is both
+  slower and actively destabilising. Build the control before asking for the test.

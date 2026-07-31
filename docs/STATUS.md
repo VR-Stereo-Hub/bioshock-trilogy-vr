@@ -1,8 +1,157 @@
-﻿# Project status
+# Project status
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-07-31, session 32 - BS2: RESOLUTION LANE SHIPS, AND BS1'S SQUARE-BACKBUFFER POLICY IS DEAD ON BS2 - branch s32-b2r-resolution-and-lens)
+## Current state (2026-07-31, session 33 - BS2: THE VIEWMODEL LENS IS FIXED AND ACCEPTED; VR PACING IS THE NEW BLOCKER - merged to main)
+
+User priority 2 is DONE. Priority 1's aspect question is answered on paper. And a bug that makes
+the game **unplayable in VR** was characterised, partly fixed, and is now the top of the queue.
+
+### 0. THE FIX: BS2's foreground lens is `PlayerController + 0x694`
+
+A float in DEGREES. BS1's is +0x460 - same engine family, same 75/60 shape, different link.
+**Shipped DEFAULT ON**, with an F10 overlay checkbox as the A/B.
+
+**In-headset verdict (user, same day): _"I tested the match viewmodel lens to the world and it
+worked, the weapon was not moving anymore."_**
+
+Flat acceptance, all from full frame dumps: ONE cluster at every option value (100 -> tanH 1.1918,
+130 -> 2.1445, 80 -> 0.8391), TWO the moment it is disarmed, 60.0 restored exactly. Tracking the
+option at every value is the property a baked constant could not have.
+
+The derivation method is the transferable part: sweep the live PC and pawn for 60.0 floats, then
+**poke each candidate to a DIFFERENT distinctive FOV and take ONE dump** - the fg cluster lands on
+the value only one of them could have produced. One capture, no bisection, and immune to the
+"did it merge or did we stop sampling it" ambiguity that produced six false positives first.
+
+**`+0x690` is the WORLD lens - do not write it.** It looks exactly like BS1's fovA next to fovB and
+it is not.
+
+### 0b. THE NEW OPEN ITEM the user wants next: the rig eats the view
+
+With the lens matched, the Big Daddy helmet takes much more of the screen and there are black bars
+at the bottom. The user wants the visible image to fill the whole FOV. This is a DIFFERENT defect
+from the swimming: the fg rig's apparent SIZE is coupled to the FOV value, not only to its lens -
+widening the lens also moves the foreground eye, so the rig grows. Leads in Next steps.
+
+### 1. THE BLOCKER: the game is paced by a headset that is not presenting
+
+**Not a hang, not stereo, not the fov watch.** Measured flat with no headset:
+
+```
+xr: pace guard ON | wait off-thread | session SYNCHRONIZED everFocused=0
+    | skips 0 lastWait 0 ms | handoffs 12747 timeouts 0
+```
+
+Nothing is blocked. The mod opens an OpenXR session whenever a runtime is present and the game is
+then "paced by the headset". Not FOCUSED -> the runtime paces its not-visible cadence, about
+**10 Hz** -> `draws/s 10`, `call2Us 99765` for the doubled stereo draw against session 26's
+4.5-5.0 ms. In a headset that reads as a freeze. **Alt-tab reproduces it** (user-confirmed):
+alt-tab drops the session out of FOCUSED. The user's words: *"the game is unplayable."*
+
+Fixed here: **`vrcam off` now disables VR** (it only cleared the camera mode before, so nothing
+could stop the pacing once a session ran), and the heartbeat carries `xr=<state>/neverFocused`.
+
+NOT fixed, and it is priority 1 next session - see Next steps.
+
+### 2. The world FOV law is SETTLED, and it is the OPPOSITE of BS1's
+
+`tanV = tan(option/2) * 9/16` (aspect-INVARIANT), `tanH = tanV * bbW/bbH`. Verified at two aspects
+x two FOV options entirely from dumps already on disk - no relaunch spent. BS1's law is the true
+horizontal. The FOV LAW is now a third never-copy instance after the ini keys and the cb0 offset.
+b2r's OpenXR claim uses the law rather than the raw option: identical at 16:9, correct elsewhere.
+
+### 3. Session 32's "the projection degenerates off 16:9" is RETRACTED - it was a decoder bug
+
+The ray block's vertical SLOPE carries a letterbox factor (RTheight/viewportHeight) that the
+offset term does not; reading the pair as an equality rejected every letterboxed block. The ratio
+was 1.4413 = 2048/1421 exactly in every block of both square dumps. Consequences: `-ScanLayout`
+now finds offset 16 on the square dump (session 32 got nothing and read it as "a different layout
+shape"), the live watch was blind at every aspect but 16:9, and the real non-16:9 defect is
+**anamorphic** - the frustum takes the backbuffer aspect while the scene renders letterboxed.
+
+Also retracted: `0xAECACF` is NOT the foreground's callstack signature. It and the world's
+`0xAEC7B4` are two call sites of the same draw dispatch; 62 draws carry it against the fg's 19.
+
+### 4. `lenses == 1` is not an acceptance criterion, and now says so
+
+The fov watch samples ~12 of 400-600 buffers; the fg pass is ~17. Absence is the ordinary case.
+Two attempts to fix the coverage are recorded as dead ends IN THE CODE: a head-slot reservation
+(the fg pass moves between captures) and a rotating stride phase (correct, and 20x the frame time).
+Acceptance is `dumpframe` + `decode-framedump.ps1`. `vrhud fovwatch off` disables the watch.
+
+### 5. Tooling and harness
+
+New: `tools/disasm-rva.py` (capstone; the one-liner three sessions retyped), `tools/game-batch.ps1`
+(command sequences, no screenshots, `-NoFocus` for headset sessions), `tools/launch-game.ps1`
+(refuses to launch over another BioShock, clears stale command.txt). `vrpreset` ported to BS2 - it
+had NO persistence at all, so no in-headset verdict could be re-checked against the same numbers.
+`vrpace`, `vrmirror`, `vrhud` dispatched on BS2 for the first time (same class as session 32's
+`vrinput` gap). **F10 overlay: a "VIEWMODEL LENS" section with the toggle, a manual FOV slider, a
+live readout and a save button** - anything judged by eye now lives there, because typing means
+alt-tab and alt-tab is the pacing bug.
+
+Harness lessons, all field-hit: a `game-shot` loop wedges BS2 under stereo (PrintWindow forces a
+re-render); `Process.Responding` is not liveness in VR (the window pump is starved - it refused a
+whole A/B on a healthy run); a guard that only prints is not a guard (the Infinite check reported
+Infinite was running and launched anyway).
+
+## Next steps
+
+### 1. THE PACING BUG (top priority - the game is unplayable in VR without it)
+
+A session that is running but not FOCUSED must not pace the game. Session 28 deliberately stopped
+SKIPPING frames while unfocused - skipping made the alt-tab freeze permanent, because a runtime
+will not re-grant FOCUSED to an app that submits nothing - and moved the wait off the present
+thread so a block could not wedge the game. **That reasoning holds and must not be undone.** What
+it missed: it treated "not blocked" as "not harmed", and the frame HANDOFF still paces the game
+thread to the runtime's cadence.
+
+The shape of the fix is therefore "keep submitting, stop WAITING": the game thread should never
+block on the pace handoff while the session is not FOCUSED, even though the pace thread keeps
+feeding the runtime so FOCUSED can be re-granted. Start at `pace_should_skip` and the handoff in
+`src/core/vr/openxr_runtime.cpp` (`g_paceOffThread`, `handoffs`, `pace_thread_start`).
+
+Acceptance: alt-tab away from a running VR session and back; the game must keep its frame rate
+throughout (heartbeat `calls/s` unchanged, `xr=` shows the state change), and FOCUSED must return
+by itself. Reproduces flat with a runtime present and no headset - `xr=SYNCHRONIZED/neverFocused`
+in the heartbeat is the tell, and it is a 30-second check.
+
+### 2. THE RIG EATS THE VIEW (the user's next felt problem)
+
+"The helmet takes a lot of the screen and there are black bars at the bottom. I want the visual
+space to be the whole screen/FOV."
+
+Two separate things, do not conflate them:
+
+- **Rig size.** The fg rig's apparent size is coupled to the FOV value, not only to its lens: at
+  fg 60 the helmet is off-screen, at fg 100 it fills the view, while the world lens is unchanged
+  in both. So the foreground EYE moves with the fov (BS1 measured the same coupling and called it
+  the zoom-pull). Find what the fg view's eye offset is derived from - the pawn/PC floats near
+  +0x694 are the obvious sweep, and `dumpframe` + the fg cluster's transform rows measure it
+  directly. The manual slider (`fgfov <deg>` / the overlay) is the calibration lane: ask the user
+  for the value where the helmet looks right, and see whether it is a constant or aspect-dependent.
+- **Black bars at the bottom.** Check `[hud] letterbox ON (engine cinematic bars)` in the log
+  first - that classifier fires on BS2 and there is a `vrcine bars hide|show` lever (BS1 uses it).
+  If it is not that, it is the engine's own letterbox: BS2 renders 2048x2048 as 2048x1421, and at
+  16:9 the viewport should fill - so bars at 16:9 are a different mechanism and want a `vp=`
+  reading from a dump plus a screenshot with `-Bands`.
+
+### 3. Owed, cheap, unchanged
+
+- **Pitch servo sign** in-headset (`enginePitch=` must MOVE while looking up/down; `vrinput
+  pitchservo invert`). Blocked only by the pacing bug making headset time expensive.
+- **Aspect ladder, 2 rungs** (user's call). The world law no longer needs it; its remaining value
+  is finding a squarer usable resolution. Each rung is a relaunch + a save load.
+- **Re-judge world scale and IPD** now the lenses match - both are overlay sliders, so no typing.
+  Worldscale 100 was accepted in session 26, which predates knowing the lens was wrong.
+
+### 4. Do NOT do yet
+
+No per-hand or per-weapon trims until item 2 is settled - a trim fitted against a rig whose size is
+still moving is not portable. Same mistake BS1 made.
+
+## Previous state (2026-07-31, session 32 - BS2: RESOLUTION LANE SHIPS, AND BS1'S SQUARE-BACKBUFFER POLICY IS DEAD ON BS2 - branch s32-b2r-resolution-and-lens)
 
 All BS2 work. **Three BS1 assumptions died**, each caught by an acceptance test rather than by
 reading code, and the second one changes the plan for BS2's VR configuration.
@@ -4057,6 +4206,42 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 33 - 2026-07-31 - BS2 viewmodel lens DONE and accepted; the VR pacing bug found
+
+Branch `s33-b2r-viewmodel-lens-match`, merged to main on the user's go-ahead after their
+in-headset test.
+
+**The result:** BS2's foreground lens is `PlayerController + 0x694` (float, degrees). Writing the
+live world FOV into it every CalcView collapses the two lenses. User: *"I tested the match
+viewmodel lens to the world and it worked, the weapon was not moving anymore."* Default ON.
+
+**The method worth keeping:** poke each candidate field to a DIFFERENT distinctive FOV and take ONE
+dump - the foreground cluster lands on the value only one candidate could have produced. That
+replaced a one-at-a-time sweep which had reported six false positives in a row, because a lens
+COUNT cannot distinguish "the cluster merged" from "the sampler missed it" while a lens VALUE can.
+
+**Answered for free, from dumps already on disk:** the world FOV law is 16:9-referenced
+(`tanV = tan(opt/2)*9/16`, aspect-invariant) - the OPPOSITE of BS1's - verified at two aspects x
+two options with no relaunch spent. Session 32's "the projection degenerates off 16:9" is
+retracted: the ray block's vertical slope carries a letterbox factor, and reading the pair as an
+equality rejected every letterboxed block. So is "`0xAECACF` separates the two lenses".
+
+**The new blocker:** the game is paced by an OpenXR session that is not FOCUSED, at the runtime's
+not-visible cadence (~10 Hz). Not a hang - `lastWait 0 ms, timeouts 0`. Alt-tab reproduces it.
+`vrcam off` could not undo it because only `on` called `set_enabled` - fixed. The rest is next
+session's priority 1.
+
+**Three of my own hypotheses died, all by measurement:** the fov watch (bisected out with a new
+`vrhud fovwatch off`), alt-tab-as-root-cause (the user pushed back and was right; it is a
+SYMPTOM of the pacing bug), and two attempts to make the live lens counter reliable - a head-slot
+reservation (the fg pass moves) and a rotating stride phase (20x the frame time). Both dead ends
+are written into the sampling site so they are not rediscovered.
+
+**Tooling:** `disasm-rva.py`, `game-batch.ps1`, `launch-game.ps1`, `vrpreset` on BS2, `vrpace` /
+`vrmirror` / `vrhud` dispatched for the first time, and an **F10 overlay section for the lens
+test** - because typing a command in a headset means alt-tabbing, and alt-tab is the pacing bug.
+
 
 ### Session 32 - 2026-07-31 - BS2 resolution lane + the lens verdict; three BS1 assumptions died
 

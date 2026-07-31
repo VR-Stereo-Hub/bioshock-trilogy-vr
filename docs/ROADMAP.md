@@ -736,18 +736,31 @@ kill. Both prerequisites below are now MET.):**
       (2) BS2 carries TWO lenses that differ AT 16:9 (world tracks the FOV option, a second is
       fixed at 60 deg), a 2.06x gain error at option 100 rising to 3.99x at 130 - the leading
       explanation for the stereo viewmodel report.
-- [ ] **BS2 aspect bisection** - find the squarest aspect BS2 renders full-height with a consistent
-      frustum. That is BS2's best VR configuration AND the clean second aspect needed to settle its
-      world FOV law (the two candidate laws coincide at 16:9).
+- [ ] **BS2 aspect bisection** - find the squarest aspect BS2 renders full-height. The FOV-law half
+      of this is DONE (session 33 settled it from dumps already on disk: BS2's option is a
+      16:9-referenced horizontal, the OPPOSITE of BS1's, verified at two aspects x two options).
+      What is left is purely "which aspect is usable", 2 rungs, each a relaunch + a save load.
 - [x] **Identify BS2's 60-deg lens** - DONE session 32 by two in-headset FOV A/Bs rather than a
       dump: the defect worsens at option 130 and VANISHES at option 60, exactly as
       `k = tan(option/2)/tan(30)` predicts. It is the viewmodel. Session 25's "foreground follows
       the world FOV natively" is retracted; BS2 has a fixed fg lens like BS1.
-- [ ] **BS2 viewmodel lens match (USER PRIORITY 2)** - find BS2's foreground FOV field and write
-      the world's value into it, so the world stays wide AND the weapon is correct. Leads: the fg
-      callstack frame `0xAECACF` (vs the world's `0xAEC7B4`), the round 60.0 value, b2r's existing
-      memscan set, and a native BS2 route checked first. Acceptance: `lenses=1` at 16:9 and a
-      stable weapon at option 100+.
+- [x] **BS2 viewmodel lens match (USER PRIORITY 2)** - DONE session 33 and ACCEPTED IN-HEADSET
+      (*"it worked, the weapon was not moving anymore"*). The field is `PlayerController + 0x694`,
+      a float in DEGREES; the live world FOV is written into it every CalcView. Shipped default ON
+      with an F10 overlay toggle. Acceptance came from full frame dumps - ONE cluster at option
+      100/130/80 and TWO when disarmed - because `lenses=1` turned out not to be proof of
+      anything. The `0xAECACF` lead was wrong (two call sites of the same draw dispatch);
+      `+0x690` is the WORLD lens and must not be written.
+- [ ] **BS2: the rig eats the view (USER PRIORITY, next)** - with the lens matched the Big Daddy
+      helmet takes much more of the screen and there are black bars at the bottom; the user wants
+      the image to fill the whole FOV. The rig's apparent SIZE is coupled to the FOV value, not
+      only to its lens, so this is a separate defect from the swimming. Bars: check the gameswf
+      letterbox classifier first (`vrcine bars`).
+- [ ] **VR PACING (BLOCKER - the game is unplayable in VR)** - an OpenXR session that is running
+      but not FOCUSED paces the game at the runtime's not-visible cadence (~10 Hz). Alt-tab
+      reproduces it. Not a block (`lastWait 0 ms`); the frame HANDOFF is what paces. Session 28's
+      "keep submitting while unfocused" must be preserved - the fix is to stop WAITING, not to
+      stop submitting.
 - [ ] **BS2 pitch-servo sign check in-headset** - the one thing flat cannot answer about the
       session-32 fix.
 - [ ] **BS2 swing-to-attack** - one `swing::publish_gate` line plus the melee-equipped predicate

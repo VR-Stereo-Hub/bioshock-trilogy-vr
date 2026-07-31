@@ -164,7 +164,14 @@ int32_t g_savedGameFov = 0;
 // from the option READ THIS FRAME. A tangent measured at one aspect or one
 // option is exactly the constant that stopped porting on BS1.
 std::atomic<uintptr_t> g_fgFovAddr{0};   // nominated candidate field
-std::atomic<bool> g_fgFovMatch{false};   // default OFF until in-headset accepted
+// DEFAULT ON since 2026-07-31: accepted in-headset, user's words - "I tested
+// the match viewmodel lens to the world and it worked, the weapon was not
+// moving anymore". The lever stays, and the overlay checkbox is the A/B.
+// OPEN, and tracked separately: with the lens matched the first-person rig
+// (the Big Daddy helmet) takes much more of the view. That is the fg rig's
+// apparent size being coupled to this FOV value, not to its lens alone - a
+// distinct defect from the swimming this fixes.
+std::atomic<bool> g_fgFovMatch{true};
 std::atomic<float> g_fgFovManual{0.0f};  // >0 = write this instead of the option
 float g_fgFovSaved = 0.0f;
 bool g_wasWritingFgFov = false;
