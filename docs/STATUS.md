@@ -2,7 +2,82 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-01, session 34 - A SIMULATED QUEST 3: agents can test VR without the user - branch `s34-xrsim-simulated-headset`)
+## Current state (2026-08-01, session 35 - PAUSED MID-SESSION - branch `s35-b2r-reentry-freeze` off `bioshock-2`)
+
+**The BS2 stereo freeze has a verified root cause. The fix is identified and not yet written.**
+Two commits are pushed; nothing is half-applied in the working tree; the build is clean.
+
+### THE FINDING (verified against the shipped exe with `tools/disasm-rva.py`, not inferred)
+
+`UGameEngine::Draw`'s tail makes exactly one call to a **render flush point at RVA `0x69FC30`** - a
+structural twin of BS1's `0x61D260`, veto for veto. Its threaded branch is the
+`WaitForSingleObject(INFINITE)` session 34's watchdog caught. `maybe_second_draw` runs the whole Draw
+a second time per tick, so that handshake runs twice per tick, and the second one's
+flag-test-then-wait races the render worker's completion signal.
+
+| role | BS1 (shipped) | BS2 (derived session 35) |
+|---|---|---|
+| flush point, `ret 8`, `ecx` = mgr | `0x61D260` | `0x69FC30`, prologue `55 8B EC 8B 55 0C 8B 45 08 56 8B F1` |
+| only static caller | build | `0x4EF4A1` via thunk `0x24A28` (exactly one) |
+| render-mgr global | `0x1356590` | `0x17DBF4C` (read at the call site into `ecx`) |
+| scene slot | `mgr+0x0C` | `mgr+0x24` |
+| view group | 16 dwords -> `mgr+0x10` | 14 dwords -> `mgr+0x28..0x5C` |
+| threaded / flush-seen | `mgr+0x50` / `+0x54` | `mgr+0x60` / `+0x64` |
+| INLINE branch | drain, nothing after | `call thunk 0xE29B -> 0x69F3F0`, then `ret 8` - **nothing after** |
+| THREADED branch | flag-then-INFINITE-wait | `mov ecx,[mgr+4]; call thunk 0x1FBF9 -> 0xBB1950`, ret `0x69FD33` |
+| drain | `0x61CAE0` | `0x69F3F0` (`[mgr+0x24]` then `lea edi,[esi+0x30]`, **no null check** = BS1's `drain+0x33`) |
+
+**Nothing after the inline drain** is the property that makes BS1's session-8 cure lossless, and BS2
+has it. So the fix is `reentry 1t` for BS2, ported with fresh constants - full-rate stereo, both eyes
+every frame, exactly what BS1 ships. **Session 26's premise is refuted structurally**: its "the Draw
+path has no submit handshake" is the only reason 1t was never ported, and Draw calls the flush point
+directly.
+
+**Mechanism vs trigger.** `0xBB1950` skips the wait entirely when the worker has already finished
+(`cmp [esi+8],0; jne skip`). So whether the race is *reachable* is pure timing - which is exactly what
+a resolution change moves. The user's recollection that the freeze began with the resolution/FOV work
+is therefore **compatible** with this, not contradicted: the doubled draw made the race possible, the
+resolution work plausibly made it reachable. Settle it with the A/B below, not with four builds.
+
+### Landed this session (pushed)
+
+- **`tools/soak.ps1`** - the acceptance instrument. Waits for gameplay (the 1 Hz camera heartbeat),
+  arms one command, then fails with an exit code on: process death, `bioshockvr.log` ceasing to
+  advance, new `WATCHDOG` lines, or new crash dumps. Exits **7 (inconclusive)** if `pacetrace.log`
+  never appeared, because a WATCHDOG check with no tracer is vacuous.
+- **`tools/game-key.ps1`** - the keyboard lane the harness never had, so a soak can pass the BS2 title
+  screen unattended. Scancodes via `KEYEVENTF_SCANCODE`, not VK codes.
+- **The stall watchdog could not fail an acceptance run, and now can.** Its trigger required an open
+  draw stage, which only BS2's doubled draw ever opens - so a clean soak of vanilla/`vrcam`/`vraer`
+  was guaranteed rather than evidence. And `watchdog_all_threads()` printed nothing every time via
+  five silent exits. Both fixed; `nf == 0` filter dropped (it hid the far side of the deadlock).
+
+### Next steps (in order; the plan is `~/.claude/plans/session-35-bioshock-2-jiggly-leaf.md`)
+
+1. **Boot experiment** - try `Bioshock2HD.exe Ghetto.bsm` (maps in `ContentBaked/pc/Maps/`); if the
+   remaster still routes through the front end, fall back to `soak.ps1 -Boot key`, then `-Attach`.
+   Then a first baseline soak to prove the harness end to end.
+2. **Backend selector** (`apply_vrstereo` -> AlternateEye by default, SequentialReentry behind a new
+   `reentry srdev on`) so the shipped default cannot freeze while the real fix is built. **Temporary**
+   - step 6 flips it back. Move `set_sr_pair_pacing(true)` out of `apply_vr_preset` into the SR branch.
+3. **Timing A/B**: add a `waitTaken/s` counter to the `[reentry] beat` line (how often the second
+   flush finds the latch already set vs has to wait), then soak 5 min each at baseline / lower
+   `Shared.ini` resolution / `fgfov off` / `vrfov off`.
+4. **Land the constants** in `bioshock2r/patterns.h` with a `verify_flush_chain()` in the shape of
+   `verify_draw_chain`, and **rewrite** (not annotate) ENGINE_NOTES' session-26 "no submit handshake"
+   section. Also fix the stale `patterns.h:87` CalcView comment, which contradicts `patterns.h:115`.
+5. **`reentry 1t` for BS2**: drain guard on `[mgr+0x24] == 0` first, then `FlushPointDetour` forcing
+   the inline branch. Never poke `0x149760C` - BS1's poke crashed a loader thread.
+6. **Acceptance**: 10-min soak of every mode (vanilla, `vrcam`, `vraer`, and the decider
+   `reentry srdev on; vrstereo on`), a BS1 regression soak, the load-crossing matrix, then the
+   simulator. Then flip the default back to full-rate stereo.
+
+**User's bar for this session**: every VR mode stable, BS1/Infinite untouched, and `vrstereo on` must
+still be *real stereo* - removing the feature is a floor to avoid shipping a freeze, not the goal.
+
+---
+
+## Previous state (2026-08-01, session 34 - A SIMULATED QUEST 3: agents can test VR without the user - branch `s34-xrsim-simulated-headset`)
 
 **M0-M9 pass, regression is green, and the branch is pushed. One open thread, below.**
 
@@ -4286,6 +4361,36 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 35 - 2026-08-01 - the BS2 freeze has a cause: Draw's tail calls a render flush point
+
+Branch `s35-b2r-reentry-freeze` off `bioshock-2`. **Paused mid-session at the user's request; two
+commits pushed, build clean, nothing half-applied.**
+
+Session 34 left the root cause open and named "render single-threaded while stereo is armed, the way
+BS1 does" as candidate #1, noting that BS2's equivalent had never been derived. It has now been
+derived and verified against the shipped exe: `UGameEngine::Draw`'s tail makes exactly one call to a
+render flush point at `0x69FC30`, whose threaded branch is the `Wait(INFINITE)` the watchdog caught,
+and whose inline branch has **nothing after the drain** - the property that makes BS1's cure lossless.
+Full table and RVAs in "Current state" above. Session 26's premise ("the Draw path has no submit
+handshake"), the sole reason 1t was never ported to BS2, is refuted structurally rather than
+empirically.
+
+The user's recollection that the freeze began with the resolution/FOV work turns out to be
+**compatible** with this rather than an alternative to it: `0xBB1950` skips the wait entirely when the
+worker has already finished, so reachability is a pure timing question and a bigger render target is
+exactly the kind of thing that makes the wait start being taken. Mechanism and trigger are different
+questions and both have answers.
+
+Two things landed, both prerequisites for measuring anything:
+
+- `tools/soak.ps1` and `tools/game-key.ps1` - the project had no soak harness at all and no keyboard
+  lane, so every soak in its history was manual and unattendable.
+- The stall watchdog **could not fail an acceptance run**. Its trigger required an open draw stage,
+  which only the doubled draw opens, so "zero WATCHDOG lines" was a guaranteed pass for every other
+  mode; and `watchdog_all_threads()` had five silent exits and printed nothing every time. Had this
+  been noticed later, the session could have declared a fix accepted on evidence that could not have
+  contradicted it.
 
 ### Session 34 - 2026-08-01 - a simulated Quest 3, so agents can test their own VR work
 
