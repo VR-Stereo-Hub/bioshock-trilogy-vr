@@ -140,6 +140,12 @@ void set_present_stage(const char* name);
 // "everything stopped" without saying where.
 void set_draw_stage(const char* name);
 
+// How many times the stall watchdog has fired this run. Session 35: the trigger
+// no longer needs an open draw stage, so this counts wedges in ANY mode - which
+// is what lets a soak of vanilla/vrcam/vraer mean something instead of passing
+// by construction.
+uint32_t watchdog_fires();
+
 // Detached pacing, set by the game adapter at init. DEFAULT OFF in core: the
 // project rule is that a core change must not move a BioShock 1 path, and BS1
 // is the headset-accepted baseline. The BS2 adapter turns it on; BS1 can opt in

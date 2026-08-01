@@ -495,6 +495,16 @@ std::atomic<int64_t> g_presentStageT0{0};
 std::atomic<const char*> g_drawStage{nullptr};
 std::atomic<int64_t> g_drawStageT0{0};
 std::atomic<uint32_t> g_drawStageTid{0};
+// Session 35: STICKY thread ids, never cleared, plus a fire counter.
+// g_drawStageTid is zeroed when the stage closes, and the old watchdog trigger
+// required a stage to be OPEN - so it could only ever fire inside the doubled
+// draw, the one path that opens one. Every other wedge (present thread, render
+// worker, a build with stereo off) produced TRACE lines and no capture at all,
+// which made a clean soak of any non-stereo mode vacuous rather than reassuring.
+// These give the trigger something to aim at when no stage is open.
+std::atomic<uint32_t> g_lastDrawTidSticky{0};
+std::atomic<uint32_t> g_presentTidSticky{0};
+std::atomic<uint32_t> g_watchdogFires{0};
 
 // Records on every return path, which is what makes the two whole-half timers
 // trustworthy - on_present_begin alone has nine early returns.
@@ -801,60 +811,114 @@ void describe_addr(uintptr_t a, char* out, size_t cap) {
 // on the render thread" from "waits on something nobody will ever signal".
 // Suspends one thread at a time and formats afterwards, so the watchdog can
 // never be holding a CRT lock that a suspended thread needs.
+// SESSION 35: this printed NOTHING, every time, and the reason it printed
+// nothing was indistinguishable from "there was nothing to print" - it had five
+// exits and all five were silent. A diagnostic that cannot report its own
+// failure is worse than none, because a blank section reads as an answer.
+//
+// Two substantive changes beyond the logging:
+//   - the `nf == 0` filter is GONE. It was justified as "only threads with game
+//     code are interesting", but the other side of a deadlock is precisely a
+//     worker parked in ntdll with no game frames near the top of its stack. The
+//     filter was hiding the one thread this function exists to find.
+//   - the scan window matches watchdog_capture (8192 dwords / 24 frames). At
+//     1024/6 it gave up before reaching the first in-image return on any thread
+//     with a deep native prologue.
 void watchdog_all_threads() {
     capture_exe_bounds();
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snap == INVALID_HANDLE_VALUE) return;
+    if (snap == INVALID_HANDLE_VALUE) {
+        char m[128];
+        sprintf_s(m, "  WATCHDOG: thread snapshot FAILED (%lu) - no thread list this episode",
+                  GetLastError());
+        trace_write(m);
+        return;
+    }
     THREADENTRY32 te{};
     te.dwSize = sizeof(te);
     DWORD self = GetCurrentThreadId();
     DWORD pid = GetCurrentProcessId();
-    int reported = 0;
-    if (Thread32First(snap, &te)) {
-        do {
-            if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
-            HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE,
-                                   te.th32ThreadID);
-            if (!th) continue;
-            CONTEXT ctx{};
-            ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-            uintptr_t eip = 0, esp = 0;
-            uintptr_t fr[6] = {};
-            int nf = 0;
-            if (SuspendThread(th) != static_cast<DWORD>(-1)) {
-                if (GetThreadContext(th, &ctx)) {
-                    eip = ctx.Eip;
-                    esp = ctx.Esp;
-                    const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(esp);
-                    for (int i = 0; i < 1024 && nf < 6; ++i) {
-                        uintptr_t v = 0;
-                        __try {
-                            v = sp[i];
-                        } __except (EXCEPTION_EXECUTE_HANDLER) {
-                            break;
-                        }
-                        if (v >= g_exeLo && v < g_exeHi) fr[nf++] = v;
+    int seen = 0, reported = 0, openFail = 0, suspFail = 0, ctxFail = 0, noEip = 0;
+    DWORD firstOpenErr = 0;
+    if (!Thread32First(snap, &te)) {
+        char m[128];
+        sprintf_s(m, "  WATCHDOG: Thread32First FAILED (%lu)", GetLastError());
+        trace_write(m);
+        CloseHandle(snap);
+        return;
+    }
+    do {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+        ++seen;
+        HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE,
+                               te.th32ThreadID);
+        if (!th) {
+            if (!firstOpenErr) firstOpenErr = GetLastError();
+            ++openFail;
+            continue;
+        }
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        uintptr_t eip = 0, esp = 0;
+        uintptr_t fr[24] = {};
+        int nf = 0;
+        bool suspended = false, gotCtx = false;
+        if (SuspendThread(th) != static_cast<DWORD>(-1)) {
+            suspended = true;
+            if (GetThreadContext(th, &ctx)) {
+                gotCtx = true;
+                eip = ctx.Eip;
+                esp = ctx.Esp;
+                const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(esp);
+                for (int i = 0; i < 8192 && nf < 24; ++i) {
+                    uintptr_t v = 0;
+                    __try {
+                        v = sp[i];
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        break;
                     }
+                    if (v >= g_exeLo && v < g_exeHi) fr[nf++] = v;
                 }
-                ResumeThread(th);
             }
-            CloseHandle(th);
-            if (!eip) continue;
-            // Only threads with game code on the stack are interesting; the
-            // rest are Steam/driver worker pools and would bury the signal.
-            if (nf == 0) continue;
-            char where[96];
-            describe_addr(eip, where, sizeof(where));
-            char msg[320];
-            int n = sprintf_s(msg, "  thread %5u at %-28s exe:", te.th32ThreadID, where);
-            for (int i = 0; i < nf && n > 0 && n < static_cast<int>(sizeof(msg)) - 12; ++i)
+            ResumeThread(th);
+        }
+        CloseHandle(th);
+        if (!suspended) { ++suspFail; continue; }
+        if (!gotCtx) { ++ctxFail; continue; }
+        if (!eip) { ++noEip; continue; }
+
+        char where[96];
+        describe_addr(eip, where, sizeof(where));
+        // Chunked: msg[320] silently truncated the RVA list at ~24 entries, and a
+        // truncated stack reads as a short one.
+        char msg[320];
+        int n = sprintf_s(msg, "  thread %5u at %-30s exe:", te.th32ThreadID, where);
+        if (nf == 0) {
+            sprintf_s(msg + n, sizeof(msg) - n, " (none)");
+            trace_write(msg);
+        } else {
+            for (int i = 0; i < nf; ++i) {
+                if (n > static_cast<int>(sizeof(msg)) - 12) {
+                    trace_write(msg);
+                    n = sprintf_s(msg, "  thread %5u  ...cont exe:", te.th32ThreadID);
+                }
                 n += sprintf_s(msg + n, sizeof(msg) - n, " %X",
                                static_cast<unsigned>(fr[i] - g_exeLo));
+            }
             trace_write(msg);
-            if (++reported >= 12) break;
-        } while (Thread32Next(snap, &te));
-    }
+        }
+        if (++reported >= 64) break;
+    } while (Thread32Next(snap, &te));
     CloseHandle(snap);
+
+    // The tally is the point: "reported=0 openFail=37" and "reported=0 seen=0"
+    // are completely different bugs, and the old code rendered both as silence.
+    char tally[224];
+    sprintf_s(tally,
+              "  WATCHDOG threads: seen=%d reported=%d openFail=%d(err %lu) "
+              "suspFail=%d ctxFail=%d noEip=%d",
+              seen, reported, openFail, firstOpenErr, suspFail, ctxFail, noEip);
+    trace_write(tally);
 }
 
 void watchdog_capture(uint32_t tid, const char* what, int64_t stuckMs) {
@@ -969,11 +1033,21 @@ DWORD WINAPI trace_thread_proc(void*) {
         // Once per stall episode, and only after it is clearly not a hitch,
         // photograph the wedged thread's stack. This is the step that names the
         // engine function; everything before it could only say "stopped".
+        //
+        // SESSION 35: the trigger used to require an OPEN DRAW STAGE
+        // (`dw && dtid && dms >= 4000`). Only the doubled draw ever opens one,
+        // so the watchdog was structurally incapable of firing in any other mode
+        // - and "zero WATCHDOG lines" was therefore a guaranteed pass for
+        // vanilla, vrcam and vraer rather than evidence about them. It now fires
+        // on the stall itself and aims at whatever thread it can name.
         {
             static bool fired = false;
+            static int stalledTicks = 0;
             if (!stalled) {
                 fired = false;
+                stalledTicks = 0;
             } else if (!fired) {
+                ++stalledTicks; // one tick per second
                 const char* dw = g_drawStage.load(std::memory_order_relaxed);
                 uint32_t dtid = g_drawStageTid.load(std::memory_order_relaxed);
                 int64_t dms = g_qpcFreq ? (phase_now() -
@@ -981,8 +1055,30 @@ DWORD WINAPI trace_thread_proc(void*) {
                                               1000 / g_qpcFreq
                                         : 0;
                 if (dw && dtid && dms >= 4000) {
+                    // Best case: a named stage is open, so we know what blocked.
                     fired = true;
+                    g_watchdogFires.fetch_add(1, std::memory_order_relaxed);
                     watchdog_capture(dtid, dw, dms);
+                } else if (stalledTicks >= 4) {
+                    // Presents have stopped for 4 s with no stage open. Aim at
+                    // the last thread known to draw, else the present thread; if
+                    // neither is known, the all-threads sweep still runs, which
+                    // is the whole reason it was worth repairing.
+                    fired = true;
+                    g_watchdogFires.fetch_add(1, std::memory_order_relaxed);
+                    uint32_t tid = g_lastDrawTidSticky.load(std::memory_order_relaxed);
+                    if (!tid) tid = g_presentTidSticky.load(std::memory_order_relaxed);
+                    if (tid) {
+                        watchdog_capture(tid, "presentsStopped",
+                                         static_cast<int64_t>(stalledTicks) * 1000);
+                    } else {
+                        char m[160];
+                        sprintf_s(m, "WATCHDOG presentsStopped %d ms, no thread to aim at - "
+                                     "sweeping all threads",
+                                  stalledTicks * 1000);
+                        trace_write(m);
+                        watchdog_all_threads();
+                    }
                 }
             }
         }
@@ -1709,6 +1805,8 @@ void init_instance() {
 void on_present_begin(IDXGISwapChain* swapchain) {
     PhaseScope psBegin(kPhPresentBegin); // records on every return path
     g_presentsSeen.fetch_add(1, std::memory_order_relaxed);
+    // Sticky, for the watchdog to aim at when no draw stage is open (session 35).
+    g_presentTidSticky.store(GetCurrentThreadId(), std::memory_order_relaxed);
     trace_thread_start(); // idempotent; the flat simulation needs it too
     sample_foreground();  // USER32 on THIS thread, never on the tracer's
     // Flat stand-in for the headset-idle stall (flat has no XR session, so the
@@ -3269,8 +3367,13 @@ void set_present_stage(const char* name) {
 
 void set_draw_stage(const char* name) {
     g_drawStageT0.store(phase_now(), std::memory_order_relaxed);
+    if (name) g_lastDrawTidSticky.store(GetCurrentThreadId(), std::memory_order_relaxed);
     g_drawStageTid.store(name ? GetCurrentThreadId() : 0u, std::memory_order_relaxed);
     g_drawStage.store(name, std::memory_order_relaxed);
+}
+
+uint32_t watchdog_fires() {
+    return g_watchdogFires.load(std::memory_order_relaxed);
 }
 
 void set_pace_detach(bool on) {
@@ -3549,6 +3652,7 @@ void handle_pace_command(const char*) {}
 void set_pace_detach(bool) {}
 void set_present_stage(const char*) {}
 void set_draw_stage(const char*) {}
+uint32_t watchdog_fires() { return 0; }
 void handle_mirror_command(const char*) {}
 float suggested_hfov_deg() { return 0.0f; }
 bool headset_half_fov_deg(float* halfH, float* halfV) {
