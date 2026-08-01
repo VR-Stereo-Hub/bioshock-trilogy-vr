@@ -5,31 +5,44 @@ here is inference unless it says so.
 
 ## The prompt for the next session
 
-> Session 35: BS2 - fix the SequentialReentry hard freeze. Nothing else.
->
-> Work on a NEW branch off `s34-b2r-pacing-and-rig` (NOT off main - main cannot see this bug;
-> its logging is written by the thread that wedges, so it just goes silent). Do not merge to
-> main. Suggested branch: `s35-b2r-reentry-freeze`.
->
-> Read first: `docs/bioshock2/FREEZE_HANDOFF.md` (this file), then the block comment at the
-> top of `src/game/bioshock2r/scenedraw.cpp` ("THE FREEZE - WHAT IT IS, AND WHAT IT IS NOT"),
-> then `git log --oneline -15`.
->
-> **The bug**: with `vrstereo on`, BioShock 2 hard-wedges within 5-100 seconds. Permanent -
-> the process never recovers and must be killed. It is NOT a crash (no fault, no dump).
->
-> **It reproduces flat, on a desk, with no headset and no OpenXR session.** You do not need
-> the user for any part of the diagnosis. Do not ask them for headset time until you have a
-> fix that survives a 10-minute flat soak.
->
-> **Root cause, measured**: the doubled Draw blocks in a cross-thread completion handshake
-> with an INFINITE timeout. See "What is actually happening" below for the disassembly.
->
-> **Two fixes already tried and REFUTED - do not retry them** (see "Dead ends").
->
-> Acceptance: `vrstereo on`, then 10 minutes of flat soak with zero `WATCHDOG` lines in
-> `pacetrace.log` and the main log still advancing. Then, and only then, ask the user to
-> confirm in the headset.
+See the separate "Session 35 prompt" the user holds; the operative facts are below.
+
+Branch from **`bioshock-2`**, never from `main`, and **never merge to `main`** - `bioshock-2`
+is the integration branch for this game (same arrangement as BioShock Infinite). Merge there.
+
+## WHICH CHANGE INTRODUCED IT - open, and cheap to settle
+
+The user's recollection is that the freeze began after **the resolution picker** and **the
+viewmodel-lens-follows-the-camera** work. That is a testable hypothesis and it should be
+tested first - but note what this session's evidence does and does NOT say:
+
+- **Measured**: the freeze reproduces at `eaac2ab` (main's tip before session 34). That commit
+  already contains BOTH suspects, so it does not discriminate between them or exonerate
+  anything earlier.
+- **NOT measured**: anything before `eaac2ab`. No bisect was run.
+- The machinery that actually blocks - the doubled `Draw` - landed much earlier, at
+  `97a229a` (2026-07-29, "bs2 sequentialreentry - threaded double draw, pass-2 replay,
+  vrstereo"). If the freeze is present there too, neither suspect is the cause and the
+  re-entrancy design is.
+
+**The bisect is cheap: the repro is flat, needs no headset, and takes about two minutes per
+commit.** Suspect commits, oldest first:
+
+| commit | date | what it added |
+|---|---|---|
+| `97a229a` | 2026-07-29 | BS2 SequentialReentry - the doubled draw itself, `vrstereo` |
+| `395893d` | 2026-07-31 | `vrres` resolution picker (writes `Shared.ini`) |
+| `d425fab` | 2026-07-31 | viewmodel lens match, `PlayerController+0x694` |
+| `eaac2ab` | 2026-07-31 | main tip - **freeze confirmed here** |
+
+Build each detached (`git checkout --detach <sha>`), install, run the repro below. Start at
+`97a229a`: if it hangs there, both suspects are cleared in one run and the answer is the
+re-entrancy design itself.
+
+Note also that `vrres` and the lens match are **not armed by default** in the same way - the
+lens match ships default ON, `vrres` only acts if `Shared.ini` was written. Check
+`%APPDATA%\BioshockHD\Bioshock2\Shared.ini` (currently `1920x1080`) before blaming
+resolution, and A/B the lens match with `fgfov off`.
 
 ## How to produce the hang (5 minutes, no headset)
 
