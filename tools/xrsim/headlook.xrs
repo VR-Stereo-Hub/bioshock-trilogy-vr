@@ -1,0 +1,17 @@
+# headlook.xrs - does head rotation actually drive the camera?
+#
+# Read the result with img-diff between the captures; the mean-abs-diff should
+# rise monotonically with the yaw delta and be well above the ~0.4 noise floor.
+reset
+head rot 0 0 0
+@frames 10
+@shot look_00
+head rot 10 0 0
+@frames 10
+@shot look_10
+head rot 25 0 0
+@frames 10
+@shot look_25
+head rot 45 0 0
+@frames 10
+@shot look_45

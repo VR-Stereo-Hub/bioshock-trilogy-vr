@@ -33,6 +33,14 @@ registry picks by host exe name (`BioshockHD.exe` -> bioshock1r, `Bioshock2HD.ex
 - Touching engine internals? Read the game's `docs/<game>/ENGINE_NOTES.md` first
   (`docs/bioshock1/` or `docs/bioshock2/`). New findings go there, in the same commit as the
   code that uses them.
+- **Validate in the SIMULATOR before handing a build to the user.** `tools\xrsim-launch.ps1`
+  runs the game against `bvr_xrsim32.dll`, a simulated 32-bit OpenXR runtime that presents as a
+  Quest 3, so head/hand poses, every controller button, deterministic frame stepping and per-eye
+  compositor captures - **including the quad layers a window screenshot can never show** (the
+  aim laser, the HUD panel) - are all scriptable with no headset. Asking the user to put the
+  Quest 3 on for something the simulator could have answered is a wasted test session.
+  Catalog: `docs/VERIFICATION.md`. Perceptual questions - comfort, judder, world scale, "does
+  the weapon swim" - still need the headset, and still belong in the F10 overlay.
 - Non-obvious design choices get a dated entry in the decision log at the bottom of
   `docs/ARCHITECTURE.md`.
 - **END**: rewrite the "Current state" and "Next steps" sections of `docs/STATUS.md`, append a
@@ -47,6 +55,11 @@ registry picks by host exe name (`BioshockHD.exe` -> bioshock1r, `Bioshock2HD.ex
 .\tools\build.ps1 -Install [-Game bs1|bs2]   # build + copy DLLs to that game's folder (default bs1)
 .\tools\install.ps1 [-Game bs1|bs2]          # copy already-built DLLs
 .\tools\tail-log.ps1 [-Game bs1|bs2]         # follow the game's log (see data dirs below)
+
+.\tools\xrsim-selftest.ps1                   # is the SIMULATED OpenXR runtime healthy?
+.\tools\xrsim-launch.ps1 -Game bs1           # launch against the simulator (no headset needed)
+.\tools\xrsim-cmd.ps1 "head rot 30 0 0"      # drive the simulated head/hands/controls
+.\tools\xrsim-shot.ps1 -Out shot             # per-eye compositor capture + JSON to assert on
 ```
 
 - BioShock 1: `K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final\BioshockHD.exe`
@@ -77,6 +90,7 @@ registry picks by host exe name (`BioshockHD.exe` -> bioshock1r, `Bioshock2HD.ex
 | `docs/ROADMAP.md` | Milestones M0–M10 with acceptance criteria and checkboxes |
 | `docs/ARCHITECTURE.md` | Module design, core/adapter contract, stereo strategy, decision log |
 | `docs/RESEARCH.md` | All research findings with sources (engine, prior art, VR runtimes, legal) |
+| `docs/VERIFICATION.md` | **Verification catalog**: intent -> tool -> command -> how to read the result. The simulated OpenXR runtime, the command seam, screenshots, img-diff, frame dumps, record/replay - and what still needs a human in the headset |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |
 | `docs/bioshock2/ENGINE_NOTES.md` | BS2 knowledge base: verified RVAs, the ProcessEvent CalcView seam, BS1 deltas |

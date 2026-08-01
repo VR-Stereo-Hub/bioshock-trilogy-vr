@@ -1,0 +1,26 @@
+# unfocused-pacing.xrs - the session-33 regression, on a desk.
+#
+# Losing FOCUSED is what collapsed the frame rate in session 33. The sim can
+# command that transition, so the bug is a repeatable test instead of an
+# accident that needed a headset to reproduce.
+#
+# The oracle is the FRAME RATE, not the session state: a state field cannot tell
+# you the game got slow. @fps fails the run if submission stalls while unfocused.
+#
+# SCOPE, and it matters: this measures the MOD's pacing against the SIM's model
+# of focus loss (the sim keeps delivering frames while VISIBLE, which is
+# spec-correct). It does NOT prove VDXR behaves the same. A pass here means the
+# mod's own pacing path survives losing focus; the hardware question stays open.
+reset
+@frames 30
+@assert sessionState eq FOCUSED
+@fps 60
+focus lose
+@wait 2000
+@assert sessionState eq VISIBLE
+# The real check: frames must keep flowing while unfocused.
+@fps 60
+focus regain
+@wait 2000
+@assert sessionState eq FOCUSED
+@fps 60

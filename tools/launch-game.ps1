@@ -20,6 +20,10 @@
 param(
     [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
     [switch]$Force,
+    # Run the guards and return WITHOUT launching. tools\xrsim-launch.ps1 calls
+    # this rather than reimplementing them, so the two launchers cannot drift
+    # apart on the checks that keep a test run honest.
+    [switch]$PreflightOnly,
     [int]$WaitSeconds = 60
 )
 
@@ -45,6 +49,11 @@ if ($others) {
 }
 
 if (Get-Process $proc -ErrorAction SilentlyContinue) {
+    if ($PreflightOnly) {
+        throw "REFUSING: $proc is already running, on whatever runtime it was " +
+              "started with. A sim launch has to start the process itself - " +
+              "XR_RUNTIME_JSON is per-process and cannot be applied afterwards."
+    }
     Write-Output "$proc is already running - nothing to do."
     return
 }
@@ -55,6 +64,11 @@ if (Test-Path $cmd) {
     $stale = (Get-Content $cmd -Raw).Trim()
     Remove-Item $cmd -Force
     if ($stale) { Write-Output "cleared a stale command.txt (would have re-applied at boot): $stale" }
+}
+
+if ($PreflightOnly) {
+    Write-Output "preflight ok ($Game) - guards passed, command.txt clear, nothing launched"
+    return
 }
 
 Write-Output "launching $Game (appid $appId)..."

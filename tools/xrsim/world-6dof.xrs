@@ -1,0 +1,55 @@
+# world-6dof.xrs - does the world hold still and stay square under 6DOF head
+# movement, or does it warp/swim?
+#
+# Warping is normally a headset-only complaint because a human cannot repeat a
+# head motion precisely. Here the motion is exact and repeatable, so two runs are
+# comparable and a regression is visible as a number.
+#
+# What each capture is for:
+#   yaw_-30 .. yaw_+30   pure rotation. The world should rotate rigidly. A
+#                        claimed-fov error shows up as the scene appearing to
+#                        magnify or shear as you turn - check derived.claimRatioH
+#                        stays ~1.0 at EVERY yaw, not just at zero.
+#   pitch_up/down        the vertical axis, where an aspect or fov-v mistake hides.
+#   trans_*              pure translation. Near geometry must shift MORE than far
+#                        geometry (parallax). If everything shifts by the same
+#                        amount the head translation is being applied to the whole
+#                        projection instead of the camera.
+#
+# Numeric checks that need no eyes:
+#   $shots | ForEach-Object { $_.ClaimRatioH }        # all ~1.0
+#   $shots | ForEach-Object { $_.EyeSeparationM }     # all == ipd, stereo intact
+#
+# Visual check, per capture: img-diff left vs right. Parallax must concentrate on
+# NEAR geometry - that is what correct stereo looks like.
+reset
+@mod vrstereo on
+@frames 60
+head rot 0 0 0
+@frames 15
+@shot w_yaw_00
+head rot -30 0 0
+@frames 15
+@shot w_yaw_n30
+head rot 30 0 0
+@frames 15
+@shot w_yaw_p30
+head rot 0 20 0
+@frames 15
+@shot w_pitch_up
+head rot 0 -20 0
+@frames 15
+@shot w_pitch_dn
+head rot 0 0 0
+@frames 15
+head pos 0.4 1.6 0
+@frames 15
+@shot w_trans_x
+head pos 0 1.6 -0.4
+@frames 15
+@shot w_trans_z
+head pos 0 1.25 0
+@frames 15
+@shot w_crouch
+head pose 0 1.6 0 0 0 0
+@frames 15
