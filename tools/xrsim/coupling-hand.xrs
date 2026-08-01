@@ -8,10 +8,18 @@
 # Two questions, two oracles:
 #
 # 1. DOES THE MODEL FOLLOW THE CONTROLLER?
-#    img-diff consecutive captures. With the head static, a model that tracks the
-#    controller produces a large, LOCALISED change (use -Grid 16 and look at the
-#    bbox); a model that ignores the controller produces almost nothing.
-#      .\tools\img-diff.ps1 -A hand_c_left.png -B hand_r_left.png -Grid 16
+#    Read the BBOX, not the mean. With the head static, a model that tracks the
+#    controller produces a LOCALISED change that moves with it:
+#      .\tools\img-diff.ps1 -A hand_c_left.png -B hand_r_left.png -Grid 12
+#
+#    DO NOT trust mean-abs-diff here. BS1's opening corridor is nearly black
+#    (meanLuma ~3/255) and a dark sleeve crossing the whole frame reads 0.25 -
+#    below the standing-still floor. It looks like "nothing moved" and it is not.
+#
+#    Ground truth, independent of lighting: sweep the controller and watch the
+#    mod's own write location follow it at ~100 UU per metre -
+#      .\tools\game-cmd.ps1 "vrhands status"     -> last write loc=(x y z)
+#    Verified 2026-08-02: a 1.1 m sweep moved it 110 UU in X.
 #
 # 2. IS THE AIM IN SYNC WITH THE MODEL?
 #    Numeric, no eyeballing: $s.AimRayMaxDev is the worst angular deviation of the

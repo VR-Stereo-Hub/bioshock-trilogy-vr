@@ -292,14 +292,25 @@ dots from the ray leaving the hand. A **constant** value across controller posit
 model move together. A value that **grows as the controller swings out** means they have drifted
 apart - the gun points somewhere other than where it shoots.
 
-**Two traps these sequences exist to avoid, both hit for real:**
+**Three traps these sequences exist to avoid, all hit for real:**
 
 1. **Arm every subsystem the question needs.** `vrhands` drives the MODEL; `vraim` drives the RAY.
    A run with only `vraim` armed showed almost no image change and looked like a pass - because
    nothing was moving the model at all.
-2. **A near-noise-floor diff is not automatically a pass.** If the controller moved 0.7 m and the
-   image changed 0.3 (the standing-still floor), that is a finding, not a success. Check
-   `vrhands status` for a null `weapon actor`, and open the PNG before concluding anything.
+2. **`mean-abs-diff` LIES IN A DARK SCENE.** This one cost real time. BioShock's opening corridor
+   has a mean luma around 3 out of 255. A dark sleeve sweeping the full width of the frame there
+   moves absolute pixel values by 0.25 - below the 0.4 "standing still" floor - so the headline
+   number said "nothing happened" while the model had in fact crossed the screen. The floors in
+   section 4 were calibrated on a normally lit scene and **do not transfer to dark interiors.**
+   In a dark scene read, in this order:
+   - `-Grid 12` **coverage and bbox** - position of the change, which survives low contrast;
+   - `pct-channels-changed`, not the mean;
+   - the **PNG itself**. It takes one look.
+3. **Cross-check against the mod's own numbers before believing any image verdict.**
+   `game-cmd "vrhands status"` prints `last write loc=(x y z)`. Sweep the controller and that
+   location must track it - roughly 100 UU per metre on BS1. Confirmed 2026-08-02: a 1.1 m sweep
+   moved it 110 UU in X, a 0.4 m drop moved it 40 UU in Z. That is the ground truth for
+   "is the model following the controller"; the picture is the confirmation, not the proof.
 
 ### 2.8 Measured baselines (BS1, 2026-08-01, in gameplay)
 
@@ -358,6 +369,7 @@ $a.NonBlackPctL      -gt 50     # something was rendered
 | Metric | Source | Expected | Fail |
 |---|---|---|---|
 | mean-abs-diff, same scene twice | `img-diff` | ~0.4 standing still | >2 with no change = the scene is moving; use a loaded save |
+| **any mean-abs-diff in a DARK scene** | `img-diff` + `stats.meanLumaL` | **do not use** below meanLuma ~10 | A full-width model sweep read 0.25 in a meanLuma-3 corridor. Use coverage/bbox and the PNG instead - see 2.8 trap 2 |
 | mean-abs-diff, real FOV change | `img-diff` | 4-7 | <1 = the change did not land |
 | mean-abs-diff, left vs right with stereo | `img-diff` | well above 0.4 | at the noise floor = both eyes are the same image |
 | `nonBlackPctL` | capture JSON | >50 in gameplay | ~0 = black frame; check `sessionState` and `layersLastFrame` first |

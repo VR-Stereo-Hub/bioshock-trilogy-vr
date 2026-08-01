@@ -24,25 +24,29 @@ modes. This section is the handoff only; do not grow it back into a manual.
 - `derived.aimRayMaxDevDeg` answers "is the aim in sync with the weapon model" numerically.
 - Session-state hazards (`focus lose`, `idle on`, `hazard ...`) make known bugs repeatable on a desk.
 
-### Open thread: the controller-coupling tests are NOT finished
+### Controller coupling: RESOLVED, and it works
 
 The user's actual priority (stated 2026-08-01) is **visual and geometric coupling**, not input
 fidelity: does the world warp under 6DOF, is the viewmodel glued to the view or to the world, does
 the weapon model follow the controller, does the aim stay in sync with the model. Three sequences
-exist for exactly those questions - `world-6dof.xrs`, `coupling-viewmodel.xrs`, `coupling-hand.xrs` -
-but **only the aim half is confirmed working**:
+cover those - `world-6dof.xrs`, `coupling-viewmodel.xrs`, `coupling-hand.xrs`.
 
-- **CONFIRMED**: the aim ray tracks the controller. Laser dot X follows grip X exactly
+Both halves of the hand test are now confirmed on BS1 (2026-08-02):
+
+- **The aim ray tracks the controller.** Laser dot X follows grip X exactly
   (`0.172 -> 0.642 -> -0.293` as the controller sweeps `0.20 -> 0.55 -> -0.15`), and
-  `aimRayMaxDevDeg` stays constant across every controller position, which is what "in sync" means.
-- **UNRESOLVED**: with the head held still and the controller swept 0.7 m, the rendered image
-  changes only 0.26-0.39 mean-abs-diff - at the standing-still noise floor. Either the weapon model
-  is not following the controller, or it is not visible in the captured frame. `vrhands status`
-  reports `ON | mode=BONES | writes=27198` with `hands actor=5BB0FF40 (matches 1)` but
-  **`weapon actor=00000000 (learned 00000000)`** - the weapon actor was never learned, which is the
-  first thing to chase.
+  `aimRayMaxDevDeg` holds constant at every controller position - which is what "in sync" means.
+- **The weapon model tracks the controller.** `vrhands status` shows `last write loc` following the
+  controller at ~100 UU per metre: a 1.1 m sweep moved X by 110 UU, a 0.4 m drop moved Z by 40 UU.
+  The captures confirm it visually - the sleeve sits lower-left at one extreme and at the right edge
+  of frame at the other.
 
-That last run was cut short, so the finding is real but the diagnosis is not yet complete.
+**The scare that got us there is the lesson, and it is recorded in VERIFICATION 2.8 trap 2:
+`mean-abs-diff` is useless in a dark scene.** BS1's opening corridor has meanLuma ~3/255, so a dark
+sleeve crossing the entire frame reads 0.25 - below the 0.4 standing-still floor. The headline
+number said "nothing moved" while the model had crossed the screen. In dark scenes read the
+coverage/bbox, `pct-channels-changed`, and the PNG; and cross-check against `vrhands status`, which
+is lighting-independent ground truth.
 
 ### Two harness bugs found and fixed while chasing it
 
@@ -55,10 +59,10 @@ That last run was cut short, so the finding is real but the diagnosis is not yet
 
 ### Next steps
 
-1. Finish the controller-coupling investigation: why does the weapon model not visibly move? Start
-   with the null `weapon actor` in `vrhands status`, and confirm the hand/weapon mesh is inside the
-   captured frame at all (view a `_left.png` directly rather than trusting img-diff alone).
-2. Review and merge the branch once that is settled.
+1. Review and merge the branch.
+2. Run `coupling-viewmodel.xrs` and `world-6dof.xrs` end to end. Both are written and the machinery
+   under them is proven by `coupling-hand`, but neither has had its own acceptance pass yet. Pick a
+   LIT area of the level for them, not the opening corridor - see the dark-scene trap above.
 3. Pin the FOV defaults from a real headset run: the mod's own
    `xr: headset fov half-angles h=.. v=..` line gives the exact VDXR values, fed back via
    `fov eye l <l> <r> <u> <d>`. Until then FOV-derived captures are relative, not absolute.
