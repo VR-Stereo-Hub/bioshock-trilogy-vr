@@ -13,6 +13,7 @@
 
 #include "game/bioshock2r/scenedraw.h"
 
+#include "core/gfx/frame_inspector.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -93,6 +94,105 @@ std::atomic<bool> g_poisoned{false};
 std::atomic<uint32_t> g_lastExcCode{0};
 std::atomic<uint32_t> g_lastExcRva{0};
 std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
+
+// ---- Session 34: THE FREEZE - WHAT IT IS, AND WHAT IT IS NOT --------------
+// Localised end to end with the stall watchdog (suspend the wedged thread,
+// read its context, scan its stack for game-image return addresses, resolve
+// the module of eip), then disassembled offline:
+//
+//   secondDraw stuck 4218 ms, eip in ntdll!NtWaitForSingleObject+0xC
+//   nearest game frame returns into a thiscall wrapper that is literally
+//       push [ebp+8] ; push [ecx+4] ; call KERNEL32!WaitForSingleObject
+//   and its CALLER is:
+//       mov esi, ecx                 ; this
+//       cmp dword ptr [esi+8], 0     ; completion flag
+//       jne  skip                    ; already done -> no wait
+//       mov ecx, [esi+0x10]          ; event object
+//       push -1                      ; INFINITE
+//       call [eax+0x14]              ; virtual Wait(INFINITE)
+//
+// So the re-entered draw blocks in a CROSS-THREAD COMPLETION HANDSHAKE with an
+// INFINITE timeout, guarded by a "already finished" flag - the classic shape in
+// which a wakeup delivered between the flag test and the wait is lost forever.
+// SequentialReentry doubles these handshakes per frame and shifts their timing,
+// which is why the freeze is non-deterministic, stereo-only, and reproduces
+// with no headset and no XR session. It is the engine's own race; VR makes it
+// fire. It is NOT a VR bug and NOT caused by anything this session changed
+// (reproduced identically on main).
+//
+// REFUTED, and the refutation is the useful part: the wrapper sitting next to
+// the Wait one calls KERNEL32!PulseEvent, whose documented lost-wakeup
+// behaviour fits the symptom exactly. Redirecting that import to SetEvent (which
+// latches) was implemented, armed at init, and MEASURED: `PulseEvent calls 0`.
+// The engine never calls it on this path. Adjacency in the binary is not a
+// calling relationship, and the fix was inert - removed rather than left in as
+// dead code that would look like a safeguard.
+//
+// ALSO REFUTED, by turning the freeze into something worse: bounding that
+// INFINITE wait (IAT-clamp KERNEL32!WaitForSingleObject, scoped by a
+// thread_local to exactly the re-entered call) stops the hang and the game
+// CRASHES instead - `fault at 101E1A4B` repeated 86000 times. The caller
+// ignores the wait's return value, so the timeout is not itself fatal; the
+// engine simply proceeds to use a resource that is genuinely not ready. The
+// wait cannot be shortcut, which also confirms it IS the freeze point.
+//
+// Session 26's premise is refuted too. Its comment above claims "the Draw path
+// has no submit handshake (that spin-wait belongs to the streaming manager)",
+// and that is the reason 1t was never ported to BS2. The doubled draw plainly
+// reaches a blocking cross-thread wait.
+//
+// The principled fix is to remove the cross-thread handshake from the doubled
+// draw entirely - i.e. render single-threaded while stereo is armed, which is
+// exactly what BioShock 1 does (`reentry 1t`) and why BS1 does not hang here.
+// Session 26 deliberately did not port that rung to BS2; this evidence is the
+// reason to revisit that decision.
+// ---- Session 34: THE RIG. Hiding the Big Daddy helmet. ----------------------
+// Measured, not guessed. An A/B/A frame-dump triple at foreground FOV
+// 60 / 137 / 60 from one standing position (docs/bioshock2/ENGINE_NOTES.md)
+// showed that the ONLY foreground constants that move with the fov are the
+// projection tangents and the terms that scale with them. The near plane holds
+// at 10 UU and nothing resembling an eye position moves.
+//
+// So BS1'S ZOOM-PULL DOES NOT EXIST HERE. The foreground eye is fixed and a
+// wider lens simply reveals more of a mesh that was always a few inches in
+// front of it - the helmet's porthole ring. Screenshots confirm it: at fg 60
+// the helmet is off-screen entirely, at fg 137 you are looking through the
+// porthole and it owns most of the frame. There is no "push it to the
+// periphery" position available, because at that distance the periphery IS
+// most of the view; the only lever that gives the user their FOV back is not
+// drawing it.
+//
+// Identified by INDEX COUNT, because inside one pass nothing else separates
+// two meshes - the weapon and the helmet share the lens, the render target and
+// the callstack. Counts are per-mesh and stable. The numbers and their
+// derivation live in patterns.h, per the never-copy rule.
+//
+// KNOWN LIMITATION, stated rather than discovered later: an index count is a
+// GLOBAL key, not a foreground-pass one. Any world mesh anywhere in the game
+// that happens to carry the same count would be skipped too. Nothing of the
+// sort was visible at the test location - the world renders complete and
+// correct with the ring gone - but "not visible here" is not "cannot happen",
+// which is why this ships DEFAULT OFF behind a toggle. Tightening the key to
+// the foreground pass is the follow-up.
+constexpr uint32_t kRigMaxCounts = 8;
+std::atomic<uint32_t> g_rigCounts[kRigMaxCounts]{};
+std::atomic<bool> g_rigHide{false};
+std::atomic<uint32_t> g_rigSkips{0};
+
+// Render thread, once per DrawIndexed. Integer compares only - no device
+// calls, no logging: this is the hottest callback in the process.
+bool rig_mesh_skip(unsigned indexCount) {
+    if (!g_rigHide.load(std::memory_order_relaxed)) return false;
+    for (uint32_t i = 0; i < kRigMaxCounts; ++i) {
+        uint32_t want = g_rigCounts[i].load(std::memory_order_relaxed);
+        if (want == 0) continue;
+        if (want == indexCount) {
+            g_rigSkips.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+    }
+    return false;
+}
 // Draw (game) thread only: present count at the previous depth-0 entry -
 // doubling is skipped while presents are stalled (unfocused window).
 uint32_t g_lastDrawPresentLow = 0;
@@ -496,13 +596,36 @@ void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void*
         g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-
+    // SESSION 34 - THE FREEZE IS IN HERE, AND FOCUS IS NOT THE GATE.
+    // The pace trace caught the wedge in the act, flat, no headset, xr=none:
+    //
+    //   TRACE ... presents/s 0 | phase: - | stage: - | draw: secondDraw for 18105 ms
+    //
+    // `stage: -` means the Present detour had fully exited, so the wedge is
+    // upstream of Present entirely - the game's own RE-ENTERED Draw never
+    // returns. Every "hang after alt-tab" in this project is this, including
+    // the one session 33 attributed to XR pacing (it reproduces with no XR
+    // session at all).
+    //
+    // A foreground gate was tried here and REMOVED: the freeze reproduces with
+    // the window focused (trace line above carries fg=1, recorded ~20 s before
+    // the test even defocused the game). The alt-tab correlation that motivated
+    // it was coincidence. Session 26's presentDelta guard is the same shape of
+    // guess and does not prevent it either.
+    //
+    // Still unknown: WHY the second call blocks. It is not a deadlock on
+    // anything this mod holds - the mod is not in the stack at that point.
     if (g_stereo.load(std::memory_order_relaxed)) bvr::vr::sr_push_eye(+1);
     g_secondPassTid.store(GetCurrentThreadId(), std::memory_order_relaxed);
     LARGE_INTEGER t0, t1, freq;
     QueryPerformanceCounter(&t0);
+    // Session 34: the BS2 stereo freeze wedges with the Present detour fully
+    // exited, so it is upstream of Present. This marker is what lets the pace
+    // trace say whether the game is sitting inside the RE-ENTERED scene draw.
+    bvr::vr::set_draw_stage("secondDraw");
     bool ok = call_draw_guarded(reinterpret_cast<DrawFn>(g_draw.original), ecx, edx, a1,
                                 a2, a3, a4);
+    bvr::vr::set_draw_stage(nullptr);
     QueryPerformanceCounter(&t1);
     QueryPerformanceFrequency(&freq);
     g_secondPassTid.store(0, std::memory_order_relaxed);
@@ -660,6 +783,15 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
     g_imageBase = image.base;
     g_imageSize = image.size;
     g_image = image;
+    // The rig veto is registered unconditionally but does nothing until
+    // g_rigHide is set - core's hook is a null check per draw otherwise.
+    bvr::frame_inspector::set_mesh_skip(&rig_mesh_skip);
+    // The helmet's meshes, derived from the foreground pass of a full frame
+    // dump and confirmed by screenshot A/B (patterns.h carries the numbers and
+    // their derivation). Preloaded but with hiding OFF, so the user's first
+    // in-headset judgement is one overlay tick away and needs nothing typed.
+    for (uint32_t i = 0; i < patterns::kRigMeshCount && i < kRigMaxCounts; ++i)
+        g_rigCounts[i].store(patterns::kRigMeshIndexCounts[i], std::memory_order_relaxed);
 }
 
 void handle_command(const char* args) {
@@ -675,6 +807,54 @@ void handle_command(const char* args) {
 
     if (strcmp(verb, "vrstereo") == 0) {
         apply_vrstereo(strncmp(rest, "on", 2) == 0);
+    } else if (strcmp(verb, "rig") == 0) {
+        // rig hide|show | skip <indexCount> | clear | status
+        // `skip` is the identification lane: nominate an index count from a
+        // frame dump's foreground cluster, then look. Nothing here is guessed
+        // from a draw count - the only honest way to name a mesh is to make it
+        // disappear and see what went with it.
+        if (strncmp(rest, "hide", 4) == 0 || strncmp(rest, "show", 4) == 0) {
+            bool hide = strncmp(rest, "hide", 4) == 0;
+            // Zero the counter on every arm, so `status` reports THIS episode.
+            // A cumulative total across a whole identification sweep is not an
+            // instrument - it answered "is 3810 over-skipping?" with a number
+            // that was mostly other candidates' draws.
+            g_rigSkips.store(0, std::memory_order_relaxed);
+            g_rigHide.store(hide, std::memory_order_relaxed);
+            BVR_LOG("[reentry] rig %s", hide ? "HIDDEN" : "shown");
+        } else if (strncmp(rest, "skip", 4) == 0) {
+            unsigned n = 0;
+            if (sscanf_s(rest + 4, "%u", &n) == 1 && n > 0) {
+                bool placed = false;
+                for (uint32_t i = 0; i < kRigMaxCounts && !placed; ++i) {
+                    if (g_rigCounts[i].load(std::memory_order_relaxed) == 0) {
+                        g_rigCounts[i].store(n, std::memory_order_relaxed);
+                        placed = true;
+                    }
+                }
+                BVR_LOG("[reentry] rig skip %u %s", n,
+                        placed ? "armed (`rig hide` to apply)" : "REFUSED - list full");
+            } else {
+                BVR_LOG("[reentry] usage: rig skip <indexCount>");
+            }
+        } else if (strncmp(rest, "clear", 5) == 0) {
+            for (uint32_t i = 0; i < kRigMaxCounts; ++i)
+                g_rigCounts[i].store(0, std::memory_order_relaxed);
+            BVR_LOG("[reentry] rig list cleared");
+        } else {
+            char list[128] = {};
+            int n = 0;
+            for (uint32_t i = 0; i < kRigMaxCounts; ++i) {
+                uint32_t v = g_rigCounts[i].load(std::memory_order_relaxed);
+                if (v && n >= 0 && n < static_cast<int>(sizeof(list)) - 16)
+                    n += sprintf_s(list + n, sizeof(list) - n, "%u ", v);
+            }
+            BVR_LOG("[reentry] rig %s | index counts: %s| skipped %u draws (core %u)",
+                    g_rigHide.load(std::memory_order_relaxed) ? "HIDDEN" : "shown",
+                    list[0] ? list : "(none) ",
+                    g_rigSkips.load(std::memory_order_relaxed),
+                    bvr::frame_inspector::mesh_skips());
+        }
     } else if (strcmp(verb, "stereo") == 0) {
         if (strncmp(rest, "on", 2) == 0) {
             if (g_poisoned.load(std::memory_order_relaxed)) {
@@ -844,6 +1024,14 @@ void apply_pending_vrstereo() {
         int pending = g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
         if (pending >= 0) apply_vrstereo(pending == 1);
     }
+}
+
+bool rig_hidden() {
+    return g_rigHide.load(std::memory_order_relaxed);
+}
+
+void set_rig_hidden(bool on) {
+    g_rigHide.store(on, std::memory_order_relaxed);
 }
 
 void draw_debug_ui() {

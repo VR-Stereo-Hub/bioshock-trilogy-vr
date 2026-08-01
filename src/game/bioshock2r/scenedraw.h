@@ -73,6 +73,15 @@ void request_vrstereo(bool on);
 void apply_pending_vrstereo();
 
 // Read-only telemetry section for the overlay (control is commands-only).
+// Session 34: the first-person rig (the Big Daddy helmet). Hiding it is the
+// only lever that gives the FOV back once the viewmodel lens matches a wide
+// world lens - the foreground eye is fixed on this game, so a wider lens simply
+// reveals a mesh sitting inches in front of it. The control lives in the camera
+// overlay next to the FOV fill it trades against; the state lives here, with
+// the draw hooks. `reentry rig hide|show|skip <n>|clear|status` is the seam.
+bool rig_hidden();
+void set_rig_hidden(bool on);
+
 void draw_debug_ui();
 
 } // namespace bvr::b2r::scenedraw

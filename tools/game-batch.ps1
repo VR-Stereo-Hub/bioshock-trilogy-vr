@@ -36,8 +36,14 @@ $ErrorActionPreference = 'Stop'
 if (-not $Steps -or $Steps.Count -eq 0) { throw "no steps given" }
 
 $proc = if ($Game -eq "bs2") { "Bioshock2HD" } else { "BioshockHD" }
-$file = if ($Game -eq "bs2") { "$env:LOCALAPPDATA\BioshockVR\bs2\command.txt" }
-        else { "$env:LOCALAPPDATA\BioshockVR\command.txt" }
+$dir  = if ($Game -eq "bs2") { "$env:LOCALAPPDATA\BioshockVR\bs2" }
+        else { "$env:LOCALAPPDATA\BioshockVR" }
+$file = "$dir\command.txt"
+# Session 34: this was MISSING, and Test-Alive's `Test-Path $log` threw on a null
+# path - so the script this session's brief tells you to use for every headset
+# run failed on its first call, every time. The liveness test that the session-33
+# comment below carefully justifies had never actually run.
+$log  = "$dir\bioshockvr.log"
 
 Add-Type @"
 using System;

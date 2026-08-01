@@ -64,7 +64,15 @@ param(
     [string[]]$FgBakeRvas = @('3DBF7C', '3EDCBF'),
     [switch]$ScanLayout,
     [string]$Diff = "",
-    [double[]]$DiffFovs = @()
+    [double[]]$DiffFovs = @(),
+    # Session 34: per-CLUSTER cb0 dump, "lo-hi" float indices (e.g. "0-31").
+    # -Diff compares whole FILES, which cannot answer a per-pass question; this
+    # restricts the modal-value table to one cluster's own blocks, so two dumps
+    # taken at different foreground FOVs can be compared on the FOREGROUND rows
+    # alone. That is the discriminator between "the fg eye moves with the fov"
+    # (transform rows change) and "the fg eye is fixed and the wider frustum
+    # simply reveals more of the rig" (only the ray block changes).
+    [string]$Cb0Range = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,6 +82,14 @@ $fgBakeRvas = $FgBakeRvas
 $aspectW = 0.0; $aspectH = 0.0
 if ($Aspect -match '^(\d+)\s*[xX]\s*(\d+)$') {
     $aspectW = [double]$Matches[1]; $aspectH = [double]$Matches[2]
+}
+
+$cb0Lo = -1; $cb0Hi = -1
+if ($Cb0Range -ne '') {
+    if ($Cb0Range -notmatch '^(\d+)\s*-\s*(\d+)$') { throw "-Cb0Range wants 'lo-hi', e.g. 0-31" }
+    $cb0Lo = [int]$Matches[1]; $cb0Hi = [int]$Matches[2]
+    if ($cb0Hi -lt $cb0Lo) { throw "-Cb0Range: hi < lo" }
+    if ($cb0Hi -gt 335) { $cb0Hi = 335 }
 }
 
 # cb0 contents are raw buffer bytes reinterpreted as floats - garbage prints
@@ -125,6 +141,11 @@ function Parse-Dump($file) {
                     rtv  = [int]$m.Groups[5].Value; dsv = [int]$m.Groups[6].Value
                     vpw  = [int]$m.Groups[7].Value; vph = [int]$m.Groups[8].Value
                     cb0b = [uint32]$m.Groups[9].Value
+                    # srv0 is the draw's first texture. Session 34: this is how a
+                    # single mesh is told apart from its neighbours inside one
+                    # pass - the foreground pass is ~17 draws carrying the weapon
+                    # AND the rig, and a lens or a draw count cannot separate them.
+                    srv0 = [int]$m.Groups[12].Value
                     stk  = $m.Groups[14].Value
                     blk  = -1
                 })
@@ -279,6 +300,7 @@ foreach ($file in $files) {
 
     # ---- cluster depth-tested draws ---------------------------------------
     $clusters = @{}   # "tanH|tanV" -> stats
+    $blockTier = @{}  # block index -> cb0 byte size (shader layout identity)
     $noBlock = 0; $drawCount = 0; $depthDraws = 0
     foreach ($ev in $events) {
         if ($drawKinds -notcontains $ev.kind) { continue }
@@ -286,6 +308,9 @@ foreach ($file in $files) {
         if ($ev.dsv -lt 0) { continue }
         $depthDraws++
         if ($ev.blk -lt 0 -or -not $blockTan.ContainsKey($ev.blk)) { $noBlock++; continue }
+        # Block -> cb0 byte size, so the per-cluster cb0 table can stay inside
+        # one shader layout (see the -Cb0Range print below).
+        $blockTier[$ev.blk] = $ev.cb0b
         $t = $blockTan[$ev.blk]
         $key = '{0:F4}|{1:F4}' -f $t[0], $t[1]
         if (-not $clusters.ContainsKey($key)) {
@@ -343,7 +368,40 @@ foreach ($file in $files) {
         if ($ShowDraws -gt 0) {
             $c.sample | Select-Object -First $ShowDraws | ForEach-Object {
                 $stkHead = ($_.stk -split ',' | Select-Object -First 4) -join ','
-                Write-Output ("    #{0:D5} {1} a={2} b0={3} stk={4}" -f $_.idx, $_.kind, $_.a, $_.cb0b, $stkHead)
+                Write-Output ("    #{0:D5} {1} a={2} b0={3} srv0=T{4} stk={5}" -f `
+                    $_.idx, $_.kind, $_.a, $_.cb0b, $_.srv0, $stkHead)
+            }
+        }
+        # ---- per-cluster cb0 rows (-Cb0Range) --------------------------------
+        # Modal value per float index across THIS cluster's blocks, with the
+        # distinct count in brackets. A float that is constant across the pass
+        # shows (1) and is a candidate camera/lens constant; one that varies per
+        # draw shows a large count and is per-object.
+        if ($cb0Lo -ge 0) {
+            # PER TIER, and that is not a nicety. A cluster's blocks span several
+            # cb0 BYTE SIZES (320/640/1280 on BS2), and a different size is a
+            # different shader's constant layout - only the screen-ray helper is
+            # common to all of them. Pooling them produces a modal table that
+            # mixes unrelated fields and reads as noise (or worse, as a stable
+            # value that is really two shaders' floats alternating).
+            foreach ($tier in ($c.tiers.Keys | Sort-Object)) {
+                $cBlocks = @()
+                foreach ($bi in $c.blocks) {
+                    if ($blockTier.ContainsKey($bi) -and $blockTier[$bi] -eq $tier) {
+                        $cBlocks += $blocks[$bi]
+                    }
+                }
+                if ($cBlocks.Count -eq 0) { continue }
+                Write-Output ("    -- cb0 tier {0} B, {1} block(s) --" -f $tier, $cBlocks.Count)
+                $cModes = Block-Modes $cBlocks ($cb0Hi + 1)
+                $line = ''; $col = 0
+                for ($i = $cb0Lo; $i -le $cb0Hi; $i++) {
+                    if (-not $cModes.ContainsKey($i)) { continue }
+                    $line += '{0}={1:F4}({2}) ' -f $i, $cModes[$i].v, $cModes[$i].distinct
+                    $col++
+                    if (($col % 6) -eq 0) { Write-Output ("       " + $line.TrimEnd()); $line = '' }
+                }
+                if ($line -ne '') { Write-Output ("       " + $line.TrimEnd()) }
             }
         }
         # ---- gates ---------------------------------------------------------

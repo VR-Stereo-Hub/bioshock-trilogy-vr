@@ -97,18 +97,54 @@ void set_camera_mode(bool on);
 void set_enabled(bool on);
 void set_sr_pair_pacing(bool on);
 
+// AlternateEye stereo: one eye per frame, the compositor reprojecting the other.
+// Judders, but it is REAL stereo and it never re-enters the engine's draw -
+// which is the difference that matters on BioShock 2, where draw re-entrancy is
+// the measured cause of the hard freeze (session 34).
+void set_alternate_eye(bool on);
+
 // --- M8: headset-disconnect stall guard --------------------------------------
 // "vrpace ..." seam (game thread). When the session leaves FOCUSED after
 // having held it, presents skip the blocking xrWaitFrame so the flat window
 // keeps running while the headset idles; a 5 s keepalive still paces one real
 // frame so the runtime can re-grant FOCUSED even if it wants to see frames.
 //   on | off          the guard (off = pre-M8 stall behavior, live A/B)
+//   thread on|off     xrWaitFrame off the present thread (session 28)
+//   detach on|off     SESSION 34: while the session is not FOCUSED, the pace
+//                     thread owns the WHOLE frame loop and the present thread
+//                     makes no blocking XR call, so the runtime's not-visible
+//                     cadence (~10 Hz measured) cannot pace the game. Frames
+//                     keep being submitted, so FOCUSED can still be re-granted -
+//                     session 28's requirement is preserved, not undone.
+//                     Live A/B: with it off the 10 Hz comes straight back.
 //   simidle on|off    flat stand-in for a headset idle: the same guard
 //                     decision runs with the state forced VISIBLE and a 1 s
 //                     sleep in place of the runtime's blocked wait (flat has
 //                     no XR session, so this is how the guard is verified)
-//   status            guard state + skip/keepalive/last-wait telemetry
+//   status            guard state, detach state, skip/handoff/last-wait
+//                     telemetry, and the per-phase present-path timings
 void handle_pace_command(const char* args);
+
+// --- Session 34: present-detour stage marker ---------------------------------
+// The pace trace can only name a stall inside code it wraps. The BS2 stereo
+// hang turned out to sit OUTSIDE all of it - our phases had exited and the
+// trace stayed silent, which is the same "silence reads as calm" trap the trace
+// existed to remove. The Present detour therefore stamps which segment it is
+// in; `name` must be a string literal (stored by pointer, read cross-thread).
+// Null clears it.
+void set_present_stage(const char* name);
+
+// Same, for the GAME/DRAW thread. The BS2 stereo freeze turned out to wedge
+// with the present detour fully exited (stage null), i.e. upstream of Present
+// entirely - so the draw path needs its own marker or the trace can only say
+// "everything stopped" without saying where.
+void set_draw_stage(const char* name);
+
+// Detached pacing, set by the game adapter at init. DEFAULT OFF in core: the
+// project rule is that a core change must not move a BioShock 1 path, and BS1
+// is the headset-accepted baseline. The BS2 adapter turns it on; BS1 can opt in
+// later on its own in-headset test.
+void set_pace_detach(bool on);
 
 // --- M8: desktop mirror ------------------------------------------------------
 // "vrmirror ..." seam (game thread). Under SequentialReentry stereo the flat
@@ -122,6 +158,13 @@ void handle_mirror_command(const char* args);
 // FOV at the backbuffer aspect - what the game should render with in camera
 // mode. 0 until the first views are located.
 float suggested_hfov_deg();
+
+// The headset eye's own HALF-angles in degrees (Quest 3 via VDXR: 54 x 55 - an
+// essentially square eye). False until the first xrLocateViews. An adapter uses
+// this to report how much of the eye its render actually fills: a 16:9 render
+// leaves the vertical short, and that shortfall IS the black bands the user
+// sees, not any kind of letterbox.
+bool headset_half_fov_deg(float* halfHDeg, float* halfVDeg);
 
 // The adapter reports the horizontal FOV the game is actually rendering with
 // (read back from the engine every frame). Projection-layer submission claims

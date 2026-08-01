@@ -925,3 +925,94 @@ work that caches the option is wrong on this game.
   and launched anyway, on top of another session's work. `tools/launch-game.ps1` throws.
 - **Anything the user judges by eye belongs in the F10 overlay, not in a seam command.** Reaching a
   keyboard means alt-tabbing, and alt-tab is the pacing bug.
+
+## Session 34 (2026-07-31): the black bands are a FOV DEFICIT, and BS2 fills the eye by FOV only
+
+### 1. THE MEASUREMENT: what the eye is, and what the game puts in it
+
+Both numbers were already on disk; no game time was spent getting them.
+
+| | horizontal | vertical | source |
+|---|---|---|---|
+| the headset eye (Quest 3 / VDXR) | **108.0 deg** | **110.0 deg** | `xr: headset fov half-angles h=54.0 v=55.0 deg` |
+| the game at FOV option 100 | 100.0 deg | **67.7 deg** | frame dump, world cluster `tanH 1.1918 tanV 0.6704` |
+
+The eye is essentially **SQUARE**. The render is 16:9. Vertically the layer covers 67.7 of 110
+degrees, so **38% of the eye's height is black** - and that is the user's *"black bars at the
+bottom"*. Horizontally the shortfall is only 8 deg, which is why the complaint was about the
+bottom (and top) and not the sides.
+
+**It is NOT a letterbox, engine or cinematic.** Every session-33 dump reports `lb=0.9999` with
+`vp=` at full backbuffer height, and `Shared.ini` is `ViewportX/Y=1920/1080`. The `[hud] letterbox
+ON (engine cinematic bars)` classifier does fire on BS2, but only transiently and symmetrically
+(84 px top AND bottom, for the duration of a scripted beat) - a different mechanism from a band
+that is there all the time. Check the classifier first, as the session brief said; it acquits
+itself here.
+
+### 2. THE CONSEQUENCE: on BS2, aspect buys NOTHING. Only the FOV option adds vertical view.
+
+From the settled law `tanV = tan(option/2) * 9/16` (aspect-INVARIANT), `tanH = tanV * bbW/bbH`:
+
+- changing the backbuffer aspect moves only the HORIZONTAL. A 2048x2048 backbuffer renders
+  67.7 x 67.7 deg - it *loses* 32 deg of horizontal and gains no vertical whatsoever. (This is the
+  same collapse session 32 measured and read as the projection degenerating; it is simply the law.)
+- to fill a 110-deg-vertical eye you need `tanV = tan(55) = 1.4281`, hence
+  `tan(option/2) = 1.4281 * 16/9 = 2.5389`, hence **option = 137 deg**. At 16:9 that renders
+  137.4 x 110.0 - vertical exactly filled, horizontal over-rendered by ~29 deg (the price of a
+  16:9 backbuffer, and cheaper than the black band).
+- `suggested_hfov_deg()` already computed 137.0 from the headset half-angles and the swapchain
+  aspect, so core was asking for the right thing all along - nothing was writing it.
+
+**THIS IS THE OPPOSITE OF BS1'S SETTLED POLICY.** BS1's law is a true horizontal, so a SQUARE
+BACKBUFFER matches the square eye and no FOV write is needed - which is exactly why BS1 has no
+FOV-fill lever worth speaking of. Do not port the square-backbuffer policy to BS2 (session 32 said
+so for a different reason; this is the deeper one). Fourth never-copy instance, after the ini keys,
+the cb0 offset and the FOV law itself - and the first where the thing copied would have been a
+POLICY rather than a number or a formula.
+
+### 3. Shipped: `vrfov` DEFAULT ON, and the option write runs the law backwards
+
+The default flip is deliberate and is the user's explicit call ("I want the visual space to be the
+whole screen/FOV"), overriding the every-render-lever-off rule. Persisted in `vrpreset.ini` as
+`fillHeadsetFov` so the in-headset verdict can be re-checked against the same numbers.
+
+One correction rides with it. Core asks for a true HORIZONTAL fov; the BS2 option is not one, so
+writing core's number straight into the option is only correct at 16:9. `option_for_rendered_hfov()`
+inverts the law:
+
+```
+tanV   = tan(wantedHfov / 2) * (bbH / bbW)
+option = 2 * atan(tanV * 16/9)
+```
+
+Identity at 16:9 - nothing shipping moves - and correct the moment a second aspect ships. Same
+shape of correction, for the same reason, as session 33 made to the CLAIM.
+
+### 4. The overlay carries the measurement, not just the switch
+
+"FILL THE VIEW" shows rendered fov, the eye's fov, and the missing degrees with the percentage of
+the eye's height that is black. In the headset the user cannot read a log, so a toggle without its
+number can only be judged by feel - and "black bars" versus "38% of the eye's height is unfilled"
+are different bug reports leading to different sessions.
+
+### 5. `decode-framedump.ps1 -Cb0Range lo-hi`, and the tier trap it exposed
+
+Per-cluster modal cb0 table, split **per cb0 BYTE TIER**. The tier split is not cosmetic: one
+cluster's blocks span 320/640/1280-byte buffers, which are different shaders with different
+constant layouts, and only the screen-ray helper is common to all of them. Pooling them produces a
+table that mixes unrelated fields - and can show a "stable" value that is really two shaders'
+floats alternating. Same family of error as `lenses == 1`: an instrument reporting a clean number
+while not measuring one thing.
+
+What it establishes about the FOREGROUND pass (640 B tier, FOV option 100, lens unmatched):
+
+| floats | contents |
+|---|---|
+| 44-59 | the fg PROJECTION matrix: `45 = 1/tanH`, `50 = 1/tanV`, `52/55 = 1.0002 / -10.0039` (a **near plane of ~10 UU**), `47` a horizontal shear term |
+| 68-70 | a world-space position equal to the frame's camera location (`-42258.99 -13396.19 -4241.22`, matching the `[b2r] camera: loc=` heartbeat) |
+
+68-70 is the candidate foreground EYE, and comparing it across two fg FOV values is the
+discriminator between "the fg eye dollies with the fov" (BS1's zoom-pull) and "the eye is fixed and
+a wider frustum simply reveals more of the rig". **That comparison needs two dumps from the SAME
+standing position** - the existing session-33 dumps are from different moments, so their world-space
+values cannot be compared, which is why this one is not answered from disk like the rest.
