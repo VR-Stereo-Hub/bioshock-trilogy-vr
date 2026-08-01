@@ -5,7 +5,13 @@
 #   @wait <ms>            sleep
 #   @frames <n>           wait for the sim's frame counter to advance n
 #   @shot <name>          capture; the result object is collected and returned
-#   @mod <seam command>   route to the MOD's command.txt via game-cmd.ps1
+#   @mod <cmd>[; <cmd>]   route to the MOD's command.txt via game-cmd.ps1.
+#                         Group with ';' to land in ONE poll, and note that this
+#                         then WAITS a poll period: the mod reads command.txt at
+#                         1 Hz on mtime change, so back-to-back @mod lines
+#                         overwrite each other before it ever sees them. That is
+#                         the same trap game-batch.ps1 documents, and it silently
+#                         cost a `vraim on` in the first version of this file.
 #   @assert <k> <op> <v>  assert on state.json (ops: eq ne gt ge lt le)
 #   @fps <min> [secs]     measure frames/s over a window and fail below <min>.
 #                         This is the session-33 oracle: the symptom there was a
@@ -22,6 +28,9 @@ param(
     [string]$Dir = "$env:LOCALAPPDATA\BioshockVR\xrsim",
     [string]$OutDir = "",
     [double]$Delay = 0,
+    # One mod poll period (1 Hz) plus margin. Anything shorter and consecutive
+    # @mod writes race the poller.
+    [int]$ModPollMs = 1400,
     [switch]$ContinueOnError
 )
 
@@ -62,7 +71,12 @@ try {
                 $shots += (& $shotScript -Dir $Dir -Out $out)
             }
             elseif ($line -match '^@mod\s+(.+)$') {
-                & $gameCmd -Game $Game $Matches[1] | Out-Null
+                # Semicolon-grouped commands go in one write so they land in the
+                # same poll; then wait past the mod's 1 Hz poller before the next
+                # write can clobber them.
+                $modCmds = @($Matches[1] -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                & $gameCmd -Game $Game @modCmds | Out-Null
+                Start-Sleep -Milliseconds $ModPollMs
             }
             elseif ($line -match '^@fps\s+([\d.]+)(?:\s+([\d.]+))?') {
                 $min = [double]$Matches[1]

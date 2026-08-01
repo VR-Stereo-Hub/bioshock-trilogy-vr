@@ -734,9 +734,44 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
         break;
     }
     const double eyeTanH = (tan(-r.fov[0].angleLeft) + tan(r.fov[0].angleRight)) * 0.5;
+
+    // Is the AIM in sync with the MODEL? The laser dots should lie along the ray
+    // leaving the right hand in its aim direction. If the weapon model and the
+    // aim ray have drifted apart, the dots come off that ray and this angle
+    // grows - which is the numeric form of "the gun points somewhere other than
+    // where it shoots", and it is otherwise a headset-only judgement.
+    double aimDevMax = 0.0, aimDevSum = 0.0;
+    int aimDevCount = 0;
+    {
+        const Vec3 aimFwd = v3_norm(quat_rotate(sub.snap.aimWorld[1].q, Vec3{0.0f, 0.0f, -1.0f}));
+        const Vec3 gripPos = sub.snap.gripWorld[1].p;
+        for (uint32_t i = 0; i < sub.layerCount; ++i) {
+            const SimLayer& L = sub.layers[i];
+            if (L.type != XR_TYPE_COMPOSITION_LAYER_QUAD) continue;
+            SimSpace* sp = space_get(L.space);
+            // Head-locked layers (the HUD) are not on the aim ray by design.
+            if (!sp || sp->isAction || sp->refType == XR_REFERENCE_SPACE_TYPE_VIEW) continue;
+            Pose base = pose_identity();
+            bool tracked = true;
+            space_pose(*sp, sub.snap, base, tracked);
+            const Pose quadWorld = pose_mul(base, from_xr(L.pose));
+            const Vec3 d = v3_sub(quadWorld.p, gripPos);
+            if (v3_len(d) < 0.05f) continue; // too close to the hand to be meaningful
+            double c = v3_dot(v3_norm(d), aimFwd);
+            if (c > 1.0) c = 1.0;
+            if (c < -1.0) c = -1.0;
+            const double deg = acos(c) * 180.0 / 3.14159265358979323846;
+            aimDevSum += deg;
+            ++aimDevCount;
+            if (deg > aimDevMax) aimDevMax = deg;
+        }
+    }
+
     sprintf_s(buf, "  \"derived\": {\"eyeSeparationM\": %.6f, \"ipdM\": %.6f, "
-                   "\"claimTanH\": %.5f, \"eyeTanH\": %.5f, \"claimRatioH\": %.5f},\n",
-              eyeSep, r.ipdM, claimTanH, eyeTanH, (eyeTanH > 0.0) ? claimTanH / eyeTanH : 0.0);
+                   "\"claimTanH\": %.5f, \"eyeTanH\": %.5f, \"claimRatioH\": %.5f, "
+                   "\"aimRayDots\": %d, \"aimRayMaxDevDeg\": %.4f, \"aimRayMeanDevDeg\": %.4f},\n",
+              eyeSep, r.ipdM, claimTanH, eyeTanH, (eyeTanH > 0.0) ? claimTanH / eyeTanH : 0.0,
+              aimDevCount, aimDevMax, (aimDevCount > 0) ? aimDevSum / aimDevCount : 0.0);
     out += buf;
 
     sprintf_s(buf, "  \"stats\": {\"meanLumaL\": %.2f, \"meanLumaR\": %.2f, "

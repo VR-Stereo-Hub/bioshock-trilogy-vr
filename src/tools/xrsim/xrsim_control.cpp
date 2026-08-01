@@ -55,6 +55,11 @@ struct Hold {
 Hold g_holds[VC_COUNT];
 
 // Smooth motion for `head to` / `hand to`.
+//
+// Smooth hand motion is not a convenience: the mod derives wrench-swing SPEED
+// from successive XR hand samples (openxr_input.cpp publish_sample), so a hand
+// that teleports between poses cannot produce a swing a user would recognise.
+// Driving a real gesture needs interpolation across frames.
 struct Motion {
     bool active = false;
     Pose from = pose_identity();
@@ -62,6 +67,7 @@ struct Motion {
     uint64_t startMs = 0;
     uint32_t durMs = 0;
     bool linear = false;
+    bool isAim = false;   // hand motions only: which pose slot is being driven
 };
 Motion g_headMotion;
 Motion g_handMotion[2];
@@ -282,6 +288,33 @@ void apply_line(const char* line) {
             rig.aimTrimPitch[h] = a.f(4);
         } else if (a.is(2, "valid")) {
             rig.handValid[h] = !a.is(3, "off");
+        } else if (a.is(2, "to")) {
+            // hand <h> to grip|aim <x> <y> <z> <yaw> <pitch> <roll> <ms>
+            //
+            // A smooth sweep, which is what the coupling tests need: to tell
+            // whether a hand or weapon MODEL is following the controller you
+            // have to move the controller continuously and watch the model over
+            // several frames. A teleport between two poses cannot show that.
+            const bool isAim = a.is(3, "aim");
+            Motion& m = g_handMotion[h];
+            m.active = true;
+            m.isAim = isAim;
+            m.from = isAim ? rig.aim[h] : rig.grip[h];
+            if (rig.handFollowsHead[h]) {
+                // Detach from the head first, or the follow logic would
+                // overwrite the interpolated pose every frame.
+                Pose parked;
+                parked.q = rig.head.q;
+                parked.p = v3_add(rig.head.p, quat_rotate(rig.head.q, rig.handOffset[h]));
+                m.from = parked;
+                rig.grip[h] = parked;
+                rig.aim[h] = parked;
+                rig.handFollowsHead[h] = false;
+            }
+            m.to.p = v3(a.f(4), a.f(5), a.f(6));
+            m.to.q = quat_from_ypr(deg2rad(a.f(7)), deg2rad(a.f(8)), deg2rad(a.f(9)));
+            m.startMs = now_ms();
+            m.durMs = a.u(10, 500);
         } else {
             set_error("unknown hand subcommand '%s'", a.s(2));
         }
@@ -773,6 +806,17 @@ void control_apply_pending() {
         if (t >= 1.0f) { t = 1.0f; g_headMotion.active = false; }
         g_staging.head = pose_lerp(g_headMotion.from, g_headMotion.to,
                                    g_headMotion.linear ? t : ease_smooth(t));
+        g_dirty = true;
+    }
+
+    for (int h = 0; h < 2; ++h) {
+        Motion& m = g_handMotion[h];
+        if (!m.active) continue;
+        const uint64_t el = nowMs - m.startMs;
+        float t = m.durMs ? static_cast<float>(el) / m.durMs : 1.0f;
+        if (t >= 1.0f) { t = 1.0f; m.active = false; }
+        const Pose p = pose_lerp(m.from, m.to, m.linear ? t : ease_smooth(t));
+        if (m.isAim) g_staging.aim[h] = p; else g_staging.grip[h] = p;
         g_dirty = true;
     }
 

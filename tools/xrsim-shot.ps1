@@ -113,5 +113,8 @@ if (-not $Quiet) {
     NonBlackPctR  = [double]$j.stats.nonBlackPctR
     EyeSeparationM= [double]$j.derived.eyeSeparationM
     ClaimRatioH   = [double]$j.derived.claimRatioH
+    # Aim-vs-model sync: how far the laser dots sit off the ray leaving the hand.
+    AimRayDots    = [int]$j.derived.aimRayDots
+    AimRayMaxDev  = [double]$j.derived.aimRayMaxDevDeg
     Raw           = $j
 }

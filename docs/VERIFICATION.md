@@ -36,6 +36,10 @@ settles a tier-3 question is worse.
 | A quad layer, not the world, is what changed | two captures | capture, toggle the layer, capture again | `img-diff` between them isolates exactly the quad contribution |
 | A controller button reaches the game | `xrsim-cmd.ps1` | `.\tools\xrsim-cmd.ps1 "btn a press 150"` | The mod's `vrinput status` counters, or the in-game effect via `img-diff` |
 | A thumbstick moves the player | `xrsim-cmd.ps1` | `.\tools\xrsim-cmd.ps1 "stick l 0 1"` ... `"stick l center"` | before/after captures, `img-diff` well above 0.4 |
+| **Is the viewmodel glued to the view or the world?** | `xrsim-run.ps1` | `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\coupling-viewmodel.xrs` | `img-diff -Grid 16`: the viewmodel's block quiet while the world is loud = view-locked (correct). See 2.8 |
+| **Does the weapon model follow the controller?** | `xrsim-run.ps1` | `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\coupling-hand.xrs` | Head static, controller swept: a large LOCALISED image change. A noise-floor diff is a finding, not a pass. See 2.8 |
+| **Is the aim in sync with the weapon model?** | capture JSON | same sequence, read `$s.AimRayMaxDev` | Constant across every controller position = in sync. Growing as the controller swings out = drifted apart |
+| **Does the world warp or swim under 6DOF?** | `xrsim-run.ps1` | `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\world-6dof.xrs` | `ClaimRatioH` ~1.0 at every yaw AND pitch, not just at zero |
 | The unfocused-pacing regression (session 33) | `xrsim-run.ps1` | `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\unfocused-pacing.xrs` | The `@fps` steps must all pass. Frame rate holding through FOCUSED -> VISIBLE -> FOCUSED is the check; the session-state transition alone proves nothing. **Scope: this measures the mod against the SIM's model of focus loss, not VDXR's** |
 | A headset going idle mid-session | `xrsim-cmd.ps1` | `.\tools\xrsim-cmd.ps1 "idle on 5000"` | With `vrpace thread on` the flat window keeps presenting; with `thread off` it stalls. Two log lines prove the session-28 fix |
 | Connecting the headset mid-game | `xrsim-cmd.ps1` | `"hazard nosystem on"` ... `"hazard nosystem off"` | Mod logs `no headset connected ... will keep retrying quietly`, then a full bring-up with no restart |
@@ -263,7 +267,39 @@ The JSON is the point. Beyond the poses and controls it carries:
 | `@assert <k> <op> <v>` | assert on `state.json` (`eq ne gt ge lt le`) |
 | `@fps <min> [secs]` | measure frames/s and fail below `min`. **The session-33 oracle** - that symptom was a frame-rate collapse, which no state field records |
 
-Shipped: `smoke`, `stereo`, `headlook`, `laser`, `unfocused-pacing`.
+Shipped: `smoke`, `stereo`, `headlook`, `laser`, `unfocused-pacing`,
+`world-6dof`, `coupling-viewmodel`, `coupling-hand`.
+
+**`@mod` waits a poll period on purpose.** The mod reads its own `command.txt` at 1 Hz on mtime
+change, so two `@mod` lines in a row overwrite each other and the first is silently lost. Group them
+with `;` to land in one poll: `@mod vrhands on; vraim on; vraim laser on`. This is not theoretical -
+it swallowed a `vraim on` and made a coupling test "pass" while measuring the wrong thing.
+
+### 2.8 The coupling tests: is X moving with Y, or glued to the world?
+
+This is the class of question that used to require the headset, and it is what the sim is best at.
+All three sequences work the same way: **hold one thing perfectly still, move the other by a known
+amount, and compare the same screen region.** A human cannot hold their head still; the sim can.
+
+| Sequence | Question | Oracle |
+|---|---|---|
+| `world-6dof` | Does the world stay rigid and square under 6DOF head movement? Any warp or swim? | `ClaimRatioH` must stay ~1.0 at **every** yaw and pitch, not just at zero. `EyeSeparationM` constant. Left-vs-right parallax must concentrate on NEAR geometry |
+| `coupling-viewmodel` | Is the viewmodel glued to the VIEW or left behind in the WORLD? | `img-diff -Grid 16` between a yaw-0 and yaw-20 capture. **View-locked**: the viewmodel's block of the coverage map stays quiet while the world is loud. **World-locked**: its block is as loud as the world. Repeat with pure translation (`head pos`), which is where a wrongly-parented viewmodel usually shows itself |
+| `coupling-hand` | Does the weapon/hand model follow the controller, and does the aim stay in sync with it? | Head static, controller swept. Model tracking = a large **localised** image change (`-Grid 16`, read the `bbox`). Aim sync = `$s.AimRayMaxDev` stays constant across every controller position |
+
+`derived.aimRayMaxDevDeg` is the aim-vs-model number: the worst angular deviation of the aim-laser
+dots from the ray leaving the hand. A **constant** value across controller positions means aim and
+model move together. A value that **grows as the controller swings out** means they have drifted
+apart - the gun points somewhere other than where it shoots.
+
+**Two traps these sequences exist to avoid, both hit for real:**
+
+1. **Arm every subsystem the question needs.** `vrhands` drives the MODEL; `vraim` drives the RAY.
+   A run with only `vraim` armed showed almost no image change and looked like a pass - because
+   nothing was moving the model at all.
+2. **A near-noise-floor diff is not automatically a pass.** If the controller moved 0.7 m and the
+   image changed 0.3 (the standing-still floor), that is a finding, not a success. Check
+   `vrhands status` for a null `weapon actor`, and open the PNG before concluding anything.
 
 ### 2.8 Measured baselines (BS1, 2026-08-01, in gameplay)
 

@@ -2,114 +2,81 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-01, session 34 - A SIMULATED QUEST 3: agents can now test VR without the user - branch `s34-xrsim-simulated-headset`, ACCEPTANCE COMPLETE)
+## Current state (2026-08-01, session 34 - A SIMULATED QUEST 3: agents can test VR without the user - branch `s34-xrsim-simulated-headset`)
 
-**All milestones M0-M9 pass and the regression pass is green. Ready to review and merge.**
+**M0-M9 pass, regression is green, and the branch is pushed. One open thread, below.**
 
-A purpose-built 32-bit OpenXR runtime, `bvr_xrsim32.dll`, that presents as a Quest 3 so an agent
-can drive head/hands/controls, step frames deterministically, and capture per-eye compositor
-images - with no headset and with **zero lines of the mod changed**.
+`bvr_xrsim32.dll` is a purpose-built 32-bit OpenXR runtime that presents as a Quest 3, so an agent
+can drive the head and controllers, step frames deterministically, and capture per-eye compositor
+images - with no headset and with **zero lines of the mod changed** (M9: the mod DLLs hash
+identically with the sim target off and on at one commit).
 
-### What works, verified on BS1 this session
+**Everything about how to USE it lives in `docs/VERIFICATION.md`** - the decision table, the command
+grammar, the `state.json` and capture-JSON field lists, the measured baselines and the failure
+modes. This section is the handoff only; do not grow it back into a manual.
 
-| Milestone | Evidence |
-|---|---|
-| M0-M2 | `xr_hello32` exits **0** against the sim, output matching the recorded real-hardware run line for line except the runtime name (same `Meta Quest 3`, max 16 layers, 16384x16384, feature level 0xB000, real RTX 4060 LUID) |
-| M3 | The mod brings up a full session: swapchain pair 2048x2048 fmt 29, aim laser 64x64, action set attached, READY -> SYNCHRONIZED -> VISIBLE -> FOCUSED, first frame submitted |
-| M4 | `xr: headset fov half-angles h=55.0 v=48.0 deg -> game hfov 110.0` - the exact predicted value; `fov` commands move it |
-| M5 | Stereo projection captured: `viewCount 2`, `eyeSeparationM 0.063` == IPD, real parallax between eyes |
-| M6 | **8 layers** composited: projection + 6 laser-dot quads receding along the aim ray + the head-locked HUD quad. The laser is visible in the capture and absent from a window screenshot |
-| M7 | `focus lose` / `focus regain` reproduce session 33's blocker on demand (mod logs `session state VISIBLE` then `FOCUSED`) |
-| M8 | `step 5` advances **exactly 5** frames, `step 20` exactly 20, no credits = 0. A walked-away agent leaves the game ALIVE: 40 s in step mode with no commands, process up, game still logging, one `STEP starved ... granting one frame` |
-| M9 | `bioshockvr.dll` and `xinput1_3.dll` hash **identically** with `-DBIOSHOCKVR_WITH_XRSIM=OFF` vs `=ON` at one commit - MSBuild did not even relink the mod, so nothing about it depends on the sim existing |
+### Why it matters
 
-### Acceptance run in gameplay (2026-08-01)
+- Per-eye captures include the **XR quad layers** - aim laser, aim dot, HUD panel - which
+  `docs/bioshock1/TESTING.md` has recorded since M8 as impossible to see in a window screenshot.
+- `derived.claimRatioH` turns the whole claimed-FOV bug class into one number (1.0 = correct; BS1
+  measures 0.98; session 28's yaw warp was 1.84 and took three sessions to infer).
+- `derived.aimRayMaxDevDeg` answers "is the aim in sync with the weapon model" numerically.
+- Session-state hazards (`focus lose`, `idle on`, `hazard ...`) make known bugs repeatable on a desk.
 
-All five `.xrs` sequences pass in a loaded save, with numeric oracles:
+### Open thread: the controller-coupling tests are NOT finished
 
-| Sequence | Result |
-|---|---|
-| `smoke` | 1 layer, non-black, `eyeSeparationM` 0.063 |
-| `stereo` | `projectionViews` 2; left eye vs right eye mean-abs-diff **3.16** against a 0.4 noise floor; `claimRatioH` **0.98** |
-| `headlook` | diffs rise monotonically with yaw: 10 deg **2.24**, 25 deg **2.79**, 45 deg **3.37** |
-| `laser` | **7 quad layers on, 1 off** - six aim-laser dots, none of which a window screenshot can show |
-| `unfocused-pacing` | 90 / 91.7 / 89.7 frames/s across FOCUSED -> VISIBLE -> FOCUSED. **No collapse** |
+The user's actual priority (stated 2026-08-01) is **visual and geometric coupling**, not input
+fidelity: does the world warp under 6DOF, is the viewmodel glued to the view or to the world, does
+the weapon model follow the controller, does the aim stay in sync with the model. Three sequences
+exist for exactly those questions - `world-6dof.xrs`, `coupling-viewmodel.xrs`, `coupling-hand.xrs` -
+but **only the aim half is confirmed working**:
 
-### Regression pass (all green)
+- **CONFIRMED**: the aim ray tracks the controller. Laser dot X follows grip X exactly
+  (`0.172 -> 0.642 -> -0.293` as the controller sweeps `0.20 -> 0.55 -> -0.15`), and
+  `aimRayMaxDevDeg` stays constant across every controller position, which is what "in sync" means.
+- **UNRESOLVED**: with the head held still and the controller swept 0.7 m, the rendered image
+  changes only 0.26-0.39 mean-abs-diff - at the standing-still noise floor. Either the weapon model
+  is not following the controller, or it is not visible in the captured frame. `vrhands status`
+  reports `ON | mode=BONES | writes=27198` with `hands actor=5BB0FF40 (matches 1)` but
+  **`weapon actor=00000000 (learned 00000000)`** - the weapon actor was never learned, which is the
+  first thing to chase.
 
-- A normal `launch-game.ps1` run in a fresh shell used **`VirtualDesktopXR`**, and no file under
-  `...\BioshockVR\xrsim\` was touched.
-- `HKLM` ActiveRuntime, both the 64-bit and WOW6432Node views, **byte-identical** before and after
-  the whole branch - still pointing at Virtual Desktop.
-- `XR_RUNTIME_JSON` is empty at process, User and Machine scope; the launcher's `finally` restores it.
-- `boot.ps1 -Attach` produces exactly **one** `BioshockHD.exe`, no Steam second instance.
-- `launch-game.ps1 -PreflightOnly` correctly REFUSES when the game is already running, because
-  `XR_RUNTIME_JSON` is per-process and cannot be applied to a live process.
+That last run was cut short, so the finding is real but the diagnosis is not yet complete.
 
-**`derived.claimRatioH` = 0.98** on BS1 with stereo armed. That number is the game's claimed
-horizontal tangent over the eye's actual one; 1.0 is correct. Session 28's yaw warp was 1.84 and
-took three sessions to infer. It is now one field in a JSON file.
+### Two harness bugs found and fixed while chasing it
 
-**This retires a documented limitation.** `docs/bioshock1/TESTING.md` has recorded since M8 that XR
-quad layers (aim laser, aim dot, HUD) exist only in the compositor and can never appear in a window
-screenshot. They are now composited and counted.
-
-### How it is selected (no mod change, no registry change)
-
-`XR_RUNTIME_JSON`, per-process, set by `tools\xrsim-launch.ps1` which starts `BioshockHD.exe`
-directly and restores the variable in a `finally`. **Verified empirically**: the game honours it and
-does NOT fall back to VDXR when it points at a broken manifest. The machine's ActiveRuntime stays on
-VDXR, so putting the headset on still works with zero switching.
-
-Two silent-failure traps are guarded by thrown errors, not warnings: an elevated shell (the loader
-ignores the env var for high-integrity processes) and a non-x86 DLL. `xrsim-launch.ps1` asserts the
-runtime NAME out of the mod's log and throws on anything that is not `bvr-xrsim`.
-
-### Bugs this found in itself (all fixed)
-
-- `state.json` had unescaped Windows paths - invalid JSON, broke every reader.
-- `layersLastFrame` only updated on capture frames, so polling read a stale answer.
-- The ack channel deadlocked in step mode: `cmdSeq` was published only from `xrWaitFrame`, which is
-  blocked in step mode, so `step N` could never be acknowledged. The control thread now publishes
-  `state.json` too.
-- **`pacing_wake()` conflated "config changed" with "abort with an error".** `pace step` set the
-  abort flag, `xrWaitFrame` returned SESSION_LOST, the mod tore down, teardown called it again, and
-  the next session died at birth - forever. Waking and aborting are now separate, and the abort flag
-  is session-scoped.
-- **`rig_defaults()` did not set the field of view.** Only `rig_staging_init()` did, so `reset`,
-  `fov quest3` and `hands reset` all zeroed the optics and every capture came back BLACK - which
-  reads as a mod bug, not a sim bug. The Quest 3 optics now live in `rig_defaults`, a degenerate
-  `fov eye` is refused with an error, and `compose_snapshot` repairs and logs as a last resort.
-  A default that only one caller applies is not a default.
-- **`xrsim-launch.ps1` waited for a session the revert-Options dialog was blocking**, then reported
-  a misleading "no session came up". It now dismisses that dialog itself while it waits.
-
-### What the simulator does NOT settle
-
-Worth restating, because it is the easiest thing to over-claim. The sim proves geometry, content and
-protocol. It models no lens distortion, no timewarp, no real display cadence, and none of VDXR's
-Wi-Fi encode path. The `unfocused-pacing` pass in particular measures the MOD against the SIM's
-model of focus loss (the sim keeps delivering frames while VISIBLE, which is spec-correct); whether
-VDXR does the same is still open. **A pacing bug that reproduces in the sim is real; one that does
-not may still exist on hardware.** Comfort, judder and world scale remain the user's verdict.
+- **`@mod` raced the mod's poller.** The mod reads `command.txt` at 1 Hz on mtime change, so
+  back-to-back `@mod` lines overwrote each other and `vraim on` silently never took - the sequence
+  then "passed" while measuring the wrong thing. `@mod` now groups with `;` into one write and waits
+  a poll period. Same trap `game-batch.ps1` already documents.
+- **`hand <h> to` was declared but never implemented.** Smooth controller motion is required to see
+  a model TRACK rather than teleport, so the coupling tests could not have worked without it.
 
 ### Next steps
 
-1. Review and merge the branch.
-2. Pin the FOV defaults from a real headset run: the mod's own
-   `xr: headset fov half-angles h=.. v=..` line gives the user's exact VDXR values, which the sim
-   then takes via `fov eye l <l> <r> <u> <d>`. Until then the sim uses published Quest 3 figures, so
-   FOV-derived captures are relative, not absolute.
-3. Adopt the sim for BS2 and Infinite. The runtime is game-agnostic and the scripts already take
-   `-Game bs2`; each needs only its own acceptance run.
-4. `boot.ps1`'s A-press loop does not reach gameplay from the main menu on this save - CONTINUE
-   needed a click plus VK_RETURN (the documented gameswf stale-hover workaround). Pre-existing, and
-   NOT caused by `-Attach`, which works correctly.
-5. The markdown cleanup was explicitly deferred by the user this session. Findings still stand:
-   STATUS.md is 432 KB / 6279 lines with three `Next steps` sections (two stale, 1074 lines), a
-   duplicate `Session log` heading, and a misfiled session-29 entry.
+1. Finish the controller-coupling investigation: why does the weapon model not visibly move? Start
+   with the null `weapon actor` in `vrhands status`, and confirm the hand/weapon mesh is inside the
+   captured frame at all (view a `_left.png` directly rather than trusting img-diff alone).
+2. Review and merge the branch once that is settled.
+3. Pin the FOV defaults from a real headset run: the mod's own
+   `xr: headset fov half-angles h=.. v=..` line gives the exact VDXR values, fed back via
+   `fov eye l <l> <r> <u> <d>`. Until then FOV-derived captures are relative, not absolute.
+4. Adopt the sim for BS2 and Infinite - the runtime is game-agnostic, the scripts take `-Game bs2`,
+   each needs only its own acceptance run.
+5. `boot.ps1`'s A-press loop does not reach gameplay from the main menu on this save (CONTINUE needs
+   a click plus VK_RETURN). Pre-existing, and NOT caused by `-Attach`, which works correctly.
+6. The markdown cleanup the user originally asked for is still deferred. Findings stand: STATUS.md
+   has three `Next steps` sections (two stale, 1074 lines), a duplicate `Session log` heading, and a
+   misfiled session-29 entry.
 
-Catalog for all of this: **`docs/VERIFICATION.md`**.
+### What the simulator does NOT settle
+
+It proves geometry, content and protocol. It models no lens distortion, no timewarp, no real display
+cadence and none of VDXR's Wi-Fi encode path. The `unfocused-pacing` pass measures the mod against
+the SIM's model of focus loss, not VDXR's. **A pacing bug that reproduces in the sim is real; one
+that does not may still exist on hardware.** Comfort, judder and world scale remain the user's
+verdict in the headset.
 
 ## Previous state (2026-07-31, session 33 - BS2: THE VIEWMODEL LENS IS FIXED AND ACCEPTED; VR PACING IS THE NEW BLOCKER - merged to main)
 
