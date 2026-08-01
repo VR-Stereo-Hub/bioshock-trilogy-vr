@@ -464,7 +464,15 @@ void apply_line(const char* line) {
         } else if (a.is(1, "eye")) {
             const int h = hand_arg(a, 2);
             if (h < 0) { set_error("fov eye needs l or r"); return; }
-            rig.fov[h] = Fov{deg2rad(a.f(3)), deg2rad(a.f(4)), deg2rad(a.f(5)), deg2rad(a.f(6))};
+            const Fov f{deg2rad(a.f(3)), deg2rad(a.f(4)), deg2rad(a.f(5)), deg2rad(a.f(6))};
+            // Refuse a zero-extent fov rather than accept it and hand back black
+            // captures that read as a mod bug.
+            if (fov_is_degenerate(f)) {
+                set_error("fov eye %s has zero extent (l=%s r=%s u=%s d=%s) - refused",
+                          a.s(2), a.s(3), a.s(4), a.s(5));
+                return;
+            }
+            rig.fov[h] = f;
         } else {
             // Symmetric-outer shorthand: `fov 55 48` gives the mod's own
             // half-angle log line exactly h=55.0 v=48.0.
@@ -711,13 +719,7 @@ void thread_proc() {
 
 void rig_staging_init() {
     std::lock_guard<std::mutex> lock(g_pendingMutex);
-    rig_defaults(g_staging);
-    // Quest 3 published optics, split per eye with the usual outward asymmetry.
-    // This is the ONE value set here not measured on this machine; the mod's own
-    // "headset fov half-angles h=.. v=.." log line is the pinning mechanism, and
-    // with these defaults it must read h=55.0 v=48.0.
-    g_staging.fov[0] = Fov{deg2rad(-55.0f), deg2rad(45.0f), deg2rad(48.0f), deg2rad(-48.0f)};
-    g_staging.fov[1] = Fov{deg2rad(-45.0f), deg2rad(55.0f), deg2rad(48.0f), deg2rad(-48.0f)};
+    rig_defaults(g_staging); // optics included - see the comment in rig_defaults
 }
 
 void control_start() {

@@ -36,7 +36,7 @@ settles a tier-3 question is worse.
 | A quad layer, not the world, is what changed | two captures | capture, toggle the layer, capture again | `img-diff` between them isolates exactly the quad contribution |
 | A controller button reaches the game | `xrsim-cmd.ps1` | `.\tools\xrsim-cmd.ps1 "btn a press 150"` | The mod's `vrinput status` counters, or the in-game effect via `img-diff` |
 | A thumbstick moves the player | `xrsim-cmd.ps1` | `.\tools\xrsim-cmd.ps1 "stick l 0 1"` ... `"stick l center"` | before/after captures, `img-diff` well above 0.4 |
-| The unfocused-pacing regression (session 33) | `xrsim-run.ps1` | `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\unfocused-pacing.xrs` | Mod log gets `session state VISIBLE` then `SUBMISSION IDLE`, then `FOCUSED again`. Frame rate must not collapse |
+| The unfocused-pacing regression (session 33) | `xrsim-run.ps1` | `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\unfocused-pacing.xrs` | The `@fps` steps must all pass. Frame rate holding through FOCUSED -> VISIBLE -> FOCUSED is the check; the session-state transition alone proves nothing. **Scope: this measures the mod against the SIM's model of focus loss, not VDXR's** |
 | A headset going idle mid-session | `xrsim-cmd.ps1` | `.\tools\xrsim-cmd.ps1 "idle on 5000"` | With `vrpace thread on` the flat window keeps presenting; with `thread off` it stalls. Two log lines prove the session-28 fix |
 | Connecting the headset mid-game | `xrsim-cmd.ps1` | `"hazard nosystem on"` ... `"hazard nosystem off"` | Mod logs `no headset connected ... will keep retrying quietly`, then a full bring-up with no restart |
 | Teardown and clean re-bring-up | `xrsim-cmd.ps1` | `.\tools\xrsim-cmd.ps1 "hazard waitfail 1"` | Mod logs the failure, `session teardown`, then a fresh session after its 5 s cooldown |
@@ -252,11 +252,32 @@ The JSON is the point. Beyond the poses and controls it carries:
 
 ### 2.7 Scripted sequences
 
-`tools\xrsim\*.xrs`. Directives: `@wait <ms>`, `@frames <n>`, `@shot <name>`,
-`@mod <seam command>` (routes to the mod's own `command.txt`), and
-`@assert <key> <op> <value>` against `state.json`.
+`tools\xrsim\*.xrs`. Directives:
+
+| Directive | Effect |
+|---|---|
+| `@wait <ms>` | sleep |
+| `@frames <n>` | wait for the sim's frame counter to advance n |
+| `@shot <name>` | capture; the result object is collected and returned |
+| `@mod <seam command>` | route to the MOD's `command.txt` via `game-cmd.ps1` |
+| `@assert <k> <op> <v>` | assert on `state.json` (`eq ne gt ge lt le`) |
+| `@fps <min> [secs]` | measure frames/s and fail below `min`. **The session-33 oracle** - that symptom was a frame-rate collapse, which no state field records |
 
 Shipped: `smoke`, `stereo`, `headlook`, `laser`, `unfocused-pacing`.
+
+### 2.8 Measured baselines (BS1, 2026-08-01, in gameplay)
+
+Numbers from a real acceptance run, so a future regression has something to
+compare against rather than a guess:
+
+| Check | Measured |
+|---|---|
+| `stereo.xrs` left eye vs right eye | mean-abs-diff **3.16** (noise floor 0.4) |
+| `headlook.xrs` vs the 0-degree baseline | 10 deg -> **2.24**, 25 deg -> **2.79**, 45 deg -> **3.37** (monotonic) |
+| `laser.xrs` quad layers on / off | **7 / 1** - six laser dots, invisible to `game-shot` |
+| `derived.claimRatioH` with stereo armed | **0.98** (1.0 is a perfect FOV claim) |
+| frames/s FOCUSED, VISIBLE, refocused | **90 / 91.7 / 89.7** - no collapse across a focus loss |
+| `step 5` / `step 20` | exactly 5 / exactly 20 frames |
 
 ---
 

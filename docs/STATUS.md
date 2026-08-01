@@ -2,9 +2,9 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-01, session 34 - A SIMULATED QUEST 3: agents can now test VR without the user - branch `s34-xrsim-simulated-headset`, IN PROGRESS)
+## Current state (2026-08-01, session 34 - A SIMULATED QUEST 3: agents can now test VR without the user - branch `s34-xrsim-simulated-headset`, ACCEPTANCE COMPLETE)
 
-**Not merged. Work is committed on the branch; the session paused for a PC restart.**
+**All milestones M0-M9 pass and the regression pass is green. Ready to review and merge.**
 
 A purpose-built 32-bit OpenXR runtime, `bvr_xrsim32.dll`, that presents as a Quest 3 so an agent
 can drive head/hands/controls, step frames deterministically, and capture per-eye compositor
@@ -20,7 +20,31 @@ images - with no headset and with **zero lines of the mod changed**.
 | M5 | Stereo projection captured: `viewCount 2`, `eyeSeparationM 0.063` == IPD, real parallax between eyes |
 | M6 | **8 layers** composited: projection + 6 laser-dot quads receding along the aim ray + the head-locked HUD quad. The laser is visible in the capture and absent from a window screenshot |
 | M7 | `focus lose` / `focus regain` reproduce session 33's blocker on demand (mod logs `session state VISIBLE` then `FOCUSED`) |
-| M8 | `step 5` advances **exactly 5** frames, `step 20` exactly 20, no credits = 0 |
+| M8 | `step 5` advances **exactly 5** frames, `step 20` exactly 20, no credits = 0. A walked-away agent leaves the game ALIVE: 40 s in step mode with no commands, process up, game still logging, one `STEP starved ... granting one frame` |
+| M9 | `bioshockvr.dll` and `xinput1_3.dll` hash **identically** with `-DBIOSHOCKVR_WITH_XRSIM=OFF` vs `=ON` at one commit - MSBuild did not even relink the mod, so nothing about it depends on the sim existing |
+
+### Acceptance run in gameplay (2026-08-01)
+
+All five `.xrs` sequences pass in a loaded save, with numeric oracles:
+
+| Sequence | Result |
+|---|---|
+| `smoke` | 1 layer, non-black, `eyeSeparationM` 0.063 |
+| `stereo` | `projectionViews` 2; left eye vs right eye mean-abs-diff **3.16** against a 0.4 noise floor; `claimRatioH` **0.98** |
+| `headlook` | diffs rise monotonically with yaw: 10 deg **2.24**, 25 deg **2.79**, 45 deg **3.37** |
+| `laser` | **7 quad layers on, 1 off** - six aim-laser dots, none of which a window screenshot can show |
+| `unfocused-pacing` | 90 / 91.7 / 89.7 frames/s across FOCUSED -> VISIBLE -> FOCUSED. **No collapse** |
+
+### Regression pass (all green)
+
+- A normal `launch-game.ps1` run in a fresh shell used **`VirtualDesktopXR`**, and no file under
+  `...\BioshockVR\xrsim\` was touched.
+- `HKLM` ActiveRuntime, both the 64-bit and WOW6432Node views, **byte-identical** before and after
+  the whole branch - still pointing at Virtual Desktop.
+- `XR_RUNTIME_JSON` is empty at process, User and Machine scope; the launcher's `finally` restores it.
+- `boot.ps1 -Attach` produces exactly **one** `BioshockHD.exe`, no Steam second instance.
+- `launch-game.ps1 -PreflightOnly` correctly REFUSES when the game is already running, because
+  `XR_RUNTIME_JSON` is per-process and cannot be applied to a live process.
 
 **`derived.claimRatioH` = 0.98** on BS1 with stereo armed. That number is the game's claimed
 horizontal tangent over the eye's actual one; 1.0 is correct. Session 28's yaw warp was 1.84 and
@@ -52,25 +76,35 @@ runtime NAME out of the mod's log and throws on anything that is not `bvr-xrsim`
   abort flag, `xrWaitFrame` returned SESSION_LOST, the mod tore down, teardown called it again, and
   the next session died at birth - forever. Waking and aborting are now separate, and the abort flag
   is session-scoped.
+- **`rig_defaults()` did not set the field of view.** Only `rig_staging_init()` did, so `reset`,
+  `fov quest3` and `hands reset` all zeroed the optics and every capture came back BLACK - which
+  reads as a mod bug, not a sim bug. The Quest 3 optics now live in `rig_defaults`, a degenerate
+  `fov eye` is refused with an error, and `compose_snapshot` repairs and logs as a last resort.
+  A default that only one caller applies is not a default.
+- **`xrsim-launch.ps1` waited for a session the revert-Options dialog was blocking**, then reported
+  a misleading "no session came up". It now dismisses that dialog itself while it waits.
+
+### What the simulator does NOT settle
+
+Worth restating, because it is the easiest thing to over-claim. The sim proves geometry, content and
+protocol. It models no lens distortion, no timewarp, no real display cadence, and none of VDXR's
+Wi-Fi encode path. The `unfocused-pacing` pass in particular measures the MOD against the SIM's
+model of focus loss (the sim keeps delivering frames while VISIBLE, which is spec-correct); whether
+VDXR does the same is still open. **A pacing bug that reproduces in the sim is real; one that does
+not may still exist on hardware.** Comfort, judder and world scale remain the user's verdict.
 
 ### Next steps
 
-1. Finish the acceptance pass: run `tools\xrsim\*.xrs` end to end in **gameplay** (this session's
-   runs were at the menu attract camera; `boot.ps1 -Attach` attaches correctly and produces exactly
-   one game instance, but its A-press loop did not reach gameplay - CONTINUE needed a click plus
-   VK_RETURN, the documented gameswf stale-hover workaround).
-2. Re-run the walk-away guarantee cleanly. The starvation path DID fire (`xrsim.log` shows one
-   `STEP starved ... granting one frame`), but the liveness half of the check is **inconclusive**:
-   the game was closed during the 35 s window, so "is it still alive afterwards" was not actually
-   measured. Redo: `pace step`, send nothing for 35 s, confirm the process is up and the log mtime
-   is advancing.
-3. M9 regression: build with `-DBIOSHOCKVR_WITH_XRSIM=OFF` then `=ON` **at one commit** and confirm
-   `bioshockvr.dll` / `xinput1_3.dll` hash identically. (`bvr_version.h` embeds `git describe`, so a
-   cross-commit comparison is a false positive.)
-3. Regression: a normal `launch-game.ps1` run in a fresh shell must show `VirtualDesktopXR`, not the
-   sim; confirm the ActiveRuntime registry value is untouched.
-4. Pin the FOV defaults from a real headset run: the mod's own `half-angles` log line gives the
-   user's exact VDXR values, which the sim then takes via `fov eye l ...`.
+1. Review and merge the branch.
+2. Pin the FOV defaults from a real headset run: the mod's own
+   `xr: headset fov half-angles h=.. v=..` line gives the user's exact VDXR values, which the sim
+   then takes via `fov eye l <l> <r> <u> <d>`. Until then the sim uses published Quest 3 figures, so
+   FOV-derived captures are relative, not absolute.
+3. Adopt the sim for BS2 and Infinite. The runtime is game-agnostic and the scripts already take
+   `-Game bs2`; each needs only its own acceptance run.
+4. `boot.ps1`'s A-press loop does not reach gameplay from the main menu on this save - CONTINUE
+   needed a click plus VK_RETURN (the documented gameswf stale-hover workaround). Pre-existing, and
+   NOT caused by `-Attach`, which works correctly.
 5. The markdown cleanup was explicitly deferred by the user this session. Findings still stand:
    STATUS.md is 432 KB / 6279 lines with three `Next steps` sections (two stale, 1074 lines), a
    duplicate `Session log` heading, and a misfiled session-29 entry.
@@ -4281,6 +4315,49 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 34 - 2026-08-01 - a simulated Quest 3, so agents can test their own VR work
+
+Branch `s34-xrsim-simulated-headset`. The user's ask: stop being the manual tester for every VR
+question across three parallel mods.
+
+**Built `bvr_xrsim32.dll`**, a purpose-built 32-bit OpenXR runtime that presents as a Quest 3.
+Nothing off the shelf could do this: Meta XR Simulator and OpenXR-Simulator are x64 (the game is
+32-bit), `ox` has no D3D11, and an API layer cannot substitute because a layer needs a runtime
+underneath and with no headset there is no session to intercept. Tractable because the mod's whole
+OpenXR surface is 39 entry points, one extension and one interaction profile.
+
+**Zero lines of the mod changed.** Selection is per-process via `XR_RUNTIME_JSON`, which the loader
+checks before the registry. That was verified empirically on day one before any runtime code was
+written: the game honours the env var on a direct launch and does NOT silently fall back to VDXR.
+M9 confirms the endpoint - `bioshockvr.dll` and `xinput1_3.dll` hash identically with the sim target
+off and on at one commit, and MSBuild does not even relink the mod.
+
+**The compositor is the payload.** Composing each eye means reprojecting the projection layer
+through the difference between the layer's tagged pose/fov and the eye's, which turns a claimed-fov
+mismatch into visible magnification. It also retires a limitation TESTING.md has carried since M8:
+XR quad layers never appear in a window screenshot, so the aim laser and HUD panel were unverifiable
+outside a headset. `laser.xrs` now reads 7 quad layers on, 1 off.
+
+**Six bugs found in the sim during bring-up**, each fixed and each worth remembering because they
+are all the same shape - a thing that worked on the one path it was written for:
+- unescaped Windows paths made `state.json` invalid JSON;
+- the layer census only updated on capture frames;
+- the ack channel deadlocked in step mode (`cmdSeq` published only from a blocked `xrWaitFrame`);
+- `pacing_wake()` conflated a config change with an abort, putting the mod in a permanent teardown
+  loop;
+- `rig_defaults()` never set the FOV, so `reset` zeroed the optics and every capture went black;
+- the launcher waited on a session the revert-Options dialog was blocking.
+
+**Acceptance in gameplay**: stereo left-vs-right 3.16 against a 0.4 noise floor, head look monotonic
+2.24/2.79/3.37, `claimRatioH` 0.98, 90/91.7/89.7 frames/s across a focus loss, exact frame stepping,
+and a walked-away agent leaving the game alive for 40 s with the starvation grant firing on cue.
+
+**Regression**: a normal launch still lands on VirtualDesktopXR, the ActiveRuntime registry values
+are byte-identical on both views, and `XR_RUNTIME_JSON` is empty at every scope afterwards.
+
+The markdown cleanup the user originally asked for was explicitly deferred mid-session; the sizing
+findings are recorded in "Next steps" for whoever picks it up.
 
 ### Session 33 - 2026-07-31 - BS2 viewmodel lens DONE and accepted; the VR pacing bug found
 

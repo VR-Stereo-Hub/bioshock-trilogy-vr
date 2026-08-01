@@ -7,6 +7,9 @@
 #   @shot <name>          capture; the result object is collected and returned
 #   @mod <seam command>   route to the MOD's command.txt via game-cmd.ps1
 #   @assert <k> <op> <v>  assert on state.json (ops: eq ne gt ge lt le)
+#   @fps <min> [secs]     measure frames/s over a window and fail below <min>.
+#                         This is the session-33 oracle: the symptom there was a
+#                         frame-rate COLLAPSE, which no state field records.
 #
 # Usage:
 #   .\tools\xrsim-run.ps1 -Path .\tools\xrsim\smoke.xrs
@@ -60,6 +63,18 @@ try {
             }
             elseif ($line -match '^@mod\s+(.+)$') {
                 & $gameCmd -Game $Game $Matches[1] | Out-Null
+            }
+            elseif ($line -match '^@fps\s+([\d.]+)(?:\s+([\d.]+))?') {
+                $min = [double]$Matches[1]
+                $secs = if ($Matches[2]) { [double]$Matches[2] } else { 3.0 }
+                $a = & $stateScript -Dir $Dir -Quiet
+                Start-Sleep -Seconds $secs
+                $b = & $stateScript -Dir $Dir -Quiet
+                $fps = [math]::Round(($b.frame - $a.frame) / $secs, 1)
+                Write-Host "      measured $fps frames/s over ${secs}s (min $min)"
+                if ($fps -lt $min) {
+                    throw "FPS FAILED: $fps frames/s is below $min while state=$($b.sessionState)"
+                }
             }
             elseif ($line -match '^@assert\s+(\S+)\s+(eq|ne|gt|ge|lt|le)\s+(.+)$') {
                 $k = $Matches[1]; $op = $Matches[2]; $v = $Matches[3]

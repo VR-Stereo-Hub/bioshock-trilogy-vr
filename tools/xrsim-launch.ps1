@@ -113,9 +113,30 @@ if ($NoWaitSession) {
 }
 
 # --- wait for the mod to report a live session -------------------------------
+# The revert-Options 'Message' dialog blocks the game before it ever presents, so
+# a launcher that only waits will time out with a misleading "no session came up".
+# Dismiss it here, the same way boot.ps1 does, rather than making every caller
+# remember to.
+Add-Type -ErrorAction SilentlyContinue @'
+using System; using System.Runtime.InteropServices;
+public static class BvrXrSimWin {
+  [DllImport("user32.dll")] public static extern IntPtr FindWindow(string cls, string title);
+  [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+}
+'@
+
 $runtimeName = $null
 $sessionUp   = $false
 for ($i = 0; $i -lt $WaitSeconds; $i++) {
+    $dlg = [BvrXrSimWin]::FindWindow("#32770", "Message")
+    if ($dlg -ne [IntPtr]::Zero) {
+        $no = [BvrXrSimWin]::FindWindowEx($dlg, [IntPtr]::Zero, "Button", "&No")
+        if ($no -ne [IntPtr]::Zero) {
+            [BvrXrSimWin]::SendMessage($no, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+            Write-Host "dismissed the revert-Options dialog with No"
+        }
+    }
     if (Test-Path $modLog) {
         $lines = Get-Content $modLog -ErrorAction SilentlyContinue
         foreach ($l in $lines) {

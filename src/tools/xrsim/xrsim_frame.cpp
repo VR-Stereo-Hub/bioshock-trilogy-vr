@@ -50,6 +50,20 @@ void compose_snapshot(FrameSnapshot& snap, const Rig& rig) {
     snap.localOrigin = g_localOrigin;
     snap.headWorld = rig.head;
 
+    // Last line of defence on the optics. A zero-extent fov produces a degenerate
+    // projection: xrLocateViews hands the mod nonsense and every capture comes
+    // back black, which reads as a mod bug rather than a sim one. Repair and say
+    // so, once, rather than silently rendering nothing.
+    for (int e = 0; e < 2; ++e) {
+        if (!fov_is_degenerate(snap.rig.fov[e])) continue;
+        XRSIM_LOG_ONCE("xrsim: eye %d had a zero-extent fov - restoring the Quest 3 default", e);
+        Rig fresh;
+        rig_defaults(fresh);
+        snap.rig.fov[0] = fresh.fov[0];
+        snap.rig.fov[1] = fresh.fov[1];
+        break;
+    }
+
     for (int h = 0; h < 2; ++h) {
         if (rig.handFollowsHead[h]) {
             // Parked relative to the head, so a hand stays in frame while the

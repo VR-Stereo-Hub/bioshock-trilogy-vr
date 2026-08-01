@@ -129,6 +129,24 @@ void rig_defaults(Rig& r) {
 
     r.ipdM = 0.063f;
     r.worldScale = 1.0f;
+
+    // The Quest 3 optics live HERE, not at the one call site that happens to run
+    // first. They were originally set only in rig_staging_init(), so `reset`,
+    // `fov quest3` and `hands reset` - all of which go through rig_defaults -
+    // silently zeroed the field of view and every capture came out black. A
+    // default that only one caller applies is not a default.
+    //
+    // Published Quest 3 figures (110 deg horizontal, 96 vertical binocular),
+    // split per eye with the usual outward asymmetry. This is the one value set
+    // in the sim not measured on this machine; the mod's own
+    // "headset fov half-angles h=.. v=.." log line is the pinning mechanism, and
+    // with these it must read h=55.0 v=48.0.
+    r.fov[0] = Fov{deg2rad(-55.0f), deg2rad(45.0f), deg2rad(48.0f), deg2rad(-48.0f)};
+    r.fov[1] = Fov{deg2rad(-45.0f), deg2rad(55.0f), deg2rad(48.0f), deg2rad(-48.0f)};
+}
+
+bool fov_is_degenerate(const Fov& f) {
+    return (f.angleRight - f.angleLeft) < 1e-4f || (f.angleUp - f.angleDown) < 1e-4f;
 }
 
 } // namespace xrsim

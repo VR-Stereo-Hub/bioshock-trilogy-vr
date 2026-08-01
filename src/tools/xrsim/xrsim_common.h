@@ -158,6 +158,10 @@ struct Rig {
 
 void rig_defaults(Rig& r);
 
+// A zero-extent field of view renders nothing. Callers use this to refuse a bad
+// value rather than hand back a black capture that looks like a mod bug.
+bool fov_is_degenerate(const Fov& f);
+
 // ---------------------------------------------------------------------------
 // Pacing
 // ---------------------------------------------------------------------------
