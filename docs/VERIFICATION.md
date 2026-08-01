@@ -312,7 +312,7 @@ apart - the gun points somewhere other than where it shoots.
    moved it 110 UU in X, a 0.4 m drop moved it 40 UU in Z. That is the ground truth for
    "is the model following the controller"; the picture is the confirmation, not the proof.
 
-### 2.8 Measured baselines (BS1, 2026-08-01, in gameplay)
+### 2.9 Measured baselines (BS1, 2026-08-01, in gameplay)
 
 Numbers from a real acceptance run, so a future regression has something to
 compare against rather than a guess:
