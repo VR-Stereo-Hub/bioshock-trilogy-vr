@@ -994,10 +994,15 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
     bvr::frame_inspector::set_mesh_skip(&rig_mesh_skip);
     // The helmet's meshes, derived from the foreground pass of a full frame
     // dump and confirmed by screenshot A/B (patterns.h carries the numbers and
-    // their derivation). Preloaded but with hiding OFF, so the user's first
-    // in-headset judgement is one overlay tick away and needs nothing typed.
+    // their derivation). HIDDEN BY DEFAULT since session 36 - the user judged
+    // the porthole in-headset ("annoying") and instructed the flip; edge-of-
+    // FOV placement is not possible for a single mesh. `reentry rig show` /
+    // the F10 checkbox restores it. KNOWN CAVEAT, first check next session:
+    // the index count is a GLOBAL key, not a foreground-pass one - an
+    // unrelated 3810-index mesh in an untested map would vanish too.
     for (uint32_t i = 0; i < patterns::kRigMeshCount && i < kRigMaxCounts; ++i)
         g_rigCounts[i].store(patterns::kRigMeshIndexCounts[i], std::memory_order_relaxed);
+    g_rigHide.store(true, std::memory_order_relaxed);
 }
 
 void handle_command(const char* args) {

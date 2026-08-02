@@ -62,19 +62,27 @@ user-verified stable). Nine commits on `s35-b2r-reentry-freeze`, merged to `bios
 .\tools\xrsim-launch.ps1 -Game bs2                                        # sim never run vs BS2; selftest PASSED 2026-08-02
 ```
 
-### Next steps
+### Next steps (user-directed, 2026-08-02 end of session 36)
 
-1. **Install the final build if the user's play session outlived the session** - their live game got
-   `vrpace detach off` by command, but an old install would re-strand on the next boot's alt-tab
-   (the repo tip has detach OFF by default; `.\tools\install.ps1 -Game bs2` when the game is closed).
-2. **Detach reconciliation (pacing epic P1)**: keepalive frames that carry REAL layers, so
-   detach-on also recovers; re-default on measurement. Note for all VDXR work: VD re-grants FOCUSED
-   only when the app is foregrounded in the headset (double-tap) - "black void + VD environment"
-   means backgrounded, not broken.
-3. **FOV fill quality (P2, user-reported in this session's headset run)**: `vrfov` fills the eye at
-   lower pixel density; the lever pair is `vrres` x `vrfov`. Plus the helmet-porthole key
-   tightening (global index count -> foreground pass).
-4. The deferred soak matrix above whenever stereo/pacing code is touched again.
+1. **SESSION 37 PRIORITY: resolution quality x FOV fill.** The user's in-headset verdict: `vrfov`
+   fills the eye (no bars, more immersion) but "the quality of the game dropped by a lot", and
+   "the custom resolutions are still not working" as a counter-lever. Goal: full FOV AND good
+   quality. Investigate the WHOLE quality chain, not just the game backbuffer: game resolution
+   (`vrres`/Shared.ini, verify it still applies end to end) -> eye capture -> **XR swapchain /
+   eye-buffer resolution (how is it sized? this is the real VR density lever)** -> VD encode.
+   Regression guards that must survive: the fgfov viewmodel lens match (weapon/hands glued to the
+   view - session 33's accepted fix), no world warp (claimRatioH ~1.0), stereo-on-1t untouched.
+2. **Helmet: HIDDEN BY DEFAULT since session 36** (user instruction; edge-of-FOV placement is not
+   possible for a single mesh). UNVERIFIED caveat, first check next session: the index count 3810
+   is a GLOBAL key - confirm no unrelated mesh vanishes in other maps, or tighten the key to the
+   foreground pass.
+3. Then per ROADMAP: aiming, motion controls, normal controls for BS2.
+4. **BS1 regression testing is deferred to the END of BS2 development** (user decision 2026-08-02:
+   work ships to the `bioshock-2` branch only, never main, so BS1 exposure begins only at the
+   eventual promotion; the deferred soak matrix above is the recipe).
+5. Pacing-epic residue (lower priority): keepalive frames that carry REAL layers so detach-on gets
+   recovery; VD re-grants FOCUSED only when the app is foregrounded in the headset (double-tap) -
+   "black void + VD environment" means backgrounded, not broken.
 
 ---
 
