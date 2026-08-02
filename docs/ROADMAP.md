@@ -736,10 +736,23 @@ kill. Both prerequisites below are now MET.):**
       (2) BS2 carries TWO lenses that differ AT 16:9 (world tracks the FOV option, a second is
       fixed at 60 deg), a 2.06x gain error at option 100 rising to 3.99x at 130 - the leading
       explanation for the stereo viewmodel report.
-- [ ] **BS2 aspect bisection** - find the squarest aspect BS2 renders full-height. The FOV-law half
-      of this is DONE (session 33 settled it from dumps already on disk: BS2's option is a
-      16:9-referenced horizontal, the OPPOSITE of BS1's, verified at two aspects x two options).
-      What is left is purely "which aspect is usable", 2 rungs, each a relaunch + a save load.
+- [x] **BS2 aspect bisection** - DISSOLVED session 37: there is no aspect law to bisect. The
+      letterbox was the WINDOW - the engine sizes its scene viewport to the window client, and the
+      game's chromed window clamps on the desktop (client tops out at 1421 rows on a 1440p
+      desktop; 2048/1421 = the "mystery ratio" 1.4413). A borderless client sized exactly to the
+      backbuffer renders full-height square pixels at EVERY aspect tried (1.778/1.6/0.9348/0.9321),
+      the engine follows a live client resize with its own ResizeBuffers, and resolution on BS2 is
+      therefore LIVE - no relaunch. Zero user boots spent (the menu scene classifies as gameplay).
+- [x] **BS2 resolution picker + automatic FOV (session 37)** - BS1-parity F10 picker
+      ("RENDER RESOLUTION (applies live)"): preset combo (flat/perf/native 2064x2208/sharp/max,
+      Quest-3-native class), custom WxH, MPx + auto-FOV preview per selection, Apply/Restore.
+      `vrres` gained the same presets + `list` + `restore`. Apply is LIVE (borderless window
+      enforcement; ini persistence + deferred re-verify against the engine's lagging
+      resize-persist; stereo-armed self-heal for chromed boots). The automatic FOV was already
+      shipping (`vrfov` computes the option from the headset via the inverse law, per CalcView);
+      session 37 verified it at the new aspects (option 138 at native renders 107.7x111.4 deg vs
+      the 108x110 eye, ClaimRatioH 0.995) and relabeled the UI. Headset acceptance in the save:
+      owed (fg one-cluster with a weapon at native, HUD legibility, perceived quality).
 - [x] **Identify BS2's 60-deg lens** - DONE session 32 by two in-headset FOV A/Bs rather than a
       dump: the defect worsens at option 130 and VANISHES at option 60, exactly as
       `k = tan(option/2)/tan(30)` predicts. It is the viewmodel. Session 25's "foreground follows

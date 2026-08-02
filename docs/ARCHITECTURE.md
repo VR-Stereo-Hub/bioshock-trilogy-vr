@@ -1063,3 +1063,41 @@ runtime.
   structurally unreachable in the sim and in flat soaks (no runtime = no session). Consequence for
   verification: state-machine changes get a headset smoke test at first opportunity, and "black
   void + VD environment" is read as BACKGROUNDED (foreground the app in the headset), not broken.
+
+### 2026-08-02 (session 37) - the letterbox was the window, and resolution goes live
+
+- **Identify the MECHANISM before bisecting its parameters.** The plan was a 4-5 boot aspect
+  bisection to find "the squarest aspect BS2 renders full-height". One `GetClientRect` on the live
+  window replaced the whole campaign: 1421 was never an engine constant, it was the chromed
+  window's client height on this desktop, and the engine sizes its scene viewport to the client
+  every frame. A bisection would have converged on a number that changes with the user's monitor.
+  Rule: when a measured constant has no derivation, first ask what SYSTEM produced it - a
+  parameter sweep over the wrong mechanism measures the lab, not the engine.
+- **The BS2 resolution apply is LIVE and window-shaped; BS1 keeps ini+relaunch. Do not port
+  either direction.** `apply_resolution()` orders the work: borderless window resize FIRST (the
+  engine follows with its own ResizeBuffers and then writes its own lagging value into
+  Shared.ini), ini persistence SECOND, a deferred re-verify THIRD (4 s, one rewrite) because the
+  engine's resize-persist records the PREVIOUS size mid-transition - the mechanism that made every
+  earlier "the write did not stick" report. A self-heal in the poll gate re-applies the fix when
+  stereo is armed and the client is smaller than the backbuffer (every chromed boot's state);
+  it is gated on `stereo_active()` so flat play is never touched, holds off 6 s around an apply
+  so it cannot fight an in-flight resize, and is disabled under StartupFullscreen.
+- **No anamorphic claim correction, still - and now none is needed.** Only a letterboxed state is
+  anamorphic, the enforcement removes letterboxing, and the picker warns instead on aspects far
+  from the eye's ~0.93. A symmetric correction was wrong anyway: BS2's band is bottom-anchored,
+  so honesty would need an asymmetric angleUp/angleDown claim the single-hfov path cannot express.
+- **A simulator default must be a measured value, not a published figure.** The sim's Quest 3 eye
+  shipped as the spec-sheet guess h=55 v=48; the real VDXR device measures h=54 v=55. Wide-short
+  vs square flips which branch of the FOV circumscription wins, so every FOV-derived sim number
+  silently disagreed with the headset. Pinned to the measured values (the session-34 open item);
+  the pinning mechanism is the mod's own `headset fov half-angles` log line.
+- **claimRatioH is claim over EYE, and ~1.0 is only the eye-matched case.** With the FOV fill ON
+  at 16:9 the mod over-renders honestly and ~1.8 is CORRECT there; the real per-config assertion
+  is `measured == tan(law(option,aspect)/2)/eyeTanH` (verified to four decimals at native, both
+  eye shapes). The session-36 guard line "claimRatioH ~1.0 at every shipped aspect" was written
+  when render==eye was the only design point and is superseded by the law assertion.
+- **BS2's menu background is a strict-gameplay ShockPlayer view, and that makes it a flat
+  screening context.** The whole letterbox/live-resize campaign ran unattended against the menu
+  scene (view classifier: GAMEPLAY; fgfov and auto FOV arm; full scene pipeline renders). The
+  save remains the ACCEPTANCE context per the user's standing directive - the screening pass
+  spends zero user boots, not zero user verdicts.

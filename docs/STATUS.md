@@ -2,7 +2,85 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-02, session 36 - THE BS2 STEREO FREEZE IS DEAD - merged to `bioshock-2`)
+## Current state (2026-08-02, session 37 - THE LETTERBOX WAS THE WINDOW; RESOLUTION IS LIVE - branch `s37-b2r-res-picker`)
+
+**The BS1-parity resolution picker ships, and it is better than BS1's: the apply is LIVE.** The
+session-36 brief's three blocking unknowns all closed in one unattended screening pass (zero user
+boots spent - BS2's menu background classifies as a strict-gameplay ShockPlayer view and renders
+the full scene pipeline, so the campaign ran against it under xrsim).
+
+### The finding that reshaped the feature
+
+**The letterbox was never the engine - it was the WINDOW.** The engine sizes its scene viewport
+to the window CLIENT area every frame while the backbuffer holds the ini size, and the game's
+chromed window clamps on the desktop: on this 2560x1440 monitor the client tops out at **1421
+rows** (outer height clamps to 1460, minus 39 rows of chrome). Sessions 32-33's "mystery ratio"
+1.4413 = 2048/1421 is window arithmetic. Even 2560x1440 (16:9!) letterboxed (client 2560x1421,
+lb=1.0141, anamorphic). A **borderless popup client sized exactly to the render** - beyond the
+desktop where needed - renders full-height square pixels at EVERY aspect tried (1.778 / 1.6 /
+0.9348 / 0.9321), and the engine follows a live client resize with its own ResizeBuffers. The
+aspect bisection is DISSOLVED; resolution on BS2 needs no relaunch at all.
+
+### What shipped (branch `s37-b2r-res-picker`, all in `bioshock2r/` + sim/docs)
+
+1. **F10 "RENDER RESOLUTION (applies live)"**: preset combo (`flat` 1920x1080, `perf` 1648x1768,
+   `native` 2064x2208 Quest 3 class, `sharp` 2480x2648, `max` 2888x3088), custom WxH
+   (1024..8192), MPx readout, an auto-FOV preview for the SELECTED size (`auto_option_for_dims` -
+   never the live-backbuffer inverse), aspect guidance against the eye's ~0.93, Apply + Restore
+   buttons through the `g_resWritePending` pending seam (render thread posts, poll gate applies -
+   and BS2's poll gate ticks at the menu, which BS1's CalcView consumer cannot).
+2. **`vrres` grew the same table**: `vrres native|perf|sharp|max|flat`, `vrres list`,
+   `vrres restore`, raw WxH - all through one `apply_resolution()`: borderless window resize
+   FIRST (engine follows), Shared.ini persistence SECOND, deferred re-verify THIRD (the engine
+   persists its live size into Shared.ini ON RESIZE one step behind - the mechanism behind every
+   historic "my write did not stick" report; it does NOT rewrite at exit, measured).
+3. **A stereo-gated self-heal**: every chromed boot starts letterbox-clamped; when stereo is
+   armed and the client is smaller than the backbuffer, the borderless fix re-applies within ~1 s
+   (verified live: boot at 2064x2208 -> client 2064x1421 -> `vrstereo on` -> healed to full
+   2064x2208). Never fires flat, never under StartupFullscreen, holds off around an apply.
+4. **The automatic FOV needed no new mechanism** - `vrfov` (default ON) already computes the
+   option per CalcView from the headset half-angles via the inverse law. Session 37 verified it
+   at the new aspects: at native the mod writes option 138 and the world renders **107.7 x 111.4
+   deg against the 108 x 110 eye** - the eye-matched configuration. UI relabeled ("Automatic FOV
+   (computed from your headset, never manual)"), option value shown, stale "squarer only narrows"
+   copy replaced (FOV = coverage lever, resolution = sharpness lever). `gfov` stays the manual
+   override.
+5. **The sim eye is pinned to the measured VDXR values** (h=54 v=55; was the spec-guess 55/48,
+   which flips the FOV circumscription branch - the session-34 open item). `fov` shorthand
+   defaults follow. claimRatioH semantics corrected on the record: it is claim/EYE, ~1.0 only
+   when render==eye; the per-config assertion is the law-derived expected value (measured to four
+   decimals at native: 0.99521 symmetric, 1.16973 asymmetric-default).
+6. **The world FOV law held at two more clean aspects** (tanV 1.427990 invariant through a live
+   16:9 -> 1.6 change; 2064x2208 dump decodes law B PASS dH=0.00000). Stereo-on-1t survived every
+   live resize: `wait2/s=0`, guardskips 0, zero faults, zero watchdogs.
+
+### Acceptance still OWED (needs the user, in the save - the screening context was the menu scene)
+
+1. **fgfov ONE-cluster with a WEAPON at native**: the menu-scene dump shows the world cluster
+   (law-exact) plus a stable 14-draw ~135x138-deg cluster that fits neither law - the menu has no
+   weapon, so whether the VIEWMODEL lens still matches off 16:9 is UNPROVEN. If it diverges, run
+   the FG lens's own law backwards in `apply_fg_fov_match` (s33 method: distinctive pokes, one
+   dump).
+2. In-headset judgment at `native`: perceived sharpness vs the old vrfov-fill blur, no world
+   warp, weapon glued, HUD/menu legibility at portrait aspect, helmet-hidden collateral watch.
+3. A 5-min `vrstereo on` soak in the save at the ship preset (flat screening soaked only minutes).
+
+### Next steps
+
+1. **USER BOOT (the acceptance above)**: launch via Steam/VD as usual, load the save, arm stereo,
+   pick `native` in the F10 picker (or `vrres native`), play. Flat-side me: `dumpframe full 2`
+   with a weapon drawn + decode at 2064x2208; `soak.ps1 -Game bs2 -Attach -NoFocus -Minutes 5
+   -Arm ""`. Then the picker preset the user prefers becomes the persisted default (Shared.ini
+   already carries it after Apply).
+2. If the fg lens diverges at native (item 1 above): derive the FG lens law from two distinctive
+   pokes + one dump, then write its inverse in `apply_fg_fov_match`.
+3. Then per ROADMAP: aiming, motion controls, normal controls for BS2. Helmet key-3810 collateral
+   watch continues to ride along. Pacing-epic residue unchanged (keepalives with real layers).
+4. BS1 regression testing stays deferred to the END of BS2 development (user decision 2026-08-02).
+
+---
+
+## Previous state (2026-08-02, session 36 - THE BS2 STEREO FREEZE IS DEAD - merged to `bioshock-2`)
 
 **`vrstereo on` ships real full-rate stereo - both eyes every frame, running on `reentry 1t` - and
 it no longer freezes.** In-headset confirmed same day (VDXR/Quest 3, immersive, head-tracked,
@@ -4457,6 +4535,45 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 37 - 2026-08-02 - the letterbox was the window; the resolution picker ships LIVE
+
+Branch `s37-b2r-res-picker` off `bioshock-2` (d875ee6), merged back to `bioshock-2`. The brief
+was a BS1-parity picker + automatic FOV behind three blocking unknowns (aspect bisection, vrres
+end-to-end, swapchain sizing); all three closed in one UNATTENDED screening pass, because BS2's
+menu background turns out to classify as a strict-gameplay ShockPlayer view rendering the full
+scene pipeline - the campaign ran there under the first-ever xrsim attach to BS2 (which worked
+first try), spending zero user boots.
+
+The reshaping find: the engine sizes its scene viewport to the window CLIENT while the backbuffer
+holds the ini size, and the game's chromed window clamps at client height 1421 on this 1440p
+desktop - sessions 32-33's "mystery ratio" 1.4413 = 2048/1421 is window arithmetic, and even
+2560x1440 letterboxes (lb=1.0141). One GetClientRect replaced the planned 4-5 boot bisection: a
+borderless client sized to the render (beyond the desktop where needed) renders full-height
+square pixels at every aspect tried, and the engine follows a LIVE client resize with its own
+ResizeBuffers - backbuffer, scene viewport, XR swapchain, auto FOV and claim all tracked
+correctly through 16:9 -> 1.6 -> 0.9348 -> 0.9321 transitions with stereo-on-1t armed
+(wait2/s=0 throughout, zero faults). So the picker ships BETTER than BS1 parity: `vrres
+native|perf|sharp|max|flat / list / restore / WxH` and the F10 "RENDER RESOLUTION (applies
+live)" section apply instantly via `apply_resolution()` (borderless resize -> ini persist ->
+deferred re-verify - the engine persists its own live size into Shared.ini ON RESIZE one step
+behind, which is the mechanism behind every historic "my resolution write did not stick" report;
+it does not rewrite at exit). A stereo-gated self-heal fixes the letterbox every chromed boot
+starts with (verified: 2064x2208 boot healed ~1 s after `vrstereo on`). The automatic FOV needed
+no new mechanism - `vrfov` already runs the inverse law per CalcView; at native it writes option
+138 and renders 107.7x111.4 deg against the 108x110 eye, ClaimRatioH 0.99521 (sim eye pinned to
+the measured VDXR 54/55 this session, closing the s34 open item; claimRatioH is claim/EYE and
+the honest 16:9-fill reads ~1.8 BY DESIGN - the guard is the law-derived expected value, matched
+to four decimals).
+
+Bugs found by the session's own instruments: `vrres list` fell to the status line (fgets newline
+vs strcmp - token-match now), game-batch writes are LOST during scene transitions (the menu-scene
+load stalls polls ~9 s; verify per-command echoes), and `vrres restore` dragged the engine to the
+stale saved rect (restore now sizes the client for the current backbuffer). OWED to the user's
+next save session: the fgfov ONE-cluster check with a real weapon at native (the menu-scene dump
+shows a stable 14-draw ~135x138-deg second cluster that fits neither law - the menu has no
+weapon, so the viewmodel lens off 16:9 is unproven), the in-headset sharpness/warp/HUD verdicts,
+and a 5-min attached soak in the save.
 
 ### Session 36 - 2026-08-02 - the BS2 stereo freeze is dead; full-rate stereo ships on 1t
 
