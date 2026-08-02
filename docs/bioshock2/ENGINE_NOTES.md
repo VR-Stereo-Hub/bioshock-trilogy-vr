@@ -1071,14 +1071,26 @@ threaded-branch ret, Draw tail call-site ret. Exactly the chain above, frame for
 all-threads snapshot also showed the render worker parked in its own FEventWin wait
 (`B8108F 67D6B4 B811E7`) - both sides of the lost-wakeup handshake, seen at once.
 
-### Mechanism vs trigger
+### Mechanism vs trigger - MEASURED (session 36), and the trigger hypothesis is refuted
 
-`0xBB1950` skips the wait entirely when the worker already finished (`cmp [esi+8],0; jne`).
-Whether the race is REACHABLE is therefore pure timing: how long the render worker takes versus
-how soon the second flush arrives. A bigger render target slows the worker - which is why the
-user's recollection that the freeze began with the resolution/FOV work is compatible with this
-mechanism (the doubled draw made the race possible; per-frame cost plausibly made it reachable).
-Session 36 measures this with the `wait2/s` counter rather than arguing about it.
+`0xBB1950` skips the wait entirely when the worker already finished (`cmp [esi+8],0; jne`), so
+session 35 hypothesised the resolution/FOV work may have made the wait START being taken (bigger
+render target -> slower worker -> latch not yet set at the second flush). Session 36 measured it
+with a passive flush-point hook sampling the latch at second-flush entry (`wait2/s` / `set2/s` on
+the `[reentry] beat` line):
+
+| run | resolution | wait2/s | set2/s | wedge onset |
+|---|---|---|---|---|
+| baseline | 1920x1080 | == 2nd/s (91-94) | **0** | ~5 s |
+| A | 1280x720 | == 2nd/s (107-111) | **0** | ~35 s |
+
+**The second flush enters the `Wait(INFINITE)` on EVERY doubled frame at BOTH resolutions.**
+There is no timing headroom for the resolution or the lens/FOV options to have created - the race
+window has been open ~100x/s since the doubled draw landed (97a229a), and the 5-100 s onset is the
+per-wait probability of the lost wakeup, not a reachability threshold. Runs B/C (`fgfov off`,
+`vrfov off`) are therefore moot - wait2 is already saturated, so they were skipped. The user's
+recollection that the freeze "began with" the resolution/FOV work reads as onset-variance
+coincidence, not causation. None of this changes the fix: 1t removes the wait entirely.
 
 ### The arg-count trap, carried forward
 

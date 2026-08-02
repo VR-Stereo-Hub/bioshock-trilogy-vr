@@ -45,6 +45,10 @@ using DrawFn = void(__fastcall*)(void* ecx, void* edx, void* a1, void* a2, void*
 // FContentStreamingManager view hand-off: `ret 0xC`, live ECX this,
 // args (FVector* loc, FRotator* rot, void* obj). Telemetry hook only.
 using StreamFn = void(__fastcall*)(void* ecx, void* edx, void* loc, void* rot, void* a3);
+// Render flush point: `ret 8`, live ECX this (the render mgr), 2 stack args
+// (scene, view group). ARG COUNT IS LOAD-BEARING: ret imm / 4 == 2 - a
+// mismatch pops the no-dump ESP RTC modal (see ENGINE_NOTES arg-count trap).
+using FlushPointFn = void(__fastcall*)(void* ecx, void* edx, void* scene, void* group);
 
 struct HookSlot {
     const char* name = nullptr;
@@ -55,6 +59,7 @@ struct HookSlot {
 };
 HookSlot g_draw{"draw"};
 HookSlot g_stream{"stream"};
+HookSlot g_flushpoint{"flushpoint"};
 
 // Nonzero exactly while a depth-0 hooked render call is in flight on that
 // thread. The poll-gate deferral (inside_hooked_call) and the calcview
@@ -102,6 +107,18 @@ std::atomic<int> g_vrstereoPending{-1}; // -1 none, 0 off, 1 on
 // backend-independent.
 std::atomic<bool> g_srDev{false};
 std::atomic<bool> g_vrStereoArmed{false};
+
+// Flush-point instrumentation (session 36). A hook on the render flush point
+// (patterns.h flush-chain constants) counts, for the SECOND draw of a pair,
+// whether the gate's completion latch was already set (the engine's wait is
+// skipped) or clear (the Wait(INFINITE) WILL be entered - the freeze window).
+// wait2/s turns "did the resolution/FOV work make the race reachable?" into
+// a number. Passive until 1t arms; it also proves the detour transparent on
+// the hot path before anything is forced.
+std::atomic<bool> g_inSecondDraw{false};
+std::atomic<uint32_t> g_flushPointEntries{0};
+std::atomic<uint32_t> g_waitTaken2{0}; // second-flush entries, latch CLEAR
+std::atomic<uint32_t> g_latchSet2{0};  // second-flush entries, latch SET
 
 // ---- Session 34: THE FREEZE - WHAT IT IS, AND WHAT IT IS NOT --------------
 // Localised end to end with the stall watchdog (suspend the wedged thread,
@@ -213,7 +230,7 @@ std::atomic<uint32_t> g_camActorProbes{0};
 // Heartbeat bookkeeping - beat thread (the Draw thread) only.
 uint64_t g_lastBeatMs = 0;
 uint32_t g_beatDraws = 0, g_beatStreams = 0, g_beatCalcIn = 0, g_beatCalcOut = 0,
-         g_beatSecond = 0;
+         g_beatSecond = 0, g_beatWait2 = 0, g_beatSet2 = 0;
 uint64_t g_beatPresents = 0;
 
 // One-shot CalcView stack scan request.
@@ -566,6 +583,31 @@ bool call_draw_guarded(DrawFn fn, void* ecx, void* edx, void* a1, void* a2, void
     }
 }
 
+// Render flush point detour (session 36, passive). Counts every entry; for
+// entries made by the SECOND draw of a pair it samples the gate's completion
+// latch ([mgr+4] -> gate, [gate+8] -> latch) nanoseconds before the engine's
+// own `cmp [esi+8],0`: latch clear = the Wait(INFINITE) will be entered.
+// Falls through to the original untouched - forcing the inline branch is the
+// 1t verb's job and arms separately.
+void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group) {
+    g_flushPointEntries.fetch_add(1, std::memory_order_relaxed);
+    if (g_inSecondDraw.load(std::memory_order_relaxed) &&
+        g_secondPassTid.load(std::memory_order_relaxed) == GetCurrentThreadId()) {
+        using namespace bvr::pattern_scan;
+        uint8_t* mgr = static_cast<uint8_t*>(ecx);
+        if (mgr && is_memory_valid(mgr + 4, sizeof(void*))) {
+            uint8_t* gate = *reinterpret_cast<uint8_t**>(mgr + 4);
+            if (gate && is_memory_valid(gate + 8, sizeof(uint32_t))) {
+                if (*reinterpret_cast<uint32_t*>(gate + 8))
+                    g_latchSet2.fetch_add(1, std::memory_order_relaxed);
+                else
+                    g_waitTaken2.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    reinterpret_cast<FlushPointFn>(g_flushpoint.original)(ecx, edx, scene, group);
+}
+
 // The second Draw of a pair (game thread, depth 0, after the first call
 // returned). ORIGINAL args pass through unchanged - the camera enters via
 // the CalcView dispatch that re-fires inside the Draw (live-verified
@@ -631,8 +673,10 @@ void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void*
     // exited, so it is upstream of Present. This marker is what lets the pace
     // trace say whether the game is sitting inside the RE-ENTERED scene draw.
     bvr::vr::set_draw_stage("secondDraw");
+    g_inSecondDraw.store(true, std::memory_order_relaxed);
     bool ok = call_draw_guarded(reinterpret_cast<DrawFn>(g_draw.original), ecx, edx, a1,
                                 a2, a3, a4);
+    g_inSecondDraw.store(false, std::memory_order_relaxed);
     bvr::vr::set_draw_stage(nullptr);
     QueryPerformanceCounter(&t1);
     QueryPerformanceFrequency(&freq);
@@ -667,6 +711,8 @@ void heartbeat(uint64_t now) {
         g_beatCalcOut = g_calcOutside.load(std::memory_order_relaxed);
         g_beatSecond = g_secondCalls.load(std::memory_order_relaxed);
         g_beatPresents = bvr::d3d11_hook::present_count();
+        g_beatWait2 = g_waitTaken2.load(std::memory_order_relaxed);
+        g_beatSet2 = g_latchSet2.load(std::memory_order_relaxed);
         return;
     }
     if (now - g_lastBeatMs < 1000) return;
@@ -675,11 +721,15 @@ void heartbeat(uint64_t now) {
     uint32_t calcIn = g_calcInside.load(std::memory_order_relaxed);
     uint32_t calcOut = g_calcOutside.load(std::memory_order_relaxed);
     uint32_t seconds = g_secondCalls.load(std::memory_order_relaxed);
+    uint32_t wait2 = g_waitTaken2.load(std::memory_order_relaxed);
+    uint32_t set2 = g_latchSet2.load(std::memory_order_relaxed);
     uint64_t presents = bvr::d3d11_hook::present_count();
-    BVR_LOG("[reentry] beat: draws/s=%u 2nd/s=%u presents/s=%llu stream/s=%u calc "
+    BVR_LOG("[reentry] beat: draws/s=%u 2nd/s=%u wait2/s=%u set2/s=%u presents/s=%llu "
+            "stream/s=%u calc "
             "in/out=%u/%u drawTid=%u presentTid=%u calcTid=%u drawUs=%u camSrc=(%.1f "
             "%.1f %.1f | %d %d %d) callers=%X,%X,%X,%X",
-            draws - g_beatDraws, seconds - g_beatSecond,
+            draws - g_beatDraws, seconds - g_beatSecond, wait2 - g_beatWait2,
+            set2 - g_beatSet2,
             static_cast<unsigned long long>(presents - g_beatPresents),
             streams - g_beatStreams, calcIn - g_beatCalcIn, calcOut - g_beatCalcOut,
             g_lastDrawTid.load(std::memory_order_relaxed),
@@ -703,6 +753,8 @@ void heartbeat(uint64_t now) {
     g_beatCalcOut = calcOut;
     g_beatSecond = seconds;
     g_beatPresents = presents;
+    g_beatWait2 = wait2;
+    g_beatSet2 = set2;
 }
 
 void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, void* a4) {
@@ -910,6 +962,18 @@ void handle_command(const char* args) {
                                   sizeof patterns::kSceneBuildPrologue))
                     return;
             }
+            // The wait2/set2 instrument (best-effort here; the 1t verb makes
+            // this same hook mandatory before anything is forced).
+            if (!g_flushpoint.enabled.load(std::memory_order_relaxed)) {
+                if (patterns::verify_flush_chain(g_image))
+                    install_slot(g_flushpoint, patterns::kFlushPointRva,
+                                 reinterpret_cast<void*>(&FlushPointDetour),
+                                 patterns::kFlushPointPrologue,
+                                 sizeof patterns::kFlushPointPrologue);
+                if (!g_flushpoint.enabled.load(std::memory_order_relaxed))
+                    BVR_LOG("[reentry] flush-point hook not armed - wait2/set2 "
+                            "will read 0 (stereo still runs)");
+            }
             g_stereo.store(true, std::memory_order_relaxed);
             BVR_LOG("[reentry] STEREO ON (threaded substrate; every gameplay draw "
                     "doubles L/R, eye-tagged for per-present capture)");
@@ -979,6 +1043,7 @@ void handle_command(const char* args) {
         g_stereo.store(false, std::memory_order_relaxed);
         disable_slot(g_draw);
         disable_slot(g_stream);
+        disable_slot(g_flushpoint);
     } else if (strcmp(verb, "dump") == 0) {
         int n = 0;
         if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 8;
