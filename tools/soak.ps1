@@ -293,11 +293,11 @@ if ($armed) {
 }
 
 # --- the soak ----------------------------------------------------------------
-$deadline  = (Get-Date).AddMinutes($Minutes)
-$started   = Get-Date
-$watchdogs = @()
-$lastNote  = Get-Date
-$age       = 0    # last measured log age; also read by the 60 s progress note
+$deadline   = (Get-Date).AddMinutes($Minutes)
+$started    = Get-Date
+$wdEpisodes = 0
+$lastNote   = Get-Date
+$age        = 0    # last measured log age; also read by the 60 s progress note
 
 Write-Step ("soaking for {0} min (until {1:HH:mm:ss})..." -f $Minutes, $deadline)
 
@@ -313,16 +313,50 @@ while ((Get-Date) -lt $deadline) {
         exit 4
     }
 
-    # New WATCHDOG lines are the stall detector's own verdict.
+    # New WATCHDOG lines are the stall detector's CRY, not yet a verdict: a
+    # save load or level transition legitimately stops presents for >4 s and
+    # trips it (measured 2026-08-02: a respawn fired `presentsStopped stuck
+    # 4000 ms` and the game recovered fully 300 ms later - and -KillOnFail
+    # then killed a healthy game the moment the user's save finished
+    # loading). The WEDGE, by definition, never recovers: its log stops
+    # forever. So an episode gets a 30 s recovery watch - the log GROWING
+    # again means a load (episode counted, soak continues); silence is the
+    # freeze (exit 3).
+    $newWd = @()
     foreach ($line in ((Read-NewText $trace ([ref]$traceOffset)) -split "`n")) {
-        if ($line -match 'WATCHDOG') { $watchdogs += $line.Trim() }
+        if ($line -match 'WATCHDOG') { $newWd += $line.Trim() }
     }
-    if ($watchdogs.Count -gt 0) {
-        Write-Step "FAIL after ${elapsed}s: WATCHDOG fired $($watchdogs.Count) time(s)"
-        $watchdogs | Select-Object -First 8 | ForEach-Object { Write-Host "  $_" }
-        Show-Tail $trace 40 "pacetrace.log"
-        Stop-GameIfAsked
-        exit 3
+    if ($newWd.Count -gt 0) {
+        $wdEpisodes++
+        Write-Step "WATCHDOG after ${elapsed}s ($($newWd.Count) line(s)) - 30 s recovery watch (loads stall presents legitimately; the wedge never recovers)"
+        $newWd | Select-Object -First 3 | ForEach-Object { Write-Host "  $_" }
+        $lenAtWd = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
+        $recovered = $false
+        for ($g = 0; $g -lt 6; $g++) {
+            Start-Sleep -Seconds 5
+            $p = Get-Process $proc -ErrorAction SilentlyContinue
+            if (-not $p) {
+                Write-Step "FAIL: $proc DIED during the recovery watch"
+                Show-Tail $trace 40 "pacetrace.log"
+                Show-Tail $log 20 "bioshockvr.log"
+                exit 4
+            }
+            if ((Test-Path $log) -and (Get-Item $log).Length -gt $lenAtWd) {
+                $recovered = $true
+                break
+            }
+        }
+        if (-not $recovered) {
+            Write-Step "FAIL after ${elapsed}s: WATCHDOG fired and the log never advanced again - WEDGED"
+            Show-Tail $trace 40 "pacetrace.log"
+            Show-Tail $log 20 "bioshockvr.log"
+            Stop-GameIfAsked
+            exit 3
+        }
+        # Consume this episode's trailing watchdog lines so one stall reads
+        # as one episode, not a cascade.
+        [void](Read-NewText $trace ([ref]$traceOffset))
+        Write-Step "recovered (episode $wdEpisodes) - continuing"
     }
 
     # The wedge signature: the log stops dead and never resumes.
@@ -362,6 +396,9 @@ if (-not (Test-Path $trace)) {
     exit 7
 }
 
-Write-Step ("PASS: {0} min, {1}, no wedge, no WATCHDOG, no new dumps" -f `
-    $Minutes, $(if ($armed) { "'$Arm'" } else { "vanilla" }))
+Write-Step ("PASS: {0} min, {1}, no wedge, {2}, no new dumps" -f `
+    $Minutes, $(if ($armed) { "'$Arm'" } else { "vanilla" }),
+    $(if ($wdEpisodes -gt 0) {
+        "$wdEpisodes RECOVERED watchdog episode(s) (loads; stacks in pacetrace.log)"
+    } else { "no WATCHDOG" }))
 exit 0
