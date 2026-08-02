@@ -419,11 +419,126 @@ struct ResMode {
     int w, h;
 };
 const ResMode kResModes[] = {
-    {"flat", "1920 x 1080  (16:9, 2.1 MPx, flat play / performance)", 1920, 1080},
-    {"balanced", "2560 x 1440  (16:9, 3.7 MPx, balanced)", 2560, 1440},
-    {"sharp", "3200 x 1800  (16:9, 5.8 MPx, sharper)", 3200, 1800},
-    {"max", "3840 x 2160  (16:9, 8.3 MPx, very demanding)", 3840, 2160},
+    {"flat", "1920 x 1080  (16:9, 2.1 MPx, flat play)", 1920, 1080},
+    {"perf", "1648 x 1768  (2.9 MPx, performance)", 1648, 1768},
+    {"native", "2064 x 2208  (4.6 MPx, Quest 3 native)", 2064, 2208},
+    {"sharp", "2480 x 2648  (6.6 MPx, sharper)", 2480, 2648},
+    {"max", "2888 x 3088  (8.9 MPx, very demanding)", 2888, 3088},
 };
+
+// ---- Live window enforcement (session 37) ----------------------------------
+// THE LETTERBOX ROOT CAUSE, measured live this session: the engine sizes its
+// scene viewport to the window CLIENT area while the backbuffer holds the ini
+// size, and its own window carries chrome plus a size clamp - on a 1440p
+// desktop the client tops out at 1421 rows, so every taller configuration
+// rendered letterboxed and anamorphic. 2048x2048 -> a 2048x1421 scene:
+// sessions 32-33's mystery ratio 1.4413 was never an engine law, it was
+// window arithmetic (2048 wide / 1421 visible rows).
+//
+// The fix is a window the engine cannot lose rows to: strip the chrome
+// (borderless popup) and size the client EXACTLY to the render size - beyond
+// the desktop if need be, which a popup is allowed to do. The engine follows
+// a client resize with its own ResizeBuffers (backbuffer == client == scene
+// viewport, letterbox 1.0000, square pixels at every aspect tried: 1.778,
+// 1.6, 0.9348, 0.9321), the XR swapchain rebuilds, and the auto FOV and the
+// claim recompute per the law. So resolution on BS2 is LIVE - the picker
+// resizes the window and the engine does the rest, no relaunch. (BS1 cannot
+// do this; its lane stays ini + relaunch. Do not port either way.)
+HWND g_gameWindow = nullptr;      // game thread only; revalidated before use
+LONG g_savedWindowStyle = 0;      // original chrome, for `vrres restore`
+RECT g_savedWindowRect = {};      // original rect, for `vrres restore`
+bool g_windowSaved = false;       // game thread only
+std::atomic<bool> g_windowRestorePending{false}; // overlay -> game thread
+// After an apply: re-verify the ini once the engine settles, because the
+// engine PERSISTS ITS LIVE SIZE INTO Shared.ini ON RESIZE, one step behind
+// (measured: it recorded the previous size mid-transition). Game thread only.
+uint64_t g_resConfirmVal = 0;
+uint64_t g_resConfirmDueMs = 0;
+// The self-heal must not fight a just-applied resize while the engine's
+// ResizeBuffers is still in flight. Game thread only.
+uint64_t g_resHealHoldUntilMs = 0;
+
+BOOL CALLBACK find_game_window_cb(HWND h, LPARAM param) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (pid != GetCurrentProcessId() || !IsWindowVisible(h)) return TRUE;
+    RECT c{};
+    if (!GetClientRect(h, &c) || c.right < 320 || c.bottom < 200) return TRUE;
+    *reinterpret_cast<HWND*>(param) = h;
+    return FALSE;
+}
+
+HWND game_window() {
+    if (g_gameWindow && IsWindow(g_gameWindow)) return g_gameWindow;
+    g_gameWindow = nullptr;
+    EnumWindows(find_game_window_cb, reinterpret_cast<LPARAM>(&g_gameWindow));
+    return g_gameWindow;
+}
+
+// Make the window's CLIENT area exactly w x h, chrome-free, top-left pinned
+// so the F10 overlay stays on the visible desktop while any excess hangs off
+// the bottom. Saves the original style/rect once for `vrres restore`.
+bool enforce_client_size(uint32_t w, uint32_t h) {
+    HWND wnd = game_window();
+    if (!wnd) {
+        BVR_LOG("[b2r] resolution: game window not found - cannot resize");
+        return false;
+    }
+    if (!g_windowSaved) {
+        g_savedWindowStyle = GetWindowLongW(wnd, GWL_STYLE);
+        GetWindowRect(wnd, &g_savedWindowRect);
+        g_windowSaved = true;
+    }
+    SetWindowLongW(wnd, GWL_STYLE,
+                   WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN);
+    if (!SetWindowPos(wnd, nullptr, 0, 0, static_cast<int>(w), static_cast<int>(h),
+                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+        BVR_LOG("[b2r] resolution: SetWindowPos %ux%u failed (err %lu)", w, h,
+                GetLastError());
+        return false;
+    }
+    RECT c{};
+    GetClientRect(wnd, &c);
+    BVR_LOG("[b2r] resolution: window client now %ldx%ld (asked %ux%u, borderless) - "
+            "the engine follows with its own ResizeBuffers",
+            c.right, c.bottom, w, h);
+    return true;
+}
+
+void restore_game_window() {
+    HWND wnd = game_window();
+    if (!wnd || !g_windowSaved) return;
+    // Restore the CHROME, but size the client for the CURRENT backbuffer
+    // rather than the remembered rect: the remembered rect encodes whatever
+    // clamped size the boot happened to have, and re-applying it drags the
+    // engine's follow-the-client resize to a stale resolution (found live -
+    // restore after `vrres flat` left the render at 2064x1421). Only the
+    // saved top-left position is reused.
+    SetWindowLongW(wnd, GWL_STYLE, g_savedWindowStyle);
+    unsigned bw = 0, bh = 0;
+    RECT r{0, 0, 1920, 1080};
+    if (bvr::hud::backbuffer_dims(&bw, &bh) && bw && bh) {
+        r.right = static_cast<LONG>(bw);
+        r.bottom = static_cast<LONG>(bh);
+    }
+    AdjustWindowRect(&r, static_cast<DWORD>(g_savedWindowStyle), FALSE);
+    SetWindowPos(wnd, nullptr, g_savedWindowRect.left, g_savedWindowRect.top,
+                 r.right - r.left, r.bottom - r.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    BVR_LOG("[b2r] resolution: window chrome restored (client sized for %ux%u)", bw,
+            bh);
+}
+
+// One resolution-apply path for the command, the picker and the self-heal:
+// resize FIRST (the engine follows and then writes its own lagging value into
+// Shared.ini), persist SECOND, re-verify THIRD after the dust settles.
+void apply_resolution(uint32_t w, uint32_t h) {
+    enforce_client_size(w, h);
+    game_ini::write_viewport(w, h);
+    g_resConfirmVal = (static_cast<uint64_t>(w) << 32) | h;
+    g_resConfirmDueMs = GetTickCount64() + 4000;
+    g_resHealHoldUntilMs = GetTickCount64() + 6000;
+}
 
 // Half-IPD shift along view-right of `rot`, sign -1 = left eye. Shared by the
 // AER path now and both SequentialReentry passes later - ONE implementation,
@@ -899,13 +1014,15 @@ void apply_command(const char* cmd, const char* args) {
         // The eye render IS the game's backbuffer, so the game's resolution is
         // the VR resolution - and a headset eye is roughly square, which is why
         // this lane comes BEFORE any FOV or viewmodel tuning (BS1's settled
-        // policy, sessions 27-28). BS2 has no engine Exec seam at all, so there
-        // is no live path to try; the game's own ini is the only lever and a
-        // change lands on the next launch. Deliberately explicit, never
-        // automatic - this writes the user's config file.
+        // policy, sessions 27-28). Session 37 made it LIVE: the apply path
+        // resizes the window (borderless, client == render size), the engine
+        // follows with its own ResizeBuffers, and the ini write is only the
+        // persistence for the next launch. Deliberately explicit, never
+        // automatic - this resizes the user's game and writes their config.
         //
-        // Session 37: named presets from kResModes (the same table the F10
-        // picker shows), `list` to print them, raw WxH still accepted.
+        // Named presets from kResModes (the same table the F10 picker shows),
+        // `list` to print them, `restore` to bring the window chrome back,
+        // raw WxH still accepted.
         // NOTE args comes from fgets and still carries the trailing newline,
         // so a whole-string strcmp can never match - token-match instead
         // (found the hard way: `vrres list` fell through to the status line).
@@ -920,16 +1037,21 @@ void apply_command(const char* cmd, const char* args) {
             if (m.cmdName && argIs(m.cmdName)) named = &m;
         unsigned rw = 0, rh = 0;
         if (named) {
-            game_ini::write_viewport(static_cast<uint32_t>(named->w),
-                                     static_cast<uint32_t>(named->h));
+            rw = static_cast<unsigned>(named->w);
+            rh = static_cast<unsigned>(named->h);
+        }
+        if (rw && rh) {
+            apply_resolution(rw, rh); // already on the game thread, poll lane
         } else if (argIs("list")) {
             for (const ResMode& m : kResModes)
                 BVR_LOG("[b2r] vrres %-10s -> %s", m.cmdName ? m.cmdName : "(ui)",
                         m.label);
+        } else if (argIs("restore")) {
+            restore_game_window();
         } else if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
-            game_ini::write_viewport(rw, rh);
+            apply_resolution(rw, rh);
         } else if (sscanf_s(args, "%u %u", &rw, &rh) == 2 && rw && rh) {
-            game_ini::write_viewport(rw, rh);
+            apply_resolution(rw, rh);
         } else {
             // The REAL backbuffer, not the XR swapchain: flat there is no
             // session, so fov_audit's swap dims are 0x0 and the status line
@@ -1566,12 +1688,59 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                 // game thread outside hooked calls. Also the MENU-arming
                 // path - BS2's menu never runs PlayerCalcView.
                 scenedraw::apply_pending_vrstereo();
-                // Overlay-posted resolution write (session 37): file I/O off
-                // the render thread, and it works from the main menu for the
-                // same reason vrstereo arming does.
+                // Overlay/command-posted resolution apply (session 37): live
+                // window resize + ini persistence, on the game thread, and it
+                // works from the main menu for the same reason vrstereo
+                // arming does.
                 if (uint64_t req = g_resWritePending.exchange(0, std::memory_order_relaxed))
-                    game_ini::write_viewport(static_cast<uint32_t>(req >> 32),
-                                             static_cast<uint32_t>(req & 0xFFFFFFFFu));
+                    apply_resolution(static_cast<uint32_t>(req >> 32),
+                                     static_cast<uint32_t>(req & 0xFFFFFFFFu));
+                if (g_windowRestorePending.exchange(false, std::memory_order_relaxed))
+                    restore_game_window();
+                // Deferred ini re-verify: the engine persists its live size
+                // into Shared.ini on resize, ONE STEP BEHIND - measured this
+                // session (it recorded the previous size mid-transition). One
+                // rewrite wins because ours comes last.
+                if (g_resConfirmVal && GetTickCount64() >= g_resConfirmDueMs) {
+                    uint32_t w = static_cast<uint32_t>(g_resConfirmVal >> 32);
+                    uint32_t h = static_cast<uint32_t>(g_resConfirmVal & 0xFFFFFFFFu);
+                    g_resConfirmVal = 0;
+                    game_ini::Viewport vp = game_ini::read_viewport();
+                    if (vp.valid && (vp.w != w || vp.h != h)) {
+                        BVR_LOG("[b2r] resolution: engine's resize-persist overwrote "
+                                "Shared.ini (%ux%u) - rewriting %ux%u",
+                                vp.w, vp.h, w, h);
+                        game_ini::write_viewport(w, h);
+                    }
+                }
+                // VR letterbox self-heal: a fresh boot comes up with the
+                // game's own chromed window, whose client loses rows to the
+                // desktop clamp - THE letterbox. While stereo is armed and
+                // the client is smaller than the backbuffer, re-apply the
+                // borderless enforcement at the backbuffer size. Never fires
+                // flat, never fires in fullscreen, and holds off while an
+                // apply is still settling.
+                if (scenedraw::stereo_active() &&
+                    GetTickCount64() >= g_resHealHoldUntilMs) {
+                    static int s_healFullscreen = -1; // -1 unknown, cache once
+                    if (s_healFullscreen < 0)
+                        s_healFullscreen =
+                            game_ini::read_viewport().startupFullscreen ? 1 : 0;
+                    unsigned bw = 0, bh = 0;
+                    RECT c{};
+                    HWND wnd = game_window();
+                    if (s_healFullscreen == 0 && wnd &&
+                        bvr::hud::backbuffer_dims(&bw, &bh) && bw && bh &&
+                        GetClientRect(wnd, &c) && c.right > 0 && c.bottom > 0 &&
+                        (static_cast<unsigned>(c.right) < bw ||
+                         static_cast<unsigned>(c.bottom) < bh)) {
+                        BVR_LOG("[b2r] resolution: client %ldx%ld < backbuffer %ux%u "
+                                "with stereo armed - re-applying the borderless fix",
+                                c.right, c.bottom, bw, bh);
+                        enforce_client_size(bw, bh);
+                        g_resHealHoldUntilMs = GetTickCount64() + 6000;
+                    }
+                }
             }
         }
     }
@@ -1820,12 +1989,14 @@ void draw_debug_ui() {
     }
 
     // ---- RENDER RESOLUTION (session 37): the sharpness lever ----------------
-    // BS1's picker SHAPE (dropdown of named modes + Custom + a write button),
-    // BS2's facts: the governing file is Shared.ini [SharedOptions] (never
-    // BS1's WinDrv pair - the engine ignores those here), a change lands on
-    // the NEXT launch (no live path; see game_ini.h), and the write is posted
-    // to the game thread via g_resWritePending because it does file I/O.
-    if (ImGui::CollapsingHeader("RENDER RESOLUTION (applies on next launch)")) {
+    // BS1's picker SHAPE (dropdown of named modes + Custom + an apply button),
+    // BS2's facts: the apply is LIVE (borderless window resize -> the engine's
+    // own ResizeBuffers follows; see the enforcement block near kResModes),
+    // Shared.ini [SharedOptions] is only the persistence for the next launch
+    // (never BS1's WinDrv pair - the engine ignores those here). The work is
+    // posted to the game thread via g_resWritePending: window calls and file
+    // I/O do not belong on the render thread.
+    if (ImGui::CollapsingHeader("RENDER RESOLUTION (applies live)")) {
         // read_viewport opens two files, so re-read at ~1 Hz, not every frame
         // (BS1 re-reads every overlay frame; do not port that).
         static game_ini::Viewport s_vp{};
@@ -1845,8 +2016,8 @@ void draw_debug_ui() {
                         liveH);
             if (liveW && liveH && (s_vp.w != liveW || s_vp.h != liveH))
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
-                                   "ini and live render disagree - restart the game "
-                                   "to apply the ini");
+                                   "ini and live render disagree - Apply below "
+                                   "makes them match");
             if (s_vp.startupFullscreen)
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
                                    "StartupFullscreen=True: odd sizes may be quantized "
@@ -1889,21 +2060,19 @@ void draw_debug_ui() {
             }
             ImGui::Text("selected: %d x %d, %.1f MPx", s_w, s_h,
                         static_cast<double>(s_w) * s_h / 1.0e6);
-            // Session-37 bisection pending: 16:9 is the only aspect PROVEN to
-            // render full-height; square is proven to letterbox AND stretch
-            // (2048x2048 -> a 2048x1421 scene with a backbuffer-aspect
-            // frustum). Until the bisection lands, warn on anything squarer
-            // than 16:9 rather than pretending to know the threshold.
+            // A headset eye wants ~0.93 (the Quest 3 render target's shape);
+            // far from it the auto FOV must over-render one axis to cover the
+            // eye's other axis, and those pixels fall outside the lenses.
             float selAspect = static_cast<float>(s_w) / static_cast<float>(s_h);
-            if (selAspect < 1.76f)
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                                   "aspect %.3f is squarer than 16:9 - BS2 may "
-                                   "letterbox and STRETCH this (under measurement)",
+            if (selAspect > 1.25f || selAspect < 0.8f)
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                   "aspect %.3f is far from the eye's ~0.93 - much "
+                                   "of this render falls outside the lenses",
                                    selAspect);
             // The auto-FOV preview for the SELECTED size - what the automatic
-            // FOV would write after the restart, from the law run backwards at
-            // these dims (never option_for_rendered_hfov, which reads the LIVE
-            // backbuffer and would preview the wrong number).
+            // FOV will write once this size is live, from the law run
+            // backwards at these dims (never option_for_rendered_hfov, which
+            // reads the LIVE backbuffer and would preview the wrong number).
             int32_t prevOpt = auto_option_for_dims(s_w, s_h);
             if (prevOpt > 0) {
                 float tanV =
@@ -1915,13 +2084,17 @@ void draw_debug_ui() {
             } else {
                 ImGui::TextDisabled("auto FOV preview needs a headset session");
             }
-            if (ImGui::Button("Write to Shared.ini")) {
+            if (ImGui::Button("Apply now (resizes the render)")) {
                 g_resWritePending.store((static_cast<uint64_t>(s_w) << 32) |
                                             static_cast<uint32_t>(s_h),
                                         std::memory_order_relaxed);
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("restart the game for it to take effect");
+            if (ImGui::Button("Restore window chrome"))
+                g_windowRestorePending.store(true, std::memory_order_relaxed);
+            ImGui::TextDisabled("applies live (borderless window; taller than the "
+                                "desktop hangs off the bottom) and persists to "
+                                "Shared.ini for the next launch");
         }
     }
 
