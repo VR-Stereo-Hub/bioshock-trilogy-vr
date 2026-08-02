@@ -31,7 +31,8 @@
 #
 # Exit codes (so a bisect or a CI-ish loop can branch on them):
 #   0 pass      2 log stalled = WEDGE      3 WATCHDOG fired     4 process died
-#   5 never reached gameplay               6 arm failed         7 inconclusive
+#   5 never reached gameplay   6 arm failed   7 inconclusive   8 new crash dump
+#   9 preflight refused (another BioShock is running - a parallel session may own the machine)
 [CmdletBinding()]
 param(
     [ValidateSet("bs1", "bs2")][string]$Game = "bs2",
@@ -66,7 +67,9 @@ $crashDir = Join-Path $dir "crash"
 # The 1 Hz camera heartbeat only ticks once CalcView is running, i.e. in
 # gameplay. At the menu there is no heartbeat, so a clock started there would
 # report a wedge that is really just a title screen.
-$beatRe = if ($Game -eq "bs2") { '^\[b2r\] camera:' } else { '^\[b1r\] camera:' }
+# NOT anchored: log lines begin with a [HH:mm:ss.fff] timestamp (session 36's
+# first mapboot run counted zero beats through 4 minutes of live heartbeat).
+$beatRe = if ($Game -eq "bs2") { '\[b2r\] camera:' } else { '\[b1r\] camera:' }
 
 $tag = if ($Label) { "[$Label] " } else { "" }
 
@@ -125,14 +128,42 @@ function Stop-GameIfAsked {
 
 # --- launch or attach --------------------------------------------------------
 
+# launch-game's guards THROW; translate them into exit codes. If the refusal is
+# "this very game is already running", degrade to attach - a soak does not care
+# who booted the process. Anything else (another BioShock, a parallel session's
+# machine) is exit 9, never a launch.
+function Invoke-Preflight {
+    try {
+        & (Join-Path $PSScriptRoot "launch-game.ps1") -Game $Game -PreflightOnly -Force:$Force |
+            ForEach-Object { Write-Step $_ }
+        return $true
+    } catch {
+        if (Get-Process $proc -ErrorAction SilentlyContinue) {
+            Write-Step "$proc is already running - degrading to attach (a soak does not care who booted it)"
+            return $false
+        }
+        Write-Step "FAIL: preflight refused: $($_.Exception.Message)"
+        exit 9
+    }
+}
+
 if ($Attach) {
     $p = Get-Process $proc -ErrorAction SilentlyContinue
     if (-not $p) { Write-Step "FAIL: -Attach but $proc is not running"; exit 4 }
     Write-Step "attached to $proc (pid $($p.Id))"
-} else {
-    & (Join-Path $PSScriptRoot "launch-game.ps1") -Game $Game -PreflightOnly -Force:$Force |
-        ForEach-Object { Write-Step $_ }
-
+} elseif ($Boot -eq "none") {
+    # Launch NOTHING: wait for someone else (a human, another script) to start
+    # the process, then behave like -Attach.
+    Write-Step "boot none: launching nothing, waiting up to $GameplayTimeoutSeconds s for $proc..."
+    $p = $null
+    for ($i = 0; $i -lt $GameplayTimeoutSeconds; $i++) {
+        $p = Get-Process $proc -ErrorAction SilentlyContinue
+        if ($p) { break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $p) { Write-Step "FAIL: $proc never appeared (-Boot none launches nothing)"; exit 4 }
+    Write-Step "found $proc (pid $($p.Id))"
+} elseif (Invoke-Preflight) {
     if ($Boot -eq "map") {
         if (-not $Map) { throw "-Boot map needs -Map <name.bsm>" }
         if (-not $GamePath) {
@@ -146,8 +177,22 @@ if ($Attach) {
         $exe = Join-Path $GamePath $exeName
         if (-not (Test-Path $exe)) { throw "game exe not found: $exe" }
         Write-Step "launching $exeName directly with map URL '$Map'"
-        Start-Process -FilePath $exe -WorkingDirectory $GamePath -ArgumentList $Map | Out-Null
+        $mp = Start-Process -FilePath $exe -WorkingDirectory $GamePath -ArgumentList $Map -PassThru
+        Start-Sleep -Seconds 5
+        if ($mp.HasExited) {
+            # A DRM bounce relaunches through Steam and DROPS the argument; a
+            # plain death leaves nothing. Either way the direct map boot failed.
+            $p = Get-Process $proc -ErrorAction SilentlyContinue
+            if ($p) {
+                Write-Step "direct exe exited but $proc is up (pid $($p.Id)) - Steam bounce, the map arg is LOST; falling back to the title-screen key lane"
+                $Boot = "key"
+            } else {
+                Write-Step "FAIL: $exeName exited within 5 s and nothing relaunched. Is the Steam client running?"
+                exit 4
+            }
+        }
     } else {
+        # steam | key: launch-game re-runs its own guards (idempotent, cheap)
         & (Join-Path $PSScriptRoot "launch-game.ps1") -Game $Game -Force:$Force |
             ForEach-Object { Write-Step $_ }
     }
@@ -194,16 +239,23 @@ for ($i = 0; $i -lt $GameplayTimeoutSeconds; $i++) {
     # session's log when attaching.
     if ($beats -ge 2) { $gameplay = $true; break }
 
-    # Past the title screen with a synthetic key, once, ~15 s in - by which time
-    # the menu has finished loading and can actually take input.
-    if ($Boot -eq "key" -and -not $keyTried -and $i -ge 15) {
+    # Past the title screen with a synthetic key, once. -Boot key presses ~15 s
+    # in, by which time the menu has finished loading and can take input.
+    # -Boot map gets the same press as a FALLBACK at ~60 s: if the map URL
+    # routed through the front end anyway, the run is sitting at the title
+    # screen and would otherwise burn the whole timeout for nothing.
+    $keyAt = if ($Boot -eq "key") { 15 } else { 60 }
+    if (($Boot -eq "key" -or $Boot -eq "map") -and -not $keyTried -and $i -ge $keyAt) {
         $keyTried = $true
         $gk = Join-Path $PSScriptRoot "game-key.ps1"
         if (Test-Path $gk) {
+            if ($Boot -eq "map") {
+                Write-Step "no heartbeat ${keyAt}s after the map boot - trying the title-screen key fallback"
+            }
             Write-Step "pressing Space at the title screen (synthetic scancode)"
-            & $gk -Game $Game -Key Space -Repeat 3 | ForEach-Object { Write-Step $_ }
+            & $gk -Game $Game -Key Space -Repeat 3 -NoFocus:$NoFocus | ForEach-Object { Write-Step $_ }
         } else {
-            Write-Step "WARNING: -Boot key but tools\game-key.ps1 does not exist"
+            Write-Step "WARNING: -Boot $Boot but tools\game-key.ps1 does not exist"
         }
     }
 }
@@ -290,7 +342,7 @@ while ((Get-Date) -lt $deadline) {
         Write-Step "FAIL after ${elapsed}s: $($dumps - $dumpsBefore) NEW crash dump(s) in $crashDir"
         Show-Tail $log 20 "bioshockvr.log"
         Stop-GameIfAsked
-        exit 4
+        exit 8
     }
 
     if (((Get-Date) - $lastNote).TotalSeconds -ge 60) {
