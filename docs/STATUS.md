@@ -64,12 +64,24 @@ user-verified stable). Nine commits on `s35-b2r-reentry-freeze`, merged to `bios
 
 ### Next steps (user-directed, 2026-08-02 end of session 36)
 
-1. **SESSION 37 PRIORITY: resolution quality x FOV fill.** The user's in-headset verdict: `vrfov`
-   fills the eye (no bars, more immersion) but "the quality of the game dropped by a lot", and
-   "the custom resolutions are still not working" as a counter-lever. Goal: full FOV AND good
-   quality. Investigate the WHOLE quality chain, not just the game backbuffer: game resolution
-   (`vrres`/Shared.ini, verify it still applies end to end) -> eye capture -> **XR swapchain /
-   eye-buffer resolution (how is it sized? this is the real VR density lever)** -> VD encode.
+1. **SESSION 37 PRIORITY: BS1-parity resolution picker + automatic FOV (user-corrected brief,
+   2026-08-02).** The user wants BS1's experience on BS2: a resolution picker offering
+   headset-NATIVE (squarer) resolutions for the Quest 3 plus presets and custom, where choosing a
+   squarer buffer ADAPTS to the headset - more rendered view, bars gone - with the FOV
+   **calculated by the mod** (never manually overridden), and no world warp / no viewmodel
+   movement against the head. On BS1 the engine does this itself (true-horizontal law: squarer
+   buffer = taller FOV; see b1r `vrres`, camera.cpp:364 - the eye render IS the backbuffer). BS2's
+   law is inverted (tanV fixed by the option against 16:9; tanH follows aspect), so the MOD must
+   compute the option write from the headset FOV target + chosen aspect (option =
+   2*atan(tanV_target*16/9); the claim already uses the law, so it stays warp-free by
+   construction). Blocking unknowns, in order: (a) the ROADMAP "aspect bisection" - the squarest
+   aspect BS2 renders full-height; the "degenerates off 16:9" claim was RETRACTED in session 33 (a
+   decoder bug), and the REAL off-16:9 defect is anamorphic (the frustum takes the backbuffer
+   aspect while the scene renders letterboxed, e.g. 2048x2048 -> 2048x1421 scene) - characterize
+   whether the letterbox persists at all aspects and whether the claim needs an anamorphic
+   correction; (b) verify `vrres` (Shared.ini) still applies end to end - the user doubts it;
+   (c) the XR swapchain sizing (does it follow the backbuffer?). The user's current `vrfov`-only
+   fill is the fallback, densified by supersampling, if the engine hard-letterboxes everything.
    Regression guards that must survive: the fgfov viewmodel lens match (weapon/hands glued to the
    view - session 33's accepted fix), no world warp (claimRatioH ~1.0), stereo-on-1t untouched.
 2. **Helmet: HIDDEN BY DEFAULT since session 36** (user instruction; edge-of-FOV placement is not
