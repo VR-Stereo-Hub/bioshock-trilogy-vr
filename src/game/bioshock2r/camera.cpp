@@ -926,7 +926,7 @@ void apply_command(const char* cmd, const char* args) {
                                                               : "vrstereo off");
     } else {
         BVR_LOG("[b2r] unknown command: %s (see the vocabulary comment in camera.cpp; "
-                "BS1-only levers like vrstereo/vraim/exec are not ported yet)",
+                "BS1-only levers like vraim/exec are not ported)",
                 cmd);
     }
 }
@@ -1013,10 +1013,11 @@ void apply_vr_preset() {
     BVR_LOG("[b2r] VR PRESET: arming the full VR configuration");
     bvr::vr::set_enabled(true);
     bvr::vr::set_camera_mode(true);
-    bvr::vr::set_sr_pair_pacing(true);
-    // BS2's stereo is ONE toggle and has no 1t rung (session 26) - the
-    // threaded substrate is this game's primary bet, so the preset arms the
-    // same sequence `vrstereo on` does rather than BS1's ladder.
+    // Stereo backend choice (and SR-only knobs like pair pacing) live in
+    // scenedraw::apply_vrstereo - the preset arms the one-toggle and lets the
+    // selector decide. Session 26's "no 1t rung" premise was refuted in
+    // session 35: Draw's tail DOES have a submit handshake, so the doubled
+    // draw runs only behind `reentry srdev on` until the 1t port lands.
     scenedraw::handle_command("vrstereo on");
     BVR_LOG("[b2r] VR PRESET: worldscale %.1f headoff up %.1f fwd %.1f ipd %.1f "
             "fgfov %s",
