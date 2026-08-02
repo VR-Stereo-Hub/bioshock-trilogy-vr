@@ -54,28 +54,47 @@ aspect bisection is DISSOLVED; resolution on BS2 needs no relaunch at all.
    16:9 -> 1.6 change; 2064x2208 dump decodes law B PASS dH=0.00000). Stereo-on-1t survived every
    live resize: `wait2/s=0`, guardskips 0, zero faults, zero watchdogs.
 
-### Acceptance still OWED (needs the user, in the save - the screening context was the menu scene)
+### Same-evening addendum: the user's first native run, and the fg lens fix
 
-1. **fgfov ONE-cluster with a WEAPON at native**: the menu-scene dump shows the world cluster
-   (law-exact) plus a stable 14-draw ~135x138-deg cluster that fits neither law - the menu has no
-   weapon, so whether the VIEWMODEL lens still matches off 16:9 is UNPROVEN. If it diverges, run
-   the FG lens's own law backwards in `apply_fg_fov_match` (s33 method: distinctive pokes, one
-   dump).
-2. In-headset judgment at `native`: perceived sharpness vs the old vrfov-fill blur, no world
-   warp, weapon glued, HUD/menu legibility at portrait aspect, helmet-hidden collateral watch.
-3. A 5-min `vrstereo on` soak in the save at the ship preset (flat screening soaked only minutes).
+The user ran `native` in the headset the same evening: **sharpness accepted** ("looks pretty
+sharp so we're good"), the auto-FOV A/B behaves exactly per the law (off = pillarbox), **but the
+viewmodel was moving against the head** - the exact defect the menu-scene dump flagged. In-save
+three-probe measurement (drill drawn) settled it: the fg lens renders `tanV = tan(d/2) *
+G(aspect)` with G(0.9348) = 0.99488 while G(16:9) = 9/16 exactly - writing the raw option at
+native was a 1.24x viewmodel gain. **Shipped fix: the match self-identifies G live** from the
+fov watch paired with its own last write, and writes `d = 2*atan(tan(option/2)*(9/16)/G)` -
+identity at 16:9, converges in one sample, freezes when the lenses merge. Full derivation +
+table in ENGINE_NOTES session-37 section 6. Build installed to the game folder; the user
+launches tonight on their own schedule.
+
+### Acceptance still OWED (user's next session)
+
+1. **Weapon glued at native** (the G fix's in-headset verdict) - within ~1 s of gameplay with a
+   weapon up, the log should print `fgfov: lens gain G 0.56250 -> 0.99xxx` and the F10
+   VIEWMODEL LENS line should read `written ~112 deg (lens gain G=0.9949)`. If it still swims,
+   report that line's numbers.
+2. `dumpframe full 2` with the weapon at native once G converged -> decoder shows ONE cluster.
+3. A 5-min `vrstereo on` soak in the save at the ship preset (attach lane, `-NoFocus`).
+4. HUD/menu legibility at portrait, helmet key-3810 collateral watch (both ride along).
+
+### NEW open item: teardown crash on quit-from-gameplay (dump banked, unattributed)
+
+Quitting from gameplay (VISIBLE/backgrounded, stereo armed, native, borderless window) died in
+teardown: DEP fault EXECUTE at 0xDEDEDEDE (freed-memory poison) on the game thread, exception
+loop for a few seconds, then exit. Minidump:
+`%LOCALAPPDATA%\BioshockVR\bs2\crash\bvr_20260802_214440.dmp` (build v0.6.0-62-g44bc6ca-dirty).
+AFTER the save was written - no data loss, cosmetic at exit - but unattributed: could be the
+hooked teardown class, the armed stereo/1t at exit, the borderless window path, or the game's
+own exit behavior amplified. Analyze the dump next session; check recurrence on the user's
+tonight-quit before spending time.
 
 ### Next steps
 
-1. **USER BOOT (the acceptance above)**: launch via Steam/VD as usual, load the save, arm stereo,
-   pick `native` in the F10 picker (or `vrres native`), play. Flat-side me: `dumpframe full 2`
-   with a weapon drawn + decode at 2064x2208; `soak.ps1 -Game bs2 -Attach -NoFocus -Minutes 5
-   -Arm ""`. Then the picker preset the user prefers becomes the persisted default (Shared.ini
-   already carries it after Apply).
-2. If the fg lens diverges at native (item 1 above): derive the FG lens law from two distinctive
-   pokes + one dump, then write its inverse in `apply_fg_fov_match`.
-3. Then per ROADMAP: aiming, motion controls, normal controls for BS2. Helmet key-3810 collateral
-   watch continues to ride along. Pacing-epic residue unchanged (keepalives with real layers).
+1. Read the owed-acceptance results from the user's tonight run (items above); if the weapon
+   verdict is good, session 37's feature is CLOSED end to end.
+2. Triage the teardown-crash dump (recurrence first, then the minidump).
+3. Then per ROADMAP: aiming, motion controls, normal controls for BS2. Pacing-epic residue
+   unchanged (keepalives with real layers).
 4. BS1 regression testing stays deferred to the END of BS2 development (user decision 2026-08-02).
 
 ---
@@ -4569,11 +4588,18 @@ to four decimals).
 Bugs found by the session's own instruments: `vrres list` fell to the status line (fgets newline
 vs strcmp - token-match now), game-batch writes are LOST during scene transitions (the menu-scene
 load stalls polls ~9 s; verify per-command echoes), and `vrres restore` dragged the engine to the
-stale saved rect (restore now sizes the client for the current backbuffer). OWED to the user's
-next save session: the fgfov ONE-cluster check with a real weapon at native (the menu-scene dump
-shows a stable 14-draw ~135x138-deg second cluster that fits neither law - the menu has no
-weapon, so the viewmodel lens off 16:9 is unproven), the in-headset sharpness/warp/HUD verdicts,
-and a 5-min attached soak in the save.
+stale saved rect (restore now sizes the client for the current backbuffer).
+
+Same-evening addendum: the user's first native run accepted the SHARPNESS and confirmed the
+auto-FOV A/B, and hit the flagged fg defect - the viewmodel moved against the head. An in-save
+three-probe sweep (drill drawn, fgfov 60/100/138) measured the fg lens law: `tanV = tan(d/2) *
+G(aspect)`, G(0.9348) = 0.99488 constant to five digits, G(16:9) = 9/16 exactly (s33's identity)
+- no natural closed form through both, so the shipped fix SELF-IDENTIFIES G live (fov-watch fg
+sample paired with the value the match itself last wrote; converges in one sample; freezes when
+the lenses merge; identity at 16:9). Owed: the user's weapon-glued verdict + a converged
+ONE-cluster dump + the in-save soak. Also banked: a teardown crash on quit-from-gameplay (DEP at
+0xDEDEDEDE, dump at `crash\bvr_20260802_214440.dmp`, after the save - unattributed, recurrence
+check first).
 
 ### Session 36 - 2026-08-02 - the BS2 stereo freeze is dead; full-rate stereo ships on 1t
 

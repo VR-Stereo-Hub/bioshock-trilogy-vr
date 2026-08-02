@@ -1189,15 +1189,37 @@ Also pinned this session: the sim's DEFAULT eye now matches the measured VDXR ha
 h=54 v=55 (was the published-figures guess h=55 v=48 - wide and short, which flips the winning
 branch of the FOV circumscription and made FOV-derived sim numbers disagree with the headset).
 
-### 6. Open: the second lens cluster at the native aspect
+### 6. ANSWERED same evening: the second cluster IS the fg lens, and its law differs off 16:9
 
-At 2064x2208 the menu-scene dump shows the world cluster (law B exact) plus a stable 14-draw
-cluster at ~135.1 x 137.8 deg true that fits NEITHER law for option 138. The menu scene has no
-weapon, so this is not necessarily the viewmodel lens - the fgfov ONE-cluster acceptance must be
-re-run in the SAVE with a weapon drawn at the native aspect. If the fg lens diverges off 16:9,
-the fix is running the FG lens's own law backwards in `apply_fg_fov_match` rather than writing
-the raw option (the s33 method: poke distinctive values, one dump, read which law the cluster
-tracks).
+The user's in-headset run at `native` confirmed the prediction as a symptom: sharpness good, but
+"the model is moving when moving the headset". In-save with the drill drawn, the second lens
+reads the SAME values as the menu scene (tanH 2.422733 at fg-written 138), and a three-probe
+sweep (`fgfov off` -> 60, `fgfov 100`, match -> 138) measured, at backbuffer aspect 0.9348:
+
+| written d | fg tanV | tan(d/2) | ratio |
+|---|---|---|---|
+| 60 | 0.574396 | 0.577350 | 0.99488 |
+| 100 | 1.185656 | 1.191754 | 0.99488 |
+| 138 | 2.591760 | 2.605089 | 0.99488 |
+
+So the fg lens renders `tanV = tan(d/2) * G(aspect)` with G a constant gain in tan space:
+**G(0.9348) = 0.99488**, while session 33's one-cluster acceptance pins **G(16:9) = 9/16
+exactly** (writing the option matched the world there). The fg tanH/tanV ratio follows the
+backbuffer aspect like the world's, so ONE scalar equality (tanV) matches both axes. No natural
+closed form fits both G points - and writing the raw option into the lens at native produced a
+1.24x angular gain on the viewmodel (fg 137.8 deg vertical vs world 111.4), which is exactly the
+reported swim.
+
+**The fix (shipped): G is IDENTIFIED live, never assumed.** `apply_fg_fov_match` pairs every
+fresh fg sample from the fov watch with the value it last wrote (`G = tanV_fg / tan(dLast/2)` -
+correct regardless of which d was in effect, so convergence is one sample) and writes the
+inverse, `d = 2*atan(tan(option/2) * (9/16) / G)`. At 16:9 G converges to 9/16 and the write
+reduces to d == option, bit-compatible with the accepted session-33 behavior. The estimator
+freezes exactly when the lenses merge (`fov_watch_fg` goes false with no second cluster) and
+re-identifies by itself after an aspect change - it only measures while an error signal exists.
+The manual lane (`fgfov <deg>`) stays RAW degrees; it is the calibration probe that measured
+this table and must never be corrected. Overlay shows `written N deg (lens gain G=...)`;
+`fgfov status` prints `lawG=`.
 
 ### 7. Harness lessons
 
