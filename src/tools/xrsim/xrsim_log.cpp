@@ -136,13 +136,18 @@ void rig_defaults(Rig& r) {
     // silently zeroed the field of view and every capture came out black. A
     // default that only one caller applies is not a default.
     //
-    // Published Quest 3 figures (110 deg horizontal, 96 vertical binocular),
-    // split per eye with the usual outward asymmetry. This is the one value set
-    // in the sim not measured on this machine; the mod's own
-    // "headset fov half-angles h=.. v=.." log line is the pinning mechanism, and
-    // with these it must read h=55.0 v=48.0.
-    r.fov[0] = Fov{deg2rad(-55.0f), deg2rad(45.0f), deg2rad(48.0f), deg2rad(-48.0f)};
-    r.fov[1] = Fov{deg2rad(-45.0f), deg2rad(55.0f), deg2rad(48.0f), deg2rad(-48.0f)};
+    // PINNED to this machine's measured VDXR values (session 37, closing the
+    // session-34 open item): the mod's real-headset log line reads
+    // "headset fov half-angles h=54.0 v=55.0" (docs/bioshock2/ENGINE_NOTES.md,
+    // Quest 3 via Virtual Desktop). The published-figures guess this replaces
+    // (h=55 v=48) made the sim eye WIDE and SHORT while the real eye is
+    // essentially square - which flips which branch of the mod's FOV
+    // circumscription wins, so FOV-derived sim numbers disagreed with the
+    // headset. Outward asymmetry shape kept (10 deg inward reduction); the
+    // MAX half-angles are what the mod consumes and they now match. With
+    // these the mod's line must read h=54.0 v=55.0.
+    r.fov[0] = Fov{deg2rad(-54.0f), deg2rad(44.0f), deg2rad(55.0f), deg2rad(-55.0f)};
+    r.fov[1] = Fov{deg2rad(-44.0f), deg2rad(54.0f), deg2rad(55.0f), deg2rad(-55.0f)};
 }
 
 bool fov_is_degenerate(const Fov& f) {

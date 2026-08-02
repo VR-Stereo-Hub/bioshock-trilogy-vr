@@ -507,11 +507,12 @@ void apply_line(const char* line) {
             }
             rig.fov[h] = f;
         } else {
-            // Symmetric-outer shorthand: `fov 55 48` gives the mod's own
-            // half-angle log line exactly h=55.0 v=48.0.
-            const float hh = deg2rad(a.f(1, 55.0f));
-            const float hv = deg2rad(a.f(2, 48.0f));
-            const float inner = deg2rad(a.f(3, 45.0f));
+            // Symmetric-outer shorthand: `fov 54 55` gives the mod's own
+            // half-angle log line exactly h=54.0 v=55.0. Arg fallbacks track
+            // the pinned VDXR defaults in rig_defaults (session 37).
+            const float hh = deg2rad(a.f(1, 54.0f));
+            const float hv = deg2rad(a.f(2, 55.0f));
+            const float inner = deg2rad(a.f(3, 44.0f));
             rig.fov[0] = Fov{-hh, inner, hv, -hv};
             rig.fov[1] = Fov{-inner, hh, hv, -hv};
         }

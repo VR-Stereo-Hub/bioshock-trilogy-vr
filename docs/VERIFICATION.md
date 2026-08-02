@@ -209,7 +209,7 @@ Every command applies at a frame boundary, and a whole batch applies atomically 
 | Command | Effect |
 |---|---|
 | `ipd <mm>` | default 63 |
-| `fov <halfH> <halfV>` | symmetric-outer shorthand; `fov 55 48` gives the mod's log line `h=55.0 v=48.0` |
+| `fov <halfH> <halfV>` | symmetric-outer shorthand; `fov 54 55` gives the mod's log line `h=54.0 v=55.0`. The sim DEFAULTS are pinned to these measured VDXR values since session 37 (they were the published-figure guess h=55 v=48 before - wide and short, while the real eye is square) |
 | `fov eye <h> <l> <r> <u> <d>` | full asymmetric, degrees |
 | `fov quest3` | restore the defaults |
 | `worldscale <s>` | scale head/hand translations |
