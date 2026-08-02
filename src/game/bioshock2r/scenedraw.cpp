@@ -47,8 +47,11 @@ using DrawFn = void(__fastcall*)(void* ecx, void* edx, void* a1, void* a2, void*
 using StreamFn = void(__fastcall*)(void* ecx, void* edx, void* loc, void* rot, void* a3);
 // Render flush point: `ret 8`, live ECX this (the render mgr), 2 stack args
 // (scene, view group). ARG COUNT IS LOAD-BEARING: ret imm / 4 == 2 - a
-// mismatch pops the no-dump ESP RTC modal (see ENGINE_NOTES arg-count trap).
+// mismatch pops the no-dump ESP RTC modal (see ENGINE_NOTES arg-chain trap).
 using FlushPointFn = void(__fastcall*)(void* ecx, void* edx, void* scene, void* group);
+// The drain (the flush point's inline branch body): thiscall, ZERO stack args
+// (the inline call site pushes nothing and cleans nothing after).
+using DrainFn = void(__fastcall*)(void* ecx, void* edx);
 
 struct HookSlot {
     const char* name = nullptr;
@@ -60,6 +63,7 @@ struct HookSlot {
 HookSlot g_draw{"draw"};
 HookSlot g_stream{"stream"};
 HookSlot g_flushpoint{"flushpoint"};
+HookSlot g_drain{"drain"};
 
 // Nonzero exactly while a depth-0 hooked render call is in flight on that
 // thread. The poll-gate deferral (inside_hooked_call) and the calcview
@@ -119,6 +123,16 @@ std::atomic<bool> g_inSecondDraw{false};
 std::atomic<uint32_t> g_flushPointEntries{0};
 std::atomic<uint32_t> g_waitTaken2{0}; // second-flush entries, latch CLEAR
 std::atomic<uint32_t> g_latchSet2{0};  // second-flush entries, latch SET
+
+// Structural 1t (session 36; BS1's session-8 cure duplicated with BS2's
+// constants - never shared, never core). The flush-point detour forces the
+// byte-confirmed INLINE branch: args into the render mgr, mode stamped
+// single-threaded, drain called on the game thread. The hw-thread quotient
+// is NEVER touched (its load-path consumers must see the true core count).
+std::atomic<bool> g_forceInline{false};
+std::atomic<uint32_t> g_forcedInline{0};
+std::atomic<uint32_t> g_drainEntries{0};
+std::atomic<uint32_t> g_drainGuardSkips{0};
 
 // ---- Session 34: THE FREEZE - WHAT IT IS, AND WHAT IT IS NOT --------------
 // Localised end to end with the stall watchdog (suspend the wedged thread,
@@ -230,7 +244,7 @@ std::atomic<uint32_t> g_camActorProbes{0};
 // Heartbeat bookkeeping - beat thread (the Draw thread) only.
 uint64_t g_lastBeatMs = 0;
 uint32_t g_beatDraws = 0, g_beatStreams = 0, g_beatCalcIn = 0, g_beatCalcOut = 0,
-         g_beatSecond = 0, g_beatWait2 = 0, g_beatSet2 = 0;
+         g_beatSecond = 0, g_beatWait2 = 0, g_beatSet2 = 0, g_beatForced = 0;
 uint64_t g_beatPresents = 0;
 
 // One-shot CalcView stack scan request.
@@ -583,14 +597,117 @@ bool call_draw_guarded(DrawFn fn, void* ecx, void* edx, void* a1, void* a2, void
     }
 }
 
-// Render flush point detour (session 36, passive). Counts every entry; for
-// entries made by the SECOND draw of a pair it samples the gate's completion
-// latch ([mgr+4] -> gate, [gate+8] -> latch) nanoseconds before the engine's
-// own `cmp [esi+8],0`: latch clear = the Wait(INFINITE) will be entered.
-// Falls through to the original untouched - forcing the inline branch is the
-// 1t verb's job and arms separately.
+// SEH-guarded u32 read (BS1's shape, duplicated per the decoupling rule).
+bool read_u32_guarded(const void* addr, uint32_t* out) {
+    __try {
+        *out = *static_cast<const volatile uint32_t*>(addr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Beat-line render-mode label. Structural 1t first (the forced inline branch
+// overrides whatever the engine's chain would pick); otherwise mirror the
+// chain's confirmed LAST test, the hw-thread quotient. Read-only, always.
+const char* render_mode_label() {
+    if (g_forceInline.load(std::memory_order_relaxed) &&
+        g_flushpoint.enabled.load(std::memory_order_relaxed))
+        return "1T";
+    uint32_t num = 0, div = 0;
+    read_u32_guarded(g_imageBase + patterns::kHwThreadsRva, &num);
+    read_u32_guarded(g_imageBase + patterns::kThreadDivisorRva, &div);
+    return (div != 0 && num / div > 1) ? "MT" : "1T";
+}
+
+void __fastcall DrainDetour(void* self, void* edx) {
+    // Empty-slot guard (BS1's drain+0x33 crash shape, BS2's offset): the
+    // drain head loads the scene from [this+0x24] and dereferences it with
+    // NO null check. A null slot can never be drained, so the skip is
+    // universally safe and runs whenever this hook is installed - under 1t
+    // it is what stands between a straggling pump wake (finding the slot the
+    // inline drain already consumed) and that crash. Skips do NOT count as
+    // drains.
+    {
+        uint32_t scene = 0;
+        if (read_u32_guarded(static_cast<const uint8_t*>(self) +
+                                 patterns::kMgrSceneSlotOffset,
+                             &scene) &&
+            scene == 0) {
+            uint32_t n = g_drainGuardSkips.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (n <= 3)
+                BVR_LOG("[reentry] drain-guard: skipped empty-slot drain #%u (tid %u, "
+                        "[this+0x%X]=0 - the null-scene crash state)",
+                        n, GetCurrentThreadId(), patterns::kMgrSceneSlotOffset);
+            return;
+        }
+    }
+    g_drainEntries.fetch_add(1, std::memory_order_relaxed);
+    reinterpret_cast<DrainFn>(g_drain.original)(self, edx); // never guarded
+}
+
+// Forced-inline scene flush (BS1's session-8 structural 1t, BS2 constants):
+// reproduce the flush point's byte-confirmed INLINE branch - copy the args
+// into the render manager, stamp mode single-threaded, call the drain on
+// this thread. The hw-thread quotient is NEVER touched. Returns 1 on
+// success, 0 when the mgr global is still null (engine too early - let the
+// original decide), -1 on a fault (the filter recorded code/rva). No C++
+// objects in this frame (SEH + unwinding = C2712).
+int force_inline_flush(void* scene, void* group) {
+    __try {
+        uint8_t* mgr = *reinterpret_cast<uint8_t* const*>(
+            g_imageBase + patterns::kRenderMgrGlobalRva);
+        if (!mgr) return 0;
+        *reinterpret_cast<void**>(mgr + patterns::kMgrSceneSlotOffset) = scene;
+        const uint32_t* src = static_cast<const uint32_t*>(group);
+        uint32_t* dst = reinterpret_cast<uint32_t*>(mgr + patterns::kMgrViewGroupOffset);
+        for (uint32_t i = 0; i < patterns::kMgrViewGroupDwords; ++i) dst[i] = src[i];
+        *reinterpret_cast<uint32_t*>(mgr + patterns::kMgrThreadedFlagOffset) = 0;
+        *reinterpret_cast<uint32_t*>(mgr + patterns::kMgrFlushSeenOffset) = 1;
+        // Call through the drain's TARGET address, not a trampoline: the
+        // DrainDetour (empty-slot guard + telemetry) must stay in the path.
+        reinterpret_cast<DrainFn>(const_cast<uint8_t*>(g_imageBase) +
+                                  patterns::kDrainRva)(mgr, nullptr);
+        return 1;
+    } __except (reentry_filter(GetExceptionCode(), GetExceptionInformation())) {
+        return -1;
+    }
+}
+
+// Render flush point detour (session 36). Two duties:
+// 1. `reentry 1t`: with g_forceInline set, reproduce the INLINE branch via
+//    force_inline_flush and never let the engine's threaded hand-off run -
+//    the Wait(INFINITE) the doubled draw races is structurally removed.
+// 2. wait2/set2 instrumentation: for second-draw flushes the ENGINE will
+//    decide (1t off), sample the gate's completion latch ([mgr+4] -> gate,
+//    [gate+8] -> latch) nanoseconds before the engine's own `cmp [esi+8],0`:
+//    latch clear = the Wait(INFINITE) will be entered. Under 1t wait2/s
+//    reads 0 - correctly, the freeze window is gone.
 void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group) {
     g_flushPointEntries.fetch_add(1, std::memory_order_relaxed);
+    if (g_forceInline.load(std::memory_order_relaxed)) {
+        int r = force_inline_flush(scene, group);
+        if (r > 0) {
+            g_forcedInline.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (r < 0) {
+            // A layout assumption broke mid-flush: mgr may be half-written
+            // and the frame half-drained - running the original now could
+            // double-drain the same ring. Drop this flush, disarm, poison.
+            g_forceInline.store(false, std::memory_order_relaxed);
+            g_stereo.store(false, std::memory_order_relaxed);
+            g_doubleCall.store(false, std::memory_order_relaxed);
+            g_poisoned.store(true, std::memory_order_relaxed);
+            BVR_LOG("[reentry] flushpoint forced-inline FAULTED code=0x%08X rva=0x%X "
+                    "- 1t disarmed, stereo/doubling off, POISONED ('reentry reset' "
+                    "to clear)",
+                    g_lastExcCode.load(std::memory_order_relaxed),
+                    g_lastExcRva.load(std::memory_order_relaxed));
+            return;
+        }
+        // r == 0: mgr not created yet - the original handles pre-init state.
+    }
     if (g_inSecondDraw.load(std::memory_order_relaxed) &&
         g_secondPassTid.load(std::memory_order_relaxed) == GetCurrentThreadId()) {
         using namespace bvr::pattern_scan;
@@ -713,6 +830,7 @@ void heartbeat(uint64_t now) {
         g_beatPresents = bvr::d3d11_hook::present_count();
         g_beatWait2 = g_waitTaken2.load(std::memory_order_relaxed);
         g_beatSet2 = g_latchSet2.load(std::memory_order_relaxed);
+        g_beatForced = g_forcedInline.load(std::memory_order_relaxed);
         return;
     }
     if (now - g_lastBeatMs < 1000) return;
@@ -723,13 +841,16 @@ void heartbeat(uint64_t now) {
     uint32_t seconds = g_secondCalls.load(std::memory_order_relaxed);
     uint32_t wait2 = g_waitTaken2.load(std::memory_order_relaxed);
     uint32_t set2 = g_latchSet2.load(std::memory_order_relaxed);
+    uint32_t forced = g_forcedInline.load(std::memory_order_relaxed);
     uint64_t presents = bvr::d3d11_hook::present_count();
-    BVR_LOG("[reentry] beat: draws/s=%u 2nd/s=%u wait2/s=%u set2/s=%u presents/s=%llu "
+    BVR_LOG("[reentry] beat: mode=%s draws/s=%u 2nd/s=%u forced/s=%u wait2/s=%u "
+            "set2/s=%u presents/s=%llu "
             "stream/s=%u calc "
             "in/out=%u/%u drawTid=%u presentTid=%u calcTid=%u drawUs=%u camSrc=(%.1f "
-            "%.1f %.1f | %d %d %d) callers=%X,%X,%X,%X",
-            draws - g_beatDraws, seconds - g_beatSecond, wait2 - g_beatWait2,
-            set2 - g_beatSet2,
+            "%.1f %.1f | %d %d %d) callers=%X,%X,%X,%X guardskips=%u%s",
+            render_mode_label(),
+            draws - g_beatDraws, seconds - g_beatSecond, forced - g_beatForced,
+            wait2 - g_beatWait2, set2 - g_beatSet2,
             static_cast<unsigned long long>(presents - g_beatPresents),
             streams - g_beatStreams, calcIn - g_beatCalcIn, calcOut - g_beatCalcOut,
             g_lastDrawTid.load(std::memory_order_relaxed),
@@ -745,7 +866,9 @@ void heartbeat(uint64_t now) {
             g_callerRvas[0].load(std::memory_order_relaxed),
             g_callerRvas[1].load(std::memory_order_relaxed),
             g_callerRvas[2].load(std::memory_order_relaxed),
-            g_callerRvas[3].load(std::memory_order_relaxed));
+            g_callerRvas[3].load(std::memory_order_relaxed),
+            g_drainGuardSkips.load(std::memory_order_relaxed),
+            g_poisoned.load(std::memory_order_relaxed) ? " POISONED" : "");
     g_lastBeatMs = now;
     g_beatDraws = draws;
     g_beatStreams = streams;
@@ -755,6 +878,7 @@ void heartbeat(uint64_t now) {
     g_beatPresents = presents;
     g_beatWait2 = wait2;
     g_beatSet2 = set2;
+    g_beatForced = forced;
 }
 
 void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, void* a4) {
@@ -827,17 +951,23 @@ void __fastcall StreamViewDetour(void* ecx, void* edx, void* loc, void* rot, voi
 void apply_vrstereo(bool on) {
     if (on) {
         if (g_srDev.load(std::memory_order_relaxed)) {
+            // BS1's arming order, load-bearing: 1t FIRST (remove the flush
+            // handshake), then camera mode, then the doubled draw.
             BVR_LOG("[reentry] VRSTEREO ON (backend: SequentialReentry, srdev): "
-                    "camera mode -> stereo");
+                    "1t -> camera mode -> stereo");
+            if (!g_forceInline.load(std::memory_order_relaxed)) handle_command("1t on");
             bvr::vr::set_camera_mode(true);
             // SR presents an L/R pair per tick; pair pacing is meaningful only
             // here, so it is armed here rather than in the preset (session 36).
             bvr::vr::set_sr_pair_pacing(true);
             if (!g_stereo.load(std::memory_order_relaxed)) handle_command("stereo on");
-            bool ok = g_stereo.load(std::memory_order_relaxed);
-            BVR_LOG("[reentry] VRSTEREO %s (stereo=%d; sticky across loads via the "
-                    "gameplay-caller gate; 'vrstereo off' reverses)",
-                    ok ? "READY" : "INCOMPLETE - see refusals above", ok ? 1 : 0);
+            bool ok = g_forceInline.load(std::memory_order_relaxed) &&
+                      g_stereo.load(std::memory_order_relaxed);
+            BVR_LOG("[reentry] VRSTEREO %s (1t=%d stereo=%d; sticky across loads via "
+                    "the gameplay-caller gate; 'vrstereo off' reverses)",
+                    ok ? "READY" : "INCOMPLETE - see refusals above",
+                    g_forceInline.load(std::memory_order_relaxed) ? 1 : 0,
+                    g_stereo.load(std::memory_order_relaxed) ? 1 : 0);
             g_vrStereoArmed.store(ok, std::memory_order_relaxed);
         } else {
             BVR_LOG("[reentry] VRSTEREO ON (backend: AlternateEye - no draw "
@@ -851,11 +981,14 @@ void apply_vrstereo(bool on) {
     } else {
         // Symmetric OFF: disarm BOTH backends regardless of how ON was reached,
         // so an srdev flip between on and off cannot strand one of them armed
-        // (the asymmetric-off trap vrcam had, session 33).
-        BVR_LOG("[reentry] VRSTEREO OFF: alternate-eye + stereo -> camera mode");
+        // (the asymmetric-off trap vrcam had, session 33). BS1's reverse
+        // order: stereo off before 1t off, so the doubled draw never runs a
+        // frame on the threaded substrate.
+        BVR_LOG("[reentry] VRSTEREO OFF: alternate-eye + stereo -> camera mode -> 1t");
         bvr::vr::set_alternate_eye(false);
         if (g_stereo.load(std::memory_order_relaxed)) handle_command("stereo off");
         bvr::vr::set_camera_mode(false);
+        if (g_forceInline.load(std::memory_order_relaxed)) handle_command("1t off");
         g_vrStereoArmed.store(false, std::memory_order_relaxed);
     }
 }
@@ -881,9 +1014,9 @@ void handle_command(const char* args) {
     char verb[16] = {};
     int consumed = 0;
     if (sscanf_s(args, "%15s%n", verb, static_cast<unsigned>(sizeof verb), &consumed) != 1) {
-        BVR_LOG("[reentry] command needs a verb: vrstereo on|off|srdev on|off|"
-                "hook [draw|stream]|unhook|dump <n>|kick on|off|kick2 on|off|"
-                "calcstack|status");
+        BVR_LOG("[reentry] command needs a verb: vrstereo on|off|1t on|off|"
+                "srdev on|off|hook [draw|stream]|unhook|dump <n>|kick on|off|"
+                "kick2 on|off|calcstack|status");
         return;
     }
     const char* rest = args + consumed;
@@ -1011,6 +1144,48 @@ void handle_command(const char* args) {
             g_secondYawDeg.store(v, std::memory_order_relaxed);
             BVR_LOG("[reentry] second-pass yaw = %.1f deg", v);
         }
+    } else if (strcmp(verb, "1t") == 0) {
+        // STRUCTURAL single-threading (BS1's session-8 cure, BS2 constants):
+        // the flush-point hook forces the inline branch; the hw-thread
+        // quotient global is untouched. Pre-world arming is inert until the
+        // render manager exists (the detour falls through while mgr is null).
+        // INSTALL ORDER IS LOAD-BEARING: drain guard FIRST - once flushes
+        // drain inline, any straggling pump wake finds an EMPTY scene slot,
+        // and only the guard stands between that and the null-scene crash.
+        if (strncmp(rest, "on", 2) == 0) {
+            if (g_forceInline.load(std::memory_order_relaxed)) {
+                BVR_LOG("[reentry] 1t already on");
+            } else if (g_poisoned.load(std::memory_order_relaxed)) {
+                BVR_LOG("[reentry] 1t refused: POISONED ('reentry reset' to clear)");
+            } else if (!install_slot(g_drain, patterns::kDrainRva,
+                                     reinterpret_cast<void*>(&DrainDetour),
+                                     patterns::kDrainPrologue,
+                                     sizeof patterns::kDrainPrologue)) {
+                BVR_LOG("[reentry] 1t refused: drain-guard install failed");
+            } else if (!(patterns::verify_flush_chain(g_image) &&
+                         install_slot(g_flushpoint, patterns::kFlushPointRva,
+                                      reinterpret_cast<void*>(&FlushPointDetour),
+                                      patterns::kFlushPointPrologue,
+                                      sizeof patterns::kFlushPointPrologue))) {
+                BVR_LOG("[reentry] 1t refused: flush-point hook install failed");
+            } else {
+                g_forceInline.store(true, std::memory_order_relaxed);
+                BVR_LOG("[reentry] 1t ON (structural): flush-point forces the inline "
+                        "branch - scene flushes drain on the game thread, hw-thread "
+                        "quotient UNTOUCHED (loaders see the true core count)");
+            }
+        } else {
+            if (!g_forceInline.exchange(false, std::memory_order_relaxed)) {
+                BVR_LOG("[reentry] 1t was not on");
+            } else {
+                BVR_LOG("[reentry] 1t off: flush-point back to the engine's own "
+                        "decision (hooks stay installed, passive)%s",
+                        g_stereo.load(std::memory_order_relaxed)
+                            ? " (WARNING: stereo still on - now on the THREADED "
+                              "substrate, which wedges)"
+                            : "");
+            }
+        }
     } else if (strcmp(verb, "srdev") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_srDev.store(on, std::memory_order_relaxed);
@@ -1041,9 +1216,13 @@ void handle_command(const char* args) {
         g_doubleCall.store(false, std::memory_order_relaxed);
         g_pulseCount.store(0, std::memory_order_relaxed);
         g_stereo.store(false, std::memory_order_relaxed);
+        // 1t must disarm BEFORE its hooks drop: with the flush detour gone,
+        // nothing may still force inline drains past a disabled drain guard.
+        g_forceInline.store(false, std::memory_order_relaxed);
         disable_slot(g_draw);
         disable_slot(g_stream);
         disable_slot(g_flushpoint);
+        disable_slot(g_drain);
     } else if (strcmp(verb, "dump") == 0) {
         int n = 0;
         if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 8;
@@ -1061,11 +1240,19 @@ void handle_command(const char* args) {
         g_calcstackPending.store(1, std::memory_order_relaxed);
         BVR_LOG("[reentry] calcstack armed (next CalcView dispatch logs a stack scan)");
     } else if (strcmp(verb, "status") == 0) {
-        BVR_LOG("[reentry] status: draw=%s stream=%s stereo=%d double=%d pulse=%d "
+        BVR_LOG("[reentry] status: mode=%s draw=%s stream=%s 1t=%d forced=%u "
+                "guardskips=%u drains=%u wait2=%u set2=%u stereo=%d double=%d pulse=%d "
                 "yaw=%.1f seconds=%u skips=%u foreign=%u 2ndHits=%u call2Us=%u "
                 "poisoned=%d kick=%d kick2=%d calcview in/out %u/%u draws=%u",
+                render_mode_label(),
                 g_draw.enabled.load(std::memory_order_relaxed) ? "on" : "off",
                 g_stream.enabled.load(std::memory_order_relaxed) ? "on" : "off",
+                g_forceInline.load(std::memory_order_relaxed) ? 1 : 0,
+                g_forcedInline.load(std::memory_order_relaxed),
+                g_drainGuardSkips.load(std::memory_order_relaxed),
+                g_drainEntries.load(std::memory_order_relaxed),
+                g_waitTaken2.load(std::memory_order_relaxed),
+                g_latchSet2.load(std::memory_order_relaxed),
                 g_stereo.load(std::memory_order_relaxed) ? 1 : 0,
                 g_doubleCall.load(std::memory_order_relaxed) ? 1 : 0,
                 g_pulseCount.load(std::memory_order_relaxed),
@@ -1082,8 +1269,8 @@ void handle_command(const char* args) {
                 g_calcOutside.load(std::memory_order_relaxed),
                 g_drawEntries.load(std::memory_order_relaxed));
     } else {
-        BVR_LOG("[reentry] unknown verb '%s' (BS2 has vrstereo|srdev|stereo|pulse|on|"
-                "off|yaw|reset|hook|unhook|dump|kick|kick2|calcstack|status)",
+        BVR_LOG("[reentry] unknown verb '%s' (BS2 has vrstereo|1t|srdev|stereo|pulse|"
+                "on|off|yaw|reset|hook|unhook|dump|kick|kick2|calcstack|status)",
                 verb);
     }
 }
