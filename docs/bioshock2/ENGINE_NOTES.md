@@ -664,19 +664,22 @@ renders a full square image and is the recommended VR configuration. On BS2 the 
 At 1920x1080 all three are clean: viewport 1920x1080 full, tanH = 1.1918 = `tan(50)` exactly,
 tanV = 0.6704 = `tanH * 9/16`, centre (0,0), both encodings agreeing to four decimals.
 
-**Consequence for the VR policy.** BS1's chain was: black bars are an ASPECT problem -> match the
-render aspect to the (roughly square) headset eye -> a sane FOV then fills the eye -> no FOV write
-needed. **On BS2 the first link breaks**: asking for a square aspect produces a letterbox and a
-broken projection rather than a square image. So on BS2 today, 16:9 is the only aspect proven to
-render correctly, and the resolution lane's value is SHARPNESS (a bigger 16:9 buffer), not aspect
-matching.
+**[SUPERSEDED session 37 - the letterbox is the WINDOW, not the engine; see the session-37
+section.]** ~~Consequence for the VR policy.~~ BS1's chain was: black bars are an ASPECT problem ->
+match the render aspect to the (roughly square) headset eye -> a sane FOV then fills the eye -> no
+FOV write needed. Session 32 read the square letterbox as "the first link breaks on BS2". Session
+37 measured the actual mechanism: the engine sizes its scene viewport to the window CLIENT area,
+and the game's own chromed window clamps on the desktop - EVERY aspect renders full-height once
+the client equals the backbuffer. 16:9-only was never an engine constraint.
 
-**Unresolved, and it is the next session's first job:** which aspects BS2 will render full-height.
-2048x1421 is 1.4413:1; where that comes from is underived, and it does NOT depend on the FOV option
-(the viewport was identical at option 100 and 130). Bisect it - the squarest aspect that still
-renders full-height is the best VR configuration available, and finding it is a handful of
-relaunches. `[Engine.RenderConfig] HorizontalFOVLock=True` and `ShockUserSettings`
-`bHorizontalFOVLock=False` / `LockHorizontalFOV=False` are unexamined suspects.
+**[RESOLVED session 37]** ~~Unresolved, and it is the next session's first job:~~ the aspect
+bisection question dissolved. 2048x1421's ratio 1.4413 was never derived from anything in the
+engine: 1421 is the window CLIENT height the clamped chromed window happens to have on this
+2560x1440 desktop (outer height clamps to 1460; minus 39 rows of title bar and border = 1421), and
+2048 was simply the requested width. The FOV-lock ini suspects were never needed (they exist -
+`[Engine.RenderConfig] HorizontalFOVLock=True;` ships in Default.ini with console variants, and
+`ShockUserSettings` carries `LockHorizontalFOV=False` / `bHorizontalFOVLock=False` - but the
+letterbox has nothing to do with them).
 
 ### 3. The world FOV law - PARTIALLY derived, and honestly so
 
@@ -693,6 +696,10 @@ rather than manufacturing a conclusion.
 
 So: `tanH = tan(option/2)` is confirmed AT 16:9 and must not be promoted to a general law until a
 clean second aspect exists. Whatever comes out of the section-2 bisection is that second aspect.
+**[Session 33 settled the law from the square dumps (16:9-referenced, tanV fixed); session 37
+re-verified it at two MORE clean full-height aspects, live: 2560x1600 (tanV held 1.42799 exactly
+through the aspect change) and a 2064x2208 frame dump (law B PASS, dH=0.00000). The law is
+settled.]**
 
 ### 4. BS2 HAS TWO LENSES, they differ AT 16:9, and the second one ignores the FOV option
 
@@ -1098,3 +1105,108 @@ A hook's stack-arg count MUST equal `ret imm / 4`. The flush point is `ret 8` = 
 plus ecx. `0xBB1950` tail-jmps and has no visible `ret imm` - read the tail-call target's ret
 before hooking anything in this family. Getting it wrong pops a Run-Time Check Failure #0 ESP
 modal that writes NO crash dump; press Abort, never force-kill.
+
+## Session 37 (2026-08-02) - THE LETTERBOX WAS THE WINDOW, and resolution is LIVE
+
+Everything below was measured on the live game under the simulated runtime (first xrsim attach to
+BS2 - it works), at the MENU SCENE, which classifies as a GAMEPLAY ShockPlayer view on this game
+and renders the full scene pipeline. The save re-check is the acceptance; the mechanisms are not
+in doubt.
+
+### 1. The letterbox mechanism - window arithmetic, not an engine law
+
+The engine sizes its SCENE VIEWPORT to the window CLIENT area every frame, while the BACKBUFFER
+holds the ini size. The game's own window carries chrome (measured style `0x14CA0000` - caption +
+sysmenu, not resizable) and a window-size clamp: on this 2560x1440 desktop the outer height tops
+out at 1460, minus 39 rows of chrome = a client of at most **1421 rows**. Every configuration
+taller than that rendered a letterboxed, anamorphic scene:
+
+| requested (ini) | window client | scene viewport | verdict |
+|---|---|---|---|
+| 1920x1080 | 1920x1080 (fits) | 1920x1080 | clean - why 16:9 always "worked" |
+| 2560x1440 | 2560x1421 | 2560x1420 | lb=1.0141, STRETCHED - even 16:9 letterboxes when taller than the clamp |
+| 2048x2048 (s32/33) | 2048x1421 | 2048x1421 | the "mystery ratio" 1.4413 = 2048/1421 - window arithmetic |
+| 2064x2208 | 2064x1421 | 2064x1421 | vpAspect 1.4525, lb 1.5538 - reproduced then FIXED live |
+
+The frustum takes the backbuffer aspect while the scene renders into the client-sized viewport -
+that mismatch is the anamorphic stretch, and it vanishes the moment client == backbuffer.
+
+### 2. Resolution is LIVE on BS2 - the engine follows the window
+
+Measured live, repeatedly, under armed `vrstereo` (1t stereo, wait2/s=0 throughout, zero faults):
+
+- A **borderless popup window CAN exceed the desktop** (client 2560x1600 and 2064x2208 both held
+  on the 2560x1440 desktop; the excess hangs off the bottom).
+- On a client resize the engine runs its own **ResizeBuffers**: backbuffer == client == scene
+  viewport, letterbox 1.0000, square pixels at every aspect tried (1.778 / 1.6 / 0.9348 / 0.9321).
+- The XR swapchain rebuilds at the new size (core's resize path), `suggested_hfov_deg` recomputes
+  at the new aspect, the auto FOV rewrites the option per the inverse law, and the CLAIM tracks
+  the law exactly (submitted == option-derived at every step).
+- The engine **persists its live size into Shared.ini ON RESIZE, one step behind** (mid-transition
+  it recorded the PREVIOUS size), and does NOT rewrite Shared.ini at exit (a clean menu quit left
+  the mod's write byte-identical, mtime untouched). This lag is the likely source of every "my
+  resolution write did not stick" report: the write raced the engine's own resize-persist.
+
+**Consequence:** `vrres` (and the F10 picker) apply LIVE - `apply_resolution()` in
+`bioshock2r/camera.cpp` resizes the window borderless to the exact client size, lets the engine
+follow, writes the ini for the next launch, and re-verifies the ini 4 s later to outlast the
+engine's lagging persist. A self-heal in the poll gate re-applies the borderless fix whenever
+stereo is armed and the client is smaller than the backbuffer (the state every chromed boot starts
+in). `vrres restore` puts the chrome back, sizing the client for the CURRENT backbuffer (restoring
+the remembered rect dragged the engine to a stale size - found live). BS1 keeps its ini+relaunch
+lane; do not port either direction.
+
+### 3. vrres end-to-end verdict (the user's doubt, session-36 brief item b)
+
+CLOSED, honored end to end: in-game `vrres 2560x1440` -> Shared.ini verified -> survived a clean
+quit -> next launch `first Present: backbuffer 2560x1440`. The failure mode users hit was never
+the write; it was (a) the engine's resize-persist racing it (above) and (b) the window clamp
+letterboxing the result so it LOOKED ignored.
+
+### 4. The FOV law, third and fourth clean aspects
+
+Session 33's law (`tanV = tan(option/2) * 9/16` aspect-invariant, `tanH = tanV * bbW/bbH`) held
+exactly at both new full-height aspects: through a LIVE aspect change 16:9 -> 1.6 the submitted
+tanV stayed 1.427990 while tanH moved 2.538648 -> 2.284783, and the 2064x2208 frame dump decodes
+to law B PASS with dH=0.00000. At the native class the auto FOV writes option 138 and the world
+renders **107.7 x 111.4 deg against a 108 x 110 eye** - the eye-matched configuration the whole
+lane exists for.
+
+### 5. ClaimRatioH semantics - corrected before it bites
+
+The sim's `claimRatioH` is **claim / EYE** (`xrsim_compositor.cpp`), not claim / render. It is
+~1.0 only when the render is eye-matched. With the FOV fill ON at 16:9 the mod deliberately
+over-renders (~137 deg against a ~108 deg eye) with an HONEST claim - claimRatioH ~1.8 there is
+correct behavior, not warp. The assertion per configuration is `measured == tan(law(option,
+aspect)/2) / eyeTanH`:
+
+| config | eye | expected | measured |
+|---|---|---|---|
+| 2064x2208, option 138 | asymmetric default (outer 54 / inner 44) | 1.1697 | 1.16973 |
+| 2064x2208, option 138 | symmetric 54 (`fov 54 55 54`) | 0.9952 | **0.99521** |
+
+Also pinned this session: the sim's DEFAULT eye now matches the measured VDXR half-angles
+h=54 v=55 (was the published-figures guess h=55 v=48 - wide and short, which flips the winning
+branch of the FOV circumscription and made FOV-derived sim numbers disagree with the headset).
+
+### 6. Open: the second lens cluster at the native aspect
+
+At 2064x2208 the menu-scene dump shows the world cluster (law B exact) plus a stable 14-draw
+cluster at ~135.1 x 137.8 deg true that fits NEITHER law for option 138. The menu scene has no
+weapon, so this is not necessarily the viewmodel lens - the fgfov ONE-cluster acceptance must be
+re-run in the SAVE with a weapon drawn at the native aspect. If the fg lens diverges off 16:9,
+the fix is running the FG lens's own law backwards in `apply_fg_fov_match` rather than writing
+the raw option (the s33 method: poke distinctive values, one dump, read which law the cluster
+tracks).
+
+### 7. Harness lessons
+
+- game-batch writes are LOST during scene transitions: the menu-scene load stalls the game thread
+  ~9 s, polls do not tick, and each command.txt write overwrites the last unread one. Never batch
+  across a transition; verify per-command echoes in the log.
+- The command seam's `args` carries fgets' trailing newline: whole-string `strcmp` never matches.
+  Token-match (`strncmp` + terminator check) - `vrres list` fell through to the status line until
+  fixed.
+- BS2's MENU BACKGROUND classifies as strict gameplay (ShockPlayer view actor), arms fgfov and
+  the auto FOV, and renders the full scene pipeline - flat screening without the save is possible
+  there, but the save remains the acceptance context (user directive).

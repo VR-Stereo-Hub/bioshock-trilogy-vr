@@ -249,9 +249,16 @@ The JSON is the point. Beyond the poses and controls it carries:
   premultiplied flag. This is how you tell a head-locked HUD (`space: view`) from
   a world-locked laser dot (`space: local`).
 - `derived.eyeSeparationM` - assert this equals the IPD, and stereo is real.
-- `derived.claimRatioH` - the game's claimed horizontal tangent over the eye's
-  actual one. **1.0 means the claim is right.** Session 28's yaw warp was a 1.84x
-  under-claim that took three sessions to infer; here it is one number.
+- `derived.claimRatioH` - the game's claimed horizontal tangent over the EYE's
+  actual one (claim/eye - NOT claim/render). **1.0 means the render is
+  eye-matched with an honest claim.** A mod that deliberately over-renders with
+  an honest claim reads ABOVE 1.0 by design - BS2's 16:9 FOV fill reads ~1.8 and
+  is correct. The real per-config assertion (session 37) is
+  `measured == tan(law(option, aspect)/2) / eyeTanH`; note the sim's default eye
+  is ASYMMETRIC (outer 54 / inner 44), so eyeTanH averages the two - send
+  `fov 54 55 54` for a symmetric eye when you want clean tan(54) math. Session
+  28's yaw warp was a 1.84x claim/RENDER mismatch - that class shows up here as
+  a measured value that disagrees with the law-derived expectation.
 - `stats.meanLumaL/R`, `stats.nonBlackPctL/R` - is anything actually rendered.
 
 ### 2.7 Scripted sequences
@@ -376,7 +383,7 @@ $a.NonBlackPctL      -gt 50     # something was rendered
 | frames/s while FOCUSED | `state.frame` delta | near `refreshHz` | a collapse to ~10/s is the session-33 pacing bug |
 | `layersLastFrame` | state.json | 1 projection + quads | 0 = nothing submitted; the mod is not in camera mode |
 | `eyeSeparationM` | capture JSON | == configured IPD | 0 = mono submitted as stereo |
-| `claimRatioH` | capture JSON | 1.0 +/- a few percent | far from 1.0 = the image is magnified in the headset |
+| `claimRatioH` | capture JSON | the law-derived expected value for the config (== 1.0 only when render is eye-matched; BS2's 16:9 fill legitimately reads ~1.8 - see 2.6) | disagreement with the EXPECTED value = a dishonest claim = magnification/warp in the headset |
 | `errors`, `endsOutOfOrder` | state.json | 0 | any = read `lastCmdError` before trusting a capture |
 
 ---
