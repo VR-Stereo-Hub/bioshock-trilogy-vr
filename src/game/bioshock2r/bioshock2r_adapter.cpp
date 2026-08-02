@@ -31,13 +31,19 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // BS1's, so without this the live fov watch decodes nothing on BS2 -
     // which is exactly the state session 26 recorded.
     bvr::hud::set_ray_block_offset(patterns::kRayBlockCb0FloatIndex);
-    // Session 34: an OpenXR session that is running but not FOCUSED paced this
-    // game at the runtime's not-visible cadence (~10 Hz measured flat, and every
-    // alt-tab reproduced it), which made VR unplayable. Detached pacing hands
-    // the frame loop to the pace thread whenever the session is not FOCUSED.
-    // Core ships it OFF so BioShock 1 - the headset-accepted baseline - is
-    // untouched; BS2 opts in here. `vrpace detach off` is the live A/B.
-    bvr::vr::set_pace_detach(true);
+    // Session 34 armed detached pacing here (hand the frame loop to the pace
+    // thread whenever the session is not FOCUSED) against the ~10 Hz unfocused
+    // cadence. Session 36, first real VDXR attach since: DETACH STRANDS THE
+    // HEADSET after any focus loss - empty keepalive frames are exactly what
+    // VDXR refuses to re-promote (state parked VISIBLE, shouldRender=0,
+    // forever), and the user hit it on the first double-tap. With the wait
+    // off-thread the frame loop while unfocused is cheap (lastEnd ~1 ms
+    // measured at VISIBLE), and full submission is what lets VD re-grant
+    // FOCUSED by itself - so the default is now OFF and the session
+    // SELF-HEALS on refocus. `vrpace detach on` remains the live A/B; the
+    // real fix (keepalives that carry layers) is queued in STATUS. Core
+    // still ships the lever OFF, so BS1 is untouched either way.
+    bvr::vr::set_pace_detach(false);
     if (!camera::install(symbols)) return false;
     BVR_LOG("[b2r] adapter ready, capabilities 0x%X", capabilities());
     return true;
