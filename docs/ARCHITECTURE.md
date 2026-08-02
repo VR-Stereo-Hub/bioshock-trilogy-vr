@@ -1039,3 +1039,27 @@ runtime.
   rendered fov, eye fov and the missing degrees. In-headset the user cannot read a log, so a
   control without its measurement is a control they can only judge by vibe - and "black bars"
   versus "38% of the eye's height is unfilled" are very different bug reports.
+- **(2026-08-02, session 36) The fix for a race is removing the wait, not narrowing it - and the
+  proof is a counter, not a soak duration.** BS2's stereo freeze was Draw's tail flush handshake
+  doubled by the second draw; `wait2/s` (latch state sampled at second-flush entry) showed the
+  INFINITE wait was entered on EVERY doubled frame at every resolution, so no timing knob could
+  ever have made it safe. `reentry 1t` (BS1's flush-point hook, duplicated into bioshock2r with
+  fresh constants per the decoupling rule) makes the wait structurally unreachable: `wait2/s == 0`
+  by construction, measured. A backend selector (AlternateEye default) shipped mid-session as a
+  floor and was flipped back to full-rate SR-on-1t the same day, on a green 10-minute soak - the
+  selector survives only as `vraer` plus the `srdev` repro gate.
+- **(2026-08-02, session 36) A watchdog episode the game recovers from is a load, not a wedge -
+  permanence is the verdict, the watchdog is the cry.** Save loads and respawns legitimately stop
+  presents >4 s, and the widened stall watchdog fires on them; the soak now gives every episode a
+  30 s recovery watch (log growing = load, counted and reported; silence = the freeze, fail). The
+  alternative - teaching core to distinguish loads - would have traded diagnostic stacks for
+  silence exactly where stacks are cheapest. Lesson bought by -KillOnFail killing a healthy game
+  the moment the user finished loading their save into it.
+- **(2026-08-02, session 36) The simulator force-grants focus, so every session-state negotiation
+  bug is INVISIBLE to it - VDXR state handling is only ever proven on the real runtime.** The first
+  real headset attach since the detach lever landed found two in one evening: bring-up (a
+  never-focused session must pump frames to REACH focused) and re-attach (VDXR never re-promotes a
+  session submitting empty keepalives - it parks at VISIBLE/shouldRender=0 forever). Both were
+  structurally unreachable in the sim and in flat soaks (no runtime = no session). Consequence for
+  verification: state-machine changes get a headset smoke test at first opportunity, and "black
+  void + VD environment" is read as BACKGROUNDED (foreground the app in the headset), not broken.

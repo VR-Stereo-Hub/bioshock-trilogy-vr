@@ -756,11 +756,26 @@ kill. Both prerequisites below are now MET.):**
       the image to fill the whole FOV. The rig's apparent SIZE is coupled to the FOV value, not
       only to its lens, so this is a separate defect from the swimming. Bars: check the gameswf
       letterbox classifier first (`vrcine bars`).
-- [ ] **VR PACING (BLOCKER - the game is unplayable in VR)** - an OpenXR session that is running
+- [x] **VR PACING (BLOCKER - the game is unplayable in VR)** - an OpenXR session that is running
       but not FOCUSED paces the game at the runtime's not-visible cadence (~10 Hz). Alt-tab
       reproduces it. Not a block (`lastWait 0 ms`); the frame HANDOFF is what paces. Session 28's
       "keep submitting while unfocused" must be preserved - the fix is to stop WAITING, not to
       stop submitting.
+      (DONE across sessions 34-36: session 34 moved the wait off the present thread and added the
+      detach lever; session 36's first real VDXR attach then showed detach STRANDS the headset -
+      VDXR never re-promotes empty keepalives - so BS2 ships detach OFF and self-heals on refocus,
+      the unfocused frame loop measured cheap (lastEnd ~1 ms at VISIBLE). Residue queued in STATUS:
+      keepalives that carry real layers, so detach-on gets recovery too.)
+- [x] **BS2 vrstereo FREEZE (RELEASE BLOCKER, sessions 34-36) - RESOLVED; full-rate stereo ships
+      on `reentry 1t`.** Root cause (session 35, verified live session 36): Draw's tail calls a
+      render flush point (0x69FC30) whose threaded branch is a latch-test-then-Wait(INFINITE);
+      the doubled draw raced it and the lost wakeup wedged the game in 5-100 s. Measured session
+      36: the wait was entered on EVERY doubled frame at every resolution (`wait2/s == 2nd/s`) -
+      the resolution/FOV work never created reachability. Fix: BS1's session-8 cure duplicated
+      with fresh constants (drain guard + flush-point force; quotient never poked), ~15% draw
+      cost. Accepted: 10-min decider soak in the user's save, user-driven load-crossing matrix
+      (stereo sticky, guardskips 0), and an immersive in-headset run of full-rate stereo on 1t.
+      Full derivations: ENGINE_NOTES "The render flush point"; history: FREEZE_HANDOFF.md.
 - [ ] **BS2 pitch-servo sign check in-headset** - the one thing flat cannot answer about the
       session-32 fix.
 - [ ] **BS2 swing-to-attack** - one `swing::publish_gate` line plus the melee-equipped predicate

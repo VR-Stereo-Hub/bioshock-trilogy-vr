@@ -2,7 +2,83 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-01, session 35 - PAUSED MID-SESSION - branch `s35-b2r-reentry-freeze` off `bioshock-2`)
+## Current state (2026-08-02, session 36 - THE BS2 STEREO FREEZE IS DEAD - merged to `bioshock-2`)
+
+**`vrstereo on` ships real full-rate stereo - both eyes every frame, running on `reentry 1t` - and
+it no longer freezes.** In-headset confirmed same day (VDXR/Quest 3, immersive, head-tracked,
+user-verified stable). Nine commits on `s35-b2r-reentry-freeze`, merged to `bioshock-2`.
+
+### What landed
+
+1. **The soak lane is proven**: `tools/soak.ps1` boots unattended (`-Boot map Ghetto.bsm` reaches
+   gameplay in ~2 min; `-Boot key`/steam with the user loading the save), waits for the camera
+   heartbeat, arms, and turns "did it freeze?" into an exit code (0..9). A WATCHDOG episode the
+   game RECOVERS from is a load, not the freeze - each gets a 30 s recovery watch (the wedge never
+   advances its log again). The beat regex was timestamp-blind on day one; fixed.
+2. **The flush chain is banked and verified**: constants + `verify_flush_chain()` in
+   `bioshock2r/patterns.h/.cpp` (call site 0x4EF4A1 -> thunk 0x24A28 -> body 0x69FC30 + prologue,
+   pure image reads). ENGINE_NOTES' session-26 "no submit handshake" section is REWRITTEN - that
+   claim was the sole reason 1t was never ported. Live confirmation: the wedged stack reads
+   `B8108F BB1963 69FD33 4EF4A6`, frame for frame the derived chain.
+3. **The trigger question is measured shut**: `wait2/s == 2nd/s, set2/s == 0` at BOTH 1920x1080 and
+   1280x720 - the second flush entered the `Wait(INFINITE)` on EVERY doubled frame since `97a229a`.
+   The resolution/FOV work created no reachability; the 5-100 s onset was per-wait lost-wakeup
+   probability. fgfov/vrfov A/Bs moot (wait2 saturated); the 4-commit bisect is superseded.
+4. **`reentry 1t` for BS2** - BS1's session-8 cure, duplicated with fresh constants (never shared,
+   never core): drain guard FIRST (null-scene skip; BS2 has BS1's drain+0x33 shape), flush-point
+   force second, quotient never poked. ~15% draw cost (91 -> 78/s). `wait2/s == 0` by construction.
+5. **Defaults**: `vrstereo on` = 1t -> camera mode -> stereo (BS1's ladder, full-rate SR).
+   `reentry srdev on` = the repro escape (raw doubled draw WITHOUT 1t - wedges, dev only).
+   `vraer` = AlternateEye. `vrstereo off` disarms everything symmetrically.
+6. **Two real VDXR bugs found by the first headset attach since session 34** (the sim force-grants
+   focus and structurally cannot see either):
+   (a) a NEVER-focused session must keep its frame loop running - frames are how the runtime walks
+   READY -> FOCUSED; `detach_skip_decision` gained the same bring-up exception `pace_should_skip`
+   always had (core, but behind the pace-detach lever - BS1 untouched);
+   (b) a DETACHED session is stranded FOREVER by VDXR - empty keepalive frames are never
+   re-promoted (state parks at VISIBLE, shouldRender=0). BS2's detach default is now OFF: with the
+   wait off-thread the unfocused frame loop is cheap (lastEnd ~1 ms measured live) and real
+   submission is what lets VD re-grant FOCUSED by itself. `vrpace detach on` is the live A/B.
+
+### Acceptance (all on the real game, in the user's save - per the user: test in the save, never the menu)
+
+- **The decider**: 10-min flat soak of full-rate stereo on 1t - PASS (one recovered load episode).
+  The unfixed build wedges in 5-35 s; measured 25 s (exit 3) on 7dce78c the same afternoon.
+- **Load crossings, stereo armed and sticky throughout**: save load, quit-to-menu x2, new game,
+  an idle-death respawn - guardskips 0, zero faults, zero new dumps (user-driven, log-verified).
+- **Post-flip smoke** of plain `vrstereo on` - PASS.
+- **In-headset**: immersive, head-tracked, full-rate stereo on 1t, stable. The user also confirmed
+  the FOV-fill toggle behaves as designed (bars without it; full FOV at lower pixel density with
+  it - the known P2 polish item; the counter-lever is `vrres`).
+
+### Deferred by the user's call (run when stability is next in doubt; each needs the save loaded at boot)
+
+```powershell
+.\tools\soak.ps1 -Game bs2 -Minutes 10 -Arm ""                            # vanilla flat
+.\tools\soak.ps1 -Game bs2 -Attach -Minutes 10 -Arm "vrcam on"
+.\tools\soak.ps1 -Game bs2 -Attach -Minutes 10 -Arm "vrcam off; vraer on"
+.\tools\soak.ps1 -Game bs2 -Attach -Minutes 10 -Arm "vraer off; vrstereo on"
+.\tools\soak.ps1 -Game bs1 -Minutes 10 -Arm "vrstereo on"                 # BS1 regression
+.\tools\xrsim-launch.ps1 -Game bs2                                        # sim never run vs BS2; selftest PASSED 2026-08-02
+```
+
+### Next steps
+
+1. **Install the final build if the user's play session outlived the session** - their live game got
+   `vrpace detach off` by command, but an old install would re-strand on the next boot's alt-tab
+   (the repo tip has detach OFF by default; `.\tools\install.ps1 -Game bs2` when the game is closed).
+2. **Detach reconciliation (pacing epic P1)**: keepalive frames that carry REAL layers, so
+   detach-on also recovers; re-default on measurement. Note for all VDXR work: VD re-grants FOCUSED
+   only when the app is foregrounded in the headset (double-tap) - "black void + VD environment"
+   means backgrounded, not broken.
+3. **FOV fill quality (P2, user-reported in this session's headset run)**: `vrfov` fills the eye at
+   lower pixel density; the lever pair is `vrres` x `vrfov`. Plus the helmet-porthole key
+   tightening (global index count -> foreground pass).
+4. The deferred soak matrix above whenever stereo/pacing code is touched again.
+
+---
+
+## Previous state (2026-08-01, session 35 - PAUSED MID-SESSION - branch `s35-b2r-reentry-freeze` off `bioshock-2`)
 
 **The BS2 stereo freeze has a verified root cause. The fix is identified and not yet written.**
 Two commits are pushed; nothing is half-applied in the working tree; the build is clean.
@@ -4361,6 +4437,36 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 36 - 2026-08-02 - the BS2 stereo freeze is dead; full-rate stereo ships on 1t
+
+Branch `s35-b2r-reentry-freeze` (worked via `claude/bioshock2-vrstereo-freeze-64334d`, same tip),
+merged to `bioshock-2`. Nine commits.
+
+Executed session 35's plan end to end, with three findings of its own. (1) The harness's first real
+run caught its own bug - the gameplay regex was anchored ahead of the log's timestamps - and then
+proved the whole lane: map boot to gameplay unattended, vanilla soak green, and the freeze
+reproduced as exit 3 in 25 s with the wedged stack reading `B8108F BB1963 69FD33 4EF4A6` - the
+session-35 chain confirmed live before a single fix landed. (2) The `wait2/s` counter refuted the
+resolution/FOV trigger hypothesis outright: the second flush entered the INFINITE wait on EVERY
+doubled frame at both 1920x1080 and 1280x720 - the race was never rare, only the lost wakeup was.
+(3) The user's headset time found two real VDXR integration bugs the simulator structurally cannot
+see (it force-grants focus): a never-focused session needs its frame loop to REACH focused
+(bring-up exception added, lever-gated), and a detached session is stranded forever because VDXR
+will not re-promote empty keepalives (BS2's detach default flipped OFF; the session self-heals on
+refocus now that the wait is off-thread - lastEnd ~1 ms at VISIBLE).
+
+The fix itself is BS1's session-8 cure duplicated with fresh constants - drain guard first,
+flush-point force second, quotient untouched - and it was accepted the same day: 10-min decider
+soak in the user's save, user-driven load-crossing matrix (save load, quit-to-menu x2, new game,
+respawn; stereo armed and sticky, guardskips 0), post-flip smoke, and an immersive in-headset run
+of full-rate stereo on 1t that the user called stable. `vrstereo on` now arms BS1's ladder by
+default; `srdev` degraded to the repro escape. A watchdog lesson closed the loop: an episode the
+game recovers from is a load, not the freeze - the soak now judges permanence, after `-KillOnFail`
+killed a healthy game at the exact moment the user's save finished loading and read as a crash.
+
+Deferred by the user's call, commands banked in Current state: the four-mode 10-minute matrix, the
+BS1 regression soak, and the sim-vs-BS2 per-eye captures (selftest passed).
 
 ### Session 35 - 2026-08-01 - the BS2 freeze has a cause: Draw's tail calls a render flush point
 
