@@ -1158,6 +1158,16 @@ bool detach_skip_decision(uint64_t now, bool focused) {
         g_detachedNow = false; // never leave the flag set behind a disabled lever
         return false;
     }
+    // Bring-up exception (session 36, found by the first real VDXR attach
+    // since this lever landed): a NEVER-focused session must keep its frame
+    // loop running - frames are how the runtime walks READY -> SYNCHRONIZED
+    // -> VISIBLE -> FOCUSED, so detaching here parks the headset on a void
+    // forever. Identical to pace_should_skip's exception; detach is for
+    // sessions that HAD focus and lost it (alt-tab), not for first attach.
+    if (!g_everFocused.load(std::memory_order_relaxed)) {
+        g_detachedNow = false;
+        return false;
+    }
     if (focused) {
         if (g_detachedNow) {
             g_detachedNow = false;
