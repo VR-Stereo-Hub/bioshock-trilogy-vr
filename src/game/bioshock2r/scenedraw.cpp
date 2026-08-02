@@ -940,44 +940,34 @@ void __fastcall StreamViewDetour(void* ecx, void* edx, void* loc, void* rot, voi
     reinterpret_cast<StreamFn>(g_stream.original)(ecx, edx, loc, rot, a3);
 }
 
-// The one-toggle compound (game thread only, outside hooked calls) is a
-// BACKEND SELECTOR (session 36). Session 26's "the Draw path has no submit
-// handshake" was refuted structurally in session 35: Draw's tail calls a
-// render flush point whose threaded branch is a flag-test-then-INFINITE-wait,
-// and the doubled draw races it - the vrstereo freeze. Until the 1t port
-// lands and earns the default back, `vrstereo on` arms AlternateEye (per-eye
-// stereo, no draw re-entrancy, structurally cannot hit the race) and the
-// doubled draw sits behind `reentry srdev on`.
+// The one-toggle compound (game thread only, outside hooked calls). Session
+// 36: full-rate SequentialReentry ON 1t is the default - BS1's shipped
+// design, earned back by the acceptance soak (10 min in the user's save,
+// zero unrecovered watchdogs) after the 1t port removed the flush-handshake
+// race that session 35 derived. AlternateEye remains reachable via `vraer`;
+// the doubled draw WITHOUT 1t remains reachable via `reentry srdev on` (the
+// freeze-repro lane, dev only).
 void apply_vrstereo(bool on) {
     if (on) {
-        if (g_srDev.load(std::memory_order_relaxed)) {
-            // BS1's arming order, load-bearing: 1t FIRST (remove the flush
-            // handshake), then camera mode, then the doubled draw.
-            BVR_LOG("[reentry] VRSTEREO ON (backend: SequentialReentry, srdev): "
-                    "1t -> camera mode -> stereo");
-            if (!g_forceInline.load(std::memory_order_relaxed)) handle_command("1t on");
-            bvr::vr::set_camera_mode(true);
-            // SR presents an L/R pair per tick; pair pacing is meaningful only
-            // here, so it is armed here rather than in the preset (session 36).
-            bvr::vr::set_sr_pair_pacing(true);
-            if (!g_stereo.load(std::memory_order_relaxed)) handle_command("stereo on");
-            bool ok = g_forceInline.load(std::memory_order_relaxed) &&
-                      g_stereo.load(std::memory_order_relaxed);
-            BVR_LOG("[reentry] VRSTEREO %s (1t=%d stereo=%d; sticky across loads via "
-                    "the gameplay-caller gate; 'vrstereo off' reverses)",
-                    ok ? "READY" : "INCOMPLETE - see refusals above",
-                    g_forceInline.load(std::memory_order_relaxed) ? 1 : 0,
-                    g_stereo.load(std::memory_order_relaxed) ? 1 : 0);
-            g_vrStereoArmed.store(ok, std::memory_order_relaxed);
-        } else {
-            BVR_LOG("[reentry] VRSTEREO ON (backend: AlternateEye - no draw "
-                    "re-entrancy; the doubled draw is behind 'reentry srdev on' "
-                    "until it runs on 1t)");
-            bvr::vr::set_enabled(true);
-            bvr::vr::set_camera_mode(true);
-            bvr::vr::set_alternate_eye(true);
-            g_vrStereoArmed.store(true, std::memory_order_relaxed);
-        }
+        // BS1's arming order, load-bearing: 1t FIRST (remove the flush
+        // handshake), then camera mode, then the doubled draw.
+        BVR_LOG("[reentry] VRSTEREO ON (full-rate SR stereo on 1t): "
+                "1t -> camera mode -> stereo");
+        if (!g_forceInline.load(std::memory_order_relaxed)) handle_command("1t on");
+        bvr::vr::set_enabled(true);
+        bvr::vr::set_camera_mode(true);
+        // SR presents an L/R pair per tick; pair pacing is meaningful only
+        // here, so it is armed here rather than in the preset (session 36).
+        bvr::vr::set_sr_pair_pacing(true);
+        if (!g_stereo.load(std::memory_order_relaxed)) handle_command("stereo on");
+        bool ok = g_forceInline.load(std::memory_order_relaxed) &&
+                  g_stereo.load(std::memory_order_relaxed);
+        BVR_LOG("[reentry] VRSTEREO %s (1t=%d stereo=%d; sticky across loads via "
+                "the gameplay-caller gate; 'vrstereo off' reverses)",
+                ok ? "READY" : "INCOMPLETE - see refusals above",
+                g_forceInline.load(std::memory_order_relaxed) ? 1 : 0,
+                g_stereo.load(std::memory_order_relaxed) ? 1 : 0);
+        g_vrStereoArmed.store(ok, std::memory_order_relaxed);
     } else {
         // Symmetric OFF: disarm BOTH backends regardless of how ON was reached,
         // so an srdev flip between on and off cannot strand one of them armed
@@ -1074,13 +1064,16 @@ void handle_command(const char* args) {
         }
     } else if (strcmp(verb, "stereo") == 0) {
         if (strncmp(rest, "on", 2) == 0) {
-            // The raw seam stays available for development, but never by
-            // accident: without 1t the doubled draw wedges on the flush
-            // handshake (session 35), so it hides behind srdev.
-            if (!g_srDev.load(std::memory_order_relaxed)) {
-                BVR_LOG("[reentry] stereo REFUSED: the doubled draw races Draw's "
-                        "tail flush handshake and wedges ('reentry srdev on' "
-                        "first - dev only until the 1t port lands)");
+            // Without 1t the doubled draw wedges on the flush handshake
+            // (session 35). The raw seam therefore requires 1t to be armed -
+            // or srdev, the deliberate dev/repro escape that runs the doubled
+            // draw on the threaded substrate anyway.
+            if (!g_forceInline.load(std::memory_order_relaxed) &&
+                !g_srDev.load(std::memory_order_relaxed)) {
+                BVR_LOG("[reentry] stereo REFUSED: no 1t armed and the doubled draw "
+                        "races Draw's tail flush handshake ('vrstereo on' arms the "
+                        "full ladder; 'reentry srdev on' deliberately runs the raw "
+                        "doubled draw for repro work)");
                 return;
             }
             if (g_poisoned.load(std::memory_order_relaxed)) {
@@ -1187,11 +1180,14 @@ void handle_command(const char* args) {
             }
         }
     } else if (strcmp(verb, "srdev") == 0) {
+        // Since the default flip (session 36) this no longer selects the
+        // backend - it is the dev/repro escape that lets the raw `stereo`
+        // verb run the doubled draw WITHOUT 1t (the freeze-repro lane).
         bool on = strncmp(rest, "on", 2) == 0;
         g_srDev.store(on, std::memory_order_relaxed);
-        BVR_LOG("[reentry] srdev %s: 'vrstereo on' arms %s", on ? "on" : "off",
-                on ? "SequentialReentry (doubled draw - dev only, wedges without 1t)"
-                   : "AlternateEye (the default)");
+        BVR_LOG("[reentry] srdev %s: raw 'stereo on' without 1t is %s (the doubled "
+                "draw on the threaded substrate WEDGES - repro use only)",
+                on ? "on" : "off", on ? "ALLOWED" : "refused");
     } else if (strcmp(verb, "reset") == 0) {
         g_poisoned.store(false, std::memory_order_relaxed);
         BVR_LOG("[reentry] poison cleared (last fault code=0x%08X rva=0x%X)",
@@ -1339,12 +1335,7 @@ void draw_debug_ui() {
     // the overlay may be drawing on the render thread.
     bool armed = g_vrStereoArmed.load(std::memory_order_relaxed);
     bool toggle = armed;
-    // The label carries the LIVE backend so an in-headset report can name it.
-    char stereoLabel[64];
-    sprintf_s(stereoLabel, "VR stereo (%s)",
-              g_srDev.load(std::memory_order_relaxed) ? "SequentialReentry [srdev]"
-                                                      : "AlternateEye");
-    if (ImGui::Checkbox(stereoLabel, &toggle) && toggle != armed)
+    if (ImGui::Checkbox("VR stereo (full-rate SR on 1t)", &toggle) && toggle != armed)
         request_vrstereo(toggle);
     ImGui::Text("hooks: draw %s  stream %s%s%s  samplers: kick %s  kick2 %s",
                 g_draw.enabled.load(std::memory_order_relaxed) ? "ON" : "off",

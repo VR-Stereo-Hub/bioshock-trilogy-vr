@@ -1013,11 +1013,10 @@ void apply_vr_preset() {
     BVR_LOG("[b2r] VR PRESET: arming the full VR configuration");
     bvr::vr::set_enabled(true);
     bvr::vr::set_camera_mode(true);
-    // Stereo backend choice (and SR-only knobs like pair pacing) live in
-    // scenedraw::apply_vrstereo - the preset arms the one-toggle and lets the
-    // selector decide. Session 26's "no 1t rung" premise was refuted in
-    // session 35: Draw's tail DOES have a submit handshake, so the doubled
-    // draw runs only behind `reentry srdev on` until the 1t port lands.
+    // The one-toggle arms full-rate SR stereo ON 1t (SR-only knobs like pair
+    // pacing live in apply_vrstereo). Session 26's "no 1t rung" premise was
+    // refuted in session 35 - Draw's tail DOES have a submit handshake - and
+    // the session-36 1t port is what makes the doubled draw safe.
     scenedraw::handle_command("vrstereo on");
     BVR_LOG("[b2r] VR PRESET: worldscale %.1f headoff up %.1f fwd %.1f ipd %.1f "
             "fgfov %s",

@@ -1,179 +1,95 @@
-# BS2 hard freeze - session handoff (2026-07-31, session 34)
+# BS2 hard freeze - RESOLVED (sessions 34-36)
 
-The whole purpose of the next session. Everything below was measured this session; nothing
-here is inference unless it says so.
+Session 34 localised it, session 35 derived the root cause, session 36 measured the trigger
+question, ported the fix, and soaked it. This file is now the historical record and the repro
+recipe; the engine knowledge lives in `ENGINE_NOTES.md` ("The render flush point"), and the
+session-by-session narrative in `docs/STATUS.md`.
 
-## The prompt for the next session
+## What it was
 
-See the separate "Session 35 prompt" the user holds; the operative facts are below.
+`vrstereo on` (the SequentialReentry doubled draw) hard-wedged the game in 5-100 s: permanent,
+no fault, no dump, process must be killed. Reproduced flat - no headset, no OpenXR session.
 
-Branch from **`bioshock-2`**, never from `main`, and **never merge to `main`** - `bioshock-2`
-is the integration branch for this game (same arrangement as BioShock Infinite). Merge there.
+**Root cause (verified against the exe, then live):** `UGameEngine::Draw`'s tail makes exactly
+one call to a render flush point (RVA `0x69FC30`) whose threaded branch is a
+flag-test-then-`WaitForSingleObject(INFINITE)` handshake with the render worker (`0xBB1950`:
+`cmp [esi+8],0; jne skip; Wait(INFINITE)`). The doubled draw runs that handshake twice per tick;
+a wakeup delivered between the second flush's flag test and its wait is lost forever. The wedged
+stack reads `B8108F BB1963 69FD33 4EF4A6` - the exact chain, recovered live by the watchdog on
+2026-08-02, with the render worker visible parked in its own wait on the other side.
 
-## WHICH CHANGE INTRODUCED IT - open, and cheap to settle
+Session 26 had concluded the Draw path has no submit handshake (the flush call hides behind a
+link thunk and virtual dispatch), which is why 1t was never ported until session 35 refuted it.
 
-The user's recollection is that the freeze began after **the resolution picker** and **the
-viewmodel-lens-follows-the-camera** work. That is a testable hypothesis and it should be
-tested first - but note what this session's evidence does and does NOT say:
+## The fix
 
-- **Measured**: the freeze reproduces at `eaac2ab` (main's tip before session 34). That commit
-  already contains BOTH suspects, so it does not discriminate between them or exonerate
-  anything earlier.
-- **NOT measured**: anything before `eaac2ab`. No bisect was run.
-- The machinery that actually blocks - the doubled `Draw` - landed much earlier, at
-  `97a229a` (2026-07-29, "bs2 sequentialreentry - threaded double draw, pass-2 replay,
-  vrstereo"). If the freeze is present there too, neither suspect is the cause and the
-  re-entrancy design is.
+**`reentry 1t` - structural single-threading while stereo is armed, BS1's session-8 cure with
+BS2's constants** (never shared, never in core): a hook on the flush point forces its
+byte-confirmed INLINE branch (args into the render mgr, mode stamped single-threaded, drain
+called on the game thread), with a drain guard skipping null-scene entries (the drain
+dereferences `[mgr+0x24]` with no null check). The hw-thread quotient global is never poked -
+its load-path consumers must see the true core count, which is why this survives load crossings.
+`vrstereo on` arms it automatically (1t -> camera mode -> stereo, BS1's order).
 
-**The bisect is cheap: the repro is flat, needs no headset, and takes about two minutes per
-commit.** Suspect commits, oldest first:
+Measured under 1t: `mode=1T`, `2nd/s == draws/s` (full-rate stereo, both eyes every frame),
+`forced/s == 2x draws/s`, `wait2/s == 0` (the wait is structurally unreachable), presents on the
+game thread, ~15% draw-rate cost (~91 -> ~78 draws/s; BS1 pays ~20% for the same cure).
 
-| commit | date | what it added |
-|---|---|---|
-| `97a229a` | 2026-07-29 | BS2 SequentialReentry - the doubled draw itself, `vrstereo` |
-| `395893d` | 2026-07-31 | `vrres` resolution picker (writes `Shared.ini`) |
-| `d425fab` | 2026-07-31 | viewmodel lens match, `PlayerController+0x694` |
-| `eaac2ab` | 2026-07-31 | main tip - **freeze confirmed here** |
+## "Which change introduced it" - ANSWERED, and it was neither suspect
 
-Build each detached (`git checkout --detach <sha>`), install, run the repro below. Start at
-`97a229a`: if it hangs there, both suspects are cleared in one run and the answer is the
-re-entrancy design itself.
+Session 36 instrumented the flush point (`wait2/s` on the beat line = second flushes that will
+enter the INFINITE wait) and A/B'd resolution:
 
-Note also that `vrres` and the lens match are **not armed by default** in the same way - the
-lens match ships default ON, `vrres` only acts if `Shared.ini` was written. Check
-`%APPDATA%\BioshockHD\Bioshock2\Shared.ini` (currently `1920x1080`) before blaming
-resolution, and A/B the lens match with `fgfov off`.
+| run | resolution | wait2/s | wedge onset |
+|---|---|---|---|
+| baseline | 1920x1080 | == 2nd/s (91-94), set2 = 0 | ~5 s |
+| A | 1280x720 | == 2nd/s (107-111), set2 = 0 | ~35 s |
 
-## How to produce the hang (5 minutes, no headset)
+The second flush entered the freeze-window wait on EVERY doubled frame at BOTH resolutions -
+the race window has been open ~100x/s since the doubled draw landed at `97a229a`. The
+resolution picker (`395893d`) and the viewmodel lens (`d425fab`) created no reachability;
+`fgfov`/`vrfov` A/B runs were moot (wait2 already saturated). The 5-100 s onset is per-wait
+lost-wakeup probability, so "it began after the resolution/FOV work" was onset-variance
+coincidence. The 4-commit bisect is superseded by this measurement.
+
+## How to reproduce the original wedge (for regression work only)
+
+The doubled draw without 1t is dev-gated behind srdev; the freeze needs it opened by hand:
 
 ```powershell
-.\tools\build.ps1
-.\tools\install.ps1 -Game bs2
-.\tools\launch-game.ps1 -Game bs2
+.\tools\soak.ps1 -Game bs2 -Minutes 5 -Arm "reentry srdev on; vrstereo on; reentry 1t off" -KillOnFail
 ```
 
-Then:
+(`vrstereo on` arms 1t as part of its ladder; the trailing `1t off` drops it while stereo
+stays armed - srdev is what lets that state exist. Expect exit 3 with `WATCHDOG secondDraw
+stuck` and the `B8108F BB1963 69FD33 4EF4A6` stack in pacetrace.log. Load the save when the
+title screen appears - tests run in the save, not the menu.) The healthy-run controls are
+`vrcam on` and `vraer on`, which never re-enter the draw, and `vrstereo on` as shipped
+(1t armed).
 
-1. Foreground the game window and press **Space** at the title screen. On this machine that
-   resumes straight into gameplay at the test save.
-2. Write the command file (the harness batch script is fine too):
-   ```powershell
-   Set-Content "$env:LOCALAPPDATA\BioshockVR\bs2\command.txt" -Value "vrstereo on" -NoNewline -Encoding ascii
-   ```
-3. Wait. It wedges in 5-100 s. Foreground or background makes no difference (tested both).
+`tools/soak.ps1` is the acceptance instrument: exit 0 pass / 2 log stalled / 3 WATCHDOG /
+4 process died / 5 no gameplay / 6 arm failed / 7 inconclusive / 8 new crash dump / 9 preflight
+refused. `-Boot map -Map Ghetto.bsm` boots unattended into gameplay in ~2 min.
 
-**Confirming it is the wedge and not something else:**
+## Dead ends - do NOT retry (all measured, session 34)
 
-- `Get-Process Bioshock2HD` -> `Responding = False`, and it stays False forever.
-- `%LOCALAPPDATA%\BioshockVR\bs2\bioshockvr.log` stops advancing and never resumes, even if
-  you foreground the window.
-- `%LOCALAPPDATA%\BioshockVR\bs2\pacetrace.log` KEEPS advancing (own thread, own file handle)
-  and prints, once per second:
-  ```
-  TRACE ... presents/s 0 | phase: - | stage: - | draw: secondDraw for 18105 ms
-  WATCHDOG secondDraw stuck 4218 ms tid=NNNN eip=77E499DC in ntdll.dll+0x799DC ... rva: B8108F BB1963 ...
-  ```
+1. **PulseEvent -> SetEvent redirect.** The engine never calls PulseEvent on this path
+   (`PulseEvent calls 0` measured). Binary adjacency is not a calling relationship.
+2. **Bounding the INFINITE wait** (IAT clamp, 2000 ms, scoped to the re-entered draw). The
+   freeze became a CRASH (fault at 101E1A4B, repeated) - the engine proceeds to use a resource
+   that genuinely is not ready. This did confirm the wait is the freeze point.
+3. **A foreground gate on the doubled draw.** The freeze reproduces focused (`fg=1` in the
+   trace); the alt-tab correlation was coincidence.
+4. **Poking the hw-thread quotient (`0x149760C`) to force inline mode.** Never tried on BS2 and
+   never will be: BS1's equivalent poke crashed a loader thread. Hook the flush point instead.
 
-The control, to prove a candidate fix actually did something: `vrcam on` instead of
-`vrstereo on` arms the VR camera WITHOUT the doubled draw and soaks indefinitely (5 min,
-zero events). `vraer on` arms AlternateEye stereo, which also never re-enters the draw.
+## The instruments that cracked it (all still in the tree)
 
-## What is actually happening
-
-`eip` sits in `ntdll!NtWaitForSingleObject+0xC`. The nearest game frame returns into a
-thiscall wrapper that is literally:
-
-```
-push [ebp+8]                  ; timeout
-push [ecx+4]                  ; HANDLE stored at +4 of an event object
-call KERNEL32!WaitForSingleObject
-neg eax ; sbb eax,eax ; inc eax   ; -> (result == WAIT_OBJECT_0)
-ret 4
-```
-
-and its caller is:
-
-```
-mov esi, ecx                  ; this
-cmp dword ptr [esi+8], 0      ; "already finished" flag
-jne  skip                     ; set -> no wait at all
-mov ecx, [esi+0x10]           ; event object
-push -1                       ; INFINITE
-call [eax+0x14]               ; virtual Wait(INFINITE)
-skip:
-mov ecx, [esi+0xc]
-```
-
-That is the textbook lost-wakeup shape: a wakeup delivered between the flag test and the
-wait is gone forever. SequentialReentry doubles these handshakes per frame and shifts their
-timing, so it is a matter of when, not if.
-
-**It is the engine's own race. VR only makes it fire.** Reproduced identically on `main`
-(build `eaac2ab` detached), so nothing session 34 changed causes it.
-
-## Dead ends - do NOT retry
-
-1. **PulseEvent -> SetEvent.** The wrapper sitting next to the Wait one calls
-   `KERNEL32!PulseEvent`, whose documented lost-wakeup behaviour fits perfectly. Redirected
-   the import to `SetEvent` (which latches), armed at init, measured: **`PulseEvent calls 0`**.
-   The engine never calls it on this path. Adjacency in a binary is not a calling relationship.
-2. **Bounding the INFINITE wait.** IAT-clamped `KERNEL32!WaitForSingleObject`, scoped by a
-   `thread_local` to exactly the re-entered draw, 2000 ms. The freeze stops and the game
-   **crashes instead** - `fault at 101E1A4B` repeated 86000 times. The caller ignores the
-   wait's return value, so the timeout is not itself fatal; the engine proceeds to use a
-   resource that genuinely is not ready. **A crash is worse than a freeze.** This does confirm
-   that wait IS the freeze point.
-3. **A foreground gate on the doubled draw.** The freeze reproduces with the window focused
-   (the trace line carries `fg=1`). The alt-tab correlation was coincidence.
-
-## Candidate fixes, in confidence order
-
-1. **Render single-threaded while stereo is armed.** This removes the cross-thread handshake
-   instead of fighting it, and it is exactly what BioShock 1 does (`reentry 1t`) - which is
-   why BS1 does not hang here. BS2's equivalent has never been derived. Session 26 explicitly
-   decided not to, on a premise this session refuted: its comment claims *"the Draw path has
-   no submit handshake (that spin-wait belongs to the streaming manager)"*. The doubled draw
-   plainly reaches a blocking cross-thread wait.
-2. **Drop draw re-entrancy on BS2 and ship AlternateEye stereo** (`vraer on`, added this
-   session). Real per-eye stereo, never re-enters the draw, structurally cannot hit this bug.
-   Costs judder - each eye updates every other frame. Flat-stable for 150 s, but with no
-   headset there is no session, so the per-eye CAPTURE path is still unproven. **One headset
-   test settles whether this is a shippable fallback**, and it is the cheapest thing in this
-   document.
-3. Identify what signals that event and why the doubled draw misses it - i.e. find the
-   partner of the wait rather than the wait. Needs the signalling call site; the watchdog can
-   be pointed at it (see below).
-
-## The instruments (all added session 34, all in this branch)
-
-- **`pacetrace.log`** - written by a dedicated thread with its OWN file handle, opened
-  `_SH_DENYWR` so it can be tailed while the game is frozen. It must never use `BVR_LOG`:
-  that takes a process-global `std::mutex` and the tracer then queues behind the very stall it
-  is describing. That mistake cost this session an hour of silent logs.
-- **Stall detection keys on presents having stopped**, not on one of our own phases being
-  open. The wedge is outside every span the VR module wraps, so a phase-based check reports
-  nothing. (It also had a bug where `continue` skipped the baseline update, making the
-  condition permanently false - check that kind of thing.)
-- **`WATCHDOG`** - suspends the wedged thread, reads its context, scans its stack for
-  return addresses inside the game image, resolves the module of `eip`, resumes. This is what
-  named the bug. `watchdog_all_threads()` exists but currently prints nothing (its `nf == 0`
-  filter or the snapshot silently fails) - **fixing that is probably the fastest next step**,
-  because it would show the OTHER side of the deadlock.
-- **Stage markers** - `set_present_stage()` across every segment of the Present detour and
-  `set_draw_stage()` around the doubled draw, so the trace can say which segment the thread is
-  in rather than "everything stopped".
-- **`tools/disasm-rva.py`** turns those RVAs into disassembly. Its output is game-derived:
-  never commit it, summarise in ENGINE_NOTES.
-
-## What else is in this branch (unrelated to the freeze, all measured)
-
-- **The 10 Hz pacing slowdown is fixed** - `xrEndFrame` blocks ~102 ms while unfocused, and
-  eventually forever. The present thread now makes no blocking OpenXR call while the session
-  is not FOCUSED. Flat A/B: 238 presents/s with it on, 1/s with it off. Separate bug from the
-  freeze; do not conflate them.
-- **Black bars diagnosed and fixed** - the eye is 108 x 110 deg, the game rendered 100 x 67.7,
-  so 38% of the eye's height was black. BS2's FOV law makes `tanV` aspect-invariant, so the
-  FOV option is the ONLY lever that adds vertical view. `vrfov` now ships default ON.
-- **The helmet** - BS1's zoom-pull does NOT exist on BS2 (A/B/A dump triple: only the
-  projection tangents move, the near plane holds, no eye position moves). The porthole is one
-  mesh, index count **3810**, confirmed by making it disappear. Overlay toggle, default off.
+- `pacetrace.log` - dedicated thread, own `_SH_DENYWR` handle, never takes `BVR_LOG`'s mutex,
+  so it keeps writing while the game is wedged.
+- The stall watchdog - suspends the wedged thread, walks its stack for game-image return
+  addresses. Session 35 made it able to fail ANY run (it used to require an open draw stage,
+  which only the doubled draw opens) and gave `watchdog_all_threads()` a voice (it showed the
+  render worker's side of the deadlock).
+- `wait2/s` / `set2/s` on the `[reentry] beat` line - latch state sampled at second-flush entry.
+- `tools/disasm-rva.py` - offline disassembly; its output is game-derived and never committed.
