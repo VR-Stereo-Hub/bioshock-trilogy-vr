@@ -198,6 +198,24 @@ std::atomic<float> g_fgFovManual{0.0f};  // >0 = write this instead of the optio
 float g_fgFovSaved = 0.0f;
 bool g_wasWritingFgFov = false;
 std::atomic<float> g_fgFovLastWritten{0.0f};
+// ---- The fg lens LAW GAIN, self-identified (session 37) --------------------
+// The fg lens does NOT follow the world's law off 16:9. Measured at aspect
+// 0.9348 (2064x2208, three probes 60/100/138): fg tanV = tan(d/2) * 0.99488,
+// a constant gain in tan space - while session 33's one-cluster acceptance
+// pins the gain at 16:9 to exactly 9/16 (writing the option matched the world
+// there). No natural closed form fits both points, so the gain G is
+// IDENTIFIED live instead of assumed: every fresh fg sample from the fov
+// watch, paired with the value this code last wrote, yields
+// G = tanV_fg / tan(dLast/2), and the match writes the inverse,
+// d = 2*atan(tanV_world / G). At 16:9 G converges to 9/16 and the write
+// reduces to d == option - bit-compatible with the accepted s33 behavior.
+// Convergence is one sample (G_meas is independent of the d in effect), and
+// the estimator FREEZES exactly when the lenses merge (fov_watch_fg returns
+// false once there is no second cluster) - it only measures while there is an
+// error signal, and re-identifies by itself after an aspect change.
+// Atomic because the overlay displays it; only the game thread writes it.
+std::atomic<float> g_fgLawG{9.0f / 16.0f}; // 16:9 identity at init
+uint64_t g_fgLastWriteChangeMs = 0;        // game thread only; pairing guard
 uint64_t g_lastCalcViewMs = 0;
 // Session 32: the ENGINE's own view pitch, sampled BEFORE the drive overwrites
 // it, and the error handed to the core pitch servo. These exist because the
@@ -318,8 +336,41 @@ void apply_fg_fov_match(const int32_t* optionFov, bool strictGameplay) {
             BVR_LOG("[b2r] fgfov write ON at 0x%08X (saved %.3f)",
                     static_cast<unsigned>(addr), g_fgFovSaved);
         }
-        float value = manual > 0.0f ? manual : static_cast<float>(*optionFov);
+        // Identify the fg lens gain from what the watch measured against what
+        // we last wrote (see g_fgLawG). The pairing guard skips samples that
+        // may predate the last CHANGE of the written value (a 1-2 frame skew
+        // during transitions would briefly corrupt G); in steady state the
+        // written value is constant and every sample qualifies.
+        uint64_t nowMs = GetTickCount64();
+        float lastW = g_fgFovLastWritten.load(std::memory_order_relaxed);
+        float fgTh = 0.0f, fgTv = 0.0f;
+        unsigned long long fgAge = 0;
+        float lawG = g_fgLawG.load(std::memory_order_relaxed);
+        if (lastW > 10.0f && bvr::hud::fov_watch_fg(&fgTh, &fgTv, &fgAge, 400) &&
+            nowMs - fgAge > g_fgLastWriteChangeMs + 100) {
+            float meas = fgTv / tanf(lastW * 0.5f / kRadToDeg);
+            if (meas > 0.1f && meas < 4.0f && fabsf(meas - lawG) > 0.0005f) {
+                if (fabsf(meas - lawG) / lawG > 0.01f)
+                    BVR_LOG("[b2r] fgfov: lens gain G %.5f -> %.5f (identified from "
+                            "fg tanV %.5f at written %.1f)",
+                            lawG, meas, fgTv, lastW);
+                lawG = meas;
+                g_fgLawG.store(meas, std::memory_order_relaxed);
+            }
+        }
+        float value;
+        if (manual > 0.0f) {
+            value = manual; // calibration lane: raw degrees, never corrected
+        } else {
+            // The equality the match exists for: fg tanV == world tanV. The
+            // world's is the law (tan(option/2) * 9/16, aspect-invariant);
+            // the fg renders tan(d/2) * G, so write the inverse.
+            float tanVWorld =
+                tanf(static_cast<float>(*optionFov) * 0.5f / kRadToDeg) * (9.0f / 16.0f);
+            value = 2.0f * atanf(tanVWorld / lawG) * kRadToDeg;
+        }
         if (*fg != value) *fg = value;
+        if (value != lastW) g_fgLastWriteChangeMs = nowMs;
         g_fgFovLastWritten.store(value, std::memory_order_relaxed);
     } else if (g_wasWritingFgFov) {
         *fg = g_fgFovSaved;
@@ -784,13 +835,15 @@ void apply_command(const char* cmd, const char* args) {
             float cur = 0.0f;
             bool ok = a && bvr::value_scan::safe_read_f32(a, &cur);
             BVR_LOG("[b2r] fgfov status: match=%s addr=0x%08X current=%s%.4f "
-                    "manual=%.1f writing=%d saved=%.4f lastWritten=%.1f option=%d",
+                    "manual=%.1f writing=%d saved=%.4f lastWritten=%.1f option=%d "
+                    "lawG=%.5f",
                     g_fgFovMatch.load(std::memory_order_relaxed) ? "on" : "off",
                     static_cast<unsigned>(a), ok ? "" : "UNREADABLE ", ok ? cur : 0.0f,
                     g_fgFovManual.load(std::memory_order_relaxed),
                     g_wasWritingFgFov ? 1 : 0, g_fgFovSaved,
                     g_fgFovLastWritten.load(std::memory_order_relaxed),
-                    g_lastOptionFov.load(std::memory_order_relaxed));
+                    g_lastOptionFov.load(std::memory_order_relaxed),
+                    g_fgLawG.load(std::memory_order_relaxed));
         } else if (strncmp(args, "off", 3) == 0) {
             g_fgFovMatch.store(false, std::memory_order_relaxed);
             BVR_LOG("[b2r] command: fgfov off (restores on the next CalcView)");
@@ -1909,6 +1962,12 @@ void draw_debug_ui() {
         ImGui::Text("field @0x%08X = %s%.1f deg   |   world FOV option = %d",
                     static_cast<unsigned>(addr), ok ? "" : "?", ok ? cur : 0.0f,
                     g_lastOptionFov.load(std::memory_order_relaxed));
+        // The written value is no longer the option verbatim: the fg lens's
+        // gain differs from the world's law off 16:9 and is identified live
+        // (g_fgLawG). Show both so a mismatch report carries its numbers.
+        ImGui::Text("written %.1f deg (lens gain G=%.4f, 0.5625 = 16:9 identity)",
+                    g_fgFovLastWritten.load(std::memory_order_relaxed),
+                    g_fgLawG.load(std::memory_order_relaxed));
 
         float wH = 0.0f, wV = 0.0f, fH = 0.0f, fV = 0.0f;
         unsigned long long age = 0;
