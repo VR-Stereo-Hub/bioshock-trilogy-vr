@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <share.h>
 
 namespace bvr::b2r::camera {
@@ -79,6 +80,14 @@ std::atomic<bool> g_gameFovWrite{false};
 // pass: the headset-derived vrfov wrote 131 on the Quest 3 / VD rig and was
 // judged good, so the manual lever defaults to match that neighborhood).
 std::atomic<float> g_gameFovDeg{130.0f};
+
+// Resolution write requested by the F10 picker (session 37). The overlay runs
+// on the RENDER thread and game_ini::write_viewport does file I/O plus a
+// read-back, so the request goes through a pending atomic and is performed on
+// the game thread - consumed in ProcessEventDetour's poll gate, which (unlike
+// BS1's CalcView-detour consumer) also ticks at the main menu. Packed as one
+// 64-bit value (w << 32 | h) so the pair cannot tear.
+std::atomic<uint64_t> g_resWritePending{0};
 
 // M4 rung 1 (AlternateEye) + the SR passes share this half-IPD shift. The
 // AER eye sign comes from core (vr::current_eye_sign(), 0 while the AER
@@ -374,6 +383,47 @@ float rendered_vfov_for_option(int32_t optionDeg) {
     float tanV = tanf(static_cast<float>(optionDeg) * 0.5f / kRadToDeg) * (9.0f / 16.0f);
     return 2.0f * atanf(tanV) * kRadToDeg;
 }
+
+// The option the automatic FOV will write at a GIVEN backbuffer size - the
+// picker's preview number for a selected-but-not-yet-applied resolution. This
+// deliberately does NOT reuse option_for_rendered_hfov: that helper (and
+// suggested_hfov_deg feeding it) reads the LIVE backbuffer, so it would show
+// the wrong option for a selection that only lands on the next launch. Same
+// circumscription core computes (openxr_runtime.cpp): the symmetric horizontal
+// that covers the eye's vertical at this aspect, capped at 160, then the law
+// run backwards. Returns 0 without headset geometry.
+int32_t auto_option_for_dims(int w, int h) {
+    float halfH = 0.0f, halfV = 0.0f;
+    if (!bvr::vr::headset_half_fov_deg(&halfH, &halfV) || w <= 0 || h <= 0) return 0;
+    float aspect = static_cast<float>(w) / static_cast<float>(h);
+    float halfHNeed = fmaxf(halfH / kRadToDeg,
+                            atanf(tanf(halfV / kRadToDeg) * aspect));
+    float sugDeg = fminf(halfHNeed * 2.0f * kRadToDeg, 160.0f);
+    float tanH = tanf(sugDeg * 0.5f / kRadToDeg);
+    float tanV = tanH * (static_cast<float>(h) / static_cast<float>(w));
+    float opt = 2.0f * atanf(tanV * (16.0f / 9.0f)) * kRadToDeg;
+    return static_cast<int32_t>(opt + 0.5f);
+}
+
+// ---- Resolution presets (session 37) ---------------------------------------
+// One table drives BOTH the `vrres <name>` command and the F10 picker, BS1's
+// dropdown shape with BS2's numbers. The entries are STATIC, measured-in
+// values - never derived from the headset at runtime - so a preset means the
+// same pixels on every rig and every boot. The 16:9 ladder is the shipped
+// baseline; squarer rungs are added only as the session-37 aspect bisection
+// proves BS2 renders them full-height (the engine letterboxes somewhere
+// between 16:9 and square: 2048x2048 renders a 2048x1421 scene).
+struct ResMode {
+    const char* cmdName; // `vrres <cmdName>`; nullptr = overlay-only entry
+    const char* label;   // overlay combo text
+    int w, h;
+};
+const ResMode kResModes[] = {
+    {"flat", "1920 x 1080  (16:9, 2.1 MPx, flat play / performance)", 1920, 1080},
+    {"balanced", "2560 x 1440  (16:9, 3.7 MPx, balanced)", 2560, 1440},
+    {"sharp", "3200 x 1800  (16:9, 5.8 MPx, sharper)", 3200, 1800},
+    {"max", "3840 x 2160  (16:9, 8.3 MPx, very demanding)", 3840, 2160},
+};
 
 // Half-IPD shift along view-right of `rot`, sign -1 = left eye. Shared by the
 // AER path now and both SequentialReentry passes later - ONE implementation,
@@ -853,8 +903,30 @@ void apply_command(const char* cmd, const char* args) {
         // is no live path to try; the game's own ini is the only lever and a
         // change lands on the next launch. Deliberately explicit, never
         // automatic - this writes the user's config file.
+        //
+        // Session 37: named presets from kResModes (the same table the F10
+        // picker shows), `list` to print them, raw WxH still accepted.
+        // NOTE args comes from fgets and still carries the trailing newline,
+        // so a whole-string strcmp can never match - token-match instead
+        // (found the hard way: `vrres list` fell through to the status line).
+        auto argIs = [args](const char* name) {
+            size_t n = strlen(name);
+            return strncmp(args, name, n) == 0 &&
+                   (args[n] == '\0' || args[n] == '\n' || args[n] == '\r' ||
+                    args[n] == ' ');
+        };
+        const ResMode* named = nullptr;
+        for (const ResMode& m : kResModes)
+            if (m.cmdName && argIs(m.cmdName)) named = &m;
         unsigned rw = 0, rh = 0;
-        if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
+        if (named) {
+            game_ini::write_viewport(static_cast<uint32_t>(named->w),
+                                     static_cast<uint32_t>(named->h));
+        } else if (argIs("list")) {
+            for (const ResMode& m : kResModes)
+                BVR_LOG("[b2r] vrres %-10s -> %s", m.cmdName ? m.cmdName : "(ui)",
+                        m.label);
+        } else if (sscanf_s(args, "%ux%u", &rw, &rh) == 2 && rw && rh) {
             game_ini::write_viewport(rw, rh);
         } else if (sscanf_s(args, "%u %u", &rw, &rh) == 2 && rw && rh) {
             game_ini::write_viewport(rw, rh);
@@ -1494,6 +1566,12 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                 // game thread outside hooked calls. Also the MENU-arming
                 // path - BS2's menu never runs PlayerCalcView.
                 scenedraw::apply_pending_vrstereo();
+                // Overlay-posted resolution write (session 37): file I/O off
+                // the render thread, and it works from the main menu for the
+                // same reason vrstereo arming does.
+                if (uint64_t req = g_resWritePending.exchange(0, std::memory_order_relaxed))
+                    game_ini::write_viewport(static_cast<uint32_t>(req >> 32),
+                                             static_cast<uint32_t>(req & 0xFFFFFFFFu));
             }
         }
     }
@@ -1689,12 +1767,14 @@ void draw_debug_ui() {
     if (ImGui::CollapsingHeader("FILL THE VIEW  <-- the black bands",
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
         bool fill = g_forceHeadsetFov.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Fill the headset FOV (widen the game's lens to the eye)",
+        if (ImGui::Checkbox("Automatic FOV (computed from your headset, never manual)",
                             &fill))
             g_forceHeadsetFov.store(fill, std::memory_order_relaxed);
 
         int32_t opt = g_lastOptionFov.load(std::memory_order_relaxed);
         float rh = rendered_hfov_for_option(opt), rv = rendered_vfov_for_option(opt);
+        ImGui::Text("FOV option: %d %s", opt,
+                    fill ? "(auto - the mod computes it per frame)" : "(the game's own)");
         float halfH = 0.0f, halfV = 0.0f;
         if (bvr::vr::headset_half_fov_deg(&halfH, &halfV)) {
             ImGui::Text("rendered %.0f x %.0f deg   |   your eye %.0f x %.0f deg", rh, rv,
@@ -1712,9 +1792,11 @@ void draw_debug_ui() {
             ImGui::Text("rendered %.0f x %.0f deg (no headset geometry yet)", rh, rv);
         }
         ImGui::TextWrapped(
-            "On this game the FOV option is the only thing that adds VERTICAL "
-            "view: its vertical is locked to a 16:9 reference, so a squarer "
-            "resolution only narrows the horizontal.");
+            "The FOV option is the COVERAGE lever on this game: its vertical is "
+            "fixed against a 16:9 reference at every aspect, so this toggle is "
+            "what fills the eye (a squarer buffer alone adds no view). The "
+            "RENDER RESOLUTION below is the SHARPNESS lever: more pixels over "
+            "the same degrees.");
 
         ImGui::Separator();
         // The helmet, right here rather than in a rig section of its own,
@@ -1735,6 +1817,112 @@ void draw_debug_ui() {
 
         if (ImGui::Button("Save these settings (survives a relaunch)##fillview"))
             save_vr_preset();
+    }
+
+    // ---- RENDER RESOLUTION (session 37): the sharpness lever ----------------
+    // BS1's picker SHAPE (dropdown of named modes + Custom + a write button),
+    // BS2's facts: the governing file is Shared.ini [SharedOptions] (never
+    // BS1's WinDrv pair - the engine ignores those here), a change lands on
+    // the NEXT launch (no live path; see game_ini.h), and the write is posted
+    // to the game thread via g_resWritePending because it does file I/O.
+    if (ImGui::CollapsingHeader("RENDER RESOLUTION (applies on next launch)")) {
+        // read_viewport opens two files, so re-read at ~1 Hz, not every frame
+        // (BS1 re-reads every overlay frame; do not port that).
+        static game_ini::Viewport s_vp{};
+        static uint64_t s_vpReadMs = 0;
+        uint64_t nowMs = GetTickCount64();
+        if (nowMs - s_vpReadMs > 1000 || s_vpReadMs == 0) {
+            s_vpReadMs = nowMs;
+            s_vp = game_ini::read_viewport();
+        }
+        unsigned liveW = 0, liveH = 0;
+        bvr::hud::backbuffer_dims(&liveW, &liveH);
+        if (!s_vp.valid) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                               "Shared.ini not found - cannot set the resolution");
+        } else {
+            ImGui::Text("ini: %ux%u   live backbuffer: %ux%u", s_vp.w, s_vp.h, liveW,
+                        liveH);
+            if (liveW && liveH && (s_vp.w != liveW || s_vp.h != liveH))
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                   "ini and live render disagree - restart the game "
+                                   "to apply the ini");
+            if (s_vp.startupFullscreen)
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                   "StartupFullscreen=True: odd sizes may be quantized "
+                                   "by the display path; windowed is the tested lane");
+
+            const int kCustom = static_cast<int>(std::size(kResModes));
+            static int s_sel = -1;
+            static int s_w = 0, s_h = 0;
+            if (s_sel < 0) {
+                // Preselect what the ini already says, so the dropdown opens
+                // showing the truth rather than a default.
+                s_w = static_cast<int>(s_vp.w);
+                s_h = static_cast<int>(s_vp.h);
+                s_sel = kCustom;
+                for (int i = 0; i < kCustom; ++i)
+                    if (kResModes[i].w == s_w && kResModes[i].h == s_h) s_sel = i;
+            }
+            const char* preview =
+                (s_sel == kCustom) ? "Custom..." : kResModes[s_sel].label;
+            if (ImGui::BeginCombo("Resolution", preview)) {
+                for (int i = 0; i <= kCustom; ++i) {
+                    const char* label = (i == kCustom) ? "Custom..." : kResModes[i].label;
+                    if (ImGui::Selectable(label, s_sel == i)) {
+                        s_sel = i;
+                        if (i != kCustom) {
+                            s_w = kResModes[i].w;
+                            s_h = kResModes[i].h;
+                        }
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (s_sel == kCustom) {
+                ImGui::InputInt("width", &s_w, 64, 256);
+                ImGui::InputInt("height", &s_h, 64, 256);
+                if (s_w < 1024) s_w = 1024;
+                if (s_h < 1024) s_h = 1024;
+                if (s_w > 8192) s_w = 8192;
+                if (s_h > 8192) s_h = 8192;
+            }
+            ImGui::Text("selected: %d x %d, %.1f MPx", s_w, s_h,
+                        static_cast<double>(s_w) * s_h / 1.0e6);
+            // Session-37 bisection pending: 16:9 is the only aspect PROVEN to
+            // render full-height; square is proven to letterbox AND stretch
+            // (2048x2048 -> a 2048x1421 scene with a backbuffer-aspect
+            // frustum). Until the bisection lands, warn on anything squarer
+            // than 16:9 rather than pretending to know the threshold.
+            float selAspect = static_cast<float>(s_w) / static_cast<float>(s_h);
+            if (selAspect < 1.76f)
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                   "aspect %.3f is squarer than 16:9 - BS2 may "
+                                   "letterbox and STRETCH this (under measurement)",
+                                   selAspect);
+            // The auto-FOV preview for the SELECTED size - what the automatic
+            // FOV would write after the restart, from the law run backwards at
+            // these dims (never option_for_rendered_hfov, which reads the LIVE
+            // backbuffer and would preview the wrong number).
+            int32_t prevOpt = auto_option_for_dims(s_w, s_h);
+            if (prevOpt > 0) {
+                float tanV =
+                    tanf(static_cast<float>(prevOpt) * 0.5f / kRadToDeg) * (9.0f / 16.0f);
+                float prevV = 2.0f * atanf(tanV) * kRadToDeg;
+                float prevH = 2.0f * atanf(tanV * selAspect) * kRadToDeg;
+                ImGui::Text("auto FOV here: option %d (renders %.0f x %.0f deg)",
+                            prevOpt, prevH, prevV);
+            } else {
+                ImGui::TextDisabled("auto FOV preview needs a headset session");
+            }
+            if (ImGui::Button("Write to Shared.ini")) {
+                g_resWritePending.store((static_cast<uint64_t>(s_w) << 32) |
+                                            static_cast<uint32_t>(s_h),
+                                        std::memory_order_relaxed);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("restart the game for it to take effect");
+        }
     }
 
     if (ImGui::CollapsingHeader("VR camera (M3)", ImGuiTreeNodeFlags_DefaultOpen)) {
