@@ -62,6 +62,15 @@ const uint8_t* follow_jmp_stub(const uint8_t* p) {
     return p + 5 + rel;
 }
 
+// Decode a direct call (E8 rel32) at a known call site. Returns null when the
+// byte there is not E8 - the caller treats that as a build mismatch.
+const uint8_t* follow_call_rel32(const uint8_t* p) {
+    if (!bvr::pattern_scan::is_memory_valid(p, 5) || p[0] != 0xE8) return nullptr;
+    int32_t rel = 0;
+    memcpy(&rel, p + 1, sizeof(rel));
+    return p + 5 + rel;
+}
+
 bool prologue_matches(const uint8_t* fn, const uint8_t* expect, size_t n, const char* what) {
     if (!bvr::pattern_scan::is_memory_valid(fn, n)) {
         BVR_LOG("[b2r] %s prologue unreadable at %p", what, fn);
@@ -192,6 +201,37 @@ bool verify_draw_chain(const bvr::pattern_scan::ProcessImage& image) {
     BVR_LOG("[b2r] UGameEngine::Draw chain VERIFIED: vtbl 0x%X slot +0x%X -> stub %p -> "
             "body %p (RVA 0x%X)",
             kGameEngineVtableRva, kDrawVtblByteOffset, stub, draw, kSceneBuildRva);
+    return true;
+}
+
+bool verify_flush_chain(const bvr::pattern_scan::ProcessImage& image) {
+    using namespace bvr::pattern_scan;
+    const uint8_t* site = image.base + kFlushCallSiteRva;
+    const uint8_t* thunk = follow_call_rel32(site);
+    if (!thunk) {
+        BVR_LOG("[b2r] flush call site 0x%X is not an E8 call - build differs, refusing",
+                kFlushCallSiteRva);
+        return false;
+    }
+    if (thunk != image.base + kFlushThunkRva) {
+        BVR_LOG("[b2r] flush call at 0x%X lands at %p, expected thunk RVA 0x%X - build "
+                "differs, refusing",
+                kFlushCallSiteRva, thunk, kFlushThunkRva);
+        return false;
+    }
+    const uint8_t* body = follow_jmp_stub(thunk);
+    if (body != image.base + kFlushPointRva) {
+        BVR_LOG("[b2r] flush thunk 0x%X lands at %p, expected body RVA 0x%X - build "
+                "differs, refusing",
+                kFlushThunkRva, body, kFlushPointRva);
+        return false;
+    }
+    if (!prologue_matches(body, kFlushPointPrologue, sizeof(kFlushPointPrologue),
+                          "render flush point"))
+        return false;
+    BVR_LOG("[b2r] render flush chain VERIFIED: Draw tail 0x%X -> thunk 0x%X -> body %p "
+            "(RVA 0x%X)",
+            kFlushCallSiteRva, kFlushThunkRva, body, kFlushPointRva);
     return true;
 }
 

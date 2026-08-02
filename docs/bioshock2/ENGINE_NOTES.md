@@ -193,17 +193,24 @@ included; null object claims 0 = core's explicit fallback signal); the gated wri
 stale-restore from the ProcessEvent detour because BS2 has no scenedraw hook); the 1 Hz
 heartbeat's `fov=` field; `fovaudit`.
 
-## Scene-draw architecture (session 26) - SequentialReentry WITHOUT single-threading
+## Scene-draw architecture (session 26; premise CORRECTED session 35)
 
-**The headline: BS2's SequentialReentry runs on the THREADED substrate.** BS1 needed
-structural single-threading (the flush-point hook) because its game thread parks in a
-racy kick-and-wait handshake per frame; BS2's Draw path has NO such handshake - the
-game thread fills a cursor-based command ring and the per-tick sync runs once AFTER the
-doubled call - so a second Draw simply enqueues a second scene + present command.
-Flat-proven: pulse and continuous doubling, `presents/s == 2 x draws/s` exact, per-eye
-camera delta IPD-exact, zero faults. None of BS1's 1t/flush-point/drain-guard machinery
-ports. (Second applied case of the "BS2 is not bound by BS1's methods" directive, after
-the session-25 fg verdict.)
+**Session 26's headline - "BS2's Draw path has no submit handshake, so SequentialReentry
+runs safely on the threaded substrate" - is REFUTED, structurally.** Draw's tail makes
+exactly one static call to a render flush point (RVA `0x69FC30`, the structural twin of
+BS1's `0x61D260` - full chain in "The render flush point" below) whose threaded branch
+is a flag-test-then-`Wait(INFINITE)` handshake with the render worker. Doubling Draw
+doubles that handshake per tick, and the second one's lost wakeup is the `vrstereo`
+freeze session 34 localised. Session 26 missed it because the flush call vanishes into
+a link thunk (`0x24A28`) and its per-frame SetEvent traffic is virtually dispatched -
+the samplers saw the streaming hand-off and the Flash/FMOD kicks and concluded the tail
+was handshake-free.
+
+What session 26 DID prove stands: the doubling mechanics work (pulse and continuous
+doubling, `presents/s == 2 x draws/s` exact, per-eye camera delta IPD-exact, zero
+faults over its short gates). The freeze needs 5-100 s of armed stereo to fire, which
+those gates never ran. Consequence: BS1's 1t machinery (flush-point hook + drain guard)
+DOES port - with fresh constants - and the doubled draw runs on it (session 36).
 
 ### The derived render substrate (all RVAs live-verified 2026-07-29, session 26)
 
@@ -211,12 +218,13 @@ the session-25 fg verdict.)
 |---|---|---|
 | `UGameEngine::Draw` | **0x4EE8D0** | THE SequentialReentry seam ("build"). Aligned-stack + SEH prologue `53 8B DC 83 EC 08 83 E4 F0` (BS1's build family), `ret 0x10`, ECX = engine this (stored [ebp-0x84]), arg1 = viewport -> edi (+0x48 read at tail). Render-command ring cursors at `this+0x118/+0x11C` (BS1's exact offsets). Derivation: live kick2 deep-chains -> offline capstone walk -> the fn sits at **engine vtable 0x10BD7DC slot +0x118** (stub 0x139D -> body; the session-24 RTTI candidate, now consumed) - the install path re-verifies that whole chain from the image every time. ZERO static E8 callers (virtual dispatch). Live: draws/s == presents/s == calcIn/s exactly; ~0.6-0.8 ms pass-through. |
 | gameplay Draw caller | ret **0xCD5D7B** | the ONLY caller observed over every gameplay beat (count == presents): the 13-instr virtual-dispatch fn at 0xCD5D60 (`call [vtbl+0x118]`, ret 4), called from the viewport iterator 0xCD2C40 (IsWindow-gated, viewport type == 1). Pass 2's deny-by-default gate: double ONLY Draws from this ret. |
-| `FContentStreamingManager` view hand-off | 0x5C7C80 | **NOT a frame submit** - it wears BS1's submit shape exactly (TLS frame-id spin-wait head, camera globals, `ret 0xC`, tail event kick) and that shape-match was session 25's mislabel. `this` = the streaming mgr global; called from the Draw tail (ret 0x4EF541, gated on mgr non-null + ring cursors unequal) and from the no-world frame fn (ret 0x4F9AB9 in fn 0x4F6E70 - the load/menu path). Prologue `55 8B EC 64 A1 2C 00 00 00`. Hooked as telemetry only (fires 1:1 with draws in gameplay). |
+| `FContentStreamingManager` view hand-off | 0x5C7C80 | **NOT a frame submit** - it wears BS1's submit shape exactly (TLS frame-id spin-wait head, camera globals, `ret 0xC`, tail event kick) and that shape-match was session 25's mislabel. `this` = the streaming mgr global; called from the Draw tail (ret 0x4EF541, gated on mgr non-null + ring cursors unequal) and from the no-world frame fn (ret 0x4F9AB9 in fn 0x4F6E70 - the load/menu path). Prologue `55 8B EC 64 A1 2C 00 00 00`. Hooked as telemetry only (fires 1:1 with draws in gameplay). **A DIFFERENT tail call from the render flush point** (ret 0x4EF541 vs 0x4EF4A6) - the tail has two, and this one being handshake-free is not evidence about the other. |
+| render flush point | **0x69FC30** | Draw's tail submit handshake, missed by session 26 and derived session 35 - the `vrstereo` freeze chain and the `reentry 1t` hook seam. Full derivation + layout in "The render flush point" below. |
 | `FEventWin::Trigger` | 0xB81050 | the event class's signal: `push [ecx+4]; call [IAT SetEvent]; ret` - handle at +4, vtable 0x11E4FAC slot 2 (slot 4 = Pulse, +0x14 = timed wait, +0x18 = wait INFINITE). The engine's ONLY static kernel32!SetEvent path; virtually dispatched everywhere. `reentry kick2` hooks it to sample engine-side call sites. |
 | Flash/FMOD lock-step runnables | Run = 0x67DAD0 | `FThreadLockStepRunnable::Run` (vtable 0x10D53D4 slot 1; abstract work virtual at +0x14): `while (![this+0xC]) { [this+4]->wait(); vtbl[+0x14](); [this+4]->signal(); }`. Shared by `FFlashUpdateRunnable` (vtbl 0x10D53F8) and `FFMODUpdateThread` (vtbl 0x11FB574) - THESE are the two once-per-present SetEvent threads the kick sampler sees, NOT render threads. Flash kick fn 0x67DB30 (gate obj [0x17F7794], work at +0x10, dt at +0x14, wake via 0xBB1950); gate methods: 0xBB1400 wait, 0xBB1610 signal-done, 0xBB1420 execute-INLINE-if-no-thread. |
-| hw-thread quotient | num **0x149760C** / div **0x1497798** | BS1's quotient family, ONE out-of-line copy at 0x67DAB0 (`return [num]/[div] > 1`), gating the Flash kick in the engine-tick fn (~0x500452 region, ret site 0x500546). Not consumed by the mod - kept for the record. |
+| hw-thread quotient | num **0x149760C** / div **0x1497798** | BS1's quotient family, ONE out-of-line copy at 0x67DAB0 (`return [num]/[div] > 1`), gating the Flash kick in the engine-tick fn (~0x500452 region, ret site 0x500546) AND the render flush point's threaded/inline decision (its chain's last test, confirmed session 35). Read-only to the mod, forever: **never poke it** - BS1's equivalent poke crashed a loader thread (other quotient consumers see a lie); forcing the inline branch is done by hooking the flush point instead. |
 | streaming camera globals | loc 0x17F5D7C, rot 0x17F5D90 | live-verified via hexdump: mirror the CalcView camera exactly (the streamer's view info). Frame-id pair 0x17F5D8C/0x17F5DA0 with BS1's high-bit-done convention (`0x800000BA` parked in steady state - backpressure slots, not per-frame counters); streaming mgr global 0x17F5D54; its FEventWin kick obj global 0x17F5D60. |
-| render-thread sync pair | FEventWin globals 0x1A69294 / 0x1A69298 | the endframe fn 0x501EA0 Triggers [0x1A69294] once per present (kick2 site 0x5029BA); static reader 0xB929F2 = render-thread loop candidate. Presents run on a dedicated thread (presentTid != drawTid, live). BANKED, UNCONSUMED - only needed if threaded doubling ever proves unstable and a 1t fallback must be derived. |
+| render-thread sync pair | FEventWin globals 0x1A69294 / 0x1A69298 | the endframe fn 0x501EA0 Triggers [0x1A69294] once per present (kick2 site 0x5029BA); static reader 0xB929F2 = render-thread loop candidate. Presents run on a dedicated thread (presentTid != drawTid, live). BANKED, UNCONSUMED - threaded doubling DID prove unstable (the freeze), but the 1t route is the flush-point hook, not this pair; kept for the record. |
 | Draw camera-source probe | viewport+0x48 -> camActor +0x1EC loc / +0x1F8 rot | the Draw head copies these cached fields into its locals (telemetry probe in the detour). NOT the final view camera (loc differs from CalcView's output) - the live camera enters via the CalcView dispatch below. |
 
 ### Frame protocol (live-measured)
@@ -226,7 +234,9 @@ Game thread per tick: engine tick fn (~0x500452, SEH state machine) -> viewport 
 ring; **PlayerCalcView dispatches EXACTLY ONCE inside every Draw** - live: calcIn ==
 draws every beat; the script-VM chain 0x4D3400 -> 0x4D06F0 -> 0x4D1080 carries the
 inlined dispatch, 0x4D1080 references the FName index global 0x17D9A08) -> Draw tail:
-streaming view hand-off + Flash kick-if-idle -> back in the tick fn: threaded Flash
+**render flush point 0x69FC30** (call site 0x4EF4A1 - the submit handshake; see "The
+render flush point") + streaming view hand-off (ret 0x4EF541) + Flash
+kick-if-idle -> back in the tick fn: threaded Flash
 kick + endframe 0x501EA0 (render event Trigger + FMOD kicks + QPC stats). A dedicated
 render thread drains the ring and Presents (~200/s == draws/s); Flash + FMOD lock-step
 threads each SetEvent once per present. PlayerCalcView also dispatches ~3x per frame
@@ -246,7 +256,10 @@ OUTSIDE Draw (other consumers).
 - **Stereo**: `2nd/s == draws/s`, `presents/s == 2x draws/s` (99->198 ... 105->210),
   per-eye camera delta `|d| = 6.30 UU == ipd/1000 x worldScale` EXACT, L/R symmetric
   around the base along the full-rotation right axis, zero skips/faults/tag-ring
-  resyncs. `vrstereo on` one-toggle (camera mode -> stereo, NO 1t rung) logs READY.
+  resyncs. CAVEAT (session 34): these gates ran seconds, and the flush-handshake race
+  needs 5-100 s armed to fire - they proved the doubling mechanics, not stability.
+  The `vrstereo on` one-toggle is a backend selector since session 36 (the doubled
+  draw runs on `reentry 1t`).
 - Load safety: pass 2 is deny-by-default on the single gameplay caller ret 0xCD5D7B +
   `calcview_silent(400)` skip + present-stall skip; loaders/menus can never double.
 
@@ -1016,3 +1029,60 @@ discriminator between "the fg eye dollies with the fov" (BS1's zoom-pull) and "t
 a wider frustum simply reveals more of the rig". **That comparison needs two dumps from the SAME
 standing position** - the existing session-33 dumps are from different moments, so their world-space
 values cannot be compared, which is why this one is not answered from disk like the rest.
+
+## The render flush point (session 35, live-confirmed session 36) - the vrstereo freeze chain
+
+Everything here was derived offline with `tools/disasm-rva.py` against the shipped exe and
+re-verified 2026-08-02; the mod re-verifies the whole chain from the image at install time
+(`patterns::verify_flush_chain`). Constants live in `src/game/bioshock2r/patterns.h` ONLY.
+
+### The chain, and how each link was derived
+
+| link | value | derivation |
+|---|---|---|
+| call site in Draw's tail | **0x4EF4A1** (ret 0x4EF4A6) | started from session 34's WATCHDOG stack (`... B8108F BB1963 ...`); walking Draw (0x4EE8D0) tail code found `mov ecx,[base+0x17DBF4C]` at 0x4EF493 followed by one E8. The E8 is the ONLY static call to the thunk in the image (xref census) |
+| link thunk | **0x24A28** | the E8's rel32 target; `E9` hop (`jmp` rel32) - a bare `calls` query returns THIS, not the callers: always chase the thunk |
+| flush point body | **0x69FC30** | the thunk's E9 target. Prologue `55 8B EC 8B 55 0C 8B 45 08 56 8B F1`; `ret 8` = 2 stack args (scene, view group) + ecx = mgr |
+| render-mgr global | **0x17DBF4C** | read into ecx at the call site (0x4EF493) |
+| decision chain | seven vetoes -> quotient | each of seven tests selects the INLINE branch; the last is `[0x149760C]/[0x1497798] > 1` (the hw-thread quotient - the same family that gates the Flash kick; **never poke it**) |
+| INLINE branch | drain, nothing after | `mov ecx,esi; call thunk 0xE29B -> 0x69F3F0`, then `pop esi; pop ebp; ret 8`. NOTHING after the drain call - forcing this branch is lossless, the property BS1's cure depends on |
+| THREADED branch | gate-wait | `mov ecx,[mgr+4]; call thunk 0x1FBF9 -> 0xBB1950`, ret site **0x69FD33** |
+| gate-wait fn | **0xBB1950** | `push esi; mov esi,ecx; cmp [esi+8],0; jne 0xBB1963;` then `mov ecx,[esi+0x10]; push -1; call [eax+0x14]` (virtual Wait(INFINITE), ret 0xBB1963); at 0xBB1963: `mov ecx,[esi+0xC]; mov [esi+8],0; jmp [eax+8]` (clear latch, Trigger GO). The flag-test-then-wait whose lost wakeup is the freeze. Tail-jmps, so it has NO visible `ret imm` - read the tail target before assuming an arg count |
+| event-wait wrapper | **0xB8108F** | FEventWin timed-wait wrapper ret (vtable +0x14) - the frame the WATCHDOG sees above 0xBB1963 |
+
+### Manager layout the flush point writes (mgr = the drain's `this`)
+
+| offset | role |
+|---|---|
+| +0x04 | gate object (the 0xBB1950 `this`; latch at gate+0x08) |
+| +0x24 | scene slot (arg1 stored here; **the drain loads it with NO null check** - BS1's drain+0x33 crash shape, hence the 1t drain guard) |
+| +0x28..0x5C | view group, 14 dwords copied from arg2 |
+| +0x60 | threaded stamp (write 0 when forcing inline) |
+| +0x64 | flush-seen stamp (write 1) |
+
+The drain is **0x69F3F0** (SEH-framed prologue `55 8B EC 6A FF` + absolute-VA scope-table push,
+which is why the prologue constant stops at 5 bytes - the VA relocates).
+
+### Live confirmation (2026-08-02, session 36)
+
+The soak harness armed `vrstereo on` on the 7dce78c build and the WATCHDOG recovered the wedged
+second draw's stack as `B8108F BB1963 69FD33 4EF4A6` - event-wait wrapper, gate-wait ret, flush
+threaded-branch ret, Draw tail call-site ret. Exactly the chain above, frame for frame. The
+all-threads snapshot also showed the render worker parked in its own FEventWin wait
+(`B8108F 67D6B4 B811E7`) - both sides of the lost-wakeup handshake, seen at once.
+
+### Mechanism vs trigger
+
+`0xBB1950` skips the wait entirely when the worker already finished (`cmp [esi+8],0; jne`).
+Whether the race is REACHABLE is therefore pure timing: how long the render worker takes versus
+how soon the second flush arrives. A bigger render target slows the worker - which is why the
+user's recollection that the freeze began with the resolution/FOV work is compatible with this
+mechanism (the doubled draw made the race possible; per-frame cost plausibly made it reachable).
+Session 36 measures this with the `wait2/s` counter rather than arguing about it.
+
+### The arg-count trap, carried forward
+
+A hook's stack-arg count MUST equal `ret imm / 4`. The flush point is `ret 8` = 2 stack args
+plus ecx. `0xBB1950` tail-jmps and has no visible `ret imm` - read the tail-call target's ret
+before hooking anything in this family. Getting it wrong pops a Run-Time Check Failure #0 ESP
+modal that writes NO crash dump; press Abort, never force-kill.

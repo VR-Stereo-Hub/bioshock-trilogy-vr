@@ -82,10 +82,12 @@ constexpr uint32_t kProcessEventVtblByteOffset = 0xC;
 //   the live caller census (deny-by-default gate data for pass 2).
 // - Draw reads its camera from the viewport's camera actor at the head:
 //   [[arg1+0x48] + 0x1EC..0x1F4] = loc floats, [+0x1F8..0x200] = rot ints -
-//   written earlier by the tick-side PlayerCalcView dispatch (fn 0x4D1080,
-//   references the documented FName index global 0x17D9A08). CalcView does
-//   NOT run inside Draw on BS2 (BS1 difference!) - a doubled Draw needs the
-//   cached fields poked, not a CalcView replay.
+//   written by the PlayerCalcView dispatch (fn 0x4D1080, references the
+//   documented FName index global 0x17D9A08). CalcView runs EXACTLY once
+//   inside every Draw (live-verified calcIn == draws every beat - see
+//   kViewportCamActorOffset below), so pass 2 replays CalcView per eye; an
+//   earlier session-26 reading of this comment claimed the opposite and is
+//   corrected here.
 // - 0x5C7C80 is NOT a frame submit despite wearing BS1's submit shape
 //   (TLS frame-id spin-wait, camera globals, ret 0xC, tail event kick): its
 //   `this` is the FContentStreamingManager global and the camera globals it
@@ -180,13 +182,73 @@ constexpr int kRayBlockCb0FloatIndex = 16;
 constexpr uint32_t kRigMeshIndexCounts[] = {3810};
 constexpr uint32_t kRigMeshCount = sizeof(kRigMeshIndexCounts) / sizeof(kRigMeshIndexCounts[0]);
 
-// Render-thread sync pair (banked for the 1t fallback, unconsumed): the
-// endframe fn 0x501EA0 triggers FEventWin global [0x1A69294] once per
-// present (kick2 site 0x5029BA) and reads its sibling [0x1A69298]; static
-// readers of the pair include 0xB929F2 (render-thread loop candidate).
-// Only derived further if threaded-mode doubling proves unstable.
+// Render-thread sync pair (banked, unconsumed): the endframe fn 0x501EA0
+// triggers FEventWin global [0x1A69294] once per present (kick2 site
+// 0x5029BA) and reads its sibling [0x1A69298]; static readers of the pair
+// include 0xB929F2 (render-thread loop candidate). Threaded-mode doubling
+// DID prove unstable (the vrstereo freeze), but the 1t route is the flush
+// point below (session 35), not this pair - kept for the record.
 
-// FContentStreamingManager view hand-off (telemetry hook only).
+// --- THE RENDER FLUSH POINT (sessions 35-36) - the vrstereo freeze chain ----
+// UGameEngine::Draw's tail makes exactly ONE static call to a render flush
+// point - the structural twin of BS1's 0x61D260, veto for veto. The SHAPE
+// transferred; every number below was derived fresh on this build with
+// tools/disasm-rva.py (session 35) and re-verified against the exe
+// 2026-08-02. Full derivation recipes: docs/bioshock2/ENGINE_NOTES.md
+// "The render flush point".
+//
+// Draw tail: mov ecx,[base+kRenderMgrGlobalRva] at 0x4EF493, then a call
+// (E8) at kFlushCallSiteRva -> link thunk kFlushThunkRva -> body
+// kFlushPointRva. `ret 8` (2 stack args: scene, view group), ecx = mgr.
+// Decision chain: seven vetoes that each select INLINE, then threaded iff
+// [kHwThreadsRva] / [kThreadDivisorRva] > 1.
+//   INLINE branch:   call thunk 0xE29B -> the drain (kDrainRva), then
+//                    pop esi; pop ebp; ret 8 - NOTHING AFTER, the property
+//                    that makes forcing this branch lossless (as on BS1).
+//   THREADED branch: mov ecx,[mgr+4]; call thunk 0x1FBF9 -> kGateWaitRva,
+//                    ret site kFlushThreadedRetRva. kGateWaitRva is
+//                    `cmp [esi+8],0; jne skip; Wait(INFINITE)` - the latch-
+//                    test-then-wait whose lost wakeup IS the vrstereo
+//                    freeze (live-confirmed 2026-08-02: the wedged second
+//                    draw's stack reads B8108F BB1963 69FD33 4EF4A6).
+// NEVER poke kHwThreadsRva to force the inline branch: BS1's equivalent
+// poke crashed a loader thread (other quotient consumers see a lie).
+// Hooking the flush point instead is why BS1 survives load crossings.
+constexpr uint32_t kFlushCallSiteRva = 0x4EF4A1; // E8 in Draw's tail, ret 0x4EF4A6
+constexpr uint32_t kFlushThunkRva = 0x24A28;     // E9 link thunk
+constexpr uint32_t kFlushPointRva = 0x69FC30;
+constexpr uint8_t kFlushPointPrologue[] = {0x55, 0x8B, 0xEC, 0x8B, 0x55, 0x0C,
+                                           0x8B, 0x45, 0x08, 0x56, 0x8B, 0xF1};
+// push ebp; mov ebp,esp; mov edx,[ebp+0xC]; mov eax,[ebp+8]; push esi; mov esi,ecx
+constexpr uint32_t kFlushThreadedRetRva = 0x69FD33; // ret site of the gate-wait call
+constexpr uint32_t kGateWaitRva = 0xBB1950;         // latch-test-then-Wait(INFINITE)
+constexpr uint32_t kEventWaitWrapperRva = 0xB8108F; // FEventWin Wait ret (vtbl +0x14)
+// The render manager the flush point writes (mgr is also the drain's `this`;
+// kMgrSceneSlotOffset is the slot the drain loads with no null check).
+constexpr uint32_t kRenderMgrGlobalRva = 0x17DBF4C; // read into ecx at 0x4EF493
+constexpr uint32_t kMgrSceneSlotOffset = 0x24;      // arg1 (scene) stored here
+constexpr uint32_t kMgrViewGroupOffset = 0x28;      // arg2 copied to 0x28..0x5C
+constexpr uint32_t kMgrViewGroupDwords = 14;
+constexpr uint32_t kMgrThreadedFlagOffset = 0x60;   // threaded stamp (0 = inline)
+constexpr uint32_t kMgrFlushSeenOffset = 0x64;      // flush-seen stamp (write 1)
+// The drain - the inline branch's whole body. After its SEH frame it loads
+// the scene from [this+kMgrSceneSlotOffset] and dereferences it with NO null
+// check (BS1's drain+0x33 crash shape), which is what the 1t drain guard is
+// for. The prologue constant stops before the absolute-VA scope-table push
+// (`68 <VA>`) - those bytes relocate with the image base.
+constexpr uint32_t kDrainRva = 0x69F3F0;
+constexpr uint8_t kDrainPrologue[] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+
+// Static build-identity gate for the flush hook, in verify_draw_chain's
+// shape: the E8 at kFlushCallSiteRva must land on kFlushThunkRva, whose E9
+// must land on kFlushPointRva, whose bytes must match kFlushPointPrologue.
+// Pure image reads - a different build names itself instead of being hooked.
+bool verify_flush_chain(const bvr::pattern_scan::ProcessImage& image);
+
+// FContentStreamingManager view hand-off (telemetry hook only). NOTE: this
+// is a DIFFERENT Draw-tail call from the flush point above - the streaming
+// hand-off returns to 0x4EF541, the flush call to 0x4EF4A6. Two tail calls,
+// two subsystems; do not conflate them (session 26 did).
 constexpr uint32_t kStreamViewRva = 0x5C7C80;
 constexpr uint8_t kStreamViewPrologue[] = {0x55, 0x8B, 0xEC, 0x64, 0xA1,
                                            0x2C, 0x00, 0x00, 0x00};
