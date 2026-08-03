@@ -1587,6 +1587,37 @@ input_drive flips at runtime, so the ini may BE the whole fix. Fallback: port th
 input_drive shape (UpdateInput per present + SetUseController + IAT hijack) with
 fresh RVAs.
 
+### DECOUPLED AIM: PROVEN FLAT (boot #2, at the user's save)
+
+The seam behaves exactly as BS1's does, with fresh numbers throughout.
+
+1. **The hook is ON the fire path, once per shot.** `wep` counter increments by
+   EXACTLY the number of trigger pulls (3 shots -> wep 0->3, 12 rivets -> wep 12); the
+   ability hook stayed 0 (no plasmid equipped at this save).
+2. **Out-param B IS the fire direction.** First-call log: `rot=(62676 10617 0)` -
+   bit-identical to the camera heartbeat's `rot=(62676 10617 0)` that frame. (Prints as
+   ints deliberately: as floats these are denormals and read 0.000 - BS1's FRotator
+   trap, live here too.)
+3. **Substitution engages 1:1.** With `vraim on` + `vraim test r <yaw> <pitch> <ms>`,
+   `subs` increments once per fire.
+4. **THE BULLETS FOLLOW THE SUBSTITUTED ROTATOR, camera provably static.** Region-mean
+   image analysis (the whole-frame diff is useless here - this scene's flickering fire
+   sits right where the shots land, exactly the "mean-abs-diff lies in a dark scene"
+   trap; a 400x220 px crop around the crosshair vs a 500x220 px crop to its right):
+
+   | region | armed, yaw 0 -> 0 (baseline) | armed, yaw 0 -> +30 |
+   |---|---|---|
+   | crosshair band | 0.159 mean, 0.1% changed | 0.379 mean, **0.1%** changed |
+   | right band | 0.397 mean, 0.1% changed | **4.653 mean, 12.4% changed** |
+
+   The camera heartbeat read `loc=(-42259.0 -13396.2 -3968.7) rot=(62676 10617 0)`
+   before AND after, unchanged. Impacts left the crosshair and appeared 30 deg to the
+   right because the ROTATOR moved - the M6 acceptance criterion ("look left while
+   shooting right"), flat, on BS2.
+
+Teardown regression re-checked with both aim hooks live: WM_CLOSE -> exit, ZERO new
+dumps (13 -> 13), session-38 baseline intact.
+
 ### Cheats lane: PROVEN (boot #1, first try)
 
 `F9=GiveAll` bound in User.ini `[Default]` (line 248; backup

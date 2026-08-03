@@ -79,6 +79,7 @@ add_library(bioshockvr SHARED
     game/bioshock2r/bioshock2r_adapter.h
     game/bioshock2r/camera.cpp
     game/bioshock2r/camera.h
+    game/bioshock2r/frame_context.h
     game/bioshock2r/game_ini.cpp
     game/bioshock2r/game_ini.h
     game/bioshock2r/patterns.cpp

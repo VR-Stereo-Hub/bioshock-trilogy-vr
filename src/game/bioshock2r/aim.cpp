@@ -51,6 +51,12 @@ std::atomic<uint64_t> g_viewStampMs{0};
 std::atomic<uint32_t> g_wepCalls{0}, g_abiCalls{0}, g_subs{0};
 std::atomic<bool> g_loggedWepArgs{false}, g_loggedAbiArgs{false};
 
+// Log the first N substitutions with BEFORE and AFTER rotators. This is the
+// numeric half of the decoupled-aim proof: the engine's own value, the value
+// we wrote, and the delta - which must equal the commanded offset in rotator
+// units. Rotators print as INTs (the FRotator denormal trap).
+std::atomic<uint32_t> g_subLogsLeft{6};
+
 // One substituted-rotator computation for both seams. Returns false when
 // nothing should be substituted this call (the original's out-params stand).
 bool substituted_rot(FRotator* rot) {
@@ -63,6 +69,7 @@ bool substituted_rot(FRotator* rot) {
     if (!g_viewGameplay.load(std::memory_order_relaxed)) return false;
     if (now > g_testDeadlineMs.load(std::memory_order_relaxed)) return false;
 
+    FRotator before = *rot;
     rot->pitch = wrap_rot(g_viewPitch.load(std::memory_order_relaxed) +
                           static_cast<int32_t>(g_testPitchDeg.load(std::memory_order_relaxed) *
                                                kRotUnitsPerDegree));
@@ -70,6 +77,15 @@ bool substituted_rot(FRotator* rot) {
                         static_cast<int32_t>(g_testYawDeg.load(std::memory_order_relaxed) *
                                              kRotUnitsPerDegree));
     // Roll deliberately preserved (BS1 shape).
+    if (g_subLogsLeft.load(std::memory_order_relaxed) > 0) {
+        g_subLogsLeft.fetch_sub(1, std::memory_order_relaxed);
+        int32_t dYaw = wrap_rot(rot->yaw - before.yaw);
+        int32_t dPitch = wrap_rot(rot->pitch - before.pitch);
+        BVR_LOG("[b2r] aim substitute: rot (%d %d %d) -> (%d %d %d), delta yaw %d units "
+                "(%.2f deg) pitch %d (%.2f deg)",
+                before.pitch, before.yaw, before.roll, rot->pitch, rot->yaw, rot->roll,
+                dYaw, dYaw / kRotUnitsPerDegree, dPitch, dPitch / kRotUnitsPerDegree);
+    }
     return true;
 }
 
@@ -429,6 +445,14 @@ bool handle_command(const char* args) {
         } else {
             BVR_LOG("[b2r] vraim probe on|off|clear|dump");
         }
+        return true;
+    }
+    if (token(args, "sublog", &rest)) {
+        unsigned n = 0;
+        g_subLogsLeft.store(sscanf_s(rest, "%u", &n) == 1 ? n : 6,
+                            std::memory_order_relaxed);
+        BVR_LOG("[b2r] command: vraim sublog %u (next N substitutions log before/after)",
+                g_subLogsLeft.load(std::memory_order_relaxed));
         return true;
     }
     if (token(args, "on")) {
