@@ -188,8 +188,23 @@ bool handle_command(const char* args) {
                 g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip");
         return true;
     }
+    if (strncmp(args, "arms", 4) == 0) {
+        int mode = strstr(args, "hide") ? 2 : strstr(args, "game") ? 0 : 1;
+        bones::set_arms_mode(mode);
+        BVR_LOG("[b2r] command: vrhands arms %s",
+                mode == 2 ? "hide" : mode == 0 ? "game" : "follow");
+        return true;
+    }
+    if (strncmp(args, "scaleweapon", 11) == 0) {
+        bones::set_scale_attach(strstr(args, "off") == nullptr);
+        BVR_LOG("[b2r] command: vrhands scaleweapon %s (off = weapon keeps authored "
+                "size; some attachments inverse-scale)",
+                bones::scale_attach() ? "on" : "off");
+        return true;
+    }
     BVR_LOG("[b2r] vrhands: on|off | status | trim l|r <p> <y> <r> | "
-            "offset l|r <f> <r> <u> | scale [l|r] <f> | pose aim|grip");
+            "offset l|r <f> <r> <u> | scale [l|r] <f> | pose aim|grip | "
+            "arms follow|hide|game | scaleweapon on|off");
     return true;
 }
 

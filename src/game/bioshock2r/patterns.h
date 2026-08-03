@@ -444,6 +444,14 @@ constexpr uint32_t kSkelPoseStride = 0x30;             // hkQsTransform
 constexpr uint32_t kSkelPoseTransOffset = 0x0;         // vec4
 constexpr uint32_t kSkelPoseQuatOffset = 0x10;         // xyzw
 constexpr uint32_t kSkelPoseScaleOffset = 0x20;        // vec4
+// Arm bones per side, from the live name dump (session 40): clavicle, upper
+// arm, lower arm, then the four twist bones. Deliberately NOT part of the
+// hand clusters - consumed by the arms mode (follow/hide) in bones.cpp; the
+// engine's own animation leaves them at the idle pose, which reads as FROZEN
+// arms floating beside driven hands.
+inline constexpr int kBoneArmL[] = {4, 5, 6, 29, 30, 31, 32};
+inline constexpr int kBoneArmR[] = {33, 34, 35, 58, 59, 60, 61};
+inline constexpr int kBoneArmCount = 7;
 
 struct GpfsImpls {
     void* weapon = nullptr;   // null = identity gate failed, seam refused

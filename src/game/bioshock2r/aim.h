@@ -74,4 +74,18 @@ bool handle_command(const char* args);
 // false while the ray is invalid or stale. Game thread only.
 bool last_ray(int hand, FVector* origin, FRotator* rot);
 
+// Per-hand aim tuning accessors (session 40 round 2, for the F10 panel and
+// the vrpreset lane). Atomics throughout - any thread.
+float trim_pitch(int hand);
+float trim_yaw(int hand);
+void set_trim(int hand, float pitchDeg, float yawDeg);
+float pos_fwd_cm(int hand);
+float pos_right_cm(int hand);
+float pos_up_cm(int hand);
+void set_pos(int hand, float fwdCm, float rightCm, float upCm);
+bool origin_on();
+void set_origin(bool on);
+float dot_dist_m();
+void set_dot_dist_m(float m);
+
 } // namespace bvr::b2r::aim

@@ -56,11 +56,16 @@ Cluster g_cluster[2] = {
     {36, 57, 63, 63}, // right / weapon hand
 };
 std::atomic<float> g_scale[2] = {{1.0f}, {1.0f}};
+std::atomic<bool> g_scaleAttach{true}; // round-1 behavior kept; F10 escape hatch
+std::atomic<int> g_armsMode{1};        // 0 game, 1 follow (user test default), 2 hide
+int g_armsApplied[2] = {-1, -1};       // game thread; drives the transition restore
+std::atomic<uint32_t> g_peRepaints{0}; // restamps caught mid-draw (flicker fix)
 
-// Last write per cluster, for reapply + telemetry.
+// Last write per hand, for reapply/repaint/release + telemetry. A bone MASK
+// rather than ranges (session 40 round 2): the written set is no longer
+// contiguous once the arm bones ride along.
 float g_written[kMaxBones][12];
-int g_writtenLo[2] = {-1, -1}, g_writtenHi[2] = {-1, -1};
-int g_writtenExtra[2] = {-1, -1};
+bool g_writtenMask[2][kMaxBones] = {};
 uint64_t g_writeStampMs[2] = {};
 float g_lastWriteLoc[2][3] = {};
 uint32_t g_driveCount[2] = {};
@@ -91,10 +96,8 @@ void drop(const char* why) {
     g_pose = nullptr;
     g_boneCount = 0;
     g_refValid = false;
-    for (int h = 0; h < 2; ++h) {
-        g_writtenLo[h] = g_writtenHi[h] = -1;
-        g_writtenExtra[h] = -1;
-    }
+    memset(g_writtenMask, 0, sizeof g_writtenMask);
+    g_armsApplied[0] = g_armsApplied[1] = -1;
     g_namesValid = false;
 }
 
@@ -396,7 +399,23 @@ bool drive(const FrameContext& ctx, const GamePose& target, int hand) {
     float scale = g_scale[hand].load(std::memory_order_relaxed);
     if (!(scale > 0.05f && scale < 20.0f)) scale = 1.0f;
 
-    auto write_bone = [&](int i) {
+    // Arms-mode transition (game thread, here on purpose): leaving follow or
+    // hide must hand the arm bones back to the engine explicitly - animation
+    // never restamps the SCALE channel, so a stale zero-scale would strand
+    // hidden arms invisible forever (BS1 session-29's stranded-collapse bug).
+    int armsMode = g_armsMode.load(std::memory_order_relaxed);
+    const int* armIdx = hand ? patterns::kBoneArmR : patterns::kBoneArmL;
+    if (armsMode != g_armsApplied[hand]) {
+        if (g_armsApplied[hand] == 1 || g_armsApplied[hand] == 2)
+            for (int a = 0; a < patterns::kBoneArmCount; ++a)
+                if (armIdx[a] < g_boneCount)
+                    memcpy(g_pose + armIdx[a] * patterns::kSkelPoseStride,
+                           g_ref[armIdx[a]], 48);
+        g_armsApplied[hand] = armsMode;
+    }
+
+    memset(g_writtenMask[hand], 0, sizeof g_writtenMask[hand]);
+    auto write_bone = [&](int i, bool scaleChannel) {
         const float* r = g_ref[i];
         float* w = g_written[i];
         // Anchor-relative offset, scaled so the cluster grows about its
@@ -411,20 +430,37 @@ bool drive(const FrameContext& ctx, const GamePose& target, int hand) {
         w[3] = r[3];
         bvr::xrmath::quat_mul(delta, &r[4], &w[4]);
         // Scale channel: poke-proven to render, and animation never restamps
-        // it (patterns.h "the AHands rig").
-        w[8] = r[8] * scale;
-        w[9] = r[9] * scale;
-        w[10] = r[10] * scale;
+        // it (patterns.h "the AHands rig"). scaleChannel=false keeps the
+        // authored scale (the weapon-attach escape hatch - see scale_attach).
+        w[8] = scaleChannel ? r[8] * scale : r[8];
+        w[9] = scaleChannel ? r[9] * scale : r[9];
+        w[10] = scaleChannel ? r[10] * scale : r[10];
         w[11] = r[11];
         memcpy(g_pose + i * patterns::kSkelPoseStride, w, 48);
+        g_writtenMask[hand][i] = true;
+    };
+    // Hidden bone: authored transform, zero scale. Kept in the mask so
+    // reapply/repaint hold it hidden and release() restores it.
+    auto hide_bone = [&](int i) {
+        float* w = g_written[i];
+        memcpy(w, g_ref[i], 48);
+        w[8] = 0.0f;
+        w[9] = 0.0f;
+        w[10] = 0.0f;
+        memcpy(g_pose + i * patterns::kSkelPoseStride, w, 48);
+        g_writtenMask[hand][i] = true;
     };
 
-    for (int i = lo; i <= hi; ++i) write_bone(i);
-    if (extra >= 0) write_bone(extra);
+    for (int i = lo; i <= hi; ++i) write_bone(i, true);
+    if (extra >= 0) write_bone(extra, g_scaleAttach.load(std::memory_order_relaxed));
+    if (armsMode == 1) {
+        for (int a = 0; a < patterns::kBoneArmCount; ++a)
+            if (armIdx[a] < g_boneCount) write_bone(armIdx[a], true);
+    } else if (armsMode == 2) {
+        for (int a = 0; a < patterns::kBoneArmCount; ++a)
+            if (armIdx[a] < g_boneCount) hide_bone(armIdx[a]);
+    }
 
-    g_writtenLo[hand] = lo;
-    g_writtenHi[hand] = hi;
-    g_writtenExtra[hand] = extra;
     g_writeStampMs[hand] = GetTickCount64();
     g_lastWriteLoc[hand][0] = target.loc.x;
     g_lastWriteLoc[hand][1] = target.loc.y;
@@ -437,32 +473,29 @@ void reapply() {
     if (!g_pose) return;
     uint64_t now = GetTickCount64();
     for (int h = 0; h < 2; ++h) {
-        if (g_writtenLo[h] < 0) continue;
         if (now - g_writeStampMs[h] > 100) continue; // stale write, leave it
-        for (int i = g_writtenLo[h]; i <= g_writtenHi[h]; ++i)
-            memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
-        if (g_writtenExtra[h] >= 0)
-            memcpy(g_pose + g_writtenExtra[h] * patterns::kSkelPoseStride,
-                   g_written[g_writtenExtra[h]], 48);
+        for (int i = 0; i < g_boneCount; ++i)
+            if (g_writtenMask[h][i])
+                memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
     }
 }
 
 void release(const char* why, int hand) {
     // Per-cluster restore: a left-hand release must not disturb a live right
-    // hand, so only the released cluster's own bones go back to reference.
+    // hand, so only the released hand's own written bones (cluster + pivot +
+    // arms, whatever the mask holds) go back to reference.
     bool any = false;
     for (int h = 0; h < 2; ++h) {
         if (hand >= 0 && h != hand) continue;
-        if (g_refValid && g_pose && g_writtenLo[h] >= 0) {
-            for (int i = g_writtenLo[h]; i <= g_writtenHi[h]; ++i)
-                memcpy(g_pose + i * patterns::kSkelPoseStride, g_ref[i], 48);
-            if (g_writtenExtra[h] >= 0)
-                memcpy(g_pose + g_writtenExtra[h] * patterns::kSkelPoseStride,
-                       g_ref[g_writtenExtra[h]], 48);
-            any = true;
+        if (g_refValid && g_pose) {
+            for (int i = 0; i < g_boneCount; ++i)
+                if (g_writtenMask[h][i]) {
+                    memcpy(g_pose + i * patterns::kSkelPoseStride, g_ref[i], 48);
+                    any = true;
+                }
         }
-        g_writtenLo[h] = g_writtenHi[h] = -1;
-        g_writtenExtra[h] = -1;
+        memset(g_writtenMask[h], 0, sizeof g_writtenMask[h]);
+        g_armsApplied[h] = -1;
     }
     if (any)
         BVR_LOG("[b2r] bones: released %s (%s) - reference restored",
@@ -470,6 +503,30 @@ void release(const char* why, int hand) {
     // Only a full release drops the reference: recapturing it while the other
     // cluster is still driven would capture OUR pose as the new authored one.
     if (hand < 0) g_refValid = false;
+}
+
+void pe_repaint() {
+    if (!g_pose || !g_refValid) return;
+    uint64_t now = GetTickCount64();
+    for (int h = 0; h < 2; ++h) {
+        if (now - g_writeStampMs[h] > 100) continue; // not driving, nothing to defend
+        // Sentinel: the first masked bone. Animation restamps translation and
+        // rotation, so a 48-byte compare catches it the moment it lands.
+        int s = -1;
+        for (int i = 0; i < g_boneCount; ++i)
+            if (g_writtenMask[h][i]) {
+                s = i;
+                break;
+            }
+        if (s < 0) continue;
+        if (memcmp(g_pose + s * patterns::kSkelPoseStride, g_written[s], 48) == 0)
+            continue;
+        if (!is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride)) return;
+        for (int i = 0; i < g_boneCount; ++i)
+            if (g_writtenMask[h][i])
+                memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
+        g_peRepaints.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void set_scale(int hand, float scale) {
@@ -481,6 +538,23 @@ float scale_of(int hand) {
     return (hand < 0 || hand > 1) ? 1.0f : g_scale[hand].load(std::memory_order_relaxed);
 }
 
+void set_scale_attach(bool on) {
+    g_scaleAttach.store(on, std::memory_order_relaxed);
+}
+
+bool scale_attach() {
+    return g_scaleAttach.load(std::memory_order_relaxed);
+}
+
+void set_arms_mode(int mode) {
+    if (mode < 0 || mode > 2) return;
+    g_armsMode.store(mode, std::memory_order_relaxed);
+}
+
+int arms_mode() {
+    return g_armsMode.load(std::memory_order_relaxed);
+}
+
 void on_world_change(const char* why) {
     drop(why);
     g_scanDormant = false;
@@ -488,7 +562,7 @@ void on_world_change(const char* why) {
 }
 
 bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs) {
-    if (hand < 0 || hand > 1 || g_writtenLo[hand] < 0) return false;
+    if (hand < 0 || hand > 1 || g_writeStampMs[hand] == 0) return false;
     if (x) *x = g_lastWriteLoc[hand][0];
     if (y) *y = g_lastWriteLoc[hand][1];
     if (z) *z = g_lastWriteLoc[hand][2];
@@ -500,9 +574,14 @@ bool handle_command(const char* args) {
     int lo = 0, hi = 0, anchor = 0, extra = -1;
     char side[8] = {};
     if (strncmp(args, "status", 6) == 0 || *args == '\0') {
-        BVR_LOG("[b2r] vrbones status: rig %s (%d bones), ref %s, names %s",
+        const char* armNames[] = {"game", "follow", "hide"};
+        BVR_LOG("[b2r] vrbones status: rig %s (%d bones), ref %s, names %s, arms %s, "
+                "scaleattach %s, pe repaints %u",
                 g_hands ? "RESOLVED" : "-", g_boneCount, g_refValid ? "captured" : "-",
-                g_namesValid ? "mapped" : "-");
+                g_namesValid ? "mapped" : "-",
+                armNames[g_armsMode.load(std::memory_order_relaxed)],
+                g_scaleAttach.load(std::memory_order_relaxed) ? "on" : "off",
+                g_peRepaints.load(std::memory_order_relaxed));
         for (int h = 0; h < 2; ++h)
             BVR_LOG("[b2r]   %s cluster %d..%d +%d anchor %d scale %.2f, drives %u, "
                     "last write (%.1f %.1f %.1f)",

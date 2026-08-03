@@ -55,6 +55,31 @@ void release(const char* why, int hand = -1);
 void set_scale(int hand, float scale);
 float scale_of(int hand);
 
+// Scale the weapon-attach (pivot) bone's SCALE CHANNEL with the hand? Some
+// weapon attachments inverse-decompose the bone scale (BS1 session-30 class -
+// live on BS2: the rifle's ammo drum GROWS when the hand scales down). Off =
+// the pivot still MOVES with the scaled hand but keeps its authored scale, so
+// the weapon stays authored size. Atomic-only setter, F10-safe.
+void set_scale_attach(bool on);
+bool scale_attach();
+
+// Arms mode (session 40 round 2): 0 = game (engine animates them - reads as
+// FROZEN arms beside driven hands), 1 = follow (arm bones ride their hand's
+// cluster rigidly), 2 = hide (collapsed to zero scale - hands + weapon only).
+// Atomic-only setter; the game thread applies transitions inside drive(),
+// restoring the arm bones from reference when leaving follow/hide (the scale
+// channel is never restamped by animation, so a stale zero-scale would strand
+// the arms invisible forever - BS1's session-29 lesson).
+void set_arms_mode(int mode);
+int arms_mode();
+
+// Left-eye flicker fix (session 40 round 2): the engine's animation restamps
+// the pose bank mid-draw on SOME frames, after pass 1's CalcView write -
+// pass 2 is protected by reapply(), pass 1 was not. Called per ProcessEvent
+// dispatch while inside a hooked draw; one 48-byte sentinel compare per
+// driven hand, full repaint only when a restamp is actually seen.
+void pe_repaint();
+
 // World/view changed under us - drop every cached pointer and the reference.
 void on_world_change(const char* why);
 

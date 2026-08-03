@@ -94,6 +94,11 @@ std::atomic<float> g_gameFovDeg{130.0f};
 // BS1's CalcView-detour consumer) also ticks at the main menu. Packed as one
 // 64-bit value (w << 32 | h) so the pair cannot tear.
 std::atomic<uint64_t> g_resWritePending{0};
+// F10 "APPLY PRESET" button (session 40 round 2): arming touches engine state
+// (stereo hook installs, SetUseController) so it is posted here and consumed
+// on the poller lane - game thread, outside hooked calls - never on the
+// render thread the overlay draws from.
+std::atomic<int> g_vrPresetPending{0};
 
 // M4 rung 1 (AlternateEye) + the SR passes share this half-IPD shift. The
 // AER eye sign comes from core (vr::current_eye_sign(), 0 while the AER
@@ -1254,7 +1259,23 @@ void save_vr_preset() {
         fprintf(f, "handOffRight%s=%.2f\n", s, hands::off_right_cm(h));
         fprintf(f, "handOffUp%s=%.2f\n", s, hands::off_up_cm(h));
         fprintf(f, "handScale%s=%.3f\n", s, bones::scale_of(h));
+        // Session 40 round 2: the aim ray's own calibration, per hand.
+        fprintf(f, "aimTrimPitch%s=%.2f\n", s, aim::trim_pitch(h));
+        fprintf(f, "aimTrimYaw%s=%.2f\n", s, aim::trim_yaw(h));
+        fprintf(f, "aimPosFwd%s=%.2f\n", s, aim::pos_fwd_cm(h));
+        fprintf(f, "aimPosRight%s=%.2f\n", s, aim::pos_right_cm(h));
+        fprintf(f, "aimPosUp%s=%.2f\n", s, aim::pos_up_cm(h));
     }
+    // Round-2 judged toggles + input levers (user request: the preset owns
+    // EVERYTHING; values here, arming implied by apply).
+    fprintf(f, "originOn=%d\n", aim::origin_on() ? 1 : 0);
+    fprintf(f, "dotDistM=%.2f\n", aim::dot_dist_m());
+    fprintf(f, "armsMode=%d\n", bones::arms_mode());
+    fprintf(f, "scaleWeapon=%d\n", bones::scale_attach() ? 1 : 0);
+    fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
+    fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
+    fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
+    fprintf(f, "ammoMod=%d\n", static_cast<int>(bvr::input::ammo_mod()));
     fclose(f);
     BVR_LOG("[b2r] VR preset values saved to %ls", path);
 }
@@ -1274,6 +1295,10 @@ void load_vr_preset_values() {
         {hands::off_fwd_cm(0), hands::off_right_cm(0), hands::off_up_cm(0)},
         {hands::off_fwd_cm(1), hands::off_right_cm(1), hands::off_up_cm(1)}};
     float hScale[2] = {bones::scale_of(0), bones::scale_of(1)};
+    float aTrim[2][2] = {{aim::trim_pitch(0), aim::trim_yaw(0)},
+                         {aim::trim_pitch(1), aim::trim_yaw(1)}};
+    float aPos[2][3] = {{aim::pos_fwd_cm(0), aim::pos_right_cm(0), aim::pos_up_cm(0)},
+                        {aim::pos_fwd_cm(1), aim::pos_right_cm(1), aim::pos_up_cm(1)}};
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char key[64] = {};
@@ -1283,7 +1308,7 @@ void load_vr_preset_values() {
         ++n;
         // Per-hand keys: <name>L / <name>R.
         size_t klen = strlen(key);
-        if (klen > 4 && strncmp(key, "hand", 4) == 0 &&
+        if (klen > 4 && (strncmp(key, "hand", 4) == 0 || strncmp(key, "aim", 3) == 0) &&
             (key[klen - 1] == 'L' || key[klen - 1] == 'R')) {
             int h = (key[klen - 1] == 'R') ? 1 : 0;
             char base[64];
@@ -1296,6 +1321,11 @@ void load_vr_preset_values() {
             else if (strcmp(base, "handOffRight") == 0) hOff[h][1] = v;
             else if (strcmp(base, "handOffUp") == 0) hOff[h][2] = v;
             else if (strcmp(base, "handScale") == 0 && v > 0.05f && v < 20.0f) hScale[h] = v;
+            else if (strcmp(base, "aimTrimPitch") == 0) aTrim[h][0] = v;
+            else if (strcmp(base, "aimTrimYaw") == 0) aTrim[h][1] = v;
+            else if (strcmp(base, "aimPosFwd") == 0) aPos[h][0] = v;
+            else if (strcmp(base, "aimPosRight") == 0) aPos[h][1] = v;
+            else if (strcmp(base, "aimPosUp") == 0) aPos[h][2] = v;
             else --n;
             continue;
         }
@@ -1315,6 +1345,22 @@ void load_vr_preset_values() {
             g_forceHeadsetFov.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "fgFovManual") == 0 && v >= 0.0f)
             g_fgFovManual.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "originOn") == 0)
+            aim::set_origin(v != 0.0f);
+        else if (strcmp(key, "dotDistM") == 0)
+            aim::set_dot_dist_m(v);
+        else if (strcmp(key, "armsMode") == 0)
+            bones::set_arms_mode(static_cast<int>(v));
+        else if (strcmp(key, "scaleWeapon") == 0)
+            bones::set_scale_attach(v != 0.0f);
+        else if (strcmp(key, "turnScale") == 0 && v > 0.0f)
+            bvr::input::set_turn_scale(v);
+        else if (strcmp(key, "snapOn") == 0)
+            bvr::input::set_snap_turn(v != 0.0f);
+        else if (strcmp(key, "snapAngle") == 0 && v > 0.0f)
+            bvr::input::set_snap_angle_deg(v);
+        else if (strcmp(key, "ammoMod") == 0 && v >= 0.0f && v <= 2.0f)
+            bvr::input::set_ammo_mod(static_cast<bvr::input::AmmoMod>(static_cast<int>(v)));
         else
             --n;
     }
@@ -1323,6 +1369,8 @@ void load_vr_preset_values() {
         hands::set_trim(h, hTrim[h][0], hTrim[h][1], hTrim[h][2]);
         hands::set_offset(h, hOff[h][0], hOff[h][1], hOff[h][2]);
         bones::set_scale(h, hScale[h]);
+        aim::set_trim(h, aTrim[h][0], aTrim[h][1]);
+        aim::set_pos(h, aPos[h][0], aPos[h][1], aPos[h][2]);
     }
     if (n) BVR_LOG("[b2r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
@@ -1336,6 +1384,10 @@ void apply_vr_preset() {
     // refuted in session 35 - Draw's tail DOES have a submit handshake - and
     // the session-36 1t port is what makes the doubled draw safe.
     scenedraw::handle_command("vrstereo on");
+    // Session 40 round 2 (user request): the CONTROLLER is part of the
+    // preset - one apply arms the whole stack. Toggles are implied ON by the
+    // apply, per the doctrine; the drive arms on the next pump tick.
+    bvr::input::handle_command("on");
     BVR_LOG("[b2r] VR PRESET: worldscale %.1f headoff up %.1f fwd %.1f ipd %.1f "
             "fgfov %s",
             g_worldScale.load(std::memory_order_relaxed),
@@ -1878,6 +1930,14 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
     // Session-39 dispatch probe: one relaxed load when disarmed.
     if (aim::g_probeArmed.load(std::memory_order_relaxed)) aim::probe_process_event(fn);
 
+    // Left-eye flicker fix (session 40 round 2): pass 1 has no second-pass
+    // reapply, and the engine's animation restamps the pose bank mid-draw on
+    // SOME frames - after pass 1's CalcView write, before the mesh batching.
+    // Repaint the driven bones the moment a restamp is seen inside a hooked
+    // draw. Cheap when idle: pe_repaint self-gates on the 100 ms write stamp
+    // and does one 48-byte sentinel compare per driven hand.
+    if (scenedraw::inside_hooked_call()) bones::pe_repaint();
+
     // The poll and the stale-restore defer while this thread is inside a
     // hooked render call (session 26): a command that installs or disables
     // hooks must never execute mid-build. Total ProcessEvent traffic is high,
@@ -1909,6 +1969,10 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                 if (uint64_t req = g_resWritePending.exchange(0, std::memory_order_relaxed))
                     apply_resolution(static_cast<uint32_t>(req >> 32),
                                      static_cast<uint32_t>(req & 0xFFFFFFFFu));
+                // F10 "APPLY PRESET" (session 40 round 2): full arming on the
+                // game thread outside hooked calls, same lane as vrstereo.
+                if (g_vrPresetPending.exchange(0, std::memory_order_relaxed))
+                    apply_vr_preset();
                 if (g_windowRestorePending.exchange(false, std::memory_order_relaxed))
                     restore_game_window();
                 // Deferred ini re-verify: the engine persists its live size
@@ -2404,10 +2468,52 @@ void draw_debug_ui() {
             bones::set_scale(0, sc);
             bones::set_scale(1, sc);
         }
+        // Some weapon attachments inverse-decompose the pivot bone's scale
+        // (the rifle's ammo drum GROWS as the hand shrinks - BS1 session-30
+        // class). Off = hands scale, weapon keeps its authored size.
+        bool sw = bones::scale_attach();
+        if (ImGui::Checkbox("scale the WEAPON too (off if parts grow)", &sw))
+            bones::set_scale_attach(sw);
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("AIM ray (this hand) - where the laser/bullets go:");
+        float ap = aim::trim_pitch(tuneHand), ay = aim::trim_yaw(tuneHand);
+        bool aimChanged = false;
+        aimChanged |= ImGui::SliderFloat("aim trim pitch (deg)", &ap, -30.0f, 30.0f);
+        aimChanged |= ImGui::SliderFloat("aim trim yaw (deg)", &ay, -30.0f, 30.0f);
+        if (aimChanged) aim::set_trim(tuneHand, ap, ay);
+        float rf = aim::pos_fwd_cm(tuneHand), rr = aim::pos_right_cm(tuneHand),
+              ru = aim::pos_up_cm(tuneHand);
+        bool posChanged = false;
+        posChanged |= ImGui::SliderFloat("ray origin fwd (cm)", &rf, -60.0f, 60.0f);
+        posChanged |= ImGui::SliderFloat("ray origin right (cm)", &rr, -60.0f, 60.0f);
+        posChanged |= ImGui::SliderFloat("ray origin up (cm)", &ru, -60.0f, 60.0f);
+        if (posChanged) aim::set_pos(tuneHand, rf, rr, ru);
+        bool orig = aim::origin_on();
+        if (ImGui::Checkbox("bullets from the HAND (origin substitution)", &orig))
+            aim::set_origin(orig);
+        float dd = aim::dot_dist_m();
+        if (ImGui::SliderFloat("aim dot / beam length (m)", &dd, 0.5f, 8.0f))
+            aim::set_dot_dist_m(dd);
+
+        ImGui::Separator();
+        int arms = bones::arms_mode();
+        ImGui::TextUnformatted("Arms:");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("follow the hands", &arms, 1)) bones::set_arms_mode(1);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("hide", &arms, 2)) bones::set_arms_mode(2);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("game (frozen)", &arms, 0)) bones::set_arms_mode(0);
+
         ImGui::Separator();
         if (ImGui::Button("Save these settings (survives a relaunch)##hands"))
             save_vr_preset();
-        ImGui::TextUnformatted("Aim trims + laser/dot options: `vraim` (flat lane).");
+        ImGui::SameLine();
+        // Engine-state arming must run on the game thread, outside hooked
+        // calls - posted to the poller lane, never applied here.
+        if (ImGui::Button("APPLY PRESET (stereo + camera + INPUT)"))
+            g_vrPresetPending.store(1, std::memory_order_relaxed);
     }
 
     if (ImGui::CollapsingHeader("Camera debug")) {

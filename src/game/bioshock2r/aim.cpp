@@ -891,4 +891,30 @@ bool last_ray(int hand, FVector* origin, FRotator* rot) {
     return ray_for(hand, origin, rot);
 }
 
+float trim_pitch(int h) { return g_trimPitch[h & 1].load(std::memory_order_relaxed); }
+float trim_yaw(int h) { return g_trimYaw[h & 1].load(std::memory_order_relaxed); }
+void set_trim(int h, float pitchDeg, float yawDeg) {
+    h &= 1;
+    g_trimPitch[h].store(pitchDeg, std::memory_order_relaxed);
+    g_trimYaw[h].store(yawDeg, std::memory_order_relaxed);
+}
+
+float pos_fwd_cm(int h) { return g_posFwdCm[h & 1].load(std::memory_order_relaxed); }
+float pos_right_cm(int h) { return g_posRightCm[h & 1].load(std::memory_order_relaxed); }
+float pos_up_cm(int h) { return g_posUpCm[h & 1].load(std::memory_order_relaxed); }
+void set_pos(int h, float fwdCm, float rightCm, float upCm) {
+    h &= 1;
+    g_posFwdCm[h].store(fwdCm, std::memory_order_relaxed);
+    g_posRightCm[h].store(rightCm, std::memory_order_relaxed);
+    g_posUpCm[h].store(upCm, std::memory_order_relaxed);
+}
+
+bool origin_on() { return g_handOrigin.load(std::memory_order_relaxed); }
+void set_origin(bool on) { g_handOrigin.store(on, std::memory_order_relaxed); }
+
+float dot_dist_m() { return g_dotDistM.load(std::memory_order_relaxed); }
+void set_dot_dist_m(float m) {
+    if (m > 0.2f && m < 20.0f) g_dotDistM.store(m, std::memory_order_relaxed);
+}
+
 } // namespace bvr::b2r::aim
