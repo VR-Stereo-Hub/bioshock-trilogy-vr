@@ -65,7 +65,21 @@ public static class BvrKey {
 '@
 
 $proc = if ($Game -eq "bs2") { "Bioshock2HD" } else { "BioshockHD" }
-$p = Get-Process $proc -ErrorAction SilentlyContinue
+# Pick the LIVE instance. Get-Process can return several entries: an exited
+# process lingers as long as anything holds a handle to it (session 38 - a
+# killed BS2 stayed listed for minutes and every -Key call died on
+# "cannot convert System.Object[] to IntPtr", silently invalidating a whole
+# unattended run). Drop exited entries, prefer one with a real window, and
+# take the newest if several are genuinely alive.
+$p = @(Get-Process $proc -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited })
+if ($p.Count -gt 1) {
+    $withWindow = @($p | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+    if ($withWindow.Count -ge 1) { $p = $withWindow }
+    # Order by Id, not StartTime: StartTime throws "Access is denied" on
+    # processes this session cannot query, and one throw kills the pipeline.
+    $p = @($p | Sort-Object Id -Descending)
+}
+$p = $p | Select-Object -First 1
 if (-not $p) { throw "$proc is not running" }
 
 # The game must have focus or the injection lands on whatever does. In a headset

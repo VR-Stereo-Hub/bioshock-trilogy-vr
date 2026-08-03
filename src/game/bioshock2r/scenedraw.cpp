@@ -705,11 +705,15 @@ int force_inline_flush(void* scene, void* group) {
 //    reads 0 - correctly, the freeze window is gone.
 void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group) {
     g_flushPointEntries.fetch_add(1, std::memory_order_relaxed);
-    // Session 38: during window teardown, stop forcing the inline branch -
-    // the single remaining draws on the engine's own (threaded) decision are
-    // exactly vanilla close behavior; forcing would drain a dying scene on
-    // this thread.
-    if (g_forceInline.load(std::memory_order_relaxed) && !bvr::crash::teardown_seen()) {
+    // Session 38: forcing the inline branch KEEPS RUNNING through teardown, on
+    // purpose. The first version of this gate stopped forcing once a close
+    // message arrived, on the theory that the engine's own (threaded) decision
+    // is vanilla behaviour - and the in-game quit then DEADLOCKED after
+    // WM_DESTROY (blocked, 0 CPU, one thread left, ~2 min): handing the flush
+    // back to a render-worker handshake while the workers are being torn down
+    // waits forever. Inline draining needs no worker, and the drain guard below
+    // is what makes it safe against a freed scene.
+    if (g_forceInline.load(std::memory_order_relaxed)) {
         int r = force_inline_flush(scene, group);
         if (r > 0) {
             g_forcedInline.fetch_add(1, std::memory_order_relaxed);

@@ -19,7 +19,9 @@ using System.Runtime.InteropServices;
 public static class Cmd { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
 '@
 if ($Game -eq "bs2") { $procName = "Bioshock2HD" } else { $procName = "BioshockHD" }
-$p = Get-Process $procName -ErrorAction SilentlyContinue
+$p = @(Get-Process $procName -ErrorAction SilentlyContinue | Where-Object {
+    -not $_.HasExited -and $_.MainWindowHandle -ne [IntPtr]::Zero
+} | Sort-Object Id -Descending) | Select-Object -First 1
 if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
     [Cmd]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
     Start-Sleep -Milliseconds 400

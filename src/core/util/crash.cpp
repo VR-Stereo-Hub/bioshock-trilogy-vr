@@ -294,11 +294,32 @@ LONG WINAPI Filter(EXCEPTION_POINTERS* info) {
 
 } // namespace
 
+// Exit watchdog. The host's exit path can end two ways, and session 38 saw
+// both on BS2: a fault (absorbed above) or a DEADLOCK - the in-game quit
+// blocked after WM_DESTROY with zero CPU and one thread left, surviving well
+// past two minutes. Either way the user asked to close the game, so a close
+// that has not completed within the grace period is ended here. The grace is
+// deliberately longer than any healthy exit measured (vanilla BS2 takes 5-9 s;
+// BS1 exits well inside that), so this never truncates a working shutdown.
+DWORD WINAPI TeardownWatchdog(LPVOID) {
+    constexpr DWORD kGraceMs = 15000;
+    Sleep(kGraceMs);
+    BVR_LOG("crash: still alive %u ms after the window began closing - the host "
+            "exit path is stuck; ending the process",
+            kGraceMs);
+    TerminateProcess(GetCurrentProcess(), 0);
+    return 0;
+}
+
 void note_teardown(const char* why) {
-    if (InterlockedExchange(&g_teardown, 1) == 0)
-        BVR_LOG("crash: window teardown noted (%s) - exit-path faults will be "
-                "logged without dumps and end the process directly",
-                why);
+    if (InterlockedExchange(&g_teardown, 1) != 0) return;
+    BVR_LOG("crash: window teardown noted (%s) - exit-path faults will be "
+            "logged without dumps and end the process directly",
+            why);
+    // Own thread: the close message runs on the game thread, which is exactly
+    // the thread that can deadlock.
+    HANDLE t = CreateThread(nullptr, 0, &TeardownWatchdog, nullptr, 0, nullptr);
+    if (t) CloseHandle(t);
 }
 
 bool teardown_seen() {

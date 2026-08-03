@@ -18,7 +18,12 @@ public static class W {
 '@
 Add-Type -AssemblyName System.Drawing
 if ($Game -eq "bs2") { $procName = "Bioshock2HD" } else { $procName = "BioshockHD" }
-$p = Get-Process $procName -ErrorAction Stop
+# Live instance only - an exited process lingers while a handle is held, and
+# the resulting array breaks every window call (session 38).
+$p = @(Get-Process $procName -ErrorAction Stop | Where-Object {
+    -not $_.HasExited -and $_.MainWindowHandle -ne [IntPtr]::Zero
+} | Sort-Object Id -Descending) | Select-Object -First 1
+if (-not $p) { throw "$procName is not running (no live instance with a window)" }
 $h = $p.MainWindowHandle
 if ($h -eq [IntPtr]::Zero) { throw "no main window" }
 [W]::SetForegroundWindow($h) | Out-Null

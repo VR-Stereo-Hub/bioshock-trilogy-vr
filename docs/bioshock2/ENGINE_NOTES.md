@@ -1408,3 +1408,58 @@ publishing side yet. Needed, in dependency order:
    distance and read a substituted fire-start delta, once the seam is live).
 3. The laser needs only the ray; the aim dot needs the fire-seam hit point - blocked on
    the seam hook landing.
+
+## Session 38 wrap-up round - the in-game quit path, flat (2026-08-03 evening)
+
+### The quit path verdict, and a deadlock caught before the user could hit it
+
+The full in-game quit (pause menu -> QUIT TO WINDOWS -> YES -> save-first YES -> slot) was
+driven flat, stereo armed. Findings:
+
+- WM_DESTROY arrives ~3 s after the final click, AFTER the save is written - detection is
+  in time on this path, and the save is never at risk. ZERO dumps.
+- **The first teardown-gate build DEADLOCKED here** (blocked at 0 CPU, one thread left,
+  survived minutes; the zombie even resisted taskkill while handles were held): stopping
+  the forced-inline flush at teardown hands the flush decision back to the engine's
+  THREADED branch exactly while the render workers die - a handshake that never completes.
+  REVERTED: forced-inline continues through close (it needs no worker; the DEAD-scene
+  drain guard is the safety). The gate now parks only the doubled draw, the FOV writes,
+  the self-heal, and re-arming.
+- **Exit watchdog in core**: `note_teardown` spawns a 15 s watchdog thread that ends the
+  process if the host's exit path is still alive - covers both observed exit shapes
+  (fault -> absorbed; deadlock -> bounded). Grace is ~2x vanilla's slowest healthy exit.
+- Acceptance: quit-with-save from gameplay = save file written, teardown noted
+  (WM_DESTROY), zero new dumps, process gone within the watchdog bound. The exit-crash
+  work needs NO user half anymore.
+
+### Harness lessons (all hit for real this round)
+
+- **BS2 menus render their own RAW-INPUT cursor.** `SetCursorPos` + click activates
+  whatever the GAME cursor last hovered, not the click coordinates - BS1's
+  "gameswf accepts synthetic clicks" verdict does NOT transfer. Drive BS2 menus with the
+  KEYBOARD (scancode injection): Down=`-Scan 0x50`, Left=`0x4B`, Right=`0x4D`, plus
+  enter/esc/space. Verify the highlight from a screenshot (highlighted text is cyan -
+  a 1-row pixel probe beats eyeballing).
+- **Space at the title CONTINUES into the newest save** on this build (no menu navigation
+  needed for the boot-to-save flow. The main menu has no Continue item - Space is it).
+- A **"Controller for Windows has been disconnected" dialog** can sit over the title
+  screen (sim boots; the xinput bridge presents no pad); it eats the first key. Press
+  Space once to clear it before anything else, and never count unverified keypresses.
+- **Exited processes linger** while anything holds a handle: `Get-Process` returns them,
+  `MainWindowHandle` goes stale, `.StartTime` may throw access-denied, and `tasklist`
+  keeps listing them - one zombie invalidated a whole unattended run. game-key/game-shot/
+  game-cmd now filter `HasExited` and sort by Id; scripts must use `HasExited`, never
+  tasklist, for liveness.
+- The `.xrs` runner's `@shot <name>` naming is BROKEN (every capture writes `shot_*.png`);
+  `xrsim-shot.ps1 -Out <name>` works - drive capture sequences manually until fixed.
+- The sim's compositor PNGs read ~one sRGB step DARKER than the real frame (meanLuma ~2
+  on a scene the flat window shows clearly). Coverage/bbox reads are unaffected (they
+  count change), but never judge brightness from these captures. Harness bug, queued.
+
+### coupling-viewmodel on BS2: VIEW-LOCKED (correct), proven at the save
+
+With `vrcam on` + `vrstereo on` at the user's save: same-pose animation floor 7.8%
+coverage (flickering flora); 20 deg yaw 34.4%; 0.5 m strafe 28.9% - the world moves at
+4-5x floor while the drill's screen block stays AT floor, and the yaw capture visibly
+rotates the world with HUD/viewmodel pinned. The session-37 queued check is closed with
+zero headset time.
