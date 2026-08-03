@@ -17,6 +17,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/aim.h"
+#include "game/bioshock2r/frame_context.h"
 #include "game/bioshock2r/game_ini.h"
 #include "game/bioshock2r/scenedraw.h"
 #include "game/shared/ue_math.h"
@@ -1414,6 +1415,14 @@ void calcview_tail(void* self, CalcViewParams* p) {
     bool vrDrove = false;
     bvr::vr::HeadPose hp{};
     bool driveHead = false;
+    // The frame context the aim ray and the hand models both read (session 39).
+    // Filled as the drive runs; published once, after the drive and BEFORE the
+    // eye offset, so both consumers place a controller with EXACTLY the
+    // transform this frame's camera used.
+    FrameContext fc{};
+    fc.worldScale = g_worldScale.load(std::memory_order_relaxed);
+    fc.viewActor = p->viewActor;
+    fc.pc = self;
     if (now < g_simHead.deadline) {
         float q[4];
         xr_local_trim_quat(g_simHead.pitchDeg / kRadToDeg, g_simHead.yawDeg / kRadToDeg,
@@ -1472,6 +1481,19 @@ void calcview_tail(void* self, CalcViewParams* p) {
         rot->roll = static_cast<int32_t>(a.rollRad * kRotUnitsPerRadian);
         rot->yaw = gameYawUnits + residualUnits;
 
+        // Everything the aim/hands mapping needs from the drive, captured at
+        // the one point where it is all true at once: the camera loc here is
+        // still PRE head-offset (the base the controller maps onto), and
+        // residualUnits is exactly the yaw the head drive added.
+        fc.baseX = loc->x;
+        fc.baseY = loc->y;
+        fc.baseZ = loc->z;
+        fc.driveYawOffsetRad = static_cast<float>(residualUnits) / kRotUnitsPerRadian;
+        fc.recenterYawRad = recenter_yaw_rad();
+        fc.recenterPx = g_recenterPose.px;
+        fc.recenterPy = g_recenterPose.py;
+        fc.recenterPz = g_recenterPose.pz;
+
         float dxr[3] = {hp.px - g_recenterPose.px, hp.py - g_recenterPose.py,
                         hp.pz - g_recenterPose.pz};
         float d[3];
@@ -1510,6 +1532,17 @@ void calcview_tail(void* self, CalcViewParams* p) {
         // render alternating eyes. Suppressed under SequentialReentry stereo
         // (rung 2), which applies both eye offsets itself. Same wiring as
         // BS1's shipped AER path.
+        // The context is complete here: post head-anchor, PRE eye offset (an
+        // eyed base would put the ray half an IPD off, and under SR stereo
+        // pass 2 replays from this same pre-eye base).
+        fc.vrDriving = true;
+        fc.camX = loc->x;
+        fc.camY = loc->y;
+        fc.camZ = loc->z;
+        fc.camPitch = rot->pitch;
+        fc.camYaw = rot->yaw;
+        fc.camRoll = rot->roll;
+
         int eyeSign = scenedraw::stereo_active() ? 0 : bvr::vr::current_eye_sign();
         if (eyeSign != 0) {
             apply_eye_offset(loc, *rot, eyeSign);
@@ -1518,6 +1551,20 @@ void calcview_tail(void* self, CalcViewParams* p) {
             g_aerStampMs[e] = now;
         }
         vrDrove = true;
+    }
+    if (!fc.vrDriving) {
+        // Not driving: publish the engine's own camera so the ray still has a
+        // coherent frame (the aim gate keys on vrDriving, but the seam's
+        // freshness stamp and world-change detection keep running).
+        fc.camX = loc->x;
+        fc.camY = loc->y;
+        fc.camZ = loc->z;
+        fc.baseX = loc->x;
+        fc.baseY = loc->y;
+        fc.baseZ = loc->z;
+        fc.camPitch = rot->pitch;
+        fc.camYaw = rot->yaw;
+        fc.camRoll = rot->roll;
     }
     g_vrDriving.store(vrDrove, std::memory_order_relaxed);
     if (!vrDrove) {
@@ -1532,10 +1579,11 @@ void calcview_tail(void* self, CalcViewParams* p) {
     }
     // Stick-pitch-kill gate for the core input bridge, same funnel BS1 feeds.
     bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
-    // The live view rotation for the aim seam (pass 1 only by construction -
-    // pass 2 routes through second_pass_replay). The test ray and later the
-    // hand ray substitute as offsets from exactly this rotation.
-    aim::publish_view_rot(*rot, strictGameplay);
+    // The aim seam's frame (pass 1 only by construction - pass 2 routes through
+    // second_pass_replay). on_calcview builds this frame's hand rays and
+    // publishes the laser + aim dot; the test ray and the hand ray both
+    // substitute against fc's transform.
+    aim::on_calcview(fc, strictGameplay);
 
     // FOV write (session 25, BS1 write-block shape): strict gameplay only,
     // VR wants it only while the HMD actually drives, manual lever for flat

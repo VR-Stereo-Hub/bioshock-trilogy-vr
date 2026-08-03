@@ -30,6 +30,7 @@
 // XR hand ray (lands with the frame-context work).
 
 #include "core/hooks/pattern_scan.h"
+#include "game/bioshock2r/frame_context.h"
 #include "game/bioshock2r/patterns.h"
 #include "game/shared/ue_math.h"
 
@@ -56,10 +57,11 @@ bool hook_live();
 void probe_findfunc(uint32_t nameIndex, uint32_t nameNumber, void* fn);
 void probe_process_event(void* fn);
 
-// The live view rotation, published by the camera's CalcView tail every
-// pass-1 dispatch (post drive). The test ray substitutes as an offset from
-// this - the exact slot the XR hand ray will feed later.
-void publish_view_rot(const FRotator& rot, bool strictGameplay);
+// Per-frame entry point, called from the camera's CalcView tail on pass 1
+// (post drive, PRE eye offset). Builds this frame's hand rays through the
+// frame context and publishes the laser + aim dot; the fire seam reads the
+// result. Game thread only.
+void on_calcview(const FrameContext& ctx, bool strictGameplay);
 
 // 1 Hz probe summary while armed; rides the camera poll lane's maintenance
 // tick (game thread, outside hooked calls).

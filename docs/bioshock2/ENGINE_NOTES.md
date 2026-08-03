@@ -1618,6 +1618,29 @@ The seam behaves exactly as BS1's does, with fresh numbers throughout.
 Teardown regression re-checked with both aim hooks live: WM_CLOSE -> exit, ZERO new
 dumps (13 -> 13), session-38 baseline intact.
 
+### The XR hand ray, laser and aim dot (boot #3, all flat, under vrstereo)
+
+`frame_context.h` duplicated from BS1 (bvr::b2r namespace; the xr_local_trim_quat
+compose is the one non-negotiable - core's laser uses the same algebra render-side).
+The camera's CalcView tail fills the context DURING the drive (base loc captured pre
+head-offset, driveYawOffsetRad = the additive residual, recenter fields, world scale)
+and publishes it pre eye-offset to `aim::on_calcview`, which builds both hand rays,
+feeds the fire seam, and publishes core's laser + aim dot. Verified live:
+
+- **The mapping is exact**: with the sim right hand posed at yaw -25 and the view at
+  58.3 deg, the ray status read `L yaw 58.3` (left follows the head = the view yaw,
+  identity check) and `R yaw 83.3` (= 58.3 + 25, the commanded offset).
+- **The seam follows the hand**: rivet fires with `vraim handray on` logged
+  `rot (62742 10617 0) -> (-7281 15168 0), delta yaw 25.00 deg` - the hand ray's
+  absolute pitch/yaw written 1:1, once per shot.
+- **Laser + dot are compositor quads**: 8 layers under SR stereo (projection + 6
+  laser dots + aim dot), visible in both eye captures.
+- **Dot round-trip error 0.0000 UU** (`game_point_to_xr` -> `xr_pose_to_game` on the
+  live context) - the dot is exactly the point the shot starts from.
+- **The DRILL never calls GetPerfectFireStart on air swings** (wep counter stayed 0
+  through drill-only fires) - BS1's "the wrench has no aim seam" precedent transfers
+  to BS2's melee. Guns traverse it every shot.
+
 ### Cheats lane: PROVEN (boot #1, first try)
 
 `F9=GiveAll` bound in User.ini `[Default]` (line 248; backup
