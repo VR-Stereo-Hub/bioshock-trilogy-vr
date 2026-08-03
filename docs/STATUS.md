@@ -2,7 +2,139 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-03, session 39 - BS2 MOTION CONTROLS: aim decoupled, laser + dot live, the rig rides the controller, ALL FLAT-GREEN - branch `claude/bioshock2-motion-aiming-c7daed`)
+## Current state (2026-08-04, session 40 - BS2 PLAYS ON THE CONTROLLER; the hands are split and the ~90 deg misalignment is FIXED - branch `claude/bs2-controller-input-decoupling-d7cc14`)
+
+### The headline: the pad drives BS2, both hands are their own, and the model sits where it should
+
+All three of the user's top verdicts from the first look are addressed and measured flat
+across three simulator boots at the user's save. **Every M10.1 code box is now ticked**; what
+remains is the in-headset acceptance (the user's call) and one blocked check.
+
+### 1. Controller-driven controls - the top ask, done
+
+The premise had to be proven before anything was written: does BS2's binary still contain a
+per-frame pad poller that nothing calls? **Yes.** `UWindowsViewport::UpdateInput` is at
+viewport vtable slot 73 with ZERO callers, and the two boot GetState calls were the whole
+story. So BS1's shape ports: pump UpdateInput once per present, flip the engine's own
+`SetUseController` (client slot 73 - a coincidence, banked as two separate constants), hijack
+the game's IAT slot. All RVAs derived fresh (GEngine ptr 0x1A638F0, IAT 0x1C0DBFC).
+
+Flat-proven at the save: the drive runs at 63-92/s, `iat 2589` calls (the engine polling every
+frame), **a stick walks the player ~400 UU**, **a synthetic trigger fires through the weapon
+seam** (wep 0->1, subs 1), **the dpad navigates the main menu**, and the engine's own UI
+switched to controller prompts (dpad glyph in the ammo tutorial, Y glyph on the 2K panel).
+Session-39's open question about XInputGetCapabilities is answered: **the game never calls
+it** - the sole cause of "no pad" was that nothing called UpdateInput. No core change needed,
+which is fortunate: the candidate core fix would NOT have been inert for BS1.
+
+### 2. THE ~90 DEG MISALIGNMENT: the composition was discarding the authored frame
+
+The `vrbones axes` instrument - the mesh-orientation read `aimRayMaxDevDeg` never was - found
+it in one reading. The rigid map was `delta = qtc * conj(refQ_anchor)`, which makes the
+anchor's rotation become the controller's outright and throws the mesh's authored orientation
+away. On this rig that orientation is **~81.6 deg** off the view frame. That discarded
+rotation IS what the user saw.
+
+Now it is `delta = qtc`: bones keep their authored rotations and the cluster turns by the
+controller's rotation relative to the AHands actor (which carries the view rotation).
+Measured: **mesh-vs-authored angle 0.21 deg at rest** (was ~81.6), and two 30 deg controller
+steps rotate the mesh by 38.85 then 38.88 deg - agreeing to 0.03 deg. No baked constant is
+needed at all, so nothing has to be re-derived when a weapon or animation changes.
+
+### 3. Left/right decoupling, on real bone names
+
+`vrbones names` auto-detected the map at **SharedSkeletonData+0xB4**, naming 64/64 bones.
+Left = wrist 7 (`BD_HAND_BONE_L00`) + fingers 8..28 + pivot 62; right = wrist 36 + fingers
+37..57 + pivot **63** (`RG_RightHandPivotTarget_BONE` - the weapon attach, proven by driving
+that bone alone and watching the gun move). Each cluster tracks its own controller:
+**35.0 UU on the moved hand, 0.0 on the other**, and 120.0 UU separation for 1.2 m apart -
+100 UU/m exact.
+
+### 4. Scale, bullet origin, dual lasers
+
+- **`vrhands scale [l|r] <f>`**, decoupled from worldscale as the user required. It scales
+  about the anchor: the anchor write-loc moved **0.00 UU** going 1.0 -> 2.0 while the model
+  visibly changed.
+- **Bullets leave the hand**: `aim origin (hand 1): ... displacement 61.9 UU`, same family as
+  BS1's 40-47 UU, behind a 200 UU refusal clamp BS1 never had.
+- **Both hands render a beam AND a dot** (user's call - BS2 is natively dual-wield): 11 of the
+  16 compositor layers, each beam terminating at its own dot so there is one bright point per
+  hand (the first look's "two dots"). The core change is strictly additive - new
+  `set_laser_slot`/`set_aim_dot_slot` entry points no BS1 path calls, a SHARED dot budget so
+  the layer arrays never grow.
+- **F10 "HANDS + AIM (per hand)"** panel: tuning-hand radio, trim/offset/scale sliders, save
+  button. In-headset controls, not commands - the standing rule.
+- **14 new vrpreset keys**: a fresh boot loads **22 values** (was 8).
+
+### What did NOT land, and why
+
+- **Ability seam live check** - blocked on a projectile plasmid, not on the seam. Telekinesis
+  provably does not traverse GetPerfectFireStart (two casts at a grabbable object, abi stayed
+  0). `<X>BasicPlasmid` exists ONLY for Telekinesis in the exe; the other item class names
+  live in the content packages and still have to be found.
+- **Per-weapon aim presets** - deliberately deferred and split out of the sliders box. There
+  is no tuned value source until the user calibrates a weapon in the headset, and seeding
+  before one exists is exactly session-21's bug.
+- **Pad menu ACTIVATION** - dpad navigation works, but the pad's A button does not trigger the
+  highlighted item (keyboard Enter does). Worth chasing if pad-only menus matter.
+
+### Two things a future session should not re-learn
+
+- **`aimRayMaxDevDeg` assumes ONE laser.** With both beams live it reads 47-75 deg and varies,
+  which looks exactly like an aim/model regression and is not one: single-beam at the same
+  pose reads **0.0000**, the session-39 baseline. Run that acceptance single-beam until the
+  metric grows a per-hand version. (VERIFICATION 2.8 records this.)
+- **A latent bug, now fixed**: `vrhands offset ...` was swallowed by the `strncmp(args,"off",3)`
+  verb check, so every offset command silently DISABLED the hands - which is why the preset
+  kept saving zeros. Verb matching is whole-token now. Watch for prefix-matched command verbs
+  where one verb is a prefix of another.
+
+### Regression guards: all intact
+
+Teardown across all three boots: **486 / 523 / 211 ms, zero new dumps** (session-38 baseline).
+Session-37 baseline observed live (sr eyes 6.30 UU exact, guardskips 0, letterbox self-heal).
+Session-39 coupling baseline re-measured at **0.0000** single-beam. Core diff is one additive
+laser/dot slot pair that no BS1 path reaches.
+
+### USER CHECKLIST (in-headset, the M10.1 acceptance)
+
+Everything below is pre-armed; load the save, `vrstereo on`, headset on.
+
+1. **Controller now plays the game** - sticks move and look, right trigger fires, left trigger
+   casts, dpad works. Say if anything is mapped wrong or feels doubled.
+2. **Model alignment** - the gun should sit in your hand the way the game drew it and turn
+   with the controller. The ~90 deg offset should be GONE. Fine-tune per hand on the F10
+   "HANDS + AIM (per hand)" panel (tuning-hand radio, then trim/offset sliders).
+3. **Scale** - F10 "model SCALE" slider, per hand. It does not touch world scale.
+4. **Both hands** - the left (plasmid) hand now rides the LEFT controller and has its own
+   laser and dot. Check they feel independent.
+5. **Bullets leave the hand**, not the head - most visible at contact range.
+6. Press "Save these settings" on the F10 panel when it feels right; it survives a relaunch.
+7. Known gaps: no shooting plasmid yet (item names not found), pad A does not activate menu
+   items (use Enter/mouse in menus).
+
+## Next steps (session 41)
+
+1. **The in-headset acceptance is the gate.** M10.1's last open box is the user's checklist
+   above. Everything else here is subordinate to what that run reports - do not start new
+   machinery before reading its verdicts.
+2. **Find the plasmid item class names** (unblocks the ability-seam box, and the user asked
+   for "something that shoots" two sessions running). `<X>BasicPlasmid` exists only for
+   Telekinesis in the exe, so the names are in `ContentBaked/pc` - the package string tables
+   are the place to look. Verify BY EFFECT (HUD icon + name), then one cast settles the
+   ability substitution, which is already hooked and identity-verified.
+3. **Per-hand `aimRayMaxDevDeg`** so the coupling acceptance works with both beams live.
+   Today it must be run single-beam, which is a footgun for whoever forgets.
+4. **Per-weapon aim presets** under session-21's rules - only once the user has tuned at
+   least one weapon in the headset, because that tuning IS the value source.
+5. **Pad menu activation** (dpad navigates, A does not select) if pad-only menus matter.
+6. Standing: BS1 regression testing stays deferred to the END of BS2 development (user
+   decision 2026-08-02). The core diff to re-check when that day comes is exactly one
+   additive pair, `set_laser_slot`/`set_aim_dot_slot`, which no BS1 path calls.
+
+---
+
+## Previous state (2026-08-03, session 39 - BS2 MOTION CONTROLS: aim decoupled, laser + dot live, the rig rides the controller, ALL FLAT-GREEN - branch `claude/bioshock2-motion-aiming-c7daed`)
 
 ### The headline: BS2 aims with the controller, and everything is in sync
 
@@ -4875,6 +5007,57 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 40 - 2026-08-04 - BS2 plays on the controller; hands split; the ~90 deg fixed
+
+Branch `claude/bs2-controller-input-decoupling-d7cc14` off `bioshock-2` (0abb6b5), merged
+back. Three simulator boots at the user's save, every M10.1 code box ticked.
+
+**The session turned on one offline question asked first**: does BS2's binary still contain
+a per-frame pad poller that nothing calls? The plan made that a go/no-go gate rather than an
+assumption, and it paid - `UWindowsViewport::UpdateInput` is at viewport vtable slot 73 with
+ZERO callers, so BS1's shape ported. Pumping it per present + `SetUseController` (client slot
+73; the shared slot number is a coincidence and is banked as two constants, because BS1's
+single shared constant was a layout accident waiting to bite) makes the engine consume the
+synthetic pad: sticks walk, triggers fire through the seam, the dpad navigates the menu, and
+the game's own UI switches to controller prompts. The same offline pass answered session 39's
+open question for free - the engine never calls XInputGetCapabilities, so the caps asymmetry
+in the core bridge was never the cause, and the core "fix" it suggested (which would not have
+been inert for BS1) was correctly not made.
+
+**The ~90 deg misalignment was a composition bug, and a new instrument found it in one
+reading.** `vrbones axes` prints the anchor's driven vs authored rotation - the mesh-level
+read `aimRayMaxDevDeg` never was, which is exactly why the defect survived to the headset.
+The rigid map was replacing the anchor's authored frame with the raw controller rotation;
+that frame is ~81.6 deg off the view frame on this rig. `delta = qtc` instead of
+`delta = qtc * conj(refQ_anchor)` keeps the authored pose and turns it, giving 0.21 deg at
+rest. The planned baked constant turned out to be unnecessary - the correct composition is
+self-deriving, so nothing needs re-banking when a weapon or animation changes.
+
+**Hands split on real names**: the bone-name map auto-detected at SharedSkeletonData+0xB4
+(64/64 named, single accepted candidate), giving left = 7 + 8..28 + 62 and right = 36 +
+37..57 + 63, where 63 is the weapon attach (proven by driving that one bone and watching the
+gun move). Per-hand tracking is exact: 35.0 UU on the moved hand, 0.0 on the other.
+
+Also shipped: worldscale-independent `vrhands scale` (anchor invariant to 0.00 UU),
+bullet-origin substitution (61.9 UU displacement, with the 200 UU clamp BS1 never had), dual
+lasers + dual dots at the user's request (BS2 is natively dual-wield - the one core change,
+strictly additive, 11 of 16 layers), an F10 per-hand calibration panel, and 14 preset keys
+(22 values loaded on a fresh boot, was 8).
+
+**Two findings worth more than the features.** `aimRayMaxDevDeg` assumes ONE laser: with both
+beams live it reads 47-75 deg and looks precisely like an aim/model regression, while
+single-beam at the same pose reads 0.0000 - the acceptance must be run single-beam until the
+metric is per-hand. And `vrhands offset ...` had been silently parsed as `vrhands off` since
+session 39 (prefix-matched verb where one verb prefixes another), which is why the preset kept
+persisting zeros; the round-trip test is what exposed it.
+
+Blocked, honestly: the ability-seam live check needs a projectile plasmid, and `<X>BasicPlasmid`
+exists only for Telekinesis in the exe - Telekinesis provably does not traverse
+GetPerfectFireStart. Per-weapon presets were deliberately split out of their box rather than
+ticked, since no tuned value source exists until the user calibrates in-headset.
+
+Teardown 486/523/211 ms, zero new dumps, across all three boots.
 
 ### Session 39 - 2026-08-03 - BS2 motion controls: decoupled aim, laser + dot, bone drive, all flat
 
