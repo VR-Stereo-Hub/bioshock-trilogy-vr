@@ -1126,3 +1126,38 @@ runtime.
   interface method - no new threads-and-messages surface, no igame_adapter change, and the
   deferred-lane trap (posted work never applies once ProcessEvent stops) is avoided because
   nothing is posted.
+
+### 2026-08-03 (session 39) - BS2 motion controls: the probe-first seam, and a lock-free rig
+
+- **A GNames census settled the dispatch question instead of per-name guessing.** The
+  fire-chain names' cached-index globals (Lane A) can only prove a name is REGISTERED, not
+  that native code dispatches it; the census (every ProcessEvent dispatch's UFunction name
+  index, deduped, printed via GNames) observes the whole dispatch surface at once. Two
+  self-deriving steps keep it layout-assumption-free: the FName ctor falls out of the
+  existing PlayerCalcView scan, and the UFunction name offset is found by scanning the
+  LEARNED CalcView UFunction for its own known index (ambiguity is logged; garbage census
+  text would name a wrong offset immediately). One boot, decisive verdict, and the
+  instrument stays for every future by-name question on this game.
+- **The seam hooks land on the C++ impls, telemetry-first.** Same verdict as BS1 but
+  re-derived (0 PE hits over 6 live fires); the weapon impl was found by a vtable-slot
+  census (classify every slot by `ret imm` + writes-through-pointer-args) rather than
+  BS1's nativemap (which this build simply does not have), and the ability impl by a
+  .text sweep keyed on the pawn loc/rot displacements the weapon impl proved. Hooks
+  enable at boot but only COUNT until `vraim on` + a live ray source - the decal proof
+  ran against the same build that ships.
+- **bioshock2r composes hands at true geometry with NO render-lock domain** (per the
+  session-39 brief and session 21's user-accepted verdict: the lock's own correction WAS
+  the +-90 deg laser-vs-gun drift). The mechanism/policy split (bones.cpp/hands.cpp) is
+  kept from BS1 so an actor-mode fallback stays one policy swap away, but the lock,
+  lockgain, lockdgain and lockpull levers are deliberately not ported. Acceptance was
+  measured, not assumed: aimRayMaxDevDeg constant across a five-station controller sweep
+  on the first build.
+- **The bone cluster is runtime-configurable (`vrbones cluster`), defaulting to the whole
+  rig on the right controller.** The per-hand split needs the bone-name map; shipping a
+  configurable cluster means session 40 derives indices by name and flips a default
+  instead of rebuilding, and the flat instruments already measure the thing that matters
+  (aim/model sync).
+- **Session-39 code is a ZERO-core-diff feature.** Everything rides existing public core
+  APIs (`get_hand_pose`, `set_laser`, `set_aim_dot`, xr_math, pattern_scan primitives) -
+  the BS1-risk surface was never touched, which is what makes the deferred-BS1-regression
+  policy safe for another session.

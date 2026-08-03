@@ -2,7 +2,109 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-03, session 38 - THE EXIT CRASH WAS THE GAME'S OWN; closes are now instant and dump-free - branch `s38-b2r-teardown-and-aim`)
+## Current state (2026-08-03, session 39 - BS2 MOTION CONTROLS: aim decoupled, laser + dot live, the rig rides the controller, ALL FLAT-GREEN - branch `claude/bioshock2-motion-aiming-c7daed`)
+
+### The headline: BS2 aims with the controller, and everything is in sync
+
+The session-39 brief's Priority 1 is code-complete and flat-verified at the user's save,
+under `vrstereo on`, across four unattended boots. The chain: XR hand pose -> b2r
+frame context (the same transform the camera drive used) -> game-space ray -> the
+GetPerfectFireStart impl seam, with the laser re-deriving render-side from the same
+pose/trims and the aim dot published from the final fire point (round-trip error
+0.0000 UU). The weapon/hand rig follows the right controller through a rigid 64-bone
+drive with NO render-lock domain - session 21's lesson honored from day one.
+
+### What shipped (five commits on the branch)
+
+1. **The dispatch probe** (`vraim probe`): GNames derived fresh (RVA 0x1A614D0 +
+   FNameEntry layout), Lane-A FName index globals for the fire-chain names, a
+   FindFunctionChecked fire-watch + a full ProcessEvent name census with runtime
+   self-derived UFunction name offset (+0x28). VERDICT: GetPerfectFireStart is
+   native-to-native (0 PE hits over 6 real fires); InitiateDamage IS PE-visible 1:1
+   with fires (banked as timing anchor); BeginFiring resolves via FFC but never
+   crosses the outer PE.
+2. **The impl seam**: weapon impl 0x89DCB0 (APlayerWeapon vtbl slot 221/+0x374 - SAME
+   body on AWeapon and APlayerMeleeWeapon, one hook covers the drill) + ability impl
+   0x81CE80 (non-virtual, found by a ret-0x10 + pawn-offsets .text sweep), both
+   identity-gated, detours call the original then substitute out-param rotators.
+   **Decoupled aim PROVEN**: camera provably static, +30 deg substituted yaw moved
+   impacts from the crosshair band (0.1% changed) to the right band (12.4% changed) -
+   M6's criterion on BS2. The drill (melee) never calls the seam on air swings -
+   BS1's wrench precedent transfers.
+3. **Hand rays + laser + aim dot** (`vraim handray/laser/dot/trim/origin/pose`):
+   b2r `frame_context.h` (duplicated per the decoupling directive, xr_local_trim_quat
+   algebra), rays built in the CalcView tail, seam substitutes the hand rotator 1:1
+   (sim hand at -25 yaw -> delta 25.00 deg exact), 6 laser dots + dot as compositor
+   quads under SR stereo.
+4. **The bone drive** (`vrhands`, `vrbones`): AHands rig found live (SkeletonInstance
+   at +0x430, two-factor identity), pose bank poke-PROVEN to render, rigid
+   whole-rig cluster on the right controller, reference-pose capture (inherent sway
+   kill), reapply on the SR second pass, release() hand-back, >500 UU sanity refusal.
+5. **Cheats lane PROVEN**: `F9=GiveAll` in User.ini [Default] (backup kept) works by
+   effect - 999 ammo + full arsenal; digit keys 1-8 switch weapons flat (no wheel, no
+   `exec NextWeapon` trap). THE USER CAN GET ALL WEAPONS NOW - press F9 in gameplay.
+
+### The acceptance (VERIFICATION 2.8, both subsystems armed)
+
+Five-station controller sweep: **aimRayMaxDevDeg 0/0/0/0.02/0 - constant**;
+`vrhands status` last-write loc tracks at EXACTLY 100 UU/m (0.25 m -> 25.0 UU exact -
+the fresh world-scale self-consistency measurement); model-only diffs (lasers off)
+show the drill region moving at every station with the head static. Teardown with
+everything armed: 470 ms close, zero dumps - session-38 baseline intact. Session-37
+baseline intact (sr eyes 6.30 UU exact, wait2/s=0, guardskips 0, fov law, letterbox
+self-heal all observed live this session).
+
+### What did NOT land (named session-40 slots)
+
+- **The engine does not consume the synthetic pad** (P2 verdict, re-confirmed with the
+  ini lever): BS2 polls XInputGetState twice at boot, pre-bridge, then never again.
+  The `[WinDrv.WindowsClient]` UseJoystick/UseController=True flip alone is NOT
+  enough. Session 40: port BS1's input_drive SHAPE (UpdateInput per present +
+  SetUseController + IAT hijack) with fresh RVAs - the thumbrest ammo modifier,
+  grip switch and dual-wield trigger mapping all wait on it (core already implements
+  the behaviors; they are reachable via `vrinput` the moment the engine polls).
+- Per-hand cluster split (left = plasmid hand): needs the bone-name map
+  (SharedSkeletonData at skel+0x08, banked). Whole rig rides the right controller
+  until then.
+- Aim/hands preset persistence + F10 sliders: session 40's brief (aim sliders focus,
+  per-weapon presets).
+- The RMB/plasmid window cast nothing at the fresh save (no plasmid equipped?) - the
+  ability seam is hooked and identity-verified but its live substitution path is
+  untested; first plasmid-equipped session covers it.
+
+### USER CHECKLIST (headset, when BS2 time happens)
+
+1. Load the save, `vrstereo on` (or preset), then: **`vraim handray on`, `vraim laser
+   on`, `vraim dot on`, `vraim on`, `vrhands on`** (F10 toggles come session 40).
+2. Point the right controller somewhere off-view and FIRE (F9 first for weapons):
+   impacts should follow the controller, the laser should sit on the impact point,
+   the dot on the surface the ray hits.
+3. The drill/weapon model should ride the controller (rotation + translation), and
+   the laser should stay glued to it - the +-90 deg drift class from BS1 session 21
+   must NOT appear (if it does, say so - the no-lock composition is the suspect).
+4. Ride-alongs if time: pitch-servo sign (`vrinput pitchservo status` looking
+   up/down), helmet key-3810 collateral in other maps.
+5. KNOWN: controllers do NOT drive movement/buttons yet (engine ignores the pad until
+   session 40's input_drive port) - play kb/m for locomotion this round.
+
+### Session 40 (planned, updated)
+
+1. input_drive port (fresh RVAs) -> controller locomotion/buttons; then the
+   BS1-parity bindings (LEFT thumbrest ammo modifier + RIGHT stick slots, grip
+   switch, native dual-wield trigger mapping - core behaviors ready).
+2. Bone-name map -> per-hand clusters (plasmid hand on the left controller).
+3. BS1-parity SLIDERS for aim + models on F10, preset persistence, PER-WEAPON AIM
+   PRESETS auto-swapping with the equipped weapon (session-21 seeding bugs are the
+   what-not-to-repeat reference).
+4. Ability-seam live check with a plasmid equipped.
+
+Standing: BS1 regression testing stays deferred to the END of BS2 development (user
+decision 2026-08-02). Core diff this session: ZERO (everything rode existing public
+APIs - the BS1-risk surface was never touched).
+
+---
+
+## Previous state (2026-08-03, session 38 - THE EXIT CRASH WAS THE GAME'S OWN; closes are now instant and dump-free - branch `s38-b2r-teardown-and-aim`)
 
 ### The teardown crash: root cause found, and it rewrites the brief
 
@@ -4730,6 +4832,44 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 39 - 2026-08-03 - BS2 motion controls: decoupled aim, laser + dot, bone drive, all flat
+
+Branch `claude/bioshock2-motion-aiming-c7daed` off `bioshock-2` (a993e80), merged back to
+`bioshock-2`. Priority 1 landed end to end, flat, in four unattended sim boots at the
+user's save; priority 2 (cheats) landed as a boot-1 rider on the first try.
+
+- **Stage 1, the probe**: GNames derived fresh offline (ctor 0xB813B0 -> worker 0xB81CE0
+  -> GNames 0x1A614D0; BS1's session-20 recipe, every number new), Lane-A FName globals
+  (BeginFiring/UseAbility/InitiateDamage resolve; GetPerfectFireStart/ApplyAimError have
+  no cached global - they live in a boot-time batch registration at ~0x976640), and a
+  PE census whose UFunction name offset self-derives (+0x28, validated by 73 sane
+  names). Live verdict in one boot: the seam is NATIVE (0 PE hits over 6 fires),
+  InitiateDamage is the PE-visible 1:1 anchor.
+- **Stage 2, the seam**: weapon impl via vtable-slot census (slot 221/+0x374 ->
+  0x89DCB0, shared by the whole weapon family incl. the drill), ability impl via a
+  targeted .text sweep (0x81CE80, non-virtual, args incl. the `tester` ShockPlayer).
+  Both hooks identity-gated and live from boot. Decoupled aim proven with the
+  region-mean method (whole-frame diffs lie in this dark scene): impacts moved
+  crosshair-band -> right-band (0.1% -> 12.4%) on a +30 deg substituted yaw with the
+  camera heartbeat bit-identical.
+- **Stage 3, rays/laser/dot**: b2r frame_context.h; the hand ray substitutes 1:1
+  (delta 25.00 deg exact against a -25 deg sim hand); 8 compositor layers under SR
+  stereo; dot round-trip 0.0000 UU.
+- **Stage 4, the rig**: AHands -> SkeletonInstance at +0x430 (two-factor identity),
+  64-bone hkQsTransform pose bank at +0x44 poke-proven to render; bones.cpp rigid
+  cluster drive (no lock domain) + hands.cpp policy; coupling acceptance PASS -
+  aimRayMaxDevDeg 0/0/0/0.02/0 constant, write-loc at exactly 100 UU/m (the fresh
+  world-scale measurement), model-only diffs localized and moving.
+- **Cheats**: F9=GiveAll + F12=GiveWeapon bound in [Default] only (backups kept),
+  verified by effect; digit keys switch weapons flat. New harness facts: mouse
+  buttons fire in gameplay (the raw-input wart is menu-only), the drill has no aim
+  seam on air swings, `vraim`/`vrhands`/`vrbones` grammars shipped.
+- **Input verdict**: the engine polls XInput twice at boot pre-bridge and never
+  again; the WinDrv ini lever alone does NOT wake it. input_drive port = session 40
+  P1; until then controllers aim/fire-substitute but do not drive locomotion.
+- Teardown with everything armed: 470 ms, zero dumps. Core diff: ZERO. Session-37/38
+  baselines observed intact live (sr eyes 6.30 exact, wait2/s=0, fov law, self-heal).
 
 ### Session 38 - 2026-08-03 - the exit crash was the game's own; instant dump-free closes; aim seam found
 

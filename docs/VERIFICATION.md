@@ -319,6 +319,16 @@ apart - the gun points somewhere other than where it shoots.
    moved it 110 UU in X, a 0.4 m drop moved it 40 UU in Z. That is the ground truth for
    "is the model following the controller"; the picture is the confirmation, not the proof.
 
+**BS2 deltas (session 39, first BS2 coupling run):** the same commands and oracles apply
+(`-Game bs2`; `vraim handray on` + `vraim laser on` + `vrhands on` is the arm set). Drive
+the stations manually with `xrsim-cmd` + `xrsim-shot -Out` (the `.xrs` `@shot` naming wart).
+Reference pass at the user's save: aimRayMaxDevDeg **0/0/0/0.02/0** across the five
+stations; write-loc tracked at **exactly 100 UU/m** (0.25 m -> 25.0 UU); the Adonis scene is
+DEEP in trap-2 territory (meanLuma ~2), so the model verdict came from write-loc + a
+lasers-OFF station diff (localized drill-region cells moving), never from mean-abs. BS2's
+melee drill never traverses the fire seam on air swings - use a gun (F9 GiveAll, digit-key
+switch) for any seam-counter oracle.
+
 ### 2.9 Measured baselines (BS1, 2026-08-01, in gameplay)
 
 Numbers from a real acceptance run, so a future regression has something to

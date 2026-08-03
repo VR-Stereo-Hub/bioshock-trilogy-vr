@@ -807,6 +807,35 @@ kill. Both prerequisites below are now MET.):**
       (the hard part; prefer the ProcessEvent-by-name seam). Unblocked now that `vrinput` reaches
       core's flat test suite on BS2.
 
+### M10.1 - BS2 motion controls (session 39; M6/M7-parity, derived fresh)
+
+- [x] **Dispatch verdict** (session 39): GetPerfectFireStart is native-to-native (probe:
+      fire-watch on Lane-A FName globals + full PE census, GNames 0x1A614D0 fresh);
+      InitiateDamage is PE-visible 1:1 with fires - the by-name timing anchor.
+- [x] **Decoupled aim, flat-proven** (session 39): both impls hooked (weapon 0x89DCB0 via
+      vtbl-slot census - one body for the whole family incl. the drill; ability 0x81CE80
+      via targeted sweep), out-param rotator substitution moves impacts with the camera
+      provably static - "look left while shooting right" on BS2.
+- [x] **XR hand ray drives the seam** (session 39): b2r frame_context (xr_local_trim_quat
+      algebra), 1:1 rotator substitution (25.00 deg delta exact), 250 ms freshness gate.
+- [x] **Laser + aim dot** (session 39): compositor quads under SR stereo; dot published
+      from the final fire point, round-trip error 0.0000 UU.
+- [x] **The rig rides the controller** (session 39): AHands -> SkeletonInstance +0x430,
+      64-bone pose bank poke-proven; rigid cluster drive, NO lock domain; coupling
+      acceptance aimRayMaxDevDeg constant (0/0/0/0.02/0), write-loc at exactly 100 UU/m.
+- [x] **Cheats lane** (session 39): F9=GiveAll by effect; digit-key weapon switching flat.
+- [ ] **input_drive port** (session 40): the engine polls XInput only twice at boot -
+      UpdateInput-per-present + SetUseController with fresh RVAs; unblocks locomotion,
+      thumbrest ammo modifier, grip switch, native dual-wield triggers (core behaviors ready).
+- [ ] **Per-hand clusters** (session 40): bone-name map (SharedSkeletonData at skel+0x08) ->
+      left cluster on the plasmid hand.
+- [ ] **Aim/model sliders + presets** (session 40): F10 sliders, vrpreset keys, per-weapon
+      aim presets auto-swapping with the equipped weapon.
+- [ ] **In-headset acceptance**: aim-follows-controller + model-in-tune-with-laser (the
+      session-21 "perfect" bar), at the user's save.
+- [ ] **Ability seam live check**: substitution on a cast with a plasmid equipped (hooked
+      and identity-verified; the fresh save had no plasmid to cast).
+
 ## Post-v1 backlog (not scheduled)
 
 - **Selection wheels** (moved here 2026-07-27, session 16 part 4, user's call - the

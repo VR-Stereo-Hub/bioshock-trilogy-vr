@@ -1641,7 +1641,57 @@ feeds the fire seam, and publishes core's laser + aim dot. Verified live:
   through drill-only fires) - BS1's "the wrench has no aim seam" precedent transfers
   to BS2's melee. Guns traverse it every shot.
 
-### Cheats lane: PROVEN (boot #1, first try)
+### The AHands rig: skeleton found, poke-proven, driven (boots #3-#4)
+
+Full constants + the two-factor identity in patterns.h "the AHands rig"; headline chain:
+`vtscan 1125478` -> ONE live AHands (+ the two documented stack false positives) ->
+**SkeletonInstance pointer at AHands+0x430** (BS1's +0x3FC does not transfer; identity =
+vtable dword AND owner backpointer at +0x4) -> pose bank at skel+0x44 `{data, 64, 64}`,
+48-byte hkQsTransform stride {translation vec4, quat xyzw, scale vec4}. **Proof by
+poke**: writing entry translations/scales visibly deformed the held rivet gun. Scale
+pokes persist (animation restamps translation/rotation only); production writes land
+per-CalcView + reapply on the SR second pass.
+
+`bones.cpp` (mechanism) + `hands.cpp` (policy): rigid cluster about an anchor composed
+against the ACTOR transform (AHands actor loc/rot live at the standard +0x1EC/+0x1F8),
+default cluster = the whole 64-bone rig on the RIGHT controller; NO render-lock domain
+(session-21 verdict honored). The per-hand cluster split (left = plasmid hand) waits on
+the bone-name map (SharedSkeletonData at skel+0x08, unconsumed) - session 40.
+
+### COUPLING ACCEPTANCE: PASS (boot #4, vrstereo on, vraim + vrhands BOTH armed)
+
+coupling-hand's five stations driven manually (the .xrs @shot wart), sim right hand
+swept c/r/l/down/up with +-25 deg rotations:
+
+- **aimRayMaxDevDeg: 0 / 0 / 0 / 0.0198 / 0** - constant (spread 0.02 deg against the
+  0.5 gate). Aim and model in sync at every controller pose, no lock domain, true
+  geometry from day one.
+- **`vrhands status` last-write loc tracks the sweep at EXACTLY 100 UU/m**: +-0.35 m
+  lateral -> 35.0 UU (rotated into the view frame, magnitude exact), +-0.25 m vertical
+  -> +-25.0 UU exact. This doubles as the fresh world-scale self-consistency
+  measurement (linear across 0.25/0.35 m; the absolute calibration stays a user
+  in-headset act via `worldscale`, BS1 session-16 precedent).
+- **The MODEL moves**: with the laser and dot OFF (so quads cannot pollute the diff),
+  the same localized cells (the drill region) change at every station while the head is
+  static. The scene is deep in meanLuma-lies territory (~2/255), so the per-region
+  numbers stay modest; the write-loc ground truth is the proof, the picture the
+  confirmation (VERIFICATION 2.8's own hierarchy).
+- The rig auto-resolved on this boot's fresh addresses (AHands 45FAA800 -> skel
+  26E6D740 -> pose 45E60000 x64) - the identity chain works cold.
+
+Teardown with EVERYTHING armed (stereo + both aim hooks + bone drive + laser/dot):
+close in 470 ms, ZERO new dumps, the known +0x4FF0FE host fault absorbed.
+
+### Input-path verdict FINAL for this session: the ini lever is NOT enough
+
+With `[WinDrv.WindowsClient]` UseJoystick/UseController=True AND the bridge enabled,
+the engine still polls XInputGetState exactly twice at BOOT (before any command can
+enable the bridge) and never again - `getstate[0] 2 total, 0/s`. The engine decides
+"no pad" once, pre-bridge. Session 40 ports BS1's input_drive SHAPE (per-present
+UpdateInput + SetUseController + IAT hijack) with fresh RVAs; the ini flip stays in
+place (harmless, and the runtime path may still want it). Until then BS2 plays
+keyboard/mouse flat; the thumbrest/grip/dual-wield binding work rides the same
+session-40 lane since all of it needs the engine consuming the pad.
 
 `F9=GiveAll` bound in User.ini `[Default]` (line 248; backup
 `User.ini.bvr-bak-cheatkeys`) + `game-key -Scan 0x43` = "You got SPECIAL AMMO!"
