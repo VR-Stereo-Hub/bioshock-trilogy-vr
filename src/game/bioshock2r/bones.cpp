@@ -3,6 +3,7 @@
 #include "core/hooks/pattern_scan.h"
 #include "core/util/log.h"
 #include "core/util/xr_math.h"
+#include "game/bioshock2r/aim.h"
 #include "game/bioshock2r/patterns.h"
 
 #include <windows.h>
@@ -136,6 +137,181 @@ bool capture_reference() {
     g_refValid = true;
     BVR_LOG("[b2r] bones: reference pose captured (%d bones)", g_boneCount);
     return true;
+}
+
+// --- bone-name map (session 40) ---------------------------------------------
+// SharedSkeletonData (skel+0x08) carries an FName->boneIndex hash map at an
+// offset auto-detected live; BS1's map LAYOUT shape transfers (pairs at map
+// +0x00, buckets int32* at +0xC, power-of-two count at +0x10, 16-byte pairs
+// {next, fnameIdx, fnameNum, boneIndex}), its offset does not (patterns.h).
+// Diagnostic only - the drive never reads names (BS1 rule: clusters are baked
+// index ranges; the map exists to DERIVE them).
+char g_boneNames[kMaxBones][48];
+bool g_namesValid = false;
+int g_nameMapOffset = -1; // -1 = not yet detected
+
+// SEH-guarded read: the map candidates walk unproven heap pointers.
+bool read_n(const void* src, void* dst, size_t n) {
+    if (!is_memory_valid(src, n)) return false;
+    __try {
+        memcpy(dst, src, n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Walk one candidate map offset. Returns bones named (>=0) or -1 on a
+// structural violation; fills g_boneNames only when commit.
+int walk_name_map(const uint8_t* shared, uint32_t off, bool commit) {
+    const uint8_t* pairs = nullptr;
+    const uint8_t* buckets = nullptr;
+    int32_t bucketCount = 0;
+    if (!read_n(shared + off, &pairs, 4) || !read_n(shared + off + 0xC, &buckets, 4) ||
+        !read_n(shared + off + 0x10, &bucketCount, 4))
+        return -1;
+    if (!pairs || !buckets) return -1;
+    if (bucketCount < 4 || bucketCount > 65536 ||
+        (bucketCount & (bucketCount - 1)) != 0)
+        return -1; // power-of-two sanity (BS1's shape)
+    bool seen[kMaxBones] = {};
+    int named = 0;
+    for (int b = 0; b < bucketCount; ++b) {
+        int32_t idx = -1;
+        if (!read_n(buckets + b * 4, &idx, 4)) return -1;
+        // Chain walk bounded by 4x the rig size so a corrupt link cannot spin.
+        for (int guard = 0; idx >= 0 && guard <= g_boneCount * 4; ++guard) {
+            if (idx > 4096) return -1;
+            struct {
+                int32_t next, nameIdx, nameNum, value;
+            } pair{};
+            if (!read_n(pairs + static_cast<size_t>(idx) * 16, &pair, sizeof pair))
+                return -1;
+            if (pair.value < 0 || pair.value >= g_boneCount) return -1;
+            char text[48];
+            if (!patterns::fname_text(static_cast<uint32_t>(pair.nameIdx), text,
+                                      sizeof text))
+                return -1;
+            if (!seen[pair.value]) {
+                seen[pair.value] = true;
+                ++named;
+                if (commit) {
+                    strncpy_s(g_boneNames[pair.value], text, _TRUNCATE);
+                    if (pair.nameNum != 0) {
+                        // FName number suffix (Name_2 style) - append it.
+                        size_t len = strlen(g_boneNames[pair.value]);
+                        _snprintf_s(g_boneNames[pair.value] + len,
+                                    sizeof g_boneNames[0] - len, _TRUNCATE, "_%d",
+                                    pair.nameNum - 1);
+                    }
+                }
+            }
+            idx = pair.next;
+        }
+    }
+    return named;
+}
+
+bool resolve_bone_names() {
+    if (g_namesValid) return true;
+    if (!g_skel || g_boneCount <= 0) return false;
+    const uint8_t* shared = nullptr;
+    if (!read_n(g_skel + patterns::kSkelSharedDataOffset, &shared, 4) || !shared) {
+        BVR_LOG("[b2r] bones: SharedSkeletonData unreadable");
+        return false;
+    }
+    if (g_nameMapOffset < 0) {
+        int winners = 0;
+        uint32_t winOff = 0;
+        int winNamed = 0;
+        for (uint32_t off = 0; off <= 0x140; off += 4) {
+            int named = walk_name_map(shared, off, false);
+            if (named >= g_boneCount / 2) {
+                ++winners;
+                winOff = off;
+                winNamed = named;
+                BVR_LOG("[b2r] bones: name-map candidate shared+0x%X names %d/%d",
+                        off, named, g_boneCount);
+            }
+        }
+        if (winners != 1) {
+            BVR_LOG("[b2r] bones: name-map auto-detect FAILED (%d candidates) - "
+                    "use `vrbones map` and derive by hand",
+                    winners);
+            return false;
+        }
+        g_nameMapOffset = static_cast<int>(winOff);
+        BVR_LOG("[b2r] bones: name map at shared+0x%X (%d/%d bones named) - bank "
+                "this offset",
+                winOff, winNamed, g_boneCount);
+    }
+    memset(g_boneNames, 0, sizeof g_boneNames);
+    if (walk_name_map(shared, static_cast<uint32_t>(g_nameMapOffset), true) < 0)
+        return false;
+    g_namesValid = true;
+    return true;
+}
+
+// The axes instrument (session 40): the flat mesh-orientation read that
+// aimRayMaxDevDeg never was. World-space basis of a bone's CURRENT and
+// REFERENCE rotation vs the right hand ray, plus every raw quat the offline
+// bake derivation needs.
+void log_axes(int idx) {
+    if (!g_pose || idx < 0 || idx >= g_boneCount) {
+        BVR_LOG("[b2r] vrbones axes: no rig / bad index %d", idx);
+        return;
+    }
+    const int32_t* aRot =
+        reinterpret_cast<const int32_t*>(g_hands + patterns::kAHandsActorRotOffset);
+    FRotator actorRot{aRot[0], aRot[1], aRot[2]};
+    float qa[4];
+    ue_rot_to_quat(actorRot, qa);
+    float qc[4], qr[4];
+    memcpy(qc, g_pose + idx * patterns::kSkelPoseStride + patterns::kSkelPoseQuatOffset,
+           16);
+    memcpy(qr, &g_ref[idx][4], 16);
+    float qwc[4], qwr[4];
+    bvr::xrmath::quat_mul(qa, qc, qwc);
+    bvr::xrmath::quat_mul(qa, qr, qwr);
+
+    FVector rayO{};
+    FRotator rayR{};
+    bool haveRay = aim::last_ray(1, &rayO, &rayR);
+    float rayDir[3] = {};
+    if (haveRay) ue_rot_to_dir(rayR, rayDir);
+
+    const char* name = (g_namesValid && g_boneNames[idx][0]) ? g_boneNames[idx] : "?";
+    BVR_LOG("[b2r] vrbones axes: bone %d '%s' actorRot (%d %d %d) qa (%.4f %.4f "
+            "%.4f %.4f)",
+            idx, name, actorRot.pitch, actorRot.yaw, actorRot.roll, qa[0], qa[1],
+            qa[2], qa[3]);
+    BVR_LOG("[b2r]   cur q comp (%.4f %.4f %.4f %.4f) world (%.4f %.4f %.4f %.4f)",
+            qc[0], qc[1], qc[2], qc[3], qwc[0], qwc[1], qwc[2], qwc[3]);
+    BVR_LOG("[b2r]   ref q comp (%.4f %.4f %.4f %.4f) world (%.4f %.4f %.4f %.4f)",
+            qr[0], qr[1], qr[2], qr[3], qwr[0], qwr[1], qwr[2], qwr[3]);
+    const float axes[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    const char* axName[3] = {"X", "Y", "Z"};
+    for (int pass = 0; pass < 2; ++pass) {
+        const float* q = pass == 0 ? qwc : qwr;
+        for (int a = 0; a < 3; ++a) {
+            float d[3];
+            bvr::xrmath::quat_rotate(q[0], q[1], q[2], q[3], axes[a], d);
+            if (haveRay) {
+                float dot = d[0] * rayDir[0] + d[1] * rayDir[1] + d[2] * rayDir[2];
+                if (dot > 1.0f) dot = 1.0f;
+                if (dot < -1.0f) dot = -1.0f;
+                BVR_LOG("[b2r]   %s %s = (%.3f %.3f %.3f)  angle to ray %.1f deg",
+                        pass == 0 ? "cur" : "ref", axName[a], d[0], d[1], d[2],
+                        acosf(dot) * 57.29578f);
+            } else {
+                BVR_LOG("[b2r]   %s %s = (%.3f %.3f %.3f)  (ray invalid)",
+                        pass == 0 ? "cur" : "ref", axName[a], d[0], d[1], d[2]);
+            }
+        }
+    }
+    if (haveRay)
+        BVR_LOG("[b2r]   ray rot (%d %d %d) dir (%.3f %.3f %.3f)", rayR.pitch,
+                rayR.yaw, rayR.roll, rayDir[0], rayDir[1], rayDir[2]);
 }
 
 // UE rotator -> quat via the shared helper; conjugate/multiply/rotate via
@@ -276,7 +452,53 @@ bool handle_command(const char* args) {
         release("command");
         return true;
     }
-    BVR_LOG("[b2r] vrbones: status | cluster <lo> <hi> <anchor> | refcap | release");
+    if (strncmp(args, "names", 5) == 0) {
+        if (!resolve_rig()) {
+            BVR_LOG("[b2r] vrbones names: rig not resolved (run in gameplay after "
+                    "the rig-resolved echo)");
+            return true;
+        }
+        if (!resolve_bone_names()) return true;
+        for (int i = 0; i < g_boneCount; ++i)
+            BVR_LOG("[b2r]   bone %2d: %s", i,
+                    g_boneNames[i][0] ? g_boneNames[i] : "-");
+        return true;
+    }
+    if (strncmp(args, "map", 3) == 0) {
+        // Raw fallback: SharedSkeletonData head as dwords, for by-hand layout
+        // derivation when the auto-detect refuses.
+        if (!resolve_rig()) {
+            BVR_LOG("[b2r] vrbones map: rig not resolved");
+            return true;
+        }
+        const uint8_t* shared = nullptr;
+        if (!read_n(g_skel + patterns::kSkelSharedDataOffset, &shared, 4) || !shared) {
+            BVR_LOG("[b2r] vrbones map: SharedSkeletonData unreadable");
+            return true;
+        }
+        BVR_LOG("[b2r] vrbones map: SharedSkeletonData %p", shared);
+        for (uint32_t off = 0; off < 0x140; off += 0x10) {
+            uint32_t d[4] = {};
+            if (!read_n(shared + off, d, 16)) break;
+            BVR_LOG("[b2r]   +0x%03X: %08X %08X %08X %08X", off, d[0], d[1], d[2],
+                    d[3]);
+        }
+        return true;
+    }
+    if (strncmp(args, "axes", 4) == 0) {
+        int idx = g_anchor;
+        sscanf_s(args, "axes %d", &idx);
+        if (resolve_rig()) {
+            if (!g_refValid) capture_reference();
+            resolve_bone_names(); // best effort, names in the log line
+            log_axes(idx);
+        } else {
+            BVR_LOG("[b2r] vrbones axes: rig not resolved");
+        }
+        return true;
+    }
+    BVR_LOG("[b2r] vrbones: status | cluster <lo> <hi> <anchor> | refcap | release | "
+            "names | map | axes [idx]");
     return true;
 }
 

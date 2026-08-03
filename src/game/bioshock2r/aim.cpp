@@ -763,4 +763,8 @@ bool handle_command(const char* args) {
     return true;
 }
 
+bool last_ray(int hand, FVector* origin, FRotator* rot) {
+    return ray_for(hand, origin, rot);
+}
+
 } // namespace bvr::b2r::aim

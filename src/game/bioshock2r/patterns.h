@@ -429,6 +429,16 @@ constexpr uint32_t kAHandsSkelInstOffset = 0x430;      // AHands -> SkeletonInst
 constexpr uint32_t kAHandsActorLocOffset = 0x1EC;      // 3 floats
 constexpr uint32_t kAHandsActorRotOffset = 0x1F8;      // 3 int32 rotator units
 constexpr uint32_t kSkelOwnerOffset = 0x4;             // SkeletonInstance -> AHands*
+constexpr uint32_t kSkelSharedDataOffset = 0x8;        // -> SharedSkeletonData
+// The bone-name map lives INSIDE SharedSkeletonData at an offset that is
+// auto-detected live (session 40): BS1's map layout SHAPE - {pairs base at
+// +0x00, buckets int32* at +0xC, power-of-two bucket count at +0x10; 16-byte
+// pairs {next, fnameIdx, fnameNum, boneIndex}} - transfers as engine-family
+// shape, but its offset within SharedSkeletonData does not (BS1: +0xAC).
+// bones.cpp scans +0x00..+0x140 in 4-byte steps and accepts the ONE candidate
+// whose full bucket walk yields >= half the bone count in valid
+// {fname_text-resolvable name, index in range} pairs; ambiguity or zero
+// candidates logs and falls back to the raw `vrbones map` dword dump.
 constexpr uint32_t kSkelPoseArrayOffset = 0x44;        // {data, count, max}
 constexpr uint32_t kSkelPoseStride = 0x30;             // hkQsTransform
 constexpr uint32_t kSkelPoseTransOffset = 0x0;         // vec4

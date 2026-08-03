@@ -70,4 +70,8 @@ void poll_tick(uint64_t now);
 // `vraim <args>` from the command seam. Returns true when consumed.
 bool handle_command(const char* args);
 
+// The last built hand ray (session 40, for the vrbones axes instrument):
+// false while the ray is invalid or stale. Game thread only.
+bool last_ray(int hand, FVector* origin, FRotator* rot);
+
 } // namespace bvr::b2r::aim
