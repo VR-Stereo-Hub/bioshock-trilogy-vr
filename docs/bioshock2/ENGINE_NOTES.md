@@ -1820,3 +1820,113 @@ command poller - UpdateInput dispatches input events that re-enter the detour, a
 nested `vrinput off` or hook install mid-pump is the failure mode the latch closes.
 Snap turn drains `take_snap_steps()` into g_recenterYawUnits BEFORE the residual math
 (same-frame consistency: yaw, frame context and lasers agree on the new recenter).
+
+### Boot 1 verdict (2026-08-04): the pad drives BS2
+
+Armed at the user's save under `vrstereo on`, one boot, everything green:
+
+- **`vrinput on` -> the engine polls every frame.** `input drive: armed - UseController
+  on` then a steady **63-92 UpdateInput calls/s**, and `vrinput status` reads
+  **`iat 2589`** (the game's own IAT slot calling the bridge wrapper) against
+  `getstate[0] 2 total` (the proxy post-hook, still just the two boot calls) - the
+  IAT lane is the one that carries traffic, exactly as BS1's Steam-overlay finding
+  predicted.
+- **Locomotion**: `vrinput test stick l 0 32767 2500` walked the player ~400 UU
+  ((-42256,-13394) -> (-42530,-13080)).
+- **Fire**: `vrinput test trig r 255 700` with a gun equipped incremented the weapon
+  seam **wep 0 -> 1, subs 1** - a synthetic trigger traverses GetPerfectFireStart and
+  gets its rotator substituted.
+- **The engine's own UI flipped to controller prompts**: the ammo tutorial rendered a
+  DPAD glyph instead of the keyboard hint. SetUseController took, and the game
+  believes a pad is connected - the boot "no pad" latch healed itself through
+  UpdateInput's reconnect branch, as the offline read predicted.
+- **XInputGetCapabilities is never called** (`xi14 caps 0, xi13 caps 0`): the
+  session-39 "does the engine check caps" question is answered NO. The sole cause of
+  "no pad" was that nothing called UpdateInput. No core change needed (and the
+  candidate core fix - serving caps while the bridge is disabled - would NOT have
+  been inert for BS1, so this is the better outcome).
+- **No double-processing**: our pump is the ONLY caller of UpdateInput (zero static
+  callers, and the pre-port boot showed 2 GetState calls total), so doubling is
+  structurally impossible; live behavior agreed (digit keys switched exactly one
+  weapon, Space advanced one screen, F9/F12 fired once each over ~10 min armed).
+  NOTE for future flat work: injected scancodes do NOT reach the movement axes -
+  the game polls DirectInput for them, and DI ignores keybd_event - so an
+  axis-level KB/M A/B cannot be done with the harness; binding-level checks can.
+- Teardown with the drive armed: close in **523 ms, zero new dumps** (session-38
+  baseline intact).
+
+### The bone-name map: shared+0xB4, and the rig is fully named
+
+`vrbones names` auto-detected the map at **SharedSkeletonData+0xB4** (single
+candidate, 64/64 bones named - the scan accepts only one offset whose full bucket
+walk yields >= half the bones, so ambiguity would have refused). BS1's layout shape
+transferred exactly (pairs at map+0x00, buckets int32* at +0xC, power-of-two count at
++0x10, 16-byte pairs {next, fnameIdx, fnameNum, boneIndex}); only the offset differed
+(BS1: +0xAC).
+
+The AHands rig, 64 bones, symmetric and cleanly split:
+
+| range | contents |
+|---|---|
+| 0-3 | `BD_Root`, `BD_Spine_BONE_C00..C02` |
+| 4-6 | left clavicle / upper arm / lower arm |
+| **7** | **`BD_HAND_BONE_L00`** - the left wrist |
+| 8-28 | left fingers (Index/Middle/Pinky/Ring/Thumb groups) |
+| 29-32 | left arm twist bones (LowerArm L01/L02, UpperArm L01/L02) |
+| 33-35 | right clavicle / upper arm / lower arm |
+| **36** | **`BD_Hand_BONE_R00`** - the right wrist |
+| 37-57 | right fingers |
+| 58-61 | right arm twist bones |
+| **62 / 63** | **`RG_LeftHandPivotTarget_BONE` / `RG_RightHandPivotTarget_BONE`** |
+
+**Bone 63 is the weapon attach**: driving the cluster `63 63 63` alone and sweeping
+the sim right hand moved the held weapon - localized img-diff, 9/144 cells, bbox
+(0.667,0.75)-(0.917,1.0), i.e. exactly the viewmodel corner. 62 is its left-hand
+twin. So the clusters are a contiguous hand+fingers range PLUS the pivot bone:
+left = 7..28 + 62 (anchor 7), right = 36..57 + 63 (anchor 63, the bone the weapon
+renders from - BS1's anchor rule, same conclusion, derived fresh).
+
+### THE ~90 DEG MISALIGNMENT: the composition was DISCARDING the authored frame
+
+The `vrbones axes` instrument (the mesh-orientation read `aimRayMaxDevDeg` never
+was) settled the user's verdict #1 in one reading. At the save, with the sim hands
+neutral:
+
+    actorRot (53590 23585 0)  qa (-0.4902 0.2309 0.7603 0.3581)
+    bone 63 ref q comp (-0.0091 -0.0336 0.6512 0.7581)
+
+Two facts fall out. First, **the AHands actor carries the view rotation** - its
+rotator IS the engine's camera rot that frame. So a controller aiming exactly where
+the view points yields `qtc = qaInv * qt = identity`. Second, the anchor's authored
+component rotation is **~81.6 deg** off identity (2*acos(0.7581)).
+
+The old composition was `delta = qtc * conj(refQ_anchor)`, which gives
+`q_anchor = qtc` - it REPLACED the authored anchor frame with the raw controller
+rotation, throwing away the mesh's authored orientation. With the controller at rest
+the rig therefore sat ~81.6 deg off where the engine would have drawn it: the
+"~90+ deg constant offset" the user saw in the headset.
+
+The fix is not a baked constant but a corrected composition: **`delta = qtc`**, so
+`q_i = qtc * refQ_i` for every cluster bone. At rest (`qtc = identity`) the rig sits
+at exactly its authored pose; a controller rotated N deg from the view rotates the
+whole authored cluster by N deg. Self-calibrating per cluster, per weapon, per
+animation - no constants to bank, nothing to re-derive when the rig changes, and it
+is equivalent to a per-cluster bake of exactly `qBake = refQ_anchor`.
+
+### Plasmid names: `<X>BasicPlasmid` is Telekinesis-only
+
+A full UTF-16 scan of the exe finds **only three** `*BasicPlasmid` strings:
+`GotAllBasicPlasmid` and the two halves of the benchmark recipe's Telekinesis line.
+`ElectricBoltBasicPlasmid` / `IncinerationBasicPlasmid` do not exist - the F12 chain
+granted nothing and the HUD stayed on Telekinesis (verified by effect, twice, with
+EquipAbility keys tried). The bare class names that DO exist (`ElectricBolt`,
+`Incineration`, `InsectSwarmPlasmid`, plus `...Two`/`...Three` upgrade tiers) are
+ActivePlasmid classes, which session 39 already proved are not what
+testAddAvailablePlasmid wants. The item classes presumably live in the content
+packages (ContentBaked/pc), not the exe - that is where a future session should look.
+
+**Ability seam still unproven live**: with Telekinesis equipped and a grabbable
+object (`Trap Rivet`) at the crosshair, two left-trigger casts left `abi=0`.
+Session 39's hypothesis is confirmed - TK's pull does not traverse
+GetPerfectFireStart at all. The check needs a projectile plasmid, so it stays
+blocked on the item-name hunt above.
