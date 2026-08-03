@@ -97,16 +97,49 @@ verified by effect: icon + name on the HUD). So:
 7. Ride-alongs if time: pitch-servo sign (`vrinput pitchservo status` looking
    up/down), helmet key-3810 collateral in other maps.
 
-### Session 40 (planned, updated)
+### THE FIRST LOOK HAPPENED (same day) - user verdicts, and they reshape session 40
 
-1. input_drive port (fresh RVAs) -> controller locomotion/buttons; then the
-   BS1-parity bindings (LEFT thumbrest ammo modifier + RIGHT stick slots, grip
-   switch, native dual-wield trigger mapping - core behaviors ready).
-2. Bone-name map -> per-hand clusters (plasmid hand on the left controller).
-3. BS1-parity SLIDERS for aim + models on F10, preset persistence, PER-WEAPON AIM
-   PRESETS auto-swapping with the equipped weapon (session-21 seeding bugs are the
-   what-not-to-repeat reference).
-4. Ability-seam live check with a plasmid equipped.
+The user tested in the headset. **PASSED**: model view-locked (does not move with the
+head), model moves with the controller, aim moves with the controller. **FINDINGS**:
+
+1. **Aim vs model misaligned ~90+ deg** (tracks the controller, constant offset) -
+   zero model trims shipped; the anchor bone's authored frame needs a BAKED correction
+   + fine trims (BS1 needed the same calibration). The flat instruments never measured
+   MESH orientation (aimRayMaxDevDeg = laser vs ray; write-loc = position) - which is
+   exactly why this survived to the headset.
+2. **Model scale badly off; user wants a scale lever DECOUPLED from world scale** -
+   consistent with session 33's rig-size/fg-lens coupling (why the helmet is hidden).
+   The skeleton's per-bone SCALE channel renders (poke-proven this session): a
+   `vrhands scale` cluster multiplier is the clean fix, zero world-scale coupling.
+3. **Bullet leaves the HEAD, lands where the laser points** - correct read: only the
+   DIRECTION is substituted this session; enable the origin substitution
+   (BS1-parity `vraim origin on`, outLoc/outEffect from the hand-ray origin).
+4. **Two dots seen** - the laser's 6 m end dot + the fixed-3 m aim dot; the dot does
+   not clamp to the hit surface yet. Needs the distance slider / surface semantics.
+5. **Left hand**: mesh still rides the right controller (known), and there is NO left
+   LASER (core renders one laser; needs a small additive core extension or an
+   active-hand swap policy).
+6. **Wants all/shooting plasmids** (Telekinesis equipped fine); ElectricBolt/
+   Incinerate item names to verify by effect (`<Name>BasicPlasmid` convention).
+7. **Wants controller-driven controls NEXT** - "to basically test everything from the
+   controller without having to use the mouse".
+
+### Session 40 (REORDERED per the user's first look)
+
+1. **input_drive port** (fresh RVAs: UpdateInput-per-present + SetUseController +
+   IAT hijack) -> controller locomotion/buttons/triggers; then the BS1-parity
+   bindings (thumbrest ammo modifier, grip switch, dual-wield triggers - core
+   behaviors ready and reachable via `vrinput`).
+2. **Model alignment + scale**: bake the anchor-frame correction, `vrhands trim`
+   fine-tune via F10 SLIDERS (in-headset controls, not commands), and the
+   decoupled `vrhands scale` cluster-scale lever. Then the origin substitution
+   (`vraim origin on`) so bullets leave the hand.
+3. **Left hand**: bone-name map -> per-hand clusters (left mesh on left controller);
+   left LASER (additive core extension or active-hand swap).
+4. Aim-dot polish (distance slider / hit-surface clamp), plasmid pack
+   (ElectricBoltBasicPlasmid etc., verify by effect), ability-seam live cast check.
+5. Preset persistence for all new levers; per-weapon aim presets (session-21 seeding
+   bugs = what not to repeat).
 
 Standing: BS1 regression testing stays deferred to the END of BS2 development (user
 decision 2026-08-02). Core diff this session: ZERO (everything rode existing public
