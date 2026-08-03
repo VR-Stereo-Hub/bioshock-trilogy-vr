@@ -5,6 +5,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/aim.h"
 #include "game/bioshock2r/camera.h"
+#include "game/bioshock2r/hands.h"
 #include "game/bioshock2r/patterns.h"
 #include "game/bioshock2r/scenedraw.h"
 
@@ -22,6 +23,9 @@ uint32_t Bioshock2RAdapter::capabilities() const {
     // CAP_AIM_OVERRIDE since session 39: both GetPerfectFireStart impls
     // hooked (identity-gated in patterns::resolve_gpfs_impls).
     if (aim::hook_live()) caps |= game::CAP_AIM_OVERRIDE;
+    // CAP_HANDS_ATTACH since session 39: the bone drive is armed (the rig
+    // itself resolves lazily at the first gameplay frame).
+    if (hands::enabled()) caps |= game::CAP_HANDS_ATTACH;
     return caps;
 }
 

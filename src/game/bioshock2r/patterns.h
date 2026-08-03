@@ -400,6 +400,41 @@ constexpr uint8_t kAbilityGpfsPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC,
 // AWeapon 0x1113DCC, APlayerMeleeWeapon 0x112EF08, UAttackAbility 0x1112A18,
 // UProjectileAttackAbility 0x1112B60.
 
+// --- the AHands rig (session 39, live-derived at the save) ------------------
+// AHands vtable heap scan (vtscan 1125478): ONE live object + two stack false
+// positives (the documented shape). Its layout, read off the live dump:
+// - actor location floats at +0x1EC/+0x1F0/+0x1F4 and rotation ints at
+//   +0x1F8/+0x1FC/+0x200 (the standard AActor offsets this game's camera
+//   probe already documented), live values == the pawn/camera pose.
+// - **SkeletonInstance pointer at +0x430** (BS1's +0x3FC does NOT transfer):
+//   the pointed object's dword0 == base+0x10D0FC0 (the SkeletonInstance
+//   vtable) and its +0x04 points BACK at the AHands actor - vtable AND owner
+//   backpointer, a two-factor identity no false positive passes.
+// SkeletonInstance layout (live dump):
+// - +0x04 owner (AHands), +0x08 SharedSkeletonData (bone-name map for later),
+// - +0x44: {data, count, max} array of 64 bone transforms, 48-byte stride =
+//   hkQsTransform {translation vec4, rotation quat xyzw, scale vec4}. Entry 0
+//   read (0,0,-48|50) t, (0,0,-0.7071,0.7071) q, ~1.0 scale - unit quats and
+//   plausible component-space translations throughout.
+// - +0x50: a second {data,64,64} array, 48-byte stride, entries LED BY A
+//   POINTER - per-bone records, not the pose; recorded, unconsumed.
+// PROOF BY POKE: writing entry translations/scales in the +0x44 bank visibly
+// deformed the held rivet gun (localized img-diff, bbox on the viewmodel).
+// This bank IS the rendered skeleton. Scale pokes persisted across frames
+// (animation restamps translation/rotation, not scale); production writes
+// land per-CalcView regardless.
+constexpr uint32_t kAHandsVtableRva = 0x1125478;       // RTTI s24, consumed s39
+constexpr uint32_t kSkeletonInstanceVtableRva = 0x10D0FC0;
+constexpr uint32_t kAHandsSkelInstOffset = 0x430;      // AHands -> SkeletonInstance*
+constexpr uint32_t kAHandsActorLocOffset = 0x1EC;      // 3 floats
+constexpr uint32_t kAHandsActorRotOffset = 0x1F8;      // 3 int32 rotator units
+constexpr uint32_t kSkelOwnerOffset = 0x4;             // SkeletonInstance -> AHands*
+constexpr uint32_t kSkelPoseArrayOffset = 0x44;        // {data, count, max}
+constexpr uint32_t kSkelPoseStride = 0x30;             // hkQsTransform
+constexpr uint32_t kSkelPoseTransOffset = 0x0;         // vec4
+constexpr uint32_t kSkelPoseQuatOffset = 0x10;         // xyzw
+constexpr uint32_t kSkelPoseScaleOffset = 0x20;        // vec4
+
 struct GpfsImpls {
     void* weapon = nullptr;   // null = identity gate failed, seam refused
     void* ability = nullptr;

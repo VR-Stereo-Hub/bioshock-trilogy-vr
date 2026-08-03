@@ -17,8 +17,10 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/aim.h"
+#include "game/bioshock2r/bones.h"
 #include "game/bioshock2r/frame_context.h"
 #include "game/bioshock2r/game_ini.h"
+#include "game/bioshock2r/hands.h"
 #include "game/bioshock2r/scenedraw.h"
 #include "game/shared/ue_math.h"
 
@@ -692,6 +694,11 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //                                decal-proof lane) plus the dispatch probe
 //                                (fire-watch + GNames census) that settled
 //                                the by-name-vs-impl question.
+//   vrhands on|off|status|trim <p> <y> <r>|offset <f> <r> <u>|pose aim|grip
+//                                the rig rides the RIGHT controller through
+//                                the same frame context the ray uses
+//   vrbones status|cluster <lo> <hi> <anchor>|refcap|release
+//                                the bone-drive mechanism's own levers
 
 void save_vr_preset();
 void apply_vr_preset();
@@ -1186,6 +1193,10 @@ void apply_command(const char* cmd, const char* args) {
                                                               : "vrstereo off");
     } else if (strcmp(cmd, "vraim") == 0) {
         aim::handle_command(args); // session 39: dispatch probe first, seam after
+    } else if (strcmp(cmd, "vrhands") == 0) {
+        hands::handle_command(args); // session 39: rig rides the right controller
+    } else if (strcmp(cmd, "vrbones") == 0) {
+        bones::handle_command(args); // session 39: the mechanism's own levers
     } else {
         BVR_LOG("[b2r] unknown command: %s (see the vocabulary comment in camera.cpp; "
                 "BS1-only levers like exec are not ported)",
@@ -1401,8 +1412,10 @@ void calcview_tail(void* self, CalcViewParams* p) {
             BVR_LOG("[b2r] view state: %s",
                     strictGameplay ? "GAMEPLAY (ShockPlayer view)" : "menu/cutscene");
             // A view-state change is the cheap signal that the object world
-            // changed under us - the moment to retry a dormant settings scan.
+            // changed under us - the moment to retry a dormant settings scan,
+            // and to drop the bone rig's cached pointers (session 39).
             patterns::hfov_scan_rearm("view state change");
+            bones::on_world_change("view state change");
         }
     }
 
@@ -1582,8 +1595,10 @@ void calcview_tail(void* self, CalcViewParams* p) {
     // The aim seam's frame (pass 1 only by construction - pass 2 routes through
     // second_pass_replay). on_calcview builds this frame's hand rays and
     // publishes the laser + aim dot; the test ray and the hand ray both
-    // substitute against fc's transform.
+    // substitute against fc's transform. hands runs LAST (BS1 ordering): the
+    // model write must never precede the ray build it has to agree with.
     aim::on_calcview(fc, strictGameplay);
+    hands::on_calcview(fc, strictGameplay);
 
     // FOV write (session 25, BS1 write-block shape): strict gameplay only,
     // VR wants it only while the HMD actually drives, manual lever for flat
@@ -1883,10 +1898,15 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
     if (fn && parms && fn == g_calcViewFn.load(std::memory_order_relaxed)) {
         auto* p = static_cast<CalcViewParams*>(parms);
         float yawDeg = 0.0f;
-        if (scenedraw::second_pass_for_current_thread(&yawDeg))
+        if (scenedraw::second_pass_for_current_thread(&yawDeg)) {
             second_pass_replay(p, yawDeg);
-        else
+            // The second engine CalcView may re-evaluate the skeleton over the
+            // pass-1 bone write; repaint it so both eyes render the driven
+            // hands (BS1's live-proven shape; cheap memcpy, no-op when idle).
+            bones::reapply();
+        } else {
             calcview_tail(self, p);
+        }
     }
 }
 
