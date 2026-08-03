@@ -112,6 +112,12 @@ let 1t idle) BEFORE the engine frees the scene.
    weapon's fire direction, can the aim decouple from the view like BS1's M6, and what do the
    laser/aim-dot quad layers need. The sim's `aimRayMaxDevDeg` + `coupling-hand.xrs` lane is
    the flat instrument.
+   ALSO (user's point, 2026-08-03): run `coupling-viewmodel.xrs` on BS2 - the capture-based
+   "does the viewmodel stay view-locked under a head sweep" check. It is the PICTURE-level
+   complement to the session-37 lens-cluster instrument: cluster equality proves the LENS,
+   not the POSE - a transform/attachment bug would pass the dumps and fail the pictures.
+   Needs the save (a weapon in frame), a LIT area, and coverage/bbox reading, not headline
+   diff numbers (the session-34 dark-scene trap; BS1 baselines in VERIFICATION 2.8).
 3. Ride-alongs when headset time happens anyway: the pitch-servo sign check (`vrinput
    pitchservo status` while looking up/down), helmet key-3810 collateral watch in other maps.
 4. Pacing-epic residue unchanged (keepalives with real layers). BS1 regression testing stays
