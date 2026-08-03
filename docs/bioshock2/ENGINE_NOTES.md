@@ -1930,3 +1930,58 @@ object (`Trap Rivet`) at the crosshair, two left-trigger casts left `abi=0`.
 Session 39's hypothesis is confirmed - TK's pull does not traverse
 GetPerfectFireStart at all. The check needs a projectile plasmid, so it stays
 blocked on the item-name hunt above.
+
+### Boot 2/3 verdicts (2026-08-04): the split, the fix, and the numbers
+
+**Per-hand decoupling: EXACT.** Each cluster reports its own write location, and moving one
+controller moves only its own cluster:
+
+| stimulus | left cluster | right cluster |
+|---|---|---|
+| hands 1.2 m apart | separation **120.0 UU** (100 UU/m, exact) | - |
+| LEFT hand +0.35 m up | **35.0 UU** | **0.0 UU** |
+| RIGHT hand +0.35 m up | **0.0 UU** | **35.0 UU** |
+
+**THE COMPOSITION FIX, MEASURED.** `vrbones axes 63` reports the angle between the anchor's
+driven rotation and its authored (reference) rotation. At the rest pose - controller aiming
+where the view aims - that angle is now **0.21 deg**, against the **~81.6 deg** the old
+composition baked in (the anchor's own authored rotation, which it was discarding). The rig
+sits exactly where the engine drew it and turns from there. Controller yaw steps rotate the
+mesh consistently (38.85 deg then 38.88 deg for two 30 deg steps - the angle differs from 30
+because this save's view is pitched 65.6 deg down, so an XR yaw maps into a game rotation of
+a different magnitude; the two steps agreeing to 0.03 deg is the property that matters).
+
+**Scale**: `vrhands scale 2.0` left the anchor write-loc **unchanged to 0.00 UU on both
+hands** while visibly changing the model (13/144 grid cells, max channel diff 255). It scales
+about the anchor, and it is completely independent of worldscale.
+
+**Origin substitution**: a synthetic trigger logged
+`aim origin (hand 1): loc (-42259.0 -13396.2 -3968.8) -> (-42310.8 -13380.6 -3998.8),
+displacement 61.9 UU` - the shot now starts at the hand, same family as BS1's measured
+40-47 UU. The clamp (200 UU) never fired.
+
+**Dual lasers + dual dots render**: 11 compositor layers at every station (1 projection +
+4+4 laser dots + 2 aim dots), against the 16 a runtime must accept. The beams terminate at
+the aim-dot distance so each hand shows ONE bright point (the first look's "two dots").
+
+**Preset persistence**: `vrpreset save` wrote 14 new per-hand keys; a fresh boot logged
+**22 value(s) loaded** (was 8). Note `vrpreset` with no argument ARMS the VR config, it does
+not reload the ini - the load happens once at startup, so an in-session round-trip test has
+to relaunch.
+
+**INSTRUMENT GAP (record this)**: `derived.aimRayMaxDevDeg` assumes ONE laser. With both
+beams live it reads 47-75 deg and varies, which looks exactly like an aim/model decoupling
+regression and is not one: turning the left beam and dot off returns it to **0.0000**, the
+session-39 baseline, at the same controller pose. The metric needs a per-hand version before
+it can be an acceptance number on BS2 again; until then, run it single-beam.
+
+**Latent bug found and fixed** (predates session 40): `vrhands offset ...` was swallowed by
+the `strncmp(args, "off", 3)` verb check, so every offset command silently DISABLED the hands
+instead - which is why the preset kept saving zeros for the offsets. Verb matching is now
+whole-token (`is_verb`). The class is worth remembering: prefix-matched command verbs where
+one verb is a prefix of another.
+
+**Pad menu navigation works** (the ProcessEvent pump site earns its keep - BS2's menu never
+runs CalcView): dpad up/down moved the main-menu highlight, and the 2K-account prompt
+rendered a **Y button glyph**. Menu ACTIVATION is not on the pad's A button, though - A did
+not trigger the highlighted item; keyboard Enter did. Worth chasing if pad-only menus matter.

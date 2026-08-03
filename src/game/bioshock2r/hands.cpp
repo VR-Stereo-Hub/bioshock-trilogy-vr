@@ -36,6 +36,17 @@ int hand_arg(const char* s) {
     return (s && (*s == 'l' || *s == 'L')) ? 0 : 1;
 }
 
+// Whole-token match. `strncmp(args, "off", 3)` also accepts "offset", which is
+// exactly what it did before session 40: every `vrhands offset ...` silently
+// DISABLED the hands instead of setting an offset (found by the preset
+// round-trip - the ini kept saving zeros).
+bool is_verb(const char* args, const char* verb) {
+    size_t n = strlen(verb);
+    if (strncmp(args, verb, n) != 0) return false;
+    char t = args[n];
+    return t == '\0' || t == ' ' || t == '\n' || t == '\r' || t == '\t';
+}
+
 } // namespace
 
 void on_calcview(const FrameContext& ctx, bool strictGameplay) {
@@ -103,19 +114,19 @@ void set_offset(int h, float f, float r, float u) {
 bool handle_command(const char* args) {
     float a = 0.0f, b = 0.0f, c = 0.0f;
     char side[8] = {};
-    if (strncmp(args, "on", 2) == 0 && (args[2] == '\0' || args[2] == '\n' || args[2] == ' ')) {
+    if (is_verb(args, "on")) {
         g_enabled.store(true, std::memory_order_relaxed);
         BVR_LOG("[b2r] command: vrhands on (left cluster -> left controller, "
                 "right cluster + weapon -> right)");
         return true;
     }
-    if (strncmp(args, "off", 3) == 0) {
+    if (is_verb(args, "off")) {
         g_enabled.store(false, std::memory_order_relaxed);
         bones::release("vrhands off", -1);
         BVR_LOG("[b2r] command: vrhands off");
         return true;
     }
-    if (strncmp(args, "status", 6) == 0 || *args == '\0') {
+    if (is_verb(args, "status") || *args == '\0') {
         BVR_LOG("[b2r] vrhands status: %s pose %s",
                 g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip");
