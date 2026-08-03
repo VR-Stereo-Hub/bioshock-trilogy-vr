@@ -35,7 +35,10 @@ AbilityGpfsFn g_origAbilityGpfs = nullptr;
 std::atomic<bool> g_hookLive{false};
 
 // Substitution controls (game thread applies; command seam writes).
-std::atomic<bool> g_aimEnabled{false};   // master (`vraim on|off`)
+// DEFAULT ON since the session-39 wrap (user request, first-look build): every
+// gate below still requires strict gameplay + the HMD driving + a fresh
+// tracked ray, so the defaults are inert flat and only bite in the headset.
+std::atomic<bool> g_aimEnabled{true};    // master (`vraim on|off`)
 std::atomic<bool> g_seamWeapon{true};    // per-seam gates (`vraim seam ...`)
 std::atomic<bool> g_seamAbility{true};
 
@@ -64,10 +67,12 @@ struct HandRay {
 };
 HandRay g_ray[2]; // game thread only; 0 = left (plasmid), 1 = right (weapon)
 
-std::atomic<bool> g_handRayOn{false};   // `vrhandray on` - XR poses drive the seam
+// DEFAULT ON since the session-39 wrap (user request): all inert without a
+// live tracked controller in strict gameplay.
+std::atomic<bool> g_handRayOn{true};    // `vraim handray` - XR poses drive the seam
 std::atomic<bool> g_useAimPose{true};   // aim pose (runtime ray) vs grip pose
-std::atomic<bool> g_laserOn{false};
-std::atomic<bool> g_dotOn{false};
+std::atomic<bool> g_laserOn{true};
+std::atomic<bool> g_dotOn{true};
 std::atomic<float> g_dotDistM{3.0f};
 std::atomic<int> g_laserHand{1};
 // Per-hand trims (degrees) and ray-origin offsets (cm), BS1's tuning surface.

@@ -14,7 +14,9 @@
 namespace bvr::b2r::hands {
 namespace {
 
-std::atomic<bool> g_enabled{false};
+// DEFAULT ON since the session-39 wrap (user request, first-look build):
+// inert without strict gameplay + the HMD driving + a tracked right hand.
+std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_useAimPose{true}; // aim pose default: the barrel agrees with the ray
 // Model trims (deg) and grip offset (cm), the tuning surface. Applied in the
 // controller's LOCAL frame (model_pose_from_xr) / the final trimmed basis.

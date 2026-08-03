@@ -72,20 +72,30 @@ self-heal all observed live this session).
   ability seam is hooked and identity-verified but its live substitution path is
   untested; first plasmid-equipped session covers it.
 
-### USER CHECKLIST (headset, when BS2 time happens)
+### USER CHECKLIST (headset first look; everything pre-armed for you)
 
-1. Load the save, `vrstereo on` (or preset), then: **`vraim handray on`, `vraim laser
-   on`, `vraim dot on`, `vraim on`, `vrhands on`** (F10 toggles come session 40).
-2. Point the right controller somewhere off-view and FIRE (F9 first for weapons):
-   impacts should follow the controller, the laser should sit on the impact point,
-   the dot on the surface the ray hits.
-3. The drill/weapon model should ride the controller (rotation + translation), and
-   the laser should stay glued to it - the +-90 deg drift class from BS1 session 21
-   must NOT appear (if it does, say so - the no-lock composition is the suspect).
-4. Ride-alongs if time: pitch-servo sign (`vrinput pitchservo status` looking
+Wrap-up round (same day, user request): **all the aim/hands toggles now DEFAULT ON**
+(handray, laser, dot, substitution, hands - inert until the HMD drives gameplay), and
+**F12 = grant + equip Telekinesis** in one press (the dev's own benchmark recipe,
+verified by effect: icon + name on the HUD). So:
+
+1. Load the save, `vrstereo on`, headset on. That is the whole setup.
+2. **F9** = all weapons + ammo; **1-8** switch weapons; **F12** = Telekinesis
+   granted AND equipped (left hand). Space through the tutorial popups - they eat
+   clicks while open.
+3. Point the right controller off-view and FIRE (LMB or trigger... LMB for now):
+   impacts follow the controller, laser on the impact, dot on the hit surface.
+4. The weapon model rides the right controller - check it feels in tune with the
+   laser (the +-90 deg drift class from BS1 session 21 must NOT appear; if anything
+   swims, say so).
+5. Cast Telekinesis with RMB at objects/enemies - does the CAST follow the LEFT
+   controller? (The left-hand ray is live; the ability seam's live substitution is
+   the one unverified link - your cast settles it.)
+6. KNOWN: controllers do NOT drive movement/buttons yet (input_drive port is session
+   40 P1) - kb/m for locomotion. The left-hand MESH also still rides the right
+   controller (per-hand cluster split is session 40); only its AIM is its own.
+7. Ride-alongs if time: pitch-servo sign (`vrinput pitchservo status` looking
    up/down), helmet key-3810 collateral in other maps.
-5. KNOWN: controllers do NOT drive movement/buttons yet (engine ignores the pad until
-   session 40's input_drive port) - play kb/m for locomotion this round.
 
 ### Session 40 (planned, updated)
 

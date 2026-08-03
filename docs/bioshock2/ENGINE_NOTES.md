@@ -1696,10 +1696,35 @@ session-40 lane since all of it needs the engine consuming the pad.
 `F9=GiveAll` bound in User.ini `[Default]` (line 248; backup
 `User.ini.bvr-bak-cheatkeys`) + `game-key -Scan 0x43` = "You got SPECIAL AMMO!"
 tutorial popups, 999/999 ammo counters, and the full weapon complement - verified by
-effect. F12=`GiveWeapon Weapons.PlayerMachineGun` also bound (untested, GiveAll made
-it moot). **Weapon switching flat = the digit keys** (`EquipWeapon1..8` in [Default];
+effect. **Weapon switching flat = the digit keys** (`EquipWeapon1..8` in [Default];
 scancode 0x02+n) - Rivet Gun equipped via "2" with 987 spare rivets; no weapon wheel,
 no `exec NextWeapon` fault trap. Firing flat = mouse buttons (LeftMouse=Fire,
 RightMouse=AltFire; game-click's mouse_event reaches gameplay fine - the raw-input
 cursor problem is a MENU problem). MiddleMouse=AmmoSelectionUp is the ammo-cycle
 input (the thumbrest modifier's future target).
+
+### Plasmid cheats: the dev's own recipe, found in the exe (wrap-up round)
+
+The community ladder's `GiveItem Plasmids...` and a bare `EquipPlasmid` bind fail
+silently. The working recipe came from the exe's OWN benchmark script (UTF-16 strings
+at ~RVA 0x1202400, beside `AD_BENCHMARK`):
+
+    testAddAvailablePlasmid TelekinesisBasicPlasmid
+    TestEquipPlasmid TelekinesisBasicPlasmid
+
+- **`TestEquipPlasmid <Name>BasicPlasmid` is the equip command** (the `EquipPlasmid`
+  native is not bind-callable) and the argument is the ITEM class
+  (`<Plasmid>BasicPlasmid`), NOT the ActivePlasmid class.
+- Both chained on ONE key work: `F12=testAddAvailablePlasmid TelekinesisBasicPlasmid |
+  TestEquipPlasmid TelekinesisBasicPlasmid` ([Default] only) - one press put the
+  "Telekinesis" icon + name on the HUD, VERIFIED BY EFFECT. The earlier attempt with
+  the ActivePlasmid class name (`ElectricBolt`) RAN (census: TestAddAvailablePlasmid
+  hits=1 - keybind script functions are PE-visible) but granted nothing equippable.
+  `ElectricBoltBasicPlasmid` is the session-40 candidate for the bolt; verify by
+  effect before trusting the name.
+- The ability seam did NOT fire on RMB with Telekinesis equipped at the save: the
+  fresh save's TUTORIAL QUEUE keeps popping panels that eat mouse clicks (drain fully
+  before any click-driven oracle), and TK's empty-handed pull may not traverse
+  GetPerfectFireStart at all (nothing grabbable at the crosshair; the damage arc rides
+  the THROW). The live ability-substitution check stays queued for a cast at a real
+  target - session 40, or the user's headset run settles it for free.
