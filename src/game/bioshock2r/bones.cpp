@@ -8,6 +8,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -35,18 +36,34 @@ bool g_scanDormant = false;
 float g_ref[kMaxBones][12];
 bool g_refValid = false;
 
-// Cluster: [lo, hi] driven rigidly about the anchor. Default = the whole
-// rig from one controller until the per-hand name split lands (session 40).
-int g_clusterLo = 0;
-int g_clusterHi = 63;
-int g_anchor = 0;
+// Bone names (diagnostic; see the name-map section below).
+char g_boneNames[kMaxBones][48];
+bool g_namesValid = false;
+int g_nameMapOffset = -1; // -1 = not yet detected
 
-// Last write, for reapply + telemetry.
+// Clusters (session 40): per hand, a contiguous [lo, hi] range PLUS one extra
+// bone - the hand-pivot target the weapon/plasmid actually renders from, which
+// sits at the end of the rig rather than beside the fingers. Derived from the
+// live bone-name map (ENGINE_NOTES session 40): left = wrist 7 + fingers 8..28
+// + pivot 62, right = wrist 36 + fingers 37..57 + pivot 63. The anchor is the
+// bone the attachment renders from (BS1's rule, re-derived here by driving
+// bone 63 alone and watching the weapon move).
+struct Cluster {
+    int lo, hi, extra, anchor;
+};
+Cluster g_cluster[2] = {
+    {7, 28, 62, 7},   // left / plasmid hand
+    {36, 57, 63, 63}, // right / weapon hand
+};
+std::atomic<float> g_scale[2] = {{1.0f}, {1.0f}};
+
+// Last write per cluster, for reapply + telemetry.
 float g_written[kMaxBones][12];
-int g_writtenLo = -1, g_writtenHi = -1;
-uint64_t g_writeStampMs = 0;
-float g_lastWriteLoc[3] = {};
-uint32_t g_driveCount = 0;
+int g_writtenLo[2] = {-1, -1}, g_writtenHi[2] = {-1, -1};
+int g_writtenExtra[2] = {-1, -1};
+uint64_t g_writeStampMs[2] = {};
+float g_lastWriteLoc[2][3] = {};
+uint32_t g_driveCount[2] = {};
 
 const uint8_t* g_imageBase = nullptr;
 
@@ -74,7 +91,11 @@ void drop(const char* why) {
     g_pose = nullptr;
     g_boneCount = 0;
     g_refValid = false;
-    g_writtenLo = g_writtenHi = -1;
+    for (int h = 0; h < 2; ++h) {
+        g_writtenLo[h] = g_writtenHi[h] = -1;
+        g_writtenExtra[h] = -1;
+    }
+    g_namesValid = false;
 }
 
 // Revalidate the cached rig or (rate-limited, dormancy-guarded) rescan.
@@ -145,10 +166,7 @@ bool capture_reference() {
 // +0x00, buckets int32* at +0xC, power-of-two count at +0x10, 16-byte pairs
 // {next, fnameIdx, fnameNum, boneIndex}), its offset does not (patterns.h).
 // Diagnostic only - the drive never reads names (BS1 rule: clusters are baked
-// index ranges; the map exists to DERIVE them).
-char g_boneNames[kMaxBones][48];
-bool g_namesValid = false;
-int g_nameMapOffset = -1; // -1 = not yet detected
+// index ranges; the map exists to DERIVE them). State declared at the top.
 
 // SEH-guarded read: the map candidates walk unproven heap pointers.
 bool read_n(const void* src, void* dst, size_t n) {
@@ -320,13 +338,16 @@ void rot_to_quat(const FRotator& r, float q[4]) { ue_rot_to_quat(r, q); }
 
 } // namespace
 
-bool drive(const FrameContext& ctx, const GamePose& target) {
+bool drive(const FrameContext& ctx, const GamePose& target, int hand) {
+    if (hand < 0 || hand > 1) return false;
     if (!resolve_rig()) return false;
     if (!g_refValid && !capture_reference()) return false;
-    int lo = g_clusterLo, hi = g_clusterHi, anchor = g_anchor;
+    const Cluster& cl = g_cluster[hand];
+    int lo = cl.lo, hi = cl.hi, extra = cl.extra, anchor = cl.anchor;
     if (lo < 0) lo = 0;
     if (hi >= g_boneCount) hi = g_boneCount - 1;
-    if (anchor < lo || anchor > hi) anchor = lo;
+    if (extra >= g_boneCount) extra = -1;
+    if (anchor < 0 || anchor >= g_boneCount) anchor = lo;
 
     // Actor transform (the bones are component-space, relative to the actor).
     if (!is_memory_valid(g_hands + patterns::kAHandsActorLocOffset, 0x18)) {
@@ -357,19 +378,31 @@ bool drive(const FrameContext& ctx, const GamePose& target) {
     float d2 = rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2];
     if (d2 > 500.0f * 500.0f) return false;
 
-    // Rigid map: delta = qtc * conj(refQ_anchor); each cluster bone gets
-    // rot_i = delta * refQ_i, pos_i = ptc + delta * (refP_i - refP_anchor).
+    // THE COMPOSITION (session 40 - this is the ~90 deg fix).
+    //
+    // delta = qtc, NOT qtc * conj(refQ_anchor). The old form made the anchor's
+    // rotation become the controller's outright, discarding the mesh's authored
+    // frame - on this rig the anchor's authored rotation is ~81.6 deg off the
+    // view frame, which IS the constant offset the first look reported. Keeping
+    // the authored rotations and rotating them by the controller's rotation
+    // RELATIVE TO THE ACTOR (which carries the view rotation) means a controller
+    // aiming where the view aims reproduces the engine's own pose exactly, and
+    // any controller rotation away from it turns the cluster by that much.
+    // Equivalent to a per-cluster bake of exactly refQ_anchor, but self-deriving:
+    // nothing to re-bank when a weapon, animation or rig changes.
     // (hkQsTransform: translation at [0..3], quat at [4..7], scale [8..11].)
     const float* refA = g_ref[anchor];
-    float refQaInv[4];
-    bvr::xrmath::quat_conj(&refA[4], refQaInv);
-    float delta[4];
-    bvr::xrmath::quat_mul(qtc, refQaInv, delta);
+    const float* delta = qtc;
+    float scale = g_scale[hand].load(std::memory_order_relaxed);
+    if (!(scale > 0.05f && scale < 20.0f)) scale = 1.0f;
 
-    for (int i = lo; i <= hi; ++i) {
+    auto write_bone = [&](int i) {
         const float* r = g_ref[i];
         float* w = g_written[i];
-        float dp[3] = {r[0] - refA[0], r[1] - refA[1], r[2] - refA[2]};
+        // Anchor-relative offset, scaled so the cluster grows about its
+        // anchor instead of only thickening bones in place.
+        float dp[3] = {(r[0] - refA[0]) * scale, (r[1] - refA[1]) * scale,
+                       (r[2] - refA[2]) * scale};
         float rp[3];
         bvr::xrmath::quat_rotate(delta[0], delta[1], delta[2], delta[3], dp, rp);
         w[0] = ptc[0] + rp[0];
@@ -377,39 +410,75 @@ bool drive(const FrameContext& ctx, const GamePose& target) {
         w[2] = ptc[2] + rp[2];
         w[3] = r[3];
         bvr::xrmath::quat_mul(delta, &r[4], &w[4]);
-        w[8] = r[8];
-        w[9] = r[9];
-        w[10] = r[10];
+        // Scale channel: poke-proven to render, and animation never restamps
+        // it (patterns.h "the AHands rig").
+        w[8] = r[8] * scale;
+        w[9] = r[9] * scale;
+        w[10] = r[10] * scale;
         w[11] = r[11];
         memcpy(g_pose + i * patterns::kSkelPoseStride, w, 48);
-    }
-    g_writtenLo = lo;
-    g_writtenHi = hi;
-    g_writeStampMs = GetTickCount64();
-    g_lastWriteLoc[0] = target.loc.x;
-    g_lastWriteLoc[1] = target.loc.y;
-    g_lastWriteLoc[2] = target.loc.z;
-    ++g_driveCount;
+    };
+
+    for (int i = lo; i <= hi; ++i) write_bone(i);
+    if (extra >= 0) write_bone(extra);
+
+    g_writtenLo[hand] = lo;
+    g_writtenHi[hand] = hi;
+    g_writtenExtra[hand] = extra;
+    g_writeStampMs[hand] = GetTickCount64();
+    g_lastWriteLoc[hand][0] = target.loc.x;
+    g_lastWriteLoc[hand][1] = target.loc.y;
+    g_lastWriteLoc[hand][2] = target.loc.z;
+    ++g_driveCount[hand];
     return true;
 }
 
 void reapply() {
-    if (g_writtenLo < 0 || !g_pose) return;
-    if (GetTickCount64() - g_writeStampMs > 100) return; // stale write, leave it
-    for (int i = g_writtenLo; i <= g_writtenHi; ++i)
-        memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
+    if (!g_pose) return;
+    uint64_t now = GetTickCount64();
+    for (int h = 0; h < 2; ++h) {
+        if (g_writtenLo[h] < 0) continue;
+        if (now - g_writeStampMs[h] > 100) continue; // stale write, leave it
+        for (int i = g_writtenLo[h]; i <= g_writtenHi[h]; ++i)
+            memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
+        if (g_writtenExtra[h] >= 0)
+            memcpy(g_pose + g_writtenExtra[h] * patterns::kSkelPoseStride,
+                   g_written[g_writtenExtra[h]], 48);
+    }
 }
 
-void release(const char* why) {
-    if (g_refValid && g_pose && g_writtenLo >= 0) {
-        // Hand the rig back: restore the captured reference once so the
-        // engine resumes from its own pose, not from our last write.
-        for (int i = 0; i < g_boneCount; ++i)
-            memcpy(g_pose + i * patterns::kSkelPoseStride, g_ref[i], 48);
-        BVR_LOG("[b2r] bones: released (%s) - reference restored", why);
+void release(const char* why, int hand) {
+    // Per-cluster restore: a left-hand release must not disturb a live right
+    // hand, so only the released cluster's own bones go back to reference.
+    bool any = false;
+    for (int h = 0; h < 2; ++h) {
+        if (hand >= 0 && h != hand) continue;
+        if (g_refValid && g_pose && g_writtenLo[h] >= 0) {
+            for (int i = g_writtenLo[h]; i <= g_writtenHi[h]; ++i)
+                memcpy(g_pose + i * patterns::kSkelPoseStride, g_ref[i], 48);
+            if (g_writtenExtra[h] >= 0)
+                memcpy(g_pose + g_writtenExtra[h] * patterns::kSkelPoseStride,
+                       g_ref[g_writtenExtra[h]], 48);
+            any = true;
+        }
+        g_writtenLo[h] = g_writtenHi[h] = -1;
+        g_writtenExtra[h] = -1;
     }
-    g_writtenLo = g_writtenHi = -1;
-    g_refValid = false; // recapture on the next drive
+    if (any)
+        BVR_LOG("[b2r] bones: released %s (%s) - reference restored",
+                hand < 0 ? "both clusters" : (hand ? "right" : "left"), why);
+    // Only a full release drops the reference: recapturing it while the other
+    // cluster is still driven would capture OUR pose as the new authored one.
+    if (hand < 0) g_refValid = false;
+}
+
+void set_scale(int hand, float scale) {
+    if (hand < 0 || hand > 1) return;
+    g_scale[hand].store(scale, std::memory_order_relaxed);
+}
+
+float scale_of(int hand) {
+    return (hand < 0 || hand > 1) ? 1.0f : g_scale[hand].load(std::memory_order_relaxed);
 }
 
 void on_world_change(const char* why) {
@@ -418,30 +487,38 @@ void on_world_change(const char* why) {
     g_scanMisses = 0;
 }
 
-bool last_write(float* x, float* y, float* z, uint64_t* ageMs) {
-    if (g_writtenLo < 0) return false;
-    if (x) *x = g_lastWriteLoc[0];
-    if (y) *y = g_lastWriteLoc[1];
-    if (z) *z = g_lastWriteLoc[2];
-    if (ageMs) *ageMs = GetTickCount64() - g_writeStampMs;
+bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs) {
+    if (hand < 0 || hand > 1 || g_writtenLo[hand] < 0) return false;
+    if (x) *x = g_lastWriteLoc[hand][0];
+    if (y) *y = g_lastWriteLoc[hand][1];
+    if (z) *z = g_lastWriteLoc[hand][2];
+    if (ageMs) *ageMs = GetTickCount64() - g_writeStampMs[hand];
     return true;
 }
 
 bool handle_command(const char* args) {
-    int lo = 0, hi = 0, anchor = 0;
+    int lo = 0, hi = 0, anchor = 0, extra = -1;
+    char side[8] = {};
     if (strncmp(args, "status", 6) == 0 || *args == '\0') {
-        BVR_LOG("[b2r] vrbones status: rig %s (%d bones), ref %s, cluster %d..%d "
-                "anchor %d, drives %u, last write (%.1f %.1f %.1f)",
+        BVR_LOG("[b2r] vrbones status: rig %s (%d bones), ref %s, names %s",
                 g_hands ? "RESOLVED" : "-", g_boneCount, g_refValid ? "captured" : "-",
-                g_clusterLo, g_clusterHi, g_anchor, g_driveCount, g_lastWriteLoc[0],
-                g_lastWriteLoc[1], g_lastWriteLoc[2]);
+                g_namesValid ? "mapped" : "-");
+        for (int h = 0; h < 2; ++h)
+            BVR_LOG("[b2r]   %s cluster %d..%d +%d anchor %d scale %.2f, drives %u, "
+                    "last write (%.1f %.1f %.1f)",
+                    h ? "R" : "L", g_cluster[h].lo, g_cluster[h].hi, g_cluster[h].extra,
+                    g_cluster[h].anchor, g_scale[h].load(std::memory_order_relaxed),
+                    g_driveCount[h], g_lastWriteLoc[h][0], g_lastWriteLoc[h][1],
+                    g_lastWriteLoc[h][2]);
         return true;
     }
-    if (sscanf_s(args, "cluster %d %d %d", &lo, &hi, &anchor) == 3) {
-        g_clusterLo = lo;
-        g_clusterHi = hi;
-        g_anchor = anchor;
-        BVR_LOG("[b2r] command: vrbones cluster %d..%d anchor %d", lo, hi, anchor);
+    // cluster l|r <lo> <hi> <anchor> [extra]
+    if (sscanf_s(args, "cluster %7s %d %d %d %d", side, (unsigned)sizeof side, &lo, &hi,
+                 &anchor, &extra) >= 4) {
+        int h = (side[0] == 'l' || side[0] == 'L') ? 0 : 1;
+        g_cluster[h] = {lo, hi, extra, anchor};
+        BVR_LOG("[b2r] command: vrbones cluster %s %d..%d +%d anchor %d",
+                h ? "r" : "l", lo, hi, extra, anchor);
         return true;
     }
     if (strncmp(args, "refcap", 6) == 0) {
@@ -486,7 +563,7 @@ bool handle_command(const char* args) {
         return true;
     }
     if (strncmp(args, "axes", 4) == 0) {
-        int idx = g_anchor;
+        int idx = g_cluster[1].anchor;
         sscanf_s(args, "axes %d", &idx);
         if (resolve_rig()) {
             if (!g_refValid) capture_reference();
@@ -497,8 +574,8 @@ bool handle_command(const char* args) {
         }
         return true;
     }
-    BVR_LOG("[b2r] vrbones: status | cluster <lo> <hi> <anchor> | refcap | release | "
-            "names | map | axes [idx]");
+    BVR_LOG("[b2r] vrbones: status | cluster l|r <lo> <hi> <anchor> [extra] | refcap | "
+            "release | names | map | axes [idx]");
     return true;
 }
 

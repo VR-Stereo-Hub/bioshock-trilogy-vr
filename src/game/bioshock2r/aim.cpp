@@ -74,7 +74,18 @@ std::atomic<bool> g_useAimPose{true};   // aim pose (runtime ray) vs grip pose
 std::atomic<bool> g_laserOn{true};
 std::atomic<bool> g_dotOn{true};
 std::atomic<float> g_dotDistM{3.0f};
-std::atomic<int> g_laserHand{1};
+// Session 40 (user decision): BS2 is natively dual-wield, so BOTH hands get a
+// laser and a dot at once - unlike BS1, where only one hand is ever active.
+// Per-hand enables; core's second slot is a BS2-only addition that leaves the
+// BS1 path byte-identical.
+std::atomic<bool> g_laserHandOn[2] = {{true}, {true}};
+std::atomic<bool> g_dotHandOn[2] = {{true}, {true}};
+// Bullet-origin substitution (BS1's `vraim origin on` parity): write the fire
+// start location from the hand ray so shots leave the HAND, not the head.
+// Default ON, with a displacement refusal BS1 never had.
+std::atomic<bool> g_handOrigin{true};
+std::atomic<float> g_originMaxUu{200.0f};
+std::atomic<uint32_t> g_originRefusals{0};
 // Per-hand trims (degrees) and ray-origin offsets (cm), BS1's tuning surface.
 std::atomic<float> g_trimPitch[2] = {{0.0f}, {0.0f}};
 std::atomic<float> g_trimYaw[2] = {{0.0f}, {0.0f}};
@@ -163,6 +174,40 @@ bool substituted_rot(FRotator* rot, int hand) {
     return true;
 }
 
+// Bullet ORIGIN substitution (session 40): move the fire start to the hand
+// ray's origin so the shot leaves the model, not the head. Runs only when the
+// rotator substitution already succeeded (same ray, same gates), and refuses
+// implausible displacements - BS1 shipped this with no clamp at all, and its
+// measured real displacement was 40-47 UU at worldScale 100, so 200 UU is a
+// wide-but-finite guard against a bad frame context writing a shot across the
+// map. On refusal the engine's own location stands (the original ran first).
+void substitute_origin(FVector* outLoc, FVector* outEffect, int hand) {
+    if (!outLoc) return;
+    if (!g_handOrigin.load(std::memory_order_relaxed)) return;
+    FVector origin{};
+    if (!ray_for(hand, &origin, nullptr)) return;
+    float dx = origin.x - outLoc->x, dy = origin.y - outLoc->y, dz = origin.z - outLoc->z;
+    float d = sqrtf(dx * dx + dy * dy + dz * dz);
+    float maxUu = g_originMaxUu.load(std::memory_order_relaxed);
+    if (d > maxUu) {
+        uint32_t n = g_originRefusals.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 3)
+            BVR_LOG("[b2r] aim origin REFUSED (hand %d): engine (%.1f %.1f %.1f) -> hand "
+                    "(%.1f %.1f %.1f) is %.1f UU > %.1f limit",
+                    hand, outLoc->x, outLoc->y, outLoc->z, origin.x, origin.y, origin.z, d,
+                    maxUu);
+        return;
+    }
+    if (g_subLogsLeft.load(std::memory_order_relaxed) > 0)
+        BVR_LOG("[b2r] aim origin (hand %d): loc (%.1f %.1f %.1f) -> (%.1f %.1f %.1f), "
+                "displacement %.1f UU",
+                hand, outLoc->x, outLoc->y, outLoc->z, origin.x, origin.y, origin.z, d);
+    *outLoc = origin;
+    // The effect (muzzle flash / tracer start) rides the same point, or the
+    // shot would visibly begin somewhere the bullet does not.
+    if (outEffect) *outEffect = origin;
+}
+
 int __fastcall WeaponGpfsDetour(void* self, void* edx, FVector* outLoc, FRotator* outRot,
                                 FVector* outEffect) {
     int r = g_origWeaponGpfs(self, edx, outLoc, outRot, outEffect);
@@ -178,8 +223,10 @@ int __fastcall WeaponGpfsDetour(void* self, void* edx, FVector* outLoc, FRotator
     // Weapons are the RIGHT hand (BS1's fallback; BS2's native dual-wield puts
     // the weapon in the right hand and the plasmid in the left).
     if (outRot && g_seamWeapon.load(std::memory_order_relaxed) &&
-        substituted_rot(outRot, 1))
+        substituted_rot(outRot, 1)) {
+        substitute_origin(outLoc, outEffect, 1);
         g_subs.fetch_add(1, std::memory_order_relaxed);
+    }
     return r;
 }
 
@@ -194,8 +241,10 @@ int __fastcall AbilityGpfsDetour(void* self, void* edx, void* tester, FVector* o
                 outRot->yaw, outRot->roll);
     // Abilities (plasmids) are the LEFT hand on BS2's native dual-wield.
     if (outRot && g_seamAbility.load(std::memory_order_relaxed) &&
-        substituted_rot(outRot, 0))
+        substituted_rot(outRot, 0)) {
+        substitute_origin(outLoc, outEffect, 0);
         g_subs.fetch_add(1, std::memory_order_relaxed);
+    }
     return r;
 }
 
@@ -372,8 +421,7 @@ void log_status() {
             g_testPitchDeg.load(std::memory_order_relaxed),
             static_cast<long long>(testLeft - now));
     BVR_LOG("[b2r]   rays: handray %s pose %s, L %s yaw %.1f pitch %.1f, R %s yaw %.1f "
-            "pitch %.1f; laser %s hand %d, dot %s %.1f m; trim R %.1f/%.1f origin R "
-            "%.1f/%.1f/%.1f",
+            "pitch %.1f; laser %s (L %s R %s), dot %s (L %s R %s) %.1f m",
             g_handRayOn.load(std::memory_order_relaxed) ? "ON" : "off",
             g_useAimPose.load(std::memory_order_relaxed) ? "aim" : "grip",
             g_rayValid[0].load(std::memory_order_relaxed) ? "valid" : "-",
@@ -383,14 +431,25 @@ void log_status() {
             g_lastRayYawDeg[1].load(std::memory_order_relaxed),
             g_lastRayPitchDeg[1].load(std::memory_order_relaxed),
             g_laserOn.load(std::memory_order_relaxed) ? "ON" : "off",
-            g_laserHand.load(std::memory_order_relaxed),
+            g_laserHandOn[0].load(std::memory_order_relaxed) ? "on" : "off",
+            g_laserHandOn[1].load(std::memory_order_relaxed) ? "on" : "off",
             g_dotOn.load(std::memory_order_relaxed) ? "ON" : "off",
-            g_dotDistM.load(std::memory_order_relaxed),
-            g_trimPitch[1].load(std::memory_order_relaxed),
-            g_trimYaw[1].load(std::memory_order_relaxed),
-            g_posFwdCm[1].load(std::memory_order_relaxed),
-            g_posRightCm[1].load(std::memory_order_relaxed),
-            g_posUpCm[1].load(std::memory_order_relaxed));
+            g_dotHandOn[0].load(std::memory_order_relaxed) ? "on" : "off",
+            g_dotHandOn[1].load(std::memory_order_relaxed) ? "on" : "off",
+            g_dotDistM.load(std::memory_order_relaxed));
+    for (int h = 0; h < 2; ++h)
+        BVR_LOG("[b2r]   %s tuning: trim %.1f/%.1f, ray pos %.1f/%.1f/%.1f cm",
+                h ? "R" : "L", g_trimPitch[h].load(std::memory_order_relaxed),
+                g_trimYaw[h].load(std::memory_order_relaxed),
+                g_posFwdCm[h].load(std::memory_order_relaxed),
+                g_posRightCm[h].load(std::memory_order_relaxed),
+                g_posUpCm[h].load(std::memory_order_relaxed));
+    BVR_LOG("[b2r]   origin substitution: %s (max %.0f UU, %u refusals) - shots leave "
+            "the %s",
+            g_handOrigin.load(std::memory_order_relaxed) ? "ON" : "off",
+            g_originMaxUu.load(std::memory_order_relaxed),
+            g_originRefusals.load(std::memory_order_relaxed),
+            g_handOrigin.load(std::memory_order_relaxed) ? "HAND" : "engine's own point");
 }
 
 void census_dump() {
@@ -490,48 +549,68 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
                                    std::memory_order_relaxed);
     }
 
-    // Publish the laser: core re-derives the ray render-side from the same
-    // hand pose and the same trims, so these fields MUST mirror the ray's.
-    int lh = g_laserHand.load(std::memory_order_relaxed);
-    bvr::vr::LaserConfig lc{};
-    lc.enabled = g_laserOn.load(std::memory_order_relaxed) && gate;
-    lc.hand = lh;
-    lc.pitchTrimDeg = g_trimPitch[lh].load(std::memory_order_relaxed);
-    lc.yawTrimDeg = g_trimYaw[lh].load(std::memory_order_relaxed);
-    lc.posFwdCm = g_posFwdCm[lh].load(std::memory_order_relaxed);
-    lc.posRightCm = g_posRightCm[lh].load(std::memory_order_relaxed);
-    lc.posUpCm = g_posUpCm[lh].load(std::memory_order_relaxed);
-    bvr::vr::set_laser(lc);
+    // Publish BOTH lasers and BOTH dots (session 40, the user's call): BS2 is
+    // natively dual-wield, so the weapon hand and the plasmid hand each get
+    // their own beam ending on their own dot. Core's slot 1 is an additive
+    // BS2-only lane; the shared dot budget means the layer count cannot grow
+    // past what one beam could already reach.
+    //
+    // Core re-derives each ray render-side from the same hand pose and the
+    // same trims, so these fields MUST mirror the ray's.
+    float dotDistM = g_dotDistM.load(std::memory_order_relaxed);
+    for (int h = 0; h < 2; ++h) {
+        int slot = (h == 1) ? 0 : 1; // right hand keeps slot 0 (BS1 parity)
+        bvr::vr::LaserConfig lc{};
+        lc.enabled = g_laserOn.load(std::memory_order_relaxed) &&
+                     g_laserHandOn[h].load(std::memory_order_relaxed) && gate;
+        lc.hand = h;
+        lc.pitchTrimDeg = g_trimPitch[h].load(std::memory_order_relaxed);
+        lc.yawTrimDeg = g_trimYaw[h].load(std::memory_order_relaxed);
+        lc.posFwdCm = g_posFwdCm[h].load(std::memory_order_relaxed);
+        lc.posRightCm = g_posRightCm[h].load(std::memory_order_relaxed);
+        lc.posUpCm = g_posUpCm[h].load(std::memory_order_relaxed);
+        // Four dots per hand: two beams share core's 8-quad budget.
+        lc.dots = 4;
+        // The beam ENDS on the aim dot instead of running past it. The first
+        // look reported "two dots" - the beam's 6 m end dot and the fixed 3 m
+        // aim dot sitting apart. One bright point per hand now.
+        lc.farM = dotDistM;
+        bvr::vr::set_laser_slot(slot, lc);
 
-    // Publish the aim dot FROM the final game-space ray (core's design note:
-    // the dot is the point the shot starts from, mapped back into XR, so
-    // "dot == shot" is exact rather than congruent).
-    bvr::vr::AimDotConfig dc{};
-    dc.enabled = g_dotOn.load(std::memory_order_relaxed);
-    FVector origin{};
-    FRotator rrot{};
-    if (dc.enabled && ray_for(lh, &origin, &rrot)) {
-        float dir[3];
-        ue_rot_to_dir(rrot, dir);
-        float distUu = g_dotDistM.load(std::memory_order_relaxed) * ctx.worldScale;
-        FVector pt{origin.x + dir[0] * distUu, origin.y + dir[1] * distUu,
-                   origin.z + dir[2] * distUu};
-        game_point_to_xr(ctx, pt, dc.posXr);
-        dc.valid = true;
-        // One-shot round-trip self-check: map the point back out and compare.
-        // A mismatch means the forward/inverse pair disagree - the one bug
-        // class that would make the dot lie about where the shot goes.
-        if (!g_loggedDotRoundTrip.exchange(true, std::memory_order_relaxed)) {
-            const float identQ[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            GamePose back = xr_pose_to_game(ctx, dc.posXr, identQ);
-            float dx = back.loc.x - pt.x, dy = back.loc.y - pt.y, dz = back.loc.z - pt.z;
-            BVR_LOG("[b2r] aim dot round-trip: game (%.1f %.1f %.1f) -> xr (%.3f %.3f "
-                    "%.3f) -> game (%.1f %.1f %.1f), error %.4f UU",
-                    pt.x, pt.y, pt.z, dc.posXr[0], dc.posXr[1], dc.posXr[2], back.loc.x,
-                    back.loc.y, back.loc.z, sqrtf(dx * dx + dy * dy + dz * dz));
+        // Publish the aim dot FROM the final game-space ray (core's design
+        // note: the dot is the point the shot starts from, mapped back into
+        // XR, so "dot == shot" is exact rather than congruent).
+        bvr::vr::AimDotConfig dc{};
+        dc.enabled = g_dotOn.load(std::memory_order_relaxed) &&
+                     g_dotHandOn[h].load(std::memory_order_relaxed);
+        FVector origin{};
+        FRotator rrot{};
+        if (dc.enabled && ray_for(h, &origin, &rrot)) {
+            float dir[3];
+            ue_rot_to_dir(rrot, dir);
+            float distUu = dotDistM * ctx.worldScale;
+            FVector pt{origin.x + dir[0] * distUu, origin.y + dir[1] * distUu,
+                       origin.z + dir[2] * distUu};
+            game_point_to_xr(ctx, pt, dc.posXr);
+            dc.valid = true;
+            // One-shot round-trip self-check: map the point back out and
+            // compare. A mismatch means the forward/inverse pair disagree -
+            // the one bug class that would make the dot lie about where the
+            // shot goes.
+            if (h == 1 && !g_loggedDotRoundTrip.exchange(true, std::memory_order_relaxed)) {
+                const float identQ[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                GamePose back = xr_pose_to_game(ctx, dc.posXr, identQ);
+                float dx = back.loc.x - pt.x, dy = back.loc.y - pt.y,
+                      dz = back.loc.z - pt.z;
+                BVR_LOG("[b2r] aim dot round-trip: game (%.1f %.1f %.1f) -> xr (%.3f "
+                        "%.3f %.3f) -> game (%.1f %.1f %.1f), error %.4f UU",
+                        pt.x, pt.y, pt.z, dc.posXr[0], dc.posXr[1], dc.posXr[2],
+                        back.loc.x, back.loc.y, back.loc.z,
+                        sqrtf(dx * dx + dy * dy + dz * dz));
+            }
         }
+        bvr::vr::set_aim_dot_slot(slot, dc);
     }
-    bvr::vr::set_aim_dot(dc);
 }
 
 void probe_findfunc(uint32_t nameIndex, uint32_t nameNumber, void* fn) {
@@ -635,14 +714,39 @@ bool handle_command(const char* args) {
                 g_handRayOn.load(std::memory_order_relaxed) ? "drive" : "released from");
         return true;
     }
+    // laser on|off (master) | laser l|r on|off (per hand - BS2 shows both).
     if (token(args, "laser", &rest)) {
-        g_laserOn.store(token(rest, "on"), std::memory_order_relaxed);
-        BVR_LOG("[b2r] command: vraim laser %s",
-                g_laserOn.load(std::memory_order_relaxed) ? "on" : "off");
+        char side[4] = {};
+        char state[8] = {};
+        if (sscanf_s(rest, "%3s %7s", side, static_cast<unsigned>(sizeof side), state,
+                     static_cast<unsigned>(sizeof state)) == 2 &&
+            (side[0] == 'l' || side[0] == 'r') && side[1] == '\0') {
+            int h = (side[0] == 'l') ? 0 : 1;
+            g_laserHandOn[h].store(strncmp(state, "off", 3) != 0, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vraim laser %c %s", side[0],
+                    g_laserHandOn[h].load(std::memory_order_relaxed) ? "on" : "off");
+        } else {
+            g_laserOn.store(token(rest, "on"), std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vraim laser %s (L %s, R %s)",
+                    g_laserOn.load(std::memory_order_relaxed) ? "on" : "off",
+                    g_laserHandOn[0].load(std::memory_order_relaxed) ? "on" : "off",
+                    g_laserHandOn[1].load(std::memory_order_relaxed) ? "on" : "off");
+        }
         return true;
     }
     if (token(args, "dot", &rest)) {
         float d = 0.0f;
+        char side[4] = {};
+        char state[8] = {};
+        if (sscanf_s(rest, "%3s %7s", side, static_cast<unsigned>(sizeof side), state,
+                     static_cast<unsigned>(sizeof state)) == 2 &&
+            (side[0] == 'l' || side[0] == 'r') && side[1] == '\0') {
+            int h = (side[0] == 'l') ? 0 : 1;
+            g_dotHandOn[h].store(strncmp(state, "off", 3) != 0, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vraim dot %c %s", side[0],
+                    g_dotHandOn[h].load(std::memory_order_relaxed) ? "on" : "off");
+            return true;
+        }
         if (token(rest, "on")) {
             g_dotOn.store(true, std::memory_order_relaxed);
         } else if (token(rest, "off")) {
@@ -670,7 +774,10 @@ bool handle_command(const char* args) {
         }
         return true;
     }
-    if (token(args, "origin", &rest)) {
+    // `pos` = the ray-ORIGIN OFFSET in cm (BS1 calls it `pos` too). Session 40
+    // renamed it off `origin`, which now means BS1's fire-origin SUBSTITUTION
+    // toggle - two different things wearing one name was a live foot-gun.
+    if (token(args, "pos", &rest)) {
         char hand[4] = {};
         float f = 0.0f, r = 0.0f, u = 0.0f;
         if (sscanf_s(rest, "%3s %f %f %f", hand, static_cast<unsigned>(sizeof hand), &f,
@@ -679,11 +786,28 @@ bool handle_command(const char* args) {
             g_posFwdCm[h].store(f, std::memory_order_relaxed);
             g_posRightCm[h].store(r, std::memory_order_relaxed);
             g_posUpCm[h].store(u, std::memory_order_relaxed);
-            BVR_LOG("[b2r] command: vraim origin %c fwd %.1f right %.1f up %.1f cm",
-                    hand[0], f, r, u);
+            BVR_LOG("[b2r] command: vraim pos %c fwd %.1f right %.1f up %.1f cm", hand[0],
+                    f, r, u);
         } else {
-            BVR_LOG("[b2r] vraim origin l|r <fwdCm> <rightCm> <upCm>");
+            BVR_LOG("[b2r] vraim pos l|r <fwdCm> <rightCm> <upCm>");
         }
+        return true;
+    }
+    // Bullet-origin substitution (BS1 parity): shots leave the HAND, not the
+    // head. `origin max <uu>` tunes the displacement refusal.
+    if (token(args, "origin", &rest)) {
+        float m = 0.0f;
+        if (sscanf_s(rest, "max %f", &m) == 1 && m > 0.0f) {
+            g_originMaxUu.store(m, std::memory_order_relaxed);
+        } else {
+            g_handOrigin.store(!token(rest, "off"), std::memory_order_relaxed);
+        }
+        BVR_LOG("[b2r] command: vraim origin %s (max displacement %.0f UU, %u refusals) - "
+                "shots leave the %s",
+                g_handOrigin.load(std::memory_order_relaxed) ? "on" : "off",
+                g_originMaxUu.load(std::memory_order_relaxed),
+                g_originRefusals.load(std::memory_order_relaxed),
+                g_handOrigin.load(std::memory_order_relaxed) ? "HAND" : "engine's own point");
         return true;
     }
     if (token(args, "pose", &rest)) {
@@ -756,10 +880,10 @@ bool handle_command(const char* args) {
         }
         return true;
     }
-    BVR_LOG("[b2r] vraim: status | on|off | handray on|off | laser on|off | "
-            "dot on|off|<distM> | trim l|r <p> <y> | origin l|r <f> <r> <u> | "
-            "pose aim|grip | seam weapon|ability on|off | test r <yaw> <pitch> "
-            "[ms]|off | sublog [n] | probe on|off|clear|dump");
+    BVR_LOG("[b2r] vraim: status | on|off | handray on|off | laser [l|r] on|off | "
+            "dot [l|r] on|off|<distM> | trim l|r <p> <y> | pos l|r <f> <r> <u> | "
+            "origin on|off|max <uu> | pose aim|grip | seam weapon|ability on|off | "
+            "test r <yaw> <pitch> [ms]|off | sublog [n] | probe on|off|clear|dump");
     return true;
 }
 

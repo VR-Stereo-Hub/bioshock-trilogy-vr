@@ -24,20 +24,36 @@
 
 namespace bvr::b2r::bones {
 
-// Rigidly place the cluster at the target pose (game space). Resolves and
-// revalidates the rig lazily (one-shot heap scan, dormant after misses,
-// re-armed on view-state change). Game thread, CalcView tail only.
-// False = rig not available this frame.
-bool drive(const FrameContext& ctx, const GamePose& target);
+// Rigidly place one hand's cluster at the target pose (game space); hand 0 =
+// left (plasmid), 1 = right (weapon). Resolves and revalidates the rig lazily
+// (one-shot heap scan, dormant after misses, re-armed on view-state change).
+// Game thread, CalcView tail only. False = rig not available this frame.
+//
+// Composition (session 40, the ~90 deg fix): the cluster's authored rotations
+// are PRESERVED and rotated by the controller's rotation relative to the
+// AHands actor - q_i = qtc * refQ_i, so a controller aiming where the view
+// aims leaves the rig exactly where the engine drew it. The old form
+// (delta = qtc * conj(refQ_anchor)) replaced the anchor's authored frame with
+// the raw controller rotation and cost a constant ~81.6 deg on this rig.
+bool drive(const FrameContext& ctx, const GamePose& target, int hand);
 
 // Repaint the last drive's write - the stereo second pass replays CalcView
 // and the engine may re-evaluate the skeleton over it. Cheap memcpy, no-op
 // when nothing is cached.
 void reapply();
 
-// Stop driving: restores the captured reference pose once and drops the
-// cache, so the engine's own animation owns the rig again.
-void release(const char* why);
+// Stop driving one hand's cluster (hand < 0 = both): restores the captured
+// reference pose over that cluster's bones and forgets its write, so the
+// engine's own animation owns them again. A left-hand release must never
+// disturb the right hand's live drive, hence the per-cluster restore.
+void release(const char* why, int hand = -1);
+
+// Per-cluster scale multiplier (1.0 = authored). Applied to the pose bank's
+// scale channel AND to the anchor-relative translations, so the cluster
+// scales about its anchor rather than only thinning the bones. Deliberately
+// independent of worldscale (user requirement, session-40 first look).
+void set_scale(int hand, float scale);
+float scale_of(int hand);
 
 // World/view changed under us - drop every cached pointer and the reference.
 void on_world_change(const char* why);
@@ -45,8 +61,9 @@ void on_world_change(const char* why);
 // `vrbones <args>`: status | cluster <lo> <hi> <anchor> | refcap | release.
 bool handle_command(const char* args);
 
-// Telemetry for vrhands status: the last written anchor location (UU) - the
-// VERIFICATION 2.8 ground truth ("last write loc tracks the sweep").
-bool last_write(float* x, float* y, float* z, uint64_t* ageMs);
+// Telemetry for vrhands status: one cluster's last written anchor location
+// (UU) - the VERIFICATION 2.8 ground truth ("last write loc tracks the
+// sweep"), now per hand so each cluster proves its own controller.
+bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs);
 
 } // namespace bvr::b2r::bones

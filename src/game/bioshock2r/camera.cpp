@@ -1242,6 +1242,19 @@ void save_vr_preset() {
     // numbers next launch is not a verdict.
     fprintf(f, "fillHeadsetFov=%d\n", g_forceHeadsetFov.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "fgFovManual=%.1f\n", g_fgFovManual.load(std::memory_order_relaxed));
+    // Session 40: the per-hand model + aim calibration. These are exactly the
+    // "tuned slider values" the doctrine says to persist - losing them on
+    // relaunch would mean re-tuning both hands in the headset every session.
+    for (int h = 0; h < 2; ++h) {
+        const char* s = h ? "R" : "L";
+        fprintf(f, "handTrimPitch%s=%.2f\n", s, hands::trim_pitch(h));
+        fprintf(f, "handTrimYaw%s=%.2f\n", s, hands::trim_yaw(h));
+        fprintf(f, "handTrimRoll%s=%.2f\n", s, hands::trim_roll(h));
+        fprintf(f, "handOffFwd%s=%.2f\n", s, hands::off_fwd_cm(h));
+        fprintf(f, "handOffRight%s=%.2f\n", s, hands::off_right_cm(h));
+        fprintf(f, "handOffUp%s=%.2f\n", s, hands::off_up_cm(h));
+        fprintf(f, "handScale%s=%.3f\n", s, bones::scale_of(h));
+    }
     fclose(f);
     BVR_LOG("[b2r] VR preset values saved to %ls", path);
 }
@@ -1253,6 +1266,14 @@ void load_vr_preset_values() {
     if (_wfopen_s(&f, path, L"r") != 0 || !f) return; // no file = shipped defaults
     char line[128];
     int n = 0;
+    // Session-40 hand values are staged and applied AFTER the parse loop, per
+    // BS1's rule for coupled sets: a partial ini must never half-apply one.
+    float hTrim[2][3] = {{hands::trim_pitch(0), hands::trim_yaw(0), hands::trim_roll(0)},
+                         {hands::trim_pitch(1), hands::trim_yaw(1), hands::trim_roll(1)}};
+    float hOff[2][3] = {
+        {hands::off_fwd_cm(0), hands::off_right_cm(0), hands::off_up_cm(0)},
+        {hands::off_fwd_cm(1), hands::off_right_cm(1), hands::off_up_cm(1)}};
+    float hScale[2] = {bones::scale_of(0), bones::scale_of(1)};
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char key[64] = {};
@@ -1260,6 +1281,24 @@ void load_vr_preset_values() {
         if (sscanf_s(line, "%63[^=]=%f", key, static_cast<unsigned>(sizeof(key)), &v) != 2)
             continue;
         ++n;
+        // Per-hand keys: <name>L / <name>R.
+        size_t klen = strlen(key);
+        if (klen > 4 && strncmp(key, "hand", 4) == 0 &&
+            (key[klen - 1] == 'L' || key[klen - 1] == 'R')) {
+            int h = (key[klen - 1] == 'R') ? 1 : 0;
+            char base[64];
+            strncpy_s(base, key, klen - 1);
+            base[klen - 1] = '\0';
+            if (strcmp(base, "handTrimPitch") == 0) hTrim[h][0] = v;
+            else if (strcmp(base, "handTrimYaw") == 0) hTrim[h][1] = v;
+            else if (strcmp(base, "handTrimRoll") == 0) hTrim[h][2] = v;
+            else if (strcmp(base, "handOffFwd") == 0) hOff[h][0] = v;
+            else if (strcmp(base, "handOffRight") == 0) hOff[h][1] = v;
+            else if (strcmp(base, "handOffUp") == 0) hOff[h][2] = v;
+            else if (strcmp(base, "handScale") == 0 && v > 0.05f && v < 20.0f) hScale[h] = v;
+            else --n;
+            continue;
+        }
         if (strcmp(key, "worldScale") == 0 && v > 0.0f)
             g_worldScale.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "headUpUu") == 0)
@@ -1280,6 +1319,11 @@ void load_vr_preset_values() {
             --n;
     }
     fclose(f);
+    for (int h = 0; h < 2; ++h) {
+        hands::set_trim(h, hTrim[h][0], hTrim[h][1], hTrim[h][2]);
+        hands::set_offset(h, hOff[h][0], hOff[h][1], hOff[h][2]);
+        bones::set_scale(h, hScale[h]);
+    }
     if (n) BVR_LOG("[b2r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
@@ -2319,6 +2363,51 @@ void draw_debug_ui() {
         // where the numbers that justify it are on screen next to it. One flag,
         // one control - two checkboxes for the same atomic is how a user ends up
         // unable to say which one they were judging.
+    }
+
+    // Session 40: the in-headset calibration surface. Standing rule - anything
+    // judged BY EYE gets a control here, never a console command: alt-tabbing
+    // to type destabilises the XR session, which is how these knobs were
+    // unusable in the headset before. BS1's conventions: one slider set plus a
+    // tuning-hand radio (not twelve sliders), sliders write atomics directly,
+    // anything touching engine state goes through a pending lane.
+    if (ImGui::CollapsingHeader("HANDS + AIM (per hand)  <-- CALIBRATE HERE",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        static int tuneHand = 1; // start on the weapon hand
+        ImGui::RadioButton("L (plasmid)", &tuneHand, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("R (weapon)", &tuneHand, 1);
+
+        float p = hands::trim_pitch(tuneHand), y = hands::trim_yaw(tuneHand),
+              r = hands::trim_roll(tuneHand);
+        bool trimChanged = false;
+        trimChanged |= ImGui::SliderFloat("model trim pitch (deg)", &p, -180.0f, 180.0f);
+        trimChanged |= ImGui::SliderFloat("model trim yaw (deg)", &y, -180.0f, 180.0f);
+        trimChanged |= ImGui::SliderFloat("model trim roll (deg)", &r, -180.0f, 180.0f);
+        if (trimChanged) hands::set_trim(tuneHand, p, y, r);
+
+        float of = hands::off_fwd_cm(tuneHand), orr = hands::off_right_cm(tuneHand),
+              ou = hands::off_up_cm(tuneHand);
+        bool offChanged = false;
+        offChanged |= ImGui::SliderFloat("model offset fwd (cm)", &of, -60.0f, 60.0f);
+        offChanged |= ImGui::SliderFloat("model offset right (cm)", &orr, -60.0f, 60.0f);
+        offChanged |= ImGui::SliderFloat("model offset up (cm)", &ou, -60.0f, 60.0f);
+        if (offChanged) hands::set_offset(tuneHand, of, orr, ou);
+
+        // Scale is deliberately NOT tied to world scale (user requirement): the
+        // rig can be the wrong size while the world is right.
+        float sc = bones::scale_of(tuneHand);
+        if (ImGui::SliderFloat("model SCALE (x, independent of worldscale)", &sc, 0.2f,
+                               4.0f))
+            bones::set_scale(tuneHand, sc);
+        if (ImGui::Button("scale both hands to this")) {
+            bones::set_scale(0, sc);
+            bones::set_scale(1, sc);
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Save these settings (survives a relaunch)##hands"))
+            save_vr_preset();
+        ImGui::TextUnformatted("Aim trims + laser/dot options: `vraim` (flat lane).");
     }
 
     if (ImGui::CollapsingHeader("Camera debug")) {

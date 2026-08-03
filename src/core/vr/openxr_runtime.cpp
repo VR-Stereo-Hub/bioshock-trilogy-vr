@@ -85,6 +85,20 @@ std::atomic<float> g_laserModelPitchTrim{0.0f}, g_laserModelYawTrim{0.0f},
 std::atomic<uint32_t> g_laserLayersSubmitted{0};
 std::atomic<bool> g_loggedFirstLaser{false};
 
+// Session 40: an ADDITIVE second laser + dot slot, for games whose hands are
+// both active at once (BS2's native dual-wield). Nothing writes these unless a
+// game calls set_laser_slot(1, ...) / set_aim_dot_slot(1, ...), so BS1's
+// submit path is unchanged - it sees `on == false` and builds zero layers.
+// The layer budget is shared, not grown: both beams together are still capped
+// at kMaxLaserDots quads, so the worst case stays 1 projection + 8 laser +
+// 2 dots + 1 HUD = 12 of the 16 layers a runtime must accept.
+std::atomic<bool> g_laser2On{false};
+std::atomic<int> g_laser2Hand{0};
+std::atomic<float> g_laser2PitchTrim{0.0f}, g_laser2YawTrim{0.0f};
+std::atomic<float> g_laser2PosFwdCm{0.0f}, g_laser2PosRightCm{0.0f}, g_laser2PosUpCm{0.0f};
+std::atomic<int> g_laser2Dots{4};
+std::atomic<float> g_laser2NearM{0.30f}, g_laser2FarM{6.0f}, g_laser2SizeDeg{0.7f};
+
 // Session 29 aim dot: one more quad off the SAME tiny swapchain, positioned
 // from a point the game thread already converted into XR space (see
 // AimDotConfig). Stamped so a stale publish cannot leave a dot hanging in the
@@ -96,6 +110,12 @@ std::atomic<float> g_dotSizeDeg{0.5f};
 std::atomic<uint64_t> g_dotStampMs{0};
 std::atomic<uint32_t> g_dotLayersSubmitted{0};
 std::atomic<bool> g_loggedFirstDot{false};
+// Second dot slot (session 40, same additive rule as the second laser).
+std::atomic<bool> g_dot2On{false};
+std::atomic<bool> g_dot2Valid{false};
+std::atomic<float> g_dot2X{0.0f}, g_dot2Y{0.0f}, g_dot2Z{0.0f};
+std::atomic<float> g_dot2SizeDeg{0.5f};
+std::atomic<uint64_t> g_dot2StampMs{0};
 constexpr uint64_t kDotStaleMs = 250; // matches aim.cpp's ray_for() freshness gate
 
 // Controls (overlay writes, render thread reads).
@@ -2180,13 +2200,31 @@ XrQuaternionf quat_facing(const float f[3]) {
     return q;
 }
 
-// Fill `quads` with the dots along the aim ray and return how many were built.
-// Render thread, inside on_present_end, only in projection mode.
-uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
-    if (!g_laserOn.load(std::memory_order_relaxed)) return 0;
+// Session 40: the geometry below is unchanged, but it now reads a plain
+// snapshot instead of the globals directly, so a SECOND laser slot can reuse
+// it (BS2 is natively dual-wield and shows both hands' beams at once; see
+// set_laser_slot). build_laser_layers() still snapshots slot 0 and behaves
+// exactly as before - the BS1 path is untouched by construction.
+struct LaserSnapshot {
+    bool on = false;
+    int hand = 1;
+    float pitchTrim = 0.0f, yawTrim = 0.0f;
+    float posFwdCm = 0.0f, posRightCm = 0.0f, posUpCm = 0.0f;
+    int dots = 6;
+    float nearM = 0.30f, farM = 6.0f, sizeDeg = 0.7f;
+    bool muzzle = false;
+    float d0[3] = {0.0f, 0.0f, -1.0f};
+    float modelPitch = 0.0f, modelYaw = 0.0f, modelRoll = 0.0f;
+};
+
+// Fill `quads` with the dots along one laser's ray and return how many were
+// built, capped at `budget` quads. Render thread, projection mode only.
+uint32_t build_laser_from(const LaserSnapshot& ls, XrCompositionLayerQuad* quads,
+                          int budget) {
+    if (!ls.on || budget < 1) return 0;
     if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
 
-    int hand = g_laserHand.load(std::memory_order_relaxed);
+    int hand = ls.hand;
     float pos[3], quat[4];
     if (!input_get_hand_pose(hand, true, pos, quat)) return 0; // AIM pose = the fire ray
 
@@ -2199,23 +2237,19 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     constexpr float kDegToRad = 3.14159265f / 180.0f;
     const float fwd[3] = {0.0f, 0.0f, -1.0f};
     float trim[4], q2[4], d[3];
-    if (g_laserMuzzle.load(std::memory_order_relaxed)) {
+    if (ls.muzzle) {
         // Muzzle ray: the beam follows the RENDERED barrel - the MODEL's trim
         // (roll included: it moves an off-axis vector) applied to the barrel
         // axis the game side derived from the driven rig this frame.
-        const float d0[3] = {g_laserMuzzleD0[0].load(std::memory_order_relaxed),
-                             g_laserMuzzleD0[1].load(std::memory_order_relaxed),
-                             g_laserMuzzleD0[2].load(std::memory_order_relaxed)};
-        bvr::xrmath::xr_local_trim_quat(
-            g_laserModelPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
-            g_laserModelYawTrim.load(std::memory_order_relaxed) * kDegToRad,
-            g_laserModelRollTrim.load(std::memory_order_relaxed) * kDegToRad, trim);
+        const float d0[3] = {ls.d0[0], ls.d0[1], ls.d0[2]};
+        bvr::xrmath::xr_local_trim_quat(ls.modelPitch * kDegToRad,
+                                        ls.modelYaw * kDegToRad,
+                                        ls.modelRoll * kDegToRad, trim);
         bvr::xrmath::quat_mul(quat, trim, q2);
         bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], d0, d);
     } else {
-        bvr::xrmath::xr_local_trim_quat(
-            g_laserPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
-            g_laserYawTrim.load(std::memory_order_relaxed) * kDegToRad, 0.0f, trim);
+        bvr::xrmath::xr_local_trim_quat(ls.pitchTrim * kDegToRad,
+                                        ls.yawTrim * kDegToRad, 0.0f, trim);
         bvr::xrmath::quat_mul(quat, trim, q2);
         bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], fwd, d);
     }
@@ -2227,9 +2261,9 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     // d x worldUp cross degenerated near vertical and silently dropped the
     // right/up offset components there.
     {
-        float ofM = g_laserPosFwdCm.load(std::memory_order_relaxed) * 0.01f;
-        float orM = g_laserPosRightCm.load(std::memory_order_relaxed) * 0.01f;
-        float ouM = g_laserPosUpCm.load(std::memory_order_relaxed) * 0.01f;
+        float ofM = ls.posFwdCm * 0.01f;
+        float orM = ls.posRightCm * 0.01f;
+        float ouM = ls.posUpCm * 0.01f;
         if (ofM != 0.0f || orM != 0.0f || ouM != 0.0f) {
             float yaw = atan2f(d[0], -d[2]);
             float right[3] = {cosf(yaw), 0.0f, sinf(yaw)};
@@ -2247,14 +2281,14 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
                      (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
                      (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
 
-    int n = g_laserDots.load(std::memory_order_relaxed);
+    int n = ls.dots;
     if (n < 1) n = 1;
-    if (n > kMaxLaserDots) n = kMaxLaserDots;
-    float nearM = g_laserNearM.load(std::memory_order_relaxed);
-    float farM = g_laserFarM.load(std::memory_order_relaxed);
+    if (n > budget) n = budget;
+    float nearM = ls.nearM;
+    float farM = ls.farM;
     if (nearM < 0.05f) nearM = 0.05f;
     if (farM < nearM * 1.01f) farM = nearM * 1.01f;
-    float sizeRad = g_laserSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+    float sizeRad = ls.sizeDeg * kDegToRad;
 
     XrSwapchainSubImage sub{};
     sub.swapchain = g_laserSwapchain;
@@ -2294,6 +2328,48 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     return built;
 }
 
+LaserSnapshot snapshot_laser_slot(int slot) {
+    LaserSnapshot ls;
+    if (slot == 1) {
+        // Slot 1 (session 40): the additive second beam. Nothing publishes it
+        // unless a game calls set_laser_slot(1, ...) - BS1 never does, so its
+        // submit path sees `on == false` and adds no layers at all.
+        ls.on = g_laser2On.load(std::memory_order_relaxed);
+        ls.hand = g_laser2Hand.load(std::memory_order_relaxed);
+        ls.pitchTrim = g_laser2PitchTrim.load(std::memory_order_relaxed);
+        ls.yawTrim = g_laser2YawTrim.load(std::memory_order_relaxed);
+        ls.posFwdCm = g_laser2PosFwdCm.load(std::memory_order_relaxed);
+        ls.posRightCm = g_laser2PosRightCm.load(std::memory_order_relaxed);
+        ls.posUpCm = g_laser2PosUpCm.load(std::memory_order_relaxed);
+        ls.dots = g_laser2Dots.load(std::memory_order_relaxed);
+        ls.nearM = g_laser2NearM.load(std::memory_order_relaxed);
+        ls.farM = g_laser2FarM.load(std::memory_order_relaxed);
+        ls.sizeDeg = g_laser2SizeDeg.load(std::memory_order_relaxed);
+        return ls;
+    }
+    ls.on = g_laserOn.load(std::memory_order_relaxed);
+    ls.hand = g_laserHand.load(std::memory_order_relaxed);
+    ls.pitchTrim = g_laserPitchTrim.load(std::memory_order_relaxed);
+    ls.yawTrim = g_laserYawTrim.load(std::memory_order_relaxed);
+    ls.posFwdCm = g_laserPosFwdCm.load(std::memory_order_relaxed);
+    ls.posRightCm = g_laserPosRightCm.load(std::memory_order_relaxed);
+    ls.posUpCm = g_laserPosUpCm.load(std::memory_order_relaxed);
+    ls.dots = g_laserDots.load(std::memory_order_relaxed);
+    ls.nearM = g_laserNearM.load(std::memory_order_relaxed);
+    ls.farM = g_laserFarM.load(std::memory_order_relaxed);
+    ls.sizeDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
+    ls.muzzle = g_laserMuzzle.load(std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i) ls.d0[i] = g_laserMuzzleD0[i].load(std::memory_order_relaxed);
+    ls.modelPitch = g_laserModelPitchTrim.load(std::memory_order_relaxed);
+    ls.modelYaw = g_laserModelYawTrim.load(std::memory_order_relaxed);
+    ls.modelRoll = g_laserModelRollTrim.load(std::memory_order_relaxed);
+    return ls;
+}
+
+uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
+    return build_laser_from(snapshot_laser_slot(0), quads, kMaxLaserDots);
+}
+
 // Session 29: the acquire/copy/release used to live inside build_laser_layers,
 // under `if (built)`. The aim dot references the SAME swapchain, and two
 // acquires on one swapchain in a single frame is a spec violation - so the
@@ -2319,18 +2395,19 @@ bool publish_laser_image() {
 // thread already in XR space, converted from the exact fire-seam ray by
 // game_point_to_xr. All that happens here is billboarding and sizing, so
 // there is no second algebra that can drift from the first.
-uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
-    if (!g_dotOn.load(std::memory_order_relaxed)) return 0;
-    if (!g_dotValid.load(std::memory_order_relaxed)) return 0;
+uint32_t build_aim_dot_slot(XrCompositionLayerQuad* quad, int slot) {
+    const bool two = (slot == 1);
+    if (!(two ? g_dot2On : g_dotOn).load(std::memory_order_relaxed)) return 0;
+    if (!(two ? g_dot2Valid : g_dotValid).load(std::memory_order_relaxed)) return 0;
     if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
     // A publish that stopped arriving must not leave a dot floating: the ray
     // going stale is exactly the state ray_for() refuses to substitute in.
-    uint64_t stamp = g_dotStampMs.load(std::memory_order_relaxed);
+    uint64_t stamp = (two ? g_dot2StampMs : g_dotStampMs).load(std::memory_order_relaxed);
     if (stamp == 0 || GetTickCount64() - stamp > kDotStaleMs) return 0;
 
-    float p[3] = {g_dotX.load(std::memory_order_relaxed),
-                  g_dotY.load(std::memory_order_relaxed),
-                  g_dotZ.load(std::memory_order_relaxed)};
+    float p[3] = {(two ? g_dot2X : g_dotX).load(std::memory_order_relaxed),
+                  (two ? g_dot2Y : g_dotY).load(std::memory_order_relaxed),
+                  (two ? g_dot2Z : g_dotZ).load(std::memory_order_relaxed)};
     float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
                      (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
                      (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
@@ -2340,7 +2417,8 @@ uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
     toHead[0] /= len; toHead[1] /= len; toHead[2] /= len;
 
     constexpr float kDegToRad = 3.14159265f / 180.0f;
-    float sizeRad = g_dotSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+    float sizeRad = (two ? g_dot2SizeDeg : g_dotSizeDeg).load(std::memory_order_relaxed) *
+                    kDegToRad;
 
     XrCompositionLayerQuad& q = *quad;
     q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -2360,6 +2438,10 @@ uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
                 "fire-seam ray point, not a reconstruction",
                 p[0], p[1], p[2], len);
     return 1;
+}
+
+uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
+    return build_aim_dot_slot(quad, 0);
 }
 
 // Yaw of an XR-space orientation (forward = -Z, right = +X), for the pose
@@ -2442,11 +2524,12 @@ void on_present_end(IDXGISwapChain* swapchain) {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerQuad laserQuads[kMaxLaserDots] = {};
     XrCompositionLayerQuad dotQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerQuad dot2Quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    // The game frame is layer 0; the aim laser adds one quad per dot on top,
-    // the session-29 aim dot one more, the HUD quad one more (worst case 11 of
-    // the 16 runtimes must accept).
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 2] = {};
+    // The game frame is layer 0; the aim laser(s) add one quad per dot on top -
+    // BOTH slots share the kMaxLaserDots budget - then up to two aim dots and
+    // the HUD quad (worst case 12 of the 16 runtimes must accept).
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 3] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -2768,19 +2851,33 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // Aim laser on top of the game frame - projection mode only, since in quad
     // ("cinema screen") mode there is no world for it to point into.
     if (layerCount && projectionMode) {
-        uint32_t dots = build_laser_layers(laserQuads);
-        uint32_t aimDot = build_aim_dot_layer(&dotQuad);
-        // ONE acquire feeds every quad that referenced this swapchain, laser
-        // and aim dot alike - two acquires in a frame would be invalid.
-        if ((dots || aimDot) && !publish_laser_image()) { dots = 0; aimDot = 0; }
-        for (uint32_t i = 0; i < dots; ++i)
+        // Slot 0 first, then the session-40 second beam within whatever is
+        // LEFT of the shared dot budget - the layer arrays never grow, so a
+        // dual-wield game cannot push the total past what slot 0 alone could.
+        uint32_t dots = build_laser_from(snapshot_laser_slot(0), laserQuads, kMaxLaserDots);
+        uint32_t dots2 = build_laser_from(snapshot_laser_slot(1), laserQuads + dots,
+                                          kMaxLaserDots - static_cast<int>(dots));
+        uint32_t aimDot = build_aim_dot_slot(&dotQuad, 0);
+        uint32_t aimDot2 = build_aim_dot_slot(&dot2Quad, 1);
+        // ONE acquire feeds every quad that referenced this swapchain, lasers
+        // and aim dots alike - two acquires in a frame would be invalid.
+        if ((dots || dots2 || aimDot || aimDot2) && !publish_laser_image()) {
+            dots = 0;
+            dots2 = 0;
+            aimDot = 0;
+            aimDot2 = 0;
+        }
+        for (uint32_t i = 0; i < dots + dots2; ++i)
             layers[layerCount++] =
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&laserQuads[i]);
         if (aimDot)
             layers[layerCount++] =
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dotQuad);
-        g_laserLayersSubmitted.store(dots, std::memory_order_relaxed);
-        g_dotLayersSubmitted.store(aimDot, std::memory_order_relaxed);
+        if (aimDot2)
+            layers[layerCount++] =
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dot2Quad);
+        g_laserLayersSubmitted.store(dots + dots2, std::memory_order_relaxed);
+        g_dotLayersSubmitted.store(aimDot + aimDot2, std::memory_order_relaxed);
     } else {
         g_laserLayersSubmitted.store(0, std::memory_order_relaxed);
         g_dotLayersSubmitted.store(0, std::memory_order_relaxed);
@@ -3598,6 +3695,41 @@ void set_aim_dot(const AimDotConfig& cfg) {
     g_dotY.store(cfg.posXr[1], std::memory_order_relaxed);
     g_dotZ.store(cfg.posXr[2], std::memory_order_relaxed);
     g_dotStampMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+void set_laser_slot(int slot, const LaserConfig& cfg) {
+    if (slot != 1) {
+        set_laser(cfg);
+        return;
+    }
+    g_laser2On.store(cfg.enabled, std::memory_order_relaxed);
+    g_laser2Hand.store(cfg.hand ? 1 : 0, std::memory_order_relaxed);
+    g_laser2PitchTrim.store(cfg.pitchTrimDeg, std::memory_order_relaxed);
+    g_laser2YawTrim.store(cfg.yawTrimDeg, std::memory_order_relaxed);
+    g_laser2PosFwdCm.store(cfg.posFwdCm, std::memory_order_relaxed);
+    g_laser2PosRightCm.store(cfg.posRightCm, std::memory_order_relaxed);
+    g_laser2PosUpCm.store(cfg.posUpCm, std::memory_order_relaxed);
+    g_laser2Dots.store(cfg.dots, std::memory_order_relaxed);
+    g_laser2NearM.store(cfg.nearM, std::memory_order_relaxed);
+    g_laser2FarM.store(cfg.farM, std::memory_order_relaxed);
+    g_laser2SizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
+    // The muzzle-ray lane stays slot-0 only: it exists for BS1's rendered
+    // barrel and has no second-hand meaning yet.
+}
+
+void set_aim_dot_slot(int slot, const AimDotConfig& cfg) {
+    if (slot != 1) {
+        set_aim_dot(cfg);
+        return;
+    }
+    g_dot2On.store(cfg.enabled, std::memory_order_relaxed);
+    g_dot2SizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
+    g_dot2Valid.store(cfg.valid, std::memory_order_relaxed);
+    if (!cfg.valid) return;
+    g_dot2X.store(cfg.posXr[0], std::memory_order_relaxed);
+    g_dot2Y.store(cfg.posXr[1], std::memory_order_relaxed);
+    g_dot2Z.store(cfg.posXr[2], std::memory_order_relaxed);
+    g_dot2StampMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
 const char* session_state_name() {

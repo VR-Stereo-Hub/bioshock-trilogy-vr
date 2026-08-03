@@ -322,6 +322,17 @@ struct AimDotConfig {
 
 void set_aim_dot(const AimDotConfig& cfg);
 
+// --- Session 40: a SECOND laser + dot slot (additive) -----------------------
+// For games whose hands are both active at once - BS2 is natively dual-wield,
+// so the weapon hand and the plasmid hand each need their own beam and dot,
+// where BS1 only ever has one active hand. Slot 0 is exactly what set_laser /
+// set_aim_dot already publish; slot 1 is inert until a game writes it, so a
+// game that never calls these submits precisely the layers it did before.
+// The dot budget is SHARED (kMaxLaserDots across both beams) rather than
+// doubled - the compositor layer arrays do not grow.
+void set_laser_slot(int slot, const LaserConfig& cfg);
+void set_aim_dot_slot(int slot, const AimDotConfig& cfg);
+
 // Session 19 HUD floating quad placement (meters; head-locked). Persisted by
 // the VR preset; sliders in the VR overlay section.
 void set_hud_quad(float distM, float widthM, float upM);
