@@ -1463,3 +1463,74 @@ coverage (flickering flora); 20 deg yaw 34.4%; 0.5 m strafe 28.9% - the world mo
 4-5x floor while the drill's screen block stays AT floor, and the yaw capture visibly
 rotates the world with HUD/viewmodel pinned. The session-37 queued check is closed with
 zero headset time.
+
+## Session 39 (2026-08-03) - the name system, and the fire-chain dispatch probe
+
+### GNames derived fresh (offline, exe on disk)
+
+Reproduced core's `find_fname_index_global` chain offline: wide `PlayerCalcView` has ONE
+occurrence (.rdata RVA 0x10BB130) and ONE exec xref (0x4DCABE), whose forward-scan yields
+ctor stub **0x19C04** and the documented index global 0x17D9A08 - the offline scan agrees
+with the live scan exactly, which validates the method before anything trusts it. The
+stub lands on the ctor body **0xB813B0**: a thin SEH wrapper (BS1 session-20's shape)
+that enters the name-system critical section (object ptr at RVA 0x1A594C8, +4 = the
+critsec; init flag 0x1A594CC) and calls the worker through stub 0x1B2A7 -> body
+**0xB81CE0**. Capstone walk of the worker, every stop of BS1's recipe present with fresh
+numbers:
+
+- digit-suffix split (`Name_123` -> base + number; FName is 8 bytes {index, number}),
+- case-insensitive hash AND 0xFFF into a **4096-bucket table at RVA 0x1A594D0**
+  (chain via entry+0xC, wcsicmp against entry+0x10),
+- FindType==2 path indexes **GNames.Data at RVA 0x1A614D0** (`TArray<FNameEntry*>`:
+  Data, +4 Count, +8 Max) and ORs 0x4000000 into entry+4,
+- free-index stack right behind it (Data 0x1A614DC, Count 0x1A614E0) - recycled indices
+  leave null Data slots, so every reader guards for them.
+
+**FNameEntry layout**: +0x0 the entry's own index (the self-check `fname_text` requires),
++0x4/+0x8 the 8-byte flags, +0xC hash-chain next, +0x10 UTF-16 text in place. BS1's
+layout exactly (its worker 0x70D3C0, GNames 0x13904EC) - shape transferred, numbers
+fresh. Consumer: `patterns::fname_text(index)` with full validation; smoke-tested at
+init (GNames[0] must read 'None', the live PlayerCalcView index must read back as
+itself).
+
+### Fire-chain FName index globals (Lane A), and the batch registration function
+
+The PlayerCalcView chain run per fire-chain dispatch name (terminator-anchored - the
+suffix-pooling trap is LIVE in this list: `UseAbility` is the tail of
+`AnimNotify_UseAbility`):
+
+| name | wide strings | exec xrefs | index global |
+|---|---|---|---|
+| BeginFiring | 1 | 1 (0x976663) | **RVA 0x180B154** |
+| UseAbility | 4 (1 real) | 1 (0x97A5A2) | **RVA 0x180C00C** |
+| InitiateDamage | 5 (2 xrefs) | store at 0x9781F9 | **RVA 0x180B804** |
+| GetPerfectFireStart | 2 | **0** | none |
+| ApplyAimError | 1 | **0** | none |
+| StopFiring | 0 | - | no wide string at all |
+
+The three resolved sites are NOT dispatch sites: they sit inside one boot-time **batch
+FName registration function** (~0x976640 and onward) - back-to-back ctor calls
+(`push 1; push 2; push <wide string>; lea ecx,[stack FName]; call ctor`) filling a
+contiguous table of 8-byte FName globals from **RVA 0x180B14C** upward. So Lane A proves
+these names have engine-owned cached FNames, NOT that native code dispatches them
+by name - the live ProcessEvent probe remains the authority on visibility.
+GetPerfectFireStart having ZERO exec xrefs (its two wide strings are the script-metadata
+and exec-registration regions) is consistent with session 38's native-to-native prior.
+
+### The dispatch probe (aim.cpp, `vraim probe on|off|clear|dump`)
+
+Two instruments behind one relaxed-atomic arm gate (fast path when disarmed: ONE load
+per ProcessEvent):
+
+- **fire-watch**: the FindFunctionChecked detour learns per-name UFunction pointers by
+  comparing nameIndex against the Lane-A globals; the ProcessEvent detour counts
+  dispatches of learned pointers. ff/pe hit deltas print at 1 Hz on the poll lane.
+- **census**: every dispatch's UFunction name index, deduped into a 256-slot table,
+  dumped with GNames text. The UFunction name-field offset is SELF-DERIVED at runtime:
+  the learned PlayerCalcView UFunction* is scanned (first 0x100 bytes) for
+  {index == *0x17D9A08, number == 0}; ambiguity is counted and logged, and garbage
+  census text would name a wrong offset immediately.
+
+Decision rule (session-39 brief): GetPerfectFireStart hits correlated with shots =
+by-name seam; ancestors only = impl hooks with the PE-visible ancestor banked for
+timing; nothing = fully native, impl hooks.

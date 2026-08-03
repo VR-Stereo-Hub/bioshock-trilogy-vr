@@ -16,6 +16,7 @@
 #include "core/util/crash.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock2r/aim.h"
 #include "game/bioshock2r/game_ini.h"
 #include "game/bioshock2r/scenedraw.h"
 #include "game/shared/ue_math.h"
@@ -680,6 +681,13 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //                                substrate - BS2's primary bet, no 1t rung)
 //   reentry vrstereo|stereo|pulse|on|off|yaw|reset|hook [draw|stream]|
 //           unhook|dump <n>|kick on|off|kick2 on|off|calcstack|status
+// Aim (session 39; aim.h has the grammar):
+//   vraim status | probe on|off|clear|dump
+//                                the fire-chain dispatch probe: fire-watch on
+//                                the Lane-A FName globals + a ProcessEvent
+//                                name census (GNames text). The seam hook and
+//                                the BS1-parity vraim controls land after the
+//                                probe's verdict.
 
 void save_vr_preset();
 void apply_vr_preset();
@@ -1172,9 +1180,11 @@ void apply_command(const char* cmd, const char* args) {
         // ticks outside hooked calls, so applying directly here is safe.
         scenedraw::handle_command(strncmp(args, "on", 2) == 0 ? "vrstereo on"
                                                               : "vrstereo off");
+    } else if (strcmp(cmd, "vraim") == 0) {
+        aim::handle_command(args); // session 39: dispatch probe first, seam after
     } else {
         BVR_LOG("[b2r] unknown command: %s (see the vocabulary comment in camera.cpp; "
-                "BS1-only levers like vraim/exec are not ported)",
+                "BS1-only levers like exec are not ported)",
                 cmd);
     }
 }
@@ -1722,6 +1732,9 @@ void* __fastcall FindFuncDetour(void* self, void* edx, uint32_t nameIndex,
             BVR_LOG("[b2r] PlayerCalcView UFunction learned: %p (was %p, this=%p)", fn,
                     prev, self);
     }
+    // Session-39 dispatch probe: one relaxed load when disarmed.
+    if (aim::g_probeArmed.load(std::memory_order_relaxed))
+        aim::probe_findfunc(nameIndex, nameNumber, fn);
     return fn;
 }
 
@@ -1732,6 +1745,9 @@ void* __fastcall FindFuncDetour(void* self, void* edx, uint32_t nameIndex,
 void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                                    void* result) {
     g_originalPE(self, edx, fn, parms, result);
+
+    // Session-39 dispatch probe: one relaxed load when disarmed.
+    if (aim::g_probeArmed.load(std::memory_order_relaxed)) aim::probe_process_event(fn);
 
     // The poll and the stale-restore defer while this thread is inside a
     // hooked render call (session 26): a command that installs or disables
@@ -1745,6 +1761,7 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
             if ((s_pollGate & 0xFF) == 0) poll_command_file(GetTickCount64());
             if ((s_pollGate & 0x3F) == 0) {
                 restore_game_fov_if_stale(400);
+                aim::poll_tick(GetTickCount64()); // 1 Hz probe summary while armed
                 // Overlay-posted vrstereo request: hook installs must never
                 // run mid-Draw or from the render thread; this lane is the
                 // game thread outside hooked calls. Also the MENU-arming

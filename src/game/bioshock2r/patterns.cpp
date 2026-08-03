@@ -179,6 +179,81 @@ void hfov_scan_rearm(const char* why) {
     }
 }
 
+bool fname_text(uint32_t index, char* out, size_t outCap) {
+    using namespace bvr::pattern_scan;
+    if (!g_imageBase || !out || outCap < 2) return false;
+    out[0] = '\0';
+
+    const uint8_t* arr = g_imageBase + kGNamesArrayRva;
+    if (!is_memory_valid(arr, 8)) return false;
+    const uint8_t* const* data = *reinterpret_cast<const uint8_t* const* const*>(arr);
+    int32_t count = *reinterpret_cast<const int32_t*>(arr + 4);
+    // Count band: BS1's live table held ~54k names; a table outside a broad
+    // band means the RVA is wrong for this build - refuse everything.
+    if (!data || count <= 0 || count > 2000000) return false;
+    if (index >= static_cast<uint32_t>(count)) return false;
+    if (!is_memory_valid(data + index, sizeof(void*))) return false;
+
+    const uint8_t* entry = data[index];
+    // Freed indices leave null slots (the worker keeps a free-index stack).
+    if (!entry) return false;
+    // Validate the header plus a bounded text window in ONE call; per-char
+    // VirtualQuery would put ~2000 syscalls behind a census dump.
+    const size_t kTextWindow = 64; // 31 UTF-16 chars + terminator
+    if (!is_memory_valid(entry, kFNameEntryTextOffset + kTextWindow)) return false;
+    if (*reinterpret_cast<const uint32_t*>(entry + kFNameEntryIndexOffset) != index)
+        return false; // self-index check - the entry vouches for itself
+
+    const wchar_t* w = reinterpret_cast<const wchar_t*>(entry + kFNameEntryTextOffset);
+    size_t i = 0;
+    size_t cap = outCap - 1;
+    if (cap > kTextWindow / 2 - 1) cap = kTextWindow / 2 - 1;
+    for (; i < cap; ++i) {
+        wchar_t c = w[i];
+        if (!c) break;
+        out[i] = (c >= 32 && c < 127) ? static_cast<char>(c) : '?';
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+void resolve_fire_names(const bvr::pattern_scan::ProcessImage& image, FireNames& out) {
+    using namespace bvr::pattern_scan;
+    // The dispatch names (no `exec` prefix - those are the thunk registration
+    // strings, a different region). StopFiring has no wide string in this exe
+    // at all (script-side name only) and is deliberately absent.
+    static const char* kNames[] = {"GetPerfectFireStart", "BeginFiring", "UseAbility",
+                                   "InitiateDamage",      "ApplyAimError"};
+    out.count = 0;
+    for (const char* name : kNames) {
+        if (out.count >= FireNames::kMax) break;
+        const uint8_t* global = nullptr;
+        auto strs = find_wide_string(image, name);
+        size_t xrefs = 0;
+        for (const uint8_t* s : strs) {
+            // Suffix-pooling trap (BS1 session 10, live in THIS list:
+            // "UseAbility" is the tail of "AnimNotify_UseAbility"): only an
+            // occurrence with its own terminator is the real string.
+            const uint8_t* term = s + 2 * strlen(name);
+            if (!is_memory_valid(term, 2) || term[0] != 0 || term[1] != 0) continue;
+            auto refs = find_references(image, s);
+            xrefs += refs.size();
+            for (const uint8_t* r : refs) {
+                global = find_fname_index_global(image, r);
+                if (global) break;
+            }
+            if (global) break;
+        }
+        out.name[out.count] = name;
+        out.indexGlobal[out.count] = global;
+        ++out.count;
+        BVR_LOG("[b2r] fire-name \"%s\": %zu wide string(s), %zu xref(s), index global %s"
+                " (RVA 0x%X)",
+                name, strs.size(), xrefs, global ? "RESOLVED" : "none",
+                global ? static_cast<unsigned>(global - image.base) : 0u);
+    }
+}
+
 bool verify_draw_chain(const bvr::pattern_scan::ProcessImage& image) {
     using namespace bvr::pattern_scan;
     const uint8_t* slot = image.base + kGameEngineVtableRva + kDrawVtblByteOffset;

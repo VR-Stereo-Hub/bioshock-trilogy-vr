@@ -337,6 +337,50 @@ constexpr float kFgFovMaxDeg = 179.0f;
 int32_t* hfov_option_ptr();
 void hfov_scan_rearm(const char* why);
 
+// --- the name system: GNames (session 39) -----------------------------------
+// Derived offline 2026-08-03 by reproducing core's find_fname_index_global
+// chain against the exe on disk (wide "PlayerCalcView" -> its single exec
+// xref at 0x4DCABE -> FName-ctor stub 0x19C04 -> SEH-wrapper body 0xB813B0 ->
+// worker stub 0x1B2A7 -> worker body 0xB81CE0) and capstone-walking the
+// worker: digit-suffix split, case-insensitive hash AND 0xFFF into a
+// 4096-bucket table at RVA 0x1A594D0 (chain via entry+0xC, wcsicmp against
+// entry+0x10), and on the FindType==2 path an index into GNames.Data with
+// 0x4000000 OR'd into entry+4. That is byte-for-byte BS1's session-20 SHAPE
+// (its worker 0x70D3C0, GNames 0x13904EC) with every number fresh, as the
+// hard rule demands. Full recipe: docs/bioshock2/ENGINE_NOTES.md session 39.
+constexpr uint32_t kGNamesArrayRva = 0x1A614D0; // TArray<FNameEntry*>: Data, +4 Count, +8 Max
+// FNameEntry layout (the worker's own accesses; fname_text() additionally
+// runs the entry self-index check before trusting any of it):
+constexpr uint32_t kFNameEntryIndexOffset = 0x0; // entry's own index (self-check)
+constexpr uint32_t kFNameEntryChainOffset = 0xC; // hash-chain next
+constexpr uint32_t kFNameEntryTextOffset = 0x10; // UTF-16 text in place
+
+// GNames[index] -> ASCII text (lossy narrowing of the UTF-16). Every
+// dereference is validated and the entry must carry its own index; false =
+// anything failed. Game thread only.
+bool fname_text(uint32_t index, char* out, size_t outCap);
+
+// --- fire-chain FName index globals (session 39, Lane A) --------------------
+// The same cached-index-global chain that resolves PlayerCalcView, run per
+// fire-chain dispatch name. Offline census 2026-08-03 of the exe found real
+// globals for BeginFiring (0x180B154), UseAbility (0x180C00C) and
+// InitiateDamage (0x180B804) - all initialized by one boot-time batch
+// registration function (the ctor-call run at ~0x976640 filling consecutive
+// 8-byte FName globals from RVA 0x180B14C up). GetPerfectFireStart and
+// ApplyAimError have wide strings but ZERO exec xrefs - no cached global, so
+// no native by-name dispatch SITE exists for them (the live ProcessEvent
+// probe is still the authority on visibility; a name can reach ProcessEvent
+// through script-to-script dispatch without any native global).
+// A name resolving null here is DATA, not an error - the probe uses whatever
+// subset resolved.
+struct FireNames {
+    static constexpr int kMax = 8;
+    const char* name[kMax] = {};
+    const uint8_t* indexGlobal[kMax] = {}; // null = no cached-index global
+    int count = 0;
+};
+void resolve_fire_names(const bvr::pattern_scan::ProcessImage& image, FireNames& out);
+
 // --- heap scan for vtable-identified objects (session 25) -------------------
 // BS2 shape of BS1's scanner (bioshock1r/patterns.cpp - duplicated per the
 // duplicate-now seam policy): walk the FULL 4 GB committed private RW space

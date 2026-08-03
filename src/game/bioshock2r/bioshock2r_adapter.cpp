@@ -3,6 +3,7 @@
 #include "core/gfx/hud_capture.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock2r/aim.h"
 #include "game/bioshock2r/camera.h"
 #include "game/bioshock2r/patterns.h"
 #include "game/bioshock2r/scenedraw.h"
@@ -45,6 +46,10 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // still ships the lever OFF, so BS1 is untouched either way.
     bvr::vr::set_pace_detach(false);
     if (!camera::install(symbols)) return false;
+    // Session 39: the fire-chain dispatch probe (fail-soft per name; the seam
+    // itself lands after the probe's live verdict). Needs the installed
+    // FindFunctionChecked/ProcessEvent detours, so after camera::install.
+    aim::init(image, symbols);
     BVR_LOG("[b2r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }
