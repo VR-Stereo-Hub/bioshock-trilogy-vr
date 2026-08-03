@@ -68,30 +68,74 @@ in-game quit from GAMEPLAY (the 0xDEDEDEDE path) is the user's half - checklist 
   hand-pose -> game-space conversion (head already crosses that boundary), a fresh BS2
   world-scale measurement, and the seam hook for the dot's hit point.
 
-### USER CHECKLIST (next boot, in the save; no headset needed unless noted)
+### Wrap-up round (same day, user asked for everything flat): BOTH user items CLOSED
 
-1. **Exit-crash acceptance**: play normally, then QUIT TO DESKTOP from gameplay. Expect:
-   game closes within a second or two, `%LOCALAPPDATA%\BioshockVR\bs2\crash\` gains NO
-   new dump, log ends with `crash: window teardown noted` (+ possibly one
-   `fault during window teardown` line - that is the game's own exit bug being absorbed).
-2. **`coupling-viewmodel.xrs`** (queued from session 37, flat, under xrsim): weapon
-   drawn, LIT area, `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\coupling-viewmodel.xrs`
-   - read coverage/bbox + the PNGs, never headline mean-abs-diff (VERIFICATION 2.8).
-3. Ride-alongs IF headset time happens anyway: pitch-servo sign (`vrinput pitchservo
-   status` while looking up/down), helmet key-3810 collateral watch in other maps.
+- **In-game quit acceptance: PASS, flat.** Full pause-menu quit with save-before-exit,
+  stereo armed, driven by scancode keys: save written, `teardown noted (WM_DESTROY)`
+  ~3 s later (post-save - detection in time on this path), ZERO dumps, process gone
+  within bound. Two more fixes fell out: the first teardown gate DEADLOCKED this path
+  (stopping the forced-inline flush mid-worker-teardown = a handshake that never
+  completes; reverted - forced-inline runs through close, the drain guard is the safety)
+  and core gained a 15 s exit WATCHDOG in `note_teardown` (bounds fault AND deadlock
+  exit shapes). ENGINE_NOTES "wrap-up round" has the full derivation + harness lessons
+  (BS2 menus are raw-input-cursor - keyboard only; Space at the title continues into
+  the newest save; zombie processes poison Get-Process/tasklist - tools fixed).
+- **coupling-viewmodel: PASS at the save.** World moves at 4-5x the animation floor
+  under 20 deg yaw / 0.5 m strafe while the drill's screen block stays AT floor -
+  view-locked, correct, zero headset time.
 
-### Next steps (session 39)
+### USER CHECKLIST - nothing required
 
-1. Merge verdict from the user's quit acceptance; if the gameplay-quit path still dumps
-   (teardown flag not yet set on that path), derive the quit-path teardown signal from
-   the new dump and extend `note_teardown`.
-2. **Aim arc, evidence first**: derive the FName-index/impl registration walker for the
-   wide-name region; land the log-only ProcessEvent fire-watch; run the live probe in
-   the save (drill + gun + plasmid); pick the seam (by-name preferred, impl hooks
-   fallback) and flat-prove decoupled aim at a wall (BS1's decal method, fresh numbers).
-3. Then the laser/aim-dot publishing side per the gap list.
-4. Pacing-epic residue unchanged. BS1 regression testing stays deferred to the END of
-   BS2 development (user decision 2026-08-02).
+Everything session 38 needed from you was closed flat. Only ride-alongs remain, IF
+headset time happens anyway: pitch-servo sign (`vrinput pitchservo status` while looking
+up/down; invert lever exists), helmet key-3810 collateral watch in other maps.
+
+### Next steps (session 39) - MOTION CONTROLS, per the user's brief (2026-08-03)
+
+The user's priorities, in order:
+
+1. **Motion controls + aiming (the headline)**: laser + aim dot, and the WEAPON MODELS
+   moving with the controllers with full freedom (rotation + translation), aim and model
+   IN SYNC. Build order:
+   a. Dispatch probe first (unattended-ready now: boot via Space-continue, cheats lane
+      below for a ranged weapon): FName-index derivation for the fire-chain names ->
+      log-only ProcessEvent fire-watch -> fire drill/gun/plasmid -> by-name seam if the
+      chain is PE-visible, BS1-style impl hooks otherwise. Then decoupled-aim flat proof
+      (BS1's decal method, fresh numbers).
+   b. Hand-pose -> game-space conversion + world scale (fresh measurement), then
+      `vr::set_laser`/`set_aim_dot` publishing (core API ready).
+   c. Models-follow-controller: BS2-NATIVE method first. BS2's fg lens already matches
+      law-exact (session 37, G self-identifying) - BS1's ENTIRE counter-model domain
+      (render lock, lockgain/lockdgain/lockpull) existed to fight its lens mismatch and
+      its lock's own correction CAUSED the +-90 deg laser-vs-gun drift (session 21 verdict:
+      `vrbones lock off` = "aim in tune with the model... perfect"; the user remembers
+      this as "switched from abs" - `lock abs` was the anchor-to-world mode). So: compose
+      hands at true geometry, NO lock domain, and verify sync flat from day one -
+      `coupling-hand.xrs` + `aimRayMaxDevDeg` CONSTANT across controller positions is
+      the acceptance instrument (VERIFICATION 2.8; arm BOTH vrhands and vraim - the
+      one-subsystem trap made a fake pass once).
+   d. **Normal controller controls incl. thumbrest, BS1-parity**: BS1's shipped shape =
+      LEFT `/input/thumbrest/touch` as the ammo-type modifier, weapon switch on grip,
+      stick-click fallback until a real thumbrest touch is seen (session 23, user:
+      "perfect"). Port the BEHAVIOR, derive BS2's bindings fresh (BS2 has native
+      dual-wield - the left hand is the plasmid hand, not a mirror of BS1).
+2. **Cheats (if session time remains; else session 40 P1)**: goal = user can GET ALL
+   WEAPONS to test with. The lane is fully unattended now: bind the session-32 command
+   ladder (`GiveAll` first) to F9/F12 in `User.ini` **[Default] section only** (the
+   seven-section trap), press via `game-key`, VERIFY BY EFFECT (weapon wheel screenshot
+   diff), exact item names from the BakedScripts dump if `GiveAll` fails. Fallback: a
+   prepared everything-save as the test fixture.
+
+### Session 40 (planned)
+
+Cheats if not done; then BS1-parity SLIDERS for aim and models (aim sliders are the
+focus - fix aim on the models), and PER-WEAPON AIM PRESETS that auto-swap with the
+equipped weapon (BS1 shape: profiles keyed off the rig's current-holdable read, applied
+over the preset baseline - session 21's two seeding bugs are the reference for what NOT
+to repeat; derive BS2's equivalents fresh).
+
+Standing: pacing-epic residue unchanged; BS1 regression testing stays deferred to the
+END of BS2 development (user decision 2026-08-02).
 
 ---
 
@@ -4707,6 +4751,22 @@ full BeginFiring/AnimNotify_UseAbility/InitiateDamage chain intact, and it is NA
 ASCII sweeps see nothing). BS1's nativemap recipe does not transfer verbatim; the dispatch
 question (ProcessEvent-visible vs native-to-native) is queued as session 39's one live
 probe. ENGINE_NOTES gained "Fire flow / aim" and the full teardown derivation.
+
+Wrap-up round (user: "everything can be tested in flat so do it"): the in-game quit
+acceptance PASSED flat (save written, WM_DESTROY noted post-save, zero dumps, bounded
+exit) after catching a real deadlock in the first teardown gate (stopping the forced
+inline flush mid-worker-teardown never completes; reverted - forced-inline runs through
+close) and adding a 15 s exit watchdog to `note_teardown`. coupling-viewmodel PASSED at
+the save (world 4-5x animation floor under yaw/strafe, drill block AT floor =
+view-locked). Boot-to-save is now fully unattended (Space at the title continues into
+the newest save; BS2 menus need KEYBOARD driving - their raw-input cursor ignores
+SetCursorPos clicks; zombie-process handling fixed in game-key/game-shot/game-cmd). The
+user's checklist for next boot is EMPTY but for headset ride-alongs. Session 39 brief
+(user, 2026-08-03): motion controls - laser/dot aiming with models moving in sync with
+the controllers (BS2-native: NO BS1 lock domain, whose `lock abs` correction caused
+BS1's +-90 drift; `coupling-hand` + constant `aimRayMaxDevDeg` as the sync instrument),
+BS1-parity controls incl. the thumbrest ammo modifier, cheats lane if time remains;
+session 40: cheats spillover + aim/model sliders + per-weapon auto aim presets.
 
 ### Session 37 - 2026-08-02 - the letterbox was the window; the resolution picker ships LIVE
 

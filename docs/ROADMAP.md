@@ -776,9 +776,11 @@ kill. Both prerequisites below are now MET.):**
       cause. Fix: teardown-aware crash handling (WM_CLOSE/WM_DESTROY noted by the overlay
       WndProc -> faults get one log line, no dump, immediate TerminateProcess) + adapter
       hygiene gates + drain-guard poison hardening. Closes now 0.1-0.3 s, zero dumps -
-      faster than vanilla. Accepted: 3 armed sim closes + 5-min armed soak. User half
-      pending: one quit from GAMEPLAY (the 0xDEDEDEDE freed-vtable path). Full derivation:
-      ENGINE_NOTES session 38.
+      faster than vanilla. Accepted: 3 armed sim closes + 5-min armed soak, AND the
+      in-game quit from gameplay with save-before-exit, flat (save written, WM_DESTROY
+      noted, zero dumps; a teardown-gate deadlock was caught and fixed in the same round,
+      plus a 15 s exit watchdog). No user half remains. Full derivation: ENGINE_NOTES
+      session 38 + wrap-up round.
 - [x] **VR PACING (BLOCKER - the game is unplayable in VR)** - an OpenXR session that is running
       but not FOCUSED paces the game at the runtime's not-visible cadence (~10 Hz). Alt-tab
       reproduces it. Not a block (`lastWait 0 ms`); the frame HANDOFF is what paces. Session 28's
