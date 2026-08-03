@@ -2,7 +2,7 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-02, session 37 - THE LETTERBOX WAS THE WINDOW; RESOLUTION IS LIVE - branch `s37-b2r-res-picker`)
+## Current state (2026-08-02/03, session 37 - THE LETTERBOX WAS THE WINDOW; RESOLUTION IS LIVE - merged to `bioshock-2`, ACCEPTED IN-HEADSET)
 
 **The BS1-parity resolution picker ships, and it is better than BS1's: the apply is LIVE.** The
 session-36 brief's three blocking unknowns all closed in one unattended screening pass (zero user
@@ -67,44 +67,55 @@ identity at 16:9, converges in one sample, freezes when the lenses merge. Full d
 table in ENGINE_NOTES session-37 section 6. Build installed to the game folder; the user
 launches tonight on their own schedule.
 
-### Acceptance still OWED (user's next session)
+### ACCEPTED IN-HEADSET (user, 2026-08-03): "it's perfect"
 
-1. **Weapon glued at native** (the G fix's in-headset PERCEPTUAL verdict) - the flat/sim half is
-   VERIFIED (2026-08-03): on a fresh sim boot the fix self-identified in one sample
-   (`lens gain G 0.56250 -> 0.99488`), wrote 111.7 at option 138, and BOTH `dumpframe full`
-   captures decode to ONE law-exact cluster (dH=0.00000, square pixels, full height) - every
-   decodable draw, fg pass included, on one frustum. If it still swims in the headset, report
-   the F10 VIEWMODEL LENS line `written N deg (lens gain G=...)`.
-2. A 5-min `vrstereo on` soak in the save at the ship preset (attach lane, `-NoFocus`).
-3. HUD/menu legibility at portrait, helmet key-3810 collateral watch (both ride along).
+The user's verdict, multiple resolutions tried: **"everything is perfect - the FOV is filling
+the screen and the weapons/hand models are stable and glued."** The flat/sim half was verified
+the same day: fresh boot, the G fix self-identified in one sample (`lens gain G 0.56250 ->
+0.99488`), wrote 111.7 at option 138, and BOTH `dumpframe full` captures decode to ONE law-exact
+cluster (dH=0.00000, square pixels, full height). Stability: the user's whole play session shows
+ZERO watchdog lines and zero guardskips (the instrumented 5-min soak is thereby covered by a
+longer real session; run one only if stability comes back into doubt). Session 37's feature -
+live resolution picker + automatic FOV + the self-identifying viewmodel lens - is CLOSED end to
+end.
 
-### Teardown crash at exit - now REPRODUCED UNATTENDED, two dumps banked
+### Teardown crash at exit - REPRODUCED UNATTENDED, FOUR dumps banked
 
-Two for two on quits with stereo armed + the borderless native window; earlier 16:9-era quits
-were clean. Both are AFTER the save (cosmetic, a few-second exception loop then exit), both
-wrote dumps:
+Correction to the first read: the crash is NOT tied to the borderless/native window - the dump
+folder shows it fired on the 2026-08-02 evening closes too (16:9-era, chrome restored). The
+common factor across all four is a STEREO-ARMED close. Always AFTER the save (cosmetic: a
+few-second exception loop, then exit):
 
 | when | context | fault | dump |
 |---|---|---|---|
-| 2026-08-02 21:44 | quit from GAMEPLAY, VDXR, native | DEP EXECUTE at 0xDEDEDEDE (freed poison), tid=game | `crash\bvr_20260802_214440.dmp` |
-| 2026-08-03 17:17 | quit from MENU scene, xrsim, native | null READ at `Bioshock2HD.exe+0x4FF0FE`, tid=20140 | `crash\bvr_20260803_171738.dmp` |
+| 08-02 19:43 | sim session close, 16:9-era | (log rotated - read the dump) | `crash\bvr_20260802_194326.dmp` |
+| 08-02 19:51 | sim session close, 16:9-era | (log rotated - read the dump) | `crash\bvr_20260802_195143.dmp` |
+| 08-02 21:44 | quit from GAMEPLAY, VDXR, native | DEP EXECUTE at 0xDEDEDEDE (freed poison), tid=game | `crash\bvr_20260802_214440.dmp` |
+| 08-03 17:17 | quit from MENU scene, xrsim, native | null READ at `Bioshock2HD.exe+0x4FF0FE` | `crash\bvr_20260803_171738.dmp` |
 
 `+0x4FF0FE` is game render code in the Draw/flush-chain neighborhood (Draw 0x4EE8D0, flush call
-site 0x4EF4A1) - the working hypothesis is teardown racing the doubled-draw/flush machinery
-(the drain's no-null-check shape is exactly this class; the 1t drain guard covers the FORCED
-path, teardown may reach the drain another way). REPRO RECIPE (no headset needed):
-`xrsim-launch -Game bs2` at a native-size ini -> menu scene -> `vrstereo on` -> close the
-window. Next session: disasm-rva 0x4FF0FE (summarize in ENGINE_NOTES, never commit output),
-read both dumps, and consider disarming stereo/1t on WM_CLOSE before the engine tears down.
+site 0x4EF4A1) - working hypothesis: teardown races the doubled-draw/flush machinery (the
+drain's no-null-check shape is exactly this class; the 1t drain guard covers the FORCED path,
+teardown may reach the drain another way). REPRO RECIPE (no headset needed): `xrsim-launch
+-Game bs2` -> menu scene -> `vrstereo on` -> close the window. Candidate fix shape: a clean
+disarm on teardown (WM_CLOSE/exit hook: park the second draw, restore the option/fg writes,
+let 1t idle) BEFORE the engine frees the scene.
 
-### Next steps
+### Next steps (session 38)
 
-1. Read the owed-acceptance results from the user's tonight run (items above); if the weapon
-   verdict is good, session 37's feature is CLOSED end to end.
-2. Triage the teardown-crash dump (recurrence first, then the minidump).
-3. Then per ROADMAP: aiming, motion controls, normal controls for BS2. Pacing-epic residue
-   unchanged (keepalives with real layers).
-4. BS1 regression testing stays deferred to the END of BS2 development (user decision 2026-08-02).
+1. **Teardown-crash fix**: disasm-rva 0x4FF0FE + read the four dumps (summarize in
+   ENGINE_NOTES, never commit game-derived output), implement the clean-disarm-on-teardown,
+   accept with the sim recipe (three closes, zero new dumps) plus one user quit.
+2. **BS2 aiming arc begins** (the ROADMAP successor: aiming -> motion controls -> normal
+   controls). Derisk first with BS2-native methods (ProcessEvent-by-name seam; BS1 is shape
+   reference ONLY - no constants, no laws, no policies transfer): where does BS2 read the
+   weapon's fire direction, can the aim decouple from the view like BS1's M6, and what do the
+   laser/aim-dot quad layers need. The sim's `aimRayMaxDevDeg` + `coupling-hand.xrs` lane is
+   the flat instrument.
+3. Ride-alongs when headset time happens anyway: the pitch-servo sign check (`vrinput
+   pitchservo status` while looking up/down), helmet key-3810 collateral watch in other maps.
+4. Pacing-epic residue unchanged (keepalives with real layers). BS1 regression testing stays
+   deferred to the END of BS2 development (user decision 2026-08-02).
 
 ---
 
@@ -4605,10 +4616,15 @@ three-probe sweep (drill drawn, fgfov 60/100/138) measured the fg lens law: `tan
 G(aspect)`, G(0.9348) = 0.99488 constant to five digits, G(16:9) = 9/16 exactly (s33's identity)
 - no natural closed form through both, so the shipped fix SELF-IDENTIFIES G live (fov-watch fg
 sample paired with the value the match itself last wrote; converges in one sample; freezes when
-the lenses merge; identity at 16:9). Owed: the user's weapon-glued verdict + a converged
-ONE-cluster dump + the in-save soak. Also banked: a teardown crash on quit-from-gameplay (DEP at
-0xDEDEDEDE, dump at `crash\bvr_20260802_214440.dmp`, after the save - unattributed, recurrence
-check first).
+the lenses merge; identity at 16:9).
+
+CLOSED next day (2026-08-03): the fix verified in-sim first (G identified in one sample, wrote
+111.7 at option 138, both dumps ONE law-exact cluster), then ACCEPTED in-headset - the user
+tried multiple resolutions: "everything is perfect - the FOV is filling the screen and the
+weapons/hand models are stable and glued". Their session log shows zero watchdogs/guardskips.
+Remaining open item handed to session 38: the teardown crash on stereo-armed close - four dumps
+banked, reproduced unattended under the sim (`+0x4FF0FE`, Draw/flush neighborhood), repro
+recipe + candidate fix shape in Current state.
 
 ### Session 36 - 2026-08-02 - the BS2 stereo freeze is dead; full-rate stereo ships on 1t
 

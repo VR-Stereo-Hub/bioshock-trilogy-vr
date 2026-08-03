@@ -764,11 +764,17 @@ kill. Both prerequisites below are now MET.):**
       100/130/80 and TWO when disarmed - because `lenses=1` turned out not to be proof of
       anything. The `0xAECACF` lead was wrong (two call sites of the same draw dispatch);
       `+0x690` is the WORLD lens and must not be written.
-- [ ] **BS2: the rig eats the view (USER PRIORITY, next)** - with the lens matched the Big Daddy
-      helmet takes much more of the screen and there are black bars at the bottom; the user wants
-      the image to fill the whole FOV. The rig's apparent SIZE is coupled to the FOV value, not
-      only to its lens, so this is a separate defect from the swimming. Bars: check the gameswf
-      letterbox classifier first (`vrcine bars`).
+- [x] **BS2: the rig eats the view - RESOLVED across sessions 36-37.** The helmet half: hidden
+      by default since session 36 (edge-of-FOV placement impossible for a single mesh at that
+      distance; the checkbox in FILL THE VIEW is the A/B). The black-bars half was the FOV
+      deficit, closed by session 37's picker + automatic FOV (accepted in-headset 2026-08-03:
+      "the FOV is filling the screen").
+- [ ] **BS2 teardown crash on stereo-armed close (session 37 find, repro'd unattended)** - every
+      close with stereo armed dies in an exception loop AFTER the save (cosmetic but noisy):
+      four dumps banked, latest at `Bioshock2HD.exe+0x4FF0FE` (Draw/flush-chain neighborhood -
+      teardown likely races the doubled-draw machinery). Repro: `xrsim-launch -Game bs2` ->
+      menu scene -> `vrstereo on` -> close. Fix shape: clean disarm on teardown before the
+      engine frees the scene. Details in STATUS session-37/38 notes.
 - [x] **VR PACING (BLOCKER - the game is unplayable in VR)** - an OpenXR session that is running
       but not FOCUSED paces the game at the runtime's not-visible cadence (~10 Hz). Alt-tab
       reproduces it. Not a block (`lastWait 0 ms`); the frame HANDOFF is what paces. Session 28's
