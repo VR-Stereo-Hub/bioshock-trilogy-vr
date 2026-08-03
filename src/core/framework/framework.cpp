@@ -4,6 +4,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
 #include "core/util/crash.h"
+#include "core/util/diag.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/adapter_registry.h"
@@ -122,9 +123,11 @@ void init() {
     }
     BVR_LOG("MinHook initialized");
 
-    input::init(); // fail-soft: missing proxy seam just disables synthetic input
+    if (diag::skip("input")) BVR_LOG("BVR_SKIP: input bridge NOT installed");
+    else input::init(); // fail-soft: missing proxy seam just disables synthetic input
 
-    game::init_adapter(); // fail-soft: scan/hook failure is logged, game runs flat
+    if (diag::skip("adapter")) BVR_LOG("BVR_SKIP: game adapter NOT installed");
+    else game::init_adapter(); // fail-soft: scan/hook failure is logged, game runs flat
 
     // The swapchain hooks go in BEFORE the OpenXR instance (session 27). The
     // first OpenXR call LoadLibrary's the runtime and every implicit API layer,
@@ -134,12 +137,15 @@ void init() {
     // whose only caller is that detour: the session then ran with whatever
     // exception filter had displaced ours (CSERHelper) and produced no dumps at
     // all. This way a hanging runtime costs VR and nothing else.
-    if (!d3d11_hook::install()) {
+    if (diag::skip("d3d11")) {
+        BVR_LOG("BVR_SKIP: D3D11 swapchain hooks NOT installed");
+    } else if (!d3d11_hook::install()) {
         BVR_LOG("D3D11 hook install failed - mod disabled, game runs flat");
         return;
     }
 
-    vr::init_instance(); // fail-soft: no runtime just means flat mode
+    if (diag::skip("xr")) BVR_LOG("BVR_SKIP: OpenXR instance NOT created");
+    else vr::init_instance(); // fail-soft: no runtime just means flat mode
 
     BVR_LOG("init complete; waiting for first Present");
 }

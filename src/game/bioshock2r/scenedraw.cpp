@@ -15,6 +15,7 @@
 
 #include "core/gfx/frame_inspector.h"
 #include "core/hooks/d3d11_hook.h"
+#include "core/util/crash.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/camera.h"
@@ -641,6 +642,25 @@ void __fastcall DrainDetour(void* self, void* edx) {
                         n, GetCurrentThreadId(), patterns::kMgrSceneSlotOffset);
             return;
         }
+        // Session 38 hardening: a FREED-but-non-null scene passes the null
+        // guard and faults inside the drain (the 0xDEDEDEDE DEP-execute dump
+        // shape, gameplay-quit close). The engine pool fills freed memory
+        // with 0xDE; a first dword that reads as pool poison, or does not
+        // read at all, can never be a live scene. No layout assumption
+        // beyond "readable" - a live scene's first dword always reads.
+        if (scene != 0) {
+            uint32_t head = 0;
+            bool ok = read_u32_guarded(reinterpret_cast<const void*>(scene), &head);
+            if (!ok || head == 0xDEDEDEDEu || head == 0xDDDDDDDDu) {
+                uint32_t n = g_drainGuardSkips.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (n <= 3)
+                    BVR_LOG("[reentry] drain-guard: skipped DEAD-scene drain #%u "
+                            "(tid %u, scene=%08X head=%s%08X)",
+                            n, GetCurrentThreadId(), scene, ok ? "" : "unreadable ",
+                            head);
+                return;
+            }
+        }
     }
     g_drainEntries.fetch_add(1, std::memory_order_relaxed);
     reinterpret_cast<DrainFn>(g_drain.original)(self, edx); // never guarded
@@ -685,7 +705,11 @@ int force_inline_flush(void* scene, void* group) {
 //    reads 0 - correctly, the freeze window is gone.
 void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group) {
     g_flushPointEntries.fetch_add(1, std::memory_order_relaxed);
-    if (g_forceInline.load(std::memory_order_relaxed)) {
+    // Session 38: during window teardown, stop forcing the inline branch -
+    // the single remaining draws on the engine's own (threaded) decision are
+    // exactly vanilla close behavior; forcing would drain a dying scene on
+    // this thread.
+    if (g_forceInline.load(std::memory_order_relaxed) && !bvr::crash::teardown_seen()) {
         int r = force_inline_flush(scene, group);
         if (r > 0) {
             g_forcedInline.fetch_add(1, std::memory_order_relaxed);
@@ -733,6 +757,9 @@ void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group)
 void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void* a4,
                        uint32_t callerRva, uint32_t presentDelta) {
     if (g_poisoned.load(std::memory_order_relaxed)) return;
+    // Session 38: no doubled draws once the window began closing - the engine
+    // is tearing the scene down and mod machinery must not run on it.
+    if (bvr::crash::teardown_seen()) return;
     bool pulse = false;
     if (g_pulseCount.load(std::memory_order_relaxed) > 0) {
         pulse = g_pulseCount.fetch_sub(1, std::memory_order_relaxed) > 0;
@@ -948,6 +975,10 @@ void __fastcall StreamViewDetour(void* ecx, void* edx, void* loc, void* rot, voi
 // the doubled draw WITHOUT 1t remains reachable via `reentry srdev on` (the
 // freeze-repro lane, dev only).
 void apply_vrstereo(bool on) {
+    if (on && bvr::crash::teardown_seen()) {
+        BVR_LOG("[reentry] VRSTEREO ON refused - window teardown in progress");
+        return;
+    }
     if (on) {
         // BS1's arming order, load-bearing: 1t FIRST (remove the flush
         // handshake), then camera mode, then the doubled draw.

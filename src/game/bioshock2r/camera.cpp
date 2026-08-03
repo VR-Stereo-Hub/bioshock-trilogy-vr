@@ -13,6 +13,7 @@
 #include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
 #include "core/ui/overlay.h"
+#include "core/util/crash.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/game_ini.h"
@@ -1534,9 +1535,15 @@ void calcview_tail(void* self, CalcViewParams* p) {
         float vrFov = g_forceHeadsetFov.load(std::memory_order_relaxed)
                           ? option_for_rendered_hfov(bvr::vr::suggested_hfov_deg())
                           : 0.0f;
-        bool wantVr = strictGameplay && vrDrove && vrFov > 0.0f;
+        // Session 38: while the window tears down, stop wanting the write.
+        // This runs inside a LIVE CalcView, so the existing OFF-edge restore
+        // below goes through engine-provided live pointers - the safe restore
+        // path; a teardown-time restore from outside CalcView would write
+        // through possibly-freed objects.
+        bool alive = !bvr::crash::teardown_seen();
+        bool wantVr = alive && strictGameplay && vrDrove && vrFov > 0.0f;
         bool wantManual =
-            strictGameplay && g_gameFovWrite.load(std::memory_order_relaxed);
+            alive && strictGameplay && g_gameFovWrite.load(std::memory_order_relaxed);
         if (wantVr || wantManual) {
             if (!g_wasWritingGameFov) {
                 g_savedGameFov = *optionFov;
@@ -1555,8 +1562,10 @@ void calcview_tail(void* self, CalcViewParams* p) {
 
     // Foreground lens match. Runs AFTER the option write above, so when gfov or
     // vrfov is holding the option we match the value the world is actually
-    // rendering rather than the user's saved one.
-    apply_fg_fov_match(optionFov, strictGameplay);
+    // rendering rather than the user's saved one. Teardown gate as above: a
+    // false want makes its OFF-edge restore run through this live CalcView.
+    apply_fg_fov_match(optionFov,
+                       strictGameplay && !bvr::crash::teardown_seen());
 
     // Debug camera offset - the cheapest "the block is writable on this game
     // too" proof, log-measurable via the heartbeat.
@@ -1771,9 +1780,10 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                 // desktop clamp - THE letterbox. While stereo is armed and
                 // the client is smaller than the backbuffer, re-apply the
                 // borderless enforcement at the backbuffer size. Never fires
-                // flat, never fires in fullscreen, and holds off while an
-                // apply is still settling.
-                if (scenedraw::stereo_active() &&
+                // flat, never fires in fullscreen, holds off while an apply
+                // is still settling, and never touches a closing window
+                // (session 38 teardown gate).
+                if (scenedraw::stereo_active() && !bvr::crash::teardown_seen() &&
                     GetTickCount64() >= g_resHealHoldUntilMs) {
                     static int s_healFullscreen = -1; // -1 unknown, cache once
                     if (s_healFullscreen < 0)

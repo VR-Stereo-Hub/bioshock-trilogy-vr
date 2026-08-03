@@ -1232,3 +1232,109 @@ this table and must never be corrected. Overlay shows `written N deg (lens gain 
 - BS2's MENU BACKGROUND classifies as strict gameplay (ShockPlayer view actor), arms fgfov and
   the auto FOV, and renders the full scene pipeline - flat screening without the save is possible
   there, but the save remains the acceptance context (user directive).
+
+## Session 38 (2026-08-03) - the teardown crash: it is the DISPLAY-APPLY, not the drain
+
+All five banked dumps read with `tools/read-dump.py` (new: python-minidump summarizer,
+exception context + module+RVA stack resolution; the dumps carry ONLY the faulting thread -
+crash.cpp's type has no ThreadListStream beyond it, so cross-thread comparison needs the log).
+Derived offline with `tools/disasm-rva.py`; raw output never committed, per the hard rule.
+
+### The faulting site 0x4FF0FE - the engine's pending-display-apply virtual
+
+THREE of the five dumps (194326, 195143, 171738 - every SIM/menu-scene close) fault at the
+SAME instruction, on the GAME thread (`drawTid == presentTid == calcTid == faulting tid`,
+beat-line-confirmed):
+
+| step | instruction shape | meaning |
+|---|---|---|
+| 1 | `mov eax,[imageVA 0x123638F0]` (RVA 0x1A638F0) | engine-family global object |
+| 2 | `mov eax,[eax+0x4C]` | subsystem (client/viewport family) |
+| 3 | `mov eax,[eax+0x44]` | sub-member - NULL at teardown |
+| 4 | `mov ecx,[eax]` | FAULT: read of address 0 |
+| 5+ | `call [vt+0x128]` -> cmp vs GetCurrentThreadId import | owner-thread check |
+| then | four `cvttss2si` + virtual `[vt+0x13C..0x148]` calls; store -1.0f latch | apply four pended display/gamma-class ints, clear the pending float |
+
+- Function entry **0x4FF0D0** (`55 8B EC` + SEH frame; probing mid-prologue misaligns the
+  disasm - always re-anchor on the CC padding before trusting `--back`).
+- ZERO static callers; reached via link thunk 0x174E, which sits at **slot 61 (byte offset
+  0xF4)** of a 108-entry vtable at RVA 0x10BD7DC, constructor-referenced from 0x4EBF58 /
+  0x4EC60F / 0x4ECB06 / 0x4F58D2 - the UGameEngine::Draw neighborhood, so an engine-family
+  class. The null-deref happens BEFORE the pending-latch check, so the crash gates on the
+  CALL being made, not on any latch state.
+
+### The "few-second exception loop" mechanism
+
+The crashing session's log (bioshockvr.prev.log of 2026-08-03 17:17) shows `crash: fault at
+10C1F0FE repeated 86500+ times`: a CHAINED exception filter (not ours; the log records our
+filter being displaced by CSERHelper.dll and re-armed, chaining to it) answers the fault with
+continue-execution, so the SAME instruction refires until the process dies. The mod's own
+SEH-guarded paths swallow their faults silently - any dump that EXISTS is by definition from
+an unguarded path.
+
+### The faulting stack (171738)
+
+The at-fault stack walk shows a USER32 dispatch frame (`USER32+0x2788A`) beneath
+KERNELBASE/ntdll exception frames: the apply virtual runs inside WINDOW-MESSAGE dispatch on
+the game thread during close. The last mod beat is a fully healthy stereo frame ~170 ms
+before the fault; nothing of the mod is on the faulting stack.
+
+### The other two dumps
+
+- **214440 (gameplay quit, VDXR, native)**: DEP EXECUTE at 0xDEDEDEDE with `esi == ecx ==
+  0xDEDEDEDE` and NO return address at esp - a `jmp` through a FREED vtable/function pointer
+  (0xDEDEDEDE is the engine pool free-fill). Different site, same class: engine close-time
+  code through a freed object.
+- **192924 (same evening, one-off)**: null+0x24 READ at 0xC312D2 - a refcount-release
+  pattern (`dec [ecx+4]; cmp; call [eax]` delete) on a null member. Same teardown class.
+
+### The bisect: the fault is the GAME's own exit bug (hook-free proven)
+
+The "stereo-armed close" precondition was refuted the same evening by an unattended
+close-repro bisect (WM_CLOSE posted to the game window = the X-button path; new `BVR_SKIP`
+env lever, tokens `input,adapter,d3d11,xr,inspector,overlay,letterbox`):
+
+| run | config | close verdict |
+|---|---|---|
+| A | sim, `vrstereo on` armed (echo-verified) | CRASH +0x4FF0FE, dump |
+| B/C | sim, mod PASSIVE (nothing armed) | CRASH +0x4FF0FE, dump |
+| D | no sim, no XR session (VDXR unavailable), hooks only | CRASH +0x4FF0FE, dump |
+| G1-G3 | progressively skip adapter, inspector, overlay, letterbox, input, xr | CRASH every time |
+| G4 | **every hook skipped** (no MinHook detours, no D3D11 hooks, DLL+filter only) | **CRASH +0x4FF0FE** (VEH first-chance confirmed) |
+| F | **vanilla** (proxy shim renamed away) | exits in 5-9 s, **teardown CPU 0.1 s** - waiting, not spinning; no observer to see a fault |
+
+**Conclusion: BioShock 2 Remastered faults on its own exit path on every close on this
+machine** (its Steam-forum reputation for exit crashes is earned). The mod contributed only
+VISIBILITY and DELAY: a 58 MB minidump per close, the chained-filter retry spin, and exit
+dumps eating the 3-per-session dump cap that exists for REAL crashes. The faulting site
+also varies run to run (+0x4FF0FE most; +0xC6C2C2 null-read and the 0xDEDEDEDE freed-vtable
+jump also seen) - it is a FAMILY of close-time faults, which is why the fix gates on
+teardown, never on a site address.
+
+### The fix (shipped session 38)
+
+1. **Core, additive**: the overlay WndProc subclass (already on the game's main window)
+   calls `crash::note_teardown()` on WM_CLOSE / WM_DESTROY / WM_ENDSESSION. Once noted,
+   `crash::report()` treats any fault as the host's exit-path bug: ONE log line, NO
+   minidump, immediate `TerminateProcess(0)`. Measured: close latency went from 5-9 s
+   (vanilla) / ~6 s + dump (modded) to **0.1-0.3 s, zero dumps** - faster and quieter than
+   the unmodded game. Live behavior before the close message is completely unchanged.
+2. **BS2 adapter hygiene** (all no-op while alive, one atomic read per gate):
+   `maybe_second_draw` bails on teardown; `FlushPointDetour` stops forcing the inline
+   branch (single draws on the engine's own decision = vanilla close behavior);
+   `apply_vrstereo(on)` refuses; the option/fg FOV writes stop WANTING inside the live
+   CalcView (so the existing OFF-edge restores run through engine-provided live pointers -
+   never a teardown-time write through possibly-freed objects); the letterbox self-heal
+   never touches a closing window.
+3. **Drain-guard hardening**: `DrainDetour` now also skips a scene whose first dword is
+   unreadable or reads as pool poison (0xDEDEDEDE/0xDDDDDDDD) - the freed-but-non-null
+   class the 214440 gameplay-quit dump showed. No layout assumption beyond "a live scene's
+   first dword reads and is not the pool fill".
+
+Diagnostics kept: `BVR_SKIP` (subsystem bisect without rebuilds) and `BVR_VEH=1`
+(first-chance AV observer, once per unique eip) - both earned their keep deriving this.
+
+Acceptance: three echo-verified `vrstereo on` closes under the sim - exit 0.1 s, ZERO new
+dumps, full-rate 1T beats (`wait2/s=0`, `guardskips=0`) to the last frame, then
+`teardown noted (WM_CLOSE)` -> one fault line -> clean exit. The in-game quit from
+GAMEPLAY (the 0xDEDEDEDE path) is queued for the user's save session.
