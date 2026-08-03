@@ -86,6 +86,8 @@ add_library(bioshockvr SHARED
     game/bioshock2r/game_ini.h
     game/bioshock2r/hands.cpp
     game/bioshock2r/hands.h
+    game/bioshock2r/input_drive.cpp
+    game/bioshock2r/input_drive.h
     game/bioshock2r/patterns.cpp
     game/bioshock2r/patterns.h
     game/bioshock2r/scenedraw.cpp

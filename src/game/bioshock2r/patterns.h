@@ -465,6 +465,72 @@ struct FireNames {
 };
 void resolve_fire_names(const bvr::pattern_scan::ProcessImage& image, FireNames& out);
 
+// --- gamepad / input drive (session 40) --------------------------------------
+// P1.0 offline gate + derivation (scratchpad pefile/capstone walk of
+// Bioshock2HD.exe on disk; every stop re-derived fresh, BS1 numbers never
+// copied). Full recipe + disasm quotes: ENGINE_NOTES "Session 40".
+// - XINPUT1_3.dll imports exactly ordinals 2 (GetState) and 3 (SetState);
+//   each slot has ONE xref, a FF25 jmp thunk (GetState thunk 0xCDDA2B). E8
+//   census of the thunk: 3 call sites - an any-input boot poller (fn
+//   0x997B10, GetAsyncKeyState family beside it) and TWO inside 0xCD7180.
+// - 0xCD7180 IS UWindowsViewport::UpdateInput: viewport vtable slot 73
+//   (+0x124, jmp stub 0x27ED0), retn 8, args (BOOL reset at ebp+8 - gates a
+//   GetKeyState refresh block - FLOAT dt at ebp+0xC, multiplied into the
+//   axis event dispatches). ZERO static E8 callers - vtable-only dispatch,
+//   and the live count of 2 boot GetState calls total means NOTHING calls
+//   UpdateInput per frame on BS2: BS1's orphaned-pad-path class exactly.
+// - Pad block: branch A (connected global set) calls GetState(0) every call
+//   and re-stamps the global from the result; branch B at 0xCD81FA (global
+//   clear) probes GetState and SETS the global on success - the reconnect
+//   branch EXISTS, so pumping UpdateInput heals the boot "no pad" latch on
+//   the first pumped call; we never write the global ourselves.
+// - UWindowsClient::SetUseController = client vtable slot 73 (+0x124, body
+//   0xCD2680, retn 4): writes client+0xDC (UseController BOOL, read by the
+//   pad block's auto-prompt path), refreshes the localized prompt cache,
+//   notifies through GEngine, SaveConfig-family tail. Slot 72 (+0x120) is
+//   the getter (mov eax,[ecx+0xDC]; ret). Both classes land on slot 73 by
+//   coincidence - banked as TWO constants anyway (BS1's shared-slot trap:
+//   its 0x118 was one constant for both, a layout accident).
+// - UGameEngine global pointer RVA 0x1A638F0: the disconnect handler
+//   0x44E6C0 runs mov ecx,[0x123638F0]; mov ecx,[ecx+0x4C];
+//   call [vtbl+0x124](0) = GEngine->Client->SetUseController(FALSE) - the
+//   global, the engine->client offset 0x4C and the slot confirm each other
+//   in one instruction run. Live identity: [global] must carry vtable
+//   kGameEngineVtableRva (a check BS1's resolver never had).
+// - Client viewports TArray: data client+0x44, count client+0x48 (slot-70
+//   body iterates it; BS1's count was +0x4C - fresh derivation caught the
+//   delta). Viewport identity: vtable RVA below.
+// - RTTI walk fresh: UWindowsClient vtable 0x120B268, UWindowsViewport
+//   0x120B5FC.
+// - Pad-connected global RVA 0x14977A0 (33 refs, written only by the pad
+//   block + reconnect branch). Pad-prompt global RVA 0x1A7F07C. UpdateInput
+//   early-out global RVA 0x1A515D4 (lone bool setter 0x2E5A20; semantics
+//   TBD live - if the stick oracle stalls with the drive armed, read this).
+// - Self-skips (KB/M double-processing guard rails): DI keyboard block skips
+//   when the DI device global [0x1A7F018] is null or client+0xD8 is 0; the
+//   WM mouse block gates on viewport+0x220; the GetKeyState block gates on
+//   the reset arg (the drive passes 0). Same family as BS1; the live KB/M
+//   A/B stays the arbiter.
+// - Ini pad map audit (R10): [Engine.Input]-family XENON_* bindings are the
+//   native console map and align with core's composed behaviors 1:1 -
+//   XENON_RT=BeginFiring, XENON_LT=UseActiveAbility (dual-wield triggers),
+//   DPAD_UP/DOWN=ContextAmmoSelectionUp/Down (thumbrest ammo modifier),
+//   LB/RB=OpenAbility/WeaponMenu radials whose input contexts are swapped
+//   ENGINE-side ([RadialActive] sections) - BS1's radial pitch guard is
+//   likely unnecessary here; verify live before porting it.
+constexpr uint32_t kGameEnginePtrRva = 0x1A638F0;
+constexpr uint32_t kEngineClientOffset = 0x4C;
+constexpr uint32_t kWindowsClientVtableRva = 0x120B268;
+constexpr uint32_t kWindowsViewportVtableRva = 0x120B5FC;
+constexpr uint32_t kClientViewportsDataOffset = 0x44;
+constexpr uint32_t kClientViewportsCountOffset = 0x48;
+constexpr uint32_t kClientSetUseControllerVtblOffset = 0x124; // slot 73, retn 4
+constexpr uint32_t kViewportUpdateInputVtblOffset = 0x124;    // slot 73, retn 8
+constexpr uint32_t kClientUseControllerOffset = 0xDC; // BOOL (documented, unread)
+constexpr uint32_t kXInputGetStateIatRva = 0x1C0DBFC; // XINPUT1_3 ordinal 2 slot
+constexpr uint32_t kXInputSetStateIatRva = 0x1C0DBF8; // ordinal 3 - untouched
+constexpr uint32_t kPadConnectedFlagRva = 0x14977A0;  // documented, never written
+
 // --- heap scan for vtable-identified objects (session 25) -------------------
 // BS2 shape of BS1's scanner (bioshock1r/patterns.cpp - duplicated per the
 // duplicate-now seam policy): walk the FULL 4 GB committed private RW space

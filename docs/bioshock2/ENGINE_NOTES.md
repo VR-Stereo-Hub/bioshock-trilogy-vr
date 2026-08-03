@@ -1728,3 +1728,95 @@ at ~RVA 0x1202400, beside `AD_BENCHMARK`):
   GetPerfectFireStart at all (nothing grabbable at the crosshair; the damage arc rides
   the THROW). The live ability-substitution check stays queued for a cast at a real
   target - session 40, or the user's headset run settles it for free.
+
+## Session 40 (2026-08-04) - the input port: BS2's pad path exists, orphaned, and pumpable
+
+### P1.0 offline gate: the per-frame pad poller EXISTS (go)
+
+The whole port rested on one unproven premise: that BS2's binary still contains a
+per-frame pad poller nothing calls (BS1's orphaned UpdateInput class). Offline
+pefile/capstone walk of Bioshock2HD.exe (preferred base 0x10900000, same as BS1 - same
+engine family, every RVA still derived fresh):
+
+- **XINPUT1_3.dll imports exactly ordinals 2 (GetState) + 3 (SetState)**; IAT slots RVA
+  0x1C0DBFC / 0x1C0DBF8. Each slot has ONE xref - a `FF25` jmp thunk (GetState thunk
+  0xCDDA2B). E8 census of the GetState thunk: **3 call sites** - an any-input boot
+  poller (fn 0x997B10, GetAsyncKeyState family alongside), and TWO inside one function.
+- **UWindowsViewport::UpdateInput = body 0xCD7180**, viewport vtable slot 73 (+0x124,
+  jmp stub 0x27ED0), `retn 8`, args (BOOL reset at ebp+8, FLOAT dt at ebp+0xC - the dt
+  multiplies into the axis event dispatches, the reset arg gates a GetKeyState refresh
+  block). **ZERO static E8 callers** - vtable-only dispatch; with the live boot showing
+  `getstate[0] 2 total` forever, nothing calls it per frame. BS1's orphan class exactly.
+- **RTTI walk fresh**: UWindowsViewport vtable 0x120B5FC, UWindowsClient 0x120B268,
+  UGameEngine 0x10BD7DC (confirms the banked constant from session 24).
+
+### The pad block, and why pumping alone heals the boot latch
+
+UpdateInput's pad block (disasm at 0xCD766B..0xCD8222):
+
+- Gate: pad-connected global **[RVA 0x14977A0]** set AND viewport+0x7C non-null AND a
+  focus/flag check (thunk 0x1ECA4 -> 0x44C610: needs bit 8 of [obj+0x44] and the
+  connected global again).
+- **Branch A** (connected): `XInputGetState(0)` EVERY call, `sete cl;
+  mov [0x14977A0], ecx` - re-stamps the global from the live result. On failure it
+  walks the disconnect flow: client vtbl slot 72 (+0x120, the UseController getter)
+  then slot 73 (+0x124) with 0 - SetUseController(FALSE) - plus the pause/dialog UI
+  via GEngine.
+- **Branch B at 0xCD81FA** (not connected): probes GetState and on success writes
+  `[0x14977A0] = 1` + runs the on-connect handler. **The reconnect branch exists** -
+  the first pumped UpdateInput after the bridge hijacks the IAT re-arms the engine's
+  own latch; the mod never writes the global.
+- Success path also reads **client+0xDC (UseController BOOL)** for the auto-prompt
+  call and stamps the pad-prompt global [RVA 0x1A7F07C].
+
+### SetUseController, GEngine, and the client layout - one instruction run proves three
+
+The on-disconnect handler (0x44E6C0) runs `mov ecx,[0x123638F0]; mov ecx,[ecx+0x4C];
+call [vtbl+0x124](0)`: **UGameEngine global pointer = RVA 0x1A638F0**, engine+0x4C =
+UWindowsClient, client vtable slot 73 (+0x124) = **SetUseController(BOOL)** (body
+0xCD2680, `retn 4`: writes client+0xDC, refreshes the localized prompt-string cache,
+notifies through GEngine, SaveConfig-family tail). Slot 72 (+0x120) is the getter
+(`mov eax,[ecx+0xDC]; ret`). Client viewports TArray: **data +0x44, count +0x48**
+(slot-70 body iterates it; BS1's count was +0x4C - the never-copy rule caught a real
+delta). Both classes landing on slot 73 is a coincidence; patterns.h banks TWO
+constants (BS1's shared 0x118 was the same accident, and porting it as one constant is
+the trap).
+
+No "ToggleUseController" console verb exists on BS2 (BS1's wide string is absent);
+`UseJoystick`/`UseController` wide strings are the .rdata ini key names.
+
+### Self-skips (the KB/M double-processing guards), and the open flag
+
+- DI keyboard block: skips when the DI device global [RVA 0x1A7F018] is null or
+  client+0xD8 is 0. WM mouse block: gates on viewport+0x220. GetKeyState refresh:
+  gates on the reset arg (the drive passes 0). Same family as BS1; the live KB/M A/B
+  is still the arbiter before vrinput defaults ON.
+- **UpdateInput early-out**: thunk 0x14222 -> `mov eax,[0x123515D4]; ret` gates the
+  whole input body; RVA 0x1A515D4 has a single bool setter (0x2E5A20), semantics not
+  yet identified. If the stick oracle stalls with the drive armed and `drives/s`
+  healthy, read this global first.
+
+### Ini pad map (R10 audit): core's composed behaviors land natively
+
+`[Engine.Input]`-family XENON_* bindings in User.ini are the native console map:
+XENON_RT=`BeginFiring` and XENON_LT=`UseActiveAbility` (core's dual-wield triggers map
+1:1), DPAD_UP/DOWN=`ContextAmmoSelectionUp/Down` (the thumbrest ammo modifier's
+pulses land on ammo cycling as-is), LB/RB=`OpenAbilityMenu`/`OpenWeaponMenu` with the
+radial stick contexts swapped ENGINE-side ([RadialActive] sections rebind the axes) -
+BS1's radial pitch guard is likely unnecessary on BS2; verify live before porting.
+A=Use, B=SwitchToWeapons/dash, X=Adopt/Hack/Reload, Y=Harvest/Jump, START=Pause,
+BACK=ShowHelp, sticks = move/strafe + turn/lookup with engine-side deadzones 0.225.
+
+### The port (input_drive.cpp + the ProcessEvent pump)
+
+`b2r/input_drive.{h,cpp}` duplicates BS1's shape (per-frame re-resolve, vtable
+identity on ALL THREE hops - the engine check is new, its vtable was already banked -
+SEH-wrapped thiscall-via-fastcall, one-way poison latch, IAT-hijack-then-
+SetUseController arm order, present-count throttle). The pump site is the
+ProcessEventDetour tail (BS2's menu never runs CalcView; the poller lane already lives
+there): per-event check self-throttled to one UpdateInput per present, gated on
+`!inside_hooked_call()` + `!teardown_seen()`, and a re-entrancy latch shared with the
+command poller - UpdateInput dispatches input events that re-enter the detour, and a
+nested `vrinput off` or hook install mid-pump is the failure mode the latch closes.
+Snap turn drains `take_snap_steps()` into g_recenterYawUnits BEFORE the residual math
+(same-frame consistency: yaw, frame context and lasers agree on the new recenter).

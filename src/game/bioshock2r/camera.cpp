@@ -21,6 +21,7 @@
 #include "game/bioshock2r/frame_context.h"
 #include "game/bioshock2r/game_ini.h"
 #include "game/bioshock2r/hands.h"
+#include "game/bioshock2r/input_drive.h"
 #include "game/bioshock2r/scenedraw.h"
 #include "game/shared/ue_math.h"
 
@@ -1465,6 +1466,20 @@ void calcview_tail(void* self, CalcViewParams* p) {
             BVR_LOG("[b2r] vr camera recentered (yaw %.1f deg)", a.yawRad * kRadToDeg);
         }
 
+        // Snap turn (session 40, BS1 shape): shift the recenter yaw by the
+        // queued bridge steps - raises the residual exactly like a physical
+        // head turn. Drained BEFORE the residual math so this frame's yaw,
+        // frame context and lasers all agree on the new recenter.
+        if (g_haveRecenter) {
+            if (int steps = bvr::input::take_snap_steps()) {
+                int32_t units = static_cast<int32_t>(
+                    lroundf(bvr::input::snap_angle_deg() * kRotUnitsPerDegree * steps));
+                g_recenterYawUnits = wrap_rot(g_recenterYawUnits - units);
+                BVR_LOG("[b2r] snap turn %+d step(s) (%.0f deg each)", steps,
+                        bvr::input::snap_angle_deg());
+            }
+        }
+
         // Integer all the way through (see BS1's invariant note): the
         // head-look residual is the ONLY thing added to the game's own yaw.
         int32_t gameYawUnits = rot->yaw;
@@ -1825,9 +1840,15 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
     // so a deferred tick lands again within milliseconds. (BS2 improvement
     // over BS1, whose poller runs inside the build via the CalcView detour.)
     static uint32_t s_pollGate = 0; // game thread only
+    // Session 40: one re-entrancy latch over the poller lane and the input
+    // pump below - UpdateInput dispatches input events that re-enter this
+    // detour, and a nested command poll could flip vrinput or install hooks
+    // mid-pump. Game thread only, like the gate counter.
+    static bool s_inTailLane = false;
     ++s_pollGate;
-    if ((s_pollGate & 0xFF) == 0 || (s_pollGate & 0x3F) == 0) {
+    if (((s_pollGate & 0xFF) == 0 || (s_pollGate & 0x3F) == 0) && !s_inTailLane) {
         if (!scenedraw::inside_hooked_call()) {
+            s_inTailLane = true;
             if ((s_pollGate & 0xFF) == 0) poll_command_file(GetTickCount64());
             if ((s_pollGate & 0x3F) == 0) {
                 restore_game_fov_if_stale(400);
@@ -1892,7 +1913,21 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                     }
                 }
             }
+            s_inTailLane = false;
         }
+    }
+
+    // Input pump (session 40): per-event check, self-throttled to one
+    // UpdateInput per present inside on_frame (the poller's 0x3F mask fires
+    // ~40/s at gameplay dispatch rates - too coarse for a per-present pump).
+    // Runs at the menu too (this lane exists precisely because BS2's menu
+    // has no CalcView); never inside a hooked render call, never during
+    // teardown, never nested under its own event dispatches.
+    if (!s_inTailLane && !scenedraw::inside_hooked_call() &&
+        !bvr::crash::teardown_seen()) {
+        s_inTailLane = true;
+        input_drive::on_frame(GetTickCount64());
+        s_inTailLane = false;
     }
 
     if (fn && parms && fn == g_calcViewFn.load(std::memory_order_relaxed)) {
@@ -2263,6 +2298,7 @@ void draw_debug_ui() {
         ImGui::Text(g_vrDriving.load(std::memory_order_relaxed)
                         ? "camera: driven by HMD pose"
                         : "camera: game (press VR camera ON, needs gameplay view)");
+        input_drive::draw_debug_ui();
         ImGui::Text("head offset: (%.1f %.1f %.1f) UU",
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
