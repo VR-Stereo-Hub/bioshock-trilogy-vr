@@ -824,17 +824,36 @@ kill. Both prerequisites below are now MET.):**
       64-bone pose bank poke-proven; rigid cluster drive, NO lock domain; coupling
       acceptance aimRayMaxDevDeg constant (0/0/0/0.02/0), write-loc at exactly 100 UU/m.
 - [x] **Cheats lane** (session 39): F9=GiveAll by effect; digit-key weapon switching flat.
-- [ ] **input_drive port** (session 40): the engine polls XInput only twice at boot -
-      UpdateInput-per-present + SetUseController with fresh RVAs; unblocks locomotion,
-      thumbrest ammo modifier, grip switch, native dual-wield triggers (core behaviors ready).
-- [ ] **Per-hand clusters** (session 40): bone-name map (SharedSkeletonData at skel+0x08) ->
-      left cluster on the plasmid hand.
-- [ ] **Aim/model sliders + presets** (session 40): F10 sliders, vrpreset keys, per-weapon
-      aim presets auto-swapping with the equipped weapon.
+- [x] **input_drive port** (session 40): UpdateInput IS in the binary but orphaned (viewport
+      vtbl slot 73, zero callers) - pumped per present + SetUseController through the client's
+      own slot 73, all RVAs fresh (GEngine ptr 0x1A638F0, IAT slot 0x1C0DBFC). Flat-proven:
+      sticks walk the player ~400 UU, a synthetic trigger fires through the seam, the main
+      menu navigates on the dpad, and the engine's own UI switched to controller prompts.
+- [x] **Per-hand clusters** (session 40): bone-name map auto-detected at
+      SharedSkeletonData+0xB4 (64/64 named) -> left = wrist 7 + fingers 8..28 + pivot 62,
+      right = wrist 36 + fingers 37..57 + pivot 63 (the weapon attach, proven by driving it
+      alone). Each cluster tracks its own controller: 35.0 UU on the moved hand, 0.0 on the
+      other, 120.0 UU separation for 1.2 m apart.
+- [x] **Model alignment + scale + bullet origin** (session 40 - the first look's top three
+      defects): the composition was DISCARDING the anchor's authored frame; fixed, so the
+      mesh-vs-authored angle at rest is 0.21 deg (was ~81.6). `vrhands scale` scales about
+      the anchor (anchor invariant to 0.00 UU) and is independent of worldscale. Bullets
+      leave the hand (61.9 UU displacement, clamped at 200).
+- [x] **Dual lasers + dual dots** (session 40, user's call - BS2 is natively dual-wield):
+      both hands render a beam and a dot, 11 of the 16 compositor layers, each beam
+      terminating at its own dot so there is one bright point per hand.
+- [x] **Aim/model sliders + presets** (session 40): F10 "HANDS + AIM (per hand)" panel with a
+      tuning-hand radio; 14 new vrpreset keys (a fresh boot loads 22 values, was 8).
 - [ ] **In-headset acceptance**: aim-follows-controller + model-in-tune-with-laser (the
       session-21 "perfect" bar), at the user's save.
-- [ ] **Ability seam live check**: substitution on a cast with a plasmid equipped (hooked
-      and identity-verified; the fresh save had no plasmid to cast).
+- [ ] **Ability seam live check**: BLOCKED on a projectile plasmid, not on the seam.
+      Telekinesis provably does not traverse GetPerfectFireStart (two casts at a grabbable
+      object, abi stayed 0), and `<X>BasicPlasmid` exists ONLY for Telekinesis in the exe -
+      the other item class names are in the content packages and still have to be found.
+- [ ] **Per-weapon aim presets** (deferred out of session 40, deliberately - was bundled into
+      the sliders box): needs holdable identity under session-21's rules (key off the rig's
+      live holdable, never vtable-gate it, unresolvable clears, never seed before a value
+      source exists), and no tuned value source exists until the user calibrates in-headset.
 
 ## Post-v1 backlog (not scheduled)
 

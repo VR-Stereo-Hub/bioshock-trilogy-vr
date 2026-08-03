@@ -1161,3 +1161,30 @@ runtime.
   APIs (`get_hand_pose`, `set_laser`, `set_aim_dot`, xr_math, pattern_scan primitives) -
   the BS1-risk surface was never touched, which is what makes the deferred-BS1-regression
   policy safe for another session.
+- **Session 40: the bone drive composes ON the authored pose, not over it.** The rigid map
+  used to be `delta = qtc * conj(refQ_anchor)`, which makes the anchor's rotation become the
+  controller's outright and throws the mesh's authored frame away. On BS2's rig that frame is
+  ~81.6 deg off the view frame, and that discarded rotation WAS the "~90 deg constant offset"
+  the first look reported. It is now `delta = qtc` - every cluster bone keeps its authored
+  rotation and the whole cluster turns by the controller's rotation relative to the AHands
+  actor (which carries the view rotation). A controller aiming where the view aims reproduces
+  the engine's own pose exactly. This is equivalent to a per-cluster bake of `refQ_anchor`,
+  but it is self-deriving: nothing to re-bank when a weapon, animation or rig changes, which
+  is why it was preferred over the baked constant the session-40 plan called for.
+- **Per-hand clusters are baked INDEX RANGES; the bone-name map is a diagnostic** (BS1's
+  conclusion, re-reached on BS2). `vrbones names` exists to DERIVE the ranges once - it is
+  never in the drive path. The anchor is the bone the attachment renders from (right = the
+  weapon pivot 63, proven by driving it alone and watching the gun move), falling back to the
+  wrist where nothing attaches (left = 7).
+- **BS2 renders BOTH lasers and BOTH aim dots at once** (user decision, session 40): BS2 is
+  natively dual-wield, so unlike BS1 there is no single "active hand". This is the session's
+  only core change, and it is additive by construction - `set_laser_slot(1, ...)` /
+  `set_aim_dot_slot(1, ...)` are new entry points that no BS1 path calls, slot 0 keeps the
+  exact behavior `set_laser` always had, and the dot budget is SHARED (kMaxLaserDots across
+  both beams) rather than doubled, so the compositor layer arrays do not grow. Worst case
+  went from 11 layers to 12 of the 16 a runtime must accept; measured live at 11.
+- **The input pump lives on the ProcessEvent lane, not CalcView** (BS1's site). BS2's menu
+  never runs PlayerCalcView, and pad menu navigation is exactly where a pad drive has to work
+  first. The lane already hosted the command poller for the same reason. It carries a
+  re-entrancy latch because UpdateInput dispatches input events that re-enter the detour, and
+  a nested command poll could flip `vrinput` or install hooks mid-pump.
