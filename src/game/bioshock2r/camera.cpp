@@ -682,12 +682,15 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   reentry vrstereo|stereo|pulse|on|off|yaw|reset|hook [draw|stream]|
 //           unhook|dump <n>|kick on|off|kick2 on|off|calcstack|status
 // Aim (session 39; aim.h has the grammar):
-//   vraim status | probe on|off|clear|dump
-//                                the fire-chain dispatch probe: fire-watch on
-//                                the Lane-A FName globals + a ProcessEvent
-//                                name census (GNames text). The seam hook and
-//                                the BS1-parity vraim controls land after the
-//                                probe's verdict.
+//   vraim status | on|off | seam weapon|ability on|off |
+//         test r <yaw> <pitch> [ms]|off | probe on|off|clear|dump
+//                                the GetPerfectFireStart impl seam (both
+//                                variants hooked, telemetry always; `on` arms
+//                                substitution, `test` feeds a synthetic ray
+//                                as an offset from the live view rot - the
+//                                decal-proof lane) plus the dispatch probe
+//                                (fire-watch + GNames census) that settled
+//                                the by-name-vs-impl question.
 
 void save_vr_preset();
 void apply_vr_preset();
@@ -1529,6 +1532,10 @@ void calcview_tail(void* self, CalcViewParams* p) {
     }
     // Stick-pitch-kill gate for the core input bridge, same funnel BS1 feeds.
     bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
+    // The live view rotation for the aim seam (pass 1 only by construction -
+    // pass 2 routes through second_pass_replay). The test ray and later the
+    // hand ray substitute as offsets from exactly this rotation.
+    aim::publish_view_rot(*rot, strictGameplay);
 
     // FOV write (session 25, BS1 write-block shape): strict gameplay only,
     // VR wants it only while the HMD actually drives, manual lever for flat

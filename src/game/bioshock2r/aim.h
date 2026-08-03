@@ -20,8 +20,18 @@
 //    UFunction* is scanned for a dword equal to *fnameIndexGlobal (with a
 //    zero number dword behind it) - zero layout constants assumed.
 
+// Stage 2 (same session): the SEAM ITSELF - MinHook detours on both impls
+// (patterns::resolve_gpfs_impls; weapon body covers the whole weapon family
+// incl. the drill, ability body covers the plasmid arc). The detours call the
+// original FIRST and then substitute the out-params - BS1's flat-proven
+// property, re-proven here with the decal test. Substitution sources, in
+// priority order: the synthetic test ray (`vraim test r <yaw> <pitch>`,
+// an OFFSET from the live view rotation - the decal proof's lane), then the
+// XR hand ray (lands with the frame-context work).
+
 #include "core/hooks/pattern_scan.h"
 #include "game/bioshock2r/patterns.h"
+#include "game/shared/ue_math.h"
 
 #include <atomic>
 #include <cstdint>
@@ -33,13 +43,23 @@ namespace bvr::b2r::aim {
 // and the fast path must stay tiny.
 extern std::atomic<bool> g_probeArmed;
 
-// Resolve the fire-chain name globals (fail-soft per name) and stash what the
-// probe needs. Call after camera::install succeeds.
+// Resolve the fire-chain name globals (fail-soft per name), install the
+// GetPerfectFireStart impl hooks (telemetry-mode until `vraim on`), and stash
+// what the probe needs. Call after camera::install succeeds.
 void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols& symbols);
+
+// True while at least one GetPerfectFireStart impl hook is live (the
+// adapter's CAP_AIM_OVERRIDE gate).
+bool hook_live();
 
 // Called from camera.cpp's detours ONLY while g_probeArmed (game thread).
 void probe_findfunc(uint32_t nameIndex, uint32_t nameNumber, void* fn);
 void probe_process_event(void* fn);
+
+// The live view rotation, published by the camera's CalcView tail every
+// pass-1 dispatch (post drive). The test ray substitutes as an offset from
+// this - the exact slot the XR hand ray will feed later.
+void publish_view_rot(const FRotator& rot, bool strictGameplay);
 
 // 1 Hz probe summary while armed; rides the camera poll lane's maintenance
 // tick (game thread, outside hooked calls).

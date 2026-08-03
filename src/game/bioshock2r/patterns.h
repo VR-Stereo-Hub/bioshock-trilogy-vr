@@ -360,6 +360,55 @@ constexpr uint32_t kFNameEntryTextOffset = 0x10; // UTF-16 text in place
 // anything failed. Game thread only.
 bool fname_text(uint32_t index, char* out, size_t outCap);
 
+// --- GetPerfectFireStart impls (session 39, THE aim seam) -------------------
+// The live probe settled the dispatch question: GetPerfectFireStart never
+// passes ProcessEvent (0 hits over 6 real fire events while InitiateDamage
+// scored 6/6 there), so the hooks land on the C++ IMPLS - BS1's conclusion,
+// re-derived on this build. Derivation 2026-08-03, fully offline:
+//
+// WEAPON: vtable slot census over APlayerWeapon 0x112CC78 (capstone: classify
+// every slot body by `ret imm` + writes-through-pointer-args) left slot 221
+// (byte +0x374, link stub 0x180D9) -> body 0x89DCB0, and its disasm is the
+// BS1 shape with fresh offsets everywhere: owner pawn from weapon+0x47C,
+// out-param B <- pawn+0x1F8/0x1FC/0x200 (the documented actor ROT offsets),
+// out-param A <- pawn+0x1EC/0x1F0/0x1F4 (the actor LOC offsets) plus an
+// eye-height float pawn+0x5B8 added to Z, `ret 0xC` = (FVector* outLoc,
+// FRotator* outRot, FVector* outEffectLoc). AWeapon (0x1113DCC) and
+// APlayerMeleeWeapon (0x112EF08 - the drill) carry the SAME body at the SAME
+// slot: ONE hook covers the whole weapon family.
+//
+// ABILITY: not virtual - UAttackAbility's vtable (0x1112A18, RTTI walk) ends
+// at slot 67 with no candidate. Found by a .text sweep for `ret 0x10` bodies
+// reading BOTH pawn+0x1EC and +0x1F8: body 0x81CE80 in the ShockGame ability
+// region. Disasm: arg1 = the `ShockPlayer tester` script param (cached at
+// ability+0x120), tester's pawn from +0x478, rot -> arg3, loc+eyeheight ->
+// arg2, effect -> arg4, and it dispatches the ViewLocationOffset script event
+// through vtable slot 3 - which the census recorded exactly once per fire,
+// cross-confirming. Reached via link stub 0x10280 from exactly two static
+// callers (0x81D5B4 / 0x81DA17, the ability fire path).
+constexpr uint32_t kPlayerWeaponVtableRva = 0x112CC78;  // RTTI s24, consumed s39
+constexpr uint32_t kWeaponGpfsVtblByteOffset = 0x374;   // slot 221
+constexpr uint32_t kWeaponGpfsImplRva = 0x89DCB0;
+constexpr uint8_t kWeaponGpfsPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC,
+                                           0x30, 0x53, 0x56};
+// push ebp; mov ebp,esp; sub esp,0x30; push ebx; push esi
+constexpr uint32_t kAbilityGpfsImplRva = 0x81CE80;
+constexpr uint8_t kAbilityGpfsPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC,
+                                            0x64, 0x53, 0x56, 0x57};
+// push ebp; mov ebp,esp; sub esp,0x64; push ebx; push esi; push edi
+// Sibling vtables from the same RTTI walk, recorded for the knowledge base:
+// AWeapon 0x1113DCC, APlayerMeleeWeapon 0x112EF08, UAttackAbility 0x1112A18,
+// UProjectileAttackAbility 0x1112B60.
+
+struct GpfsImpls {
+    void* weapon = nullptr;   // null = identity gate failed, seam refused
+    void* ability = nullptr;
+};
+// Static build-identity gates (pure image reads): the weapon impl must be
+// reachable through the APlayerWeapon vtable slot (stub-following) AND match
+// its prologue; the ability impl must match its prologue. Fail-soft per slot.
+void resolve_gpfs_impls(const bvr::pattern_scan::ProcessImage& image, GpfsImpls& out);
+
 // --- fire-chain FName index globals (session 39, Lane A) --------------------
 // The same cached-index-global chain that resolves PlayerCalcView, run per
 // fire-chain dispatch name. Offline census 2026-08-03 of the exe found real

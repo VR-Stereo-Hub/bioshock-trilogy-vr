@@ -179,6 +179,41 @@ void hfov_scan_rearm(const char* why) {
     }
 }
 
+void resolve_gpfs_impls(const bvr::pattern_scan::ProcessImage& image, GpfsImpls& out) {
+    using namespace bvr::pattern_scan;
+    out = {};
+
+    // Weapon: image[APlayerWeapon vtbl + 0x374] -> one stub hop -> body.
+    const uint8_t* slot = image.base + kPlayerWeaponVtableRva + kWeaponGpfsVtblByteOffset;
+    if (is_memory_valid(slot, sizeof(void*))) {
+        const uint8_t* stub = *reinterpret_cast<const uint8_t* const*>(slot);
+        const uint8_t* body = follow_jmp_stub(stub);
+        if (body != image.base + kWeaponGpfsImplRva) {
+            BVR_LOG("[b2r] weapon GetPerfectFireStart via vtbl+0x%X = %p, expected RVA "
+                    "0x%X - build differs, weapon seam refused",
+                    kWeaponGpfsVtblByteOffset, body, kWeaponGpfsImplRva);
+        } else if (prologue_matches(body, kWeaponGpfsPrologue, sizeof(kWeaponGpfsPrologue),
+                                    "weapon GetPerfectFireStart")) {
+            out.weapon = const_cast<uint8_t*>(body);
+            BVR_LOG("[b2r] weapon GetPerfectFireStart impl VERIFIED: vtbl 0x%X+0x%X -> "
+                    "stub %p -> body %p (RVA 0x%X)",
+                    kPlayerWeaponVtableRva, kWeaponGpfsVtblByteOffset, stub, body,
+                    kWeaponGpfsImplRva);
+        }
+    } else {
+        BVR_LOG("[b2r] APlayerWeapon vtable slot unreadable - weapon seam refused");
+    }
+
+    // Ability: static-called body, prologue gate only.
+    const uint8_t* abody = image.base + kAbilityGpfsImplRva;
+    if (prologue_matches(abody, kAbilityGpfsPrologue, sizeof(kAbilityGpfsPrologue),
+                         "ability GetPerfectFireStart")) {
+        out.ability = const_cast<uint8_t*>(const_cast<const uint8_t*>(abody));
+        BVR_LOG("[b2r] ability GetPerfectFireStart impl VERIFIED: body %p (RVA 0x%X)",
+                abody, kAbilityGpfsImplRva);
+    }
+}
+
 bool fname_text(uint32_t index, char* out, size_t outCap) {
     using namespace bvr::pattern_scan;
     if (!g_imageBase || !out || outCap < 2) return false;

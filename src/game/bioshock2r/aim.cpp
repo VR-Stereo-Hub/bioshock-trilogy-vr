@@ -3,6 +3,7 @@
 #include "core/util/log.h"
 
 #include <windows.h>
+#include <MinHook.h>
 
 #include <cstdio>
 #include <cstring>
@@ -12,6 +13,130 @@ namespace bvr::b2r::aim {
 std::atomic<bool> g_probeArmed{false};
 
 namespace {
+
+// ---- the seam hooks ---------------------------------------------------------
+// Both impls are __thiscall; __fastcall detours with a dummy EDX slot are
+// register/stack/cleanup-identical (the camera detours' proven pattern). Arg
+// counts match ret imm/4 EXACTLY - the scanimpl lesson: a mismatch kills the
+// game with an ESP RTC dialog that writes no crash dump.
+// Weapon: (FVector* outLoc, FRotator* outRot, FVector* outEffectLoc), ret 0xC.
+using WeaponGpfsFn = int(__fastcall*)(void* self, void* edx, FVector* outLoc,
+                                      FRotator* outRot, FVector* outEffect);
+// Ability: (ShockPlayer* tester, FVector* outLoc, FRotator* outRot,
+//           FVector* outEffectLoc), ret 0x10.
+using AbilityGpfsFn = int(__fastcall*)(void* self, void* edx, void* tester,
+                                       FVector* outLoc, FRotator* outRot,
+                                       FVector* outEffect);
+WeaponGpfsFn g_origWeaponGpfs = nullptr;
+AbilityGpfsFn g_origAbilityGpfs = nullptr;
+std::atomic<bool> g_hookLive{false};
+
+// Substitution controls (game thread applies; command seam writes).
+std::atomic<bool> g_aimEnabled{false};   // master (`vraim on|off`)
+std::atomic<bool> g_seamWeapon{true};    // per-seam gates (`vraim seam ...`)
+std::atomic<bool> g_seamAbility{true};
+
+// The synthetic test ray: yaw/pitch OFFSET in degrees from the live view
+// rotation, self-expiring (BS1's decal-proof lane, fresh numbers).
+std::atomic<float> g_testYawDeg{0.0f};
+std::atomic<float> g_testPitchDeg{0.0f};
+std::atomic<uint64_t> g_testDeadlineMs{0};
+
+// Live view rotation from the CalcView tail (pass 1, post drive).
+std::atomic<int32_t> g_viewPitch{0}, g_viewYaw{0}, g_viewRoll{0};
+std::atomic<bool> g_viewGameplay{false};
+std::atomic<uint64_t> g_viewStampMs{0};
+
+// Telemetry.
+std::atomic<uint32_t> g_wepCalls{0}, g_abiCalls{0}, g_subs{0};
+std::atomic<bool> g_loggedWepArgs{false}, g_loggedAbiArgs{false};
+
+// One substituted-rotator computation for both seams. Returns false when
+// nothing should be substituted this call (the original's out-params stand).
+bool substituted_rot(FRotator* rot) {
+    if (!g_aimEnabled.load(std::memory_order_relaxed)) return false;
+    uint64_t now = GetTickCount64();
+    // View freshness: the rotation base must be this frame's - a stale base
+    // aims at wherever the camera last was (matches the 250 ms ray_for gate
+    // BS1 ships; scripted scenes silence CalcView and disarm this).
+    if (now - g_viewStampMs.load(std::memory_order_relaxed) > 250) return false;
+    if (!g_viewGameplay.load(std::memory_order_relaxed)) return false;
+    if (now > g_testDeadlineMs.load(std::memory_order_relaxed)) return false;
+
+    rot->pitch = wrap_rot(g_viewPitch.load(std::memory_order_relaxed) +
+                          static_cast<int32_t>(g_testPitchDeg.load(std::memory_order_relaxed) *
+                                               kRotUnitsPerDegree));
+    rot->yaw = wrap_rot(g_viewYaw.load(std::memory_order_relaxed) +
+                        static_cast<int32_t>(g_testYawDeg.load(std::memory_order_relaxed) *
+                                             kRotUnitsPerDegree));
+    // Roll deliberately preserved (BS1 shape).
+    return true;
+}
+
+int __fastcall WeaponGpfsDetour(void* self, void* edx, FVector* outLoc, FRotator* outRot,
+                                FVector* outEffect) {
+    int r = g_origWeaponGpfs(self, edx, outLoc, outRot, outEffect);
+    g_wepCalls.fetch_add(1, std::memory_order_relaxed);
+    if (!g_loggedWepArgs.exchange(true, std::memory_order_relaxed) && outLoc && outRot)
+        // Rotator prints as INTs - the FRotator denormal trap: as floats these
+        // are denormals and print 0.000.
+        BVR_LOG("[b2r] weapon GetPerfectFireStart #1: self=%p ret=%d loc=(%.1f %.1f %.1f) "
+                "rot=(%d %d %d) effect=(%.1f %.1f %.1f)",
+                self, r, outLoc->x, outLoc->y, outLoc->z, outRot->pitch, outRot->yaw,
+                outRot->roll, outEffect ? outEffect->x : 0.0f,
+                outEffect ? outEffect->y : 0.0f, outEffect ? outEffect->z : 0.0f);
+    if (outRot && g_seamWeapon.load(std::memory_order_relaxed) && substituted_rot(outRot))
+        g_subs.fetch_add(1, std::memory_order_relaxed);
+    return r;
+}
+
+int __fastcall AbilityGpfsDetour(void* self, void* edx, void* tester, FVector* outLoc,
+                                 FRotator* outRot, FVector* outEffect) {
+    int r = g_origAbilityGpfs(self, edx, tester, outLoc, outRot, outEffect);
+    g_abiCalls.fetch_add(1, std::memory_order_relaxed);
+    if (!g_loggedAbiArgs.exchange(true, std::memory_order_relaxed) && outLoc && outRot)
+        BVR_LOG("[b2r] ability GetPerfectFireStart #1: self=%p tester=%p ret=%d "
+                "loc=(%.1f %.1f %.1f) rot=(%d %d %d)",
+                self, tester, r, outLoc->x, outLoc->y, outLoc->z, outRot->pitch,
+                outRot->yaw, outRot->roll);
+    if (outRot && g_seamAbility.load(std::memory_order_relaxed) && substituted_rot(outRot))
+        g_subs.fetch_add(1, std::memory_order_relaxed);
+    return r;
+}
+
+void install_seam_hooks(const bvr::pattern_scan::ProcessImage& image) {
+    patterns::GpfsImpls impls{};
+    patterns::resolve_gpfs_impls(image, impls);
+    bool any = false;
+    if (impls.weapon) {
+        MH_STATUS st = MH_CreateHook(impls.weapon,
+                                     reinterpret_cast<void*>(&WeaponGpfsDetour),
+                                     reinterpret_cast<void**>(&g_origWeaponGpfs));
+        if (st == MH_OK) st = MH_EnableHook(impls.weapon);
+        if (st != MH_OK)
+            BVR_LOG("[b2r] weapon GetPerfectFireStart hook failed: %s",
+                    MH_StatusToString(st));
+        else
+            any = true;
+    }
+    if (impls.ability) {
+        MH_STATUS st = MH_CreateHook(impls.ability,
+                                     reinterpret_cast<void*>(&AbilityGpfsDetour),
+                                     reinterpret_cast<void**>(&g_origAbilityGpfs));
+        if (st == MH_OK) st = MH_EnableHook(impls.ability);
+        if (st != MH_OK)
+            BVR_LOG("[b2r] ability GetPerfectFireStart hook failed: %s",
+                    MH_StatusToString(st));
+        else
+            any = true;
+    }
+    g_hookLive.store(any, std::memory_order_relaxed);
+    if (any)
+        BVR_LOG("[b2r] aim seam hooks live (weapon=%d ability=%d) - telemetry mode, "
+                "substitution armed by `vraim on` + a ray source",
+                impls.weapon && g_origWeaponGpfs ? 1 : 0,
+                impls.ability && g_origAbilityGpfs ? 1 : 0);
+}
 
 // ---- fire-watch -------------------------------------------------------------
 // One row per fire-chain name: the Lane-A index global (null = none exists in
@@ -132,6 +257,25 @@ void log_status() {
         BVR_LOG("[b2r]   %-20s global=%s fn=%p ff=%u pe=%u", w.name,
                 w.indexGlobal ? "yes" : "no", w.fn, w.ffHits, w.peHits);
     }
+    uint64_t now = GetTickCount64();
+    uint64_t viewAge = now - g_viewStampMs.load(std::memory_order_relaxed);
+    uint64_t testLeft = g_testDeadlineMs.load(std::memory_order_relaxed);
+    BVR_LOG("[b2r]   seam: hooks %s, enable %s, weapon %s ability %s, calls wep=%u "
+            "abi=%u subs=%u, view age %llu ms (gameplay=%d), test %s (yaw %.1f pitch "
+            "%.1f, %lld ms left)",
+            g_hookLive.load(std::memory_order_relaxed) ? "LIVE" : "off",
+            g_aimEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
+            g_seamWeapon.load(std::memory_order_relaxed) ? "on" : "OFF",
+            g_seamAbility.load(std::memory_order_relaxed) ? "on" : "OFF",
+            g_wepCalls.load(std::memory_order_relaxed),
+            g_abiCalls.load(std::memory_order_relaxed),
+            g_subs.load(std::memory_order_relaxed),
+            static_cast<unsigned long long>(viewAge),
+            g_viewGameplay.load(std::memory_order_relaxed) ? 1 : 0,
+            now < testLeft ? "ACTIVE" : "off",
+            g_testYawDeg.load(std::memory_order_relaxed),
+            g_testPitchDeg.load(std::memory_order_relaxed),
+            static_cast<long long>(testLeft - now));
 }
 
 void census_dump() {
@@ -162,6 +306,7 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     }
     g_calcViewIndexGlobal = symbols.fnameIndexGlobal;
     census_clear();
+    install_seam_hooks(image);
 
     // GNames smoke test - index 0 is 'None' on every UE2 build; the
     // PlayerCalcView index (live in the cached global) must read back as
@@ -178,6 +323,18 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     if (ok0 && strcmp(t0, "None") != 0)
         BVR_LOG("[b2r] aim probe: GNames[0] is not 'None' - RVA suspect, census text "
                 "untrusted");
+}
+
+bool hook_live() {
+    return g_hookLive.load(std::memory_order_relaxed);
+}
+
+void publish_view_rot(const FRotator& rot, bool strictGameplay) {
+    g_viewPitch.store(rot.pitch, std::memory_order_relaxed);
+    g_viewYaw.store(rot.yaw, std::memory_order_relaxed);
+    g_viewRoll.store(rot.roll, std::memory_order_relaxed);
+    g_viewGameplay.store(strictGameplay, std::memory_order_relaxed);
+    g_viewStampMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
 void probe_findfunc(uint32_t nameIndex, uint32_t nameNumber, void* fn) {
@@ -274,8 +431,64 @@ bool handle_command(const char* args) {
         }
         return true;
     }
-    BVR_LOG("[b2r] vraim: status | probe on|off|clear|dump (the seam hook lands after "
-            "the probe's verdict)");
+    if (token(args, "on")) {
+        g_aimEnabled.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b2r] command: vraim on (substitution armed; needs a live ray source)");
+        return true;
+    }
+    if (token(args, "off")) {
+        g_aimEnabled.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b2r] command: vraim off");
+        return true;
+    }
+    if (token(args, "seam", &rest)) {
+        const char* rest2 = nullptr;
+        std::atomic<bool>* gate = nullptr;
+        const char* which = nullptr;
+        if (token(rest, "weapon", &rest2)) {
+            gate = &g_seamWeapon;
+            which = "weapon";
+        } else if (token(rest, "ability", &rest2)) {
+            gate = &g_seamAbility;
+            which = "ability";
+        }
+        if (gate) {
+            gate->store(token(rest2, "on"), std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vraim seam %s %s", which,
+                    gate->load(std::memory_order_relaxed) ? "on" : "OFF");
+        } else {
+            BVR_LOG("[b2r] vraim seam weapon|ability on|off");
+        }
+        return true;
+    }
+    if (token(args, "test", &rest)) {
+        if (token(rest, "off")) {
+            g_testDeadlineMs.store(0, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vraim test off");
+            return true;
+        }
+        // `vraim test r <yawDeg> <pitchDeg> [holdMs]` - the hand letter is
+        // accepted for BS1 grammar parity; the test ray feeds both seams.
+        char hand[4] = {};
+        float yaw = 0.0f, pitch = 0.0f;
+        unsigned hold = 0;
+        int got = sscanf_s(rest, "%3s %f %f %u", hand,
+                           static_cast<unsigned>(sizeof hand), &yaw, &pitch, &hold);
+        if (got >= 3) {
+            g_testYawDeg.store(yaw, std::memory_order_relaxed);
+            g_testPitchDeg.store(pitch, std::memory_order_relaxed);
+            uint64_t holdMs = hold ? hold : 15000;
+            g_testDeadlineMs.store(GetTickCount64() + holdMs, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vraim test %s yaw %.1f pitch %.1f for %llu ms "
+                    "(offset from the live view rot)",
+                    hand, yaw, pitch, static_cast<unsigned long long>(holdMs));
+        } else {
+            BVR_LOG("[b2r] vraim test r <yawDeg> <pitchDeg> [holdMs] | off");
+        }
+        return true;
+    }
+    BVR_LOG("[b2r] vraim: status | on|off | seam weapon|ability on|off | "
+            "test r <yaw> <pitch> [ms]|off | probe on|off|clear|dump");
     return true;
 }
 

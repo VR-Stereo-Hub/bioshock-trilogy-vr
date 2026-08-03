@@ -1534,3 +1534,68 @@ per ProcessEvent):
 Decision rule (session-39 brief): GetPerfectFireStart hits correlated with shots =
 by-name seam; ancestors only = impl hooks with the PE-visible ancestor banked for
 timing; nothing = fully native, impl hooks.
+
+### THE PROBE VERDICT (live, boot #1): impl hooks - and the census proves itself
+
+Run at the user's save (Adonis), GiveAll granted, three firing windows (drill LMB x5,
+RMB x3, Rivet Gun LMB x3 after an EquipWeapon2 digit-key switch) against a 10 s idle
+baseline:
+
+- **The census instrument validates end-to-end**: name offset self-derived to
+  UFunction+0x28 (2 candidates, disambiguated by the text being sane), GNames[0]=None,
+  GNames[1695]=PlayerCalcView, 73 distinct names all real (PlayerTick, PreRender,
+  LeftMousePressed...), ~2500 PE dispatches/s in gameplay, zero overflow.
+- **InitiateDamage: ff=6 pe=6** - ProcessEvent-visible, EXACTLY one dispatch per
+  weapon fire event (3 drill + 3 rivet; the census's ViewLocationOffset also scored 6,
+  dispatched from inside the impls). Banked as the by-name timing/attribution anchor.
+- **BeginFiring: ff=24 pe=0** - native code resolves it via FindFunctionChecked (three
+  DISTINCT UFunction pointers per fire - one per involved object/class) but the
+  dispatch never crosses the outer ProcessEvent. GotoState-internal or inner-body
+  dispatch; not a usable seam.
+- **GetPerfectFireStart: ff=0 pe=0 through 6 real fire events - NATIVE-TO-NATIVE.**
+  The seam is the C++ impls, exactly as on BS1.
+- The RMB window cast NOTHING (no UseAbility, no InitiateDamage; RightMousePressed x3
+  did reach script) - plasmid-equip state at this save needs a later look; the input
+  events themselves arrive.
+
+### The impls (derivation in patterns.h; hooks live since this commit)
+
+| symbol | RVA | how |
+|---|---|---|
+| Weapon::GetPerfectFireStart impl | 0x89DCB0 | APlayerWeapon vtable slot census (ret 0xC + ptr writes), slot 221 (+0x374) stub 0x180D9; SAME body on AWeapon 0x1113DCC and APlayerMeleeWeapon 0x112EF08 - one hook covers the drill too |
+| Ability::GetPerfectFireStart impl | 0x81CE80 | .text sweep for `ret 0x10` bodies reading pawn+0x1EC AND +0x1F8; static callers 0x81D5B4/0x81DA17 via stub 0x10280 |
+| AWeapon / APlayerMeleeWeapon / UAttackAbility / UProjectileAttackAbility vtables | 0x1113DCC / 0x112EF08 / 0x1112A18 / 0x1112B60 | offline RTTI walk (TypeDescriptor -> COL -> vtable-4) |
+
+Layout facts read off the impl disasm (fresh, never copied): weapon owner pawn at
+weapon+0x47C; ability caches its `tester` arg at ability+0x120, tester pawn +0x478;
+pawn location floats +0x1EC/+0x1F0/+0x1F4, rotation ints +0x1F8/+0x1FC/+0x200 (the
+same AActor offsets the camera-actor probe documented), eye-height float pawn+0x5B8
+added to Z. Weapon args (outLoc, outRot, outEffectLoc) ret 0xC; ability args (tester,
+outLoc, outRot, outEffectLoc) ret 0x10 - detour arg counts match ret/4 exactly (the
+scanimpl RTC trap). Both impls dispatch ViewLocationOffset-family script events
+through vtable slot 3 as part of composing the start location.
+
+### Input-path verdict (boot #1) + the candidate native lever
+
+With the bridge force-enabled (`vrinput on`) the game NEVER polls: `getstate[0]
+2 total, 0/s` - BS2 checks XInput at boot (the controller-disconnect dialog), sees no
+pad, and stops polling forever. BS1's problem class exactly. BS2-NATIVE candidate
+first (per the standing directive): `[WinDrv.WindowsClient]` in Bioshock2SP.ini
+carries `UseJoystick=False` + `UseController=False` (the console sections carry True) -
+flipped to True for boot #2; SetUseController is precisely the state BS1's
+input_drive flips at runtime, so the ini may BE the whole fix. Fallback: port the
+input_drive shape (UpdateInput per present + SetUseController + IAT hijack) with
+fresh RVAs.
+
+### Cheats lane: PROVEN (boot #1, first try)
+
+`F9=GiveAll` bound in User.ini `[Default]` (line 248; backup
+`User.ini.bvr-bak-cheatkeys`) + `game-key -Scan 0x43` = "You got SPECIAL AMMO!"
+tutorial popups, 999/999 ammo counters, and the full weapon complement - verified by
+effect. F12=`GiveWeapon Weapons.PlayerMachineGun` also bound (untested, GiveAll made
+it moot). **Weapon switching flat = the digit keys** (`EquipWeapon1..8` in [Default];
+scancode 0x02+n) - Rivet Gun equipped via "2" with 987 spare rivets; no weapon wheel,
+no `exec NextWeapon` fault trap. Firing flat = mouse buttons (LeftMouse=Fire,
+RightMouse=AltFire; game-click's mouse_event reaches gameplay fine - the raw-input
+cursor problem is a MENU problem). MiddleMouse=AmmoSelectionUp is the ammo-cycle
+input (the thumbrest modifier's future target).

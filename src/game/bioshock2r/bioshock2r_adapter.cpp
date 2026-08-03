@@ -19,6 +19,9 @@ uint32_t Bioshock2RAdapter::capabilities() const {
     uint32_t caps =
         camera::hook_live() ? (game::CAP_CAMERA_OVERRIDE | game::CAP_FOV_WRITE) : 0u;
     if (scenedraw::hook_live()) caps |= game::CAP_SCENE_REENTRY;
+    // CAP_AIM_OVERRIDE since session 39: both GetPerfectFireStart impls
+    // hooked (identity-gated in patterns::resolve_gpfs_impls).
+    if (aim::hook_live()) caps |= game::CAP_AIM_OVERRIDE;
     return caps;
 }
 
