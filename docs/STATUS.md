@@ -84,6 +84,19 @@ in-game quit from GAMEPLAY (the 0xDEDEDEDE path) is the user's half - checklist 
   under 20 deg yaw / 0.5 m strafe while the drill's screen block stays AT floor -
   view-locked, correct, zero headset time.
 
+### Known harness warts (queued, none block session 39)
+
+- Sim closes can pop a "Debug Error! ... bvr_xrsim32.dll - abort() has been called"
+  dialog at process exit (debug CRT in the SIM RUNTIME objecting to teardown with the
+  XR instance still open - by design we never destroy it at exit). Dev-machine-only,
+  fires after the save is written; click Abort. Fix when touched next: suppress the
+  debug-CRT dialog in the sim DLL (`_set_abort_behavior`/`_CrtSetReportMode`) or
+  tolerate a live instance at detach.
+- The `.xrs` runner's `@shot <name>` naming is broken (all captures write `shot_*.png`);
+  use `xrsim-shot.ps1 -Out` manually.
+- Sim compositor PNGs read one sRGB step darker than the real frame - coverage reads
+  fine, brightness judgments invalid.
+
 ### USER CHECKLIST - nothing required
 
 Everything session 38 needed from you was closed flat. Only ride-alongs remain, IF
