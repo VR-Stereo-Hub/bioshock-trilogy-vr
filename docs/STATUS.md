@@ -2,7 +2,100 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-02/03, session 37 - THE LETTERBOX WAS THE WINDOW; RESOLUTION IS LIVE - merged to `bioshock-2`, ACCEPTED IN-HEADSET)
+## Current state (2026-08-03, session 38 - THE EXIT CRASH WAS THE GAME'S OWN; closes are now instant and dump-free - branch `s38-b2r-teardown-and-aim`)
+
+### The teardown crash: root cause found, and it rewrites the brief
+
+The session-38 brief's hypothesis (teardown races the doubled-draw/flush machinery) is
+REFUTED by an unattended bisect. The close-time fault at `Bioshock2HD.exe+0x4FF0FE` (null
+read in the engine's display-apply path, inside close-time window-message dispatch) fires:
+
+- with stereo armed (echo-verified), passive (nothing armed), with NO XR session at all,
+- and in the decider run **G4: with EVERY mod hook skipped** (new `BVR_SKIP` env bisect
+  lever) - no MinHook detours, no D3D11 hooks, no adapter - confirmed first-chance by the
+  new `BVR_VEH=1` vectored observer.
+
+Vanilla (shim renamed away) "exits cleanly" only because nothing observes it: teardown
+burns 0.1 s CPU over a 5-9 s exit while a chained filter (CSERHelper) eats the fault
+invisibly. **BioShock 2 Remastered crashes on its own exit path on every close** - its
+Steam-forum reputation is earned. The faulting site varies (+0x4FF0FE mostly, +0xC6C2C2,
++0xC312D2, a 0xDEDEDEDE freed-vtable jump on the gameplay-quit path) - a FAMILY of
+close-time faults. The mod's real defect was AMPLIFYING it: one 58 MB dump per close
+(eating the 3-dump session cap that exists for real crashes), an 86k-retry exception spin,
+and a multi-second noisy exit. Full derivation: ENGINE_NOTES session 38.
+
+### What shipped (commits `f8813b8`, `4071543`)
+
+1. **Teardown-aware crash handling (core, additive)**: the overlay WndProc (already
+   subclassing the game window) calls `crash::note_teardown()` on
+   WM_CLOSE/WM_DESTROY/WM_ENDSESSION; after that, any fault gets ONE log line, NO
+   minidump, and immediate `TerminateProcess(0)`. Close latency measured **0.1-0.3 s with
+   zero dumps** - faster and quieter than the unmodded game. Pre-close behavior unchanged
+   (BS1 inert: it does not fault at exit).
+2. **BS2 adapter hygiene on the same signal** (atomic-read gates, no-op while alive):
+   doubled draw bails, 1t stops forcing the inline branch (vanilla close path), vrstereo
+   arming refuses, the option/fg FOV writes stop WANTING inside a live CalcView (the
+   existing OFF-edge restores then run through engine-provided live pointers), the
+   letterbox self-heal never touches a closing window.
+3. **Drain-guard hardening**: freed-but-non-null scenes (first dword unreadable or pool
+   poison 0xDEDEDEDE/0xDDDDDDDD) are skipped - the gameplay-quit dump's class.
+4. **`tools/read-dump.py`**: minidump summarizer (at-fault context, module+RVA stack
+   scan) on the pip `minidump` package - no cdb needed. Plus the `BVR_SKIP` /
+   `BVR_VEH` diagnostic levers, kept.
+
+### Acceptance (sim, unattended)
+
+Three echo-verified `vrstereo on` closes + one 5-min armed menu soak (308 full-rate 1T
+beats, `wait2/s=0`, `guardskips=0`, zero watchdogs), all closing in ~0.1 s with ZERO new
+dumps; the log shows `teardown noted (WM_CLOSE)` -> one fault line -> clean exit. The
+in-game quit from GAMEPLAY (the 0xDEDEDEDE path) is the user's half - checklist below.
+
+### Aiming arc derisked (offline; ENGINE_NOTES "Fire flow / aim")
+
+- **The seam family EXISTS with BS1's exact shape**: `GetPerfectFireStart(out loc,
+  out Rotator rot, out effectLoc)` on `Weapon` AND `AttackAbility` (+ a new
+  `ShockPlayer tester` param), plus the whole BeginFiring/AnimNotify_UseAbility/
+  InitiateDamage chain. Decouple-from-view: viable in principle by BS1's proven
+  substitute-the-out-params property; flat decal test is the proof gate.
+- **It is NATIVE** (`execGetPerfectFireStart` wide string in the exe - this build stores
+  script names UTF-16; ASCII sweeps miss everything). BS1's nativemap recipe does NOT
+  transfer verbatim (scanned: zero real entries); the wide-name registration region has
+  no per-string pointers - session-39 derives the boot walker.
+- **The dispatch question** (ProcessEvent-visible = preferred by-name seam, vs
+  native-to-native = BS1-style impl hooks) needs ONE live probe: learn the fire-chain
+  UFunction pointers, count ProcessEvent hits while firing drill/gun/plasmid in the save.
+- **Quad-layer gap list**: core's laser/aim-dot API is ready; the adapter needs XR
+  hand-pose -> game-space conversion (head already crosses that boundary), a fresh BS2
+  world-scale measurement, and the seam hook for the dot's hit point.
+
+### USER CHECKLIST (next boot, in the save; no headset needed unless noted)
+
+1. **Exit-crash acceptance**: play normally, then QUIT TO DESKTOP from gameplay. Expect:
+   game closes within a second or two, `%LOCALAPPDATA%\BioshockVR\bs2\crash\` gains NO
+   new dump, log ends with `crash: window teardown noted` (+ possibly one
+   `fault during window teardown` line - that is the game's own exit bug being absorbed).
+2. **`coupling-viewmodel.xrs`** (queued from session 37, flat, under xrsim): weapon
+   drawn, LIT area, `.\tools\xrsim-run.ps1 -Path .\tools\xrsim\coupling-viewmodel.xrs`
+   - read coverage/bbox + the PNGs, never headline mean-abs-diff (VERIFICATION 2.8).
+3. Ride-alongs IF headset time happens anyway: pitch-servo sign (`vrinput pitchservo
+   status` while looking up/down), helmet key-3810 collateral watch in other maps.
+
+### Next steps (session 39)
+
+1. Merge verdict from the user's quit acceptance; if the gameplay-quit path still dumps
+   (teardown flag not yet set on that path), derive the quit-path teardown signal from
+   the new dump and extend `note_teardown`.
+2. **Aim arc, evidence first**: derive the FName-index/impl registration walker for the
+   wide-name region; land the log-only ProcessEvent fire-watch; run the live probe in
+   the save (drill + gun + plasmid); pick the seam (by-name preferred, impl hooks
+   fallback) and flat-prove decoupled aim at a wall (BS1's decal method, fresh numbers).
+3. Then the laser/aim-dot publishing side per the gap list.
+4. Pacing-epic residue unchanged. BS1 regression testing stays deferred to the END of
+   BS2 development (user decision 2026-08-02).
+
+---
+
+## Previous state (2026-08-02/03, session 37 - THE LETTERBOX WAS THE WINDOW; RESOLUTION IS LIVE - merged to `bioshock-2`, ACCEPTED IN-HEADSET)
 
 **The BS1-parity resolution picker ships, and it is better than BS1's: the apply is LIVE.** The
 session-36 brief's three blocking unknowns all closed in one unattended screening pass (zero user
@@ -4580,6 +4673,40 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 38 - 2026-08-03 - the exit crash was the game's own; instant dump-free closes; aim seam found
+
+Branch `s38-b2r-teardown-and-aim` off `bioshock-2` (50a8131), merged back to `bioshock-2`.
+The brief's priority 1 (teardown crash) inverted under evidence: `tools/read-dump.py` (new,
+python-minidump) read all five banked dumps - three were the SAME null read at
+`Bioshock2HD.exe+0x4FF0FE` (the engine's display-apply virtual dereferencing a nulled
+subsystem member during close-time message dispatch, slot 61 of the engine-family vtable at
+RVA 0x10BD7DC), and the "few-second exception loop" is a chained CSERHelper filter retrying
+the faulting instruction 86k times. An unattended close-repro bisect (WM_CLOSE poster +
+teardown-CPU sampling + the new `BVR_SKIP` subsystem lever + `BVR_VEH` first-chance
+observer) then eliminated the mod entirely: the fault fires passive, without an XR session,
+and in run G4 with EVERY hook skipped - while vanilla "exits cleanly" only because nothing
+observes its 0.1-s-CPU teardown as CSERHelper eats the same fault. BS2R crashes on its own
+exit path, per its Steam reputation; the mod had been amplifying that into a 58 MB dump per
+close plus a multi-second spin.
+
+Shipped accordingly: teardown-aware crash handling (overlay WndProc notes
+WM_CLOSE/WM_DESTROY/WM_ENDSESSION; from then on a fault gets one log line, no dump,
+immediate TerminateProcess) - closes now measure 0.1-0.3 s with zero dumps, faster than
+vanilla; BS2 adapter hygiene gates (doubled draw, 1t force, FOV writes via live-CalcView
+OFF edges, window self-heal) and a drain-guard poison-hardening for the gameplay-quit dump's
+freed-scene class. Acceptance: three echo-verified armed closes + a 5-min armed soak (308
+1T beats, wait2/s=0, guardskips 0) all closing instantly with zero dumps. The arm-timing
+lesson: the poll gate ticks only after the menu's first CalcView (20-55 s variance) - key
+scripted arms on the log line, never on a fixed wait.
+
+Priority 2 (aim derisk, offline): BS2's fire seam family EXISTS with BS1's exact shape -
+`GetPerfectFireStart(out loc, out Rotator, out effectLoc)` on Weapon AND AttackAbility, the
+full BeginFiring/AnimNotify_UseAbility/InitiateDamage chain intact, and it is NATIVE
+(`execGetPerfectFireStart` present as a WIDE string - this build stores script names UTF-16,
+ASCII sweeps see nothing). BS1's nativemap recipe does not transfer verbatim; the dispatch
+question (ProcessEvent-visible vs native-to-native) is queued as session 39's one live
+probe. ENGINE_NOTES gained "Fire flow / aim" and the full teardown derivation.
 
 ### Session 37 - 2026-08-02 - the letterbox was the window; the resolution picker ships LIVE
 

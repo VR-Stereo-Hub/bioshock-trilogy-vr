@@ -1338,3 +1338,73 @@ Acceptance: three echo-verified `vrstereo on` closes under the sim - exit 0.1 s,
 dumps, full-rate 1T beats (`wait2/s=0`, `guardskips=0`) to the last frame, then
 `teardown noted (WM_CLOSE)` -> one fault line -> clean exit. The in-game quit from
 GAMEPLAY (the 0xDEDEDEDE path) is queued for the user's save session.
+
+## Fire flow / aim (session 38 derisk - offline only, no live probes yet)
+
+Derived fresh from BS2's own artifacts (UELib headless dump of `ShockGame.U` version 143/59
+via `tools/uscript/dump.ps1` pointed at the BS2 BakedScripts; exe-side string/xref scans).
+BS1 is shape reference only; nothing below is copied.
+
+### The seam family EXISTS, and it is BS1's shape
+
+- `Weapon.GetPerfectFireStart(out Vector StartLocation, out Rotator StartRotation,
+  out Vector EffectStartLocation) : bool`
+- `AttackAbility.GetPerfectFireStart(ShockPlayer tester, out Vector StartLocation,
+  out Rotator StartRotation, out Vector EffectStartLocation) : bool`
+
+Same names, same out-param triple as BS1's M6 seam (the rotator is the direction - BS1's
+"prints as near-zero floats" FRotator trap applies). The extra `tester` param on the
+ability variant is new. Chain classes present: `Weapon : Holdable`, `PlayerWeapon`,
+`PlayerWeaponWithAlternateMeleeAttack` (native dual-wield), `PlayerMeleeWeapon` (drill),
+`AttackAbility : Ability`, `ProjectileAttackAbility`, `EmitterAttackAbility`,
+`TraceAbility`, `AnimNotify_UseAbility` - the BS1-style trigger -> BeginFiring -> anim
+notify -> UseAbility -> InitiateDamage -> GetPerfectFireStart arc is structurally intact
+(`BeginFiring`/`UseAbility`/`InitiateDamage`/`ApplyAimError` all on the classes;
+`HasInitiateDamageOccurred*` bookkeeping on Weapon).
+
+### GetPerfectFireStart is NATIVE (exec thunk present)
+
+The exe carries the WIDE string `execGetPerfectFireStart` (my first ASCII sweep missed
+every script name - this build stores them UTF-16; search wide). Exec-thunk names mean
+native functions, so BS1's lesson likely holds: exec thunks are dead code for
+native-to-native calls, and the hook target is the C++ IMPL. The wide names sit in a
+contiguous registration region (`...ttackAbility` immediately precedes
+`execGetPerfectFireStart`) with NO per-string pointer holders - BS1's
+12-byte-entry/`mov [entry+4], imm` nativemap recipe does NOT transfer verbatim (scanned:
+2625 false-positive entries, zero real ones). Session-39 derivation lane: find the boot
+walker that consumes this wide-name region (xref the region base, or breakpoint FName
+autoregistration) -> per-name index globals and/or impl pointers.
+
+### The dispatch question, and the one live probe that settles it
+
+Unknown: does the player fire chain dispatch any of BeginFiring / UseAbility /
+InitiateDamage / GetPerfectFireStart through ProcessEvent (by-name seam - PREFERRED,
+BS2-native, the mod already hooks ProcessEvent + FindFunctionChecked), or is it
+native-to-native all the way (then port BS1's impl-hook method with fresh RVAs)?
+Settle it in the save with a log-only watch: learn the fire-chain UFunction pointers via
+`FindFunctionChecked` (extend the PlayerCalcView single-slot learning to a small table
+keyed on the names' FName indexes - each name needs its index global, from the session-39
+derivation above) and count ProcessEvent hits per name while firing the drill, a gun round,
+and a plasmid. Nonzero counts = the by-name seam carries the arc; zeros = impl hooks.
+
+### Decouple-from-view verdict
+
+VIABLE IN PRINCIPLE by the same property BS1 flat-proved at a wall: run the original
+GetPerfectFireStart, then substitute the out-params with the hand ray - impacts follow the
+substitution. BS2's identical signature shape is strong evidence the property transfers;
+the flat decal test (camera stationary, substituted rotator, decals off-crosshair) is the
+proof gate, and needs a ranged weapon in the save.
+
+### What the laser/aim-dot quad layers need from the adapter (gap list)
+
+Core is ready: `vr::LaserConfig`/`set_laser` + `AimDotConfig`/`set_aim_dot`
+(openxr_runtime.h; read its design note - laser re-derives the ray render-side, the dot is
+published from the fire-seam point on the game thread). The BS2 adapter has NONE of the
+publishing side yet. Needed, in dependency order:
+1. XR hand aim-pose -> GAME-space ray conversion (the head already crosses this boundary
+   in camera.cpp; hands need the same recenter-frame + yaw alignment treatment - BS1
+   keeps this coherent via its FrameContext snapshot; BS2 wants its own equivalent).
+2. World scale (BS1 measured ~100 UU/m; DERIVE FRESH on BS2 - e.g. sweep a hand a known
+   distance and read a substituted fire-start delta, once the seam is live).
+3. The laser needs only the ray; the aim dot needs the fire-seam hit point - blocked on
+   the seam hook landing.

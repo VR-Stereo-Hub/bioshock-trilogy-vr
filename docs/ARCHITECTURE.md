@@ -1101,3 +1101,28 @@ runtime.
   scene (view classifier: GAMEPLAY; fgfov and auto FOV arm; full scene pipeline renders). The
   save remains the ACCEPTANCE context per the user's standing directive - the screening pass
   spends zero user boots, not zero user verdicts.
+
+### 2026-08-03 (session 38) - teardown-aware crash handling, and why it gates on messages
+
+- **Faults after window close begin are answered with one log line, no dump, and
+  `TerminateProcess` - in CORE.** Evidence (ENGINE_NOTES bs2 session 38): BS2R faults on its
+  own exit path on every close, with every mod hook skipped; vanilla just hides it behind
+  CSERHelper. The alternatives were rejected: per-SITE suppression (an address list) breaks
+  the "addresses live in per-game patterns" rule and the observed site VARIES (+0x4FF0FE,
+  +0xC6C2C2, +0xC312D2, freed-vtable jumps); adapter-side-only handling cannot stop the core
+  crash filter from writing dumps. Gating on WM_CLOSE/WM_DESTROY/WM_ENDSESSION (seen by the
+  overlay's existing game-window subclass) is game-agnostic, needs no addresses, and cannot
+  misfire during play. BS1 path impact: zero until a close message, and BS1 does not fault
+  at exit - the change is purely additive pre-close, per the decoupling rule.
+- **TerminateProcess instead of chaining post-close**: chaining let a foreign filter retry
+  the faulting instruction 86k times (the user-visible "exception loop"). The user asked to
+  close the game; after the close message, ending the process IS the correct semantic, and
+  measured closes went from 5-9 s (vanilla) to 0.1-0.3 s.
+- **`BVR_SKIP` + `BVR_VEH` ship as permanent diagnostics.** The whole root cause fell out of
+  a no-rebuild subsystem bisect plus a first-chance observer; the next mystery gets the same
+  levers for free. Both read once at init, inert unless set.
+- **The teardown disarm in bioshock2r consumes `crash::teardown_seen()` by polling in its
+  per-frame gates** (an atomic read) rather than a WndProc of its own or a new adapter
+  interface method - no new threads-and-messages surface, no igame_adapter change, and the
+  deferred-lane trap (posted work never applies once ProcessEvent stops) is avoided because
+  nothing is posted.

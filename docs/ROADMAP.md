@@ -769,12 +769,16 @@ kill. Both prerequisites below are now MET.):**
       distance; the checkbox in FILL THE VIEW is the A/B). The black-bars half was the FOV
       deficit, closed by session 37's picker + automatic FOV (accepted in-headset 2026-08-03:
       "the FOV is filling the screen").
-- [ ] **BS2 teardown crash on stereo-armed close (session 37 find, repro'd unattended)** - every
-      close with stereo armed dies in an exception loop AFTER the save (cosmetic but noisy):
-      four dumps banked, latest at `Bioshock2HD.exe+0x4FF0FE` (Draw/flush-chain neighborhood -
-      teardown likely races the doubled-draw machinery). Repro: `xrsim-launch -Game bs2` ->
-      menu scene -> `vrstereo on` -> close. Fix shape: clean disarm on teardown before the
-      engine frees the scene. Details in STATUS session-37/38 notes.
+- [x] **BS2 teardown crash on stereo-armed close - RESOLVED session 38, and the premise was
+      wrong**: the close-time fault (`+0x4FF0FE` display-apply null read) is the GAME'S OWN
+      exit bug - it fires with every mod hook skipped (`BVR_SKIP` bisect run G4) and vanilla
+      merely hides it (CSERHelper eats the fault, 0.1 s teardown CPU). Stereo was never the
+      cause. Fix: teardown-aware crash handling (WM_CLOSE/WM_DESTROY noted by the overlay
+      WndProc -> faults get one log line, no dump, immediate TerminateProcess) + adapter
+      hygiene gates + drain-guard poison hardening. Closes now 0.1-0.3 s, zero dumps -
+      faster than vanilla. Accepted: 3 armed sim closes + 5-min armed soak. User half
+      pending: one quit from GAMEPLAY (the 0xDEDEDEDE freed-vtable path). Full derivation:
+      ENGINE_NOTES session 38.
 - [x] **VR PACING (BLOCKER - the game is unplayable in VR)** - an OpenXR session that is running
       but not FOCUSED paces the game at the runtime's not-visible cadence (~10 Hz). Alt-tab
       reproduces it. Not a block (`lastWait 0 ms`); the frame HANDOFF is what paces. Session 28's
