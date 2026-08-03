@@ -69,24 +69,33 @@ launches tonight on their own schedule.
 
 ### Acceptance still OWED (user's next session)
 
-1. **Weapon glued at native** (the G fix's in-headset verdict) - within ~1 s of gameplay with a
-   weapon up, the log should print `fgfov: lens gain G 0.56250 -> 0.99xxx` and the F10
-   VIEWMODEL LENS line should read `written ~112 deg (lens gain G=0.9949)`. If it still swims,
-   report that line's numbers.
-2. `dumpframe full 2` with the weapon at native once G converged -> decoder shows ONE cluster.
-3. A 5-min `vrstereo on` soak in the save at the ship preset (attach lane, `-NoFocus`).
-4. HUD/menu legibility at portrait, helmet key-3810 collateral watch (both ride along).
+1. **Weapon glued at native** (the G fix's in-headset PERCEPTUAL verdict) - the flat/sim half is
+   VERIFIED (2026-08-03): on a fresh sim boot the fix self-identified in one sample
+   (`lens gain G 0.56250 -> 0.99488`), wrote 111.7 at option 138, and BOTH `dumpframe full`
+   captures decode to ONE law-exact cluster (dH=0.00000, square pixels, full height) - every
+   decodable draw, fg pass included, on one frustum. If it still swims in the headset, report
+   the F10 VIEWMODEL LENS line `written N deg (lens gain G=...)`.
+2. A 5-min `vrstereo on` soak in the save at the ship preset (attach lane, `-NoFocus`).
+3. HUD/menu legibility at portrait, helmet key-3810 collateral watch (both ride along).
 
-### NEW open item: teardown crash on quit-from-gameplay (dump banked, unattributed)
+### Teardown crash at exit - now REPRODUCED UNATTENDED, two dumps banked
 
-Quitting from gameplay (VISIBLE/backgrounded, stereo armed, native, borderless window) died in
-teardown: DEP fault EXECUTE at 0xDEDEDEDE (freed-memory poison) on the game thread, exception
-loop for a few seconds, then exit. Minidump:
-`%LOCALAPPDATA%\BioshockVR\bs2\crash\bvr_20260802_214440.dmp` (build v0.6.0-62-g44bc6ca-dirty).
-AFTER the save was written - no data loss, cosmetic at exit - but unattributed: could be the
-hooked teardown class, the armed stereo/1t at exit, the borderless window path, or the game's
-own exit behavior amplified. Analyze the dump next session; check recurrence on the user's
-tonight-quit before spending time.
+Two for two on quits with stereo armed + the borderless native window; earlier 16:9-era quits
+were clean. Both are AFTER the save (cosmetic, a few-second exception loop then exit), both
+wrote dumps:
+
+| when | context | fault | dump |
+|---|---|---|---|
+| 2026-08-02 21:44 | quit from GAMEPLAY, VDXR, native | DEP EXECUTE at 0xDEDEDEDE (freed poison), tid=game | `crash\bvr_20260802_214440.dmp` |
+| 2026-08-03 17:17 | quit from MENU scene, xrsim, native | null READ at `Bioshock2HD.exe+0x4FF0FE`, tid=20140 | `crash\bvr_20260803_171738.dmp` |
+
+`+0x4FF0FE` is game render code in the Draw/flush-chain neighborhood (Draw 0x4EE8D0, flush call
+site 0x4EF4A1) - the working hypothesis is teardown racing the doubled-draw/flush machinery
+(the drain's no-null-check shape is exactly this class; the 1t drain guard covers the FORCED
+path, teardown may reach the drain another way). REPRO RECIPE (no headset needed):
+`xrsim-launch -Game bs2` at a native-size ini -> menu scene -> `vrstereo on` -> close the
+window. Next session: disasm-rva 0x4FF0FE (summarize in ENGINE_NOTES, never commit output),
+read both dumps, and consider disarming stereo/1t on WM_CLOSE before the engine tears down.
 
 ### Next steps
 
