@@ -243,6 +243,14 @@ bvr::vr::HeadPose g_recenterPose{};
 int32_t g_recenterYawUnits = 0;
 float recenter_yaw_rad() { return g_recenterYawUnits / kRotUnitsPerRadian; }
 
+// Session 42, authored+look (BS1 s29 shape): the head reference captured on
+// the first cineLook frame; head DELTAS from it ride the authored camera.
+// Dropped on both cinematic edges. Game thread only.
+int32_t g_cineLookPitch = 0;
+int32_t g_cineLookYaw = 0;
+int32_t g_cineLookRoll = 0;
+bool g_cineLookValid = false;
+
 // Synthetic HMD lane, extended over BS1's: `simhead <yaw> <pitch> <roll>
 // [px py pz] [holdMs]` feeds a scripted head pose - ROTATION AND POSITION -
 // through the real drive, so the full 6DOF xr-to-ue mapping is provable flat
@@ -1627,6 +1635,16 @@ void calcview_tail(void* self, CalcViewParams* p) {
         }
     }
 
+    // Session 42 (BS1 s29 shape): the cinematic drive policy (vrcine drive
+    // off|authored|authored+look). cineHold MUST be cinematic_hold(), never
+    // letterbox(): with the bars hidden (the default) there are no black
+    // pixels left to detect, so a letterbox()-keyed suspend can never fire
+    // during a bars-type cutscene - exactly when it matters.
+    bool cineHold = bvr::hud::cinematic_hold();
+    bvr::vr::CineDrive cineMode = bvr::vr::cine_drive();
+    bool cineSuspend = cineHold && cineMode == bvr::vr::CineDrive::Authored;
+    bool cineLook = cineHold && cineMode == bvr::vr::CineDrive::AuthoredLook;
+
     // M3: drive the camera from the HMD pose. Pitch/roll are absolute (head
     // owns them); yaw is additive on the game's yaw so stick/mouse turning
     // still works; position adds the recenter-relative head offset, rotated
@@ -1657,11 +1675,13 @@ void calcview_tail(void* self, CalcViewParams* p) {
         hp.qz = q[2];
         hp.qw = q[3];
         driveHead = true; // sim lane stays ungated for flat tests
-    } else if (strictGameplay && !bvr::vr::cinematic_active() &&
-               !bvr::hud::letterbox(nullptr, nullptr) && bvr::vr::vr_camera_mode() &&
-               bvr::vr::get_head_pose(hp)) {
+    } else if (strictGameplay && !bvr::vr::cinematic_active() && !cineSuspend &&
+               bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
         // Live lane gated exactly like BS1: the HMD must not steer scripted
-        // or menu cameras (their content lands on the quad screen).
+        // or menu cameras (their content lands on the quad screen). Session
+        // 42: the cine gate is cineSuspend (drive=authored under a live
+        // cinematic_hold), replacing the dead letterbox() predicate; drive=
+        // off drives straight through, authored+look adds deltas below.
         driveHead = true;
     }
     if (driveHead) {
@@ -1687,6 +1707,51 @@ void calcview_tail(void* self, CalcViewParams* p) {
             }
         }
 
+        if (cineLook) {
+            // Session 42 (BS1 s29 authored+look): the head adds a rotation
+            // DELTA on top of the authored camera and NOTHING else - the
+            // normal branch below writes pitch/roll absolutely, which would
+            // erase the authored choreography. The reference is the head
+            // orientation when the shot began (dropped on both cine edges,
+            // so every shot opens framed exactly as authored). No positional
+            // term at all: the camera can never be dollied out of the shot.
+            // The residual stays 0 and the pitch error publishes 0 - the
+            // look must never reach the pawn or steer the pitch servo.
+            int32_t hpU = static_cast<int32_t>(lroundf(a.pitchRad * kRotUnitsPerRadian));
+            int32_t hyU = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
+            int32_t hrU = static_cast<int32_t>(lroundf(a.rollRad * kRotUnitsPerRadian));
+            if (!g_cineLookValid) {
+                g_cineLookPitch = hpU;
+                g_cineLookYaw = hyU;
+                g_cineLookRoll = hrU;
+                g_cineLookValid = true;
+                BVR_LOG("[b2r] authored+look reference captured (head pitch %.1f "
+                        "yaw %.1f roll %.1f deg) - the shot starts unmodified",
+                        a.pitchRad * kRadToDeg, a.yawRad * kRadToDeg,
+                        a.rollRad * kRadToDeg);
+            }
+            rot->pitch += wrap_rot(hpU - g_cineLookPitch);
+            rot->yaw += wrap_rot(hyU - g_cineLookYaw);
+            rot->roll += wrap_rot(hrU - g_cineLookRoll);
+            g_enginePitchUnits = rot->pitch;
+            g_pitchErrDeg = 0.0f;
+            bvr::input::publish_pitch_error(0.0f);
+            fc.baseX = loc->x;
+            fc.baseY = loc->y;
+            fc.baseZ = loc->z;
+            fc.driveYawOffsetRad = 0.0f;
+            fc.recenterYawRad = recenter_yaw_rad();
+            fc.recenterPx = g_recenterPose.px;
+            fc.recenterPy = g_recenterPose.py;
+            fc.recenterPz = g_recenterPose.pz;
+            fc.vrDriving = true;
+            fc.camX = loc->x;
+            fc.camY = loc->y;
+            fc.camZ = loc->z;
+            fc.camPitch = rot->pitch;
+            fc.camYaw = rot->yaw;
+            fc.camRoll = rot->roll;
+        } else {
         // Integer all the way through (see BS1's invariant note): the
         // head-look residual is the ONLY thing added to the game's own yaw.
         int32_t gameYawUnits = rot->yaw;
@@ -1777,7 +1842,11 @@ void calcview_tail(void* self, CalcViewParams* p) {
         fc.camPitch = rot->pitch;
         fc.camYaw = rot->yaw;
         fc.camRoll = rot->roll;
+        } // end of the normal (non-cineLook) drive branch
 
+        // Common to both branches: the eye offsets still apply, so an
+        // authored+look cinematic stays STEREO (they ride the authored
+        // camera; under SR stereo eyeSign is 0 here and pass 2 applies them).
         int eyeSign = scenedraw::stereo_active() ? 0 : bvr::vr::current_eye_sign();
         if (eyeSign != 0) {
             apply_eye_offset(loc, *rot, eyeSign);
@@ -1812,6 +1881,30 @@ void calcview_tail(void* self, CalcViewParams* p) {
         g_enginePitchUnits = rot->pitch;
         g_pitchErrDeg = 0.0f;
     }
+    // Session 42: cinematic edge instrument (BS1 s29 shape) - LOG ONLY. The
+    // s29 hang lesson: NO bone writes from a cine edge; hands.cpp releases at
+    // its own gate, after the world-change detection, the only safe place.
+    {
+        static bool s_lastCineHold = false; // game thread only
+        if (cineHold != s_lastCineHold) {
+            s_lastCineHold = cineHold;
+            unsigned lbT = 0, lbB = 0;
+            bool lb = bvr::hud::letterbox(&lbT, &lbB);
+            BVR_LOG("[b2r] cine edge %s (barDraw=%d letterbox=%d cineQuad=%d "
+                    "drive=%s) | vrDriving=%d strict=%d",
+                    cineHold ? "ENTER" : "EXIT",
+                    bvr::hud::bar_draw_active() ? 1 : 0, lb ? 1 : 0,
+                    bvr::vr::cinematic_active() ? 1 : 0,
+                    cineMode == bvr::vr::CineDrive::Off        ? "off"
+                    : cineMode == bvr::vr::CineDrive::Authored ? "authored"
+                                                               : "authored+look",
+                    vrDrove ? 1 : 0, strictGameplay ? 1 : 0);
+            // Both edges drop the look reference so the next shot opens
+            // framed as authored rather than wherever this one ended.
+            g_cineLookValid = false;
+        }
+    }
+
     // Stick-pitch-kill gate for the core input bridge, same funnel BS1 feeds.
     bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
     // The aim seam's frame (pass 1 only by construction - pass 2 routes through
