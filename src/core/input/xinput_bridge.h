@@ -77,6 +77,10 @@ void last_composed_triggers(uint8_t* lt, uint8_t* rt);
 // fix latches hand attribution from these too.
 void last_composed_bumpers(bool* lb, bool* rb);
 
+// The full wButtons word the game last saw (composed or real pad). Additive,
+// read-only; session 42 consumer is BS2's menukey lane (pad-A -> Enter).
+void last_composed_buttons(uint16_t* buttons);
+
 // Session 22: the FINAL composed sticks the game consumed (post merge/
 // pitchkill/turn controls) - the movement-wonkiness instrument reads them.
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);
