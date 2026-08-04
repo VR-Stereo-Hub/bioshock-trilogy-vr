@@ -850,10 +850,31 @@ kill. Both prerequisites below are now MET.):**
       Telekinesis provably does not traverse GetPerfectFireStart (two casts at a grabbable
       object, abi stayed 0), and `<X>BasicPlasmid` exists ONLY for Telekinesis in the exe -
       the other item class names are in the content packages and still have to be found.
-- [ ] **Per-weapon aim presets** (deferred out of session 40, deliberately - was bundled into
-      the sliders box): needs holdable identity under session-21's rules (key off the rig's
-      live holdable, never vtable-gate it, unresolvable clears, never seed before a value
-      source exists), and no tuned value source exists until the user calibrates in-headset.
+- [x] **Per-weapon profiles** (session 41): holdable derived fresh (hands+0x4B4, both
+      methods agreeing), UObject identity chain (UClass vtable 0x11E71F8, 3 classes),
+      BS1's session-21 shape ported under all four seeding rules - RIGHT hand + uniform
+      weapon scale per weapon (user decision; left stays global). Flat-proven: pre-fire
+      keying, stash/seed/restore round-trip with no edit leak, weapons.ini persistence
+      (2 profiles / 26 values at boot).
+- [x] **Animation-preserving drive** (session 41): the rigid drive REPLACED driven bones
+      (erased melee animations; engine restamps = the left-eye flicker). Now the drive
+      adopts the engine's evaluated trans+quat per bone (scale NEVER adopted - structural
+      compounding guard) and composes the controller frame on top; absorb-then-recompose
+      repaint on pass 1. Flat: adoption live (~7 absorbs/drive/hand), drill-region motion
+      during a trigger pulse, no scale-flick alternation, write-loc 100 UU/m exact,
+      anim-off bitwise-stable (the rigid fallback).
+- [x] **Uniform weapon scale** (session 41): the holdable's OWN SkeletonInstance
+      (holdable+0x430, two-factor identity) - `vrhands wscale` scales body AND canister
+      together (the session-40 inverse-scale repro INVERTED at 0.5/2.0), weapon anims
+      keep playing while scaled, 1.0 = restore + hands-off. Pivot-63 `scaleweapon` kept
+      as fallback, default OFF.
+- [x] **Session-41 polish**: arms-hide collapses onto the driven wrist (the skin-web
+      fix); F10 always-visible top PRESET section ("applies/saves ALL settings and
+      values"); vrinput default-ON at boot (BS2-local); per-hand aimRayMaxDevDegL/R in
+      the sim (dual-beam acceptance reads 0.0000/0.0000).
+- [ ] **Session-41 in-headset acceptance**: melee/reload animations play on driven hands;
+      scale-flick flicker gone; arms-hide web gone; per-weapon tuning + uniform weapon
+      scale feel; idle sway verdict (anim on vs off).
 
 ## Post-v1 backlog (not scheduled)
 

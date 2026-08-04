@@ -319,23 +319,33 @@ apart - the gun points somewhere other than where it shoots.
    moved it 110 UU in X, a 0.4 m drop moved it 40 UU in Z. That is the ground truth for
    "is the model following the controller"; the picture is the confirmation, not the proof.
 
-**BS2 delta (session 40): `aimRayMaxDevDeg` ASSUMES ONE LASER.** BS2 now renders a beam and
-a dot per hand (native dual-wield), and the metric treats the second hand's dots as deviation
-from the first hand's ray: it reads 47-75 deg and varies across stations, which looks exactly
-like the aim/model decoupling regression it is not. Turn the second beam and dot off
-(`vraim laser l off`, `vraim dot l off`) and the same controller pose reads **0.0000**. Until
-the metric grows a per-hand version, run this acceptance single-beam and say so in the log.
+**BS2 delta (session 40, RESOLVED session 41): the legacy `aimRayMaxDevDeg` ASSUMES ONE
+LASER.** BS2 renders a beam and a dot per hand (native dual-wield), and the legacy field
+folds the second hand's dots in as deviation from the first hand's ray - it reads 47-75 deg
+dual-beam and that is NOT a regression. Session 41 added **`aimRayMaxDevDegL` /
+`aimRayMaxDevDegR`** (each quad assigned to the hand whose ray it deviates least from, with
+`aimRayDotsL/R` counts): the dual-beam acceptance now reads the per-hand fields - session-41
+reference at the save, both beams live, zero trims: **L 0.0000 / R 0.0000**. The legacy
+field keeps its old semantics for recorded-baseline comparability; ignore it dual-beam.
+Note the metric measures against the SIM'S RAW aim pose, so a tuned aim trim shows up as
+exactly the trim (5/3 deg trim -> 5.829): zero the trims for the coupling number, or expect
+the trim value.
+
 Two BS2-native instruments cover what it cannot:
 
 - **`vrbones axes [idx]`** - the MESH orientation read the coupling metric never was (the
-  session-39 misalignment survived to the headset because nothing measured the mesh). It
-  prints the bone's driven and authored rotations in component and world space plus the angle
-  of each axis to the live hand ray. The acceptance: at the rest pose (controller aiming
-  where the view aims) the driven-vs-authored angle is ~0 - session 40 measured **0.21 deg**
-  after the composition fix, against ~81.6 deg before it.
+  session-39 misalignment survived to the headset because nothing measured the mesh).
+  SESSION-41 CORRECTION: the `cur` quat samples the LIVE BANK, which mid-frame races
+  between the engine's restamp and the drive's recompose - two same-pose samples read 79
+  deg apart in boot A. Use the **`written q` / `anim q`** line instead (race-free): with
+  `vrhands anim off` the written quat must be BITWISE stable across reads (rigid
+  composition; the session-40 0.21-deg rest oracle lives in this mode); with anim ON the
+  written quat oscillates at idle-sway amplitude (~1.7 deg measured) and `anim q` tracks
+  the engine pose - that oscillation IS the adoption-liveness signal, not a defect.
 - **per-hand `vrhands status` write-loc** - each cluster reports its own last write, so
   moving one controller and watching both numbers proves decoupling directly (session 40:
-  35.0 UU on the moved hand, 0.0 on the other; 120.0 UU separation for 1.2 m apart).
+  35.0 UU on the moved hand, 0.0 on the other; 120.0 UU separation for 1.2 m apart;
+  re-measured exact under the session-41 animation-preserving drive).
 
 **BS2 deltas (session 39, first BS2 coupling run):** the same commands and oracles apply
 (`-Game bs2`; `vraim handray on` + `vraim laser on` + `vrhands on` is the arm set). Drive

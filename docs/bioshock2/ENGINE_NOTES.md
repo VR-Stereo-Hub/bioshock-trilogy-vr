@@ -2160,3 +2160,33 @@ per-plasmid key becomes derivable. Preset ordering mirrored from BS1
 `reapply_weapon_profile()`; the preset save chains `save_weapon_profiles()`. NO
 default profiles are seeded in code (class names only exist live). `vraim weapon |
 wsave | wkey real|sim <Class>`.
+
+### Boot-B acceptance (2026-08-04, second sim boot, all at the save under vrstereo)
+
+- **Uniform weapon scale: the canister repro INVERTED.** Rivet gun (19-bone own
+  skeleton resolved at holdable+0x430): `vrhands wscale 0.5` shrank the WHOLE gun -
+  furnace/canister element proportionally with the body (session 40's pivot-63 repro
+  ballooned it ~4x at the same value); `wscale 2.0` grew it uniformly; `wscale 1.0`
+  logged "authored pose restored" and dropped the skel (hands-off). Weapon-skel
+  adoption live while scaled (2412 adopts over 560 drives - the drill-spin class of
+  animation keeps playing).
+- **Profiles**: 'PlayerRivetGun' keyed PRE-FIRE off the rig holdable and CREATED from
+  the preset baseline (the user's 22-value preset seeded it: model trim 12.5/-7.5/3.2
+  scale 1.35); a `trim r 5 3` edit then a switch to 'PlayerMachineGun' seeded the NEW
+  profile from the BASELINE (0/0 - the edit did not leak); switch-back RESTORED
+  5.0/3.0 exactly. weapons.ini round-trip: 2 profiles / 26 values loaded at the next
+  boot, and the loaded profile applied pre-fire the moment the rig resolved. NOTE:
+  the resolver keys only while the rig is resolved, which needs the VR camera
+  driving - a flat boot without vrstereo keys nothing (correct in the headset flow).
+- **Preset**: 43 values now round-trip (was 22); animMode/animTrans/wScale/
+  scaleWeapon persisted; boot order load -> baseline -> weapons.ini proven in-log.
+- **Per-hand devdeg**: both beams live, zero trims - `aimRayMaxDevDegL 0.0000 /
+  R 0.0000` while the legacy field read 62.6 (the documented dual-beam artifact).
+  A tuned aim trim reads as exactly the trim (5/3 -> 5.829 deg): the metric measures
+  against the sim's RAW aim pose.
+- **Race-free axes**: anim OFF -> written q BITWISE identical across reads; anim ON
+  -> written q oscillates ~1.7 deg (idle sway composing; BS1's measured envelope
+  class) and anim q tracks the engine pose.
+- **Guards**: 11 compositor layers; sr eyes 6.30 UU exact; wait2/s=0, guardskips 0;
+  input drive 58-92/s armed at BOOT with no command (default-ON); teardown 478/463 ms
+  with ZERO dumps across both closes.
