@@ -200,6 +200,15 @@ bool cinematic_hold();
 // agreement between them is real evidence. `vrcine status` reports both.
 void get_bar_stats(unsigned* skipped, unsigned* intervalsWithBars, unsigned* lastVertexCount);
 
+// ---- Session 42: backbuffer-composite pipelines (BS2 opt-in) -----------------
+// BS2 composites gameswf directly on the BACKBUFFER (bind = RENDER_TARGET
+// only, no SHADER_RESOURCE) and its tonemap is an INDEXED 6-index quad - both
+// fail the BS1-derived fingerprints, so with the flag off the classifier
+// never identifies a HUD target on such a game. Opt-in per game at adapter
+// init; DEFAULT OFF, which keeps every BS1 code path bit-identical.
+void set_backbuffer_composite(bool on);
+bool backbuffer_composite();
+
 // ---- Session 42: auto-arm a frame dump on a classifier edge ------------------
 // The screen kinds that still need fingerprints (loading, FMV entry, whatever a
 // playthrough reaches) are transitions: they are OVER before the 1 Hz command

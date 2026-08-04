@@ -20,6 +20,10 @@ namespace {
 std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_force{false};
 std::atomic<bool> g_gate{false};
+// Session 42 (BS2): the game composites gameswf directly on the BACKBUFFER
+// (bind = RENDER_TARGET only) and its tonemap is an INDEXED quad - both fail
+// BS1's fingerprints. Per-game opt-in; default off keeps BS1 bit-identical.
+std::atomic<bool> g_bbComposite{false};
 
 // Our RT (created lazily to match the tonemap target's desc), plus the
 // PROCESSED copy: gameswf leaves garbage in the capture's alpha channel, so
@@ -969,11 +973,16 @@ void on_setrt(UINT numViews, ID3D11RenderTargetView* const* rtvs,
         g_curH = d.Height;
         g_curFmt = d.Format;
         // HUD-capable: big RGBA8 render+shader target (the tonemap target's
-        // shape; exact size keys off whatever the game runs at).
+        // shape; exact size keys off whatever the game runs at). Session 42:
+        // under backbuffer-composite (BS2 opt-in) the HUD host is the
+        // BACKBUFFER itself, which carries RENDER_TARGET without
+        // SHADER_RESOURCE (framedump_232940: T0 bind=0x20).
+        bool bindPair = (d.BindFlags & D3D11_BIND_RENDER_TARGET) &&
+                        (d.BindFlags & D3D11_BIND_SHADER_RESOURCE);
+        bool bindBb = g_bbComposite.load(std::memory_order_relaxed) &&
+                      (d.BindFlags & D3D11_BIND_RENDER_TARGET);
         g_curRtLdr = d.Width >= 640 && d.Height >= 480 &&
-                     d.Format == DXGI_FORMAT_R8G8B8A8_UNORM &&
-                     (d.BindFlags & D3D11_BIND_RENDER_TARGET) &&
-                     (d.BindFlags & D3D11_BIND_SHADER_RESOURCE);
+                     d.Format == DXGI_FORMAT_R8G8B8A8_UNORM && (bindPair || bindBb);
         tex->Release();
     }
     if (g_descCacheCount < static_cast<int>(_countof(g_descCache))) {
@@ -994,6 +1003,27 @@ void on_draw_indexed(ID3D11DeviceContext* ctx) {
         // about before trusting the redirect.
         g_cLeaks.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
+    // Session 42 (BS2, flag-gated): BS2's tonemap is an INDEXED 6-index quad
+    // straight onto the backbuffer - the on_draw tonemap check below never
+    // sees it (that one requires a NON-indexed draw). Same fingerprint
+    // otherwise: first indexed draw on an LDR-shaped target with NO depth
+    // bound whose PS srv0 IS the scene-vote leader (framedump_232940 event
+    // 934: DrawIndexed a=6 rtv0=T0 dsv=- srv0=T1, T1 = 612-vote leader).
+    // Runs only until the target is found, a handful of draws per interval.
+    if (g_bbComposite.load(std::memory_order_relaxed) && !g_hudTarget &&
+        g_curRtLdr && !g_curDsvBound && ctx) {
+        if (ID3D11Resource* leader = scene_leader()) {
+            ID3D11ShaderResourceView* srv0 = nullptr;
+            ctx->PSGetShaderResources(0, 1, &srv0);
+            if (srv0) {
+                ID3D11Resource* srvRes = nullptr;
+                srv0->GetResource(&srvRes);
+                srv0->Release();
+                if (srvRes) srvRes->Release(); // identity compare only
+                if (srvRes == leader) g_hudTarget = g_curRt;
+            }
+        }
     }
     if (!g_curDsvBound) return;
 
@@ -1644,6 +1674,17 @@ void set_bars_hidden(bool on) {
 }
 
 bool bars_hidden() { return g_barsHidden.load(std::memory_order_relaxed); }
+
+void set_backbuffer_composite(bool on) {
+    g_bbComposite.store(on, std::memory_order_relaxed);
+    if (on)
+        BVR_LOG("[hud] backbuffer-composite mode ON (indexed tonemap + "
+                "RENDER_TARGET-only HUD host accepted)");
+}
+
+bool backbuffer_composite() {
+    return g_bbComposite.load(std::memory_order_relaxed);
+}
 
 void set_dump_on_edge(int edge, int count) {
     if (count < 1) count = 1;

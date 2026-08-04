@@ -39,6 +39,13 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // BS1's, so without this the live fov watch decodes nothing on BS2 -
     // which is exactly the state session 26 recorded.
     bvr::hud::set_ray_block_offset(patterns::kRayBlockCb0FloatIndex);
+    // Session 42: BS2 composites gameswf directly on the BACKBUFFER (bind =
+    // RENDER_TARGET only) and tonemaps via an INDEXED 6-index quad sampling
+    // the scene-vote leader (framedump_232940 event 934 - derivation in
+    // docs/bioshock2/ENGINE_NOTES.md session 42). BS1's fingerprints never
+    // fire on that shape, so the HUD classifier needs the opt-in; core
+    // default stays off (BS1 bit-identical).
+    bvr::hud::set_backbuffer_composite(true);
     // Session 34 armed detached pacing here (hand the frame loop to the pace
     // thread whenever the session is not FOCUSED) against the ~10 Hz unfocused
     // cadence. Session 36, first real VDXR attach since: DETACH STRANDS THE
