@@ -1349,6 +1349,14 @@ void save_vr_preset() {
     fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
     fprintf(f, "ammoMod=%d\n", static_cast<int>(bvr::input::ammo_mod()));
+    // Session 42: cinematic/classifier levers (BS1 parity; bar_verts is NOT
+    // persisted - it is a per-game patterns constant, never a tunable).
+    fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
+    fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
+    fprintf(f, "cineSubsInFrame=%d\n", bvr::hud::cine_subs_in_frame() ? 1 : 0);
+    fprintf(f, "effectsInFrame=%d\n", bvr::hud::effects_in_frame() ? 1 : 0);
+    fprintf(f, "effectMaxVerts=%u\n", bvr::hud::effect_max_verts());
+    fprintf(f, "postFxRtOnly=%d\n", bvr::hud::postfx_rt_only() ? 1 : 0);
     // Session 42: HUD quad placement (F10 sliders live in core; the values are
     // eye-judged so losing them on relaunch would mean re-tuning every session).
     {
@@ -1478,6 +1486,20 @@ void load_vr_preset_values() {
             hudW = v;
         else if (strcmp(key, "hudQuadUpM") == 0)
             hudU = v;
+        else if (strcmp(key, "cineBarsHidden") == 0)
+            bvr::hud::set_bars_hidden(v != 0.0f);
+        else if (strcmp(key, "cineDrive") == 0) {
+            int m = static_cast<int>(v);
+            if (m >= 0 && m <= 2)
+                bvr::vr::set_cine_drive(static_cast<bvr::vr::CineDrive>(m));
+        } else if (strcmp(key, "cineSubsInFrame") == 0)
+            bvr::hud::set_cine_subs_in_frame(v != 0.0f);
+        else if (strcmp(key, "effectsInFrame") == 0)
+            bvr::hud::set_effects_in_frame(v != 0.0f);
+        else if (strcmp(key, "effectMaxVerts") == 0 && v >= 3.0f)
+            bvr::hud::set_effect_max_verts(static_cast<unsigned>(v));
+        else if (strcmp(key, "postFxRtOnly") == 0)
+            bvr::hud::set_postfx_rt_only(v != 0.0f);
         else
             --n;
     }
