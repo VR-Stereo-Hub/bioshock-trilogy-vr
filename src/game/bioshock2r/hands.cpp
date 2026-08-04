@@ -59,7 +59,10 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
     // g_wasDriving edge below is what hands each cluster back - HERE, after
     // the world-change detection already ran this frame, never from the cine
     // edge itself (the s29 save-load hang). Identity when no cine holds.
-    bool cineSuspend = bvr::hud::cinematic_hold() &&
+    // Round 2: bar-draw signal only (see camera.cpp's policy block) - the
+    // pixel watch false-flaps on BS2 dark scenes and a release/redrive flap
+    // was the in-headset "animations not fully playing" report.
+    bool cineSuspend = bvr::hud::bar_draw_active() &&
                        bvr::vr::cine_drive() != bvr::vr::CineDrive::Off;
     bool want = g_enabled.load(std::memory_order_relaxed) && strictGameplay &&
                 ctx.vrDriving && !cineSuspend;

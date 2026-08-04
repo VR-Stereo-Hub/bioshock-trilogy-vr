@@ -4,6 +4,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/aim.h"
+#include "game/bioshock2r/body.h"
 #include "game/bioshock2r/camera.h"
 #include "game/bioshock2r/hands.h"
 #include "game/bioshock2r/patterns.h"
@@ -34,6 +35,7 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     if (!patterns::resolve(image, symbols)) return false; // resolve() logged why
     camera::init_image(image); // vtable-RVA identity checks need the bounds
     scenedraw::init(image);    // RVA math for the discovery instruments
+    body::init(image);         // session 42 r2: M7.5 transfer (image base only)
     // BS2's cb0 ray block sits at float 16, not BS1's 12 (session 32; the
     // derivation is in patterns.h next to the constant). Core defaults to
     // BS1's, so without this the live fov watch decodes nothing on BS2 -
@@ -47,10 +49,11 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // default stays off (BS1 bit-identical).
     bvr::hud::set_backbuffer_composite(true);
     // Session 42 (user decision): harvest the first cutscene's fingerprint
-    // automatically - BS2's letterbox-bar vertex count is still underived
-    // (never copy BS1's 29), and the transition is over before any hand-armed
-    // dump could land. One-shot, self-disarms; ~0.5 s hitch once per run.
-    bvr::hud::set_dump_on_edge(1 /* bar-draw rising */, 2);
+    // automatically. Round 2: the bars edge can never fire while the
+    // fingerprint is underived (circular), but the in-headset run proved the
+    // LETTERBOX PIXEL WATCH trips inside real cutscenes - arm the dump on
+    // THAT edge instead. One-shot, self-disarms; ~0.5 s hitch once per run.
+    bvr::hud::set_dump_on_edge(3 /* letterbox pixel-watch rising */, 2);
     // Session 42 deviation from BS1 (ARCHITECTURE decision log): BS1 falls
     // back to the SIZE-ONLY post-FX rule during cutscenes (its cine shots
     // carry no HUD art, and the bind test cost a visible floating screen).
@@ -86,6 +89,7 @@ void Bioshock2RAdapter::setFov(float hfovDeg) {
 
 void Bioshock2RAdapter::drawDebugUi() {
     camera::draw_debug_ui();
+    body::draw_debug_ui(); // session 42 r2: body/locomotion section
     scenedraw::draw_debug_ui();
 }
 

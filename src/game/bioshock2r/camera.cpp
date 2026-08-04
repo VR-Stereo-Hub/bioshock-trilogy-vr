@@ -17,6 +17,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/aim.h"
+#include "game/bioshock2r/body.h"
 #include "game/bioshock2r/bones.h"
 #include "game/bioshock2r/frame_context.h"
 #include "game/bioshock2r/game_ini.h"
@@ -691,6 +692,15 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //                                without live SR stereo (flat A/B); status =
 //                                counters + per-reason routes + lens/letterbox
 //                                state. fovwatch on|off kept (BS2-only).
+//   vrbody on|off|status|rate <s>|deadzone <deg>|max <degPerSec>|field
+//   pc|pawn|both|probe on|off|poke <deg>
+//                                session 42 r2: M7.5 body-follows-head yaw
+//                                transfer (stick-forward = look direction;
+//                                snap turns carry the pawn). The rotation
+//                                offset is DERIVED live and the probe
+//                                handshake verifies writes before any
+//                                transfer runs; fails soft to BS1-s16
+//                                behaviour. Default ON.
 //   vrxhair on|off|status        session 42: the game's own crosshair.
 //                                DEFAULT HIDDEN (user ask) - asserted with
 //                                ShockPlayer.DisableReticle()/EnableReticle()
@@ -1195,6 +1205,9 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "menukey") == 0) {
         // Session 42: pad-A menu activation (A -> scancode Enter, menu-gated).
         input_drive::handle_menukey_command(args);
+    } else if (strcmp(cmd, "vrbody") == 0) {
+        // Session 42 round 2: the M7.5 body-follows-head transfer.
+        body::handle_command(args);
     } else if (strcmp(cmd, "vrxhair") == 0) {
         // Session 42: the game's own crosshair (default HIDDEN; BS1 verb name).
         if (strncmp(args, "on", 2) == 0) {
@@ -1389,6 +1402,9 @@ void save_vr_preset() {
     // Session 42: the crosshair choice survives a relaunch (BS1 key name).
     fprintf(f, "crosshairVisible=%d\n",
             g_reticleHidden.load(std::memory_order_relaxed) ? 0 : 1);
+    // Session 42 r2: body-transfer feel (BS1 key names).
+    fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
+    fprintf(f, "bodyDeadzone=%.1f\n", body::deadzone_deg());
     // Session 42: cinematic/classifier levers (BS1 parity; bar_verts is NOT
     // persisted - it is a per-game patterns constant, never a tunable).
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
@@ -1438,6 +1454,8 @@ void load_vr_preset_values() {
     // and applied together after the parse, behind the same guard BS1 uses.
     float hudD = 0, hudW = 0, hudU = 0;
     bvr::vr::get_hud_quad(&hudD, &hudW, &hudU);
+    // Session 42 r2: body tuning is a coupled pair (BS1 loader shape).
+    float bodyRate = body::rate_per_sec(), bodyDz = body::deadzone_deg();
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char key[64] = {};
@@ -1528,6 +1546,10 @@ void load_vr_preset_values() {
             hudU = v;
         else if (strcmp(key, "crosshairVisible") == 0)
             g_reticleHidden.store(v == 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "bodyRate") == 0)
+            bodyRate = v;
+        else if (strcmp(key, "bodyDeadzone") == 0)
+            bodyDz = v;
         else if (strcmp(key, "cineBarsHidden") == 0)
             bvr::hud::set_bars_hidden(v != 0.0f);
         else if (strcmp(key, "cineDrive") == 0) {
@@ -1555,6 +1577,7 @@ void load_vr_preset_values() {
     }
     bones::set_weapon_offset(wOff[0], wOff[1], wOff[2]);
     if (hudD > 0.0f && hudW > 0.0f) bvr::vr::set_hud_quad(hudD, hudW, hudU);
+    body::set_tuning(bodyRate, bodyDz);
     if (n) BVR_LOG("[b2r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
@@ -1696,6 +1719,14 @@ void calcview_tail(void* self, CalcViewParams* p) {
     g_lastCalcViewMs = now;
     scenedraw::note_calcview(); // in/out attribution + one-shot instruments
 
+    // Session 42 round 2 (M7.5 port): the engine's OWN rotation this frame,
+    // captured BEFORE any drive write - the body transfer's inputs. The
+    // residual is set by the normal drive branch below (0 in cineLook, per
+    // BS1's invariant: the look must never reach the body).
+    int32_t gameYawUnitsRaw = rot->yaw;
+    int32_t pitchUnitsRaw = rot->pitch;
+    int32_t residualUnits = 0;
+
     // FOV readback (session 25): claim what the game actually renders, every
     // call, menus included - BS1 shape. Null option object -> claim 0, which
     // core treats exactly like "no readback yet" (falls back to the headset
@@ -1761,11 +1792,16 @@ void calcview_tail(void* self, CalcViewParams* p) {
     }
 
     // Session 42 (BS1 s29 shape): the cinematic drive policy (vrcine drive
-    // off|authored|authored+look). cineHold MUST be cinematic_hold(), never
-    // letterbox(): with the bars hidden (the default) there are no black
-    // pixels left to detect, so a letterbox()-keyed suspend can never fire
-    // during a bars-type cutscene - exactly when it matters.
-    bool cineHold = bvr::hud::cinematic_hold();
+    // off|authored|authored+look). Round 2: the suspend keys on the BAR-DRAW
+    // signal ONLY - the in-headset session proved BS2's pixel watch
+    // false-flaps on dark scenes and fades (letterbox ON at 39%-band fades,
+    // 6 transitions in one run), and a FLAPPING suspend is worse than none:
+    // the hands released and re-drove mid-scene ("animations playing but not
+    // fully"). bar_draw_active() is inert until the BS2 bars fingerprint is
+    // derived (the letterbox-edge auto-dump harvests it), then sustains for
+    // whole scenes with no hysteresis. The pixel watch stays as telemetry
+    // and as the dump trigger, never as a gate on this game.
+    bool cineHold = bvr::hud::bar_draw_active();
     bvr::vr::CineDrive cineMode = bvr::vr::cine_drive();
     bool cineSuspend = cineHold && cineMode == bvr::vr::CineDrive::Authored;
     bool cineLook = cineHold && cineMode == bvr::vr::CineDrive::AuthoredLook;
@@ -1815,6 +1851,7 @@ void calcview_tail(void* self, CalcViewParams* p) {
             g_recenterPose = hp;
             g_recenterYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
             g_haveRecenter = true;
+            body::on_reset("recentered"); // session 42 r2: M7.5 state machine
             BVR_LOG("[b2r] vr camera recentered (yaw %.1f deg)", a.yawRad * kRadToDeg);
         }
 
@@ -1881,7 +1918,7 @@ void calcview_tail(void* self, CalcViewParams* p) {
         // head-look residual is the ONLY thing added to the game's own yaw.
         int32_t gameYawUnits = rot->yaw;
         int32_t headYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
-        int32_t residualUnits = wrap_rot(headYawUnits - g_recenterYawUnits);
+        residualUnits = wrap_rot(headYawUnits - g_recenterYawUnits);
         float gameYawRad = static_cast<float>(gameYawUnits) / kRotUnitsPerRadian;
         // Session 32 (BS1 session 30, same defect in shared code): publish how
         // far the ENGINE's own pitch is from the head's BEFORE we overwrite it,
@@ -2039,6 +2076,17 @@ void calcview_tail(void* self, CalcViewParams* p) {
     // model write must never precede the ray build it has to agree with.
     aim::on_calcview(fc, strictGameplay);
     hands::on_calcview(fc, strictGameplay);
+
+    // M7.5 body transfer (session 42 round 2, BS1 shape): rotate the body
+    // facing under an UNCHANGED camera so stick-forward is the look direction
+    // and snap turns carry the pawn. Runs AFTER the fc publish (the write is
+    // state for the NEXT frame) and absorbs EXACTLY the units the body took -
+    // the same integer, which is what makes the invariant a theorem.
+    {
+        int32_t moved = body::on_calcview(self, va, gameYawUnitsRaw, pitchUnitsRaw,
+                                          residualUnits, vrDrove);
+        if (moved) g_recenterYawUnits = wrap_rot(g_recenterYawUnits + moved);
+    }
 
     // FOV write (session 25, BS1 write-block shape): strict gameplay only,
     // VR wants it only while the HMD actually drives, manual lever for flat

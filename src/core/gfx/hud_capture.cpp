@@ -228,7 +228,10 @@ void fire_edge_dump(int edge) {
     int n = g_dumpEdgeCount.load(std::memory_order_relaxed);
     bvr::frame_inspector::arm(2, n);
     BVR_LOG("[hud] edge dump armed (%s rising, %d present window%s) - one-shot",
-            edge == 1 ? "bar-draw" : "screen-only", n, n == 1 ? "" : "s");
+            edge == 1   ? "bar-draw"
+            : edge == 2 ? "screen-only"
+                        : "letterbox pixel-watch",
+            n, n == 1 ? "" : "s");
 }
 std::atomic<unsigned> g_cPostFx{0};
 // Draws the OLD size-only rule would have passed in-frame and the bind test
@@ -485,6 +488,7 @@ void letterbox_watch(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
                     if (isLb) g_cLbIntervals.fetch_add(1, std::memory_order_relaxed);
                     BVR_LOG("[hud] letterbox %s (top %u px, bottom %u px of %u)",
                             isLb ? "ON (engine cinematic bars)" : "off", top, bot, h);
+                    if (isLb) fire_edge_dump(3); // session 42 r2: mid-cine dump
                 }
             } else {
                 g_lbStreak = 0;
