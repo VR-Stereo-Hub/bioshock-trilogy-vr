@@ -1216,3 +1216,37 @@ runtime.
   per-PLASMID key becomes derivable. Everything else is BS1's session-21 shape with
   fresh constants (holdable hands+0x4B4, UClass vtable 0x11E71F8) and the four seeding
   rules preserved verbatim.
+
+### 2026-08-04/05 (session 42, BS2 presentation lane)
+
+- **Backbuffer-composite classifier mode is a per-game OPT-IN FLAG, not an
+  autodetect**: BS2 draws gameswf straight onto a RENDER_TARGET-only backbuffer
+  and tonemaps via an indexed quad, which no BS1 fingerprint matches. The flag
+  (`hud::set_backbuffer_composite`, adapter init) widens the target gate and adds
+  an indexed-tonemap check; default OFF keeps every BS1 code path bit-identical.
+  Autodetection was rejected: a heuristic that can flip at runtime is exactly the
+  class of core change the decoupling directive forbids.
+- **Fullscreen screens ship GENERIC on BS2** (user decision): no per-kind
+  special-casing - unknown kinds classify into the screen-only family (head-locked
+  quad) or the overlay family (panel redirect + projection), and a one-shot
+  edge-armed frame dump (`vrcine dumparm`, auto-armed for the bars edge at adapter
+  init) harvests fingerprints during normal play for any kind that misroutes.
+- **`postfx cine` (size-only fallback during cutscenes) ships OFF on BS2** -
+  deviation from BS1, where it is a scoped workaround. BS2 renders a square-ish
+  backbuffer, where the size-only rule is maximally degenerate (it matches the UI
+  atlases); enable only if a headset session shows the floating-screen artifact.
+- **BS1's stall-watchdog screen_only exemption was NOT ported**: BS2 has no
+  watchdog thread to put it in (verified absent - its protections pause doubling
+  rather than kill stereo). If a watchdog is ever added, the exemption ships
+  inside it, same commit.
+- **Pad-A menu activation is a BS2-LOCAL A->Enter scancode translation**
+  (keybd_event, menu-context gated, foreground-checked) rather than a core
+  button-mapping change: core's A=use/loot mapping is deliberate and shared. The
+  known reach limit: BS2's pause menu starves the whole PE-tail service lane
+  (poll + pump + menukey) - fixing THAT is its own future lane, not a mapping
+  problem.
+- **Engine-state writes on BS2 go through SCRIPT SETTERS called by name**
+  (FindFunctionChecked + ProcessEvent through the engine's own trampolines, SEH
+  isolated, effect-verified): the crosshair lane (ShockPlayer.DisableReticle /
+  EnableReticle, default hidden per user ask) is the precedent. BS1's Exec SET
+  seam stays BS1-only.

@@ -64,8 +64,25 @@ pokeaddr(i)/hexdump/fsweep/strscan/membases/dumpframe`, plus the b2r-first
 ~3 s Debug in gameplay, EXPECTED to freeze the game for that long). Since session 26 also
 the stereo family: `vrstereo on|off` (one toggle: camera mode + stereo - NO 1t rung on
 this game) and `reentry vrstereo|stereo|pulse|on|off|yaw|reset|hook [draw|stream]|unhook|
-dump <n>|kick on|off|kick2 on|off|calcstack|status`. Still unported from BS1: vraim/
-vrhands/vrbones/exec.
+dump <n>|kick on|off|kick2 on|off|calcstack|status`. Sessions 39-41 added the motion
+family (`vraim`, `vrhands`, `vrbones`, `vrinput`, `vrpreset [save]`). Session 42 added
+the presentation family: `vrhud on|off|force on|force off|status` (force = redirect
+without live SR stereo, the flat A/B; status = counters + per-reason routes),
+`vrcine dumparm bars|screen <n>|off` (one-shot frame dump on a classifier rising
+edge), `menukey on|off|force on|force off|status` (pad A -> scancode Enter in menu
+contexts; inert while vrinput is off), `vrxhair on|off|status` (the game's own
+crosshair - DEFAULT HIDDEN, PE-by-name DisableReticle), and `vrbones flick on|off`
+(the [flick] per-minute flicker-diagnosis line; counters always count). `exec` stays
+BS1-only by design - BS2 engine-state writes go through script setters via
+FindFunctionChecked + ProcessEvent (the vrxhair precedent, ENGINE_NOTES s42).
+
+**PAUSE-MENU COMMAND STARVATION (session 42, structural)**: with the pause menu up,
+every ProcessEvent dispatch lands inside the hooked draw (3 CalcView/s, 205 ms
+draws), so the command poll NEVER ticks and the input pump is dead - seam commands
+and the pad both do nothing until the menu closes. The game also writes NOTHING
+while unfocused, so game-batch's log-age wedge check FALSE-POSITIVES on a paused
+unfocused game: wake it with `game-key -Game bs2 -Key Space` (a healthy game jumps
+back to ~370 CalcView/s instantly; the real wedge does not).
 
 ## Stereo flat acceptance (session 26 - all PASSED, log-measured; stereo-only policy)
 
