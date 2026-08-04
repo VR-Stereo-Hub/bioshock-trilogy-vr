@@ -2049,3 +2049,114 @@ The user re-tested the round-2 build in the headset. PASSED: per-hand arms modes
 5. Weapon scale must be uniform-down - the weapon-skeleton lane (canister verdict above).
 6. F10: APPLY/SAVE buttons belong in their own always-visible section at the TOP, labeled
    "saves ALL settings and values" - buried at the panel bottom they read as sub-options.
+
+## Session 41 (2026-08-04) - the holdable lane, and the animation-preserving drive
+
+### UObject identity: name +0x28, class +0x30, UClass vtable RVA 0x11E71F8
+
+Derived live at the save with the `vraim oclass` probe (dumps header dwords, every
++0x20..0x3C int32 that resolves through GNames, every +0x24..0x44 pointer that looks
+like a UClass). Three distinct classes probed - the AHands actor ('PlayerHands') and
+two weapon objects captured at the fire seam ('PlayerMachineGun',
+'PlayerGrenadeLauncher'):
+
+- the object's own FName index sits at **+0x28** (resolved names exactly matched the
+  expected objects);
+- the UClass pointer sits at **+0x30**; the UClass's own +0x28 FName is the canonical
+  class name;
+- the UClass vtable RVA is **0x11E71F8** - IDENTICAL across all three classes (the
+  bank-only-when-stable rule).
+
+BS1's layout SHAPE (+0x28/+0x30) transferred; the UClass vtable RVA is fresh (BS1:
+0xE2F04C). `patterns::object_class_name()` implements the full validation chain
+(memory-valid, UClass-vtable gate, GNames entry self-index check) and is
+class-agnostic by design - session-21 rule c.
+
+### Hands.CurrentHoldable = hands+0x4B4 (two methods, agreeing)
+
+- **Seam-anchored (primary)**: the weapon `this` captured at the GetPerfectFireStart
+  detour occurs at EXACTLY ONE pointer slot in hands+0x000..0x800 (`vrbones holdscan
+  find`) - at +0x4B4, for two different weapons (0BE7D200 machine gun, then 0BE7E000
+  grenade launcher after a digit switch).
+- **Switch-diff (cross-check)**: `holdscan cap` -> digit-key switch -> `holdscan
+  diff` showed 5 changed dwords, exactly one a pointer slot: **+0x4B4** flipping from
+  the PlayerMachineGun object to the PlayerGrenadeLauncher object (both class-named
+  live by the probe). The others were small ints (+0x23C, +0x428/+0x42C - ammo/
+  selection state family).
+
+BS1's was +0x45C - same idea, different offset. `bones::current_holdable()` reads it
+raw behind the rig's own vtable gate; the class validates downstream (rules b/c).
+
+### The weapon's OWN SkeletonInstance: holdable+0x430
+
+`vrbones wskel` scanned the live holdable +0x000..0x800 for a pointer whose dword0 ==
+base+0x10D0FC0 (the SkeletonInstance vtable): exactly ONE hit, at **+0x430** (same
+offset as AHands - convergent actor layout, derived fresh), owner backpointer ==
+the holdable, pose array at +0x44 valid (grenade launcher: **13 bones**). This bank
+is the uniform-weapon-scale lane: `vrhands wscale <f>` scales every bone's scale
+channel AND translation (uniform about the component origin) so body and ammo
+canister scale together - the AHands pivot-63 path stays as the `scaleweapon`
+fallback (default OFF since this session).
+
+### The animation-preserving drive (retarget): adopt, then compose
+
+The rigid drive REPLACED driven bones with the rotated reference, which erased engine
+weapon animations (the drill's melee-hit) and made every engine restamp a race (the
+left-eye flicker; scale changes provably trigger a heavier restamp cadence). The fix
+composes the controller frame ON TOP of the engine's own freshly-evaluated pose:
+
+- `g_anim` bank: per driven bone, adopt the live pose-bank value ONLY when its first
+  32 bytes (trans vec4 + quat) differ from OUR last write (`g_written`) - the drive's
+  own output can never feed back. Bones ENTERING the driven set adopt
+  unconditionally (their `g_written` is stale); bones masked by the OTHER hand are
+  skipped (the bank holds that hand's composed write).
+- **The scale rows of g_anim are PINNED to g_ref and never adopted.** The engine
+  does not restamp scale, so at every genuine trans/rot restamp the bank's scale
+  bytes are still ours - adopting all 48 bytes would compound `g_scale`
+  geometrically (`refS * g_scale^n`) and could adopt arms-hide's zero scale. This is
+  a structural rule, not a clamp.
+- Compose: `q_i = qtc * animQ_i`, `p_i = ptc + rot(qtc, (animP_i - animP_anchor) *
+  scale)`, scale from g_ref only. Algebraically `qtc * (animQ * conj(refQ)) * refQ ==
+  qtc * animQ` - the brief's "delta on top of the controller frame" without forming
+  the delta. The anchor stays glued to the controller (write-loc ground truth
+  preserved); `vrhands animtrans 0..1` optionally re-adds the wrist's own authored
+  travel (default 0).
+- `pe_repaint` is now ABSORB-then-recompose: on a sentinel mismatch it adopts the
+  restamp into g_anim and rewrites the frame composed on the fresh pose - pass 1
+  only; pass 2 (and `reapply`) keep the verbatim `g_written` restamp so both eyes
+  render the same frame (`scenedraw::in_second_draw()`, the side-effect-free
+  accessor). A restamp is INPUT now, not an enemy.
+- `vrhands anim on|off` (default ON) falls back to the rigid reference drive - also
+  the escape hatch for the returning idle sway (BS1 froze it deliberately; BS2 is
+  not bound). Adoption runs even with anim off so the toggle is glitch-free.
+
+Boot-A numbers: adoption live at ~7 absorbs/drive/hand (the engine restamps
+trans/quat every frame - the flicker war was constant); write-loc still 100 UU/m
+EXACT (+35.0 UU for a 0.35 m move, other hand 0.0); per-hand decoupling intact;
+anim-off composition bitwise-stable across reads; a 30-deg controller step rotated
+the mesh 30.03 deg (driven view pitch 0 - the session-40 38.85 figure was the
+65-deg-down view's mapping, not a constant).
+
+### INSTRUMENT CORRECTION: `vrbones axes` 'cur' RACES the restamp war
+
+The 'cur' quat samples the LIVE BANK, which mid-frame holds either the engine's
+fresh restamp or our recompose - one boot-A pose read 79 deg apart between two
+samples of the SAME state (both stable-looking). All session-40 'cur' readings
+carry this caveat. The instrument now also prints **`written q` (our last write)
+and `anim q` (the adopted engine pose)** - race-free; use those for composition
+acceptance, and expect `anim q` to oscillate at idle-sway amplitude with anim on
+(that oscillation IS the adoption-liveness signal).
+
+### Per-weapon profiles (BS1 session-21 shape, right hand + wScale only)
+
+Ported into b2r aim.cpp: 13-field `WeaponProfile` (aim trim/pos R, model
+trim/off/scale R, wScale), keyed by `narrow_key(object_class_name(holdable))`,
+stash-on-switch / seed-on-first-sight-from-the-CAPTURED-preset-baseline, resolver
+idling until a value source exists, unresolvable class CLEARS the key, weapons.ini
+(`<Class>.<field>=<value>`) at the bs2 data dir. USER DECISION (this session): the
+left/plasmid hand does NOT fork per weapon - it stays global in vrpreset until a
+per-plasmid key becomes derivable. Preset ordering mirrored from BS1
+(camera.cpp:934-936): load values -> `note_preset_baseline()` ->
+`reapply_weapon_profile()`; the preset save chains `save_weapon_profiles()`. NO
+default profiles are seeded in code (class names only exist live). `vraim weapon |
+wsave | wkey real|sim <Class>`.

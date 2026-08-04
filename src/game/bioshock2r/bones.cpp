@@ -62,6 +62,31 @@ struct ComposeCache {
 };
 ComposeCache g_compose[2] = {};
 
+// --- the weapon's OWN skeleton: uniform scale (session 41) ------------------
+// The AHands pivot-63 scale channel is inverse-decomposed by attachment math
+// (the ammo-canister proof, session 40) - uniform weapon scaling is only
+// reachable through the holdable's own SkeletonInstance
+// (kWeaponSkelInstOffset). Scale s multiplies BOTH the bone scale channels
+// and the bone translations (uniform about the component origin, so parts
+// keep their relative layout); trans+quat come from a per-bone adopted bank
+// (the Priority-2 adoption shape, duplicated - own banks, never grows the
+// AHands g_written) so weapon animations (drill spin, pump) keep playing
+// while scaled; the SCALE channel composes from the captured reference only,
+// never adopted - the engine does not restamp scale, adopting it would
+// re-absorb our own writes and compound.
+uint8_t* g_wHold = nullptr;
+uint8_t* g_wSkel = nullptr;
+uint8_t* g_wPose = nullptr;
+int g_wBoneCount = 0;
+float g_wRef[kMaxBones][12];
+float g_wAnim[kMaxBones][12];
+float g_wWritten[kMaxBones][12];
+bool g_wWrittenValid[kMaxBones] = {};
+std::atomic<float> g_wScale{1.0f};
+uint64_t g_wStampMs = 0;
+std::atomic<uint32_t> g_wAdopts{0};
+uint32_t g_wDrives = 0;
+
 // Bone names (diagnostic; see the name-map section below).
 char g_boneNames[kMaxBones][48];
 bool g_namesValid = false;
@@ -82,7 +107,10 @@ Cluster g_cluster[2] = {
     {36, 57, 63, 63}, // right / weapon hand
 };
 std::atomic<float> g_scale[2] = {{1.0f}, {1.0f}};
-std::atomic<bool> g_scaleAttach{true}; // round-1 behavior kept; F10 escape hatch
+// Session 41: default OFF - the uniform weapon scale (wskel lane) supersedes
+// scaling the attach pivot, whose scale attachments inverse-decompose (the
+// canister proof). Kept as the F10 fallback toggle; preset key overrides.
+std::atomic<bool> g_scaleAttach{false};
 std::atomic<int> g_armsMode{1};        // 0 game, 1 follow (user test default), 2 hide
 int g_armsApplied[2] = {-1, -1};       // game thread; drives the transition restore
 std::atomic<uint32_t> g_peRepaints{0}; // restamps caught mid-draw (flicker fix)
@@ -287,6 +315,120 @@ void compose_bone(int hand, int i, int kind) {
     g_writeKind[hand][i] = static_cast<uint8_t>(kind);
 }
 
+// --- the weapon skeleton lane (session 41) ----------------------------------
+
+// Is the cached weapon skeleton still the live, owned, readable one?
+bool wskel_intact() {
+    if (!g_wHold || !g_wSkel || !g_wPose || g_wBoneCount <= 0) return false;
+    if (!is_memory_valid(g_wSkel, 0x60)) return false;
+    if (*reinterpret_cast<const uint8_t* const*>(g_wSkel) !=
+        g_imageBase + patterns::kSkeletonInstanceVtableRva)
+        return false;
+    if (*reinterpret_cast<uint8_t**>(g_wSkel + patterns::kSkelOwnerOffset) != g_wHold)
+        return false;
+    uint8_t* arr = g_wSkel + patterns::kSkelPoseArrayOffset;
+    if (*reinterpret_cast<uint8_t**>(arr) != g_wPose ||
+        *reinterpret_cast<int32_t*>(arr + 4) != g_wBoneCount)
+        return false;
+    return is_memory_valid(g_wPose, g_wBoneCount * patterns::kSkelPoseStride);
+}
+
+// Hand the weapon skeleton back to the engine: restore authored transforms
+// over every bone we wrote (scale never restamps on its own - BS1's
+// stranded-collapse class), then forget it. Restore only through an INTACT
+// identity - a freed bank must never be written.
+void wskel_drop(const char* why) {
+    bool any = false;
+    if (wskel_intact()) {
+        for (int i = 0; i < g_wBoneCount; ++i)
+            if (g_wWrittenValid[i]) {
+                memcpy(g_wPose + i * patterns::kSkelPoseStride, g_wRef[i], 48);
+                any = true;
+            }
+    }
+    if (g_wHold || any)
+        BVR_LOG("[b2r] bones: weapon skel dropped (%s)%s", why,
+                any ? " - authored pose restored" : "");
+    g_wHold = nullptr;
+    g_wSkel = nullptr;
+    g_wPose = nullptr;
+    g_wBoneCount = 0;
+    memset(g_wWrittenValid, 0, sizeof g_wWrittenValid);
+    g_wStampMs = 0;
+}
+
+// Resolve (or revalidate) the CURRENT holdable's own skeleton. On a holdable
+// change the old skeleton is restored first, then the new one is captured.
+bool wskel_resolve() {
+    void* hold = nullptr;
+    if (!current_holdable(&hold) || !hold) {
+        if (g_wHold) wskel_drop("no holdable");
+        return false;
+    }
+    if (hold == g_wHold) {
+        if (wskel_intact()) return true;
+        wskel_drop("revalidation failed");
+        return false; // re-resolve next frame
+    }
+    if (g_wHold) wskel_drop("holdable changed");
+    uint8_t* h = static_cast<uint8_t*>(hold);
+    if (!is_memory_valid(h + patterns::kWeaponSkelInstOffset, sizeof(void*)))
+        return false;
+    uint8_t* skel = *reinterpret_cast<uint8_t**>(h + patterns::kWeaponSkelInstOffset);
+    if (!skel || !is_memory_valid(skel, 0x60)) return false;
+    if (*reinterpret_cast<const uint8_t* const*>(skel) !=
+        g_imageBase + patterns::kSkeletonInstanceVtableRva)
+        return false;
+    if (*reinterpret_cast<uint8_t**>(skel + patterns::kSkelOwnerOffset) != h)
+        return false;
+    uint8_t* arr = skel + patterns::kSkelPoseArrayOffset;
+    uint8_t* pose = *reinterpret_cast<uint8_t**>(arr);
+    int32_t cnt = *reinterpret_cast<int32_t*>(arr + 4);
+    if (!pose || cnt <= 0 || cnt > kMaxBones ||
+        !is_memory_valid(pose, cnt * patterns::kSkelPoseStride))
+        return false;
+    g_wHold = h;
+    g_wSkel = skel;
+    g_wPose = pose;
+    g_wBoneCount = cnt;
+    for (int i = 0; i < cnt; ++i)
+        memcpy(g_wRef[i], pose + i * patterns::kSkelPoseStride, 48);
+    memcpy(g_wAnim, g_wRef, sizeof g_wAnim);
+    memset(g_wWrittenValid, 0, sizeof g_wWrittenValid);
+    BVR_LOG("[b2r] bones: weapon skel resolved - holdable %p skel %p pose %p x%d bones",
+            h, skel, pose, cnt);
+    return true;
+}
+
+// Compose + stamp every weapon bone from the adopted bank at scale ws.
+void wskel_compose(float ws) {
+    for (int i = 0; i < g_wBoneCount; ++i) {
+        uint8_t* bank = g_wPose + i * patterns::kSkelPoseStride;
+        if (!g_wWrittenValid[i]) {
+            memcpy(g_wAnim[i], bank, 32); // entering: bank is engine truth
+        } else if (memcmp(bank, g_wWritten[i], 32) != 0) {
+            const float* q = reinterpret_cast<const float*>(bank + 16);
+            float n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+            if (n2 > 0.5f && n2 < 2.0f) {
+                memcpy(g_wAnim[i], bank, 32);
+                g_wAdopts.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        float* w = g_wWritten[i];
+        w[0] = g_wAnim[i][0] * ws;
+        w[1] = g_wAnim[i][1] * ws;
+        w[2] = g_wAnim[i][2] * ws;
+        w[3] = g_wAnim[i][3];
+        memcpy(&w[4], &g_wAnim[i][4], 16);
+        w[8] = g_wRef[i][8] * ws;
+        w[9] = g_wRef[i][9] * ws;
+        w[10] = g_wRef[i][10] * ws;
+        w[11] = g_wRef[i][11];
+        memcpy(bank, w, 48);
+        g_wWrittenValid[i] = true;
+    }
+}
+
 // --- bone-name map (session 40) ---------------------------------------------
 // SharedSkeletonData (skel+0x08) carries an FName->boneIndex hash map at an
 // offset auto-detected live; BS1's map LAYOUT shape transfers (pairs at map
@@ -430,6 +572,16 @@ void log_axes(int idx) {
             "%.4f %.4f)",
             idx, name, actorRot.pitch, actorRot.yaw, actorRot.roll, qa[0], qa[1],
             qa[2], qa[3]);
+    // Session 41: 'cur' above samples the BANK, which mid-frame races between
+    // the engine's restamp and our recompose (a boot-A reading flipped 79 deg
+    // between the two families at one pose). These two are race-free: what WE
+    // wrote last, and the engine pose the drive adopted.
+    if (g_writtenMask[0][idx] || g_writtenMask[1][idx])
+        BVR_LOG("[b2r]   written q (%.4f %.4f %.4f %.4f) anim q (%.4f %.4f %.4f "
+                "%.4f)",
+                g_written[idx][4], g_written[idx][5], g_written[idx][6],
+                g_written[idx][7], g_anim[idx][4], g_anim[idx][5], g_anim[idx][6],
+                g_anim[idx][7]);
     BVR_LOG("[b2r]   cur q comp (%.4f %.4f %.4f %.4f) world (%.4f %.4f %.4f %.4f)",
             qc[0], qc[1], qc[2], qc[3], qwc[0], qwc[1], qwc[2], qwc[3]);
     BVR_LOG("[b2r]   ref q comp (%.4f %.4f %.4f %.4f) world (%.4f %.4f %.4f %.4f)",
@@ -593,6 +745,12 @@ void reapply() {
             if (g_writtenMask[h][i])
                 memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
     }
+    // Weapon skeleton (session 41): the same pass-2 discipline - verbatim
+    // restamp, both eyes must see the same frame.
+    if (g_wPose && g_wStampMs && now - g_wStampMs <= 100 && wskel_intact())
+        for (int i = 0; i < g_wBoneCount; ++i)
+            if (g_wWrittenValid[i])
+                memcpy(g_wPose + i * patterns::kSkelPoseStride, g_wWritten[i], 48);
 }
 
 void release(const char* why, int hand) {
@@ -618,7 +776,11 @@ void release(const char* why, int hand) {
                 hand < 0 ? "both clusters" : (hand ? "right" : "left"), why);
     // Only a full release drops the reference: recapturing it while the other
     // cluster is still driven would capture OUR pose as the new authored one.
-    if (hand < 0) g_refValid = false;
+    if (hand < 0) {
+        g_refValid = false;
+        // A full hand-back also returns the weapon's own skeleton.
+        if (g_wHold) wskel_drop(why);
+    }
 }
 
 void pe_repaint() {
@@ -653,6 +815,30 @@ void pe_repaint() {
                     memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
         }
         g_peRepaints.fetch_add(1, std::memory_order_relaxed);
+    }
+    // Weapon skeleton (session 41): same sentinel, same absorb-then-recompose
+    // on pass 1 / verbatim on pass 2.
+    if (g_wPose && g_wStampMs && now - g_wStampMs <= 100 && wskel_intact()) {
+        int s = -1;
+        for (int i = 0; i < g_wBoneCount; ++i)
+            if (g_wWrittenValid[i]) {
+                s = i;
+                break;
+            }
+        if (s >= 0 &&
+            memcmp(g_wPose + s * patterns::kSkelPoseStride, g_wWritten[s], 48) != 0) {
+            if (!scenedraw::in_second_draw()) {
+                float ws = g_wScale.load(std::memory_order_relaxed);
+                if (!(ws > 0.05f && ws < 20.0f)) ws = 1.0f;
+                wskel_compose(ws); // adopts the restamp, recomposes
+            } else {
+                for (int i = 0; i < g_wBoneCount; ++i)
+                    if (g_wWrittenValid[i])
+                        memcpy(g_wPose + i * patterns::kSkelPoseStride, g_wWritten[i],
+                               48);
+            }
+            g_peRepaints.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -707,12 +893,60 @@ int arms_mode() {
 
 void on_world_change(const char* why) {
     drop(why);
+    // The holdable and its skeleton died with the world - forget them without
+    // touching memory (wskel_drop's restore self-gates on wskel_intact).
+    if (g_wHold) wskel_drop(why);
     g_scanDormant = false;
     g_scanMisses = 0;
 }
 
 void* hands_actor() {
     return g_hands;
+}
+
+bool current_holdable(void** out) {
+    if (!out) return false;
+    *out = nullptr;
+    // Rig-gated RAW read (session-21 rules b/c): the rig's own vtable is the
+    // only gate; the holdable is NEVER vtable-gated - BS1's MachineGun and
+    // GrenadeLauncher carried a different native vtable than the rest of the
+    // family and a gated read pinned the stale weapon for a whole headset
+    // run. Class validation happens downstream via object_class_name.
+    // false = rig unknown; true + null = rig known, nothing equipped.
+    if (!g_hands || !g_imageBase) return false;
+    if (!is_memory_valid(g_hands, sizeof(void*)) ||
+        *reinterpret_cast<const uint8_t* const*>(g_hands) !=
+            g_imageBase + patterns::kAHandsVtableRva)
+        return false;
+    if (!is_memory_valid(g_hands + patterns::kHandsCurrentHoldableOffset,
+                         sizeof(void*)))
+        return false;
+    *out = *reinterpret_cast<void**>(g_hands + patterns::kHandsCurrentHoldableOffset);
+    return true;
+}
+
+void wskel_drive() {
+    float ws = g_wScale.load(std::memory_order_relaxed);
+    if (!(ws > 0.05f && ws < 20.0f)) ws = 1.0f;
+    if (ws == 1.0f) {
+        // Authored size = zero interference: restore anything we touched and
+        // stay entirely off the weapon's bank.
+        if (g_wHold) wskel_drop("wscale 1.0");
+        return;
+    }
+    if (!g_imageBase) return;
+    if (!wskel_resolve()) return;
+    wskel_compose(ws);
+    g_wStampMs = GetTickCount64();
+    ++g_wDrives;
+}
+
+void set_weapon_scale(float s) {
+    if (s > 0.05f && s < 20.0f) g_wScale.store(s, std::memory_order_relaxed);
+}
+
+float weapon_scale() {
+    return g_wScale.load(std::memory_order_relaxed);
 }
 
 bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs) {
@@ -747,6 +981,11 @@ bool handle_command(const char* args) {
                     g_cluster[h].anchor, g_scale[h].load(std::memory_order_relaxed),
                     g_driveCount[h], g_lastWriteLoc[h][0], g_lastWriteLoc[h][1],
                     g_lastWriteLoc[h][2]);
+        BVR_LOG("[b2r]   weapon skel: %s (holdable %p, %d bones), wscale %.2f, "
+                "drives %u, adopts %u",
+                g_wPose ? "RESOLVED" : "-", g_wHold, g_wBoneCount,
+                g_wScale.load(std::memory_order_relaxed), g_wDrives,
+                g_wAdopts.load(std::memory_order_relaxed));
         return true;
     }
     // cluster l|r <lo> <hi> <anchor> [extra]

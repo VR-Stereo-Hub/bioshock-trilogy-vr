@@ -370,6 +370,14 @@ bool fname_text(uint32_t index, char* out, size_t outCap);
 // across >= 3 distinct classes. Game thread only.
 void probe_object_identity(const void* obj, const char* label);
 
+// The object's canonical class name via the session-41 identity chain
+// (obj+0x30 -> UClass, UClass-vtable gate, UClass+0x28 FName through GNames'
+// self-index check). Class-agnostic BY DESIGN - session-21's rule c: never
+// vtable-gate the OBJECT (BS1's MachineGun/GrenadeLauncher carried a
+// different native vtable and got pinned); the CLASS validates instead.
+// False = anything failed (out is emptied). Game thread only.
+bool object_class_name(const void* obj, char* out, size_t outCap);
+
 // --- GetPerfectFireStart impls (session 39, THE aim seam) -------------------
 // The live probe settled the dispatch question: GetPerfectFireStart never
 // passes ProcessEvent (0 hits over 6 real fire events while InitiateDamage
@@ -462,6 +470,36 @@ constexpr uint32_t kSkelPoseScaleOffset = 0x20;        // vec4
 inline constexpr int kBoneArmL[] = {4, 5, 6, 29, 30, 31, 32};
 inline constexpr int kBoneArmR[] = {33, 34, 35, 58, 59, 60, 61};
 inline constexpr int kBoneArmCount = 7;
+
+// --- UObject identity + the holdable (session 41, live-derived at the save) --
+// `vraim oclass` probe on the LIVE AHands actor and two weapon objects:
+// - object's own FName index at +0x28 ('PlayerHands' / 'PlayerMachineGun' /
+//   'PlayerGrenadeLauncher' resolved through GNames);
+// - UClass pointer at +0x30 - a heap object whose dword0 is the SAME in-image
+//   vtable across all three classes (the liveness gate below) and whose own
+//   +0x28 FName is the canonical class name (number 0).
+// BS1's layout shape (name +0x28 / class +0x30) transferred; the UClass
+// vtable RVA is fresh (BS1: 0xE2F04C).
+constexpr uint32_t kUObjectNameIndexOffset = 0x28;
+constexpr uint32_t kUObjectClassOffset = 0x30;
+constexpr uint32_t kUClassVtableRva = 0x11E71F8;
+// The equipped-holdable pointer on the AHands actor. Derived twice, both
+// methods agreeing (session 41): (a) seam-anchored - the weapon object seen
+// at the GetPerfectFireStart detour occurs at EXACTLY ONE pointer slot in
+// hands+0x000..0x800, for two different weapons; (b) switch-diff - a
+// digit-key weapon switch changes exactly this slot, old/new values both
+// resolving as Player<Weapon> class objects. BS1's was +0x45C - same idea,
+// different offset, derived fresh per the hard rule.
+constexpr uint32_t kHandsCurrentHoldableOffset = 0x4B4;
+// The held weapon carries its OWN SkeletonInstance (BS1 session-20 fact,
+// re-proven here): scanning the live holdable +0x000..0x800 for a pointer
+// whose dword0 == base+kSkeletonInstanceVtableRva found exactly one, at
+// +0x430 (same offset as AHands - convergent layout, still derived fresh),
+// owner backpointer == the holdable, pose array valid (grenade launcher: 13
+// bones). This bank is the uniform-weapon-scale lane: the AHands pivot-63
+// scale is inverse-decomposed by attachment math (the ammo-canister proof,
+// session 40), while the weapon's own bank scales its parts together.
+constexpr uint32_t kWeaponSkelInstOffset = 0x430;
 
 struct GpfsImpls {
     void* weapon = nullptr;   // null = identity gate failed, seam refused

@@ -113,4 +113,21 @@ bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs);
 // identity-probe use only - consumers must treat it as revalidate-before-use.
 void* hands_actor();
 
+// The equipped holdable, read raw off the rig (kHandsCurrentHoldableOffset,
+// session 41). NEVER vtable-gated (session-21 rule c) - validate the CLASS
+// via patterns::object_class_name instead. false = rig unknown (no signal);
+// true with *out == null = rig known, nothing equipped.
+bool current_holdable(void** out);
+
+// Uniform weapon scale (session 41): drives the HOLDABLE's own
+// SkeletonInstance - scale channels AND translations, uniform about the
+// component origin - so body and ammo canister scale together (the AHands
+// pivot-63 path inverse-scales attachments and stays only as the
+// scaleweapon fallback). Adopts the engine's trans/quat per bone (weapon
+// animations keep playing while scaled); 1.0 = fully hands-off. Called per
+// CalcView tail from hands::on_calcview; resolve/revalidate is internal.
+void wskel_drive();
+void set_weapon_scale(float s);
+float weapon_scale();
+
 } // namespace bvr::b2r::bones

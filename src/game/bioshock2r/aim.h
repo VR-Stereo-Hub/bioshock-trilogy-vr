@@ -93,4 +93,14 @@ void set_dot_dist_m(float m);
 // dereference without fresh validation.
 void* last_weapon_this();
 
+// Per-weapon profiles (session 41): RIGHT-hand aim/model tuning + uniform
+// weapon scale, keyed by the holdable's class, weapons.ini-persisted (BS1's
+// session-21 shape - see the block comment in aim.cpp for the four rules).
+// Ordering contract with the preset (BS1 camera.cpp:934-936 parity):
+// load preset values -> note_preset_baseline() -> reapply_weapon_profile().
+void save_weapon_profiles();      // chained from the preset save
+void note_preset_baseline();      // un-idles the resolver; new profiles seed from it
+void reapply_weapon_profile();    // active profile OVER the preset (no stash)
+void weapon_key_ui(char* out, size_t cap); // "-" when keyless; any thread
+
 } // namespace bvr::b2r::aim

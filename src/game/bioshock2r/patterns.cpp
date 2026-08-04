@@ -253,6 +253,24 @@ bool fname_text(uint32_t index, char* out, size_t outCap) {
     return i > 0;
 }
 
+bool object_class_name(const void* objPtr, char* out, size_t outCap) {
+    using namespace bvr::pattern_scan;
+    if (out && outCap) out[0] = '\0';
+    const uint8_t* o = static_cast<const uint8_t*>(objPtr);
+    if (!g_imageBase || !o || !out || outCap < 2) return false;
+    if (!is_memory_valid(o, kUObjectClassOffset + sizeof(void*))) return false;
+    const uint8_t* cls = *reinterpret_cast<const uint8_t* const*>(o + kUObjectClassOffset);
+    if (!cls || !is_memory_valid(cls, kUObjectNameIndexOffset + 4)) return false;
+    // The UClass-vtable gate is the liveness predicate: a freed or non-UObject
+    // candidate cannot present a heap object whose dword0 is exactly this
+    // vtable AND whose name field resolves through GNames' self-index check.
+    if (*reinterpret_cast<const uint8_t* const*>(cls) != g_imageBase + kUClassVtableRva)
+        return false;
+    int32_t idx = *reinterpret_cast<const int32_t*>(cls + kUObjectNameIndexOffset);
+    if (idx <= 0) return false;
+    return fname_text(static_cast<uint32_t>(idx), out, outCap);
+}
+
 void probe_object_identity(const void* objPtr, const char* label) {
     using namespace bvr::pattern_scan;
     const uint8_t* o = static_cast<const uint8_t*>(objPtr);

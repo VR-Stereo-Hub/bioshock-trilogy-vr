@@ -84,6 +84,9 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
             g_frames[h].fetch_add(1, std::memory_order_relaxed);
         }
     }
+    // Uniform weapon scale (session 41): independent of per-hand tracking -
+    // the weapon should hold its tuned size whenever gameplay renders it.
+    if (strictGameplay) bones::wskel_drive();
 }
 
 bool enabled() {
@@ -202,6 +205,15 @@ bool handle_command(const char* args) {
                 bones::scale_attach() ? "on" : "off");
         return true;
     }
+    // wscale: the session-41 uniform weapon scale (the holdable's own
+    // skeleton); `scaleweapon` above stays the pivot-63 fallback.
+    if (sscanf_s(args, "wscale %f", &a) == 1) {
+        bones::set_weapon_scale(a);
+        BVR_LOG("[b2r] command: vrhands wscale %.2f (uniform, weapon's own "
+                "skeleton; 1.0 = authored, hands-off)",
+                bones::weapon_scale());
+        return true;
+    }
     // animtrans BEFORE anim: is_verb keeps them apart, but parse the longer
     // token first anyway (the off/offset lesson).
     if (sscanf_s(args, "animtrans %f", &a) == 1) {
@@ -222,8 +234,8 @@ bool handle_command(const char* args) {
     }
     BVR_LOG("[b2r] vrhands: on|off | status | trim l|r <p> <y> <r> | "
             "offset l|r <f> <r> <u> | scale [l|r] <f> | pose aim|grip | "
-            "arms follow|hide|game | scaleweapon on|off | anim on|off | "
-            "animtrans <0..1>");
+            "arms follow|hide|game | scaleweapon on|off | wscale <f> | "
+            "anim on|off | animtrans <0..1>");
     return true;
 }
 
