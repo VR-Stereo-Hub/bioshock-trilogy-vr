@@ -2,7 +2,115 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-04, session 41 - THE HOLDABLE LANE + THE ANIMATION-PRESERVING DRIVE, all flat-green - branch `claude/bioshock2-holdable-polish-7cbec4`, merged to `bioshock-2`)
+## Current state (2026-08-05, session 42 - THE PRESENTATION LANE, all reachable rungs flat-green - branch `claude/bioshock2-presentation-vr-2a7b3a`, merged to `bioshock-2`)
+
+### The headline: the HUD rides a readable head-locked panel, and it took a core discovery
+
+BS2's frame is a **backbuffer-composite pipeline**: gameswf draws land straight on a
+RENDER_TARGET-only backbuffer and the tonemap is an INDEXED quad - no BS1 classifier
+fingerprint ever fired (hudDraws=0 under armed stereo). One flag-gated core mode
+(`set_backbuffer_composite`, adapter opt-in, default off = BS1 bit-identical) and the
+whole presentation stack came alive: **hudDraws=redirects=12352, leaks=0, stranded=0
+per reason**, the HUD panel submits as the 12th compositor layer (space=view) at the
+preset pose, the flat window keeps its HUD via the composite, and the health/EVE bars
+keep their colour (BS2's fills are textured - BS1's bar-fill collision does not
+manifest). `vrhud force on|off` + full counters ported; hudQuadDistM/WidthM/UpM
+persist (a hand-edited 1.55 survived a relaunch onto the live quad).
+
+### What else landed (all flat-verified where the sim can reach)
+
+1. **Screens route GENERICALLY** (user decision): loading AND the pause menu measured
+   SCREEN-ONLY (world pass absent - unlike BS1's pause) -> head-locked quad; the
+   title/menu attract stays a strict projection. Unmeasured kinds (vending, gene
+   bank, hacking, map, FMV) ride the same generic route, and `vrcine dumparm`
+   (one-shot frame dump on a classifier rising edge; **bars edge auto-armed at
+   init**) harvests fingerprints during normal play.
+2. **Cinematic gates fixed + consumed**: the camera's cine gate keyed on
+   `letterbox()`, which is DEAD with bars hidden - now `cinematic_hold()`; `vrcine
+   drive off|authored|authored+look` is consumed by camera/aim/hands/wskel
+   (identity folds outside a cine - a full session of normal driving proves it);
+   authored+look ported (head DELTAS only, residual 0, reference dropped on both
+   edges); `bones::release()` gained the missing s29 memory-validity leg;
+   `wskel_release` returns the scaled weapon to authored size in suspended shots.
+3. **Pad-A (menukey)**: A -> scancode Enter while a menu context holds
+   (calcview-silent / menu-shape vtable / screen-only, + foreground + stuck-key
+   cap), default ON. **The title-continue accepts NATIVE pad A** - a synthetic A
+   continued into the save. Gameplay negative proven (zero injects).
+4. **The game crosshair is HIDDEN by default** (user ask, same session):
+   `ShockPlayer.DisableReticle()` called through the engine's OWN
+   FindFunctionChecked + ProcessEvent - the first PE-by-name CALL lane, the
+   precedent for future BS2 engine-state writes. `vrxhair on|off` + F10 checkbox +
+   `crosshairVisible` preset key; A/B screenshot-proven; fail-soft (one fault
+   latches the lane off).
+5. **Flicker diagnosis armed at boot**: per-site catch counters (PE pass-1/2,
+   flush pass-1/2, hands vs wskel), write->catch latency maxima (the survivor
+   discriminator), the drive-adopt cadence BASELINE, correlates, and a `[flick]
+   min=N ...` line every minute. Proven flowing 4 minutes; ambient baseline: pe1
+   ~1900/min hands + ~950/min wskel, dmax 16 ms, everything else 0. Any 12+ min
+   play log now answers the ~10-min onset question.
+
+### Two structural discoveries future sessions must not re-learn
+
+- **The BS2 pause menu starves the entire PE-tail service lane**: every dispatch
+  lands inside the hooked draw (3 CalcView/s, 205 ms draws), so seam commands
+  never poll and the input pump - and therefore the PAD - is dead there
+  (pre-existing, not a s42 regression; keyboard drives it). An unfocused-paused
+  BS2 writes NOTHING and false-positives log-age wedge checks; `game-key Space`
+  wakes a healthy game to ~370 CalcView/s instantly.
+- **The title screen preloads the newest save under itself** - the camera
+  heartbeat shows save coordinates while "PRESS A" is up; continue is instant.
+
+### Regression guards: all intact
+
+sr eyes 6.30 UU exact; wait2/s=0, guardskips 0; drive 90/s; write-locs live on both
+hands; teardown clean with ZERO dumps across all four closes (the known host
+exit-path fault absorbed each time). Core diff this session: the backbuffer-composite
+flag + dumparm + `last_composed_buttons` - all additive, default-off/read-only,
+no BS1 path changes behaviour.
+
+### USER CHECKLIST (in-headset, the session-42 acceptance)
+
+Load the save, headset on. Everything arms itself (HUD panel included).
+
+1. **HUD panel**: health/EVE/ammo/plasmid + subtitles on a floating panel in front
+   of you. Tune distance / width / height on the F10 sliders (VR section), press
+   SAVE - it comes back after a relaunch. Bars must read FULL (coloured).
+2. **Crosshair**: the game's own reticle is GONE by default. If you want it back:
+   F10 "Game crosshair" checkbox (or `vrxhair on`).
+3. **Screens during play**: pause menu and anything you reach (vending, gene bank,
+   hacking, map) should land on a readable screen. If one misroutes, just note
+   WHICH - the auto-armed dump harvests the evidence silently.
+4. **Cutscenes** (any you reach): default = authored camera plays with stereo
+   intact and your hands/weapon return at the end. F10 "During cutscenes" combo:
+   try `authored+look` for head-look-on-rails and say which you prefer. If the
+   drill/gun looks wrong DURING a shot, or a floating screen appears, say so.
+5. **Pad A in menus**: A should activate at the title and on fullscreen screens.
+   The PAUSE menu pad is dead (structural - use keyboard there for now); report
+   whether the MAIN menu list activates on A.
+6. **Flicker**: play 12+ minutes normally; the log records `[flick]` every minute.
+   Note roughly WHEN you first see the flicker (minute-ish) - we correlate after.
+7. Known: plasmid-hand tuning still global; no projectile-plasmid seam yet.
+
+## Next steps (session 43)
+
+1. **Read the session-42 headset verdicts** + the auto-harvested dumps: derive
+   `patterns::kCineBarVerts` from the bars-edge dump (C10 - the one open M10.2
+   code box), classify any misrouted screen kind from its dump.
+2. **Flicker verdict from the [flick] readout**: pick the next fix from the
+   playbook (ENGINE_NOTES s42 #7) - late-window catches vs cadence steps vs
+   "not these banks at all".
+3. **Main-menu pad-A verdict** decides whether menukey needs a 4th gate leg.
+4. Plasmid item names (ContentBaked/pc string tables) -> ability-seam live check
+   -> per-PLASMID left-hand profiles.
+5. The pause-menu service-lane starvation + the alt-tab pacing wedge - one
+   careful CORE-adjacent lane, together (same frame-loop neighbourhood).
+6. Standing: BS1 regression testing deferred to the END of BS2 development. Core
+   diff to re-check that day: laser/dot slots (s40), backbuffer-composite flag +
+   dumparm + last_composed_buttons (s42) - all additive/default-off.
+
+---
+
+## Previous state (2026-08-04, session 41 - THE HOLDABLE LANE + THE ANIMATION-PRESERVING DRIVE, all flat-green - branch `claude/bioshock2-holdable-polish-7cbec4`, merged to `bioshock-2`)
 
 ### The headline: every round-2 defect has a shipped, flat-verified fix
 
@@ -118,7 +226,7 @@ calibrated all 8 weapons + both hands and saved. Follow-ups shipped same day:
   unclear. This is now a DIAGNOSIS item, not a repaint-site hunt (ENGINE_NOTES s41
   r3 has the instrumentation plan).
 
-## Next steps (session 42 - user's brief: HUD elements)
+### Next steps (as written end of session 41 - executed by session 42)
 
 1. **THE HUD LANE** (the user's chosen focus): make the HUD work properly in VR -
    health/EVE/ammo readability and placement. Existing substrate: core `vrhud`
@@ -5168,6 +5276,42 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 42 - 2026-08-04/05 - the presentation lane: HUD panel, screens, cinematics, menukey, crosshair, flicker instrument
+
+Branch `claude/bioshock2-presentation-vr-2a7b3a` off `bioshock-2`, merged back.
+The plan's audit held: all presentation machinery is core; BS2 lacked dispatch and
+consumption - EXCEPT the classifier itself never fired on BS2, which became the
+session's core discovery: **BS2 is a backbuffer-composite pipeline** (gameswf on a
+RENDER_TARGET-only backbuffer, INDEXED 6-idx tonemap sampling the 612-vote scene
+leader - framedump_232940 evidence) and BS1's fingerprints structurally miss it.
+Shipped a flag-gated core mode (adapter opt-in, BS1 bit-identical off) and the full
+stack came alive: 12352 redirects, 0 leaks, 0 stranded, HUD quad as the 12th layer
+(space=view), composite intact, preset round-trip through a relaunch.
+
+Landed: vrhud force+counters; HUD quad + cine + crosshair preset keys (59 values at
+boot); vrcine dumparm (edge-armed one-shot dumps; bars edge auto-armed at init -
+the C10 bars-verts harvest); cine gate predicate fix (cinematic_hold, not the dead
+letterbox()) + cine-drive consumption in camera/aim/hands/wskel + authored+look +
+the s29 release interlock leg + wskel_release; menukey (pad A -> scancode Enter,
+3-leg menu gate; title-continue proven NATIVE-A; gameplay negative clean); the
+crosshair hidden by default via ShockPlayer.DisableReticle through the engine's own
+FFC+ProcessEvent (the PE-by-name precedent; GNames reverse lookup; A/B proven);
+the flicker instrument ([flick] per minute, catch phases + dmax + cadence baseline,
+4 min proven; ambient baseline banked).
+
+Discoveries banked in ENGINE_NOTES s42: the pause menu is SCREEN-ONLY (world absent,
+unlike BS1) AND starves the whole PE-tail service lane (commands + pad dead while
+paused - pre-existing, structural); the title screen preloads the save under itself;
+BS2 HUD fills are textured (no BS1 bar-fill collision); postFx idles in gameplay
+(post chain is CopySubRes-based). Deviations logged in ARCHITECTURE: postfx-cine
+fallback OFF on BS2, no watchdog-exemption port (no watchdog exists), generic
+screens, menukey as BS2-local translation, script-setter precedent.
+
+Open into session 43: C10 bars constant (rides the auto-harvest), the headset
+acceptance (checklist above), main-menu pad-A verdict, the flicker readout.
+Teardown clean x4, zero dumps; sr eyes 6.30 exact; drive 90/s; BS1 untouched
+beyond the three additive core seams.
 
 ### Session 41 rounds 2-3 - 2026-08-04 - in-headset acceptance, the bake, weapon offset
 
