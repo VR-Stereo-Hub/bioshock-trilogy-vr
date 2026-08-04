@@ -130,4 +130,15 @@ void wskel_drive();
 void set_weapon_scale(float s);
 float weapon_scale();
 
+// Weapon offset (session 41 round 2): moves the WEAPON relative to the hand
+// by offsetting only the attach pivot's position (fingers/wrist and the aim
+// ray are untouched). cm in the hand's trimmed basis, per-weapon profile
+// field. hands.cpp converts to the game-space vector each frame via
+// set_weapon_offset_game (game thread only).
+void set_weapon_offset(float fwdCm, float rightCm, float upCm);
+float weapon_off_fwd_cm();
+float weapon_off_right_cm();
+float weapon_off_up_cm();
+void set_weapon_offset_game(float x, float y, float z);
+
 } // namespace bvr::b2r::bones

@@ -54,13 +54,25 @@ std::atomic<uint32_t> g_adopts[2] = {{0}, {0}}; // engine restamps absorbed
 struct ComposeCache {
     float qtc[4];
     float ptc[3];
+    float ptcExtra[3]; // the attach pivot's base: ptc + the weapon offset
     float scale;
     float animT;
     int anchor;
+    int extra;
     bool animMode;
     bool valid;
 };
 ComposeCache g_compose[2] = {};
+
+// Weapon offset (session 41 round 2, user ask): move the WEAPON relative to
+// the hand - scaling revealed the gun sitting ahead of the hand model. The
+// lever is the attach pivot (bone 63): offsetting only its position moves
+// what renders FROM it (the weapon) while fingers/wrist stay put, and the
+// aim ray is untouched (it never reads the model). cm in the hand's trimmed
+// basis - the same frame as the model offset sliders; per-weapon profile
+// field. hands.cpp converts to a game-space UU vector each frame.
+std::atomic<float> g_wOffCm[3] = {{0.0f}, {0.0f}, {0.0f}}; // fwd, right, up
+float g_wOffGame[3] = {}; // this frame's converted vector (game thread)
 
 // --- the weapon's OWN skeleton: uniform scale (session 41) ------------------
 // The AHands pivot-63 scale channel is inverse-decomposed by attachment math
@@ -82,7 +94,7 @@ float g_wRef[kMaxBones][12];
 float g_wAnim[kMaxBones][12];
 float g_wWritten[kMaxBones][12];
 bool g_wWrittenValid[kMaxBones] = {};
-std::atomic<float> g_wScale{1.0f};
+std::atomic<float> g_wScale{0.774f}; // user-calibration default (s41 r2 bake)
 uint64_t g_wStampMs = 0;
 std::atomic<uint32_t> g_wAdopts{0};
 uint32_t g_wDrives = 0;
@@ -106,7 +118,8 @@ Cluster g_cluster[2] = {
     {7, 28, 62, 7},   // left / plasmid hand
     {36, 57, 63, 63}, // right / weapon hand
 };
-std::atomic<float> g_scale[2] = {{1.0f}, {1.0f}};
+// Default = the user's calibration (session 41 round 2 bake; preset overrides).
+std::atomic<float> g_scale[2] = {{0.771f}, {0.771f}};
 // Session 41: default OFF - the uniform weapon scale (wskel lane) supersedes
 // scaling the attach pivot, whose scale attachments inverse-decompose (the
 // canister proof). Kept as the F10 fallback toggle; preset key overrides.
@@ -291,6 +304,10 @@ void compose_bone(int hand, int i, int kind) {
     } else {
         const float* A = src[cc.anchor];
         const float* refA = g_ref[cc.anchor];
+        // The attach pivot rides its own base (ptc + weapon offset) so the
+        // WEAPON can be moved relative to the hand; everything else is glued
+        // to ptc.
+        const float* base = (i == cc.extra) ? cc.ptcExtra : cc.ptc;
         // Anchor-relative offset, scaled about the anchor; animT re-adds the
         // wrist's own authored travel (0 = glued to the controller, the
         // default - the write-loc ground truth stays exact).
@@ -299,9 +316,9 @@ void compose_bone(int hand, int i, int kind) {
             dp[k] = (r[k] - A[k]) * cc.scale + cc.animT * (A[k] - refA[k]) * cc.scale;
         float rp[3];
         bvr::xrmath::quat_rotate(cc.qtc[0], cc.qtc[1], cc.qtc[2], cc.qtc[3], dp, rp);
-        w[0] = cc.ptc[0] + rp[0];
-        w[1] = cc.ptc[1] + rp[1];
-        w[2] = cc.ptc[2] + rp[2];
+        w[0] = base[0] + rp[0];
+        w[1] = base[1] + rp[1];
+        w[2] = base[2] + rp[2];
         w[3] = r[3];
         bvr::xrmath::quat_mul(cc.qtc, &r[4], &w[4]);
         bool scaleCh = kind == 0;
@@ -709,9 +726,22 @@ bool drive(const FrameContext& ctx, const GamePose& target, int hand) {
     ComposeCache& cc = g_compose[hand];
     memcpy(cc.qtc, qtc, sizeof cc.qtc);
     memcpy(cc.ptc, ptc, sizeof cc.ptc);
+    // The weapon offset (right hand only): the hands policy converted the cm
+    // sliders into a game-space vector this frame; rotate it into component
+    // space and give the attach pivot its own base.
+    memcpy(cc.ptcExtra, ptc, sizeof cc.ptcExtra);
+    if (hand == 1) {
+        float ro[3];
+        bvr::xrmath::quat_rotate(qaInv[0], qaInv[1], qaInv[2], qaInv[3], g_wOffGame,
+                                 ro);
+        cc.ptcExtra[0] += ro[0];
+        cc.ptcExtra[1] += ro[1];
+        cc.ptcExtra[2] += ro[2];
+    }
     cc.scale = scale;
     cc.animT = animT;
     cc.anchor = anchor;
+    cc.extra = extra;
     cc.animMode = animMode;
     cc.valid = true;
 
@@ -947,6 +977,22 @@ void set_weapon_scale(float s) {
 
 float weapon_scale() {
     return g_wScale.load(std::memory_order_relaxed);
+}
+
+void set_weapon_offset(float fwdCm, float rightCm, float upCm) {
+    g_wOffCm[0].store(fwdCm, std::memory_order_relaxed);
+    g_wOffCm[1].store(rightCm, std::memory_order_relaxed);
+    g_wOffCm[2].store(upCm, std::memory_order_relaxed);
+}
+
+float weapon_off_fwd_cm() { return g_wOffCm[0].load(std::memory_order_relaxed); }
+float weapon_off_right_cm() { return g_wOffCm[1].load(std::memory_order_relaxed); }
+float weapon_off_up_cm() { return g_wOffCm[2].load(std::memory_order_relaxed); }
+
+void set_weapon_offset_game(float x, float y, float z) {
+    g_wOffGame[0] = x;
+    g_wOffGame[1] = y;
+    g_wOffGame[2] = z;
 }
 
 bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs) {

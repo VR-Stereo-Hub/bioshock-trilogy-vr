@@ -18,6 +18,7 @@
 #include "core/util/crash.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock2r/bones.h"
 #include "game/bioshock2r/camera.h"
 #include "game/bioshock2r/patterns.h"
 
@@ -705,6 +706,13 @@ int force_inline_flush(void* scene, void* group) {
 //    reads 0 - correctly, the freeze window is gone.
 void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group) {
     g_flushPointEntries.fetch_add(1, std::memory_order_relaxed);
+    // Session 41 round 2 (the residual left-eye flicker): this is the LAST
+    // game-thread point before the inline drain submits the pass. A skeleton
+    // restamp that landed after the final PE dispatch of the pass slips past
+    // the PE-lane repaint and renders raw for one eye - absorb-and-recompose
+    // it here. Self-gating (one 48-byte sentinel per driven hand when fresh,
+    // no-op otherwise), pass-2 verbatim semantics live inside pe_repaint.
+    bvr::b2r::bones::pe_repaint();
     // Session 38: forcing the inline branch KEEPS RUNNING through teardown, on
     // purpose. The first version of this gate stopped forcing once a close
     // message arrived, on the theory that the engine's own (threaded) decision
