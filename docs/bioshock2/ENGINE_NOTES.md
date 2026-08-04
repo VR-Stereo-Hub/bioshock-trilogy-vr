@@ -2458,3 +2458,21 @@ user's preference), and the panel is bar-free. The engine ALSO letterboxes some
 moments in-frame (pixel watch saw real 166/182 px bands during this scene) -
 those bands live in the eyes like flat, BS1's correct-by-construction class;
 revisit only if the user reports them.
+
+### Session 42 round 4 (2026-08-05) - the transition reticle fault, release defaults, v0.7.0
+
+- **User bug: the crosshair returned after a level 1->2 transition and vrxhair
+  went dead.** Log verdict: `FAULT during the DisableReticle dispatch - lane
+  disabled` - the assert ran on a STALE pawn from the dying world (pages still
+  mapped, the s29 class) and ONE fault latched the lane off for the run. Fixed
+  three ways: the dispatch requires CalcView freshness (<200 ms - transitions
+  stop it), the pawn vtable is re-read AT CALL TIME (never trust the cached
+  RVA across a world change), and the fault latch is per-WORLD (3 faults in
+  one world latch; the view-state change clears the latch and re-asserts).
+- **Release defaults (user's call)**: lasers OFF both hands, aim dots ON both
+  (aim.cpp atomics); `cineDrive = authored+look` via a BS2-local adapter-init
+  call (core/BS1 default untouched). Verified live: `vrxhair status HIDDEN
+  applied=1`, `laser ON (L off R off), dot ON (L on R on)`,
+  `drive=authored+look`.
+- v0.7.0 (CMakeLists), packaged with tools/package.ps1 - ONE zip serves both
+  games (the adapter registry picks by host exe).
