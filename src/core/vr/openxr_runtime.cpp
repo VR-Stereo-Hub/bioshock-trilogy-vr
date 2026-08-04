@@ -3586,6 +3586,12 @@ void handle_cine_command(const char* args) {
         sscanf_s(args + 14, "%d", &n);
         bvr::hud::set_dump_on_edge(2, n);
         BVR_LOG("xr: edge dump armed on the next SCREEN-ONLY rising edge (%d windows)", n);
+    } else if (strncmp(args, "dumparm letterbox", 17) == 0) {
+        int n = 2;
+        sscanf_s(args + 17, "%d", &n);
+        bvr::hud::set_dump_on_edge(3, n);
+        BVR_LOG("xr: edge dump armed on the next LETTERBOX pixel-watch rising edge "
+                "(%d windows)", n);
     } else if (strncmp(args, "unsqueeze", 9) == 0) {
         // Session 29: RETIRED, not merely defaulted off. The unsqueeze assumed
         // the cinematic content was anamorphically squeezed into a middle band

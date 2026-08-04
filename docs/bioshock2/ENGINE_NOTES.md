@@ -2409,3 +2409,37 @@ big, redirecting result). Read it out of any 12+ minute play session log.
   heartbeat shows the save's coordinates while "PRESS A" is up, and continue
   is instant. Boot flow varies (a boot was seen going straight to gameplay).
 
+
+### Session 42 round 2 (2026-08-05) - in-headset verdicts, the M7.5 port, cine stabilizers
+
+USER VERDICTS round 1: HUD panel, hidden crosshair, menus/screens, title+main menu
+on the pad - ALL GOOD; no flicker seen yet. Two asks + one defect came back:
+
+1. **M7.5 body transfer PORTED** (movement did not follow the view; snap turn
+   left the pawn behind). BS1's shape verbatim (probe handshake, instant 1:1,
+   integer invariant) with ONE BS2 difference: the actor rotation offset is
+   DERIVED LIVE - (pitch,yaw) int32-pair match against the PC across >=3
+   distinct-yaw frames - instead of a baked constant. Flat-proven in one pass:
+   **offset +0x1F8 on the PC** (bank as patterns::kActorRotationOffset when it
+   repeats across boots), probe CONFIRMED (-200 asked, -200 moved), RUN drained
+   a -30 deg residual to 0.00 while the camera heartbeat held BIT-CONSTANT at
+   yaw 35382 - the invariant is a theorem on BS2 too. `vrbody` verb + F10
+   "Body / locomotion (M7.5)" + bodyRate/bodyDeadzone preset keys; pitch never
+   written (melee/right-stick behaviour untouched).
+2. **The cine gates key on bar_draw_active() ONLY now** (camera/aim/hands/
+   wskel): the in-headset run proved the letterbox PIXEL WATCH false-flaps on
+   BS2's dark scenes and fades (6 transitions, bands swinging 337..1046 px -
+   fades, not letterboxes), and the flapping suspend was the reported
+   "animations playing but not fully". The draw signal is inert until the BS2
+   bars fingerprint is derived - hands stay steadily driven in cutscenes until
+   then (stable > flapping). The pixel watch remains as telemetry and as the
+   dump trigger only.
+3. **The user's "2 horizontal black bars on the HUD panel" during cutscenes**:
+   no textureless census lines fired during the cine windows (only 17/11-vert
+   draws OUTSIDE them), so BS2's bars are most likely a TEXTURED gameswf
+   sprite riding the residual-HUD redirect onto the panel - invisible to
+   BS1's textureless+vert-count fingerprint. Evidence hook shipped: dumparm
+   edge 3 = LETTERBOX PIXEL-WATCH rising (proven to trip inside real
+   cutscenes), auto-armed at adapter init. The next cutscene writes a full
+   2-window dump; fingerprint the bars from it (verts + srv atlas), then give
+   the bar test a textured variant + re-arm the draw-signal gates.

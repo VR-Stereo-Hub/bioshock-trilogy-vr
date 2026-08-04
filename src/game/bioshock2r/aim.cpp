@@ -858,7 +858,10 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
     // and - through invalid rays - the laser/dot publish; the aim path fails
     // safe by construction (valid=false leaves the engine's own
     // GetPerfectFireStart values untouched). Identity when no cine holds.
-    bool cineSuspend = bvr::hud::cinematic_hold() &&
+    // Round 2: bar-draw signal only - BS2's pixel watch false-flaps on dark
+    // scenes (camera.cpp policy block has the derivation); a flapping ray
+    // gate mid-combat is exactly the reported mess.
+    bool cineSuspend = bvr::hud::bar_draw_active() &&
                        bvr::vr::cine_drive() != bvr::vr::CineDrive::Off;
 
     // Per-weapon profile resolver (session 41) - throttled, idles until a

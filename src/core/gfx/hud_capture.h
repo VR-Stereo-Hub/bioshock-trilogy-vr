@@ -214,8 +214,12 @@ bool backbuffer_composite();
 // playthrough reaches) are transitions: they are OVER before the 1 Hz command
 // poll could arm `dumpframe` by hand. Stage the arm here and it fires on the
 // selected RISING edge, once, then disarms itself. Default off; when off the
-// cost is one relaxed load per present. `vrcine dumparm bars|screen <n>|off`.
-// edge: 0 = off, 1 = bar-draw rising, 2 = screen-only rising.
+// cost is one relaxed load per present.
+// `vrcine dumparm bars|screen|letterbox <n>|off`.
+// edge: 0 = off, 1 = bar-draw rising, 2 = screen-only rising, 3 = the
+// letterbox pixel watch rising (session 42 r2: BS2's cutscene bars carry no
+// derivable draw fingerprint yet, but the pixel watch DOES trip inside those
+// scenes - a dump armed on its edge lands mid-cutscene by construction).
 void set_dump_on_edge(int edge, int count);
 void get_dump_on_edge(int* edge, int* count);
 
