@@ -3571,6 +3571,21 @@ void handle_cine_command(const char* args) {
             bvr::hud::set_bar_verts(n);
         else
             BVR_LOG("xr: usage: vrcine bars verts <n>  (current %u)", bvr::hud::bar_verts());
+    } else if (strncmp(args, "dumparm off", 11) == 0) {
+        bvr::hud::set_dump_on_edge(0, 2);
+        BVR_LOG("xr: edge dump DISARMED");
+    } else if (strncmp(args, "dumparm bars", 12) == 0) {
+        // Session 42: transitions (loading, FMV entry) are over before the 1 Hz
+        // command poll could arm a dump by hand - stage it on the rising edge.
+        int n = 2;
+        sscanf_s(args + 12, "%d", &n);
+        bvr::hud::set_dump_on_edge(1, n);
+        BVR_LOG("xr: edge dump armed on the next BAR-DRAW rising edge (%d windows)", n);
+    } else if (strncmp(args, "dumparm screen", 14) == 0) {
+        int n = 2;
+        sscanf_s(args + 14, "%d", &n);
+        bvr::hud::set_dump_on_edge(2, n);
+        BVR_LOG("xr: edge dump armed on the next SCREEN-ONLY rising edge (%d windows)", n);
     } else if (strncmp(args, "unsqueeze", 9) == 0) {
         // Session 29: RETIRED, not merely defaulted off. The unsqueeze assumed
         // the cinematic content was anamorphically squeezed into a middle band
@@ -3636,11 +3651,13 @@ void handle_cine_command(const char* args) {
                     ? (bvr::hud::postfx_cine_size() ? "render-target (size-only in cutscenes)"
                                                     : "render-target")
                     : "size-only");
+        int dumpEdge = 0, dumpCount = 0;
+        bvr::hud::get_dump_on_edge(&dumpEdge, &dumpCount);
         BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
                 "published strict=%d age=%llums | WORLD tanH=%.4f age=%llums "
-                "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|bars "
-                "hide|show|effects frame|panel|effects verts <n>|postfx rt|size|subs "
-                "panel|frame|status)",
+                "mismatch=%d screenOnly=%d dumparm=%s (vrcine on|off|mode quad|mode "
+                "stereo|bars hide|show|effects frame|panel|effects verts <n>|postfx "
+                "rt|size|subs panel|frame|dumparm bars|screen <n>|off|status)",
                 g_cineEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_cineStereo.load(std::memory_order_relaxed) ? "stereo" : "quad",
                 g_cineActive.load(std::memory_order_relaxed) ? 1 : 0,
@@ -3650,7 +3667,8 @@ void handle_cine_command(const char* args) {
                 pv ? static_cast<int>(pv & 1) : -1,
                 static_cast<unsigned long long>(ageMs),
                 haveFov ? t : 0.0f, haveFov ? fovAge : 0,
-                bvr::hud::fov_mismatch() ? 1 : 0, bvr::hud::screen_only() ? 1 : 0);
+                bvr::hud::fov_mismatch() ? 1 : 0, bvr::hud::screen_only() ? 1 : 0,
+                dumpEdge == 0 ? "off" : (dumpEdge == 1 ? "bars" : "screen"));
     }
 }
 

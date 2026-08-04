@@ -200,6 +200,16 @@ bool cinematic_hold();
 // agreement between them is real evidence. `vrcine status` reports both.
 void get_bar_stats(unsigned* skipped, unsigned* intervalsWithBars, unsigned* lastVertexCount);
 
+// ---- Session 42: auto-arm a frame dump on a classifier edge ------------------
+// The screen kinds that still need fingerprints (loading, FMV entry, whatever a
+// playthrough reaches) are transitions: they are OVER before the 1 Hz command
+// poll could arm `dumpframe` by hand. Stage the arm here and it fires on the
+// selected RISING edge, once, then disarms itself. Default off; when off the
+// cost is one relaxed load per present. `vrcine dumparm bars|screen <n>|off`.
+// edge: 0 = off, 1 = bar-draw rising, 2 = screen-only rising.
+void set_dump_on_edge(int edge, int count);
+void get_dump_on_edge(int* edge, int* count);
+
 // Telemetry for `vrhud status` (per second, reset on read... no - lifetime).
 void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
                   unsigned* intervalsWithHud);

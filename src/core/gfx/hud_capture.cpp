@@ -1,6 +1,7 @@
 #include "core/gfx/hud_capture.h"
 
 #include "core/gfx/blit.h"
+#include "core/gfx/frame_inspector.h" // session 42: edge-armed frame dumps
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h" // rendered_hfov_deg (fov-watch comparison)
 
@@ -212,6 +213,19 @@ int g_fovMismatchStreak = 0;
 int g_swfDrawsThisInterval = 0;
 std::atomic<bool> g_screenOnlyOn{false};
 int g_screenOnlyStreak = 0;
+
+// Session 42: one-shot edge-armed frame dump (0 off, 1 bar-draw, 2 screen-only).
+std::atomic<int> g_dumpEdge{0};
+std::atomic<int> g_dumpEdgeCount{2};
+
+void fire_edge_dump(int edge) {
+    if (g_dumpEdge.load(std::memory_order_relaxed) != edge) return;
+    g_dumpEdge.store(0, std::memory_order_relaxed);
+    int n = g_dumpEdgeCount.load(std::memory_order_relaxed);
+    bvr::frame_inspector::arm(2, n);
+    BVR_LOG("[hud] edge dump armed (%s rising, %d present window%s) - one-shot",
+            edge == 1 ? "bar-draw" : "screen-only", n, n == 1 ? "" : "s");
+}
 std::atomic<unsigned> g_cPostFx{0};
 // Draws the OLD size-only rule would have passed in-frame and the bind test
 // rejects. On a 16:9 render this should stay 0; at 2048x2048 it is the size of
@@ -1359,6 +1373,7 @@ void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
                 BVR_LOG("[hud] screen-only interval %s (swf draws %d, world pass %s)",
                         screenOnly ? "ON (hack/loading/FMV-class screen)" : "off",
                         g_swfDrawsThisInterval, screenOnly ? "absent" : "present");
+                if (screenOnly) fire_edge_dump(2); // session 42: one-shot fingerprint
             }
         } else {
             g_screenOnlyStreak = 0;
@@ -1378,13 +1393,15 @@ void on_present(ID3D11DeviceContext* ctx, IDXGISwapChain* swapchain) {
     {
         bool was = g_barActive.exchange(g_barSeenThisInterval, std::memory_order_relaxed);
         if (g_barSeenThisInterval) g_cBarIntervals.fetch_add(1, std::memory_order_relaxed);
-        if (was != g_barSeenThisInterval)
+        if (was != g_barSeenThisInterval) {
             BVR_LOG("[hud] bar draw %s (WidescreenBars sprite, %u verts) - cinematic signal "
                     "%s; pixel watch says %s",
                     g_barSeenThisInterval ? "ON" : "off",
                     g_lastBarVerts.load(std::memory_order_relaxed),
                     g_barSeenThisInterval ? "held" : "released",
                     g_lbBars.load(std::memory_order_relaxed) ? "bars" : "no bars");
+            if (g_barSeenThisInterval) fire_edge_dump(1); // session 42: one-shot
+        }
         g_barSeenThisInterval = false;
     }
 
@@ -1627,6 +1644,18 @@ void set_bars_hidden(bool on) {
 }
 
 bool bars_hidden() { return g_barsHidden.load(std::memory_order_relaxed); }
+
+void set_dump_on_edge(int edge, int count) {
+    if (count < 1) count = 1;
+    if (count > 8) count = 8;
+    g_dumpEdgeCount.store(count, std::memory_order_relaxed);
+    g_dumpEdge.store(edge, std::memory_order_relaxed);
+}
+
+void get_dump_on_edge(int* edge, int* count) {
+    if (edge) *edge = g_dumpEdge.load(std::memory_order_relaxed);
+    if (count) *count = g_dumpEdgeCount.load(std::memory_order_relaxed);
+}
 
 void set_bar_verts(unsigned n) {
     g_barVerts.store(n, std::memory_order_relaxed);
