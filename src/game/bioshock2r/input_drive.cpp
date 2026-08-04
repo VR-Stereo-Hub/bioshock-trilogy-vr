@@ -1,16 +1,20 @@
 #include "game/bioshock2r/input_drive.h"
 
+#include "core/gfx/hud_capture.h" // session 42: menukey gate (screen_only)
 #include "core/hooks/d3d11_hook.h"
 #include "core/hooks/pattern_scan.h"
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
+#include "game/bioshock2r/camera.h" // session 42: menukey gate (view signals)
 #include "game/bioshock2r/patterns.h"
 
 #include <windows.h>
+#include <xinput.h>
 
 #include <imgui.h>
 
 #include <atomic>
+#include <cstring>
 
 namespace bvr::b2r::input_drive {
 namespace {
@@ -108,13 +112,97 @@ void poison(const char* what) {
             "after a relaunch to retry)", what);
 }
 
+// ---- Session 42: menukey (pad A -> keyboard Enter in menu contexts) ---------
+// BS2's gameswf front-end activates on KEYBOARD input only: the composed A bit
+// provably reaches the game (the same word's dpad navigates the menu, the ini
+// pad map binds A=Use), but no menu item activates on it - while a SCANCODE
+// Enter does (harness-proven; VK-only injection is ignored, tools/game-key.ps1
+// header). So on the A rising edge, while a menu context holds, press Enter
+// via keybd_event and mirror the release on the A falling edge (gameswf polls
+// per frame; the press needs real duration). keybd_event over SendInput for
+// the same x86 INPUT-layout reason as game-key.ps1. keybd_event is GLOBAL, so
+// the gate also requires the game window foreground.
+std::atomic<bool> g_menuKey{true};
+std::atomic<bool> g_menuKeyForce{false};
+std::atomic<uint32_t> g_menuKeyInjects{0};
+bool g_prevA = false; // game thread only, like the drive state above
+bool g_enterDown = false;
+uint64_t g_enterDownMs = 0;
+
+// Whole-token match (the vrhands offset/off lesson - never prefix-match verbs).
+bool is_verb(const char* args, const char* verb) {
+    size_t n = strlen(verb);
+    if (strncmp(args, verb, n) != 0) return false;
+    char t = args[n];
+    return t == '\0' || t == ' ' || t == '\n' || t == '\r' || t == '\t';
+}
+
+bool game_foreground() {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    return pid == GetCurrentProcessId();
+}
+
+void enter_key(bool down) {
+    keybd_event(0, 0x1C /* Enter, scancode set 1 */,
+                KEYEVENTF_SCANCODE | (down ? 0 : KEYEVENTF_KEYUP), 0);
+}
+
+void enter_release(const char* why) {
+    if (!g_enterDown) return;
+    enter_key(false);
+    g_enterDown = false;
+    BVR_LOG("[b2r] menukey: Enter up (%s)", why);
+}
+
+void menu_key_tick(uint64_t nowMs) {
+    uint16_t btns = 0;
+    bvr::input::last_composed_buttons(&btns);
+    bool a = (btns & XINPUT_GAMEPAD_A) != 0;
+    bool rising = a && !g_prevA;
+    bool falling = !a && g_prevA;
+    g_prevA = a; // edges tracked even while off, so re-enabling can't replay one
+    if (!g_menuKey.load(std::memory_order_relaxed)) {
+        enter_release("menukey off");
+        return;
+    }
+    if (g_enterDown) {
+        // Mirror the pad release; the 1 s cap means a held A (gameplay charge,
+        // a dropped falling edge) can never leave Enter stuck down.
+        if (falling)
+            enter_release("A released");
+        else if (nowMs - g_enterDownMs > 1000)
+            enter_release("held > 1s");
+        return;
+    }
+    if (!rising) return;
+    bool force = g_menuKeyForce.load(std::memory_order_relaxed);
+    bool silent = camera::calcview_silent(400);
+    bool strict = camera::last_strict_gameplay();
+    bool screen = bvr::hud::screen_only();
+    // Menu context = any leg. In gameplay all three read "gameplay" and the A
+    // press stays what it is (use/loot) - no injection.
+    if (!force && !silent && strict && !screen) return;
+    if (!game_foreground()) return;
+    enter_key(true);
+    g_enterDown = true;
+    g_enterDownMs = nowMs;
+    g_menuKeyInjects.fetch_add(1, std::memory_order_relaxed);
+    BVR_LOG("[b2r] menukey: A->Enter down (silent=%d strict=%d screen=%d force=%d)",
+            silent ? 1 : 0, strict ? 1 : 0, screen ? 1 : 0, force ? 1 : 0);
+}
+
 } // namespace
 
 void on_frame(uint64_t nowMs) {
     bool wantOn = bvr::input::enabled();
-    if (g_poisoned.load(std::memory_order_relaxed)) return;
+    if (g_poisoned.load(std::memory_order_relaxed)) {
+        enter_release("drive poisoned");
+        return;
+    }
 
     if (!wantOn) {
+        enter_release("drive off"); // menukey is inert without the pump
         if (g_armed) {
             Objects obj;
             if (resolve(obj)) {
@@ -188,6 +276,37 @@ void on_frame(uint64_t nowMs) {
         g_rateWindowMs = nowMs;
         g_rateWindowBase = count;
     }
+
+    // Session 42: A->Enter translation, once per present, on the fresh pad
+    // word the pump just produced.
+    menu_key_tick(nowMs);
+}
+
+void handle_menukey_command(const char* args) {
+    if (is_verb(args, "on")) {
+        g_menuKey.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b2r] menukey ON (pad A activates menu items via scancode Enter)");
+    } else if (is_verb(args, "off")) {
+        g_menuKey.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b2r] menukey off");
+    } else if (strncmp(args, "force on", 8) == 0) {
+        g_menuKeyForce.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b2r] menukey FORCE (gate open everywhere - diagnostic only; "
+                "gameplay A will also type Enter)");
+    } else if (strncmp(args, "force off", 9) == 0) {
+        g_menuKeyForce.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b2r] menukey force off");
+    } else {
+        BVR_LOG("[b2r] menukey status: %s force=%d injects=%u | gate now: "
+                "silent=%d strict=%d screen=%d foreground=%d "
+                "(menukey on|off|force on|force off|status)",
+                g_menuKey.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_menuKeyForce.load(std::memory_order_relaxed) ? 1 : 0,
+                g_menuKeyInjects.load(std::memory_order_relaxed),
+                camera::calcview_silent(400) ? 1 : 0,
+                camera::last_strict_gameplay() ? 1 : 0,
+                bvr::hud::screen_only() ? 1 : 0, game_foreground() ? 1 : 0);
+    }
 }
 
 bool resolve_engine_objects(void** client, void** viewport) {
@@ -199,12 +318,14 @@ bool resolve_engine_objects(void** client, void** viewport) {
 }
 
 void draw_debug_ui() {
-    ImGui::Text("pad drive: %s | drives %u (%u/s)",
+    ImGui::Text("pad drive: %s | drives %u (%u/s) | menu-A %s (%u)",
                 g_poisoned.load(std::memory_order_relaxed) ? "POISONED"
                 : bvr::input::enabled()                    ? "on"
                                                            : "off",
                 g_driveCount.load(std::memory_order_relaxed),
-                g_driveRate.load(std::memory_order_relaxed));
+                g_driveRate.load(std::memory_order_relaxed),
+                g_menuKey.load(std::memory_order_relaxed) ? "on" : "off",
+                g_menuKeyInjects.load(std::memory_order_relaxed));
 }
 
 } // namespace bvr::b2r::input_drive

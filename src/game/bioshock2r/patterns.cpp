@@ -253,6 +253,30 @@ bool fname_text(uint32_t index, char* out, size_t outCap) {
     return i > 0;
 }
 
+bool fname_find(const char* text, uint32_t* outIndex) {
+    // Session 42: GNames REVERSE lookup (string -> index) for calling script
+    // functions by name through the engine's own FindFunctionChecked. Linear
+    // over the live table via fname_text (self-index-checked reads); ~50k
+    // entries = one bounded hitch, so callers cache the result.
+    using namespace bvr::pattern_scan;
+    if (!g_imageBase || !text || !outIndex) return false;
+    size_t want = strlen(text);
+    if (want == 0 || want > 30) return false;
+    const uint8_t* arr = g_imageBase + kGNamesArrayRva;
+    if (!is_memory_valid(arr, 8)) return false;
+    int32_t count = *reinterpret_cast<const int32_t*>(arr + 4);
+    if (count <= 0 || count > 2000000) return false;
+    char buf[48];
+    for (int32_t i = 0; i < count; ++i) {
+        if (!fname_text(static_cast<uint32_t>(i), buf, sizeof buf)) continue;
+        if (buf[0] == text[0] && strcmp(buf, text) == 0) {
+            *outIndex = static_cast<uint32_t>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool object_class_name(const void* objPtr, char* out, size_t outCap) {
     using namespace bvr::pattern_scan;
     if (out && outCap) out[0] = '\0';

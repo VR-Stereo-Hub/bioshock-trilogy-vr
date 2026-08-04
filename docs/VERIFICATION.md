@@ -371,6 +371,28 @@ compare against rather than a guess:
 | frames/s FOCUSED, VISIBLE, refocused | **90 / 91.7 / 89.7** - no collapse across a focus loss |
 | `step 5` / `step 20` | exactly 5 / exactly 20 frames |
 
+### 2.10 Presentation-lane reads (BS2, session 42)
+
+- **HUD-panel-vs-eye oracle, proven on BS2**: `vrhud status` first line must read
+  `redirects` climbing with `leaks=0` and the routes line `stranded=0` per reason;
+  the capture JSON then shows the HUD quad as an EXTRA layer with `space: view`
+  (BS2 dual-beam baseline 11 layers -> 12 with the panel) whose pose z equals
+  `-hudQuadDistM`. `vrhud force on` arms the redirect without live SR stereo -
+  the flat A/B lever. The window keeps its HUD via the composite (game-shot).
+- **`vrcine status` is a verification read**: `barDraw`/`pixelWatch` side by side
+  (bars hidden => `barDraw=1 pixelWatch=0` is the DESIGN), the measured bar vertex
+  count, `effectsInFrame`, the postfx rule + square flag, and `dumparm` state.
+  A counter is not evidence until you know which population it counts; pair every
+  zero with a positive control (BS1 session-30 lesson, carried).
+- **`[flick] min=N ...` once per minute** (BS2): per-site restamp-catch deltas +
+  write->catch latency maxima + cadence baseline. Ambient sim baseline at the
+  save: pe1 ~1900/min hands + ~950/min wskel, everything else 0, dmax 16 ms.
+  Read any 12+ min play log for the ~10-min flicker onset correlation.
+- **BS2 pause menu**: seam commands and the pad are BOTH dead while paused (the
+  PE-tail service lane starves - ENGINE_NOTES s42 #4); an unfocused-paused game
+  writes nothing and false-positives log-age wedge checks. `game-key Space` wakes
+  a healthy game instantly; the real wedge needs a restart.
+
 ---
 
 ## 3. The end-to-end agent workflow

@@ -712,7 +712,8 @@ void __fastcall FlushPointDetour(void* ecx, void* edx, void* scene, void* group)
     // the PE-lane repaint and renders raw for one eye - absorb-and-recompose
     // it here. Self-gating (one 48-byte sentinel per driven hand when fresh,
     // no-op otherwise), pass-2 verbatim semantics live inside pe_repaint.
-    bvr::b2r::bones::pe_repaint();
+    // Session 42: site 1 = flush point, for the flicker catch-phase split.
+    bvr::b2r::bones::pe_repaint(1);
     // Session 38: forcing the inline branch KEEPS RUNNING through teardown, on
     // purpose. The first version of this gate stopped forcing once a close
     // message arrived, on the theory that the engine's own (threaded) decision
@@ -918,6 +919,57 @@ void heartbeat(uint64_t now) {
     g_beatWait2 = wait2;
     g_beatSet2 = set2;
     g_beatForced = forced;
+
+    // ---- Session 42: the [flick] minute line (flicker diagnosis) -----------
+    // 60 s sub-window on the same game-thread beat host. Deltas per window;
+    // `min` is ABSOLUTE minutes since the first beat so the user's "~10 min"
+    // onset reads straight off the log. dmax is the window's worst
+    // write->catch latency per phase - the survivor discriminator (a catch
+    // that sat most of the pass plausibly rendered before it was caught).
+    static uint64_t s_flickStartMs = 0;
+    static uint64_t s_flickWindowMs = 0;
+    static bones::FlickerStats s_prev = {};
+    static uint32_t s_prevStreams = 0, s_prevWait2 = 0, s_prevSet2 = 0,
+                    s_prevFlush = 0;
+    if (s_flickWindowMs == 0) {
+        s_flickStartMs = now;
+        s_flickWindowMs = now;
+        bones::flicker_snapshot(&s_prev);
+        s_prevStreams = streams;
+        s_prevWait2 = wait2;
+        s_prevSet2 = set2;
+        s_prevFlush = g_flushPointEntries.load(std::memory_order_relaxed);
+        return;
+    }
+    if (now - s_flickWindowMs < 60000) return;
+    s_flickWindowMs = now;
+    bones::FlickerStats cur = {};
+    bones::flicker_snapshot(&cur);
+    uint32_t flush = g_flushPointEntries.load(std::memory_order_relaxed);
+    if (bones::flicker_log()) {
+        uint32_t d[4][2];
+        for (int p = 0; p < 4; ++p)
+            for (int k = 0; k < 2; ++k)
+                d[p][k] = cur.catches[p][k] - s_prev.catches[p][k];
+        BVR_LOG("[flick] min=%llu pe1=%u/%u pe2=%u/%u fl1=%u/%u fl2=%u/%u "
+                "dmax=%u/%u/%u/%u ms drv=%u/%u adopts=%u/%u wAdopt=%u "
+                "stream=%u wait2=%u set2=%u flush=%u world=%u resc=%u",
+                static_cast<unsigned long long>((now - s_flickStartMs) / 60000),
+                d[0][0], d[0][1], d[1][0], d[1][1], d[2][0], d[2][1], d[3][0],
+                d[3][1], cur.dmaxMs[0], cur.dmaxMs[1], cur.dmaxMs[2], cur.dmaxMs[3],
+                cur.driveAdoptEvents[0] - s_prev.driveAdoptEvents[0],
+                cur.driveAdoptEvents[1] - s_prev.driveAdoptEvents[1],
+                cur.adopts[0] - s_prev.adopts[0], cur.adopts[1] - s_prev.adopts[1],
+                cur.wAdopts - s_prev.wAdopts, streams - s_prevStreams,
+                wait2 - s_prevWait2, set2 - s_prevSet2, flush - s_prevFlush,
+                cur.worldChanges - s_prev.worldChanges,
+                cur.wRescans - s_prev.wRescans);
+    }
+    s_prev = cur;
+    s_prevStreams = streams;
+    s_prevWait2 = wait2;
+    s_prevSet2 = set2;
+    s_prevFlush = flush;
 }
 
 void __fastcall DrawDetour(void* ecx, void* edx, void* a1, void* a2, void* a3, void* a4) {

@@ -1,8 +1,10 @@
 #include "game/bioshock2r/bones.h"
 
+#include "core/gfx/hud_capture.h" // session 42: cinematic_hold (residue line)
 #include "core/hooks/pattern_scan.h"
 #include "core/util/log.h"
 #include "core/util/xr_math.h"
+#include "core/vr/openxr_runtime.h" // session 42: cine_drive (residue line)
 #include "game/bioshock2r/aim.h"
 #include "game/bioshock2r/patterns.h"
 #include "game/bioshock2r/scenedraw.h"
@@ -128,6 +130,33 @@ std::atomic<bool> g_scaleAttach{false};
 std::atomic<int> g_armsMode{1};        // 0 game, 1 follow (user test default), 2 hide
 int g_armsApplied[2] = {-1, -1};       // game thread; drives the transition restore
 std::atomic<uint32_t> g_peRepaints{0}; // restamps caught mid-draw (flicker fix)
+
+// --- Session 42: flicker DIAGNOSIS instrumentation (counters only) ----------
+// The surviving left-eye flicker (~10 min onset per the user) outlived both
+// repaint rungs; before the next fix we need to know WHERE in the pass
+// timeline the surviving restamps land and WHEN the cadence changes. Phase =
+// where a restamp was DISCOVERED: 0/1 = PE-lane repaint pass 1/2, 2/3 =
+// flush-point repaint pass 1/2. kind: 0 = hands bank, 1 = weapon skeleton.
+// IMPORTANT for the readout: with anim mode ON the drive ADOPTS a fresh
+// engine pose nearly every frame - g_driveAdoptEvents is the restamp-cadence
+// BASELINE, not a survivor count. The survivor signal is the late-window
+// catches (fl*) and a large write->catch latency (g_catchDeltaMaxMs): a
+// restamp that sat unrepainted for most of the pass plausibly rendered.
+std::atomic<uint32_t> g_catch[4][2] = {};
+std::atomic<uint32_t> g_catchDeltaMaxMs[4] = {}; // window max, drained on snapshot
+std::atomic<uint32_t> g_driveAdoptEvents[2] = {}; // [0] hand drives, [1] wskel drives
+std::atomic<uint32_t> g_worldChanges{0};
+std::atomic<uint32_t> g_wRescans{0};
+std::atomic<bool> g_flickLog{true}; // [flick] minute line (counters always count)
+
+void note_catch(int phase, int kind, uint32_t latMs) {
+    if (phase < 0 || phase > 3) return;
+    g_catch[phase][kind].fetch_add(1, std::memory_order_relaxed);
+    // Torn max under the dev-only threaded substrate is an accepted diagnostic
+    // hazard (matches pe_repaint's existing exposure); shipping config is 1t.
+    if (latMs > g_catchDeltaMaxMs[phase].load(std::memory_order_relaxed))
+        g_catchDeltaMaxMs[phase].store(latMs, std::memory_order_relaxed);
+}
 
 // Last write per hand, for reapply/repaint/release + telemetry. A bone MASK
 // rather than ranges (session 40 round 2): the written set is no longer
@@ -415,6 +444,7 @@ bool wskel_resolve() {
     memset(g_wWrittenValid, 0, sizeof g_wWrittenValid);
     BVR_LOG("[b2r] bones: weapon skel resolved - holdable %p skel %p pose %p x%d bones",
             h, skel, pose, cnt);
+    g_wRescans.fetch_add(1, std::memory_order_relaxed); // flicker correlate
     return true;
 }
 
@@ -707,7 +737,12 @@ bool drive(const FrameContext& ctx, const GamePose& target, int hand) {
     // becomes this frame's pose source. Runs before the arms-transition
     // restore below (that restore writes ref to the bank without updating
     // g_written, and must not be mistaken for an engine restamp).
+    // Session 42: the snapshot-around counts drive calls where adoption fired
+    // at all - the restamp-cadence baseline for the flicker readout.
+    uint32_t adoptsBefore = g_adopts[hand].load(std::memory_order_relaxed);
     adopt_hand(hand);
+    if (g_adopts[hand].load(std::memory_order_relaxed) != adoptsBefore)
+        g_driveAdoptEvents[0].fetch_add(1, std::memory_order_relaxed);
 
     // Arms-mode transition (game thread, here on purpose): leaving follow or
     // hide must hand the arm bones back to the engine explicitly - animation
@@ -788,10 +823,22 @@ void release(const char* why, int hand) {
     // Per-cluster restore: a left-hand release must not disturb a live right
     // hand, so only the released hand's own written bones (cluster + pivot +
     // arms, whatever the mask holds) go back to reference.
+    //
+    // Session 42, the missing s29 interlock leg: "stop driving" is always
+    // safe, "hand state back" WRITES - and a save load can free and reuse the
+    // skeleton pages while g_pose still points at them (SEH is useless: the
+    // pages stay mapped, owned by the new level). Same predicate pe_repaint
+    // already trusts. On refusal the masks still clear below - stopping is
+    // the part that must always happen.
+    bool bankLive = g_pose && g_refValid &&
+                    is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride);
+    if (g_pose && g_refValid && !bankLive)
+        BVR_LOG("[b2r] bones: release(%s) REFUSED the restore - pose bank not "
+                "live (world changed under us); masks cleared, no writes", why);
     bool any = false;
     for (int h = 0; h < 2; ++h) {
         if (hand >= 0 && h != hand) continue;
-        if (g_refValid && g_pose) {
+        if (bankLive) {
             for (int i = 0; i < g_boneCount; ++i)
                 if (g_writtenMask[h][i]) {
                     memcpy(g_pose + i * patterns::kSkelPoseStride, g_ref[i], 48);
@@ -814,9 +861,12 @@ void release(const char* why, int hand) {
     }
 }
 
-void pe_repaint() {
+void pe_repaint(int site) {
     if (!g_pose || !g_refValid) return;
     uint64_t now = GetTickCount64();
+    // Session 42: catch phase for the flicker instrumentation (site 0 = the
+    // PE lane, 1 = the flush point; odd = pass 2).
+    int phase = site * 2 + (scenedraw::in_second_draw() ? 1 : 0);
     for (int h = 0; h < 2; ++h) {
         if (now - g_writeStampMs[h] > 100) continue; // not driving, nothing to defend
         // Sentinel: the first masked bone. Animation restamps translation and
@@ -846,6 +896,7 @@ void pe_repaint() {
                     memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
         }
         g_peRepaints.fetch_add(1, std::memory_order_relaxed);
+        note_catch(phase, 0, static_cast<uint32_t>(now - g_writeStampMs[h]));
     }
     // Weapon skeleton (session 41): same sentinel, same absorb-then-recompose
     // on pass 1 / verbatim on pass 2.
@@ -869,6 +920,7 @@ void pe_repaint() {
                                48);
             }
             g_peRepaints.fetch_add(1, std::memory_order_relaxed);
+            note_catch(phase, 1, static_cast<uint32_t>(now - g_wStampMs));
         }
     }
 }
@@ -894,6 +946,33 @@ float anim_trans() {
 uint32_t adopt_count(int hand) {
     return (hand < 0 || hand > 1) ? 0
                                   : g_adopts[hand].load(std::memory_order_relaxed);
+}
+
+void flicker_snapshot(FlickerStats* out) {
+    if (!out) return;
+    for (int p = 0; p < 4; ++p) {
+        for (int k = 0; k < 2; ++k)
+            out->catches[p][k] = g_catch[p][k].load(std::memory_order_relaxed);
+        // Drain the window max: exchange gives the caller-defined window
+        // semantics without a second clear pass racing a concurrent catch.
+        out->dmaxMs[p] = g_catchDeltaMaxMs[p].exchange(0, std::memory_order_relaxed);
+    }
+    out->driveAdoptEvents[0] = g_driveAdoptEvents[0].load(std::memory_order_relaxed);
+    out->driveAdoptEvents[1] = g_driveAdoptEvents[1].load(std::memory_order_relaxed);
+    out->adopts[0] = g_adopts[0].load(std::memory_order_relaxed);
+    out->adopts[1] = g_adopts[1].load(std::memory_order_relaxed);
+    out->wAdopts = g_wAdopts.load(std::memory_order_relaxed);
+    out->peRepaints = g_peRepaints.load(std::memory_order_relaxed);
+    out->worldChanges = g_worldChanges.load(std::memory_order_relaxed);
+    out->wRescans = g_wRescans.load(std::memory_order_relaxed);
+}
+
+bool flicker_log() {
+    return g_flickLog.load(std::memory_order_relaxed);
+}
+
+void set_flicker_log(bool on) {
+    g_flickLog.store(on, std::memory_order_relaxed);
 }
 
 void set_scale(int hand, float scale) {
@@ -929,6 +1008,7 @@ void on_world_change(const char* why) {
     if (g_wHold) wskel_drop(why);
     g_scanDormant = false;
     g_scanMisses = 0;
+    g_worldChanges.fetch_add(1, std::memory_order_relaxed); // flicker correlate
 }
 
 void* hands_actor() {
@@ -967,9 +1047,16 @@ void wskel_drive() {
     }
     if (!g_imageBase) return;
     if (!wskel_resolve()) return;
+    uint32_t adoptsBefore = g_wAdopts.load(std::memory_order_relaxed);
     wskel_compose(ws);
+    if (g_wAdopts.load(std::memory_order_relaxed) != adoptsBefore)
+        g_driveAdoptEvents[1].fetch_add(1, std::memory_order_relaxed);
     g_wStampMs = GetTickCount64();
     ++g_wDrives;
+}
+
+void wskel_release(const char* why) {
+    if (g_wHold) wskel_drop(why);
 }
 
 void set_weapon_scale(float s) {
@@ -1033,6 +1120,57 @@ bool handle_command(const char* args) {
                 g_wPose ? "RESOLVED" : "-", g_wHold, g_wBoneCount,
                 g_wScale.load(std::memory_order_relaxed), g_wDrives,
                 g_wAdopts.load(std::memory_order_relaxed));
+        {
+            // Session 42: the residue line - "did the hands get handed back"
+            // answerable without provoking an edge.
+            int wm[2] = {0, 0};
+            for (int h = 0; h < 2; ++h)
+                for (int i = 0; i < g_boneCount; ++i)
+                    if (g_writtenMask[h][i]) ++wm[h];
+            bvr::vr::CineDrive cd = bvr::vr::cine_drive();
+            BVR_LOG("[b2r]   residue: masked L %d R %d wskel %s | cineHold=%d "
+                    "drive=%s",
+                    wm[0], wm[1], g_wHold ? "HELD" : "-",
+                    bvr::hud::cinematic_hold() ? 1 : 0,
+                    cd == bvr::vr::CineDrive::Off        ? "off"
+                    : cd == bvr::vr::CineDrive::Authored ? "authored"
+                                                         : "authored+look");
+        }
+        {
+            // Session 42: cumulative flicker catches + the printed invariant.
+            uint32_t sum = 0;
+            for (int p = 0; p < 4; ++p)
+                for (int k = 0; k < 2; ++k)
+                    sum += g_catch[p][k].load(std::memory_order_relaxed);
+            uint32_t pe = g_peRepaints.load(std::memory_order_relaxed);
+            BVR_LOG("[b2r]   flick: log %s | catches h/w pe1=%u/%u pe2=%u/%u "
+                    "fl1=%u/%u fl2=%u/%u (sum %u %s peRepaints %u) | drvAdopt "
+                    "h=%u w=%u | world %u rescans %u",
+                    g_flickLog.load(std::memory_order_relaxed) ? "on" : "off",
+                    g_catch[0][0].load(std::memory_order_relaxed),
+                    g_catch[0][1].load(std::memory_order_relaxed),
+                    g_catch[1][0].load(std::memory_order_relaxed),
+                    g_catch[1][1].load(std::memory_order_relaxed),
+                    g_catch[2][0].load(std::memory_order_relaxed),
+                    g_catch[2][1].load(std::memory_order_relaxed),
+                    g_catch[3][0].load(std::memory_order_relaxed),
+                    g_catch[3][1].load(std::memory_order_relaxed),
+                    sum, sum == pe ? "==" : "!= (INVARIANT BROKEN)", pe,
+                    g_driveAdoptEvents[0].load(std::memory_order_relaxed),
+                    g_driveAdoptEvents[1].load(std::memory_order_relaxed),
+                    g_worldChanges.load(std::memory_order_relaxed),
+                    g_wRescans.load(std::memory_order_relaxed));
+        }
+        return true;
+    }
+    if (strncmp(args, "flick", 5) == 0) {
+        // flick on|off|status - gates the [flick] minute line only.
+        if (strstr(args + 5, "on"))
+            g_flickLog.store(true, std::memory_order_relaxed);
+        else if (strstr(args + 5, "off"))
+            g_flickLog.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b2r] command: vrbones flick %s (counters always count)",
+                g_flickLog.load(std::memory_order_relaxed) ? "on" : "off");
         return true;
     }
     // cluster l|r <lo> <hi> <anchor> [extra]

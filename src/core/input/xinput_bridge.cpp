@@ -644,6 +644,13 @@ void last_composed_bumpers(bool* lb, bool* rb) {
     if (rb) *rb = (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
 }
 
+void last_composed_buttons(uint16_t* buttons) {
+    // The whole wButtons word as the game last saw it - stored on both the
+    // composed (VR) path and the disabled/real-pad path, so a consumer reading
+    // edges here covers a physical pad too. Session 42: BS2's menukey lane.
+    if (buttons) *buttons = g_lastButtons.load(std::memory_order_relaxed);
+}
+
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (lx) *lx = g_lastComposed.lx;

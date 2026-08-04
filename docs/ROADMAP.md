@@ -876,6 +876,44 @@ kill. Both prerequisites below are now MET.):**
       scale-flick flicker gone; arms-hide web gone; per-weapon tuning + uniform weapon
       scale feel; idle sway verdict (anim on vs off).
 
+### M10.2 - BS2 presentation (session 42; BS1 M8/M9 parity, derived fresh)
+
+- [x] **HUD on a readable floating panel** - BS2 is a BACKBUFFER-COMPOSITE pipeline
+      (indexed tonemap onto a RENDER_TARGET-only backbuffer) that no BS1 fingerprint
+      matched; core gained a flag-gated mode (default off, BS1 bit-identical). Flat
+      gates all green: hudDraws=redirects=12352, **leaks=0**, stranded=0, HUD quad =
+      12th layer space=view at the preset-tuned pose, window composite intact,
+      health/EVE fills keep their colour (the BS1 bar-fill collision does not
+      manifest - BS2's fills are textured). `vrhud force` makes it flat-testable.
+- [x] **HUD quad + cine + crosshair preset keys** (10 new; 59 values load at boot;
+      dist round-tripped a relaunch through the live quad).
+- [x] **Fullscreen screens route GENERICALLY** (user decision): loading + pause menu
+      measured SCREEN-ONLY -> head-locked quad; title/menu attract = strict
+      projection. Vending/gene bank/hacking/map ride the same generic route +
+      auto-armed evidence dumps (`vrcine dumparm`, bars edge armed at init).
+- [x] **Cinematic gates fixed + consumed**: camera keys on `cinematic_hold()` (the
+      letterbox() predicate was dead with bars hidden); `vrcine drive
+      off|authored|authored+look` consumed by camera/aim/hands/wskel; authored+look
+      ported (deltas only, residual 0); bones release interlock (s29 leg) +
+      wskel_release; log-only cine edge instrument.
+- [x] **Pad-A activation (menukey)**: A -> scancode Enter, menu-gated + foreground
+      + stuck-key cap, default ON. Title-continue accepts NATIVE pad A (proven).
+      Known limits: pause menu starves the whole service lane (structural,
+      pre-existing); main-menu leg unverified in sim.
+- [x] **Game crosshair hidden by default** (user ask): ShockPlayer.DisableReticle
+      via the engine's own FFC+ProcessEvent (the PE-by-name precedent), 5 s
+      re-assert, `vrxhair` + F10 + preset key, A/B screenshot-proven.
+- [x] **Flicker diagnosis armed at boot**: per-site catch phases, dmax latency,
+      cadence baseline, correlates, `[flick]` per-minute line (proven flowing for
+      4 min; ambient baseline banked in ENGINE_NOTES s42).
+- [ ] **BS2 bars-verts constant** (C10): underived until a real cutscene renders -
+      the auto-armed bars-edge dump harvests it; then patterns::kCineBarVerts +
+      `hud::set_bar_verts` at init + derivation note, one commit.
+- [ ] **Session-42 in-headset acceptance**: panel readability/placement (F10
+      sliders + SAVE), screens land readable during play, cutscene drive-mode
+      verdicts + hands return at cine exit, crosshair-hidden feel, menukey reach
+      report (which menus A now activates), 12+ min play for the [flick] readout.
+
 ## Post-v1 backlog (not scheduled)
 
 - **Selection wheels** (moved here 2026-07-27, session 16 part 4, user's call - the

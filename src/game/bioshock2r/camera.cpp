@@ -243,6 +243,29 @@ bvr::vr::HeadPose g_recenterPose{};
 int32_t g_recenterYawUnits = 0;
 float recenter_yaw_rad() { return g_recenterYawUnits / kRotUnitsPerRadian; }
 
+// Session 42, authored+look (BS1 s29 shape): the head reference captured on
+// the first cineLook frame; head DELTAS from it ride the authored camera.
+// Dropped on both cinematic edges. Game thread only.
+int32_t g_cineLookPitch = 0;
+int32_t g_cineLookYaw = 0;
+int32_t g_cineLookRoll = 0;
+bool g_cineLookValid = false;
+
+// --- Session 42: the game's own crosshair, DEFAULT HIDDEN (user ask) --------
+// BS1 hid it with `set ShockPlayer bReticleDisabled` through its Exec seam;
+// BS2 has no Exec (deliberate) and affords BETTER: ShockPlayer carries
+// DisableReticle()/EnableReticle() script setters (ShouldHideReticle() =
+// bReticleDisabled || IsInLittleSisterMode(); uscript derivation, ENGINE_NOTES
+// s42), called through the engine's OWN FindFunctionChecked + ProcessEvent -
+// the by-name seam. Re-asserted on a slow cadence: a level load spawns a
+// fresh pawn carrying the class default (visible). All game thread only.
+std::atomic<bool> g_reticleHidden{true}; // `vrxhair on` re-shows it
+int g_reticleApplied = -1;               // -1 = never pushed
+uint64_t g_reticleAssertMs = 0;
+uint32_t g_reticleNameIdx[2] = {};       // [0] DisableReticle, [1] EnableReticle
+bool g_reticleNamesResolved = false;
+bool g_reticleNamesFailed = false;       // fail-soft latch (lookup or fault)
+
 // Synthetic HMD lane, extended over BS1's: `simhead <yaw> <pitch> <roll>
 // [px py pz] [holdMs]` feeds a scripted head pose - ROTATION AND POSITION -
 // through the real drive, so the full 6DOF xr-to-ue mapping is provable flat
@@ -663,7 +686,24 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 // access to it when the adapter owns the command table):
 //   vrpace <args>                M8 stall guard
 //   vrmirror <args>              M8 desktop mirror
-//   vrhud on|off|status          HUD capture control + the lens/letterbox state
+//   vrhud on|off|force on|force off|status
+//                                HUD capture control. force arms the redirect
+//                                without live SR stereo (flat A/B); status =
+//                                counters + per-reason routes + lens/letterbox
+//                                state. fovwatch on|off kept (BS2-only).
+//   vrxhair on|off|status        session 42: the game's own crosshair.
+//                                DEFAULT HIDDEN (user ask) - asserted with
+//                                ShockPlayer.DisableReticle()/EnableReticle()
+//                                through the engine's own FFC + ProcessEvent
+//                                (the by-name seam; BS1 needed Exec SET).
+//   menukey on|off|force on|force off|status
+//                                session 42: pad A -> scancode Enter while a
+//                                menu context holds (calcview silent, menu
+//                                view-actor, or screen-only). BS2's gameswf
+//                                front-end activates on keyboard only; the A
+//                                bit reaches the game but is ignored by menus.
+//                                Default ON; force = gate open everywhere
+//                                (diagnostic). Inert while vrinput is off.
 //   vrpreset [save]              arm the full VR configuration / persist the
 //                                tuned sliders to this game's own
 //                                vrpreset.ini. b2r had NO persistence at all
@@ -703,7 +743,11 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   vrhands on|off|status|trim <p> <y> <r>|offset <f> <r> <u>|pose aim|grip
 //                                the rig rides the RIGHT controller through
 //                                the same frame context the ray uses
-//   vrbones status|cluster <lo> <hi> <anchor>|refcap|release
+//   vrbones status|cluster <lo> <hi> <anchor>|refcap|release|flick on|off
+//                                flick (session 42) gates the [flick] minute
+//                                line - per-site restamp-catch deltas + pass
+//                                phase + write->catch latency, the flicker
+//                                diagnosis readout (counters always count)
 //                                the bone-drive mechanism's own levers
 
 void save_vr_preset();
@@ -1148,6 +1192,26 @@ void apply_command(const char* cmd, const char* args) {
         // sign gets checked) and the swing detector's entire flat test suite
         // had no way in. One line, all of it core, none of it BS1-specific.
         bvr::input::handle_command(args); // logs its own echoes
+    } else if (strcmp(cmd, "menukey") == 0) {
+        // Session 42: pad-A menu activation (A -> scancode Enter, menu-gated).
+        input_drive::handle_menukey_command(args);
+    } else if (strcmp(cmd, "vrxhair") == 0) {
+        // Session 42: the game's own crosshair (default HIDDEN; BS1 verb name).
+        if (strncmp(args, "on", 2) == 0) {
+            g_reticleHidden.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vrxhair on (game reticle re-enabled)");
+        } else if (strncmp(args, "off", 3) == 0) {
+            g_reticleHidden.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vrxhair off (game reticle hidden)");
+        } else {
+            BVR_LOG("[b2r] vrxhair status: %s applied=%d names=%s "
+                    "(vrxhair on|off|status)",
+                    g_reticleHidden.load(std::memory_order_relaxed) ? "HIDDEN" : "shown",
+                    g_reticleApplied,
+                    g_reticleNamesFailed      ? "FAILED"
+                    : g_reticleNamesResolved  ? "resolved"
+                                              : "pending");
+        }
     } else if (strcmp(cmd, "vrpace") == 0) {
         // Session 33 audit, same class of gap as vrinput was: core owns the M8
         // stall guard and BS1 dispatches to it; b2r never did, so a fully built
@@ -1162,20 +1226,56 @@ void apply_command(const char* cmd, const char* args) {
         // control surface it could not be toggled or A/B'd on BS2 at all.
         if (strncmp(args, "fovwatch", 8) == 0) {
             bvr::hud::set_fov_watch(strstr(args, "off") == nullptr);
-        } else if (strncmp(args, "status", 6) == 0) {
+        } else if (strncmp(args, "force on", 8) == 0) {
+            // Session 42: without force the redirect only arms under live SR
+            // stereo, so the HUD panel was not flat-testable on BS2 at all.
+            bvr::hud::set_force(true);
+            BVR_LOG("[b2r] command: vrhud force on");
+        } else if (strncmp(args, "force off", 9) == 0) {
+            bvr::hud::set_force(false);
+            BVR_LOG("[b2r] command: vrhud force off");
+        } else if (strncmp(args, "on", 2) == 0) {
+            bvr::hud::set_enabled(true);
+            BVR_LOG("[b2r] command: vrhud on");
+        } else if (strncmp(args, "off", 3) == 0) {
+            bvr::hud::set_enabled(false);
+            BVR_LOG("[b2r] command: vrhud off");
+        } else {
+            unsigned hd = 0, rd = 0, lk = 0, iv = 0;
+            bvr::hud::get_counters(&hd, &rd, &lk, &iv);
+            unsigned lbT = 0, lbB = 0;
+            bool lb = bvr::hud::letterbox(&lbT, &lbB);
+            BVR_LOG("[b2r] hud status: %s force=%d | hudDraws=%u redirects=%u "
+                    "leaks=%u hudIntervals=%u | postFx=%u screenOnly=%d "
+                    "letterbox=%d(%u/%u) (vrhud on|off|force on|force off|status)",
+                    bvr::hud::enabled() ? "ON" : "off", bvr::hud::force() ? 1 : 0,
+                    hd, rd, lk, iv, bvr::hud::postfx_count(),
+                    bvr::hud::screen_only() ? 1 : 0, lb ? 1 : 0, lbT, lbB);
+            // Per-reason routing breakdown (BS1 session-30 shape): pass/STRANDED
+            // per verdict reason, plus the classifier-health numbers.
+            bvr::hud::RouteStats rs{};
+            bvr::hud::get_route_stats(&rs);
+            char buf[320];
+            int n = 0;
+            for (int i = 0; i < bvr::hud::kRoutePassCount && n >= 0 && n < 300; ++i) {
+                if (!rs.pass[i] && !rs.stranded[i]) continue;
+                n += _snprintf_s(buf + n, sizeof buf - n, _TRUNCATE, "%s=%u/%u ",
+                                 bvr::hud::route_reason_name(i), rs.pass[i],
+                                 rs.stranded[i]);
+            }
+            BVR_LOG("[b2r] hud routes (pass/STRANDED): %s| postFxRejected=%u "
+                    "effectsInFrame=%u effectsOverBound=%u square=%d",
+                    n > 0 ? buf : "(none) ", rs.postFxRejected, rs.effectsInFrame,
+                    rs.effectsRejected, rs.squareTarget ? 1 : 0);
+            // BS2-only diagnostics (pre-session-42 status line, kept).
             unsigned bw = 0, bh = 0;
             bvr::hud::backbuffer_dims(&bw, &bh);
-            BVR_LOG("[b2r] vrhud status: backbuffer %ux%u screenOnly=%d letterbox=%d "
-                    "cineHold=%d lenses=%d vpRatio=%.4f rayOffset=%d",
-                    bw, bh, bvr::hud::screen_only() ? 1 : 0,
-                    bvr::hud::letterbox(nullptr, nullptr) ? 1 : 0,
-                    bvr::hud::cinematic_hold() ? 1 : 0, bvr::hud::fov_lens_count(),
-                    bvr::hud::fov_vp_ratio(), bvr::hud::ray_block_offset());
-            BVR_LOG("[b2r] vrhud status: fovWatch=%s",
+            BVR_LOG("[b2r] hud status: backbuffer %ux%u cineHold=%d lenses=%d "
+                    "vpRatio=%.4f rayOffset=%d fovWatch=%s",
+                    bw, bh, bvr::hud::cinematic_hold() ? 1 : 0,
+                    bvr::hud::fov_lens_count(), bvr::hud::fov_vp_ratio(),
+                    bvr::hud::ray_block_offset(),
                     bvr::hud::fov_watch_enabled() ? "on" : "OFF");
-        } else {
-            bvr::hud::set_enabled(strncmp(args, "off", 3) != 0);
-            BVR_LOG("[b2r] command: vrhud %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
         }
     } else if (strcmp(cmd, "vrpreset") == 0) {
         if (strncmp(args, "save", 4) == 0) save_vr_preset();
@@ -1286,6 +1386,26 @@ void save_vr_preset() {
     fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
     fprintf(f, "ammoMod=%d\n", static_cast<int>(bvr::input::ammo_mod()));
+    // Session 42: the crosshair choice survives a relaunch (BS1 key name).
+    fprintf(f, "crosshairVisible=%d\n",
+            g_reticleHidden.load(std::memory_order_relaxed) ? 0 : 1);
+    // Session 42: cinematic/classifier levers (BS1 parity; bar_verts is NOT
+    // persisted - it is a per-game patterns constant, never a tunable).
+    fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
+    fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
+    fprintf(f, "cineSubsInFrame=%d\n", bvr::hud::cine_subs_in_frame() ? 1 : 0);
+    fprintf(f, "effectsInFrame=%d\n", bvr::hud::effects_in_frame() ? 1 : 0);
+    fprintf(f, "effectMaxVerts=%u\n", bvr::hud::effect_max_verts());
+    fprintf(f, "postFxRtOnly=%d\n", bvr::hud::postfx_rt_only() ? 1 : 0);
+    // Session 42: HUD quad placement (F10 sliders live in core; the values are
+    // eye-judged so losing them on relaunch would mean re-tuning every session).
+    {
+        float hd = 0, hw = 0, hu = 0;
+        bvr::vr::get_hud_quad(&hd, &hw, &hu);
+        fprintf(f, "hudQuadDistM=%.2f\n", hd);
+        fprintf(f, "hudQuadWidthM=%.2f\n", hw);
+        fprintf(f, "hudQuadUpM=%.2f\n", hu);
+    }
     fclose(f);
     BVR_LOG("[b2r] VR preset values saved to %ls", path);
     // One save button covers everything (BS1 parity): the per-weapon profiles
@@ -1314,6 +1434,10 @@ void load_vr_preset_values() {
                         {aim::pos_fwd_cm(1), aim::pos_right_cm(1), aim::pos_up_cm(1)}};
     float wOff[3] = {bones::weapon_off_fwd_cm(), bones::weapon_off_right_cm(),
                      bones::weapon_off_up_cm()};
+    // Session 42: HUD quad placement is a coupled set (dist/width/up) - staged
+    // and applied together after the parse, behind the same guard BS1 uses.
+    float hudD = 0, hudW = 0, hudU = 0;
+    bvr::vr::get_hud_quad(&hudD, &hudW, &hudU);
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char key[64] = {};
@@ -1396,6 +1520,28 @@ void load_vr_preset_values() {
             bvr::input::set_snap_angle_deg(v);
         else if (strcmp(key, "ammoMod") == 0 && v >= 0.0f && v <= 2.0f)
             bvr::input::set_ammo_mod(static_cast<bvr::input::AmmoMod>(static_cast<int>(v)));
+        else if (strcmp(key, "hudQuadDistM") == 0)
+            hudD = v;
+        else if (strcmp(key, "hudQuadWidthM") == 0)
+            hudW = v;
+        else if (strcmp(key, "hudQuadUpM") == 0)
+            hudU = v;
+        else if (strcmp(key, "crosshairVisible") == 0)
+            g_reticleHidden.store(v == 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "cineBarsHidden") == 0)
+            bvr::hud::set_bars_hidden(v != 0.0f);
+        else if (strcmp(key, "cineDrive") == 0) {
+            int m = static_cast<int>(v);
+            if (m >= 0 && m <= 2)
+                bvr::vr::set_cine_drive(static_cast<bvr::vr::CineDrive>(m));
+        } else if (strcmp(key, "cineSubsInFrame") == 0)
+            bvr::hud::set_cine_subs_in_frame(v != 0.0f);
+        else if (strcmp(key, "effectsInFrame") == 0)
+            bvr::hud::set_effects_in_frame(v != 0.0f);
+        else if (strcmp(key, "effectMaxVerts") == 0 && v >= 3.0f)
+            bvr::hud::set_effect_max_verts(static_cast<unsigned>(v));
+        else if (strcmp(key, "postFxRtOnly") == 0)
+            bvr::hud::set_postfx_rt_only(v != 0.0f);
         else
             --n;
     }
@@ -1408,6 +1554,7 @@ void load_vr_preset_values() {
         aim::set_pos(h, aPos[h][0], aPos[h][1], aPos[h][2]);
     }
     bones::set_weapon_offset(wOff[0], wOff[1], wOff[2]);
+    if (hudD > 0.0f && hudW > 0.0f) bvr::vr::set_hud_quad(hudD, hudW, hudU);
     if (n) BVR_LOG("[b2r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
@@ -1431,6 +1578,66 @@ void apply_vr_preset() {
             g_headOffFwdUu.load(std::memory_order_relaxed),
             g_ipdMm.load(std::memory_order_relaxed),
             g_fgFovMatch.load(std::memory_order_relaxed) ? "on" : "off");
+}
+
+// SEH-isolated engine dispatch (house pattern: no C++ objects in the frame):
+// resolve the named function on the pawn through the engine's own
+// FindFunctionChecked, then dispatch it through the engine's own ProcessEvent.
+// 0 = dispatched, 1 = fault, 2 = resolve returned null (retry later).
+int seh_reticle_call(void* pawn, uint32_t nameIdx) {
+    __try {
+        void* fn = g_originalFF(pawn, nullptr, nameIdx, 0, 0);
+        if (!fn) return 2;
+        uint8_t parms[16] = {};
+        g_originalPE(pawn, nullptr, fn, parms, nullptr);
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 1;
+    }
+}
+
+// Session 42: push the wanted reticle state at the live ShockPlayer pawn.
+// Runs on the maintenance tick (game thread, outside hooked calls). Change
+// asserts immediately; hidden re-asserts every 5 s (a level load spawns a
+// fresh pawn carrying the class default). Fail-soft: one fault or a failed
+// name lookup latches the lane off for the run.
+void assert_reticle(uint64_t now) {
+    if (g_reticleNamesFailed || !g_originalFF || !g_originalPE) return;
+    bool wantHidden = g_reticleHidden.load(std::memory_order_relaxed);
+    int want = wantHidden ? 1 : 0;
+    bool changed = want != g_reticleApplied;
+    if (!changed && !(wantHidden && now - g_reticleAssertMs >= 5000)) return;
+    void* pawn = g_lastViewActor.load(std::memory_order_relaxed);
+    if (!pawn || !is_gameplay_view_rva(g_lastVtblRva.load(std::memory_order_relaxed)))
+        return; // menu/cutscene shapes draw no reticle; retried in gameplay
+    if (!bvr::pattern_scan::is_memory_valid(pawn, 0x40)) return;
+    if (!g_reticleNamesResolved) {
+        // One-time GNames reverse lookup (bounded linear scan, cached).
+        if (!patterns::fname_find("DisableReticle", &g_reticleNameIdx[0]) ||
+            !patterns::fname_find("EnableReticle", &g_reticleNameIdx[1])) {
+            g_reticleNamesFailed = true;
+            BVR_LOG("[b2r] reticle: GNames lookup FAILED - vrxhair inert this run");
+            return;
+        }
+        g_reticleNamesResolved = true;
+        BVR_LOG("[b2r] reticle: names resolved (DisableReticle idx %u, "
+                "EnableReticle idx %u)",
+                g_reticleNameIdx[0], g_reticleNameIdx[1]);
+    }
+    int r = seh_reticle_call(pawn, g_reticleNameIdx[wantHidden ? 0 : 1]);
+    if (r == 1) {
+        g_reticleNamesFailed = true;
+        BVR_LOG("[b2r] reticle: FAULT during the %s dispatch - lane disabled",
+                wantHidden ? "DisableReticle" : "EnableReticle");
+        return;
+    }
+    if (r == 2) return;
+    g_reticleAssertMs = now;
+    g_reticleApplied = want;
+    if (changed)
+        BVR_LOG("[b2r] reticle: %s (ShockPlayer.%s via the engine's ProcessEvent)",
+                wantHidden ? "HIDDEN" : "shown",
+                wantHidden ? "DisableReticle" : "EnableReticle");
 }
 
 void poll_command_file(uint64_t now) {
@@ -1549,8 +1756,19 @@ void calcview_tail(void* self, CalcViewParams* p) {
             // and to drop the bone rig's cached pointers (session 39).
             patterns::hfov_scan_rearm("view state change");
             bones::on_world_change("view state change");
+            g_reticleApplied = -1; // session 42: fresh pawn = re-assert reticle
         }
     }
+
+    // Session 42 (BS1 s29 shape): the cinematic drive policy (vrcine drive
+    // off|authored|authored+look). cineHold MUST be cinematic_hold(), never
+    // letterbox(): with the bars hidden (the default) there are no black
+    // pixels left to detect, so a letterbox()-keyed suspend can never fire
+    // during a bars-type cutscene - exactly when it matters.
+    bool cineHold = bvr::hud::cinematic_hold();
+    bvr::vr::CineDrive cineMode = bvr::vr::cine_drive();
+    bool cineSuspend = cineHold && cineMode == bvr::vr::CineDrive::Authored;
+    bool cineLook = cineHold && cineMode == bvr::vr::CineDrive::AuthoredLook;
 
     // M3: drive the camera from the HMD pose. Pitch/roll are absolute (head
     // owns them); yaw is additive on the game's yaw so stick/mouse turning
@@ -1582,11 +1800,13 @@ void calcview_tail(void* self, CalcViewParams* p) {
         hp.qz = q[2];
         hp.qw = q[3];
         driveHead = true; // sim lane stays ungated for flat tests
-    } else if (strictGameplay && !bvr::vr::cinematic_active() &&
-               !bvr::hud::letterbox(nullptr, nullptr) && bvr::vr::vr_camera_mode() &&
-               bvr::vr::get_head_pose(hp)) {
+    } else if (strictGameplay && !bvr::vr::cinematic_active() && !cineSuspend &&
+               bvr::vr::vr_camera_mode() && bvr::vr::get_head_pose(hp)) {
         // Live lane gated exactly like BS1: the HMD must not steer scripted
-        // or menu cameras (their content lands on the quad screen).
+        // or menu cameras (their content lands on the quad screen). Session
+        // 42: the cine gate is cineSuspend (drive=authored under a live
+        // cinematic_hold), replacing the dead letterbox() predicate; drive=
+        // off drives straight through, authored+look adds deltas below.
         driveHead = true;
     }
     if (driveHead) {
@@ -1612,6 +1832,51 @@ void calcview_tail(void* self, CalcViewParams* p) {
             }
         }
 
+        if (cineLook) {
+            // Session 42 (BS1 s29 authored+look): the head adds a rotation
+            // DELTA on top of the authored camera and NOTHING else - the
+            // normal branch below writes pitch/roll absolutely, which would
+            // erase the authored choreography. The reference is the head
+            // orientation when the shot began (dropped on both cine edges,
+            // so every shot opens framed exactly as authored). No positional
+            // term at all: the camera can never be dollied out of the shot.
+            // The residual stays 0 and the pitch error publishes 0 - the
+            // look must never reach the pawn or steer the pitch servo.
+            int32_t hpU = static_cast<int32_t>(lroundf(a.pitchRad * kRotUnitsPerRadian));
+            int32_t hyU = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
+            int32_t hrU = static_cast<int32_t>(lroundf(a.rollRad * kRotUnitsPerRadian));
+            if (!g_cineLookValid) {
+                g_cineLookPitch = hpU;
+                g_cineLookYaw = hyU;
+                g_cineLookRoll = hrU;
+                g_cineLookValid = true;
+                BVR_LOG("[b2r] authored+look reference captured (head pitch %.1f "
+                        "yaw %.1f roll %.1f deg) - the shot starts unmodified",
+                        a.pitchRad * kRadToDeg, a.yawRad * kRadToDeg,
+                        a.rollRad * kRadToDeg);
+            }
+            rot->pitch += wrap_rot(hpU - g_cineLookPitch);
+            rot->yaw += wrap_rot(hyU - g_cineLookYaw);
+            rot->roll += wrap_rot(hrU - g_cineLookRoll);
+            g_enginePitchUnits = rot->pitch;
+            g_pitchErrDeg = 0.0f;
+            bvr::input::publish_pitch_error(0.0f);
+            fc.baseX = loc->x;
+            fc.baseY = loc->y;
+            fc.baseZ = loc->z;
+            fc.driveYawOffsetRad = 0.0f;
+            fc.recenterYawRad = recenter_yaw_rad();
+            fc.recenterPx = g_recenterPose.px;
+            fc.recenterPy = g_recenterPose.py;
+            fc.recenterPz = g_recenterPose.pz;
+            fc.vrDriving = true;
+            fc.camX = loc->x;
+            fc.camY = loc->y;
+            fc.camZ = loc->z;
+            fc.camPitch = rot->pitch;
+            fc.camYaw = rot->yaw;
+            fc.camRoll = rot->roll;
+        } else {
         // Integer all the way through (see BS1's invariant note): the
         // head-look residual is the ONLY thing added to the game's own yaw.
         int32_t gameYawUnits = rot->yaw;
@@ -1702,7 +1967,11 @@ void calcview_tail(void* self, CalcViewParams* p) {
         fc.camPitch = rot->pitch;
         fc.camYaw = rot->yaw;
         fc.camRoll = rot->roll;
+        } // end of the normal (non-cineLook) drive branch
 
+        // Common to both branches: the eye offsets still apply, so an
+        // authored+look cinematic stays STEREO (they ride the authored
+        // camera; under SR stereo eyeSign is 0 here and pass 2 applies them).
         int eyeSign = scenedraw::stereo_active() ? 0 : bvr::vr::current_eye_sign();
         if (eyeSign != 0) {
             apply_eye_offset(loc, *rot, eyeSign);
@@ -1737,6 +2006,30 @@ void calcview_tail(void* self, CalcViewParams* p) {
         g_enginePitchUnits = rot->pitch;
         g_pitchErrDeg = 0.0f;
     }
+    // Session 42: cinematic edge instrument (BS1 s29 shape) - LOG ONLY. The
+    // s29 hang lesson: NO bone writes from a cine edge; hands.cpp releases at
+    // its own gate, after the world-change detection, the only safe place.
+    {
+        static bool s_lastCineHold = false; // game thread only
+        if (cineHold != s_lastCineHold) {
+            s_lastCineHold = cineHold;
+            unsigned lbT = 0, lbB = 0;
+            bool lb = bvr::hud::letterbox(&lbT, &lbB);
+            BVR_LOG("[b2r] cine edge %s (barDraw=%d letterbox=%d cineQuad=%d "
+                    "drive=%s) | vrDriving=%d strict=%d",
+                    cineHold ? "ENTER" : "EXIT",
+                    bvr::hud::bar_draw_active() ? 1 : 0, lb ? 1 : 0,
+                    bvr::vr::cinematic_active() ? 1 : 0,
+                    cineMode == bvr::vr::CineDrive::Off        ? "off"
+                    : cineMode == bvr::vr::CineDrive::Authored ? "authored"
+                                                               : "authored+look",
+                    vrDrove ? 1 : 0, strictGameplay ? 1 : 0);
+            // Both edges drop the look reference so the next shot opens
+            // framed as authored rather than wherever this one ended.
+            g_cineLookValid = false;
+        }
+    }
+
     // Stick-pitch-kill gate for the core input bridge, same funnel BS1 feeds.
     bvr::input::publish_vr_gameplay(vrDrove && strictGameplay);
     // The aim seam's frame (pass 1 only by construction - pass 2 routes through
@@ -1993,6 +2286,7 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
             if ((s_pollGate & 0x3F) == 0) {
                 restore_game_fov_if_stale(400);
                 aim::poll_tick(GetTickCount64()); // 1 Hz probe summary while armed
+                assert_reticle(GetTickCount64()); // session 42: crosshair state
                 // Overlay-posted vrstereo request: hook installs must never
                 // run mid-Draw or from the render thread; this lane is the
                 // game thread outside hooked calls. Also the MENU-arming
@@ -2172,6 +2466,13 @@ bool calcview_silent(uint64_t maxAgeMs) {
     if (g_lastCalcViewMs == 0) return true;
     uint64_t now = GetTickCount64();
     return now - g_lastCalcViewMs > maxAgeMs;
+}
+
+bool last_strict_gameplay() {
+    // Session 42 (menukey gate leg 2): menus that still tick CalcView do it on
+    // the AShockPlayerController "menu shape" view-actor vtable, so the last
+    // observed vtable RVA is a menu-context signal calcview_silent misses.
+    return is_gameplay_view_rva(g_lastVtblRva.load(std::memory_order_relaxed));
 }
 
 void draw_debug_ui() {
@@ -2479,6 +2780,12 @@ void draw_debug_ui() {
         if (ImGui::Button("VR camera OFF")) bvr::vr::set_camera_mode(false);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
+        {
+            // Session 42 (user ask): the game's own crosshair, default hidden.
+            bool xhair = !g_reticleHidden.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Game crosshair (default hidden in VR)", &xhair))
+                g_reticleHidden.store(!xhair, std::memory_order_relaxed);
+        }
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);

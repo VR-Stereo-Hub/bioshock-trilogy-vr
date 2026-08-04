@@ -360,6 +360,11 @@ constexpr uint32_t kFNameEntryTextOffset = 0x10; // UTF-16 text in place
 // anything failed. Game thread only.
 bool fname_text(uint32_t index, char* out, size_t outCap);
 
+// Session 42: the REVERSE lookup (exact text -> index), for calling script
+// functions by name through the engine's own FindFunctionChecked +
+// ProcessEvent. Linear over the live table - callers cache the index.
+bool fname_find(const char* text, uint32_t* outIndex);
+
 // UObject-identity DERIVATION probe (session 41, log-only): dumps a live
 // object's header dwords, every +0x20..0x3C int32 that resolves through
 // GNames (the object's own FName index candidate) and every +0x24..0x44
