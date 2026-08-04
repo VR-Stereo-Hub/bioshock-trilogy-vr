@@ -59,6 +59,12 @@ bool stereo_active();
 // run ONLY the replay (second_pass_replay) - none of its normal body.
 bool second_pass_for_current_thread(float* yawDegOut);
 
+// Side-effect-free variant for observers (bones' absorb-repaint): true while
+// the current thread is inside the second Draw. Unlike the consumer above it
+// increments nothing, so it can be polled without disturbing the pass-2
+// dispatch accounting.
+bool in_second_draw();
+
 // One-toggle "VR stereo" request: posts the on/off intent; the game thread
 // applies camera mode + stereo outside any hooked call (the overlay checkbox
 // draws on the render thread and must never install hooks itself).

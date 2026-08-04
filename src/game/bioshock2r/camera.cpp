@@ -1272,12 +1272,18 @@ void save_vr_preset() {
     fprintf(f, "dotDistM=%.2f\n", aim::dot_dist_m());
     fprintf(f, "armsMode=%d\n", bones::arms_mode());
     fprintf(f, "scaleWeapon=%d\n", bones::scale_attach() ? 1 : 0);
+    fprintf(f, "animMode=%d\n", bones::anim_mode() ? 1 : 0);
+    fprintf(f, "animTrans=%.2f\n", bones::anim_trans());
+    fprintf(f, "wScale=%.3f\n", bones::weapon_scale());
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
     fprintf(f, "ammoMod=%d\n", static_cast<int>(bvr::input::ammo_mod()));
     fclose(f);
     BVR_LOG("[b2r] VR preset values saved to %ls", path);
+    // One save button covers everything (BS1 parity): the per-weapon profiles
+    // ride the same press.
+    aim::save_weapon_profiles();
 }
 
 void load_vr_preset_values() {
@@ -1353,6 +1359,12 @@ void load_vr_preset_values() {
             bones::set_arms_mode(static_cast<int>(v));
         else if (strcmp(key, "scaleWeapon") == 0)
             bones::set_scale_attach(v != 0.0f);
+        else if (strcmp(key, "animMode") == 0)
+            bones::set_anim_mode(v != 0.0f);
+        else if (strcmp(key, "animTrans") == 0)
+            bones::set_anim_trans(v);
+        else if (strcmp(key, "wScale") == 0)
+            bones::set_weapon_scale(v);
         else if (strcmp(key, "turnScale") == 0 && v > 0.0f)
             bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapOn") == 0)
@@ -2099,6 +2111,19 @@ bool install(const patterns::Symbols& symbols) {
     }
 
     load_vr_preset_values(); // tuned sliders, before anything reads them
+    // Session 41, the profile ordering contract (BS1 camera.cpp:934-936
+    // parity): the just-loaded preset values become the per-weapon BASELINE -
+    // this is also what un-idles the profile resolver (seeding rule (a): no
+    // profile may exist before a value source does). aim::init later loads
+    // weapons.ini OVER this ordering-safely; the active profile always beats
+    // the baseline via reapply (no-op at boot, key is empty).
+    aim::note_preset_baseline();
+    aim::reapply_weapon_profile();
+    // Session 41 (user ask): the pad must work WITHOUT pressing APPLY PRESET.
+    // BS2-local default-ON - core's shared enabled flag keeps its false
+    // default so no BS1 path changes; `vrinput off` still disarms, and the
+    // drive itself arms lazily on the pump lane once a viewport exists.
+    bvr::input::handle_command("on");
     g_peTarget = symbols.processEvent;
     g_hookLive.store(true, std::memory_order_relaxed);
     BVR_LOG("[b2r] calcview seam installed (ProcessEvent %p + FindFunctionChecked %p)",
@@ -2170,6 +2195,22 @@ void draw_debug_ui() {
                 pitch / kRotUnitsPerDegree, yaw / kRotUnitsPerDegree,
                 roll / kRotUnitsPerDegree);
 
+    // ---- PRESET: always visible, at the TOP (session 41, user's round-2
+    // ask - buried at a section bottom these read as sub-options). One
+    // obvious place: APPLY arms the whole VR stack, SAVE persists every
+    // tuned value on this panel (camera, lens, hands, aim, arms, input).
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.0f),
+                       "PRESET - applies / saves ALL settings and values");
+    // Engine-state arming must run on the game thread, outside hooked
+    // calls - posted to the poller lane, never applied here.
+    if (ImGui::Button("APPLY PRESET (stereo + camera + INPUT)"))
+        g_vrPresetPending.store(1, std::memory_order_relaxed);
+    ImGui::SameLine();
+    if (ImGui::Button("SAVE all settings (survives a relaunch)"))
+        save_vr_preset();
+    ImGui::Separator();
+
     // ---- VIEWMODEL LENS: the thing currently under test -------------------
     // FIRST and open by default, because this is driven IN THE HEADSET. The
     // overlay renders into the game's backbuffer, which IS the eye image, so
@@ -2228,8 +2269,6 @@ void draw_debug_ui() {
                 ImGui::TextDisabled("(lenses=1 is a hint, not proof - the dump is "
                                     "the evidence)");
         }
-        if (ImGui::Button("Save these settings (survives a relaunch)"))
-            save_vr_preset();
     }
 
     // ---- FILL THE VIEW: the black bands, with the measurement on screen -----
@@ -2287,9 +2326,6 @@ void draw_debug_ui() {
             "At a wide FOV the helmet's porthole ring surrounds the view and "
             "takes most of it. Untick to put it back - it costs you the "
             "periphery, but it is the authored look.");
-
-        if (ImGui::Button("Save these settings (survives a relaunch)##fillview"))
-            save_vr_preset();
     }
 
     // ---- RENDER RESOLUTION (session 37): the sharpness lever ----------------
@@ -2437,6 +2473,12 @@ void draw_debug_ui() {
     // anything touching engine state goes through a pending lane.
     if (ImGui::CollapsingHeader("HANDS + AIM (per hand)  <-- CALIBRATE HERE",
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Session 41: right-hand slider edits land in THIS weapon's profile
+        // and auto-swap on weapon change (left hand stays global, user's
+        // call).
+        char wkey[48];
+        aim::weapon_key_ui(wkey, sizeof wkey);
+        ImGui::Text("weapon profile: %s", wkey);
         static int tuneHand = 1; // start on the weapon hand
         ImGui::RadioButton("L (plasmid)", &tuneHand, 0);
         ImGui::SameLine();
@@ -2468,11 +2510,20 @@ void draw_debug_ui() {
             bones::set_scale(0, sc);
             bones::set_scale(1, sc);
         }
+        // Session 41: the uniform weapon scale drives the HOLDABLE's own
+        // skeleton, so body AND ammo canister scale together (per weapon,
+        // saved in this weapon's profile). 1.0 = authored, fully hands-off.
+        float ws = bones::weapon_scale();
+        if (ImGui::SliderFloat("WEAPON scale (uniform, per weapon)", &ws, 0.3f, 2.5f))
+            bones::set_weapon_scale(ws);
         // Some weapon attachments inverse-decompose the pivot bone's scale
         // (the rifle's ammo drum GROWS as the hand shrinks - BS1 session-30
-        // class). Off = hands scale, weapon keeps its authored size.
+        // class). Off = hands scale, weapon keeps its authored size. Kept as
+        // the FALLBACK to the uniform slider above; default OFF since s41.
         bool sw = bones::scale_attach();
-        if (ImGui::Checkbox("scale the WEAPON too (off if parts grow)", &sw))
+        if (ImGui::Checkbox("fallback: scale weapon via hand pivot (parts may "
+                            "grow)",
+                            &sw))
             bones::set_scale_attach(sw);
 
         ImGui::Separator();
@@ -2507,13 +2558,14 @@ void draw_debug_ui() {
         if (ImGui::RadioButton("game (frozen)", &arms, 0)) bones::set_arms_mode(0);
 
         ImGui::Separator();
-        if (ImGui::Button("Save these settings (survives a relaunch)##hands"))
-            save_vr_preset();
-        ImGui::SameLine();
-        // Engine-state arming must run on the game thread, outside hooked
-        // calls - posted to the poller lane, never applied here.
-        if (ImGui::Button("APPLY PRESET (stereo + camera + INPUT)"))
-            g_vrPresetPending.store(1, std::memory_order_relaxed);
+        bool anim = bones::anim_mode();
+        if (ImGui::Checkbox("engine animations on driven hands (melee/reload)", &anim))
+            bones::set_anim_mode(anim);
+        if (anim) {
+            float at = bones::anim_trans();
+            if (ImGui::SliderFloat("anim wrist travel (0 = glued)", &at, 0.0f, 1.0f))
+                bones::set_anim_trans(at);
+        }
     }
 
     if (ImGui::CollapsingHeader("Camera debug")) {

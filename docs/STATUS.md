@@ -2,7 +2,122 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Current state (2026-08-04, session 40 - BS2 PLAYS ON THE CONTROLLER; the hands are split and the ~90 deg misalignment is FIXED - branch `claude/bs2-controller-input-decoupling-d7cc14`)
+## Current state (2026-08-04, session 41 - THE HOLDABLE LANE + THE ANIMATION-PRESERVING DRIVE, all flat-green - branch `claude/bioshock2-holdable-polish-7cbec4`, merged to `bioshock-2`)
+
+### The headline: every round-2 defect has a shipped, flat-verified fix
+
+Session 40's round-2 list is fully addressed in code and measured across two sim boots
+at the user's save (vrstereo on throughout). What remains is the in-headset acceptance.
+
+### 1. The animation-preserving drive (the flicker AND the missing animations, one root)
+
+The rigid drive REPLACED driven bones every frame; engine restamps that survived were
+the left-eye flicker, and bones where our writes always won had no animation at all.
+Now the drive ADOPTS the engine's freshly-evaluated pose per bone (32-byte trans+quat
+only, and ONLY when the bank stopped being our own last write - the feedback filter)
+and composes the controller frame on top: `q = qtc * animQ`. Restamps became input.
+The design review caught a real bug before it shipped: the engine never restamps
+SCALE, so adopting all 48 bytes would compound `g_scale` geometrically - the scale
+channel is pinned to the captured reference, structurally. The per-PE repaint is now
+absorb-then-recompose (pass 1 only; pass 2 verbatim - both eyes render one frame).
+`vrhands anim on|off` (default ON; off = the rigid session-40 drive, also the idle-sway
+escape hatch), `animtrans 0..1` re-adds authored wrist travel (default 0, glued).
+
+Flat: adoption live at ~7 absorbs/drive/hand; drill-region motion during a trigger
+pulse that no rest pair shows; scale-flick captures decay to ambient with NO
+pose-alternation outliers; write-loc 100 UU/m EXACT; per-hand decoupling exact;
+anim-off composition bitwise-stable. INSTRUMENT CORRECTION banked: `vrbones axes`
+'cur' RACES the restamp war (79 deg between same-pose samples) - the new race-free
+`written q / anim q` line is the acceptance read.
+
+### 2. The holdable lane - one derivation, two user asks (all constants fresh)
+
+- **UObject identity**: name FName +0x28, UClass +0x30, UClass vtable RVA
+  **0x11E71F8** (stable across PlayerHands/PlayerMachineGun/PlayerGrenadeLauncher);
+  `patterns::object_class_name` with the full validation chain.
+- **Hands.CurrentHoldable = hands+0x4B4**, derived TWICE (seam-anchored find: the
+  fired weapon at exactly one slot, two weapons; switch-diff: the same slot swapping
+  class objects). BS1's 0x45C did not transfer - the never-copy rule held.
+- **The weapon's OWN SkeletonInstance = holdable+0x430** (vtable + owner backpointer,
+  one hit; rivet gun 19 bones, grenade launcher 13).
+- **Uniform weapon scale** (`vrhands wscale`, F10 slider, per-weapon profile field):
+  drives the weapon's own pose bank - scale channels AND translations about the
+  component origin. THE CANISTER REPRO INVERTED: at 0.5 the whole rivet gun halves,
+  furnace/canister proportional (session 40: ballooned ~4x); at 2.0 uniform growth;
+  1.0 = authored restored + fully hands-off. Weapon animations keep playing while
+  scaled (adoption on the weapon bank too). `scaleweapon` (pivot-63) kept as
+  fallback, default OFF.
+- **Per-weapon profiles** (BS1 session-21 shape, all four seeding rules): RIGHT hand
+  (aim trim/pos + model trim/offset/scale) + wScale per weapon, keyed by class name,
+  auto-swap on the rig's live holdable, weapons.ini persistence. USER DECISION: the
+  left/plasmid hand stays GLOBAL (per-plasmid keys are a future session). Flat:
+  pre-fire keying ('PlayerRivetGun' applied the moment the rig resolved), edits stash
+  on switch and restore on switch-back with NO leak into new profiles (they seed from
+  the captured preset baseline), 2 profiles / 26 values round-tripped a relaunch.
+
+### 3. Round-2 polish, all landed
+
+- **Arms-hide web FIXED**: hidden arm bones now collapse ONTO the driven wrist
+  (position = wrist target, zero scale) - the skinning blend degenerates to a point.
+- **F10**: always-visible PRESET section at the TOP - "applies / saves ALL settings
+  and values" - APPLY + SAVE in one obvious place; buried duplicates removed; new
+  anim checkbox/slider, WEAPON scale slider, live "weapon profile: <key>" readout.
+- **vrinput default-ON** (BS2-local call in camera::install): the pad drives at boot
+  with no command - proven this session pre-command at 90/s. Core default untouched.
+- **Per-hand aimRayMaxDevDegL/R** in the sim compositor (nearest-ray assignment):
+  dual-beam acceptance reads **L 0.0000 / R 0.0000** at the save (legacy field kept
+  for old baselines; a tuned aim trim reads as exactly the trim).
+- **Preset**: 43 values round-trip (was 22) - animMode/animTrans/wScale/scaleWeapon
+  added; boot order load -> baseline capture -> weapons.ini proven in-log.
+
+### Regression guards: all intact (session-41 numbers)
+
+11 compositor layers dual-beam; sr eyes 6.30 UU exact; wait2/s=0, guardskips 0; input
+drive 58-92 UpdateInput/s; teardown 478/463 ms with ZERO dumps across both closes;
+`vrhands offset` verb still whole-token. BS1 untouched (BS2-local code only; the one
+sim-tool change is additive JSON fields).
+
+### USER CHECKLIST (in-headset, the session-41 acceptance)
+
+Load the save, headset on - everything arms itself (vrinput is ON at boot now; APPLY
+PRESET is at the TOP of F10 with SAVE next to it).
+
+1. **Weapon animations**: drill melee-hit should PLAY on the driven hand now; reload
+   and grip animations too. Idle breathing/sway is BACK by design - if it bothers
+   you, F10 "engine animations on driven hands" OFF is the old rigid feel; say which
+   you prefer.
+2. **The left-eye flicker**: flick the model scale slider (the old trigger) - the
+   flicker should be gone. If any survives, say when it happens.
+3. **Arms hide**: the stretchy web from the wrist should be gone (arms radio "hide").
+   Follow stays the default.
+4. **WEAPON scale (uniform)**: the new "WEAPON scale" slider shrinks the whole gun -
+   ammo canister included, nothing should balloon. Tune per weapon; it saves into
+   that weapon's profile.
+5. **Per-weapon tuning**: aim/model sliders (R hand) now save PER WEAPON and swap
+   automatically when you switch weapons - the panel shows "weapon profile:
+   PlayerRivetGun" etc. Tune a couple of weapons, switch back and forth, press SAVE.
+6. Known: plasmid-hand tuning is still global; pad A still does not activate menu
+   items (Enter does); no projectile plasmid yet.
+
+## Next steps (session 42)
+
+1. **In-headset acceptance** of the session-41 list above (animations, flicker, hide,
+   uniform scale, per-weapon profiles, sway preference).
+2. **Plasmid item names**: hunt the ContentBaked/pc package string tables (the exe
+   provably has only Telekinesis' `<X>BasicPlasmid`); verify BY EFFECT via the F12
+   chain; then the ability-seam live check with a projectile plasmid -> left-hand
+   per-PLASMID profiles become derivable.
+3. **Pad-A menu activation** (dpad navigates, A does not activate; Enter does - a
+   BS2-local A->Enter translation in menu state is the cheap candidate).
+4. **The alt-tab pacing wedge** (CORE code shared with BS1 - own careful session;
+   repro banked in ENGINE_NOTES s40).
+5. Standing: BS1 regression testing stays deferred to the END of BS2 development.
+   Core diff to re-check that day: the additive laser/dot slot pair (s40) only -
+   session 41 added nothing to core.
+
+---
+
+## Previous state (2026-08-04, session 40 - BS2 PLAYS ON THE CONTROLLER; the hands are split and the ~90 deg misalignment is FIXED - branch `claude/bs2-controller-input-decoupling-d7cc14`)
 
 ### The headline: the pad drives BS2, both hands are their own, and the model sits where it should
 
@@ -140,7 +255,7 @@ clusters); the ammo canister inversely rides pivot 63's scale; the alt-tab pacin
 reproduced twice with a fresh signature (SUBMISSION IDLE, frame not begun; restart-only
 recovery).
 
-## Next steps (session 41 - the brief lives in the session-log entry below)
+### Next steps (as written end of session 40 - executed by session 41)
 
 1. **The holdable lane** (unblocks TWO user asks): resolve the currently-held weapon
    object off the rig, then (a) its own SkeletonInstance -> uniform weapon scale-down,
@@ -5034,6 +5149,45 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 41 - 2026-08-04 - the holdable lane, the animation-preserving drive, polish flat-green
+
+Branch `claude/bioshock2-holdable-polish-7cbec4` off `bioshock-2` (5f9b0da), merged back.
+Every round-2 defect addressed in code and flat-verified in two sim boots at the save.
+
+- **Retarget drive**: per-bone 32-byte adoption of the engine's evaluated pose (only
+  when the bank stopped being our write; unconditional for bones entering the driven
+  set; other-hand-masked skipped), compose `q = qtc * animQ` - engine animations play
+  in the driven hand's space and restamps become input. The design review caught
+  scale-adoption compounding BEFORE it shipped (the engine never restamps scale; the
+  channel is pinned to g_ref, structurally). Absorb-then-recompose PE repaint (pass 1
+  only; new side-effect-free `scenedraw::in_second_draw()`). `vrhands anim on|off` +
+  `animtrans`. Flat: adoption ~7/drive/hand, drill-region motion on a trigger pulse,
+  scale-flick decays with no alternation, write-loc 100 UU/m exact, anim-off bitwise
+  stable. INSTRUMENT CORRECTION: axes 'cur' races the restamp war - use the new
+  race-free `written q / anim q` line.
+- **Holdable lane, constants all fresh**: UObject identity +0x28/+0x30 with UClass
+  vtable 0x11E71F8 (3 classes stable); Hands.CurrentHoldable = hands+0x4B4 (seam find
+  + switch diff agreeing; BS1's 0x45C did not transfer); weapon SkeletonInstance =
+  holdable+0x430 (two-factor). `object_class_name`, `current_holdable`,
+  oclass/holdscan/wskel derivation probes.
+- **Uniform weapon scale** (`vrhands wscale`): the weapon's OWN pose bank, scale +
+  translations about the component origin - the canister repro INVERTED (0.5 halves
+  the whole rivet gun; 2.0 uniform; 1.0 restores + hands-off); weapon anims keep
+  playing while scaled. scaleweapon fallback default OFF.
+- **Per-weapon profiles** (session-21 rules a-d): RIGHT hand + wScale per weapon
+  (USER DECISION: left stays global until per-plasmid keys exist), pre-fire keying,
+  stash/seed-from-baseline/restore with no edit leak, weapons.ini round-trip (2
+  profiles / 26 values), preset ordering load -> note_preset_baseline -> reapply,
+  save chained. `vraim weapon|wsave|wkey`.
+- **Polish**: arms-hide collapses onto the driven wrist (web fix); F10 top PRESET
+  section (APPLY + SAVE, "applies/saves ALL settings and values", duplicates
+  removed); vrinput default-ON at boot (proven pre-command at 90/s); per-hand
+  aimRayMaxDevDegL/R in the sim (dual-beam L 0.0000 / R 0.0000; legacy field kept).
+- Preset 43 values (was 22). Guards: 11 layers, sr eyes 6.30 exact, wait2/guardskips
+  0, teardown 478/463 ms zero dumps. Core diff: ZERO (sim-tool JSON fields only).
+- Session 42: in-headset acceptance, plasmid names in ContentBaked -> ability seam +
+  per-plasmid left profiles, pad-A activation, the alt-tab wedge (own session).
 
 ### Session 40 - 2026-08-04 - BS2 plays on the controller; hands split; the ~90 deg fixed
 

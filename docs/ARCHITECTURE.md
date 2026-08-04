@@ -1188,3 +1188,31 @@ runtime.
   first. The lane already hosted the command poller for the same reason. It carries a
   re-entrancy latch because UpdateInput dispatches input events that re-enter the detour, and
   a nested command poll could flip `vrinput` or install hooks mid-pump.
+
+### 2026-08-04 (session 41) - BS2: the animation-preserving drive, and profile scope
+
+- **The BS2 bone drive composes on the ENGINE'S OWN evaluated pose, not a frozen
+  reference** (`vrhands anim on`, default). Per driven bone the drive adopts the live
+  bank's translation+quat ONLY when they stopped being our own last write (a bone
+  entering the driven set adopts unconditionally; a bone masked by the other hand never
+  adopts), then composes `q = qtc * animQ`. This is algebraically the "engine delta on
+  top of the controller frame" without forming the delta, and it turns the engine's
+  restamps - previously the left-eye flicker race - into the drive's input. The per-PE
+  repaint became absorb-then-recompose on pass 1 (pass 2 and reapply stay verbatim so
+  both eyes render one frame). THE STRUCTURAL RULE THAT MAKES IT SAFE: **the scale
+  channel is never adopted** - the engine does not restamp scale, so the bank's scale
+  bytes are always ours and a 48-byte adopt would compound `g_scale` geometrically
+  (and could adopt arms-hide's zero). Scale always composes from the captured
+  reference. The rigid session-40 drive remains as `anim off` (also the escape hatch
+  for the returning idle sway, which BS1 deliberately froze; BS2 is not bound).
+- **Uniform weapon scale lives on the WEAPON'S OWN SkeletonInstance** (holdable+0x430),
+  scaling bone scale channels AND translations about the component origin - the AHands
+  pivot-63 scale is inverse-decomposed by attachment math (the session-40 canister
+  proof) and stays only as the `scaleweapon` fallback (default OFF). 1.0 = restore +
+  fully hands-off.
+- **BS2 per-weapon profiles carry the RIGHT hand + weapon scale only** (user decision,
+  session 41): the left/plasmid hand does not change on weapon switches, so storing it
+  per weapon would silently fork its tuning; it stays global in vrpreset until a
+  per-PLASMID key becomes derivable. Everything else is BS1's session-21 shape with
+  fresh constants (holdable hands+0x4B4, UClass vtable 0x11E71F8) and the four seeding
+  rules preserved verbatim.

@@ -12,6 +12,7 @@ namespace {
 // Captured by resolve() so the heap scanner can form vtable addresses for
 // this session's ASLR base.
 const uint8_t* g_imageBase = nullptr;
+size_t g_imageSize = 0;
 
 // Cached UShockUserSettings instance (revalidated by vtable every call).
 // Like BS1 there is no known static pointer to it; unlike BS1's scanner this
@@ -252,6 +253,66 @@ bool fname_text(uint32_t index, char* out, size_t outCap) {
     return i > 0;
 }
 
+bool object_class_name(const void* objPtr, char* out, size_t outCap) {
+    using namespace bvr::pattern_scan;
+    if (out && outCap) out[0] = '\0';
+    const uint8_t* o = static_cast<const uint8_t*>(objPtr);
+    if (!g_imageBase || !o || !out || outCap < 2) return false;
+    if (!is_memory_valid(o, kUObjectClassOffset + sizeof(void*))) return false;
+    const uint8_t* cls = *reinterpret_cast<const uint8_t* const*>(o + kUObjectClassOffset);
+    if (!cls || !is_memory_valid(cls, kUObjectNameIndexOffset + 4)) return false;
+    // The UClass-vtable gate is the liveness predicate: a freed or non-UObject
+    // candidate cannot present a heap object whose dword0 is exactly this
+    // vtable AND whose name field resolves through GNames' self-index check.
+    if (*reinterpret_cast<const uint8_t* const*>(cls) != g_imageBase + kUClassVtableRva)
+        return false;
+    int32_t idx = *reinterpret_cast<const int32_t*>(cls + kUObjectNameIndexOffset);
+    if (idx <= 0) return false;
+    return fname_text(static_cast<uint32_t>(idx), out, outCap);
+}
+
+void probe_object_identity(const void* objPtr, const char* label) {
+    using namespace bvr::pattern_scan;
+    const uint8_t* o = static_cast<const uint8_t*>(objPtr);
+    if (!label) label = "?";
+    if (!g_imageBase || !o || !is_memory_valid(o, 0x48)) {
+        BVR_LOG("[b2r] oclass %s: object %p unreadable", label, objPtr);
+        return;
+    }
+    // Raw header first - the derivation evidence even when nothing resolves.
+    const uint32_t* d = reinterpret_cast<const uint32_t*>(o);
+    BVR_LOG("[b2r] oclass %s %p hdr: %08X %08X %08X %08X | %08X %08X %08X %08X | "
+            "%08X %08X %08X %08X | %08X %08X %08X %08X",
+            label, o, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10],
+            d[11], d[12], d[13], d[14], d[15]);
+    // Candidate own-name FName index: any int32 in +0x20..+0x3C that GNames
+    // resolves (BS1's was +0x28; derive fresh - never copy).
+    char text[64];
+    for (uint32_t off = 0x20; off <= 0x3C; off += 4) {
+        int32_t idx = *reinterpret_cast<const int32_t*>(o + off);
+        if (idx > 0 && idx < 2000000 && fname_text(static_cast<uint32_t>(idx), text,
+                                                   sizeof text))
+            BVR_LOG("[b2r]   name candidate +0x%02X: idx %d -> '%s'", off, idx, text);
+    }
+    // Candidate UClass pointer: any pointer in +0x24..+0x44 to a heap object
+    // whose dword0 is an IN-IMAGE vtable and whose +0x28 FName resolves (the
+    // canonical class name is FName number 0 on BS1's layout). The UClass
+    // vtable RVA printed here is the constant to bank once it is identical
+    // across >= 3 distinct classes.
+    for (uint32_t off = 0x24; off <= 0x44; off += 4) {
+        const uint8_t* cls = *reinterpret_cast<const uint8_t* const*>(o + off);
+        if (!cls || cls == o || !is_memory_valid(cls, 0x2C + 4)) continue;
+        const uint8_t* vt = *reinterpret_cast<const uint8_t* const*>(cls);
+        if (vt < g_imageBase || vt >= g_imageBase + g_imageSize) continue;
+        int32_t nidx = *reinterpret_cast<const int32_t*>(cls + 0x28);
+        if (nidx <= 0 || !fname_text(static_cast<uint32_t>(nidx), text, sizeof text))
+            continue;
+        BVR_LOG("[b2r]   class candidate +0x%02X: cls %p vtbl RVA 0x%X, cls+0x28 "
+                "name '%s'",
+                off, cls, static_cast<unsigned>(vt - g_imageBase), text);
+    }
+}
+
 void resolve_fire_names(const bvr::pattern_scan::ProcessImage& image, FireNames& out) {
     using namespace bvr::pattern_scan;
     // The dispatch names (no `exec` prefix - those are the thunk registration
@@ -349,6 +410,7 @@ bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     using namespace bvr::pattern_scan;
 
     g_imageBase = image.base;
+    g_imageSize = image.size;
     BVR_LOG("[b2r] scanning main module: base %p size 0x%zX", image.base, image.size);
 
     // FName-chain scan (game-agnostic, core/hooks/pattern_scan.h). On BS2 its

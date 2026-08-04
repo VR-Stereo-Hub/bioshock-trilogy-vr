@@ -3,6 +3,8 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock2r/bones.h"
+#include "game/bioshock2r/hands.h"
 
 #include <windows.h>
 #include <MinHook.h>
@@ -10,6 +12,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
 
 namespace bvr::b2r::aim {
 
@@ -105,6 +110,12 @@ constexpr uint64_t kRayStaleMs = 250;
 // Telemetry.
 std::atomic<uint32_t> g_wepCalls{0}, g_abiCalls{0}, g_subs{0};
 std::atomic<bool> g_loggedWepArgs{false}, g_loggedAbiArgs{false};
+
+// The last weapon object seen at the fire seam (its detour `this`) - the
+// GROUND TRUTH for the session-41 holdable-offset derivation: `vrbones
+// holdscan find` scans the AHands actor for exactly this pointer. Read-only
+// diagnostic; never dereferenced without fresh validation.
+std::atomic<void*> g_lastWeaponThis{nullptr};
 
 // Log the first N substitutions with BEFORE and AFTER rotators. This is the
 // numeric half of the decoupled-aim proof: the engine's own value, the value
@@ -212,6 +223,7 @@ int __fastcall WeaponGpfsDetour(void* self, void* edx, FVector* outLoc, FRotator
                                 FVector* outEffect) {
     int r = g_origWeaponGpfs(self, edx, outLoc, outRot, outEffect);
     g_wepCalls.fetch_add(1, std::memory_order_relaxed);
+    g_lastWeaponThis.store(self, std::memory_order_relaxed);
     if (!g_loggedWepArgs.exchange(true, std::memory_order_relaxed) && outLoc && outRot)
         // Rotator prints as INTs - the FRotator denormal trap: as floats these
         // are denormals and print 0.000.
@@ -468,6 +480,9 @@ void census_dump() {
     }
 }
 
+// Defined in the profile section below; init() runs first in the file.
+void load_weapon_profiles();
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols& symbols) {
@@ -497,6 +512,260 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     if (ok0 && strcmp(t0, "None") != 0)
         BVR_LOG("[b2r] aim probe: GNames[0] is not 'None' - RVA suspect, census text "
                 "untrusted");
+
+    // Per-weapon profiles (session 41): tuned values only - NO default
+    // seeding in code (rule (a): a value source must exist first, and BS2
+    // class names were only ever seen live).
+    load_weapon_profiles();
+}
+
+// --- per-weapon profiles (session 41; BS1's session-21 shape, adapted) ------
+// RIGHT hand + uniform weapon scale only, keyed by the holdable's class name
+// (the user's session-41 decision: the left/plasmid hand does not change on
+// weapon switches, so its tuning stays global in vrpreset until a per-plasmid
+// key becomes derivable). The live atomics remain the single truth - sliders
+// and commands keep writing them; this layer stashes them into the active
+// profile on swap/save and restores on swap-back. Session-21 rules, all four:
+// (a) the resolver IDLES until a value source exists (preset baseline
+//     captured or weapons.ini loaded) - the seeding-race fix;
+// (b) identity comes from the rig's live holdable only - no fire-learned
+//     fallback lanes exist on BS2 at all;
+// (c) the holdable is never vtable-gated - object_class_name validates the
+//     CLASS;
+// (d) an unresolvable class CLEARS the key (edits touch no profile, logged).
+namespace {
+
+struct WeaponProfile {
+    float aimTrimPitch, aimTrimYaw, aimPosFwd, aimPosRight, aimPosUp;
+    float modTrimPitch, modTrimYaw, modTrimRoll;
+    float modOffFwd, modOffRight, modOffUp, modScale;
+    float wScale;
+};
+std::map<std::string, WeaponProfile> g_weaponProfiles;
+std::string g_weaponKey;              // "" = none
+void* g_weaponKeyActor = nullptr;     // pointer the key was resolved from
+bool g_weaponKeySim = false;          // `wkey sim` latch (flat testing)
+uint32_t g_weaponSwaps = 0;
+std::mutex g_weaponKeyUiMutex;        // overlay copy (render thread reads)
+char g_weaponKeyUi[48] = "-";
+WeaponProfile g_presetBaseline{};
+bool g_presetBaselineValid = false;
+
+WeaponProfile snapshot_live() {
+    WeaponProfile p{};
+    p.aimTrimPitch = g_trimPitch[1].load(std::memory_order_relaxed);
+    p.aimTrimYaw = g_trimYaw[1].load(std::memory_order_relaxed);
+    p.aimPosFwd = g_posFwdCm[1].load(std::memory_order_relaxed);
+    p.aimPosRight = g_posRightCm[1].load(std::memory_order_relaxed);
+    p.aimPosUp = g_posUpCm[1].load(std::memory_order_relaxed);
+    p.modTrimPitch = hands::trim_pitch(1);
+    p.modTrimYaw = hands::trim_yaw(1);
+    p.modTrimRoll = hands::trim_roll(1);
+    p.modOffFwd = hands::off_fwd_cm(1);
+    p.modOffRight = hands::off_right_cm(1);
+    p.modOffUp = hands::off_up_cm(1);
+    p.modScale = bones::scale_of(1);
+    p.wScale = bones::weapon_scale();
+    return p;
+}
+
+void apply_profile_values(const WeaponProfile& p) {
+    g_trimPitch[1].store(p.aimTrimPitch, std::memory_order_relaxed);
+    g_trimYaw[1].store(p.aimTrimYaw, std::memory_order_relaxed);
+    g_posFwdCm[1].store(p.aimPosFwd, std::memory_order_relaxed);
+    g_posRightCm[1].store(p.aimPosRight, std::memory_order_relaxed);
+    g_posUpCm[1].store(p.aimPosUp, std::memory_order_relaxed);
+    hands::set_trim(1, p.modTrimPitch, p.modTrimYaw, p.modTrimRoll);
+    hands::set_offset(1, p.modOffFwd, p.modOffRight, p.modOffUp);
+    bones::set_scale(1, p.modScale);
+    bones::set_weapon_scale(p.wScale);
+}
+
+// Class name -> ini-safe key: printable ASCII, '.'/'=' (the line format's own
+// separators) mapped to '_', capped at 47.
+void narrow_key(const char* name, char* out, size_t cap) {
+    size_t j = 0;
+    for (size_t i = 0; name[i] && j + 1 < cap && j < 47; ++i) {
+        char c = name[i];
+        if (c < 32 || c > 126) continue;
+        if (c == '.' || c == '=') c = '_';
+        out[j++] = c;
+    }
+    out[j] = '\0';
+}
+
+void stash_active_profile() {
+    if (g_weaponKey.empty()) return;
+    g_weaponProfiles[g_weaponKey] = snapshot_live();
+}
+
+void apply_weapon_key(const std::string& key, const char* why) {
+    if (key == g_weaponKey) return;
+    stash_active_profile();
+    g_weaponKey = key;
+    {
+        std::lock_guard<std::mutex> lk(g_weaponKeyUiMutex);
+        strncpy_s(g_weaponKeyUi, key.empty() ? "-" : key.c_str(), _TRUNCATE);
+    }
+    if (key.empty()) {
+        BVR_LOG("[b2r] weapon profile: key cleared (%s)", why);
+        return;
+    }
+    ++g_weaponSwaps;
+    auto it = g_weaponProfiles.find(key);
+    if (it == g_weaponProfiles.end()) {
+        // First sight: seed from the CAPTURED preset baseline, never from the
+        // outgoing weapon's live values (session-21's seeding rule).
+        WeaponProfile p = g_presetBaselineValid ? g_presetBaseline : snapshot_live();
+        g_weaponProfiles[key] = p;
+        apply_profile_values(p);
+        BVR_LOG("[b2r] weapon profile '%s' CREATED from %s (%s)", key.c_str(),
+                g_presetBaselineValid ? "the preset baseline" : "current R values",
+                why);
+    } else {
+        apply_profile_values(it->second);
+        BVR_LOG("[b2r] weapon profile '%s' applied (%s)", key.c_str(), why);
+    }
+}
+
+// Per-frame resolver (throttled). Keys the profile off the rig's LIVE
+// holdable; a rig-unknown frame is NO SIGNAL (key kept), a resolvable change
+// swaps, null holdable or unresolvable class clears.
+void update_weapon_profile() {
+    if (g_weaponKeySim) return;
+    if (!g_presetBaselineValid && g_weaponProfiles.empty()) return; // rule (a)
+    static uint32_t throttle = 0;
+    if ((++throttle & 15) != 0) return;
+    void* w = nullptr;
+    if (!bones::current_holdable(&w)) return; // rig unknown - no signal
+    if (w == g_weaponKeyActor) return;        // steady-state cost: one compare
+    char name[48] = {};
+    bool resolved = w && patterns::object_class_name(w, name, sizeof name);
+    if (w && !resolved) {
+        // rule (d): edits must not land in the previous weapon's profile.
+        g_weaponKeyActor = w;
+        BVR_LOG("[b2r] weapon profile: holdable %p has NO resolvable class name - "
+                "key cleared, slider edits will touch no profile until it resolves",
+                w);
+        apply_weapon_key(std::string(), "unresolvable class");
+        return;
+    }
+    g_weaponKeyActor = w;
+    if (!w) {
+        apply_weapon_key(std::string(), "nothing equipped");
+        return;
+    }
+    char key[48];
+    narrow_key(name, key, sizeof key);
+    apply_weapon_key(std::string(key), "weapon change");
+}
+
+void weapons_ini_path(wchar_t* out, size_t count) {
+    swprintf_s(out, count, L"%s\\weapons.ini", bvr::log::data_dir());
+}
+
+// One field table drives load, save and the format doc: <Class>.<field>=<v>.
+struct ProfileField {
+    const char* name;
+    float WeaponProfile::* member;
+};
+constexpr ProfileField kProfileFields[] = {
+    {"aimTrimPitch", &WeaponProfile::aimTrimPitch},
+    {"aimTrimYaw", &WeaponProfile::aimTrimYaw},
+    {"aimPosFwd", &WeaponProfile::aimPosFwd},
+    {"aimPosRight", &WeaponProfile::aimPosRight},
+    {"aimPosUp", &WeaponProfile::aimPosUp},
+    {"modTrimPitch", &WeaponProfile::modTrimPitch},
+    {"modTrimYaw", &WeaponProfile::modTrimYaw},
+    {"modTrimRoll", &WeaponProfile::modTrimRoll},
+    {"modOffFwd", &WeaponProfile::modOffFwd},
+    {"modOffRight", &WeaponProfile::modOffRight},
+    {"modOffUp", &WeaponProfile::modOffUp},
+    {"modScale", &WeaponProfile::modScale},
+    {"wScale", &WeaponProfile::wScale},
+};
+
+void load_weapon_profiles() {
+    wchar_t path[MAX_PATH];
+    weapons_ini_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f) return; // no file = nothing tuned yet
+    char line[160];
+    int values = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char key[48] = {}, field[32] = {};
+        float v = 0.0f;
+        if (sscanf_s(line, "%47[^.].%31[^=]=%f", key, (unsigned)sizeof key, field,
+                     (unsigned)sizeof field, &v) != 3)
+            continue;
+        // Scales guard the same band the setters do; a corrupt line must not
+        // zero a weapon.
+        WeaponProfile& p = g_weaponProfiles[key]; // default-constructed once
+        bool known = false;
+        for (const auto& pf : kProfileFields)
+            if (strcmp(field, pf.name) == 0) {
+                if ((pf.member == &WeaponProfile::modScale ||
+                     pf.member == &WeaponProfile::wScale) &&
+                    !(v > 0.05f && v < 20.0f))
+                    break;
+                p.*pf.member = v;
+                known = true;
+                break;
+            }
+        if (known) ++values;
+    }
+    fclose(f);
+    if (!g_weaponProfiles.empty())
+        BVR_LOG("[b2r] weapons.ini: %zu profile(s), %d value(s) loaded",
+                g_weaponProfiles.size(), values);
+}
+
+} // namespace
+
+void save_weapon_profiles() {
+    stash_active_profile(); // the active weapon's live edits are part of it
+    wchar_t path[MAX_PATH];
+    weapons_ini_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f) {
+        BVR_LOG("[b2r] could not write weapons.ini");
+        return;
+    }
+    fprintf(f, "# BioShock 2 VR - per-weapon RIGHT-hand aim/model profiles\n");
+    fprintf(f, "# <Class>.<field>=<value>; fields: aimTrim*/aimPos* (deg/cm), "
+               "modTrim*/modOff* (deg/cm), modScale, wScale\n");
+    for (const auto& kv : g_weaponProfiles)
+        for (const auto& pf : kProfileFields)
+            fprintf(f, "%s.%s=%.2f\n", kv.first.c_str(), pf.name,
+                    kv.second.*pf.member);
+    fclose(f);
+    BVR_LOG("[b2r] weapons.ini: %zu profile(s) saved to %ls", g_weaponProfiles.size(),
+            path);
+}
+
+void note_preset_baseline() {
+    g_presetBaseline = snapshot_live();
+    g_presetBaselineValid = true;
+    BVR_LOG("[b2r] weapon profiles: preset baseline captured (new profiles seed "
+            "from it)");
+}
+
+void reapply_weapon_profile() {
+    // The preset values are a BASELINE, not an edit: the active profile beats
+    // them, and nothing is stashed on the way (stashing here would overwrite
+    // the profile with the just-loaded preset values).
+    if (g_weaponKey.empty()) return;
+    auto it = g_weaponProfiles.find(g_weaponKey);
+    if (it == g_weaponProfiles.end()) return;
+    apply_profile_values(it->second);
+    BVR_LOG("[b2r] weapon profile '%s' re-applied over the preset",
+            g_weaponKey.c_str());
+}
+
+void weapon_key_ui(char* out, size_t cap) {
+    std::lock_guard<std::mutex> lk(g_weaponKeyUiMutex);
+    strncpy_s(out, cap, g_weaponKeyUi, _TRUNCATE);
 }
 
 bool hook_live() {
@@ -510,6 +779,10 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
     g_viewRoll.store(ctx.camRoll, std::memory_order_relaxed);
     g_viewGameplay.store(strictGameplay, std::memory_order_relaxed);
     g_viewStampMs.store(now, std::memory_order_relaxed);
+
+    // Per-weapon profile resolver (session 41) - throttled, idles until a
+    // value source exists, keys off the rig's live holdable.
+    if (strictGameplay) update_weapon_profile();
 
     // Build both hand rays through the SAME transform the camera just used.
     bool useAim = g_useAimPose.load(std::memory_order_relaxed);
@@ -880,11 +1153,88 @@ bool handle_command(const char* args) {
         }
         return true;
     }
+    // Per-weapon profiles (session 41).
+    if (token(args, "weapon", &rest)) {
+        char ui[48];
+        weapon_key_ui(ui, sizeof ui);
+        void* hold = nullptr;
+        bool rigKnown = bones::current_holdable(&hold);
+        char cls[48] = {};
+        bool clsOk = hold && patterns::object_class_name(hold, cls, sizeof cls);
+        BVR_LOG("[b2r] vraim weapon: key '%s'%s, holdable %p (%s), %zu profile(s), "
+                "%u swap(s), baseline %s",
+                ui, g_weaponKeySim ? " (SIM)" : "", hold,
+                !rigKnown ? "rig unknown" : (clsOk ? cls : "no class"),
+                g_weaponProfiles.size(), g_weaponSwaps,
+                g_presetBaselineValid ? "captured" : "NOT captured (resolver idle)");
+        BVR_LOG("[b2r]   live R: aim trim %.1f/%.1f pos %.1f/%.1f/%.1f, model trim "
+                "%.1f/%.1f/%.1f off %.1f/%.1f/%.1f scale %.2f, wscale %.2f",
+                g_trimPitch[1].load(std::memory_order_relaxed),
+                g_trimYaw[1].load(std::memory_order_relaxed),
+                g_posFwdCm[1].load(std::memory_order_relaxed),
+                g_posRightCm[1].load(std::memory_order_relaxed),
+                g_posUpCm[1].load(std::memory_order_relaxed), hands::trim_pitch(1),
+                hands::trim_yaw(1), hands::trim_roll(1), hands::off_fwd_cm(1),
+                hands::off_right_cm(1), hands::off_up_cm(1), bones::scale_of(1),
+                bones::weapon_scale());
+        return true;
+    }
+    if (token(args, "wsave", &rest)) {
+        save_weapon_profiles();
+        return true;
+    }
+    if (token(args, "wkey", &rest)) {
+        char name[48] = {};
+        if (token(rest, "real")) {
+            g_weaponKeySim = false;
+            g_weaponKeyActor = nullptr; // force a fresh resolve
+            BVR_LOG("[b2r] command: vraim wkey real (resolver re-armed)");
+        } else if (sscanf_s(rest, "sim %47s", name, (unsigned)sizeof name) == 1) {
+            // Flat lane: pin a key without switching weapons (BS1's wkey sim).
+            g_weaponKeySim = true;
+            char key[48];
+            narrow_key(name, key, sizeof key);
+            apply_weapon_key(std::string(key), "wkey sim");
+            BVR_LOG("[b2r] command: vraim wkey sim %s", key);
+        } else {
+            BVR_LOG("[b2r] vraim wkey real | sim <ClassName>");
+        }
+        return true;
+    }
+    // Session 41 derivation probe: `vraim oclass hands|weapon|<hexptr>`.
+    if (token(args, "oclass", &rest)) {
+        void* obj = nullptr;
+        const char* label = "ptr";
+        if (token(rest, "hands")) {
+            obj = bones::hands_actor();
+            label = "hands";
+            if (!obj)
+                BVR_LOG("[b2r] vraim oclass: AHands not resolved (enter gameplay, "
+                        "vrhands drives it)");
+        } else if (token(rest, "weapon")) {
+            obj = g_lastWeaponThis.load(std::memory_order_relaxed);
+            label = "weapon";
+            if (!obj)
+                BVR_LOG("[b2r] vraim oclass: no weapon seen at the seam yet - fire a "
+                        "gun (vrinput test trig r 255 300)");
+        } else {
+            unsigned v = 0;
+            if (sscanf_s(rest, "%x", &v) == 1) obj = reinterpret_cast<void*>(
+                static_cast<uintptr_t>(v));
+        }
+        if (obj) patterns::probe_object_identity(obj, label);
+        return true;
+    }
     BVR_LOG("[b2r] vraim: status | on|off | handray on|off | laser [l|r] on|off | "
             "dot [l|r] on|off|<distM> | trim l|r <p> <y> | pos l|r <f> <r> <u> | "
             "origin on|off|max <uu> | pose aim|grip | seam weapon|ability on|off | "
-            "test r <yaw> <pitch> [ms]|off | sublog [n] | probe on|off|clear|dump");
+            "test r <yaw> <pitch> [ms]|off | sublog [n] | probe on|off|clear|dump | "
+            "weapon | wsave | wkey real|sim <Class> | oclass hands|weapon|<hex>");
     return true;
+}
+
+void* last_weapon_this() {
+    return g_lastWeaponThis.load(std::memory_order_relaxed);
 }
 
 bool last_ray(int hand, FVector* origin, FRotator* rot) {
