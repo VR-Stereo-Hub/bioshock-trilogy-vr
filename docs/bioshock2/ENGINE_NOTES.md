@@ -2223,3 +2223,24 @@ weapons.ini loads (ini overrides key-by-key; the seeded defaults are themselves 
 value source, so rule (a) holds by construction on a virgin install). Virgin-boot
 proof (inis moved aside): "8 defaults seeded", PlayerRivetGun applied with the exact
 tuned numbers, weapon skel driving at 0.77.
+
+### Session 41 round 3 (same day) - offset accepted, flicker persists (~10 min), toggles
+
+- **Weapon offset: ACCEPTED** ("perfect"). The user tuned per-weapon offsets
+  (MachineGun -7.47 fwd, RivetGun -6.30, Shotgun -11.44 + modScale 0.79, Speargun
+  -7.24/-2.10 up) - re-baked as code defaults (round-3 bake: seed rows + wOffCm
+  default -6.30 + handScaleR 0.760 + aim R baseline 17.88/-16.69, -3.58/-1.19/11.13,
+  wScale 0.770).
+- **THE FLICKER SURVIVES THE FLUSH RUNG** - and the user's new observation is that it
+  may be TIME-correlated ("after 10 mins or so"), trigger unclear. Two rungs
+  (PE-lane absorb + flush-point) reduced but did not eliminate it. This stops being
+  a repaint-site hunt: the next step is a DIAGNOSIS session - instrument WHEN the
+  surviving restamp lands relative to the pass timeline (e.g. count sentinel
+  mismatches caught at each site per minute, log the pass phase of any bank change
+  the drive discovers on its next frame), and correlate with uptime (a 10-minute
+  onset smells like an engine-side cadence change - GC, streaming, or LOD - not a
+  fixed race).
+- **Laser/dot per-hand toggles** (user ask: no F10 control existed): checkbox row in
+  HANDS+AIM ("laser: L R  aim dot: L R"), preset keys laserL/laserR/dotL/dotR,
+  accessors on the existing per-hand atomics. Beam and dot are independent - laser
+  off + dot on = bare aim point.

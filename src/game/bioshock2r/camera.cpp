@@ -1278,6 +1278,10 @@ void save_vr_preset() {
     fprintf(f, "wOffFwd=%.2f\n", bones::weapon_off_fwd_cm());
     fprintf(f, "wOffRight=%.2f\n", bones::weapon_off_right_cm());
     fprintf(f, "wOffUp=%.2f\n", bones::weapon_off_up_cm());
+    fprintf(f, "laserL=%d\n", aim::laser_hand(0) ? 1 : 0);
+    fprintf(f, "laserR=%d\n", aim::laser_hand(1) ? 1 : 0);
+    fprintf(f, "dotL=%d\n", aim::dot_hand(0) ? 1 : 0);
+    fprintf(f, "dotR=%d\n", aim::dot_hand(1) ? 1 : 0);
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
@@ -1376,6 +1380,14 @@ void load_vr_preset_values() {
             wOff[1] = v;
         else if (strcmp(key, "wOffUp") == 0)
             wOff[2] = v;
+        else if (strcmp(key, "laserL") == 0)
+            aim::set_laser_hand(0, v != 0.0f);
+        else if (strcmp(key, "laserR") == 0)
+            aim::set_laser_hand(1, v != 0.0f);
+        else if (strcmp(key, "dotL") == 0)
+            aim::set_dot_hand(0, v != 0.0f);
+        else if (strcmp(key, "dotR") == 0)
+            aim::set_dot_hand(1, v != 0.0f);
         else if (strcmp(key, "turnScale") == 0 && v > 0.0f)
             bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapOn") == 0)
@@ -2569,6 +2581,21 @@ void draw_debug_ui() {
         float dd = aim::dot_dist_m();
         if (ImGui::SliderFloat("aim dot / beam length (m)", &dd, 0.5f, 8.0f))
             aim::set_dot_dist_m(dd);
+        // Session 41 round 3 (user ask): the beam and the dot are separate
+        // per-hand toggles - laser off + dot on gives a bare aim point.
+        ImGui::TextUnformatted("laser:");
+        ImGui::SameLine();
+        bool lzL = aim::laser_hand(0), lzR = aim::laser_hand(1);
+        if (ImGui::Checkbox("L##laser", &lzL)) aim::set_laser_hand(0, lzL);
+        ImGui::SameLine();
+        if (ImGui::Checkbox("R##laser", &lzR)) aim::set_laser_hand(1, lzR);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("  aim dot:");
+        ImGui::SameLine();
+        bool dtL = aim::dot_hand(0), dtR = aim::dot_hand(1);
+        if (ImGui::Checkbox("L##dot", &dtL)) aim::set_dot_hand(0, dtL);
+        ImGui::SameLine();
+        if (ImGui::Checkbox("R##dot", &dtR)) aim::set_dot_hand(1, dtR);
 
         ImGui::Separator();
         int arms = bones::arms_mode();

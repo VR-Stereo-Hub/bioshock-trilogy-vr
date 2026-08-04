@@ -99,21 +99,40 @@ PRESET is at the TOP of F10 with SAVE next to it).
 6. Known: plasmid-hand tuning is still global; pad A still does not activate menu
    items (Enter does); no projectile plasmid yet.
 
-## Next steps (session 42)
+### ROUNDS 2-3 (same day): the user tested TWICE - near-total acceptance
 
-1. **In-headset acceptance** of the session-41 list above (animations, flicker, hide,
-   uniform scale, per-weapon profiles, sway preference).
-2. **Plasmid item names**: hunt the ContentBaked/pc package string tables (the exe
-   provably has only Telekinesis' `<X>BasicPlasmid`); verify BY EFFECT via the F12
-   chain; then the ability-seam live check with a projectile plasmid -> left-hand
-   per-PLASMID profiles become derivable.
-3. **Pad-A menu activation** (dpad navigates, A does not activate; Enter does - a
-   BS2-local A->Enter translation in menu state is the cheap candidate).
-4. **The alt-tab pacing wedge** (CORE code shared with BS1 - own careful session;
-   repro banked in ENGINE_NOTES s40).
-5. Standing: BS1 regression testing stays deferred to the END of BS2 development.
-   Core diff to re-check that day: the additive laser/dot slot pair (s40) only -
-   session 41 added nothing to core.
+Round-2 in-headset verdicts: **animations, sway, arms-hide/follow, uniform weapon
+scale, per-weapon profiles, F10 - ALL ACCEPTED; nothing regressed.** The user
+calibrated all 8 weapons + both hands and saved. Follow-ups shipped same day:
+
+- **The calibration is BAKED AS CODE DEFAULTS** (their ask; BS1 s21 precedent) -
+  atomics + `seed_default_profiles()` carry the tuned values, virgin-boot-proven
+  (inis moved aside: 8 profiles seeded, rivet gun applied the exact numbers). Round 3
+  re-baked after the offset pass (per-weapon wOff, handScaleR 0.760, shotgun 0.79).
+- **NEW: per-weapon WEAPON OFFSET** (attach-pivot base; gun moves, fingers/wrist/aim
+  stay) - round-3 verdict: "perfect". F10 sliders + `vrhands woffset` + profile
+  fields + preset keys.
+- **NEW: laser/dot per-hand F10 toggles** + preset keys (beam and dot independent).
+- **THE FLICKER SURVIVES both repaint rungs** (PE-lane absorb + flush-point),
+  reduced; new observation: possibly TIME-correlated (~10 min uptime), trigger
+  unclear. This is now a DIAGNOSIS item, not a repaint-site hunt (ENGINE_NOTES s41
+  r3 has the instrumentation plan).
+
+## Next steps (session 42 - user's brief: HUD elements)
+
+1. **THE HUD LANE** (the user's chosen focus): make the HUD work properly in VR -
+   health/EVE/ammo readability and placement. Existing substrate: core `vrhud`
+   (quad-layer HUD capture, `vrhud on|off|status`), the gameswf draw classifier,
+   and the post-v1 backlog's wrist-anchored idea. Decide head-locked quad vs
+   world/wrist anchoring, size/distance tuning in F10 (in-headset controls rule).
+2. **Flicker DIAGNOSIS** (repro: ~10 min of play): per-site sentinel-catch counters
+   per minute, log the pass phase of surviving restamps, correlate with uptime
+   (GC/streaming/LOD cadence suspects). Only then pick the next fix.
+3. **Plasmid item names** (ContentBaked/pc string tables) -> ability-seam live check
+   -> per-PLASMID left-hand profiles.
+4. Pad-A menu activation; the alt-tab pacing wedge (CORE-shared, own careful lane).
+5. Standing: BS1 regression testing deferred to the END of BS2 development. Core
+   diff to re-check that day: the additive laser/dot slot pair (s40) only.
 
 ---
 
@@ -5149,6 +5168,20 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 41 rounds 2-3 - 2026-08-04 - in-headset acceptance, the bake, weapon offset
+
+Two same-day headset passes. Round 2: EVERYTHING accepted (animations, sway,
+arms-hide, uniform scale, per-weapon profiles, F10, no regressions); the user
+calibrated all 8 weapons + both hands. Shipped in response: the calibration baked as
+code defaults (virgin-boot proven), the flush-point flicker rung, and the per-weapon
+WEAPON OFFSET (attach-pivot base - gun moves, hand/aim stay; flat-proven localized
+with write-locs bit-identical). Round 3: offset "perfect" (values re-baked:
+MachineGun -7.47, RivetGun -6.30, Shotgun -11.44 + modScale 0.79, Speargun
+-7.24/-2.10); laser/dot per-hand F10 toggles + preset keys added; THE FLICKER
+SURVIVES both rungs, reduced, now suspected TIME-correlated (~10 min) - reclassified
+as a diagnosis item (instrumentation plan in ENGINE_NOTES s41 r3). Session-42 brief
+(user): THE HUD LANE.
 
 ### Session 41 - 2026-08-04 - the holdable lane, the animation-preserving drive, polish flat-green
 

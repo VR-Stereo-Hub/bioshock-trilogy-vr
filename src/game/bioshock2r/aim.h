@@ -87,6 +87,11 @@ bool origin_on();
 void set_origin(bool on);
 float dot_dist_m();
 void set_dot_dist_m(float m);
+// Per-hand laser/dot enables (session 41 round 3; F10 + preset).
+bool laser_hand(int hand);
+void set_laser_hand(int hand, bool on);
+bool dot_hand(int hand);
+void set_dot_hand(int hand, bool on);
 
 // The last weapon object seen at the fire seam (diagnostic ground truth for
 // the session-41 holdable derivation). May be stale or dead - never
