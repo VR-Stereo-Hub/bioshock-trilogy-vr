@@ -2019,3 +2019,33 @@ refocusing does NOT recover it, `vrstereo off` restores fast draws (833 us) but 
 present rate. Only a restart cleared it. This is the documented top-backlog pacing bug
 (STATUS "THE PACING BUG") with a fresh, easily reproduced signature - bank it as the
 repro for that session.
+
+### Round-2 in-headset verdicts (2026-08-04, same day) - and the unifying diagnosis
+
+The user re-tested the round-2 build in the headset. PASSED: per-hand arms modes all work
+(follow judged best), aim sliders work, controller stack solid. FINDINGS, with analysis:
+
+1. **The left-eye flicker survives the PE repaint, and it is TRIGGERED BY SCALE CHANGES** -
+   flicking `vrhands scale` starts it and returning to the old value does not stop it. Read:
+   a bone-scale change dirties the skeleton/bounds and puts the engine's animation
+   evaluation into a heavier re-stamp cadence; the per-PE repaint only wins when a dispatch
+   lands between the re-stamp and mesh batching, so under the heavier cadence some pass-1
+   frames slip through un-repainted.
+2. **Missing weapon animations** (the drill's melee-HIT swing plays nothing; idle/normal
+   anims fine): the rigid drive REPLACES every driven bone with the rotated reference pose,
+   erasing any animation the engine wrote that frame. Same root as (1), opposite symptom -
+   frames where the animation DID survive our writes are the flicker; bones where our
+   writes always win have no animation at all.
+   **The unifying fix (session 41): retarget instead of overwrite** - each frame read the
+   engine's freshly-evaluated pose, express it as a delta from the captured reference, and
+   compose that delta ON TOP of the controller-driven frame. Animations then play in the
+   driven hand's space, and a re-stamp stops being an enemy to race - it becomes the input.
+3. **Arms hide mode stretches a web from the wrist**: hidden bones keep their AUTHORED
+   translations at zero scale, so vertices weighted across the wrist/forearm boundary blend
+   between the driven wrist and a zero-scaled bone sitting at the authored spot - a visible
+   stretchy connection. Fix: in hide mode also TRANSLATE the arm bones onto the driven
+   wrist (collapse to the anchor point, zero scale) so the blend degenerates to the wrist.
+4. Aim sliders wanted PER WEAPON per hand (BS1's weapons.ini shape) - the holdable lane.
+5. Weapon scale must be uniform-down - the weapon-skeleton lane (canister verdict above).
+6. F10: APPLY/SAVE buttons belong in their own always-visible section at the TOP, labeled
+   "saves ALL settings and values" - buried at the panel bottom they read as sub-options.

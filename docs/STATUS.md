@@ -113,24 +113,51 @@ Everything below is pre-armed; load the save, `vrstereo on`, headset on.
 7. Known gaps: no shooting plasmid yet (item names not found), pad A does not activate menu
    items (use Enter/mouse in menus).
 
-## Next steps (session 41)
+### ROUND 2 (same day): the user tested TWICE, and the second pass reshapes session 41
 
-1. **The in-headset acceptance is the gate.** M10.1's last open box is the user's checklist
-   above. Everything else here is subordinate to what that run reports - do not start new
-   machinery before reading its verdicts.
-2. **Find the plasmid item class names** (unblocks the ability-seam box, and the user asked
-   for "something that shoots" two sessions running). `<X>BasicPlasmid` exists only for
-   Telekinesis in the exe, so the names are in `ContentBaked/pc` - the package string tables
-   are the place to look. Verify BY EFFECT (HUD icon + name), then one cast settles the
-   ability substitution, which is already hooked and identity-verified.
-3. **Per-hand `aimRayMaxDevDeg`** so the coupling acceptance works with both beams live.
-   Today it must be run single-beam, which is a footgun for whoever forgets.
-4. **Per-weapon aim presets** under session-21's rules - only once the user has tuned at
-   least one weapon in the headset, because that tuning IS the value source.
-5. **Pad menu activation** (dpad navigates, A does not select) if pad-only menus matter.
-6. Standing: BS1 regression testing stays deferred to the END of BS2 development (user
-   decision 2026-08-02). The core diff to re-check when that day comes is exactly one
-   additive pair, `set_laser_slot`/`set_aim_dot_slot`, which no BS1 path calls.
+The first in-headset pass PASSED the core acceptance (decoupled hands/aim/lasers,
+controller stack, thumbrest, 90-deg fix, origin). A same-day round-2 build addressed its
+findings (per-hand aim sliders, arms follow/hide/game, weapon-scale toggle, PE-lane
+repaint, full preset + one-button APPLY incl. controller arming), and the user tested
+AGAIN. Round-2 verdicts (full analysis in ENGINE_NOTES "Round-2 in-headset verdicts"):
+
+- **Flicker survives, and scale changes TRIGGER it** (persists after reverting the value).
+- **Some weapon animations never play** (drill melee-hit; idles fine) - the rigid drive
+  erases engine animation on driven bones. Same root as the flicker, opposite symptom.
+  The session-41 fix is ONE mechanism: retarget engine animation deltas onto the driven
+  frame instead of overwriting.
+- **Arms hide stretches a web** from the wrist to a zero-scaled bone at its authored spot -
+  collapse hidden bones ONTO the driven wrist.
+- **Aim tuning must become per WEAPON per hand** (BS1 weapons.ini shape) and **weapon scale
+  must be uniform-down** - both need the HOLDABLE lane (resolve the held weapon; its own
+  SkeletonInstance is where uniform scale lives - the ammo-canister inverse-scale is
+  PROVEN attach-path math, unreachable from the AHands bank).
+- **F10 layout**: APPLY/SAVE buttons to a top always-visible section, labeled clearly.
+
+Experiment verdicts banked on the way (ENGINE_NOTES): one-shot scale POKES do not render
+on this rig state (drive-path writes do - attribution must go through single-bone
+clusters); the ammo canister inversely rides pivot 63's scale; the alt-tab pacing wedge
+reproduced twice with a fresh signature (SUBMISSION IDLE, frame not begun; restart-only
+recovery).
+
+## Next steps (session 41 - the brief lives in the session-log entry below)
+
+1. **The holdable lane** (unblocks TWO user asks): resolve the currently-held weapon
+   object off the rig, then (a) its own SkeletonInstance -> uniform weapon scale-down,
+   (b) per-weapon per-hand aim/model profiles with auto-swap (BS1 weapons.ini shape,
+   session-21 seeding rules a-d).
+2. **Animation-preserving drive**: compose the engine's per-frame animation delta
+   (current engine pose vs captured reference) on top of the controller frame - fixes
+   the missing melee animations AND the scale-triggered left-eye flicker at one root.
+   Retire the PE repaint if the retarget makes it redundant.
+3. **Arms-hide collapse-to-wrist**; **F10 top APPLY/SAVE section** ("saves ALL settings");
+   vrinput default-ON once the user confirms the arm behavior.
+4. **Plasmid item names** (ContentBaked packages - `<X>BasicPlasmid` is Telekinesis-only
+   in the exe) -> ability-seam live check + "something that shoots".
+5. Pad-A menu activation; per-hand aimRayMaxDevDeg; the alt-tab pacing wedge (CORE code -
+   BS1-shared, needs its own careful session; repro is banked).
+6. Standing: BS1 regression testing deferred to the END of BS2 development. Core diff to
+   re-check that day: the additive `set_laser_slot`/`set_aim_dot_slot` pair only.
 
 ---
 
@@ -5058,6 +5085,27 @@ GetPerfectFireStart. Per-weapon presets were deliberately split out of their box
 ticked, since no tuned value source exists until the user calibrates in-headset.
 
 Teardown 486/523/211 ms, zero new dumps, across all three boots.
+
+### Session 40 round 2 - 2026-08-04 - two in-headset passes, the retarget diagnosis, the holdable lane
+
+Same-day continuation after the user's first look PASSED the core acceptance. Round-2
+build shipped per-hand aim sliders in F10, arms follow/hide/game, the weapon-scale
+toggle, a PE-lane restamp repaint, and the full preset (aim trims/pos, arms, scale-
+weapon, dot length, turnscale/snap/ammomod - 14 -> 22+ keys) with a one-button APPLY
+that also arms the controller. Second in-headset pass verdicts: flicker SURVIVES and is
+triggered by scale changes; some weapon animations never play (the rigid drive erases
+them - one root with the flicker; fix = retarget engine animation deltas onto the driven
+frame); arms-hide stretches a web to the authored bone spots (collapse onto the wrist);
+aim tuning must be per-weapon (BS1 weapons.ini shape); weapon scale must be uniform-down.
+The scale experiment PROVED the ammo canister inversely rides pivot 63's scale in the
+engine's attach math - unreachable from the AHands bank; the weapon's OWN skeleton is
+the lane, shared with the per-weapon-profile holdable resolution. Also banked: one-shot
+scale pokes do not render on this rig state (drive-path attribution only); a fixed
+pre-existing `vrhands offset`-parsed-as-`off` bug would have kept persisting zeros; the
+alt-tab pacing wedge reproduced twice with a clean signature (restart-only recovery).
+Session 41 brief: holdable lane (uniform weapon scale + per-weapon profiles), the
+animation-preserving drive, hide-collapse, F10 top APPLY/SAVE section, plasmid names in
+ContentBaked, pad-A activation, per-hand aimRayMaxDevDeg.
 
 ### Session 39 - 2026-08-03 - BS2 motion controls: decoupled aim, laser + dot, bone drive, all flat
 
