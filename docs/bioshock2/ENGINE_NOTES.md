@@ -2244,3 +2244,168 @@ tuned numbers, weapon skel driving at 0.77.
   HANDS+AIM ("laser: L R  aim dot: L R"), preset keys laserL/laserR/dotL/dotR,
   accessors on the existing per-hand atomics. Beam and dot are independent - laser
   off + dot on = bare aim point.
+
+## Session 42 (2026-08-04/05) - the presentation lane: HUD panel, screens, cinematics wiring, menukey, reticle, flicker instrument
+
+### 1. BS2 is a BACKBUFFER-COMPOSITE pipeline - BS1's classifier fingerprints never fire
+
+The core gameswf classifier reached BS2 fully implemented and identified NOTHING
+(hudDraws=0 after 17 s of armed SR stereo). Frame dump ground truth
+(framedump_232940, gameplay at the user's save, 2064x2208):
+
+- **Scene leader**: T1, 2064x2208 R11G11B10F (fmt 26) bind 0x28 - 612 DSV-bound
+  DrawIndexed (the vote is unambiguous; runner-up 153).
+- T1 is never SAMPLED by a Draw - the post chain moves it by **CopySubResource**
+  into T116 and ping-pongs 516x552 mips (T127-T130) for bloom.
+- **The tonemap is event 934: a `DrawIndexed` with SIX indices** - an indexed
+  quad - onto **T0 = the backbuffer, 2064x2208 RGBA8 bind 0x20 (RENDER_TARGET
+  only, NO SHADER_RESOURCE)**, no DSV, full viewport, PS srv0 = T1 (the leader).
+- Every gameswf draw (938+) is a non-indexed Draw ON THE BACKBUFFER with a DSV
+  (T2) bound for flash masks, sampling BC atlases (T132+).
+
+BS1's two fingerprints both miss this shape: its target gate requires
+RENDER_TARGET|SHADER_RESOURCE (BS1 tonemaps into an intermediate LDR), and its
+tonemap check runs only in `on_draw` (non-indexed). Fix: core
+`hud::set_backbuffer_composite(true)` (adapter init, default OFF = BS1
+bit-identical) widens the LDR gate for RT-only targets and adds the indexed
+tonemap check in `on_draw_indexed` (same fingerprint: first indexed draw, LDR
+target, no DSV, srv0 == leader). Verdict after the flag: **hudDraws=12352
+redirects=12352 leaks=0 over 64 intervals, stranded 0 per reason** - and the
+HUD quad submits as the 12th compositor layer (space=view), dual-beam's 11 + 1.
+
+### 2. Classifier behaviour on BS2 (differences from BS1 worth knowing)
+
+- **The health/EVE bar fills are NOT textureless on BS2** - effectsInFrame=0,
+  effectsRejected=0, no textureless census lines in gameplay. BS1's
+  bar-fill-as-effect collision does not manifest; `effects=panel` default is
+  correct and untouched.
+- **postFx=0 in gameplay** at the save (sober): BS2's post effects live in the
+  CopySubRes chain, not as post-tonemap draws - the postfx rule idles. The
+  square-target warning did not fire (2064x2208 is not exactly square).
+- `barDraw=0` through gameplay + pause soak - no 29-vert false positive
+  observed. THE BS2 BAR VERTEX COUNT IS STILL UNDERIVED (never copy BS1's 29):
+  the adapter now auto-arms a one-shot bars-edge dump at init, so the user's
+  first real cutscene harvests the fingerprint (self-disarms, ~0.5 s once).
+- The boot loading screen classifies **screen-only** (swf 127-143 draws, world
+  pass absent) and drops to the head-locked quad via the generic route - the
+  cine quad ON/off transition is in the boot log every run.
+
+### 3. Screen-kind table (generic-first per the user's decision; measured so far)
+
+| Kind | Verdict | Presentation |
+|---|---|---|
+| Boot loading screen | SCREEN-ONLY (world absent, ~130 swf draws) | head-locked quad |
+| **Pause menu** | **SCREEN-ONLY** - full-screen art, world pass ABSENT (unlike BS1's pause which dims over a live world) | head-locked quad |
+| Title screen ("PRESS A") | renders OVER the PRELOADED newest save - CalcView live at full rate, strict-gameplay ShockPlayer view | projection (stereo) |
+| Main-menu attract | strict-gameplay full-scene (s37 fact, reconfirmed) | projection (stereo) |
+| Vending / gene bank / hacking / map / FMV / vita-chamber | UNMEASURED - expected screen-only family; auto-arm + counters will tell during real play | generic route |
+
+### 4. THE PAUSE-MENU SERVICE-LANE STARVATION (structural, pre-existing)
+
+With the pause menu up (1t): **3 CalcView/s, 6 presents/s, ~205 ms per hooked
+draw, and calc in/out = 3/0 - EVERY ProcessEvent dispatch lands INSIDE the
+hooked draw window.** Consequences:
+
+- The command poll (every-256th-dispatch gate + `!inside_hooked_call()`)
+  **never ticks** - seam commands are effectively dead while paused. Batch
+  writes overwrite each other unread.
+- The input pump rides the same lane -> **the pad is dead in the pause menu**
+  (dpad included - this was true before session 42; keyboard drives it).
+  menukey therefore cannot fire there either.
+- The game writes NOTHING (log included) while unfocused - harness log-age
+  wedge heuristics FALSE-POSITIVE on an unfocused-paused game. Wake it with
+  `game-key -Key Space` (focus + one key); a healthy game resumes to ~370
+  CalcView/s instantly. The REAL wedge needs a restart; this does not.
+- `xr: SUBMISSION IDLE (frame not begun)` repeats while paused - the game
+  stops beginning XR frames; the pacing keepalive covers it. Not the wedge
+  by itself.
+
+### 5. Pad-A activation (menukey) - what was proven
+
+- **The title-continue accepts NATIVE pad A**: a synthetic
+  `vrinput test press A 400` at "PRESS (A) TO CONTINUE" continued into the
+  save (the composed A bit reaches the game and this code path consumes it).
+  The defect is specifically the gameswf MENU LISTS.
+- menukey (A -> scancode-Enter keybd_event, mirrored press/release, 1 s
+  stuck-key cap) gates on `calcview_silent(400) || !last_strict_gameplay() ||
+  hud::screen_only()`, + foreground. Gameplay negative PASS (all legs read
+  gameplay, injects=0 with a synthetic A). Reach matrix: title = native (no
+  translation needed); screen-only screens (vending/hacking family) = gate
+  OPEN and pump alive; pause menu = unreachable (starvation above); MAIN menu
+  = unverified (its attract runs CalcView on a strict view actor during the
+  boot flow - whether the post-quit main menu does too decides leg 1;
+  `menukey status` prints the live legs, `menukey force on` is the probe).
+
+### 6. The reticle (crosshair) - the first PE-BY-NAME CALL lane
+
+`ShockHUD.RenderReticle` consults `ShockPlayer.ShouldHideReticle()` which is
+`bReticleDisabled || IsInLittleSisterMode()` (uscript derivation; decompiled
+text stays in tools/uscript, gitignored). ShockPlayer carries parameterless
+script setters **`DisableReticle()` / `EnableReticle()`** - so BS2 needs no
+Exec seam (BS1 hid it with `set ShockPlayer bReticleDisabled` + re-assert):
+
+- `patterns::fname_find(text)` - GNames REVERSE lookup (linear, validated
+  reads, callers cache). This run: DisableReticle idx 28114, EnableReticle
+  28115 (RUNTIME-resolved every boot - the indices are not constants).
+- `camera::assert_reticle()`: resolve the UFunction through the engine's OWN
+  FindFunctionChecked trampoline on the live strict-gameplay view actor
+  (vtable-gated), dispatch through the engine's OWN ProcessEvent trampoline
+  (SEH-isolated, zeroed 16-byte parms). Change asserts immediately; hidden
+  re-asserts every 5 s (a level load spawns a fresh pawn carrying the class
+  default); one fault latches the lane off for the run (fail-soft).
+- Proven live: hidden at boot (default, user ask), `vrxhair on` -> reticle
+  back on screen, `off` -> gone; both dispatches log; no fault. Preset key
+  `crosshairVisible` (BS1 name), F10 checkbox in VR camera (M3).
+- **Precedent**: this is the shape for future engine-state writes on BS2 -
+  find a script SETTER, call it by name through FFC+PE. Verify by EFFECT
+  (screenshot A/B), never by the dispatch returning.
+
+### 7. Flicker diagnosis instrument (session-41 r3 plan, landed)
+
+Sites split by CATCH PHASE (pe1/pe2 = PE-lane repaint pass 1/2, fl1/fl2 =
+flush-point pass 1/2) x kind (hands/wskel), plus write-to-catch latency maxima
+(`dmax`, the survivor discriminator - a large-latency catch sat unrepainted
+through most of the pass and plausibly rendered), the drive-adopt CADENCE
+BASELINE (drv - fires ~every frame with anim ON, it is NOT a survivor count),
+and correlates (world changes, wskel rescans, stream/wait2/set2/flush).
+`[flick] min=<uptime>` line per minute (scenedraw heartbeat host, game
+thread); `vrbones flick on|off` gates the line only; `vrbones status` prints
+cumulative catches + the `sum(catches)==peRepaints` invariant.
+
+Baseline at the save (sim, stereo, idle+pulses): **pe1 ~1900/min hands +
+~950/min wskel, pe2/fl1/fl2 = 0, dmax 16 ms** - the ambient restamp war is
+fully caught at the PE rung within a frame. Playbook: fl*/dmax stepping up at
+~min 10 while pe1 stays flat = a late-in-pass restamp source appeared
+(streaming/LOD cadence); drv stepping with stream/present moves = engine
+cadence change; everything flat while the user still sees flicker = the
+surviving restamp is NOT on these banks (a different instance/resource - a
+big, redirecting result). Read it out of any 12+ minute play session log.
+
+### 8. Smaller facts
+
+- `vrcine dumparm bars|screen <n>|off` - one-shot frame dump armed on a
+  classifier rising edge (transitions outrun the 1 Hz poll by construction).
+  The adapter auto-arms `bars 2` at init (user decision - harvest evidence
+  during normal play).
+- The camera cine gate now keys on `cinematic_hold()` (the `!letterbox()`
+  predicate was dead with bars hidden); `vrcine drive off|authored|
+  authored+look` is consumed by camera/aim/hands/wskel (all `&&
+  !cineSuspend` folds - bit-identical outside a cinematic, proven by a full
+  session of normal driving). authored+look ports BS1 s29 (deltas only, no
+  positional term, residual 0, reference dropped on both edges).
+- `bones::release()` gained the missing s29 interlock leg (`is_memory_valid`
+  on the pose bank before the restore memcpys - same predicate pe_repaint
+  trusts); `bones::wskel_release()` hands the weapon skeleton back during a
+  suspended cinematic (the engine never restamps scale - merely not driving
+  would leave the gun scaled for the whole shot).
+- Preset gained 10 keys: hudQuadDistM/WidthM/UpM (round-tripped through a
+  relaunch with a hand-edited 1.55 applied to the live quad),
+  crosshairVisible, cineBarsHidden/cineDrive/cineSubsInFrame/effectsInFrame/
+  effectMaxVerts/postFxRtOnly. 59 values load at boot now.
+- `postfx cine` (size-only fallback during cutscenes) ships OFF on BS2 -
+  deviation from BS1, rationale in ARCHITECTURE (square-ish backbuffer makes
+  size-only maximally degenerate).
+- The title screen preloads the newest save UNDER itself - the "camera:"
+  heartbeat shows the save's coordinates while "PRESS A" is up, and continue
+  is instant. Boot flow varies (a boot was seen going straight to gameplay).
+
