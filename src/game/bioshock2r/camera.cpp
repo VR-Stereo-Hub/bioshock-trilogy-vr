@@ -251,6 +251,21 @@ int32_t g_cineLookYaw = 0;
 int32_t g_cineLookRoll = 0;
 bool g_cineLookValid = false;
 
+// --- Session 42: the game's own crosshair, DEFAULT HIDDEN (user ask) --------
+// BS1 hid it with `set ShockPlayer bReticleDisabled` through its Exec seam;
+// BS2 has no Exec (deliberate) and affords BETTER: ShockPlayer carries
+// DisableReticle()/EnableReticle() script setters (ShouldHideReticle() =
+// bReticleDisabled || IsInLittleSisterMode(); uscript derivation, ENGINE_NOTES
+// s42), called through the engine's OWN FindFunctionChecked + ProcessEvent -
+// the by-name seam. Re-asserted on a slow cadence: a level load spawns a
+// fresh pawn carrying the class default (visible). All game thread only.
+std::atomic<bool> g_reticleHidden{true}; // `vrxhair on` re-shows it
+int g_reticleApplied = -1;               // -1 = never pushed
+uint64_t g_reticleAssertMs = 0;
+uint32_t g_reticleNameIdx[2] = {};       // [0] DisableReticle, [1] EnableReticle
+bool g_reticleNamesResolved = false;
+bool g_reticleNamesFailed = false;       // fail-soft latch (lookup or fault)
+
 // Synthetic HMD lane, extended over BS1's: `simhead <yaw> <pitch> <roll>
 // [px py pz] [holdMs]` feeds a scripted head pose - ROTATION AND POSITION -
 // through the real drive, so the full 6DOF xr-to-ue mapping is provable flat
@@ -676,6 +691,11 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //                                without live SR stereo (flat A/B); status =
 //                                counters + per-reason routes + lens/letterbox
 //                                state. fovwatch on|off kept (BS2-only).
+//   vrxhair on|off|status        session 42: the game's own crosshair.
+//                                DEFAULT HIDDEN (user ask) - asserted with
+//                                ShockPlayer.DisableReticle()/EnableReticle()
+//                                through the engine's own FFC + ProcessEvent
+//                                (the by-name seam; BS1 needed Exec SET).
 //   menukey on|off|force on|force off|status
 //                                session 42: pad A -> scancode Enter while a
 //                                menu context holds (calcview silent, menu
@@ -1175,6 +1195,23 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "menukey") == 0) {
         // Session 42: pad-A menu activation (A -> scancode Enter, menu-gated).
         input_drive::handle_menukey_command(args);
+    } else if (strcmp(cmd, "vrxhair") == 0) {
+        // Session 42: the game's own crosshair (default HIDDEN; BS1 verb name).
+        if (strncmp(args, "on", 2) == 0) {
+            g_reticleHidden.store(false, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vrxhair on (game reticle re-enabled)");
+        } else if (strncmp(args, "off", 3) == 0) {
+            g_reticleHidden.store(true, std::memory_order_relaxed);
+            BVR_LOG("[b2r] command: vrxhair off (game reticle hidden)");
+        } else {
+            BVR_LOG("[b2r] vrxhair status: %s applied=%d names=%s "
+                    "(vrxhair on|off|status)",
+                    g_reticleHidden.load(std::memory_order_relaxed) ? "HIDDEN" : "shown",
+                    g_reticleApplied,
+                    g_reticleNamesFailed      ? "FAILED"
+                    : g_reticleNamesResolved  ? "resolved"
+                                              : "pending");
+        }
     } else if (strcmp(cmd, "vrpace") == 0) {
         // Session 33 audit, same class of gap as vrinput was: core owns the M8
         // stall guard and BS1 dispatches to it; b2r never did, so a fully built
@@ -1349,6 +1386,9 @@ void save_vr_preset() {
     fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
     fprintf(f, "ammoMod=%d\n", static_cast<int>(bvr::input::ammo_mod()));
+    // Session 42: the crosshair choice survives a relaunch (BS1 key name).
+    fprintf(f, "crosshairVisible=%d\n",
+            g_reticleHidden.load(std::memory_order_relaxed) ? 0 : 1);
     // Session 42: cinematic/classifier levers (BS1 parity; bar_verts is NOT
     // persisted - it is a per-game patterns constant, never a tunable).
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
@@ -1486,6 +1526,8 @@ void load_vr_preset_values() {
             hudW = v;
         else if (strcmp(key, "hudQuadUpM") == 0)
             hudU = v;
+        else if (strcmp(key, "crosshairVisible") == 0)
+            g_reticleHidden.store(v == 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "cineBarsHidden") == 0)
             bvr::hud::set_bars_hidden(v != 0.0f);
         else if (strcmp(key, "cineDrive") == 0) {
@@ -1536,6 +1578,66 @@ void apply_vr_preset() {
             g_headOffFwdUu.load(std::memory_order_relaxed),
             g_ipdMm.load(std::memory_order_relaxed),
             g_fgFovMatch.load(std::memory_order_relaxed) ? "on" : "off");
+}
+
+// SEH-isolated engine dispatch (house pattern: no C++ objects in the frame):
+// resolve the named function on the pawn through the engine's own
+// FindFunctionChecked, then dispatch it through the engine's own ProcessEvent.
+// 0 = dispatched, 1 = fault, 2 = resolve returned null (retry later).
+int seh_reticle_call(void* pawn, uint32_t nameIdx) {
+    __try {
+        void* fn = g_originalFF(pawn, nullptr, nameIdx, 0, 0);
+        if (!fn) return 2;
+        uint8_t parms[16] = {};
+        g_originalPE(pawn, nullptr, fn, parms, nullptr);
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 1;
+    }
+}
+
+// Session 42: push the wanted reticle state at the live ShockPlayer pawn.
+// Runs on the maintenance tick (game thread, outside hooked calls). Change
+// asserts immediately; hidden re-asserts every 5 s (a level load spawns a
+// fresh pawn carrying the class default). Fail-soft: one fault or a failed
+// name lookup latches the lane off for the run.
+void assert_reticle(uint64_t now) {
+    if (g_reticleNamesFailed || !g_originalFF || !g_originalPE) return;
+    bool wantHidden = g_reticleHidden.load(std::memory_order_relaxed);
+    int want = wantHidden ? 1 : 0;
+    bool changed = want != g_reticleApplied;
+    if (!changed && !(wantHidden && now - g_reticleAssertMs >= 5000)) return;
+    void* pawn = g_lastViewActor.load(std::memory_order_relaxed);
+    if (!pawn || !is_gameplay_view_rva(g_lastVtblRva.load(std::memory_order_relaxed)))
+        return; // menu/cutscene shapes draw no reticle; retried in gameplay
+    if (!bvr::pattern_scan::is_memory_valid(pawn, 0x40)) return;
+    if (!g_reticleNamesResolved) {
+        // One-time GNames reverse lookup (bounded linear scan, cached).
+        if (!patterns::fname_find("DisableReticle", &g_reticleNameIdx[0]) ||
+            !patterns::fname_find("EnableReticle", &g_reticleNameIdx[1])) {
+            g_reticleNamesFailed = true;
+            BVR_LOG("[b2r] reticle: GNames lookup FAILED - vrxhair inert this run");
+            return;
+        }
+        g_reticleNamesResolved = true;
+        BVR_LOG("[b2r] reticle: names resolved (DisableReticle idx %u, "
+                "EnableReticle idx %u)",
+                g_reticleNameIdx[0], g_reticleNameIdx[1]);
+    }
+    int r = seh_reticle_call(pawn, g_reticleNameIdx[wantHidden ? 0 : 1]);
+    if (r == 1) {
+        g_reticleNamesFailed = true;
+        BVR_LOG("[b2r] reticle: FAULT during the %s dispatch - lane disabled",
+                wantHidden ? "DisableReticle" : "EnableReticle");
+        return;
+    }
+    if (r == 2) return;
+    g_reticleAssertMs = now;
+    g_reticleApplied = want;
+    if (changed)
+        BVR_LOG("[b2r] reticle: %s (ShockPlayer.%s via the engine's ProcessEvent)",
+                wantHidden ? "HIDDEN" : "shown",
+                wantHidden ? "DisableReticle" : "EnableReticle");
 }
 
 void poll_command_file(uint64_t now) {
@@ -1654,6 +1756,7 @@ void calcview_tail(void* self, CalcViewParams* p) {
             // and to drop the bone rig's cached pointers (session 39).
             patterns::hfov_scan_rearm("view state change");
             bones::on_world_change("view state change");
+            g_reticleApplied = -1; // session 42: fresh pawn = re-assert reticle
         }
     }
 
@@ -2183,6 +2286,7 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
             if ((s_pollGate & 0x3F) == 0) {
                 restore_game_fov_if_stale(400);
                 aim::poll_tick(GetTickCount64()); // 1 Hz probe summary while armed
+                assert_reticle(GetTickCount64()); // session 42: crosshair state
                 // Overlay-posted vrstereo request: hook installs must never
                 // run mid-Draw or from the render thread; this lane is the
                 // game thread outside hooked calls. Also the MENU-arming
@@ -2676,6 +2780,12 @@ void draw_debug_ui() {
         if (ImGui::Button("VR camera OFF")) bvr::vr::set_camera_mode(false);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
+        {
+            // Session 42 (user ask): the game's own crosshair, default hidden.
+            bool xhair = !g_reticleHidden.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Game crosshair (default hidden in VR)", &xhair))
+                g_reticleHidden.store(!xhair, std::memory_order_relaxed);
+        }
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
