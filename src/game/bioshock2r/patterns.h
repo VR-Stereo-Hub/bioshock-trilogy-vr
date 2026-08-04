@@ -360,6 +360,16 @@ constexpr uint32_t kFNameEntryTextOffset = 0x10; // UTF-16 text in place
 // anything failed. Game thread only.
 bool fname_text(uint32_t index, char* out, size_t outCap);
 
+// UObject-identity DERIVATION probe (session 41, log-only): dumps a live
+// object's header dwords, every +0x20..0x3C int32 that resolves through
+// GNames (the object's own FName index candidate) and every +0x24..0x44
+// pointer that looks like a UClass (heap object, in-image vtable, +0x28
+// FName resolves). BS1's layout was name +0x28 / class +0x30 with the UClass
+// vtable as the liveness gate - the never-copy rule says re-derive all three
+// here; the banked constants land once the log shows one stable answer
+// across >= 3 distinct classes. Game thread only.
+void probe_object_identity(const void* obj, const char* label);
+
 // --- GetPerfectFireStart impls (session 39, THE aim seam) -------------------
 // The live probe settled the dispatch question: GetPerfectFireStart never
 // passes ProcessEvent (0 hits over 6 real fire events while InitiateDamage

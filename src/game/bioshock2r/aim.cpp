@@ -3,6 +3,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshock2r/bones.h"
 
 #include <windows.h>
 #include <MinHook.h>
@@ -105,6 +106,12 @@ constexpr uint64_t kRayStaleMs = 250;
 // Telemetry.
 std::atomic<uint32_t> g_wepCalls{0}, g_abiCalls{0}, g_subs{0};
 std::atomic<bool> g_loggedWepArgs{false}, g_loggedAbiArgs{false};
+
+// The last weapon object seen at the fire seam (its detour `this`) - the
+// GROUND TRUTH for the session-41 holdable-offset derivation: `vrbones
+// holdscan find` scans the AHands actor for exactly this pointer. Read-only
+// diagnostic; never dereferenced without fresh validation.
+std::atomic<void*> g_lastWeaponThis{nullptr};
 
 // Log the first N substitutions with BEFORE and AFTER rotators. This is the
 // numeric half of the decoupled-aim proof: the engine's own value, the value
@@ -212,6 +219,7 @@ int __fastcall WeaponGpfsDetour(void* self, void* edx, FVector* outLoc, FRotator
                                 FVector* outEffect) {
     int r = g_origWeaponGpfs(self, edx, outLoc, outRot, outEffect);
     g_wepCalls.fetch_add(1, std::memory_order_relaxed);
+    g_lastWeaponThis.store(self, std::memory_order_relaxed);
     if (!g_loggedWepArgs.exchange(true, std::memory_order_relaxed) && outLoc && outRot)
         // Rotator prints as INTs - the FRotator denormal trap: as floats these
         // are denormals and print 0.000.
@@ -880,11 +888,40 @@ bool handle_command(const char* args) {
         }
         return true;
     }
+    // Session 41 derivation probe: `vraim oclass hands|weapon|<hexptr>`.
+    if (token(args, "oclass", &rest)) {
+        void* obj = nullptr;
+        const char* label = "ptr";
+        if (token(rest, "hands")) {
+            obj = bones::hands_actor();
+            label = "hands";
+            if (!obj)
+                BVR_LOG("[b2r] vraim oclass: AHands not resolved (enter gameplay, "
+                        "vrhands drives it)");
+        } else if (token(rest, "weapon")) {
+            obj = g_lastWeaponThis.load(std::memory_order_relaxed);
+            label = "weapon";
+            if (!obj)
+                BVR_LOG("[b2r] vraim oclass: no weapon seen at the seam yet - fire a "
+                        "gun (vrinput test trig r 255 300)");
+        } else {
+            unsigned v = 0;
+            if (sscanf_s(rest, "%x", &v) == 1) obj = reinterpret_cast<void*>(
+                static_cast<uintptr_t>(v));
+        }
+        if (obj) patterns::probe_object_identity(obj, label);
+        return true;
+    }
     BVR_LOG("[b2r] vraim: status | on|off | handray on|off | laser [l|r] on|off | "
             "dot [l|r] on|off|<distM> | trim l|r <p> <y> | pos l|r <f> <r> <u> | "
             "origin on|off|max <uu> | pose aim|grip | seam weapon|ability on|off | "
-            "test r <yaw> <pitch> [ms]|off | sublog [n] | probe on|off|clear|dump");
+            "test r <yaw> <pitch> [ms]|off | sublog [n] | probe on|off|clear|dump | "
+            "oclass hands|weapon|<hex>");
     return true;
+}
+
+void* last_weapon_this() {
+    return g_lastWeaponThis.load(std::memory_order_relaxed);
 }
 
 bool last_ray(int hand, FVector* origin, FRotator* rot) {

@@ -1348,6 +1348,11 @@ bool second_pass_for_current_thread(float* yawDegOut) {
     return true;
 }
 
+bool in_second_draw() {
+    uint32_t t = g_secondPassTid.load(std::memory_order_relaxed);
+    return t != 0 && t == GetCurrentThreadId();
+}
+
 void request_vrstereo(bool on) {
     g_vrstereoPending.store(on ? 1 : 0, std::memory_order_relaxed);
 }

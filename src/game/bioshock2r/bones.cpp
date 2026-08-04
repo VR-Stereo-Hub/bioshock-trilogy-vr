@@ -5,6 +5,7 @@
 #include "core/util/xr_math.h"
 #include "game/bioshock2r/aim.h"
 #include "game/bioshock2r/patterns.h"
+#include "game/bioshock2r/scenedraw.h"
 
 #include <windows.h>
 
@@ -36,6 +37,31 @@ bool g_scanDormant = false;
 float g_ref[kMaxBones][12];
 bool g_refValid = false;
 
+// Engine-adopted pose (session 41, the animation-preserving drive): the
+// trans+quat rows track the engine's own freshly-evaluated animation - a bone
+// is adopted only when the bank differs from OUR last write, so the drive's
+// own output can never feed back. The SCALE rows stay PINNED to g_ref
+// forever: the engine never restamps scale (poke-proven, patterns.h), so the
+// bank's scale bytes are always ours and adopting them would compound
+// g_scale geometrically (and could adopt arms-hide's zero).
+float g_anim[kMaxBones][12];
+std::atomic<bool> g_animMode{true};   // vrhands anim on|off (off = rigid ref drive)
+std::atomic<float> g_animTrans{0.0f}; // wrist authored-travel re-add, 0..1
+std::atomic<uint32_t> g_adopts[2] = {{0}, {0}}; // engine restamps absorbed
+
+// Per-frame compose inputs, cached so the absorb-repaint can RECOMPOSE a
+// mid-draw restamp instead of restoring a stale write (game thread only).
+struct ComposeCache {
+    float qtc[4];
+    float ptc[3];
+    float scale;
+    float animT;
+    int anchor;
+    bool animMode;
+    bool valid;
+};
+ComposeCache g_compose[2] = {};
+
 // Bone names (diagnostic; see the name-map section below).
 char g_boneNames[kMaxBones][48];
 bool g_namesValid = false;
@@ -66,6 +92,9 @@ std::atomic<uint32_t> g_peRepaints{0}; // restamps caught mid-draw (flicker fix)
 // contiguous once the arm bones ride along.
 float g_written[kMaxBones][12];
 bool g_writtenMask[2][kMaxBones] = {};
+// How each masked bone was written (0 = full, 1 = no scale channel, 2 =
+// hidden/collapsed) so the absorb-repaint can recompose it identically.
+uint8_t g_writeKind[2][kMaxBones] = {};
 uint64_t g_writeStampMs[2] = {};
 float g_lastWriteLoc[2][3] = {};
 uint32_t g_driveCount[2] = {};
@@ -99,6 +128,7 @@ void drop(const char* why) {
     memset(g_writtenMask, 0, sizeof g_writtenMask);
     g_armsApplied[0] = g_armsApplied[1] = -1;
     g_namesValid = false;
+    g_compose[0].valid = g_compose[1].valid = false;
 }
 
 // Revalidate the cached rig or (rate-limited, dormancy-guarded) rescan.
@@ -158,9 +188,103 @@ bool capture_reference() {
     if (!g_pose) return false;
     for (int i = 0; i < g_boneCount; ++i)
         memcpy(g_ref[i], g_pose + i * patterns::kSkelPoseStride, 48);
+    // The adopted-pose bank starts as the reference (scale rows included -
+    // they are pinned to g_ref and never adopted afterwards).
+    memcpy(g_anim, g_ref, sizeof g_anim);
     g_refValid = true;
     BVR_LOG("[b2r] bones: reference pose captured (%d bones)", g_boneCount);
     return true;
+}
+
+// --- engine-pose adoption (session 41) --------------------------------------
+// For every bone this hand is about to drive, decide whether the bank holds a
+// FRESH engine evaluation (adopt its trans+quat into g_anim) or still holds
+// our own last write (keep g_anim). Rules, in order:
+// - a bone the OTHER hand has masked is skipped outright (the bank holds that
+//   hand's composed write - adopting it would compose-on-composed);
+// - a bone NOT in this hand's mask is adopted UNCONDITIONALLY (it is entering
+//   the driven set - fresh drive after release, arms-mode change, cluster
+//   reconfig - and g_written[i] is stale garbage there, so the compare would
+//   be meaningless; the bank is engine truth for undriven bones);
+// - otherwise adopt only when the first 32 bytes differ from our last write.
+// NEVER the scale bytes (see g_anim above). Runs even with anim OFF so the
+// toggle switches to an up-to-date bank glitch-free.
+void adopt_one(int hand, int i) {
+    if (i < 0 || i >= g_boneCount) return;
+    if (g_writtenMask[1 - hand][i]) return;
+    const uint8_t* bank = g_pose + i * patterns::kSkelPoseStride;
+    if (g_writtenMask[hand][i]) {
+        if (memcmp(bank, g_written[i], 32) == 0) return; // still our write
+        // Quat-norm sanity: a torn read on the dev-only threaded substrate
+        // must not enter the compose (structural 1t makes this a no-op in
+        // the shipping config).
+        const float* q = reinterpret_cast<const float*>(bank + 16);
+        float n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+        if (!(n2 > 0.5f && n2 < 2.0f)) return;
+        g_adopts[hand].fetch_add(1, std::memory_order_relaxed);
+    }
+    memcpy(g_anim[i], bank, 32);
+}
+
+void adopt_hand(int hand) {
+    if (!g_pose || !g_refValid) return;
+    const Cluster& cl = g_cluster[hand];
+    int lo = cl.lo < 0 ? 0 : cl.lo;
+    int hi = cl.hi >= g_boneCount ? g_boneCount - 1 : cl.hi;
+    for (int i = lo; i <= hi; ++i) adopt_one(hand, i);
+    if (cl.extra >= 0 && cl.extra < g_boneCount) adopt_one(hand, cl.extra);
+    int armsMode = g_armsMode.load(std::memory_order_relaxed);
+    if (armsMode == 1 || armsMode == 2) {
+        const int* armIdx = hand ? patterns::kBoneArmR : patterns::kBoneArmL;
+        for (int a = 0; a < patterns::kBoneArmCount; ++a)
+            adopt_one(hand, armIdx[a]);
+    }
+}
+
+// Compose one bone from the cached frame inputs and stamp it (g_written +
+// bank + mask + kind). kind: 0 = full, 1 = keep authored scale (the
+// weapon-attach escape hatch), 2 = hidden - collapsed ONTO the driven wrist
+// (session 41: zero scale at the AUTHORED spot stretched a skin web from the
+// wrist across the arm; degenerating the blend to the wrist point kills it).
+// Scale ALWAYS comes from g_ref (never g_anim) - see the g_anim comment.
+void compose_bone(int hand, int i, int kind) {
+    const ComposeCache& cc = g_compose[hand];
+    const float(*src)[12] = cc.animMode ? g_anim : g_ref;
+    const float* r = src[i];
+    float* w = g_written[i];
+    if (kind == 2) {
+        memcpy(w, g_ref[i], 48);
+        w[0] = cc.ptc[0];
+        w[1] = cc.ptc[1];
+        w[2] = cc.ptc[2];
+        w[8] = 0.0f;
+        w[9] = 0.0f;
+        w[10] = 0.0f;
+    } else {
+        const float* A = src[cc.anchor];
+        const float* refA = g_ref[cc.anchor];
+        // Anchor-relative offset, scaled about the anchor; animT re-adds the
+        // wrist's own authored travel (0 = glued to the controller, the
+        // default - the write-loc ground truth stays exact).
+        float dp[3];
+        for (int k = 0; k < 3; ++k)
+            dp[k] = (r[k] - A[k]) * cc.scale + cc.animT * (A[k] - refA[k]) * cc.scale;
+        float rp[3];
+        bvr::xrmath::quat_rotate(cc.qtc[0], cc.qtc[1], cc.qtc[2], cc.qtc[3], dp, rp);
+        w[0] = cc.ptc[0] + rp[0];
+        w[1] = cc.ptc[1] + rp[1];
+        w[2] = cc.ptc[2] + rp[2];
+        w[3] = r[3];
+        bvr::xrmath::quat_mul(cc.qtc, &r[4], &w[4]);
+        bool scaleCh = kind == 0;
+        w[8] = scaleCh ? g_ref[i][8] * cc.scale : g_ref[i][8];
+        w[9] = scaleCh ? g_ref[i][9] * cc.scale : g_ref[i][9];
+        w[10] = scaleCh ? g_ref[i][10] * cc.scale : g_ref[i][10];
+        w[11] = g_ref[i][11];
+    }
+    memcpy(g_pose + i * patterns::kSkelPoseStride, w, 48);
+    g_writtenMask[hand][i] = true;
+    g_writeKind[hand][i] = static_cast<uint8_t>(kind);
 }
 
 // --- bone-name map (session 40) ---------------------------------------------
@@ -394,10 +518,26 @@ bool drive(const FrameContext& ctx, const GamePose& target, int hand) {
     // Equivalent to a per-cluster bake of exactly refQ_anchor, but self-deriving:
     // nothing to re-bank when a weapon, animation or rig changes.
     // (hkQsTransform: translation at [0..3], quat at [4..7], scale [8..11].)
-    const float* refA = g_ref[anchor];
-    const float* delta = qtc;
+    //
+    // Session 41: with anim mode ON the source is g_anim - the engine's own
+    // freshly-evaluated pose, adopted below - so q_i = qtc * animQ_i and the
+    // engine's animation plays inside the controller-driven frame. Since
+    // adoption filters our own writes out, this is algebraically the brief's
+    // "compose the animation DELTA on top of the controller frame"
+    // (qtc * (animQ * conj(refQ)) * refQ == qtc * animQ), without ever
+    // forming the delta explicitly.
     float scale = g_scale[hand].load(std::memory_order_relaxed);
     if (!(scale > 0.05f && scale < 20.0f)) scale = 1.0f;
+    bool animMode = g_animMode.load(std::memory_order_relaxed);
+    float animT = animMode ? g_animTrans.load(std::memory_order_relaxed) : 0.0f;
+    if (!(animT >= 0.0f && animT <= 1.0f)) animT = 0.0f;
+
+    // Absorb the engine's evaluation BEFORE this frame's writes: any driven
+    // bone whose bank bytes are no longer ours was restamped by animation and
+    // becomes this frame's pose source. Runs before the arms-transition
+    // restore below (that restore writes ref to the bank without updating
+    // g_written, and must not be mistaken for an engine restamp).
+    adopt_hand(hand);
 
     // Arms-mode transition (game thread, here on purpose): leaving follow or
     // hide must hand the arm bones back to the engine explicitly - animation
@@ -414,51 +554,26 @@ bool drive(const FrameContext& ctx, const GamePose& target, int hand) {
         g_armsApplied[hand] = armsMode;
     }
 
-    memset(g_writtenMask[hand], 0, sizeof g_writtenMask[hand]);
-    auto write_bone = [&](int i, bool scaleChannel) {
-        const float* r = g_ref[i];
-        float* w = g_written[i];
-        // Anchor-relative offset, scaled so the cluster grows about its
-        // anchor instead of only thickening bones in place.
-        float dp[3] = {(r[0] - refA[0]) * scale, (r[1] - refA[1]) * scale,
-                       (r[2] - refA[2]) * scale};
-        float rp[3];
-        bvr::xrmath::quat_rotate(delta[0], delta[1], delta[2], delta[3], dp, rp);
-        w[0] = ptc[0] + rp[0];
-        w[1] = ptc[1] + rp[1];
-        w[2] = ptc[2] + rp[2];
-        w[3] = r[3];
-        bvr::xrmath::quat_mul(delta, &r[4], &w[4]);
-        // Scale channel: poke-proven to render, and animation never restamps
-        // it (patterns.h "the AHands rig"). scaleChannel=false keeps the
-        // authored scale (the weapon-attach escape hatch - see scale_attach).
-        w[8] = scaleChannel ? r[8] * scale : r[8];
-        w[9] = scaleChannel ? r[9] * scale : r[9];
-        w[10] = scaleChannel ? r[10] * scale : r[10];
-        w[11] = r[11];
-        memcpy(g_pose + i * patterns::kSkelPoseStride, w, 48);
-        g_writtenMask[hand][i] = true;
-    };
-    // Hidden bone: authored transform, zero scale. Kept in the mask so
-    // reapply/repaint hold it hidden and release() restores it.
-    auto hide_bone = [&](int i) {
-        float* w = g_written[i];
-        memcpy(w, g_ref[i], 48);
-        w[8] = 0.0f;
-        w[9] = 0.0f;
-        w[10] = 0.0f;
-        memcpy(g_pose + i * patterns::kSkelPoseStride, w, 48);
-        g_writtenMask[hand][i] = true;
-    };
+    ComposeCache& cc = g_compose[hand];
+    memcpy(cc.qtc, qtc, sizeof cc.qtc);
+    memcpy(cc.ptc, ptc, sizeof cc.ptc);
+    cc.scale = scale;
+    cc.animT = animT;
+    cc.anchor = anchor;
+    cc.animMode = animMode;
+    cc.valid = true;
 
-    for (int i = lo; i <= hi; ++i) write_bone(i, true);
-    if (extra >= 0) write_bone(extra, g_scaleAttach.load(std::memory_order_relaxed));
+    memset(g_writtenMask[hand], 0, sizeof g_writtenMask[hand]);
+    for (int i = lo; i <= hi; ++i) compose_bone(hand, i, 0);
+    if (extra >= 0)
+        compose_bone(hand, extra,
+                     g_scaleAttach.load(std::memory_order_relaxed) ? 0 : 1);
     if (armsMode == 1) {
         for (int a = 0; a < patterns::kBoneArmCount; ++a)
-            if (armIdx[a] < g_boneCount) write_bone(armIdx[a], true);
+            if (armIdx[a] < g_boneCount) compose_bone(hand, armIdx[a], 0);
     } else if (armsMode == 2) {
         for (int a = 0; a < patterns::kBoneArmCount; ++a)
-            if (armIdx[a] < g_boneCount) hide_bone(armIdx[a]);
+            if (armIdx[a] < g_boneCount) compose_bone(hand, armIdx[a], 2);
     }
 
     g_writeStampMs[hand] = GetTickCount64();
@@ -496,6 +611,7 @@ void release(const char* why, int hand) {
         }
         memset(g_writtenMask[h], 0, sizeof g_writtenMask[h]);
         g_armsApplied[h] = -1;
+        g_compose[h].valid = false;
     }
     if (any)
         BVR_LOG("[b2r] bones: released %s (%s) - reference restored",
@@ -522,11 +638,45 @@ void pe_repaint() {
         if (memcmp(g_pose + s * patterns::kSkelPoseStride, g_written[s], 48) == 0)
             continue;
         if (!is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride)) return;
-        for (int i = 0; i < g_boneCount; ++i)
-            if (g_writtenMask[h][i])
-                memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
+        // Session 41, absorb-then-recompose: the restamp is INPUT, not an
+        // enemy - adopt it into g_anim first, then rewrite this frame
+        // composed on the fresh pose. Pass 1 only: the second pass must
+        // render the identical frame pass 1 did, so it gets the verbatim
+        // restamp (as does a repaint arriving before any compose is cached).
+        adopt_hand(h);
+        if (g_compose[h].valid && !scenedraw::in_second_draw()) {
+            for (int i = 0; i < g_boneCount; ++i)
+                if (g_writtenMask[h][i]) compose_bone(h, i, g_writeKind[h][i]);
+        } else {
+            for (int i = 0; i < g_boneCount; ++i)
+                if (g_writtenMask[h][i])
+                    memcpy(g_pose + i * patterns::kSkelPoseStride, g_written[i], 48);
+        }
         g_peRepaints.fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+void set_anim_mode(bool on) {
+    g_animMode.store(on, std::memory_order_relaxed);
+}
+
+bool anim_mode() {
+    return g_animMode.load(std::memory_order_relaxed);
+}
+
+void set_anim_trans(float t) {
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    g_animTrans.store(t, std::memory_order_relaxed);
+}
+
+float anim_trans() {
+    return g_animTrans.load(std::memory_order_relaxed);
+}
+
+uint32_t adopt_count(int hand) {
+    return (hand < 0 || hand > 1) ? 0
+                                  : g_adopts[hand].load(std::memory_order_relaxed);
 }
 
 void set_scale(int hand, float scale) {
@@ -561,6 +711,10 @@ void on_world_change(const char* why) {
     g_scanMisses = 0;
 }
 
+void* hands_actor() {
+    return g_hands;
+}
+
 bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs) {
     if (hand < 0 || hand > 1 || g_writeStampMs[hand] == 0) return false;
     if (x) *x = g_lastWriteLoc[hand][0];
@@ -576,12 +730,16 @@ bool handle_command(const char* args) {
     if (strncmp(args, "status", 6) == 0 || *args == '\0') {
         const char* armNames[] = {"game", "follow", "hide"};
         BVR_LOG("[b2r] vrbones status: rig %s (%d bones), ref %s, names %s, arms %s, "
-                "scaleattach %s, pe repaints %u",
+                "scaleattach %s, pe repaints %u, anim %s trans %.2f adopts L %u R %u",
                 g_hands ? "RESOLVED" : "-", g_boneCount, g_refValid ? "captured" : "-",
                 g_namesValid ? "mapped" : "-",
                 armNames[g_armsMode.load(std::memory_order_relaxed)],
                 g_scaleAttach.load(std::memory_order_relaxed) ? "on" : "off",
-                g_peRepaints.load(std::memory_order_relaxed));
+                g_peRepaints.load(std::memory_order_relaxed),
+                g_animMode.load(std::memory_order_relaxed) ? "on" : "off",
+                g_animTrans.load(std::memory_order_relaxed),
+                g_adopts[0].load(std::memory_order_relaxed),
+                g_adopts[1].load(std::memory_order_relaxed));
         for (int h = 0; h < 2; ++h)
             BVR_LOG("[b2r]   %s cluster %d..%d +%d anchor %d scale %.2f, drives %u, "
                     "last write (%.1f %.1f %.1f)",
@@ -663,6 +821,132 @@ bool handle_command(const char* args) {
             return true;
         }
     }
+    // --- session 41 holdable-offset derivation --------------------------------
+    // `holdscan cap` snapshots the AHands actor's first 0x800 bytes;
+    // `holdscan diff` lists the dword slots that changed since (run it across
+    // a digit-key weapon switch - the slot that changes AND resolves as an
+    // object is the holdable); `holdscan find` scans for the pointer the fire
+    // seam last saw (the ground-truth method - BS1's derivation found the
+    // weapon pointer exactly once in hands+0..0x800). Both methods must agree
+    // before the offset is banked.
+    if (strncmp(args, "holdscan", 8) == 0) {
+        static uint8_t snap[0x800];
+        static bool snapValid = false;
+        const char* sub = args + 8;
+        while (*sub == ' ') ++sub;
+        if (!resolve_rig()) {
+            BVR_LOG("[b2r] vrbones holdscan: rig not resolved");
+            return true;
+        }
+        if (strncmp(sub, "cap", 3) == 0) {
+            if (read_n(g_hands, snap, sizeof snap)) {
+                snapValid = true;
+                BVR_LOG("[b2r] holdscan: captured hands %p +0x000..0x800", g_hands);
+            } else {
+                BVR_LOG("[b2r] holdscan: hands read failed");
+            }
+            return true;
+        }
+        uint8_t cur[0x800];
+        if (!read_n(g_hands, cur, sizeof cur)) {
+            BVR_LOG("[b2r] holdscan: hands read failed");
+            return true;
+        }
+        if (strncmp(sub, "diff", 4) == 0) {
+            if (!snapValid) {
+                BVR_LOG("[b2r] holdscan diff: no snapshot - run `holdscan cap` first");
+                return true;
+            }
+            int shown = 0, probes = 0;
+            for (uint32_t off = 0; off < sizeof cur; off += 4) {
+                uint32_t a, b;
+                memcpy(&a, snap + off, 4);
+                memcpy(&b, cur + off, 4);
+                if (a == b) continue;
+                if (++shown > 24) continue; // count the rest silently
+                BVR_LOG("[b2r]   holdscan diff +0x%03X: %08X -> %08X", off, a, b);
+                // Object-looking new values get the identity probe (capped).
+                if (probes < 6 && b > 0x10000 && (b & 3) == 0 &&
+                    is_memory_valid(reinterpret_cast<void*>(static_cast<uintptr_t>(b)),
+                                    0x48)) {
+                    ++probes;
+                    patterns::probe_object_identity(
+                        reinterpret_cast<void*>(static_cast<uintptr_t>(b)),
+                        "holdscan-diff");
+                }
+            }
+            BVR_LOG("[b2r] holdscan diff: %d slot(s) changed (showing first 24)", shown);
+            return true;
+        }
+        if (strncmp(sub, "find", 4) == 0) {
+            void* w = aim::last_weapon_this();
+            if (!w) {
+                BVR_LOG("[b2r] holdscan find: no weapon seen at the seam yet - fire a "
+                        "gun first (vrinput test trig r 255 300)");
+                return true;
+            }
+            int hits = 0;
+            for (uint32_t off = 0; off < sizeof cur; off += 4) {
+                void* v;
+                memcpy(&v, cur + off, 4);
+                if (v != w) continue;
+                ++hits;
+                BVR_LOG("[b2r]   holdscan find: hands+0x%03X holds the fired weapon %p "
+                        "<- holdable-offset candidate",
+                        off, w);
+            }
+            BVR_LOG("[b2r] holdscan find: %d hit(s) for %p in hands+0x000..0x800", hits,
+                    w);
+            return true;
+        }
+        BVR_LOG("[b2r] vrbones holdscan cap|diff|find");
+        return true;
+    }
+    // `wskel [hexptr]` - session 41: does the holdable carry its OWN
+    // SkeletonInstance (vtable + owner backpointer, the AHands two-factor
+    // identity)? Scans the object's first 0x800 bytes; the offset it reports
+    // is the constant the uniform-weapon-scale lane banks.
+    if (strncmp(args, "wskel", 5) == 0) {
+        void* hold = nullptr;
+        unsigned hv = 0;
+        if (sscanf_s(args, "wskel %x", &hv) == 1)
+            hold = reinterpret_cast<void*>(static_cast<uintptr_t>(hv));
+        else
+            hold = aim::last_weapon_this();
+        if (!hold) {
+            BVR_LOG("[b2r] vrbones wskel: no target - fire a gun first or pass a hex "
+                    "pointer");
+            return true;
+        }
+        if (!resolve_rig()) {
+            BVR_LOG("[b2r] vrbones wskel: rig not resolved (image base unknown)");
+            return true;
+        }
+        int hits = 0;
+        for (uint32_t off = 0; off < 0x800; off += 4) {
+            uint8_t* cand = nullptr;
+            if (!read_n(static_cast<uint8_t*>(hold) + off, &cand, 4)) break;
+            if (!cand || !is_memory_valid(cand, 0x60)) continue;
+            if (*reinterpret_cast<const uint8_t* const*>(cand) !=
+                g_imageBase + patterns::kSkeletonInstanceVtableRva)
+                continue;
+            ++hits;
+            bool owned = *reinterpret_cast<uint8_t**>(cand + patterns::kSkelOwnerOffset) ==
+                         hold;
+            uint8_t* arr = cand + patterns::kSkelPoseArrayOffset;
+            uint8_t* pose = *reinterpret_cast<uint8_t**>(arr);
+            int32_t cnt = *reinterpret_cast<int32_t*>(arr + 4);
+            bool poseOk = pose && cnt > 0 && cnt <= kMaxBones &&
+                          is_memory_valid(pose, cnt * patterns::kSkelPoseStride);
+            BVR_LOG("[b2r]   wskel: %p+0x%03X -> SkeletonInstance %p, owner %s, pose "
+                    "%p x%d (%s)",
+                    hold, off, cand, owned ? "MATCHES the holdable" : "OTHER", pose, cnt,
+                    poseOk ? "valid" : "INVALID");
+        }
+        BVR_LOG("[b2r] vrbones wskel: %d SkeletonInstance hit(s) in %p+0x000..0x800",
+                hits, hold);
+        return true;
+    }
     if (strncmp(args, "axes", 4) == 0) {
         int idx = g_cluster[1].anchor;
         sscanf_s(args, "axes %d", &idx);
@@ -676,7 +960,8 @@ bool handle_command(const char* args) {
         return true;
     }
     BVR_LOG("[b2r] vrbones: status | cluster l|r <lo> <hi> <anchor> [extra] | refcap | "
-            "release | names | map | axes [idx]");
+            "release | names | map | axes [idx] | holdscan cap|diff|find | "
+            "wskel [hex]");
     return true;
 }
 

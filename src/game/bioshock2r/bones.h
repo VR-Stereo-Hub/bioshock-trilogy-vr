@@ -78,7 +78,25 @@ int arms_mode();
 // pass 2 is protected by reapply(), pass 1 was not. Called per ProcessEvent
 // dispatch while inside a hooked draw; one 48-byte sentinel compare per
 // driven hand, full repaint only when a restamp is actually seen.
+// Session 41: on pass 1 the repaint ABSORBS the restamp (adopts it as the
+// new animation pose) and recomposes, instead of restoring a stale write;
+// pass 2 keeps the verbatim restamp so both eyes render the same frame.
 void pe_repaint();
+
+// Animation-preserving drive (session 41): ON composes the controller frame
+// on top of the engine's own freshly-evaluated pose (adopted per bone only
+// when the bank stopped being our own write), so weapon/finger animations
+// play in the driven hand's space; OFF is the rigid session-40 reference
+// drive (also the escape hatch if the returning idle sway bothers). The
+// axes-instrument 0.21 deg rest oracle is only valid with anim OFF.
+void set_anim_mode(bool on);
+bool anim_mode();
+// Re-add the wrist's own authored travel (0 = anchor glued to the controller,
+// the default; 1 = full authored travel composed into the controller frame).
+void set_anim_trans(float t);
+float anim_trans();
+// Telemetry: engine restamps absorbed for one hand (adoption liveness).
+uint32_t adopt_count(int hand);
 
 // World/view changed under us - drop every cached pointer and the reference.
 void on_world_change(const char* why);
@@ -90,5 +108,9 @@ bool handle_command(const char* args);
 // (UU) - the VERIFICATION 2.8 ground truth ("last write loc tracks the
 // sweep"), now per hand so each cluster proves its own controller.
 bool last_write(int hand, float* x, float* y, float* z, uint64_t* ageMs);
+
+// The resolved AHands actor (null until the rig resolves). Diagnostic /
+// identity-probe use only - consumers must treat it as revalidate-before-use.
+void* hands_actor();
 
 } // namespace bvr::b2r::bones

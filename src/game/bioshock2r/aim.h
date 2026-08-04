@@ -88,4 +88,9 @@ void set_origin(bool on);
 float dot_dist_m();
 void set_dot_dist_m(float m);
 
+// The last weapon object seen at the fire seam (diagnostic ground truth for
+// the session-41 holdable derivation). May be stale or dead - never
+// dereference without fresh validation.
+void* last_weapon_this();
+
 } // namespace bvr::b2r::aim

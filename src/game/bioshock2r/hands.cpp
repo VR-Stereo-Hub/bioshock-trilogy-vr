@@ -202,9 +202,28 @@ bool handle_command(const char* args) {
                 bones::scale_attach() ? "on" : "off");
         return true;
     }
+    // animtrans BEFORE anim: is_verb keeps them apart, but parse the longer
+    // token first anyway (the off/offset lesson).
+    if (sscanf_s(args, "animtrans %f", &a) == 1) {
+        bones::set_anim_trans(a);
+        BVR_LOG("[b2r] command: vrhands animtrans %.2f (authored wrist travel "
+                "re-added; 0 = glued to the controller)",
+                bones::anim_trans());
+        return true;
+    }
+    if (is_verb(args, "anim")) {
+        bones::set_anim_mode(strstr(args, "off") == nullptr);
+        BVR_LOG("[b2r] command: vrhands anim %s (%s)",
+                bones::anim_mode() ? "on" : "off",
+                bones::anim_mode()
+                    ? "engine animations compose into the driven frame"
+                    : "rigid reference drive - animations frozen");
+        return true;
+    }
     BVR_LOG("[b2r] vrhands: on|off | status | trim l|r <p> <y> <r> | "
             "offset l|r <f> <r> <u> | scale [l|r] <f> | pose aim|grip | "
-            "arms follow|hide|game | scaleweapon on|off");
+            "arms follow|hide|game | scaleweapon on|off | anim on|off | "
+            "animtrans <0..1>");
     return true;
 }
 
