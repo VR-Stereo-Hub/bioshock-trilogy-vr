@@ -48,6 +48,11 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // fire on that shape, so the HUD classifier needs the opt-in; core
     // default stays off (BS1 bit-identical).
     bvr::hud::set_backbuffer_composite(true);
+    // Session 42 r2: BS2's letterbox-bars sprite is 11 verts (derivation in
+    // patterns.h next to the constant; never copy BS1's 29). Skipping it is
+    // what removes the black bars from the HUD panel, and its presence is the
+    // sustained cinematic-hold signal the cine gates key on.
+    bvr::hud::set_bar_verts(patterns::kCineBarVerts);
     // Session 42 (user decision): harvest the first cutscene's fingerprint
     // automatically. Round 2: the bars edge can never fire while the
     // fingerprint is underived (circular), but the in-headset run proved the
