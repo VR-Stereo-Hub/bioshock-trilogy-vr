@@ -2443,3 +2443,18 @@ on the pad - ALL GOOD; no flicker seen yet. Two asks + one defect came back:
    cutscenes), auto-armed at adapter init. The next cutscene writes a full
    2-window dump; fingerprint the bars from it (verts + srv atlas), then give
    the bar test a textured variant + re-arm the draw-signal gates.
+
+### Session 42 round 3 (2026-08-05) - the bars fingerprint lands, full cine lifecycle green
+
+`patterns::kCineBarVerts = 11` (textureless gameswf draw; derivation next to the
+constant - the 11-vert census line fired at letterbox-ON in the user's headset
+run AND the sim replay of their pre-cutscene save, never in gameplay). Sim replay
+of the Adonis plasmid-injection scene, full lifecycle in one pass: bar draw ON
+(11 verts) -> cine edge ENTER (barDraw=1, drive=authored) -> hold SUSTAINED 43 s
+(one ENTER, one EXIT, no flapping) -> **skipped 6288 of 6288 intervals** (no
+black bars reach the HUD panel) -> EXIT -> hands re-driving (residue L30 R30,
+wskel HELD). Cutscenes now play with authored camera AND authored hands (the
+user's preference), and the panel is bar-free. The engine ALSO letterboxes some
+moments in-frame (pixel watch saw real 166/182 px bands during this scene) -
+those bands live in the eyes like flat, BS1's correct-by-construction class;
+revisit only if the user reports them.

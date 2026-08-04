@@ -149,6 +149,19 @@ constexpr uint32_t kSceneBuildGameplayRetRva = 0xCD5D7B;
 // a wrong offset - see ENGINE_NOTES "BS2 does not render non-16:9 cleanly".
 constexpr int kRayBlockCb0FloatIndex = 16;
 
+// ---- CUTSCENE LETTERBOX BARS (session 42 round 2) ---------------------------
+// BS2's gameswf bars sprite tessellates to ELEVEN vertices, not BS1's 29.
+// Derivation (two independent runs): the classifier's textureless census
+// logged an 11-vert textureless gameswf draw at the EXACT letterbox-ON moment
+// of the Adonis plasmid-injection cutscene - in the user's in-headset run
+// (01:07:07, their session) and again in the sim replay of their save
+// (01:54:21.746 vs letterbox ON 01:54:22.335, top 166 / bottom 182 px) - and
+// never during plain gameplay across the whole session. Fed to
+// hud::set_bar_verts at adapter init; the classifier then SKIPS the draw
+// (bars hidden default) and bar_draw_active() becomes the sustained cinematic
+// hold signal the cine gates key on.
+constexpr unsigned kCineBarVerts = 11;
+
 // ---- THE FIRST-PERSON RIG (the Big Daddy helmet), session 34 ----------------
 // DrawIndexed index count of the helmet's PORTHOLE RING - the mesh that
 // surrounds the view and takes most of it once the viewmodel lens is wide.
