@@ -1,0 +1,26 @@
+The bundled BioShock 2 calibration (v0.7.0)
+===========================================
+
+You do NOT need these files for a fresh install: BioShock 2's calibration
+(per-weapon aim, hand model tuning, cutscene and HUD defaults) is built
+into the mod DLL itself. Install the two DLLs, press APPLY PRESET at the
+top of the F10 menu, play.
+
+These files are the author's exact tuned setup, for two cases only:
+
+1. You changed settings in-game, pressed SAVE, and want to get back to
+   the shipped tuning: copy BOTH files into
+     %LOCALAPPDATA%\BioshockVR\bs2\
+   (create the folder if it does not exist) and restart the game.
+
+2. You want a file baseline to hand-edit (each line is one setting;
+   the F10 menu edits the same values live and SAVE rewrites the files).
+
+Files:
+  vrpreset.ini  - global settings (camera, HUD panel, cutscenes,
+                  laser/dot toggles, body-follow, hand trims)
+  weapons.ini   - per-weapon aim + model calibration (auto-applied as
+                  you switch weapons)
+
+Note: BioShock 2 keeps its settings in the bs2\ subfolder - the two
+games never share files.
