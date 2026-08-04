@@ -96,11 +96,11 @@ std::atomic<uint32_t> g_originRefusals{0};
 // round 2 (their explicit ask; BS1 session-21 precedent). Left = the plasmid
 // hand's global tuning; right = the baseline the per-weapon profiles seed
 // from. The preset still overrides key-by-key.
-std::atomic<float> g_trimPitch[2] = {{1.19f}, {14.31f}};
-std::atomic<float> g_trimYaw[2] = {{23.25f}, {-14.31f}};
-std::atomic<float> g_posFwdCm[2] = {{0.0f}, {1.99f}};
-std::atomic<float> g_posRightCm[2] = {{3.18f}, {-0.79f}};
-std::atomic<float> g_posUpCm[2] = {{0.0f}, {10.33f}};
+std::atomic<float> g_trimPitch[2] = {{1.19f}, {17.88f}};
+std::atomic<float> g_trimYaw[2] = {{23.25f}, {-16.69f}};
+std::atomic<float> g_posFwdCm[2] = {{0.0f}, {-3.58f}};
+std::atomic<float> g_posRightCm[2] = {{3.18f}, {-1.19f}};
+std::atomic<float> g_posUpCm[2] = {{0.0f}, {11.13f}};
 // Telemetry for `vraim status` / the flat sweep.
 std::atomic<float> g_lastRayYawDeg[2] = {{0.0f}, {0.0f}};
 std::atomic<float> g_lastRayPitchDeg[2] = {{0.0f}, {0.0f}};
@@ -709,21 +709,31 @@ constexpr ProfileField kProfileFields[] = {
 // construction). Shared model trims across all: trim 12.5/-7.5/3.25 scale
 // 0.76-0.77; per-weapon aim trims/pos + wScale as tuned.
 void seed_default_profiles() {
-    struct Row {
+    struct Row2 {
         const char* key;
-        float aTP, aTY, aPF, aPR, aPU, mScale, wScale;
+        float aTP, aTY, aPF, aPR, aPU, mScale, wScale, wOF, wOR, wOU;
     };
-    static const Row kRows[] = {
-        {"PlayerDistanceHackingTool", 11.72f, -8.94f, 0.00f, 0.00f, 11.13f, 0.76f, 0.75f},
-        {"PlayerDrill", 15.50f, -10.93f, -19.87f, 2.38f, 18.68f, 0.76f, 0.75f},
-        {"PlayerGrenadeLauncher", 10.33f, -12.32f, 0.00f, -4.37f, 26.62f, 0.76f, 0.75f},
-        {"PlayerMachineGun", 12.52f, -9.93f, 0.00f, -3.97f, 26.62f, 0.76f, 0.75f},
-        {"PlayerResearchVideoCamera", 0.00f, 0.00f, 0.00f, 0.00f, 0.00f, 1.35f, 1.00f},
-        {"PlayerRivetGun", 17.88f, -16.69f, -3.58f, -1.19f, 11.13f, 0.76f, 0.77f},
-        {"PlayerShotgun", 14.31f, -14.31f, 1.99f, -0.79f, 10.33f, 0.77f, 0.77f},
-        {"PlayerSpeargun", 14.90f, -15.89f, 17.48f, -17.48f, 29.40f, 0.76f, 0.75f},
+    // Round-3 bake (2026-08-04): the user's round-2 in-headset pass added the
+    // per-weapon weapon offsets and a shotgun model-scale touch-up.
+    static const Row2 kRows[] = {
+        {"PlayerDistanceHackingTool", 11.72f, -8.94f, 0.00f, 0.00f, 11.13f, 0.76f,
+         0.75f, 0.00f, 0.00f, 0.00f},
+        {"PlayerDrill", 15.50f, -10.93f, -19.87f, 2.38f, 18.68f, 0.76f, 0.75f, 0.00f,
+         0.00f, 0.00f},
+        {"PlayerGrenadeLauncher", 10.33f, -12.32f, 0.00f, -4.37f, 26.62f, 0.76f,
+         0.75f, 0.00f, 0.00f, 0.00f},
+        {"PlayerMachineGun", 12.52f, -9.93f, 0.00f, -3.97f, 26.62f, 0.76f, 0.75f,
+         -7.47f, 0.00f, 0.00f},
+        {"PlayerResearchVideoCamera", 0.00f, 0.00f, 0.00f, 0.00f, 0.00f, 1.35f, 1.00f,
+         0.00f, 0.00f, 0.00f},
+        {"PlayerRivetGun", 17.88f, -16.69f, -3.58f, -1.19f, 11.13f, 0.76f, 0.77f,
+         -6.30f, 0.00f, 0.00f},
+        {"PlayerShotgun", 14.31f, -14.31f, 1.99f, -0.79f, 10.33f, 0.79f, 0.77f,
+         -11.44f, 0.00f, 0.00f},
+        {"PlayerSpeargun", 14.90f, -15.89f, 17.48f, -17.48f, 29.40f, 0.76f, 0.75f,
+         -7.24f, 0.00f, -2.10f},
     };
-    for (const Row& r : kRows) {
+    for (const Row2& r : kRows) {
         WeaponProfile p{};
         p.aimTrimPitch = r.aTP;
         p.aimTrimYaw = r.aTY;
@@ -738,9 +748,9 @@ void seed_default_profiles() {
         p.modOffUp = 0.0f;
         p.modScale = r.mScale;
         p.wScale = r.wScale;
-        p.wOffFwd = 0.0f;
-        p.wOffRight = 0.0f;
-        p.wOffUp = 0.0f;
+        p.wOffFwd = r.wOF;
+        p.wOffRight = r.wOR;
+        p.wOffUp = r.wOU;
         g_weaponProfiles[r.key] = p;
     }
     BVR_LOG("[b2r] weapon profiles: %zu defaults seeded (user calibration bake)",
@@ -1327,6 +1337,19 @@ void set_origin(bool on) { g_handOrigin.store(on, std::memory_order_relaxed); }
 float dot_dist_m() { return g_dotDistM.load(std::memory_order_relaxed); }
 void set_dot_dist_m(float m) {
     if (m > 0.2f && m < 20.0f) g_dotDistM.store(m, std::memory_order_relaxed);
+}
+
+// Per-hand laser/dot toggles (session 41 round 3, user ask: the commands
+// existed but nothing in F10 could switch the beam or the dot). The master
+// g_laserOn/g_dotOn stay implied-ON; these are the user-facing per-hand
+// enables, preset-persisted.
+bool laser_hand(int h) { return g_laserHandOn[h & 1].load(std::memory_order_relaxed); }
+void set_laser_hand(int h, bool on) {
+    g_laserHandOn[h & 1].store(on, std::memory_order_relaxed);
+}
+bool dot_hand(int h) { return g_dotHandOn[h & 1].load(std::memory_order_relaxed); }
+void set_dot_hand(int h, bool on) {
+    g_dotHandOn[h & 1].store(on, std::memory_order_relaxed);
 }
 
 } // namespace bvr::b2r::aim

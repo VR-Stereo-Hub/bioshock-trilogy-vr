@@ -71,7 +71,8 @@ ComposeCache g_compose[2] = {};
 // aim ray is untouched (it never reads the model). cm in the hand's trimmed
 // basis - the same frame as the model offset sliders; per-weapon profile
 // field. hands.cpp converts to a game-space UU vector each frame.
-std::atomic<float> g_wOffCm[3] = {{0.0f}, {0.0f}, {0.0f}}; // fwd, right, up
+// fwd, right, up; default = user calibration (s41 r3 bake)
+std::atomic<float> g_wOffCm[3] = {{-6.30f}, {0.0f}, {0.0f}};
 float g_wOffGame[3] = {}; // this frame's converted vector (game thread)
 
 // --- the weapon's OWN skeleton: uniform scale (session 41) ------------------
@@ -94,7 +95,7 @@ float g_wRef[kMaxBones][12];
 float g_wAnim[kMaxBones][12];
 float g_wWritten[kMaxBones][12];
 bool g_wWrittenValid[kMaxBones] = {};
-std::atomic<float> g_wScale{0.774f}; // user-calibration default (s41 r2 bake)
+std::atomic<float> g_wScale{0.770f}; // user-calibration default (s41 r3 bake)
 uint64_t g_wStampMs = 0;
 std::atomic<uint32_t> g_wAdopts{0};
 uint32_t g_wDrives = 0;
@@ -118,8 +119,8 @@ Cluster g_cluster[2] = {
     {7, 28, 62, 7},   // left / plasmid hand
     {36, 57, 63, 63}, // right / weapon hand
 };
-// Default = the user's calibration (session 41 round 2 bake; preset overrides).
-std::atomic<float> g_scale[2] = {{0.771f}, {0.771f}};
+// Default = the user's calibration (session 41 round 3 bake; preset overrides).
+std::atomic<float> g_scale[2] = {{0.771f}, {0.760f}};
 // Session 41: default OFF - the uniform weapon scale (wskel lane) supersedes
 // scaling the attach pivot, whose scale attachments inverse-decompose (the
 // canister proof). Kept as the F10 fallback toggle; preset key overrides.
