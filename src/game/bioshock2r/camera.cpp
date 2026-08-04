@@ -715,7 +715,11 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //   vrhands on|off|status|trim <p> <y> <r>|offset <f> <r> <u>|pose aim|grip
 //                                the rig rides the RIGHT controller through
 //                                the same frame context the ray uses
-//   vrbones status|cluster <lo> <hi> <anchor>|refcap|release
+//   vrbones status|cluster <lo> <hi> <anchor>|refcap|release|flick on|off
+//                                flick (session 42) gates the [flick] minute
+//                                line - per-site restamp-catch deltas + pass
+//                                phase + write->catch latency, the flicker
+//                                diagnosis readout (counters always count)
 //                                the bone-drive mechanism's own levers
 
 void save_vr_preset();

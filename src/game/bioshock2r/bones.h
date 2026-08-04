@@ -81,7 +81,9 @@ int arms_mode();
 // Session 41: on pass 1 the repaint ABSORBS the restamp (adopts it as the
 // new animation pose) and recomposes, instead of restoring a stale write;
 // pass 2 keeps the verbatim restamp so both eyes render the same frame.
-void pe_repaint();
+// Session 42: `site` tags the catch for the flicker instrumentation - 0 = the
+// PE lane (default, existing call sites unchanged), 1 = the flush point.
+void pe_repaint(int site = 0);
 
 // Animation-preserving drive (session 41): ON composes the controller frame
 // on top of the engine's own freshly-evaluated pose (adopted per bone only
@@ -97,6 +99,28 @@ void set_anim_trans(float t);
 float anim_trans();
 // Telemetry: engine restamps absorbed for one hand (adoption liveness).
 uint32_t adopt_count(int hand);
+
+// --- Session 42: flicker DIAGNOSIS snapshot ---------------------------------
+// Cumulative counters plus the per-phase write->catch latency maxima (the
+// dmax fields are a WINDOW max: drained to 0 by the snapshot, so the caller's
+// cadence defines the window). Phases: 0/1 = PE repaint pass 1/2, 2/3 =
+// flush-point repaint pass 1/2. catches[][0] = hands bank, [][1] = wskel.
+// Invariant printed by the consumer: sum(catches) == peRepaints.
+struct FlickerStats {
+    uint32_t catches[4][2];
+    uint32_t dmaxMs[4];
+    uint32_t driveAdoptEvents[2]; // [0] hand drives w/ adoption, [1] wskel
+    uint32_t adopts[2];           // raw per-hand adoption counts
+    uint32_t wAdopts;
+    uint32_t peRepaints;
+    uint32_t worldChanges;
+    uint32_t wRescans;
+};
+void flicker_snapshot(FlickerStats* out);
+// `vrbones flick on|off` gates only the [flick] minute log line; the counters
+// always count (they are a handful of relaxed atomics on actual catches).
+bool flicker_log();
+void set_flicker_log(bool on);
 
 // World/view changed under us - drop every cached pointer and the reference.
 void on_world_change(const char* why);
