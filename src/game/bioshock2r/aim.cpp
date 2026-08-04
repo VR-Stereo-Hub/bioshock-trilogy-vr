@@ -1,5 +1,6 @@
 #include "game/bioshock2r/aim.h"
 
+#include "core/gfx/hud_capture.h" // session 42: cinematic_hold (cine gate)
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -852,13 +853,21 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
     g_viewGameplay.store(strictGameplay, std::memory_order_relaxed);
     g_viewStampMs.store(now, std::memory_order_relaxed);
 
+    // Session 42 (BS1 s29 shape): suspend the aim lane during a cinematic
+    // unless drive=off. One flag covers the profile resolver, the ray build
+    // and - through invalid rays - the laser/dot publish; the aim path fails
+    // safe by construction (valid=false leaves the engine's own
+    // GetPerfectFireStart values untouched). Identity when no cine holds.
+    bool cineSuspend = bvr::hud::cinematic_hold() &&
+                       bvr::vr::cine_drive() != bvr::vr::CineDrive::Off;
+
     // Per-weapon profile resolver (session 41) - throttled, idles until a
     // value source exists, keys off the rig's live holdable.
-    if (strictGameplay) update_weapon_profile();
+    if (strictGameplay && !cineSuspend) update_weapon_profile();
 
     // Build both hand rays through the SAME transform the camera just used.
     bool useAim = g_useAimPose.load(std::memory_order_relaxed);
-    bool gate = strictGameplay && ctx.vrDriving;
+    bool gate = strictGameplay && ctx.vrDriving && !cineSuspend;
     for (int h = 0; h < 2; ++h) {
         bvr::vr::HeadPose hp{};
         if (!gate || !bvr::vr::get_hand_pose(h, useAim, hp)) {

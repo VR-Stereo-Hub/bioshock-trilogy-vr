@@ -151,6 +151,11 @@ bool current_holdable(void** out);
 // animations keep playing while scaled); 1.0 = fully hands-off. Called per
 // CalcView tail from hands::on_calcview; resolve/revalidate is internal.
 void wskel_drive();
+// Session 42: hand the weapon skeleton back explicitly (authored transforms
+// restored through an INTACT identity only; no-op when nothing is held). The
+// cine-suspend consumer: a suspended cutscene must show the authored weapon,
+// and the engine never restamps the scale channel on its own.
+void wskel_release(const char* why);
 void set_weapon_scale(float s);
 float weapon_scale();
 

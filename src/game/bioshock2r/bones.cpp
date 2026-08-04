@@ -1,8 +1,10 @@
 #include "game/bioshock2r/bones.h"
 
+#include "core/gfx/hud_capture.h" // session 42: cinematic_hold (residue line)
 #include "core/hooks/pattern_scan.h"
 #include "core/util/log.h"
 #include "core/util/xr_math.h"
+#include "core/vr/openxr_runtime.h" // session 42: cine_drive (residue line)
 #include "game/bioshock2r/aim.h"
 #include "game/bioshock2r/patterns.h"
 #include "game/bioshock2r/scenedraw.h"
@@ -821,10 +823,22 @@ void release(const char* why, int hand) {
     // Per-cluster restore: a left-hand release must not disturb a live right
     // hand, so only the released hand's own written bones (cluster + pivot +
     // arms, whatever the mask holds) go back to reference.
+    //
+    // Session 42, the missing s29 interlock leg: "stop driving" is always
+    // safe, "hand state back" WRITES - and a save load can free and reuse the
+    // skeleton pages while g_pose still points at them (SEH is useless: the
+    // pages stay mapped, owned by the new level). Same predicate pe_repaint
+    // already trusts. On refusal the masks still clear below - stopping is
+    // the part that must always happen.
+    bool bankLive = g_pose && g_refValid &&
+                    is_memory_valid(g_pose, g_boneCount * patterns::kSkelPoseStride);
+    if (g_pose && g_refValid && !bankLive)
+        BVR_LOG("[b2r] bones: release(%s) REFUSED the restore - pose bank not "
+                "live (world changed under us); masks cleared, no writes", why);
     bool any = false;
     for (int h = 0; h < 2; ++h) {
         if (hand >= 0 && h != hand) continue;
-        if (g_refValid && g_pose) {
+        if (bankLive) {
             for (int i = 0; i < g_boneCount; ++i)
                 if (g_writtenMask[h][i]) {
                     memcpy(g_pose + i * patterns::kSkelPoseStride, g_ref[i], 48);
@@ -1041,6 +1055,10 @@ void wskel_drive() {
     ++g_wDrives;
 }
 
+void wskel_release(const char* why) {
+    if (g_wHold) wskel_drop(why);
+}
+
 void set_weapon_scale(float s) {
     if (s > 0.05f && s < 20.0f) g_wScale.store(s, std::memory_order_relaxed);
 }
@@ -1102,6 +1120,22 @@ bool handle_command(const char* args) {
                 g_wPose ? "RESOLVED" : "-", g_wHold, g_wBoneCount,
                 g_wScale.load(std::memory_order_relaxed), g_wDrives,
                 g_wAdopts.load(std::memory_order_relaxed));
+        {
+            // Session 42: the residue line - "did the hands get handed back"
+            // answerable without provoking an edge.
+            int wm[2] = {0, 0};
+            for (int h = 0; h < 2; ++h)
+                for (int i = 0; i < g_boneCount; ++i)
+                    if (g_writtenMask[h][i]) ++wm[h];
+            bvr::vr::CineDrive cd = bvr::vr::cine_drive();
+            BVR_LOG("[b2r]   residue: masked L %d R %d wskel %s | cineHold=%d "
+                    "drive=%s",
+                    wm[0], wm[1], g_wHold ? "HELD" : "-",
+                    bvr::hud::cinematic_hold() ? 1 : 0,
+                    cd == bvr::vr::CineDrive::Off        ? "off"
+                    : cd == bvr::vr::CineDrive::Authored ? "authored"
+                                                         : "authored+look");
+        }
         {
             // Session 42: cumulative flicker catches + the printed invariant.
             uint32_t sum = 0;

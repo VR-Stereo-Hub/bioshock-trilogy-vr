@@ -1,5 +1,6 @@
 #include "game/bioshock2r/hands.h"
 
+#include "core/gfx/hud_capture.h" // session 42: cinematic_hold (cine gate)
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock2r/bones.h"
@@ -53,8 +54,15 @@ bool is_verb(const char* args, const char* verb) {
 } // namespace
 
 void on_calcview(const FrameContext& ctx, bool strictGameplay) {
+    // Session 42 (BS1 s29 shape): the hands suspend during a cinematic unless
+    // drive=off, so the authored shot shows authored hands. The per-hand
+    // g_wasDriving edge below is what hands each cluster back - HERE, after
+    // the world-change detection already ran this frame, never from the cine
+    // edge itself (the s29 save-load hang). Identity when no cine holds.
+    bool cineSuspend = bvr::hud::cinematic_hold() &&
+                       bvr::vr::cine_drive() != bvr::vr::CineDrive::Off;
     bool want = g_enabled.load(std::memory_order_relaxed) && strictGameplay &&
-                ctx.vrDriving;
+                ctx.vrDriving && !cineSuspend;
     bool useAim = g_useAimPose.load(std::memory_order_relaxed);
     // Each hand drives and releases INDEPENDENTLY: a lost left controller must
     // never hand the right hand's cluster back mid-aim.
@@ -101,7 +109,13 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
     }
     // Uniform weapon scale (session 41): independent of per-hand tracking -
     // the weapon should hold its tuned size whenever gameplay renders it.
-    if (strictGameplay) bones::wskel_drive();
+    // Session 42: a suspended cinematic hands the weapon skeleton BACK (the
+    // engine never restamps scale, so merely not driving would leave the gun
+    // scaled for the whole shot); release is intact-gated and idempotent.
+    if (strictGameplay && !cineSuspend)
+        bones::wskel_drive();
+    else if (cineSuspend)
+        bones::wskel_release("cinematic");
 }
 
 bool enabled() {
