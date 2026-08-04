@@ -22,9 +22,12 @@ std::atomic<bool> g_useAimPose{true}; // aim pose default: the barrel agrees wit
 // in the controller's LOCAL frame (model_pose_from_xr) / the final trimmed
 // basis. Session 40: per hand, because the two clusters ride two controllers
 // and each needs its own calibration.
-std::atomic<float> g_trimPitch[2] = {{0.0f}, {0.0f}};
-std::atomic<float> g_trimYaw[2] = {{0.0f}, {0.0f}};
-std::atomic<float> g_trimRoll[2] = {{0.0f}, {0.0f}};
+// Defaults = the user's in-headset calibration, baked 2026-08-04 session 41
+// round 2 (their explicit ask - BS1 session-21 precedent). The preset still
+// overrides key-by-key.
+std::atomic<float> g_trimPitch[2] = {{0.0f}, {12.50f}};
+std::atomic<float> g_trimYaw[2] = {{0.0f}, {-7.50f}};
+std::atomic<float> g_trimRoll[2] = {{0.0f}, {3.25f}};
 std::atomic<float> g_offFwdCm[2] = {{0.0f}, {0.0f}};
 std::atomic<float> g_offRightCm[2] = {{0.0f}, {0.0f}};
 std::atomic<float> g_offUpCm[2] = {{0.0f}, {0.0f}};
@@ -78,6 +81,18 @@ void on_calcview(const FrameContext& ctx, bool strictGameplay) {
         gp.loc.x += fwd[0] * oF + right[0] * oR + up[0] * oU;
         gp.loc.y += fwd[1] * oF + right[1] * oR + up[1] * oU;
         gp.loc.z += fwd[2] * oF + right[2] * oR + up[2] * oU;
+
+        // Weapon offset (session 41 round 2): same basis, same cm->UU rule,
+        // but delivered to the attach pivot only - moves the gun, not the
+        // hand.
+        if (h == 1) {
+            float wF = bones::weapon_off_fwd_cm() * k;
+            float wR = bones::weapon_off_right_cm() * k;
+            float wU = bones::weapon_off_up_cm() * k;
+            bones::set_weapon_offset_game(fwd[0] * wF + right[0] * wR + up[0] * wU,
+                                          fwd[1] * wF + right[1] * wR + up[1] * wU,
+                                          fwd[2] * wF + right[2] * wR + up[2] * wU);
+        }
 
         if (bones::drive(ctx, gp, h)) {
             g_wasDriving[h].store(true, std::memory_order_relaxed);
@@ -205,6 +220,16 @@ bool handle_command(const char* args) {
                 bones::scale_attach() ? "on" : "off");
         return true;
     }
+    // woffset: move the WEAPON relative to the hand (attach-pivot base,
+    // session 41 round 2). Whole-token parse - "woffset" shares no prefix
+    // hazard but the lesson stands.
+    if (sscanf_s(args, "woffset %f %f %f", &a, &b, &c) == 3) {
+        bones::set_weapon_offset(a, b, c);
+        BVR_LOG("[b2r] command: vrhands woffset %.1f %.1f %.1f cm (gun moves, "
+                "hand and aim stay)",
+                a, b, c);
+        return true;
+    }
     // wscale: the session-41 uniform weapon scale (the holdable's own
     // skeleton); `scaleweapon` above stays the pivot-63 fallback.
     if (sscanf_s(args, "wscale %f", &a) == 1) {
@@ -235,7 +260,7 @@ bool handle_command(const char* args) {
     BVR_LOG("[b2r] vrhands: on|off | status | trim l|r <p> <y> <r> | "
             "offset l|r <f> <r> <u> | scale [l|r] <f> | pose aim|grip | "
             "arms follow|hide|game | scaleweapon on|off | wscale <f> | "
-            "anim on|off | animtrans <0..1>");
+            "woffset <f> <r> <u> | anim on|off | animtrans <0..1>");
     return true;
 }
 

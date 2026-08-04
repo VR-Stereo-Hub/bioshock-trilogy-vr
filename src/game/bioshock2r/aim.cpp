@@ -92,11 +92,15 @@ std::atomic<bool> g_handOrigin{true};
 std::atomic<float> g_originMaxUu{200.0f};
 std::atomic<uint32_t> g_originRefusals{0};
 // Per-hand trims (degrees) and ray-origin offsets (cm), BS1's tuning surface.
-std::atomic<float> g_trimPitch[2] = {{0.0f}, {0.0f}};
-std::atomic<float> g_trimYaw[2] = {{0.0f}, {0.0f}};
-std::atomic<float> g_posFwdCm[2] = {{0.0f}, {0.0f}};
-std::atomic<float> g_posRightCm[2] = {{0.0f}, {0.0f}};
-std::atomic<float> g_posUpCm[2] = {{0.0f}, {0.0f}};
+// Defaults = the user's in-headset calibration, baked 2026-08-04 session 41
+// round 2 (their explicit ask; BS1 session-21 precedent). Left = the plasmid
+// hand's global tuning; right = the baseline the per-weapon profiles seed
+// from. The preset still overrides key-by-key.
+std::atomic<float> g_trimPitch[2] = {{1.19f}, {14.31f}};
+std::atomic<float> g_trimYaw[2] = {{23.25f}, {-14.31f}};
+std::atomic<float> g_posFwdCm[2] = {{0.0f}, {1.99f}};
+std::atomic<float> g_posRightCm[2] = {{3.18f}, {-0.79f}};
+std::atomic<float> g_posUpCm[2] = {{0.0f}, {10.33f}};
 // Telemetry for `vraim status` / the flat sweep.
 std::atomic<float> g_lastRayYawDeg[2] = {{0.0f}, {0.0f}};
 std::atomic<float> g_lastRayPitchDeg[2] = {{0.0f}, {0.0f}};
@@ -481,6 +485,7 @@ void census_dump() {
 }
 
 // Defined in the profile section below; init() runs first in the file.
+void seed_default_profiles();
 void load_weapon_profiles();
 
 } // namespace
@@ -513,9 +518,10 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
         BVR_LOG("[b2r] aim probe: GNames[0] is not 'None' - RVA suspect, census text "
                 "untrusted");
 
-    // Per-weapon profiles (session 41): tuned values only - NO default
-    // seeding in code (rule (a): a value source must exist first, and BS2
-    // class names were only ever seen live).
+    // Per-weapon profiles: the user's baked calibration seeds the defaults
+    // (session 41 round 2 - it IS a value source now, rule (a) satisfied by
+    // construction); weapons.ini then overrides key-by-key.
+    seed_default_profiles();
     load_weapon_profiles();
 }
 
@@ -540,6 +546,9 @@ struct WeaponProfile {
     float modTrimPitch, modTrimYaw, modTrimRoll;
     float modOffFwd, modOffRight, modOffUp, modScale;
     float wScale;
+    // Session 41 round 2: the weapon's own offset from the hand (attach-pivot
+    // base), cm in the hand's trimmed basis.
+    float wOffFwd, wOffRight, wOffUp;
 };
 std::map<std::string, WeaponProfile> g_weaponProfiles;
 std::string g_weaponKey;              // "" = none
@@ -566,6 +575,9 @@ WeaponProfile snapshot_live() {
     p.modOffUp = hands::off_up_cm(1);
     p.modScale = bones::scale_of(1);
     p.wScale = bones::weapon_scale();
+    p.wOffFwd = bones::weapon_off_fwd_cm();
+    p.wOffRight = bones::weapon_off_right_cm();
+    p.wOffUp = bones::weapon_off_up_cm();
     return p;
 }
 
@@ -579,6 +591,7 @@ void apply_profile_values(const WeaponProfile& p) {
     hands::set_offset(1, p.modOffFwd, p.modOffRight, p.modOffUp);
     bones::set_scale(1, p.modScale);
     bones::set_weapon_scale(p.wScale);
+    bones::set_weapon_offset(p.wOffFwd, p.wOffRight, p.wOffUp);
 }
 
 // Class name -> ini-safe key: printable ASCII, '.'/'=' (the line format's own
@@ -683,7 +696,56 @@ constexpr ProfileField kProfileFields[] = {
     {"modOffUp", &WeaponProfile::modOffUp},
     {"modScale", &WeaponProfile::modScale},
     {"wScale", &WeaponProfile::wScale},
+    {"wOffFwd", &WeaponProfile::wOffFwd},
+    {"wOffRight", &WeaponProfile::wOffRight},
+    {"wOffUp", &WeaponProfile::wOffUp},
 };
+
+// The user's in-headset calibration, baked as DEFAULT profiles (2026-08-04
+// session 41 round 2, their explicit ask; BS1's seed_default_profiles
+// precedent). Seeded BEFORE weapons.ini loads, so a user file overrides
+// key-by-key - and their existence is itself a value source, which keeps the
+// resolver live even on a virgin install (rule (a) satisfied by
+// construction). Shared model trims across all: trim 12.5/-7.5/3.25 scale
+// 0.76-0.77; per-weapon aim trims/pos + wScale as tuned.
+void seed_default_profiles() {
+    struct Row {
+        const char* key;
+        float aTP, aTY, aPF, aPR, aPU, mScale, wScale;
+    };
+    static const Row kRows[] = {
+        {"PlayerDistanceHackingTool", 11.72f, -8.94f, 0.00f, 0.00f, 11.13f, 0.76f, 0.75f},
+        {"PlayerDrill", 15.50f, -10.93f, -19.87f, 2.38f, 18.68f, 0.76f, 0.75f},
+        {"PlayerGrenadeLauncher", 10.33f, -12.32f, 0.00f, -4.37f, 26.62f, 0.76f, 0.75f},
+        {"PlayerMachineGun", 12.52f, -9.93f, 0.00f, -3.97f, 26.62f, 0.76f, 0.75f},
+        {"PlayerResearchVideoCamera", 0.00f, 0.00f, 0.00f, 0.00f, 0.00f, 1.35f, 1.00f},
+        {"PlayerRivetGun", 17.88f, -16.69f, -3.58f, -1.19f, 11.13f, 0.76f, 0.77f},
+        {"PlayerShotgun", 14.31f, -14.31f, 1.99f, -0.79f, 10.33f, 0.77f, 0.77f},
+        {"PlayerSpeargun", 14.90f, -15.89f, 17.48f, -17.48f, 29.40f, 0.76f, 0.75f},
+    };
+    for (const Row& r : kRows) {
+        WeaponProfile p{};
+        p.aimTrimPitch = r.aTP;
+        p.aimTrimYaw = r.aTY;
+        p.aimPosFwd = r.aPF;
+        p.aimPosRight = r.aPR;
+        p.aimPosUp = r.aPU;
+        p.modTrimPitch = 12.50f;
+        p.modTrimYaw = -7.50f;
+        p.modTrimRoll = 3.25f;
+        p.modOffFwd = 0.0f;
+        p.modOffRight = 0.0f;
+        p.modOffUp = 0.0f;
+        p.modScale = r.mScale;
+        p.wScale = r.wScale;
+        p.wOffFwd = 0.0f;
+        p.wOffRight = 0.0f;
+        p.wOffUp = 0.0f;
+        g_weaponProfiles[r.key] = p;
+    }
+    BVR_LOG("[b2r] weapon profiles: %zu defaults seeded (user calibration bake)",
+            g_weaponProfiles.size());
+}
 
 void load_weapon_profiles() {
     wchar_t path[MAX_PATH];

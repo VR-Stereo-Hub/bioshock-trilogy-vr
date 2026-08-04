@@ -2190,3 +2190,36 @@ wsave | wkey real|sim <Class>`.
 - **Guards**: 11 compositor layers; sr eyes 6.30 UU exact; wait2/s=0, guardskips 0;
   input drive 58-92/s armed at BOOT with no command (default-ON); teardown 478/463 ms
   with ZERO dumps across both closes.
+
+### Session 41 round 2 (same day) - in-headset verdicts, the bake, the flush rung, the weapon offset
+
+USER VERDICTS on the session-41 build: animations, sway, arms-hide/follow, uniform
+weapon scale, per-weapon profiles, F10 - ALL ACCEPTED; nothing regressed. The user
+calibrated aim + scale for all 8 weapons and both hands and pressed SAVE. Two items
+came back:
+
+1. **The left-eye flicker SURVIVES, reduced.** The PE-lane absorb-repaint wins most
+   races but a restamp landing after the LAST script dispatch of the pass still
+   renders raw. THE RUNG SHIPPED: `bones::pe_repaint()` now also runs at
+   `FlushPointDetour` entry - the last game-thread point before the inline drain
+   submits the pass (the reserve rung the design review specified). Self-gating
+   (fresh-write + sentinel); pass-2 verbatim semantics unchanged. Flat: counters
+   normal, presents/teardown unchanged. The in-headset re-test is the verdict.
+2. **NEW: per-weapon WEAPON OFFSET** (`vrhands woffset <f> <r> <u>` cm + three F10
+   sliders + profile fields wOffFwd/wOffRight/wOffUp + preset keys): scaling left
+   the gun floating ahead of the hand. The lever is the ATTACH PIVOT (bone 63): its
+   compose base becomes `ptc + offset` (converted hands-side to a game-space vector
+   in the trimmed basis, rotated into component space in drive) while every other
+   cluster bone keeps ptc - the gun moves, fingers/wrist/aim stay. Flat-proven:
+   woffset -12/0/6 moved ONLY the weapon region (####-strength localized cells)
+   with both hands' write-locs bit-identical.
+
+**THE BAKE (user ask; BS1 session-21 precedent): the calibration is now CODE
+DEFAULTS.** All atomic initializers carry the user's preset values (hands R trim
+12.5/-7.5/3.25, both hand scales 0.771, aim L 1.19/23.25 + right 3.18 cm, aim R
+14.31/-14.31 + 1.99/-0.79/10.33 cm, wScale 0.774; camera/input defaults already
+matched), and `seed_default_profiles()` seeds the 8 tuned weapon profiles BEFORE
+weapons.ini loads (ini overrides key-by-key; the seeded defaults are themselves a
+value source, so rule (a) holds by construction on a virgin install). Virgin-boot
+proof (inis moved aside): "8 defaults seeded", PlayerRivetGun applied with the exact
+tuned numbers, weapon skel driving at 0.77.

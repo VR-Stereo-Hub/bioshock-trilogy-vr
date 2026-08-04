@@ -1275,6 +1275,9 @@ void save_vr_preset() {
     fprintf(f, "animMode=%d\n", bones::anim_mode() ? 1 : 0);
     fprintf(f, "animTrans=%.2f\n", bones::anim_trans());
     fprintf(f, "wScale=%.3f\n", bones::weapon_scale());
+    fprintf(f, "wOffFwd=%.2f\n", bones::weapon_off_fwd_cm());
+    fprintf(f, "wOffRight=%.2f\n", bones::weapon_off_right_cm());
+    fprintf(f, "wOffUp=%.2f\n", bones::weapon_off_up_cm());
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
@@ -1305,6 +1308,8 @@ void load_vr_preset_values() {
                          {aim::trim_pitch(1), aim::trim_yaw(1)}};
     float aPos[2][3] = {{aim::pos_fwd_cm(0), aim::pos_right_cm(0), aim::pos_up_cm(0)},
                         {aim::pos_fwd_cm(1), aim::pos_right_cm(1), aim::pos_up_cm(1)}};
+    float wOff[3] = {bones::weapon_off_fwd_cm(), bones::weapon_off_right_cm(),
+                     bones::weapon_off_up_cm()};
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char key[64] = {};
@@ -1365,6 +1370,12 @@ void load_vr_preset_values() {
             bones::set_anim_trans(v);
         else if (strcmp(key, "wScale") == 0)
             bones::set_weapon_scale(v);
+        else if (strcmp(key, "wOffFwd") == 0)
+            wOff[0] = v;
+        else if (strcmp(key, "wOffRight") == 0)
+            wOff[1] = v;
+        else if (strcmp(key, "wOffUp") == 0)
+            wOff[2] = v;
         else if (strcmp(key, "turnScale") == 0 && v > 0.0f)
             bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapOn") == 0)
@@ -1384,6 +1395,7 @@ void load_vr_preset_values() {
         aim::set_trim(h, aTrim[h][0], aTrim[h][1]);
         aim::set_pos(h, aPos[h][0], aPos[h][1], aPos[h][2]);
     }
+    bones::set_weapon_offset(wOff[0], wOff[1], wOff[2]);
     if (n) BVR_LOG("[b2r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
@@ -2516,6 +2528,17 @@ void draw_debug_ui() {
         float ws = bones::weapon_scale();
         if (ImGui::SliderFloat("WEAPON scale (uniform, per weapon)", &ws, 0.3f, 2.5f))
             bones::set_weapon_scale(ws);
+        // Session 41 round 2 (user ask): move the GUN relative to the hand -
+        // scaling can leave it floating ahead of the grip. Attach-pivot
+        // offset: fingers, wrist and the aim ray stay put. Per weapon.
+        float wf = bones::weapon_off_fwd_cm(), wr2 = bones::weapon_off_right_cm(),
+              wu = bones::weapon_off_up_cm();
+        bool wOffChanged = false;
+        wOffChanged |= ImGui::SliderFloat("weapon offset fwd (cm)", &wf, -30.0f, 30.0f);
+        wOffChanged |=
+            ImGui::SliderFloat("weapon offset right (cm)", &wr2, -30.0f, 30.0f);
+        wOffChanged |= ImGui::SliderFloat("weapon offset up (cm)", &wu, -30.0f, 30.0f);
+        if (wOffChanged) bones::set_weapon_offset(wf, wr2, wu);
         // Some weapon attachments inverse-decompose the pivot bone's scale
         // (the rifle's ammo drum GROWS as the hand shrinks - BS1 session-30
         // class). Off = hands scale, weapon keeps its authored size. Kept as
