@@ -1985,3 +1985,37 @@ one verb is a prefix of another.
 runs CalcView): dpad up/down moved the main-menu highlight, and the 2K-account prompt
 rendered a **Y button glyph**. Menu ACTIVATION is not on the pad's A button, though - A did
 not trigger the highlighted item; keyboard Enter did. Worth chasing if pad-only menus matter.
+
+### The inverse-scaled ammo canister: proven attach-path math, not a mod bug (session 40 round 2)
+
+Live bisection at the user's save (rivet gun, Heavy Rivet): with the FULL right cluster at
+scale 0.5 the gun body halves but the red-slotted ammo canister balloons ~4x out of
+proportion; with ONLY pivot bone 63 at 0.5 the canister balloons identically; with 63 at
+2.5 the whole gun grows uniformly and no inverted part appears (the canister SHRANK).
+Verdict: **the canister's attach transform divides out bone 63's scale** (inverse
+decompose - BS1 session-30's class) while the gun body multiplies it. One scale channel,
+two opposite consumers: uniform weapon scaling is UNREACHABLE from the AHands pose bank.
+The lane that can reach it: BS2 weapons should carry their OWN SkeletonInstance (BS1's
+did - the weapon skeleton is how its muzzle bone was found in s20); scaling the weapon's
+own pose bank scales its parts uniformly. That derivation shares the holdable-resolution
+work per-weapon profiles need. Until then: `vrhands scaleweapon off` = hands scale,
+weapon (all parts) stays authored size.
+
+### CORRECTION: one-shot scale pokes do NOT always render
+
+Session 39 banked "scale pokes persist and render" (poke-proven on the then-current rig).
+This round, `vrbones scaleone` pokes at 2.5x on bones 63/36/62/7 - rig freshly resolved,
+no errors - changed NOTHING on screen, while the same scale through the per-frame DRIVE
+path rendered immediately. Environment-dependent (different save spot / rig instance /
+anim state). Consequence: per-bone attribution experiments must run through the drive
+(single-bone clusters), never through pokes; and any future "poke-proven" claim needs the
+drive-path cross-check before it is trusted.
+
+### The alt-tab wedge, observed twice this round
+
+Long unfocus (typing in another window) while the XR session runs drops the game to
+3-6 presents/s with `xr: SUBMISSION IDLE (frame not begun)` and waitFrames frozen;
+refocusing does NOT recover it, `vrstereo off` restores fast draws (833 us) but not the
+present rate. Only a restart cleared it. This is the documented top-backlog pacing bug
+(STATUS "THE PACING BUG") with a fresh, easily reproduced signature - bank it as the
+repro for that session.

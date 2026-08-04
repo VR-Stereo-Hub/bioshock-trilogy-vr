@@ -641,6 +641,28 @@ bool handle_command(const char* args) {
         }
         return true;
     }
+    // Diagnostic (session 40 round 2, the drum hunt): poke ONE bone's scale
+    // channel and leave it - animation never restamps scale, so the poke
+    // persists and the renderer answers "which bone does this attachment
+    // actually ride, and in which direction". Run with vrhands off, or the
+    // drive rewrites the cluster bones next frame.
+    {
+        int pi = -1;
+        float sv = 1.0f;
+        if (sscanf_s(args, "scaleone %d %f", &pi, &sv) == 2) {
+            if (resolve_rig() && pi >= 0 && pi < g_boneCount) {
+                float e[12];
+                memcpy(e, g_pose + pi * patterns::kSkelPoseStride, 48);
+                e[8] = e[9] = e[10] = sv;
+                memcpy(g_pose + pi * patterns::kSkelPoseStride, e, 48);
+                BVR_LOG("[b2r] command: vrbones scaleone %d %.2f ('%s')", pi, sv,
+                        (g_namesValid && g_boneNames[pi][0]) ? g_boneNames[pi] : "?");
+            } else {
+                BVR_LOG("[b2r] vrbones scaleone: rig not resolved / bad index %d", pi);
+            }
+            return true;
+        }
+    }
     if (strncmp(args, "axes", 4) == 0) {
         int idx = g_cluster[1].anchor;
         sscanf_s(args, "axes %d", &idx);
