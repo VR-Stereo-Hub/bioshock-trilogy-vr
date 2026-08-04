@@ -84,7 +84,9 @@ std::atomic<float> g_dotDistM{3.0f};
 // laser and a dot at once - unlike BS1, where only one hand is ever active.
 // Per-hand enables; core's second slot is a BS2-only addition that leaves the
 // BS1 path byte-identical.
-std::atomic<bool> g_laserHandOn[2] = {{true}, {true}};
+// Session 42 r3 (user's release defaults): beams OFF, aim dots ON - the dot
+// alone is the calibrated aim point; the preset still overrides key-by-key.
+std::atomic<bool> g_laserHandOn[2] = {{false}, {false}};
 std::atomic<bool> g_dotHandOn[2] = {{true}, {true}};
 // Bullet-origin substitution (BS1's `vraim origin on` parity): write the fire
 // start location from the hand ray so shots leave the HAND, not the head.

@@ -66,6 +66,10 @@ bool Bioshock2RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // degenerate (it matches the UI atlases) - ship the fallback OFF and
     // enable it only if a headset session actually shows the artifact.
     bvr::hud::set_postfx_cine_size(false);
+    // Session 42 r3 (user's release default): cutscenes play the authored
+    // camera WITH head-look deltas. BS2-local call - core's default (and BS1)
+    // stays untouched.
+    bvr::vr::set_cine_drive(bvr::vr::CineDrive::AuthoredLook);
     // Session 34 armed detached pacing here (hand the frame loop to the pace
     // thread whenever the session is not FOCUSED) against the ~10 Hz unfocused
     // cadence. Session 36, first real VDXR attach since: DETACH STRANDS THE

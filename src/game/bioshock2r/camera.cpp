@@ -265,7 +265,16 @@ int g_reticleApplied = -1;               // -1 = never pushed
 uint64_t g_reticleAssertMs = 0;
 uint32_t g_reticleNameIdx[2] = {};       // [0] DisableReticle, [1] EnableReticle
 bool g_reticleNamesResolved = false;
-bool g_reticleNamesFailed = false;       // fail-soft latch (lookup or fault)
+bool g_reticleNamesFailed = false; // fail-soft latch (lookup failure, or 3 faults)
+// Session 42 r3 (user bug: the crosshair returned after a level transition and
+// the toggle was dead): the dispatch faulted on a STALE pawn - the level
+// change freed the view actor while the cached pointer/vtable-RVA pair still
+// described the old world (pages stay mapped, the s29 lesson), and ONE fault
+// latched the lane off for the whole run. The latch is per-WORLD now (cleared
+// on the view-state change alongside g_reticleApplied), faults are counted (3
+// in one world = latch), and the call itself is gated on CalcView freshness +
+// a call-time re-read of the pawn's vtable.
+int g_reticleFaults = 0;
 
 // Synthetic HMD lane, extended over BS1's: `simhead <yaw> <pitch> <roll>
 // [px py pz] [holdMs]` feeds a scripted head pose - ROTATION AND POSITION -
@@ -1630,10 +1639,20 @@ void assert_reticle(uint64_t now) {
     int want = wantHidden ? 1 : 0;
     bool changed = want != g_reticleApplied;
     if (!changed && !(wantHidden && now - g_reticleAssertMs >= 5000)) return;
+    // A live CalcView within the last 200 ms is the freshness proof: during a
+    // level transition CalcView stops (or changes worlds) and the cached pawn
+    // may already be freed - the window that faulted the user's run.
+    if (calcview_silent(200)) return;
     void* pawn = g_lastViewActor.load(std::memory_order_relaxed);
     if (!pawn || !is_gameplay_view_rva(g_lastVtblRva.load(std::memory_order_relaxed)))
         return; // menu/cutscene shapes draw no reticle; retried in gameplay
     if (!bvr::pattern_scan::is_memory_valid(pawn, 0x40)) return;
+    // Call-time identity: the pawn's OWN vtable must still be the gameplay
+    // one - the cached RVA describes whatever CalcView last saw, which across
+    // a transition is not necessarily this pointer's current owner.
+    if (reinterpret_cast<uintptr_t>(*reinterpret_cast<void* const*>(pawn)) !=
+        g_imageBase + patterns::kShockPlayerVtableRva)
+        return;
     if (!g_reticleNamesResolved) {
         // One-time GNames reverse lookup (bounded linear scan, cached).
         if (!patterns::fname_find("DisableReticle", &g_reticleNameIdx[0]) ||
@@ -1649,9 +1668,19 @@ void assert_reticle(uint64_t now) {
     }
     int r = seh_reticle_call(pawn, g_reticleNameIdx[wantHidden ? 0 : 1]);
     if (r == 1) {
-        g_reticleNamesFailed = true;
-        BVR_LOG("[b2r] reticle: FAULT during the %s dispatch - lane disabled",
-                wantHidden ? "DisableReticle" : "EnableReticle");
+        // Per-world retry (session 42 r3): one transition-window fault must
+        // not kill the toggle for the run. Three faults in ONE world latch.
+        if (++g_reticleFaults >= 3) {
+            g_reticleNamesFailed = true;
+            BVR_LOG("[b2r] reticle: 3 FAULTS in this world - lane disabled "
+                    "until the next level/view change");
+        } else {
+            g_reticleAssertMs = now; // back off one re-assert period
+            BVR_LOG("[b2r] reticle: FAULT during the %s dispatch (%d/3) - "
+                    "retrying after the world settles",
+                    wantHidden ? "DisableReticle" : "EnableReticle",
+                    g_reticleFaults);
+        }
         return;
     }
     if (r == 2) return;
@@ -1788,6 +1817,10 @@ void calcview_tail(void* self, CalcViewParams* p) {
             patterns::hfov_scan_rearm("view state change");
             bones::on_world_change("view state change");
             g_reticleApplied = -1; // session 42: fresh pawn = re-assert reticle
+            // Session 42 r3: the fault latch is per-WORLD - a transition
+            // fault must recover in the new level (the user's crosshair bug).
+            g_reticleFaults = 0;
+            g_reticleNamesFailed = false;
         }
     }
 
