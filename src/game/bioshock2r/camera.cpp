@@ -663,7 +663,11 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 // access to it when the adapter owns the command table):
 //   vrpace <args>                M8 stall guard
 //   vrmirror <args>              M8 desktop mirror
-//   vrhud on|off|status          HUD capture control + the lens/letterbox state
+//   vrhud on|off|force on|force off|status
+//                                HUD capture control. force arms the redirect
+//                                without live SR stereo (flat A/B); status =
+//                                counters + per-reason routes + lens/letterbox
+//                                state. fovwatch on|off kept (BS2-only).
 //   vrpreset [save]              arm the full VR configuration / persist the
 //                                tuned sliders to this game's own
 //                                vrpreset.ini. b2r had NO persistence at all
@@ -1162,20 +1166,56 @@ void apply_command(const char* cmd, const char* args) {
         // control surface it could not be toggled or A/B'd on BS2 at all.
         if (strncmp(args, "fovwatch", 8) == 0) {
             bvr::hud::set_fov_watch(strstr(args, "off") == nullptr);
-        } else if (strncmp(args, "status", 6) == 0) {
+        } else if (strncmp(args, "force on", 8) == 0) {
+            // Session 42: without force the redirect only arms under live SR
+            // stereo, so the HUD panel was not flat-testable on BS2 at all.
+            bvr::hud::set_force(true);
+            BVR_LOG("[b2r] command: vrhud force on");
+        } else if (strncmp(args, "force off", 9) == 0) {
+            bvr::hud::set_force(false);
+            BVR_LOG("[b2r] command: vrhud force off");
+        } else if (strncmp(args, "on", 2) == 0) {
+            bvr::hud::set_enabled(true);
+            BVR_LOG("[b2r] command: vrhud on");
+        } else if (strncmp(args, "off", 3) == 0) {
+            bvr::hud::set_enabled(false);
+            BVR_LOG("[b2r] command: vrhud off");
+        } else {
+            unsigned hd = 0, rd = 0, lk = 0, iv = 0;
+            bvr::hud::get_counters(&hd, &rd, &lk, &iv);
+            unsigned lbT = 0, lbB = 0;
+            bool lb = bvr::hud::letterbox(&lbT, &lbB);
+            BVR_LOG("[b2r] hud status: %s force=%d | hudDraws=%u redirects=%u "
+                    "leaks=%u hudIntervals=%u | postFx=%u screenOnly=%d "
+                    "letterbox=%d(%u/%u) (vrhud on|off|force on|force off|status)",
+                    bvr::hud::enabled() ? "ON" : "off", bvr::hud::force() ? 1 : 0,
+                    hd, rd, lk, iv, bvr::hud::postfx_count(),
+                    bvr::hud::screen_only() ? 1 : 0, lb ? 1 : 0, lbT, lbB);
+            // Per-reason routing breakdown (BS1 session-30 shape): pass/STRANDED
+            // per verdict reason, plus the classifier-health numbers.
+            bvr::hud::RouteStats rs{};
+            bvr::hud::get_route_stats(&rs);
+            char buf[320];
+            int n = 0;
+            for (int i = 0; i < bvr::hud::kRoutePassCount && n >= 0 && n < 300; ++i) {
+                if (!rs.pass[i] && !rs.stranded[i]) continue;
+                n += _snprintf_s(buf + n, sizeof buf - n, _TRUNCATE, "%s=%u/%u ",
+                                 bvr::hud::route_reason_name(i), rs.pass[i],
+                                 rs.stranded[i]);
+            }
+            BVR_LOG("[b2r] hud routes (pass/STRANDED): %s| postFxRejected=%u "
+                    "effectsInFrame=%u effectsOverBound=%u square=%d",
+                    n > 0 ? buf : "(none) ", rs.postFxRejected, rs.effectsInFrame,
+                    rs.effectsRejected, rs.squareTarget ? 1 : 0);
+            // BS2-only diagnostics (pre-session-42 status line, kept).
             unsigned bw = 0, bh = 0;
             bvr::hud::backbuffer_dims(&bw, &bh);
-            BVR_LOG("[b2r] vrhud status: backbuffer %ux%u screenOnly=%d letterbox=%d "
-                    "cineHold=%d lenses=%d vpRatio=%.4f rayOffset=%d",
-                    bw, bh, bvr::hud::screen_only() ? 1 : 0,
-                    bvr::hud::letterbox(nullptr, nullptr) ? 1 : 0,
-                    bvr::hud::cinematic_hold() ? 1 : 0, bvr::hud::fov_lens_count(),
-                    bvr::hud::fov_vp_ratio(), bvr::hud::ray_block_offset());
-            BVR_LOG("[b2r] vrhud status: fovWatch=%s",
+            BVR_LOG("[b2r] hud status: backbuffer %ux%u cineHold=%d lenses=%d "
+                    "vpRatio=%.4f rayOffset=%d fovWatch=%s",
+                    bw, bh, bvr::hud::cinematic_hold() ? 1 : 0,
+                    bvr::hud::fov_lens_count(), bvr::hud::fov_vp_ratio(),
+                    bvr::hud::ray_block_offset(),
                     bvr::hud::fov_watch_enabled() ? "on" : "OFF");
-        } else {
-            bvr::hud::set_enabled(strncmp(args, "off", 3) != 0);
-            BVR_LOG("[b2r] command: vrhud %s", strncmp(args, "off", 3) != 0 ? "on" : "off");
         }
     } else if (strcmp(cmd, "vrpreset") == 0) {
         if (strncmp(args, "save", 4) == 0) save_vr_preset();
@@ -1286,6 +1326,15 @@ void save_vr_preset() {
     fprintf(f, "snapOn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngle=%.1f\n", bvr::input::snap_angle_deg());
     fprintf(f, "ammoMod=%d\n", static_cast<int>(bvr::input::ammo_mod()));
+    // Session 42: HUD quad placement (F10 sliders live in core; the values are
+    // eye-judged so losing them on relaunch would mean re-tuning every session).
+    {
+        float hd = 0, hw = 0, hu = 0;
+        bvr::vr::get_hud_quad(&hd, &hw, &hu);
+        fprintf(f, "hudQuadDistM=%.2f\n", hd);
+        fprintf(f, "hudQuadWidthM=%.2f\n", hw);
+        fprintf(f, "hudQuadUpM=%.2f\n", hu);
+    }
     fclose(f);
     BVR_LOG("[b2r] VR preset values saved to %ls", path);
     // One save button covers everything (BS1 parity): the per-weapon profiles
@@ -1314,6 +1363,10 @@ void load_vr_preset_values() {
                         {aim::pos_fwd_cm(1), aim::pos_right_cm(1), aim::pos_up_cm(1)}};
     float wOff[3] = {bones::weapon_off_fwd_cm(), bones::weapon_off_right_cm(),
                      bones::weapon_off_up_cm()};
+    // Session 42: HUD quad placement is a coupled set (dist/width/up) - staged
+    // and applied together after the parse, behind the same guard BS1 uses.
+    float hudD = 0, hudW = 0, hudU = 0;
+    bvr::vr::get_hud_quad(&hudD, &hudW, &hudU);
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char key[64] = {};
@@ -1396,6 +1449,12 @@ void load_vr_preset_values() {
             bvr::input::set_snap_angle_deg(v);
         else if (strcmp(key, "ammoMod") == 0 && v >= 0.0f && v <= 2.0f)
             bvr::input::set_ammo_mod(static_cast<bvr::input::AmmoMod>(static_cast<int>(v)));
+        else if (strcmp(key, "hudQuadDistM") == 0)
+            hudD = v;
+        else if (strcmp(key, "hudQuadWidthM") == 0)
+            hudW = v;
+        else if (strcmp(key, "hudQuadUpM") == 0)
+            hudU = v;
         else
             --n;
     }
@@ -1408,6 +1467,7 @@ void load_vr_preset_values() {
         aim::set_pos(h, aPos[h][0], aPos[h][1], aPos[h][2]);
     }
     bones::set_weapon_offset(wOff[0], wOff[1], wOff[2]);
+    if (hudD > 0.0f && hudW > 0.0f) bvr::vr::set_hud_quad(hudD, hudW, hudU);
     if (n) BVR_LOG("[b2r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
