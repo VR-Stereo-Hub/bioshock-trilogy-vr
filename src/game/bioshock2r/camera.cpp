@@ -668,6 +668,14 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 //                                without live SR stereo (flat A/B); status =
 //                                counters + per-reason routes + lens/letterbox
 //                                state. fovwatch on|off kept (BS2-only).
+//   menukey on|off|force on|force off|status
+//                                session 42: pad A -> scancode Enter while a
+//                                menu context holds (calcview silent, menu
+//                                view-actor, or screen-only). BS2's gameswf
+//                                front-end activates on keyboard only; the A
+//                                bit reaches the game but is ignored by menus.
+//                                Default ON; force = gate open everywhere
+//                                (diagnostic). Inert while vrinput is off.
 //   vrpreset [save]              arm the full VR configuration / persist the
 //                                tuned sliders to this game's own
 //                                vrpreset.ini. b2r had NO persistence at all
@@ -1152,6 +1160,9 @@ void apply_command(const char* cmd, const char* args) {
         // sign gets checked) and the swing detector's entire flat test suite
         // had no way in. One line, all of it core, none of it BS1-specific.
         bvr::input::handle_command(args); // logs its own echoes
+    } else if (strcmp(cmd, "menukey") == 0) {
+        // Session 42: pad-A menu activation (A -> scancode Enter, menu-gated).
+        input_drive::handle_menukey_command(args);
     } else if (strcmp(cmd, "vrpace") == 0) {
         // Session 33 audit, same class of gap as vrinput was: core owns the M8
         // stall guard and BS1 dispatches to it; b2r never did, so a fully built
@@ -2232,6 +2243,13 @@ bool calcview_silent(uint64_t maxAgeMs) {
     if (g_lastCalcViewMs == 0) return true;
     uint64_t now = GetTickCount64();
     return now - g_lastCalcViewMs > maxAgeMs;
+}
+
+bool last_strict_gameplay() {
+    // Session 42 (menukey gate leg 2): menus that still tick CalcView do it on
+    // the AShockPlayerController "menu shape" view-actor vtable, so the last
+    // observed vtable RVA is a menu-context signal calcview_silent misses.
+    return is_gameplay_view_rva(g_lastVtblRva.load(std::memory_order_relaxed));
 }
 
 void draw_debug_ui() {

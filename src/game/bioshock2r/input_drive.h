@@ -31,6 +31,11 @@ void on_frame(uint64_t nowMs);
 // One status line for the adapter overlay section.
 void draw_debug_ui();
 
+// Session 42: `menukey on|off|force on|force off|status`. Pad A -> scancode
+// Enter while a menu context holds (BS2's gameswf front-end activates on
+// keyboard only). Inert while the drive is off (no fresh pad word).
+void handle_menukey_command(const char* args);
+
 // Resolve the live UWindowsClient / first UWindowsViewport (vtable-identity
 // checked, SEH-safe reads; heap objects - never cache). False while the
 // engine is not up. Game thread only.
