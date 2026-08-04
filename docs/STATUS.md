@@ -7750,3 +7750,18 @@ user's final go before merge and tag.
   killed a whole wrong approach); shipping the refuting instrument with the fix (the vertex-count
   log immediately proved "textureless = bars" would have been wrong); and stating plainly which
   claims flat could not test - all three of those turned out to matter in headset.
+
+### Session 42 rounds 2-4 addendum - 2026-08-05 - in-headset acceptance -> v0.7.0 SHIPPED
+
+Round-1 verdicts: HUD, crosshair, menus, pad-at-title/main-menu ALL GOOD. Fixed in
+rounds 2-4 from the user's reports + their pre-cutscene save (replayed in the sim):
+M7.5 body transfer ported (offset +0x1F8 DERIVED live, probe confirmed, camera
+invariant bit-exact - movement follows the view, snap turn carries the pawn);
+BS2 bars fingerprint derived (11-vert textureless; skipped 6288/6288 - no panel
+bars; the cine hold sustains 43 s with authored camera AND hands); the reticle
+transition fault fixed (freshness gate + call-time vtable + per-world latch).
+Release defaults per the user: lasers off/dots on both hands, cineDrive
+authored+look. **v0.7.0 released** (tag on bioshock-2, one zip, both games):
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.7.0
+Open for later: subtitles verdict, flicker watch ([flick] armed), main-menu-A was
+confirmed working by the user (menukey + native paths), plasmid-hand profiles.
