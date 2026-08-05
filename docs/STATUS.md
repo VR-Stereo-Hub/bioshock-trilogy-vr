@@ -74,12 +74,39 @@ game-thread pump lags 30+ s at attract movie transitions - seam commands now go
 one-at-a-time with dispatch confirmation (VERIFICATION gotchas 20-21, the second being
 xrsim-shot littering the CWD with game-derived captures).
 
-**NEXT: the I6 HEADSET SESSION (user drives, VDXR, suggest Virtual Desktop at 72 Hz)** - the
-checklist is written (TESTING.md "I6 in-headset checklist"): the filled-eye verdict (Load
-`eye` preset -> Apply -> no more window, straight lines straight), then the three carried I5
-items - world-scale tune through the filled view, the judder verdict at 72 Hz, and the
-30-minute soak with a level transition (`reentry status` poisoned=no after). After that
-verdict, I6 CLOSES and I7 (controllers + decoupled aim) opens.
+**HEADSET FEEDBACK (user, VDXR, 2026-08-05, same day): THE EYE IS FILLED.** Verbatim
+verdicts and the fixes they drove:
+
+- **"Everything through a box" until the lever hit 132 deg - then "pretty good with the
+  stereo and no space warp, which is perfect."** The filled-eye verdict is GREEN at
+  fovLeverDeg=132 (tanV 1.2634, hfov 99.5 at the 2064x2208 aspect), and no-warp confirms
+  claim==render in the instrument that matters. VR stereo + VR camera "working very well";
+  the resolution picker "also working very well" (the user runs Quest 3 native 2064x2208).
+- **World scale tuned to ~150 UU/m** (not the UE3-canonical 50 the code guessed - the
+  same 3x surprise BS1/BS2 produced; their calibrated value was 100).
+- **The `eye`-preset Load button did nothing** - real bug: the F10 list's Load only
+  handled slotN names and LOGGED for everything else. Fixed by the user's own redesign
+  request: **ONE preset, Save + Load, like the other mods** - the slot/named UI is gone
+  (named files stay as a desktop verb lane), and the preset now carries the WHOLE session
+  shape: vrstereoOn + driveHmd joined the registry (8 keys), and a loaded preset's
+  resolution now APPLIES instead of latching (user's call, overriding the s41 flat-half
+  hazard design). Verified: one boot with zero commands auto-restores everything - 8/8
+  keys, first Present 2064x2208, stereo auto-armed, SR beat exact 77/77/154/77, lever
+  enforcing (217k writes 0 faults), claim tanV 1.2634.
+- **JUDDER ON HEAD TURNS PERSISTS "even though the frames are good" - the remaining open
+  item.** First suspect for next session: the pacing beat - 77-80 eye pairs/s against a
+  72 Hz VD refresh is a ~5 Hz interference pattern; pairs synced/capped to the headset
+  refresh is the experiment to run. The 30-minute soak + level transition also remains
+  unreported.
+- **Standing guard for I8 (user, this session): the FOV lever must not break the
+  viewmodels (hands/guns)** - BS1/BS2 both bled sessions on fg-FOV counter-modeling. The
+  lever writes ONLY the world camera's two FOV fields; the decoder's named second lens is
+  the early-warning instrument (watch `bsilens` lens2 in gameplay saves); I8 tests
+  whether Infinite's viewmodel lens is even coupled before porting ANY compensation.
+
+**NEXT**: the judder investigation (pacing-beat hypothesis first) + the 30-minute soak
+close I6; then I7 (controllers + decoupled aim) opens, with the I8 viewmodel-FOV guard on
+record.
 
 ### Infinite: current state after session 40 (superseded by session 41 above - kept for the derivation trail; I5 CLOSED as re-scoped - stereo headset-verified on VDXR; world-scale tune, judder verdict and the long soak carried to I6 - branch `si40-inf-stereo`)
 

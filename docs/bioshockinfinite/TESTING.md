@@ -511,22 +511,23 @@ want the audit line running).
    corner lean, F10 opens.
 2. **VR stereo on at defaults (lever off)**: the I5 baseline - true depth, no fisheye,
    the world through the window at true angular size. This is the BEFORE.
-3. **THE VERDICT - fill the eye**: in CONFIG / PRESETS press Load on the `eye` preset
-   (lever 137 deg + 1600x1712), then in RENDER RESOLUTION press Apply (the preset LATCHES
-   resolution; Apply is the one resize control). The window should open up to fill most
-   of the view vertically and horizontally. Judge: does the world fill the eye (no more
+3. **THE VERDICT - fill the eye**: press **Load preset** in VR PRESET (ONE preset since
+   the s41 feedback round; it applies EVERYTHING - stereo, drive, lever, scale, ipd and
+   the resolution - and auto-loads at boot). The user's accepted values: lever 132 deg,
+   worldScale 150, Quest 3 native 2064x2208. Judge: does the world fill the eye (no more
    window)? Do straight lines stay straight (a wrong claim = fisheye/warp on head
-   rotation - the in-headset instrument for claim==render)? The FOV-lever slider
-   (60..140) is live for tuning; `vrpreset save` from F10 (Save current) persists.
+   rotation - the in-headset instrument for claim==render)? The FOV-lever slider is live
+   for tuning; **Save preset** persists. *(Verdict 2026-08-05: GREEN at 132 - "no space
+   warp, which is perfect".)*
 4. **CARRIED - world-scale tune**: through the FILLED view, lean toward a railing - does
    Columbia feel life-size? Tune "World scale (UU per m)" (default 50) and IPD (63) by
    feel; Save current afterwards.
 5. **CARRIED - judder verdict at VD 72 Hz**: the near-square render also lowers per-eye
    cost vs 2560x1440. Head turns smooth? (I5 measured 77-80 pairs/s under 90 Hz - at
    72 Hz the target is pairs >= refresh.)
-6. **Preset round-trip across a restart**: Save slot 1 with your tuned values, quit the
-   game fully, relaunch, Load slot 1 - values return (the boot also auto-loads your
-   last-saved current store, including the lever).
+6. **Preset round-trip across a restart**: Save preset with your tuned values, quit the
+   game fully, relaunch - the boot auto-loads and auto-arms everything (verified flat:
+   8/8 keys, stereo armed, first Present at the preset resolution, zero commands).
 7. **CARRIED - 30-minute soak** with stereo armed, including one level transition and one
    quit-to-menu. Afterwards, desktop: `reentry status` -> poisoned must be "no".
 8. Expected noise, not bugs: HUD screen-locked mid-view (I9), weapon rides the engine

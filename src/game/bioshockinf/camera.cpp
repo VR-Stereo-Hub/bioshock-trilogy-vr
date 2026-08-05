@@ -747,6 +747,15 @@ void cfg_set_fov_lever(float v) {
 }
 float cfg_get_res_w() { return static_cast<float>(cached_ini_resolution().x); }
 float cfg_get_res_h() { return static_cast<float>(cached_ini_resolution().y); }
+// Session 41 headset feedback: the preset carries the WHOLE session shape -
+// stereo armed and the HMD drive too, so one Load restores everything. Both
+// setters go through the same posting/atomic lanes the F10 checkboxes use.
+float cfg_get_vrstereo() { return g_stereoArmed.load(std::memory_order_relaxed) ? 1.0f : 0.0f; }
+void cfg_set_vrstereo(float v) {
+    g_vrstereoPending.store(v != 0.0f ? 1 : 0, std::memory_order_relaxed);
+}
+float cfg_get_drive() { return g_driveEnabled.load(std::memory_order_relaxed) ? 1.0f : 0.0f; }
+void cfg_set_drive(float v) { g_driveEnabled.store(v != 0.0f, std::memory_order_relaxed); }
 
 constexpr config::KeyDesc kConfigKeys[] = {
     {"worldScale", cfg_get_world_scale, cfg_set_world_scale, 1.0f, 500.0f},
@@ -755,6 +764,8 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"fovLeverDeg", cfg_get_fov_lever, cfg_set_fov_lever, 0.0f, 170.0f},
     {"resW", cfg_get_res_w, config::detail::latch_wanted_res_w, 640.0f, 16384.0f},
     {"resH", cfg_get_res_h, config::detail::latch_wanted_res_h, 480.0f, 16384.0f},
+    {"vrstereoOn", cfg_get_vrstereo, cfg_set_vrstereo, 0.0f, 1.0f},
+    {"driveHmd", cfg_get_drive, cfg_set_drive, 0.0f, 1.0f},
 };
 
 // ---------------------------------------------------------------------------
@@ -1130,6 +1141,18 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     apply_pending_vrstereo();
     apply_pending_resolution();
     config::tick(); // F10-posted preset save/load ops (file IO on this thread)
+    // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
+    // Load restores the whole session shape - the user's call, overriding the
+    // earlier latch-then-click design). Same game-thread lane as the picker.
+    {
+        int pw = 0, ph = 0;
+        bool fresh = false;
+        if (config::wanted_resolution(&pw, &ph, &fresh) && fresh && pw >= 640 && ph >= 480)
+            g_resApplyPending.store(
+                (static_cast<uint64_t>(static_cast<uint32_t>(pw)) << 32) |
+                    static_cast<uint32_t>(ph),
+                std::memory_order_relaxed);
+    }
     // I6: the lens decoder's round tick runs BEFORE the lever and the claim
     // publish - a track-mode write is deliberately overridden by an armed
     // lever, and the audit compares against the claim the previous dispatch
@@ -1734,25 +1757,6 @@ void draw_debug_ui() {
         constexpr int kCustom = static_cast<int>(std::size(kResModes));
         static int s_sel = -1;
         static int s_customW = 2560, s_customH = 1440;
-        // A freshly loaded preset preselects its wanted resolution (LATCHED,
-        // never auto-applied - config.h's hazard note); Apply stays the one
-        // clickable that resizes.
-        {
-            int pw = 0, ph = 0;
-            bool fresh = false;
-            if (config::wanted_resolution(&pw, &ph, &fresh) && fresh) {
-                s_sel = kCustom;
-                for (int i = 0; i < kCustom; ++i)
-                    if (kResModes[i].w == pw && kResModes[i].h == ph) s_sel = i;
-                s_customW = pw;
-                s_customH = ph;
-            }
-            if (pw > 0 && liveW && (static_cast<unsigned>(pw) != liveW ||
-                                    static_cast<unsigned>(ph) != liveH))
-                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
-                                   "loaded preset wants %dx%d - Apply below to resize", pw,
-                                   ph);
-        }
         if (s_sel < 0) {
             // First draw: preselect from the ini so the combo opens on truth.
             s_sel = kCustom;

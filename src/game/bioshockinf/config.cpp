@@ -245,63 +245,21 @@ void latch_wanted_res_h(float v) {
 } // namespace detail
 
 void draw_debug_ui() {
-    if (!ImGui::CollapsingHeader("CONFIG / PRESETS (I6)")) return;
-    // Render thread: buttons post ops; the game thread's tick() does the IO.
-    for (int slot = 1; slot <= 4; ++slot) {
-        char label[24];
-        _snprintf_s(label, sizeof label, _TRUNCATE, "Save slot %d", slot);
-        if (ImGui::SmallButton(label)) {
-            g_pendingSlot.store(slot, std::memory_order_relaxed);
-            g_pendingOp.store(1, std::memory_order_relaxed);
-        }
-        ImGui::SameLine();
-        _snprintf_s(label, sizeof label, _TRUNCATE, "Load slot %d", slot);
-        if (ImGui::SmallButton(label)) {
-            g_pendingSlot.store(slot, std::memory_order_relaxed);
-            g_pendingOp.store(2, std::memory_order_relaxed);
-        }
-        if (slot < 4) ImGui::SameLine(0.0f, 18.0f);
-    }
-    if (ImGui::SmallButton("Save current (vrpreset)"))
-        g_pendingOp.store(3, std::memory_order_relaxed);
+    if (!ImGui::CollapsingHeader("VR PRESET (I6)", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    // ONE preset, Save + Load, like the other mods (session-41 headset
+    // feedback - the slot/named UI was dropped; the named files stay reachable
+    // from the desktop via `vrpreset saveas/load <name>`). Buttons post ops;
+    // the game thread's tick() does the IO and the setters apply everything -
+    // stereo, drive, FOV lever, scale, ipd AND the resolution.
+    if (ImGui::Button("Save preset")) g_pendingOp.store(3, std::memory_order_relaxed);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Reload current"))
-        g_pendingOp.store(4, std::memory_order_relaxed);
-
-    refresh_list();
-    if (g_listCount > 0) {
-        ImGui::Text("presets on disk:");
-        for (int i = 0; i < g_listCount; ++i) {
-            ImGui::BulletText("%s", g_list[i]);
-            ImGui::SameLine();
-            char label[80];
-            _snprintf_s(label, sizeof label, _TRUNCATE, "Load##%s", g_list[i]);
-            if (ImGui::SmallButton(label)) {
-                // Named loads reuse the slot lane only for slot names; for
-                // arbitrary names post via a small static copy the tick can
-                // read - simplest: match slotN, else fall back to a direct
-                // note in the log (desktop verb covers arbitrary names).
-                int slot = 0;
-                if (sscanf_s(g_list[i], "slot%d", &slot) == 1 && slot >= 1 && slot <= 4) {
-                    g_pendingSlot.store(slot, std::memory_order_relaxed);
-                    g_pendingOp.store(2, std::memory_order_relaxed);
-                } else {
-                    BVR_LOG("[bsi] config: load non-slot presets from the desktop - "
-                            "`vrpreset load %s` (in-headset buttons cover slot1..slot4)",
-                            g_list[i]);
-                }
-            }
-        }
-    } else {
-        ImGui::TextDisabled("no presets saved yet (Save slot 1..4, or vrpreset saveas <name>)");
-    }
+    if (ImGui::Button("Load preset")) g_pendingOp.store(4, std::memory_order_relaxed);
     if (g_keys) {
-        ImGui::Separator();
         for (size_t i = 0; i < g_keyCount; ++i)
             ImGui::Text("%-14s %.4g", g_keys[i].key, g_keys[i].get());
     }
-    ImGui::TextDisabled("a loaded preset's RESOLUTION is latched, not applied - use the "
-                        "RENDER RESOLUTION Apply above");
+    ImGui::TextDisabled("the preset carries the whole session: stereo + drive + FOV + "
+                        "scale + resolution, all applied on Load (and auto-loaded at boot)");
 }
 
 } // namespace bvr::bsi::config

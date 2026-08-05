@@ -15,10 +15,11 @@
 // applies through whatever posting machinery the value needs - fov and
 // resolution NEVER take naked stores into engine-coupled state.
 //
-// Resolution keys are the one deliberate exception to load-applies: a
-// surprise live resize mid-headset is a session hazard, so a loaded preset
-// LATCHES its resolution as "wanted" and the RENDER RESOLUTION section (and
-// the log) surface it behind the existing overlay-clickable Apply.
+// Resolution keys route through a "wanted" latch that the camera's game
+// thread consumes and applies right after a load completes (session-41
+// headset feedback: ONE Load restores the whole session shape - stereo,
+// drive, FOV, scale AND resolution; the earlier latch-then-click design was
+// dropped at the user's direction).
 
 #include <cstdint>
 
@@ -40,9 +41,9 @@ void init(const KeyDesc* keys, size_t n);
 void save_current();
 void load_current();
 
-// Named presets under presets\<name>.ini. Slot names are "slot1".."slot4"
-// (the F10 buttons); the seam verbs take arbitrary names. Game thread only
-// (file IO + the same appliers load_current uses).
+// Named presets under presets\<name>.ini - a DESKTOP lane only (`vrpreset
+// saveas/load <name>`); the F10 UI is one Save/Load pair on the current
+// store per the session-41 feedback. Game thread only.
 bool save_named(const char* name);
 bool load_named(const char* name);
 

@@ -448,9 +448,14 @@ resolution has BOTH proven levers (DR-I8: `XUserOptions.ini ResolutionX/Y` honou
       Present *(s41: `first Present: backbuffer 1440x1440` after the mod's own ini write)*; and
       the claimed projection matches the rendered frustum **at a non-16:9 aspect**, measured,
       not argued *(s41: 0.6704 both instruments, claim delta 0.0%, claimRatioH 0.48705 vs
-      0.4871 predicted)*. **Flat half CLOSED s41; the headset half - the filled-eye verdict plus
-      the three carried I5 items (world scale, judder at VD 72 Hz, 30-min soak with a level
-      transition) - runs the s41 in-headset checklist (TESTING.md).**
+      0.4871 predicted)*. **Flat half CLOSED s41. Headset half (same day): the FILLED-EYE
+      verdict is GREEN at lever 132 ("no space warp - perfect"), world scale tuned to 150,
+      preset redesigned to ONE Save/Load carrying the whole session (verified auto-restoring
+      at boot). STILL OPEN before I6 closes: the judder on head turns (frames good - the
+      77-80 pairs vs 72 Hz pacing beat is the first suspect) and the 30-min soak + level
+      transition. Standing I8 guard from the user: the lever must not break the viewmodels -
+      watch `bsilens` lens2 in gameplay, test coupling before porting any BS1/BS2 fg-FOV
+      machinery.**
 
 ## I7 - Motion controllers and decoupled aim (~2-3 sessions, one lane per BS2 s39-40)
 
