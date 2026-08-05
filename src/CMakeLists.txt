@@ -100,8 +100,11 @@ add_library(bioshockvr SHARED
     game/bioshockinf/bioshockinf_adapter.h
     game/bioshockinf/camera.cpp
     game/bioshockinf/camera.h
+    game/bioshockinf/inf_math.h
     game/bioshockinf/patterns.cpp
     game/bioshockinf/patterns.h
+    game/bioshockinf/recorder.cpp
+    game/bioshockinf/recorder.h
     game/bioshockinf/reflect.cpp
     game/bioshockinf/reflect.h
     game/shared/ue_math.h

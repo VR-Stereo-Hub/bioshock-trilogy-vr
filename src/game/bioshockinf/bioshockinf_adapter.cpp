@@ -6,6 +6,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/patterns.h"
+#include "game/bioshockinf/recorder.h"
 #include "game/bioshockinf/reflect.h"
 
 #include <imgui.h>
@@ -52,10 +53,14 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
 
     reflect::init(image);
 
-    // DR-I2. Read-only, prologue-gated, and fail-soft: a refusal logs and the
-    // game runs flat. Once it fires it takes over the command poll from the
-    // Present pump (see the lease in core/framework/command).
+    // DR-I2 seam + the I4 drive (drive ships OFF; out-param substitution
+    // only). Prologue-gated and fail-soft: a refusal logs and the game runs
+    // flat. Once it fires it takes over the command poll from the Present
+    // pump (see the lease in core/framework/command).
     const bool hooked = camera::install(image);
+
+    // Persisted tuning (worldScale). File read only - touches no engine state.
+    camera::load_vr_preset();
 
     BVR_LOG("[bsi] adapter ready - build gate %s, camera hook %s. Command seam is live either "
             "way (Present pump), and hands over to the game thread on the hook's first fire.",
@@ -97,7 +102,9 @@ void BioshockInfAdapter::drawDebugUi() {
     ImGui::Text("presents: %llu   capabilities: 0x%X",
                 static_cast<unsigned long long>(bvr::d3d11_hook::present_count()),
                 capabilities());
-    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsivr | bsireflect | bsinative | bsicall | vrcmd");
+    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsivr | simhead | recenter | "
+                        "worldscale | vrpreset | vrrec | bsireflect | bsinative | bsicall | "
+                        "vrcmd");
 
     camera::draw_debug_ui();
     reflect::draw_debug_ui();
@@ -115,7 +122,13 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (strcmp(cmd, "bsicam") == 0) {
         if (!camera::handle_command(args))
             BVR_LOG("[bsi] camera: unknown subcommand. bsicam status|paths|tid|matrix|"
-                    "heartbeat on|off|on|off");
+                    "heartbeat on|off|drive on|off|on|off");
+        return true;
+    }
+    // I4 drive verbs (simhead / recenter / worldscale / vrpreset) + vrrec.
+    if (camera::handle_drive_verb(cmd, args)) return true;
+    if (strcmp(cmd, "vrrec") == 0) {
+        recorder::handle_command(args);
         return true;
     }
     if (strcmp(cmd, "bsivr") == 0) {

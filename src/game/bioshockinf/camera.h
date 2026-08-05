@@ -1,10 +1,14 @@
 #pragma once
 // BioShock Infinite's camera seam: APlayerController::GetPlayerViewPoint.
 //
-// I2 / DR-I2 installs this READ-ONLY. The detour calls the original and then
-// only OBSERVES - it never writes through the out-params, and no assignment
-// through them exists anywhere in camera.cpp. The 6DoF override is I4 work and
-// arrives as a new function, not by loosening this one.
+// I2 / DR-I2 installed this READ-ONLY; I4 (session 39) added the 6DoF drive as
+// a separate function (drive_view) called from the detour tail. The WRITE
+// TARGET IS THE OUT-PARAMS ONLY - nothing here ever writes [cam+0x3B8] or any
+// other engine memory, so the engine's own camera state stays engine-owned and
+// keeps moving under mouse/pad (the BS1 pitch-freeze class of bug cannot
+// occur), and drive-off is a byte-identical passthrough. The read-only probe
+// machinery underneath is unchanged and its returned-minus-source instrument
+// keeps measuring the ORIGINAL's output (snapshot taken before the drive).
 //
 // Why this target and not the exec thunk at 0x129280: a static E8 caller census
 // (session 34, reproduced by tools/pe-xref.ps1 in session 36) gives the thunk
@@ -12,6 +16,7 @@
 // script thunks entirely, exactly as on BioShock 1. Hook implementations.
 
 #include "core/hooks/pattern_scan.h"
+#include "core/vr/openxr_runtime.h"
 
 #include <cstdint>
 
@@ -54,6 +59,21 @@ uint32_t camera_tid();
 
 // `bsicam ...`. Returns false when the subcommand is not ours.
 bool handle_command(const char* args);
+
+// The I4 drive's own seam verbs - simhead / recenter / worldscale / vrpreset -
+// routed here from the adapter table. Returns false when the verb is not ours.
+bool handle_drive_verb(const char* cmd, const char* args);
+
+// The recenter state vrrec serializes in its file header and restores on play
+// (the whole xr->game mapping routes through it). The setter also clears any
+// pending auto-recenter, or the first replayed frame would re-reference the
+// mapping and throw away what was just restored.
+void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* worldScale);
+void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float worldScale);
+
+// Loads the persisted worldScale (vrpreset.ini) if present. Called once from
+// adapter init; touches no engine state.
+void load_vr_preset();
 
 // Overlay section.
 void draw_debug_ui();
