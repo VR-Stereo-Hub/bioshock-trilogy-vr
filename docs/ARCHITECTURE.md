@@ -230,6 +230,35 @@ runtime.
 
 ## Decision log
 
+- **2026-08-05 (session 41) · Infinite I6: the FOV lever ENFORCES per dispatch, and the claim
+  derives from the lever through the 16:9-referenced law.** The named-property lane was tried
+  first per the roadmap and is measurably dead (`set XUserOptionsManager FieldOfView` writes
+  nothing - zero stable holders after a scan for the written value), and every FOV cache in the
+  process (six 82.5f holders) snaps back within a tick of a poke: the engine recomputes the
+  chain from the option each tick, so no single write can be the lever. The lever therefore
+  writes the camera object's two FOV fields (`[cam+0x214]`, `[cam+0x3D0]`) on every
+  GetPlayerViewPoint dispatch - the same seam BS2's option-write lever uses, with the engine's
+  own recompute as the disarm restore. The claim wiring was then CORRECTED BY ITS OWN AUDIT:
+  the degrees value is horizontal at a FIXED 16:9 reference (tanV = tan(deg/2)/(16/9), pinned;
+  tanH = tanV x actual aspect), not at the current aspect - the lens decoder flagged the
+  current-aspect claim 43.7% wrong on its first 1:1 round, both decoders agreed on
+  tan(50)/1.7778 = 0.6704 exactly, and patterns.h now carries `kFovRefAspect` with the
+  measurement. The rejected alternative - publishing the decoder's output as the claim
+  unconditionally - was declined: the commanded-value-through-the-law claim is exact by
+  construction while the lever is armed, and the decoder stays the independent AUDIT (with
+  `bsilens track on` as the opt-in coupling for lever-off states).
+- **2026-08-05 (session 41) · Infinite I6: the config registry stays ADAPTER-LOCAL; the
+  ROADMAP's "extract bvr::config into core" is deferred to the healing session.** Infinite is
+  the third consumer of preset persistence, which is the extraction trigger the roadmap named -
+  but the decoupling directive outranks it: BS1/BS2 are headset-accepted, their hand-rolled
+  vrpreset writers round-trip core-owned state through adapter files in ways a shared registry
+  would have to reproduce exactly, and a core module whose only consumer is Infinite buys
+  nothing this session that a 300-line adapter file does not. `bioshockinf/config.cpp` owns the
+  KeyDesc table, vrpreset.ini and named presets; the ROADMAP line is annotated rather than
+  silently dropped. A second decision rides along: a loaded preset's RESOLUTION is latched into
+  the picker and never auto-applied - a surprise live resize mid-headset (backbuffer +
+  XR-swapchain rebuild) is a session hazard, so the one overlay-clickable Apply stays the only
+  resize path.
 - **2026-08-05 (session 40) · Infinite I5: the SR root must INCLUDE the present kick, and the
   FOV claim is a constant-tanV law until I6.** Two decisions. (1) The doubling root is the
   viewport draw (`0x1FDE30`, canvas -> client draw -> present kick), not the client draw

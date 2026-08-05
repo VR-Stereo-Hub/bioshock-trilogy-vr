@@ -320,6 +320,95 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 41 - I6: the FOV lever, the lens decoder, resolution, config)
+
+### The FOV lever: every named lane is dead, and the live chain is a per-tick recompute
+
+The named-property route was tried FIRST, per the roadmap, and is now a recorded negative
+with the mechanism mapped:
+
+- `bsiexec set XUserOptionsManager FieldOfView <v>` dispatches cleanly (the class and both
+  property names are in GNames: 11162 / 5085 / 5046) but WRITES NOTHING - after
+  `set ... FieldOfView 0.37`, a full writable-memory scan for 0.37f finds ZERO stable
+  holders. Same for in-range 0.0 and absurd 3.0 by frustum decode. Do not re-try `set` on
+  this class. (`set D3DRenderDevice ...` is bound to F7/F8 by the retail game, so the exec
+  itself is not dead - this class just is not writable through it.)
+- Console `FOV 100` and `SetFOV` execs: no frustum effect (`SetFOV` is in GNames at 20771
+  but FindFunction on the PC chain returns null; the CheatManager route was not pursued).
+- The LIVE chain, mapped by poke/rescan at the attract: with the slider at max the frustum
+  decodes tanH 0.8770 and the camera object `[pc+0x240]` carries **82.50f** - and
+  tan(82.5/2) = 0.8770 EXACTLY. Copies at `[cam+0x214]` (followed by two 1.3333f - the
+  ACamera DefaultFOV / DefaultAspectRatio shape) and `[cam+0x3D0]` (cached POV: loc +0x3B8,
+  rot +0x3C4, fov +0x3D0 - FTPOV). A memscan for 82.5f found SIX holders and EVERY ONE
+  snapped back within a tick of being poked: the value is recomputed from the option each
+  tick; no address is the source.
+
+**THE LEVER (patterns.h `kCameraDefaultFovOffset`/`kCameraPovFovOffset`): enforce per
+camera-detour dispatch.** `apply_fov_lever` writes both copies every GetPlayerViewPoint
+call, outrunning the once-per-tick refresh; disarm self-restores because the engine's own
+recompute is the undo. Measured at 2560x1440: commanded 110 -> decode tanH 1.4281
+(= tan 55 exact) tanV 0.8033; 130 -> 2.1443/1.2063; monotone, aspect held, 56k writes
+0 faults; `bsifov off` -> the native value returns within a tick. SR beat with the lever
+armed stayed exact (84/84/169/84).
+
+### THE LAW'S ANCHOR, corrected by the decoder at 1:1 (the biggest s41 finding)
+
+The camera degrees value is horizontal **at a FIXED 16:9 REFERENCE**, not at the current
+aspect: `tanV = tan(deg/2) / (16/9)` is pinned, `tanH = tanV x actual aspect` (the s37
+vertical-referenced law restated WITH its anchor). Measured at 1440x1440 with the lever at
+100: both decoders read tanH = tanV = **0.6704 = tan(50)/1.7778 exactly**, while the claim
+(then computed against the current aspect) sat 43.7% off - **the lens decoder's audit
+caught the wrong law on its first non-16:9 round**. At 16:9 the two readings coincide,
+which is why no 16:9 measurement could separate them. patterns.h `kFovRefAspect` carries
+the constant; the corrected claim closes at delta 0.0% and the capture read claimRatioH
+0.48705 vs 0.4871 predicted.
+
+Consequences, measured: claimRatioH is config-dependent (slider-min/16:9 baseline 0.5576;
+lever-100/16:9 0.86586; lever-100/1:1 0.48705 - the square render ALONE narrows the
+horizontal, the ROADMAP caveat now with numbers). Filling the ~110-deg eye vertically
+needs lever ~137 deg (tanV 1.428); the banked `eye` preset carries exactly that plus the
+1600x1712 render.
+
+### The live lens decoder (bsilens) and its vote
+
+Core half: an opt-in UpdateSubresource tap in frame_inspector (raw 80-byte samples into a
+seqlocked ring; disarmed cost one relaxed load; only this adapter arms it). Adapter half
+(`lens.cpp`): 1 s rounds on the game thread; per sample the matrix decode (gates aligned
+with decode-framedump's Decode-Matrix), then the load-bearing structural filter
+(tanH/tanV == live backbuffer aspect within 1%), clustering by tanV, publish only >= 60%
+of >= 16 valid samples, runner-up >= 10% published as a NAMED second lens (telemetry
+only), refused rounds keep the last lens with age showing. Measured: caught the stale
+slider-min claim on its first round (decoded 0.4933 vs claim 0.4317, 14.3% loud); follows
+the lever within one round at 100% support; `bsilens track on` writes the claim on
+majority rounds (the armed lever still wins - publish order). No second lens observed at
+the attract (no viewmodel there); the gameplay-save check rides the headset session.
+
+### Resolution: both lanes proven end-to-end, and the boot acceptance
+
+`bsires squareperf` resized the backbuffer live to 1440x1440 (ResizeBuffers hr=0, XR
+swapchain rebuild survived) AND wrote XUserOptions.ini `[XCore.XUserOptionsManager]`
+ResolutionX/Y (section-scoped, one-time .bvr-bak-res backup, temp+ReplaceFileW, read-back
+logged as not-acceptance); the NEXT BOOT's first Present read **backbuffer 1440x1440** -
+the DR-I8 acceptance on the mod's own write path. XEngine.ini is never touched. The live
+user config's single section `[XCore.XUserOptionsManager]` carries every key this
+milestone needs (FieldOfView :138, MaxUserFOVOffsetPercent :95, ResolutionX/Y :150-151).
+
+### Config registry and presets
+
+Adapter-local `config.cpp` registry (six keys) serves vrpreset.ini (legacy files load
+unchanged), named presets under `bsi\presets\`, the verb family and the F10 slots.
+Round-tripped within a session and across a restart (6 applied each way). A loaded
+preset's resolution is LATCHED into the picker, never auto-applied. Core extraction
+deferred (ARCHITECTURE decision log 2026-08-05).
+
+### Session hazards recorded
+
+The pre-existing unattended-attract freeze hit TWICE (force-kill + relaunch, zero mod
+faults - same signature as s37's, which hit an unmodified build). And at attract movie
+transitions the game-thread pump can lag 30+ s: send seam commands one at a time and
+CONFIRM the dispatch line before the next, or later writes overwrite undispatched ones
+(VERIFICATION gotcha 20).
+
 ## LIVE RESULTS (session 40 - I5: stereo, and the render-root derivation)
 
 ### The FOV claim and Infinite's own claimRatioH baseline
@@ -1542,6 +1631,8 @@ single frame has been dumped**, which is exactly the multi-lens situation I5 is 
 | `APlayerController` | `+0x258` | cached POV Rotation (FRotator) | structural |
 | `APlayerController` | `+0x240` | camera object pointer, lazily created | **inferred** from shape |
 | camera object | `+0x3B8` / `+0x3C4` | POV Location / Rotation | structural |
+| camera object | `+0x3D0` | POV FOV, f32 horizontal degrees at the 16:9 reference (FTPOV: loc, rot, fov) | measured s41 - tan(deg/2) == the decoded frustum tanH at 16:9, and poking it is overwritten within a tick (per-tick recompute) |
+| camera object | `+0x214` | DefaultFOV analog, f32 degrees; `+0x218`/`+0x21C` hold 1.3333f (DefaultAspectRatio pair) | measured s41 - same recompute; both copies are the FOV lever's per-dispatch write targets |
 | `APlayerController` vtable | `+0x2C0` | `GetViewTarget()` | **inferred** from shape |
 | `APlayerController` | `+0x430` | 0x40-byte block fed to a 4x4 SSE transform applied to the POV | structural, purpose unknown |
 

@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 40" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 41" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,71 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 40 (I5 CLOSED as re-scoped - stereo headset-verified on VDXR; world-scale tune, judder verdict and the long soak carried to I6 - branch `si40-inf-stereo`)
+### Infinite: current state after session 41 (I6 flat half CLOSED - lever, decoder, resolution, presets all measured; the headset half is a ready checklist - branch `si41-inf-lens-config`)
+
+**The eye can now be filled, and every number that claims so was measured twice.** Session 41
+landed the whole I6 flat stack in six commits:
+
+1. **THE FOV LEVER** (`bsifov set <deg>`, F10 slider, preset-persisted). The named-property
+   lane was tried first per the roadmap and is a recorded negative WITH the mechanism:
+   `set XUserOptionsManager FieldOfView` dispatches but writes nothing (zero stable holders
+   after a scan for the written value), and every FOV cache in the process (six 82.5f
+   holders incl. `[cam+0x214]` DefaultFOV and `[cam+0x3D0]` POV fov) snaps back within a
+   tick - the engine recomputes the chain from the option every tick. The lever therefore
+   ENFORCES both camera fields per GetPlayerViewPoint dispatch; disarm self-restores via the
+   engine's own recompute. Measured: 110 deg -> decode tanH 1.4281 (tan 55 exact) tanV
+   0.8033; 130 -> 2.1443/1.2063; monotone, aspect held, 0 faults; tanV to 1.2+ proven =
+   nearly 2.5x the native slider cap (0.4933).
+2. **THE LAW'S ANCHOR, corrected by its own audit**: the camera degrees value is horizontal
+   at a FIXED 16:9 REFERENCE - tanV = tan(deg/2)/(16/9) pinned, tanH = tanV x actual aspect.
+   At 1440x1440 with the lever at 100 both decoders read 0.6704 = tan(50)/1.7778 EXACT while
+   the first-cut claim (current-aspect) sat 43.7% off - the lens decoder flagged it on its
+   first non-16:9 round. patterns.h `kFovRefAspect` carries the measurement. **The ROADMAP
+   done-when "claimed projection matches the rendered frustum at a non-16:9 aspect, measured"
+   is BANKED**: claim delta 0.0%, claimRatioH captured 0.48705 vs 0.4871 predicted.
+3. **THE LIVE LENS DECODER** (`bsilens on|track|status`, F10 section): core grew an opt-in
+   UpdateSubresource cb tap (raw 80-byte ring, disarmed cost one relaxed load, BS1/BS2
+   byte-identical - proofs in the commit); the adapter decodes by the UE3 matrix law,
+   aspect-gates structurally (the load-bearing filter), clusters by tanV, publishes only a
+   >=60%-of->=16 majority, names the runner-up as a second lens, refuses rounds otherwise.
+   It caught the stale slider-min claim (14.3% loud) AND the wrong claim law (43.7%) in its
+   first hour - the audit instrument works. Track mode writes the claim on majority rounds;
+   an armed lever always wins.
+4. **RESOLUTION, both lanes end-to-end**: `bsires <mode|WxH>` / the RENDER RESOLUTION F10
+   picker (flat/squareperf/eye/native/sharp + custom, ini-vs-live compare, aspect warning,
+   headset-recommends annotation) applies live setres (backbuffer resized in 20 ms, XR
+   rebuild survives) AND writes XUserOptions.ini `[XCore.XUserOptionsManager]` ResolutionX/Y
+   (BS2's safety chain, adapter-local; XEngine.ini never touched). **The boot acceptance
+   landed: `first Present: backbuffer 1440x1440` after the mod's own ini write.** The square
+   render alone narrows tanH (claimRatioH 0.487 at 1:1/lever-100) - the modes pay only
+   combined with the lever, now with numbers.
+5. **`xrEnumerateViewConfigurationViews` at bring-up** (core, additive): recommendedImageRect
+   stored + `recommended_eye_size()` getter; sim serves 2064x2208. Inertness proven by a
+   FULL BS1 sim lane on the new build (boot -> gameplay -> vrstereo -> claimRatioH 1.01769 =
+   the banked 1.018 baseline, zero faults) - named in the commit.
+6. **CONFIG REGISTRY + NAMED PRESETS** (adapter-local BY DECISION - ARCHITECTURE log
+   2026-08-05; core extraction deferred to the healing session): one KeyDesc table
+   (worldScale, claimTanV, ipdMm, fovLeverDeg, resW, resH) serves vrpreset.ini
+   (legacy-compatible, measured), `bsi\presets\<name>.ini`, `vrpreset
+   save|saveas|load|list` and F10 slot buttons. **Preset round-trip across a full restart:
+   6/6 keys both directions.** A loaded preset's resolution is LATCHED into the picker,
+   never auto-applied (mid-headset resize hazard). A recommended **`eye` preset is banked**:
+   lever 137 deg (tanV 1.428 ~ the 110-deg eye vertical) + 1600x1712.
+
+**Session hazards, recorded**: the pre-existing unattended-attract freeze hit twice (zero mod
+faults, force-kill + relaunch; same signature as s37's unmodified-build hit), and the
+game-thread pump lags 30+ s at attract movie transitions - seam commands now go
+one-at-a-time with dispatch confirmation (VERIFICATION gotchas 20-21, the second being
+xrsim-shot littering the CWD with game-derived captures).
+
+**NEXT: the I6 HEADSET SESSION (user drives, VDXR, suggest Virtual Desktop at 72 Hz)** - the
+checklist is written (TESTING.md "I6 in-headset checklist"): the filled-eye verdict (Load
+`eye` preset -> Apply -> no more window, straight lines straight), then the three carried I5
+items - world-scale tune through the filled view, the judder verdict at 72 Hz, and the
+30-minute soak with a level transition (`reentry status` poisoned=no after). After that
+verdict, I6 CLOSES and I7 (controllers + decoupled aim) opens.
+
+### Infinite: current state after session 40 (superseded by session 41 above - kept for the derivation trail; I5 CLOSED as re-scoped - stereo headset-verified on VDXR; world-scale tune, judder verdict and the long soak carried to I6 - branch `si40-inf-stereo`)
 
 **HEADSET VERDICT (user, VDXR, 2026-08-05): "there's stereo 3d rendering and it's working
 well" - I5 is CLOSED as re-scoped.** True geometric parallax confirmed in the headset;
@@ -5738,6 +5802,45 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 41 (Infinite) - 2026-08-05 - I6 flat half CLOSED: FOV lever + lens decoder + resolution + presets, every done-when number measured
+
+Branch `si41-inf-lens-config` off `bioshock-infinite` (8feae7f), six feat commits + docs.
+The session opened with a planning finding: the live XUserOptions.ini had FieldOfView=1.0
+(slider at MAX) so the shipped claim default (slider-min 0.4317) was stale on this very
+machine - the milestone's honesty problem demonstrated before any code.
+
+The lever: set-by-name tried FIRST and measurably dead (`set XUserOptionsManager
+FieldOfView` writes nothing - zero stable holders for the written value; FOV/SetFOV execs
+inert), the live chain mapped by poke/rescan (camera holds 82.50f at [cam+0x214] and the
+POV fov at [cam+0x3D0], tan(82.5/2)=0.8770=the decoded tanH exactly, every holder
+recomputed per tick), so the lever ENFORCES both fields per camera dispatch - measured
+exact and monotone at 110/130 deg, 0 faults, self-restoring disarm.
+
+The law's anchor: at 1440x1440 the first-cut claim (current-aspect) sat 43.7% off and the
+new lens decoder flagged it - the degrees value is horizontal at a FIXED 16:9 reference
+(tanV = tan(deg/2)/1.7778 pinned; both decoders 0.6704 exact after the fix, claim delta
+0.0%, claimRatioH 0.48705 vs 0.4871 predicted). The decoder (opt-in core UpdateSubresource
+tap + adapter matrix-law vote: aspect-gated, 60%-of-16 majority, named runner-up, refusal
+over confident-wrong) also caught the stale boot claim at 14.3% on its first round - the
+audit instrument earned its keep twice in one session.
+
+Resolution: bsires/picker applies live setres AND the section-scoped XUserOptions.ini
+write; the next boot's `first Present: backbuffer 1440x1440` banked the DR-I8 acceptance
+on the mod's own write path. xrEnumerateViewConfigurationViews landed additively in core
+(recommended_eye_size; sim serves 2064x2208) with a full BS1 sim lane re-run as the named
+inertness proof (claimRatioH 1.01769 = the banked 1.018). Config registry + named presets
+landed adapter-local by decision (ARCHITECTURE log; core extraction deferred to healing):
+preset round-trip 6/6 across a full restart, legacy vrpreset files still load, resolution
+LATCHED on load (never auto-applied), and an `eye` preset banked (lever 137 = tanV 1.428 ~
+the eye's vertical, 1600x1712).
+
+Hazards: the pre-existing unattended-attract freeze hit twice (zero mod faults;
+force-kill + relaunch) and the pump lags 30+ s at attract movie transitions -
+send-one-confirm-one is now gotcha 20 (21 = xrsim-shot littering the CWD with
+game-derived captures; deleted before commit). The headset half is a ready checklist
+(TESTING.md "I6 in-headset checklist"): the filled-eye verdict + the three carried I5
+items (world scale, judder at VD 72 Hz, 30-min soak + level transition).
 
 ### Session 40 (Infinite) - 2026-08-05 - I5 CLOSED as re-scoped: stereo flat-green AND headset-verified on VDXR
 

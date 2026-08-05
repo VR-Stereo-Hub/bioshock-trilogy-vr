@@ -460,6 +460,81 @@ overlay ("VR stereo (I5)" + "VR camera (I4)" sections) - never type commands in-
    quad briefly (the cine fallback working). Anything off: untick "VR stereo" first - if
    the symptom survives, it predates this session (I4 baseline).
 
+## I6 battery (session 41 - lens/FOV/resolution/config, all flat, run at the attract)
+
+Prep as for I5 (BS2 conflict check, selftest, build, clear command.txt, launch, `recenter`
+at yaw 0, `fov 54 55 54`). NEW DISCIPLINE from s41: at attract movie transitions the pump
+lags - send ONE command and confirm its dispatch line in the log before the next
+(VERIFICATION gotcha 20), and never leave the attract unattended (the pre-existing freeze
+hit twice this session).
+
+1. **Lever**: `dumpframe cb` + `decode-framedump -ScanMatrix -BlockBytes 80` baseline
+   (native, scene-dependent: slider-min 0.7673/0.4316 or max 0.8770/0.4933 - the attract
+   cycles bases). `bsifov set 110` -> decode tanH 1.4281 (tan 55 exact) tanV 0.8033;
+   `bsifov set 130` -> 2.1443/1.2063 (monotone, aspect held); `bsifov` shows the claim
+   tracking (hfov == commanded, writes counting, faults 0); `bsifov off` -> native decode
+   returns.
+2. **Decoder**: before arming, `bsilens` must show samples=0 (the core tap's inertness
+   observable). `bsilens on` -> rounds publish within seconds; majority tanV must match a
+   same-scene dumpframe decode; the CLAIM MISMATCH line fires if the claim is stale (it
+   caught 0.4317-vs-0.4933 at 14.3% on its first round in s41); `bsilens track on` heals
+   the claim; with the lever armed the decoder follows within one round at 100% support
+   and delta 0.0%. Refused rounds count up at menu/movie transitions - correct, not a
+   failure.
+3. **Resolution live**: `bsires squareperf` -> log shows setres dispatch, `ResizeBuffers
+   1440x1440 hr=0`, XR swapchain rebuild queued, ini written (one-time .bvr-bak-res on
+   first write). `bsires status` compares ini vs live.
+4. **Resolution boot acceptance**: relaunch -> `first Present: backbuffer 1440x1440`.
+   This line is THE acceptance; the ini read-back never is.
+5. **The non-16:9 claim measurement (the ROADMAP done-when)**: at 1440x1440 with
+   `bsifov set 100`, BOTH decoders read tanH = tanV = 0.6704 (= tan(50)/(16/9) - the
+   16:9-referenced law, patterns.h kFovRefAspect) and the claim closes at delta 0.0%;
+   stereo capture claimRatioH 0.48705 vs 0.4871 predicted. claimRatioH is
+   CONFIG-DEPENDENT - recompute claimTanH/tan(54) per config, never reuse a banked value.
+6. **Presets**: save a slot, scramble every value, load -> all applied (log counts);
+   restart the game -> boot store applies, slot loads identically. A loaded preset's
+   resolution is LATCHED into the picker (amber line), applied only by the Apply button.
+   Legacy vrpreset.ini files (1-4 keys) still load.
+7. **Battery 0 after any rebuild**: `vrstereo on` -> SR beat exact in an attract gameplay
+   scene (draws==2nd, presents==2x, replays==2nd; menu/movie phases legitimately show
+   30/30/30 with high raw draws and counting s-skips - wait for the gameplay scene),
+   `reentry status` poisoned=no, clean exit.
+
+## I6 in-headset checklist (VDXR, user drives - the Done-when; suggest Virtual Desktop at 72 Hz)
+
+Launch via Virtual Desktop as before. Load the Columbia save. Everything judged by eye is
+an F10 control - never type in-headset. Desktop prep: none needed (the claim now tracks
+the lever, and the decoder audits it live - `bsilens on` from the desktop first if you
+want the audit line running).
+
+1. **Non-regression sweep, 60 s, FIRST**: stereo off - head-tracked quad, drive checkbox,
+   corner lean, F10 opens.
+2. **VR stereo on at defaults (lever off)**: the I5 baseline - true depth, no fisheye,
+   the world through the window at true angular size. This is the BEFORE.
+3. **THE VERDICT - fill the eye**: in CONFIG / PRESETS press Load on the `eye` preset
+   (lever 137 deg + 1600x1712), then in RENDER RESOLUTION press Apply (the preset LATCHES
+   resolution; Apply is the one resize control). The window should open up to fill most
+   of the view vertically and horizontally. Judge: does the world fill the eye (no more
+   window)? Do straight lines stay straight (a wrong claim = fisheye/warp on head
+   rotation - the in-headset instrument for claim==render)? The FOV-lever slider
+   (60..140) is live for tuning; `vrpreset save` from F10 (Save current) persists.
+4. **CARRIED - world-scale tune**: through the FILLED view, lean toward a railing - does
+   Columbia feel life-size? Tune "World scale (UU per m)" (default 50) and IPD (63) by
+   feel; Save current afterwards.
+5. **CARRIED - judder verdict at VD 72 Hz**: the near-square render also lowers per-eye
+   cost vs 2560x1440. Head turns smooth? (I5 measured 77-80 pairs/s under 90 Hz - at
+   72 Hz the target is pairs >= refresh.)
+6. **Preset round-trip across a restart**: Save slot 1 with your tuned values, quit the
+   game fully, relaunch, Load slot 1 - values return (the boot also auto-loads your
+   last-saved current store, including the lever).
+7. **CARRIED - 30-minute soak** with stereo armed, including one level transition and one
+   quit-to-menu. Afterwards, desktop: `reentry status` -> poisoned must be "no".
+8. Expected noise, not bugs: HUD screen-locked mid-view (I9), weapon rides the engine
+   camera (I8), aim/head mismatch (I7), brief quad drops at loads (cine fallback), the
+   HUD/menus render at the new aspect (they follow the backbuffer). Anything off: lever
+   off first (bsifov checkbox), then stereo off - if the symptom survives, it predates
+   this session.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

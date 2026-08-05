@@ -537,6 +537,20 @@ $a.NonBlackPctL      -gt 50     # something was rendered
     `xrsim-shot`, which writes `<name>_left.png` etc.). Pass the extensionless file
     to `img-diff` or include the extension yourself; `img-diff` against
     `<name>.png` fails with a Resolve-Path error. (Session 40.)
+20. **At attract movie transitions the game-thread pump can lag 30+ seconds**,
+    and one-command-per-write means a faster sender OVERWRITES undispatched
+    commands (each write replaces command.txt). A fixed sleep between writes is
+    not enough: send one command, then CONFIRM its `[cmd] command.txt changed`
+    dispatch line in the log before writing the next. The same stall window is
+    where the pre-existing unattended-attract FREEZE lives (ENGINE_NOTES s37,
+    hit twice more in s41 - it hits unmodified builds too): if `Responding` goes
+    False and the log stays silent for minutes, force-kill and relaunch; the mod
+    logs zero faults across it. (Session 41.)
+21. **A bare `xrsim-shot -Out <name>` also copies the capture files into the
+    CURRENT DIRECTORY.** Run from the repo root that means game-derived PNGs and
+    JSON sitting in the worktree - never committable (hard rule). Pass an
+    absolute `-Out` outside the repo, or delete the copies before `git add`.
+    (Session 41 - they showed up in `git status` next to a real commit.)
 
 ---
 

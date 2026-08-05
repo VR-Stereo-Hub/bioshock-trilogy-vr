@@ -412,26 +412,45 @@ Much of the original milestone is already banked: the FOV law is derived (I2, tw
 resolution has BOTH proven levers (DR-I8: `XUserOptions.ini ResolutionX/Y` honoured at boot;
 `bsiexec setres` live, XR swapchain rebuild surviving it - s38). What remains:
 
-- [ ] **The lens decoder.** Stride-sampled, majority-voted, structurally validated, multi-lens.
+- [x] **The lens decoder.** Stride-sampled, majority-voted, structurally validated, multi-lens.
       **Assume the frame carries more than one lens until proven otherwise.** Publish the
       runner-up as a named second lens. Refuse to publish a round without a clear majority
       rather than publishing a confident wrong value. BS1's watch latched onto the viewmodel
-      frustum, and that single choice was the release blocker.
-- [ ] **Cross-check the lens law at a non-16:9 aspect live** (the I2 derivation already did
-      16:9 vs 4:3 offline; keep the discipline for every new lens found).
-- [ ] FOV lever. The native slider spans only ~46.7-52.6 deg vFOV, so a lever is needed - the
-      property chain is *named*, so try `set`-by-name before any memory scan.
-- [ ] Resolution picker UI: named square-first modes plus custom, live-vs-config comparison, and
+      frustum, and that single choice was the release blocker. *(s41: `bsilens` - matrix-law
+      decode off an opt-in core cb tap, 60%-of-16 majority, aspect gate load-bearing, runner-up
+      named, refused rounds keep last-good. Caught a wrong claim twice in its first hour. No
+      second lens visible at the attract - the gameplay-save check rides the headset session.)*
+- [x] **Cross-check the lens law at a non-16:9 aspect live** (the I2 derivation already did
+      16:9 vs 4:3 offline; keep the discipline for every new lens found). *(s41 at 1440x1440:
+      the law's ANCHOR corrected - degrees are horizontal at a FIXED 16:9 reference, tanV =
+      tan(deg/2)/(16/9) pinned; both decoders 0.6704 exact, claim delta 0.0% after the fix.)*
+- [x] FOV lever. The native slider spans only ~46.7-52.6 deg vFOV, so a lever is needed - the
+      property chain is *named*, so try `set`-by-name before any memory scan. *(s41: set-by-name
+      tried FIRST and measurably dead (writes nothing); every FOV cache recomputes per tick; the
+      lever ENFORCES [cam+0x214]/[cam+0x3D0] per camera dispatch - tanV to 1.2+ proven, exact,
+      0 faults, self-restoring disarm. `bsifov set <deg>`, F10 slider, preset-persisted.)*
+- [x] Resolution picker UI: named square-first modes plus custom, live-vs-config comparison, and
       the aspect warning (a headset eye is near-square; 16:9 throws away most of its width).
-- [ ] **Call `xrEnumerateViewConfigurationViews`.** Neither BS1 nor BS2 ever does, and the docs
+      *(s41: flat/squareperf/eye/native/sharp + custom, 1 Hz ini-vs-live, aspect warning,
+      recommends-annotation, live setres + XUserOptions.ini persist in one Apply, `bsires`.)*
+- [x] **Call `xrEnumerateViewConfigurationViews`.** Neither BS1 nor BS2 ever does, and the docs
       name its absence as the missing input for both a correct FOV policy and a derived render
-      target (`recommendedImageRect`).
-- [ ] **Extract `bvr::config` into core** with per-key registration and real types (the third
-      consumer is the right trigger), config menu with **named preset save and load**, and the
-      generic half of the resolution ini lane moved to core alongside it.
-- [ ] **Done when:** a full preset round-trips through the menu across a restart; the resolution
-      picker's value is confirmed by the backbuffer at first Present; and the claimed projection
-      matches the rendered frustum **at a non-16:9 aspect**, measured, not argued.
+      target (`recommendedImageRect`). *(s41: at bring-up, additive, `recommended_eye_size()`;
+      BS1 full sim lane re-run green as the inertness proof - claimRatioH 1.01769 unchanged.)*
+- [x] ~~**Extract `bvr::config` into core**~~ **ADAPTER-LOCAL by decision** (ARCHITECTURE
+      decision log 2026-08-05 s41: the decoupling directive outranks the third-consumer trigger;
+      core extraction deferred to the healing session). Per-key registration and the config menu
+      with **named preset save and load** are DONE adapter-locally (`bioshockinf/config.cpp`:
+      KeyDesc registry, vrpreset.ini legacy-compatible, `bsi\presets\<name>.ini`, F10 slots,
+      `vrpreset saveas/load/list`).
+- [x] **Done when:** a full preset round-trips through the menu across a restart *(s41: 6/6 keys
+      both directions)*; the resolution picker's value is confirmed by the backbuffer at first
+      Present *(s41: `first Present: backbuffer 1440x1440` after the mod's own ini write)*; and
+      the claimed projection matches the rendered frustum **at a non-16:9 aspect**, measured,
+      not argued *(s41: 0.6704 both instruments, claim delta 0.0%, claimRatioH 0.48705 vs
+      0.4871 predicted)*. **Flat half CLOSED s41; the headset half - the filled-eye verdict plus
+      the three carried I5 items (world scale, judder at VD 72 Hz, 30-min soak with a level
+      transition) - runs the s41 in-headset checklist (TESTING.md).**
 
 ## I7 - Motion controllers and decoupled aim (~2-3 sessions, one lane per BS2 s39-40)
 
