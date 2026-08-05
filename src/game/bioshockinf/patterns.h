@@ -250,6 +250,15 @@ inline constexpr float kTanVSliderMax = 0.4933f;
 // and disarming self-restores - the engine's own recompute is the undo.
 inline constexpr uint32_t kCameraDefaultFovOffset = 0x214; // f32 deg, [cam+...]
 inline constexpr uint32_t kCameraPovFovOffset = 0x3D0;     // f32 deg, [cam+...]
+// The camera degrees value is HORIZONTAL AT A FIXED 16:9 REFERENCE, not at
+// the current aspect: the engine pins tanV = tan(deg/2) / (16/9) and derives
+// tanH = tanV x actual aspect (Hor+ - the s37 law restated with its anchor).
+// MEASURED at 1440x1440 with the lever enforcing 100 deg: both decoders read
+// tanH = tanV = 0.6704 = tan(50 deg)/1.7778 exactly (predicting tan(50) =
+// 1.19175 from a current-aspect reading was WRONG and the claim audit caught
+// it at 43.7% off - session 41). At 16:9 the two readings coincide, which is
+// why the 16:9-only measurements could not separate them.
+inline constexpr float kFovRefAspect = 16.0f / 9.0f;
 
 // ---- the scene-build root (session 40, derived live) -----------------------
 //

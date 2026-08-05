@@ -23,6 +23,14 @@ void init(const bvr::pattern_scan::ProcessImage& image);
 // Returns false when the command is not ours.
 bool handle_command(const char* cmd, const char* args);
 
+// Dispatch a console command through ConsoleCommand-by-name (the proven
+// bsiexec lane: setres works, session 37) from adapter code. All of
+// cmd_exec's gates apply - build gate, GAME-THREAD interlock, live vtable
+// RVA match - so calling this off the game thread refuses cleanly.
+// Acceptance is the downstream EFFECT (the backbuffer, a file), never a
+// return value; that is why this returns void.
+void exec_console(const char* cmd);
+
 // Overlay section.
 void draw_debug_ui();
 

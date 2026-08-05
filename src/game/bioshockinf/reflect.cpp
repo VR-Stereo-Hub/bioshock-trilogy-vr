@@ -611,6 +611,10 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
     g_image = image;
 }
 
+void exec_console(const char* cmd) {
+    cmd_exec(cmd);
+}
+
 bool handle_command(const char* cmd, const char* args) {
     if (strcmp(cmd, "bsinative") == 0) {
         cmd_native(args);

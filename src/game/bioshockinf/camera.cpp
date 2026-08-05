@@ -4,10 +4,12 @@
 #include "core/gfx/hud_capture.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
+#include "game/bioshockinf/game_ini.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
+#include "game/bioshockinf/reflect.h"
 #include "game/bioshockinf/scenedraw.h"
 
 #include <MinHook.h>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <share.h>
 #include <string>
 
@@ -126,6 +129,30 @@ std::atomic<float> g_claimTanV{patterns::kTanVSliderMin};
 std::atomic<float> g_fovLeverDeg{0.0f};
 std::atomic<uint32_t> g_fovLeverWrites{0};
 std::atomic<uint32_t> g_fovLeverFaults{0};
+
+// I6 rung 3: the resolution picker. Named modes are FIXED pixel sizes (a
+// preset must mean the same pixels on every rig and boot - BS2's rule); the
+// eye-shaped rungs are 0.93 aspect (the Quest 3 render-target shape). THE LAW
+// CAVEAT on every non-flat entry: the FOV option is vertical-referenced
+// (tanH = tanV x aspect), so a squarer render ALONE just narrows the
+// horizontal - these modes pay only combined with the FOV lever (wide tanV +
+// near-square target = the filled eye).
+struct ResMode {
+    const char* cmdName;
+    const char* label;
+    int w, h;
+};
+constexpr ResMode kResModes[] = {
+    {"flat", "2560 x 1440 (16:9 desktop native, flat play)", 2560, 1440},
+    {"squareperf", "1440 x 1440 (1:1, 2.1 MPx, perf / flat-test)", 1440, 1440},
+    {"eye", "1600 x 1712 (0.93, 2.7 MPx, eye-shaped)", 1600, 1712},
+    {"native", "2064 x 2208 (0.93, 4.6 MPx, Quest 3 native)", 2064, 2208},
+    {"sharp", "2480 x 2648 (0.93, 6.6 MPx, demanding)", 2480, 2648},
+};
+// F10/seam -> game thread: (w<<32)|h, 0 = none pending. Consumed in the
+// detour tail; the apply dispatches setres INTO the engine (game-thread-only
+// per the reflect gates) and then persists the ini so the next boot agrees.
+std::atomic<uint64_t> g_resApplyPending{0};
 // The vrstereo latch (what the toggle last applied), telemetry for UI/status.
 std::atomic<bool> g_stereoArmed{false};
 // F10 -> game thread: -1 none, 0 pending off, 1 pending on. The overlay draws
@@ -757,13 +784,15 @@ void publish_projection_claim() {
     if (bvr::hud::backbuffer_dims(&w, &h) && w > 0 && h > 0)
         aspect = static_cast<float>(w) / static_cast<float>(h);
     // Lever armed: the claim derives from the ENFORCED value, not the manual
-    // tanV - tan(deg/2) is the frustum's tanH (measured, patterns.h), so
-    // tanV = tan(deg/2)/aspect and the published hfov equals the commanded
-    // degrees exactly. The manual claim (bsifov tanv) is mirrored so the
-    // heartbeat, overlay and preset all read the live truth.
+    // tanV. The engine reads the camera degrees as horizontal AT THE FIXED
+    // 16:9 REFERENCE (patterns.h kFovRefAspect - measured at 1:1, where the
+    // claim audit caught the current-aspect reading 43.7% wrong): tanV =
+    // tan(deg/2)/(16/9), pinned across aspects; the publish below re-derives
+    // tanH from the live aspect. The manual claim (bsifov tanv) is mirrored
+    // so the heartbeat, overlay and preset all read the live truth.
     const float leverDeg = g_fovLeverDeg.load(std::memory_order_relaxed);
     if (leverDeg > 0.0f) {
-        const float leverTanV = tanf(leverDeg * 0.5f / kRadToDeg) / aspect;
+        const float leverTanV = tanf(leverDeg * 0.5f / kRadToDeg) / patterns::kFovRefAspect;
         g_claimTanV.store(leverTanV, std::memory_order_relaxed);
     }
     const float tanV = g_claimTanV.load(std::memory_order_relaxed);
@@ -816,6 +845,24 @@ void apply_vrstereo(bool on, bool monoOnly = false) {
 void apply_pending_vrstereo() {
     const int pending = g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
     if (pending >= 0) apply_vrstereo(pending != 0);
+}
+
+// I6 rung 3: consume a posted resolution change on the game thread. Both
+// lanes, in order: (1) live - setres through the proven ConsoleCommand seam
+// (resizes the backbuffer within 20 ms, XR swapchain rebuild survives it -
+// s38); (2) persist - the XUserOptions.ini write so the next boot agrees.
+// The ini write is single-digit milliseconds, once, on explicit request -
+// fine on the game thread (BS2 does the same).
+void apply_pending_resolution() {
+    const uint64_t packed = g_resApplyPending.exchange(0, std::memory_order_relaxed);
+    if (!packed) return;
+    const int w = static_cast<int>(packed >> 32);
+    const int h = static_cast<int>(packed & 0xFFFFFFFFu);
+    char cmd[48];
+    _snprintf_s(cmd, sizeof cmd, _TRUNCATE, "setres %dx%d", w, h);
+    BVR_LOG("[bsi] resolution: applying %dx%d (live setres + ini persist)", w, h);
+    reflect::exec_console(cmd);
+    game_ini::write_resolution(w, h);
 }
 
 void throttled(void* self, uint64_t now) {
@@ -1066,6 +1113,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // fov the layer is tagged with plus the gameplay-view liveness that keeps
     // core's cinematic fallback from quadding a live gameplay projection.
     apply_pending_vrstereo();
+    apply_pending_resolution();
     // I6: the lens decoder's round tick runs BEFORE the lever and the claim
     // publish - a track-mode write is deliberately overridden by an armed
     // lever, and the audit compares against the claim the previous dispatch
@@ -1348,15 +1396,58 @@ bool handle_drive_verb(const char* cmd, const char* args) {
         }
         return true;
     }
+    if (strcmp(cmd, "bsires") == 0) {
+        // Accepts a mode name, "W H", "WxH", "list" or "status". Posts the
+        // same atomic the F10 Apply button posts, so the harness and the UI
+        // share one lane. Token-match, not whole-string (trailing newline).
+        int w = 0, h = 0;
+        char tok[24] = "";
+        sscanf_s(args, "%23s", tok, static_cast<unsigned>(sizeof tok));
+        if (!tok[0] || strcmp(tok, "status") == 0) {
+            unsigned lw = 0, lh = 0;
+            bvr::hud::backbuffer_dims(&lw, &lh);
+            game_ini::log_status(lw, lh);
+            return true;
+        }
+        if (strcmp(tok, "list") == 0) {
+            for (const ResMode& m : kResModes)
+                BVR_LOG("[bsi] bsires %-10s = %s", m.cmdName, m.label);
+            BVR_LOG("[bsi] bsires <w> <h> | <WxH> | <mode> | status | list");
+            return true;
+        }
+        for (const ResMode& m : kResModes) {
+            if (strcmp(tok, m.cmdName) == 0) {
+                w = m.w;
+                h = m.h;
+                break;
+            }
+        }
+        if (!w && (sscanf_s(args, "%d %d", &w, &h) == 2 ||
+                   sscanf_s(args, "%dx%d", &w, &h) == 2)) {
+            // parsed
+        }
+        if (w >= 640 && h >= 480 && w <= 16384 && h <= 16384) {
+            g_resApplyPending.store((static_cast<uint64_t>(static_cast<uint32_t>(w)) << 32) |
+                                        static_cast<uint32_t>(h),
+                                    std::memory_order_relaxed);
+            BVR_LOG("[bsi] resolution %dx%d posted (applies on the next camera dispatch)", w,
+                    h);
+        } else {
+            BVR_LOG("[bsi] usage: bsires <w> <h> | <WxH> | <mode> | status | list");
+        }
+        return true;
+    }
     if (strcmp(cmd, "bsifov") == 0) {
         if (strncmp(args, "set", 3) == 0) {
             float deg = 0.0f;
             if (sscanf_s(args + 3, "%f", &deg) == 1 && deg >= 20.0f && deg <= 170.0f) {
                 g_fovLeverDeg.store(deg, std::memory_order_relaxed);
-                BVR_LOG("[bsi] FOV LEVER ARMED: %.1f deg horizontal at the current aspect, "
-                        "enforced per dispatch (expect tanH=%.4f in a `dumpframe cb` decode; "
-                        "the claim now derives from the lever)",
-                        deg, tanf(deg * 0.5f / kRadToDeg));
+                const float tanV = tanf(deg * 0.5f / kRadToDeg) / patterns::kFovRefAspect;
+                BVR_LOG("[bsi] FOV LEVER ARMED: %.1f deg (horizontal at the 16:9 reference), "
+                        "enforced per dispatch. Engine law: tanV=%.4f pinned, tanH = tanV x "
+                        "aspect (expect that in a `dumpframe cb` decode; the claim derives "
+                        "from the lever)",
+                        deg, tanV);
             } else {
                 BVR_LOG("[bsi] usage: bsifov set <20..170 deg> (current %.1f, 0=off)",
                         g_fovLeverDeg.load(std::memory_order_relaxed));
@@ -1614,6 +1705,86 @@ void draw_debug_ui() {
         ImGui::TextDisabled("lever OFF: claim tracks bsifov tanv (fix manually if the in-game "
                             "slider moved). Lever ON: claim tracks the lever.");
         ImGui::TextDisabled("persist tuning: vrpreset save (worldScale, ipd, claim, lever)");
+    }
+
+    if (ImGui::CollapsingHeader("RENDER RESOLUTION (I6, applies live + persists)")) {
+        // Render thread: reads and one posted atomic only. Ini re-read is
+        // throttled to 1 Hz (BS2's rule - BS1 re-read every frame; don't).
+        static game_ini::Resolution s_ini;
+        static uint64_t s_lastIniReadMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (nowMs - s_lastIniReadMs >= 1000) {
+            s_lastIniReadMs = nowMs;
+            s_ini = game_ini::read_resolution();
+        }
+        unsigned liveW = 0, liveH = 0;
+        bvr::hud::backbuffer_dims(&liveW, &liveH);
+        if (s_ini.valid)
+            ImGui::Text("ini: %dx%d   live backbuffer: %ux%u", s_ini.x, s_ini.y, liveW, liveH);
+        else
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                               "XUserOptions.ini not found - boot-persist lane dead");
+        if (s_ini.valid && liveW && (static_cast<unsigned>(s_ini.x) != liveW ||
+                                     static_cast<unsigned>(s_ini.y) != liveH))
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                               "ini and live differ - Apply persists both lanes");
+        {
+            uint32_t rw = 0, rh = 0;
+            if (bvr::vr::recommended_eye_size(&rw, &rh))
+                ImGui::Text("headset recommends %ux%u per eye", rw, rh);
+            else
+                ImGui::TextDisabled("headset recommendation needs a live XR session");
+        }
+
+        constexpr int kCustom = static_cast<int>(std::size(kResModes));
+        static int s_sel = -1;
+        static int s_customW = 2560, s_customH = 1440;
+        if (s_sel < 0) {
+            // First draw: preselect from the ini so the combo opens on truth.
+            s_sel = kCustom;
+            for (int i = 0; i < kCustom; ++i)
+                if (s_ini.valid && kResModes[i].w == s_ini.x && kResModes[i].h == s_ini.y)
+                    s_sel = i;
+            if (s_ini.valid) {
+                s_customW = s_ini.x;
+                s_customH = s_ini.y;
+            }
+        }
+        auto modeLabel = [](int i) {
+            return i < kCustom ? kResModes[i].label : "custom";
+        };
+        if (ImGui::BeginCombo("mode", modeLabel(s_sel))) {
+            for (int i = 0; i <= kCustom; ++i)
+                if (ImGui::Selectable(modeLabel(i), s_sel == i)) s_sel = i;
+            ImGui::EndCombo();
+        }
+        int selW = s_sel < kCustom ? kResModes[s_sel].w : s_customW;
+        int selH = s_sel < kCustom ? kResModes[s_sel].h : s_customH;
+        if (s_sel == kCustom) {
+            ImGui::InputInt("width", &s_customW);
+            ImGui::InputInt("height", &s_customH);
+            if (s_customW < 640) s_customW = 640;
+            if (s_customW > 8192) s_customW = 8192;
+            if (s_customH < 480) s_customH = 480;
+            if (s_customH > 8192) s_customH = 8192;
+            selW = s_customW;
+            selH = s_customH;
+        }
+        const float selAspect = selH > 0 ? static_cast<float>(selW) / selH : 0.0f;
+        ImGui::Text("selected: %dx%d  (%.2f MPx, aspect %.3f)", selW, selH,
+                    selW * selH / 1.0e6f, selAspect);
+        if (selAspect > 1.25f || (selAspect > 0.0f && selAspect < 0.8f))
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                               "aspect %.3f is far from the eye's ~0.93 - much of this render "
+                               "falls outside the lenses",
+                               selAspect);
+        ImGui::TextDisabled("the FOV law is vertical-referenced: a squarer render pays only "
+                            "combined with the FOV lever");
+        if (ImGui::Button("Apply (live setres + write ini)"))
+            g_resApplyPending.store(
+                (static_cast<uint64_t>(static_cast<uint32_t>(selW)) << 32) |
+                    static_cast<uint32_t>(selH),
+                std::memory_order_relaxed);
     }
 
     if (!ImGui::CollapsingHeader("Camera seam (DR-I2 observation)")) return;

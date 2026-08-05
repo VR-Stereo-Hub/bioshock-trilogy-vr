@@ -109,8 +109,8 @@ void BioshockInfAdapter::drawDebugUi() {
                 static_cast<unsigned long long>(bvr::d3d11_hook::present_count()),
                 capabilities());
     ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsivr | vrstereo | vraer | reentry | "
-                        "bsifov | bsilens | ipd | simhead | recenter | worldscale | vrpreset | "
-                        "vrrec | bsireflect | bsinative | bsicall | vrcmd");
+                        "bsifov | bsilens | bsires | ipd | simhead | recenter | worldscale | "
+                        "vrpreset | vrrec | bsireflect | bsinative | bsicall | vrcmd");
 
     camera::draw_debug_ui();
     lens::draw_debug_ui();
