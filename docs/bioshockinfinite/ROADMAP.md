@@ -468,10 +468,14 @@ resolution has BOTH proven levers (DR-I8: `XUserOptions.ini ResolutionX/Y` honou
       shaders vs encoder) and the user's "camera slightly jumpy" observation carry
       forward as their own item; the lens/FOV/resolution/config milestone itself is
       complete.
-      Standing I8 guard from the user: the lever must not break the viewmodels - s42
-      gameplay-save check: lens1 tracks the lever exactly (tanV 1.2634, delta 0.0%,
-      100% support), NO second lens - but the save predates the first weapon, so no
-      viewmodel was drawn; re-check with a weapon in hand before I8 trusts it.**
+      Standing I8 guard from the user: the lever must not break the viewmodels -
+      **ANSWERED 2026-08-06 on the user's pistol save, weapon and hands DRAWN**: lens1 ==
+      the lever claim exactly (tanV 1.2634, 100% of 211 valid samples, delta 0.0%), NO
+      second lens (0% support). Infinite renders the viewmodel through the SAME
+      projection as the world - no separate fg lens exists to break, and no BS1/BS2
+      fg-FOV counter-modeling is needed. (Honest caveat: the decoder names a runner-up
+      only at >=10% support; 100%-of-valid across weapon-drawn rounds is the strongest
+      evidence this instrument can produce.)**
 
 ## I7 - Motion controllers and decoupled aim (~2-3 sessions, one lane per BS2 s39-40)
 

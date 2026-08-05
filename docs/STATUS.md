@@ -43,9 +43,18 @@ corrected the cheat-lane's foundational assumption.** Three commits.
    render-load/streaming matter, not pacing. Carried forward as its own hunt (streaming
    vs GC vs shaders vs encoder; hitches-on-head-turns points first at texture-mip
    streaming), plus the user's new "camera slightly jumpy" observation (instrument
-   before theorizing). The 30-min soak stays DEFERRED by user decision. Also carried:
-   the user banked a save WITH the pistol + two vigors - the s43 aim test bed exists,
-   no grant machinery needed.
+   before theorizing). The 30-min soak stays DEFERRED by user decision. **NEXT SESSION
+   (user decision, 2026-08-06): the judder/stutter hunt comes BEFORE the aim/motion
+   work - performance first.** Also: the user banked a save WITH the pistol + two
+   vigors, and the cheat-lane verification ran on it same-night (autonomous via
+   LoadCheckpoint): `bsicall NextPlasmid` PROVEN BY EFFECT (vigor icon swap + cast hand
+   raised + crosshair, 8.5% pixel diff), NextWeapon cycles the single gun (idle-sway
+   diff only - a second weapon shows a real swap), AddInvulnerableFlag re-dispatched on
+   the pawn (damage verification pends combat), and the s41 VIEWMODEL GUARD CLOSED FOR
+   REAL: weapon + hands DRAWN, lens1 == lever exactly (tanV 1.2634, 100% of 211 valid
+   samples, delta 0.0%), NO second lens - Infinite's viewmodel shares the world
+   projection, no fg-FOV counter-modeling needed (ROADMAP I6 note carries the
+   runner-up-threshold caveat).
 2. **THE EXEC-SURFACE TRUTH (I7 cheat lane)**: script execs through ConsoleCommand are
    DEAD in retail (god/AllWeapons/behindview/viewmode - zero effect by pixel-identical
    screenshots in a gameplay save; C++ handlers setres/shot stay proven); the give-family

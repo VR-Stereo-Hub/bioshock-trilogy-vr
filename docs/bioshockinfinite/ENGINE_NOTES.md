@@ -396,8 +396,9 @@ lane (s34). Corollaries, all verified live:
 | command | object | result |
 |---|---|---|
 | `bsiexec LoadCheckpoint` | console (C++/save system) | **LOADS THE NEWEST CHECKPOINT FROM THE MENU** - the autonomous save-entry lane the harness lacked. Proven twice by GNames growth (62,160 -> 69,719), camera relocation and the gameplay HUD. One caveat: it picks the engine's own "most recent" save. |
-| `bsicall NextWeapon` / `SwitchWeapon` | PC (UFunction) | dispatches cleanly (visible effect needs an owned weapon) |
-| `bsicallat <pawn> AddInvulnerableFlag` | XHuman | dispatches (god-family native; flag arg semantics underived - zeroed parm) |
+| `bsicall NextWeapon` / `SwitchWeapon` | PC (UFunction) | dispatches cleanly; on the pistol save NextWeapon cycles onto the single owned gun (idle-sway-only diff) - a second weapon is needed for a visible swap |
+| `bsicall NextPlasmid` | PC (UFunction) | **PROVEN BY EFFECT on the 2-vigor save** (2026-08-06): vigor icon swapped with the transition spark, left hand raised to cast, crosshair appeared - screenshot diff 4.6 mean / 8.5% pixels |
+| `bsicallat <pawn> AddInvulnerableFlag` | XHuman | dispatches (god-family native; flag arg semantics underived - zeroed parm; re-confirmed on the pistol save's pawn - damage-effect verification pends a combat test) |
 | `bsicallat <pawn> AddDefaultInventory` / `SetWeapon` / `CreateInventory` | XHuman | dispatch cleanly with zeroed parms; NO weapon appears - Infinite grants via story Kismet, and both user saves predate the first weapon |
 | `bsicallat <pawn> AcquireWeapon` | XHuman | EXISTS and FAULTS on null parms (SEH-swallowed) - **it wants a weapon object argument; this is the s43 grant seam** |
 | `bsinames dump` | - | full GNames -> `%LOCALAPPDATA%\BioshockVR\bsi\gnames.txt` (game-derived, never commit). ~1.1 s for 69.7k names |
