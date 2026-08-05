@@ -395,6 +395,71 @@ levers are in the F10 overlay, "VR camera (I4)" section - never type commands in
 Run s39 verdicts (VDXR): lean tracked no drift; roll correct; world-scale feel deferred to
 I5 (not judgeable on the mono screen). I4 CLOSED.
 
+## I5 battery (session 40 - stereo, all flat, run at the attract)
+
+Prep as for the I4 battery (BS2 conflict check, selftest, build, clear command.txt,
+`xrsim-launch -Game bsi -Release`), then `xrsim-cmd "recenter"` (head at yaw 0 - gotcha 17)
+and `xrsim-cmd "fov 54 55 54"` (symmetric eye, or the claimRatioH math needs the asymmetric
+average). ONE command per game-cmd write throughout.
+
+1. **Rung 1, the projection flip**: `vrstereo mono` -> log shows `VRSTEREO ON`, core's
+   `camera mode ON` and `first projection-layer frame`; the fovaudit line must carry
+   `src=readback` with `tanH = claimTanV x aspect` (slider-min claim at 16:9:
+   0.4317 x 16/9 = 0.7675). Capture: `projectionViews=2`, `claimTanH 0.76747`,
+   **claimRatioH 0.5576** (the s40 baseline - claimTanH / tan(54)), L and R
+   **byte-identical** (img-diff 0.0 - the mono control). `vrstereo off` -> capture shows
+   `LayerTypes={quad}` again.
+2. **Rung 2, AlternateEye**: `vraer on` -> park the head (`simhead 0 0 0`) -> heartbeat
+   `[bsi] stereo: inter-eye |d|` = ipd/1000 x worldScale exactly (63 mm at scale 50 =
+   3.150 UU; residual only while the attract base moves between eye frames);
+   `worldscale 100` doubles it; both `lastSign` values appear. `vraer off`.
+3. **Rung 3, SequentialReentry**: `vrstereo on` -> `[bsi][reentry] hook installed on the
+   viewport draw root`, `STEREO ARMED`, core logs `first SequentialReentry eye frame` and
+   `pair pacing live`. The 5 s `[bsi][reentry] beat:` line is the acceptance instrument:
+   **draws/s == 2nd/s, presents/s == 2 x draws/s, camReplays/s == 2nd/s** (s40: 90/90/180/90
+   at the sim's 90 Hz ceiling), `call2` well under a millisecond, skips not accumulating
+   during steady scenes. Inter-eye line exact as in rung 2. Capture pair L vs R img-diff
+   NON-zero (s40: mean 0.42, 1.09 % - real parallax; the rung-1 identical pair is the
+   control). Occasional `sr tag ring skewed - cleared` at attract scene/movie transitions is
+   self-healing noise, not a failure; a CONTINUOUS skew stream means the doubling and the
+   presents have gone one-sided (that signature = the wrong root; see ENGINE_NOTES s40).
+4. **Soak**: 10+ minutes armed (attended - never leave the attract unattended). Zero
+   watchdog fires, zero faults, zero poison; beats stay exact; `vrcmd` responsive.
+5. **Fallbacks still clean**: `vrstereo off` (mono quad), `bsivr off/on` (~250 ms
+   re-bring-up), `bsicam off` lease control, clean WM_CLOSE exit.
+6. **vrrec determinism**: run replay-identity checks with stereo OFF - the eye offset rides
+   the final camera the recorder taps, and AER phase vs the recording is not deterministic.
+
+## I5 in-headset checklist (VDXR, user drives - the Done-when)
+
+Launch via Virtual Desktop as in I3/I4. Load the Columbia save. All levers in the F10
+overlay ("VR stereo (I5)" + "VR camera (I4)" sections) - never type commands in-headset.
+**Desktop prep before putting the headset on**: verify the in-game FOV slider is at MINIMUM
+(the claim assumes it; if you have moved it, `bsifov tanv` on the desktop first).
+
+1. **Non-regression sweep, 60 s, FIRST**: I3/I4 behaviour with stereo off - head-tracked
+   quad, drive checkbox, corner lean, F10 opens.
+2. Tick **"VR stereo (projection layer)"** (or run the preset): the cinema screen is
+   REPLACED by the world filling your view in true stereo. Judge: real depth (close one
+   eye, then the other - nearby railings/objects shift; both eyes fused, no double
+   vision), NO vertical disparity (no eye-strain "swimming"), no fisheye (straight lines
+   stay straight - a wrong claim shows here immediately).
+3. **THE CARRIED ITEM - world-scale tune**: lean toward a table/railing; does the world
+   move the right amount? Does Columbia feel life-size, not miniature/giant? Tune "World
+   scale (UU per m)" by feel (default 50 = UE3 canonical; do NOT expect BS1/BS2's 100),
+   and the IPD slider if depth feels exaggerated/flat (default 63 mm). `vrpreset save`
+   from the desktop afterwards persists worldScale + ipd + claim.
+4. **Comfort/perf**: 72 fps at default render scale (no judder on head turns; VDXR
+   overlay if in doubt), 30-minute session, no visual state corruption (flicker,
+   stuck geometry, HUD ghosting).
+5. **Stability**: one level transition and one quit-to-menu with stereo armed (the deny
+   gate + silent/stall gates must keep loads un-doubled; `reentry status` on the desktop
+   afterwards - foreign/stereo skips may count up, poisoned must stay "no").
+6. Expected noise, not bugs: HUD is screen-locked mid-view (I9's lane), the weapon rides
+   the engine camera not your head (I8), aim/head mismatch (I7), menus/loads drop to the
+   quad briefly (the cine fallback working). Anything off: untick "VR stereo" first - if
+   the symptom survives, it predates this session (I4 baseline).
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

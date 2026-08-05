@@ -528,6 +528,15 @@ $a.NonBlackPctL      -gt 50     # something was rendered
     the game WINDOW (`game-shot` + `img-diff`) as the pixel instrument for
     camera-drive questions - gotcha 9's "the window is the projection source"
     cuts both ways.
+18. **PowerShell 5.1 turns cmake's stderr deprecation warning into a failure** when
+    `build.ps1` re-runs the configure step (any CMakeLists edit): the tool reports
+    NativeCommandError / exit 1 while the build actually succeeded (tail says
+    "Installed"). Run the build via `powershell -NoProfile -Command ... 2>&1` from
+    bash, or read the tail before believing the exit code. (Session 40.)
+19. **`game-shot -Out` uses the name verbatim** - no `.png` is appended (unlike
+    `xrsim-shot`, which writes `<name>_left.png` etc.). Pass the extensionless file
+    to `img-diff` or include the extension yourself; `img-diff` against
+    `<name>.png` fails with a Resolve-Path error. (Session 40.)
 
 ---
 

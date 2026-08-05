@@ -320,6 +320,80 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 40 - I5: stereo, and the render-root derivation)
+
+### The FOV claim and Infinite's own claimRatioH baseline
+
+The adapter publishes `hfov = 2*atan(tanV x aspect)` per detour call (the law is
+vertical-referenced, session 37) with `publish_gameplay_view(true)` alongside - core's
+cinematic fallback defaults ON and a stale publish parks the headset on the quad, so the
+publish must tick every dispatch. tanV default = `kTanVSliderMin` 0.4317 (the shipped slider
+minimum); there is NO live option reader until I6, so a moved in-game FOV slider makes the
+claim stale - `bsifov tanv` corrects it and `dumpframe cb` verifies it. Measured on the sim
+at 2560x1440: audit `tanH=0.767467 src=readback` (= 0.4317 x 16/9 exact), and with the sim
+eye symmetric at 54 deg (`fov 54 55 54`) the capture reads **claimRatioH 0.5576** =
+0.76747 / tan(54 deg) to four digits. That is Infinite's OWN baseline at slider-min/16:9 -
+NEVER compare to BS1's 1.018 (different game, different law, different meaning).
+
+### The render-root chain, derived live (the session's core work)
+
+The scene camera, scene build and present kick live at three levels, all now named:
+
+| level | RVA | role |
+|---|---|---|
+| viewport draw (THE DOUBLING ROOT) | `0x1FDE30` | FViewport::Draw analog: stack canvas ctor `0x331110` -> client Draw dispatch -> canvas dtor `0x3339F0` -> present kick `call 0x1E50B0(1)`. thiscall on the viewport, ONE stack arg, `ret 4` (at `0x1FE0AB`). 4 static E8 callers; the per-tick gameplay dispatcher returns to **`0x206309`** |
+| client draw | `0x26A3E0` | UGameViewportClient::Draw analog, reached via vtable `.rdata 0xDE6FC8` slot 2 (+0x8) -> jmp stub `0x6F1360`. Body holds the IsA-gated (UClass interval `+0xC0/+0xC2`) player-controller loop that calls GetPlayerViewPoint once per present per controller (call site ret `0x26B499`); the client object is `[viewport+0x1C]`, dispatch site ret `0x1FE05F` |
+| camera seam | `0x1E10C0` | GetPlayerViewPoint (I2), unchanged |
+
+**Derivation method (all live, one relaunch each, then static confirmation):** (1) a caller
+census at the camera detour - ret `0x26B499` fired EXACTLY once per present (810 in 810)
+on the game thread; (2) `bsicam stack` - one-shot RtlCaptureStackBackTrace PLUS a raw stack
+scrape for call-preceded image addresses (FPO cuts the API short at 4 frames; the scrape
+walks the whole chain); (3) `bsicam scenedraw` / `bsicam vtprobe` - one-shot SEH-guarded
+reads that resolve virtual dispatch targets from live objects. The outer entry fell out of
+the scrape: ret `0x206309` is an E8 whose target is `0x1FDE30` directly, and the capstone
+stream from `0x1FDE30` reaches the dispatch at `0x1FE05D`. Static walking alone had FAILED
+twice first (function-start heuristics land on basic-block boundaries; .rdata pointer scans
+drown in UTF-16 false positives) - on this engine, derive render roots live.
+
+**The negative that chose the root (recorded so nobody re-tries it):** doubling the CLIENT
+draw (`0x26A3E0`) doubles the camera and scene build but NOT the present - the present is
+kicked by the viewport draw's tail, outside the client call tree. Measured: the SR tag ring
+skewed +1 per tick (self-healing at depth 3, continuous "sr tag ring skewed" log spam) with
+presents pinned 1:1 to ticks. Doubling the VIEWPORT draw gives camera + scene + present per
+eye: presents/s snapped to exactly 2x draws/s.
+
+### SequentialReentry: THREADED doubling works on this substrate (DR-I5 confirmed by use)
+
+No 1t machinery, no flush-point hook, nothing from BS1's kit - the doubled call runs on the
+threaded ring-buffered substrate exactly as DR-I5 predicted. Measured at the attract (which
+runs real gameplay scenes), sim at 90 Hz:
+
+- `draws/s=90 2nd/s=90 presents/s=180 camReplays/s=90` - every gate exact at the sim's
+  ceiling (90 eye pairs/s), second call costs **80-170 us**.
+- Pass 2 replays pass 1's CACHED base absolutely (100 ms staleness guard) and applies the
+  +1 eye; pass 1 caches pre-eye and applies -1. Inter-eye |d| = ipd x scale exact (3.150 UU
+  at 63 mm / scale 50; doubles at scale 100). The replay-burst counter (one per doubled
+  draw, seq-edge) equals the second-draw count exactly - the per-frame-multiple of this
+  seam (several camera dispatches per draw) makes the RAW pass-2 call count a multiple, so
+  the burst counter is the gate.
+- **L/R parallax proven at the pixel level**: SR capture pair differs (mean-abs-diff 0.42,
+  1.09 % channels changed) while the rung-1 mono-projection pair is byte-identical (0.0) -
+  the control that makes the diff meaningful.
+- The deny gate fired in anger during the battery: foreign-caller skips counted 2 (a
+  non-gameplay dispatcher reached the root at a menu transition and was refused, no double).
+- Occasional `sr tag ring skewed - cleared` resyncs at attract scene/movie transitions
+  (self-healing by design, mono for 2 frames); zero watchdog fires, zero faults in the soak.
+
+### Sim traps found (session 40)
+
+- PowerShell 5.1 turns cmake's stderr *deprecation warning* into a NativeCommandError when
+  the build script re-runs the configure step (CMakeLists edit) - the build actually
+  succeeded. Wrap the build in `powershell -NoProfile -Command ... 2>&1` from bash, or
+  ignore exit 1 when the tail says "Installed".
+- game-shot's `-Out` is used verbatim (no .png appended): pass extensionless names to
+  img-diff or name the file with the extension yourself.
+
 ## LIVE RESULTS (session 39 - I4: the 6DoF drive, proven flat with numbers)
 
 The I4 drive is live and the whole flat battery passed on the simulator at the attract
@@ -1419,7 +1493,8 @@ and every value here must also exist in `src/game/bioshockinf/patterns.h/.cpp` a
 | `AActor::ProcessEvent` | impl RVA `0x19A150` | the override an AActor subclass actually carries in slot `+0x7C` | same histogram's runner-up; confirmed by its tail-call into the base | derived, not hooked |
 | `UObject::FindFunctionChecked` | impl RVA `0xD1090` | resolve a `UFunction*` by FName before a ProcessEvent call | UTF-16 `Failed to find function` xref -> enclosing function via the E8-target set | **derived, `ret 0xC` (3 args), 426 callers. Not hooked.** |
 | **`APlayerController::GetPlayerViewPoint`** | **impl RVA `0x1E10C0`** (thunk `0x129280`) | **the camera seam**: 6DoF override. thiscall, 2 stack args, `ret 8`, 13 native callers | native table -> disasm thunk -> last call before epilogue -> caller census | **READ-ONLY detour WRITTEN (session 36), prologue- and `ret 8`-gated. NOT yet observed firing - live confirmation owed.** |
-| scene build / draw root | - | SequentialReentry stereo seam | frame inspector callstack RVAs + capstone | pending I2/I6 |
+| viewport draw root (SR doubling) | `0x1FDE30` | SequentialReentry stereo seam (camera + scene + present per call) | live caller census + stack scrape + vtable probes, capstone confirm (s40) | **HOOKED, verified live s40** |
+| client draw (camera loop) | `0x26A3E0` | derivation link only - doubling it yields NO second present (recorded negative, s40) | vtable `0xDE6FC8` slot +0x8 -> stub `0x6F1360`, live probe | verified live s40, not hooked |
 | `XInputGetState` | game IAT RVA `0xCD4814` (XINPUT1_3 ord 2) | synthetic gamepad | import table parse (**done**, session 34) | confirmed, unhooked |
 | Draw / DrawIndexed / OMSetRenderTargets / Map+Unmap | context vtable | HUD classification, frame dumps, lens watch | core `frame_inspector` | pending I2 |
 | engine `Exec` dispatchers | - | console commands by code | RTTI + vtable walk | pending I2 |

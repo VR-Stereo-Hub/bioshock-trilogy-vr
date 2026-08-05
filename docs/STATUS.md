@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 38" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 40" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,48 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 39 (I4 CLOSED - flat battery green AND headset-verified on VDXR - branch `si39-inf-head-camera`)
+### Infinite: current state after session 40 (I5 flat half COMPLETE - true stereo runs on the simulator; headset session is the remaining gate - branch `si40-inf-stereo`)
+
+**All three stereo rungs are live and flat-verified: mono projection, AlternateEye, and
+SequentialReentry with per-eye presents and pair pacing.** The adapter now feeds core an
+honest FOV claim from the I2 law (`hfov = 2*atan(tanV x aspect)`, tanV default = slider-min
+0.4317, `bsifov tanv` lever, vrpreset-persisted) plus `publish_gameplay_view` per detour
+call, so core's camera-mode toggle finally flips the quad to a projection layer on this
+game. `vrstereo on` is the full one-toggle ladder (enable -> camera mode -> pair pacing ->
+SR; `vrstereo mono` stops at mono projection, `vraer` is the AER backend); everything is in
+the F10 "VR stereo (I5)" section for the headset. NO 1t machinery exists or is needed -
+DR-I5's threaded/ring-buffered verdict held under real doubling.
+
+**The session's derivation: the render-root chain, live** (ENGINE_NOTES s40). The SR
+doubling root is the VIEWPORT draw `0x1FDE30` (FViewport::Draw analog: canvas -> client
+draw -> present kick, thiscall + 1 arg, ret 4; gameplay caller ret `0x206309` of 4 static
+callers). Derived by a caller census at the camera detour (ret `0x26B499` = exactly once
+per present), a one-shot backtrace + raw stack scrape, and one-shot live vtable probes
+(`bsicam scenedraw`/`vtprobe`: client `[viewport+0x1C]` -> vtable `0xDE6FC8` slot +0x8 ->
+stub `0x6F1360` -> client draw `0x26A3E0`). **Recorded negative:** doubling the client draw
+(the function that actually samples the camera) yields NO second present - the tag ring
+skews +1/tick. The root must contain camera + scene + present; the viewport draw does.
+
+**The flat battery (sim at the attract, all measured):** claim audit `src=readback`,
+`tanH=0.767467` exact, **claimRatioH baseline 0.5576 derived fresh** (never BS1's 1.018);
+projectionViews=2; mono pair byte-identical (the control) vs SR pair really differing
+(mean 0.42 / 1.09 % channels = geometric parallax); AER + SR inter-eye |d| = ipd x scale
+exact (3.150 UU at 63 mm/scale 50, doubles at 100); `draws/s=90 2nd/s=90 presents/s=180
+camReplays/s=90` at the sim's ceiling with call2 80-215 us; deny gate observed refusing a
+foreign caller (f=2, no double); 15-min armed soak - zero faults, zero watchdog, zero
+poison, skips frozen, occasional self-healing tag-ring resyncs only at attract
+scene/movie transitions; `vrstereo off` returns to the mono quad; clean exits. Runbook:
+TESTING.md "I5 battery".
+
+**NEXT: the I5 headset session (VDXR, user drives)** - TESTING.md "I5 in-headset
+checklist": true geometric parallax, THE CARRIED world-scale tune (F10 slider, default 50)
++ IPD (63), 72 fps, 30-minute session, level transition + quit-to-menu with stereo armed.
+Desktop prep: in-game FOV slider must be at MINIMUM (the claim assumes it until I6's
+lever). Load-path safety in real loads is also headset-session evidence (`reentry status`
+after - poisoned must stay "no"). After the verdict: tick the I5 Done-when, then I6 (lens
+audit/resolution/config) per the ladder.
+
+### Infinite: current state after session 39 (superseded by session 40 above - kept for the derivation trail; I4 CLOSED - flat battery green AND headset-verified on VDXR - branch `si39-inf-head-camera`)
 
 **The 6DoF head camera drive is live and the entire flat harness proved it with numbers, no
 headset involved.** The GetPlayerViewPoint detour tail gained `drive_view`: out-param
@@ -5677,6 +5718,61 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 40 (Infinite) - 2026-08-05 - I5 stereo: all three rungs flat-green on the sim; headset verdict pending
+
+Branch `si40-inf-stereo` off `bioshock-infinite` (d3007ba). The ladder ran exactly as
+planned - mono projection, AlternateEye, SequentialReentry - each rung flat-validated
+before the next, everything Infinite-local (+ an additive CMake file-list entry).
+
+**Rung 1, the projection flip.** The adapter publishes the FOV claim per detour call from
+the I2 law (`2*atan(tanV x aspect)`, tanV default = slider-min `kTanVSliderMin` 0.4317 -
+now a named constant - with `bsifov tanv` as the lever and vrpreset persistence) plus
+`publish_gameplay_view(true)` (core's cine fallback defaults ON; a stale publish parks the
+quad - and its fovMismatch/screenOnly legs fail safe on UE3, verified in core source).
+`vrstereo` one-toggle + F10 "VR stereo (I5)" section (posts to the game thread). Flat:
+core's first projection-layer frame on toggle, audit `src=readback tanH=0.767467` (the law
+exactly), projectionViews=2, **claimRatioH baseline 0.5576 derived fresh** vs the
+symmetric 54-deg sim eye, window img-diff 13x floor under simhead yaw, quad fallback on
+off. The claim's honest caveat is documented everywhere: no live option reader until I6,
+so the in-game FOV slider must sit at minimum.
+
+**Rung 2, AlternateEye.** `ue_rot_basis` added to inf_math.h (the Vengeance formula in
+shape; the frame is the s39-measured one), `apply_eye_offset` = sign x ipd/2000 x
+worldScale along the full-rotation right axis, `g_ipdMm` 63 default with F10 slider +
+vrpreset. Flat: inter-eye |d| exact (3.150 UU at scale 50, 6.300 at 100), both signs
+observed, L/R capture stats differ under AER.
+
+**Rung 3, SequentialReentry - the session's real work.** The static walk to the scene
+root dead-ended twice (basic-block boundaries, UTF-16 pointer noise), so the derivation
+went LIVE: a caller census at the camera detour (ret `0x26B499` exactly once per present),
+one-shot backtrace + raw stack scrape (`bsicam stack`), and one-shot vtable probes
+(`bsicam scenedraw`/`vtprobe`). Chain: viewport draw `0x1FDE30` (thiscall+1 arg, ret 4;
+canvas ctor `0x331110` -> client-draw dispatch ret `0x1FE05F` -> canvas dtor -> present
+kick `0x1E50B0(1)`) -> client draw `0x26A3E0` (vtable `0xDE6FC8` slot +0x8 via jmp stub
+`0x6F1360`; holds the IsA-gated controller camera loop) -> GetPlayerViewPoint. **Recorded
+negative that chose the root:** doubling the CLIENT draw doubles camera+scene but NOT the
+present (tag ring skews +1/tick) - the SR root must contain camera + scene + present
+(ARCHITECTURE decision log). scenedraw.cpp doubles the viewport draw: deny-by-default on
+gameplay caller ret `0x206309` (4 static callers), camera-silent/present-stall/teardown/
+poison gates, SEH-guarded second call, draw-stage markers, pulse instrument. camera.cpp
+pass-2 fork replays pass 1's CACHED base absolutely (+1 eye, 100 ms staleness, burst
+counter on the pass seq). Pair pacing armed in the vrstereo ladder; NO 1t machinery -
+threaded doubling ran clean, exactly as DR-I5 predicted.
+
+**Flat acceptance:** `draws/s=90 2nd/s=90 presents/s=180 camReplays/s=90` at the sim's
+90 Hz ceiling, call2 80-215 us, inter-eye exact, SR capture pair genuinely differing
+(mean 0.42 / 1.09 % channels) against a byte-identical mono control pair, deny gate
+observed refusing a foreign caller live, 15-minute armed soak with zero faults / zero
+watchdog / zero poison and only self-healing tag-ring resyncs at attract transitions.
+Full runbook: TESTING.md "I5 battery"; headset checklist "I5 in-headset checklist" (true
+parallax, the CARRIED world-scale tune, 72 fps, 30 min, transition + quit-to-menu).
+
+New derivation instruments kept on the seam: `bsicam callers` (ret-RVA census with
+present-delta), `bsicam stack` (backtrace + call-preceded stack scrape), `bsicam
+scenedraw` / `bsicam vtprobe` (live virtual-dispatch resolution). Two harness traps
+recorded in ENGINE_NOTES s40 (PS 5.1 vs cmake stderr on reconfigure; game-shot -Out is
+extensionless).
 
 ### Session 39 (Infinite) - 2026-08-05 - I4 6DoF head drive + simhead + vrrec, flat battery green; headset corner-lean pending
 

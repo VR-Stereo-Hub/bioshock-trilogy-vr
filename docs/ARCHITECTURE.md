@@ -230,6 +230,20 @@ runtime.
 
 ## Decision log
 
+- **2026-08-05 (session 40) · Infinite I5: the SR root must INCLUDE the present kick, and the
+  FOV claim is a constant-tanV law until I6.** Two decisions. (1) The doubling root is the
+  viewport draw (`0x1FDE30`, canvas -> client draw -> present kick), not the client draw
+  (`0x26A3E0`) whose body actually holds the camera loop - doubling the client draw was tried
+  first and produced camera+scene doubling with NO second present (the present is kicked by the
+  caller's tail), which starves core's one-eye-per-present model and skews the SR tag ring +1
+  per tick. The general rule, now measured on a second engine family: the SR root is the
+  smallest function whose call tree contains camera sample, scene build AND present. (2) The
+  projection claim is computed from the I2 law with a CONSTANT tanV (slider-min 0.4317,
+  `bsifov tanv` lever, vrpreset-persisted) rather than a live option read - Infinite's option
+  pointer is not derived yet and I6 owns that lever. The cost is honest and documented: a user
+  who moves the in-game FOV slider makes the claim stale until corrected. The alternative -
+  pulling I6's decoder forward - was declined per the restructured ladder (only a lens question
+  the law cannot answer justifies that).
 - **2026-08-05 (session 39) · Infinite I4: MonoTracked runs on the QUAD, and the drive writes
   out-params only.** Core couples `set_camera_mode(true)` to flipping submission from the quad
   to a projection layer ("never let a head-driven camera show on the quad" - a BS1/BS2

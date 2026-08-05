@@ -347,27 +347,52 @@ Ladder, in this order, because it worked on BS1 and each rung is independently s
 MonoScreen (done - I3), MonoTracked (I4's camera under the quad), AlternateEye, then
 SequentialReentry.
 
-- [ ] Entry gate (RESHAPED at the s38 restructure): a trustworthy projection CLAIM - which the
+- [x] Entry gate (RESHAPED at the s38 restructure): a trustworthy projection CLAIM - which the
       I2-derived FOV law already provides (vertical-referenced, tanV 0.4317..0.4933,
       tanH = tanV x aspect, verified at two aspects). The FULL multi-lens decoder now lives in
       I6; pull it forward ONLY if stereo shows a lens question the law cannot answer. A wrong
       FOV claim still makes every subjective stereo judgment worthless (BS1's M4) - the gate is
       unchanged in spirit, only its instrument is lighter.
-- [ ] AlternateEye rung (core already supports it) as the de-risking step
-- [ ] SequentialReentry: find the scene-build root and call it twice per game tick with per-eye
+      *2026-08-05 session 40: claim published per detour call from the law (tanV default =
+      slider min 0.4317, `bsifov tanv` lever, vrpreset-persisted) + publish_gameplay_view
+      (core's cine fallback needs it). Audit src=readback, tanH exact; Infinite's OWN
+      claimRatioH baseline derived fresh: **0.5576** at slider-min/16:9 vs the symmetric
+      54-deg sim eye. Caveat recorded: no live option reader until I6, so the claim assumes
+      the in-game slider at minimum.*
+- [x] AlternateEye rung (core already supports it) as the de-risking step
+      *2026-08-05 session 40: vraer one-toggle; apply_eye_offset on the full rotation basis
+      (inf-local ue_rot_basis). Flat: inter-eye |d| = ipd x scale exact (3.150 UU at
+      63 mm/50), doubles at scale 100, both signs observed.*
+- [x] SequentialReentry: find the scene-build root and call it twice per game tick with per-eye
       cameras. Whether a single-threading rung is needed at all is DR-I5's answer - and DR-I5
       recorded a threaded, ring-buffered substrate (90 M UpdateSubresource, no stalls at 9681
       calls/s), the same shape that let BS2 run SR with NO 1t machinery at all. Test threaded
       first; port nothing from BS1's single-threading kit until a measured stall demands it.
-- [ ] **Gate pass 2 deny-by-default** on a known gameplay caller return RVA, so doubling can never
+      *2026-08-05 session 40: the root is the VIEWPORT draw `0x1FDE30` (canvas -> client
+      draw -> present kick), derived live (census + stack scrape + vtable probes; the
+      client-draw-only double is a recorded negative - no second present, ring skew).
+      THREADED doubling ran clean: draws/s=90 2nd/s=90 presents/s=180 camReplays/s=90 at the
+      sim ceiling, call2 80-215 us, zero faults, 15-min armed soak green. No 1t ported.*
+- [x] **Gate pass 2 deny-by-default** on a known gameplay caller return RVA, so doubling can never
       run inside a load path.
-- [ ] Pair pacing: one `xrWaitFrame`, one locate, one prediction per game tick. Submitting the two
+      *2026-08-05 session 40: ret `0x206309` (4 static callers exist; census names it the
+      per-tick dispatcher), jointly with camera-silent(400ms) + present-stall + teardown +
+      poison gates. Observed refusing a foreign caller live (f=2, no double).*
+- [x] Pair pacing: one `xrWaitFrame`, one locate, one prediction per game tick. Submitting the two
       eyes of a pair with poses located a compositor period apart produces motion-dependent shear.
-- [ ] Camera pass 2 is a **replay of pass 1's cached base**, not a re-sample - a Present lands
+      *2026-08-05 session 40: armed in the vrstereo ladder; core logged "pair pacing live"
+      on the first eye pair; 90 pairs/s sustained.*
+- [x] Camera pass 2 is a **replay of pass 1's cached base**, not a re-sample - a Present lands
       between passes, and re-sampling skews the pair into vertical disparity.
+      *2026-08-05 session 40: absolute replay + 100 ms staleness guard; replay BURSTS ==
+      second draws exactly; L/R capture pair shows real parallax (mean 0.42 / 1.09 %
+      channels) against a byte-identical mono-projection control pair.*
 - [ ] **Done when:** true geometric parallax (verified in the headset), 72 fps at default render
       scale, a 30-minute session with no visual state corruption, and stability across a level
       transition and a quit-to-menu.
+      *2026-08-05 session 40: flat half COMPLETE (all five boxes above); the headset session
+      is next - checklist in TESTING.md "I5 in-headset checklist", carrying the I4
+      world-scale tune (F10 slider, default 50, vrpreset save persists).*
 
 ## I6 - Lens audit, FOV, resolution, and the config menu (~2 sessions, after stereo per BS2)
 
