@@ -91,7 +91,16 @@ XrTime now_xr_time() {
     }();
     LARGE_INTEGER c;
     QueryPerformanceCounter(&c);
-    return static_cast<XrTime>((c.QuadPart * 1000000000LL) / freq.QuadPart);
+    // Split the conversion: `ticks * 1e9` overflows int64 after ~15 minutes of
+    // MACHINE UPTIME at a 10 MHz QPC frequency, turning this clock into a
+    // ~30.7-minute sawtooth that jumps backwards by ~1845 s. A session crossing
+    // that jump computed a huge free-mode waitNs and parked the caller's
+    // xrWaitFrame for good - the mod's pace thread wedged exactly this way
+    // ~25 min into an Infinite run (session 38, stack in hand). The split form
+    // is exact and overflow-free for ~292 years.
+    const int64_t sec = c.QuadPart / freq.QuadPart;
+    const int64_t rem = c.QuadPart % freq.QuadPart;
+    return static_cast<XrTime>(sec * 1000000000LL + rem * 1000000000LL / freq.QuadPart);
 }
 
 uint64_t now_ms() { return static_cast<uint64_t>(GetTickCount64()); }

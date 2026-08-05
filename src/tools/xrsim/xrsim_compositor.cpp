@@ -234,12 +234,24 @@ bool ensure_targets(uint32_t w, uint32_t h) {
     desc.Height = h;
     desc.MipLevels = 1;
     desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; // straight to what WIC wants
+    // _SRGB, so the hardware RE-ENCODES on write. The app's swapchain images are
+    // R8G8B8A8_UNORM_SRGB (core's format pick), so the SRV decodes their texels
+    // to linear when compositing - a UNORM target then stores those LINEAR
+    // values, which crushes every dark scene ~13x and made an Infinite quad
+    // capture read meanLuma 0.05 while the window read ~10 (session 38). With an
+    // SRGB target the texel bytes round-trip decode->blend->encode, matching
+    // what a real compositor shows the eye and what the PNG format expects.
+    // NOTE: pixel-stat baselines captured before this change (VERIFICATION 2.9)
+    // are systematically darker and not comparable.
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
     D3D11_TEXTURE2D_DESC sd = desc;
+    // Staging keeps plain UNORM - same B8G8R8A8_TYPELESS family, so CopyResource
+    // is legal and Map hands back the sRGB-encoded bytes WIC wants.
+    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     sd.Usage = D3D11_USAGE_STAGING;
     sd.BindFlags = 0;
     sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;

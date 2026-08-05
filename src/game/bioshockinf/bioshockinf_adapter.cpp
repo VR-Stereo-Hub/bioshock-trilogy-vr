@@ -124,11 +124,13 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
         // without hazard injection. `status` reports the observable state -
         // session_live() - rather than echoing the flag, because the checkbox
         // is a second writer and an echo could go stale.
-        if (args && strcmp(args, "on") == 0) {
+        char sub[16] = "";
+        if (args) sscanf_s(args, "%15s", sub, static_cast<unsigned>(sizeof sub));
+        if (strcmp(sub, "on") == 0) {
             bvr::vr::set_enabled(true);
             BVR_LOG("[bsi] vr: enable requested - bring-up happens from Present "
                     "(watch for 'xr: session created')");
-        } else if (args && strcmp(args, "off") == 0) {
+        } else if (strcmp(sub, "off") == 0) {
             bvr::vr::set_enabled(false);
             BVR_LOG("[bsi] vr: disable requested - teardown happens from Present "
                     "(watch for 'xr: session teardown')");

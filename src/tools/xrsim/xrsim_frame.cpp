@@ -226,12 +226,24 @@ static XrResult impl_WaitFrame(XrSession session, const XrFrameWaitInfo*,
             g_nextDisplay = now + period; // first frame, or we fell far behind
         } else {
             const XrTime waitNs = g_nextDisplay - now;
-            if (waitNs > 0) {
+            // Never trust a wait longer than a second. The pacing target can
+            // only ever be one period ahead, so a huge waitNs means the clock
+            // misbehaved (the session-38 overflow sawtooth wedged the mod's
+            // pace thread here for good). A test tool must not be able to hang
+            // its host: resync and carry on instead of blocking.
+            if (waitNs > 1000000000LL) {
+                XRSIM_LOG("xrsim: free-mode wait computed %lld ms - clock anomaly, "
+                          "resyncing the pace target instead of blocking",
+                          static_cast<long long>(waitNs / 1000000));
+                g_nextDisplay = now + period;
+            } else if (waitNs > 0) {
                 std::unique_lock<std::mutex> lock(g_paceMutex);
                 g_paceCv.wait_for(lock, std::chrono::nanoseconds(waitNs),
                                   [] { return g_paceAbort; });
+                g_nextDisplay += period;
+            } else {
+                g_nextDisplay += period;
             }
-            g_nextDisplay += period;
         }
         break;
     }
