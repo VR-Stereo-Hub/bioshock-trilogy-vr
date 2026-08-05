@@ -7,6 +7,17 @@ Ordered **by engineering dependency**, not by desirability. The user's stated pr
 acceptance criteria, not as ordering: on BS1 the resolution/FOV question could not be judged at all
 until stereo ran, and two sessions were lost to mono screenshots that measured the wrong thing.
 
+**RESTRUCTURED 2026-08-05 (session 38 wrap, user directive): the ladder now follows BS2's proven
+order** - BS2 reached in-headset-accepted stereo on its third session and did lens/resolution
+polish AFTERWARDS, driven by what the headset actually showed; controls, hands and presentation
+then landed as three clean lanes (sessions 39-42). Infinite is better positioned than BS2 was:
+the FOV law is already derived (I2), resolution is a solved lever (DR-I8, both lanes), and the
+substrate is threaded/ring-buffered (DR-I5) - the same shape that made BS2's stereo cheap.
+**Renumbering map** (session logs before this date use the old numbers): old I6 (stereo) -> I5;
+old I5 (lens/FOV/config) -> I6; old I7+I8 (controllers, aim) -> I7; old I9 (viewmodel/hands) ->
+I8; old I10+I11 (HUD, cinematics) -> I9; old I12 (set pieces/DLC) -> I10; old I13 (release) ->
+I11.
+
 Each milestone has a "done when" acceptance test that is a **measured downstream effect**, never a
 confirmed write. Effort in focused sessions. Tick boxes as work lands; surprises go to
 [../STATUS.md](../STATUS.md).
@@ -282,13 +293,13 @@ Goal: the game on a giant head-tracked screen. Core does essentially all of this
       only surfaced later.
       *2026-08-05 session 38: VDXR half user-verified in-headset. **SteamVR half DEFERRED by
       user directive** ("no Steam Link; we can test SteamVR later, not needed for the first
-      version") - the debt is carried on the I13 release checklist, not silently dropped.*
+      version") - the debt is carried on the I11 release checklist (post-restructure numbering), not silently dropped.*
 - [x] **Done when:** the Quest 3 shows the game on a head-tracked screen, under both runtimes.
       *2026-08-05 session 38: **MET AS RE-SCOPED BY THE USER** - Quest 3 via Virtual
       Desktop/VDXR shows the head-tracked big screen, user verdict "looks pretty good, no
       crashes or freezes/hangs"; F10 VR A/B confirmed in the log (session teardown ->
       re-bring-up live on VDXR), alt-tab survived, two boots, clean exits. SteamVR runtime
-      deferred to I13 per the user (no Steam Link hardware).*
+      deferred to the release milestone (now I11) per the user (no Steam Link hardware).*
 
 ## I4 - 6DoF head camera, and the flat harness (~1.5 sessions)
 
@@ -310,54 +321,28 @@ Goal: a real VR camera, and the ability to test it **without a headset**.
 - [ ] **Done when:** lean physically around a corner in Columbia with no drift and correct roll,
       user-verified in the headset; and `simhead` reproduces a head-driven camera flat.
 
-## I5 - Lens audit, FOV, resolution, and the config menu (~2-3 sessions)
+## I5 - Stereo (~2-4 sessions - the risk milestone, pulled forward per the BS2 lesson)
 
-Goal: **user priority 1.** A correct projection, a resolution picker, and a real config/preset UI.
-
-This is the highest-leverage milestone in the project. On BS1 the projection-claim question caused
-the M3 "swim", blocked M4, produced the cinematic fisheye, produced the release-blocking yaw warp
-and the "hands are huge" report - and it is *still* the open BS2 blocker at session 33. Front-load
-the instrument.
-
-- [ ] **Build the lens decoder first.** Stride-sampled, majority-voted, structurally validated,
-      multi-lens. **Assume the frame carries more than one lens until proven otherwise.** Publish
-      the runner-up as a named second lens. Refuse to publish a round without a clear majority
-      rather than publishing a confident wrong value. BS1's watch took the first decodable draw and
-      latched onto the viewmodel frustum, and that single choice was the release blocker.
-- [ ] **Derive the lens law from two different backbuffer aspects, never one.** The world and
-      foreground conventions coincide exactly at 16:9. That coincidence cost BS1 two sessions and
-      BS2 one.
-- [ ] FOV lever. The native slider spans only ~70 to ~80.5 degrees (`MaxUserFOVOffsetPercent=15`),
-      so a lever is still needed - but the property chain is *named*, so try `set`-by-name before
-      any memory scan.
-- [ ] Resolution picker: named square-first modes plus custom, live-vs-config comparison, and the
-      aspect warning (a headset eye is near-square; a 16:9 render throws away most of its width).
-- [ ] **Call `xrEnumerateViewConfigurationViews`.** Neither BS1 nor BS2 ever does, and the docs
-      name its absence as the missing input for both a correct FOV policy and a derived render
-      target (`recommendedImageRect`).
-- [ ] **Extract `bvr::config` into core** with per-key registration and real types. Today the
-      preset system is a 60-branch `strcmp` chain in the BS1 adapter that round-trips ints and
-      bools through float and persists *core* state from *adapter* code - which is why BS2 writes
-      no ini at all. A third consumer is the right trigger.
-- [ ] Config menu with **named preset save and load**, so nothing has to be clicked twice.
-- [ ] Move the generic half of the resolution ini lane (section-scoped edit, backup, temp file,
-      `ReplaceFileW`, read-back) into core alongside it.
-- [ ] **Done when:** a full preset round-trips through the menu across a restart; the resolution
-      picker's value is confirmed by the backbuffer at first Present; and the claimed projection
-      matches the rendered frustum **at a non-16:9 aspect**, measured, not argued.
-
-## I6 - Stereo (~3-5 sessions - the risk milestone)
-
-Goal: true geometric stereo with 6DoF.
+Goal: true geometric stereo with 6DoF. BS2 reached in-headset-accepted stereo on its THIRD
+session, before any lens/resolution polish - and the polish milestones were better for it,
+because every judgment finally measured the thing the headset shows. Same bet here.
 
 Ladder, in this order, because it worked on BS1 and each rung is independently shippable:
-MonoScreen, MonoTracked, AlternateEye, then SequentialReentry.
+MonoScreen (done - I3), MonoTracked (I4's camera under the quad), AlternateEye, then
+SequentialReentry.
 
-- [ ] Entry gate: I5's lens decoder is trustworthy. A wrong FOV claim makes **every** subjective
-      stereo judgment (scale, depth, comfort) worthless, and BS1's M4 was blocked on exactly this.
+- [ ] Entry gate (RESHAPED at the s38 restructure): a trustworthy projection CLAIM - which the
+      I2-derived FOV law already provides (vertical-referenced, tanV 0.4317..0.4933,
+      tanH = tanV x aspect, verified at two aspects). The FULL multi-lens decoder now lives in
+      I6; pull it forward ONLY if stereo shows a lens question the law cannot answer. A wrong
+      FOV claim still makes every subjective stereo judgment worthless (BS1's M4) - the gate is
+      unchanged in spirit, only its instrument is lighter.
 - [ ] AlternateEye rung (core already supports it) as the de-risking step
 - [ ] SequentialReentry: find the scene-build root and call it twice per game tick with per-eye
-      cameras. Whether a single-threading rung is needed at all is DR-I5's answer.
+      cameras. Whether a single-threading rung is needed at all is DR-I5's answer - and DR-I5
+      recorded a threaded, ring-buffered substrate (90 M UpdateSubresource, no stalls at 9681
+      calls/s), the same shape that let BS2 run SR with NO 1t machinery at all. Test threaded
+      first; port nothing from BS1's single-threading kit until a measured stall demands it.
 - [ ] **Gate pass 2 deny-by-default** on a known gameplay caller return RVA, so doubling can never
       run inside a load path.
 - [ ] Pair pacing: one `xrWaitFrame`, one locate, one prediction per game tick. Submitting the two
@@ -368,9 +353,45 @@ MonoScreen, MonoTracked, AlternateEye, then SequentialReentry.
       scale, a 30-minute session with no visual state corruption, and stability across a level
       transition and a quit-to-menu.
 
-## I7 - Motion controllers and full control mapping (~2 sessions)
+## I6 - Lens audit, FOV, resolution, and the config menu (~2 sessions, after stereo per BS2)
 
-Goal: **user priority 3 and 4.** The game fully playable from the headset, every action bound.
+Goal: **user priority 1.** A correct projection everywhere, a resolution picker, and a real
+config/preset UI - now judged IN STEREO, the way BS2 s32-37 did it (its picker, automatic FOV
+and viewmodel-lens fixes all landed after stereo and were judged against the headset).
+
+Much of the original milestone is already banked: the FOV law is derived (I2, two aspects), and
+resolution has BOTH proven levers (DR-I8: `XUserOptions.ini ResolutionX/Y` honoured at boot;
+`bsiexec setres` live, XR swapchain rebuild surviving it - s38). What remains:
+
+- [ ] **The lens decoder.** Stride-sampled, majority-voted, structurally validated, multi-lens.
+      **Assume the frame carries more than one lens until proven otherwise.** Publish the
+      runner-up as a named second lens. Refuse to publish a round without a clear majority
+      rather than publishing a confident wrong value. BS1's watch latched onto the viewmodel
+      frustum, and that single choice was the release blocker.
+- [ ] **Cross-check the lens law at a non-16:9 aspect live** (the I2 derivation already did
+      16:9 vs 4:3 offline; keep the discipline for every new lens found).
+- [ ] FOV lever. The native slider spans only ~46.7-52.6 deg vFOV, so a lever is needed - the
+      property chain is *named*, so try `set`-by-name before any memory scan.
+- [ ] Resolution picker UI: named square-first modes plus custom, live-vs-config comparison, and
+      the aspect warning (a headset eye is near-square; 16:9 throws away most of its width).
+- [ ] **Call `xrEnumerateViewConfigurationViews`.** Neither BS1 nor BS2 ever does, and the docs
+      name its absence as the missing input for both a correct FOV policy and a derived render
+      target (`recommendedImageRect`).
+- [ ] **Extract `bvr::config` into core** with per-key registration and real types (the third
+      consumer is the right trigger), config menu with **named preset save and load**, and the
+      generic half of the resolution ini lane moved to core alongside it.
+- [ ] **Done when:** a full preset round-trips through the menu across a restart; the resolution
+      picker's value is confirmed by the backbuffer at first Present; and the claimed projection
+      matches the rendered frustum **at a non-16:9 aspect**, measured, not argued.
+
+## I7 - Motion controllers and decoupled aim (~2-3 sessions, one lane per BS2 s39-40)
+
+Goal: **user priorities 3 and 4.** The game fully playable from the headset, every action bound,
+and the controller aims while the head looks. BS2 did the whole M6/M7-parity block fresh in two
+sessions once stereo and camera were real; controllers without aim are half a feature, so they
+ship as one lane here.
+
+Controls half:
 
 - [ ] OpenXR action set, Quest 3 Touch bindings, synthetic-XInput lane
 - [ ] **Extract the XR-to-pad mapping table out of core** into a per-game table the adapter
@@ -387,12 +408,8 @@ Goal: **user priority 3 and 4.** The game fully playable from the headset, every
       `exec NextWeapon` faulted and weapon switching could not be driven flat at all.
 - [ ] Expect the Steam overlay to eat `XInputGetState` at the proxy thunk; the IAT-hijack lane is
       already scoped (slot RVA `0xCD4814`).
-- [ ] **Done when:** the game is fully playable from the headset with every action bound, audited
-      against the shipped `DefaultInput.ini` command list so nothing is silently missing.
 
-## I8 - Decoupled aim (~2 sessions)
-
-Goal: the controller aims, the head looks.
+Aim half:
 
 - [ ] Find UE3's fire path; substitute at the origin-and-direction seam so per-weapon spread still
       applies downstream
@@ -404,16 +421,20 @@ Goal: the controller aims, the head looks.
       there."
 - [ ] Respect `ret imm / 4` for every probe (see the RTC warning in ENGINE_NOTES)
 - [ ] Per-weapon aim profiles keyed by class name, covering the DLC weapons
-- [ ] **Done when:** look one way and shoot another - impacts land where the controller points,
-      user-verified.
+- [ ] **Done when:** fully playable from the headset with every action bound (audited against the
+      shipped `DefaultInput.ini` command list), and look one way / shoot another - impacts land
+      where the controller points, user-verified.
 
-## I9 - Viewmodel and hands decoupled from the headset, and scale (~3 sessions)
+## I8 - Viewmodel and hands decoupled from the headset, and scale (~3 sessions)
 
 Goal: **user priority 2.** Hands, weapons and Vigors stuck in space, not glued to the head, at a
 believable size.
 
 This was the single largest sink on BS1 (about seven sessions plus a relapse). **Apply the policy
-gate before writing a line of compensation code.**
+gate before writing a line of compensation code.** The reference implementation SHAPE is BS2
+sessions 40-41 (hands split per-controller, the holdable lane, and the animation-preserving
+drive whose written-quat/anim-quat discipline is documented in VERIFICATION 2.8) - derive fresh,
+port nothing.
 
 - [ ] Step 1: check what UE3 does natively here.
 - [ ] Step 2: **test whether the BS1/BS2 defect even exists.** BS1's viewmodel renders through a
@@ -438,24 +459,27 @@ gate before writing a line of compensation code.**
       left, inspectable from any angle, believable size, effects attached, and **they do not move
       with the head** - user-verified in the headset.
 
-## I10 - HUD, menus and effects (~2-3 sessions)
+## I9 - Presentation: HUD, menus, effects and cinematics (~2-3 sessions, one lane per BS2 s42)
 
-Goal: **user priority 5, part 1.** Readable HUD, usable menus, correct full-screen effects.
+Goal: **user priorities 5 and 6.** Readable HUD, usable menus, correct full-screen effects, and
+both cinematic classes working in VR. BS2 shipped its whole presentation surface as a single
+lane (session 42: HUD panel redirect, cinema verdicts, bars, effects) - the pieces share the
+same instruments and the same eye-image rule, so they ship together here too. Note DR-I7's gift:
+the Infinite eye image needs NO classifier (the positional rule - srv0 of the last full-screen
+a=6 DrawIndexed into the backbuffer - is HUD-free by construction).
 
-- [ ] Scaleform GFx classifier (not the gameswf one - `hud_capture` is a worked example here, not
-      a library)
+HUD/menus/effects half:
+
+- [ ] Scaleform GFx classifier ONLY IF a surface needs one beyond the positional rule
+      (`hud_capture` is a worked example, not a library)
 - [ ] Health / Salts / Shield / ammo / Vigor selection on a readable panel in both eyes
 - [ ] Pause menu, upgrade menus (Veni Vidi Vigor machines, gear), and the hacking/lockpick UI
 - [ ] Full-screen effects. The BS1 rule that generalizes: effects authored in **stage space cannot
       be made full-screen by routing them** to a different target - that needs different geometry.
 - [ ] Any backbuffer-content detector must sample **before** our own writers. BS1's letterbox
       detector worked every time flat and never in the headset for exactly this reason.
-- [ ] **Done when:** a non-developer can read their health and ammo and navigate the menus from
-      inside the headset.
 
-## I11 - Cinematics (~2 sessions)
-
-Goal: **user priority 5, part 2 and 6.** Both cinematic classes work in VR.
+Cinematics half:
 
 - [ ] **Bink FMV** through `binkw32.dll` (100+ `.bik` files: attract movie, credits, voxophone and
       PSA reels, per-Vigor tutorials)
@@ -466,10 +490,11 @@ Goal: **user priority 5, part 2 and 6.** Both cinematic classes work in VR.
 - [ ] Selectable rig behaviour during cutscenes (authored / authored + head look / off), as BS1
       ships it
 - [ ] Subtitles readable in stereo
-- [ ] **Done when:** both classes play correctly in stereo, user-verified, with no fisheye and no
-      black-bar artifacts.
+- [ ] **Done when:** a non-developer can read their health and ammo and navigate the menus from
+      inside the headset, and both cinematic classes play correctly in stereo with no fisheye and
+      no black-bar artifacts.
 
-## I12 - Infinite-specific set pieces and DLC tuning (~2-3 sessions)
+## I10 - Infinite-specific set pieces and DLC tuning (~2-3 sessions)
 
 Goal: the things BioShock never had, plus the full DLC sweep.
 
@@ -482,7 +507,7 @@ Goal: the things BioShock never had, plus the full DLC sweep.
 - [ ] **Done when:** a Skyline ride is comfortable, and aim, scale, HUD and viewmodel calibration
       hold in all three DLC.
 
-## I13 - Release (~1-2 sessions)
+## I11 - Release (~1-2 sessions)
 
 - [ ] **SteamVR runtime cross-check** - the debt deferred from I3 (user, 2026-08-05: no Steam
       Link hardware, not needed for the first version). BS1's Steam Link gap surfaced

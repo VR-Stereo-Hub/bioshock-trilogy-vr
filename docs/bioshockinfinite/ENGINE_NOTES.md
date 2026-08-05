@@ -208,7 +208,7 @@ renderer - which is more than BS2 could say for its viewport keys. This does **n
 *writing* a new value lands; that still needs a write plus a relaunch, and acceptance is still the
 backbuffer, never the read-back.
 
-**Observation for I10, recorded now so it is not mistaken for a bug later:** core's letterbox
+**Observation for the presentation milestone (I9 post-restructure), recorded now so it is not mistaken for a bug later:** core's letterbox
 detector (BS1-tuned) fires on Infinite's loading/cinematic bars and produces incoherent readings
 (`top 1440 px, bottom 0 px of 1440`). The detector needs re-deriving for this game; nothing consumes
 it yet.
@@ -399,14 +399,14 @@ live, on any runtime** (dllmain's own doc: no detach + no fault = TerminateProce
 In effect it is benign - prompt exit (4-6 s), no fault logged, no dump, user saw no hang -
 so it is recorded as a property, not a defect. Mechanism unattributed (game exit path vs a
 runtime DLL); if it ever matters (e.g. a teardown-ordering bug hides behind it), attribute it
-during the I13 soak.
+during the release (I11) soak.
 
 ### Headset verdict (VDXR lane, user, 2026-08-05)
 
 Quest 3 via Virtual Desktop (`VirtualDesktopXR` 1.0.10): head-tracked big screen, "looks
 pretty good, no crashes or freezes/hangs". The log confirms the F10 A/B ran live on VDXR
 (`session teardown (disabled in overlay)` -> `session running` ~5 s later), alt-tab survived,
-two boots. SteamVR lane deferred by the user (no Steam Link hardware; carried on I13).
+two boots. SteamVR lane deferred by the user (no Steam Link hardware; carried on the release milestone, I11 post-restructure).
 
 ### BS1 shared-tool proof run (fixed sim, BS1's shipped v0.7.0 mod via -AllowStale)
 
@@ -503,7 +503,7 @@ target of its own - it draws straight onto the backbuffer.
   once on the UNMODIFIED session-36 build (the control that exonerated the merge). The pace
   watchdog photographed both: present thread and game thread parked in ntdll waits under
   game-code frames, all 64 threads reported, zero mod frames on the wedged stacks. An attended
-  menu has never hung. Sessions should keep a driver at the menu and note this for I13 soak
+  menu has never hung. Sessions should keep a driver at the menu and note this for the release (I11) soak
   tests.
 - **Infinite exits CLEANLY via WM_CLOSE** - `DLL_PROCESS_DETACH (orderly process exit)`, twice,
   with no exit-path fault. Better behaved than both remasters.
@@ -1375,7 +1375,7 @@ Everything must also live in `src/game/bioshockinf/patterns.h/.cpp` and nowhere 
 | **`UObject::FindFunctionChecked`** | **`0xD1090`** | thiscall, **3 stack args, `ret 0xC`**. 426 E8 callers (the generated event stubs), 0 absolute refs. |
 | `APlayerController::execGetPlayerViewPoint` (thunk) | `0x129280` | 0 callers - do not hook |
 | `APlayerController::execXGetPlayerFloatingViewPoint` | `0x1292C0` | Irrational addition; 0 callers |
-| `APlayerController::execXGetMatineeViewTarget` | `0x129240` | of interest for I11 cinematics |
+| `APlayerController::execXGetMatineeViewTarget` | `0x129240` | of interest for cinematics (I9 post-restructure) |
 | `APlayerController::execSetViewTarget` | `0x1291A0` | |
 | `APlayerController::execGetFOVAngle` | `0x1290A0` | |
 | `ACamera::execGetFOVAngle` | `0x127A00` | |

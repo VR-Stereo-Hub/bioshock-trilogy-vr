@@ -53,7 +53,7 @@ different engine, so no number transfers, and even shapes are suspect. Infinite 
 
 - **START**: read `docs/STATUS.md`, then the current milestone in `docs/ROADMAP.md`, then
   `git log --oneline -10`. **Working on Infinite?** You want branch `bioshock-infinite` and
-  `docs/bioshockinfinite/ROADMAP.md` (milestones I0-I13), which is a separate ladder from M0-M10.
+  `docs/bioshockinfinite/ROADMAP.md` (milestones I0-I11 after the 2026-08-05 BS2-shaped restructure), which is a separate ladder from M0-M10.
 - Touching engine internals? Read the game's `docs/<game>/ENGINE_NOTES.md` first
   (`docs/bioshock1/`, `docs/bioshock2/` or `docs/bioshockinfinite/`). New findings go there, in
   the same commit as the code that uses them.
@@ -126,6 +126,6 @@ different engine, so no number transfers, and even shapes are suspect. Infinite 
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |
 | `docs/bioshock2/ENGINE_NOTES.md` | BS2 knowledge base: verified RVAs, the ProcessEvent CalcView seam, BS1 deltas |
 | `docs/bioshock2/TESTING.md` | BS2 install/launch/harness deltas + M3 checklists |
-| `docs/bioshockinfinite/ROADMAP.md` | **Infinite milestones I0–I13** (separate ladder from M0–M10) |
+| `docs/bioshockinfinite/ROADMAP.md` | **Infinite milestones I0–I11** (separate ladder from M0–M10) |
 | `docs/bioshockinfinite/ENGINE_NOTES.md` | Infinite (UE3) knowledge base: PE identity, injection vector, UE3 reflection evidence, the cheat/Exec surfaces, carried-over rules |
 | `docs/bioshockinfinite/TESTING.md` | Infinite install/launch/harness deltas + the BS2-conflict rule |

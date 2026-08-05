@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 38" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I13) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 38" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -47,12 +47,12 @@ geometric baseline identical (1.018).
 good, no crashes or freezes/hangs"** - head-tracked big screen live, F10 VR A/B confirmed in
 the log (teardown -> re-bring-up on VDXR), alt-tab survived, two boots, clean exits. **I3 is
 DONE as re-scoped by the user**: the SteamVR lane is deferred ("no Steam Link; test SteamVR
-later, not needed for the first version") and the debt is carried explicitly on the I13
+later, not needed for the first version") and the debt is carried explicitly on the I11 (release)
 release checklist.
 
 **Exit breadcrumb resolved to a benign property**: `DLL_PROCESS_DETACH` never logs when an XR
 session is LIVE at exit - sim AND real VDXR, both games; sessionless exits log it. Prompt,
-fault-free, dump-free closes either way; attribute the mechanism during the I13 soak only if
+fault-free, dump-free closes either way; attribute the mechanism during the release (I11) soak only if
 it ever hides a real teardown bug.
 
 **NEXT SESSION = I4** (6DoF head camera + the flat harness: `simhead`, `vrrec`, servo-vs-write
@@ -5673,8 +5673,8 @@ teardown/re-bring-up, and two boots. The VDXR exit also lacks the `DLL_PROCESS_D
 breadcrumb, which RECLASSIFIES the watch item: live-session exits are TerminateProcess-class
 on any runtime (benign - prompt, fault-free, dump-free); sessionless exits log the breadcrumb.
 SteamVR lane deferred by the user (no Steam Link hardware, "not needed for the first
-version") - debt carried on I13. **I3 closed as re-scoped**: Done-when ticked with the
-re-scope recorded; the cross-check box stays open pointing at I13.
+version") - debt carried on the release milestone. **I3 closed as re-scoped**: Done-when ticked with the
+re-scope recorded; the cross-check box stays open pointing at the release milestone.
 
 ### Session 37 (Infinite) - 2026-08-05 - main merged into the Infinite line, and I2 CLOSED
 
