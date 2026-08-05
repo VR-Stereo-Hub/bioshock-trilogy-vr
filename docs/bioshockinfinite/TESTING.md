@@ -110,6 +110,19 @@ A second surface exists in `XGame\Config\DefaultDesignerControlPresets.ini` (bas
 lists `God Mode`, `Ghost`, `Prevent Death`, `GiveAmmo`, `Slomo 10/50/100/200/1000%`, `QuickSave`,
 `QuickLoad` and the viewmodes.
 
+**Session 37: the console works WITHOUT any key or UI - `bsiexec <console cmd>`** runs the text
+through `ConsoleCommand` resolved by name on the live player controller (proven by effect:
+`bsiexec setres 2560x1440` resizes the backbuffer, logged by our ResizeBuffers hook). `bsicall
+<Func> [float]` calls any UFunction on the controller by name. Both refuse unless the camera
+hook owns the pump (`pump=game`), so they only run on the game thread. Acceptance stays a
+measured effect, never the log line.
+
+**CAUTION (session 37): do not leave the game UNATTENDED at the menu/attract.** Two unattended
+boots froze there (also on an unmodified build - it is the game's own bug; watchdog stack photos
+in `%LOCALAPPDATA%\BioshockVR\bsi\s37-*hang*.log`). Attended menus have never hung. If it
+happens: the process stops responding, presents stop, the log goes quiet - `Stop-Process` is the
+only exit, a wedged process cannot take WM_CLOSE.
+
 ### I0 live checklist (about 3 minutes, no mod installed, no headset needed)
 
 Run this the next time Infinite can have the machine, i.e. **with `Bioshock2HD.exe` closed**. Load

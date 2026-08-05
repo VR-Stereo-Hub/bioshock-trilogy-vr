@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | Session 34 in the log, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I13) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 37" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I13) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,77 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 36 (I2 part 1 - branch `si36-inf-derisk`)
+### Infinite: current state after session 37 (I2 CLOSED + main merged in - branch `si37-inf-merge-and-derisk2`)
+
+**I2 IS CLOSED - all eight de-risks recorded - and `main` (BS2 v0.7.0, 124 commits) is merged
+into the Infinite line.** Details per DR in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md)
+and the "LIVE RESULTS (session 37)" section of
+[bioshockinfinite/ENGINE_NOTES.md](bioshockinfinite/ENGINE_NOTES.md). The branch is pushed;
+fast-forwarding `bioshock-infinite` awaits the user's confirmation.
+
+**The merge (step 0, before any testing):** 6 conflicted files, all resolved per the session-36
+policy (BS2 wins behavioural, keep-both on additive). The 336-float-cap removals in
+`decode-framedump.ps1` survived; `frame_inspector` mode 3 survived; `game-cmd`/`game-shot`
+compose Infinite's bsi support with main's live-instance filter. **All four BS1/BS2 inertness
+proofs re-run on the merged tree** (no `framework/command` include in either remaster adapter;
+only bioshockinf arms the Present pump; both arm dumps as `full ? 2 : 1`; `git diff main` over
+both adapter dirs empty) - cited in the merge commit. Acceptance ran clean: Release build,
+decoder `-SelfTest` both scanners + `-ScanLayout` offset-12 regression on a banked BS1 dump,
+**BS1 smoked on the simulator** (boot -> gameplay -> `vrstereo on` -> projectionViews=2,
+eyeSep 0.063, claimRatio 1.018 - note stereo takes ~40 s to engage under the sim, longer than
+stereo.xrs's 60-frame assert), **BS2 smoked on the simulator** (all scans resolve, XR session
+FOCUSED, quad submits, `recenter` dispatched by the game-thread poller), Infinite full battery
+below. The merge brings BS2's OpenXR runtime (+1271 lines), the xrsim simulated-Quest-3
+toolchain, `docs/VERIFICATION.md`, hud_capture/crash/diag upgrades - **most of I3
+pre-debugged**, untouched until I3 per the session brief.
+
+**The battery, all measured live on the merged build:**
+
+- **The TRANSFORM question is CLOSED**: the path-aware heartbeat in gameplay says path 2
+  (100 % census), source `[cam+0x3B8]`, `returned-minus-source = (0,0,0)` every beat - a RAW
+  COPY. **I4 injects at the camera POV / out-params; there is no downstream transform.**
+- **DR-I4 CLOSED (negative)**: no engine stereo names in the live pool; `AllowNvidiaStereo3d`
+  at index 4154 is the positive control and the only (driver-side) stereo surface.
+- **DR-I5 recorded**: threads separate under BOTH `OneFrameThreadLag` positions; the lever is
+  accepted, game healthy; substrate evidence says ring-buffered submission (90 M lifetime
+  UpdateSubresource, no stalls at 9681 calls/s). The latency half needs I6's instrument, by design.
+- **DR-I6 CLOSED**: `bsicall`/`bsiexec` (new, `src/game/bioshockinf/reflect.cpp`) dispatch by
+  name via FindFunction(+0x54)+ProcessEvent(+0x7C) with full gates (build, thread identity,
+  GNames, vtable-RVA interlock incl. new `kFindFunctionRva 0xD1030`), SEH-isolated.
+  **`bsiexec setres` RESIZED THE BACKBUFFER live** - the strongest possible by-effect proof.
+  `set FOVAngle` moved nothing, but FOVAngle is known-disconnected; recorded honestly.
+- **DR-I7 CLOSED**: HUD fingerprint confirmed in a second scene/resolution - backbuffer-composite
+  from 2 call sites, BC3 atlases. The tonemap target index VARIES (T9 then T8), so the eye-image
+  rule is positional (srv0 of the last full-screen a=6 into the backbuffer) and needs no
+  classifier - that texture is HUD-free by construction.
+- **DR-I8 CLOSED (both levers)**: `XEngine.ini ResX/ResY` is a boot-derived copy - the real
+  store is **`XUserOptions.ini ResolutionX/ResolutionY`** (honoured: `first Present: backbuffer
+  1600x1200`); `setres` also works live. BS1's fault does not exist here.
+- **The FOV law is VERTICAL-referenced** (aspect cross-check at 16:9 vs 4:3, slider max: tanV
+  pinned at 0.4933, tanH = tanV x aspect to 5 digits). Slider = vFOV 46.67..52.63 deg. I5 derives
+  everything from tanV; ini FOVAngle is decorative.
+
+**Incidental but load-bearing:** an UNATTENDED menu/attract hangs the game (pre-existing - the
+unmodified session-36 build hung identically, which exonerated the merge; watchdog stack
+photographs banked in `%LOCALAPPDATA%\BioshockVR\bsi\s37-*-hang*.log`). Keep a driver at the
+menu. Infinite exits CLEANLY via WM_CLOSE (orderly DLL_PROCESS_DETACH, twice) - better than
+both remasters. Camera hook: 1.49 M calls this session, 0 foreign-tid dispatches ever.
+
+**Still owed / known gaps:**
+
+1. `frame_inspector` records `rtv0` only (4-RTV frames discarded) - worth fixing before I6;
+   unchanged from session 36.
+2. The FNameEntry UTF-16 branch remains UNTESTED (0 wide entries in the pool's first 4096).
+3. `bsiexec`'s ReturnValue capture is unverified (possible signature drift on bWriteToLog);
+   never rely on the returned string - verify by effect, which is the rule anyway.
+4. BS1/BS2 flat sim smokes passed, but no headset regression ran this session - the core deltas
+   are grep-proven inert and their game code is byte-identical to shipped v0.7.0.
+
+**NEXT SESSION = I3, headset bring-up (mono big screen)** - and the merged BS2 OpenXR runtime
+plus the xrsim toolchain make it a very different, much shorter job than BS2's was. Read
+`docs/VERIFICATION.md` first.
+
+### Infinite: current state after session 36 (superseded by session 37 above - kept for the derivation trail; branch `si36-inf-derisk`)
 
 **DR-I1, DR-I2 and DR-I3 all PASS. Three of the eight de-risks are closed, and I2 is half done in
 one session.** BioShock 2 held the machine for the first half, so the offline derivation came
@@ -5516,6 +5586,36 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 37 (Infinite) - 2026-08-05 - main merged into the Infinite line, and I2 CLOSED
+
+Branch `si37-inf-merge-and-derisk2` off `bioshock-infinite`. Step 0 was the merge of `main`
+(BS2 v0.7.0, 124 commits, base 76052f1): 6 conflicts, resolved per the standing policy
+(keep-both on additive, BS2 wins behavioural - none were genuinely behavioural); the
+decode-framedump param-block union kept both sides' instruments and the 336-cap removals; the
+BS1/BS2 inertness proofs were RE-RUN on the merged tree and cited in the merge commit.
+Acceptance: clean Release build, decoder self-tests + the offset-12 BS1 regression, BS1 AND BS2
+smoked green on the xrsim simulator (BS1 to full stereo: projectionViews=2, eyeSep 0.063 m,
+claimRatio 1.018; BS2 to XR-session FOCUSED + seam dispatch), Infinite to `camera: READ-ONLY
+hook installed` / `pump=game` / `bsireflect selftest` 15/15.
+
+Then the battery closed I2 - every remaining DR measured by effect on the merged build:
+the TRANSFORM question (raw copy on path 2 -> I4 injects at the POV), DR-I4 (stereo negative,
+live pool, with `AllowNvidiaStereo3d`@4154 as the positive control), DR-I5 (threads separate
+under both `OneFrameThreadLag` positions; ring-shaped substrate; latency half deferred into I6),
+DR-I6 (new `bsicall`/`bsiexec` by-name dispatch; **`setres` resized the backbuffer live**;
+`set FOVAngle` no effect - property known dead), DR-I7 (HUD fingerprint confirmed at a second
+scene+resolution; the eye-image rule is positional and classifier-free), DR-I8 (the real
+config store is `XUserOptions.ini ResolutionX/Y` - `XEngine.ini` is a boot copy that silently
+discards writes; `first Present: backbuffer 1600x1200` accepted; setres live too), and the FOV
+law (VERTICAL-referenced: tanV pinned across aspects, tanH = tanV x aspect).
+
+Also found: unattended attract/menu hangs the game - reproduced on the UNMODIFIED session-36
+build, exonerating the merge; watchdog stack photos banked. Infinite exits cleanly via WM_CLOSE.
+An electricity outage cost one mid-session reboot; nothing was lost. Instruments added:
+`bsicall <Func> [float]`, `bsiexec <console cmd>`, `camera_tid()` and the `kFindFunctionRva`
+interlock. NOT started, per the brief: anything I3+, the OpenXR runtime on Infinite, the repo
+restructure.
 
 ### Session 42 - 2026-08-04/05 - the presentation lane: HUD panel, screens, cinematics, menukey, crosshair, flicker instrument
 

@@ -209,26 +209,58 @@ dead-end list saved real time.
       `decode_ray_block`. **And the ini lied**: `FOVAngle=70` + 15 % predicts 70-80.5 deg and a
       1.2094 ratio; the frustum says 75.01-82.50 and 1.1428. I5 must use the frustum.
       Still owed: the aspect cross-check at a second backbuffer size.*
-- [ ] **DR-I4 Native stereo - TIMEBOXED to one session slice.** Is there any usable engine-side
+- [x] **DR-I4 Native stereo - TIMEBOXED to one session slice.** Is there any usable engine-side
       per-eye render path? Current evidence says no: `[Stereoscopic3D]` exists in the ini but no
       `bStereo` / `EyeSeparation` / `StereoDevice` names appear in the exe, which points at
       driver-side 3D Vision. If it exists it deletes I6 entirely. If it does not, **write the
       negative down with the evidence and move on** - do not let this become a rabbit hole.
-- [ ] **DR-I5 Render substrate.** Is command submission a ring (BS2: doubling is free) or a
+      *2026-08-05 session 37: **NEGATIVE, confirmed live and closed.** GNames pool (69,719 live
+      entries): Stereo/Stereoscopic3D/EyeSeparation/StereoDevice/bStereoEnabled all absent;
+      `AllowNvidiaStereo3d` present at 4154 (the positive control, and driver-side-only). I6
+      builds our own stereo.*
+- [x] **DR-I5 Render substrate.** Is command submission a ring (BS2: doubling is free) or a
       kick-and-wait handshake (BS1: needed structural single-threading and cost four sessions)?
       Test `OneFrameThreadLag=False` and `bSmoothFrameRate=False` as the **config-level** lever -
       if that works it buys BS1's `reentry 1t` without a flush-point hook.
-- [ ] **DR-I6 Exec seam.** Confirm `set <class> <prop> <value>` actually lands. **Verify by effect,
+      *2026-08-05 session 37: game and render threads SEPARATE under both lever positions;
+      `OneFrameThreadLag=False` is accepted and the game plays normally (`bSmoothFrameRate` ships
+      FALSE already). Substrate evidence (per-draw UpdateSubresource uploads at 90 M lifetime
+      calls, no stall at 9681 camera calls/s) points at buffered/ring submission, NOT BS1's
+      handshake. Whether the lag lever shortens camera-to-present latency needs the I6 latency
+      instrument - deferred INTO I6 by design, not owed before it.*
+- [x] **DR-I6 Exec seam.** Confirm `set <class> <prop> <value>` actually lands. **Verify by effect,
       not by return value** - set the value absurdly rather than to the target. Confirm which of
       the shipped debug binds work by code as well as by key.
-- [ ] **DR-I7 Scaleform HUD fingerprint.** How do GFx draws appear in the frame? Does a movie
+      *2026-08-05 session 37: **the seam is PASS by effect** - `bsicall`/`bsiexec` dispatch by
+      name through FindFunction(+0x54)+ProcessEvent(+0x7C); `bsiexec setres` RESIZED THE
+      BACKBUFFER live (ResizeBuffers hr=0, 20 ms), `bsiexec shot` created its ScreenShots dir at
+      the dispatch timestamp. `set ... FOVAngle 130` produced no frustum effect - but FOVAngle is
+      independently disconnected from the frustum (the ini lies), so mechanism-vs-dead-property
+      stays unseparated; retest on a live property only if I5 ever needs `set`.*
+- [x] **DR-I7 Scaleform HUD fingerprint.** How do GFx draws appear in the frame? Does a movie
       render to its own target we can capture directly, rather than being classified out of a
       batch? (That would be materially cleaner than the gameswf classifier.)
-- [ ] **DR-I8 Resolution lever.** `setres` exec vs
+      *2026-08-05 session 37: **CONFIRMED live in a second scene at a second resolution.**
+      Contiguous end-of-frame draw run on the BACKBUFFER after the scene blit, exactly two call
+      sites (0x492284 DrawIndexed / 0x4920FF Draw), BC3 atlases + an R8 glyph atlas. No offscreen
+      movie target - but none is needed: the tonemap target (T9 one frame, T8 another - the index
+      varies, so the rule is POSITIONAL: srv0 of the last full-screen a=6 DrawIndexed into the
+      backbuffer) is HUD-free by construction. The eye image needs NO classifier.*
+- [x] **DR-I8 Resolution lever.** `setres` exec vs
       `My Games\BioShock Infinite\XGame\Config\` `ResX`/`ResY`. On BS1 `SETRES` faulted through the
       viewport Exec seam; do not assume either way. **Acceptance is the backbuffer at first Present
       after a relaunch**, never the config read-back.
-- [ ] **Done when:** every DR is recorded pass or fail, with its derivation method.
+      *2026-08-05 session 37: **PASS on BOTH levers.** Config: `XEngine.ini` ResX/ResY is a
+      boot-derived COPY (a write there is discarded - measured); the real store is
+      `XUserOptions.ini` `ResolutionX/ResolutionY`, honoured at first Present
+      (`backbuffer 1600x1200`). Exec: `setres` works LIVE via the by-name console seam - no BS1
+      fault. Infinite has both lanes.*
+- [x] **Done when:** every DR is recorded pass or fail, with its derivation method.
+      *2026-08-05 session 37: all eight recorded - **I2 CLOSED**. The session-36 transform
+      leftover also closed: GetPlayerViewPoint returns a RAW COPY of the camera POV on the
+      observed path (path 2, 100 % census), so I4 injects at the POV/out-params with no
+      downstream transform. The FOV law closed at two aspects: VERTICAL-referenced (tanV pinned
+      0.4933 at slider max across 16:9 and 4:3; tanH = tanV x aspect exactly).*
 
 ## I3 - Headset bring-up: mono big screen (~1 session)
 

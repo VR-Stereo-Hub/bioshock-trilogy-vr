@@ -320,6 +320,114 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 37 - I2 CLOSED: the five remaining DRs, all measured)
+
+Session 37 first merged `main` (BS2 v0.7.0, 124 commits) into the Infinite line - see the
+merge commit for the re-run BS1/BS2 inertness proofs - then ran the remaining battery on the
+merged build. Every verdict below is a measured downstream effect from a running
+`BioShockInfinite.exe` (v0.7.0-25-g2b6e76a), never a return value.
+
+### THE TRANSFORM QUESTION: GetPlayerViewPoint is a RAW COPY on path 2. CLOSED.
+
+The path-aware heartbeat (fixed at the end of session 36) read in real gameplay AND at the
+intro: path census still 100 % path 2, comparison bound to the camera POV `[cam+0x3B8]`, and
+`returned-minus-source d=(0.000 0.000 0.000)` on every beat. **The returned view is handed back
+unchanged - no transform is applied between the camera object's POV fields and the out-params.**
+Consequence for I4: a pose written to the camera POV (or substituted in the detour's out-params)
+IS the view; there is no downstream transform to fight. The `[this+0x430]` 4x4 read all zeros at
+first fire and is not on the observed path.
+
+### DR-I4 native stereo: NEGATIVE, confirmed live. CLOSED.
+
+Live pool lookups against the populated GNames (69,719 entries): `Stereo`, `Stereoscopic3D`,
+`EyeSeparation`, `StereoDevice`, `bStereoEnabled` all **absent**. `AllowNvidiaStereo3d` IS
+present (index 4154) - which is simultaneously the positive control proving the search works and
+the confirmation that the only stereo surface is the driver-side 3D Vision allow-flag
+(`=False` in the shipped ini). With the offline evidence (0 of 2647 natives match `*Stereo*`,
+no stereo strings in the exe), there is **no usable engine-side per-eye render path**. I6 builds
+its own stereo, as planned.
+
+### DR-I5 render substrate: threads separate under BOTH lever positions. RECORDED.
+
+- Game and render threads are SEPARATE, re-measured this session in both configurations:
+  `OneFrameThreadLag=True` (camera tid 7136 vs present tid 18952 in one boot, 12808/21704 in
+  another) and **`OneFrameThreadLag=False` - the topology does not change**, the game boots,
+  loads and plays normally. The lever is ACCEPTED by the engine but does not single-thread it.
+- Camera rate at the same save spot: ~1000 calls/s (2560x1440, lag on) vs ~2600 calls/s
+  (1600x1200, lag off) - CONFOUNDED by the resolution change, recorded but not attributed.
+- Substrate shape: uploads go through `UpdateSubresource` (90 M lifetime calls by mid-session),
+  per-draw b0 rewrites, no kick-and-wait stall ever observed at dispatch rates up to 9681
+  calls/s. Everything points at a buffered/ring submission rather than BS1's handshake -
+  **whether the lag lever actually shortens the camera-to-present latency needs the I6-era
+  latency instrument**; that half stays open into I6 and is not needed before it.
+
+### DR-I6 the Exec seam: PASS by effect, through ProcessEvent by name. CLOSED.
+
+`bsicall <Func> [float]` and `bsiexec <console cmd>` (src/game/bioshockinf/reflect.cpp) dispatch
+on the latched APlayerController via `FindFunction` (vtable `+0x54`, impl `0xD1030` interlock)
+then `ProcessEvent` (`+0x7C`). Gates: build gate, game-thread identity, GNames populated,
+vtable-slot RVA match; SEH-isolated, fail-soft. Measured results:
+
+| probe | result |
+|---|---|
+| `bsicall FOV 120` | FindFunction -> **null** - the class chain does not carry stock `FOV`. The miss lane works; nothing was called. |
+| `bsiexec shot` | ConsoleCommand resolved and ran; the engine **created `My Games\...\XGame\ScreenShots\` at the dispatch timestamp** (12:33:29) - a filesystem side effect = the console chain executes. No PNG is written by this build's capture path. |
+| `bsiexec setres 2560x1440` | **THE BACKBUFFER PHYSICALLY RESIZED within 20 ms** - `ResizeBuffers: 2560x1440 hr=0x0` from our own hook. The seam is live end-to-end, and unlike BS1, `setres` does not fault. |
+| `bsiexec set XGamePlayerController FOVAngle 130` | dispatch completed; the rendered lens stayed at the slider-max 0.8769/0.4933 - **no frustum effect**. FOVAngle is independently known to be disconnected from the frustum (the ini lies), so this cannot separate "set is dead" from "the property is dead". A live-property retest is I5 work if ever needed; the seam itself is proven above. |
+| `bsiexec get ... FOVAngle` | returned string empty - but the FString ReturnValue offset assumes stock `(string, optional bool)`; if Irrational dropped `bWriteToLog` the capture reads the wrong slot. Return-string capture is UNVERIFIED; never rely on it (verify by effect anyway). |
+
+### DR-I7 Scaleform HUD: fingerprint CONFIRMED live, twice. CLOSED.
+
+The session-36 offline fingerprint reproduced in a live gameplay frame with an active HUD, at a
+different resolution (1600x1200) and scene: the HUD is a contiguous end-of-frame run on the
+BACKBUFFER (this frame ~46 draws - the count varies with HUD content, the structure does not),
+after the full-screen scene blit, from EXACTLY the two engine call sites `0x492284` (DrawIndexed,
+counts divisible by 6) and `0x4920FF` (Draw), sampling **BC3 atlases (fmt 77)** T71-T77 plus an
+R8 1024x1024 glyph atlas (fmt 61). The tonemap target this frame was **T8** (1600x1200
+R8G8B8A8_UNORM RT|SRV) where session 36's frame used T9 - **the index varies, so the POSITIONAL
+rule is confirmed as the only correct one: the eye image source is the `srv0` of the last
+full-screen `DrawIndexed a=6` into the backbuffer** (event 00463: `rtv0=T0 srv0=T8`). That
+texture is HUD-free by construction; no classifier is needed. The HUD has no offscreen movie
+target of its own - it draws straight onto the backbuffer.
+
+### DR-I8 resolution lever: PASS on BOTH levers - and the config layer was misidentified. CLOSED.
+
+- **`XEngine.ini` `ResX`/`ResY` is a boot-time DERIVED COPY, not the store.** A write there is
+  silently overwritten at boot (measured: wrote 1600x1200, backbuffer stayed 2560x1440 and the
+  file read back 2560). The authoritative store is **`XUserOptions.ini` `ResolutionX`/
+  `ResolutionY`** - writing 1600x1200 there produced `first Present: backbuffer 1600x1200`,
+  which is the acceptance. (Fourth instance of "a verified write is not an honoured one".)
+- **The exec lever works live**: `bsiexec setres 2560x1440` resized the backbuffer mid-session
+  (ResizeBuffers logged, hr=0). Infinite's `setres` does NOT fault the way BS1's did.
+
+### Incidental live findings worth keeping
+
+- **Unattended attract/menu hangs the game** (pre-existing, NOT ours, NOT the merge): left
+  sitting at the menu/attract with no input, the game froze twice - once on the merged build,
+  once on the UNMODIFIED session-36 build (the control that exonerated the merge). The pace
+  watchdog photographed both: present thread and game thread parked in ntdll waits under
+  game-code frames, all 64 threads reported, zero mod frames on the wedged stacks. An attended
+  menu has never hung. Sessions should keep a driver at the menu and note this for I13 soak
+  tests.
+- **Infinite exits CLEANLY via WM_CLOSE** - `DLL_PROCESS_DETACH (orderly process exit)`, twice,
+  with no exit-path fault. Better behaved than both remasters.
+- Camera hook totals after the battery: 1.49 M calls in one boot, still **0 foreign-tid
+  dispatches** across every boot this session.
+
+### The FOV law (aspect cross-check): VERTICAL-referenced. The DR-I3 leftover is CLOSED.
+
+Slider at maximum, same save, two backbuffer aspects, `-ScanMatrix -BlockBytes 80`:
+
+| | 2560x1440 (16:9) | 1600x1200 (4:3) |
+|---|---|---|
+| tanH | 0.8770 | 0.6577 |
+| tanV | **0.4933** | **0.4933 - PINNED** |
+
+tanH moved by exactly **0.75000** = the aspect change; tanV did not move at all. **The option
+sets the VERTICAL half-angle and tanH = tanV x aspect (Hor+).** Slider range in tanV:
+0.4317 (min) to 0.4933 (max), i.e. vFOV 46.67 to 52.63 deg at any aspect. I5's lens math and
+config UI derive from tanV; `FOVAngle` in the ini stays decorative.
+
 ## LIVE CONFIRMATION (session 36, second half - the game was finally free)
 
 Everything in the two sections below was measured inside a running
@@ -911,6 +1019,11 @@ by reflection is a more direct route than the console ever was, and it sidesteps
 **Confidence:** the natives and their RVAs are structural facts from the binary. That calling them
 from injected code works, and that nothing gates them, is unproven. Verify by effect.
 
+> **PROVEN, session 37.** `ConsoleCommand` resolved BY NAME off the latched controller and run
+> through `ProcessEvent` executes for real: `setres` resized the backbuffer (our ResizeBuffers
+> hook logged it), `shot` created its ScreenShots directory at the dispatch timestamp. See
+> "LIVE RESULTS (session 37)" above; the commands are `bsicall` / `bsiexec`.
+
 ### Save data location
 
 Saves are **not** under `My Games`. They live in Steam cloud-synced userdata:
@@ -937,7 +1050,7 @@ Read from the generated user config, so these are what the engine is actually ru
 
 | key | file | value | note |
 |---|---|---|---|
-| `ResX` / `ResY` | `XEngine.ini:877-878` | **2560 / 1440** | matches `XUserOptions.ini` `ResolutionX/Y`, so **`XEngine.ini` is the resolution lane** and the options UI writes through to it. Still needs backbuffer-at-first-Present acceptance (DR-I8). |
+| `ResX` / `ResY` | `XEngine.ini:877-878` | **2560 / 1440** | ~~matches `XUserOptions.ini` `ResolutionX/Y`, so `XEngine.ini` is the resolution lane~~ **CORRECTED session 37: the match is because `XEngine.ini` is a boot-time COPY of `XUserOptions.ini`.** A write to `ResX/ResY` is silently overwritten at boot (measured). The lever is `XUserOptions.ini` `ResolutionX/ResolutionY` - honoured at first Present. DR-I8 closed on that lane. |
 | `DisplayMode` | `XUserOptions.ini:152` | **0 = windowed** | good news for the harness - `PrintWindow` capture and synthetic clicks behave far better windowed than exclusive fullscreen |
 | `bSmoothFrameRate` | `XEngine.ini:152` | **FALSE** | already off. The shipped `BaseEngine.ini` says TRUE; the generated config disagrees, so one VR blocker is pre-cleared. |
 | `MaxSmoothedFrameRate` | `XEngine.ini:154` | 120 | moot while smoothing is off |
@@ -954,8 +1067,9 @@ Read from the generated user config, so these are what the engine is actually ru
   point"), `DefaultDisplayMode=1` (0 windowed / 1 fullscreen / 2 fullscreen-windowed).
 - `XGame\Config\DefaultEngine.ini:219-220`: `ResX=1280`, `ResY=720`.
 - `SETRES` exists as a UTF-16 exec string in the exe. On BS1 the equivalent **faulted** through the
-  viewport Exec seam, which is why the ini lane became primary there. Test it here; do not assume
-  either way.
+  viewport Exec seam, which is why the ini lane became primary there. **Tested session 37: it
+  WORKS live** - `bsiexec setres 2560x1440` resized the backbuffer within 20 ms, ResizeBuffers
+  hr=0. Infinite has BOTH a working ini lane and a working live lane.
 - User config is written to `%USERPROFILE%\Documents\My Games\BioShock Infinite\XGame\Config\`
   (standard UE3). That directory **does not exist yet** - the game has never been launched on this
   machine. It appears after the first flat run.
