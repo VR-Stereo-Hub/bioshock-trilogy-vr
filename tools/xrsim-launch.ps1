@@ -18,7 +18,7 @@
 #   .\tools\xrsim-launch.ps1 -Game bs1 -AllowStale -WaitSeconds 120
 [CmdletBinding()]
 param(
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1",
     [string]$GamePath = "",
     [switch]$Release,
     [switch]$Force,
@@ -34,16 +34,18 @@ $ErrorActionPreference = 'Stop'
 
 $repo   = Split-Path -Parent $PSScriptRoot
 $config = if ($Release) { "RelWithDebInfo" } else { "Debug" }
-$proc   = if ($Game -eq "bs2") { "Bioshock2HD" } else { "BioshockHD" }
-$exeName = if ($Game -eq "bs2") { "Bioshock2HD.exe" } else { "BioshockHD.exe" }
-$modLog = if ($Game -eq "bs2") { "$env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.log" }
-          else { "$env:LOCALAPPDATA\BioshockVR\bioshockvr.log" }
+$proc   = switch ($Game) { "bs2" { "Bioshock2HD" } "bsi" { "BioShockInfinite" }
+                           default { "BioshockHD" } }
+$exeName = "$proc.exe"
+$modLog = switch ($Game) { "bs2" { "$env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.log" }
+                           "bsi" { "$env:LOCALAPPDATA\BioshockVR\bsi\bioshockvr.log" }
+                           default { "$env:LOCALAPPDATA\BioshockVR\bioshockvr.log" } }
 
 if (-not $GamePath) {
-    $GamePath = if ($Game -eq "bs2") {
-        "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final"
-    } else {
-        "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final"
+    $GamePath = switch ($Game) {
+        "bs2" { "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final" }
+        "bsi" { "D:\SteamLibrary\steamapps\common\BioShock Infinite\Binaries\Win32" }
+        default { "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final" }
     }
 }
 $exe = Join-Path $GamePath $exeName
@@ -116,7 +118,10 @@ if ($NoWaitSession) {
 # The revert-Options 'Message' dialog blocks the game before it ever presents, so
 # a launcher that only waits will time out with a misleading "no session came up".
 # Dismiss it here, the same way boot.ps1 does, rather than making every caller
-# remember to.
+# remember to. The dialog is a Remastered (BS1/BS2) prompt only - Infinite has no
+# such dialog, so the probe is skipped there (its real launch hazard is the
+# UNATTENDED attract-mode hang, which no dialog probe can fix - keep a driver at
+# the menu).
 Add-Type -ErrorAction SilentlyContinue @'
 using System; using System.Runtime.InteropServices;
 public static class BvrXrSimWin {
@@ -129,7 +134,8 @@ public static class BvrXrSimWin {
 $runtimeName = $null
 $sessionUp   = $false
 for ($i = 0; $i -lt $WaitSeconds; $i++) {
-    $dlg = [BvrXrSimWin]::FindWindow("#32770", "Message")
+    $dlg = if ($Game -ne "bsi") { [BvrXrSimWin]::FindWindow("#32770", "Message") }
+           else { [IntPtr]::Zero }
     if ($dlg -ne [IntPtr]::Zero) {
         $no = [BvrXrSimWin]::FindWindowEx($dlg, [IntPtr]::Zero, "Button", "&No")
         if ($no -ne [IntPtr]::Zero) {
@@ -156,9 +162,15 @@ for ($i = 0; $i -lt $WaitSeconds; $i++) {
 
 if (-not $runtimeName) { throw "the mod never logged an XR instance within $WaitSeconds s (log: $modLog)." }
 if (-not $sessionUp) {
-    throw "runtime '$runtimeName' loaded but no session came up within $WaitSeconds s. " +
-          "The game may be sitting on the revert-Options dialog - dismiss it, or run " +
-          "boot.ps1 -Attach."
+    $hint = if ($Game -eq "bsi") {
+        "Infinite presents from the menu, so no dialog should be blocking - check the log " +
+        "for bring-up refusals, and make sure the menu is ATTENDED (the attract-mode hang " +
+        "stops presents entirely)."
+    } else {
+        "The game may be sitting on the revert-Options dialog - dismiss it, or run " +
+        "boot.ps1 -Attach."
+    }
+    throw "runtime '$runtimeName' loaded but no session came up within $WaitSeconds s. $hint"
 }
 
 # --- confirm frames are actually advancing -----------------------------------
