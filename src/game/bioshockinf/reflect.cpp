@@ -422,6 +422,60 @@ int call_by_name_seh(void* obj, const uint8_t* const* vt, int32_t nameIndex, voi
     }
 }
 
+// The shared gate stack for anything that dispatches into the engine. Every
+// refusal is named after the check that made it. Returns false unless: the
+// build gate is open, we are on the camera (game) thread, GNames is populated,
+// the latched APlayerController and its vtable are readable, and BOTH dispatch
+// slots still hold the derived implementations (a re-linked build would pass
+// the readability checks and then call through slots that mean something else
+// entirely - this is the gate that fails it softly instead).
+bool resolve_dispatch_target(const char* tag, void*& outObj, const uint8_t* const*& outVt) {
+    if (!patterns::rva_trusted()) {
+        BVR_LOG("[bsi] %s: REFUSED - build gate closed", tag);
+        return false;
+    }
+    // Thread interlock: this must be the camera (game) thread. Under the lease
+    // a silent game thread hands the pump to the Present thread in degraded
+    // mode, and an engine call from there is a cross-thread dispatch the
+    // engine itself was measured never to take (foreign-tid-calls=0).
+    const uint32_t camTid = camera::camera_tid();
+    if (camTid == 0 || GetCurrentThreadId() != camTid) {
+        BVR_LOG("[bsi] %s: REFUSED - not on the game thread (this tid=%u camera tid=%u). "
+                "The camera hook must own the pump (pump=game).",
+                tag, GetCurrentThreadId(), camTid);
+        return false;
+    }
+    if (patterns::fname_count() <= 0) {
+        BVR_LOG("[bsi] %s: REFUSED - GNames not populated yet", tag);
+        return false;
+    }
+    void* obj = camera::last_player_controller();
+    if (!obj || !bvr::pattern_scan::is_memory_valid(obj, sizeof(void*))) {
+        BVR_LOG("[bsi] %s: REFUSED - no readable latched APlayerController (%p)", tag, obj);
+        return false;
+    }
+    const uint8_t* const* vt = *reinterpret_cast<const uint8_t* const* const*>(obj);
+    const size_t slotsNeeded = patterns::kProcessEventVtableOffset / 4 + 1;
+    if (!vt || !bvr::pattern_scan::is_memory_valid(vt, slotsNeeded * sizeof(void*))) {
+        BVR_LOG("[bsi] %s: REFUSED - vtable %p unreadable through slot +0x%X", tag, (void*)vt,
+                patterns::kProcessEventVtableOffset);
+        return false;
+    }
+    const uint32_t ffRva = rva_of(vt[patterns::kFindFunctionVtableOffset / 4]);
+    const uint32_t peRva = rva_of(vt[patterns::kProcessEventVtableOffset / 4]);
+    if (ffRva != patterns::kFindFunctionRva ||
+        (peRva != patterns::kActorProcessEventRva && peRva != patterns::kProcessEventRva)) {
+        BVR_LOG("[bsi] %s: REFUSED - live vtable disagrees with the derivation "
+                "(+0x54=0x%X expected 0x%X, +0x7C=0x%X expected 0x%X/0x%X)",
+                tag, ffRva, patterns::kFindFunctionRva, peRva, patterns::kActorProcessEventRva,
+                patterns::kProcessEventRva);
+        return false;
+    }
+    outObj = obj;
+    outVt = vt;
+    return true;
+}
+
 void cmd_call(const char* args) {
     char fn[96] = {};
     char valStr[32] = {};
@@ -434,25 +488,6 @@ void cmd_call(const char* args) {
                 "+ ProcessEvent(+0x7C). Acceptance is the downstream EFFECT, never this log.");
         return;
     }
-    if (!patterns::rva_trusted()) {
-        BVR_LOG("[bsi] call: REFUSED - build gate closed");
-        return;
-    }
-    // Thread interlock: this must be the camera (game) thread. Under the lease
-    // a silent game thread hands the pump to the Present thread in degraded
-    // mode, and an engine call from there is a cross-thread dispatch the
-    // engine itself was measured never to take (foreign-tid-calls=0).
-    const uint32_t camTid = camera::camera_tid();
-    if (camTid == 0 || GetCurrentThreadId() != camTid) {
-        BVR_LOG("[bsi] call: REFUSED - not on the game thread (this tid=%u camera tid=%u). "
-                "The camera hook must own the pump (pump=game).",
-                GetCurrentThreadId(), camTid);
-        return;
-    }
-    if (patterns::fname_count() <= 0) {
-        BVR_LOG("[bsi] call: REFUSED - GNames not populated yet");
-        return;
-    }
     const int32_t nameIndex = patterns::fname_find(fn);
     if (nameIndex < 0) {
         BVR_LOG("[bsi] call: REFUSED - '%s' is not in GNames (%d entries searched). A name "
@@ -460,32 +495,9 @@ void cmd_call(const char* args) {
                 fn, patterns::fname_count());
         return;
     }
-    void* obj = camera::last_player_controller();
-    if (!obj || !bvr::pattern_scan::is_memory_valid(obj, sizeof(void*))) {
-        BVR_LOG("[bsi] call: REFUSED - no readable latched APlayerController (%p)", obj);
-        return;
-    }
-    const uint8_t* const* vt = *reinterpret_cast<const uint8_t* const* const*>(obj);
-    const size_t slotsNeeded = patterns::kProcessEventVtableOffset / 4 + 1;
-    if (!vt || !bvr::pattern_scan::is_memory_valid(vt, slotsNeeded * sizeof(void*))) {
-        BVR_LOG("[bsi] call: REFUSED - vtable %p unreadable through slot +0x%X", (void*)vt,
-                patterns::kProcessEventVtableOffset);
-        return;
-    }
-    // Both dispatch slots must still hold the derived implementations. A
-    // re-linked build would pass the readability checks and then call through
-    // slots that mean something else entirely - this is the gate that fails
-    // it softly instead.
-    const uint32_t ffRva = rva_of(vt[patterns::kFindFunctionVtableOffset / 4]);
-    const uint32_t peRva = rva_of(vt[patterns::kProcessEventVtableOffset / 4]);
-    if (ffRva != patterns::kFindFunctionRva ||
-        (peRva != patterns::kActorProcessEventRva && peRva != patterns::kProcessEventRva)) {
-        BVR_LOG("[bsi] call: REFUSED - live vtable disagrees with the derivation "
-                "(+0x54=0x%X expected 0x%X, +0x7C=0x%X expected 0x%X/0x%X)",
-                ffRva, patterns::kFindFunctionRva, peRva, patterns::kActorProcessEventRva,
-                patterns::kProcessEventRva);
-        return;
-    }
+    void* obj = nullptr;
+    const uint8_t* const* vt = nullptr;
+    if (!resolve_dispatch_target("call", obj, vt)) return;
     // Zeroed 256-byte param block, float arg (if any) at offset 0. Enough for
     // any probe-sized signature; anything the callee writes back (out params,
     // an FString return) lands here and is discarded - this is a probe
@@ -517,6 +529,82 @@ void cmd_call(const char* args) {
     }
 }
 
+// ---- bsiexec: run a console command through ConsoleCommand, by name ---------
+// `ConsoleCommand` is registered as a native on AActor / APlayerController /
+// AXPlayerController (ENGINE_NOTES, session 34 census), so the latched PC's
+// class chain carries it and FindFunction resolves it without an address.
+// Stock UE3 shape:
+//   native function string ConsoleCommand(string Command, optional bool
+//                                         bWriteToLog);
+// Params block: FString Command at +0 ({TCHAR* Data, int Num, int Max} - the
+// same TArray triple GNames confirmed on this build), UBOOL bWriteToLog at
+// +12, FString ReturnValue at +16. The Command buffer is OURS (static, game
+// thread only); the ReturnValue the engine writes is deliberately LEAKED, a
+// few bytes per probe, because freeing it means calling the engine allocator
+// with a shape this derivation has not touched.
+void cmd_exec(const char* args) {
+    while (args && *args == ' ') ++args;
+    if (!args || !*args) {
+        BVR_LOG("[bsi] exec: usage - bsiexec <console command>   e.g. bsiexec shot. Runs it "
+                "through AXPlayerController::ConsoleCommand resolved BY NAME. Acceptance is "
+                "the downstream EFFECT (a file, the backbuffer, the lens) - never this log.");
+        return;
+    }
+    const int32_t nameIndex = patterns::fname_find("ConsoleCommand");
+    if (nameIndex < 0) {
+        BVR_LOG("[bsi] exec: REFUSED - 'ConsoleCommand' not in GNames (%d entries)",
+                patterns::fname_count());
+        return;
+    }
+    void* obj = nullptr;
+    const uint8_t* const* vt = nullptr;
+    if (!resolve_dispatch_target("exec", obj, vt)) return;
+    // Game thread only (the interlock above guarantees it), so statics are safe.
+    static wchar_t s_wide[512];
+    const int written =
+        MultiByteToWideChar(CP_UTF8, 0, args, -1, s_wide, static_cast<int>(_countof(s_wide)));
+    if (written <= 0) {
+        BVR_LOG("[bsi] exec: REFUSED - command text did not convert to UTF-16");
+        return;
+    }
+    struct ConsoleCommandParms {
+        wchar_t* data;      // FString Command
+        int32_t num, max;   //   Num counts the terminator
+        int32_t bWriteToLog;
+        wchar_t* retData;   // FString ReturnValue, engine-written
+        int32_t retNum, retMax;
+    };
+    ConsoleCommandParms parms{};
+    parms.data = s_wide;
+    parms.num = written; // MultiByteToWideChar's count includes the NUL
+    parms.max = written;
+    parms.bWriteToLog = 1;
+    BVR_LOG("[bsi] exec: dispatching ConsoleCommand(\"%s\") on PC %p, tid %u", args, obj,
+            GetCurrentThreadId());
+    void* func = nullptr;
+    uint32_t code = 0;
+    const int r = call_by_name_seh(obj, vt, nameIndex, &parms, &func, &code);
+    if (r == 1) {
+        BVR_LOG("[bsi] exec: FindFunction('ConsoleCommand') returned null - unexpected, the "
+                "census says the class chain registers it. Nothing was called.");
+    } else if (r == 2) {
+        BVR_LOG("[bsi] exec: FAULT 0x%08X inside the dispatch - swallowed by SEH, game "
+                "continues. Treat the FString shape as wrong until re-derived.",
+                code);
+    } else {
+        char ret[128] = {};
+        if (parms.retData && parms.retNum > 0 &&
+            bvr::pattern_scan::is_memory_valid(parms.retData,
+                                               static_cast<size_t>(parms.retNum) * 2)) {
+            WideCharToMultiByte(CP_UTF8, 0, parms.retData, -1, ret, sizeof ret - 1, nullptr,
+                                nullptr);
+        }
+        BVR_LOG("[bsi] exec: ConsoleCommand returned (UFunction %p, ret \"%s\", %d wchars "
+                "leaked by design). NOT acceptance - measure the downstream effect.",
+                func, ret, parms.retNum);
+    }
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -544,13 +632,18 @@ bool handle_command(const char* cmd, const char* args) {
         cmd_call(args);
         return true;
     }
+    if (strcmp(cmd, "bsiexec") == 0) {
+        cmd_exec(args);
+        return true;
+    }
     if (strcmp(cmd, "bsireflect") == 0) {
         if (args && strncmp(args, "selftest", 8) == 0) {
             cmd_selftest();
         } else {
             BVR_LOG("[bsi] reflect: GNames Num=%d Max=%d | native table %s | commands: "
                     "bsireflect selftest | bsinative <Class> <Func> | bsinames <start> [n] | "
-                    "bsiname <text> | bsivtable [n] | bsicall <Func> [floatArg]",
+                    "bsiname <text> | bsivtable [n] | bsicall <Func> [floatArg] | "
+                    "bsiexec <console cmd>",
                     patterns::fname_count(), patterns::fname_max(),
                     g_table.base ? "seeded" : "not seeded yet");
         }
