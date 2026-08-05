@@ -230,6 +230,27 @@ inline constexpr bool kLensRowMajor = true;
 inline constexpr float kTanVSliderMin = 0.4317f;
 inline constexpr float kTanVSliderMax = 0.4933f;
 
+// ---- the live FOV chain on the camera object (session 41, derived live) ----
+//
+// DERIVATION (poke/rescan at the attract, ENGINE_NOTES "LIVE RESULTS (session
+// 41)"). With the in-game slider at max the frustum decodes tanH 0.8770 and
+// the camera object [pc+0x240] carries 82.50f - and tan(82.5/2) = 0.8770
+// EXACTLY, so the stored value is the horizontal FOV in degrees at the current
+// aspect. Copies live at [cam+0x214] (followed by two 1.3333f floats - the
+// UE3 ACamera DefaultFOV / DefaultAspectRatio shape) and [cam+0x3D0] (the
+// cached POV: loc at +0x3B8, rot at +0x3C4, fov at +0x3D0 - the FTPOV
+// layout). A full writable-memory scan for 82.5f found SIX holders and every
+// single one snapped back to 82.5 within a tick of being poked (including
+// these two), so the value is RECOMPUTED each tick from the option upstream:
+// no memory address is the source, and the console `set` lane never writes
+// XUserOptionsManager.FieldOfView at all (a scan for the written value found
+// zero stable holders - recorded negative, do not re-try `set` here).
+// THE LEVER therefore ENFORCES per camera-detour dispatch: writing both
+// copies every GetPlayerViewPoint call outruns the once-per-tick refresh,
+// and disarming self-restores - the engine's own recompute is the undo.
+inline constexpr uint32_t kCameraDefaultFovOffset = 0x214; // f32 deg, [cam+...]
+inline constexpr uint32_t kCameraPovFovOffset = 0x3D0;     // f32 deg, [cam+...]
+
 // ---- the scene-build root (session 40, derived live) -----------------------
 //
 // The SequentialReentry seam: the UGameViewportClient::Draw analog. DERIVATION

@@ -115,6 +115,16 @@ bool g_finalValid = false;
 // `dumpframe cb` decode. A WRONG CLAIM POISONS EVERY STEREO JUDGMENT (BS1's
 // M4), which is why this is loud in the log and visible in the overlay.
 std::atomic<float> g_claimTanV{patterns::kTanVSliderMin};
+// I6 rung 1: THE FOV LEVER. Horizontal degrees at the current aspect; 0 = off.
+// The engine recomputes its FOV caches from the option every tick (patterns.h
+// "the live FOV chain"), so the lever ENFORCES per detour dispatch - writing
+// [cam+0x214] and [cam+0x3D0] each call outruns the refresh, and disarming
+// self-restores (the recompute is the undo). While armed the claim DERIVES
+// from the lever (tanV = tan(deg/2)/aspect, so the published hfov == the
+// commanded degrees) - the audit line can never go stale against this lever.
+std::atomic<float> g_fovLeverDeg{0.0f};
+std::atomic<uint32_t> g_fovLeverWrites{0};
+std::atomic<uint32_t> g_fovLeverFaults{0};
 // The vrstereo latch (what the toggle last applied), telemetry for UI/status.
 std::atomic<bool> g_stereoArmed{false};
 // F10 -> game thread: -1 none, 0 pending off, 1 pending on. The overlay draws
@@ -695,11 +705,37 @@ void save_vr_preset() {
     fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
     fprintf(f, "claimTanV=%.4f\n", g_claimTanV.load(std::memory_order_relaxed));
     fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
+    fprintf(f, "fovLeverDeg=%.1f\n", g_fovLeverDeg.load(std::memory_order_relaxed));
     fclose(f);
-    BVR_LOG("[bsi] vrpreset saved (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f)",
+    BVR_LOG("[bsi] vrpreset saved (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f fovLeverDeg=%.1f)",
             g_worldScale.load(std::memory_order_relaxed),
             g_claimTanV.load(std::memory_order_relaxed),
-            g_ipdMm.load(std::memory_order_relaxed));
+            g_ipdMm.load(std::memory_order_relaxed),
+            g_fovLeverDeg.load(std::memory_order_relaxed));
+}
+
+// ---------------------------------------------------------------------------
+// I6 rung 1: the per-dispatch FOV enforcement. Game thread only, SEH-guarded
+// C frame (same discipline as probe_self: `cam` is an engine pointer we
+// neither created nor own, and a torn camera at a load must fault soft, not
+// crash). Writes BOTH known copies - the DefaultFOV field the per-tick
+// refresh reads and the cached POV the projection consumes - so whichever
+// side of the refresh this dispatch lands on, the enforced value is the one
+// downstream. Idempotent across the SR pass-2 replay dispatches.
+// ---------------------------------------------------------------------------
+void apply_fov_lever(void* self) {
+    const float deg = g_fovLeverDeg.load(std::memory_order_relaxed);
+    if (deg <= 0.0f || !self) return;
+    __try {
+        uint8_t* base = static_cast<uint8_t*>(self);
+        uint8_t* cam = *reinterpret_cast<uint8_t* const*>(base + patterns::kPcCameraOffset);
+        if (!cam) return;
+        *reinterpret_cast<float*>(cam + patterns::kCameraDefaultFovOffset) = deg;
+        *reinterpret_cast<float*>(cam + patterns::kCameraPovFovOffset) = deg;
+        g_fovLeverWrites.fetch_add(1, std::memory_order_relaxed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_fovLeverFaults.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +755,16 @@ void publish_projection_claim() {
     float aspect = 16.0f / 9.0f; // pre-first-Present fallback, matches the law's 16:9 row
     if (bvr::hud::backbuffer_dims(&w, &h) && w > 0 && h > 0)
         aspect = static_cast<float>(w) / static_cast<float>(h);
+    // Lever armed: the claim derives from the ENFORCED value, not the manual
+    // tanV - tan(deg/2) is the frustum's tanH (measured, patterns.h), so
+    // tanV = tan(deg/2)/aspect and the published hfov equals the commanded
+    // degrees exactly. The manual claim (bsifov tanv) is mirrored so the
+    // heartbeat, overlay and preset all read the live truth.
+    const float leverDeg = g_fovLeverDeg.load(std::memory_order_relaxed);
+    if (leverDeg > 0.0f) {
+        const float leverTanV = tanf(leverDeg * 0.5f / kRadToDeg) / aspect;
+        g_claimTanV.store(leverTanV, std::memory_order_relaxed);
+    }
     const float tanV = g_claimTanV.load(std::memory_order_relaxed);
     const float hfovDeg = 2.0f * atanf(tanV * aspect) * kRadToDeg;
     bvr::vr::set_rendered_hfov(hfovDeg);
@@ -1019,6 +1065,9 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // fov the layer is tagged with plus the gameplay-view liveness that keeps
     // core's cinematic fallback from quadding a live gameplay projection.
     apply_pending_vrstereo();
+    // I6: enforce the FOV lever BEFORE the claim publish so the claim derives
+    // from what this very dispatch wrote into the camera.
+    apply_fov_lever(self);
     publish_projection_claim();
 
     // The I4 drive, AFTER the snapshot (so the observation instruments keep
@@ -1190,12 +1239,17 @@ void load_vr_preset() {
             g_claimTanV.store(v, std::memory_order_relaxed);
         else if (sscanf_s(line, "ipdMm=%f", &v) == 1 && v > 0.0f)
             g_ipdMm.store(v, std::memory_order_relaxed);
+        else if (sscanf_s(line, "fovLeverDeg=%f", &v) == 1 && v >= 0.0f)
+            g_fovLeverDeg.store(v >= 20.0f && v <= 170.0f ? v : 0.0f,
+                                std::memory_order_relaxed);
     }
     fclose(f);
-    BVR_LOG("[bsi] vrpreset loaded (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f)",
+    BVR_LOG("[bsi] vrpreset loaded (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f "
+            "fovLeverDeg=%.1f)",
             g_worldScale.load(std::memory_order_relaxed),
             g_claimTanV.load(std::memory_order_relaxed),
-            g_ipdMm.load(std::memory_order_relaxed));
+            g_ipdMm.load(std::memory_order_relaxed),
+            g_fovLeverDeg.load(std::memory_order_relaxed));
 }
 
 bool handle_drive_verb(const char* cmd, const char* args) {
@@ -1283,7 +1337,26 @@ bool handle_drive_verb(const char* cmd, const char* args) {
         return true;
     }
     if (strcmp(cmd, "bsifov") == 0) {
-        if (strncmp(args, "tanv", 4) == 0) {
+        if (strncmp(args, "set", 3) == 0) {
+            float deg = 0.0f;
+            if (sscanf_s(args + 3, "%f", &deg) == 1 && deg >= 20.0f && deg <= 170.0f) {
+                g_fovLeverDeg.store(deg, std::memory_order_relaxed);
+                BVR_LOG("[bsi] FOV LEVER ARMED: %.1f deg horizontal at the current aspect, "
+                        "enforced per dispatch (expect tanH=%.4f in a `dumpframe cb` decode; "
+                        "the claim now derives from the lever)",
+                        deg, tanf(deg * 0.5f / kRadToDeg));
+            } else {
+                BVR_LOG("[bsi] usage: bsifov set <20..170 deg> (current %.1f, 0=off)",
+                        g_fovLeverDeg.load(std::memory_order_relaxed));
+            }
+        } else if (strncmp(args, "off", 3) == 0) {
+            g_fovLeverDeg.store(0.0f, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fov lever OFF - the engine's per-tick recompute restores the "
+                    "native FOV within a tick (writes=%u faults=%u); the claim keeps the "
+                    "last derived tanV until bsifov tanv corrects it",
+                    g_fovLeverWrites.load(std::memory_order_relaxed),
+                    g_fovLeverFaults.load(std::memory_order_relaxed));
+        } else if (strncmp(args, "tanv", 4) == 0) {
             float v = 0.0f;
             if (sscanf_s(args + 4, "%f", &v) == 1 && v > 0.1f && v < 2.0f) {
                 g_claimTanV.store(v, std::memory_order_relaxed);
@@ -1299,11 +1372,15 @@ bool handle_drive_verb(const char* cmd, const char* args) {
             int auditSrc = -1;
             unsigned swapW = 0, swapH = 0;
             bvr::vr::fov_audit(&auditTanH, &auditTanV, &auditSrc, &swapW, &swapH);
-            BVR_LOG("[bsi] fov claim: tanV=%.4f aspect=%.4f hfov=%.1f deg | audit tanH=%.4f "
-                    "tanV=%.4f src=%d swap=%ux%u | usage: bsifov [tanv <v>]",
+            BVR_LOG("[bsi] fov claim: tanV=%.4f aspect=%.4f hfov=%.1f deg | lever=%.1f deg "
+                    "(writes=%u faults=%u) | audit tanH=%.4f tanV=%.4f src=%d swap=%ux%u | "
+                    "usage: bsifov [set <deg>|off|tanv <v>]",
                     g_claimTanV.load(std::memory_order_relaxed),
                     g_lastClaimAspect.load(std::memory_order_relaxed),
-                    g_lastClaimHfovDeg.load(std::memory_order_relaxed), auditTanH, auditTanV,
+                    g_lastClaimHfovDeg.load(std::memory_order_relaxed),
+                    g_fovLeverDeg.load(std::memory_order_relaxed),
+                    g_fovLeverWrites.load(std::memory_order_relaxed),
+                    g_fovLeverFaults.load(std::memory_order_relaxed), auditTanH, auditTanV,
                     auditSrc, swapW, swapH);
         }
         return true;
@@ -1501,13 +1578,30 @@ void draw_debug_ui() {
             if (ImGui::SliderFloat("IPD (mm)", &ipd, 50.0f, 75.0f, "%.1f"))
                 g_ipdMm.store(ipd, std::memory_order_relaxed);
         }
+        // I6: the FOV lever. Checkbox + slider write the atomic only; the
+        // engine write happens per dispatch in the detour (apply_fov_lever).
+        {
+            float lever = g_fovLeverDeg.load(std::memory_order_relaxed);
+            bool armed = lever > 0.0f;
+            if (ImGui::Checkbox("FOV lever (fill the eye)", &armed))
+                g_fovLeverDeg.store(armed ? (lever > 0.0f ? lever : 100.0f) : 0.0f,
+                                    std::memory_order_relaxed);
+            if (armed) {
+                float deg = lever > 0.0f ? lever : 100.0f;
+                if (ImGui::SliderFloat("horizontal FOV (deg)", &deg, 60.0f, 140.0f, "%.0f"))
+                    g_fovLeverDeg.store(deg, std::memory_order_relaxed);
+                ImGui::Text("lever: writes %u  faults %u",
+                            g_fovLeverWrites.load(std::memory_order_relaxed),
+                            g_fovLeverFaults.load(std::memory_order_relaxed));
+            }
+        }
         ImGui::Text("claim: tanV %.4f  aspect %.4f  hfov %.1f deg",
                     g_claimTanV.load(std::memory_order_relaxed),
                     g_lastClaimAspect.load(std::memory_order_relaxed),
                     g_lastClaimHfovDeg.load(std::memory_order_relaxed));
-        ImGui::TextDisabled("claim assumes the in-game FOV slider at MINIMUM; if moved, fix "
-                            "with bsifov tanv (desktop)");
-        ImGui::TextDisabled("persist tuning: vrpreset save (worldScale, ipd, claim)");
+        ImGui::TextDisabled("lever OFF: claim tracks bsifov tanv (fix manually if the in-game "
+                            "slider moved). Lever ON: claim tracks the lever.");
+        ImGui::TextDisabled("persist tuning: vrpreset save (worldScale, ipd, claim, lever)");
     }
 
     if (!ImGui::CollapsingHeader("Camera seam (DR-I2 observation)")) return;
