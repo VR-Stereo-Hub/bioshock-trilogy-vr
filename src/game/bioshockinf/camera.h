@@ -61,7 +61,10 @@ uint32_t camera_tid();
 bool handle_command(const char* args);
 
 // The I4 drive's own seam verbs - simhead / recenter / worldscale / vrpreset -
-// routed here from the adapter table. Returns false when the verb is not ours.
+// plus the I5 stereo verbs: `vrstereo on|off` (the one-toggle: master enable +
+// camera mode, i.e. core's quad->projection flip; OFF returns to the mono
+// quad) and `bsifov [tanv <v>]` (the projection claim lever + audit readout).
+// Routed here from the adapter table. Returns false when the verb is not ours.
 bool handle_drive_verb(const char* cmd, const char* args);
 
 // The recenter state vrrec serializes in its file header and restores on play

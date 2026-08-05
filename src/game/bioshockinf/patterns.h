@@ -219,6 +219,17 @@ inline constexpr uint32_t kLensCbBytes = 80;      // the tier that carries it
 inline constexpr uint32_t kLensFloatIndex = 0;    // float offset within it
 inline constexpr bool kLensRowMajor = true;
 
+// THE FOV LAW (session 37 aspect cross-check, ENGINE_NOTES "The FOV law"):
+// the option is VERTICAL-referenced and tanH = tanV x aspect (Hor+). Slider
+// min pins tanV at 0.4317 at BOTH tested aspects (16:9 and 4:3), slider max
+// at 0.4933; vFOV 46.67..52.63 deg at any aspect. These are the frustum's own
+// numbers (the ini's FOVAngle is decorative - see the warning below). I5's
+// projection claim is 2*atan(tanV x aspect); the default assumes the slider
+// at MINIMUM (the shipped default), correctable live via `bsifov tanv` and
+// verifiable against a `dumpframe cb` decode.
+inline constexpr float kTanVSliderMin = 0.4317f;
+inline constexpr float kTanVSliderMax = 0.4933f;
+
 // **A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT.** `XEngine.ini` says
 // `FOVAngle=70` and `MaxUserFOVOffsetPercent=15`, which session 34 read as "the
 // native slider spans roughly 70 to 80.5 degrees". The RENDERED frustum spans

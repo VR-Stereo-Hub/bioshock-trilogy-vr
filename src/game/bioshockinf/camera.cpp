@@ -1,6 +1,7 @@
 #include "game/bioshockinf/camera.h"
 
 #include "core/framework/command.h"
+#include "core/gfx/hud_capture.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/inf_math.h"
@@ -97,6 +98,31 @@ const char* g_driveLane = "off";
 FVector g_finalLoc{};
 FRotator g_finalRot{};
 bool g_finalValid = false;
+
+// ---------------------------------------------------------------------------
+// I5 stereo state (session 40). Rung 1 is the projection flip: the adapter
+// finally feeds core an HONEST fov claim and asks for camera mode, and core
+// swaps the quad for a projection layer (openxr_runtime projectionMode).
+// ---------------------------------------------------------------------------
+// The claimed VERTICAL half-tangent. The I2/I37 law: the game's FOV option is
+// vertical-referenced and tanH = tanV x aspect at any aspect (measured at two
+// aspects, ENGINE_NOTES "The FOV law"). Default = the slider at MINIMUM (the
+// shipped default position, tanV pinned 0.4317). There is no live option
+// reader yet (that lever is I6's); if the user moves the in-game slider the
+// claim goes stale - correct it with `bsifov tanv <v>` and verify against a
+// `dumpframe cb` decode. A WRONG CLAIM POISONS EVERY STEREO JUDGMENT (BS1's
+// M4), which is why this is loud in the log and visible in the overlay.
+std::atomic<float> g_claimTanV{patterns::kTanVSliderMin};
+// The vrstereo latch (what the toggle last applied), telemetry for UI/status.
+std::atomic<bool> g_stereoArmed{false};
+// F10 -> game thread: -1 none, 0 pending off, 1 pending on. The overlay draws
+// on the render thread and must never touch engine state or (later, rung 3)
+// install hooks; the detour consumes this on the next call - BS2's
+// request_vrstereo shape.
+std::atomic<int> g_vrstereoPending{-1};
+// What publish_projection_claim last computed, for the overlay/heartbeat.
+std::atomic<float> g_lastClaimHfovDeg{0.0f};
+std::atomic<float> g_lastClaimAspect{0.0f};
 
 // Synthetic HMD lane (BS2's shape, WITH the position triple): `simhead <yaw>
 // <pitch> <roll> [px py pz] [holdMs]` feeds a scripted head pose through the
@@ -356,9 +382,68 @@ void save_vr_preset() {
         return;
     }
     fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
+    fprintf(f, "claimTanV=%.4f\n", g_claimTanV.load(std::memory_order_relaxed));
     fclose(f);
-    BVR_LOG("[bsi] vrpreset saved (worldScale=%.1f)",
-            g_worldScale.load(std::memory_order_relaxed));
+    BVR_LOG("[bsi] vrpreset saved (worldScale=%.1f claimTanV=%.4f)",
+            g_worldScale.load(std::memory_order_relaxed),
+            g_claimTanV.load(std::memory_order_relaxed));
+}
+
+// ---------------------------------------------------------------------------
+// The projection claim, published on every detour call (BS2 publishes per
+// CalcView - same seam role here; the math is one atan). Two core inputs:
+//  - set_rendered_hfov: the horizontal FOV the game actually renders, from
+//    the law hfov = 2*atan(tanV x aspect). hfovSrc=0, the honest claim - the
+//    projection layer is tagged with it, and a mismatch reads as fisheye.
+//  - publish_gameplay_view(true): core's cinematic fallback (g_cineEnabled
+//    defaults ON) drops projection to the quad whenever this publish goes
+//    STALE, so it must tick every dispatch. Strict stays constant true for
+//    I5 - Infinite has no cinematic classifier until I9, and the stale leg
+//    already quads load screens for free (this seam goes silent there).
+// ---------------------------------------------------------------------------
+void publish_projection_claim() {
+    unsigned w = 0, h = 0;
+    float aspect = 16.0f / 9.0f; // pre-first-Present fallback, matches the law's 16:9 row
+    if (bvr::hud::backbuffer_dims(&w, &h) && w > 0 && h > 0)
+        aspect = static_cast<float>(w) / static_cast<float>(h);
+    const float tanV = g_claimTanV.load(std::memory_order_relaxed);
+    const float hfovDeg = 2.0f * atanf(tanV * aspect) * kRadToDeg;
+    bvr::vr::set_rendered_hfov(hfovDeg);
+    bvr::vr::publish_gameplay_view(true);
+    g_lastClaimHfovDeg.store(hfovDeg, std::memory_order_relaxed);
+    g_lastClaimAspect.store(aspect, std::memory_order_relaxed);
+}
+
+// The vrstereo one-toggle, rung 1: quad <-> projection. Runs on the GAME
+// thread only (posted from the overlay via g_vrstereoPending). NO 1t rung on
+// this game by design - DR-I5 measured a threaded ring-buffered substrate
+// (BS2's shape, not BS1's kick-and-wait). Rung 3 extends ON with pair pacing
+// and the doubled scene build; the arming order is already BS2's proven one.
+// OFF returns to the MONO QUAD (session stays live), symmetric across every
+// stereo backend so an off can never strand one armed (BS2's asymmetric-off
+// trap).
+void apply_vrstereo(bool on) {
+    if (on) {
+        bvr::vr::set_enabled(true);
+        bvr::vr::set_camera_mode(true);
+        g_stereoArmed.store(true, std::memory_order_relaxed);
+        BVR_LOG("[bsi] VRSTEREO ON (I5 rung 1): camera mode requested - core flips quad -> "
+                "projection once views locate. Claim tanV=%.4f hfov=%.1f deg aspect=%.4f. "
+                "Mono projection: both eyes the same image until AER/SR arm.",
+                g_claimTanV.load(std::memory_order_relaxed),
+                g_lastClaimHfovDeg.load(std::memory_order_relaxed),
+                g_lastClaimAspect.load(std::memory_order_relaxed));
+    } else {
+        bvr::vr::set_alternate_eye(false);
+        bvr::vr::set_camera_mode(false);
+        g_stereoArmed.store(false, std::memory_order_relaxed);
+        BVR_LOG("[bsi] vrstereo off - back to the mono quad (session stays live)");
+    }
+}
+
+void apply_pending_vrstereo() {
+    const int pending = g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
+    if (pending >= 0) apply_vrstereo(pending != 0);
 }
 
 void throttled(void* self, uint64_t now) {
@@ -467,6 +552,24 @@ void throttled(void* self, uint64_t now) {
                 g_headOffZ.load(std::memory_order_relaxed),
                 g_worldScale.load(std::memory_order_relaxed), bvr::vr::session_state_name());
     }
+    if (g_stereoArmed.load(std::memory_order_relaxed)) {
+        // The I5 stereo heartbeat: what the flat battery asserts on. camMode
+        // is core's composite (requested AND session AND projection-ready);
+        // the audit tangents are what the last projection layer was actually
+        // TAGGED with (src 0 = our claim - anything else means core fell back
+        // and the claim is not being consumed).
+        float auditTanH = 0.0f, auditTanV = 0.0f;
+        int auditSrc = -1;
+        unsigned swapW = 0, swapH = 0;
+        bvr::vr::fov_audit(&auditTanH, &auditTanV, &auditSrc, &swapW, &swapH);
+        BVR_LOG("[bsi] stereo: armed=1 camMode=%d claim tanV=%.4f aspect=%.4f hfov=%.1f | "
+                "audit tanH=%.4f tanV=%.4f src=%d swap=%ux%u",
+                bvr::vr::vr_camera_mode() ? 1 : 0,
+                g_claimTanV.load(std::memory_order_relaxed),
+                g_lastClaimAspect.load(std::memory_order_relaxed),
+                g_lastClaimHfovDeg.load(std::memory_order_relaxed), auditTanH, auditTanV,
+                auditSrc, swapW, swapH);
+    }
     g_lastBeatMs = now;
     g_beatBaseCount = count;
     --g_beatsLeft;
@@ -533,6 +636,13 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
                 static_cast<unsigned long long>(now - prevCallMs));
         g_lastBeatMs = 0; // reseed the base rather than report a fake calls/s spike
     }
+
+    // I5: consume a posted vrstereo toggle (game thread, before the drive so
+    // it takes effect this call), then publish the projection claim - the
+    // fov the layer is tagged with plus the gameplay-view liveness that keeps
+    // core's cinematic fallback from quadding a live gameplay projection.
+    apply_pending_vrstereo();
+    publish_projection_claim();
 
     // The I4 drive, AFTER the snapshot (so the observation instruments keep
     // measuring the original) and after the command poll (so a just-dispatched
@@ -695,10 +805,13 @@ void load_vr_preset() {
         float v = 0.0f;
         if (sscanf_s(line, "worldScale=%f", &v) == 1 && v > 0.0f)
             g_worldScale.store(v, std::memory_order_relaxed);
+        else if (sscanf_s(line, "claimTanV=%f", &v) == 1 && v > 0.0f)
+            g_claimTanV.store(v, std::memory_order_relaxed);
     }
     fclose(f);
-    BVR_LOG("[bsi] vrpreset loaded (worldScale=%.1f)",
-            g_worldScale.load(std::memory_order_relaxed));
+    BVR_LOG("[bsi] vrpreset loaded (worldScale=%.1f claimTanV=%.4f)",
+            g_worldScale.load(std::memory_order_relaxed),
+            g_claimTanV.load(std::memory_order_relaxed));
 }
 
 bool handle_drive_verb(const char* cmd, const char* args) {
@@ -729,6 +842,46 @@ bool handle_drive_verb(const char* cmd, const char* args) {
             BVR_LOG("[bsi] vrpreset: worldScale=%.1f (vrpreset save persists the current "
                     "values)",
                     g_worldScale.load(std::memory_order_relaxed));
+        }
+        return true;
+    }
+    if (strcmp(cmd, "vrstereo") == 0) {
+        // Seam commands already run on the game thread (the pump handover), so
+        // this applies directly; the overlay checkbox posts instead.
+        if (strncmp(args, "on", 2) == 0) {
+            apply_vrstereo(true);
+        } else if (strncmp(args, "off", 3) == 0) {
+            apply_vrstereo(false);
+        } else {
+            BVR_LOG("[bsi] vrstereo: armed=%d camMode=%d session=%s | usage: vrstereo on|off",
+                    g_stereoArmed.load(std::memory_order_relaxed) ? 1 : 0,
+                    bvr::vr::vr_camera_mode() ? 1 : 0, bvr::vr::session_state_name());
+        }
+        return true;
+    }
+    if (strcmp(cmd, "bsifov") == 0) {
+        if (strncmp(args, "tanv", 4) == 0) {
+            float v = 0.0f;
+            if (sscanf_s(args + 4, "%f", &v) == 1 && v > 0.1f && v < 2.0f) {
+                g_claimTanV.store(v, std::memory_order_relaxed);
+                BVR_LOG("[bsi] fov claim: tanV=%.4f (law: slider min %.4f .. max %.4f; verify "
+                        "against a `dumpframe cb` decode)",
+                        v, patterns::kTanVSliderMin, patterns::kTanVSliderMax);
+            } else {
+                BVR_LOG("[bsi] usage: bsifov tanv <0.1..2.0> (current %.4f)",
+                        g_claimTanV.load(std::memory_order_relaxed));
+            }
+        } else {
+            float auditTanH = 0.0f, auditTanV = 0.0f;
+            int auditSrc = -1;
+            unsigned swapW = 0, swapH = 0;
+            bvr::vr::fov_audit(&auditTanH, &auditTanV, &auditSrc, &swapW, &swapH);
+            BVR_LOG("[bsi] fov claim: tanV=%.4f aspect=%.4f hfov=%.1f deg | audit tanH=%.4f "
+                    "tanV=%.4f src=%d swap=%ux%u | usage: bsifov [tanv <v>]",
+                    g_claimTanV.load(std::memory_order_relaxed),
+                    g_lastClaimAspect.load(std::memory_order_relaxed),
+                    g_lastClaimHfovDeg.load(std::memory_order_relaxed), auditTanH, auditTanV,
+                    auditSrc, swapW, swapH);
         }
         return true;
     }
@@ -875,6 +1028,25 @@ void draw_debug_ui() {
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed));
         ImGui::TextDisabled("persist tuning: vrpreset save (worldScale)");
+    }
+
+    // I5 stereo. The checkbox POSTS - the game thread applies at the next
+    // detour call (rung 3 makes the toggle install a hook, which must never
+    // happen on the render thread this UI draws on).
+    if (ImGui::CollapsingHeader("VR stereo (I5)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        {
+            bool armed = g_stereoArmed.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("VR stereo (projection layer)", &armed))
+                g_vrstereoPending.store(armed ? 1 : 0, std::memory_order_relaxed);
+        }
+        ImGui::Text("camera mode: %s (core: requested AND session AND projection-ready)",
+                    bvr::vr::vr_camera_mode() ? "LIVE" : "off");
+        ImGui::Text("claim: tanV %.4f  aspect %.4f  hfov %.1f deg",
+                    g_claimTanV.load(std::memory_order_relaxed),
+                    g_lastClaimAspect.load(std::memory_order_relaxed),
+                    g_lastClaimHfovDeg.load(std::memory_order_relaxed));
+        ImGui::TextDisabled("claim assumes the in-game FOV slider at MINIMUM; if moved, fix "
+                            "with bsifov tanv (desktop)");
     }
 
     if (!ImGui::CollapsingHeader("Camera seam (DR-I2 observation)")) return;
