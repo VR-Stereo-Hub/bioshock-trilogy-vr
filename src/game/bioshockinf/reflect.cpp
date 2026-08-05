@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace bvr::bsi::reflect {
@@ -382,6 +383,140 @@ void cmd_selftest() {
             c.pass, c.fail);
 }
 
+// ---- bsicall: call a UFunction BY NAME on the latched APlayerController ----
+// (DR-I6, session 37.) Goes through the engine's OWN reflection - FindFunction
+// at vtable slot +0x54, then ProcessEvent at +0x7C - never the exec thunks,
+// which have 0 static callers and would need a hand-built FFrame. This is
+// BS2's script-setter precedent (ProcessEvent by name, SEH-isolated,
+// effect-verified) rebuilt on UE3's shapes; no BS2 number or code is reused.
+//
+// UObject::FindFunction(FName InName, UBOOL Global=0): FName is the UE3
+// {Index, Number} pair, so thiscall + 3 stack dwords - the same measured
+// `ret 0xC` shape as FindFunctionChecked (patterns.h). ProcessEvent takes
+// (UFunction*, void* Parms, void* Result), the derived 3-arg `ret 0xC`.
+// __fastcall with a dummy edx is this codebase's standing thiscall idiom.
+using FindFunctionFn = void* (__fastcall*)(void* self, void* edx, int32_t nameIndex,
+                                           int32_t nameNumber, int32_t global);
+using ProcessEventFn = void(__fastcall*)(void* self, void* edx, void* func, void* parms,
+                                         void* result);
+
+// SEH-isolated dispatch. In its own frame with no C++ objects (SEH and C++
+// unwinding do not mix). Returns 0 on success, 1 when FindFunction returned
+// null, and 2 on a fault, with the code in outExcept - the game keeps running
+// either way, which is the whole point of the isolation.
+int call_by_name_seh(void* obj, const uint8_t* const* vt, int32_t nameIndex, void* parms,
+                     void** outFunc, uint32_t* outExcept) {
+    __try {
+        FindFunctionFn findFn = reinterpret_cast<FindFunctionFn>(
+            vt[patterns::kFindFunctionVtableOffset / 4]);
+        void* fn = findFn(obj, nullptr, nameIndex, 0, 0);
+        *outFunc = fn;
+        if (!fn) return 1;
+        ProcessEventFn pe =
+            reinterpret_cast<ProcessEventFn>(vt[patterns::kProcessEventVtableOffset / 4]);
+        pe(obj, nullptr, fn, parms, nullptr);
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *outExcept = GetExceptionCode();
+        return 2;
+    }
+}
+
+void cmd_call(const char* args) {
+    char fn[96] = {};
+    char valStr[32] = {};
+    const int n = sscanf_s(args ? args : "", "%95s %31s", fn,
+                           static_cast<unsigned>(sizeof fn), valStr,
+                           static_cast<unsigned>(sizeof valStr));
+    if (n < 1) {
+        BVR_LOG("[bsi] call: usage - bsicall <Function> [floatArg]   e.g. bsicall FOV 120. "
+                "Dispatches by NAME on the latched APlayerController via FindFunction(+0x54) "
+                "+ ProcessEvent(+0x7C). Acceptance is the downstream EFFECT, never this log.");
+        return;
+    }
+    if (!patterns::rva_trusted()) {
+        BVR_LOG("[bsi] call: REFUSED - build gate closed");
+        return;
+    }
+    // Thread interlock: this must be the camera (game) thread. Under the lease
+    // a silent game thread hands the pump to the Present thread in degraded
+    // mode, and an engine call from there is a cross-thread dispatch the
+    // engine itself was measured never to take (foreign-tid-calls=0).
+    const uint32_t camTid = camera::camera_tid();
+    if (camTid == 0 || GetCurrentThreadId() != camTid) {
+        BVR_LOG("[bsi] call: REFUSED - not on the game thread (this tid=%u camera tid=%u). "
+                "The camera hook must own the pump (pump=game).",
+                GetCurrentThreadId(), camTid);
+        return;
+    }
+    if (patterns::fname_count() <= 0) {
+        BVR_LOG("[bsi] call: REFUSED - GNames not populated yet");
+        return;
+    }
+    const int32_t nameIndex = patterns::fname_find(fn);
+    if (nameIndex < 0) {
+        BVR_LOG("[bsi] call: REFUSED - '%s' is not in GNames (%d entries searched). A name "
+                "the engine never registered cannot be a UFunction.",
+                fn, patterns::fname_count());
+        return;
+    }
+    void* obj = camera::last_player_controller();
+    if (!obj || !bvr::pattern_scan::is_memory_valid(obj, sizeof(void*))) {
+        BVR_LOG("[bsi] call: REFUSED - no readable latched APlayerController (%p)", obj);
+        return;
+    }
+    const uint8_t* const* vt = *reinterpret_cast<const uint8_t* const* const*>(obj);
+    const size_t slotsNeeded = patterns::kProcessEventVtableOffset / 4 + 1;
+    if (!vt || !bvr::pattern_scan::is_memory_valid(vt, slotsNeeded * sizeof(void*))) {
+        BVR_LOG("[bsi] call: REFUSED - vtable %p unreadable through slot +0x%X", (void*)vt,
+                patterns::kProcessEventVtableOffset);
+        return;
+    }
+    // Both dispatch slots must still hold the derived implementations. A
+    // re-linked build would pass the readability checks and then call through
+    // slots that mean something else entirely - this is the gate that fails
+    // it softly instead.
+    const uint32_t ffRva = rva_of(vt[patterns::kFindFunctionVtableOffset / 4]);
+    const uint32_t peRva = rva_of(vt[patterns::kProcessEventVtableOffset / 4]);
+    if (ffRva != patterns::kFindFunctionRva ||
+        (peRva != patterns::kActorProcessEventRva && peRva != patterns::kProcessEventRva)) {
+        BVR_LOG("[bsi] call: REFUSED - live vtable disagrees with the derivation "
+                "(+0x54=0x%X expected 0x%X, +0x7C=0x%X expected 0x%X/0x%X)",
+                ffRva, patterns::kFindFunctionRva, peRva, patterns::kActorProcessEventRva,
+                patterns::kProcessEventRva);
+        return;
+    }
+    // Zeroed 256-byte param block, float arg (if any) at offset 0. Enough for
+    // any probe-sized signature; anything the callee writes back (out params,
+    // an FString return) lands here and is discarded - this is a probe
+    // instrument, not a general dispatcher.
+    alignas(16) uint8_t parms[256] = {};
+    float v = 0.0f;
+    if (n == 2) {
+        v = strtof(valStr, nullptr);
+        memcpy(parms, &v, sizeof v);
+    }
+    BVR_LOG("[bsi] call: dispatching '%s' (GNames %d)%s on PC %p, tid %u",
+            fn, nameIndex, n == 2 ? " with float parm" : " with zeroed parms", obj,
+            GetCurrentThreadId());
+    void* func = nullptr;
+    uint32_t code = 0;
+    const int r = call_by_name_seh(obj, vt, nameIndex, parms, &func, &code);
+    if (r == 1) {
+        BVR_LOG("[bsi] call: FindFunction('%s') returned null - the controller's class does "
+                "not carry that function. Nothing was called.",
+                fn);
+    } else if (r == 2) {
+        BVR_LOG("[bsi] call: FAULT 0x%08X inside the dispatch - swallowed by SEH, game "
+                "continues. Treat the shape as wrong until re-derived.",
+                code);
+    } else {
+        BVR_LOG("[bsi] call: '%s' (UFunction %p) returned%s. A completed call is NOT "
+                "acceptance - measure the downstream effect (lens, heartbeat, screenshot).",
+                fn, func, n == 2 ? "" : " (no parm)");
+    }
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -405,13 +540,17 @@ bool handle_command(const char* cmd, const char* args) {
         cmd_vtable(args);
         return true;
     }
+    if (strcmp(cmd, "bsicall") == 0) {
+        cmd_call(args);
+        return true;
+    }
     if (strcmp(cmd, "bsireflect") == 0) {
         if (args && strncmp(args, "selftest", 8) == 0) {
             cmd_selftest();
         } else {
             BVR_LOG("[bsi] reflect: GNames Num=%d Max=%d | native table %s | commands: "
                     "bsireflect selftest | bsinative <Class> <Func> | bsinames <start> [n] | "
-                    "bsiname <text> | bsivtable [n]",
+                    "bsiname <text> | bsivtable [n] | bsicall <Func> [floatArg]",
                     patterns::fname_count(), patterns::fname_max(),
                     g_table.base ? "seeded" : "not seeded yet");
         }

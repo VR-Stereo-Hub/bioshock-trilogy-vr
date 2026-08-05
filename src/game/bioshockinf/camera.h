@@ -44,6 +44,14 @@ uint64_t silent_ms();
 // it is only known to have been valid at the last dispatch.
 void* last_player_controller();
 
+// The single thread the detour has ever dispatched on (0 before first fire).
+// Anything that calls INTO the engine - bsicall's ProcessEvent dispatch - must
+// verify it is running on this thread first: under the command lease a silent
+// game thread hands the pump back to the Present thread in degraded mode, and
+// an engine call from the render thread is exactly the cross-thread hazard the
+// 0-foreign-dispatch measurement says the engine itself never takes.
+uint32_t camera_tid();
+
 // `bsicam ...`. Returns false when the subcommand is not ours.
 bool handle_command(const char* args);
 

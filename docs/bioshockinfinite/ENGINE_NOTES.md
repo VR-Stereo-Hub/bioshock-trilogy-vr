@@ -239,7 +239,7 @@ right work to do while BioShock 2 held the machine.
 | **`UObject::ProcessEvent`** | **`0xCFE70`** | thiscall, **3 stack args, `ret 0xC`** | vtable slot `+0x7C` read from 1582 candidate vtables: **1038 votes**. 672 bytes, single `ret 0xC`, `int3`-padded. |
 | **`AActor::ProcessEvent`** | **`0x19A150`** | thiscall, `ret 0xC` | the same histogram's **runner-up, 175 votes**. A thin override: two global checks, `test [esi+8],0x200`, then `call 0x4CFE70`. |
 | **`UObject::FindFunctionChecked`** | **`0xD1090`** | thiscall, **3 stack args, `ret 0xC`** | UTF-16 `Failed to find function` at `.rdata 0xD07CC0`; its only code xref `0xD1131` resolves to this function. 304 bytes, single `ret 0xC`. |
-| **`UObject::FindFunction`** | **vtable slot `+0x54`** | virtual | read out of FindFunctionChecked's own body: `mov eax,[esi]; mov edx,[eax+0x54]; call edx`, then the null test that reaches the `appErrorf`. Recorded, not consumed. |
+| **`UObject::FindFunction`** | **vtable slot `+0x54`, impl RVA `0xD1030`** | virtual; thiscall, 3 stack args (`FName{Index,Number}` + `UBOOL Global`), `ret 0xC` like FFC | slot read out of FindFunctionChecked's own body: `mov eax,[esi]; mov edx,[eax+0x54]; call edx`, then the null test that reaches the `appErrorf`. RVA derived twice in agreement: the function immediately preceding FFC's `0xD1090` in .text starts at `0xD1030`, and the live session-36 vtable read of a latched APlayerController put `0xD1030` in slot `+0x54`. Consumed by `bsicall` (session 37) as its dispatch interlock: the live slot must equal this RVA or the call refuses. |
 | **ProcessEvent vtable slot** | **`+0x7C`** (index 31) | | **407 of 420** decodable callers of FindFunctionChecked agree. |
 
 ### Why this is believed, rather than merely plausible

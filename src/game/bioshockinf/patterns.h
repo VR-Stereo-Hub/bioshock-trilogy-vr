@@ -125,8 +125,17 @@ inline constexpr uint32_t kFindFunctionCheckedRva = 0xD1090;
 inline constexpr uint32_t kProcessEventVtableOffset = 0x7C;
 // UObject::FindFunction, read out of FindFunctionChecked's own body
 // (`mov eax,[esi]; mov edx,[eax+0x54]; call edx`, then the null test that
-// produces the appErrorf above). Recorded, not yet consumed.
+// produces the appErrorf above). Consumed by `bsicall` (session 37): the slot
+// is the locator, the RVA below is the interlock.
 inline constexpr uint32_t kFindFunctionVtableOffset = 0x54;
+// UObject::FindFunction implementation RVA, derived twice in agreement:
+// (a) offline session 36 - FindFunctionChecked's body dispatches through
+// [vtable+0x54], and the function immediately preceding FFC's 0xD1090 in .text
+// starts at 0xD1030; (b) live session 36 - slot +0x54 of a latched
+// APlayerController's vtable read 0xD1030. `bsicall` refuses to dispatch when
+// the live slot disagrees with this, so a re-linked build cannot be called
+// through a slot that now means something else.
+inline constexpr uint32_t kFindFunctionRva = 0xD1030;
 
 // BOTH are thiscall with 3 stack args, `ret 0xC`, confirmed as the only ret imm
 // in each body (ProcessEvent 672 bytes, FindFunctionChecked 304 bytes, both

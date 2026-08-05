@@ -430,6 +430,10 @@ void* last_player_controller() {
     return g_lastSelf.load(std::memory_order_relaxed);
 }
 
+uint32_t camera_tid() {
+    return g_cameraTid.load(std::memory_order_relaxed);
+}
+
 uint64_t silent_ms() {
     const uint64_t last = g_lastCallMs.load(std::memory_order_relaxed);
     if (last == 0) return 0;

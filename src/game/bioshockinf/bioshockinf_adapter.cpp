@@ -96,7 +96,7 @@ void BioshockInfAdapter::drawDebugUi() {
     ImGui::Text("presents: %llu   capabilities: 0x%X",
                 static_cast<unsigned long long>(bvr::d3d11_hook::present_count()),
                 capabilities());
-    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsireflect | bsinative | vrcmd");
+    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsireflect | bsinative | bsicall | vrcmd");
 
     camera::draw_debug_ui();
     reflect::draw_debug_ui();
