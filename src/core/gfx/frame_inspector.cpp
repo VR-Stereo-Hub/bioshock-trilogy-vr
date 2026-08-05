@@ -223,6 +223,54 @@ std::atomic<uint32_t> g_watchHits{0};
 // Unmap callstack (exe RVAs) - the road to whoever BUILDS the watched values.
 std::atomic<int> g_watchStackShots{0};
 
+// ---- opt-in UpdateSubresource cb tap (session 41, BSI I6) -------------------
+// Raw-sample ring for a live lens decoder on engines that upload constant
+// buffers via UpdateSubresource (the Map/Unmap watch above never sees those).
+// Disarmed cost: one relaxed load in UpdateSubResDetour. Writers reserve a
+// unique global sequence number per accepted sample (fetch_add), stamp the
+// slot 0 while writing, then stamp it with the sequence - readers skip any
+// slot whose stamp does not match the sequence they expect (overwritten or
+// mid-write), so a torn read is impossible and a lost sample is skipped, not
+// invented.
+struct CbTapSlot {
+    std::atomic<uint32_t> stamp{0};
+    float f[bvr::frame_inspector::kCbTapFloats];
+};
+std::atomic<uint32_t> g_tapBytes{0};   // required ByteWidth; 0 = disarmed
+std::atomic<uint32_t> g_tapStride{16}; // sample every Nth UpdateSubresource
+std::atomic<uint32_t> g_tapStrideCtr{0};
+std::atomic<uint32_t> g_tapSeq{0}; // global accepted-sample counter
+std::atomic<uint32_t> g_tapAccepted{0};
+CbTapSlot g_tapRing[bvr::frame_inspector::kCbTapSlots];
+
+void tap_maybe_capture(ID3D11Resource* dst, const D3D11_BOX* box, const void* data) {
+    const uint32_t want = g_tapBytes.load(std::memory_order_relaxed);
+    if (!want || !dst || !data) return;
+    const uint32_t stride = g_tapStride.load(std::memory_order_relaxed);
+    if (stride > 1 &&
+        (g_tapStrideCtr.fetch_add(1, std::memory_order_relaxed) % stride) != 0)
+        return;
+    // Whole-buffer or offset-0 updates only: the sample must be the START of
+    // the buffer for a float-0 lens layout to mean anything.
+    if (box && box->left != 0) return;
+    ID3D11Buffer* buf = nullptr;
+    if (FAILED(dst->QueryInterface(__uuidof(ID3D11Buffer),
+                                   reinterpret_cast<void**>(&buf))))
+        return;
+    D3D11_BUFFER_DESC bd{};
+    buf->GetDesc(&bd);
+    buf->Release();
+    if (!(bd.BindFlags & D3D11_BIND_CONSTANT_BUFFER) || bd.ByteWidth != want) return;
+    const uint32_t availBytes = box ? (box->right - box->left) : bd.ByteWidth;
+    if (availBytes < bvr::frame_inspector::kCbTapFloats * 4) return;
+    const uint32_t n = g_tapSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    CbTapSlot& slot = g_tapRing[(n - 1) % bvr::frame_inspector::kCbTapSlots];
+    slot.stamp.store(0, std::memory_order_relaxed);
+    memcpy(slot.f, data, sizeof slot.f);
+    slot.stamp.store(n, std::memory_order_release);
+    g_tapAccepted.fetch_add(1, std::memory_order_relaxed);
+}
+
 // Per-thread last WRITE-mapped buffer (the engine's pattern is a tight
 // Map/copy/Unmap per draw, so depth-1 tracking is enough; a nested map just
 // drops the outer capture for that draw).
@@ -716,6 +764,10 @@ void STDMETHODCALLTYPE UpdateSubResDetour(ID3D11DeviceContext* ctx, ID3D11Resour
                                           UINT dstSub, const D3D11_BOX* box, const void* data,
                                           UINT rowPitch, UINT depthPitch) {
     g_callCensus[CxUpdateSubRes].fetch_add(1, std::memory_order_relaxed);
+    // Session-41 opt-in tap: one relaxed load when disarmed (the load is
+    // inside tap_maybe_capture's first line). t_suppress keeps our own
+    // uploads out of the ring, same as the recorder below.
+    if (!t_suppress) tap_maybe_capture(dst, box, data);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::UpdateSubRes, _ReturnAddress(),
@@ -1051,6 +1103,47 @@ uint32_t cb_watch_hits() {
 
 void cb_watch_log_stacks(int n) {
     g_watchStackShots.store(n, std::memory_order_relaxed);
+}
+
+void set_cb_upload_tap(uint32_t requiredBytes, uint32_t strideN) {
+    g_tapStride.store(strideN ? strideN : 1, std::memory_order_relaxed);
+    g_tapBytes.store(requiredBytes, std::memory_order_relaxed);
+    if (requiredBytes)
+        BVR_LOG("[gfx] cb upload tap ARMED: ByteWidth=%u stride=%u (opt-in, session 41)",
+                requiredBytes, strideN ? strideN : 1);
+    else
+        BVR_LOG("[gfx] cb upload tap disarmed (%u samples accepted lifetime)",
+                g_tapAccepted.load(std::memory_order_relaxed));
+}
+
+uint32_t drain_cb_upload_samples(float* out, uint32_t maxSamples, uint32_t* cursor) {
+    if (!out || !maxSamples || !cursor) return 0;
+    const uint32_t newest = g_tapSeq.load(std::memory_order_acquire);
+    uint32_t from = *cursor;
+    if (newest <= from) return 0;
+    // Never reach further back than the ring holds, and never return more
+    // than asked: start at the newest end and walk back.
+    uint32_t span = newest - from;
+    if (span > kCbTapSlots) span = kCbTapSlots;
+    if (span > maxSamples) span = maxSamples;
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < span; ++i) {
+        const uint32_t n = newest - i;
+        CbTapSlot& slot = g_tapRing[(n - 1) % kCbTapSlots];
+        if (slot.stamp.load(std::memory_order_acquire) != n) continue; // overwritten/mid-write
+        float tmp[kCbTapFloats];
+        memcpy(tmp, slot.f, sizeof tmp);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (slot.stamp.load(std::memory_order_relaxed) != n) continue;
+        memcpy(out + written * kCbTapFloats, tmp, sizeof tmp);
+        ++written;
+    }
+    *cursor = newest;
+    return written;
+}
+
+uint32_t cb_upload_tap_count() {
+    return g_tapAccepted.load(std::memory_order_relaxed);
 }
 
 bool latest_cb_watch(float* out, uint32_t count, uint64_t* ageMs) {
