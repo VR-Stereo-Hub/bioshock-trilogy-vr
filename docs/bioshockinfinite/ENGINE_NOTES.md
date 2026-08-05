@@ -320,6 +320,91 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 38 - I3 sim battery: the whole XR stack runs on Infinite)
+
+The merged BS2 OpenXR runtime ran the full mono-big-screen stack on `BioShockInfinite.exe`
+against the simulated Quest 3, unmodified: **zero core changes and zero adapter changes were
+needed for bring-up** (the only new mod code is `bsivr on|off|status`, an adapter-local wrapper
+over `vr::set_enabled` for scripted A/B). Every number below is from a live run.
+
+### The bring-up, measured
+
+- Instance -> session on the game's OWN device, first try: `first Present: backbuffer 2560x1440
+  format 28` (R8G8B8A8_UNORM) -> `swapchain pair 2560x1440 format 29` (R8G8B8A8_UNORM_SRGB -
+  core's picker prefers SRGB; same typeless family, so the zero-copy `CopyResource` is legal) ->
+  IDLE -> READY -> SYNCHRONIZED -> first quad frame -> VISIBLE -> FOCUSED, all inside ~600 ms of
+  the first Present. Pace thread up (`xrWaitFrame` off the present thread).
+- **90.0 fps sustained** in gameplay (sim at 90 Hz); `step 5` grants exactly 5 frames; the game
+  window keeps presenting at full rate through every unfocus/idle episode (flat rendering
+  continues by design).
+- `focus lose` -> VISIBLE: frame rate holds (session-33 oracle), the mod KEEPS submitting
+  (session-28 requirement observed live: begin/end continue in VISIBLE), FOCUSED re-earned.
+- Teardown/re-bring-up, three independent lanes, all clean: `bsivr off/on` (teardown ->
+  full re-bring-up to FOCUSED in ~250 ms), `hazard waitfail 1` (SESSION_LOST -> teardown ->
+  fresh session after the 5 s cooldown), and the resize lane below.
+- **The resize lane** (Infinite-specific, DR-I8's lever exercised against XR):
+  `bsiexec setres 1600x1200` live -> `ResizeBuffers 1600x1200 hr=0` -> queued XR swapchain
+  rebuild at the safe point -> `swapchain pair 1600x1200`, quad size follows aspect
+  (2.4 x 1.8 m at 4:3), hfov recomputed 137.0 -> 124.6 deg, capture still carries game pixels.
+  And back to 2560x1440 the same way. Mid-session backbuffer resize is fully survivable.
+- Quad geometry verified in captures: world-locked LOCAL quad, 2.4 m wide at 1.75 m, correct
+  stereo parallax between eyes, game pixels (health bar, scene, menus) visible and readable.
+
+### Three SIM bugs found and fixed (the battery's real yield - first mono-quad consumer)
+
+1. **`now_xr_time` int64 overflow wedged the pace thread permanently.** The conversion
+   `(QPC_ticks * 1e9) / freq` overflows after ~15 min of MACHINE UPTIME at a 10 MHz QPC, making
+   the sim's clock a ~30.7-min sawtooth that jumps backwards ~1845 s. A session crossing the
+   jump computes a huge free-mode `waitNs` and parks `xrWaitFrame` for good; the mod then
+   (correctly, per the 1:1 wait:begin spec) never waits again - observed live 25 min into
+   gameplay as `SUBMISSION IDLE (frame not begun)` forever, `waitFrames = beginFrames + 1`,
+   every present timing out its 200 ms handoff deadline. **Derivation: minidump of the wedged
+   process; the pace thread's stack ends in `impl_WaitFrame`'s `wait_for` (xrsim_frame.cpp:231);
+   capture JSONs show sawtooth `displayTimeNs` (278 s / 824 s, not days-magnitude).** Fixed with
+   split seconds/remainder arithmetic PLUS a defensive clamp: any computed free-mode wait > 1 s
+   logs and resyncs instead of blocking - no clock anomaly may hang the host again.
+2. **Quad captures were sRGB-decoded to linear, crushing dark scenes ~13x.** The app swapchain
+   is `_SRGB`, the compositor SRV decodes to linear, and the old UNORM composite target stored
+   those linear values: an Infinite gameplay capture read meanLuma 0.05 / nonBlack 0.03 % while
+   the window read ~10 (i.e. numerically "black" with visible content). Composite target is now
+   `_SRGB` so texel bytes round-trip. **Pixel-stat baselines recorded before session 38 are
+   systematically darker and not comparable** - BS1 re-baselined below.
+3. **Timed `focus lose <ms>` was silently sticky**: `session_focus_lose` stored the hold, then
+   `session_force_state`'s FOCUSED->VISIBLE edge reset it to sticky - only an explicit
+   `focus regain` ever recovered. Unnoticed because BS1's sequence uses the explicit form.
+   Write order fixed.
+
+### Sim traps for the next session (harness discipline, not bugs)
+
+- **The sim's initial LOCAL origin is at the FLOOR (world origin), not the initial eye pose** -
+  OpenXR (and VDXR) put LOCAL at the initial VIEW pose. The mod's eye-level quad therefore
+  renders 1.6 m low / grazing until you send **`recenter`** (which re-origins LOCAL onto the
+  head, spec-shaped). Send `recenter` before any quad-pose capture. Left unfixed in the sim this
+  session (shared-tool blast radius); candidate for the healing lane.
+- `idle on <ms>` is PERSISTENT (every wait blocks <ms> until `idle off`), not a one-shot window.
+- After `step N` exhausts its credits the next `pace free`/`step off` cannot commit until the
+  30 s starve grant (commands apply at wait boundaries) - send `pace free` while credits remain,
+  or wait it out.
+- Infinite auto-pauses on window-focus loss (pause menu up, presents continue, XR submission
+  idles on the "frame not begun" path) and auto-resumes on focus regain - foreground the game
+  (game-shot does) before any capture that must show gameplay pixels.
+
+### Exit breadcrumb watch item (sim lane only, both games)
+
+With a LIVE sim session at WM_CLOSE, the process exits promptly (4-6 s), no fault logged, no
+dump - but the `shutdown: DLL_PROCESS_DETACH` breadcrumb does NOT appear, on Infinite AND on
+BS1 (dllmain's own doc: no detach + no fault = TerminateProcess/fail-fast somewhere). Session
+37's sessionless VDXR exits DID log it. Classified as a sim-lane artifact until the headset
+session's VDXR exit says otherwise - watch for the breadcrumb there.
+
+### BS1 shared-tool proof run (fixed sim, BS1's shipped v0.7.0 mod via -AllowStale)
+
+Full lane: `xrsim-launch -Game bs1` -> `boot.ps1 -Attach` -> `smoke.xrs` PASS (FOCUSED, quad,
+meanLuma 11.7, nonBlack 49.6 %) -> `vrstereo on` -> projViews=2, eyeSep 0.063 exact,
+**claimRatioH 1.018 - identical to the session-37 geometric baseline**, proving the sRGB fix
+moved only pixel statistics. New post-fix stereo baseline: left-vs-right mean-abs-diff
+**11.53** (pre-fix scale read 3.16), pct-channels-changed 42.75 %.
+
 ## LIVE RESULTS (session 37 - I2 CLOSED: the five remaining DRs, all measured)
 
 Session 37 first merged `main` (BS2 v0.7.0, 124 commits) into the Infinite line - see the

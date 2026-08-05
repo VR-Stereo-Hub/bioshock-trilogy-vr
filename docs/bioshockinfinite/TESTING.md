@@ -165,6 +165,20 @@ Save files are fair game: change, remove and create them freely.
 `game-cmd.ps1 / game-shot.ps1 / game-click.ps1` all take `-Game bsi` (process
 `BioShockInfinite`, `bsi\command.txt`, and the conflict guard).
 
+**Since session 38 the sim harness does too**: `xrsim-launch.ps1 -Game bsi -Release` launches
+Infinite directly against the simulated Quest 3 (Steam client must be running; the Remastered
+revert-Options dialog probe is skipped), `launch-game.ps1 -Game bsi` goes through Steam (appid
+8870), and `xrsim-run.ps1 -Game bsi` routes `@mod` lines to the bsi seam. Sim discipline for
+this game: send `recenter` before quad-pose captures (VERIFICATION.md gotcha 13), foreground
+the game before captures that must show gameplay (it auto-pauses unfocused, auto-resumes on
+focus), and keep the menu attended.
+
+**`bsivr on|off|status`** (session 38) is the scripted lever on core's VR master enable - the
+same flag as the F10 overlay checkbox. `off` tears the XR session down, `on` re-brings-up from
+Present (~250 ms to FOCUSED under the sim); `status` reports `vr::session_live()`, the
+observable state, because the checkbox is a second writer. Note the seam does NOT split on `;`
+- one command per `game-cmd` write.
+
 Carried from BS1/BS2 and expected to apply here until proven otherwise:
 
 - **The game pauses while unfocused**, so a command written to `command.txt` may sit undispatched.

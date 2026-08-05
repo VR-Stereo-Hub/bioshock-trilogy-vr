@@ -266,8 +266,18 @@ dead-end list saved real time.
 
 Goal: the game on a giant head-tracked screen. Core does essentially all of this.
 
-- [ ] OpenXR session on the game's **own** `ID3D11Device` (zero-copy submits)
-- [ ] Quad "cinema screen" layer; pace thread; teardown and alt-tab survival
+- [x] OpenXR session on the game's **own** `ID3D11Device` (zero-copy submits)
+      *2026-08-05 session 38: PASS on the simulated Quest 3, zero core/adapter changes -
+      session on the game's device first try, backbuffer fmt 28 -> swapchain pair fmt 29 (same
+      typeless family, CopyResource zero-copy), FOCUSED in ~600 ms. Survives live
+      `bsiexec setres` backbuffer resizes both directions (queued rebuild lane).*
+- [x] Quad "cinema screen" layer; pace thread; teardown and alt-tab survival
+      *2026-08-05 session 38: sim-verified with numbers - quad world-locked at 1.75 m with
+      correct stereo parallax and game pixels; 90.0 fps sustained, `step 5` exact; focus-loss
+      holds frame rate and keeps submitting (FOCUSED re-earned); teardown/re-bring-up clean via
+      bsivr off/on, hazard waitfail, and resize. The battery's yield was three SIM bugs (clock
+      overflow that wedged pacing at ~25 min, sRGB-crushed captures, sticky focus-lose), all
+      fixed - see ENGINE_NOTES session 38.*
 - [ ] **Cross-check both VDXR and SteamVR.** BS1 never did, and shipped with a Steam Link gap that
       only surfaced later.
 - [ ] **Done when:** the Quest 3 shows the game on a head-tracked screen, under both runtimes.

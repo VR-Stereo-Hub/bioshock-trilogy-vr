@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 37" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I13) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 38" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I13) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,42 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 37 (I2 CLOSED + main merged in - branch `si37-inf-merge-and-derisk2`)
+### Infinite: current state after session 38 (I3 sim battery GREEN, three sim bugs fixed - branch `si38-inf-headset-bringup`)
+
+**The whole I3 mono-big-screen stack runs on Infinite with ZERO core and ZERO adapter changes** -
+the merged BS2 OpenXR runtime brought the session up on the game's own device first try
+(backbuffer fmt 28 -> swapchain pair fmt 29, zero-copy; FOCUSED in ~600 ms), sustains 90.0 fps,
+survives focus loss (keeps submitting, FOCUSED re-earned), tears down and re-brings-up cleanly
+three independent ways (`bsivr off/on` ~250 ms, `hazard waitfail`, and live `bsiexec setres`
+resizes BOTH directions with the queued swapchain rebuild + aspect-following quad). Captures
+show the world-locked 2.4 m quad with correct stereo parallax and readable game pixels. Details
+with numbers: ENGINE_NOTES "LIVE RESULTS (session 38)".
+
+**The battery's real yield was three SIM bugs** (I3 is the first mono-quad capture consumer):
+the `now_xr_time` int64 overflow (a ~30.7-min machine-uptime sawtooth that parked the pace
+thread's `xrWaitFrame` forever ~25 min into gameplay - diagnosed from a minidump stack, fixed
+with split arithmetic + a >1 s wait clamp so no clock anomaly can ever hang the host again),
+sRGB-decoded captures (dark scenes crushed ~13x - composite target now `_SRGB`; **pixel-stat
+baselines before s38 are not comparable**, BS1 re-baselined: stereo L/R diff 11.53, claimRatioH
+1.018 unchanged), and sticky timed `focus lose`. Plus harness: `xrsim-launch`/`launch-game`/
+`xrsim-run` take `-Game bsi`; new `bsivr on|off|status` adapter command; new sim traps
+catalogued (VERIFICATION gotchas 13-16: floor LOCAL origin -> send `recenter` before quad
+captures; persistent `idle on`; step-starve command latch; Infinite's auto-pause on focus loss).
+
+**Shared-tool proofs run**: bs1/bs2 preflights green after the launcher edits; selftest green
+after each sim fix; full BS1 lane on the fixed sim (boot -> smoke -> stereo) green with the
+geometric baseline identical (1.018).
+
+**Watch item**: with a LIVE sim session at WM_CLOSE the `DLL_PROCESS_DETACH` breadcrumb does
+not appear (both games; no fault, no dump, prompt exit) - sessionless VDXR exits (s37) did log
+it. Classified sim-lane; VERIFY the breadcrumb on the headset session's VDXR exit.
+
+**Headset lanes (checklist in the session-38 log entry): PENDING USER REPORT** - VDXR big
+screen, F10 A/B, alt-tab, exit, second boot; then the SteamVR/Steam Link cross-check. I3's
+Done-when needs BOTH runtimes user-verified; the two sim-verifiable boxes are ticked, the
+cross-check and Done-when boxes are not.
+
+### Infinite: current state after session 37 (superseded by session 38 above - kept for the derivation trail; branch `si37-inf-merge-and-derisk2`)
 
 **I2 IS CLOSED - all eight de-risks recorded - and `main` (BS2 v0.7.0, 124 commits) is merged
 into the Infinite line.** Details per DR in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md)
@@ -5586,6 +5621,46 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 38 (Infinite) - 2026-08-05 - I3 sim battery green; the sim's clock bug, dark captures and sticky focus-lose found and fixed
+
+Branch `si38-inf-headset-bringup` off `bioshock-infinite` (c595e27). Order of work: harness
+first (`xrsim-launch`/`launch-game`/`xrsim-run` gained `-Game bsi`; bs1/bs2 preflights re-run
+green as the inertness proof), then `bsivr on|off|status` (adapter-local over the public
+`vr::set_enabled`; status reports `session_live()` because the F10 checkbox is a second
+writer), then the attended sim battery (user drove boot -> save both boots).
+
+**Everything in core just worked on Infinite** - no bring-up code was written. The battery
+instead caught three SIM bugs, each with a derivation: (1) `now_xr_time` overflow -> pace
+thread parked in `impl_WaitFrame`'s free-mode wait ~25 min in (WinDbg stack from a live
+minidump; sawtooth `displayTimeNs` in capture JSONs; mod-side state `waitFrames=beginFrames+1`
+with every present timing out its 200 ms handoff deadline - the mod's own 1:1 discipline held
+correctly); (2) capture composite stored sRGB-decoded linear (Infinite quad capture meanLuma
+0.05 vs ~10 in the window; PNG histogram cross-check matched the sim's stats, so the stats
+were honest about wrong pixels); (3) timed `focus lose` clobbered to sticky by the
+FOCUSED->VISIBLE edge (BS1's sequence uses explicit `focus regain`, so it never saw it).
+All three fixed in `src/tools/xrsim/`, selftest green after each, and the full BS1 lane
+re-run on the fixed sim (`-AllowStale` keeps BS1's shipped v0.7.0 mod): smoke green, stereo
+projViews=2 / eyeSep 0.063 / claimRatioH 1.018 IDENTICAL to s37's geometric baseline, new
+pixel-scale baseline L/R diff 11.53 (was 3.16 on the dark scale).
+
+Measured on Infinite: FOCUSED ~600 ms from first Present; 90.0 fps; `step 5` exact; focus-loss
+frame rate holds and submission continues through VISIBLE; `bsivr off/on` teardown /
+re-bring-up ~250 ms; `hazard waitfail 1` -> teardown -> fresh session post-cooldown; live
+`setres 1600x1200` -> queued XR rebuild -> pair 1600x1200 + quad 2.4x1.8 m + hfov 124.6 deg,
+and back. Two boots, two orderly WM_CLOSE exits (4-6 s, no fault, no dump) - but with a live
+sim session the `DLL_PROCESS_DETACH` breadcrumb is absent on BOTH games (sessionless s37 exits
+logged it): sim-lane watch item, check the breadcrumb on a VDXR exit.
+
+Traps catalogued for future sim sessions (VERIFICATION gotchas 13-16): the sim's LOCAL origin
+starts at the FLOOR (send `recenter` before quad-pose captures - the eye-level quad otherwise
+renders 1.6 m low at a grazing angle); `idle on <ms>` is persistent until `idle off`; a
+`pace free` after step-credit exhaustion latches until the 30 s starve grant; Infinite
+auto-pauses unfocused (foreground before gameplay captures; menu never unattended).
+
+Headset checklists (VDXR then Steam Link, numbered, F10-only judgments) handed to the user;
+results land in this entry's follow-up. I3 boxes: the two sim-verifiable ticked; cross-check
+and Done-when await the user's two-runtime verdict.
 
 ### Session 37 (Infinite) - 2026-08-05 - main merged into the Infinite line, and I2 CLOSED
 

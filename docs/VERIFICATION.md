@@ -359,6 +359,15 @@ switch) for any seam-counter oracle.
 
 ### 2.9 Measured baselines (BS1, 2026-08-01, in gameplay)
 
+> **SESSION-38 SCALE BREAK for pixel statistics.** The sim's capture composite
+> used to store sRGB-decoded LINEAR values, crushing everything dark ~13x; it is
+> sRGB-correct since 2026-08-05. Geometric numbers (claimRatioH, eyeSeparationM,
+> layer counts, poses) are unaffected - BS1 re-measured claimRatioH 1.018 on the
+> fixed sim, identical to its session-37 value. Pixel stats in the table below
+> are PRE-FIX scale; the post-fix BS1 stereo left-vs-right mean-abs-diff
+> re-baseline is **11.53** (was 3.16), smoke-quad meanLuma 11.7 / nonBlack
+> 49.6 %. Do not compare captures across the fix.
+
 Numbers from a real acceptance run, so a future regression has something to
 compare against rather than a guess:
 
@@ -490,6 +499,24 @@ $a.NonBlackPctL      -gt 50     # something was rendered
     has no DRM. If the process exits within 5 s, that is the first suspect.
 12. **Captures are game-derived content.** They live under `%LOCALAPPDATA%` and
     are never committed - same rule as frame dumps and crash dumps.
+13. **The sim's initial LOCAL origin is at the FLOOR, not the initial eye pose**
+    (OpenXR and VDXR put LOCAL at the initial VIEW pose). A world-locked
+    eye-level quad - the mono cinema screen - therefore renders 1.6 m low at a
+    grazing angle until you send **`recenter`**. Send `recenter` before any
+    quad-pose capture. (Session 38, first mono-quad consumer; sim left as-is
+    for baseline stability, candidate for the healing lane.)
+14. **`idle on <ms>` is persistent** - every xrWaitFrame blocks `<ms>` until
+    `idle off`. It is not a one-shot window; a forgotten `idle off` reads as a
+    ~0.3 fps XR lane with a healthy 90 fps window.
+15. **After `step N` exhausts, a pending `pace free`/`step off` cannot commit
+    until the 30 s starve grant** - sim commands apply at wait boundaries, and
+    with zero credits no wait completes. Send `pace free` while credits remain,
+    or expect the stall.
+16. **`xrsim-launch`, `launch-game` and `xrsim-run` take `-Game bsi`**
+    (session 38). Infinite auto-pauses on window-focus loss and auto-resumes on
+    focus regain: foreground the game before any capture that must show
+    gameplay pixels, and NEVER leave its menu unattended (attract-hang,
+    TESTING.md).
 
 ---
 
