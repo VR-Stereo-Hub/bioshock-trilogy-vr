@@ -7765,3 +7765,12 @@ authored+look. **v0.7.0 released** (tag on bioshock-2, one zip, both games):
 https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.7.0
 Open for later: subtitles verdict, flicker watch ([flick] armed), main-menu-A was
 confirmed working by the user (menukey + native paths), plasmid-hand profiles.
+
+### Post-release addendum - 2026-08-05 - BS1 in-headset verdict, merged to main
+
+The user tested BioShock 1 in the headset on the released v0.7.0 binaries:
+LOOKS GOOD, NO REGRESSIONS observed. With both games verified on the shipped
+DLL (BS2 flat+headset across rounds 1-4, BS1 sim smoke + headset pass),
+`bioshock-2` was merged to `main` - main now carries the full duology mod at
+v0.7.0. The exhaustive BS1 regression checklist remains available for the
+end-of-development pass, but the release-blocking question is answered.
