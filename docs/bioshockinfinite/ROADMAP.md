@@ -459,8 +459,15 @@ resolution has BOTH proven levers (DR-I8: `XUserOptions.ini ResolutionX/Y` honou
       so the free-run beat is a PIPELINING-runtime behaviour the sim cannot reproduce -
       whether VDXR free-runs is answered by reading pacetrace.log after the next headset
       run, and the sync checkbox is the fix either way. The 30-min soak is DEFERRED by
-      user decision (2026-08-05) to a later/release soak. **I6 CLOSES on the user's
-      VD-72 Hz headset verdict** (checklist in TESTING.md "S42 judder verdict").
+      user decision (2026-08-05) to a later/release soak. **HEADSET VERDICT IN
+      (2026-08-06, VD at 80 Hz)**: pacing LOCKED AND CLEAN in steady seconds (pairs ==
+      refresh, sd 0.3-1 ms) - the beat hypothesis is falsified on VDXR too; the judder is
+      recurring engine/GPU HITCH SPIKES (39-113 ms pair intervals in bursts), worse
+      outdoors at native res, better at the `eye` preset - a render-load/streaming
+      matter, not a pacing defect. The hitch-source hunt (texture streaming vs GC vs
+      shaders vs encoder) and the user's "camera slightly jumpy" observation carry
+      forward as their own item; the lens/FOV/resolution/config milestone itself is
+      complete.
       Standing I8 guard from the user: the lever must not break the viewmodels - s42
       gameplay-save check: lens1 tracks the lever exactly (tanV 1.2634, delta 0.0%,
       100% support), NO second lens - but the save predates the first weapon, so no

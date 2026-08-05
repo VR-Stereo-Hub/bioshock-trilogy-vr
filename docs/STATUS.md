@@ -35,9 +35,17 @@ corrected the cheat-lane's foundational assumption.** Three commits.
    Infinite arms it with stereo (so the preset boots it ON). Measured sync-on at 72:
    pairs 72/s, sd 1.2 -> 1.0 ms, waitGate 615 -> 21 ms/s, SR beat exact 72/72/144/72.
    **BS1 inertness proof run on the build**: full sim lane, claimRatioH 1.01769 == the
-   banked 1.018, no sync line in BS1's log, zero faults. **I6 CLOSES on the user's VD-72
-   verdict** - TESTING.md "S42 judder verdict checklist" (2 minutes, one checkbox A/B);
-   the 30-min soak is DEFERRED by user decision to a later/release soak.
+   banked 1.018, no sync line in BS1's log, zero faults. **HEADSET VERDICT IN (2026-08-06,
+   VD ran at 80 Hz)**: steady-state pacing LOCKED (pairs == refresh, sd 0.3-1 ms) - the
+   beat hypothesis is falsified on VDXR too. The judder is recurring HITCH SPIKES
+   (39-113 ms pair intervals in bursts every few seconds; sd explodes to 3.6-10.7 ms in
+   exactly the bad seconds), worse outdoors at 2064x2208, better at the eye preset - a
+   render-load/streaming matter, not pacing. Carried forward as its own hunt (streaming
+   vs GC vs shaders vs encoder; hitches-on-head-turns points first at texture-mip
+   streaming), plus the user's new "camera slightly jumpy" observation (instrument
+   before theorizing). The 30-min soak stays DEFERRED by user decision. Also carried:
+   the user banked a save WITH the pistol + two vigors - the s43 aim test bed exists,
+   no grant machinery needed.
 2. **THE EXEC-SURFACE TRUTH (I7 cheat lane)**: script execs through ConsoleCommand are
    DEAD in retail (god/AllWeapons/behindview/viewmode - zero effect by pixel-identical
    screenshots in a gameplay save; C++ handlers setres/shot stay proven); the give-family

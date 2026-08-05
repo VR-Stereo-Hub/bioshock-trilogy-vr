@@ -342,6 +342,23 @@ next headset run (read `%LOCALAPPDATA%\BioshockVR\bsi\pacetrace.log` afterwards:
 72 and waitGate ~0 = free-run confirmed; pairs ~72 with fat sd/max = marginal-frame-time
 flutter instead, and the resolution picker is the lever).
 
+**THE HEADSET RUN ANSWERED IT (user, VDXR via Virtual Desktop, 2026-08-06 00:09-00:41).**
+The trace from the run (pacetrace.log, kept): VDXR reported **period 12.50 ms = 80 Hz**
+(the VD session ran at 80, not 72). In steady seconds the pacing is LOCKED AND CLEAN -
+pairs 80/s == refresh, interval mean 12.5 ms, sd 0.3-1.0 ms, sync gating on our side.
+**The s41 free-run-beat hypothesis is FALSIFIED on VDXR too.** The judder is something
+else entirely: recurring HITCH SPIKES - single pair intervals of 39/43/51/75/77/87/101/113
+ms (3-9 missed display frames each) in bursts every few seconds, visible as sd exploding
+to 3.6-10.7 ms in exactly the bad seconds. User percept matches the numbers: judder worse
+OUTDOORS at native 2064x2208 (heavier scenes -> more/longer spikes, and render cost near
+the 12.5 ms budget drops extra frames), noticeably better at the `eye` preset 1600x1712.
+Candidate spike sources for the hunt (next session): UE3 texture-mip streaming on view
+change (would bind hitches to head TURNS - the reported trigger), UE3 incremental GC,
+shader-cache misses, the VD encoder. Second user observation, recorded open: camera
+movement feels "a bit jumpy" beyond the hitches - candidates: the hitch bursts at micro
+scale, the one-pair-stale content-pose attribution, or drive granularity; instrument
+before theorizing.
+
 The armable fix either way: **`vrpace sync on|off|<hz>` / `set_pace_sync`** (core, default
 OFF, the set_pace_detach pattern; Infinite arms it inside `apply_vrstereo(true)` and disarms
 on the symmetric off). Before OPENING a pair the present thread waits for the next tick of a
