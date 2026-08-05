@@ -4,6 +4,7 @@
 #include "core/gfx/hud_capture.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
+#include "game/bioshockinf/config.h"
 #include "game/bioshockinf/game_ini.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/lens.h"
@@ -717,30 +718,44 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
     }
 }
 
-// --- vrpreset: minimal per-game persistence (worldScale only, I4) -----------
-std::wstring vr_preset_path() {
-    std::wstring p = bvr::log::data_dir();
-    p += L"\\vrpreset.ini";
-    return p;
+// --- vrpreset: the config registry (I6 rung 5) ------------------------------
+// The hand-rolled 3-key writer/reader this replaces used the same file and
+// the same key names, so legacy vrpreset.ini files keep loading through the
+// registry unchanged. resW/resH getters read the game ini through a 1 Hz
+// cache (the F10 readout loop calls get() every frame - no file IO there).
+game_ini::Resolution cached_ini_resolution() {
+    static game_ini::Resolution s_cached;
+    static uint64_t s_stampMs = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - s_stampMs >= 1000) {
+        s_stampMs = now;
+        s_cached = game_ini::read_resolution();
+    }
+    return s_cached;
 }
 
-void save_vr_preset() {
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, vr_preset_path().c_str(), L"w") != 0 || !f) {
-        BVR_LOG("[bsi] vrpreset save FAILED (open)");
-        return;
-    }
-    fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
-    fprintf(f, "claimTanV=%.4f\n", g_claimTanV.load(std::memory_order_relaxed));
-    fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
-    fprintf(f, "fovLeverDeg=%.1f\n", g_fovLeverDeg.load(std::memory_order_relaxed));
-    fclose(f);
-    BVR_LOG("[bsi] vrpreset saved (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f fovLeverDeg=%.1f)",
-            g_worldScale.load(std::memory_order_relaxed),
-            g_claimTanV.load(std::memory_order_relaxed),
-            g_ipdMm.load(std::memory_order_relaxed),
-            g_fovLeverDeg.load(std::memory_order_relaxed));
+float cfg_get_world_scale() { return g_worldScale.load(std::memory_order_relaxed); }
+void cfg_set_world_scale(float v) { g_worldScale.store(v, std::memory_order_relaxed); }
+float cfg_get_claim_tanv() { return g_claimTanV.load(std::memory_order_relaxed); }
+void cfg_set_claim_tanv(float v) { g_claimTanV.store(v, std::memory_order_relaxed); }
+float cfg_get_ipd() { return g_ipdMm.load(std::memory_order_relaxed); }
+void cfg_set_ipd(float v) { g_ipdMm.store(v, std::memory_order_relaxed); }
+float cfg_get_fov_lever() { return g_fovLeverDeg.load(std::memory_order_relaxed); }
+void cfg_set_fov_lever(float v) {
+    // 0 = off is a legal stored state; anything else clamps to the verb range.
+    g_fovLeverDeg.store(v >= 20.0f && v <= 170.0f ? v : 0.0f, std::memory_order_relaxed);
 }
+float cfg_get_res_w() { return static_cast<float>(cached_ini_resolution().x); }
+float cfg_get_res_h() { return static_cast<float>(cached_ini_resolution().y); }
+
+constexpr config::KeyDesc kConfigKeys[] = {
+    {"worldScale", cfg_get_world_scale, cfg_set_world_scale, 1.0f, 500.0f},
+    {"claimTanV", cfg_get_claim_tanv, cfg_set_claim_tanv, 0.05f, 4.0f},
+    {"ipdMm", cfg_get_ipd, cfg_set_ipd, 40.0f, 80.0f},
+    {"fovLeverDeg", cfg_get_fov_lever, cfg_set_fov_lever, 0.0f, 170.0f},
+    {"resW", cfg_get_res_w, config::detail::latch_wanted_res_w, 640.0f, 16384.0f},
+    {"resH", cfg_get_res_h, config::detail::latch_wanted_res_h, 480.0f, 16384.0f},
+};
 
 // ---------------------------------------------------------------------------
 // I6 rung 1: the per-dispatch FOV enforcement. Game thread only, SEH-guarded
@@ -1114,6 +1129,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // core's cinematic fallback from quadding a live gameplay projection.
     apply_pending_vrstereo();
     apply_pending_resolution();
+    config::tick(); // F10-posted preset save/load ops (file IO on this thread)
     // I6: the lens decoder's round tick runs BEFORE the lever and the claim
     // publish - a track-mode write is deliberately overridden by an armed
     // lever, and the audit compares against the claim the previous dispatch
@@ -1288,28 +1304,12 @@ void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float w
 }
 
 void load_vr_preset() {
-    FILE* f = _wfsopen(vr_preset_path().c_str(), L"r", _SH_DENYNO);
-    if (!f) return; // no preset yet - defaults stand
-    char line[128];
-    while (fgets(line, sizeof line, f)) {
-        float v = 0.0f;
-        if (sscanf_s(line, "worldScale=%f", &v) == 1 && v > 0.0f)
-            g_worldScale.store(v, std::memory_order_relaxed);
-        else if (sscanf_s(line, "claimTanV=%f", &v) == 1 && v > 0.0f)
-            g_claimTanV.store(v, std::memory_order_relaxed);
-        else if (sscanf_s(line, "ipdMm=%f", &v) == 1 && v > 0.0f)
-            g_ipdMm.store(v, std::memory_order_relaxed);
-        else if (sscanf_s(line, "fovLeverDeg=%f", &v) == 1 && v >= 0.0f)
-            g_fovLeverDeg.store(v >= 20.0f && v <= 170.0f ? v : 0.0f,
-                                std::memory_order_relaxed);
-    }
-    fclose(f);
-    BVR_LOG("[bsi] vrpreset loaded (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f "
-            "fovLeverDeg=%.1f)",
-            g_worldScale.load(std::memory_order_relaxed),
-            g_claimTanV.load(std::memory_order_relaxed),
-            g_ipdMm.load(std::memory_order_relaxed),
-            g_fovLeverDeg.load(std::memory_order_relaxed));
+    // Adapter init: register the config table once (before the first load so
+    // the applied values go through the registry's range guards), then load
+    // the current store. Legacy 3-key files load unchanged - same file, same
+    // key names.
+    config::init(kConfigKeys, std::size(kConfigKeys));
+    config::load_current();
 }
 
 bool handle_drive_verb(const char* cmd, const char* args) {
@@ -1333,14 +1333,9 @@ bool handle_drive_verb(const char* cmd, const char* args) {
         return true;
     }
     if (strcmp(cmd, "vrpreset") == 0) {
-        if (strncmp(args, "save", 4) == 0) {
-            save_vr_preset();
-        } else {
-            load_vr_preset();
-            BVR_LOG("[bsi] vrpreset: worldScale=%.1f (vrpreset save persists the current "
-                    "values)",
-                    g_worldScale.load(std::memory_order_relaxed));
-        }
+        // The whole verb family lives in the config registry now:
+        // save | saveas <name> | load [<name>] | list (bare = load current).
+        config::handle_vrpreset(args);
         return true;
     }
     if (strcmp(cmd, "vrstereo") == 0) {
@@ -1739,6 +1734,25 @@ void draw_debug_ui() {
         constexpr int kCustom = static_cast<int>(std::size(kResModes));
         static int s_sel = -1;
         static int s_customW = 2560, s_customH = 1440;
+        // A freshly loaded preset preselects its wanted resolution (LATCHED,
+        // never auto-applied - config.h's hazard note); Apply stays the one
+        // clickable that resizes.
+        {
+            int pw = 0, ph = 0;
+            bool fresh = false;
+            if (config::wanted_resolution(&pw, &ph, &fresh) && fresh) {
+                s_sel = kCustom;
+                for (int i = 0; i < kCustom; ++i)
+                    if (kResModes[i].w == pw && kResModes[i].h == ph) s_sel = i;
+                s_customW = pw;
+                s_customH = ph;
+            }
+            if (pw > 0 && liveW && (static_cast<unsigned>(pw) != liveW ||
+                                    static_cast<unsigned>(ph) != liveH))
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                                   "loaded preset wants %dx%d - Apply below to resize", pw,
+                                   ph);
+        }
         if (s_sel < 0) {
             // First draw: preselect from the ini so the combo opens on truth.
             s_sel = kCustom;

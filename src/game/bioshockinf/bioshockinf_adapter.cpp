@@ -5,6 +5,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/config.h"
 #include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
@@ -113,6 +114,7 @@ void BioshockInfAdapter::drawDebugUi() {
                         "vrpreset | vrrec | bsireflect | bsinative | bsicall | vrcmd");
 
     camera::draw_debug_ui();
+    config::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
     reflect::draw_debug_ui();
