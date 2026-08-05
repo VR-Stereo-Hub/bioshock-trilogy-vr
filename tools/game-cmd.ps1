@@ -34,7 +34,9 @@ switch ($Game) {
     "bsi" { $procName = "BioShockInfinite" }
     default { $procName = "BioshockHD" }
 }
-$p = Get-Process $procName -ErrorAction SilentlyContinue
+$p = @(Get-Process $procName -ErrorAction SilentlyContinue | Where-Object {
+    -not $_.HasExited -and $_.MainWindowHandle -ne [IntPtr]::Zero
+} | Sort-Object Id -Descending) | Select-Object -First 1
 if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
     [Cmd]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
     Start-Sleep -Milliseconds 400

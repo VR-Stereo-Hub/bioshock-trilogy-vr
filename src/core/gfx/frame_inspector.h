@@ -37,6 +37,24 @@ void arm(int mode, int count = 1);
 // writes a recording frame, or begins a pending one.
 void on_present(IDXGISwapChain* swapchain);
 
+// ---- Session 34: an adapter-supplied per-DrawIndexed veto -------------------
+// Return true to DROP the draw. Null by default, so a game that never
+// registers one is on exactly the code path it was on before - which is the
+// point: this is core code that only BioShock 2 turns on.
+//
+// It exists because a mesh cannot be identified any other way inside a single
+// pass. BioShock 2's foreground pass is ~17 draws carrying the weapon AND the
+// Big Daddy helmet; they share a lens, a render target and a callstack, so
+// neither the fov watch nor a draw count can separate them. The index count
+// can, and it is stable for a given mesh.
+//
+// Runs on the render thread, once per DrawIndexed, guarded by the same
+// re-entrancy suppression as the recorder - so keep it to a couple of integer
+// compares and no device calls.
+using MeshSkipFn = bool (*)(unsigned indexCount);
+void set_mesh_skip(MeshSkipFn fn);
+unsigned mesh_skips();
+
 // Suppress capture of our own rendering (ImGui, VR copies) on this thread
 // for the current scope. Used by the Present detour after on_present().
 struct ScopedSuppress {

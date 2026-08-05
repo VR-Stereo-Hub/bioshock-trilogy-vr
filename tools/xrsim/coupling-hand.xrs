@@ -1,0 +1,64 @@
+# coupling-hand.xrs - does the hand/weapon MODEL follow the controller, and does
+# the AIM stay in sync with it while the controller moves?
+#
+# The head is held perfectly still throughout, so anything that changes in these
+# captures was caused by the controller and nothing else. That is the whole point
+# of a simulated headset: a human cannot hold their head still.
+#
+# Two questions, two oracles:
+#
+# 1. DOES THE MODEL FOLLOW THE CONTROLLER?
+#    Read the BBOX, not the mean. With the head static, a model that tracks the
+#    controller produces a LOCALISED change that moves with it:
+#      .\tools\img-diff.ps1 -A hand_c_left.png -B hand_r_left.png -Grid 12
+#
+#    DO NOT trust mean-abs-diff here. BS1's opening corridor is nearly black
+#    (meanLuma ~3/255) and a dark sleeve crossing the whole frame reads 0.25 -
+#    below the standing-still floor. It looks like "nothing moved" and it is not.
+#
+#    Ground truth, independent of lighting: sweep the controller and watch the
+#    mod's own write location follow it at ~100 UU per metre -
+#      .\tools\game-cmd.ps1 "vrhands status"     -> last write loc=(x y z)
+#    Verified 2026-08-02: a 1.1 m sweep moved it 110 UU in X.
+#
+# 2. IS THE AIM IN SYNC WITH THE MODEL?
+#    Numeric, no eyeballing: $s.AimRayMaxDev is the worst angular deviation of the
+#    aim-laser dots from the ray leaving the hand. It should stay near zero at
+#    EVERY controller position. If it grows as the controller swings out, the aim
+#    and the model have drifted apart - the gun points somewhere other than where
+#    it shoots.
+#      $shots | ForEach-Object { $_.AimRayMaxDev }
+#
+# BOTH subsystems must be armed or the test answers the wrong question:
+#   vrhands drives the MODEL   -> question 1
+#   vraim   drives the RAY     -> question 2
+# Arming only vraim was the first version of this file, and it "passed" with the
+# image barely changing - because nothing was moving the model at all.
+#
+# Stereo is armed HERE rather than left to the caller. Testing mono has misled
+# this project before (sessions 12-13), and `vrstereo on` is sticky, so a
+# sequence that assumes someone else armed it will silently run flat one day.
+reset
+@mod vrstereo on
+@mod vrhands on; vraim on; vraim laser on
+@frames 60
+@assert projectionViews eq 2
+# Detach the hand from the head and place it centred in front of the face, then
+# sweep it. `hand to` interpolates, so the model is seen tracking across frames
+# rather than teleporting.
+hand r grip pose 0.20 1.30 -0.45 0 0 0
+@frames 20
+@shot hand_c
+@assert layersLastFrame ge 3
+hand r to grip 0.55 1.30 -0.45 -25 0 0 400
+@frames 40
+@shot hand_r
+hand r to grip -0.15 1.30 -0.45 25 0 0 400
+@frames 40
+@shot hand_l
+hand r to grip 0.20 1.05 -0.45 0 -25 0 400
+@frames 40
+@shot hand_down
+hand r to grip 0.20 1.55 -0.45 0 25 0 400
+@frames 40
+@shot hand_up

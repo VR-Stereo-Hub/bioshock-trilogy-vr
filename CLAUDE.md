@@ -40,6 +40,14 @@ different engine, so no number transfers, and even shapes are suspect. Infinite 
   running, WAIT or POSTPONE the test - do not close the other game. Building, installing,
   packaging and tailing logs do NOT contend and must keep working while BS2 runs. The `-Game bsi`
   harness scripts enforce this via `tools/lib/assert-no-conflict.ps1`.
+- **KEEP THE PER-GAME MODS DECOUPLED. Duplicate code is fine** (user directive, 2026-07-31
+  session 34; the same was said for the BioShock Infinite mod). Copy a BS1 behaviour into
+  `bioshock2r/` and adapt it rather than promoting it to `src/core/` or parameterising the BS1
+  version - BS1 is the headset-accepted baseline and must not be put at risk to serve BS2, and
+  BS1 regressions cost headset time to even detect. Put something in `src/core/` only when it is
+  genuinely game-agnostic AND new; if a core change is unavoidable, keep it purely additive so
+  no BS1 path changes behaviour. Consolidation and de-duplication are deferred to a dedicated
+  "healing" session in the polish milestone.
 
 ## Session protocol
 
@@ -49,6 +57,14 @@ different engine, so no number transfers, and even shapes are suspect. Infinite 
 - Touching engine internals? Read the game's `docs/<game>/ENGINE_NOTES.md` first
   (`docs/bioshock1/`, `docs/bioshock2/` or `docs/bioshockinfinite/`). New findings go there, in
   the same commit as the code that uses them.
+- **Validate in the SIMULATOR before handing a build to the user.** `tools\xrsim-launch.ps1`
+  runs the game against `bvr_xrsim32.dll`, a simulated 32-bit OpenXR runtime that presents as a
+  Quest 3, so head/hand poses, every controller button, deterministic frame stepping and per-eye
+  compositor captures - **including the quad layers a window screenshot can never show** (the
+  aim laser, the HUD panel) - are all scriptable with no headset. Asking the user to put the
+  Quest 3 on for something the simulator could have answered is a wasted test session.
+  Catalog: `docs/VERIFICATION.md`. Perceptual questions - comfort, judder, world scale, "does
+  the weapon swim" - still need the headset, and still belong in the F10 overlay.
 - Non-obvious design choices get a dated entry in the decision log at the bottom of
   `docs/ARCHITECTURE.md`.
 - **END**: rewrite the "Current state" and "Next steps" sections of `docs/STATUS.md`, append a
@@ -63,6 +79,11 @@ different engine, so no number transfers, and even shapes are suspect. Infinite 
 .\tools\build.ps1 -Install [-Game bs1|bs2|bsi]   # build + copy DLLs to that game's folder (default bs1)
 .\tools\install.ps1 [-Game bs1|bs2|bsi]          # copy already-built DLLs
 .\tools\tail-log.ps1 [-Game bs1|bs2|bsi]         # follow the game's log (see data dirs below)
+
+.\tools\xrsim-selftest.ps1                   # is the SIMULATED OpenXR runtime healthy?
+.\tools\xrsim-launch.ps1 -Game bs1           # launch against the simulator (no headset needed)
+.\tools\xrsim-cmd.ps1 "head rot 30 0 0"      # drive the simulated head/hands/controls
+.\tools\xrsim-shot.ps1 -Out shot             # per-eye compositor capture + JSON to assert on
 ```
 
 - BioShock 1: `K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final\BioshockHD.exe`
@@ -100,6 +121,7 @@ different engine, so no number transfers, and even shapes are suspect. Infinite 
 | `docs/ROADMAP.md` | BS1/BS2 milestones M0–M10 with acceptance criteria and checkboxes |
 | `docs/ARCHITECTURE.md` | Module design, core/adapter contract, stereo strategy, decision log |
 | `docs/RESEARCH.md` | All research findings with sources (engine, prior art, VR runtimes, legal) |
+| `docs/VERIFICATION.md` | **Verification catalog**: intent -> tool -> command -> how to read the result. The simulated OpenXR runtime, the command seam, screenshots, img-diff, frame dumps, record/replay - and what still needs a human in the headset |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |
 | `docs/bioshock2/ENGINE_NOTES.md` | BS2 knowledge base: verified RVAs, the ProcessEvent CalcView seam, BS1 deltas |

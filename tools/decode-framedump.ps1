@@ -8,6 +8,15 @@
 # screen-ray helper block at cb0 floats 12..18 - layout
 # (2*tanH, 0, -tanH, 0, 0, -2*tanV, tanV) - and clusters draws by tangent pair.
 #
+# THE VERTICAL SLOPE CARRIES A LETTERBOX FACTOR (session 33). The helper maps UV
+# over the RENDER TARGET, so when the scene viewport is shorter than the RT the
+# slope term is scaled by (RT height / viewport height) while the offset term is
+# not. tanV is therefore f[o+6] (the OFFSET), and -f[o+5]/2 divided by it is the
+# letterbox ratio - reported as lb=. Session 32 read that ratio as a broken
+# frustum and concluded BS2's projection "degenerates" off 16:9; it does not.
+# The ratio was 1.4413 = 2048/1421 in EVERY block of both square BS2 dumps,
+# world and foreground alike, which is a consistent frustum plus a letterbox.
+#
 # Because the shipped fg lens match (vrfgfov, default ON) makes the foreground
 # pass render with WORLD-equal tangents, tangents alone cannot separate the
 # passes; each cluster therefore also reports how many of its draws carry the
@@ -78,7 +87,15 @@ param(
     # Prove the scanners can find a known answer before any negative from them
     # is believed. An instrument that cannot fail its own hypothesis is not
     # evidence.
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    # Session 34: per-CLUSTER cb0 dump, "lo-hi" float indices (e.g. "0-31").
+    # -Diff compares whole FILES, which cannot answer a per-pass question; this
+    # restricts the modal-value table to one cluster's own blocks, so two dumps
+    # taken at different foreground FOVs can be compared on the FOREGROUND rows
+    # alone. That is the discriminator between "the fg eye moves with the fov"
+    # (transform rows change) and "the fg eye is fixed and the wider frustum
+    # simply reveals more of the rig" (only the ray block changes).
+    [string]$Cb0Range = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,6 +105,14 @@ $fgBakeRvas = $FgBakeRvas
 $aspectW = 0.0; $aspectH = 0.0
 if ($Aspect -match '^(\d+)\s*[xX]\s*(\d+)$') {
     $aspectW = [double]$Matches[1]; $aspectH = [double]$Matches[2]
+}
+
+$cb0Lo = -1; $cb0Hi = -1
+if ($Cb0Range -ne '') {
+    if ($Cb0Range -notmatch '^(\d+)\s*-\s*(\d+)$') { throw "-Cb0Range wants 'lo-hi', e.g. 0-31" }
+    $cb0Lo = [int]$Matches[1]; $cb0Hi = [int]$Matches[2]
+    if ($cb0Hi -lt $cb0Lo) { throw "-Cb0Range: hi < lo" }
+    if ($cb0Hi -gt 335) { $cb0Hi = 335 }
 }
 
 # cb0 contents are raw buffer bytes reinterpreted as floats - garbage prints
@@ -161,7 +186,13 @@ function Parse-Dump($file) {
                     idx  = [int]$m.Groups[1].Value; kind = $m.Groups[2].Value
                     a    = [uint32]$m.Groups[3].Value; b = [uint32]$m.Groups[4].Value
                     rtv  = [int]$m.Groups[5].Value; dsv = [int]$m.Groups[6].Value
+                    vpw  = [int]$m.Groups[7].Value; vph = [int]$m.Groups[8].Value
                     cb0b = [uint32]$m.Groups[9].Value
+                    # srv0 is the draw's first texture. Session 34: this is how a
+                    # single mesh is told apart from its neighbours inside one
+                    # pass - the foreground pass is ~17 draws carrying the weapon
+                    # AND the rig, and a lens or a draw count cannot separate them.
+                    srv0 = [int]$m.Groups[12].Value
                     stk  = $m.Groups[14].Value
                     blk  = -1
                 })
@@ -207,15 +238,28 @@ function Report-Blocks($tag, $parsed, $sel) {
 # The screen-ray helper at floats o..o+6: (2tanH, 0, -tanH, 0, 0, -2tanV, tanV).
 # The three ZERO slots (o+1, o+3, o+4) are the whole axis-disambiguation - the
 # two pair checks are intra-axis and carry no information about which axis is
-# which. Returns @(tanH, tanV) or $null.
+# which.
+#
+# The V pair is NOT an equality (session 33): the helper's UV runs over the
+# render target, so a letterboxed viewport scales the SLOPE term and leaves the
+# OFFSET term alone. tanV is the offset f[o+6]; the ratio slope/offset is the
+# letterbox factor (1.000 when the viewport fills the RT). The H pair stays an
+# equality - no horizontal (pillarbox) case has been observed on either game,
+# so if one ever appears this check fails loudly instead of silently halving a
+# tangent. Returns @(tanH, tanV, letterbox) or $null.
 function Decode-RayBlock($f, [int]$o) {
     if ($f.Count -lt ($o + 7)) { return $null }
     $tanH1 = $f[$o] / 2.0; $tanH2 = -$f[$o + 2]
-    $tanV1 = -$f[$o + 5] / 2.0; $tanV2 = $f[$o + 6]
+    $tanVs = -$f[$o + 5] / 2.0; $tanV = $f[$o + 6]
     $okH = ([math]::Abs($f[$o + 1]) -lt 0.001) -and ([math]::Abs($tanH1 - $tanH2) -lt 0.001) -and ($tanH1 -gt 0.05) -and ($tanH1 -lt 4.0)
-    $okV = ([math]::Abs($f[$o + 3]) -lt 0.001) -and ([math]::Abs($f[$o + 4]) -lt 0.001) -and ([math]::Abs($tanV1 - $tanV2) -lt 0.001) -and ($tanV1 -gt 0.05) -and ($tanV1 -lt 4.0)
-    if ($okH -and $okV) { return @([math]::Round($tanH1, 4), [math]::Round($tanV1, 4)) }
-    return $null
+    if (-not $okH) { return $null }
+    if (([math]::Abs($f[$o + 3]) -ge 0.001) -or ([math]::Abs($f[$o + 4]) -ge 0.001)) { return $null }
+    if (($tanV -le 0.05) -or ($tanV -ge 4.0) -or ($tanVs -le 0.05) -or ($tanVs -ge 8.0)) { return $null }
+    $lb = $tanVs / $tanV
+    # A viewport is never TALLER than its render target, so the factor is >= 1;
+    # 4.0 is well past any plausible letterbox and keeps -ScanLayout specific.
+    if (($lb -lt 0.999) -or ($lb -gt 4.0)) { return $null }
+    return @([math]::Round($tanH1, 4), [math]::Round($tanV, 4), [math]::Round($lb, 4))
 }
 
 # ---- the 4x4 route --------------------------------------------------------
@@ -470,7 +514,7 @@ foreach ($file in $files) {
             for ($o = 0; $o -lt $maxOff; $o++) {
                 $t = Decode-RayBlock $b.f $o
                 if ($null -eq $t) { continue }
-                $k = '{0}|{1:F4}|{2:F4}' -f $o, $t[0], $t[1]
+                $k = '{0}|{1:F4}|{2:F4}|{3:F4}' -f $o, $t[0], $t[1], $t[2]
                 if (-not $hits.ContainsKey($k)) { $hits[$k] = 0 }
                 $hits[$k]++
             }
@@ -480,10 +524,11 @@ foreach ($file in $files) {
                           "the (2tanH,0,-tanH,0,0,-2tanV,tanV) signature. This game's layout is a " +
                           "DIFFERENT SHAPE, not just a different offset - use -Diff.")
         } else {
-            Write-Output "SCAN: offsets carrying a valid ray block (offset | tanH | tanV | blocks):"
+            Write-Output "SCAN: offsets carrying a valid ray block (offset | tanH | tanV | lb | blocks):"
             foreach ($k in ($hits.Keys | Sort-Object { - $hits[$_] })) {
                 $p = $k -split '\|'
-                Write-Output ("  offset {0,3}  tanH={1,8}  tanV={2,8}  blocks={3}" -f $p[0], $p[1], $p[2], $hits[$k])
+                Write-Output ("  offset {0,3}  tanH={1,8}  tanV={2,8}  lb={3,7}  blocks={4}" -f `
+                    $p[0], $p[1], $p[2], $p[3], $hits[$k])
             }
             Write-Output "The offset with the most blocks is the candidate for -RayOffset / the per-game constant."
         }
@@ -503,6 +548,7 @@ foreach ($file in $files) {
 
     # ---- cluster depth-tested draws ---------------------------------------
     $clusters = @{}   # "tanH|tanV" -> stats
+    $blockTier = @{}  # block index -> cb0 byte size (shader layout identity)
     $noBlock = 0; $drawCount = 0; $depthDraws = 0
     foreach ($ev in $events) {
         if ($drawKinds -notcontains $ev.kind) { continue }
@@ -510,17 +556,23 @@ foreach ($file in $files) {
         if ($ev.dsv -lt 0) { continue }
         $depthDraws++
         if ($ev.blk -lt 0 -or -not $blockTan.ContainsKey($ev.blk)) { $noBlock++; continue }
+        # Block -> cb0 byte size, so the per-cluster cb0 table can stay inside
+        # one shader layout (see the -Cb0Range print below).
+        $blockTier[$ev.blk] = $ev.cb0b
         $t = $blockTan[$ev.blk]
         $key = '{0:F4}|{1:F4}' -f $t[0], $t[1]
         if (-not $clusters.ContainsKey($key)) {
             $clusters[$key] = @{
-                tanH = $t[0]; tanV = $t[1]; draws = 0; fgBake = 0
+                tanH = $t[0]; tanV = $t[1]; lb = $t[2]; draws = 0; fgBake = 0
                 blocks = New-Object System.Collections.Generic.HashSet[int]
-                tiers = @{}; sample = New-Object System.Collections.Generic.List[object]
+                tiers = @{}; vps = @{}; sample = New-Object System.Collections.Generic.List[object]
             }
         }
         $c = $clusters[$key]
         $c.draws++
+        $vpKey = '{0}x{1}' -f $ev.vpw, $ev.vph
+        if (-not $c.vps.ContainsKey($vpKey)) { $c.vps[$vpKey] = 0 }
+        $c.vps[$vpKey]++
         [void]$c.blocks.Add($ev.blk)
         if (-not $c.tiers.ContainsKey($ev.cb0b)) { $c.tiers[$ev.cb0b] = 0 }
         $c.tiers[$ev.cb0b]++
@@ -541,12 +593,63 @@ foreach ($file in $files) {
         # hfov/vfov are 2*atan of the half-tangents, so they are the rendered
         # angles at ANY aspect - the old "@16:9" label on this line was wrong.
         $vfov = 2.0 * [math]::Atan($c.tanV) * 180.0 / [math]::PI
-        Write-Output ("cluster tanH={0:F4} tanV={1:F4} (rendered {2:F1}x{3:F1} deg)  draws={4} blocks={5} fgBakeStacks={6}  b0tiers[{7}]" -f `
-            $c.tanH, $c.tanV, $hfov, $vfov, $c.draws, $c.blocks.Count, $c.fgBake, $tierStr)
+        Write-Output ("cluster tanH={0:F4} tanV={1:F4} (rendered {2:F1}x{3:F1} deg) lb={4:F4}  draws={5} blocks={6} fgBakeStacks={7}  b0tiers[{8}]" -f `
+            $c.tanH, $c.tanV, $hfov, $vfov, $c.lb, $c.draws, $c.blocks.Count, $c.fgBake, $tierStr)
+        # The letterbox check, and the ANAMORPHIC check that rides with it. The
+        # frustum's aspect is tanH/tanV; the viewport's is w/h. When those two
+        # disagree the render is stretched - a defect entirely separate from the
+        # black band, and the one that makes a non-16:9 BS2 render unusable.
+        $vpKeyBest = ($c.vps.Keys | Sort-Object { - $c.vps[$_] } | Select-Object -First 1)
+        $vpParts = $vpKeyBest -split 'x'
+        $vpW = [double]$vpParts[0]; $vpH = [double]$vpParts[1]
+        $frustumAr = if ($c.tanV -gt 0) { $c.tanH / $c.tanV } else { [double]::NaN }
+        $vpAr = if ($vpH -gt 0) { $vpW / $vpH } else { [double]::NaN }
+        $lbNote = ''
+        if ($aspectH -gt 0 -and $vpH -gt 0) {
+            $lbExpect = $aspectH / $vpH
+            $lbNote = '  expect bbH/vpH={0:F4} -> {1}' -f $lbExpect,
+                      $(if ([math]::Abs($c.lb - $lbExpect) -lt 0.002) { 'OK' } else { 'MISMATCH' })
+        }
+        $anam = if ([math]::Abs($frustumAr - $vpAr) -lt 0.005) { 'square pixels' } else { 'ANAMORPHIC - render is stretched' }
+        Write-Output ("    vp={0} (ar {1:F4})  frustum ar {2:F4}  lb={3:F4}{4}  -> {5}" -f `
+            $vpKeyBest, $vpAr, $frustumAr, $c.lb, $lbNote, $anam)
         if ($ShowDraws -gt 0) {
             $c.sample | Select-Object -First $ShowDraws | ForEach-Object {
                 $stkHead = ($_.stk -split ',' | Select-Object -First 4) -join ','
-                Write-Output ("    #{0:D5} {1} a={2} b0={3} stk={4}" -f $_.idx, $_.kind, $_.a, $_.cb0b, $stkHead)
+                Write-Output ("    #{0:D5} {1} a={2} b0={3} srv0=T{4} stk={5}" -f `
+                    $_.idx, $_.kind, $_.a, $_.cb0b, $_.srv0, $stkHead)
+            }
+        }
+        # ---- per-cluster cb0 rows (-Cb0Range) --------------------------------
+        # Modal value per float index across THIS cluster's blocks, with the
+        # distinct count in brackets. A float that is constant across the pass
+        # shows (1) and is a candidate camera/lens constant; one that varies per
+        # draw shows a large count and is per-object.
+        if ($cb0Lo -ge 0) {
+            # PER TIER, and that is not a nicety. A cluster's blocks span several
+            # cb0 BYTE SIZES (320/640/1280 on BS2), and a different size is a
+            # different shader's constant layout - only the screen-ray helper is
+            # common to all of them. Pooling them produces a modal table that
+            # mixes unrelated fields and reads as noise (or worse, as a stable
+            # value that is really two shaders' floats alternating).
+            foreach ($tier in ($c.tiers.Keys | Sort-Object)) {
+                $cBlocks = @()
+                foreach ($bi in $c.blocks) {
+                    if ($blockTier.ContainsKey($bi) -and $blockTier[$bi] -eq $tier) {
+                        $cBlocks += $blocks[$bi]
+                    }
+                }
+                if ($cBlocks.Count -eq 0) { continue }
+                Write-Output ("    -- cb0 tier {0} B, {1} block(s) --" -f $tier, $cBlocks.Count)
+                $cModes = Block-Modes $cBlocks ($cb0Hi + 1)
+                $line = ''; $col = 0
+                for ($i = $cb0Lo; $i -le $cb0Hi; $i++) {
+                    if (-not $cModes.ContainsKey($i)) { continue }
+                    $line += '{0}={1:F4}({2}) ' -f $i, $cModes[$i].v, $cModes[$i].distinct
+                    $col++
+                    if (($col % 6) -eq 0) { Write-Output ("       " + $line.TrimEnd()); $line = '' }
+                }
+                if ($line -ne '') { Write-Output ("       " + $line.TrimEnd()) }
             }
         }
         # ---- gates ---------------------------------------------------------

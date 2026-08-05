@@ -736,23 +736,183 @@ kill. Both prerequisites below are now MET.):**
       (2) BS2 carries TWO lenses that differ AT 16:9 (world tracks the FOV option, a second is
       fixed at 60 deg), a 2.06x gain error at option 100 rising to 3.99x at 130 - the leading
       explanation for the stereo viewmodel report.
-- [ ] **BS2 aspect bisection** - find the squarest aspect BS2 renders full-height with a consistent
-      frustum. That is BS2's best VR configuration AND the clean second aspect needed to settle its
-      world FOV law (the two candidate laws coincide at 16:9).
+- [x] **BS2 aspect bisection** - DISSOLVED session 37: there is no aspect law to bisect. The
+      letterbox was the WINDOW - the engine sizes its scene viewport to the window client, and the
+      game's chromed window clamps on the desktop (client tops out at 1421 rows on a 1440p
+      desktop; 2048/1421 = the "mystery ratio" 1.4413). A borderless client sized exactly to the
+      backbuffer renders full-height square pixels at EVERY aspect tried (1.778/1.6/0.9348/0.9321),
+      the engine follows a live client resize with its own ResizeBuffers, and resolution on BS2 is
+      therefore LIVE - no relaunch. Zero user boots spent (the menu scene classifies as gameplay).
+- [x] **BS2 resolution picker + automatic FOV (session 37)** - BS1-parity F10 picker
+      ("RENDER RESOLUTION (applies live)"): preset combo (flat/perf/native 2064x2208/sharp/max,
+      Quest-3-native class), custom WxH, MPx + auto-FOV preview per selection, Apply/Restore.
+      `vrres` gained the same presets + `list` + `restore`. Apply is LIVE (borderless window
+      enforcement; ini persistence + deferred re-verify against the engine's lagging
+      resize-persist; stereo-armed self-heal for chromed boots). The automatic FOV was already
+      shipping (`vrfov` computes the option from the headset via the inverse law, per CalcView);
+      session 37 verified it at the new aspects (option 138 at native renders 107.7x111.4 deg vs
+      the 108x110 eye, ClaimRatioH 0.995) and relabeled the UI. Headset acceptance in the save:
+      owed (fg one-cluster with a weapon at native, HUD legibility, perceived quality).
 - [x] **Identify BS2's 60-deg lens** - DONE session 32 by two in-headset FOV A/Bs rather than a
       dump: the defect worsens at option 130 and VANISHES at option 60, exactly as
       `k = tan(option/2)/tan(30)` predicts. It is the viewmodel. Session 25's "foreground follows
       the world FOV natively" is retracted; BS2 has a fixed fg lens like BS1.
-- [ ] **BS2 viewmodel lens match (USER PRIORITY 2)** - find BS2's foreground FOV field and write
-      the world's value into it, so the world stays wide AND the weapon is correct. Leads: the fg
-      callstack frame `0xAECACF` (vs the world's `0xAEC7B4`), the round 60.0 value, b2r's existing
-      memscan set, and a native BS2 route checked first. Acceptance: `lenses=1` at 16:9 and a
-      stable weapon at option 100+.
+- [x] **BS2 viewmodel lens match (USER PRIORITY 2)** - DONE session 33 and ACCEPTED IN-HEADSET
+      (*"it worked, the weapon was not moving anymore"*). The field is `PlayerController + 0x694`,
+      a float in DEGREES; the live world FOV is written into it every CalcView. Shipped default ON
+      with an F10 overlay toggle. Acceptance came from full frame dumps - ONE cluster at option
+      100/130/80 and TWO when disarmed - because `lenses=1` turned out not to be proof of
+      anything. The `0xAECACF` lead was wrong (two call sites of the same draw dispatch);
+      `+0x690` is the WORLD lens and must not be written.
+- [x] **BS2: the rig eats the view - RESOLVED across sessions 36-37.** The helmet half: hidden
+      by default since session 36 (edge-of-FOV placement impossible for a single mesh at that
+      distance; the checkbox in FILL THE VIEW is the A/B). The black-bars half was the FOV
+      deficit, closed by session 37's picker + automatic FOV (accepted in-headset 2026-08-03:
+      "the FOV is filling the screen").
+- [x] **BS2 teardown crash on stereo-armed close - RESOLVED session 38, and the premise was
+      wrong**: the close-time fault (`+0x4FF0FE` display-apply null read) is the GAME'S OWN
+      exit bug - it fires with every mod hook skipped (`BVR_SKIP` bisect run G4) and vanilla
+      merely hides it (CSERHelper eats the fault, 0.1 s teardown CPU). Stereo was never the
+      cause. Fix: teardown-aware crash handling (WM_CLOSE/WM_DESTROY noted by the overlay
+      WndProc -> faults get one log line, no dump, immediate TerminateProcess) + adapter
+      hygiene gates + drain-guard poison hardening. Closes now 0.1-0.3 s, zero dumps -
+      faster than vanilla. Accepted: 3 armed sim closes + 5-min armed soak, AND the
+      in-game quit from gameplay with save-before-exit, flat (save written, WM_DESTROY
+      noted, zero dumps; a teardown-gate deadlock was caught and fixed in the same round,
+      plus a 15 s exit watchdog). No user half remains. Full derivation: ENGINE_NOTES
+      session 38 + wrap-up round.
+- [x] **VR PACING (BLOCKER - the game is unplayable in VR)** - an OpenXR session that is running
+      but not FOCUSED paces the game at the runtime's not-visible cadence (~10 Hz). Alt-tab
+      reproduces it. Not a block (`lastWait 0 ms`); the frame HANDOFF is what paces. Session 28's
+      "keep submitting while unfocused" must be preserved - the fix is to stop WAITING, not to
+      stop submitting.
+      (DONE across sessions 34-36: session 34 moved the wait off the present thread and added the
+      detach lever; session 36's first real VDXR attach then showed detach STRANDS the headset -
+      VDXR never re-promotes empty keepalives - so BS2 ships detach OFF and self-heals on refocus,
+      the unfocused frame loop measured cheap (lastEnd ~1 ms at VISIBLE). Residue queued in STATUS:
+      keepalives that carry real layers, so detach-on gets recovery too.)
+- [x] **BS2 vrstereo FREEZE (RELEASE BLOCKER, sessions 34-36) - RESOLVED; full-rate stereo ships
+      on `reentry 1t`.** Root cause (session 35, verified live session 36): Draw's tail calls a
+      render flush point (0x69FC30) whose threaded branch is a latch-test-then-Wait(INFINITE);
+      the doubled draw raced it and the lost wakeup wedged the game in 5-100 s. Measured session
+      36: the wait was entered on EVERY doubled frame at every resolution (`wait2/s == 2nd/s`) -
+      the resolution/FOV work never created reachability. Fix: BS1's session-8 cure duplicated
+      with fresh constants (drain guard + flush-point force; quotient never poked), ~15% draw
+      cost. Accepted: 10-min decider soak in the user's save, user-driven load-crossing matrix
+      (stereo sticky, guardskips 0), and an immersive in-headset run of full-rate stereo on 1t.
+      Full derivations: ENGINE_NOTES "The render flush point"; history: FREEZE_HANDOFF.md.
 - [ ] **BS2 pitch-servo sign check in-headset** - the one thing flat cannot answer about the
       session-32 fix.
 - [ ] **BS2 swing-to-attack** - one `swing::publish_gate` line plus the melee-equipped predicate
       (the hard part; prefer the ProcessEvent-by-name seam). Unblocked now that `vrinput` reaches
       core's flat test suite on BS2.
+
+### M10.1 - BS2 motion controls (session 39; M6/M7-parity, derived fresh)
+
+- [x] **Dispatch verdict** (session 39): GetPerfectFireStart is native-to-native (probe:
+      fire-watch on Lane-A FName globals + full PE census, GNames 0x1A614D0 fresh);
+      InitiateDamage is PE-visible 1:1 with fires - the by-name timing anchor.
+- [x] **Decoupled aim, flat-proven** (session 39): both impls hooked (weapon 0x89DCB0 via
+      vtbl-slot census - one body for the whole family incl. the drill; ability 0x81CE80
+      via targeted sweep), out-param rotator substitution moves impacts with the camera
+      provably static - "look left while shooting right" on BS2.
+- [x] **XR hand ray drives the seam** (session 39): b2r frame_context (xr_local_trim_quat
+      algebra), 1:1 rotator substitution (25.00 deg delta exact), 250 ms freshness gate.
+- [x] **Laser + aim dot** (session 39): compositor quads under SR stereo; dot published
+      from the final fire point, round-trip error 0.0000 UU.
+- [x] **The rig rides the controller** (session 39): AHands -> SkeletonInstance +0x430,
+      64-bone pose bank poke-proven; rigid cluster drive, NO lock domain; coupling
+      acceptance aimRayMaxDevDeg constant (0/0/0/0.02/0), write-loc at exactly 100 UU/m.
+- [x] **Cheats lane** (session 39): F9=GiveAll by effect; digit-key weapon switching flat.
+- [x] **input_drive port** (session 40): UpdateInput IS in the binary but orphaned (viewport
+      vtbl slot 73, zero callers) - pumped per present + SetUseController through the client's
+      own slot 73, all RVAs fresh (GEngine ptr 0x1A638F0, IAT slot 0x1C0DBFC). Flat-proven:
+      sticks walk the player ~400 UU, a synthetic trigger fires through the seam, the main
+      menu navigates on the dpad, and the engine's own UI switched to controller prompts.
+- [x] **Per-hand clusters** (session 40): bone-name map auto-detected at
+      SharedSkeletonData+0xB4 (64/64 named) -> left = wrist 7 + fingers 8..28 + pivot 62,
+      right = wrist 36 + fingers 37..57 + pivot 63 (the weapon attach, proven by driving it
+      alone). Each cluster tracks its own controller: 35.0 UU on the moved hand, 0.0 on the
+      other, 120.0 UU separation for 1.2 m apart.
+- [x] **Model alignment + scale + bullet origin** (session 40 - the first look's top three
+      defects): the composition was DISCARDING the anchor's authored frame; fixed, so the
+      mesh-vs-authored angle at rest is 0.21 deg (was ~81.6). `vrhands scale` scales about
+      the anchor (anchor invariant to 0.00 UU) and is independent of worldscale. Bullets
+      leave the hand (61.9 UU displacement, clamped at 200).
+- [x] **Dual lasers + dual dots** (session 40, user's call - BS2 is natively dual-wield):
+      both hands render a beam and a dot, 11 of the 16 compositor layers, each beam
+      terminating at its own dot so there is one bright point per hand.
+- [x] **Aim/model sliders + presets** (session 40): F10 "HANDS + AIM (per hand)" panel with a
+      tuning-hand radio; 14 new vrpreset keys (a fresh boot loads 22 values, was 8).
+- [ ] **In-headset acceptance**: aim-follows-controller + model-in-tune-with-laser (the
+      session-21 "perfect" bar), at the user's save.
+- [ ] **Ability seam live check**: BLOCKED on a projectile plasmid, not on the seam.
+      Telekinesis provably does not traverse GetPerfectFireStart (two casts at a grabbable
+      object, abi stayed 0), and `<X>BasicPlasmid` exists ONLY for Telekinesis in the exe -
+      the other item class names are in the content packages and still have to be found.
+- [x] **Per-weapon profiles** (session 41): holdable derived fresh (hands+0x4B4, both
+      methods agreeing), UObject identity chain (UClass vtable 0x11E71F8, 3 classes),
+      BS1's session-21 shape ported under all four seeding rules - RIGHT hand + uniform
+      weapon scale per weapon (user decision; left stays global). Flat-proven: pre-fire
+      keying, stash/seed/restore round-trip with no edit leak, weapons.ini persistence
+      (2 profiles / 26 values at boot).
+- [x] **Animation-preserving drive** (session 41): the rigid drive REPLACED driven bones
+      (erased melee animations; engine restamps = the left-eye flicker). Now the drive
+      adopts the engine's evaluated trans+quat per bone (scale NEVER adopted - structural
+      compounding guard) and composes the controller frame on top; absorb-then-recompose
+      repaint on pass 1. Flat: adoption live (~7 absorbs/drive/hand), drill-region motion
+      during a trigger pulse, no scale-flick alternation, write-loc 100 UU/m exact,
+      anim-off bitwise-stable (the rigid fallback).
+- [x] **Uniform weapon scale** (session 41): the holdable's OWN SkeletonInstance
+      (holdable+0x430, two-factor identity) - `vrhands wscale` scales body AND canister
+      together (the session-40 inverse-scale repro INVERTED at 0.5/2.0), weapon anims
+      keep playing while scaled, 1.0 = restore + hands-off. Pivot-63 `scaleweapon` kept
+      as fallback, default OFF.
+- [x] **Session-41 polish**: arms-hide collapses onto the driven wrist (the skin-web
+      fix); F10 always-visible top PRESET section ("applies/saves ALL settings and
+      values"); vrinput default-ON at boot (BS2-local); per-hand aimRayMaxDevDegL/R in
+      the sim (dual-beam acceptance reads 0.0000/0.0000).
+- [ ] **Session-41 in-headset acceptance**: melee/reload animations play on driven hands;
+      scale-flick flicker gone; arms-hide web gone; per-weapon tuning + uniform weapon
+      scale feel; idle sway verdict (anim on vs off).
+
+### M10.2 - BS2 presentation (session 42; BS1 M8/M9 parity, derived fresh)
+
+- [x] **HUD on a readable floating panel** - BS2 is a BACKBUFFER-COMPOSITE pipeline
+      (indexed tonemap onto a RENDER_TARGET-only backbuffer) that no BS1 fingerprint
+      matched; core gained a flag-gated mode (default off, BS1 bit-identical). Flat
+      gates all green: hudDraws=redirects=12352, **leaks=0**, stranded=0, HUD quad =
+      12th layer space=view at the preset-tuned pose, window composite intact,
+      health/EVE fills keep their colour (the BS1 bar-fill collision does not
+      manifest - BS2's fills are textured). `vrhud force` makes it flat-testable.
+- [x] **HUD quad + cine + crosshair preset keys** (10 new; 59 values load at boot;
+      dist round-tripped a relaunch through the live quad).
+- [x] **Fullscreen screens route GENERICALLY** (user decision): loading + pause menu
+      measured SCREEN-ONLY -> head-locked quad; title/menu attract = strict
+      projection. Vending/gene bank/hacking/map ride the same generic route +
+      auto-armed evidence dumps (`vrcine dumparm`, bars edge armed at init).
+- [x] **Cinematic gates fixed + consumed**: camera keys on `cinematic_hold()` (the
+      letterbox() predicate was dead with bars hidden); `vrcine drive
+      off|authored|authored+look` consumed by camera/aim/hands/wskel; authored+look
+      ported (deltas only, residual 0); bones release interlock (s29 leg) +
+      wskel_release; log-only cine edge instrument.
+- [x] **Pad-A activation (menukey)**: A -> scancode Enter, menu-gated + foreground
+      + stuck-key cap, default ON. Title-continue accepts NATIVE pad A (proven).
+      Known limits: pause menu starves the whole service lane (structural,
+      pre-existing); main-menu leg unverified in sim.
+- [x] **Game crosshair hidden by default** (user ask): ShockPlayer.DisableReticle
+      via the engine's own FFC+ProcessEvent (the PE-by-name precedent), 5 s
+      re-assert, `vrxhair` + F10 + preset key, A/B screenshot-proven.
+- [x] **Flicker diagnosis armed at boot**: per-site catch phases, dmax latency,
+      cadence baseline, correlates, `[flick]` per-minute line (proven flowing for
+      4 min; ambient baseline banked in ENGINE_NOTES s42).
+- [ ] **BS2 bars-verts constant** (C10): underived until a real cutscene renders -
+      the auto-armed bars-edge dump harvests it; then patterns::kCineBarVerts +
+      `hud::set_bar_verts` at init + derivation note, one commit.
+- [ ] **Session-42 in-headset acceptance**: panel readability/placement (F10
+      sliders + SAVE), screens land readable during play, cutscene drive-mode
+      verdicts + hands return at cine exit, crosshair-hidden feel, menukey reach
+      report (which menus A now activates), 12+ min play for the [flick] readout.
 
 ## Post-v1 backlog (not scheduled)
 

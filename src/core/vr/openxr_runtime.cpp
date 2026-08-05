@@ -26,6 +26,8 @@
 
 #include <imgui.h>
 
+#include <tlhelp32.h>
+#include <share.h>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -83,6 +85,20 @@ std::atomic<float> g_laserModelPitchTrim{0.0f}, g_laserModelYawTrim{0.0f},
 std::atomic<uint32_t> g_laserLayersSubmitted{0};
 std::atomic<bool> g_loggedFirstLaser{false};
 
+// Session 40: an ADDITIVE second laser + dot slot, for games whose hands are
+// both active at once (BS2's native dual-wield). Nothing writes these unless a
+// game calls set_laser_slot(1, ...) / set_aim_dot_slot(1, ...), so BS1's
+// submit path is unchanged - it sees `on == false` and builds zero layers.
+// The layer budget is shared, not grown: both beams together are still capped
+// at kMaxLaserDots quads, so the worst case stays 1 projection + 8 laser +
+// 2 dots + 1 HUD = 12 of the 16 layers a runtime must accept.
+std::atomic<bool> g_laser2On{false};
+std::atomic<int> g_laser2Hand{0};
+std::atomic<float> g_laser2PitchTrim{0.0f}, g_laser2YawTrim{0.0f};
+std::atomic<float> g_laser2PosFwdCm{0.0f}, g_laser2PosRightCm{0.0f}, g_laser2PosUpCm{0.0f};
+std::atomic<int> g_laser2Dots{4};
+std::atomic<float> g_laser2NearM{0.30f}, g_laser2FarM{6.0f}, g_laser2SizeDeg{0.7f};
+
 // Session 29 aim dot: one more quad off the SAME tiny swapchain, positioned
 // from a point the game thread already converted into XR space (see
 // AimDotConfig). Stamped so a stale publish cannot leave a dot hanging in the
@@ -94,6 +110,12 @@ std::atomic<float> g_dotSizeDeg{0.5f};
 std::atomic<uint64_t> g_dotStampMs{0};
 std::atomic<uint32_t> g_dotLayersSubmitted{0};
 std::atomic<bool> g_loggedFirstDot{false};
+// Second dot slot (session 40, same additive rule as the second laser).
+std::atomic<bool> g_dot2On{false};
+std::atomic<bool> g_dot2Valid{false};
+std::atomic<float> g_dot2X{0.0f}, g_dot2Y{0.0f}, g_dot2Z{0.0f};
+std::atomic<float> g_dot2SizeDeg{0.5f};
+std::atomic<uint64_t> g_dot2StampMs{0};
 constexpr uint64_t kDotStaleMs = 250; // matches aim.cpp's ray_for() freshness gate
 
 // Controls (overlay writes, render thread reads).
@@ -136,6 +158,10 @@ XrView g_viewsContent[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 bool g_viewsContentValid = false;
 bool g_viewsValid = false;
 std::atomic<float> g_hfovDeg{0.0f};      // circumscribed symmetric hfov, read cross-thread
+// Session 34: the headset eye's own half-angles in degrees (0 until the first
+// locate). Exposed so an adapter can say, on screen, how much of the eye its
+// render is actually filling - which is the whole diagnosis of "black bars".
+std::atomic<float> g_headsetHalfH{0.0f}, g_headsetHalfV{0.0f};
 std::atomic<float> g_renderedHfov{0.0f}; // fov the game actually rendered (adapter readback)
 // Distortion calibration: the readback reads the same engine address we write,
 // so under forcing it echoes our own value and cannot see how the RENDERER
@@ -325,6 +351,230 @@ const char* g_teardownPending = nullptr;
 constexpr uint32_t kPaceDeadlineFocusedMs = 200;
 constexpr uint32_t kPaceDeadlineIdleMs = 20;
 
+// ---- Session 34: DETACHED PACING - an unfocused session must not own the
+// ---- game thread's frame loop ------------------------------------------------
+// Session 28 stopped SKIPPING frames while unfocused, and that reasoning holds:
+// a runtime will not re-grant FOCUSED to an app that submits nothing, so
+// skipping is what made the alt-tab freeze permanent. What it missed is that
+// "not blocked" is not "not harmed" - the present thread still walked the whole
+// frame loop at the runtime's not-visible cadence (~10 Hz measured), and the
+// game inherited it. In a headset that reads as a freeze; flat it reads as
+// `draws/s 10`.
+//
+// The fix keeps both properties by SPLITTING THE TWO DUTIES onto two threads:
+//   submission  the pace thread runs the entire frame loop by itself -
+//               xrWaitFrame -> xrBeginFrame -> xrEndFrame with zero layers -
+//               so the app keeps a live frame loop and can earn FOCUSED back.
+//   pacing      the present thread makes NO blocking XR call at all, so
+//               whatever the runtime does to its own cadence cannot reach the
+//               game thread. That is deliberately phase-agnostic: it holds
+//               whether the blocking call is xrWaitFrame, xrWaitSwapchainImage
+//               (which waits XR_INFINITE_DURATION) or xrEndFrame.
+// Zero layers is the honest submission here: while merely SYNCHRONIZED,
+// shouldRender is false and there is nothing to show anyway. While VISIBLE it
+// means the headset image holds still during the seconds the desktop has focus,
+// which is the alt-tab-to-type case this exists to fix.
+//
+// WHICH CALL BLOCKS - MEASURED, not inferred (session 34, and the whole reason
+// the phase timers went in first). At the FOCUSED -> VISIBLE transition:
+//
+//   presentBegin=152417 presentEnd=101853 wait=10782 beginFrame=29 locate=15
+//   acquire=11 capture=4 endFrame=101847 composite=47      (max us)
+//
+// **xrEndFrame is the pacer at 101.8 ms** - one not-visible period, matching
+// the 10 Hz and `call2Us 99765` exactly. NOT the frame handoff, which session
+// 33 named and which maxes at 10.8 ms; not xrWaitSwapchainImage at 11 us.
+//
+// WHY THE FRAME LOOP IS NOT MOVED OFF THE PRESENT THREAD - a dead end, recorded
+// so nobody re-walks it. The first cut of this fix had the pace thread run the
+// whole loop (wait/begin/end, zero layers) while unfocused. It works, and the
+// log shows it handing over and back cleanly - but it CRASHED the game nine
+// milliseconds into the second detach: a write to NULL inside game code, then a
+// chained handler retrying the faulting instruction 86000 times. The reason is
+// structural: xrEndFrame touches the D3D11 device, the present thread keeps
+// running composite_hud/mirror_present on the same IMMEDIATE CONTEXT, and a
+// D3D11 immediate context is not thread-safe. Session 28 got away with moving
+// xrWaitFrame off-thread precisely because that call touches no D3D. Doing this
+// properly needs the XR session on its own device with shared textures, which
+// is a bigger change than a pacing fix should carry.
+//
+// THE RATE-LIMITED KEEPALIVE IS ALSO A DEAD END, and this one was measured in
+// the field rather than reasoned about. Running the frame loop once a second
+// while unfocused survived four intervals and wedged on the fifth:
+//
+//   19:45:09 VISIBLE -> DETACHED (keepalive 1000 ms)
+//   19:45:09/10/11/12  SUBMISSION IDLE, frames=5896   <- alive, one loop per second
+//   19:45:13           nothing, ever again; present thread blocked in a wait
+//
+// So while unfocused xrEndFrame does not block for ~100 ms - it eventually
+// blocks FOREVER, exactly as session 28 found for xrWaitFrame with the headset
+// idle. Rate-limiting only chooses which call wedges.
+//
+// WHAT SHIPS: while the session is not FOCUSED the present thread makes NO
+// blocking OpenXR call at all - no wait, no begin, no end. Recovery is by
+// EVENT: pump_events runs first thing every present, is non-blocking, and needs
+// no submission to see FOCUSED come back.
+//
+// This looks like session 28's rejected "skip", and the difference matters:
+// session 28 rejected it because FOCUSED never returned, but its real bug was
+// that the pair-hold returned ABOVE pump_events so no events were polled at
+// all - fixed since, separately. Tonight's log settles it directly: FOCUSED was
+// re-granted after an episode of 755 unpaced presents carrying just 4 submitted
+// frames, so this runtime plainly does not require a frame stream to hand focus
+// back. `vrpace keepalive <ms>` can put submission back for anyone whose
+// runtime does; it defaults to 0 because 0 is the setting that survived.
+//
+// DEFAULT OFF IN CORE, ON PER GAME. BioShock 1 is the headset-accepted baseline
+// and the project rule is that a core change must not move a BS1 path; the BS2
+// adapter opts in via set_pace_detach(), BS1 keeps byte-identical behaviour and
+// can opt in later on its own test. `vrpace detach on|off` is the live A/B, and
+// proving causation with it is part of the acceptance.
+std::atomic<bool> g_paceDetach{false};
+// While unfocused, run the frame loop at most this often. The whole cost of an
+// unfocused session is now one blocking xrEndFrame per interval instead of one
+// per present. Tunable live (`vrpace keepalive <ms>`) because the right value
+// is a judgement about hitch-versus-recovery that only the headset can settle.
+// 0 = NEVER touch the frame loop while unfocused, which is the default and the
+// only setting shown to survive. Non-zero is kept as an experiment lever only.
+std::atomic<uint32_t> g_paceKeepaliveMs{0};
+uint64_t g_lastKeepaliveMs = 0; // present thread only
+bool g_detachedNow = false;     // present thread only
+std::atomic<uint32_t> g_detachSkips{0}, g_detachKeepalives{0}, g_detachEpisodes{0};
+
+// ---- Session 34: present-path PHASE TIMING ---------------------------------
+// Session 33 concluded that the frame HANDOFF paces the game thread. Its own
+// telemetry refuses that: `lastWait 0 ms` says xrWaitFrame returned instantly,
+// and `timeouts 0` says the present thread never once reached its 20 ms handoff
+// deadline - so neither of those two calls blocked, while the game still ran at
+// 10 Hz with call2Us 99765. The ~100 ms was in a present-path phase that had
+// never been timed (xrWaitSwapchainImage waits XR_INFINITE_DURATION; xrEndFrame
+// was never measured at all).
+//
+// These timers exist so the phase that blocks is NAMED before anything is
+// changed. A fix aimed at the wrong phase is indistinguishable from no fix, and
+// this project has already spent a session on a mechanism its own numbers
+// contradicted. `presentBegin` and `presentEnd` are the whole detour halves, so
+// "is the stall even ours?" is answerable in one glance: if both are near zero
+// while the game crawls, the pacer is not in this file.
+enum PacePhase {
+    kPhPresentBegin = 0, // the whole on_present_begin
+    kPhPresentEnd,       // the whole on_present_end
+    kPhWait,             // handoff wait, or the inline xrWaitFrame
+    kPhBeginFrame,       // xrBeginFrame
+    kPhLocate,           // xrLocateSpace + xrLocateViews
+    kPhAcquire,          // xrAcquireSwapchainImage + xrWaitSwapchainImage (eye)
+    kPhCapture,          // capture_frame blit
+    kPhEndFrame,         // xrEndFrame
+    kPhComposite,        // composite_hud + mirror_present
+    kPhCount,
+};
+const char* const kPhaseNames[kPhCount] = {"presentBegin", "presentEnd", "wait",
+                                           "beginFrame",   "locate",     "acquire",
+                                           "capture",      "endFrame",   "composite"};
+std::atomic<uint32_t> g_phaseLastUs[kPhCount]{};
+std::atomic<uint32_t> g_phaseMaxUs[kPhCount]{};
+std::atomic<bool> g_lastShouldRender{false};
+// Presents seen by this module, so the overlay can show a rate without pulling
+// in the d3d11 hook. THE number the user is judging: it is what "the game is at
+// 10 Hz" means, on screen, next to the toggle that changes it.
+std::atomic<uint32_t> g_presentsSeen{0};
+int64_t g_qpcFreq = 0;
+
+int64_t phase_now() {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+void phase_record(int ph, int64_t t0) {
+    if (g_qpcFreq == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        g_qpcFreq = f.QuadPart ? f.QuadPart : 1;
+    }
+    uint32_t us = static_cast<uint32_t>((phase_now() - t0) * 1000000 / g_qpcFreq);
+    g_phaseLastUs[ph].store(us, std::memory_order_relaxed);
+    if (us > g_phaseMaxUs[ph].load(std::memory_order_relaxed))
+        g_phaseMaxUs[ph].store(us, std::memory_order_relaxed);
+}
+
+// ---- WHAT IS THE PRESENT THREAD INSIDE, RIGHT NOW? -------------------------
+// The timers above only record a span once it RETURNS. A call that never
+// returns is exactly the case we care about, and it makes them silent - which
+// is indistinguishable from "nothing happened". These two say what the present
+// thread entered and when, so the trace thread below can report a call that is
+// still running after N seconds. Written by the present thread, read by the
+// trace thread; relaxed is fine because a torn read only misnames one sample.
+std::atomic<int> g_curPhase{-1};
+std::atomic<int64_t> g_curPhaseT0{0};
+// Which segment of the Present detour we are in, including the segments this
+// file does not own (overlay, HUD capture, frame inspector, the game's own
+// Present). String literals only.
+std::atomic<const char*> g_presentStage{nullptr};
+std::atomic<int64_t> g_presentStageT0{0};
+std::atomic<const char*> g_drawStage{nullptr};
+std::atomic<int64_t> g_drawStageT0{0};
+std::atomic<uint32_t> g_drawStageTid{0};
+// Session 35: STICKY thread ids, never cleared, plus a fire counter.
+// g_drawStageTid is zeroed when the stage closes, and the old watchdog trigger
+// required a stage to be OPEN - so it could only ever fire inside the doubled
+// draw, the one path that opens one. Every other wedge (present thread, render
+// worker, a build with stereo off) produced TRACE lines and no capture at all,
+// which made a clean soak of any non-stereo mode vacuous rather than reassuring.
+// These give the trigger something to aim at when no stage is open.
+std::atomic<uint32_t> g_lastDrawTidSticky{0};
+std::atomic<uint32_t> g_presentTidSticky{0};
+std::atomic<uint32_t> g_watchdogFires{0};
+
+// Records on every return path, which is what makes the two whole-half timers
+// trustworthy - on_present_begin alone has nine early returns.
+struct PhaseScope {
+    int ph;
+    int64_t t0;
+    int prevPh;
+    int64_t prevT0;
+    explicit PhaseScope(int p) : ph(p), t0(phase_now()) {
+        prevPh = g_curPhase.load(std::memory_order_relaxed);
+        prevT0 = g_curPhaseT0.load(std::memory_order_relaxed);
+        g_curPhaseT0.store(t0, std::memory_order_relaxed);
+        g_curPhase.store(p, std::memory_order_relaxed);
+    }
+    ~PhaseScope() {
+        phase_record(ph, t0);
+        g_curPhase.store(prevPh, std::memory_order_relaxed);
+        g_curPhaseT0.store(prevT0, std::memory_order_relaxed);
+    }
+    PhaseScope(const PhaseScope&) = delete;
+    PhaseScope& operator=(const PhaseScope&) = delete;
+};
+
+
+// Names the exact call in flight for the trace thread, restoring the enclosing
+// span on the way out. Used only around calls that can actually block, so the
+// trace can say "IN endFrame for 4200 ms" instead of the containing half.
+struct PhaseMark {
+    int prevPh;
+    int64_t prevT0;
+    explicit PhaseMark(int p) {
+        prevPh = g_curPhase.load(std::memory_order_relaxed);
+        prevT0 = g_curPhaseT0.load(std::memory_order_relaxed);
+        g_curPhaseT0.store(phase_now(), std::memory_order_relaxed);
+        g_curPhase.store(p, std::memory_order_relaxed);
+    }
+    ~PhaseMark() {
+        g_curPhase.store(prevPh, std::memory_order_relaxed);
+        g_curPhaseT0.store(prevT0, std::memory_order_relaxed);
+    }
+    PhaseMark(const PhaseMark&) = delete;
+    PhaseMark& operator=(const PhaseMark&) = delete;
+};
+
+// A phase that blocks for longer than this while the session is NOT focused is
+// the bug: nothing off the headset's own display cadence has any business
+// costing the game thread a frame's worth of time.
+constexpr uint32_t kPhaseAlarmUs = 8000;
+uint64_t g_lastPhaseLogMs = 0;
+
 // M8 release blocker (b): the desktop mirror. Under SequentialReentry every
 // Present alternates the backbuffer between the two eyes, so the flat window
 // cannot be streamed, recorded, or shown. Fix: LEFT-eye presents snapshot the
@@ -464,6 +714,533 @@ bool pace_should_skip(XrSessionState state, bool everFocused, uint64_t now) {
     }
     g_paceSkips.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+// ---- THE PACE TRACE, on its OWN thread -------------------------------------
+// Every other log line in this file is written by the present thread. When that
+// thread is blocked - which is the entire failure mode under investigation -
+// the log goes silent, and silence reads exactly like "nothing is wrong". Three
+// sessions have now been spent inferring from that silence.
+//
+// This thread reports once a second regardless of what the game is doing, and
+// carries the four facts that separate the candidate explanations:
+//
+//   presents/s     is the GAME still presenting? BS2 pauses presenting when its
+//                  window loses focus - documented in this repo's own harness
+//                  scripts - so an alt-tab freeze may be the game's own
+//                  behaviour and not the XR session at all. Nothing so far has
+//                  told these two apart.
+//   fg             is our window foreground? The above only means anything
+//                  alongside this.
+//   submitted/s    are frames reaching the headset? A live game with a frozen
+//                  headset image and a frozen game look identical from inside
+//                  the headset, and they need opposite fixes.
+//   IN <phase>     what the present thread entered and has not come back from.
+//                  This is the one the after-the-fact timers structurally
+//                  cannot report.
+HANDLE g_traceThread = nullptr;
+std::atomic<bool> g_traceRun{false};
+std::atomic<uint32_t> g_presentsAtTrace{0};
+
+// Sampled ON THE PRESENT THREAD and read by the trace. USER32 calls can block
+// on a wedged UI thread, and the trace must touch nothing that the freeze can
+// hold - a stale flag is honest, a blocked tracer is not.
+std::atomic<bool> g_appForeground{false};
+
+void sample_foreground() {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    g_appForeground.store(pid == GetCurrentProcessId(), std::memory_order_relaxed);
+}
+
+// The trace writes to its OWN file with its OWN handle. BVR_LOG serialises on a
+// process-global std::mutex, so a thread wedged anywhere near a log call takes
+// the tracer down with it - which is exactly what happened: the BS2 stereo
+// freeze produced ZERO trace lines because the tracer was queued behind the
+// very stall it was built to describe. An instrument that shares a lock with
+// its subject is not an instrument.
+FILE* g_traceFile = nullptr;
+
+void trace_write(const char* line) {
+    if (!g_traceFile) {
+        wchar_t path[MAX_PATH];
+        const wchar_t* base = bvr::log::data_dir();
+        if (!base || !base[0]) return;
+        swprintf_s(path, L"%s\\pacetrace.log", base);
+        // _SH_DENYWR so the file can be tailed WHILE the game is frozen -
+        // the default deny-all open made the trace unreadable at exactly the
+        // moment it mattered.
+        g_traceFile = _wfsopen(path, L"a", _SH_DENYWR);
+        if (!g_traceFile) return;
+    }
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    fprintf(g_traceFile, "[%02u:%02u:%02u.%03u] %s\n", st.wHour, st.wMinute, st.wSecond,
+            st.wMilliseconds, line);
+    fflush(g_traceFile); // the process may be killed at any moment
+}
+
+// ---- Session 34: THE STALL WATCHDOG ----------------------------------------
+// The freeze is a call inside the game that never returns, and the mod is not
+// on that stack - so no amount of our own logging can name it. This suspends
+// the wedged thread, reads its instruction pointer, and scans its stack for
+// return addresses that fall inside the game image. Those RVAs, run through
+// tools/disasm-rva.py, are what turn "secondDraw never returned" into a named
+// engine function.
+//
+// Suspending a thread from another thread is only safe because we do nothing
+// that can allocate or take a lock while it is suspended: read the context,
+// copy raw dwords, resume. The formatting happens afterwards.
+uintptr_t g_exeLo = 0, g_exeHi = 0;
+
+void capture_exe_bounds() {
+    if (g_exeLo) return;
+    HMODULE exe = GetModuleHandleW(nullptr);
+    if (!exe) return;
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(exe);
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<uint8_t*>(exe) +
+                                                   dos->e_lfanew);
+    g_exeLo = reinterpret_cast<uintptr_t>(exe);
+    g_exeHi = g_exeLo + nt->OptionalHeader.SizeOfImage;
+}
+
+// Resolve an address to "module+offset" (a DLL name is not game-derived).
+void describe_addr(uintptr_t a, char* out, size_t cap) {
+    out[0] = 0;
+    if (!a) return;
+    HMODULE hm = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(a), &hm) &&
+        hm) {
+        wchar_t wpath[MAX_PATH] = {};
+        GetModuleFileNameW(hm, wpath, MAX_PATH);
+        const wchar_t* b = wcsrchr(wpath, L'\\');
+        b = b ? b + 1 : wpath;
+        char nm[64] = {};
+        WideCharToMultiByte(CP_UTF8, 0, b, -1, nm, sizeof(nm), nullptr, nullptr);
+        sprintf_s(out, cap, "%s+0x%X", nm,
+                  static_cast<unsigned>(a - reinterpret_cast<uintptr_t>(hm)));
+    } else {
+        sprintf_s(out, cap, "%08X", static_cast<unsigned>(a));
+    }
+}
+
+// Snapshot EVERY thread in the process, one at a time. A deadlock has two
+// sides, and naming only the side that stopped first cannot distinguish "waits
+// on the render thread" from "waits on something nobody will ever signal".
+// Suspends one thread at a time and formats afterwards, so the watchdog can
+// never be holding a CRT lock that a suspended thread needs.
+// SESSION 35: this printed NOTHING, every time, and the reason it printed
+// nothing was indistinguishable from "there was nothing to print" - it had five
+// exits and all five were silent. A diagnostic that cannot report its own
+// failure is worse than none, because a blank section reads as an answer.
+//
+// Two substantive changes beyond the logging:
+//   - the `nf == 0` filter is GONE. It was justified as "only threads with game
+//     code are interesting", but the other side of a deadlock is precisely a
+//     worker parked in ntdll with no game frames near the top of its stack. The
+//     filter was hiding the one thread this function exists to find.
+//   - the scan window matches watchdog_capture (8192 dwords / 24 frames). At
+//     1024/6 it gave up before reaching the first in-image return on any thread
+//     with a deep native prologue.
+void watchdog_all_threads() {
+    capture_exe_bounds();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        char m[128];
+        sprintf_s(m, "  WATCHDOG: thread snapshot FAILED (%lu) - no thread list this episode",
+                  GetLastError());
+        trace_write(m);
+        return;
+    }
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    DWORD self = GetCurrentThreadId();
+    DWORD pid = GetCurrentProcessId();
+    int seen = 0, reported = 0, openFail = 0, suspFail = 0, ctxFail = 0, noEip = 0;
+    DWORD firstOpenErr = 0;
+    if (!Thread32First(snap, &te)) {
+        char m[128];
+        sprintf_s(m, "  WATCHDOG: Thread32First FAILED (%lu)", GetLastError());
+        trace_write(m);
+        CloseHandle(snap);
+        return;
+    }
+    do {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+        ++seen;
+        HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE,
+                               te.th32ThreadID);
+        if (!th) {
+            if (!firstOpenErr) firstOpenErr = GetLastError();
+            ++openFail;
+            continue;
+        }
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        uintptr_t eip = 0, esp = 0;
+        uintptr_t fr[24] = {};
+        int nf = 0;
+        bool suspended = false, gotCtx = false;
+        if (SuspendThread(th) != static_cast<DWORD>(-1)) {
+            suspended = true;
+            if (GetThreadContext(th, &ctx)) {
+                gotCtx = true;
+                eip = ctx.Eip;
+                esp = ctx.Esp;
+                const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(esp);
+                for (int i = 0; i < 8192 && nf < 24; ++i) {
+                    uintptr_t v = 0;
+                    __try {
+                        v = sp[i];
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        break;
+                    }
+                    if (v >= g_exeLo && v < g_exeHi) fr[nf++] = v;
+                }
+            }
+            ResumeThread(th);
+        }
+        CloseHandle(th);
+        if (!suspended) { ++suspFail; continue; }
+        if (!gotCtx) { ++ctxFail; continue; }
+        if (!eip) { ++noEip; continue; }
+
+        char where[96];
+        describe_addr(eip, where, sizeof(where));
+        // Chunked: msg[320] silently truncated the RVA list at ~24 entries, and a
+        // truncated stack reads as a short one.
+        char msg[320];
+        int n = sprintf_s(msg, "  thread %5u at %-30s exe:", te.th32ThreadID, where);
+        if (nf == 0) {
+            sprintf_s(msg + n, sizeof(msg) - n, " (none)");
+            trace_write(msg);
+        } else {
+            for (int i = 0; i < nf; ++i) {
+                if (n > static_cast<int>(sizeof(msg)) - 12) {
+                    trace_write(msg);
+                    n = sprintf_s(msg, "  thread %5u  ...cont exe:", te.th32ThreadID);
+                }
+                n += sprintf_s(msg + n, sizeof(msg) - n, " %X",
+                               static_cast<unsigned>(fr[i] - g_exeLo));
+            }
+            trace_write(msg);
+        }
+        if (++reported >= 64) break;
+    } while (Thread32Next(snap, &te));
+    CloseHandle(snap);
+
+    // The tally is the point: "reported=0 openFail=37" and "reported=0 seen=0"
+    // are completely different bugs, and the old code rendered both as silence.
+    char tally[224];
+    sprintf_s(tally,
+              "  WATCHDOG threads: seen=%d reported=%d openFail=%d(err %lu) "
+              "suspFail=%d ctxFail=%d noEip=%d",
+              seen, reported, openFail, firstOpenErr, suspFail, ctxFail, noEip);
+    trace_write(tally);
+}
+
+void watchdog_capture(uint32_t tid, const char* what, int64_t stuckMs) {
+    capture_exe_bounds();
+    if (!g_exeLo || !tid) return;
+    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                           FALSE, tid);
+    if (!th) {
+        char msg[128];
+        sprintf_s(msg, "WATCHDOG: OpenThread(%u) failed (%lu)", tid, GetLastError());
+        trace_write(msg);
+        return;
+    }
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    uintptr_t frames[24] = {};
+    int nFrames = 0;
+    uintptr_t eip = 0, esp = 0, ebp = 0;
+    if (SuspendThread(th) != static_cast<DWORD>(-1)) {
+        if (GetThreadContext(th, &ctx)) {
+            eip = ctx.Eip;
+            esp = ctx.Esp;
+            ebp = ctx.Ebp;
+            // Raw stack scan: every dword in the first 8 KB that lands inside
+            // the game image is a plausible return address. Crude, but it needs
+            // no symbols and no unwind data, and the histogram is unambiguous.
+            const uintptr_t* p = reinterpret_cast<const uintptr_t*>(esp);
+            for (int i = 0; i < 2048 && nFrames < 24; ++i) {
+                uintptr_t v = 0;
+                __try {
+                    v = p[i];
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    break;
+                }
+                if (v >= g_exeLo && v < g_exeHi) frames[nFrames++] = v;
+            }
+        }
+        ResumeThread(th);
+    }
+    CloseHandle(th);
+
+    // WHICH MODULE is the wedged thread actually inside? This is the datum that
+    // separates "blocked in the graphics driver" from "blocked on a lock", and
+    // those need opposite fixes. A DLL name is not game-derived content.
+    char mod[64] = "?";
+    if (eip) {
+        HMODULE hm = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(eip), &hm) &&
+            hm) {
+            wchar_t wpath[MAX_PATH] = {};
+            GetModuleFileNameW(hm, wpath, MAX_PATH);
+            const wchar_t* base = wcsrchr(wpath, L'\\');
+            base = base ? base + 1 : wpath;
+            WideCharToMultiByte(CP_UTF8, 0, base, -1, mod, sizeof(mod), nullptr, nullptr);
+            sprintf_s(mod + strlen(mod), sizeof(mod) - strlen(mod), "+0x%X",
+                      static_cast<unsigned>(eip - reinterpret_cast<uintptr_t>(hm)));
+        }
+    }
+
+    char msg[640];
+    int n = sprintf_s(msg, "WATCHDOG %s stuck %lld ms tid=%u eip=%08X in %s esp=%08X ebp=%08X rva:",
+                      what, static_cast<long long>(stuckMs), tid,
+                      static_cast<unsigned>(eip), mod, static_cast<unsigned>(esp),
+                      static_cast<unsigned>(ebp));
+    for (int i = 0; i < nFrames && n > 0 && n < static_cast<int>(sizeof(msg)) - 16; ++i)
+        n += sprintf_s(msg + n, sizeof(msg) - n, " %X",
+                       static_cast<unsigned>(frames[i] - g_exeLo));
+    trace_write(msg);
+    trace_write("WATCHDOG all threads with game code on the stack:");
+    watchdog_all_threads();
+}
+
+DWORD WINAPI trace_thread_proc(void*) {
+    uint32_t lastPresents = 0;
+    uint32_t lastSubmitted = 0;
+    uint32_t lastKeepalives = 0;
+    uint32_t lastSkips = 0;
+    while (g_traceRun.load(std::memory_order_relaxed)) {
+        Sleep(1000);
+        if (!g_traceRun.load(std::memory_order_relaxed)) break;
+        // Session 34: report with NO session at all, and detect the stall from
+        // PRESENTS HAVING STOPPED rather than from one of our own phases being
+        // open. The first cut keyed on g_curPhase and stayed silent through the
+        // real hang, because the present thread was wedged OUTSIDE every span
+        // this file wraps - the same "silence reads as calm" failure the trace
+        // exists to remove, reintroduced one level up.
+        //
+        // The BOOKKEEPING BELOW MUST RUN EVERY TICK. The first cut did the
+        // `continue` above the `lastPresents = presents` update at the bottom of
+        // the loop, so lastPresents stayed 0 forever, `stalled` could never
+        // become true, and the tracer was structurally incapable of firing -
+        // which is why the freeze produced no trace file at all. Deltas are
+        // computed and the baselines rolled BEFORE any decision to skip.
+        uint32_t presents = g_presentsSeen.load(std::memory_order_relaxed);
+        uint32_t submitted = g_framesSubmitted;
+        uint32_t keepalives = g_detachKeepalives.load(std::memory_order_relaxed);
+        uint32_t skips = g_detachSkips.load(std::memory_order_relaxed);
+        uint32_t dPresents = presents - lastPresents;
+        uint32_t dSubmitted = submitted - lastSubmitted;
+        uint32_t dKeepalives = keepalives - lastKeepalives;
+        uint32_t dSkips = skips - lastSkips;
+        bool seenAny = lastPresents > 0;
+        lastPresents = presents;
+        lastSubmitted = submitted;
+        lastKeepalives = keepalives;
+        lastSkips = skips;
+
+        bool stalled = seenAny && dPresents == 0;
+
+        // Once per stall episode, and only after it is clearly not a hitch,
+        // photograph the wedged thread's stack. This is the step that names the
+        // engine function; everything before it could only say "stopped".
+        //
+        // SESSION 35: the trigger used to require an OPEN DRAW STAGE
+        // (`dw && dtid && dms >= 4000`). Only the doubled draw ever opens one,
+        // so the watchdog was structurally incapable of firing in any other mode
+        // - and "zero WATCHDOG lines" was therefore a guaranteed pass for
+        // vanilla, vrcam and vraer rather than evidence about them. It now fires
+        // on the stall itself and aims at whatever thread it can name.
+        {
+            static bool fired = false;
+            static int stalledTicks = 0;
+            if (!stalled) {
+                fired = false;
+                stalledTicks = 0;
+            } else if (!fired) {
+                ++stalledTicks; // one tick per second
+                const char* dw = g_drawStage.load(std::memory_order_relaxed);
+                uint32_t dtid = g_drawStageTid.load(std::memory_order_relaxed);
+                int64_t dms = g_qpcFreq ? (phase_now() -
+                                           g_drawStageT0.load(std::memory_order_relaxed)) *
+                                              1000 / g_qpcFreq
+                                        : 0;
+                if (dw && dtid && dms >= 4000) {
+                    // Best case: a named stage is open, so we know what blocked.
+                    fired = true;
+                    g_watchdogFires.fetch_add(1, std::memory_order_relaxed);
+                    watchdog_capture(dtid, dw, dms);
+                } else if (stalledTicks >= 4) {
+                    // Presents have stopped for 4 s with no stage open. Aim at
+                    // the last thread known to draw, else the present thread; if
+                    // neither is known, the all-threads sweep still runs, which
+                    // is the whole reason it was worth repairing.
+                    fired = true;
+                    g_watchdogFires.fetch_add(1, std::memory_order_relaxed);
+                    uint32_t tid = g_lastDrawTidSticky.load(std::memory_order_relaxed);
+                    if (!tid) tid = g_presentTidSticky.load(std::memory_order_relaxed);
+                    if (tid) {
+                        watchdog_capture(tid, "presentsStopped",
+                                         static_cast<int64_t>(stalledTicks) * 1000);
+                    } else {
+                        char m[160];
+                        sprintf_s(m, "WATCHDOG presentsStopped %d ms, no thread to aim at - "
+                                     "sweeping all threads",
+                                  stalledTicks * 1000);
+                        trace_write(m);
+                        watchdog_all_threads();
+                    }
+                }
+            }
+        }
+        if (g_session == XR_NULL_HANDLE && !g_simIdle.load(std::memory_order_relaxed) &&
+            !stalled)
+            continue;
+
+        // Is a call still in flight, and for how long?
+        char stuck[96] = "-";
+        int ph = g_curPhase.load(std::memory_order_relaxed);
+        if (ph >= 0 && ph < kPhCount && g_qpcFreq) {
+            int64_t t0 = g_curPhaseT0.load(std::memory_order_relaxed);
+            int64_t ms = (phase_now() - t0) * 1000 / g_qpcFreq;
+            if (ms >= 200)
+                sprintf_s(stuck, "IN %s for %lld ms", kPhaseNames[ph],
+                          static_cast<long long>(ms));
+        }
+
+        char draw[128] = "-";
+        {
+            const char* nm = g_drawStage.load(std::memory_order_relaxed);
+            if (nm && g_qpcFreq) {
+                int64_t ms = (phase_now() - g_drawStageT0.load(std::memory_order_relaxed)) *
+                             1000 / g_qpcFreq;
+                sprintf_s(draw, "%s for %lld ms", nm, static_cast<long long>(ms));
+            }
+        }
+        char stage[128] = "-";
+        {
+            const char* nm = g_presentStage.load(std::memory_order_relaxed);
+            if (nm && g_qpcFreq) {
+                int64_t ms = (phase_now() - g_presentStageT0.load(std::memory_order_relaxed)) *
+                             1000 / g_qpcFreq;
+                sprintf_s(stage, "%s for %lld ms", nm, static_cast<long long>(ms));
+            }
+        }
+        char line[640];
+        sprintf_s(line,
+                  "TRACE %s%s detached=%d fg=%d | presents/s %u submitted/s %u | "
+                  "keepalive %u ms (unpaced %u/s, ka %u/s) | lastEnd %u ms lastWait %u ms "
+                  "shouldRender=%d | phase: %s | stage: %s | draw: %s",
+                  state_str(g_state),
+                  g_everFocused.load(std::memory_order_relaxed) ? "" : "/never",
+                  g_detachedNow ? 1 : 0,
+                  g_appForeground.load(std::memory_order_relaxed) ? 1 : 0,
+                  dPresents, dSubmitted,
+                  g_paceKeepaliveMs.load(std::memory_order_relaxed), dSkips,
+                  dKeepalives,
+                  g_phaseLastUs[kPhEndFrame].load(std::memory_order_relaxed) / 1000,
+                  g_lastWaitMs.load(std::memory_order_relaxed),
+                  g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0, stuck, stage,
+                  draw);
+        trace_write(line);
+
+    }
+    return 0;
+}
+
+void trace_thread_start() {
+    if (g_traceThread) return;
+    g_traceRun.store(true, std::memory_order_relaxed);
+    g_traceThread = CreateThread(nullptr, 0, &trace_thread_proc, nullptr, 0, nullptr);
+    if (g_traceThread)
+        BVR_LOG("xr: pace trace started - 1 Hz from its OWN thread, so it keeps "
+                "reporting while the present thread is blocked");
+}
+
+// The DETACHED-PACING decision for one present, factored out so the flat
+// simulation below runs the IDENTICAL logic against a forced state. True = this
+// present must make no blocking OpenXR call. Present thread only.
+//
+// Being able to run this flat matters more than it looks: VDXR creates no
+// session without a headset, so the real path is unreachable on a desk, and
+// three builds went to the user unverified because of it.
+bool detach_skip_decision(uint64_t now, bool focused) {
+    if (!g_paceDetach.load(std::memory_order_relaxed)) {
+        g_detachedNow = false; // never leave the flag set behind a disabled lever
+        return false;
+    }
+    // Bring-up exception (session 36, found by the first real VDXR attach
+    // since this lever landed): a NEVER-focused session must keep its frame
+    // loop running - frames are how the runtime walks READY -> SYNCHRONIZED
+    // -> VISIBLE -> FOCUSED, so detaching here parks the headset on a void
+    // forever. Identical to pace_should_skip's exception; detach is for
+    // sessions that HAD focus and lost it (alt-tab), not for first attach.
+    if (!g_everFocused.load(std::memory_order_relaxed)) {
+        g_detachedNow = false;
+        return false;
+    }
+    if (focused) {
+        if (g_detachedNow) {
+            g_detachedNow = false;
+            BVR_LOG("xr: ATTACHED - session FOCUSED again, full-rate pacing resumes "
+                    "(%u presents ran unpaced, %u keepalive frames submitted)",
+                    g_detachSkips.load(std::memory_order_relaxed),
+                    g_detachKeepalives.load(std::memory_order_relaxed));
+        }
+        return false;
+    }
+    uint32_t every = g_paceKeepaliveMs.load(std::memory_order_relaxed);
+    if (!g_detachedNow) {
+        g_detachedNow = true;
+        g_lastKeepaliveMs = now;
+        g_detachEpisodes.fetch_add(1, std::memory_order_relaxed);
+        BVR_LOG("xr: DETACHED (session %s) - the present thread now makes NO blocking "
+                "OpenXR call (keepalive %u ms; 0 = none). Recovery is by EVENT: "
+                "pump_events runs first thing every present and needs no submission.",
+                state_str(g_state), every);
+    }
+    if (every == 0 || now - g_lastKeepaliveMs < every) {
+        g_detachSkips.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    g_lastKeepaliveMs = now;
+    g_detachKeepalives.fetch_add(1, std::memory_order_relaxed);
+    return false;
+}
+
+// One line per 5 s, and ONLY while unfocused with some phase over the alarm -
+// the session-33 lesson that a diagnostic on the present path needs a hard rate
+// limit rather than a change test (a change test can flicker at present rate,
+// which is how the fov-watch line took the game to 40 fps and then wedged it).
+// Never fires on a healthy focused session.
+void phase_heartbeat_maybe(uint64_t now) {
+    if (g_state == XR_SESSION_STATE_FOCUSED) return;
+    uint32_t worst = 0;
+    for (int i = kPhWait; i < kPhCount; ++i) {
+        uint32_t v = g_phaseMaxUs[i].load(std::memory_order_relaxed);
+        if (v > worst) worst = v;
+    }
+    if (worst < kPhaseAlarmUs) return;
+    if (now - g_lastPhaseLogMs < 5000) return;
+    g_lastPhaseLogMs = now;
+    char buf[512];
+    int n = sprintf_s(buf, "xr: present phases (max us, state %s shouldRender=%d):",
+                      state_str(g_state),
+                      g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0);
+    for (int i = 0; i < kPhCount && n > 0 && n < static_cast<int>(sizeof(buf)) - 40; ++i)
+        n += sprintf_s(buf + n, sizeof(buf) - n, " %s=%u", kPhaseNames[i],
+                       g_phaseMaxUs[i].load(std::memory_order_relaxed));
+    BVR_LOG("%s", buf);
+    for (int i = 0; i < kPhCount; ++i) g_phaseMaxUs[i].store(0, std::memory_order_relaxed);
 }
 
 void release_mirror() {
@@ -647,6 +1424,8 @@ void composite_hud(IDXGISwapChain* swapchain) {
 }
 
 void teardown_session(const char* why) {
+    g_detachedNow = false;
+
     // SESSION 28: never call xrDestroySession while the pace thread is parked
     // inside xrWaitFrame on that session - that is a use-after-free inside the
     // runtime. Give an outstanding wait a bounded chance to come back; if it
@@ -935,6 +1714,7 @@ void pump_events() {
                     } else {
                         g_sessionBegun = true;
                         BVR_LOG("xr: session running - game is now paced by the headset");
+                        trace_thread_start();
                     }
                     break;
                 }
@@ -1053,6 +1833,12 @@ void init_instance() {
 }
 
 void on_present_begin(IDXGISwapChain* swapchain) {
+    PhaseScope psBegin(kPhPresentBegin); // records on every return path
+    g_presentsSeen.fetch_add(1, std::memory_order_relaxed);
+    // Sticky, for the watchdog to aim at when no draw stage is open (session 35).
+    g_presentTidSticky.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    trace_thread_start(); // idempotent; the flat simulation needs it too
+    sample_foreground();  // USER32 on THIS thread, never on the tracer's
     // Flat stand-in for the headset-idle stall (flat has no XR session, so the
     // real path below never runs): the SAME guard decision runs with the state
     // forced VISIBLE and the focus latch forced, and a 1 s sleep stands in for
@@ -1061,8 +1847,19 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // the free-running rate (one 1 s keepalive hitch per 5 s); with the guard
     // OFF it collapses under 1/s - the stall being fixed, reproduced.
     if (g_simIdle.load(std::memory_order_relaxed)) {
-        if (!pace_should_skip(XR_SESSION_STATE_VISIBLE, true, GetTickCount64()))
-            Sleep(1000);
+        // SESSION 34: this now runs the SHIPPED decision (detach_skip_decision)
+        // against a forced not-FOCUSED state, with a 1 s sleep standing in for
+        // the blocking xrEndFrame the runtime performs while unfocused - which
+        // is the call the phase timers measured at 101.8 ms and which, left
+        // long enough, never returns at all.
+        //
+        // Flat acceptance, runnable on a desk with no headset:
+        //   vrpace simidle on              -> presents/s must stay at the free
+        //                                     running rate (detach ON, keepalive 0)
+        //   vrpace detach off + simidle on -> presents/s must collapse to ~1
+        // If those two do not differ, the fix is not doing anything, and no
+        // amount of headset time will tell you that any faster.
+        if (!detach_skip_decision(GetTickCount64(), false)) Sleep(1000);
         return;
     }
 
@@ -1101,6 +1898,28 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     pump_events();
     if (g_session == XR_NULL_HANDLE || !g_sessionBegun) {
         g_srPairOpen = false; // never strand a hold across a stopped session
+        return;
+    }
+
+    // SESSION 34 - DETACHED PACING. Everything below this point makes blocking
+    // OpenXR calls on the present thread, and while the session is not FOCUSED
+    // those calls run at the runtime's not-visible cadence and pace the game
+    // with it. Hand the whole frame loop to the pace thread instead: it keeps
+    // submitting (so FOCUSED can be re-granted - session 28's requirement) and
+    // this thread returns immediately (so the game keeps its frame rate).
+    // pump_events above stays here and is non-blocking, which is what lets the
+    // return to FOCUSED be seen at all.
+    if (detach_skip_decision(GetTickCount64(), g_state == XR_SESSION_STATE_FOCUSED)) {
+        // No OpenXR call at all this present. A frame must never be left open
+        // across this return.
+        if (g_frameOpen) {
+            XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+            idle.displayTime = g_frameState.predictedDisplayTime;
+            idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+            xrEndFrame(g_session, &idle);
+            g_frameOpen = false;
+        }
+        g_srPairOpen = false;
         return;
     }
 
@@ -1172,6 +1991,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     }
 
     XrResult r;
+    int64_t tPhase = phase_now();
     if (g_paceOffThread.load(std::memory_order_relaxed) && pace_thread_start()) {
         // One request outstanding at a time keeps wait:begin at 1:1.
         if (!g_paceOutstanding) {
@@ -1181,7 +2001,13 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         uint32_t deadline = g_state == XR_SESSION_STATE_FOCUSED
                                 ? kPaceDeadlineFocusedMs
                                 : kPaceDeadlineIdleMs;
-        if (WaitForSingleObject(g_paceDone, deadline) != WAIT_OBJECT_0) {
+        bool signalled;
+        {
+            PhaseMark mark(kPhWait);
+            signalled = WaitForSingleObject(g_paceDone, deadline) == WAIT_OBJECT_0;
+        }
+        phase_record(kPhWait, tPhase);
+        if (!signalled) {
             // The runtime has not come back yet. Give up on THIS present only -
             // the request stays outstanding and a later present consumes it. The
             // game keeps running either way, which is the whole point.
@@ -1211,20 +2037,25 @@ void on_present_begin(IDXGISwapChain* swapchain) {
                         waitMs, state_str(g_state));
             }
         }
+        phase_record(kPhWait, tPhase);
     }
+    g_lastShouldRender.store(g_frameState.shouldRender != XR_FALSE, std::memory_order_relaxed);
     if (XR_FAILED(r)) {
         BVR_LOG("xr: xrWaitFrame failed: %s", res_str(r));
         teardown_session("waitframe failed");
         return;
     }
+    tPhase = phase_now();
     XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
     r = xrBeginFrame(g_session, &fbi);
+    phase_record(kPhBeginFrame, tPhase);
     if (XR_FAILED(r)) {
         BVR_LOG("xr: xrBeginFrame failed: %s", res_str(r));
         teardown_session("beginframe failed");
         return;
     }
     g_frameOpen = true;
+    tPhase = phase_now(); // locate span closes after xrLocateViews below
 
     // M3: locate the head pose + per-eye views for the predicted display time.
     // The head pose feeds the CalcView camera drive on the game thread; the
@@ -1266,6 +2097,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     g_viewsValid =
         XR_SUCCEEDED(xrLocateViews(g_session, &vli, &vs, 2, &viewCount, g_views)) &&
         viewCount == 2 && (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+    phase_record(kPhLocate, tPhase);
     if (!g_viewsContentValid && g_viewsValid) {
         // Session start: no previous generation yet - better a one-frame
         // fresh-pose attribution than none.
@@ -1286,6 +2118,12 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         float halfH = fmaxf(maxHalfH, atanf(tanf(maxHalfV) * aspect));
         float deg = fminf(halfH * 2.0f * 57.29578f, 160.0f);
         g_hfovDeg.store(deg, std::memory_order_relaxed);
+        // The eye's OWN geometry, kept for anyone who needs to compare what the
+        // game renders against what the headset can show. On a Quest 3 through
+        // VDXR this is 54 x 55 deg half-angles - an essentially SQUARE eye - and
+        // that asymmetry against a 16:9 render is what the black bands are.
+        g_headsetHalfH.store(maxHalfH * 57.29578f, std::memory_order_relaxed);
+        g_headsetHalfV.store(maxHalfV * 57.29578f, std::memory_order_relaxed);
         BVR_LOG("xr: headset fov half-angles h=%.1f v=%.1f deg -> game hfov %.1f deg "
                 "(aspect %.3f)",
                 maxHalfH * 57.29578f, maxHalfV * 57.29578f, deg, aspect);
@@ -1362,13 +2200,31 @@ XrQuaternionf quat_facing(const float f[3]) {
     return q;
 }
 
-// Fill `quads` with the dots along the aim ray and return how many were built.
-// Render thread, inside on_present_end, only in projection mode.
-uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
-    if (!g_laserOn.load(std::memory_order_relaxed)) return 0;
+// Session 40: the geometry below is unchanged, but it now reads a plain
+// snapshot instead of the globals directly, so a SECOND laser slot can reuse
+// it (BS2 is natively dual-wield and shows both hands' beams at once; see
+// set_laser_slot). build_laser_layers() still snapshots slot 0 and behaves
+// exactly as before - the BS1 path is untouched by construction.
+struct LaserSnapshot {
+    bool on = false;
+    int hand = 1;
+    float pitchTrim = 0.0f, yawTrim = 0.0f;
+    float posFwdCm = 0.0f, posRightCm = 0.0f, posUpCm = 0.0f;
+    int dots = 6;
+    float nearM = 0.30f, farM = 6.0f, sizeDeg = 0.7f;
+    bool muzzle = false;
+    float d0[3] = {0.0f, 0.0f, -1.0f};
+    float modelPitch = 0.0f, modelYaw = 0.0f, modelRoll = 0.0f;
+};
+
+// Fill `quads` with the dots along one laser's ray and return how many were
+// built, capped at `budget` quads. Render thread, projection mode only.
+uint32_t build_laser_from(const LaserSnapshot& ls, XrCompositionLayerQuad* quads,
+                          int budget) {
+    if (!ls.on || budget < 1) return 0;
     if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
 
-    int hand = g_laserHand.load(std::memory_order_relaxed);
+    int hand = ls.hand;
     float pos[3], quat[4];
     if (!input_get_hand_pose(hand, true, pos, quat)) return 0; // AIM pose = the fire ray
 
@@ -1381,23 +2237,19 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     constexpr float kDegToRad = 3.14159265f / 180.0f;
     const float fwd[3] = {0.0f, 0.0f, -1.0f};
     float trim[4], q2[4], d[3];
-    if (g_laserMuzzle.load(std::memory_order_relaxed)) {
+    if (ls.muzzle) {
         // Muzzle ray: the beam follows the RENDERED barrel - the MODEL's trim
         // (roll included: it moves an off-axis vector) applied to the barrel
         // axis the game side derived from the driven rig this frame.
-        const float d0[3] = {g_laserMuzzleD0[0].load(std::memory_order_relaxed),
-                             g_laserMuzzleD0[1].load(std::memory_order_relaxed),
-                             g_laserMuzzleD0[2].load(std::memory_order_relaxed)};
-        bvr::xrmath::xr_local_trim_quat(
-            g_laserModelPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
-            g_laserModelYawTrim.load(std::memory_order_relaxed) * kDegToRad,
-            g_laserModelRollTrim.load(std::memory_order_relaxed) * kDegToRad, trim);
+        const float d0[3] = {ls.d0[0], ls.d0[1], ls.d0[2]};
+        bvr::xrmath::xr_local_trim_quat(ls.modelPitch * kDegToRad,
+                                        ls.modelYaw * kDegToRad,
+                                        ls.modelRoll * kDegToRad, trim);
         bvr::xrmath::quat_mul(quat, trim, q2);
         bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], d0, d);
     } else {
-        bvr::xrmath::xr_local_trim_quat(
-            g_laserPitchTrim.load(std::memory_order_relaxed) * kDegToRad,
-            g_laserYawTrim.load(std::memory_order_relaxed) * kDegToRad, 0.0f, trim);
+        bvr::xrmath::xr_local_trim_quat(ls.pitchTrim * kDegToRad,
+                                        ls.yawTrim * kDegToRad, 0.0f, trim);
         bvr::xrmath::quat_mul(quat, trim, q2);
         bvr::xrmath::quat_rotate(q2[0], q2[1], q2[2], q2[3], fwd, d);
     }
@@ -1409,9 +2261,9 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     // d x worldUp cross degenerated near vertical and silently dropped the
     // right/up offset components there.
     {
-        float ofM = g_laserPosFwdCm.load(std::memory_order_relaxed) * 0.01f;
-        float orM = g_laserPosRightCm.load(std::memory_order_relaxed) * 0.01f;
-        float ouM = g_laserPosUpCm.load(std::memory_order_relaxed) * 0.01f;
+        float ofM = ls.posFwdCm * 0.01f;
+        float orM = ls.posRightCm * 0.01f;
+        float ouM = ls.posUpCm * 0.01f;
         if (ofM != 0.0f || orM != 0.0f || ouM != 0.0f) {
             float yaw = atan2f(d[0], -d[2]);
             float right[3] = {cosf(yaw), 0.0f, sinf(yaw)};
@@ -1429,14 +2281,14 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
                      (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
                      (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
 
-    int n = g_laserDots.load(std::memory_order_relaxed);
+    int n = ls.dots;
     if (n < 1) n = 1;
-    if (n > kMaxLaserDots) n = kMaxLaserDots;
-    float nearM = g_laserNearM.load(std::memory_order_relaxed);
-    float farM = g_laserFarM.load(std::memory_order_relaxed);
+    if (n > budget) n = budget;
+    float nearM = ls.nearM;
+    float farM = ls.farM;
     if (nearM < 0.05f) nearM = 0.05f;
     if (farM < nearM * 1.01f) farM = nearM * 1.01f;
-    float sizeRad = g_laserSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+    float sizeRad = ls.sizeDeg * kDegToRad;
 
     XrSwapchainSubImage sub{};
     sub.swapchain = g_laserSwapchain;
@@ -1476,6 +2328,48 @@ uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
     return built;
 }
 
+LaserSnapshot snapshot_laser_slot(int slot) {
+    LaserSnapshot ls;
+    if (slot == 1) {
+        // Slot 1 (session 40): the additive second beam. Nothing publishes it
+        // unless a game calls set_laser_slot(1, ...) - BS1 never does, so its
+        // submit path sees `on == false` and adds no layers at all.
+        ls.on = g_laser2On.load(std::memory_order_relaxed);
+        ls.hand = g_laser2Hand.load(std::memory_order_relaxed);
+        ls.pitchTrim = g_laser2PitchTrim.load(std::memory_order_relaxed);
+        ls.yawTrim = g_laser2YawTrim.load(std::memory_order_relaxed);
+        ls.posFwdCm = g_laser2PosFwdCm.load(std::memory_order_relaxed);
+        ls.posRightCm = g_laser2PosRightCm.load(std::memory_order_relaxed);
+        ls.posUpCm = g_laser2PosUpCm.load(std::memory_order_relaxed);
+        ls.dots = g_laser2Dots.load(std::memory_order_relaxed);
+        ls.nearM = g_laser2NearM.load(std::memory_order_relaxed);
+        ls.farM = g_laser2FarM.load(std::memory_order_relaxed);
+        ls.sizeDeg = g_laser2SizeDeg.load(std::memory_order_relaxed);
+        return ls;
+    }
+    ls.on = g_laserOn.load(std::memory_order_relaxed);
+    ls.hand = g_laserHand.load(std::memory_order_relaxed);
+    ls.pitchTrim = g_laserPitchTrim.load(std::memory_order_relaxed);
+    ls.yawTrim = g_laserYawTrim.load(std::memory_order_relaxed);
+    ls.posFwdCm = g_laserPosFwdCm.load(std::memory_order_relaxed);
+    ls.posRightCm = g_laserPosRightCm.load(std::memory_order_relaxed);
+    ls.posUpCm = g_laserPosUpCm.load(std::memory_order_relaxed);
+    ls.dots = g_laserDots.load(std::memory_order_relaxed);
+    ls.nearM = g_laserNearM.load(std::memory_order_relaxed);
+    ls.farM = g_laserFarM.load(std::memory_order_relaxed);
+    ls.sizeDeg = g_laserSizeDeg.load(std::memory_order_relaxed);
+    ls.muzzle = g_laserMuzzle.load(std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i) ls.d0[i] = g_laserMuzzleD0[i].load(std::memory_order_relaxed);
+    ls.modelPitch = g_laserModelPitchTrim.load(std::memory_order_relaxed);
+    ls.modelYaw = g_laserModelYawTrim.load(std::memory_order_relaxed);
+    ls.modelRoll = g_laserModelRollTrim.load(std::memory_order_relaxed);
+    return ls;
+}
+
+uint32_t build_laser_layers(XrCompositionLayerQuad* quads) {
+    return build_laser_from(snapshot_laser_slot(0), quads, kMaxLaserDots);
+}
+
 // Session 29: the acquire/copy/release used to live inside build_laser_layers,
 // under `if (built)`. The aim dot references the SAME swapchain, and two
 // acquires on one swapchain in a single frame is a spec violation - so the
@@ -1501,18 +2395,19 @@ bool publish_laser_image() {
 // thread already in XR space, converted from the exact fire-seam ray by
 // game_point_to_xr. All that happens here is billboarding and sizing, so
 // there is no second algebra that can drift from the first.
-uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
-    if (!g_dotOn.load(std::memory_order_relaxed)) return 0;
-    if (!g_dotValid.load(std::memory_order_relaxed)) return 0;
+uint32_t build_aim_dot_slot(XrCompositionLayerQuad* quad, int slot) {
+    const bool two = (slot == 1);
+    if (!(two ? g_dot2On : g_dotOn).load(std::memory_order_relaxed)) return 0;
+    if (!(two ? g_dot2Valid : g_dotValid).load(std::memory_order_relaxed)) return 0;
     if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
     // A publish that stopped arriving must not leave a dot floating: the ray
     // going stale is exactly the state ray_for() refuses to substitute in.
-    uint64_t stamp = g_dotStampMs.load(std::memory_order_relaxed);
+    uint64_t stamp = (two ? g_dot2StampMs : g_dotStampMs).load(std::memory_order_relaxed);
     if (stamp == 0 || GetTickCount64() - stamp > kDotStaleMs) return 0;
 
-    float p[3] = {g_dotX.load(std::memory_order_relaxed),
-                  g_dotY.load(std::memory_order_relaxed),
-                  g_dotZ.load(std::memory_order_relaxed)};
+    float p[3] = {(two ? g_dot2X : g_dotX).load(std::memory_order_relaxed),
+                  (two ? g_dot2Y : g_dotY).load(std::memory_order_relaxed),
+                  (two ? g_dot2Z : g_dotZ).load(std::memory_order_relaxed)};
     float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
                      (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
                      (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
@@ -1522,7 +2417,8 @@ uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
     toHead[0] /= len; toHead[1] /= len; toHead[2] /= len;
 
     constexpr float kDegToRad = 3.14159265f / 180.0f;
-    float sizeRad = g_dotSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+    float sizeRad = (two ? g_dot2SizeDeg : g_dotSizeDeg).load(std::memory_order_relaxed) *
+                    kDegToRad;
 
     XrCompositionLayerQuad& q = *quad;
     q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -1542,6 +2438,10 @@ uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
                 "fire-seam ray point, not a reconstruction",
                 p[0], p[1], p[2], len);
     return 1;
+}
+
+uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
+    return build_aim_dot_slot(quad, 0);
 }
 
 // Yaw of an XR-space orientation (forward = -Z, right = +X), for the pose
@@ -1573,12 +2473,16 @@ void capture_frame(ID3D11Texture2D* dst, ID3D11Texture2D* backbuffer) {
 }
 
 void on_present_end(IDXGISwapChain* swapchain) {
+    PhaseScope psEnd(kPhPresentEnd); // records on every return path
+    phase_heartbeat_maybe(GetTickCount64());
     if (!g_frameOpen) {
         // No XR frame this present (session gone, or the pace guard skipped
         // it). The game may still be presenting alternating stereo eyes -
         // keep draining the tag ring and keep the window pinned to one eye.
+        int64_t tComp = phase_now();
         mirror_present(swapchain, sr_pop_eye());
         composite_hud(swapchain); // the window keeps its HUD even with no session
+        phase_record(kPhComposite, tComp);
         // SESSION 28: name the guard, on a heartbeat, while submission is idle.
         // "Present keeps running but the headset is frozen" was diagnosable only
         // by reading the source and guessing which early return had fired, and
@@ -1591,6 +2495,10 @@ void on_present_end(IDXGISwapChain* swapchain) {
                                   ? "VR disabled in overlay"
                               : !g_sessionBegun ? "session not begun (waiting "
                                                   "for READY after a STOPPING)"
+                              : g_detachedNow
+                                  ? "DETACHED: session not FOCUSED, so the present "
+                                    "thread makes no blocking OpenXR call at all; "
+                                    "recovery is by event (session 34)"
                               : g_state != XR_SESSION_STATE_FOCUSED
                                   ? "pace guard: session not FOCUSED"
                               : g_swapchains[0] == XR_NULL_HANDLE
@@ -1616,11 +2524,12 @@ void on_present_end(IDXGISwapChain* swapchain) {
         {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerQuad laserQuads[kMaxLaserDots] = {};
     XrCompositionLayerQuad dotQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerQuad dot2Quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    // The game frame is layer 0; the aim laser adds one quad per dot on top,
-    // the session-29 aim dot one more, the HUD quad one more (worst case 11 of
-    // the 16 runtimes must accept).
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 2] = {};
+    // The game frame is layer 0; the aim laser(s) add one quad per dot on top -
+    // BOTH slots share the kMaxLaserDots budget - then up to two aim dots and
+    // the HUD quad (worst case 12 of the 16 runtimes must accept).
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 3] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -1769,16 +2678,25 @@ void on_present_end(IDXGISwapChain* swapchain) {
                          : (aerActive && imageSign == currentEyeSign) ? g_currentEye
                                                                       : 0;
             uint32_t index = 0;
+            int64_t tAcq = phase_now();
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_swapchains[target], &ai, &index))) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
-                if (XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi))) {
+                bool imageReady;
+                {
+                    PhaseMark mark(kPhAcquire); // XR_INFINITE_DURATION lives here
+                    imageReady = XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi));
+                }
+                phase_record(kPhAcquire, tAcq);
+                if (imageReady) {
                     // Same size + same typeless family (guaranteed at creation),
                     // so a straight GPU copy carries the frame - overlay
                     // included. Under an engine letterbox the copy becomes an
                     // unsqueeze blit instead (session 22, capture_frame).
+                    int64_t tCap = phase_now();
                     capture_frame(g_images[target][index].texture, backbuffer);
+                    phase_record(kPhCapture, tCap);
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_swapchains[target], &ri);
@@ -1925,25 +2843,41 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // this present) - pin the backbuffer to the held left image before the
     // real Present displays it. The window HUD composite comes after (the
     // re-blit would overwrite it).
+    int64_t tComp = phase_now();
     if (srSign > 0) mirror_present(swapchain, srSign);
     composite_hud(swapchain);
+    phase_record(kPhComposite, tComp);
 
     // Aim laser on top of the game frame - projection mode only, since in quad
     // ("cinema screen") mode there is no world for it to point into.
     if (layerCount && projectionMode) {
-        uint32_t dots = build_laser_layers(laserQuads);
-        uint32_t aimDot = build_aim_dot_layer(&dotQuad);
-        // ONE acquire feeds every quad that referenced this swapchain, laser
-        // and aim dot alike - two acquires in a frame would be invalid.
-        if ((dots || aimDot) && !publish_laser_image()) { dots = 0; aimDot = 0; }
-        for (uint32_t i = 0; i < dots; ++i)
+        // Slot 0 first, then the session-40 second beam within whatever is
+        // LEFT of the shared dot budget - the layer arrays never grow, so a
+        // dual-wield game cannot push the total past what slot 0 alone could.
+        uint32_t dots = build_laser_from(snapshot_laser_slot(0), laserQuads, kMaxLaserDots);
+        uint32_t dots2 = build_laser_from(snapshot_laser_slot(1), laserQuads + dots,
+                                          kMaxLaserDots - static_cast<int>(dots));
+        uint32_t aimDot = build_aim_dot_slot(&dotQuad, 0);
+        uint32_t aimDot2 = build_aim_dot_slot(&dot2Quad, 1);
+        // ONE acquire feeds every quad that referenced this swapchain, lasers
+        // and aim dots alike - two acquires in a frame would be invalid.
+        if ((dots || dots2 || aimDot || aimDot2) && !publish_laser_image()) {
+            dots = 0;
+            dots2 = 0;
+            aimDot = 0;
+            aimDot2 = 0;
+        }
+        for (uint32_t i = 0; i < dots + dots2; ++i)
             layers[layerCount++] =
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&laserQuads[i]);
         if (aimDot)
             layers[layerCount++] =
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dotQuad);
-        g_laserLayersSubmitted.store(dots, std::memory_order_relaxed);
-        g_dotLayersSubmitted.store(aimDot, std::memory_order_relaxed);
+        if (aimDot2)
+            layers[layerCount++] =
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dot2Quad);
+        g_laserLayersSubmitted.store(dots + dots2, std::memory_order_relaxed);
+        g_dotLayersSubmitted.store(aimDot + aimDot2, std::memory_order_relaxed);
     } else {
         g_laserLayersSubmitted.store(0, std::memory_order_relaxed);
         g_dotLayersSubmitted.store(0, std::memory_order_relaxed);
@@ -2003,7 +2937,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
     fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     fei.layerCount = layerCount;
     fei.layers = layerCount ? layers : nullptr;
-    XrResult r = xrEndFrame(g_session, &fei);
+    int64_t tEnd = phase_now();
+    XrResult r;
+    {
+        PhaseMark mark(kPhEndFrame); // the measured pacer - name it while in flight
+        r = xrEndFrame(g_session, &fei);
+    }
+    phase_record(kPhEndFrame, tEnd);
     if (XR_FAILED(r)) {
         BVR_LOG("xr: xrEndFrame failed: %s", res_str(r));
         teardown_session("endframe failed");
@@ -2080,6 +3020,73 @@ void draw_debug_ui() {
     } else {
         ImGui::Text("VR: '%s' session %s, %u frames", g_runtimeName, state_str(g_state),
                     g_framesSubmitted);
+    }
+
+    // ---- VR PACING: the session-34 fix, judged in the headset ---------------
+    // FIRST and open by default. The whole point is that the alt-tab A/B must
+    // not require alt-tabbing: reaching a keyboard is what drops the session out
+    // of FOCUSED, which is the very transition this section exists to fix.
+    if (ImGui::CollapsingHeader("VR PACING  <-- the freeze fix",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Presents per second, sampled here so it is live while the user looks.
+        static uint64_t lastSampleMs = 0;
+        static uint32_t lastPresents = 0;
+        static uint32_t presentsPerSec = 0;
+        uint64_t nowMs = GetTickCount64();
+        uint32_t presents = g_presentsSeen.load(std::memory_order_relaxed);
+        if (lastSampleMs == 0) {
+            lastSampleMs = nowMs;
+            lastPresents = presents;
+        } else if (nowMs - lastSampleMs >= 1000) {
+            presentsPerSec = static_cast<uint32_t>((presents - lastPresents) * 1000ull /
+                                                   (nowMs - lastSampleMs));
+            lastSampleMs = nowMs;
+            lastPresents = presents;
+        }
+        bool focused = g_state == XR_SESSION_STATE_FOCUSED;
+        ImGui::Text("session %s%s | presents/s %u", state_str(g_state),
+                    g_everFocused.load(std::memory_order_relaxed) ? "" : " (never focused)",
+                    presentsPerSec);
+
+        bool detach = g_paceDetach.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Do not let an unfocused headset pace the game", &detach))
+            set_pace_detach(detach);
+        ImGui::TextWrapped(
+            "ON = while the session is not FOCUSED the frame loop runs on its own "
+            "thread, so the game keeps its frame rate and the runtime still gets "
+            "frames (which is how FOCUSED comes back). OFF = the old behaviour: "
+            "the game runs at the runtime's not-visible cadence, about 10 Hz, "
+            "which in the headset reads as a freeze.");
+        if (g_detachedNow)
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                               "DETACHED right now - the game is NOT being paced");
+        ImGui::Text("episodes %u | unpaced presents %u | keepalive frames %u",
+                    g_detachEpisodes.load(std::memory_order_relaxed),
+                    g_detachSkips.load(std::memory_order_relaxed),
+                    g_detachKeepalives.load(std::memory_order_relaxed));
+        int ka = static_cast<int>(g_paceKeepaliveMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("Keepalive every (ms)", &ka, 250, 5000))
+            g_paceKeepaliveMs.store(static_cast<uint32_t>(ka), std::memory_order_relaxed);
+        ImGui::TextWrapped(
+            "How often the frame loop runs while unfocused. Each one costs a "
+            "single ~100 ms hitch; between them the game runs free. Too rare and "
+            "the headset may be slower to hand focus back.");
+
+        // The phase table. This is the instrument that named the blocking call;
+        // it stays visible because "which call owns the frame time" is the only
+        // question that distinguishes a fix from a coincidence.
+        if (ImGui::TreeNode("Present-path phases (last / max us)")) {
+            ImGui::Text("shouldRender = %d",
+                        g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0);
+            for (int i = 0; i < kPhCount; ++i)
+                ImGui::Text("%-13s %6u / %6u", kPhaseNames[i],
+                            g_phaseLastUs[i].load(std::memory_order_relaxed),
+                            g_phaseMaxUs[i].load(std::memory_order_relaxed));
+            if (ImGui::Button("Reset maxima"))
+                for (int i = 0; i < kPhCount; ++i)
+                    g_phaseMaxUs[i].store(0, std::memory_order_relaxed);
+            ImGui::TreePop();
+        }
     }
 
     bool enabled = g_enabled.load(std::memory_order_relaxed);
@@ -2329,6 +3336,18 @@ void set_enabled(bool on) {
     if (was != on) BVR_LOG("xr: VR %s (preset/programmatic)", on ? "ENABLED" : "disabled");
 }
 
+// Session 34: AlternateEye armable programmatically. It is the only stereo path
+// on BS2 that does NOT re-enter the engine's Draw, and draw re-entrancy is the
+// measured freeze - so this needs to be soak-testable from the command surface,
+// not just from a checkbox nobody can reach while the game is wedged.
+void set_alternate_eye(bool on) {
+    g_aerEnabled.store(on, std::memory_order_relaxed);
+    BVR_LOG("xr: AlternateEye stereo %s (per-eye images on alternate frames; the "
+            "compositor reprojects the stale eye - judders, but never re-enters "
+            "the game's draw)",
+            on ? "ON" : "off");
+}
+
 void set_sr_pair_pacing(bool on) {
     g_srPairPacing.store(on, std::memory_order_relaxed);
 }
@@ -2357,6 +3376,25 @@ void handle_pace_command(const char* args) {
                 "reinstates the skip guard)",
                 on ? "OFF the present thread (deadline 200 ms focused / 20 ms idle)"
                    : "INLINE on the present thread");
+    } else if (strcmp(verb, "keepalive") == 0) {
+        unsigned ms = 0;
+        if (sscanf_s(rest, "%u", &ms) == 1 && ms >= 100 && ms <= 10000) {
+            g_paceKeepaliveMs.store(ms, std::memory_order_relaxed);
+            BVR_LOG("xr: unfocused keepalive every %u ms", ms);
+        } else {
+            BVR_LOG("xr: usage: vrpace keepalive <100..10000 ms>  (current %u)",
+                    g_paceKeepaliveMs.load(std::memory_order_relaxed));
+        }
+    } else if (strcmp(verb, "detach") == 0) {
+        bool on = strncmp(rest, "off", 3) != 0;
+        g_paceDetach.store(on, std::memory_order_relaxed);
+        BVR_LOG("xr: detached pacing %s - while the session is not FOCUSED the "
+                "pace thread %s. This is the session-34 A/B: with it off the game "
+                "runs at the runtime's not-visible cadence (~10 Hz measured).",
+                on ? "ON" : "off",
+                on ? "runs the frame loop at most once per keepalive interval, so "
+                     "the blocking xrEndFrame costs one hitch per interval"
+                   : "runs the frame loop every present, at the runtime's cadence");
     } else if (strcmp(verb, "simidle") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_simIdle.store(on, std::memory_order_relaxed);
@@ -2367,7 +3405,7 @@ void handle_pace_command(const char* args) {
     } else {
         BVR_LOG("xr: pace guard %s | wait %s | session %s everFocused=%d | skips %u "
                 "lastWait %u ms | handoffs %u timeouts %u | simidle %s "
-                "(vrpace on|off|thread on|off|simidle on|off|status)",
+                "(vrpace on|off|thread on|off|detach on|off|simidle on|off|status)",
                 g_paceGuard.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_paceOffThread.load(std::memory_order_relaxed) ? "off-thread" : "inline",
                 state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? 1 : 0,
@@ -2376,6 +3414,24 @@ void handle_pace_command(const char* args) {
                 g_paceHandoffs.load(std::memory_order_relaxed),
                 g_paceTimeouts.load(std::memory_order_relaxed),
                 g_simIdle.load(std::memory_order_relaxed) ? "ON" : "off");
+        BVR_LOG("xr: detach %s (keepalive every %u ms) | detachedNow=%d | episodes %u "
+                "| unpaced presents %u, keepalive frames %u",
+                g_paceDetach.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_paceKeepaliveMs.load(std::memory_order_relaxed), g_detachedNow ? 1 : 0,
+                g_detachEpisodes.load(std::memory_order_relaxed),
+                g_detachSkips.load(std::memory_order_relaxed),
+                g_detachKeepalives.load(std::memory_order_relaxed));
+        // The phase table is the whole point of the instrument: it says WHICH
+        // call owns the frame time, which is the question session 33 answered
+        // by inference and got wrong.
+        char buf[512];
+        int n = sprintf_s(buf, "xr: present phases last/max us (shouldRender=%d):",
+                          g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0);
+        for (int i = 0; i < kPhCount && n > 0 && n < static_cast<int>(sizeof(buf)) - 48; ++i)
+            n += sprintf_s(buf + n, sizeof(buf) - n, " %s=%u/%u", kPhaseNames[i],
+                           g_phaseLastUs[i].load(std::memory_order_relaxed),
+                           g_phaseMaxUs[i].load(std::memory_order_relaxed));
+        BVR_LOG("%s", buf);
     }
 }
 
@@ -2399,8 +3455,39 @@ float suggested_hfov_deg() {
     return g_hfovDeg.load(std::memory_order_relaxed);
 }
 
+bool headset_half_fov_deg(float* halfH, float* halfV) {
+    float h = g_headsetHalfH.load(std::memory_order_relaxed);
+    float v = g_headsetHalfV.load(std::memory_order_relaxed);
+    if (halfH) *halfH = h;
+    if (halfV) *halfV = v;
+    return h > 0.0f && v > 0.0f;
+}
+
 void set_rendered_hfov(float hfovDeg) {
     g_renderedHfov.store(hfovDeg, std::memory_order_relaxed);
+}
+
+void set_present_stage(const char* name) {
+    g_presentStageT0.store(phase_now(), std::memory_order_relaxed);
+    g_presentStage.store(name, std::memory_order_relaxed);
+}
+
+void set_draw_stage(const char* name) {
+    g_drawStageT0.store(phase_now(), std::memory_order_relaxed);
+    if (name) g_lastDrawTidSticky.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    g_drawStageTid.store(name ? GetCurrentThreadId() : 0u, std::memory_order_relaxed);
+    g_drawStage.store(name, std::memory_order_relaxed);
+}
+
+uint32_t watchdog_fires() {
+    return g_watchdogFires.load(std::memory_order_relaxed);
+}
+
+void set_pace_detach(bool on) {
+    if (g_paceDetach.exchange(on, std::memory_order_relaxed) == on) return;
+    BVR_LOG("xr: detached pacing %s by the game adapter (an unfocused session "
+            "will %space the game thread)",
+            on ? "ENABLED" : "disabled", on ? "no longer " : "");
 }
 
 void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* swapH) {
@@ -2484,6 +3571,27 @@ void handle_cine_command(const char* args) {
             bvr::hud::set_bar_verts(n);
         else
             BVR_LOG("xr: usage: vrcine bars verts <n>  (current %u)", bvr::hud::bar_verts());
+    } else if (strncmp(args, "dumparm off", 11) == 0) {
+        bvr::hud::set_dump_on_edge(0, 2);
+        BVR_LOG("xr: edge dump DISARMED");
+    } else if (strncmp(args, "dumparm bars", 12) == 0) {
+        // Session 42: transitions (loading, FMV entry) are over before the 1 Hz
+        // command poll could arm a dump by hand - stage it on the rising edge.
+        int n = 2;
+        sscanf_s(args + 12, "%d", &n);
+        bvr::hud::set_dump_on_edge(1, n);
+        BVR_LOG("xr: edge dump armed on the next BAR-DRAW rising edge (%d windows)", n);
+    } else if (strncmp(args, "dumparm screen", 14) == 0) {
+        int n = 2;
+        sscanf_s(args + 14, "%d", &n);
+        bvr::hud::set_dump_on_edge(2, n);
+        BVR_LOG("xr: edge dump armed on the next SCREEN-ONLY rising edge (%d windows)", n);
+    } else if (strncmp(args, "dumparm letterbox", 17) == 0) {
+        int n = 2;
+        sscanf_s(args + 17, "%d", &n);
+        bvr::hud::set_dump_on_edge(3, n);
+        BVR_LOG("xr: edge dump armed on the next LETTERBOX pixel-watch rising edge "
+                "(%d windows)", n);
     } else if (strncmp(args, "unsqueeze", 9) == 0) {
         // Session 29: RETIRED, not merely defaulted off. The unsqueeze assumed
         // the cinematic content was anamorphically squeezed into a middle band
@@ -2549,11 +3657,13 @@ void handle_cine_command(const char* args) {
                     ? (bvr::hud::postfx_cine_size() ? "render-target (size-only in cutscenes)"
                                                     : "render-target")
                     : "size-only");
+        int dumpEdge = 0, dumpCount = 0;
+        bvr::hud::get_dump_on_edge(&dumpEdge, &dumpCount);
         BVR_LOG("xr: cine %s mode=%s active=%d | enters %u exits %u presents %u | "
                 "published strict=%d age=%llums | WORLD tanH=%.4f age=%llums "
-                "mismatch=%d screenOnly=%d (vrcine on|off|mode quad|mode stereo|bars "
-                "hide|show|effects frame|panel|effects verts <n>|postfx rt|size|subs "
-                "panel|frame|status)",
+                "mismatch=%d screenOnly=%d dumparm=%s (vrcine on|off|mode quad|mode "
+                "stereo|bars hide|show|effects frame|panel|effects verts <n>|postfx "
+                "rt|size|subs panel|frame|dumparm bars|screen <n>|off|status)",
                 g_cineEnabled.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_cineStereo.load(std::memory_order_relaxed) ? "stereo" : "quad",
                 g_cineActive.load(std::memory_order_relaxed) ? 1 : 0,
@@ -2563,7 +3673,8 @@ void handle_cine_command(const char* args) {
                 pv ? static_cast<int>(pv & 1) : -1,
                 static_cast<unsigned long long>(ageMs),
                 haveFov ? t : 0.0f, haveFov ? fovAge : 0,
-                bvr::hud::fov_mismatch() ? 1 : 0, bvr::hud::screen_only() ? 1 : 0);
+                bvr::hud::fov_mismatch() ? 1 : 0, bvr::hud::screen_only() ? 1 : 0,
+                dumpEdge == 0 ? "off" : (dumpEdge == 1 ? "bars" : "screen"));
     }
 }
 
@@ -2609,6 +3720,48 @@ void set_aim_dot(const AimDotConfig& cfg) {
     g_dotZ.store(cfg.posXr[2], std::memory_order_relaxed);
     g_dotStampMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
+
+void set_laser_slot(int slot, const LaserConfig& cfg) {
+    if (slot != 1) {
+        set_laser(cfg);
+        return;
+    }
+    g_laser2On.store(cfg.enabled, std::memory_order_relaxed);
+    g_laser2Hand.store(cfg.hand ? 1 : 0, std::memory_order_relaxed);
+    g_laser2PitchTrim.store(cfg.pitchTrimDeg, std::memory_order_relaxed);
+    g_laser2YawTrim.store(cfg.yawTrimDeg, std::memory_order_relaxed);
+    g_laser2PosFwdCm.store(cfg.posFwdCm, std::memory_order_relaxed);
+    g_laser2PosRightCm.store(cfg.posRightCm, std::memory_order_relaxed);
+    g_laser2PosUpCm.store(cfg.posUpCm, std::memory_order_relaxed);
+    g_laser2Dots.store(cfg.dots, std::memory_order_relaxed);
+    g_laser2NearM.store(cfg.nearM, std::memory_order_relaxed);
+    g_laser2FarM.store(cfg.farM, std::memory_order_relaxed);
+    g_laser2SizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
+    // The muzzle-ray lane stays slot-0 only: it exists for BS1's rendered
+    // barrel and has no second-hand meaning yet.
+}
+
+void set_aim_dot_slot(int slot, const AimDotConfig& cfg) {
+    if (slot != 1) {
+        set_aim_dot(cfg);
+        return;
+    }
+    g_dot2On.store(cfg.enabled, std::memory_order_relaxed);
+    g_dot2SizeDeg.store(cfg.sizeDeg, std::memory_order_relaxed);
+    g_dot2Valid.store(cfg.valid, std::memory_order_relaxed);
+    if (!cfg.valid) return;
+    g_dot2X.store(cfg.posXr[0], std::memory_order_relaxed);
+    g_dot2Y.store(cfg.posXr[1], std::memory_order_relaxed);
+    g_dot2Z.store(cfg.posXr[2], std::memory_order_relaxed);
+    g_dot2StampMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+const char* session_state_name() {
+    if (g_session == XR_NULL_HANDLE) return "none";
+    return state_str(g_state);
+}
+
+bool ever_focused() { return g_everFocused.load(std::memory_order_relaxed); }
 
 void set_hud_quad(float distM, float widthM, float upM) {
     g_hudDistM.store(distM, std::memory_order_relaxed);
@@ -2658,11 +3811,21 @@ bool session_live() { return false; }
 int64_t last_predicted_time() { return 0; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
+void set_alternate_eye(bool) {}
 void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}
+void set_pace_detach(bool) {}
+void set_present_stage(const char*) {}
+void set_draw_stage(const char*) {}
+uint32_t watchdog_fires() { return 0; }
 void handle_mirror_command(const char*) {}
 float suggested_hfov_deg() { return 0.0f; }
+bool headset_half_fov_deg(float* halfH, float* halfV) {
+    if (halfH) *halfH = 0.0f;
+    if (halfV) *halfV = 0.0f;
+    return false;
+}
 void set_rendered_hfov(float) {}
 void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* swapH) {
     if (tanH) *tanH = 0.0f;

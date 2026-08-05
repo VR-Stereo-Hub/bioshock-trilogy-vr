@@ -1,0 +1,47 @@
+# coupling-viewmodel.xrs - is the weapon/hand viewmodel GLUED TO THE VIEW, or
+# left behind in the world when you turn your head?
+#
+# This is a difference-of-differences test, and it is the reason captures beat
+# eyeballing: turn the head by a known amount and compare the SAME screen region
+# before and after.
+#
+#   - A view-locked viewmodel stays in the same place on screen. The region where
+#     the gun sits barely changes; the world behind it changes a lot.
+#   - A world-locked viewmodel slides across the screen (or leaves frame) with
+#     exactly the same magnitude as the world.
+#
+# How to read it, with img-diff's grid so you can see WHERE it changed:
+#
+#   .\tools\img-diff.ps1 -A vm_yaw00_left.png -B vm_yaw20_left.png -Grid 16
+#
+# The viewmodel occupies the lower-right of the frame in BS1. If that block of
+# the coverage map is quiet while the rest is loud, the viewmodel is following
+# the head, which is correct. If the viewmodel block is as loud as the world, it
+# is world-locked - the bug this sequence exists to catch.
+#
+# Then repeat with TRANSLATION rather than rotation (below): a view-locked
+# viewmodel is also immune to head TRANSLATION, and translation is the case that
+# usually exposes a viewmodel parented to the wrong space.
+# Stereo armed here, not left to the caller - see coupling-hand.xrs.
+reset
+@mod vrstereo on
+@mod vrhands on
+@frames 60
+@assert projectionViews eq 2
+@shot vm_yaw00
+head rot 20 0 0
+@frames 20
+@shot vm_yaw20
+head rot 0 0 0
+@frames 20
+# Strafe half a metre without turning. The world must shift; a correctly
+# parented viewmodel must not.
+head pos 0.5 1.6 0
+@frames 20
+@shot vm_strafe
+# And lean in, which changes parallax on everything world-locked.
+head pos 0 1.6 -0.5
+@frames 20
+@shot vm_lean
+head pos 0 1.6 0
+@frames 10

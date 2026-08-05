@@ -1,0 +1,11 @@
+# stereo.xrs - stereo must produce two DIFFERENT eye images.
+#
+# Read the result with:
+#   .\tools\img-diff.ps1 -A <Left> -B <Right>
+# Standing-still noise is ~0.4 mean (docs/bioshock1/TESTING.md). Both eyes
+# identical reads at the noise floor; real stereo reads well above it.
+reset
+@mod vrstereo on
+@frames 60
+@assert projectionViews eq 2
+@shot stereo_on

@@ -12,6 +12,14 @@
 # boot flow for it is future M10 work - launch BS2 manually or via
 # `Start-Process steam://rungameid/409720` and drive with the -Game bs2
 # harness scripts.
+#
+# -Attach: the game is ALREADY running because tools\xrsim-launch.ps1 started it
+# directly with XR_RUNTIME_JSON set. Skip the Steam launch. This is mandatory in
+# sim mode, not a nicety: Steam does not know about a directly launched process,
+# so it would start a SECOND BioshockHD.exe - on the real runtime, on top of this
+# one, with both fighting over the GPU.
+param([switch]$Attach)
+
 $repo = Split-Path -Parent $PSScriptRoot
 $log = "$env:LOCALAPPDATA\BioshockVR\bioshockvr.log"
 
@@ -25,8 +33,16 @@ public static class W {
 }
 '@
 
-Start-Process "steam://rungameid/409710"
-"launched via steam"
+if ($Attach) {
+    if (-not (Get-Process BioshockHD -ErrorAction SilentlyContinue)) {
+        "FAIL: -Attach was given but BioshockHD is not running"
+        exit 1
+    }
+    "attaching to the running BioshockHD (no Steam launch)"
+} else {
+    Start-Process "steam://rungameid/409710"
+    "launched via steam"
+}
 
 # Phase 1: wait for the game process; dismiss any 'Message' dialog with &No.
 $game = $null

@@ -12,6 +12,7 @@ namespace {
 // Captured by resolve() so the heap scanner can form vtable addresses for
 // this session's ASLR base.
 const uint8_t* g_imageBase = nullptr;
+size_t g_imageSize = 0;
 
 // Cached UShockUserSettings instance (revalidated by vtable every call).
 // Like BS1 there is no known static pointer to it; unlike BS1's scanner this
@@ -57,6 +58,15 @@ void scan_region(uintptr_t base, uintptr_t end, uintptr_t wantVtable, uint32_t n
 // table (RVAs ~0x10000-0x40000); one hop reaches the real body.
 const uint8_t* follow_jmp_stub(const uint8_t* p) {
     if (!bvr::pattern_scan::is_memory_valid(p, 5) || p[0] != 0xE9) return p;
+    int32_t rel = 0;
+    memcpy(&rel, p + 1, sizeof(rel));
+    return p + 5 + rel;
+}
+
+// Decode a direct call (E8 rel32) at a known call site. Returns null when the
+// byte there is not E8 - the caller treats that as a build mismatch.
+const uint8_t* follow_call_rel32(const uint8_t* p) {
+    if (!bvr::pattern_scan::is_memory_valid(p, 5) || p[0] != 0xE8) return nullptr;
     int32_t rel = 0;
     memcpy(&rel, p + 1, sizeof(rel));
     return p + 5 + rel;
@@ -170,6 +180,200 @@ void hfov_scan_rearm(const char* why) {
     }
 }
 
+void resolve_gpfs_impls(const bvr::pattern_scan::ProcessImage& image, GpfsImpls& out) {
+    using namespace bvr::pattern_scan;
+    out = {};
+
+    // Weapon: image[APlayerWeapon vtbl + 0x374] -> one stub hop -> body.
+    const uint8_t* slot = image.base + kPlayerWeaponVtableRva + kWeaponGpfsVtblByteOffset;
+    if (is_memory_valid(slot, sizeof(void*))) {
+        const uint8_t* stub = *reinterpret_cast<const uint8_t* const*>(slot);
+        const uint8_t* body = follow_jmp_stub(stub);
+        if (body != image.base + kWeaponGpfsImplRva) {
+            BVR_LOG("[b2r] weapon GetPerfectFireStart via vtbl+0x%X = %p, expected RVA "
+                    "0x%X - build differs, weapon seam refused",
+                    kWeaponGpfsVtblByteOffset, body, kWeaponGpfsImplRva);
+        } else if (prologue_matches(body, kWeaponGpfsPrologue, sizeof(kWeaponGpfsPrologue),
+                                    "weapon GetPerfectFireStart")) {
+            out.weapon = const_cast<uint8_t*>(body);
+            BVR_LOG("[b2r] weapon GetPerfectFireStart impl VERIFIED: vtbl 0x%X+0x%X -> "
+                    "stub %p -> body %p (RVA 0x%X)",
+                    kPlayerWeaponVtableRva, kWeaponGpfsVtblByteOffset, stub, body,
+                    kWeaponGpfsImplRva);
+        }
+    } else {
+        BVR_LOG("[b2r] APlayerWeapon vtable slot unreadable - weapon seam refused");
+    }
+
+    // Ability: static-called body, prologue gate only.
+    const uint8_t* abody = image.base + kAbilityGpfsImplRva;
+    if (prologue_matches(abody, kAbilityGpfsPrologue, sizeof(kAbilityGpfsPrologue),
+                         "ability GetPerfectFireStart")) {
+        out.ability = const_cast<uint8_t*>(const_cast<const uint8_t*>(abody));
+        BVR_LOG("[b2r] ability GetPerfectFireStart impl VERIFIED: body %p (RVA 0x%X)",
+                abody, kAbilityGpfsImplRva);
+    }
+}
+
+bool fname_text(uint32_t index, char* out, size_t outCap) {
+    using namespace bvr::pattern_scan;
+    if (!g_imageBase || !out || outCap < 2) return false;
+    out[0] = '\0';
+
+    const uint8_t* arr = g_imageBase + kGNamesArrayRva;
+    if (!is_memory_valid(arr, 8)) return false;
+    const uint8_t* const* data = *reinterpret_cast<const uint8_t* const* const*>(arr);
+    int32_t count = *reinterpret_cast<const int32_t*>(arr + 4);
+    // Count band: BS1's live table held ~54k names; a table outside a broad
+    // band means the RVA is wrong for this build - refuse everything.
+    if (!data || count <= 0 || count > 2000000) return false;
+    if (index >= static_cast<uint32_t>(count)) return false;
+    if (!is_memory_valid(data + index, sizeof(void*))) return false;
+
+    const uint8_t* entry = data[index];
+    // Freed indices leave null slots (the worker keeps a free-index stack).
+    if (!entry) return false;
+    // Validate the header plus a bounded text window in ONE call; per-char
+    // VirtualQuery would put ~2000 syscalls behind a census dump.
+    const size_t kTextWindow = 64; // 31 UTF-16 chars + terminator
+    if (!is_memory_valid(entry, kFNameEntryTextOffset + kTextWindow)) return false;
+    if (*reinterpret_cast<const uint32_t*>(entry + kFNameEntryIndexOffset) != index)
+        return false; // self-index check - the entry vouches for itself
+
+    const wchar_t* w = reinterpret_cast<const wchar_t*>(entry + kFNameEntryTextOffset);
+    size_t i = 0;
+    size_t cap = outCap - 1;
+    if (cap > kTextWindow / 2 - 1) cap = kTextWindow / 2 - 1;
+    for (; i < cap; ++i) {
+        wchar_t c = w[i];
+        if (!c) break;
+        out[i] = (c >= 32 && c < 127) ? static_cast<char>(c) : '?';
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+bool fname_find(const char* text, uint32_t* outIndex) {
+    // Session 42: GNames REVERSE lookup (string -> index) for calling script
+    // functions by name through the engine's own FindFunctionChecked. Linear
+    // over the live table via fname_text (self-index-checked reads); ~50k
+    // entries = one bounded hitch, so callers cache the result.
+    using namespace bvr::pattern_scan;
+    if (!g_imageBase || !text || !outIndex) return false;
+    size_t want = strlen(text);
+    if (want == 0 || want > 30) return false;
+    const uint8_t* arr = g_imageBase + kGNamesArrayRva;
+    if (!is_memory_valid(arr, 8)) return false;
+    int32_t count = *reinterpret_cast<const int32_t*>(arr + 4);
+    if (count <= 0 || count > 2000000) return false;
+    char buf[48];
+    for (int32_t i = 0; i < count; ++i) {
+        if (!fname_text(static_cast<uint32_t>(i), buf, sizeof buf)) continue;
+        if (buf[0] == text[0] && strcmp(buf, text) == 0) {
+            *outIndex = static_cast<uint32_t>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool object_class_name(const void* objPtr, char* out, size_t outCap) {
+    using namespace bvr::pattern_scan;
+    if (out && outCap) out[0] = '\0';
+    const uint8_t* o = static_cast<const uint8_t*>(objPtr);
+    if (!g_imageBase || !o || !out || outCap < 2) return false;
+    if (!is_memory_valid(o, kUObjectClassOffset + sizeof(void*))) return false;
+    const uint8_t* cls = *reinterpret_cast<const uint8_t* const*>(o + kUObjectClassOffset);
+    if (!cls || !is_memory_valid(cls, kUObjectNameIndexOffset + 4)) return false;
+    // The UClass-vtable gate is the liveness predicate: a freed or non-UObject
+    // candidate cannot present a heap object whose dword0 is exactly this
+    // vtable AND whose name field resolves through GNames' self-index check.
+    if (*reinterpret_cast<const uint8_t* const*>(cls) != g_imageBase + kUClassVtableRva)
+        return false;
+    int32_t idx = *reinterpret_cast<const int32_t*>(cls + kUObjectNameIndexOffset);
+    if (idx <= 0) return false;
+    return fname_text(static_cast<uint32_t>(idx), out, outCap);
+}
+
+void probe_object_identity(const void* objPtr, const char* label) {
+    using namespace bvr::pattern_scan;
+    const uint8_t* o = static_cast<const uint8_t*>(objPtr);
+    if (!label) label = "?";
+    if (!g_imageBase || !o || !is_memory_valid(o, 0x48)) {
+        BVR_LOG("[b2r] oclass %s: object %p unreadable", label, objPtr);
+        return;
+    }
+    // Raw header first - the derivation evidence even when nothing resolves.
+    const uint32_t* d = reinterpret_cast<const uint32_t*>(o);
+    BVR_LOG("[b2r] oclass %s %p hdr: %08X %08X %08X %08X | %08X %08X %08X %08X | "
+            "%08X %08X %08X %08X | %08X %08X %08X %08X",
+            label, o, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10],
+            d[11], d[12], d[13], d[14], d[15]);
+    // Candidate own-name FName index: any int32 in +0x20..+0x3C that GNames
+    // resolves (BS1's was +0x28; derive fresh - never copy).
+    char text[64];
+    for (uint32_t off = 0x20; off <= 0x3C; off += 4) {
+        int32_t idx = *reinterpret_cast<const int32_t*>(o + off);
+        if (idx > 0 && idx < 2000000 && fname_text(static_cast<uint32_t>(idx), text,
+                                                   sizeof text))
+            BVR_LOG("[b2r]   name candidate +0x%02X: idx %d -> '%s'", off, idx, text);
+    }
+    // Candidate UClass pointer: any pointer in +0x24..+0x44 to a heap object
+    // whose dword0 is an IN-IMAGE vtable and whose +0x28 FName resolves (the
+    // canonical class name is FName number 0 on BS1's layout). The UClass
+    // vtable RVA printed here is the constant to bank once it is identical
+    // across >= 3 distinct classes.
+    for (uint32_t off = 0x24; off <= 0x44; off += 4) {
+        const uint8_t* cls = *reinterpret_cast<const uint8_t* const*>(o + off);
+        if (!cls || cls == o || !is_memory_valid(cls, 0x2C + 4)) continue;
+        const uint8_t* vt = *reinterpret_cast<const uint8_t* const*>(cls);
+        if (vt < g_imageBase || vt >= g_imageBase + g_imageSize) continue;
+        int32_t nidx = *reinterpret_cast<const int32_t*>(cls + 0x28);
+        if (nidx <= 0 || !fname_text(static_cast<uint32_t>(nidx), text, sizeof text))
+            continue;
+        BVR_LOG("[b2r]   class candidate +0x%02X: cls %p vtbl RVA 0x%X, cls+0x28 "
+                "name '%s'",
+                off, cls, static_cast<unsigned>(vt - g_imageBase), text);
+    }
+}
+
+void resolve_fire_names(const bvr::pattern_scan::ProcessImage& image, FireNames& out) {
+    using namespace bvr::pattern_scan;
+    // The dispatch names (no `exec` prefix - those are the thunk registration
+    // strings, a different region). StopFiring has no wide string in this exe
+    // at all (script-side name only) and is deliberately absent.
+    static const char* kNames[] = {"GetPerfectFireStart", "BeginFiring", "UseAbility",
+                                   "InitiateDamage",      "ApplyAimError"};
+    out.count = 0;
+    for (const char* name : kNames) {
+        if (out.count >= FireNames::kMax) break;
+        const uint8_t* global = nullptr;
+        auto strs = find_wide_string(image, name);
+        size_t xrefs = 0;
+        for (const uint8_t* s : strs) {
+            // Suffix-pooling trap (BS1 session 10, live in THIS list:
+            // "UseAbility" is the tail of "AnimNotify_UseAbility"): only an
+            // occurrence with its own terminator is the real string.
+            const uint8_t* term = s + 2 * strlen(name);
+            if (!is_memory_valid(term, 2) || term[0] != 0 || term[1] != 0) continue;
+            auto refs = find_references(image, s);
+            xrefs += refs.size();
+            for (const uint8_t* r : refs) {
+                global = find_fname_index_global(image, r);
+                if (global) break;
+            }
+            if (global) break;
+        }
+        out.name[out.count] = name;
+        out.indexGlobal[out.count] = global;
+        ++out.count;
+        BVR_LOG("[b2r] fire-name \"%s\": %zu wide string(s), %zu xref(s), index global %s"
+                " (RVA 0x%X)",
+                name, strs.size(), xrefs, global ? "RESOLVED" : "none",
+                global ? static_cast<unsigned>(global - image.base) : 0u);
+    }
+}
+
 bool verify_draw_chain(const bvr::pattern_scan::ProcessImage& image) {
     using namespace bvr::pattern_scan;
     const uint8_t* slot = image.base + kGameEngineVtableRva + kDrawVtblByteOffset;
@@ -195,10 +399,42 @@ bool verify_draw_chain(const bvr::pattern_scan::ProcessImage& image) {
     return true;
 }
 
+bool verify_flush_chain(const bvr::pattern_scan::ProcessImage& image) {
+    using namespace bvr::pattern_scan;
+    const uint8_t* site = image.base + kFlushCallSiteRva;
+    const uint8_t* thunk = follow_call_rel32(site);
+    if (!thunk) {
+        BVR_LOG("[b2r] flush call site 0x%X is not an E8 call - build differs, refusing",
+                kFlushCallSiteRva);
+        return false;
+    }
+    if (thunk != image.base + kFlushThunkRva) {
+        BVR_LOG("[b2r] flush call at 0x%X lands at %p, expected thunk RVA 0x%X - build "
+                "differs, refusing",
+                kFlushCallSiteRva, thunk, kFlushThunkRva);
+        return false;
+    }
+    const uint8_t* body = follow_jmp_stub(thunk);
+    if (body != image.base + kFlushPointRva) {
+        BVR_LOG("[b2r] flush thunk 0x%X lands at %p, expected body RVA 0x%X - build "
+                "differs, refusing",
+                kFlushThunkRva, body, kFlushPointRva);
+        return false;
+    }
+    if (!prologue_matches(body, kFlushPointPrologue, sizeof(kFlushPointPrologue),
+                          "render flush point"))
+        return false;
+    BVR_LOG("[b2r] render flush chain VERIFIED: Draw tail 0x%X -> thunk 0x%X -> body %p "
+            "(RVA 0x%X)",
+            kFlushCallSiteRva, kFlushThunkRva, body, kFlushPointRva);
+    return true;
+}
+
 bool resolve(const bvr::pattern_scan::ProcessImage& image, Symbols& out) {
     using namespace bvr::pattern_scan;
 
     g_imageBase = image.base;
+    g_imageSize = image.size;
     BVR_LOG("[b2r] scanning main module: base %p size 0x%zX", image.base, image.size);
 
     // FName-chain scan (game-agnostic, core/hooks/pattern_scan.h). On BS2 its

@@ -3,6 +3,7 @@
 #include "core/framework/framework.h"
 #include "core/gfx/frame_inspector.h"
 #include "core/input/xinput_bridge.h"
+#include "core/util/crash.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/igame_adapter.h"
@@ -32,6 +33,15 @@ HWND g_window = nullptr;
 WNDPROC g_originalWndProc = nullptr;
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    // Session 38: the subclass is on the GAME's main window, so it is the
+    // earliest game-agnostic sight of a close. BS2's engine faults on its own
+    // exit path (hook-free-proven); noting teardown here turns that into a
+    // quiet fast exit instead of a dump per close. WM_ENDSESSION covers
+    // logoff/shutdown. Always forwarded - observation only.
+    if (msg == WM_CLOSE || msg == WM_DESTROY || (msg == WM_ENDSESSION && wparam))
+        crash::note_teardown(msg == WM_CLOSE     ? "WM_CLOSE"
+                             : msg == WM_DESTROY ? "WM_DESTROY"
+                                                 : "WM_ENDSESSION");
     if (g_visible) {
         ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
         // Session 22 (user report: overlay unusable while scrolling): while

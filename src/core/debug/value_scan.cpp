@@ -394,6 +394,13 @@ bool poke_addr_u32(uintptr_t addr, uint32_t value) {
     return poke_addr_bits(addr, value, describe_u32(value));
 }
 
+bool safe_read_f32(uintptr_t addr, float* out) {
+    uint32_t bits = 0;
+    if (!safe_read_u32(addr, &bits)) return false;
+    memcpy(out, &bits, 4);
+    return true;
+}
+
 void hexdump(uintptr_t addr, size_t len) {
     if (len > 1024) len = 1024;
     char where[MAX_PATH + 16];

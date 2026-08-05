@@ -1,4 +1,4 @@
-﻿# Project status
+# Project status
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
@@ -242,7 +242,1226 @@ startup where BS1/BS2 still execute a stale one.
 never thunks (offline census proves the thunks are dead here), and read the `FNameEntry` encoding
 flag rather than assuming UTF-16 like BS1.
 
-## Current state (2026-07-31, session 32 - BS2: RESOLUTION LANE SHIPS, AND BS1'S SQUARE-BACKBUFFER POLICY IS DEAD ON BS2 - branch s32-b2r-resolution-and-lens)
+## Current state (2026-08-05, session 42 - THE PRESENTATION LANE, all reachable rungs flat-green - branch `claude/bioshock2-presentation-vr-2a7b3a`, merged to `bioshock-2`)
+
+### The headline: the HUD rides a readable head-locked panel, and it took a core discovery
+
+BS2's frame is a **backbuffer-composite pipeline**: gameswf draws land straight on a
+RENDER_TARGET-only backbuffer and the tonemap is an INDEXED quad - no BS1 classifier
+fingerprint ever fired (hudDraws=0 under armed stereo). One flag-gated core mode
+(`set_backbuffer_composite`, adapter opt-in, default off = BS1 bit-identical) and the
+whole presentation stack came alive: **hudDraws=redirects=12352, leaks=0, stranded=0
+per reason**, the HUD panel submits as the 12th compositor layer (space=view) at the
+preset pose, the flat window keeps its HUD via the composite, and the health/EVE bars
+keep their colour (BS2's fills are textured - BS1's bar-fill collision does not
+manifest). `vrhud force on|off` + full counters ported; hudQuadDistM/WidthM/UpM
+persist (a hand-edited 1.55 survived a relaunch onto the live quad).
+
+### What else landed (all flat-verified where the sim can reach)
+
+1. **Screens route GENERICALLY** (user decision): loading AND the pause menu measured
+   SCREEN-ONLY (world pass absent - unlike BS1's pause) -> head-locked quad; the
+   title/menu attract stays a strict projection. Unmeasured kinds (vending, gene
+   bank, hacking, map, FMV) ride the same generic route, and `vrcine dumparm`
+   (one-shot frame dump on a classifier rising edge; **bars edge auto-armed at
+   init**) harvests fingerprints during normal play.
+2. **Cinematic gates fixed + consumed**: the camera's cine gate keyed on
+   `letterbox()`, which is DEAD with bars hidden - now `cinematic_hold()`; `vrcine
+   drive off|authored|authored+look` is consumed by camera/aim/hands/wskel
+   (identity folds outside a cine - a full session of normal driving proves it);
+   authored+look ported (head DELTAS only, residual 0, reference dropped on both
+   edges); `bones::release()` gained the missing s29 memory-validity leg;
+   `wskel_release` returns the scaled weapon to authored size in suspended shots.
+3. **Pad-A (menukey)**: A -> scancode Enter while a menu context holds
+   (calcview-silent / menu-shape vtable / screen-only, + foreground + stuck-key
+   cap), default ON. **The title-continue accepts NATIVE pad A** - a synthetic A
+   continued into the save. Gameplay negative proven (zero injects).
+4. **The game crosshair is HIDDEN by default** (user ask, same session):
+   `ShockPlayer.DisableReticle()` called through the engine's OWN
+   FindFunctionChecked + ProcessEvent - the first PE-by-name CALL lane, the
+   precedent for future BS2 engine-state writes. `vrxhair on|off` + F10 checkbox +
+   `crosshairVisible` preset key; A/B screenshot-proven; fail-soft (one fault
+   latches the lane off).
+5. **Flicker diagnosis armed at boot**: per-site catch counters (PE pass-1/2,
+   flush pass-1/2, hands vs wskel), write->catch latency maxima (the survivor
+   discriminator), the drive-adopt cadence BASELINE, correlates, and a `[flick]
+   min=N ...` line every minute. Proven flowing 4 minutes; ambient baseline: pe1
+   ~1900/min hands + ~950/min wskel, dmax 16 ms, everything else 0. Any 12+ min
+   play log now answers the ~10-min onset question.
+
+### Two structural discoveries future sessions must not re-learn
+
+- **The BS2 pause menu starves the entire PE-tail service lane**: every dispatch
+  lands inside the hooked draw (3 CalcView/s, 205 ms draws), so seam commands
+  never poll and the input pump - and therefore the PAD - is dead there
+  (pre-existing, not a s42 regression; keyboard drives it). An unfocused-paused
+  BS2 writes NOTHING and false-positives log-age wedge checks; `game-key Space`
+  wakes a healthy game to ~370 CalcView/s instantly.
+- **The title screen preloads the newest save under itself** - the camera
+  heartbeat shows save coordinates while "PRESS A" is up; continue is instant.
+
+### Regression guards: all intact
+
+sr eyes 6.30 UU exact; wait2/s=0, guardskips 0; drive 90/s; write-locs live on both
+hands; teardown clean with ZERO dumps across all four closes (the known host
+exit-path fault absorbed each time). Core diff this session: the backbuffer-composite
+flag + dumparm + `last_composed_buttons` - all additive, default-off/read-only,
+no BS1 path changes behaviour.
+
+### USER CHECKLIST (in-headset, the session-42 acceptance)
+
+Load the save, headset on. Everything arms itself (HUD panel included).
+
+1. **HUD panel**: health/EVE/ammo/plasmid + subtitles on a floating panel in front
+   of you. Tune distance / width / height on the F10 sliders (VR section), press
+   SAVE - it comes back after a relaunch. Bars must read FULL (coloured).
+2. **Crosshair**: the game's own reticle is GONE by default. If you want it back:
+   F10 "Game crosshair" checkbox (or `vrxhair on`).
+3. **Screens during play**: pause menu and anything you reach (vending, gene bank,
+   hacking, map) should land on a readable screen. If one misroutes, just note
+   WHICH - the auto-armed dump harvests the evidence silently.
+4. **Cutscenes** (any you reach): default = authored camera plays with stereo
+   intact and your hands/weapon return at the end. F10 "During cutscenes" combo:
+   try `authored+look` for head-look-on-rails and say which you prefer. If the
+   drill/gun looks wrong DURING a shot, or a floating screen appears, say so.
+5. **Pad A in menus**: A should activate at the title and on fullscreen screens.
+   The PAUSE menu pad is dead (structural - use keyboard there for now); report
+   whether the MAIN menu list activates on A.
+6. **Flicker**: play 12+ minutes normally; the log records `[flick]` every minute.
+   Note roughly WHEN you first see the flicker (minute-ish) - we correlate after.
+7. Known: plasmid-hand tuning still global; no projectile-plasmid seam yet.
+
+## Next steps (session 43)
+
+1. **Read the session-42 headset verdicts** + the auto-harvested dumps: derive
+   `patterns::kCineBarVerts` from the bars-edge dump (C10 - the one open M10.2
+   code box), classify any misrouted screen kind from its dump.
+2. **Flicker verdict from the [flick] readout**: pick the next fix from the
+   playbook (ENGINE_NOTES s42 #7) - late-window catches vs cadence steps vs
+   "not these banks at all".
+3. **Main-menu pad-A verdict** decides whether menukey needs a 4th gate leg.
+4. Plasmid item names (ContentBaked/pc string tables) -> ability-seam live check
+   -> per-PLASMID left-hand profiles.
+5. The pause-menu service-lane starvation + the alt-tab pacing wedge - one
+   careful CORE-adjacent lane, together (same frame-loop neighbourhood).
+6. Standing: BS1 regression testing deferred to the END of BS2 development. Core
+   diff to re-check that day: laser/dot slots (s40), backbuffer-composite flag +
+   dumparm + last_composed_buttons (s42) - all additive/default-off.
+
+---
+
+## Previous state (2026-08-04, session 41 - THE HOLDABLE LANE + THE ANIMATION-PRESERVING DRIVE, all flat-green - branch `claude/bioshock2-holdable-polish-7cbec4`, merged to `bioshock-2`)
+
+### The headline: every round-2 defect has a shipped, flat-verified fix
+
+Session 40's round-2 list is fully addressed in code and measured across two sim boots
+at the user's save (vrstereo on throughout). What remains is the in-headset acceptance.
+
+### 1. The animation-preserving drive (the flicker AND the missing animations, one root)
+
+The rigid drive REPLACED driven bones every frame; engine restamps that survived were
+the left-eye flicker, and bones where our writes always won had no animation at all.
+Now the drive ADOPTS the engine's freshly-evaluated pose per bone (32-byte trans+quat
+only, and ONLY when the bank stopped being our own last write - the feedback filter)
+and composes the controller frame on top: `q = qtc * animQ`. Restamps became input.
+The design review caught a real bug before it shipped: the engine never restamps
+SCALE, so adopting all 48 bytes would compound `g_scale` geometrically - the scale
+channel is pinned to the captured reference, structurally. The per-PE repaint is now
+absorb-then-recompose (pass 1 only; pass 2 verbatim - both eyes render one frame).
+`vrhands anim on|off` (default ON; off = the rigid session-40 drive, also the idle-sway
+escape hatch), `animtrans 0..1` re-adds authored wrist travel (default 0, glued).
+
+Flat: adoption live at ~7 absorbs/drive/hand; drill-region motion during a trigger
+pulse that no rest pair shows; scale-flick captures decay to ambient with NO
+pose-alternation outliers; write-loc 100 UU/m EXACT; per-hand decoupling exact;
+anim-off composition bitwise-stable. INSTRUMENT CORRECTION banked: `vrbones axes`
+'cur' RACES the restamp war (79 deg between same-pose samples) - the new race-free
+`written q / anim q` line is the acceptance read.
+
+### 2. The holdable lane - one derivation, two user asks (all constants fresh)
+
+- **UObject identity**: name FName +0x28, UClass +0x30, UClass vtable RVA
+  **0x11E71F8** (stable across PlayerHands/PlayerMachineGun/PlayerGrenadeLauncher);
+  `patterns::object_class_name` with the full validation chain.
+- **Hands.CurrentHoldable = hands+0x4B4**, derived TWICE (seam-anchored find: the
+  fired weapon at exactly one slot, two weapons; switch-diff: the same slot swapping
+  class objects). BS1's 0x45C did not transfer - the never-copy rule held.
+- **The weapon's OWN SkeletonInstance = holdable+0x430** (vtable + owner backpointer,
+  one hit; rivet gun 19 bones, grenade launcher 13).
+- **Uniform weapon scale** (`vrhands wscale`, F10 slider, per-weapon profile field):
+  drives the weapon's own pose bank - scale channels AND translations about the
+  component origin. THE CANISTER REPRO INVERTED: at 0.5 the whole rivet gun halves,
+  furnace/canister proportional (session 40: ballooned ~4x); at 2.0 uniform growth;
+  1.0 = authored restored + fully hands-off. Weapon animations keep playing while
+  scaled (adoption on the weapon bank too). `scaleweapon` (pivot-63) kept as
+  fallback, default OFF.
+- **Per-weapon profiles** (BS1 session-21 shape, all four seeding rules): RIGHT hand
+  (aim trim/pos + model trim/offset/scale) + wScale per weapon, keyed by class name,
+  auto-swap on the rig's live holdable, weapons.ini persistence. USER DECISION: the
+  left/plasmid hand stays GLOBAL (per-plasmid keys are a future session). Flat:
+  pre-fire keying ('PlayerRivetGun' applied the moment the rig resolved), edits stash
+  on switch and restore on switch-back with NO leak into new profiles (they seed from
+  the captured preset baseline), 2 profiles / 26 values round-tripped a relaunch.
+
+### 3. Round-2 polish, all landed
+
+- **Arms-hide web FIXED**: hidden arm bones now collapse ONTO the driven wrist
+  (position = wrist target, zero scale) - the skinning blend degenerates to a point.
+- **F10**: always-visible PRESET section at the TOP - "applies / saves ALL settings
+  and values" - APPLY + SAVE in one obvious place; buried duplicates removed; new
+  anim checkbox/slider, WEAPON scale slider, live "weapon profile: <key>" readout.
+- **vrinput default-ON** (BS2-local call in camera::install): the pad drives at boot
+  with no command - proven this session pre-command at 90/s. Core default untouched.
+- **Per-hand aimRayMaxDevDegL/R** in the sim compositor (nearest-ray assignment):
+  dual-beam acceptance reads **L 0.0000 / R 0.0000** at the save (legacy field kept
+  for old baselines; a tuned aim trim reads as exactly the trim).
+- **Preset**: 43 values round-trip (was 22) - animMode/animTrans/wScale/scaleWeapon
+  added; boot order load -> baseline capture -> weapons.ini proven in-log.
+
+### Regression guards: all intact (session-41 numbers)
+
+11 compositor layers dual-beam; sr eyes 6.30 UU exact; wait2/s=0, guardskips 0; input
+drive 58-92 UpdateInput/s; teardown 478/463 ms with ZERO dumps across both closes;
+`vrhands offset` verb still whole-token. BS1 untouched (BS2-local code only; the one
+sim-tool change is additive JSON fields).
+
+### USER CHECKLIST (in-headset, the session-41 acceptance)
+
+Load the save, headset on - everything arms itself (vrinput is ON at boot now; APPLY
+PRESET is at the TOP of F10 with SAVE next to it).
+
+1. **Weapon animations**: drill melee-hit should PLAY on the driven hand now; reload
+   and grip animations too. Idle breathing/sway is BACK by design - if it bothers
+   you, F10 "engine animations on driven hands" OFF is the old rigid feel; say which
+   you prefer.
+2. **The left-eye flicker**: flick the model scale slider (the old trigger) - the
+   flicker should be gone. If any survives, say when it happens.
+3. **Arms hide**: the stretchy web from the wrist should be gone (arms radio "hide").
+   Follow stays the default.
+4. **WEAPON scale (uniform)**: the new "WEAPON scale" slider shrinks the whole gun -
+   ammo canister included, nothing should balloon. Tune per weapon; it saves into
+   that weapon's profile.
+5. **Per-weapon tuning**: aim/model sliders (R hand) now save PER WEAPON and swap
+   automatically when you switch weapons - the panel shows "weapon profile:
+   PlayerRivetGun" etc. Tune a couple of weapons, switch back and forth, press SAVE.
+6. Known: plasmid-hand tuning is still global; pad A still does not activate menu
+   items (Enter does); no projectile plasmid yet.
+
+### ROUNDS 2-3 (same day): the user tested TWICE - near-total acceptance
+
+Round-2 in-headset verdicts: **animations, sway, arms-hide/follow, uniform weapon
+scale, per-weapon profiles, F10 - ALL ACCEPTED; nothing regressed.** The user
+calibrated all 8 weapons + both hands and saved. Follow-ups shipped same day:
+
+- **The calibration is BAKED AS CODE DEFAULTS** (their ask; BS1 s21 precedent) -
+  atomics + `seed_default_profiles()` carry the tuned values, virgin-boot-proven
+  (inis moved aside: 8 profiles seeded, rivet gun applied the exact numbers). Round 3
+  re-baked after the offset pass (per-weapon wOff, handScaleR 0.760, shotgun 0.79).
+- **NEW: per-weapon WEAPON OFFSET** (attach-pivot base; gun moves, fingers/wrist/aim
+  stay) - round-3 verdict: "perfect". F10 sliders + `vrhands woffset` + profile
+  fields + preset keys.
+- **NEW: laser/dot per-hand F10 toggles** + preset keys (beam and dot independent).
+- **THE FLICKER SURVIVES both repaint rungs** (PE-lane absorb + flush-point),
+  reduced; new observation: possibly TIME-correlated (~10 min uptime), trigger
+  unclear. This is now a DIAGNOSIS item, not a repaint-site hunt (ENGINE_NOTES s41
+  r3 has the instrumentation plan).
+
+### Next steps (as written end of session 41 - executed by session 42)
+
+1. **THE HUD LANE** (the user's chosen focus): make the HUD work properly in VR -
+   health/EVE/ammo readability and placement. Existing substrate: core `vrhud`
+   (quad-layer HUD capture, `vrhud on|off|status`), the gameswf draw classifier,
+   and the post-v1 backlog's wrist-anchored idea. Decide head-locked quad vs
+   world/wrist anchoring, size/distance tuning in F10 (in-headset controls rule).
+2. **Flicker DIAGNOSIS** (repro: ~10 min of play): per-site sentinel-catch counters
+   per minute, log the pass phase of surviving restamps, correlate with uptime
+   (GC/streaming/LOD cadence suspects). Only then pick the next fix.
+3. **Plasmid item names** (ContentBaked/pc string tables) -> ability-seam live check
+   -> per-PLASMID left-hand profiles.
+4. Pad-A menu activation; the alt-tab pacing wedge (CORE-shared, own careful lane).
+5. Standing: BS1 regression testing deferred to the END of BS2 development. Core
+   diff to re-check that day: the additive laser/dot slot pair (s40) only.
+
+---
+
+## Previous state (2026-08-04, session 40 - BS2 PLAYS ON THE CONTROLLER; the hands are split and the ~90 deg misalignment is FIXED - branch `claude/bs2-controller-input-decoupling-d7cc14`)
+
+### The headline: the pad drives BS2, both hands are their own, and the model sits where it should
+
+All three of the user's top verdicts from the first look are addressed and measured flat
+across three simulator boots at the user's save. **Every M10.1 code box is now ticked**; what
+remains is the in-headset acceptance (the user's call) and one blocked check.
+
+### 1. Controller-driven controls - the top ask, done
+
+The premise had to be proven before anything was written: does BS2's binary still contain a
+per-frame pad poller that nothing calls? **Yes.** `UWindowsViewport::UpdateInput` is at
+viewport vtable slot 73 with ZERO callers, and the two boot GetState calls were the whole
+story. So BS1's shape ports: pump UpdateInput once per present, flip the engine's own
+`SetUseController` (client slot 73 - a coincidence, banked as two separate constants), hijack
+the game's IAT slot. All RVAs derived fresh (GEngine ptr 0x1A638F0, IAT 0x1C0DBFC).
+
+Flat-proven at the save: the drive runs at 63-92/s, `iat 2589` calls (the engine polling every
+frame), **a stick walks the player ~400 UU**, **a synthetic trigger fires through the weapon
+seam** (wep 0->1, subs 1), **the dpad navigates the main menu**, and the engine's own UI
+switched to controller prompts (dpad glyph in the ammo tutorial, Y glyph on the 2K panel).
+Session-39's open question about XInputGetCapabilities is answered: **the game never calls
+it** - the sole cause of "no pad" was that nothing called UpdateInput. No core change needed,
+which is fortunate: the candidate core fix would NOT have been inert for BS1.
+
+### 2. THE ~90 DEG MISALIGNMENT: the composition was discarding the authored frame
+
+The `vrbones axes` instrument - the mesh-orientation read `aimRayMaxDevDeg` never was - found
+it in one reading. The rigid map was `delta = qtc * conj(refQ_anchor)`, which makes the
+anchor's rotation become the controller's outright and throws the mesh's authored orientation
+away. On this rig that orientation is **~81.6 deg** off the view frame. That discarded
+rotation IS what the user saw.
+
+Now it is `delta = qtc`: bones keep their authored rotations and the cluster turns by the
+controller's rotation relative to the AHands actor (which carries the view rotation).
+Measured: **mesh-vs-authored angle 0.21 deg at rest** (was ~81.6), and two 30 deg controller
+steps rotate the mesh by 38.85 then 38.88 deg - agreeing to 0.03 deg. No baked constant is
+needed at all, so nothing has to be re-derived when a weapon or animation changes.
+
+### 3. Left/right decoupling, on real bone names
+
+`vrbones names` auto-detected the map at **SharedSkeletonData+0xB4**, naming 64/64 bones.
+Left = wrist 7 (`BD_HAND_BONE_L00`) + fingers 8..28 + pivot 62; right = wrist 36 + fingers
+37..57 + pivot **63** (`RG_RightHandPivotTarget_BONE` - the weapon attach, proven by driving
+that bone alone and watching the gun move). Each cluster tracks its own controller:
+**35.0 UU on the moved hand, 0.0 on the other**, and 120.0 UU separation for 1.2 m apart -
+100 UU/m exact.
+
+### 4. Scale, bullet origin, dual lasers
+
+- **`vrhands scale [l|r] <f>`**, decoupled from worldscale as the user required. It scales
+  about the anchor: the anchor write-loc moved **0.00 UU** going 1.0 -> 2.0 while the model
+  visibly changed.
+- **Bullets leave the hand**: `aim origin (hand 1): ... displacement 61.9 UU`, same family as
+  BS1's 40-47 UU, behind a 200 UU refusal clamp BS1 never had.
+- **Both hands render a beam AND a dot** (user's call - BS2 is natively dual-wield): 11 of the
+  16 compositor layers, each beam terminating at its own dot so there is one bright point per
+  hand (the first look's "two dots"). The core change is strictly additive - new
+  `set_laser_slot`/`set_aim_dot_slot` entry points no BS1 path calls, a SHARED dot budget so
+  the layer arrays never grow.
+- **F10 "HANDS + AIM (per hand)"** panel: tuning-hand radio, trim/offset/scale sliders, save
+  button. In-headset controls, not commands - the standing rule.
+- **14 new vrpreset keys**: a fresh boot loads **22 values** (was 8).
+
+### What did NOT land, and why
+
+- **Ability seam live check** - blocked on a projectile plasmid, not on the seam. Telekinesis
+  provably does not traverse GetPerfectFireStart (two casts at a grabbable object, abi stayed
+  0). `<X>BasicPlasmid` exists ONLY for Telekinesis in the exe; the other item class names
+  live in the content packages and still have to be found.
+- **Per-weapon aim presets** - deliberately deferred and split out of the sliders box. There
+  is no tuned value source until the user calibrates a weapon in the headset, and seeding
+  before one exists is exactly session-21's bug.
+- **Pad menu ACTIVATION** - dpad navigation works, but the pad's A button does not trigger the
+  highlighted item (keyboard Enter does). Worth chasing if pad-only menus matter.
+
+### Two things a future session should not re-learn
+
+- **`aimRayMaxDevDeg` assumes ONE laser.** With both beams live it reads 47-75 deg and varies,
+  which looks exactly like an aim/model regression and is not one: single-beam at the same
+  pose reads **0.0000**, the session-39 baseline. Run that acceptance single-beam until the
+  metric grows a per-hand version. (VERIFICATION 2.8 records this.)
+- **A latent bug, now fixed**: `vrhands offset ...` was swallowed by the `strncmp(args,"off",3)`
+  verb check, so every offset command silently DISABLED the hands - which is why the preset
+  kept saving zeros. Verb matching is whole-token now. Watch for prefix-matched command verbs
+  where one verb is a prefix of another.
+
+### Regression guards: all intact
+
+Teardown across all three boots: **486 / 523 / 211 ms, zero new dumps** (session-38 baseline).
+Session-37 baseline observed live (sr eyes 6.30 UU exact, guardskips 0, letterbox self-heal).
+Session-39 coupling baseline re-measured at **0.0000** single-beam. Core diff is one additive
+laser/dot slot pair that no BS1 path reaches.
+
+### USER CHECKLIST (in-headset, the M10.1 acceptance)
+
+Everything below is pre-armed; load the save, `vrstereo on`, headset on.
+
+1. **Controller now plays the game** - sticks move and look, right trigger fires, left trigger
+   casts, dpad works. Say if anything is mapped wrong or feels doubled.
+2. **Model alignment** - the gun should sit in your hand the way the game drew it and turn
+   with the controller. The ~90 deg offset should be GONE. Fine-tune per hand on the F10
+   "HANDS + AIM (per hand)" panel (tuning-hand radio, then trim/offset sliders).
+3. **Scale** - F10 "model SCALE" slider, per hand. It does not touch world scale.
+4. **Both hands** - the left (plasmid) hand now rides the LEFT controller and has its own
+   laser and dot. Check they feel independent.
+5. **Bullets leave the hand**, not the head - most visible at contact range.
+6. Press "Save these settings" on the F10 panel when it feels right; it survives a relaunch.
+7. Known gaps: no shooting plasmid yet (item names not found), pad A does not activate menu
+   items (use Enter/mouse in menus).
+
+### ROUND 2 (same day): the user tested TWICE, and the second pass reshapes session 41
+
+The first in-headset pass PASSED the core acceptance (decoupled hands/aim/lasers,
+controller stack, thumbrest, 90-deg fix, origin). A same-day round-2 build addressed its
+findings (per-hand aim sliders, arms follow/hide/game, weapon-scale toggle, PE-lane
+repaint, full preset + one-button APPLY incl. controller arming), and the user tested
+AGAIN. Round-2 verdicts (full analysis in ENGINE_NOTES "Round-2 in-headset verdicts"):
+
+- **Flicker survives, and scale changes TRIGGER it** (persists after reverting the value).
+- **Some weapon animations never play** (drill melee-hit; idles fine) - the rigid drive
+  erases engine animation on driven bones. Same root as the flicker, opposite symptom.
+  The session-41 fix is ONE mechanism: retarget engine animation deltas onto the driven
+  frame instead of overwriting.
+- **Arms hide stretches a web** from the wrist to a zero-scaled bone at its authored spot -
+  collapse hidden bones ONTO the driven wrist.
+- **Aim tuning must become per WEAPON per hand** (BS1 weapons.ini shape) and **weapon scale
+  must be uniform-down** - both need the HOLDABLE lane (resolve the held weapon; its own
+  SkeletonInstance is where uniform scale lives - the ammo-canister inverse-scale is
+  PROVEN attach-path math, unreachable from the AHands bank).
+- **F10 layout**: APPLY/SAVE buttons to a top always-visible section, labeled clearly.
+
+Experiment verdicts banked on the way (ENGINE_NOTES): one-shot scale POKES do not render
+on this rig state (drive-path writes do - attribution must go through single-bone
+clusters); the ammo canister inversely rides pivot 63's scale; the alt-tab pacing wedge
+reproduced twice with a fresh signature (SUBMISSION IDLE, frame not begun; restart-only
+recovery).
+
+### Next steps (as written end of session 40 - executed by session 41)
+
+1. **The holdable lane** (unblocks TWO user asks): resolve the currently-held weapon
+   object off the rig, then (a) its own SkeletonInstance -> uniform weapon scale-down,
+   (b) per-weapon per-hand aim/model profiles with auto-swap (BS1 weapons.ini shape,
+   session-21 seeding rules a-d).
+2. **Animation-preserving drive**: compose the engine's per-frame animation delta
+   (current engine pose vs captured reference) on top of the controller frame - fixes
+   the missing melee animations AND the scale-triggered left-eye flicker at one root.
+   Retire the PE repaint if the retarget makes it redundant.
+3. **Arms-hide collapse-to-wrist**; **F10 top APPLY/SAVE section** ("saves ALL settings");
+   vrinput default-ON once the user confirms the arm behavior.
+4. **Plasmid item names** (ContentBaked packages - `<X>BasicPlasmid` is Telekinesis-only
+   in the exe) -> ability-seam live check + "something that shoots".
+5. Pad-A menu activation; per-hand aimRayMaxDevDeg; the alt-tab pacing wedge (CORE code -
+   BS1-shared, needs its own careful session; repro is banked).
+6. Standing: BS1 regression testing deferred to the END of BS2 development. Core diff to
+   re-check that day: the additive `set_laser_slot`/`set_aim_dot_slot` pair only.
+
+---
+
+## Previous state (2026-08-03, session 39 - BS2 MOTION CONTROLS: aim decoupled, laser + dot live, the rig rides the controller, ALL FLAT-GREEN - branch `claude/bioshock2-motion-aiming-c7daed`)
+
+### The headline: BS2 aims with the controller, and everything is in sync
+
+The session-39 brief's Priority 1 is code-complete and flat-verified at the user's save,
+under `vrstereo on`, across four unattended boots. The chain: XR hand pose -> b2r
+frame context (the same transform the camera drive used) -> game-space ray -> the
+GetPerfectFireStart impl seam, with the laser re-deriving render-side from the same
+pose/trims and the aim dot published from the final fire point (round-trip error
+0.0000 UU). The weapon/hand rig follows the right controller through a rigid 64-bone
+drive with NO render-lock domain - session 21's lesson honored from day one.
+
+### What shipped (five commits on the branch)
+
+1. **The dispatch probe** (`vraim probe`): GNames derived fresh (RVA 0x1A614D0 +
+   FNameEntry layout), Lane-A FName index globals for the fire-chain names, a
+   FindFunctionChecked fire-watch + a full ProcessEvent name census with runtime
+   self-derived UFunction name offset (+0x28). VERDICT: GetPerfectFireStart is
+   native-to-native (0 PE hits over 6 real fires); InitiateDamage IS PE-visible 1:1
+   with fires (banked as timing anchor); BeginFiring resolves via FFC but never
+   crosses the outer PE.
+2. **The impl seam**: weapon impl 0x89DCB0 (APlayerWeapon vtbl slot 221/+0x374 - SAME
+   body on AWeapon and APlayerMeleeWeapon, one hook covers the drill) + ability impl
+   0x81CE80 (non-virtual, found by a ret-0x10 + pawn-offsets .text sweep), both
+   identity-gated, detours call the original then substitute out-param rotators.
+   **Decoupled aim PROVEN**: camera provably static, +30 deg substituted yaw moved
+   impacts from the crosshair band (0.1% changed) to the right band (12.4% changed) -
+   M6's criterion on BS2. The drill (melee) never calls the seam on air swings -
+   BS1's wrench precedent transfers.
+3. **Hand rays + laser + aim dot** (`vraim handray/laser/dot/trim/origin/pose`):
+   b2r `frame_context.h` (duplicated per the decoupling directive, xr_local_trim_quat
+   algebra), rays built in the CalcView tail, seam substitutes the hand rotator 1:1
+   (sim hand at -25 yaw -> delta 25.00 deg exact), 6 laser dots + dot as compositor
+   quads under SR stereo.
+4. **The bone drive** (`vrhands`, `vrbones`): AHands rig found live (SkeletonInstance
+   at +0x430, two-factor identity), pose bank poke-PROVEN to render, rigid
+   whole-rig cluster on the right controller, reference-pose capture (inherent sway
+   kill), reapply on the SR second pass, release() hand-back, >500 UU sanity refusal.
+5. **Cheats lane PROVEN**: `F9=GiveAll` in User.ini [Default] (backup kept) works by
+   effect - 999 ammo + full arsenal; digit keys 1-8 switch weapons flat (no wheel, no
+   `exec NextWeapon` trap). THE USER CAN GET ALL WEAPONS NOW - press F9 in gameplay.
+
+### The acceptance (VERIFICATION 2.8, both subsystems armed)
+
+Five-station controller sweep: **aimRayMaxDevDeg 0/0/0/0.02/0 - constant**;
+`vrhands status` last-write loc tracks at EXACTLY 100 UU/m (0.25 m -> 25.0 UU exact -
+the fresh world-scale self-consistency measurement); model-only diffs (lasers off)
+show the drill region moving at every station with the head static. Teardown with
+everything armed: 470 ms close, zero dumps - session-38 baseline intact. Session-37
+baseline intact (sr eyes 6.30 UU exact, wait2/s=0, guardskips 0, fov law, letterbox
+self-heal all observed live this session).
+
+### What did NOT land (named session-40 slots)
+
+- **The engine does not consume the synthetic pad** (P2 verdict, re-confirmed with the
+  ini lever): BS2 polls XInputGetState twice at boot, pre-bridge, then never again.
+  The `[WinDrv.WindowsClient]` UseJoystick/UseController=True flip alone is NOT
+  enough. Session 40: port BS1's input_drive SHAPE (UpdateInput per present +
+  SetUseController + IAT hijack) with fresh RVAs - the thumbrest ammo modifier,
+  grip switch and dual-wield trigger mapping all wait on it (core already implements
+  the behaviors; they are reachable via `vrinput` the moment the engine polls).
+- Per-hand cluster split (left = plasmid hand): needs the bone-name map
+  (SharedSkeletonData at skel+0x08, banked). Whole rig rides the right controller
+  until then.
+- Aim/hands preset persistence + F10 sliders: session 40's brief (aim sliders focus,
+  per-weapon presets).
+- The RMB/plasmid window cast nothing at the fresh save (no plasmid equipped?) - the
+  ability seam is hooked and identity-verified but its live substitution path is
+  untested; first plasmid-equipped session covers it.
+
+### USER CHECKLIST (headset first look; everything pre-armed for you)
+
+Wrap-up round (same day, user request): **all the aim/hands toggles now DEFAULT ON**
+(handray, laser, dot, substitution, hands - inert until the HMD drives gameplay), and
+**F12 = grant + equip Telekinesis** in one press (the dev's own benchmark recipe,
+verified by effect: icon + name on the HUD). So:
+
+1. Load the save, `vrstereo on`, headset on. That is the whole setup.
+2. **F9** = all weapons + ammo; **1-8** switch weapons; **F12** = Telekinesis
+   granted AND equipped (left hand). Space through the tutorial popups - they eat
+   clicks while open.
+3. Point the right controller off-view and FIRE (LMB or trigger... LMB for now):
+   impacts follow the controller, laser on the impact, dot on the hit surface.
+4. The weapon model rides the right controller - check it feels in tune with the
+   laser (the +-90 deg drift class from BS1 session 21 must NOT appear; if anything
+   swims, say so).
+5. Cast Telekinesis with RMB at objects/enemies - does the CAST follow the LEFT
+   controller? (The left-hand ray is live; the ability seam's live substitution is
+   the one unverified link - your cast settles it.)
+6. KNOWN: controllers do NOT drive movement/buttons yet (input_drive port is session
+   40 P1) - kb/m for locomotion. The left-hand MESH also still rides the right
+   controller (per-hand cluster split is session 40); only its AIM is its own.
+7. Ride-alongs if time: pitch-servo sign (`vrinput pitchservo status` looking
+   up/down), helmet key-3810 collateral in other maps.
+
+### THE FIRST LOOK HAPPENED (same day) - user verdicts, and they reshape session 40
+
+The user tested in the headset. **PASSED**: model view-locked (does not move with the
+head), model moves with the controller, aim moves with the controller. **FINDINGS**:
+
+1. **Aim vs model misaligned ~90+ deg** (tracks the controller, constant offset) -
+   zero model trims shipped; the anchor bone's authored frame needs a BAKED correction
+   + fine trims (BS1 needed the same calibration). The flat instruments never measured
+   MESH orientation (aimRayMaxDevDeg = laser vs ray; write-loc = position) - which is
+   exactly why this survived to the headset.
+2. **Model scale badly off; user wants a scale lever DECOUPLED from world scale** -
+   consistent with session 33's rig-size/fg-lens coupling (why the helmet is hidden).
+   The skeleton's per-bone SCALE channel renders (poke-proven this session): a
+   `vrhands scale` cluster multiplier is the clean fix, zero world-scale coupling.
+3. **Bullet leaves the HEAD, lands where the laser points** - correct read: only the
+   DIRECTION is substituted this session; enable the origin substitution
+   (BS1-parity `vraim origin on`, outLoc/outEffect from the hand-ray origin).
+4. **Two dots seen** - the laser's 6 m end dot + the fixed-3 m aim dot; the dot does
+   not clamp to the hit surface yet. Needs the distance slider / surface semantics.
+5. **Left hand**: mesh still rides the right controller (known), and there is NO left
+   LASER (core renders one laser; needs a small additive core extension or an
+   active-hand swap policy).
+6. **Wants all/shooting plasmids** (Telekinesis equipped fine); ElectricBolt/
+   Incinerate item names to verify by effect (`<Name>BasicPlasmid` convention).
+7. **Wants controller-driven controls NEXT** - "to basically test everything from the
+   controller without having to use the mouse".
+
+### Session 40 (REORDERED per the user's first look)
+
+1. **input_drive port** (fresh RVAs: UpdateInput-per-present + SetUseController +
+   IAT hijack) -> controller locomotion/buttons/triggers; then the BS1-parity
+   bindings (thumbrest ammo modifier, grip switch, dual-wield triggers - core
+   behaviors ready and reachable via `vrinput`).
+2. **Model alignment + scale**: bake the anchor-frame correction, `vrhands trim`
+   fine-tune via F10 SLIDERS (in-headset controls, not commands), and the
+   decoupled `vrhands scale` cluster-scale lever. Then the origin substitution
+   (`vraim origin on`) so bullets leave the hand.
+3. **Left hand**: bone-name map -> per-hand clusters (left mesh on left controller);
+   left LASER (additive core extension or active-hand swap).
+4. Aim-dot polish (distance slider / hit-surface clamp), plasmid pack
+   (ElectricBoltBasicPlasmid etc., verify by effect), ability-seam live cast check.
+5. Preset persistence for all new levers; per-weapon aim presets (session-21 seeding
+   bugs = what not to repeat).
+
+Standing: BS1 regression testing stays deferred to the END of BS2 development (user
+decision 2026-08-02). Core diff this session: ZERO (everything rode existing public
+APIs - the BS1-risk surface was never touched).
+
+---
+
+## Previous state (2026-08-03, session 38 - THE EXIT CRASH WAS THE GAME'S OWN; closes are now instant and dump-free - branch `s38-b2r-teardown-and-aim`)
+
+### The teardown crash: root cause found, and it rewrites the brief
+
+The session-38 brief's hypothesis (teardown races the doubled-draw/flush machinery) is
+REFUTED by an unattended bisect. The close-time fault at `Bioshock2HD.exe+0x4FF0FE` (null
+read in the engine's display-apply path, inside close-time window-message dispatch) fires:
+
+- with stereo armed (echo-verified), passive (nothing armed), with NO XR session at all,
+- and in the decider run **G4: with EVERY mod hook skipped** (new `BVR_SKIP` env bisect
+  lever) - no MinHook detours, no D3D11 hooks, no adapter - confirmed first-chance by the
+  new `BVR_VEH=1` vectored observer.
+
+Vanilla (shim renamed away) "exits cleanly" only because nothing observes it: teardown
+burns 0.1 s CPU over a 5-9 s exit while a chained filter (CSERHelper) eats the fault
+invisibly. **BioShock 2 Remastered crashes on its own exit path on every close** - its
+Steam-forum reputation is earned. The faulting site varies (+0x4FF0FE mostly, +0xC6C2C2,
++0xC312D2, a 0xDEDEDEDE freed-vtable jump on the gameplay-quit path) - a FAMILY of
+close-time faults. The mod's real defect was AMPLIFYING it: one 58 MB dump per close
+(eating the 3-dump session cap that exists for real crashes), an 86k-retry exception spin,
+and a multi-second noisy exit. Full derivation: ENGINE_NOTES session 38.
+
+### What shipped (commits `f8813b8`, `4071543`)
+
+1. **Teardown-aware crash handling (core, additive)**: the overlay WndProc (already
+   subclassing the game window) calls `crash::note_teardown()` on
+   WM_CLOSE/WM_DESTROY/WM_ENDSESSION; after that, any fault gets ONE log line, NO
+   minidump, and immediate `TerminateProcess(0)`. Close latency measured **0.1-0.3 s with
+   zero dumps** - faster and quieter than the unmodded game. Pre-close behavior unchanged
+   (BS1 inert: it does not fault at exit).
+2. **BS2 adapter hygiene on the same signal** (atomic-read gates, no-op while alive):
+   doubled draw bails, 1t stops forcing the inline branch (vanilla close path), vrstereo
+   arming refuses, the option/fg FOV writes stop WANTING inside a live CalcView (the
+   existing OFF-edge restores then run through engine-provided live pointers), the
+   letterbox self-heal never touches a closing window.
+3. **Drain-guard hardening**: freed-but-non-null scenes (first dword unreadable or pool
+   poison 0xDEDEDEDE/0xDDDDDDDD) are skipped - the gameplay-quit dump's class.
+4. **`tools/read-dump.py`**: minidump summarizer (at-fault context, module+RVA stack
+   scan) on the pip `minidump` package - no cdb needed. Plus the `BVR_SKIP` /
+   `BVR_VEH` diagnostic levers, kept.
+
+### Acceptance (sim, unattended)
+
+Three echo-verified `vrstereo on` closes + one 5-min armed menu soak (308 full-rate 1T
+beats, `wait2/s=0`, `guardskips=0`, zero watchdogs), all closing in ~0.1 s with ZERO new
+dumps; the log shows `teardown noted (WM_CLOSE)` -> one fault line -> clean exit. The
+in-game quit from GAMEPLAY (the 0xDEDEDEDE path) is the user's half - checklist below.
+
+### Aiming arc derisked (offline; ENGINE_NOTES "Fire flow / aim")
+
+- **The seam family EXISTS with BS1's exact shape**: `GetPerfectFireStart(out loc,
+  out Rotator rot, out effectLoc)` on `Weapon` AND `AttackAbility` (+ a new
+  `ShockPlayer tester` param), plus the whole BeginFiring/AnimNotify_UseAbility/
+  InitiateDamage chain. Decouple-from-view: viable in principle by BS1's proven
+  substitute-the-out-params property; flat decal test is the proof gate.
+- **It is NATIVE** (`execGetPerfectFireStart` wide string in the exe - this build stores
+  script names UTF-16; ASCII sweeps miss everything). BS1's nativemap recipe does NOT
+  transfer verbatim (scanned: zero real entries); the wide-name registration region has
+  no per-string pointers - session-39 derives the boot walker.
+- **The dispatch question** (ProcessEvent-visible = preferred by-name seam, vs
+  native-to-native = BS1-style impl hooks) needs ONE live probe: learn the fire-chain
+  UFunction pointers, count ProcessEvent hits while firing drill/gun/plasmid in the save.
+- **Quad-layer gap list**: core's laser/aim-dot API is ready; the adapter needs XR
+  hand-pose -> game-space conversion (head already crosses that boundary), a fresh BS2
+  world-scale measurement, and the seam hook for the dot's hit point.
+
+### Wrap-up round (same day, user asked for everything flat): BOTH user items CLOSED
+
+- **In-game quit acceptance: PASS, flat.** Full pause-menu quit with save-before-exit,
+  stereo armed, driven by scancode keys: save written, `teardown noted (WM_DESTROY)`
+  ~3 s later (post-save - detection in time on this path), ZERO dumps, process gone
+  within bound. Two more fixes fell out: the first teardown gate DEADLOCKED this path
+  (stopping the forced-inline flush mid-worker-teardown = a handshake that never
+  completes; reverted - forced-inline runs through close, the drain guard is the safety)
+  and core gained a 15 s exit WATCHDOG in `note_teardown` (bounds fault AND deadlock
+  exit shapes). ENGINE_NOTES "wrap-up round" has the full derivation + harness lessons
+  (BS2 menus are raw-input-cursor - keyboard only; Space at the title continues into
+  the newest save; zombie processes poison Get-Process/tasklist - tools fixed).
+- **coupling-viewmodel: PASS at the save.** World moves at 4-5x the animation floor
+  under 20 deg yaw / 0.5 m strafe while the drill's screen block stays AT floor -
+  view-locked, correct, zero headset time.
+
+### Known harness warts (queued, none block session 39)
+
+- Sim closes can pop a "Debug Error! ... bvr_xrsim32.dll - abort() has been called"
+  dialog at process exit (debug CRT in the SIM RUNTIME objecting to teardown with the
+  XR instance still open - by design we never destroy it at exit). Dev-machine-only,
+  fires after the save is written; click Abort. Fix when touched next: suppress the
+  debug-CRT dialog in the sim DLL (`_set_abort_behavior`/`_CrtSetReportMode`) or
+  tolerate a live instance at detach.
+- The `.xrs` runner's `@shot <name>` naming is broken (all captures write `shot_*.png`);
+  use `xrsim-shot.ps1 -Out` manually.
+- Sim compositor PNGs read one sRGB step darker than the real frame - coverage reads
+  fine, brightness judgments invalid.
+
+### USER CHECKLIST - nothing required
+
+Everything session 38 needed from you was closed flat. Only ride-alongs remain, IF
+headset time happens anyway: pitch-servo sign (`vrinput pitchservo status` while looking
+up/down; invert lever exists), helmet key-3810 collateral watch in other maps.
+
+### Next steps (session 39) - MOTION CONTROLS, per the user's brief (2026-08-03)
+
+The user's priorities, in order:
+
+1. **Motion controls + aiming (the headline)**: laser + aim dot, and the WEAPON MODELS
+   moving with the controllers with full freedom (rotation + translation), aim and model
+   IN SYNC. Build order:
+   a. Dispatch probe first (unattended-ready now: boot via Space-continue, cheats lane
+      below for a ranged weapon): FName-index derivation for the fire-chain names ->
+      log-only ProcessEvent fire-watch -> fire drill/gun/plasmid -> by-name seam if the
+      chain is PE-visible, BS1-style impl hooks otherwise. Then decoupled-aim flat proof
+      (BS1's decal method, fresh numbers).
+   b. Hand-pose -> game-space conversion + world scale (fresh measurement), then
+      `vr::set_laser`/`set_aim_dot` publishing (core API ready).
+   c. Models-follow-controller: BS2-NATIVE method first. BS2's fg lens already matches
+      law-exact (session 37, G self-identifying) - BS1's ENTIRE counter-model domain
+      (render lock, lockgain/lockdgain/lockpull) existed to fight its lens mismatch and
+      its lock's own correction CAUSED the +-90 deg laser-vs-gun drift (session 21 verdict:
+      `vrbones lock off` = "aim in tune with the model... perfect"; the user remembers
+      this as "switched from abs" - `lock abs` was the anchor-to-world mode). So: compose
+      hands at true geometry, NO lock domain, and verify sync flat from day one -
+      `coupling-hand.xrs` + `aimRayMaxDevDeg` CONSTANT across controller positions is
+      the acceptance instrument (VERIFICATION 2.8; arm BOTH vrhands and vraim - the
+      one-subsystem trap made a fake pass once).
+   d. **Normal controller controls incl. thumbrest, BS1-parity**: BS1's shipped shape =
+      LEFT `/input/thumbrest/touch` as the ammo-type modifier, weapon switch on grip,
+      stick-click fallback until a real thumbrest touch is seen (session 23, user:
+      "perfect"). Port the BEHAVIOR, derive BS2's bindings fresh (BS2 has native
+      dual-wield - the left hand is the plasmid hand, not a mirror of BS1).
+2. **Cheats (if session time remains; else session 40 P1)**: goal = user can GET ALL
+   WEAPONS to test with. The lane is fully unattended now: bind the session-32 command
+   ladder (`GiveAll` first) to F9/F12 in `User.ini` **[Default] section only** (the
+   seven-section trap), press via `game-key`, VERIFY BY EFFECT (weapon wheel screenshot
+   diff), exact item names from the BakedScripts dump if `GiveAll` fails. Fallback: a
+   prepared everything-save as the test fixture.
+
+### Session 40 (planned)
+
+Cheats if not done; then BS1-parity SLIDERS for aim and models (aim sliders are the
+focus - fix aim on the models), and PER-WEAPON AIM PRESETS that auto-swap with the
+equipped weapon (BS1 shape: profiles keyed off the rig's current-holdable read, applied
+over the preset baseline - session 21's two seeding bugs are the reference for what NOT
+to repeat; derive BS2's equivalents fresh).
+
+Standing: pacing-epic residue unchanged; BS1 regression testing stays deferred to the
+END of BS2 development (user decision 2026-08-02).
+
+---
+
+## Previous state (2026-08-02/03, session 37 - THE LETTERBOX WAS THE WINDOW; RESOLUTION IS LIVE - merged to `bioshock-2`, ACCEPTED IN-HEADSET)
+
+**The BS1-parity resolution picker ships, and it is better than BS1's: the apply is LIVE.** The
+session-36 brief's three blocking unknowns all closed in one unattended screening pass (zero user
+boots spent - BS2's menu background classifies as a strict-gameplay ShockPlayer view and renders
+the full scene pipeline, so the campaign ran against it under xrsim).
+
+### The finding that reshaped the feature
+
+**The letterbox was never the engine - it was the WINDOW.** The engine sizes its scene viewport
+to the window CLIENT area every frame while the backbuffer holds the ini size, and the game's
+chromed window clamps on the desktop: on this 2560x1440 monitor the client tops out at **1421
+rows** (outer height clamps to 1460, minus 39 rows of chrome). Sessions 32-33's "mystery ratio"
+1.4413 = 2048/1421 is window arithmetic. Even 2560x1440 (16:9!) letterboxed (client 2560x1421,
+lb=1.0141, anamorphic). A **borderless popup client sized exactly to the render** - beyond the
+desktop where needed - renders full-height square pixels at EVERY aspect tried (1.778 / 1.6 /
+0.9348 / 0.9321), and the engine follows a live client resize with its own ResizeBuffers. The
+aspect bisection is DISSOLVED; resolution on BS2 needs no relaunch at all.
+
+### What shipped (branch `s37-b2r-res-picker`, all in `bioshock2r/` + sim/docs)
+
+1. **F10 "RENDER RESOLUTION (applies live)"**: preset combo (`flat` 1920x1080, `perf` 1648x1768,
+   `native` 2064x2208 Quest 3 class, `sharp` 2480x2648, `max` 2888x3088), custom WxH
+   (1024..8192), MPx readout, an auto-FOV preview for the SELECTED size (`auto_option_for_dims` -
+   never the live-backbuffer inverse), aspect guidance against the eye's ~0.93, Apply + Restore
+   buttons through the `g_resWritePending` pending seam (render thread posts, poll gate applies -
+   and BS2's poll gate ticks at the menu, which BS1's CalcView consumer cannot).
+2. **`vrres` grew the same table**: `vrres native|perf|sharp|max|flat`, `vrres list`,
+   `vrres restore`, raw WxH - all through one `apply_resolution()`: borderless window resize
+   FIRST (engine follows), Shared.ini persistence SECOND, deferred re-verify THIRD (the engine
+   persists its live size into Shared.ini ON RESIZE one step behind - the mechanism behind every
+   historic "my write did not stick" report; it does NOT rewrite at exit, measured).
+3. **A stereo-gated self-heal**: every chromed boot starts letterbox-clamped; when stereo is
+   armed and the client is smaller than the backbuffer, the borderless fix re-applies within ~1 s
+   (verified live: boot at 2064x2208 -> client 2064x1421 -> `vrstereo on` -> healed to full
+   2064x2208). Never fires flat, never under StartupFullscreen, holds off around an apply.
+4. **The automatic FOV needed no new mechanism** - `vrfov` (default ON) already computes the
+   option per CalcView from the headset half-angles via the inverse law. Session 37 verified it
+   at the new aspects: at native the mod writes option 138 and the world renders **107.7 x 111.4
+   deg against the 108 x 110 eye** - the eye-matched configuration. UI relabeled ("Automatic FOV
+   (computed from your headset, never manual)"), option value shown, stale "squarer only narrows"
+   copy replaced (FOV = coverage lever, resolution = sharpness lever). `gfov` stays the manual
+   override.
+5. **The sim eye is pinned to the measured VDXR values** (h=54 v=55; was the spec-guess 55/48,
+   which flips the FOV circumscription branch - the session-34 open item). `fov` shorthand
+   defaults follow. claimRatioH semantics corrected on the record: it is claim/EYE, ~1.0 only
+   when render==eye; the per-config assertion is the law-derived expected value (measured to four
+   decimals at native: 0.99521 symmetric, 1.16973 asymmetric-default).
+6. **The world FOV law held at two more clean aspects** (tanV 1.427990 invariant through a live
+   16:9 -> 1.6 change; 2064x2208 dump decodes law B PASS dH=0.00000). Stereo-on-1t survived every
+   live resize: `wait2/s=0`, guardskips 0, zero faults, zero watchdogs.
+
+### Same-evening addendum: the user's first native run, and the fg lens fix
+
+The user ran `native` in the headset the same evening: **sharpness accepted** ("looks pretty
+sharp so we're good"), the auto-FOV A/B behaves exactly per the law (off = pillarbox), **but the
+viewmodel was moving against the head** - the exact defect the menu-scene dump flagged. In-save
+three-probe measurement (drill drawn) settled it: the fg lens renders `tanV = tan(d/2) *
+G(aspect)` with G(0.9348) = 0.99488 while G(16:9) = 9/16 exactly - writing the raw option at
+native was a 1.24x viewmodel gain. **Shipped fix: the match self-identifies G live** from the
+fov watch paired with its own last write, and writes `d = 2*atan(tan(option/2)*(9/16)/G)` -
+identity at 16:9, converges in one sample, freezes when the lenses merge. Full derivation +
+table in ENGINE_NOTES session-37 section 6. Build installed to the game folder; the user
+launches tonight on their own schedule.
+
+### ACCEPTED IN-HEADSET (user, 2026-08-03): "it's perfect"
+
+The user's verdict, multiple resolutions tried: **"everything is perfect - the FOV is filling
+the screen and the weapons/hand models are stable and glued."** The flat/sim half was verified
+the same day: fresh boot, the G fix self-identified in one sample (`lens gain G 0.56250 ->
+0.99488`), wrote 111.7 at option 138, and BOTH `dumpframe full` captures decode to ONE law-exact
+cluster (dH=0.00000, square pixels, full height). Stability: the user's whole play session shows
+ZERO watchdog lines and zero guardskips (the instrumented 5-min soak is thereby covered by a
+longer real session; run one only if stability comes back into doubt). Session 37's feature -
+live resolution picker + automatic FOV + the self-identifying viewmodel lens - is CLOSED end to
+end.
+
+### Teardown crash at exit - REPRODUCED UNATTENDED, FOUR dumps banked
+
+Correction to the first read: the crash is NOT tied to the borderless/native window - the dump
+folder shows it fired on the 2026-08-02 evening closes too (16:9-era, chrome restored). The
+common factor across all four is a STEREO-ARMED close. Always AFTER the save (cosmetic: a
+few-second exception loop, then exit):
+
+| when | context | fault | dump |
+|---|---|---|---|
+| 08-02 19:43 | sim session close, 16:9-era | (log rotated - read the dump) | `crash\bvr_20260802_194326.dmp` |
+| 08-02 19:51 | sim session close, 16:9-era | (log rotated - read the dump) | `crash\bvr_20260802_195143.dmp` |
+| 08-02 21:44 | quit from GAMEPLAY, VDXR, native | DEP EXECUTE at 0xDEDEDEDE (freed poison), tid=game | `crash\bvr_20260802_214440.dmp` |
+| 08-03 17:17 | quit from MENU scene, xrsim, native | null READ at `Bioshock2HD.exe+0x4FF0FE` | `crash\bvr_20260803_171738.dmp` |
+
+`+0x4FF0FE` is game render code in the Draw/flush-chain neighborhood (Draw 0x4EE8D0, flush call
+site 0x4EF4A1) - working hypothesis: teardown races the doubled-draw/flush machinery (the
+drain's no-null-check shape is exactly this class; the 1t drain guard covers the FORCED path,
+teardown may reach the drain another way). REPRO RECIPE (no headset needed): `xrsim-launch
+-Game bs2` -> menu scene -> `vrstereo on` -> close the window. Candidate fix shape: a clean
+disarm on teardown (WM_CLOSE/exit hook: park the second draw, restore the option/fg writes,
+let 1t idle) BEFORE the engine frees the scene.
+
+### Next steps (session 38)
+
+1. **Teardown-crash fix**: disasm-rva 0x4FF0FE + read the four dumps (summarize in
+   ENGINE_NOTES, never commit game-derived output), implement the clean-disarm-on-teardown,
+   accept with the sim recipe (three closes, zero new dumps) plus one user quit.
+2. **BS2 aiming arc begins** (the ROADMAP successor: aiming -> motion controls -> normal
+   controls). Derisk first with BS2-native methods (ProcessEvent-by-name seam; BS1 is shape
+   reference ONLY - no constants, no laws, no policies transfer): where does BS2 read the
+   weapon's fire direction, can the aim decouple from the view like BS1's M6, and what do the
+   laser/aim-dot quad layers need. The sim's `aimRayMaxDevDeg` + `coupling-hand.xrs` lane is
+   the flat instrument.
+   ALSO (user's point, 2026-08-03): run `coupling-viewmodel.xrs` on BS2 - the capture-based
+   "does the viewmodel stay view-locked under a head sweep" check. It is the PICTURE-level
+   complement to the session-37 lens-cluster instrument: cluster equality proves the LENS,
+   not the POSE - a transform/attachment bug would pass the dumps and fail the pictures.
+   Needs the save (a weapon in frame), a LIT area, and coverage/bbox reading, not headline
+   diff numbers (the session-34 dark-scene trap; BS1 baselines in VERIFICATION 2.8).
+3. Ride-alongs when headset time happens anyway: the pitch-servo sign check (`vrinput
+   pitchservo status` while looking up/down), helmet key-3810 collateral watch in other maps.
+4. Pacing-epic residue unchanged (keepalives with real layers). BS1 regression testing stays
+   deferred to the END of BS2 development (user decision 2026-08-02).
+
+---
+
+## Previous state (2026-08-02, session 36 - THE BS2 STEREO FREEZE IS DEAD - merged to `bioshock-2`)
+
+**`vrstereo on` ships real full-rate stereo - both eyes every frame, running on `reentry 1t` - and
+it no longer freezes.** In-headset confirmed same day (VDXR/Quest 3, immersive, head-tracked,
+user-verified stable). Nine commits on `s35-b2r-reentry-freeze`, merged to `bioshock-2`.
+
+### What landed
+
+1. **The soak lane is proven**: `tools/soak.ps1` boots unattended (`-Boot map Ghetto.bsm` reaches
+   gameplay in ~2 min; `-Boot key`/steam with the user loading the save), waits for the camera
+   heartbeat, arms, and turns "did it freeze?" into an exit code (0..9). A WATCHDOG episode the
+   game RECOVERS from is a load, not the freeze - each gets a 30 s recovery watch (the wedge never
+   advances its log again). The beat regex was timestamp-blind on day one; fixed.
+2. **The flush chain is banked and verified**: constants + `verify_flush_chain()` in
+   `bioshock2r/patterns.h/.cpp` (call site 0x4EF4A1 -> thunk 0x24A28 -> body 0x69FC30 + prologue,
+   pure image reads). ENGINE_NOTES' session-26 "no submit handshake" section is REWRITTEN - that
+   claim was the sole reason 1t was never ported. Live confirmation: the wedged stack reads
+   `B8108F BB1963 69FD33 4EF4A6`, frame for frame the derived chain.
+3. **The trigger question is measured shut**: `wait2/s == 2nd/s, set2/s == 0` at BOTH 1920x1080 and
+   1280x720 - the second flush entered the `Wait(INFINITE)` on EVERY doubled frame since `97a229a`.
+   The resolution/FOV work created no reachability; the 5-100 s onset was per-wait lost-wakeup
+   probability. fgfov/vrfov A/Bs moot (wait2 saturated); the 4-commit bisect is superseded.
+4. **`reentry 1t` for BS2** - BS1's session-8 cure, duplicated with fresh constants (never shared,
+   never core): drain guard FIRST (null-scene skip; BS2 has BS1's drain+0x33 shape), flush-point
+   force second, quotient never poked. ~15% draw cost (91 -> 78/s). `wait2/s == 0` by construction.
+5. **Defaults**: `vrstereo on` = 1t -> camera mode -> stereo (BS1's ladder, full-rate SR).
+   `reentry srdev on` = the repro escape (raw doubled draw WITHOUT 1t - wedges, dev only).
+   `vraer` = AlternateEye. `vrstereo off` disarms everything symmetrically.
+6. **Two real VDXR bugs found by the first headset attach since session 34** (the sim force-grants
+   focus and structurally cannot see either):
+   (a) a NEVER-focused session must keep its frame loop running - frames are how the runtime walks
+   READY -> FOCUSED; `detach_skip_decision` gained the same bring-up exception `pace_should_skip`
+   always had (core, but behind the pace-detach lever - BS1 untouched);
+   (b) a DETACHED session is stranded FOREVER by VDXR - empty keepalive frames are never
+   re-promoted (state parks at VISIBLE, shouldRender=0). BS2's detach default is now OFF: with the
+   wait off-thread the unfocused frame loop is cheap (lastEnd ~1 ms measured live) and real
+   submission is what lets VD re-grant FOCUSED by itself. `vrpace detach on` is the live A/B.
+
+### Acceptance (all on the real game, in the user's save - per the user: test in the save, never the menu)
+
+- **The decider**: 10-min flat soak of full-rate stereo on 1t - PASS (one recovered load episode).
+  The unfixed build wedges in 5-35 s; measured 25 s (exit 3) on 7dce78c the same afternoon.
+- **Load crossings, stereo armed and sticky throughout**: save load, quit-to-menu x2, new game,
+  an idle-death respawn - guardskips 0, zero faults, zero new dumps (user-driven, log-verified).
+- **Post-flip smoke** of plain `vrstereo on` - PASS.
+- **In-headset**: immersive, head-tracked, full-rate stereo on 1t, stable. The user also confirmed
+  the FOV-fill toggle behaves as designed (bars without it; full FOV at lower pixel density with
+  it - the known P2 polish item; the counter-lever is `vrres`).
+
+### Deferred by the user's call (run when stability is next in doubt; each needs the save loaded at boot)
+
+```powershell
+.\tools\soak.ps1 -Game bs2 -Minutes 10 -Arm ""                            # vanilla flat
+.\tools\soak.ps1 -Game bs2 -Attach -Minutes 10 -Arm "vrcam on"
+.\tools\soak.ps1 -Game bs2 -Attach -Minutes 10 -Arm "vrcam off; vraer on"
+.\tools\soak.ps1 -Game bs2 -Attach -Minutes 10 -Arm "vraer off; vrstereo on"
+.\tools\soak.ps1 -Game bs1 -Minutes 10 -Arm "vrstereo on"                 # BS1 regression
+.\tools\xrsim-launch.ps1 -Game bs2                                        # sim never run vs BS2; selftest PASSED 2026-08-02
+```
+
+### Next steps (user-directed, 2026-08-02 end of session 36)
+
+1. **SESSION 37 PRIORITY: BS1-parity resolution picker + automatic FOV (user-corrected brief,
+   2026-08-02).** The user wants BS1's experience on BS2: a resolution picker offering
+   headset-NATIVE (squarer) resolutions for the Quest 3 plus presets and custom, where choosing a
+   squarer buffer ADAPTS to the headset - more rendered view, bars gone - with the FOV
+   **calculated by the mod** (never manually overridden), and no world warp / no viewmodel
+   movement against the head. On BS1 the engine does this itself (true-horizontal law: squarer
+   buffer = taller FOV; see b1r `vrres`, camera.cpp:364 - the eye render IS the backbuffer). BS2's
+   law is inverted (tanV fixed by the option against 16:9; tanH follows aspect), so the MOD must
+   compute the option write from the headset FOV target + chosen aspect (option =
+   2*atan(tanV_target*16/9); the claim already uses the law, so it stays warp-free by
+   construction). Blocking unknowns, in order: (a) the ROADMAP "aspect bisection" - the squarest
+   aspect BS2 renders full-height; the "degenerates off 16:9" claim was RETRACTED in session 33 (a
+   decoder bug), and the REAL off-16:9 defect is anamorphic (the frustum takes the backbuffer
+   aspect while the scene renders letterboxed, e.g. 2048x2048 -> 2048x1421 scene) - characterize
+   whether the letterbox persists at all aspects and whether the claim needs an anamorphic
+   correction; (b) verify `vrres` (Shared.ini) still applies end to end - the user doubts it;
+   (c) the XR swapchain sizing (does it follow the backbuffer?). The user's current `vrfov`-only
+   fill is the fallback, densified by supersampling, if the engine hard-letterboxes everything.
+   Regression guards that must survive: the fgfov viewmodel lens match (weapon/hands glued to the
+   view - session 33's accepted fix), no world warp (claimRatioH ~1.0), stereo-on-1t untouched.
+2. **Helmet: HIDDEN BY DEFAULT since session 36** (user instruction; edge-of-FOV placement is not
+   possible for a single mesh). UNVERIFIED caveat, first check next session: the index count 3810
+   is a GLOBAL key - confirm no unrelated mesh vanishes in other maps, or tighten the key to the
+   foreground pass.
+3. Then per ROADMAP: aiming, motion controls, normal controls for BS2.
+4. **BS1 regression testing is deferred to the END of BS2 development** (user decision 2026-08-02:
+   work ships to the `bioshock-2` branch only, never main, so BS1 exposure begins only at the
+   eventual promotion; the deferred soak matrix above is the recipe).
+5. Pacing-epic residue (lower priority): keepalive frames that carry REAL layers so detach-on gets
+   recovery; VD re-grants FOCUSED only when the app is foregrounded in the headset (double-tap) -
+   "black void + VD environment" means backgrounded, not broken.
+
+---
+
+## Previous state (2026-08-01, session 35 - PAUSED MID-SESSION - branch `s35-b2r-reentry-freeze` off `bioshock-2`)
+
+**The BS2 stereo freeze has a verified root cause. The fix is identified and not yet written.**
+Two commits are pushed; nothing is half-applied in the working tree; the build is clean.
+
+### THE FINDING (verified against the shipped exe with `tools/disasm-rva.py`, not inferred)
+
+`UGameEngine::Draw`'s tail makes exactly one call to a **render flush point at RVA `0x69FC30`** - a
+structural twin of BS1's `0x61D260`, veto for veto. Its threaded branch is the
+`WaitForSingleObject(INFINITE)` session 34's watchdog caught. `maybe_second_draw` runs the whole Draw
+a second time per tick, so that handshake runs twice per tick, and the second one's
+flag-test-then-wait races the render worker's completion signal.
+
+| role | BS1 (shipped) | BS2 (derived session 35) |
+|---|---|---|
+| flush point, `ret 8`, `ecx` = mgr | `0x61D260` | `0x69FC30`, prologue `55 8B EC 8B 55 0C 8B 45 08 56 8B F1` |
+| only static caller | build | `0x4EF4A1` via thunk `0x24A28` (exactly one) |
+| render-mgr global | `0x1356590` | `0x17DBF4C` (read at the call site into `ecx`) |
+| scene slot | `mgr+0x0C` | `mgr+0x24` |
+| view group | 16 dwords -> `mgr+0x10` | 14 dwords -> `mgr+0x28..0x5C` |
+| threaded / flush-seen | `mgr+0x50` / `+0x54` | `mgr+0x60` / `+0x64` |
+| INLINE branch | drain, nothing after | `call thunk 0xE29B -> 0x69F3F0`, then `ret 8` - **nothing after** |
+| THREADED branch | flag-then-INFINITE-wait | `mov ecx,[mgr+4]; call thunk 0x1FBF9 -> 0xBB1950`, ret `0x69FD33` |
+| drain | `0x61CAE0` | `0x69F3F0` (`[mgr+0x24]` then `lea edi,[esi+0x30]`, **no null check** = BS1's `drain+0x33`) |
+
+**Nothing after the inline drain** is the property that makes BS1's session-8 cure lossless, and BS2
+has it. So the fix is `reentry 1t` for BS2, ported with fresh constants - full-rate stereo, both eyes
+every frame, exactly what BS1 ships. **Session 26's premise is refuted structurally**: its "the Draw
+path has no submit handshake" is the only reason 1t was never ported, and Draw calls the flush point
+directly.
+
+**Mechanism vs trigger.** `0xBB1950` skips the wait entirely when the worker has already finished
+(`cmp [esi+8],0; jne skip`). So whether the race is *reachable* is pure timing - which is exactly what
+a resolution change moves. The user's recollection that the freeze began with the resolution/FOV work
+is therefore **compatible** with this, not contradicted: the doubled draw made the race possible, the
+resolution work plausibly made it reachable. Settle it with the A/B below, not with four builds.
+
+### Landed this session (pushed)
+
+- **`tools/soak.ps1`** - the acceptance instrument. Waits for gameplay (the 1 Hz camera heartbeat),
+  arms one command, then fails with an exit code on: process death, `bioshockvr.log` ceasing to
+  advance, new `WATCHDOG` lines, or new crash dumps. Exits **7 (inconclusive)** if `pacetrace.log`
+  never appeared, because a WATCHDOG check with no tracer is vacuous.
+- **`tools/game-key.ps1`** - the keyboard lane the harness never had, so a soak can pass the BS2 title
+  screen unattended. Scancodes via `KEYEVENTF_SCANCODE`, not VK codes.
+- **The stall watchdog could not fail an acceptance run, and now can.** Its trigger required an open
+  draw stage, which only BS2's doubled draw ever opens - so a clean soak of vanilla/`vrcam`/`vraer`
+  was guaranteed rather than evidence. And `watchdog_all_threads()` printed nothing every time via
+  five silent exits. Both fixed; `nf == 0` filter dropped (it hid the far side of the deadlock).
+
+### Next steps (in order; the plan is `~/.claude/plans/session-35-bioshock-2-jiggly-leaf.md`)
+
+1. **Boot experiment** - try `Bioshock2HD.exe Ghetto.bsm` (maps in `ContentBaked/pc/Maps/`); if the
+   remaster still routes through the front end, fall back to `soak.ps1 -Boot key`, then `-Attach`.
+   Then a first baseline soak to prove the harness end to end.
+2. **Backend selector** (`apply_vrstereo` -> AlternateEye by default, SequentialReentry behind a new
+   `reentry srdev on`) so the shipped default cannot freeze while the real fix is built. **Temporary**
+   - step 6 flips it back. Move `set_sr_pair_pacing(true)` out of `apply_vr_preset` into the SR branch.
+3. **Timing A/B**: add a `waitTaken/s` counter to the `[reentry] beat` line (how often the second
+   flush finds the latch already set vs has to wait), then soak 5 min each at baseline / lower
+   `Shared.ini` resolution / `fgfov off` / `vrfov off`.
+4. **Land the constants** in `bioshock2r/patterns.h` with a `verify_flush_chain()` in the shape of
+   `verify_draw_chain`, and **rewrite** (not annotate) ENGINE_NOTES' session-26 "no submit handshake"
+   section. Also fix the stale `patterns.h:87` CalcView comment, which contradicts `patterns.h:115`.
+5. **`reentry 1t` for BS2**: drain guard on `[mgr+0x24] == 0` first, then `FlushPointDetour` forcing
+   the inline branch. Never poke `0x149760C` - BS1's poke crashed a loader thread.
+6. **Acceptance**: 10-min soak of every mode (vanilla, `vrcam`, `vraer`, and the decider
+   `reentry srdev on; vrstereo on`), a BS1 regression soak, the load-crossing matrix, then the
+   simulator. Then flip the default back to full-rate stereo.
+
+**User's bar for this session**: every VR mode stable, BS1/Infinite untouched, and `vrstereo on` must
+still be *real stereo* - removing the feature is a floor to avoid shipping a freeze, not the goal.
+
+---
+
+## Previous state (2026-08-01, session 34 - A SIMULATED QUEST 3: agents can test VR without the user - branch `s34-xrsim-simulated-headset`)
+
+**M0-M9 pass, regression is green, and the branch is pushed. One open thread, below.**
+
+`bvr_xrsim32.dll` is a purpose-built 32-bit OpenXR runtime that presents as a Quest 3, so an agent
+can drive the head and controllers, step frames deterministically, and capture per-eye compositor
+images - with no headset and with **zero lines of the mod changed** (M9: the mod DLLs hash
+identically with the sim target off and on at one commit).
+
+**Everything about how to USE it lives in `docs/VERIFICATION.md`** - the decision table, the command
+grammar, the `state.json` and capture-JSON field lists, the measured baselines and the failure
+modes. This section is the handoff only; do not grow it back into a manual.
+
+### Why it matters
+
+- Per-eye captures include the **XR quad layers** - aim laser, aim dot, HUD panel - which
+  `docs/bioshock1/TESTING.md` has recorded since M8 as impossible to see in a window screenshot.
+- `derived.claimRatioH` turns the whole claimed-FOV bug class into one number (1.0 = correct; BS1
+  measures 0.98; session 28's yaw warp was 1.84 and took three sessions to infer).
+- `derived.aimRayMaxDevDeg` answers "is the aim in sync with the weapon model" numerically.
+- Session-state hazards (`focus lose`, `idle on`, `hazard ...`) make known bugs repeatable on a desk.
+
+### Controller coupling: RESOLVED, and it works
+
+The user's actual priority (stated 2026-08-01) is **visual and geometric coupling**, not input
+fidelity: does the world warp under 6DOF, is the viewmodel glued to the view or to the world, does
+the weapon model follow the controller, does the aim stay in sync with the model. Three sequences
+cover those - `world-6dof.xrs`, `coupling-viewmodel.xrs`, `coupling-hand.xrs`.
+
+Both halves of the hand test are now confirmed on BS1 (2026-08-02):
+
+- **The aim ray tracks the controller.** Laser dot X follows grip X exactly
+  (`0.172 -> 0.642 -> -0.293` as the controller sweeps `0.20 -> 0.55 -> -0.15`), and
+  `aimRayMaxDevDeg` holds constant at every controller position - which is what "in sync" means.
+- **The weapon model tracks the controller.** `vrhands status` shows `last write loc` following the
+  controller at ~100 UU per metre: a 1.1 m sweep moved X by 110 UU, a 0.4 m drop moved Z by 40 UU.
+  The captures confirm it visually - the sleeve sits lower-left at one extreme and at the right edge
+  of frame at the other.
+
+**The scare that got us there is the lesson, and it is recorded in VERIFICATION 2.8 trap 2:
+`mean-abs-diff` is useless in a dark scene.** BS1's opening corridor has meanLuma ~3/255, so a dark
+sleeve crossing the entire frame reads 0.25 - below the 0.4 standing-still floor. The headline
+number said "nothing moved" while the model had crossed the screen. In dark scenes read the
+coverage/bbox, `pct-channels-changed`, and the PNG; and cross-check against `vrhands status`, which
+is lighting-independent ground truth.
+
+### Two harness bugs found and fixed while chasing it
+
+- **`@mod` raced the mod's poller.** The mod reads `command.txt` at 1 Hz on mtime change, so
+  back-to-back `@mod` lines overwrote each other and `vraim on` silently never took - the sequence
+  then "passed" while measuring the wrong thing. `@mod` now groups with `;` into one write and waits
+  a poll period. Same trap `game-batch.ps1` already documents.
+- **`hand <h> to` was declared but never implemented.** Smooth controller motion is required to see
+  a model TRACK rather than teleport, so the coupling tests could not have worked without it.
+
+### Next steps
+
+1. Review and merge the branch.
+2. Run `coupling-viewmodel.xrs` and `world-6dof.xrs` end to end. Both are written and the machinery
+   under them is proven by `coupling-hand`, but neither has had its own acceptance pass yet. Pick a
+   LIT area of the level for them, not the opening corridor - see the dark-scene trap above.
+3. Pin the FOV defaults from a real headset run: the mod's own
+   `xr: headset fov half-angles h=.. v=..` line gives the exact VDXR values, fed back via
+   `fov eye l <l> <r> <u> <d>`. Until then FOV-derived captures are relative, not absolute.
+4. Adopt the sim for BS2 and Infinite - the runtime is game-agnostic, the scripts take `-Game bs2`,
+   each needs only its own acceptance run.
+5. `boot.ps1`'s A-press loop does not reach gameplay from the main menu on this save (CONTINUE needs
+   a click plus VK_RETURN). Pre-existing, and NOT caused by `-Attach`, which works correctly.
+6. The markdown cleanup the user originally asked for is still deferred. Findings stand: STATUS.md
+   has three `Next steps` sections (two stale, 1074 lines), a duplicate `Session log` heading, and a
+   misfiled session-29 entry.
+
+### What the simulator does NOT settle
+
+It proves geometry, content and protocol. It models no lens distortion, no timewarp, no real display
+cadence and none of VDXR's Wi-Fi encode path. The `unfocused-pacing` pass measures the mod against
+the SIM's model of focus loss, not VDXR's. **A pacing bug that reproduces in the sim is real; one
+that does not may still exist on hardware.** Comfort, judder and world scale remain the user's
+verdict in the headset.
+
+## Previous state (2026-07-31, session 33 - BS2: THE VIEWMODEL LENS IS FIXED AND ACCEPTED; VR PACING IS THE NEW BLOCKER - merged to main)
+
+User priority 2 is DONE. Priority 1's aspect question is answered on paper. And a bug that makes
+the game **unplayable in VR** was characterised, partly fixed, and is now the top of the queue.
+
+### 0. THE FIX: BS2's foreground lens is `PlayerController + 0x694`
+
+A float in DEGREES. BS1's is +0x460 - same engine family, same 75/60 shape, different link.
+**Shipped DEFAULT ON**, with an F10 overlay checkbox as the A/B.
+
+**In-headset verdict (user, same day): _"I tested the match viewmodel lens to the world and it
+worked, the weapon was not moving anymore."_**
+
+Flat acceptance, all from full frame dumps: ONE cluster at every option value (100 -> tanH 1.1918,
+130 -> 2.1445, 80 -> 0.8391), TWO the moment it is disarmed, 60.0 restored exactly. Tracking the
+option at every value is the property a baked constant could not have.
+
+The derivation method is the transferable part: sweep the live PC and pawn for 60.0 floats, then
+**poke each candidate to a DIFFERENT distinctive FOV and take ONE dump** - the fg cluster lands on
+the value only one of them could have produced. One capture, no bisection, and immune to the
+"did it merge or did we stop sampling it" ambiguity that produced six false positives first.
+
+**`+0x690` is the WORLD lens - do not write it.** It looks exactly like BS1's fovA next to fovB and
+it is not.
+
+### 0b. THE NEW OPEN ITEM the user wants next: the rig eats the view
+
+With the lens matched, the Big Daddy helmet takes much more of the screen and there are black bars
+at the bottom. The user wants the visible image to fill the whole FOV. This is a DIFFERENT defect
+from the swimming: the fg rig's apparent SIZE is coupled to the FOV value, not only to its lens -
+widening the lens also moves the foreground eye, so the rig grows. Leads in Next steps.
+
+### 1. THE BLOCKER: the game is paced by a headset that is not presenting
+
+**Not a hang, not stereo, not the fov watch.** Measured flat with no headset:
+
+```
+xr: pace guard ON | wait off-thread | session SYNCHRONIZED everFocused=0
+    | skips 0 lastWait 0 ms | handoffs 12747 timeouts 0
+```
+
+Nothing is blocked. The mod opens an OpenXR session whenever a runtime is present and the game is
+then "paced by the headset". Not FOCUSED -> the runtime paces its not-visible cadence, about
+**10 Hz** -> `draws/s 10`, `call2Us 99765` for the doubled stereo draw against session 26's
+4.5-5.0 ms. In a headset that reads as a freeze. **Alt-tab reproduces it** (user-confirmed):
+alt-tab drops the session out of FOCUSED. The user's words: *"the game is unplayable."*
+
+Fixed here: **`vrcam off` now disables VR** (it only cleared the camera mode before, so nothing
+could stop the pacing once a session ran), and the heartbeat carries `xr=<state>/neverFocused`.
+
+NOT fixed, and it is priority 1 next session - see Next steps.
+
+### 2. The world FOV law is SETTLED, and it is the OPPOSITE of BS1's
+
+`tanV = tan(option/2) * 9/16` (aspect-INVARIANT), `tanH = tanV * bbW/bbH`. Verified at two aspects
+x two FOV options entirely from dumps already on disk - no relaunch spent. BS1's law is the true
+horizontal. The FOV LAW is now a third never-copy instance after the ini keys and the cb0 offset.
+b2r's OpenXR claim uses the law rather than the raw option: identical at 16:9, correct elsewhere.
+
+### 3. Session 32's "the projection degenerates off 16:9" is RETRACTED - it was a decoder bug
+
+The ray block's vertical SLOPE carries a letterbox factor (RTheight/viewportHeight) that the
+offset term does not; reading the pair as an equality rejected every letterboxed block. The ratio
+was 1.4413 = 2048/1421 exactly in every block of both square dumps. Consequences: `-ScanLayout`
+now finds offset 16 on the square dump (session 32 got nothing and read it as "a different layout
+shape"), the live watch was blind at every aspect but 16:9, and the real non-16:9 defect is
+**anamorphic** - the frustum takes the backbuffer aspect while the scene renders letterboxed.
+
+Also retracted: `0xAECACF` is NOT the foreground's callstack signature. It and the world's
+`0xAEC7B4` are two call sites of the same draw dispatch; 62 draws carry it against the fg's 19.
+
+### 4. `lenses == 1` is not an acceptance criterion, and now says so
+
+The fov watch samples ~12 of 400-600 buffers; the fg pass is ~17. Absence is the ordinary case.
+Two attempts to fix the coverage are recorded as dead ends IN THE CODE: a head-slot reservation
+(the fg pass moves between captures) and a rotating stride phase (correct, and 20x the frame time).
+Acceptance is `dumpframe` + `decode-framedump.ps1`. `vrhud fovwatch off` disables the watch.
+
+### 5. Tooling and harness
+
+New: `tools/disasm-rva.py` (capstone; the one-liner three sessions retyped), `tools/game-batch.ps1`
+(command sequences, no screenshots, `-NoFocus` for headset sessions), `tools/launch-game.ps1`
+(refuses to launch over another BioShock, clears stale command.txt). `vrpreset` ported to BS2 - it
+had NO persistence at all, so no in-headset verdict could be re-checked against the same numbers.
+`vrpace`, `vrmirror`, `vrhud` dispatched on BS2 for the first time (same class as session 32's
+`vrinput` gap). **F10 overlay: a "VIEWMODEL LENS" section with the toggle, a manual FOV slider, a
+live readout and a save button** - anything judged by eye now lives there, because typing means
+alt-tab and alt-tab is the pacing bug.
+
+Harness lessons, all field-hit: a `game-shot` loop wedges BS2 under stereo (PrintWindow forces a
+re-render); `Process.Responding` is not liveness in VR (the window pump is starved - it refused a
+whole A/B on a healthy run); a guard that only prints is not a guard (the Infinite check reported
+Infinite was running and launched anyway).
+
+## Next steps
+
+### 1. THE PACING BUG (top priority - the game is unplayable in VR without it)
+
+A session that is running but not FOCUSED must not pace the game. Session 28 deliberately stopped
+SKIPPING frames while unfocused - skipping made the alt-tab freeze permanent, because a runtime
+will not re-grant FOCUSED to an app that submits nothing - and moved the wait off the present
+thread so a block could not wedge the game. **That reasoning holds and must not be undone.** What
+it missed: it treated "not blocked" as "not harmed", and the frame HANDOFF still paces the game
+thread to the runtime's cadence.
+
+The shape of the fix is therefore "keep submitting, stop WAITING": the game thread should never
+block on the pace handoff while the session is not FOCUSED, even though the pace thread keeps
+feeding the runtime so FOCUSED can be re-granted. Start at `pace_should_skip` and the handoff in
+`src/core/vr/openxr_runtime.cpp` (`g_paceOffThread`, `handoffs`, `pace_thread_start`).
+
+Acceptance: alt-tab away from a running VR session and back; the game must keep its frame rate
+throughout (heartbeat `calls/s` unchanged, `xr=` shows the state change), and FOCUSED must return
+by itself. Reproduces flat with a runtime present and no headset - `xr=SYNCHRONIZED/neverFocused`
+in the heartbeat is the tell, and it is a 30-second check.
+
+### 2. THE RIG EATS THE VIEW (the user's next felt problem)
+
+"The helmet takes a lot of the screen and there are black bars at the bottom. I want the visual
+space to be the whole screen/FOV."
+
+Two separate things, do not conflate them:
+
+- **Rig size.** The fg rig's apparent size is coupled to the FOV value, not only to its lens: at
+  fg 60 the helmet is off-screen, at fg 100 it fills the view, while the world lens is unchanged
+  in both. So the foreground EYE moves with the fov (BS1 measured the same coupling and called it
+  the zoom-pull). Find what the fg view's eye offset is derived from - the pawn/PC floats near
+  +0x694 are the obvious sweep, and `dumpframe` + the fg cluster's transform rows measure it
+  directly. The manual slider (`fgfov <deg>` / the overlay) is the calibration lane: ask the user
+  for the value where the helmet looks right, and see whether it is a constant or aspect-dependent.
+- **Black bars at the bottom.** Check `[hud] letterbox ON (engine cinematic bars)` in the log
+  first - that classifier fires on BS2 and there is a `vrcine bars hide|show` lever (BS1 uses it).
+  If it is not that, it is the engine's own letterbox: BS2 renders 2048x2048 as 2048x1421, and at
+  16:9 the viewport should fill - so bars at 16:9 are a different mechanism and want a `vp=`
+  reading from a dump plus a screenshot with `-Bands`.
+
+### 3. Owed, cheap, unchanged
+
+- **Pitch servo sign** in-headset (`enginePitch=` must MOVE while looking up/down; `vrinput
+  pitchservo invert`). Blocked only by the pacing bug making headset time expensive.
+- **Aspect ladder, 2 rungs** (user's call). The world law no longer needs it; its remaining value
+  is finding a squarer usable resolution. Each rung is a relaunch + a save load.
+- **Re-judge world scale and IPD** now the lenses match - both are overlay sliders, so no typing.
+  Worldscale 100 was accepted in session 26, which predates knowing the lens was wrong.
+
+### 4. Do NOT do yet
+
+No per-hand or per-weapon trims until item 2 is settled - a trim fitted against a rig whose size is
+still moving is not portable. Same mistake BS1 made.
+
+## Previous state (2026-07-31, session 32 - BS2: RESOLUTION LANE SHIPS, AND BS1'S SQUARE-BACKBUFFER POLICY IS DEAD ON BS2 - branch s32-b2r-resolution-and-lens)
 
 All BS2 work. **Three BS1 assumptions died**, each caught by an acceptance test rather than by
 reading code, and the second one changes the plan for BS2's VR configuration.
@@ -4298,6 +5517,444 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 42 - 2026-08-04/05 - the presentation lane: HUD panel, screens, cinematics, menukey, crosshair, flicker instrument
+
+Branch `claude/bioshock2-presentation-vr-2a7b3a` off `bioshock-2`, merged back.
+The plan's audit held: all presentation machinery is core; BS2 lacked dispatch and
+consumption - EXCEPT the classifier itself never fired on BS2, which became the
+session's core discovery: **BS2 is a backbuffer-composite pipeline** (gameswf on a
+RENDER_TARGET-only backbuffer, INDEXED 6-idx tonemap sampling the 612-vote scene
+leader - framedump_232940 evidence) and BS1's fingerprints structurally miss it.
+Shipped a flag-gated core mode (adapter opt-in, BS1 bit-identical off) and the full
+stack came alive: 12352 redirects, 0 leaks, 0 stranded, HUD quad as the 12th layer
+(space=view), composite intact, preset round-trip through a relaunch.
+
+Landed: vrhud force+counters; HUD quad + cine + crosshair preset keys (59 values at
+boot); vrcine dumparm (edge-armed one-shot dumps; bars edge auto-armed at init -
+the C10 bars-verts harvest); cine gate predicate fix (cinematic_hold, not the dead
+letterbox()) + cine-drive consumption in camera/aim/hands/wskel + authored+look +
+the s29 release interlock leg + wskel_release; menukey (pad A -> scancode Enter,
+3-leg menu gate; title-continue proven NATIVE-A; gameplay negative clean); the
+crosshair hidden by default via ShockPlayer.DisableReticle through the engine's own
+FFC+ProcessEvent (the PE-by-name precedent; GNames reverse lookup; A/B proven);
+the flicker instrument ([flick] per minute, catch phases + dmax + cadence baseline,
+4 min proven; ambient baseline banked).
+
+Discoveries banked in ENGINE_NOTES s42: the pause menu is SCREEN-ONLY (world absent,
+unlike BS1) AND starves the whole PE-tail service lane (commands + pad dead while
+paused - pre-existing, structural); the title screen preloads the save under itself;
+BS2 HUD fills are textured (no BS1 bar-fill collision); postFx idles in gameplay
+(post chain is CopySubRes-based). Deviations logged in ARCHITECTURE: postfx-cine
+fallback OFF on BS2, no watchdog-exemption port (no watchdog exists), generic
+screens, menukey as BS2-local translation, script-setter precedent.
+
+Open into session 43: C10 bars constant (rides the auto-harvest), the headset
+acceptance (checklist above), main-menu pad-A verdict, the flicker readout.
+Teardown clean x4, zero dumps; sr eyes 6.30 exact; drive 90/s; BS1 untouched
+beyond the three additive core seams.
+
+### Session 41 rounds 2-3 - 2026-08-04 - in-headset acceptance, the bake, weapon offset
+
+Two same-day headset passes. Round 2: EVERYTHING accepted (animations, sway,
+arms-hide, uniform scale, per-weapon profiles, F10, no regressions); the user
+calibrated all 8 weapons + both hands. Shipped in response: the calibration baked as
+code defaults (virgin-boot proven), the flush-point flicker rung, and the per-weapon
+WEAPON OFFSET (attach-pivot base - gun moves, hand/aim stay; flat-proven localized
+with write-locs bit-identical). Round 3: offset "perfect" (values re-baked:
+MachineGun -7.47, RivetGun -6.30, Shotgun -11.44 + modScale 0.79, Speargun
+-7.24/-2.10); laser/dot per-hand F10 toggles + preset keys added; THE FLICKER
+SURVIVES both rungs, reduced, now suspected TIME-correlated (~10 min) - reclassified
+as a diagnosis item (instrumentation plan in ENGINE_NOTES s41 r3). Session-42 brief
+(user): THE HUD LANE.
+
+### Session 41 - 2026-08-04 - the holdable lane, the animation-preserving drive, polish flat-green
+
+Branch `claude/bioshock2-holdable-polish-7cbec4` off `bioshock-2` (5f9b0da), merged back.
+Every round-2 defect addressed in code and flat-verified in two sim boots at the save.
+
+- **Retarget drive**: per-bone 32-byte adoption of the engine's evaluated pose (only
+  when the bank stopped being our write; unconditional for bones entering the driven
+  set; other-hand-masked skipped), compose `q = qtc * animQ` - engine animations play
+  in the driven hand's space and restamps become input. The design review caught
+  scale-adoption compounding BEFORE it shipped (the engine never restamps scale; the
+  channel is pinned to g_ref, structurally). Absorb-then-recompose PE repaint (pass 1
+  only; new side-effect-free `scenedraw::in_second_draw()`). `vrhands anim on|off` +
+  `animtrans`. Flat: adoption ~7/drive/hand, drill-region motion on a trigger pulse,
+  scale-flick decays with no alternation, write-loc 100 UU/m exact, anim-off bitwise
+  stable. INSTRUMENT CORRECTION: axes 'cur' races the restamp war - use the new
+  race-free `written q / anim q` line.
+- **Holdable lane, constants all fresh**: UObject identity +0x28/+0x30 with UClass
+  vtable 0x11E71F8 (3 classes stable); Hands.CurrentHoldable = hands+0x4B4 (seam find
+  + switch diff agreeing; BS1's 0x45C did not transfer); weapon SkeletonInstance =
+  holdable+0x430 (two-factor). `object_class_name`, `current_holdable`,
+  oclass/holdscan/wskel derivation probes.
+- **Uniform weapon scale** (`vrhands wscale`): the weapon's OWN pose bank, scale +
+  translations about the component origin - the canister repro INVERTED (0.5 halves
+  the whole rivet gun; 2.0 uniform; 1.0 restores + hands-off); weapon anims keep
+  playing while scaled. scaleweapon fallback default OFF.
+- **Per-weapon profiles** (session-21 rules a-d): RIGHT hand + wScale per weapon
+  (USER DECISION: left stays global until per-plasmid keys exist), pre-fire keying,
+  stash/seed-from-baseline/restore with no edit leak, weapons.ini round-trip (2
+  profiles / 26 values), preset ordering load -> note_preset_baseline -> reapply,
+  save chained. `vraim weapon|wsave|wkey`.
+- **Polish**: arms-hide collapses onto the driven wrist (web fix); F10 top PRESET
+  section (APPLY + SAVE, "applies/saves ALL settings and values", duplicates
+  removed); vrinput default-ON at boot (proven pre-command at 90/s); per-hand
+  aimRayMaxDevDegL/R in the sim (dual-beam L 0.0000 / R 0.0000; legacy field kept).
+- Preset 43 values (was 22). Guards: 11 layers, sr eyes 6.30 exact, wait2/guardskips
+  0, teardown 478/463 ms zero dumps. Core diff: ZERO (sim-tool JSON fields only).
+- Session 42: in-headset acceptance, plasmid names in ContentBaked -> ability seam +
+  per-plasmid left profiles, pad-A activation, the alt-tab wedge (own session).
+
+### Session 40 - 2026-08-04 - BS2 plays on the controller; hands split; the ~90 deg fixed
+
+Branch `claude/bs2-controller-input-decoupling-d7cc14` off `bioshock-2` (0abb6b5), merged
+back. Three simulator boots at the user's save, every M10.1 code box ticked.
+
+**The session turned on one offline question asked first**: does BS2's binary still contain
+a per-frame pad poller that nothing calls? The plan made that a go/no-go gate rather than an
+assumption, and it paid - `UWindowsViewport::UpdateInput` is at viewport vtable slot 73 with
+ZERO callers, so BS1's shape ported. Pumping it per present + `SetUseController` (client slot
+73; the shared slot number is a coincidence and is banked as two constants, because BS1's
+single shared constant was a layout accident waiting to bite) makes the engine consume the
+synthetic pad: sticks walk, triggers fire through the seam, the dpad navigates the menu, and
+the game's own UI switches to controller prompts. The same offline pass answered session 39's
+open question for free - the engine never calls XInputGetCapabilities, so the caps asymmetry
+in the core bridge was never the cause, and the core "fix" it suggested (which would not have
+been inert for BS1) was correctly not made.
+
+**The ~90 deg misalignment was a composition bug, and a new instrument found it in one
+reading.** `vrbones axes` prints the anchor's driven vs authored rotation - the mesh-level
+read `aimRayMaxDevDeg` never was, which is exactly why the defect survived to the headset.
+The rigid map was replacing the anchor's authored frame with the raw controller rotation;
+that frame is ~81.6 deg off the view frame on this rig. `delta = qtc` instead of
+`delta = qtc * conj(refQ_anchor)` keeps the authored pose and turns it, giving 0.21 deg at
+rest. The planned baked constant turned out to be unnecessary - the correct composition is
+self-deriving, so nothing needs re-banking when a weapon or animation changes.
+
+**Hands split on real names**: the bone-name map auto-detected at SharedSkeletonData+0xB4
+(64/64 named, single accepted candidate), giving left = 7 + 8..28 + 62 and right = 36 +
+37..57 + 63, where 63 is the weapon attach (proven by driving that one bone and watching the
+gun move). Per-hand tracking is exact: 35.0 UU on the moved hand, 0.0 on the other.
+
+Also shipped: worldscale-independent `vrhands scale` (anchor invariant to 0.00 UU),
+bullet-origin substitution (61.9 UU displacement, with the 200 UU clamp BS1 never had), dual
+lasers + dual dots at the user's request (BS2 is natively dual-wield - the one core change,
+strictly additive, 11 of 16 layers), an F10 per-hand calibration panel, and 14 preset keys
+(22 values loaded on a fresh boot, was 8).
+
+**Two findings worth more than the features.** `aimRayMaxDevDeg` assumes ONE laser: with both
+beams live it reads 47-75 deg and looks precisely like an aim/model regression, while
+single-beam at the same pose reads 0.0000 - the acceptance must be run single-beam until the
+metric is per-hand. And `vrhands offset ...` had been silently parsed as `vrhands off` since
+session 39 (prefix-matched verb where one verb prefixes another), which is why the preset kept
+persisting zeros; the round-trip test is what exposed it.
+
+Blocked, honestly: the ability-seam live check needs a projectile plasmid, and `<X>BasicPlasmid`
+exists only for Telekinesis in the exe - Telekinesis provably does not traverse
+GetPerfectFireStart. Per-weapon presets were deliberately split out of their box rather than
+ticked, since no tuned value source exists until the user calibrates in-headset.
+
+Teardown 486/523/211 ms, zero new dumps, across all three boots.
+
+### Session 40 round 2 - 2026-08-04 - two in-headset passes, the retarget diagnosis, the holdable lane
+
+Same-day continuation after the user's first look PASSED the core acceptance. Round-2
+build shipped per-hand aim sliders in F10, arms follow/hide/game, the weapon-scale
+toggle, a PE-lane restamp repaint, and the full preset (aim trims/pos, arms, scale-
+weapon, dot length, turnscale/snap/ammomod - 14 -> 22+ keys) with a one-button APPLY
+that also arms the controller. Second in-headset pass verdicts: flicker SURVIVES and is
+triggered by scale changes; some weapon animations never play (the rigid drive erases
+them - one root with the flicker; fix = retarget engine animation deltas onto the driven
+frame); arms-hide stretches a web to the authored bone spots (collapse onto the wrist);
+aim tuning must be per-weapon (BS1 weapons.ini shape); weapon scale must be uniform-down.
+The scale experiment PROVED the ammo canister inversely rides pivot 63's scale in the
+engine's attach math - unreachable from the AHands bank; the weapon's OWN skeleton is
+the lane, shared with the per-weapon-profile holdable resolution. Also banked: one-shot
+scale pokes do not render on this rig state (drive-path attribution only); a fixed
+pre-existing `vrhands offset`-parsed-as-`off` bug would have kept persisting zeros; the
+alt-tab pacing wedge reproduced twice with a clean signature (restart-only recovery).
+Session 41 brief: holdable lane (uniform weapon scale + per-weapon profiles), the
+animation-preserving drive, hide-collapse, F10 top APPLY/SAVE section, plasmid names in
+ContentBaked, pad-A activation, per-hand aimRayMaxDevDeg.
+
+### Session 39 - 2026-08-03 - BS2 motion controls: decoupled aim, laser + dot, bone drive, all flat
+
+Branch `claude/bioshock2-motion-aiming-c7daed` off `bioshock-2` (a993e80), merged back to
+`bioshock-2`. Priority 1 landed end to end, flat, in four unattended sim boots at the
+user's save; priority 2 (cheats) landed as a boot-1 rider on the first try.
+
+- **Stage 1, the probe**: GNames derived fresh offline (ctor 0xB813B0 -> worker 0xB81CE0
+  -> GNames 0x1A614D0; BS1's session-20 recipe, every number new), Lane-A FName globals
+  (BeginFiring/UseAbility/InitiateDamage resolve; GetPerfectFireStart/ApplyAimError have
+  no cached global - they live in a boot-time batch registration at ~0x976640), and a
+  PE census whose UFunction name offset self-derives (+0x28, validated by 73 sane
+  names). Live verdict in one boot: the seam is NATIVE (0 PE hits over 6 fires),
+  InitiateDamage is the PE-visible 1:1 anchor.
+- **Stage 2, the seam**: weapon impl via vtable-slot census (slot 221/+0x374 ->
+  0x89DCB0, shared by the whole weapon family incl. the drill), ability impl via a
+  targeted .text sweep (0x81CE80, non-virtual, args incl. the `tester` ShockPlayer).
+  Both hooks identity-gated and live from boot. Decoupled aim proven with the
+  region-mean method (whole-frame diffs lie in this dark scene): impacts moved
+  crosshair-band -> right-band (0.1% -> 12.4%) on a +30 deg substituted yaw with the
+  camera heartbeat bit-identical.
+- **Stage 3, rays/laser/dot**: b2r frame_context.h; the hand ray substitutes 1:1
+  (delta 25.00 deg exact against a -25 deg sim hand); 8 compositor layers under SR
+  stereo; dot round-trip 0.0000 UU.
+- **Stage 4, the rig**: AHands -> SkeletonInstance at +0x430 (two-factor identity),
+  64-bone hkQsTransform pose bank at +0x44 poke-proven to render; bones.cpp rigid
+  cluster drive (no lock domain) + hands.cpp policy; coupling acceptance PASS -
+  aimRayMaxDevDeg 0/0/0/0.02/0 constant, write-loc at exactly 100 UU/m (the fresh
+  world-scale measurement), model-only diffs localized and moving.
+- **Cheats**: F9=GiveAll + F12=GiveWeapon bound in [Default] only (backups kept),
+  verified by effect; digit keys switch weapons flat. New harness facts: mouse
+  buttons fire in gameplay (the raw-input wart is menu-only), the drill has no aim
+  seam on air swings, `vraim`/`vrhands`/`vrbones` grammars shipped.
+- **Input verdict**: the engine polls XInput twice at boot pre-bridge and never
+  again; the WinDrv ini lever alone does NOT wake it. input_drive port = session 40
+  P1; until then controllers aim/fire-substitute but do not drive locomotion.
+- Teardown with everything armed: 470 ms, zero dumps. Core diff: ZERO. Session-37/38
+  baselines observed intact live (sr eyes 6.30 exact, wait2/s=0, fov law, self-heal).
+
+### Session 38 - 2026-08-03 - the exit crash was the game's own; instant dump-free closes; aim seam found
+
+Branch `s38-b2r-teardown-and-aim` off `bioshock-2` (50a8131), merged back to `bioshock-2`.
+The brief's priority 1 (teardown crash) inverted under evidence: `tools/read-dump.py` (new,
+python-minidump) read all five banked dumps - three were the SAME null read at
+`Bioshock2HD.exe+0x4FF0FE` (the engine's display-apply virtual dereferencing a nulled
+subsystem member during close-time message dispatch, slot 61 of the engine-family vtable at
+RVA 0x10BD7DC), and the "few-second exception loop" is a chained CSERHelper filter retrying
+the faulting instruction 86k times. An unattended close-repro bisect (WM_CLOSE poster +
+teardown-CPU sampling + the new `BVR_SKIP` subsystem lever + `BVR_VEH` first-chance
+observer) then eliminated the mod entirely: the fault fires passive, without an XR session,
+and in run G4 with EVERY hook skipped - while vanilla "exits cleanly" only because nothing
+observes its 0.1-s-CPU teardown as CSERHelper eats the same fault. BS2R crashes on its own
+exit path, per its Steam reputation; the mod had been amplifying that into a 58 MB dump per
+close plus a multi-second spin.
+
+Shipped accordingly: teardown-aware crash handling (overlay WndProc notes
+WM_CLOSE/WM_DESTROY/WM_ENDSESSION; from then on a fault gets one log line, no dump,
+immediate TerminateProcess) - closes now measure 0.1-0.3 s with zero dumps, faster than
+vanilla; BS2 adapter hygiene gates (doubled draw, 1t force, FOV writes via live-CalcView
+OFF edges, window self-heal) and a drain-guard poison-hardening for the gameplay-quit dump's
+freed-scene class. Acceptance: three echo-verified armed closes + a 5-min armed soak (308
+1T beats, wait2/s=0, guardskips 0) all closing instantly with zero dumps. The arm-timing
+lesson: the poll gate ticks only after the menu's first CalcView (20-55 s variance) - key
+scripted arms on the log line, never on a fixed wait.
+
+Priority 2 (aim derisk, offline): BS2's fire seam family EXISTS with BS1's exact shape -
+`GetPerfectFireStart(out loc, out Rotator, out effectLoc)` on Weapon AND AttackAbility, the
+full BeginFiring/AnimNotify_UseAbility/InitiateDamage chain intact, and it is NATIVE
+(`execGetPerfectFireStart` present as a WIDE string - this build stores script names UTF-16,
+ASCII sweeps see nothing). BS1's nativemap recipe does not transfer verbatim; the dispatch
+question (ProcessEvent-visible vs native-to-native) is queued as session 39's one live
+probe. ENGINE_NOTES gained "Fire flow / aim" and the full teardown derivation.
+
+Wrap-up round (user: "everything can be tested in flat so do it"): the in-game quit
+acceptance PASSED flat (save written, WM_DESTROY noted post-save, zero dumps, bounded
+exit) after catching a real deadlock in the first teardown gate (stopping the forced
+inline flush mid-worker-teardown never completes; reverted - forced-inline runs through
+close) and adding a 15 s exit watchdog to `note_teardown`. coupling-viewmodel PASSED at
+the save (world 4-5x animation floor under yaw/strafe, drill block AT floor =
+view-locked). Boot-to-save is now fully unattended (Space at the title continues into
+the newest save; BS2 menus need KEYBOARD driving - their raw-input cursor ignores
+SetCursorPos clicks; zombie-process handling fixed in game-key/game-shot/game-cmd). The
+user's checklist for next boot is EMPTY but for headset ride-alongs. Session 39 brief
+(user, 2026-08-03): motion controls - laser/dot aiming with models moving in sync with
+the controllers (BS2-native: NO BS1 lock domain, whose `lock abs` correction caused
+BS1's +-90 drift; `coupling-hand` + constant `aimRayMaxDevDeg` as the sync instrument),
+BS1-parity controls incl. the thumbrest ammo modifier, cheats lane if time remains;
+session 40: cheats spillover + aim/model sliders + per-weapon auto aim presets.
+
+### Session 37 - 2026-08-02 - the letterbox was the window; the resolution picker ships LIVE
+
+Branch `s37-b2r-res-picker` off `bioshock-2` (d875ee6), merged back to `bioshock-2`. The brief
+was a BS1-parity picker + automatic FOV behind three blocking unknowns (aspect bisection, vrres
+end-to-end, swapchain sizing); all three closed in one UNATTENDED screening pass, because BS2's
+menu background turns out to classify as a strict-gameplay ShockPlayer view rendering the full
+scene pipeline - the campaign ran there under the first-ever xrsim attach to BS2 (which worked
+first try), spending zero user boots.
+
+The reshaping find: the engine sizes its scene viewport to the window CLIENT while the backbuffer
+holds the ini size, and the game's chromed window clamps at client height 1421 on this 1440p
+desktop - sessions 32-33's "mystery ratio" 1.4413 = 2048/1421 is window arithmetic, and even
+2560x1440 letterboxes (lb=1.0141). One GetClientRect replaced the planned 4-5 boot bisection: a
+borderless client sized to the render (beyond the desktop where needed) renders full-height
+square pixels at every aspect tried, and the engine follows a LIVE client resize with its own
+ResizeBuffers - backbuffer, scene viewport, XR swapchain, auto FOV and claim all tracked
+correctly through 16:9 -> 1.6 -> 0.9348 -> 0.9321 transitions with stereo-on-1t armed
+(wait2/s=0 throughout, zero faults). So the picker ships BETTER than BS1 parity: `vrres
+native|perf|sharp|max|flat / list / restore / WxH` and the F10 "RENDER RESOLUTION (applies
+live)" section apply instantly via `apply_resolution()` (borderless resize -> ini persist ->
+deferred re-verify - the engine persists its own live size into Shared.ini ON RESIZE one step
+behind, which is the mechanism behind every historic "my resolution write did not stick" report;
+it does not rewrite at exit). A stereo-gated self-heal fixes the letterbox every chromed boot
+starts with (verified: 2064x2208 boot healed ~1 s after `vrstereo on`). The automatic FOV needed
+no new mechanism - `vrfov` already runs the inverse law per CalcView; at native it writes option
+138 and renders 107.7x111.4 deg against the 108x110 eye, ClaimRatioH 0.99521 (sim eye pinned to
+the measured VDXR 54/55 this session, closing the s34 open item; claimRatioH is claim/EYE and
+the honest 16:9-fill reads ~1.8 BY DESIGN - the guard is the law-derived expected value, matched
+to four decimals).
+
+Bugs found by the session's own instruments: `vrres list` fell to the status line (fgets newline
+vs strcmp - token-match now), game-batch writes are LOST during scene transitions (the menu-scene
+load stalls polls ~9 s; verify per-command echoes), and `vrres restore` dragged the engine to the
+stale saved rect (restore now sizes the client for the current backbuffer).
+
+Same-evening addendum: the user's first native run accepted the SHARPNESS and confirmed the
+auto-FOV A/B, and hit the flagged fg defect - the viewmodel moved against the head. An in-save
+three-probe sweep (drill drawn, fgfov 60/100/138) measured the fg lens law: `tanV = tan(d/2) *
+G(aspect)`, G(0.9348) = 0.99488 constant to five digits, G(16:9) = 9/16 exactly (s33's identity)
+- no natural closed form through both, so the shipped fix SELF-IDENTIFIES G live (fov-watch fg
+sample paired with the value the match itself last wrote; converges in one sample; freezes when
+the lenses merge; identity at 16:9).
+
+CLOSED next day (2026-08-03): the fix verified in-sim first (G identified in one sample, wrote
+111.7 at option 138, both dumps ONE law-exact cluster), then ACCEPTED in-headset - the user
+tried multiple resolutions: "everything is perfect - the FOV is filling the screen and the
+weapons/hand models are stable and glued". Their session log shows zero watchdogs/guardskips.
+Remaining open item handed to session 38: the teardown crash on stereo-armed close - four dumps
+banked, reproduced unattended under the sim (`+0x4FF0FE`, Draw/flush neighborhood), repro
+recipe + candidate fix shape in Current state.
+
+### Session 36 - 2026-08-02 - the BS2 stereo freeze is dead; full-rate stereo ships on 1t
+
+Branch `s35-b2r-reentry-freeze` (worked via `claude/bioshock2-vrstereo-freeze-64334d`, same tip),
+merged to `bioshock-2`. Nine commits.
+
+Executed session 35's plan end to end, with three findings of its own. (1) The harness's first real
+run caught its own bug - the gameplay regex was anchored ahead of the log's timestamps - and then
+proved the whole lane: map boot to gameplay unattended, vanilla soak green, and the freeze
+reproduced as exit 3 in 25 s with the wedged stack reading `B8108F BB1963 69FD33 4EF4A6` - the
+session-35 chain confirmed live before a single fix landed. (2) The `wait2/s` counter refuted the
+resolution/FOV trigger hypothesis outright: the second flush entered the INFINITE wait on EVERY
+doubled frame at both 1920x1080 and 1280x720 - the race was never rare, only the lost wakeup was.
+(3) The user's headset time found two real VDXR integration bugs the simulator structurally cannot
+see (it force-grants focus): a never-focused session needs its frame loop to REACH focused
+(bring-up exception added, lever-gated), and a detached session is stranded forever because VDXR
+will not re-promote empty keepalives (BS2's detach default flipped OFF; the session self-heals on
+refocus now that the wait is off-thread - lastEnd ~1 ms at VISIBLE).
+
+The fix itself is BS1's session-8 cure duplicated with fresh constants - drain guard first,
+flush-point force second, quotient untouched - and it was accepted the same day: 10-min decider
+soak in the user's save, user-driven load-crossing matrix (save load, quit-to-menu x2, new game,
+respawn; stereo armed and sticky, guardskips 0), post-flip smoke, and an immersive in-headset run
+of full-rate stereo on 1t that the user called stable. `vrstereo on` now arms BS1's ladder by
+default; `srdev` degraded to the repro escape. A watchdog lesson closed the loop: an episode the
+game recovers from is a load, not the freeze - the soak now judges permanence, after `-KillOnFail`
+killed a healthy game at the exact moment the user's save finished loading and read as a crash.
+
+Deferred by the user's call, commands banked in Current state: the four-mode 10-minute matrix, the
+BS1 regression soak, and the sim-vs-BS2 per-eye captures (selftest passed).
+
+### Session 35 - 2026-08-01 - the BS2 freeze has a cause: Draw's tail calls a render flush point
+
+Branch `s35-b2r-reentry-freeze` off `bioshock-2`. **Paused mid-session at the user's request; two
+commits pushed, build clean, nothing half-applied.**
+
+Session 34 left the root cause open and named "render single-threaded while stereo is armed, the way
+BS1 does" as candidate #1, noting that BS2's equivalent had never been derived. It has now been
+derived and verified against the shipped exe: `UGameEngine::Draw`'s tail makes exactly one call to a
+render flush point at `0x69FC30`, whose threaded branch is the `Wait(INFINITE)` the watchdog caught,
+and whose inline branch has **nothing after the drain** - the property that makes BS1's cure lossless.
+Full table and RVAs in "Current state" above. Session 26's premise ("the Draw path has no submit
+handshake"), the sole reason 1t was never ported to BS2, is refuted structurally rather than
+empirically.
+
+The user's recollection that the freeze began with the resolution/FOV work turns out to be
+**compatible** with this rather than an alternative to it: `0xBB1950` skips the wait entirely when the
+worker has already finished, so reachability is a pure timing question and a bigger render target is
+exactly the kind of thing that makes the wait start being taken. Mechanism and trigger are different
+questions and both have answers.
+
+Two things landed, both prerequisites for measuring anything:
+
+- `tools/soak.ps1` and `tools/game-key.ps1` - the project had no soak harness at all and no keyboard
+  lane, so every soak in its history was manual and unattendable.
+- The stall watchdog **could not fail an acceptance run**. Its trigger required an open draw stage,
+  which only the doubled draw opens, so "zero WATCHDOG lines" was a guaranteed pass for every other
+  mode; and `watchdog_all_threads()` had five silent exits and printed nothing every time. Had this
+  been noticed later, the session could have declared a fix accepted on evidence that could not have
+  contradicted it.
+
+### Session 34 - 2026-08-01 - a simulated Quest 3, so agents can test their own VR work
+
+Branch `s34-xrsim-simulated-headset`. The user's ask: stop being the manual tester for every VR
+question across three parallel mods.
+
+**Built `bvr_xrsim32.dll`**, a purpose-built 32-bit OpenXR runtime that presents as a Quest 3.
+Nothing off the shelf could do this: Meta XR Simulator and OpenXR-Simulator are x64 (the game is
+32-bit), `ox` has no D3D11, and an API layer cannot substitute because a layer needs a runtime
+underneath and with no headset there is no session to intercept. Tractable because the mod's whole
+OpenXR surface is 39 entry points, one extension and one interaction profile.
+
+**Zero lines of the mod changed.** Selection is per-process via `XR_RUNTIME_JSON`, which the loader
+checks before the registry. That was verified empirically on day one before any runtime code was
+written: the game honours the env var on a direct launch and does NOT silently fall back to VDXR.
+M9 confirms the endpoint - `bioshockvr.dll` and `xinput1_3.dll` hash identically with the sim target
+off and on at one commit, and MSBuild does not even relink the mod.
+
+**The compositor is the payload.** Composing each eye means reprojecting the projection layer
+through the difference between the layer's tagged pose/fov and the eye's, which turns a claimed-fov
+mismatch into visible magnification. It also retires a limitation TESTING.md has carried since M8:
+XR quad layers never appear in a window screenshot, so the aim laser and HUD panel were unverifiable
+outside a headset. `laser.xrs` now reads 7 quad layers on, 1 off.
+
+**Six bugs found in the sim during bring-up**, each fixed and each worth remembering because they
+are all the same shape - a thing that worked on the one path it was written for:
+- unescaped Windows paths made `state.json` invalid JSON;
+- the layer census only updated on capture frames;
+- the ack channel deadlocked in step mode (`cmdSeq` published only from a blocked `xrWaitFrame`);
+- `pacing_wake()` conflated a config change with an abort, putting the mod in a permanent teardown
+  loop;
+- `rig_defaults()` never set the FOV, so `reset` zeroed the optics and every capture went black;
+- the launcher waited on a session the revert-Options dialog was blocking.
+
+**Acceptance in gameplay**: stereo left-vs-right 3.16 against a 0.4 noise floor, head look monotonic
+2.24/2.79/3.37, `claimRatioH` 0.98, 90/91.7/89.7 frames/s across a focus loss, exact frame stepping,
+and a walked-away agent leaving the game alive for 40 s with the starvation grant firing on cue.
+
+**Regression**: a normal launch still lands on VirtualDesktopXR, the ActiveRuntime registry values
+are byte-identical on both views, and `XR_RUNTIME_JSON` is empty at every scope afterwards.
+
+The markdown cleanup the user originally asked for was explicitly deferred mid-session; the sizing
+findings are recorded in "Next steps" for whoever picks it up.
+
+### Session 33 - 2026-07-31 - BS2 viewmodel lens DONE and accepted; the VR pacing bug found
+
+Branch `s33-b2r-viewmodel-lens-match`, merged to main on the user's go-ahead after their
+in-headset test.
+
+**The result:** BS2's foreground lens is `PlayerController + 0x694` (float, degrees). Writing the
+live world FOV into it every CalcView collapses the two lenses. User: *"I tested the match
+viewmodel lens to the world and it worked, the weapon was not moving anymore."* Default ON.
+
+**The method worth keeping:** poke each candidate field to a DIFFERENT distinctive FOV and take ONE
+dump - the foreground cluster lands on the value only one candidate could have produced. That
+replaced a one-at-a-time sweep which had reported six false positives in a row, because a lens
+COUNT cannot distinguish "the cluster merged" from "the sampler missed it" while a lens VALUE can.
+
+**Answered for free, from dumps already on disk:** the world FOV law is 16:9-referenced
+(`tanV = tan(opt/2)*9/16`, aspect-invariant) - the OPPOSITE of BS1's - verified at two aspects x
+two options with no relaunch spent. Session 32's "the projection degenerates off 16:9" is
+retracted: the ray block's vertical slope carries a letterbox factor, and reading the pair as an
+equality rejected every letterboxed block. So is "`0xAECACF` separates the two lenses".
+
+**The new blocker:** the game is paced by an OpenXR session that is not FOCUSED, at the runtime's
+not-visible cadence (~10 Hz). Not a hang - `lastWait 0 ms, timeouts 0`. Alt-tab reproduces it.
+`vrcam off` could not undo it because only `on` called `set_enabled` - fixed. The rest is next
+session's priority 1.
+
+**Three of my own hypotheses died, all by measurement:** the fov watch (bisected out with a new
+`vrhud fovwatch off`), alt-tab-as-root-cause (the user pushed back and was right; it is a
+SYMPTOM of the pacing bug), and two attempts to make the live lens counter reliable - a head-slot
+reservation (the fg pass moves) and a rotating stride phase (20x the frame time). Both dead ends
+are written into the sampling site so they are not rediscovered.
+
+**Tooling:** `disasm-rva.py`, `game-batch.ps1`, `launch-game.ps1`, `vrpreset` on BS2, `vrpace` /
+`vrmirror` / `vrhud` dispatched for the first time, and an **F10 overlay section for the lens
+test** - because typing a command in a headset means alt-tabbing, and alt-tab is the pacing bug.
+
 ### Session 36 - 2026-07-31 - I2 part 1: DR-I1 CLOSED offline; DR-I2 and DR-I3 built and waiting on the headset
 
 Branch `si36-inf-derisk`. **BioShock 2 owned the machine for the entire session**, so nothing was
@@ -4605,6 +6262,7 @@ real conflict**: BS2 was live (pid 24588) during this session, and the guard ref
    (`simhead`, `vrrec`) arrived at sessions 12 and 20 - far too late. Both are scheduled into I4.
 3. **The policy gate** - check native, test whether the defect exists, only then port the cure -
    paid out three times on BS2 and is the preamble of the new ENGINE_NOTES.
+
 
 ### Session 32 - 2026-07-31 - BS2 resolution lane + the lens verdict; three BS1 assumptions died
 
@@ -6640,3 +8298,27 @@ user's final go before merge and tag.
   killed a whole wrong approach); shipping the refuting instrument with the fix (the vertex-count
   log immediately proved "textureless = bars" would have been wrong); and stating plainly which
   claims flat could not test - all three of those turned out to matter in headset.
+
+### Session 42 rounds 2-4 addendum - 2026-08-05 - in-headset acceptance -> v0.7.0 SHIPPED
+
+Round-1 verdicts: HUD, crosshair, menus, pad-at-title/main-menu ALL GOOD. Fixed in
+rounds 2-4 from the user's reports + their pre-cutscene save (replayed in the sim):
+M7.5 body transfer ported (offset +0x1F8 DERIVED live, probe confirmed, camera
+invariant bit-exact - movement follows the view, snap turn carries the pawn);
+BS2 bars fingerprint derived (11-vert textureless; skipped 6288/6288 - no panel
+bars; the cine hold sustains 43 s with authored camera AND hands); the reticle
+transition fault fixed (freshness gate + call-time vtable + per-world latch).
+Release defaults per the user: lasers off/dots on both hands, cineDrive
+authored+look. **v0.7.0 released** (tag on bioshock-2, one zip, both games):
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.7.0
+Open for later: subtitles verdict, flicker watch ([flick] armed), main-menu-A was
+confirmed working by the user (menukey + native paths), plasmid-hand profiles.
+
+### Post-release addendum - 2026-08-05 - BS1 in-headset verdict, merged to main
+
+The user tested BioShock 1 in the headset on the released v0.7.0 binaries:
+LOOKS GOOD, NO REGRESSIONS observed. With both games verified on the shipped
+DLL (BS2 flat+headset across rounds 1-4, BS1 sim smoke + headset pass),
+`bioshock-2` was merged to `main` - main now carries the full duology mod at
+v0.7.0. The exhaustive BS1 regression checklist remains available for the
+end-of-development pass, but the release-blocking question is answered.

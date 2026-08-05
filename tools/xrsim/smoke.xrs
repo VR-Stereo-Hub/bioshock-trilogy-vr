@@ -1,0 +1,7 @@
+# smoke.xrs - is the sim driving the mod at all?
+# Expect: a capture with at least one layer and a non-black image.
+reset
+@frames 10
+@assert sessionState eq FOCUSED
+@assert layersLastFrame ge 1
+@shot smoke

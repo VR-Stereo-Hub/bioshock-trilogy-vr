@@ -200,6 +200,29 @@ bool cinematic_hold();
 // agreement between them is real evidence. `vrcine status` reports both.
 void get_bar_stats(unsigned* skipped, unsigned* intervalsWithBars, unsigned* lastVertexCount);
 
+// ---- Session 42: backbuffer-composite pipelines (BS2 opt-in) -----------------
+// BS2 composites gameswf directly on the BACKBUFFER (bind = RENDER_TARGET
+// only, no SHADER_RESOURCE) and its tonemap is an INDEXED 6-index quad - both
+// fail the BS1-derived fingerprints, so with the flag off the classifier
+// never identifies a HUD target on such a game. Opt-in per game at adapter
+// init; DEFAULT OFF, which keeps every BS1 code path bit-identical.
+void set_backbuffer_composite(bool on);
+bool backbuffer_composite();
+
+// ---- Session 42: auto-arm a frame dump on a classifier edge ------------------
+// The screen kinds that still need fingerprints (loading, FMV entry, whatever a
+// playthrough reaches) are transitions: they are OVER before the 1 Hz command
+// poll could arm `dumpframe` by hand. Stage the arm here and it fires on the
+// selected RISING edge, once, then disarms itself. Default off; when off the
+// cost is one relaxed load per present.
+// `vrcine dumparm bars|screen|letterbox <n>|off`.
+// edge: 0 = off, 1 = bar-draw rising, 2 = screen-only rising, 3 = the
+// letterbox pixel watch rising (session 42 r2: BS2's cutscene bars carry no
+// derivable draw fingerprint yet, but the pixel watch DOES trip inside those
+// scenes - a dump armed on its edge lands mid-cutscene by construction).
+void set_dump_on_edge(int edge, int count);
+void get_dump_on_edge(int* edge, int* count);
+
 // Telemetry for `vrhud status` (per second, reset on read... no - lifetime).
 void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
                   unsigned* intervalsWithHud);
@@ -253,8 +276,44 @@ bool fov_watch(float* tanH, float* tanV, unsigned long long* ageMs,
                unsigned long long maxAgeMs = 500);
 bool fov_watch_fg(float* tanH, float* tanV, unsigned long long* ageMs,
                   unsigned long long maxAgeMs = 500);
+// How many distinct perspective lenses the watch has seen recently.
+//
+// READ THIS BEFORE USING IT AS A GATE (session 33). The watch samples ~12 of
+// 400-600 distinct constant buffers per interval on a fixed stride, and a
+// foreground/viewmodel pass is only ~17 of those - so whether it lands in a
+// given sample is luck. `lenses == 2` is therefore TRUSTWORTHY (a second lens
+// was really decoded), but `lenses == 1` IS NOT PROOF that the lenses match; it
+// is the ordinary outcome of not sampling the fg pass. Covering the whole pass
+// was tried twice and both attempts failed - a head-slot reservation (the fg
+// pass moves) and a rotating stride phase (measured at 10 fps, because copying
+// from a different set of dynamic buffers each interval stalls the render
+// thread). The acceptance instrument for a lens match is `dumpframe full` +
+// tools/decode-framedump.ps1, which sees every block.
 int fov_lens_count();
 bool fov_mismatch();
+// Session 33: the winning lens's LETTERBOX factor, i.e. the ray block's
+// vertical slope divided by its offset, which the engine sets to
+// RTheight/viewportHeight because the helper's UV runs over the render target.
+// 1.0 = the scene viewport fills the backbuffer. Anything above that means the
+// engine letterboxed, and the frustum's aspect (tanH/tanV) must then be
+// compared against the VIEWPORT's aspect rather than the backbuffer's - on BS2
+// off 16:9 those disagree and the render comes out stretched. Reading the V
+// pair as an equality (pre-session-33) rejected every letterboxed block, so the
+// whole watch published nothing at those aspects.
+float fov_vp_ratio();
+// Bisection switch for the whole fov watch (session 33): no cb0 copies, no
+// staging map, nothing on the render path. The watch is the biggest change to
+// that path since SequentialReentry stereo was proven stable, and under SR it
+// runs at twice the present rate. `vrhud fovwatch off`.
+void set_fov_watch(bool on);
+bool fov_watch_enabled();
+// Session 33: the RAW decoded tangent slots of the last sampled round, before
+// the majority vote and the guards. `fov_lens_count()` alone cannot separate
+// "the second lens is gone" from "the sampler did not sample it", and a poke
+// hunt that reads the first as the second concludes the exact opposite of the
+// truth - which is what happened before the head-slot reservation landed.
+// Returns the number written (at most 8).
+int fov_slots(float* tanH, float* tanV, int maxSlots);
 // Backbuffer dims (letterbox-watch sample). The lens laws are
 // aspect-parameterised, so anything printing an expectation must use these
 // rather than assume 16:9 - flat there is no XR session to read swap dims from,
