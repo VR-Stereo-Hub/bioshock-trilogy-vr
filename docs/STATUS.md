@@ -17,7 +17,7 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 39 (I4 code-complete, flat battery green - branch `si39-inf-head-camera`; headset corner-lean pending)
+### Infinite: current state after session 39 (I4 CLOSED - flat battery green AND headset-verified on VDXR - branch `si39-inf-head-camera`)
 
 **The 6DoF head camera drive is live and the entire flat harness proved it with numbers, no
 headset involved.** The GetPlayerViewPoint detour tail gained `drive_view`: out-param
@@ -49,17 +49,20 @@ recenter leaves the captured quad oddly off-centre - the capture's layer transfo
 reference-space change is suspect (healing lane). Use the game window for camera-drive pixel
 checks.
 
-**What remains for I4's Done-when:** the user's VDXR corner-lean (checklist in TESTING.md
-"I4 in-headset checklist": drive checkbox + Recenter in the F10 "VR camera (I4)" section,
-roll tilt, lean-around-a-corner with no drift, world-scale tune by feel + `vrpreset save`).
-The simhead half of the Done-when is DONE. Expected and fine: HUD screen-locked, viewmodel
-rides the engine camera, gun aims where the ENGINE looks (pitch mismatch is I7's job -
-pitchErr is logged, never published, because publish_vr_gameplay would seize right-stick Y).
+**HEADSET VERDICT (user, VDXR, 2026-08-05): I4 is CLOSED.** The corner-lean tracked with
+NO drift, head roll tilted the horizon correctly, and the head-driven camera showed on the
+I3 big screen exactly as the MonoTracked rung intends. Two verdict footnotes: (1) the
+world-scale FEEL could not be judged on the mono screen - the tune is DEFERRED to I5 where
+stereo makes it a real judgment (the lever, F10 slider and vrpreset persistence are all in
+place at default 50); (2) the user pressed core's VR-section camera toggle and saw nothing -
+correct and by design: that toggle is the quad->projection flip, gated on a lens claim the
+adapter does not feed core until I5/I6, and only the "VR camera (I4)" section is live this
+milestone.
 
-**NEXT SESSION = I5 (stereo)** once the headset verdict lands: MonoTracked (this) ->
-AlternateEye (core supports it) -> SequentialReentry; entry gate is the I2 FOV law (tanV
-0.4317..0.4933, tanH = tanV x aspect); DR-I5 says test threaded first, port no 1t machinery
-until a measured stall demands it.
+**NEXT SESSION = I5 (stereo)**: MonoTracked (done) -> AlternateEye (core supports it) ->
+SequentialReentry; entry gate is the I2 FOV law (tanV 0.4317..0.4933, tanH = tanV x aspect);
+DR-I5 says test threaded first, port no 1t machinery until a measured stall demands it.
+Carry the world-scale tune into I5's headset checklist.
 
 ### Infinite: current state after session 38 (superseded by session 39 above - kept for the derivation trail; I3 DONE as re-scoped: VDXR headset-verified, three sim bugs fixed - branch `si38-inf-headset-bringup`)
 
@@ -5705,8 +5708,14 @@ Found and recorded: VERIFICATION gotcha 17 - a sim `recenter` with the head yawe
 quad capture (falsified both ways: yaw-110 -> 1 covered pixel with a bright window; yaw-0 ->
 pixels back), and even then the captured quad sits off-centre - the capture's layer transform
 after a reference-space change is a healing-lane candidate. The window is the pixel
-instrument for camera-drive questions. I4 boxes ticked except the Done-when (simhead half
-done; the VDXR corner-lean is the user's next headset session).
+instrument for camera-drive questions.
+
+**Headset session (same day, VDXR): I4 CLOSED.** User verdicts: corner-lean tracked with no
+drift; roll correct; the head-driven camera on the static big screen confirmed as the
+intended MonoTracked rung. World-scale feel not judgeable on the mono screen - tune deferred
+to I5's checklist. Core's VR-section camera toggle observed inert - by design (the
+projection flip waits on the FOV law, I5/I6); noted in the checklist as expected noise. All
+six I4 ROADMAP boxes ticked.
 
 ### Session 38 (Infinite) - 2026-08-05 - I3 sim battery green; the sim's clock bug, dark captures and sticky focus-lose found and fixed
 

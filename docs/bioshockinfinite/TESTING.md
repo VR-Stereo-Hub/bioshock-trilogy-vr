@@ -385,9 +385,15 @@ levers are in the F10 overlay, "VR camera (I4)" section - never type commands in
    (additive yaw), aim/shooting still functions (the gun aims where the ENGINE looks, which
    no longer matches your head pitch - that mismatch is expected and is I7's job).
 6. Expected noise, not bugs: the HUD stays screen-locked on the quad; the weapon viewmodel
-   rides the engine camera, not your head; pause/menus render on the quad unmoved.
-   Anything off: untick the drive checkbox first - if the symptom survives, it predates
-   this session (I3 baseline).
+   rides the engine camera, not your head; pause/menus render on the quad unmoved; and the
+   camera toggle in core's own VR overlay section does NOTHING on this game - that is the
+   quad->projection flip, gated on a lens claim the adapter does not feed core until I5/I6
+   (user pressed it in the s39 run and correctly saw no effect). Only the "VR camera (I4)"
+   section is live. Anything off: untick the drive checkbox first - if the symptom
+   survives, it predates this session (I3 baseline).
+
+Run s39 verdicts (VDXR): lean tracked no drift; roll correct; world-scale feel deferred to
+I5 (not judgeable on the mono screen). I4 CLOSED.
 
 ## Testing discipline
 

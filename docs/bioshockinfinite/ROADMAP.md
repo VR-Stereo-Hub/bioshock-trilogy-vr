@@ -328,10 +328,14 @@ Goal: a real VR camera, and the ability to test it **without a headset**.
 - [x] 1 Hz heartbeat logging the FINAL camera (post drive and offsets) so flat checks measure
       numbers directly (s39: the `[bsi] drive:` line - lane, final loc/rot, engineRot,
       pitchErr, headOff, scale, xr state; 10-beat self-expiry kept)
-- [ ] **Done when:** lean physically around a corner in Columbia with no drift and correct roll,
+- [x] **Done when:** lean physically around a corner in Columbia with no drift and correct roll,
       user-verified in the headset; and `simhead` reproduces a head-driven camera flat.
-      (s39: the simhead half is DONE - flat battery green end to end; the corner-lean
-      headset half is pending the user's VDXR session, checklist in TESTING.md)
+      (s39: BOTH halves done - flat battery green end to end, and the user's VDXR verdict:
+      lean tracked with NO drift, roll correct. World-scale FEEL could not be judged on the
+      mono screen - the tune is deferred to I5, where stereo makes it a real judgment; the
+      lever, slider and vrpreset persistence are in place. Core's VR-section camera toggle
+      is inert on Infinite by design until I5 - the user pressed it and correctly saw
+      nothing.)
 
 ## I5 - Stereo (~2-4 sessions - the risk milestone, pulled forward per the BS2 lesson)
 
