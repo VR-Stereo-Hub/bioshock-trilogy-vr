@@ -230,6 +230,34 @@ runtime.
 
 ## Decision log
 
+- **2026-08-05 (session 42) · Infinite I6/I7: the pair-rate sync gates at PAIR-OPEN only, and
+  it ships default-off in core, default-on with Infinite stereo.** The judder investigation
+  measured that a strictly-gating xrWaitFrame (the sim's) locks the pair rate to refresh with
+  the present thread parked in the wait handoff - so the s41 "free-run beat" suspect is a
+  property of a PIPELINING runtime, decidable only by the new TRACE pairs telemetry under
+  VDXR. The sync (`set_pace_sync` / `vrpace sync`) therefore exists as an armable A/B rather
+  than an unconditional fix: it delays only the present that OPENS a pair (delaying the
+  closing RIGHT present would stretch the 1-4 ms intra-pair gap pair pacing exists to bound),
+  targets the runtime's own predictedDisplayPeriod (published for the first time; commanded
+  Hz as the fallback), and self-collapses to no-delay when the game is slower than the
+  schedule - measured near-inert against a gating runtime (sd tightened 1.2 -> 1.0 ms, gate
+  moved from the wait to our side). Default OFF in core with zero new branches taken for
+  BS1/BS2 (the set_pace_detach pattern; BS1 full-sim-lane proof in the commit); the Infinite
+  adapter arms it inside `apply_vrstereo(true)` and disarms on the symmetric off - so the
+  headset A/B is one F10 checkbox.
+- **2026-08-05 (session 42) · Infinite I7: the loadout/cheat lane dispatches ProcessEvent on
+  the OWNING OBJECT; the console script-exec bridge is a recorded structural negative.**
+  Measured in a gameplay save: every script-side exec through ConsoleCommand is inert (god,
+  AllWeapons, behindview, viewmode - pixel-identical screenshots) while C++ handlers stay
+  proven; the give-family names do not exist in a full GNames dump; XCheatManager is never
+  instantiated (the PC carries only CheatClass at +0x344), so the entire CheatManager
+  vocabulary is structurally unreachable - not gated, absent. The design consequence: the
+  reflect lane grew `bsifields` (walk the latched PC's pointer fields, identify UObjects by
+  class name via the live-derived UObject::Name +0x18, hook-parameter objects only - never a
+  scan) and `bsicallat` (the bsicall gate stack against an explicit object), and grants go by
+  ProcessEvent on the pawn (AcquireWeapon wants a weapon object - the s43 seam). The
+  alternative - resurrecting the console bridge or constructing a CheatManager - was
+  declined: both mean building engine machinery the shipped game deliberately does not run.
 - **2026-08-05 (session 41) · Infinite I6: the FOV lever ENFORCES per dispatch, and the claim
   derives from the lever through the 16:9-referenced law.** The named-property lane was tried
   first per the roadmap and is measurably dead (`set XUserOptionsManager FieldOfView` writes

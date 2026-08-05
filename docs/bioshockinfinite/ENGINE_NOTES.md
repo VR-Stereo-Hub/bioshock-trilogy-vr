@@ -320,6 +320,118 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 42 - I6 judder flat half; I7 opens: the exec-surface truth, object dispatch, the pad lane)
+
+### The judder, measured flat: the wait GATES here, and the instrument now rides every session
+
+The s41 suspect was "77-80 pairs/s free-running against VD's 72 Hz = a ~5 Hz beat". New core
+instrumentation (TRACE pairs line in pacetrace.log, 1 Hz: inter-pair interval mean/sd/min/max,
+plus **waitGate** = present-thread ms/s actually blocked in the xrWaitFrame handoff, plus the
+runtime's own `predictedDisplayPeriod` - never consumed anywhere before) says the SIM cannot
+reproduce a free-run:
+
+| sim refresh | pairs/s | interval mean | sd | min-max | waitGate |
+|---|---|---|---|---|---|
+| 72 | 72 | 13.89 ms (= period) | ~1.2 ms | 10.4-17.4 ms | 540-620 ms/s |
+| 90 | 90 | 11.11 ms (= period) | ~1.0-1.2 ms | 7.8-14.5 ms | 534-548 ms/s |
+
+The sim's `xrWaitFrame` strictly blocks, so the pair rate LOCKS to refresh with the present
+thread parked in the handoff. A runtime that PIPELINES (returns waits early) is the one that
+free-runs - whether VDXR does is exactly what the TRACE pairs line will show from the user's
+next headset run (read `%LOCALAPPDATA%\BioshockVR\bsi\pacetrace.log` afterwards: pairs/s vs
+72 and waitGate ~0 = free-run confirmed; pairs ~72 with fat sd/max = marginal-frame-time
+flutter instead, and the resolution picker is the lever).
+
+The armable fix either way: **`vrpace sync on|off|<hz>` / `set_pace_sync`** (core, default
+OFF, the set_pace_detach pattern; Infinite arms it inside `apply_vrstereo(true)` and disarms
+on the symmetric off). Before OPENING a pair the present thread waits for the next tick of a
+one-period-per-pair schedule (period = predictedDisplayPeriod, else the commanded Hz); the
+closing RIGHT present is never delayed (the 1-4 ms intra-pair gap survives); the schedule
+self-collapses to no-delay when the runtime is slower (measured: sync-on at refresh 72 keeps
+72 pairs/s, tightens sd 1.2 -> 1.0 ms, moves the gate to our side - waitGate 615 -> 21 ms/s -
+and the SR beat stays exact 72/72/144/72). F10 checkbox "Sync pair rate to headset refresh"
+under SR pair pacing is the in-headset A/B. BS1 inertness proof run on the build: full sim
+lane, claimRatioH 1.01769 == the banked 1.018, no sync log line, zero faults.
+
+### The exec surface, corrected: SCRIPT execs are dead through ConsoleCommand; only C++ handlers live
+
+s37 proved `bsiexec setres/shot` by effect - those are C++ `Exec` handlers. Session 42
+extends the map with measured negatives IN A GAMEPLAY SAVE: `god`, `AllWeapons`,
+`behindview`, `viewmode wireframe` all dispatch through ConsoleCommand and produce ZERO
+effect (screenshots pixel-identical; wireframe would have rewritten every pixel). The
+script-side console exec bridge is compiled out or gated in retail, exactly like the key-bind
+lane (s34). Corollaries, all verified live:
+
+- The give-family console cheats DO NOT EXIST in this build: no GiveWeapon / GiveVigor /
+  GiveItem / GiveLockpicks / giveall FName anywhere in a full in-save GNames dump (69,719
+  entries). GIVELOCKPICKS in the autocomplete ini is a stale string, not a command.
+- `XCheatManager` is NEVER INSTANTIATED: the PC's field walk shows CheatClass (a `Class`
+  pointer at PC+0x344, right after XPlayerInput +0x340) and no manager instance anywhere in
+  the PC's fields. `EnableCheats` is not on the PC's function chain (FindFunction null). So
+  God/Ghost/Walk/Slomo/Loaded/AllWeapons - all CheatManager script vocabulary - are
+  structurally unreachable, not merely gated.
+- **The lane that works: ProcessEvent on the OWNING object** (the s34 prediction, now the
+  design). `bsicallat <hexaddr> <Func> [float]` dispatches on any object a `bsifields` walk
+  named; the vtable slot interlock (+0x54/+0x7C RVA match) carries over unchanged.
+
+### The working command list (proven live this session; effects state-confounded where noted)
+
+| command | object | result |
+|---|---|---|
+| `bsiexec LoadCheckpoint` | console (C++/save system) | **LOADS THE NEWEST CHECKPOINT FROM THE MENU** - the autonomous save-entry lane the harness lacked. Proven twice by GNames growth (62,160 -> 69,719), camera relocation and the gameplay HUD. One caveat: it picks the engine's own "most recent" save. |
+| `bsicall NextWeapon` / `SwitchWeapon` | PC (UFunction) | dispatches cleanly (visible effect needs an owned weapon) |
+| `bsicallat <pawn> AddInvulnerableFlag` | XHuman | dispatches (god-family native; flag arg semantics underived - zeroed parm) |
+| `bsicallat <pawn> AddDefaultInventory` / `SetWeapon` / `CreateInventory` | XHuman | dispatch cleanly with zeroed parms; NO weapon appears - Infinite grants via story Kismet, and both user saves predate the first weapon |
+| `bsicallat <pawn> AcquireWeapon` | XHuman | EXISTS and FAULTS on null parms (SEH-swallowed) - **it wants a weapon object argument; this is the s43 grant seam** |
+| `bsinames dump` | - | full GNames -> `%LOCALAPPDATA%\BioshockVR\bsi\gnames.txt` (game-derived, never commit). ~1.1 s for 69.7k names |
+| `bsifields [startHex] [dwords]` | latched PC | UObject field map with class names (see below) |
+
+Recorded negatives (do not re-probe): GiveAmmo/GiveMoney/RefillWeaponAmmo/RefillSalt/
+AllWeapons/Loaded/God/Ghost/AddItemToLoadout/EquipPlasmid are on NEITHER the PC nor the
+XHuman function chains (FindFunction null on both) - they are Kismet/designer-action names
+or CheatManager vocabulary. `Fly`, `Summon`, `KillAllPawns`, `SetJumpZ`, `SetSpeed` exist as
+names; owning objects unknown.
+
+**The s43 loadout options, in preference order**: (1) the user plays to the raffle once and
+saves - a post-pistol save makes grants unnecessary for aim work; (2) derive the weapon
+archetype lookup (DynamicLoadObject/StaticFindObject by path) and feed `AcquireWeapon` a
+real object via an object-arg extension of bsicallat; (3) walk XHuman's fields (bsifields
+needs a small explicit-object generalization) for the loadout/inventory manager.
+
+### The PC field map and the new struct facts (derived live, s42)
+
+`bsifields` on the latched XPlayerController (TWN save): pawn `XHuman` at **+0x1FC** (also
++0x268/+0x274 - ViewTarget shapes), `XPlayerReplicationInfo` +0x200, `XLocalPlayer` +0x23C,
+`XCamera` **+0x240**, HUD +0x2B4, `XPlayerInput` **+0x340/+0x348**, CheatClass (Class)
++0x344, `XnaForceFeedbackManager` +0x35C, `OnlineSubsystemSteamworks` +0x390, XWorldInfo
++0xA4. **UObject::Name is at +0x18** (index dword; derived by candidate walk on the PC's
+class object reading 'XPlayerController'; Class stays +0x20). **FName indices are per-boot**:
+the same name pool loads in package order, so indices from a previous boot's gnames.txt are
+stale - re-dump per boot; only the text is stable.
+
+### The pad lane (I7 controls): IAT verified live, end-to-end effect flat
+
+`bsiinput on` verified the s34-derived ord-2 IAT slot (patterns.h `kXInputGetStateIatRva
+0xCD4814`): current target resolved into XINPUT1_3.dll (the proxy chain), then re-pointed it
+at core's composing wrapper (`hijack_import_slot`) and enabled the bridge. Measured in a
+gameplay save: the game polls through the wrapper (iat 5642 calls at first status read; the
+real chain answers ERROR_DEVICE_NOT_CONNECTED 1167 and the bridge composes CONNECTED),
+**sim right-stick hold TURNS the camera** (engine yaw 65.1 -> 145.3 -> -133.1 deg across two
+holds in the heartbeat; screenshot diff 31.4 mean-abs / 52% pixels), sim A press produced a
+one-sample camera kick (pitch 36 / roll -20 units). Left-stick translation did NOT move the
+pawn in this scene - the checkpoint drops into a movement-locked scripted state (loc frozen
+across every probe); re-test walking in a free-roam scene before reading it as a defect.
+NO UpdateInput pump and no SetUseController on this engine - it polls XInput itself, so
+BS2's whole activation machinery correctly does not port.
+
+### Session hazards (s42)
+
+- The pre-existing freeze hit ONCE at a LoadCheckpoint dispatched into the attract-movie
+  window (Responding=False, presents 0, silent log; watchdog stack captured in pacetrace -
+  ntdll wait, zero mod frames). Force-kill + relaunch; the second attempt (dispatch AFTER
+  `vrcmd` confirmed pump=game at the settled menu) loaded clean twice.
+- gnames.txt is game-derived content in the data dir - never commit (hard rule).
+
 ## LIVE RESULTS (session 41 - I6: the FOV lever, the lens decoder, resolution, config)
 
 ### The FOV lever: every named lane is dead, and the live chain is a per-tick recompute
@@ -1484,6 +1596,45 @@ Actions seen: `StartFireWeapon` / `StopFireWeapon`, `StartFirePlasmid` / `StopFi
 `XNavQuickToggleCycleLeft` / `Right`, `XMakeUnstableSelection`, `FlashCommand <name>`
 (the Scaleform bridge - `AbortHack`, `AutoHack`, `BuyoutHack`, `ActivateFirstNeedle`, ...).
 
+### The audited retail pad map (s42, shipped DefaultInput.ini == live XInput.ini, verified)
+
+The complete `XboxTypeS_*` binding set the synthetic pad must serve (chains abbreviated to
+their effect; `A + B` = XInputHandler short-circuit chain, `| OnRelease X` = release action,
+`| FlashCommand X` = the Scaleform/UI-context alternative):
+
+| pad control | bound chain (effect) |
+|---|---|
+| A | TBar transfer activates (highlight on press, perform on release) + **Jump**; air-to-TBar window |
+| B | TBar dodge + TBar reverse + **ToggleCrouch** |
+| X | **ReloadOrHoldToHackOrUse** / FlashCommand ActivateFirstNeedle |
+| Y | TBar melee transfer + **melee attack** (hold 0.15 s = execution) / AbortHack |
+| LT | XStartTBarZoom + **StartFirePlasmid** (release: stop both) |
+| RT | **Fire** |
+| LB | **NextPlasmid** / ActivateSecondNeedle |
+| RB | **NextWeapon** / ActivateThirdNeedle |
+| LS click | **StartSprint** |
+| RS click | **XToggleZoom** |
+| DPad Up | XNavShowPulse / BuyoutHack |
+| DPad Down | XMakeUnstableSelection / AutoHack |
+| DPad L/R | XNavQuickToggleCycleLeft/Right |
+| Start | ShowPauseMenu; Back | XUserInterface_OnBackButtonPressed |
+| LX/LY/RX/RY | `Axis aLeftStickX/aLeftStickY/aRightStickX/aRightStickY Speed=1.0 DeadZone=0.0` |
+
+AxisEmulationDefinitions map stick extremes to `Gamepad_LeftStick_*` button events (menu
+navigation). The live file also carries a merged BaseInput default set (aStrafe/aTurn/
+aLookup, deadzone 0.2-0.3) for a different input class - the XGame set above is the one the
+game plays with. Keyboard notes for parity: PC keys use SwapWeapon/SwapPlasmid (two-slot
+carry) where the pad uses Next*.
+
+**Consequences for the per-game pad map (s43)**: core's `input_sync` BioShock-1 semantics
+are WRONG here on four counts - the B->Y / Y->B face-button re-route (Infinite wants
+straight-through: A jump, B crouch/dodge, X use/reload, Y melee), the ammo-slot dpad
+machinery (RS-click is deliberately consumed on BS1 but Infinite NEEDS it for XToggleZoom,
+and synthesized dpad pulses mean hack/nav commands here), grips->bumpers (fine - bumpers =
+Next weapon/plasmid, a good Touch fit), and the menu long-press->BACK (fine - back button).
+The extraction must be additive/opt-in (adapter-supplied map; absent = today's hardcoded
+path, BS1/BS2 byte-identical) per the decoupling directive.
+
 **The Skyline is its own control family.** The ini documents an `XInputHandler` chain mechanism
 (commands joined by `+`, each short-circuiting the rest on success) with a large TBar set:
 `XJumpOffTBar`, `XPerformTBarToTBarLookAtTransfer`, `XPerformTBarToGroundTransfer`,
@@ -1635,6 +1786,12 @@ single frame has been dumped**, which is exactly the multi-lens situation I5 is 
 | camera object | `+0x214` | DefaultFOV analog, f32 degrees; `+0x218`/`+0x21C` hold 1.3333f (DefaultAspectRatio pair) | measured s41 - same recompute; both copies are the FOV lever's per-dispatch write targets |
 | `APlayerController` vtable | `+0x2C0` | `GetViewTarget()` | **inferred** from shape |
 | `APlayerController` | `+0x430` | 0x40-byte block fed to a 4x4 SSE transform applied to the POV | structural, purpose unknown |
+| `UObject` | `+0x18` | `Name` FName index dword | measured s42 - candidate walk on the PC's class object read 'XPlayerController'; derived per run by `bsifields`, text-checked |
+| `APlayerController` | `+0x1FC` | `Pawn` (XHuman in gameplay) | measured s42 - bsifields class-name walk |
+| `APlayerController` | `+0x23C` / `+0x240` | `Player` (XLocalPlayer) / camera object (XCamera) | measured s42 - the +0x240 inference above CONFIRMED by class name |
+| `APlayerController` | `+0x340` | `PlayerInput` (XPlayerInput) | measured s42 |
+| `APlayerController` | `+0x344` | `CheatClass` (UClass; the manager instance is NEVER spawned) | measured s42 |
+| image | `0xCD4814` | XINPUT1_3 ord-2 (XInputGetState) IAT slot | s34 PE parse, VERIFIED live s42 (target resolved into XINPUT1_3.dll before the re-point) |
 
 ## Globals
 

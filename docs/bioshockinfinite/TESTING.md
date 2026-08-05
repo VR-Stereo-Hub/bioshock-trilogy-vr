@@ -536,6 +536,25 @@ want the audit line running).
    off first (bsifov checkbox), then stereo off - if the symptom survives, it predates
    this session.
 
+## S42 judder verdict checklist (VDXR, Virtual Desktop at 72 Hz - the I6 close)
+
+Boot as usual (the preset auto-arms everything, now including the new pair-rate sync -
+it defaults ON with stereo). Load your save. Everything is F10; never type in-headset.
+
+1. **Head turns, sync ON (the default)**: smooth or juddering? This is the verdict line.
+2. **The A/B**: F10 -> VR section -> uncheck "Sync pair rate to headset refresh
+   (judder A/B)" -> turn your head -> recheck it. Any difference? (If sync-off judders
+   and sync-on is smooth, the beat hypothesis is CONFIRMED on VDXR; if both judder the
+   same, it is falsified there and the trace tells us what is actually happening.)
+3. Optional second experiment if judder persists: RENDER RESOLUTION -> `eye` preset
+   (1600x1712) -> Apply, and judge head turns again (marginal-frame-time hypothesis -
+   the render may sit right at the 13.9 ms budget at 2064x2208).
+4. Nothing else changed this session for the headset: stereo, lever 132, world scale,
+   preset all ride as accepted in s41.
+5. Afterwards, desktop: keep `%LOCALAPPDATA%\BioshockVR\bsi\pacetrace.log` - the
+   `TRACE pairs` lines under VDXR are the measurement half of the verdict (pairs/s vs
+   72, sd, waitGate). Report the feel; the log carries the numbers.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

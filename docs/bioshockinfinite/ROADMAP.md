@@ -451,11 +451,20 @@ resolution has BOTH proven levers (DR-I8: `XUserOptions.ini ResolutionX/Y` honou
       0.4871 predicted)*. **Flat half CLOSED s41. Headset half (same day): the FILLED-EYE
       verdict is GREEN at lever 132 ("no space warp - perfect"), world scale tuned to 150,
       preset redesigned to ONE Save/Load carrying the whole session (verified auto-restoring
-      at boot). STILL OPEN before I6 closes: the judder on head turns (frames good - the
-      77-80 pairs vs 72 Hz pacing beat is the first suspect) and the 30-min soak + level
-      transition. Standing I8 guard from the user: the lever must not break the viewmodels -
-      watch `bsilens` lens2 in gameplay, test coupling before porting any BS1/BS2 fg-FOV
-      machinery.**
+      at boot). s42: the judder FLAT half is DONE - pair-cadence jitter instrument (TRACE
+      pairs line: interval mean/sd/min/max + the waitGate share) + the opt-in
+      `vrpace sync` pair-rate cap (default off in core, armed with Infinite stereo, F10
+      A/B checkbox; BS1 sim-lane inertness proof in the commit). Measured: the SIM's
+      xrWaitFrame gates strictly (pairs lock to 72/90 = refresh, waitGate 540-620 ms/s),
+      so the free-run beat is a PIPELINING-runtime behaviour the sim cannot reproduce -
+      whether VDXR free-runs is answered by reading pacetrace.log after the next headset
+      run, and the sync checkbox is the fix either way. The 30-min soak is DEFERRED by
+      user decision (2026-08-05) to a later/release soak. **I6 CLOSES on the user's
+      VD-72 Hz headset verdict** (checklist in TESTING.md "S42 judder verdict").
+      Standing I8 guard from the user: the lever must not break the viewmodels - s42
+      gameplay-save check: lens1 tracks the lever exactly (tanV 1.2634, delta 0.0%,
+      100% support), NO second lens - but the save predates the first weapon, so no
+      viewmodel was drawn; re-check with a weapon in hand before I8 trusts it.**
 
 ## I7 - Motion controllers and decoupled aim (~2-3 sessions, one lane per BS2 s39-40)
 
@@ -466,21 +475,39 @@ ship as one lane here.
 
 Controls half:
 
-- [ ] OpenXR action set, Quest 3 Touch bindings, synthetic-XInput lane
+- [x] OpenXR action set, Quest 3 Touch bindings, synthetic-XInput lane *(s42: LIVE flat -
+      `bsiinput on` verifies + re-points the ord-2 IAT slot (0xCD4814, target read in
+      XINPUT1_3.dll), core bridge composes, the game polls through the wrapper (iat 5642),
+      sim right-stick TURNED the camera (yaw 65->145->-133 deg, shot diff 52% pixels), sim A
+      pressed. No UpdateInput pump / SetUseController - Infinite polls XInput itself; BS2's
+      activation machinery correctly does not port. Movement was scene-locked in the probe
+      save - re-test walking in free roam.)*
 - [ ] **Extract the XR-to-pad mapping table out of core** into a per-game table the adapter
       supplies. It is currently hardcoded BioShock semantics (B->Y jump, Y->B med hypo, grips to
-      bumpers) living in `core/vr/openxr_input.cpp`.
+      bumpers) living in `core/vr/openxr_input.cpp`. *(s42 audit: Infinite needs
+      straight-through faces (A jump, B crouch, X use, Y melee), RS-click passed through
+      (XToggleZoom - BS1 deliberately eats it), NO synthesized dpad (hack/nav commands
+      here); grips->bumpers and menu press/hold fit as-is. ENGINE_NOTES "audited retail
+      pad map" is the spec; additive opt-in seam or bsi-local duplicate per the
+      decoupling directive - session 43.)*
 - [ ] Infinite-specific mapping work that BioShock has no analogue for: two-weapon carry (not the
       full wheel), Vigors on the left hand, sprint, hack/lockpick, Elizabeth's item toss, and the
       Sky-Hook melee.
-- [ ] **The Skyline (TBar) control family.** The shipped ini documents an `XInputHandler` chain
+- [x] **The Skyline (TBar) control family.** The shipped ini documents an `XInputHandler` chain
       mechanism where commands joined by `+` short-circuit on success, with a large TBar set
       (transfers, boost, dodge, melee transfer, zoom, and the highlight-effect pairs). Any VR remap
-      must preserve that chain semantics.
+      must preserve that chain semantics. *(s42: fully audited into ENGINE_NOTES; the synthetic
+      pad drives the game's OWN bindings through the IAT, so the chains are preserved by
+      construction - a remap only ever changes which pad control the XR input lands on.)*
 - [ ] Drive the named UE3 axes (`aLeftStickX` etc.) directly - a large advantage over BS1, where
-      `exec NextWeapon` faulted and weapon switching could not be driven flat at all.
-- [ ] Expect the Steam overlay to eat `XInputGetState` at the proxy thunk; the IAT-hijack lane is
-      already scoped (slot RVA `0xCD4814`).
+      `exec NextWeapon` faulted and weapon switching could not be driven flat at all. *(s42:
+      probably unnecessary - the pad axes drive the same bindings and `bsicall NextWeapon`
+      dispatches as a PC UFunction; keep only if a VR remap needs an axis the pad lacks.)*
+- [x] Expect the Steam overlay to eat `XInputGetState` at the proxy thunk; the IAT-hijack lane is
+      already scoped (slot RVA `0xCD4814`). *(s42: patterns.h `kXInputGetStateIatRva`, verified
+      live before the re-point - under the sim launch the slot still pointed at XINPUT1_3.dll;
+      the overlay case rides the first Steam-launched headset run, where the wrapper keeps
+      whatever chain the slot holds.)*
 
 Aim half:
 

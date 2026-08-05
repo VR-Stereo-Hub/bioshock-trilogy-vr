@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 41" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 42" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,72 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 41 (I6 flat half CLOSED - lever, decoder, resolution, presets all measured; the headset half is a ready checklist - branch `si41-inf-lens-config`)
+### Infinite: current state after session 42 (I6 judder flat half DONE + sync armable; I7 OPEN - pad lane LIVE flat, exec surface truth mapped - branch `si42-inf-judder-bindings`)
+
+**Session 42 (2026-08-05) closed I6's last flat item, opened I7's controls half, and
+corrected the cheat-lane's foundational assumption.** Three commits.
+
+1. **THE JUDDER, measured flat (I6)**: new core pair-cadence instrument (TRACE pairs line
+   in pacetrace.log, 1 Hz: interval mean/sd/min/max + waitGate = present-thread ms/s
+   blocked in the wait handoff; predictedDisplayPeriod published for the first time). The
+   SIM's xrWaitFrame GATES strictly: pairs lock to refresh at both 72 and 90 Hz (waitGate
+   540-620 ms/s, timeouts 0) - the s41 free-run-beat suspect is a PIPELINING-runtime
+   behaviour the sim cannot reproduce; whether VDXR pipelines is answered by reading the
+   TRACE pairs lines after the next headset run. The armable fix either way:
+   **`vrpace sync` / F10 "Sync pair rate to headset refresh"** - delays only the
+   pair-OPENING present to a one-period schedule, never the closing RIGHT present;
+   self-collapses when the game is slower. Default OFF in core (set_pace_detach pattern),
+   Infinite arms it with stereo (so the preset boots it ON). Measured sync-on at 72:
+   pairs 72/s, sd 1.2 -> 1.0 ms, waitGate 615 -> 21 ms/s, SR beat exact 72/72/144/72.
+   **BS1 inertness proof run on the build**: full sim lane, claimRatioH 1.01769 == the
+   banked 1.018, no sync line in BS1's log, zero faults. **I6 CLOSES on the user's VD-72
+   verdict** - TESTING.md "S42 judder verdict checklist" (2 minutes, one checkbox A/B);
+   the 30-min soak is DEFERRED by user decision to a later/release soak.
+2. **THE EXEC-SURFACE TRUTH (I7 cheat lane)**: script execs through ConsoleCommand are
+   DEAD in retail (god/AllWeapons/behindview/viewmode - zero effect by pixel-identical
+   screenshots in a gameplay save; C++ handlers setres/shot stay proven); the give-family
+   names DO NOT EXIST (full 69.7k GNames dump); **XCheatManager is never instantiated**
+   (PC+0x344 carries only CheatClass; EnableCheats not on the PC chain) - the whole
+   CheatManager vocabulary is structurally absent, not gated. What WORKS, all proven live:
+   `bsiexec LoadCheckpoint` **loads the newest save from the menu** (the autonomous
+   save-entry lane; GNames 62,160 -> 69,719 + relocation + gameplay HUD, twice);
+   `bsinames dump` (full pool -> gnames.txt, per-boot indices, text stable); `bsifields`
+   (PC field map by class name: pawn XHuman +0x1FC, XCamera +0x240 confirming the s37
+   inference, XPlayerInput +0x340; UObject::Name derived at +0x18); `bsicallat` (dispatch
+   on any walked object - AddInvulnerableFlag / AddDefaultInventory / SetWeapon /
+   CreateInventory dispatch on the pawn; **AcquireWeapon exists and wants a weapon object
+   - the s43 grant seam**). The WEAPON-IN-HAND acceptance did not land: both user saves
+   predate the first story weapon (grants are story-Kismet, defaults empty), so effects
+   are state-confounded. **Session 43 needs one of**: the user plays to the raffle once
+   and saves (recommended - makes grants unnecessary for aim work), or the archetype
+   lookup + object-arg dispatch rung (scoped in ENGINE_NOTES).
+3. **THE PAD LANE (I7 controls), LIVE FLAT**: `bsiinput on` verifies the s34 IAT slot
+   (0xCD4814 - target read in XINPUT1_3.dll) and re-points it at core's composing wrapper.
+   The game polls through it (iat 5642); **sim right-stick TURNED the camera** (yaw 65 ->
+   145 -> -133 deg; screenshot diff 52% of pixels), sim A pressed (camera kick). NO
+   UpdateInput pump / SetUseController - Infinite polls XInput itself; BS2's activation
+   machinery correctly does not port. Movement was scene-locked in the probe save (loc
+   frozen) - re-test walking in free roam before reading it as a defect. **The bindings
+   audit is complete** (ENGINE_NOTES "audited retail pad map"): Infinite needs
+   straight-through face buttons, RS-click passthrough (XToggleZoom), and NO synthesized
+   dpad - core's BS1-semantics `input_sync` is wrong on exactly those counts; the
+   per-game map seam (additive opt-in, absent = byte-identical) is session 43's first
+   controls task, spec'd in the ROADMAP annotation.
+
+**Hazards**: the pre-existing freeze hit once more (LoadCheckpoint dispatched into the
+attract-movie window; force-kill, relaunch, then two clean loads with the
+confirm-pump-first discipline). The bsi camera heartbeat rate-limits to ~10 lines per
+`bsicam heartbeat on` - re-arm per read window (cost a probe round this session). FName
+indices are PER-BOOT - re-dump gnames.txt each boot, only the text is stable.
+
+**NEXT (session 43, the user's plan)**: decoupled aim + motion controls + model
+sync/sliders. From this session: the judder verdict closes I6 (checklist ready); the
+per-game pad map lands on the audit spec; the loadout lane picks its grant route (user
+save vs archetype-lookup rung); the viewmodel-lens guard re-check needs a weapon in hand
+(s42 gameplay check: lens1 tracks the lever at delta 0.0%, lens2 absent - but nothing
+drew a viewmodel in the pre-weapon save).
+
+### Infinite: current state after session 41 (superseded by session 42 above - kept for the derivation trail; I6 flat half CLOSED - lever, decoder, resolution, presets all measured - branch `si41-inf-lens-config`)
 
 **The eye can now be filled, and every number that claims so was measured twice.** Session 41
 landed the whole I6 flat stack in six commits:
@@ -5829,6 +5894,31 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 42 (Infinite) - 2026-08-05 - I6 judder flat half + I7 opens: pad lane live, the exec surface mapped honest
+
+Branch `si42-inf-judder-bindings` off `si41-inf-lens-config` (a7a34be), three commits.
+Rung 1: pair-cadence jitter instrument (TRACE pairs: interval mean/sd/min/max + waitGate)
+plus the first-ever consumption of predictedDisplayPeriod; the sim GATES (pairs lock to
+refresh at 72 AND 90, waitGate ~0.6 s/s) so the free-run beat needs a pipelining runtime -
+VDXR answers via pacetrace on the next headset run; `vrpace sync` pair-open-only rate cap
+lands default-off-in-core / on-with-Infinite-stereo (F10 A/B), measured near-inert against
+a gating runtime and proven inert for BS1 (full sim lane, claimRatioH 1.01769, named in
+the commit). Rung 2 falsified its own premise with instruments: script execs dead through
+ConsoleCommand (pixel-identical screenshots), give-family names absent from a full GNames
+dump, XCheatManager never spawned - so the lane pivoted to ProcessEvent-on-the-owning-
+object: bsinames dump / bsifields (UObject::Name derived live at +0x18; PC field map incl.
+pawn +0x1FC, XCamera +0x240 confirmed) / bsicallat; LoadCheckpoint proved as the
+autonomous menu-to-save lane; AcquireWeapon identified as the s43 grant seam (wants a
+weapon object); the weapon-in-hand acceptance blocked by BOTH user saves predating the
+first story weapon - s43 wants a post-raffle save (or the archetype-lookup rung). The
+bsilens viewmodel guard ran in-save: lens1 == lever exactly (delta 0.0%), lens2 absent,
+caveated on the no-weapon state. Rung 3: bindings audit complete (retail pad map + chain
+semantics -> ENGINE_NOTES; core's BS1 pad semantics wrong for Infinite on three named
+counts); kXInputGetStateIatRva verified live and hijacked; the sim's right stick TURNED
+the camera and A pressed - the synthetic-pad lane is live flat, per-game map to s43. One
+pre-existing attract freeze (force-kill; two clean loads after with confirm-pump-first).
+User's vrpreset.ini and 2064x2208 restored and verified untouched.
 
 ### Session 41 (Infinite) - 2026-08-05 - I6 flat half CLOSED: FOV lever + lens decoder + resolution + presets, every done-when number measured
 
