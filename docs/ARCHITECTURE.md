@@ -230,6 +230,19 @@ runtime.
 
 ## Decision log
 
+- **2026-08-05 (session 39) · Infinite I4: MonoTracked runs on the QUAD, and the drive writes
+  out-params only.** Core couples `set_camera_mode(true)` to flipping submission from the quad
+  to a projection layer ("never let a head-driven camera show on the quad" - a BS1/BS2
+  convention). Infinite's ladder deliberately breaks that for one rung: the I4 drive gates
+  adapter-locally (`bsicam drive` + `get_head_pose`) and never touches camera mode, so the
+  head-driven camera shows on the mono quad until I5 earns the projection flip with the FOV
+  law. No core change was needed - the coupling stays intact for BS1/BS2. Second half of the
+  decision: the drive substitutes the GetPlayerViewPoint OUT-PARAMS and never writes
+  `[cam+0x3B8]`/engine memory - drive-off is a byte-identical passthrough, the engine's view
+  stays engine-owned (heartbeat prints engineRot + pitchErr as the read-back), and the BS1
+  pitch-freeze class of bug is impossible by construction. The pitch servo
+  (publish_pitch_error/publish_vr_gameplay) is deliberately NOT armed: with the bridge live it
+  seizes right-stick Y, which is I7's lane to own.
 - **2026-07-31 (session 36) · The game-thread command pump holds a LEASE, not an eviction.**
   Session 35 made `poll_from_game_thread` silence the Present pump permanently, on the reasoning
   that a resume-on-stall rule would hand the render thread a dispatch exactly during a load, "the

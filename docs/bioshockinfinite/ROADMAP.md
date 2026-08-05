@@ -305,21 +305,33 @@ Goal: the game on a giant head-tracked screen. Core does essentially all of this
 
 Goal: a real VR camera, and the ability to test it **without a headset**.
 
-- [ ] Camera driven from the predicted HMD pose, including roll; world scale; recenter
-- [ ] **Build `simhead` in this milestone.** On BS1 it arrived at session 12 and the docs name it
+- [x] Camera driven from the predicted HMD pose, including roll; world scale; recenter
+      (s39: out-param substitution in the detour tail, lane order replay->sim->live; every
+      axis flat-verified in exact rotator units/UU; worldScale default 50 = UE3 canonical,
+      F10 slider + `vrpreset save`; quad stays the submit path - camera mode is never set)
+- [x] **Build `simhead` in this milestone.** On BS1 it arrived at session 12 and the docs name it
       as the thing that should have come first: it drives the entire camera path exactly as a
       headset does, flat, and it is what reproduced the head-coupling bug with no headset at all.
       Include the position triple (BS2's version) so 6DoF is provable flat, not just rotation.
-- [ ] **Build record/replay (`vrrec`) in this milestone too.** On BS1 it arrived at session 20.
-- [ ] Camera write discipline: BS1 wrote pitch **absolutely** and yaw **relatively**, which froze
+      (s39: BS2's 3/4/6/7-arg form, self-expiring, recenters on arming from idle)
+- [x] **Build record/replay (`vrrec`) in this milestone too.** On BS1 it arrived at session 20.
+      (s39: BVRR v1, present-edge cadence - this seam fires many times per frame - replay
+      marks number-for-number identical to record, flat with `xr=none`)
+- [x] Camera write discipline: BS1 wrote pitch **absolutely** and yaw **relatively**, which froze
       the engine's own view pitch at -88.9 degrees for a whole session and silently broke melee,
       because nothing else wrote it and nothing noticed. Prefer a **servo through the game's own
       input path** over writing engine memory; if writing directly, make sure something reads back
-      and something notices.
-- [ ] 1 Hz heartbeat logging the FINAL camera (post drive and offsets) so flat checks measure
-      numbers directly
+      and something notices. (s39: out-params ONLY - engine memory never written, so the engine's
+      view stays engine-owned and kept moving under the drive, observed live; heartbeat prints
+      engineRot + pitchErr every beat so divergence is a number; pitch servo deferred to I7 -
+      publishing the error would arm core's pitch kill and seize right-stick Y)
+- [x] 1 Hz heartbeat logging the FINAL camera (post drive and offsets) so flat checks measure
+      numbers directly (s39: the `[bsi] drive:` line - lane, final loc/rot, engineRot,
+      pitchErr, headOff, scale, xr state; 10-beat self-expiry kept)
 - [ ] **Done when:** lean physically around a corner in Columbia with no drift and correct roll,
       user-verified in the headset; and `simhead` reproduces a head-driven camera flat.
+      (s39: the simhead half is DONE - flat battery green end to end; the corner-lean
+      headset half is pending the user's VDXR session, checklist in TESTING.md)
 
 ## I5 - Stereo (~2-4 sessions - the risk milestone, pulled forward per the BS2 lesson)
 

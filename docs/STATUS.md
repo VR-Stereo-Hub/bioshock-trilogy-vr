@@ -17,7 +17,51 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 38 (I3 DONE as re-scoped: VDXR headset-verified, three sim bugs fixed - branch `si38-inf-headset-bringup`)
+### Infinite: current state after session 39 (I4 code-complete, flat battery green - branch `si39-inf-head-camera`; headset corner-lean pending)
+
+**The 6DoF head camera drive is live and the entire flat harness proved it with numbers, no
+headset involved.** The GetPlayerViewPoint detour tail gained `drive_view`: out-param
+substitution ONLY (engine memory never written - drive-off is a byte-identical passthrough,
+and the engine's own view kept moving under the drive on every heartbeat, which is the BS1
+pitch-freeze bug made impossible by construction). Yaw additive, pitch/roll absolute,
+position recenter-relative x worldScale (default 50 = UE3 canonical, NOT BS2's 100). Lane
+order replay -> simhead -> live; the live lane gates adapter-locally and **never sets camera
+mode** - core flips quad->projection on camera mode, and that rung is I5's (ARCHITECTURE
+decision log 2026-08-05). All new code is Infinite-local (`inf_math.h`, `recorder.cpp/.h`,
+camera/adapter edits + the source listing); zero core, zero shared, zero BS1/BS2 files.
+
+**The flat battery, all measured at the attract (which runs real gameplay scenes):**
+passthrough control (lane=off, final==engineRot, d=0); simhead yaw +30 -> final-minus-engine
+= exactly 5461 units on three consecutive beats against a MOVING attract camera; pitch 20 ->
+3640, roll 10 -> 1820; position triples on all three XR axes -> headOff exact (0.5 m = 25 UU
+at scale 50, rotated by game yaw, world-up unrotated); worldscale 100 doubles it; the REAL
+OpenXR path end-to-end (`head rot`/`head pos`/`head orbit` -> xrLocateSpace ->
+get_head_pose) exact to the unit; vrrec round trip (1077 frames, PLAY marks
+number-for-number identical to REC incl. the driven camera, lane=replay with xr=none,
+recenter+worldScale restored from the header); rendered-pixels acceptance via WINDOW
+img-diff (floor 0.58/1.12 % vs simhead-60 6.12/23.4 % - 10x, heading visibly rotated);
+90.0 fps sustained with the drive on; vrpreset round trip; clean WM_CLOSE exit. Full runbook:
+TESTING.md "I4 battery".
+
+**One new sim trap found and recorded (VERIFICATION gotcha 17):** a sim `recenter` sent while
+the head is yawed makes the next quad capture ~black (1 covered pixel), and even a yaw-0
+recenter leaves the captured quad oddly off-centre - the capture's layer transform after a
+reference-space change is suspect (healing lane). Use the game window for camera-drive pixel
+checks.
+
+**What remains for I4's Done-when:** the user's VDXR corner-lean (checklist in TESTING.md
+"I4 in-headset checklist": drive checkbox + Recenter in the F10 "VR camera (I4)" section,
+roll tilt, lean-around-a-corner with no drift, world-scale tune by feel + `vrpreset save`).
+The simhead half of the Done-when is DONE. Expected and fine: HUD screen-locked, viewmodel
+rides the engine camera, gun aims where the ENGINE looks (pitch mismatch is I7's job -
+pitchErr is logged, never published, because publish_vr_gameplay would seize right-stick Y).
+
+**NEXT SESSION = I5 (stereo)** once the headset verdict lands: MonoTracked (this) ->
+AlternateEye (core supports it) -> SequentialReentry; entry gate is the I2 FOV law (tanV
+0.4317..0.4933, tanH = tanV x aspect); DR-I5 says test threaded first, port no 1t machinery
+until a measured stall demands it.
+
+### Infinite: current state after session 38 (superseded by session 39 above - kept for the derivation trail; I3 DONE as re-scoped: VDXR headset-verified, three sim bugs fixed - branch `si38-inf-headset-bringup`)
 
 **The whole I3 mono-big-screen stack runs on Infinite with ZERO core and ZERO adapter changes** -
 the merged BS2 OpenXR runtime brought the session up on the game's own device first try
@@ -5630,6 +5674,39 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 39 (Infinite) - 2026-08-05 - I4 6DoF head drive + simhead + vrrec, flat battery green; headset corner-lean pending
+
+Branch `si39-inf-head-camera` off `bioshock-infinite` (2923d25). Order of work per the
+BS1-learned rule: the flat instruments landed WITH the drive in one commit and were exercised
+before any headset ask. `drive_view` in the GetPlayerViewPoint detour tail substitutes the
+OUT-PARAMS only (never `[cam+0x3B8]`/engine memory): yaw additive on the game's own yaw,
+pitch/roll absolute, position = recenter-relative XR delta -> UE axes -> x worldScale (default
+50, UE3-canonical, NOT BS2's 100). Lane order replay -> simhead -> live; the live lane never
+calls `set_camera_mode` - core flips quad->projection there, which is I5's rung (ARCHITECTURE
+decision log). simhead is BS2's shape with the position triple; vrrec is BS1's BVRR v1
+adapted to a present-count-edge cadence (this seam fires many times per frame); heartbeat
+gained the `[bsi] drive:` FINAL-camera line with engineRot + pitchErr as the read-back
+discipline (pitchErr logged, never published - the core servo would seize right-stick Y;
+I7's lane). New files `inf_math.h` (adapter-local UE3 math, each convention a falsifiable
+claim) and `recorder.cpp/.h`; zero core/shared/BS1/BS2 edits by construction.
+
+The whole flat battery ran at the attended attract (which plays real gameplay scenes) and
+passed with exact numbers: passthrough d=0; yaw residual exactly 5461 units (30 deg) on
+three beats against a MOVING engine camera; pitch 3640 / roll 1820; all three position axes
+exact in UU incl. the game-yaw rotation and world-up Z; worldscale doubling; the real
+OpenXR path (`head rot/pos/orbit` -> xrLocateSpace -> get_head_pose) exact; vrrec 1077-frame
+round trip with PLAY marks number-for-number identical to REC and lane=replay at xr=none;
+window img-diff 6.12 mean / 23.4 % changed vs a 0.58 / 1.12 % floor (10x) with the heading
+visibly rotated; 90.0 fps sustained; vrpreset round trip; clean WM_CLOSE exit. Runbook now in
+TESTING.md "I4 battery" + the in-headset checklist for the Done-when corner-lean.
+
+Found and recorded: VERIFICATION gotcha 17 - a sim `recenter` with the head yawed blanks the
+quad capture (falsified both ways: yaw-110 -> 1 covered pixel with a bright window; yaw-0 ->
+pixels back), and even then the captured quad sits off-centre - the capture's layer transform
+after a reference-space change is a healing-lane candidate. The window is the pixel
+instrument for camera-drive questions. I4 boxes ticked except the Done-when (simhead half
+done; the VDXR corner-lean is the user's next headset session).
 
 ### Session 38 (Infinite) - 2026-08-05 - I3 sim battery green; the sim's clock bug, dark captures and sticky focus-lose found and fixed
 

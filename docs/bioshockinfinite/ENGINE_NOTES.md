@@ -320,6 +320,71 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 39 - I4: the 6DoF drive, proven flat with numbers)
+
+The I4 drive is live and the whole flat battery passed on the simulator at the attract
+(details and the exact numbers: TESTING.md "I4 battery"). Everything below is a design fact
+or a measured result worth keeping; nothing here is a new address - I4 consumed only
+already-derived offsets.
+
+### The drive design (what I5 builds on)
+
+- **Write target: the detour's out-params ONLY.** `drive_view` runs in the GetPlayerViewPoint
+  detour tail, after the original fills the out-params and after the read-only snapshot, and
+  substitutes them. `[cam+0x3B8]`/engine memory is never written, so drive-off is a
+  byte-identical passthrough, and the engine's own view keeps moving under mouse/pad -
+  observed live: engineRot swept with the attract camera on every beat while the drive held
+  the final rot. The BS1 pitch-freeze class of bug cannot occur by construction; the
+  read-back discipline is the heartbeat printing engineRot (pre-drive snapshot) next to the
+  final rot, plus pitchErr. pitchErr is LOGGED ONLY - publish_vr_gameplay/publish_pitch_error
+  would arm core's shared pitch kill and seize right-stick Y (xinput_bridge), so the servo
+  lane is deferred to I7 with the rest of input.
+- **Rotation law**: yaw ADDITIVE (game yaw + wrap_rot(headYaw - recenterYaw), integer rotator
+  units), pitch/roll ABSOLUTE from the head. Position: recenter-relative XR delta ->
+  `xr_to_ue` -> rotate into recenter-local by -recenterYaw, out by the game yaw -> x
+  worldScale -> ADD to the game loc; Z is world-up, unrotated. All in
+  `src/game/bioshockinf/inf_math.h` + `camera.cpp` (adapter-local copies per the decoupling
+  directive).
+- **The UE3 frame MATCHES the Vengeance convention** - now measured, not assumed: each axis
+  was driven separately flat (simhead yaw/pitch/roll sweeps, the sim's real `head rot`/`head
+  pos`/`head orbit` path) and every predicted rotator unit and UU landed exactly (30 deg =
+  5461 units additive; 20 deg pitch = 3640; 10 deg roll = 1820; 0.5 m = 25 UU at scale 50,
+  rotated by the game yaw for horizontal axes, world-up for Z).
+- **MonoTracked runs UNDER the quad, camera mode never set**: core's `set_camera_mode(true)`
+  flips submission from the quad to a projection layer (`openxr_runtime.cpp` projectionMode)
+  - that is I5's rung. The I4 live lane gates adapter-locally on `bsicam drive` +
+  `get_head_pose` succeeding; `vr_camera_mode()` is deliberately NOT consulted. Core's
+  "never let a head-driven camera show on the quad" comment is BS1/BS2 convention that this
+  ladder intentionally breaks for one rung (ARCHITECTURE decision log 2026-08-05).
+- **Lane order** (BS1's proven shape): vrrec replay -> simhead (deadline) -> live -> off.
+  While a replay is loaded the live/sim lanes are never consulted. simhead carries BS2's
+  position triple; arming from idle requests a recenter onto the first sim pose.
+- **worldScale default is 50 UU/m** - UE3's canonical 1 uu = 2 cm, NOT BS1/BS2's calibrated
+  100 (different engine; never copy a number). The flat battery only proves the code applies
+  the configured scale; the true value is the user's headset calibration (F10 slider,
+  `vrpreset save` persists to `bsi\vrpreset.ini`).
+- **vrrec cadence is a present_count() edge**, not per-detour-call: this seam fires
+  1000-9600/s (many times per rendered frame), so BS1's once-per-CalcView tap does not
+  transfer. Both record and replay advance on the same edge - measured ~90 entries/s live,
+  and a sessionless replay ran the cursor at the uncapped flat present rate (faster
+  wall-clock, frame-for-frame identical: determinism over wall-clock, as designed).
+
+### Measured on the merged path (worth keeping)
+
+- **Record/replay round trip is exact**: 1077 frames recorded across a `head orbit 10 8000`,
+  `[rec] PLAY` marks number-for-number identical to `REC` (head quat AND driven camera),
+  recenter yaw + worldScale restored from the BVRR header, `lane=replay` with `xr=none`.
+- **Rendered-pixels acceptance** (the engine consuming the substituted view): window
+  img-diff floor 0.58 mean / 1.12 % vs simhead-yaw-60 6.12 mean / 23.4 % - 10x, with the
+  heading visibly rotated. The compositor capture was NOT usable for this - see
+  VERIFICATION gotcha 17 (sim recenter-while-yawed capture trap, found this session).
+- **90.0 fps sustained with the drive on** (3915 frames / 43.5 s between two sim status
+  reads), live lane calling `get_head_pose` (a mutex) on every detour call at 1400-3600/s -
+  no measurable cost at this game's dispatch rates.
+- The attract sequence runs REAL gameplay scenes (health bar, path-2 camera, moving loc) -
+  the flat battery ran there attended; per-beat checks (final-minus-engine) are
+  scene-independent, which is what made that valid.
+
 ## LIVE RESULTS (session 38 - I3 sim battery: the whole XR stack runs on Infinite)
 
 The merged BS2 OpenXR runtime ran the full mono-big-screen stack on `BioShockInfinite.exe`

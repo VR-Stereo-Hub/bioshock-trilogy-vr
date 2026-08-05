@@ -517,6 +517,17 @@ $a.NonBlackPctL      -gt 50     # something was rendered
     focus regain: foreground the game before any capture that must show
     gameplay pixels, and NEVER leave its menu unattended (attract-hang,
     TESTING.md).
+17. **A sim `recenter` sent while the head is YAWED breaks the quad capture**
+    (session 39): with the head at yaw 110 the next `xrsim-shot` read the quad
+    at ~1 covered pixel / meanLuma 0.00 while the game window was full of
+    bright pixels; re-origining with the head at yaw 0 brought the pixels
+    back (falsified both ways). Even then the captured quad sits off-centre
+    at an oblique angle - the capture's layer-vs-view transform after a
+    mid-session `XrEventDataReferenceSpaceChangePending` is suspect (healing
+    lane). Until fixed: recenter the sim only with the head at yaw 0, and use
+    the game WINDOW (`game-shot` + `img-diff`) as the pixel instrument for
+    camera-drive questions - gotcha 9's "the window is the projection source"
+    cuts both ways.
 
 ---
 

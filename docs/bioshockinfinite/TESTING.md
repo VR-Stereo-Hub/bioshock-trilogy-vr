@@ -318,6 +318,77 @@ long `memscan` or `fsweep` now freezes the GAME rather than stalling presents. I
 goes quiet for 3 s the Present pump resumes in degraded mode and refuses `mempoke*`/`pokeaddr*`/
 `memrestore` until it returns.
 
+## I4 battery (session 39 - the 6DoF drive, all flat, run at the attract)
+
+The drive substitutes the detour's OUT-PARAMS only; `bsicam drive on|off` is the live-lane
+lever (ships OFF), `simhead`/`vrrec replay` drive regardless. Every check below reads the
+1 Hz `[bsi] drive:` heartbeat line (`bsicam heartbeat on` re-arms the 10-beat burst; ONE
+command per `game-cmd` write; each `game-cmd` needs ~1 s for the poll before the next).
+
+```powershell
+Get-Process Bioshock2HD -ErrorAction SilentlyContinue   # MUST be empty
+.\tools\xrsim-selftest.ps1 -Release
+.\tools\build.ps1 -Release -Install -Game bsi
+Remove-Item "$env:LOCALAPPDATA\BioshockVR\bsi\command.txt" -ErrorAction SilentlyContinue
+.\tools\xrsim-launch.ps1 -Game bsi -Release
+```
+
+1. **Passthrough control** (drive off, default): `lane=off`, final rot == `engineRot`,
+   `returned-minus-source d=(0.000 0.000 0.000)` still identical. Session-39 values held.
+2. **simhead additive yaw**: `simhead off` -> `simhead 0 0 0` (arming from idle recenters
+   onto the sim pose) -> `simhead 30 0 0` -> **final yaw - engineRot yaw = 5461 units =
+   exactly 30.0 deg**, and engineRot keeps MOVING underneath (the attract camera) - a frozen
+   engineRot beside a moving final rot is the BS1 pitch-freeze bug showing itself.
+3. **Absolute pitch/roll**: `simhead 0 20 0` -> final pitch 3640 (20.0 deg), engine base
+   untouched, `pitchErr` = head-minus-engine; `simhead 0 0 10` -> final roll 1820 (10.0 deg).
+4. **Position triple** (after the recenter in step 2, XR meters): `simhead 0 0 0 0.5 0 0` ->
+   `headOff` = 0.5 x scale UU rotated by the game yaw (at scale 50 / game yaw 65.1 deg:
+   (-22.7, 10.5, 0.0)); `... 0 0.5 0` -> (0, 0, +25.0) world-up unrotated;
+   `... 0 0 -0.5` -> +25 UU along the view yaw. Final loc = engine loc + headOff exactly.
+5. **worldscale lever**: `worldscale 100` doubles `headOff`; `worldscale 50` restores.
+6. **The real OpenXR path** (composes sim head -> xrLocateSpace -> get_head_pose -> drive):
+   `bsicam drive on` -> `recenter` -> `xrsim-cmd "head rot 30 0 0"` -> `lane=live`, residual
+   exactly 5461 units; `xrsim-cmd "head pos 0.25 1.6 0"` -> `headOff` = 12.5 UU rotated by
+   the game yaw, exact.
+7. **vrrec**: `vrrec start` -> `xrsim-cmd "head orbit 10 8000"` -> `vrrec stop` (~90
+   entries/s, one per present edge) -> `bsivr off` -> `vrrec play` -> `[rec] PLAY` marks
+   number-for-number identical to `REC` (head quat AND driven camera), `lane=replay` with
+   `xr=none`, recenter+worldScale restored from the header -> `bsivr on` re-earns FOCUSED.
+8. **Rendered pixels** (the engine consuming the substituted view, not our own read-back):
+   `game-shot` twice for the ambient floor (s39: mean 0.58, 1.12 % changed), then
+   `simhead 0 0 0` -> `simhead 60 0 0` -> `game-shot` again: s39 read **mean 6.12 / 23.4 %
+   changed, 10x the floor**, and the shot visibly shows a rotated heading. Use the WINDOW
+   for I4 pixel checks, not the compositor capture - see the recenter gotcha in
+   VERIFICATION.md section 5.
+9. **Perf + stability**: 90.0 fps sustained with the drive on (frame-counter delta across
+   two `xrsim-cmd` status reads); `bsivr off/on` and the `bsicam off` lease control still
+   pass; `vrpreset save` round-trips worldScale; clean WM_CLOSE exit.
+
+## I4 in-headset checklist (VDXR, user drives - the Done-when)
+
+Launch via Virtual Desktop as in I3. Load a Columbia save (never judge at the menu). All
+levers are in the F10 overlay, "VR camera (I4)" section - never type commands in-headset.
+
+1. **Non-regression sweep, 60 s, FIRST**: the I3 big screen as before - head-tracked quad,
+   stable, no judder, F10 opens.
+2. Tick **"Drive camera from HMD"**, then press **Recenter** looking straight ahead.
+   The world view on the big screen now follows your head: turn (yaw), look up/down
+   (pitch), TILT your head (roll - the screen horizon must tilt with you, this game's first
+   roll ever).
+3. **The corner lean**: stand at a doorway or corner, lean your body sideways around it
+   without stepping. The view must translate - you can peek around the edge - and come back
+   to exactly the same place (no drift after repeated leans).
+4. **World scale**: lean toward a table/railing - does the world move the RIGHT amount?
+   Tune the "World scale (UU per m)" slider by feel (default 50 = UE3 canonical; BS1/BS2
+   wanted 100 on their engine). `vrpreset save` via desktop afterwards persists it.
+5. Walk and turn with the stick while the drive is on - stick turning must still work
+   (additive yaw), aim/shooting still functions (the gun aims where the ENGINE looks, which
+   no longer matches your head pitch - that mismatch is expected and is I7's job).
+6. Expected noise, not bugs: the HUD stays screen-locked on the quad; the weapon viewmodel
+   rides the engine camera, not your head; pause/menus render on the quad unmoved.
+   Anything off: untick the drive checkbox first - if the symptom survives, it predates
+   this session (I3 baseline).
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono
