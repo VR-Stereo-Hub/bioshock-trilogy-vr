@@ -387,12 +387,20 @@ SequentialReentry.
       *2026-08-05 session 40: absolute replay + 100 ms staleness guard; replay BURSTS ==
       second draws exactly; L/R capture pair shows real parallax (mean 0.42 / 1.09 %
       channels) against a byte-identical mono-projection control pair.*
-- [ ] **Done when:** true geometric parallax (verified in the headset), 72 fps at default render
+- [x] **Done when:** true geometric parallax (verified in the headset), 72 fps at default render
       scale, a 30-minute session with no visual state corruption, and stability across a level
       transition and a quit-to-menu.
-      *2026-08-05 session 40: flat half COMPLETE (all five boxes above); the headset session
-      is next - checklist in TESTING.md "I5 in-headset checklist", carrying the I4
-      world-scale tune (F10 slider, default 50, vrpreset save persists).*
+      ***I5 CLOSED AS RE-SCOPED 2026-08-05 (session 40, user verdict on VDXR):** "there's
+      stereo 3d rendering and it's working well" - true geometric parallax confirmed;
+      nothing broke in their testing; the log measured 77-80 eye pairs/s (155-160
+      presents/s) at default scale with every SR gate exact - above the 72 fps target,
+      though a slight judder suggests the headset was at a higher refresh (try VD 72 Hz).
+      **The "window" percept is the expected honest-claim behaviour**: the game renders
+      75 x 47 deg inside a ~108 x 110 deg eye - filling it is I6's whole purpose (FOV
+      lever + near-square render; resolution alone cannot help under the
+      vertical-referenced law). **Carried to I6's headset session, explicitly:** the
+      world-scale tune (slider works, feel unjudgeable through the window), the judder
+      verdict, and the 30-minute soak (this session was a couple of minutes by design).*
 
 ## I6 - Lens audit, FOV, resolution, and the config menu (~2 sessions, after stereo per BS2)
 

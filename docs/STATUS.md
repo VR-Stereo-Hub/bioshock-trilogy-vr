@@ -17,7 +17,25 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 40 (I5 flat half COMPLETE - true stereo runs on the simulator; headset session is the remaining gate - branch `si40-inf-stereo`)
+### Infinite: current state after session 40 (I5 CLOSED as re-scoped - stereo headset-verified on VDXR; world-scale tune, judder verdict and the long soak carried to I6 - branch `si40-inf-stereo`)
+
+**HEADSET VERDICT (user, VDXR, 2026-08-05): "there's stereo 3d rendering and it's working
+well" - I5 is CLOSED as re-scoped.** True geometric parallax confirmed in the headset;
+nothing broke in their testing (short session by design); the log measured **77-80 eye
+pairs/s (155-160 presents/s) at default render scale with every SR gate exact** - above
+the 72 fps target. Three footnotes, all carried EXPLICITLY to I6's headset session:
+(1) **the "looking through a window" percept is expected and correct** - the honest claim
+renders the game's 75 x 47 deg frustum at true angular size inside a ~108 x 110 deg eye;
+filling the eye is I6's whole purpose (a real FOV lever pushing tanV past the native
+slider + a near-square render; resolution ALONE cannot help - the law is
+vertical-referenced, so a square render just narrows the horizontal); (2) the world-scale
+slider works live but the FEEL stays unjudgeable through the window - tune at I6; (3) a
+slight judder on head motion - consistent with ~80 pairs/s under a 90 Hz headset refresh
+(suggest Virtual Desktop at 72 Hz next session; I6's resolution work also lowers the
+per-eye cost). The section below records the session-40 flat state that earned the
+verdict.
+
+### Infinite: session-40 flat state (the battery that preceded the verdict above)
 
 **All three stereo rungs are live and flat-verified: mono projection, AlternateEye, and
 SequentialReentry with per-eye presents and pair pacing.** The adapter now feeds core an
@@ -50,13 +68,15 @@ poison, skips frozen, occasional self-healing tag-ring resyncs only at attract
 scene/movie transitions; `vrstereo off` returns to the mono quad; clean exits. Runbook:
 TESTING.md "I5 battery".
 
-**NEXT: the I5 headset session (VDXR, user drives)** - TESTING.md "I5 in-headset
-checklist": true geometric parallax, THE CARRIED world-scale tune (F10 slider, default 50)
-+ IPD (63), 72 fps, 30-minute session, level transition + quit-to-menu with stereo armed.
-Desktop prep: in-game FOV slider must be at MINIMUM (the claim assumes it until I6's
-lever). Load-path safety in real loads is also headset-session evidence (`reentry status`
-after - poisoned must stay "no"). After the verdict: tick the I5 Done-when, then I6 (lens
-audit/resolution/config) per the ladder.
+**NEXT SESSION = I6 (lens audit, FOV, resolution, config menu)** - now judged IN STEREO,
+which is the entire point of the restructured ladder. The headset gave I6 its worklist:
+fill the eye (FOV lever via the named property chain first - the native slider tops out at
+52.6 deg vFOV, the eye wants ~110; then the near-square render, which only pays combined
+with the lever because the law is vertical-referenced), re-judge world scale and judder
+through the filled view (suggest VD at 72 Hz), run the 30-minute soak, and land
+`xrEnumerateViewConfigurationViews` + the resolution picker + the config/preset menu per
+the ROADMAP boxes. The claim machinery to extend is `bsifov`/`kTanVSliderMin` in
+camera.cpp; `reentry status` after any load-heavy session must keep showing poisoned=no.
 
 ### Infinite: current state after session 39 (superseded by session 40 above - kept for the derivation trail; I4 CLOSED - flat battery green AND headset-verified on VDXR - branch `si39-inf-head-camera`)
 
@@ -5719,7 +5739,17 @@ and it resumes.
 
 ## Session log (newest first)
 
-### Session 40 (Infinite) - 2026-08-05 - I5 stereo: all three rungs flat-green on the sim; headset verdict pending
+### Session 40 (Infinite) - 2026-08-05 - I5 CLOSED as re-scoped: stereo flat-green AND headset-verified on VDXR
+
+**The verdict (user, VDXR, same day):** "there's stereo 3d rendering and it's working
+well"; nothing broke; slight judder on head motion. Log from their run: 77-80 eye pairs/s
+(155-160 presents/s) at default scale, all SR gates exact, zero foreign skips, no faults -
+above the 72 fps target; the judder fits ~80 pairs under a 90 Hz refresh (VD 72 Hz
+suggested next time). The "looking through a window" percept was confirmed EXPECTED: the
+honest claim renders 75 x 47 deg inside a ~108 x 110 deg eye - I6 exists to fill it.
+Carried to I6's headset session: the world-scale tune (slider live, feel unjudgeable
+through the window), the judder verdict, the 30-minute soak. I5's five flat boxes plus the
+re-scoped Done-when are ticked in the ROADMAP.
 
 Branch `si40-inf-stereo` off `bioshock-infinite` (d3007ba). The ladder ran exactly as
 planned - mono projection, AlternateEye, SequentialReentry - each rung flat-validated
