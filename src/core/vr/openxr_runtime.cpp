@@ -162,6 +162,11 @@ std::atomic<float> g_hfovDeg{0.0f};      // circumscribed symmetric hfov, read c
 // locate). Exposed so an adapter can say, on screen, how much of the eye its
 // render is actually filling - which is the whole diagnosis of "black bars".
 std::atomic<float> g_headsetHalfH{0.0f}, g_headsetHalfV{0.0f};
+// Session 41: the runtime's recommended per-eye render size, from
+// xrEnumerateViewConfigurationViews at bring-up (0 until then). Purely
+// informational - nothing in core reads these; swapchain sizing stays
+// backbuffer-derived. Exposed for adapters' resolution pickers.
+std::atomic<uint32_t> g_recommendedEyeW{0}, g_recommendedEyeH{0};
 std::atomic<float> g_renderedHfov{0.0f}; // fov the game actually rendered (adapter readback)
 // Distortion calibration: the readback reads the same engine address we write,
 // so under forcing it echoes our own value and cannot see how the RENDERER
@@ -1632,6 +1637,33 @@ void try_bring_up(IDXGISwapChain* swapchain) {
     xrGetSystemProperties(g_instance, g_system, &sp);
     BVR_LOG("xr: system '%s' (max layers %u)", sp.systemName,
             sp.graphicsProperties.maxLayerCount);
+
+    // Session 41 (BSI I6): ask the runtime what per-eye render size it
+    // recommends. Purely informational - a failure logs once and changes no
+    // control flow, and nothing downstream conditions on the result (the eye
+    // swapchains stay backbuffer-sized). Adapters read it via
+    // recommended_eye_size() to annotate their resolution pickers.
+    {
+        XrViewConfigurationView vcv[2];
+        vcv[0] = {XR_TYPE_VIEW_CONFIGURATION_VIEW};
+        vcv[1] = {XR_TYPE_VIEW_CONFIGURATION_VIEW};
+        uint32_t nViews = 0;
+        const XrResult vr = xrEnumerateViewConfigurationViews(
+            g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &nViews,
+            vcv);
+        if (XR_SUCCEEDED(vr) && nViews >= 1) {
+            g_recommendedEyeW.store(vcv[0].recommendedImageRectWidth,
+                                    std::memory_order_relaxed);
+            g_recommendedEyeH.store(vcv[0].recommendedImageRectHeight,
+                                    std::memory_order_relaxed);
+            BVR_LOG("xr: view config recommends %ux%u per eye (max %ux%u, %u views)",
+                    vcv[0].recommendedImageRectWidth, vcv[0].recommendedImageRectHeight,
+                    vcv[0].maxImageRectWidth, vcv[0].maxImageRectHeight, nViews);
+        } else {
+            BVR_LOG("xr: xrEnumerateViewConfigurationViews failed: %s (informational only)",
+                    res_str(vr));
+        }
+    }
 
     // Spec requires querying graphics requirements before xrCreateSession.
     PFN_xrGetD3D11GraphicsRequirementsKHR getReqs = nullptr;
@@ -3463,6 +3495,14 @@ bool headset_half_fov_deg(float* halfH, float* halfV) {
     return h > 0.0f && v > 0.0f;
 }
 
+bool recommended_eye_size(uint32_t* w, uint32_t* h) {
+    const uint32_t rw = g_recommendedEyeW.load(std::memory_order_relaxed);
+    const uint32_t rh = g_recommendedEyeH.load(std::memory_order_relaxed);
+    if (w) *w = rw;
+    if (h) *h = rh;
+    return rw > 0 && rh > 0;
+}
+
 void set_rendered_hfov(float hfovDeg) {
     g_renderedHfov.store(hfovDeg, std::memory_order_relaxed);
 }
@@ -3824,6 +3864,11 @@ float suggested_hfov_deg() { return 0.0f; }
 bool headset_half_fov_deg(float* halfH, float* halfV) {
     if (halfH) *halfH = 0.0f;
     if (halfV) *halfV = 0.0f;
+    return false;
+}
+bool recommended_eye_size(uint32_t* w, uint32_t* h) {
+    if (w) *w = 0;
+    if (h) *h = 0;
     return false;
 }
 void set_rendered_hfov(float) {}

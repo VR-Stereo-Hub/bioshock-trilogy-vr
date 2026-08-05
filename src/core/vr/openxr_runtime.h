@@ -172,6 +172,13 @@ float suggested_hfov_deg();
 // sees, not any kind of letterbox.
 bool headset_half_fov_deg(float* halfHDeg, float* halfVDeg);
 
+// Session 41: the runtime's recommended per-eye render size, from
+// xrEnumerateViewConfigurationViews at bring-up. False (and 0/0) until a
+// session has been brought up. Purely informational: core's eye swapchains
+// stay backbuffer-sized; adapters use this to annotate resolution pickers
+// (the correct-FOV-policy input the docs flagged as missing on BS1/BS2).
+bool recommended_eye_size(uint32_t* w, uint32_t* h);
+
 // The adapter reports the horizontal FOV the game is actually rendering with
 // (read back from the engine every frame). Projection-layer submission claims
 // this value, so claimed fov matches the rendered image even when an engine
