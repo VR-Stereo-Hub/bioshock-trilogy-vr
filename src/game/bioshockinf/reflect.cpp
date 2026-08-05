@@ -681,13 +681,23 @@ void cmd_call_at(const char* args) {
     derive_obj_name_off();
     object_class_name(obj, nm, sizeof nm);
     alignas(16) uint8_t parms[256] = {};
+    const char* parmKind = " with zeroed parms";
     if (n == 3) {
-        const float v = strtof(valStr, nullptr);
-        memcpy(parms, &v, sizeof v);
+        if (valStr[0] == '0' && (valStr[1] == 'x' || valStr[1] == 'X')) {
+            // Session 42b: a raw pointer argument at parms+0 (an object a
+            // bsiload/bsifields line produced) - the grant-lane shape
+            // (e.g. CreateInventory(class<Inventory>)).
+            const uint32_t p = strtoul(valStr + 2, nullptr, 16);
+            memcpy(parms, &p, sizeof p);
+            parmKind = " with pointer parm";
+        } else {
+            const float v = strtof(valStr, nullptr);
+            memcpy(parms, &v, sizeof v);
+            parmKind = " with float parm";
+        }
     }
     BVR_LOG("[bsi] callat: dispatching '%s' (GNames %d)%s on %p (class %s), tid %u", fn,
-            nameIndex, n == 3 ? " with float parm" : " with zeroed parms", obj,
-            nm[0] ? nm : "?", GetCurrentThreadId());
+            nameIndex, parmKind, obj, nm[0] ? nm : "?", GetCurrentThreadId());
     void* func = nullptr;
     uint32_t code = 0;
     const int r = call_by_name_seh(obj, vt, nameIndex, parms, &func, &code);
@@ -703,6 +713,93 @@ void cmd_call_at(const char* args) {
         BVR_LOG("[bsi] callat: '%s' (UFunction %p) returned. NOT acceptance - measure the "
                 "downstream effect.",
                 fn, func);
+    }
+}
+
+// ---- Session 42b: the object LOADER, for the grant lane ---------------------
+// bsiload <Full.Object.Path> - DynamicLoadObject(path, null, MayFail=true)
+// dispatched on the latched PC (the function is a static native on Core.Object,
+// so any object's FindFunction resolves it). The RETURN pointer is read back
+// out of the parms block and logged with its class and name, so the next
+// command can feed it onward (bsicallat ... 0x<ptr>). This is how a weapon or
+// Vigor CLASS/archetype becomes a pointer an inventory grant can consume.
+void cmd_load(const char* args) {
+    while (args && *args == ' ') ++args;
+    if (!args || !*args) {
+        BVR_LOG("[bsi] load: usage - bsiload <Full.Object.Path>   e.g. bsiload "
+                "XGame.XWeaponMurderOfCrows. Returns the object pointer for bsicallat.");
+        return;
+    }
+    const int32_t nameIndex = patterns::fname_find("DynamicLoadObject");
+    if (nameIndex < 0) {
+        BVR_LOG("[bsi] load: REFUSED - 'DynamicLoadObject' not in GNames");
+        return;
+    }
+    void* obj = nullptr;
+    const uint8_t* const* vt = nullptr;
+    if (!resolve_dispatch_target("load", obj, vt)) return;
+    static wchar_t s_wide[512]; // game thread only (the tid gate above)
+    int written =
+        MultiByteToWideChar(CP_UTF8, 0, args, -1, s_wide, static_cast<int>(_countof(s_wide)));
+    if (written <= 0) {
+        BVR_LOG("[bsi] load: REFUSED - path did not convert to UTF-16");
+        return;
+    }
+    // Trim trailing CR/LF/space: command.txt lines arrive with the line ending
+    // attached. ConsoleCommand's own parser eats it, but an OBJECT PATH match
+    // is exact - "XCore.XConsole\n" resolves to nothing (measured, this run).
+    while (written >= 2 && (s_wide[written - 2] == L'\r' || s_wide[written - 2] == L'\n' ||
+                            s_wide[written - 2] == L' ' || s_wide[written - 2] == L'\t')) {
+        s_wide[written - 2] = L'\0';
+        --written;
+    }
+    // UE3: static final function Object DynamicLoadObject(string ObjectName,
+    // class ObjectClass, optional bool MayFail). Parms: FString, UClass*,
+    // UBOOL, then the return slot. ObjectClass null = no IsA constraint.
+    struct LoadParms {
+        wchar_t* data;
+        int32_t num, max;
+        void* objectClass;
+        int32_t mayFail;
+        void* ret;
+    };
+    LoadParms parms{};
+    parms.data = s_wide;
+    parms.num = written;
+    parms.max = written;
+    parms.objectClass = nullptr;
+    parms.mayFail = 1;
+    parms.ret = nullptr;
+    BVR_LOG("[bsi] load: DynamicLoadObject(\"%s\", null, MayFail=1) on PC %p", args, obj);
+    void* func = nullptr;
+    uint32_t code = 0;
+    const int r = call_by_name_seh(obj, vt, nameIndex, &parms, &func, &code);
+    if (r == 1) {
+        BVR_LOG("[bsi] load: FindFunction('DynamicLoadObject') returned null - the Object "
+                "statics are not reachable through this chain");
+    } else if (r == 2) {
+        BVR_LOG("[bsi] load: FAULT 0x%08X - swallowed by SEH", code);
+    } else if (!parms.ret) {
+        // Diagnose a layout mismatch vs a genuine miss: show every dword the
+        // callee may have written. A pointer in an unexpected slot means the
+        // signature differs from stock UE3; all-zero after the FString means a
+        // real not-found.
+        const uint32_t* d = reinterpret_cast<const uint32_t*>(&parms);
+        BVR_LOG("[bsi] load: returned NULL - parms dwords after call: "
+                "[3]=0x%08X [4]=0x%08X [5]=0x%08X (FString triple omitted)",
+                d[3], d[4], d[5]);
+    } else {
+        char cls[128] = {};
+        char nm[128] = {};
+        derive_obj_name_off();
+        object_class_name(parms.ret, cls, sizeof cls);
+        if (g_objNameOff >= 0 && bvr::pattern_scan::is_memory_valid(parms.ret, 0x50)) {
+            const int32_t ni = *reinterpret_cast<const int32_t*>(
+                static_cast<const uint8_t*>(parms.ret) + g_objNameOff);
+            if (ni > 0 && ni < patterns::fname_count()) patterns::fname_text(ni, nm, sizeof nm);
+        }
+        BVR_LOG("[bsi] load: LOADED %p  class %s  name %s  -> use it as bsicallat's 0x arg",
+                parms.ret, cls[0] ? cls : "?", nm[0] ? nm : "?");
     }
 }
 
@@ -872,6 +969,10 @@ bool handle_command(const char* cmd, const char* args) {
     }
     if (strcmp(cmd, "bsicallat") == 0) {
         cmd_call_at(args);
+        return true;
+    }
+    if (strcmp(cmd, "bsiload") == 0) {
+        cmd_load(args);
         return true;
     }
     if (strcmp(cmd, "bsiexec") == 0) {

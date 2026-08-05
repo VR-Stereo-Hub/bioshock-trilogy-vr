@@ -411,10 +411,43 @@ or CheatManager vocabulary. `Fly`, `Summon`, `KillAllPawns`, `SetJumpZ`, `SetSpe
 names; owning objects unknown.
 
 **The s43 loadout options, in preference order**: (1) the user plays to the raffle once and
-saves - a post-pistol save makes grants unnecessary for aim work; (2) derive the weapon
-archetype lookup (DynamicLoadObject/StaticFindObject by path) and feed `AcquireWeapon` a
-real object via an object-arg extension of bsicallat; (3) walk XHuman's fields (bsifields
-needs a small explicit-object generalization) for the loadout/inventory manager.
+saves - a post-pistol save makes grants unnecessary for aim work *(DONE 2026-08-06: the
+TWN2 save carries pistol + 2 vigors)*; (2) derive the weapon archetype lookup
+(DynamicLoadObject/StaticFindObject by path) and feed `AcquireWeapon` a real object via an
+object-arg extension of bsicallat; (3) walk XHuman's fields (bsifields needs a small
+explicit-object generalization) for the loadout/inventory manager.
+
+### The GRANT recipe (s42b, 2026-08-06 - every piece proven, final combination pending)
+
+Lane (2) above is BUILT and all but the last step is proven live:
+
+- **`bsiload <Full.Object.Path>`** = DynamicLoadObject(path, null, MayFail=1) on the PC,
+  logging the returned pointer + class + name. Stock parms shape works on this build.
+  TRAP FOUND AND FIXED: command.txt args carry the trailing newline; ConsoleCommand's
+  parser eats it but an object-path match is exact - trim before converting.
+- **The script-class package is `XCore`** - `XCore.XConsole` AND `XCore.XWeaponUndertow`
+  both resolved (the latter = a Vigor class the save does NOT own, pointer in hand);
+  `XGame.*` and `Nano_*.*` are recorded negatives for class paths (Nano_* are startup
+  package names, not the class outers).
+- **`bsicallat <obj> <Func> 0x<ptr>`** passes a raw pointer at parms+0 (the
+  class<Inventory> shape CreateInventory wants); CreateInventory dispatches on XHuman.
+- The one unexecuted step: `bsicallat <pawn> CreateInventory 0x<vigorClass>` in a
+  possessed gameplay state, then NextPlasmid onto it. Blocked at 01:2x only by the
+  LoadCheckpoint state machine (below), not by any missing machinery.
+
+### LoadCheckpoint's state machine (s42b, measured the hard way)
+
+- From a SETTLED main menu (save index loaded): loads the NEWEST disk save. Proven twice
+  (00:59 boot -> TWN2 pistol save, GNames 72,073).
+- Dispatched too early (title screen / index still loading): starts the CAMPAIGN INTRO
+  instead - and once the intro has run, the in-memory "current checkpoint" is
+  contaminated: every further LoadCheckpoint in that process re-loads the intro, and
+  `disconnect` + LoadCheckpoint goes black/menu-limbo. A fresh process is the only clean
+  reset (the intro run writes NO save file - the user's saves are untouched).
+- The reliable sequence: fresh boot -> DISMISS "PRESS ANY KEY" (needs a real keypress -
+  game-click alone did not advance it; extend game-key.ps1 to bsi) -> wait for the menu
+  ~30 s -> `vrcmd` confirms pump=game -> ONE LoadCheckpoint -> 45 s -> verify by
+  GNames/pawn walk, THEN probe.
 
 ### The PC field map and the new struct facts (derived live, s42)
 
