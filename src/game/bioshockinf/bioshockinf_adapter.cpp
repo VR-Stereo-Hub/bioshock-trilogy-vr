@@ -3,6 +3,7 @@
 #include "core/framework/command.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/reflect.h"
@@ -96,7 +97,7 @@ void BioshockInfAdapter::drawDebugUi() {
     ImGui::Text("presents: %llu   capabilities: 0x%X",
                 static_cast<unsigned long long>(bvr::d3d11_hook::present_count()),
                 capabilities());
-    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsireflect | bsinative | bsicall | vrcmd");
+    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsivr | bsireflect | bsinative | bsicall | vrcmd");
 
     camera::draw_debug_ui();
     reflect::draw_debug_ui();
@@ -115,6 +116,26 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
         if (!camera::handle_command(args))
             BVR_LOG("[bsi] camera: unknown subcommand. bsicam status|paths|tid|matrix|"
                     "heartbeat on|off|on|off");
+        return true;
+    }
+    if (strcmp(cmd, "bsivr") == 0) {
+        // Scripted lever on core's master VR enable (the same flag the F10
+        // checkbox writes), so the sim battery can drive teardown/re-bring-up
+        // without hazard injection. `status` reports the observable state -
+        // session_live() - rather than echoing the flag, because the checkbox
+        // is a second writer and an echo could go stale.
+        if (args && strcmp(args, "on") == 0) {
+            bvr::vr::set_enabled(true);
+            BVR_LOG("[bsi] vr: enable requested - bring-up happens from Present "
+                    "(watch for 'xr: session created')");
+        } else if (args && strcmp(args, "off") == 0) {
+            bvr::vr::set_enabled(false);
+            BVR_LOG("[bsi] vr: disable requested - teardown happens from Present "
+                    "(watch for 'xr: session teardown')");
+        } else {
+            BVR_LOG("[bsi] vr: session %s | usage: bsivr on|off|status",
+                    bvr::vr::session_live() ? "LIVE" : "not live");
+        }
         return true;
     }
     if (reflect::handle_command(cmd, args)) return true;
