@@ -6,6 +6,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/config.h"
+#include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
@@ -115,6 +116,7 @@ void BioshockInfAdapter::drawDebugUi() {
 
     camera::draw_debug_ui();
     config::draw_debug_ui();
+    input_drive::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
     reflect::draw_debug_ui();
@@ -139,6 +141,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     // stereo verbs (vrstereo / vraer / ipd / bsifov) + vrrec.
     if (camera::handle_drive_verb(cmd, args)) return true;
     if (lens::handle_command(cmd, args)) return true;
+    if (input_drive::handle_command(cmd, args)) return true;
     if (strcmp(cmd, "reentry") == 0) {
         if (!scenedraw::handle_command(args))
             BVR_LOG("[bsi] reentry: unknown subcommand. reentry status|reset|pulse [n]|"

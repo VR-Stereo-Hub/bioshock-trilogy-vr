@@ -145,6 +145,18 @@ inline constexpr uint32_t kFindFunctionRva = 0xD1030;
 inline constexpr uint8_t kProcessEventRetImm = 0x0C;
 inline constexpr uint8_t kFindFunctionCheckedRetImm = 0x0C;
 
+// ---- XInput IAT slot (derived offline session 34, consumed session 42) ------
+// BioShockInfinite.exe imports XINPUT1_3.dll by ORDINAL: two entries, ord 1
+// (caps) and ord 2 (XInputGetState), parsed from the PE import directory in
+// the s34 recon (ENGINE_NOTES "PE identity"). The ord-2 IAT slot sits at RVA
+// 0xCD4814. The s34 live hook census read the slot UNHOOKED - Steam's overlay
+// E9-hooks the export THUNK instead, which is exactly why re-pointing this
+// last hop composes synthetic pad state without fighting Steam (BS1/BS2's
+// measured mechanism; see core/input/xinput_bridge.cpp:hijack_import_slot).
+// input_drive.cpp verifies the slot's CURRENT target resolves into a loaded
+// module before consuming it, and refuses the hijack otherwise.
+inline constexpr uint32_t kXInputGetStateIatRva = 0xCD4814;
+
 // ---- GNames / FName (derived offline session 34) ---------------------------
 // GNames is a UE3 TArray<FNameEntry*> - the classic { Data, Num, Max } triple -
 // traced from the hardcoded UnNames.h string run.

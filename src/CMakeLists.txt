@@ -105,6 +105,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/game_ini.cpp
     game/bioshockinf/game_ini.h
     game/bioshockinf/inf_math.h
+    game/bioshockinf/input_drive.cpp
+    game/bioshockinf/input_drive.h
     game/bioshockinf/lens.cpp
     game/bioshockinf/lens.h
     game/bioshockinf/patterns.cpp

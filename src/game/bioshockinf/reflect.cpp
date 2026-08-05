@@ -110,7 +110,53 @@ void cmd_native(const char* args) {
     }
 }
 
+// Session 42 (the cheat-loadout lane): one-shot FULL GNames dump to the data
+// dir, so candidate exec names (the give-family, cheats, weapon and Vigor
+// class names) are greppable OFFLINE instead of being guessed 64 entries at a
+// time through the pump. The file is game-derived content: it lives under
+// %LOCALAPPDATA% and is never committed - the frame-dump rule. Game thread
+// only (command-driven by construction); one linear pass, buffered stdio, so
+// the cost is one long-ish tick rather than a per-second cadence (the
+// fname_* one-shot rule).
+void cmd_names_dump() {
+    const int32_t num = patterns::fname_count();
+    if (num <= 0) {
+        BVR_LOG("[bsi] reflect: GNames is not populated yet (Num=%d) - nothing to dump", num);
+        return;
+    }
+    wchar_t path[MAX_PATH];
+    const wchar_t* base = bvr::log::data_dir();
+    if (!base || !base[0]) {
+        BVR_LOG("[bsi] reflect: no data dir - cannot dump GNames");
+        return;
+    }
+    swprintf_s(path, L"%s\\gnames.txt", base);
+    FILE* f = _wfsopen(path, L"w", _SH_DENYWR);
+    if (!f) {
+        BVR_LOG("[bsi] reflect: could not open gnames.txt for writing");
+        return;
+    }
+    char buf[256];
+    int written = 0, unreadable = 0;
+    for (int i = 0; i < num; ++i) {
+        if (patterns::fname_text(i, buf, sizeof buf)) {
+            fprintf(f, "%d\t%s\n", i, buf);
+            ++written;
+        } else {
+            ++unreadable;
+        }
+    }
+    fclose(f);
+    BVR_LOG("[bsi] reflect: GNames dumped - %d names (%d unreadable) of Num=%d -> "
+            "%%LOCALAPPDATA%%\\BioshockVR\\bsi\\gnames.txt (game-derived: never commit)",
+            written, unreadable, num);
+}
+
 void cmd_names(const char* args) {
+    if (strncmp(args, "dump", 4) == 0) {
+        cmd_names_dump();
+        return;
+    }
     int start = 0;
     int count = 16;
     sscanf_s(args, "%d %d", &start, &count);
@@ -476,6 +522,190 @@ bool resolve_dispatch_target(const char* tag, void*& outObj, const uint8_t* cons
     return true;
 }
 
+// ---- Session 42: object-walking, for the cheat-loadout lane -----------------
+// The measured facts that force this design: ConsoleCommand dispatches (s37,
+// C++ handlers proven by effect) but SCRIPT execs do not - god, AllWeapons,
+// behindview and viewmode all produced zero effect in a gameplay save, and
+// FindFunction on the PC chain has no EnableCheats/BehindView. The script-side
+// console exec bridge is dead in this retail build, exactly like the key-bind
+// lane (s34). The loadout must therefore dispatch by ProcessEvent ON THE
+// OBJECT that owns the function (pawn, CheatManager) - which needs a way to
+// FIND those objects. Per the recorded design rule, objects come from hook
+// parameters, never scans: these helpers walk the LATCHED PC's own pointer
+// fields and identify UObjects by class name.
+//
+// UObject::Class is +0x20 (ENGINE_NOTES struct layouts, from execIsA).
+// UObject::Name's offset is DERIVED once per run: candidate dwords on the
+// latched PC's class object, accepted only when the FName text they select
+// contains "PlayerController" - the one name the class object must carry.
+int g_objNameOff = -1;
+
+const void* object_class(const void* obj) {
+    if (!bvr::pattern_scan::is_memory_valid(obj, 0x24)) return nullptr;
+    const void* cls =
+        *reinterpret_cast<const void* const*>(static_cast<const uint8_t*>(obj) + 0x20);
+    if (!bvr::pattern_scan::is_memory_valid(cls, 0x50)) return nullptr;
+    return cls;
+}
+
+bool derive_obj_name_off() {
+    if (g_objNameOff >= 0) return true;
+    const void* pc = camera::last_player_controller();
+    const void* cls = pc ? object_class(pc) : nullptr;
+    if (!cls) return false;
+    // Live s42 derivation: the PC's class object carried its name index at
+    // +0x18 (read 8167 = 'XPlayerController' in that boot's pool), so the
+    // candidate walk starts low enough to reach it. Kept as a walk rather
+    // than a constant: the text check is the interlock either way.
+    const int32_t num = patterns::fname_count();
+    for (int cand = 0x0C; cand <= 0x48; cand += 4) {
+        const int32_t idx =
+            *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(cls) + cand);
+        if (idx <= 0 || idx >= num) continue;
+        char txt[128];
+        if (!patterns::fname_text(idx, txt, sizeof txt)) continue;
+        if (strstr(txt, "PlayerController")) {
+            g_objNameOff = cand;
+            BVR_LOG("[bsi] reflect: UObject::Name derived at +0x%X (the PC's class object "
+                    "reads '%s')",
+                    cand, txt);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Class name of an arbitrary pointer IF it reads as a UObject; empty string
+// otherwise. The gates (readable object, readable class, name index in range,
+// name text readable) are what makes walking raw fields safe.
+bool object_class_name(const void* obj, char* out, size_t outSize) {
+    if (outSize) out[0] = '\0';
+    if (g_objNameOff < 0) return false;
+    const void* cls = object_class(obj);
+    if (!cls) return false;
+    const int32_t idx =
+        *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(cls) + g_objNameOff);
+    if (idx <= 0 || idx >= patterns::fname_count()) return false;
+    return patterns::fname_text(idx, out, outSize);
+}
+
+// bsifields [startHex] [dwords]: walk the latched PC's pointer fields and name
+// every UObject they reach. This is how the pawn and the CheatManager instance
+// (if any) are FOUND, with their PC-relative offsets, without GObjObjects.
+void cmd_fields(const char* args) {
+    unsigned start = 0;
+    unsigned count = 0x180;
+    if (args) sscanf_s(args, "%x %u", &start, &count);
+    if (count > 0x400) count = 0x400;
+    void* obj = nullptr;
+    const uint8_t* const* vt = nullptr;
+    if (!resolve_dispatch_target("fields", obj, vt)) return;
+    if (!derive_obj_name_off()) {
+        BVR_LOG("[bsi] fields: REFUSED - UObject::Name offset did not derive on the PC's "
+                "class object (no candidate dword selected a '*PlayerController' name)");
+        return;
+    }
+    char clsName[128];
+    object_class_name(obj, clsName, sizeof clsName);
+    BVR_LOG("[bsi] fields: walking %s %p from +0x%X, %u dwords - every pointer whose "
+            "target reads as a UObject, with its class name",
+            clsName[0] ? clsName : "<pc>", obj, start, count);
+    int shown = 0;
+    for (unsigned i = 0; i < count && shown < 80; ++i) {
+        const uint32_t off = start + i * 4;
+        const uint8_t* slot = static_cast<const uint8_t*>(obj) + off;
+        if (!bvr::pattern_scan::is_memory_valid(slot, sizeof(void*))) break;
+        const void* p = *reinterpret_cast<const void* const*>(slot);
+        if (!p || (reinterpret_cast<uintptr_t>(p) & 3)) continue;
+        char nm[128];
+        if (!object_class_name(p, nm, sizeof nm) || !nm[0]) continue;
+        BVR_LOG("[bsi] fields:   +0x%03X -> %p  class %s", off, p, nm);
+        ++shown;
+    }
+    BVR_LOG("[bsi] fields: done (%d object fields shown%s)", shown,
+            shown >= 80 ? " - CAPPED, narrow with [startHex]" : "");
+}
+
+// bsicallat <hexaddr> <Func> [float]: cmd_call generalized to an EXPLICIT
+// object address (one bsifields just printed). Same gate stack; the vtable
+// slot interlock carries over unchanged because FindFunction is UObject-level
+// and ProcessEvent must be one of the two derived RVAs on any dispatchable
+// object here.
+void cmd_call_at(const char* args) {
+    unsigned addr = 0;
+    char fn[96] = {};
+    char valStr[32] = {};
+    const int n = sscanf_s(args ? args : "", "%x %95s %31s", &addr, fn,
+                           static_cast<unsigned>(sizeof fn), valStr,
+                           static_cast<unsigned>(sizeof valStr));
+    if (n < 2) {
+        BVR_LOG("[bsi] callat: usage - bsicallat <hexaddr> <Func> [floatArg]. The address "
+                "comes from a bsifields line; dispatch is FindFunction+ProcessEvent on "
+                "THAT object. Acceptance is the downstream EFFECT.");
+        return;
+    }
+    const int32_t nameIndex = patterns::fname_find(fn);
+    if (nameIndex < 0) {
+        BVR_LOG("[bsi] callat: REFUSED - '%s' is not in GNames (%d entries searched)", fn,
+                patterns::fname_count());
+        return;
+    }
+    // The shared prefix gates (build/tid/GNames/latched-PC) via the standard
+    // resolver - then the checks are re-run against the explicit object.
+    void* pcObj = nullptr;
+    const uint8_t* const* pcVt = nullptr;
+    if (!resolve_dispatch_target("callat", pcObj, pcVt)) return;
+    void* obj = reinterpret_cast<void*>(static_cast<uintptr_t>(addr));
+    if (!obj || !bvr::pattern_scan::is_memory_valid(obj, sizeof(void*))) {
+        BVR_LOG("[bsi] callat: REFUSED - %p is not readable", obj);
+        return;
+    }
+    const uint8_t* const* vt = *reinterpret_cast<const uint8_t* const* const*>(obj);
+    const size_t slotsNeeded = patterns::kProcessEventVtableOffset / 4 + 1;
+    if (!vt || !bvr::pattern_scan::is_memory_valid(vt, slotsNeeded * sizeof(void*))) {
+        BVR_LOG("[bsi] callat: REFUSED - vtable %p unreadable through slot +0x%X",
+                (void*)vt, patterns::kProcessEventVtableOffset);
+        return;
+    }
+    const uint32_t ffRva = rva_of(vt[patterns::kFindFunctionVtableOffset / 4]);
+    const uint32_t peRva = rva_of(vt[patterns::kProcessEventVtableOffset / 4]);
+    if (ffRva != patterns::kFindFunctionRva ||
+        (peRva != patterns::kActorProcessEventRva && peRva != patterns::kProcessEventRva)) {
+        BVR_LOG("[bsi] callat: REFUSED - vtable disagrees with the derivation (+0x54=0x%X "
+                "expected 0x%X, +0x7C=0x%X expected 0x%X/0x%X) - not a dispatchable UObject",
+                ffRva, patterns::kFindFunctionRva, peRva, patterns::kActorProcessEventRva,
+                patterns::kProcessEventRva);
+        return;
+    }
+    char nm[128] = {};
+    derive_obj_name_off();
+    object_class_name(obj, nm, sizeof nm);
+    alignas(16) uint8_t parms[256] = {};
+    if (n == 3) {
+        const float v = strtof(valStr, nullptr);
+        memcpy(parms, &v, sizeof v);
+    }
+    BVR_LOG("[bsi] callat: dispatching '%s' (GNames %d)%s on %p (class %s), tid %u", fn,
+            nameIndex, n == 3 ? " with float parm" : " with zeroed parms", obj,
+            nm[0] ? nm : "?", GetCurrentThreadId());
+    void* func = nullptr;
+    uint32_t code = 0;
+    const int r = call_by_name_seh(obj, vt, nameIndex, parms, &func, &code);
+    if (r == 1) {
+        BVR_LOG("[bsi] callat: FindFunction('%s') returned null on class %s - that object "
+                "does not carry the function. Nothing was called.",
+                fn, nm[0] ? nm : "?");
+    } else if (r == 2) {
+        BVR_LOG("[bsi] callat: FAULT 0x%08X inside the dispatch - swallowed by SEH, game "
+                "continues. Treat the parameter shape as wrong until re-derived.",
+                code);
+    } else {
+        BVR_LOG("[bsi] callat: '%s' (UFunction %p) returned. NOT acceptance - measure the "
+                "downstream effect.",
+                fn, func);
+    }
+}
+
 void cmd_call(const char* args) {
     char fn[96] = {};
     char valStr[32] = {};
@@ -634,6 +864,14 @@ bool handle_command(const char* cmd, const char* args) {
     }
     if (strcmp(cmd, "bsicall") == 0) {
         cmd_call(args);
+        return true;
+    }
+    if (strcmp(cmd, "bsifields") == 0) {
+        cmd_fields(args);
+        return true;
+    }
+    if (strcmp(cmd, "bsicallat") == 0) {
+        cmd_call_at(args);
         return true;
     }
     if (strcmp(cmd, "bsiexec") == 0) {
