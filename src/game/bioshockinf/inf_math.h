@@ -57,6 +57,34 @@ inline void xr_to_ue(const float v[3], float out[3]) {
     out[2] = v[1];  // XR +Y (up)      -> UE +Z
 }
 
+// Orthonormal basis of an FRotator (UE's FRotationMatrix rows): X forward,
+// Y right, Z up. The formula is the Vengeance one in SHAPE, kept adapter-local
+// per the decoupling directive - and on this game the frame it encodes is
+// MEASURED, not assumed: the s39 flat battery drove each axis separately
+// (yaw/pitch/roll sweeps, exact rotator units) and the s40 eye-offset check
+// asserts the right-vector's yaw/roll behaviour again (eyes must stack
+// vertically under head roll). At roll 0, yaw y: right = (-sin y, cos y, 0).
+inline void ue_rot_basis(const FRotator& r, float fwd[3], float right[3], float up[3]) {
+    const float pitch = static_cast<float>(r.pitch) / kRotUnitsPerRadian;
+    const float yaw = static_cast<float>(r.yaw) / kRotUnitsPerRadian;
+    const float roll = static_cast<float>(r.roll) / kRotUnitsPerRadian;
+    const float cp = cosf(pitch), sp = sinf(pitch);
+    const float cy = cosf(yaw), sy = sinf(yaw);
+    const float cr = cosf(roll), sr = sinf(roll);
+
+    fwd[0] = cp * cy;
+    fwd[1] = cp * sy;
+    fwd[2] = sp;
+
+    right[0] = sr * sp * cy - cr * sy;
+    right[1] = sr * sp * sy + cr * cy;
+    right[2] = -sr * cp;
+
+    up[0] = -(cr * sp * cy + sr * sy);
+    up[1] = cy * sr - cr * sp * sy;
+    up[2] = cr * cp;
+}
+
 struct UeAngles {
     float yawRad, pitchRad, rollRad;
 };

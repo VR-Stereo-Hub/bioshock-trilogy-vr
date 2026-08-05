@@ -124,6 +124,16 @@ std::atomic<int> g_vrstereoPending{-1};
 std::atomic<float> g_lastClaimHfovDeg{0.0f};
 std::atomic<float> g_lastClaimAspect{0.0f};
 
+// Rung 2: the inter-pupillary distance, adapter-local (core has no IPD API -
+// the parallax the headset shows is produced entirely here). 63 mm default,
+// F10 slider, persisted in vrpreset.ini.
+std::atomic<float> g_ipdMm{63.0f};
+// Per-eye telemetry for the heartbeat's inter-eye check: the last FINAL loc
+// published for each eye (index 0 = left/sign -1). Game thread only.
+FVector g_eyeLoc[2] = {};
+bool g_eyeLocValid[2] = {false, false};
+int g_lastEyeSign = 0;
+
 // Synthetic HMD lane (BS2's shape, WITH the position triple): `simhead <yaw>
 // <pitch> <roll> [px py pz] [holdMs]` feeds a scripted head pose through the
 // real drive, so the full 6DoF xr-to-ue mapping is provable flat from the
@@ -258,6 +268,23 @@ void log_matrix_once(const Probe& p) {
 // must never recenter or read the live head); an entry recorded with the
 // camera not driven leaves the camera to the game, faithfully.
 // ---------------------------------------------------------------------------
+// Half-IPD displacement along the FINAL rotator's full-rotation right axis
+// (BS1's session-22 lesson kept: a yaw-only right vector makes the virtual
+// eyes stay horizontal while the head rolls, so the world's stereo collapses
+// exactly when the horizon tilts; the full basis stacks the eyes the way real
+// eyes stack, and reduces to the yaw-only formula bit-for-bit at roll 0).
+// sign: -1 left, +1 right, in UU via ipd * worldScale.
+void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
+    float fwd[3], right[3], up[3];
+    ue_rot_basis(rot, fwd, right, up);
+    const float halfIpdUu = static_cast<float>(sign) *
+                            (g_ipdMm.load(std::memory_order_relaxed) / 2000.0f) *
+                            g_worldScale.load(std::memory_order_relaxed);
+    loc->x += right[0] * halfIpdUu;
+    loc->y += right[1] * halfIpdUu;
+    loc->z += right[2] * halfIpdUu;
+}
+
 void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
     if (!loc || !rot) return;
 
@@ -351,6 +378,21 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         g_pitchErrDeg = 0.0f;
     }
 
+    // Rung 2 (AlternateEye): displace the FINAL camera half an IPD along its
+    // own right axis. current_eye_sign() is 0 unless core's AER is armed, and
+    // core flips it after each submit so this renders exactly the eye the next
+    // Present will capture. Applied with or without a head drive (a stereo
+    // camera does not need a driven one), and to every caller in the frame -
+    // this seam is the engine's single camera path, same as BS1/BS2's
+    // CalcView. Rung 3 (SR) supplies the sign per pass instead.
+    const int eyeSign = bvr::vr::current_eye_sign();
+    if (eyeSign != 0) apply_eye_offset(loc, *rot, eyeSign);
+    g_lastEyeSign = eyeSign;
+    if (eyeSign != 0) {
+        g_eyeLoc[eyeSign < 0 ? 0 : 1] = *loc;
+        g_eyeLocValid[eyeSign < 0 ? 0 : 1] = true;
+    }
+
     g_driveLane = lane;
     g_finalLoc = *loc;
     g_finalRot = *rot;
@@ -383,10 +425,12 @@ void save_vr_preset() {
     }
     fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
     fprintf(f, "claimTanV=%.4f\n", g_claimTanV.load(std::memory_order_relaxed));
+    fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
     fclose(f);
-    BVR_LOG("[bsi] vrpreset saved (worldScale=%.1f claimTanV=%.4f)",
+    BVR_LOG("[bsi] vrpreset saved (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f)",
             g_worldScale.load(std::memory_order_relaxed),
-            g_claimTanV.load(std::memory_order_relaxed));
+            g_claimTanV.load(std::memory_order_relaxed),
+            g_ipdMm.load(std::memory_order_relaxed));
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +613,23 @@ void throttled(void* self, uint64_t now) {
                 g_lastClaimAspect.load(std::memory_order_relaxed),
                 g_lastClaimHfovDeg.load(std::memory_order_relaxed), auditTanH, auditTanV,
                 auditSrc, swapW, swapH);
+        if (g_eyeLocValid[0] && g_eyeLocValid[1]) {
+            // The inter-eye check the flat battery asserts: |L-R| must equal
+            // ipd (m) x worldScale UU exactly - the L and R finals are the
+            // same base displaced -/+ half an IPD along one right vector.
+            // Under AER the two finals are a frame apart, so compare only
+            // while the base holds still (the battery parks the head).
+            const float dx = g_eyeLoc[1].x - g_eyeLoc[0].x;
+            const float dy = g_eyeLoc[1].y - g_eyeLoc[0].y;
+            const float dz = g_eyeLoc[1].z - g_eyeLoc[0].z;
+            const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+            const float expect = (g_ipdMm.load(std::memory_order_relaxed) / 1000.0f) *
+                                 g_worldScale.load(std::memory_order_relaxed);
+            BVR_LOG("[bsi] stereo: inter-eye |d|=%.3f UU expect=%.3f (d=(%.3f %.3f %.3f) "
+                    "ipd=%.1fmm scale=%.0f lastSign=%+d)",
+                    d, expect, dx, dy, dz, g_ipdMm.load(std::memory_order_relaxed),
+                    g_worldScale.load(std::memory_order_relaxed), g_lastEyeSign);
+        }
     }
     g_lastBeatMs = now;
     g_beatBaseCount = count;
@@ -807,11 +868,14 @@ void load_vr_preset() {
             g_worldScale.store(v, std::memory_order_relaxed);
         else if (sscanf_s(line, "claimTanV=%f", &v) == 1 && v > 0.0f)
             g_claimTanV.store(v, std::memory_order_relaxed);
+        else if (sscanf_s(line, "ipdMm=%f", &v) == 1 && v > 0.0f)
+            g_ipdMm.store(v, std::memory_order_relaxed);
     }
     fclose(f);
-    BVR_LOG("[bsi] vrpreset loaded (worldScale=%.1f claimTanV=%.4f)",
+    BVR_LOG("[bsi] vrpreset loaded (worldScale=%.1f claimTanV=%.4f ipdMm=%.1f)",
             g_worldScale.load(std::memory_order_relaxed),
-            g_claimTanV.load(std::memory_order_relaxed));
+            g_claimTanV.load(std::memory_order_relaxed),
+            g_ipdMm.load(std::memory_order_relaxed));
 }
 
 bool handle_drive_verb(const char* cmd, const char* args) {
@@ -856,6 +920,41 @@ bool handle_drive_verb(const char* cmd, const char* args) {
             BVR_LOG("[bsi] vrstereo: armed=%d camMode=%d session=%s | usage: vrstereo on|off",
                     g_stereoArmed.load(std::memory_order_relaxed) ? 1 : 0,
                     bvr::vr::vr_camera_mode() ? 1 : 0, bvr::vr::session_state_name());
+        }
+        return true;
+    }
+    if (strcmp(cmd, "vraer") == 0) {
+        // AlternateEye one-toggle: real geometric stereo, one eye per frame,
+        // the compositor reprojecting the other. Judders by design - it is
+        // the de-risking rung, no engine re-entrancy. Rides on the vrstereo
+        // arming (enable + camera mode) plus core's AER flag; the eye offset
+        // itself is applied in drive_view off current_eye_sign().
+        if (strncmp(args, "on", 2) == 0) {
+            apply_vrstereo(true);
+            bvr::vr::set_alternate_eye(true);
+            BVR_LOG("[bsi] VRAER ON: AlternateEye armed (ipd %.1f mm, worldScale %.0f -> "
+                    "inter-eye %.3f UU on the heartbeat)",
+                    g_ipdMm.load(std::memory_order_relaxed),
+                    g_worldScale.load(std::memory_order_relaxed),
+                    (g_ipdMm.load(std::memory_order_relaxed) / 1000.0f) *
+                        g_worldScale.load(std::memory_order_relaxed));
+        } else if (strncmp(args, "off", 3) == 0) {
+            bvr::vr::set_alternate_eye(false);
+            BVR_LOG("[bsi] vraer off (camera mode stays as vrstereo left it)");
+        } else {
+            BVR_LOG("[bsi] vraer: eyeSign=%+d ipd=%.1fmm | usage: vraer on|off",
+                    bvr::vr::current_eye_sign(), g_ipdMm.load(std::memory_order_relaxed));
+        }
+        return true;
+    }
+    if (strcmp(cmd, "ipd") == 0) {
+        float v = 0.0f;
+        if (sscanf_s(args, "%f", &v) == 1 && v >= 40.0f && v <= 80.0f) {
+            g_ipdMm.store(v, std::memory_order_relaxed);
+            BVR_LOG("[bsi] ipd %.1f mm (vrpreset save persists)", v);
+        } else {
+            BVR_LOG("[bsi] usage: ipd <40..80 mm> (current %.1f)",
+                    g_ipdMm.load(std::memory_order_relaxed));
         }
         return true;
     }
@@ -1041,12 +1140,18 @@ void draw_debug_ui() {
         }
         ImGui::Text("camera mode: %s (core: requested AND session AND projection-ready)",
                     bvr::vr::vr_camera_mode() ? "LIVE" : "off");
+        {
+            float ipd = g_ipdMm.load(std::memory_order_relaxed);
+            if (ImGui::SliderFloat("IPD (mm)", &ipd, 50.0f, 75.0f, "%.1f"))
+                g_ipdMm.store(ipd, std::memory_order_relaxed);
+        }
         ImGui::Text("claim: tanV %.4f  aspect %.4f  hfov %.1f deg",
                     g_claimTanV.load(std::memory_order_relaxed),
                     g_lastClaimAspect.load(std::memory_order_relaxed),
                     g_lastClaimHfovDeg.load(std::memory_order_relaxed));
         ImGui::TextDisabled("claim assumes the in-game FOV slider at MINIMUM; if moved, fix "
                             "with bsifov tanv (desktop)");
+        ImGui::TextDisabled("persist tuning: vrpreset save (worldScale, ipd, claim)");
     }
 
     if (!ImGui::CollapsingHeader("Camera seam (DR-I2 observation)")) return;
