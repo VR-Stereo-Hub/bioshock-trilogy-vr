@@ -49,6 +49,11 @@ uint64_t silent_ms();
 // it is only known to have been valid at the last dispatch.
 void* last_player_controller();
 
+// Rung 3c: how many doubled draws have had their camera replayed (one BURST
+// per pass-2 attempt, however many times the seam dispatched inside it).
+// The SR acceptance gate is bursts == scenedraw's second-draw count.
+uint32_t second_pass_replays();
+
 // The single thread the detour has ever dispatched on (0 before first fire).
 // Anything that calls INTO the engine - bsicall's ProcessEvent dispatch - must
 // verify it is running on this thread first: under the command lease a silent

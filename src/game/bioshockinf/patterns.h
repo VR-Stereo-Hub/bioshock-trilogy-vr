@@ -230,6 +230,61 @@ inline constexpr bool kLensRowMajor = true;
 inline constexpr float kTanVSliderMin = 0.4317f;
 inline constexpr float kTanVSliderMax = 0.4933f;
 
+// ---- the scene-build root (session 40, derived live) -----------------------
+//
+// The SequentialReentry seam: the UGameViewportClient::Draw analog. DERIVATION
+// (three independent live routes agreeing, ENGINE_NOTES session 40):
+//  1. Caller census at the GetPlayerViewPoint detour: return RVA 0x26B499
+//     fires EXACTLY once per present (810 in 810 presents) on the game thread,
+//     inside a loop that walks a linked list ([esi+0x208]) doing the
+//     constant-time UClass-interval IsA check before sampling each player
+//     controller's view - the per-frame scene camera sweep.
+//  2. One-shot RtlCaptureStackBackTrace from that caller: dispatched from
+//     return RVA 0x1FE05F, whose site is `mov ecx,[viewport+0x1C];
+//     mov edx,[ecx]; mov edx,[edx+8]; call edx` bracketed by a stack canvas's
+//     ctor (0x331110) / dtor (0x3339F0) - the engine's per-tick redraw.
+//  3. One-shot live stack probe at that dispatch (`bsicam scenedraw`):
+//     client [viewport+0x1C] -> vtable in .rdata at 0xDE6FC8 -> slot 2
+//     (byte +0x8) = 0x6F1360, a `jmp 0x26A3E0` stub. Entry confirmed by
+//     prologue disassembly; body spans the census call site 0x26B494.
+//
+// __thiscall, ecx = the viewport client, TWO stack args (viewport, canvas),
+// `ret 8`. NOT the doubling root: doubling this function was TRIED first
+// (session 40) and produced camera+scene doubling with NO second present -
+// the tag ring skewed +1 per tick (self-healed at depth 3) because the
+// present is kicked by the CALLER's tail, not by this call tree. Kept as
+// derivation facts and for the install-time chain cross-check.
+inline constexpr uint32_t kSceneDrawRva = 0x26A3E0;       // client Draw body
+inline constexpr uint32_t kSceneDrawStubRva = 0x6F1360;   // vtable slot target (jmp stub)
+inline constexpr uint32_t kSceneDrawVtableRva = 0xDE6FC8; // .rdata, slot 2 = +0x8
+// The `call edx` return address of the client-Draw dispatch (inside the
+// viewport draw root below) - the camera-side scene probe keys on it.
+inline constexpr uint32_t kSceneDispatchRetRva = 0x1FE05F;
+// The census fact, for reference: the GetPlayerViewPoint call site inside the
+// scene draw's controller loop.
+inline constexpr uint32_t kSceneGpvpCallSiteRetRva = 0x26B499;
+
+// THE DOUBLING ROOT: the viewport draw - FViewport::Draw(bShouldPresent)'s
+// analog, one level ABOVE the client draw. Its body is: stack canvas ctor
+// (0x331110) -> client->Draw dispatch (ret 0x1FE05F) -> canvas dtor
+// (0x3339F0) -> the present kick (call 0x1E50B0 with arg 1). Doubling THIS
+// yields camera + scene + present per eye, which is what the SR tag ring
+// requires (one present per pushed eye tag). Entry resolved by walking the
+// live stack scrape one frame above the dispatch: ret 0x206309's E8 call
+// targets 0x1FDE30 directly, and the forward stream from 0x1FDE30 reaches
+// the dispatch at 0x1FE05D (capstone). __thiscall, ecx = the viewport, ONE
+// stack arg, `ret 4` (at RVA 0x1FE0AB).
+inline constexpr uint32_t kViewportDrawRva = 0x1FDE30;
+inline constexpr uint8_t kViewportDrawPrologue[] = {0x6A, 0xFF, 0x68, 0x36, 0xCE, 0x02,
+                                                    0x01, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00};
+inline constexpr uint8_t kViewportDrawRetImm = 4;
+// The gameplay caller's return RVA (pe-xref: 4 static callers - 0x118086,
+// 0x1FFD5C, 0x2017CA, 0x206304; the live census names 0x206309, the return
+// of 0x206304's call, as the per-tick dispatcher). Pass 2 is deny-by-default
+// on this value, jointly with the camera-silent and present-stall gates
+// (BS2's three-gate design).
+inline constexpr uint32_t kViewportDrawGameplayRetRva = 0x206309;
+
 // **A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT.** `XEngine.ini` says
 // `FOVAngle=70` and `MaxUserFOVOffsetPercent=15`, which session 34 read as "the
 // native slider spans roughly 70 to 80.5 degrees". The RENDERED frustum spans

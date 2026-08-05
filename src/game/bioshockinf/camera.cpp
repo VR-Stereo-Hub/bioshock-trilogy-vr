@@ -7,9 +7,11 @@
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
+#include "game/bioshockinf/scenedraw.h"
 
 #include <MinHook.h>
 #include <imgui.h>
+#include <intrin.h>
 #include <windows.h>
 
 #include <atomic>
@@ -134,6 +136,20 @@ FVector g_eyeLoc[2] = {};
 bool g_eyeLocValid[2] = {false, false};
 int g_lastEyeSign = 0;
 
+// Rung 3c: SequentialReentry's cached base. Pass 1 caches the fully-driven
+// PRE-EYE camera here (game thread only); pass 2 replays it ABSOLUTELY and
+// applies the +1 eye - it never re-samples the head, because a Present lands
+// between the passes and a re-sample skews the pair into vertical disparity
+// (the ROADMAP box, BS1's proven rule). The 100 ms staleness guard leaves
+// the camera alone rather than replay a dead base.
+FVector g_srBaseLoc{};
+FRotator g_srBaseRot{};
+uint64_t g_srBaseStampMs = 0;
+bool g_srBaseValid = false;
+std::atomic<uint32_t> g_srReplayBursts{0}; // one per doubled draw (seq edge)
+std::atomic<uint32_t> g_srReplayCalls{0};  // raw pass-2 camera dispatches
+uint32_t g_srLastSeq = 0;                  // game thread only
+
 // Synthetic HMD lane (BS2's shape, WITH the position triple): `simhead <yaw>
 // <pitch> <roll> [px py pz] [holdMs]` feeds a scripted head pose through the
 // real drive, so the full 6DoF xr-to-ue mapping is provable flat from the
@@ -168,6 +184,244 @@ std::atomic<uint32_t> g_pathTarget{0};   // clear, and [this+0x240] null
 std::atomic<uint32_t> g_pathUnknown{0};  // `this` unreadable
 std::atomic<bool> g_loggedMatrix{false};
 std::atomic<void*> g_lastSelf{nullptr};
+
+// ---------------------------------------------------------------------------
+// Rung 3a: caller census. This seam has 14 static callers and fires
+// 1400-9600/s while the game presents ~90/s - the caller whose rate tracks
+// presents 1:1 marks the once-per-frame scene-build path, which is where the
+// SequentialReentry root is derived from (walk UP from that return RVA with
+// pe-xref + capstone, offline). COUNTS per return RVA, not just distinct
+// RVAs (BS1's note_caller shape, extended - rate is the discriminator here).
+// Game thread only (called after the tid latch). `bsicam callers` dumps
+// counts + deltas against the present counter; two dumps give rates.
+// ---------------------------------------------------------------------------
+constexpr size_t kCallerSlots = 24;
+struct CallerSlot {
+    uint32_t rva = 0;
+    uint64_t count = 0;
+    uint64_t lastDump = 0;
+};
+CallerSlot g_callers[kCallerSlots];
+uint64_t g_callerOverflow = 0;
+uint64_t g_callersLastPresent = 0;
+uint64_t g_callersLastMs = 0;
+
+void note_caller(uint32_t rva) {
+    for (auto& slot : g_callers) {
+        if (slot.rva == rva) {
+            ++slot.count;
+            return;
+        }
+        if (slot.rva == 0) {
+            slot.rva = rva;
+            slot.count = 1;
+            return;
+        }
+    }
+    ++g_callerOverflow;
+}
+
+uint32_t to_rva(const void* p) {
+    const patterns::Symbols& s = patterns::symbols();
+    if (!s.imageBase) return 0xFFFFFFFFu;
+    const uintptr_t d =
+        reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(s.imageBase);
+    return d < s.imageSize ? static_cast<uint32_t>(d) : 0xFFFFFFFFu;
+}
+
+// One-shot stack backtrace, armed per caller return RVA (`bsicam stack
+// <hexRva>`): the next detour call whose immediate caller matches logs the
+// whole return chain as RVAs. This is how the scene-build ROOT is derived -
+// the census names the once-per-frame immediate caller, the backtrace names
+// everything above it, and pe-xref/capstone then only have to CONFIRM
+// entries, not guess them. RtlCaptureStackBackTrace is cheap and read-only;
+// with FPO frames it can come up short, which is a visible result (fewer
+// frames), never a wrong one.
+std::atomic<uint32_t> g_stackWantCaller{0};
+
+// FPO cuts RtlCaptureStackBackTrace short, so the one-shot ALSO scrapes the
+// raw stack: any dword that is an image VA whose preceding bytes decode as a
+// call instruction is a plausible return address. Heuristic (a data dword
+// can false-positive), which is fine for a derivation instrument - every hit
+// gets confirmed offline before anything hooks it.
+struct ScrapeHit {
+    uint32_t rva;
+    uint32_t kind; // call opcode class, for the log
+};
+
+int scrape_stack(void* stackAnchor, ScrapeHit* out, int maxOut) {
+    int n = 0;
+    const patterns::Symbols& s = patterns::symbols();
+    if (!s.imageBase) return 0;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(s.imageBase);
+    __try {
+        const uintptr_t* sp = static_cast<const uintptr_t*>(stackAnchor);
+        for (int i = 0; i < 0x800 && n < maxOut; ++i) {
+            const uintptr_t v = sp[i];
+            if (v < base + 0x1000 || v >= base + s.imageSize) continue;
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(v);
+            uint32_t kind = 0;
+            if (p[-5] == 0xE8) kind = 0xE8;                       // call rel32
+            else if (p[-2] == 0xFF && (p[-1] & 0xF8) == 0xD0) kind = 0xFFD0; // call reg
+            else if (p[-3] == 0xFF && (p[-2] & 0xF8) == 0x50) kind = 0xFF50; // call [reg+d8]
+            else if (p[-6] == 0xFF && (p[-5] & 0xF8) == 0x90) kind = 0xFF90; // call [reg+d32]
+            else if (p[-7] == 0xFF && p[-6] == 0x14) kind = 0xFF14;          // call [sib]
+            if (!kind) continue;
+            out[n].rva = static_cast<uint32_t>(v - base);
+            out[n].kind = kind;
+            ++n;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
+void maybe_backtrace(uint32_t callerRva, void* stackAnchor) {
+    if (g_stackWantCaller.load(std::memory_order_relaxed) != callerRva) return;
+    if (g_stackWantCaller.exchange(0, std::memory_order_relaxed) != callerRva) return;
+    void* frames[24] = {};
+    const USHORT n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+    BVR_LOG("[bsi] stack: one-shot for caller 0x%X - %u frames (RVAs, 0xFFFFFFFF = outside "
+            "the image):",
+            callerRva, n);
+    for (USHORT i = 0; i < n; ++i)
+        BVR_LOG("[bsi] stack:   #%u 0x%08X", i, to_rva(frames[i]));
+    ScrapeHit hits[24];
+    const int m = scrape_stack(stackAnchor, hits, 24);
+    BVR_LOG("[bsi] stack: scrape (%d call-preceded stack dwords, walk-up order, heuristic):",
+            m);
+    for (int i = 0; i < m; ++i)
+        BVR_LOG("[bsi] stack:   ret 0x%08X (call form %X)", hits[i].rva, hits[i].kind);
+}
+
+// One-shot LIVE resolution of the vtable-dispatched scene-draw entry
+// (`bsicam scenedraw`). The static walk dead-ends: the call at 0x1FE05D is
+// `mov edx,[ecx]; mov edx,[edx+8]; call edx` with ecx = [viewport+0x1C], so
+// the entry lives in a vtable the census cannot name. Live it is trivial:
+// when this detour runs from the scene path, the outer frame's return
+// address (0x1FE05F) is on the stack with the two pushed args right above
+// it - [ret][viewport][canvas] - so scan up from our own frame for that
+// return VA, take the next dword as the viewport, and follow
+// [viewport+0x1C] -> [client] -> [vtable+8]. Every read SEH-guarded,
+// POD-only inside the guard.
+std::atomic<bool> g_sceneProbeArmed{false};
+
+struct SceneProbeResult {
+    uint32_t viewportRva = 0; // heap - expect 0xFFFFFFFF, logged for shape
+    void* viewport = nullptr;
+    void* client = nullptr;
+    uint32_t vtableRva = 0;
+    uint32_t entryRva = 0;
+    uint32_t slots[6] = {};
+    bool ok = false;
+};
+
+SceneProbeResult scene_probe(void* stackAnchor) {
+    SceneProbeResult r{};
+    const patterns::Symbols& s = patterns::symbols();
+    if (!s.imageBase) return r;
+    const uintptr_t wantRet =
+        reinterpret_cast<uintptr_t>(s.imageBase) + patterns::kSceneDispatchRetRva;
+    __try {
+        const uintptr_t* sp = static_cast<const uintptr_t*>(stackAnchor);
+        for (int i = 0; i < 0x600; ++i) {
+            if (sp[i] != wantRet) continue;
+            void* viewport = reinterpret_cast<void*>(sp[i + 1]);
+            if (!viewport) return r;
+            r.viewport = viewport;
+            const uint8_t* vp = static_cast<const uint8_t*>(viewport);
+            void* client = *reinterpret_cast<void* const*>(vp + 0x1C);
+            if (!client) return r;
+            r.client = client;
+            const uintptr_t* vt = *reinterpret_cast<const uintptr_t* const*>(client);
+            if (!vt) return r;
+            r.vtableRva = to_rva(vt);
+            for (int k = 0; k < 6; ++k) r.slots[k] = to_rva(reinterpret_cast<void*>(vt[k]));
+            r.entryRva = r.slots[2];
+            r.ok = true;
+            return r;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        r.ok = false;
+    }
+    return r;
+}
+
+void maybe_scene_probe(void* stackAnchor) {
+    if (!g_sceneProbeArmed.load(std::memory_order_relaxed)) return;
+    if (!g_sceneProbeArmed.exchange(false, std::memory_order_relaxed)) return;
+    const SceneProbeResult r = scene_probe(stackAnchor);
+    if (!r.ok) {
+        BVR_LOG("[bsi] sceneprobe: dispatch ret 0x%X not found on the stack this call (or a "
+                "read faulted) - re-arm with `bsicam scenedraw` and make sure the scene "
+                "path is firing",
+                patterns::kSceneDispatchRetRva);
+        return;
+    }
+    BVR_LOG("[bsi] sceneprobe: viewport=%p client=%p vtable RVA 0x%08X", r.viewport, r.client,
+            r.vtableRva);
+    BVR_LOG("[bsi] sceneprobe: slots [0]=0x%08X [1]=0x%08X [2]=0x%08X <- SCENE DRAW ENTRY "
+            "[3]=0x%08X [4]=0x%08X [5]=0x%08X",
+            r.slots[0], r.slots[1], r.slots[2], r.slots[3], r.slots[4], r.slots[5]);
+}
+
+// Generic one-shot vtable read (`bsicam vtprobe <globalVaHex> <slotHex>`):
+// obj = *[globalVa], vt = [obj], entry = [vt+slot], all RVAs logged. Runs on
+// the game thread at the next detour call, SEH-guarded - the derivation
+// instrument for virtually-dispatched roots.
+std::atomic<uint64_t> g_vtProbe{0}; // (globalVa << 16) | slot; 0 = disarmed
+
+void maybe_vt_probe() {
+    const uint64_t req = g_vtProbe.exchange(0, std::memory_order_relaxed);
+    if (!req) return;
+    const uint32_t globalVa = static_cast<uint32_t>(req >> 16);
+    const uint32_t slot = static_cast<uint32_t>(req & 0xFFFF);
+    void* obj = nullptr;
+    void* vt = nullptr;
+    void* entry = nullptr;
+    bool ok = false;
+    __try {
+        obj = *reinterpret_cast<void* const*>(static_cast<uintptr_t>(globalVa));
+        if (obj) {
+            vt = *static_cast<void* const*>(obj);
+            if (vt)
+                entry = *reinterpret_cast<void* const*>(static_cast<uint8_t*>(vt) + slot);
+            ok = entry != nullptr;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    if (ok)
+        BVR_LOG("[bsi] vtprobe: [*0x%08X] obj=%p vt RVA 0x%08X slot +0x%X -> entry RVA "
+                "0x%08X",
+                globalVa, obj, to_rva(vt), slot, to_rva(entry));
+    else
+        BVR_LOG("[bsi] vtprobe: FAILED at 0x%08X (+0x%X) - obj=%p vt=%p", globalVa, slot,
+                obj, vt);
+}
+
+void dump_callers() {
+    const uint64_t present = bvr::d3d11_hook::present_count();
+    const uint64_t now = GetTickCount64();
+    const uint64_t presentDelta = present - g_callersLastPresent;
+    const uint64_t msDelta = g_callersLastMs ? now - g_callersLastMs : 0;
+    BVR_LOG("[bsi] callers: presents +%llu in %llu ms (a caller whose delta matches is the "
+            "once-per-frame scene path)",
+            static_cast<unsigned long long>(presentDelta),
+            static_cast<unsigned long long>(msDelta));
+    for (auto& slot : g_callers) {
+        if (slot.rva == 0) break;
+        BVR_LOG("[bsi] callers: ret 0x%08X count=%llu delta=%llu", slot.rva,
+                static_cast<unsigned long long>(slot.count),
+                static_cast<unsigned long long>(slot.count - slot.lastDump));
+        slot.lastDump = slot.count;
+    }
+    if (g_callerOverflow)
+        BVR_LOG("[bsi] callers: overflow=%llu (table full - widen kCallerSlots)",
+                static_cast<unsigned long long>(g_callerOverflow));
+    g_callersLastPresent = present;
+    g_callersLastMs = now;
+}
 
 // Silence detection. The game-thread pump rides on this hook, so a camera that
 // stops is a command surface that stops - and that must be a timestamped fact
@@ -378,19 +632,34 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         g_pitchErrDeg = 0.0f;
     }
 
-    // Rung 2 (AlternateEye): displace the FINAL camera half an IPD along its
-    // own right axis. current_eye_sign() is 0 unless core's AER is armed, and
-    // core flips it after each submit so this renders exactly the eye the next
-    // Present will capture. Applied with or without a head drive (a stereo
-    // camera does not need a driven one), and to every caller in the frame -
-    // this seam is the engine's single camera path, same as BS1/BS2's
-    // CalcView. Rung 3 (SR) supplies the sign per pass instead.
-    const int eyeSign = bvr::vr::current_eye_sign();
-    if (eyeSign != 0) apply_eye_offset(loc, *rot, eyeSign);
-    g_lastEyeSign = eyeSign;
-    if (eyeSign != 0) {
-        g_eyeLoc[eyeSign < 0 ? 0 : 1] = *loc;
-        g_eyeLocValid[eyeSign < 0 ? 0 : 1] = true;
+    // The eye offset, applied LAST so the final camera is base + half-IPD
+    // along its own right axis. Two mutually exclusive sign sources:
+    //  - SR armed (rung 3): this whole pass is the LEFT eye - cache the
+    //    PRE-EYE base for pass 2's replay, then apply -1. Pass 2 never runs
+    //    through here (the detour forks to the replay instead).
+    //  - AER (rung 2): core's current_eye_sign(), flipped after each submit
+    //    so this renders exactly the eye the next Present will capture.
+    // Applied with or without a head drive (a stereo camera does not need a
+    // driven one), and to every caller in the frame - this seam is the
+    // engine's single camera path, same as BS1/BS2's CalcView.
+    if (scenedraw::stereo_active()) {
+        g_srBaseLoc = *loc;
+        g_srBaseRot = *rot;
+        g_srBaseStampMs = now;
+        g_srBaseValid = true;
+        apply_eye_offset(loc, *rot, -1);
+        g_lastEyeSign = -1;
+        g_eyeLoc[0] = *loc;
+        g_eyeLocValid[0] = true;
+    } else {
+        g_srBaseValid = false;
+        const int eyeSign = bvr::vr::current_eye_sign();
+        if (eyeSign != 0) apply_eye_offset(loc, *rot, eyeSign);
+        g_lastEyeSign = eyeSign;
+        if (eyeSign != 0) {
+            g_eyeLoc[eyeSign < 0 ? 0 : 1] = *loc;
+            g_eyeLocValid[eyeSign < 0 ? 0 : 1] = true;
+        }
     }
 
     g_driveLane = lane;
@@ -458,26 +727,38 @@ void publish_projection_claim() {
     g_lastClaimAspect.store(aspect, std::memory_order_relaxed);
 }
 
-// The vrstereo one-toggle, rung 1: quad <-> projection. Runs on the GAME
-// thread only (posted from the overlay via g_vrstereoPending). NO 1t rung on
-// this game by design - DR-I5 measured a threaded ring-buffered substrate
-// (BS2's shape, not BS1's kick-and-wait). Rung 3 extends ON with pair pacing
-// and the doubled scene build; the arming order is already BS2's proven one.
-// OFF returns to the MONO QUAD (session stays live), symmetric across every
-// stereo backend so an off can never strand one armed (BS2's asymmetric-off
-// trap).
-void apply_vrstereo(bool on) {
+// The vrstereo one-toggle. Runs on the GAME thread only (seam commands run
+// there via the pump handover; the overlay posts via g_vrstereoPending -
+// load-bearing at rung 3, where ON installs a hook). NO 1t rung on this game
+// by design - DR-I5 measured a threaded ring-buffered substrate (BS2's
+// shape, not BS1's kick-and-wait), so the ladder is BS2's minus 1t:
+//   ON  : set_enabled -> set_camera_mode -> set_sr_pair_pacing ->
+//         scenedraw install + arm  (monoOnly stops before pair pacing -
+//         the rung-1 grade, projection with both eyes the same image)
+//   OFF : scenedraw disarm -> set_alternate_eye(false) -> set_camera_mode
+//         (exact reverse, symmetric across every backend so an off can
+//         never strand one armed - BS2's asymmetric-off trap. Session
+//         stays live: OFF returns to the mono quad, not to flat.)
+void apply_vrstereo(bool on, bool monoOnly = false) {
     if (on) {
         bvr::vr::set_enabled(true);
         bvr::vr::set_camera_mode(true);
         g_stereoArmed.store(true, std::memory_order_relaxed);
-        BVR_LOG("[bsi] VRSTEREO ON (I5 rung 1): camera mode requested - core flips quad -> "
-                "projection once views locate. Claim tanV=%.4f hfov=%.1f deg aspect=%.4f. "
-                "Mono projection: both eyes the same image until AER/SR arm.",
+        bool srArmed = false;
+        if (!monoOnly) {
+            bvr::vr::set_sr_pair_pacing(true);
+            srArmed = scenedraw::install() && scenedraw::set_stereo(true);
+        }
+        BVR_LOG("[bsi] VRSTEREO ON (%s): claim tanV=%.4f hfov=%.1f deg aspect=%.4f%s",
+                monoOnly     ? "mono projection - both eyes the same image"
+                : srArmed    ? "SequentialReentry - doubled scene build, pair-paced"
+                             : "projection only - SR REFUSED, see [reentry] above",
                 g_claimTanV.load(std::memory_order_relaxed),
                 g_lastClaimHfovDeg.load(std::memory_order_relaxed),
-                g_lastClaimAspect.load(std::memory_order_relaxed));
+                g_lastClaimAspect.load(std::memory_order_relaxed),
+                srArmed ? " (inter-eye + reentry beats are the acceptance instruments)" : "");
     } else {
+        scenedraw::set_stereo(false);
         bvr::vr::set_alternate_eye(false);
         bvr::vr::set_camera_mode(false);
         g_stereoArmed.store(false, std::memory_order_relaxed);
@@ -651,6 +932,32 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
 
     if (!g_enabled.load(std::memory_order_relaxed)) return;
 
+    // Rung 3c: the pass-2 fork. Inside the RE-ENTERED scene draw this seam
+    // must replay pass 1's cached base (right-eyed) and do NOTHING else - no
+    // census, no snapshot, no pump poll, no drive, no heartbeat, and above
+    // all no g_lastCallMs update, so "camera silent" keeps meaning the
+    // NORMAL pass went silent (BS2's discipline). Absolute writes make the
+    // several pass-2 dispatches per draw idempotent; the burst counter
+    // advances once per doubled draw via the seq edge, which is what makes
+    // "bursts == second draws" an exact gate.
+    if (scenedraw::second_pass_for_current_thread()) {
+        if (loc && rot && g_srBaseValid &&
+            GetTickCount64() - g_srBaseStampMs <= 100) {
+            *loc = g_srBaseLoc;
+            *rot = g_srBaseRot;
+            apply_eye_offset(loc, *rot, +1);
+            g_eyeLoc[1] = *loc;
+            g_eyeLocValid[1] = true;
+            g_srReplayCalls.fetch_add(1, std::memory_order_relaxed);
+            const uint32_t seq = scenedraw::second_pass_seq();
+            if (seq != g_srLastSeq) {
+                g_srLastSeq = seq;
+                g_srReplayBursts.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        return;
+    }
+
     const uint32_t count = g_callCount.fetch_add(1, std::memory_order_relaxed) + 1;
     const uint64_t now = GetTickCount64();
     const uint64_t prevCallMs = g_lastCallMs.exchange(now, std::memory_order_relaxed);
@@ -665,6 +972,15 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         // counted and then leave.
         g_foreignTidCalls.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
+
+    // Rung 3a census: which return address is calling, at what rate.
+    {
+        const uint32_t callerRva = to_rva(_ReturnAddress());
+        note_caller(callerRva);
+        maybe_backtrace(callerRva, _AddressOfReturnAddress());
+        maybe_scene_probe(_AddressOfReturnAddress());
+        maybe_vt_probe();
     }
 
     // Snapshot for the heartbeat. const locals: nothing here can write back.
@@ -829,6 +1145,10 @@ void* last_player_controller() {
     return g_lastSelf.load(std::memory_order_relaxed);
 }
 
+uint32_t second_pass_replays() {
+    return g_srReplayBursts.load(std::memory_order_relaxed);
+}
+
 uint32_t camera_tid() {
     return g_cameraTid.load(std::memory_order_relaxed);
 }
@@ -912,14 +1232,18 @@ bool handle_drive_verb(const char* cmd, const char* args) {
     if (strcmp(cmd, "vrstereo") == 0) {
         // Seam commands already run on the game thread (the pump handover), so
         // this applies directly; the overlay checkbox posts instead.
-        if (strncmp(args, "on", 2) == 0) {
+        if (strncmp(args, "mono", 4) == 0) {
+            apply_vrstereo(true, /*monoOnly=*/true);
+        } else if (strncmp(args, "on", 2) == 0) {
             apply_vrstereo(true);
         } else if (strncmp(args, "off", 3) == 0) {
             apply_vrstereo(false);
         } else {
-            BVR_LOG("[bsi] vrstereo: armed=%d camMode=%d session=%s | usage: vrstereo on|off",
+            BVR_LOG("[bsi] vrstereo: armed=%d sr=%d camMode=%d session=%s | usage: vrstereo "
+                    "on|mono|off",
                     g_stereoArmed.load(std::memory_order_relaxed) ? 1 : 0,
-                    bvr::vr::vr_camera_mode() ? 1 : 0, bvr::vr::session_state_name());
+                    scenedraw::stereo_active() ? 1 : 0, bvr::vr::vr_camera_mode() ? 1 : 0,
+                    bvr::vr::session_state_name());
         }
         return true;
     }
@@ -1037,6 +1361,38 @@ bool handle_command(const char* args) {
                 "'camera' = clear with [this+0x240] non-null; the third bucket is the view "
                 "target and the controller's own fields, deliberately NOT separated because "
                 "that needs a virtual call out of a detour.");
+        return true;
+    }
+    if (strncmp(args, "callers", 7) == 0) {
+        dump_callers();
+        return true;
+    }
+    if (strncmp(args, "vtprobe", 7) == 0) {
+        unsigned va = 0, slot = 0;
+        if (sscanf_s(args + 7, "%x %x", &va, &slot) == 2 && va != 0 && slot < 0x10000) {
+            g_vtProbe.store((static_cast<uint64_t>(va) << 16) | slot,
+                            std::memory_order_relaxed);
+            BVR_LOG("[bsi] camera: vtprobe armed for [*0x%08X] slot +0x%X", va, slot);
+        } else {
+            BVR_LOG("[bsi] usage: bsicam vtprobe <globalVaHex> <slotHex>");
+        }
+        return true;
+    }
+    if (strncmp(args, "scenedraw", 9) == 0) {
+        g_sceneProbeArmed.store(true, std::memory_order_relaxed);
+        BVR_LOG("[bsi] camera: scene-draw probe armed (one-shot)");
+        return true;
+    }
+    if (strncmp(args, "stack", 5) == 0) {
+        const char* v = args + 5;
+        while (*v == ' ') ++v;
+        unsigned rva = 0;
+        if (sscanf_s(v, "%x", &rva) == 1 && rva != 0) {
+            g_stackWantCaller.store(rva, std::memory_order_relaxed);
+            BVR_LOG("[bsi] camera: one-shot backtrace armed for caller 0x%X", rva);
+        } else {
+            BVR_LOG("[bsi] usage: bsicam stack <callerRetRvaHex>");
+        }
         return true;
     }
     if (strncmp(args, "tid", 3) == 0) {

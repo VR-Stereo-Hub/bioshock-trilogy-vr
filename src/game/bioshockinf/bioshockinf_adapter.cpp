@@ -8,6 +8,7 @@
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
 #include "game/bioshockinf/reflect.h"
+#include "game/bioshockinf/scenedraw.h"
 
 #include <imgui.h>
 
@@ -38,7 +39,11 @@ uint32_t BioshockInfAdapter::capabilities() const {
     // BS2, which both key this off hook_live(). On this game the camera hook is
     // read-only in I2, so the bit advertises that the seam is real and reached,
     // which is exactly what a later milestone needs to know.
-    return camera::has_fired() ? bvr::game::CAP_CAMERA_OVERRIDE : 0u;
+    uint32_t caps = camera::has_fired() ? bvr::game::CAP_CAMERA_OVERRIDE : 0u;
+    // Same rule for the SR bit: earned by the scene-draw hook being LIVE (it
+    // observes every frame once installed), not by an address resolving.
+    if (scenedraw::hook_live()) caps |= bvr::game::CAP_SCENE_REENTRY;
+    return caps;
 }
 
 bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
@@ -102,11 +107,12 @@ void BioshockInfAdapter::drawDebugUi() {
     ImGui::Text("presents: %llu   capabilities: 0x%X",
                 static_cast<unsigned long long>(bvr::d3d11_hook::present_count()),
                 capabilities());
-    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsivr | vrstereo | vraer | bsifov | "
-                        "ipd | simhead | recenter | worldscale | vrpreset | vrrec | bsireflect | "
-                        "bsinative | bsicall | vrcmd");
+    ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsivr | vrstereo | vraer | reentry | "
+                        "bsifov | ipd | simhead | recenter | worldscale | vrpreset | vrrec | "
+                        "bsireflect | bsinative | bsicall | vrcmd");
 
     camera::draw_debug_ui();
+    scenedraw::draw_debug_ui();
     reflect::draw_debug_ui();
 }
 
@@ -126,8 +132,14 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
         return true;
     }
     // I4 drive verbs (simhead / recenter / worldscale / vrpreset) + the I5
-    // stereo verbs (vrstereo / bsifov) + vrrec.
+    // stereo verbs (vrstereo / vraer / ipd / bsifov) + vrrec.
     if (camera::handle_drive_verb(cmd, args)) return true;
+    if (strcmp(cmd, "reentry") == 0) {
+        if (!scenedraw::handle_command(args))
+            BVR_LOG("[bsi] reentry: unknown subcommand. reentry status|reset|pulse [n]|"
+                    "stereo on|off");
+        return true;
+    }
     if (strcmp(cmd, "vrrec") == 0) {
         recorder::handle_command(args);
         return true;
