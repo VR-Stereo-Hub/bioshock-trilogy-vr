@@ -209,7 +209,7 @@ Every command applies at a frame boundary, and a whole batch applies atomically 
 | Command | Effect |
 |---|---|
 | `ipd <mm>` | default 63 |
-| `fov <halfH> <halfV>` | symmetric-outer shorthand; `fov 55 48` gives the mod's log line `h=55.0 v=48.0` |
+| `fov <halfH> <halfV>` | symmetric-outer shorthand; `fov 54 55` gives the mod's log line `h=54.0 v=55.0`. The sim DEFAULTS are pinned to these measured VDXR values since session 37 (they were the published-figure guess h=55 v=48 before - wide and short, while the real eye is square) |
 | `fov eye <h> <l> <r> <u> <d>` | full asymmetric, degrees |
 | `fov quest3` | restore the defaults |
 | `worldscale <s>` | scale head/hand translations |
@@ -249,9 +249,16 @@ The JSON is the point. Beyond the poses and controls it carries:
   premultiplied flag. This is how you tell a head-locked HUD (`space: view`) from
   a world-locked laser dot (`space: local`).
 - `derived.eyeSeparationM` - assert this equals the IPD, and stereo is real.
-- `derived.claimRatioH` - the game's claimed horizontal tangent over the eye's
-  actual one. **1.0 means the claim is right.** Session 28's yaw warp was a 1.84x
-  under-claim that took three sessions to infer; here it is one number.
+- `derived.claimRatioH` - the game's claimed horizontal tangent over the EYE's
+  actual one (claim/eye - NOT claim/render). **1.0 means the render is
+  eye-matched with an honest claim.** A mod that deliberately over-renders with
+  an honest claim reads ABOVE 1.0 by design - BS2's 16:9 FOV fill reads ~1.8 and
+  is correct. The real per-config assertion (session 37) is
+  `measured == tan(law(option, aspect)/2) / eyeTanH`; note the sim's default eye
+  is ASYMMETRIC (outer 54 / inner 44), so eyeTanH averages the two - send
+  `fov 54 55 54` for a symmetric eye when you want clean tan(54) math. Session
+  28's yaw warp was a 1.84x claim/RENDER mismatch - that class shows up here as
+  a measured value that disagrees with the law-derived expectation.
 - `stats.meanLumaL/R`, `stats.nonBlackPctL/R` - is anything actually rendered.
 
 ### 2.7 Scripted sequences
@@ -312,6 +319,44 @@ apart - the gun points somewhere other than where it shoots.
    moved it 110 UU in X, a 0.4 m drop moved it 40 UU in Z. That is the ground truth for
    "is the model following the controller"; the picture is the confirmation, not the proof.
 
+**BS2 delta (session 40, RESOLVED session 41): the legacy `aimRayMaxDevDeg` ASSUMES ONE
+LASER.** BS2 renders a beam and a dot per hand (native dual-wield), and the legacy field
+folds the second hand's dots in as deviation from the first hand's ray - it reads 47-75 deg
+dual-beam and that is NOT a regression. Session 41 added **`aimRayMaxDevDegL` /
+`aimRayMaxDevDegR`** (each quad assigned to the hand whose ray it deviates least from, with
+`aimRayDotsL/R` counts): the dual-beam acceptance now reads the per-hand fields - session-41
+reference at the save, both beams live, zero trims: **L 0.0000 / R 0.0000**. The legacy
+field keeps its old semantics for recorded-baseline comparability; ignore it dual-beam.
+Note the metric measures against the SIM'S RAW aim pose, so a tuned aim trim shows up as
+exactly the trim (5/3 deg trim -> 5.829): zero the trims for the coupling number, or expect
+the trim value.
+
+Two BS2-native instruments cover what it cannot:
+
+- **`vrbones axes [idx]`** - the MESH orientation read the coupling metric never was (the
+  session-39 misalignment survived to the headset because nothing measured the mesh).
+  SESSION-41 CORRECTION: the `cur` quat samples the LIVE BANK, which mid-frame races
+  between the engine's restamp and the drive's recompose - two same-pose samples read 79
+  deg apart in boot A. Use the **`written q` / `anim q`** line instead (race-free): with
+  `vrhands anim off` the written quat must be BITWISE stable across reads (rigid
+  composition; the session-40 0.21-deg rest oracle lives in this mode); with anim ON the
+  written quat oscillates at idle-sway amplitude (~1.7 deg measured) and `anim q` tracks
+  the engine pose - that oscillation IS the adoption-liveness signal, not a defect.
+- **per-hand `vrhands status` write-loc** - each cluster reports its own last write, so
+  moving one controller and watching both numbers proves decoupling directly (session 40:
+  35.0 UU on the moved hand, 0.0 on the other; 120.0 UU separation for 1.2 m apart;
+  re-measured exact under the session-41 animation-preserving drive).
+
+**BS2 deltas (session 39, first BS2 coupling run):** the same commands and oracles apply
+(`-Game bs2`; `vraim handray on` + `vraim laser on` + `vrhands on` is the arm set). Drive
+the stations manually with `xrsim-cmd` + `xrsim-shot -Out` (the `.xrs` `@shot` naming wart).
+Reference pass at the user's save: aimRayMaxDevDeg **0/0/0/0.02/0** across the five
+stations; write-loc tracked at **exactly 100 UU/m** (0.25 m -> 25.0 UU); the Adonis scene is
+DEEP in trap-2 territory (meanLuma ~2), so the model verdict came from write-loc + a
+lasers-OFF station diff (localized drill-region cells moving), never from mean-abs. BS2's
+melee drill never traverses the fire seam on air swings - use a gun (F9 GiveAll, digit-key
+switch) for any seam-counter oracle.
+
 ### 2.9 Measured baselines (BS1, 2026-08-01, in gameplay)
 
 Numbers from a real acceptance run, so a future regression has something to
@@ -325,6 +370,28 @@ compare against rather than a guess:
 | `derived.claimRatioH` with stereo armed | **0.98** (1.0 is a perfect FOV claim) |
 | frames/s FOCUSED, VISIBLE, refocused | **90 / 91.7 / 89.7** - no collapse across a focus loss |
 | `step 5` / `step 20` | exactly 5 / exactly 20 frames |
+
+### 2.10 Presentation-lane reads (BS2, session 42)
+
+- **HUD-panel-vs-eye oracle, proven on BS2**: `vrhud status` first line must read
+  `redirects` climbing with `leaks=0` and the routes line `stranded=0` per reason;
+  the capture JSON then shows the HUD quad as an EXTRA layer with `space: view`
+  (BS2 dual-beam baseline 11 layers -> 12 with the panel) whose pose z equals
+  `-hudQuadDistM`. `vrhud force on` arms the redirect without live SR stereo -
+  the flat A/B lever. The window keeps its HUD via the composite (game-shot).
+- **`vrcine status` is a verification read**: `barDraw`/`pixelWatch` side by side
+  (bars hidden => `barDraw=1 pixelWatch=0` is the DESIGN), the measured bar vertex
+  count, `effectsInFrame`, the postfx rule + square flag, and `dumparm` state.
+  A counter is not evidence until you know which population it counts; pair every
+  zero with a positive control (BS1 session-30 lesson, carried).
+- **`[flick] min=N ...` once per minute** (BS2): per-site restamp-catch deltas +
+  write->catch latency maxima + cadence baseline. Ambient sim baseline at the
+  save: pe1 ~1900/min hands + ~950/min wskel, everything else 0, dmax 16 ms.
+  Read any 12+ min play log for the ~10-min flicker onset correlation.
+- **BS2 pause menu**: seam commands and the pad are BOTH dead while paused (the
+  PE-tail service lane starves - ENGINE_NOTES s42 #4); an unfocused-paused game
+  writes nothing and false-positives log-age wedge checks. `game-key Space` wakes
+  a healthy game instantly; the real wedge needs a restart.
 
 ---
 
@@ -376,7 +443,7 @@ $a.NonBlackPctL      -gt 50     # something was rendered
 | frames/s while FOCUSED | `state.frame` delta | near `refreshHz` | a collapse to ~10/s is the session-33 pacing bug |
 | `layersLastFrame` | state.json | 1 projection + quads | 0 = nothing submitted; the mod is not in camera mode |
 | `eyeSeparationM` | capture JSON | == configured IPD | 0 = mono submitted as stereo |
-| `claimRatioH` | capture JSON | 1.0 +/- a few percent | far from 1.0 = the image is magnified in the headset |
+| `claimRatioH` | capture JSON | the law-derived expected value for the config (== 1.0 only when render is eye-matched; BS2's 16:9 fill legitimately reads ~1.8 - see 2.6) | disagreement with the EXPECTED value = a dishonest claim = magnification/warp in the headset |
 | `errors`, `endsOutOfOrder` | state.json | 0 | any = read `lastCmdError` before trusting a capture |
 
 ---

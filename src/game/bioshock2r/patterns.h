@@ -82,10 +82,12 @@ constexpr uint32_t kProcessEventVtblByteOffset = 0xC;
 //   the live caller census (deny-by-default gate data for pass 2).
 // - Draw reads its camera from the viewport's camera actor at the head:
 //   [[arg1+0x48] + 0x1EC..0x1F4] = loc floats, [+0x1F8..0x200] = rot ints -
-//   written earlier by the tick-side PlayerCalcView dispatch (fn 0x4D1080,
-//   references the documented FName index global 0x17D9A08). CalcView does
-//   NOT run inside Draw on BS2 (BS1 difference!) - a doubled Draw needs the
-//   cached fields poked, not a CalcView replay.
+//   written by the PlayerCalcView dispatch (fn 0x4D1080, references the
+//   documented FName index global 0x17D9A08). CalcView runs EXACTLY once
+//   inside every Draw (live-verified calcIn == draws every beat - see
+//   kViewportCamActorOffset below), so pass 2 replays CalcView per eye; an
+//   earlier session-26 reading of this comment claimed the opposite and is
+//   corrected here.
 // - 0x5C7C80 is NOT a frame submit despite wearing BS1's submit shape
 //   (TLS frame-id spin-wait, camera globals, ret 0xC, tail event kick): its
 //   `this` is the FContentStreamingManager global and the camera globals it
@@ -147,13 +149,119 @@ constexpr uint32_t kSceneBuildGameplayRetRva = 0xCD5D7B;
 // a wrong offset - see ENGINE_NOTES "BS2 does not render non-16:9 cleanly".
 constexpr int kRayBlockCb0FloatIndex = 16;
 
-// Render-thread sync pair (banked for the 1t fallback, unconsumed): the
-// endframe fn 0x501EA0 triggers FEventWin global [0x1A69294] once per
-// present (kick2 site 0x5029BA) and reads its sibling [0x1A69298]; static
-// readers of the pair include 0xB929F2 (render-thread loop candidate).
-// Only derived further if threaded-mode doubling proves unstable.
+// ---- CUTSCENE LETTERBOX BARS (session 42 round 2) ---------------------------
+// BS2's gameswf bars sprite tessellates to ELEVEN vertices, not BS1's 29.
+// Derivation (two independent runs): the classifier's textureless census
+// logged an 11-vert textureless gameswf draw at the EXACT letterbox-ON moment
+// of the Adonis plasmid-injection cutscene - in the user's in-headset run
+// (01:07:07, their session) and again in the sim replay of their save
+// (01:54:21.746 vs letterbox ON 01:54:22.335, top 166 / bottom 182 px) - and
+// never during plain gameplay across the whole session. Fed to
+// hud::set_bar_verts at adapter init; the classifier then SKIPS the draw
+// (bars hidden default) and bar_draw_active() becomes the sustained cinematic
+// hold signal the cine gates key on.
+constexpr unsigned kCineBarVerts = 11;
 
-// FContentStreamingManager view hand-off (telemetry hook only).
+// ---- THE FIRST-PERSON RIG (the Big Daddy helmet), session 34 ----------------
+// DrawIndexed index count of the helmet's PORTHOLE RING - the mesh that
+// surrounds the view and takes most of it once the viewmodel lens is wide.
+//
+// Derived 2026-07-31 from the FOREGROUND cluster of a full frame dump
+// (`dumpframe full` + `decode-framedump.ps1 -RayOffset 16 -FgBakeRvas @()
+// -ShowDraws 20`), which lists nine meshes: 3810, 3477, 23766, 12366, 10512,
+// 2778 (10512 and 2778 twice each) and 90. CONFIRMED THE ONLY WAY THAT WORKS -
+// by making it disappear. `reentry rig skip <n>` + `rig hide` + a flat
+// screenshot, one candidate at a time:
+//
+//   23766, 12366, 10512  removed nothing visible (occluded or depth-only)
+//   all nine together    removed the porthole AND the drill - so the ring IS
+//                        in this pass, which is what justified bisecting
+//   {3810, 3477}         removed the porthole, KEPT the drill
+//   3477 alone           porthole intact
+//   3810 alone           porthole GONE, drill kept, world fills the frame  <--
+//
+// Size is NOT the clue: the ring is 3810 indices while three larger meshes in
+// the same pass are invisible. Guessing "biggest mesh = the thing filling the
+// screen" was wrong on the first try, and it is exactly the draw-count
+// inference BS1's rule forbids.
+//
+// Why an index count at all: inside one pass nothing else separates two meshes.
+// The helmet and the weapon share the lens, the render target and the callstack
+// (session 33 retracted `0xAECACF` as a foreground signature for that reason).
+// The count is a property of the mesh's geometry, so it is stable across
+// frames, positions and FOV values.
+//
+// This is a BS2 number for the BS2 Delta rig. Derive fresh, never copy.
+constexpr uint32_t kRigMeshIndexCounts[] = {3810};
+constexpr uint32_t kRigMeshCount = sizeof(kRigMeshIndexCounts) / sizeof(kRigMeshIndexCounts[0]);
+
+// Render-thread sync pair (banked, unconsumed): the endframe fn 0x501EA0
+// triggers FEventWin global [0x1A69294] once per present (kick2 site
+// 0x5029BA) and reads its sibling [0x1A69298]; static readers of the pair
+// include 0xB929F2 (render-thread loop candidate). Threaded-mode doubling
+// DID prove unstable (the vrstereo freeze), but the 1t route is the flush
+// point below (session 35), not this pair - kept for the record.
+
+// --- THE RENDER FLUSH POINT (sessions 35-36) - the vrstereo freeze chain ----
+// UGameEngine::Draw's tail makes exactly ONE static call to a render flush
+// point - the structural twin of BS1's 0x61D260, veto for veto. The SHAPE
+// transferred; every number below was derived fresh on this build with
+// tools/disasm-rva.py (session 35) and re-verified against the exe
+// 2026-08-02. Full derivation recipes: docs/bioshock2/ENGINE_NOTES.md
+// "The render flush point".
+//
+// Draw tail: mov ecx,[base+kRenderMgrGlobalRva] at 0x4EF493, then a call
+// (E8) at kFlushCallSiteRva -> link thunk kFlushThunkRva -> body
+// kFlushPointRva. `ret 8` (2 stack args: scene, view group), ecx = mgr.
+// Decision chain: seven vetoes that each select INLINE, then threaded iff
+// [kHwThreadsRva] / [kThreadDivisorRva] > 1.
+//   INLINE branch:   call thunk 0xE29B -> the drain (kDrainRva), then
+//                    pop esi; pop ebp; ret 8 - NOTHING AFTER, the property
+//                    that makes forcing this branch lossless (as on BS1).
+//   THREADED branch: mov ecx,[mgr+4]; call thunk 0x1FBF9 -> kGateWaitRva,
+//                    ret site kFlushThreadedRetRva. kGateWaitRva is
+//                    `cmp [esi+8],0; jne skip; Wait(INFINITE)` - the latch-
+//                    test-then-wait whose lost wakeup IS the vrstereo
+//                    freeze (live-confirmed 2026-08-02: the wedged second
+//                    draw's stack reads B8108F BB1963 69FD33 4EF4A6).
+// NEVER poke kHwThreadsRva to force the inline branch: BS1's equivalent
+// poke crashed a loader thread (other quotient consumers see a lie).
+// Hooking the flush point instead is why BS1 survives load crossings.
+constexpr uint32_t kFlushCallSiteRva = 0x4EF4A1; // E8 in Draw's tail, ret 0x4EF4A6
+constexpr uint32_t kFlushThunkRva = 0x24A28;     // E9 link thunk
+constexpr uint32_t kFlushPointRva = 0x69FC30;
+constexpr uint8_t kFlushPointPrologue[] = {0x55, 0x8B, 0xEC, 0x8B, 0x55, 0x0C,
+                                           0x8B, 0x45, 0x08, 0x56, 0x8B, 0xF1};
+// push ebp; mov ebp,esp; mov edx,[ebp+0xC]; mov eax,[ebp+8]; push esi; mov esi,ecx
+constexpr uint32_t kFlushThreadedRetRva = 0x69FD33; // ret site of the gate-wait call
+constexpr uint32_t kGateWaitRva = 0xBB1950;         // latch-test-then-Wait(INFINITE)
+constexpr uint32_t kEventWaitWrapperRva = 0xB8108F; // FEventWin Wait ret (vtbl +0x14)
+// The render manager the flush point writes (mgr is also the drain's `this`;
+// kMgrSceneSlotOffset is the slot the drain loads with no null check).
+constexpr uint32_t kRenderMgrGlobalRva = 0x17DBF4C; // read into ecx at 0x4EF493
+constexpr uint32_t kMgrSceneSlotOffset = 0x24;      // arg1 (scene) stored here
+constexpr uint32_t kMgrViewGroupOffset = 0x28;      // arg2 copied to 0x28..0x5C
+constexpr uint32_t kMgrViewGroupDwords = 14;
+constexpr uint32_t kMgrThreadedFlagOffset = 0x60;   // threaded stamp (0 = inline)
+constexpr uint32_t kMgrFlushSeenOffset = 0x64;      // flush-seen stamp (write 1)
+// The drain - the inline branch's whole body. After its SEH frame it loads
+// the scene from [this+kMgrSceneSlotOffset] and dereferences it with NO null
+// check (BS1's drain+0x33 crash shape), which is what the 1t drain guard is
+// for. The prologue constant stops before the absolute-VA scope-table push
+// (`68 <VA>`) - those bytes relocate with the image base.
+constexpr uint32_t kDrainRva = 0x69F3F0;
+constexpr uint8_t kDrainPrologue[] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+
+// Static build-identity gate for the flush hook, in verify_draw_chain's
+// shape: the E8 at kFlushCallSiteRva must land on kFlushThunkRva, whose E9
+// must land on kFlushPointRva, whose bytes must match kFlushPointPrologue.
+// Pure image reads - a different build names itself instead of being hooked.
+bool verify_flush_chain(const bvr::pattern_scan::ProcessImage& image);
+
+// FContentStreamingManager view hand-off (telemetry hook only). NOTE: this
+// is a DIFFERENT Draw-tail call from the flush point above - the streaming
+// hand-off returns to 0x4EF541, the flush call to 0x4EF4A6. Two tail calls,
+// two subsystems; do not conflate them (session 26 did).
 constexpr uint32_t kStreamViewRva = 0x5C7C80;
 constexpr uint8_t kStreamViewPrologue[] = {0x55, 0x8B, 0xEC, 0x64, 0xA1,
                                            0x2C, 0x00, 0x00, 0x00};
@@ -241,6 +349,271 @@ constexpr float kFgFovMaxDeg = 179.0f;
 // Game thread only.
 int32_t* hfov_option_ptr();
 void hfov_scan_rearm(const char* why);
+
+// --- the name system: GNames (session 39) -----------------------------------
+// Derived offline 2026-08-03 by reproducing core's find_fname_index_global
+// chain against the exe on disk (wide "PlayerCalcView" -> its single exec
+// xref at 0x4DCABE -> FName-ctor stub 0x19C04 -> SEH-wrapper body 0xB813B0 ->
+// worker stub 0x1B2A7 -> worker body 0xB81CE0) and capstone-walking the
+// worker: digit-suffix split, case-insensitive hash AND 0xFFF into a
+// 4096-bucket table at RVA 0x1A594D0 (chain via entry+0xC, wcsicmp against
+// entry+0x10), and on the FindType==2 path an index into GNames.Data with
+// 0x4000000 OR'd into entry+4. That is byte-for-byte BS1's session-20 SHAPE
+// (its worker 0x70D3C0, GNames 0x13904EC) with every number fresh, as the
+// hard rule demands. Full recipe: docs/bioshock2/ENGINE_NOTES.md session 39.
+constexpr uint32_t kGNamesArrayRva = 0x1A614D0; // TArray<FNameEntry*>: Data, +4 Count, +8 Max
+// FNameEntry layout (the worker's own accesses; fname_text() additionally
+// runs the entry self-index check before trusting any of it):
+constexpr uint32_t kFNameEntryIndexOffset = 0x0; // entry's own index (self-check)
+constexpr uint32_t kFNameEntryChainOffset = 0xC; // hash-chain next
+constexpr uint32_t kFNameEntryTextOffset = 0x10; // UTF-16 text in place
+
+// GNames[index] -> ASCII text (lossy narrowing of the UTF-16). Every
+// dereference is validated and the entry must carry its own index; false =
+// anything failed. Game thread only.
+bool fname_text(uint32_t index, char* out, size_t outCap);
+
+// Session 42: the REVERSE lookup (exact text -> index), for calling script
+// functions by name through the engine's own FindFunctionChecked +
+// ProcessEvent. Linear over the live table - callers cache the index.
+bool fname_find(const char* text, uint32_t* outIndex);
+
+// UObject-identity DERIVATION probe (session 41, log-only): dumps a live
+// object's header dwords, every +0x20..0x3C int32 that resolves through
+// GNames (the object's own FName index candidate) and every +0x24..0x44
+// pointer that looks like a UClass (heap object, in-image vtable, +0x28
+// FName resolves). BS1's layout was name +0x28 / class +0x30 with the UClass
+// vtable as the liveness gate - the never-copy rule says re-derive all three
+// here; the banked constants land once the log shows one stable answer
+// across >= 3 distinct classes. Game thread only.
+void probe_object_identity(const void* obj, const char* label);
+
+// The object's canonical class name via the session-41 identity chain
+// (obj+0x30 -> UClass, UClass-vtable gate, UClass+0x28 FName through GNames'
+// self-index check). Class-agnostic BY DESIGN - session-21's rule c: never
+// vtable-gate the OBJECT (BS1's MachineGun/GrenadeLauncher carried a
+// different native vtable and got pinned); the CLASS validates instead.
+// False = anything failed (out is emptied). Game thread only.
+bool object_class_name(const void* obj, char* out, size_t outCap);
+
+// --- GetPerfectFireStart impls (session 39, THE aim seam) -------------------
+// The live probe settled the dispatch question: GetPerfectFireStart never
+// passes ProcessEvent (0 hits over 6 real fire events while InitiateDamage
+// scored 6/6 there), so the hooks land on the C++ IMPLS - BS1's conclusion,
+// re-derived on this build. Derivation 2026-08-03, fully offline:
+//
+// WEAPON: vtable slot census over APlayerWeapon 0x112CC78 (capstone: classify
+// every slot body by `ret imm` + writes-through-pointer-args) left slot 221
+// (byte +0x374, link stub 0x180D9) -> body 0x89DCB0, and its disasm is the
+// BS1 shape with fresh offsets everywhere: owner pawn from weapon+0x47C,
+// out-param B <- pawn+0x1F8/0x1FC/0x200 (the documented actor ROT offsets),
+// out-param A <- pawn+0x1EC/0x1F0/0x1F4 (the actor LOC offsets) plus an
+// eye-height float pawn+0x5B8 added to Z, `ret 0xC` = (FVector* outLoc,
+// FRotator* outRot, FVector* outEffectLoc). AWeapon (0x1113DCC) and
+// APlayerMeleeWeapon (0x112EF08 - the drill) carry the SAME body at the SAME
+// slot: ONE hook covers the whole weapon family.
+//
+// ABILITY: not virtual - UAttackAbility's vtable (0x1112A18, RTTI walk) ends
+// at slot 67 with no candidate. Found by a .text sweep for `ret 0x10` bodies
+// reading BOTH pawn+0x1EC and +0x1F8: body 0x81CE80 in the ShockGame ability
+// region. Disasm: arg1 = the `ShockPlayer tester` script param (cached at
+// ability+0x120), tester's pawn from +0x478, rot -> arg3, loc+eyeheight ->
+// arg2, effect -> arg4, and it dispatches the ViewLocationOffset script event
+// through vtable slot 3 - which the census recorded exactly once per fire,
+// cross-confirming. Reached via link stub 0x10280 from exactly two static
+// callers (0x81D5B4 / 0x81DA17, the ability fire path).
+constexpr uint32_t kPlayerWeaponVtableRva = 0x112CC78;  // RTTI s24, consumed s39
+constexpr uint32_t kWeaponGpfsVtblByteOffset = 0x374;   // slot 221
+constexpr uint32_t kWeaponGpfsImplRva = 0x89DCB0;
+constexpr uint8_t kWeaponGpfsPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC,
+                                           0x30, 0x53, 0x56};
+// push ebp; mov ebp,esp; sub esp,0x30; push ebx; push esi
+constexpr uint32_t kAbilityGpfsImplRva = 0x81CE80;
+constexpr uint8_t kAbilityGpfsPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC,
+                                            0x64, 0x53, 0x56, 0x57};
+// push ebp; mov ebp,esp; sub esp,0x64; push ebx; push esi; push edi
+// Sibling vtables from the same RTTI walk, recorded for the knowledge base:
+// AWeapon 0x1113DCC, APlayerMeleeWeapon 0x112EF08, UAttackAbility 0x1112A18,
+// UProjectileAttackAbility 0x1112B60.
+
+// --- the AHands rig (session 39, live-derived at the save) ------------------
+// AHands vtable heap scan (vtscan 1125478): ONE live object + two stack false
+// positives (the documented shape). Its layout, read off the live dump:
+// - actor location floats at +0x1EC/+0x1F0/+0x1F4 and rotation ints at
+//   +0x1F8/+0x1FC/+0x200 (the standard AActor offsets this game's camera
+//   probe already documented), live values == the pawn/camera pose.
+// - **SkeletonInstance pointer at +0x430** (BS1's +0x3FC does NOT transfer):
+//   the pointed object's dword0 == base+0x10D0FC0 (the SkeletonInstance
+//   vtable) and its +0x04 points BACK at the AHands actor - vtable AND owner
+//   backpointer, a two-factor identity no false positive passes.
+// SkeletonInstance layout (live dump):
+// - +0x04 owner (AHands), +0x08 SharedSkeletonData (bone-name map for later),
+// - +0x44: {data, count, max} array of 64 bone transforms, 48-byte stride =
+//   hkQsTransform {translation vec4, rotation quat xyzw, scale vec4}. Entry 0
+//   read (0,0,-48|50) t, (0,0,-0.7071,0.7071) q, ~1.0 scale - unit quats and
+//   plausible component-space translations throughout.
+// - +0x50: a second {data,64,64} array, 48-byte stride, entries LED BY A
+//   POINTER - per-bone records, not the pose; recorded, unconsumed.
+// PROOF BY POKE: writing entry translations/scales in the +0x44 bank visibly
+// deformed the held rivet gun (localized img-diff, bbox on the viewmodel).
+// This bank IS the rendered skeleton. Scale pokes persisted across frames
+// (animation restamps translation/rotation, not scale); production writes
+// land per-CalcView regardless.
+constexpr uint32_t kAHandsVtableRva = 0x1125478;       // RTTI s24, consumed s39
+constexpr uint32_t kSkeletonInstanceVtableRva = 0x10D0FC0;
+constexpr uint32_t kAHandsSkelInstOffset = 0x430;      // AHands -> SkeletonInstance*
+constexpr uint32_t kAHandsActorLocOffset = 0x1EC;      // 3 floats
+constexpr uint32_t kAHandsActorRotOffset = 0x1F8;      // 3 int32 rotator units
+constexpr uint32_t kSkelOwnerOffset = 0x4;             // SkeletonInstance -> AHands*
+constexpr uint32_t kSkelSharedDataOffset = 0x8;        // -> SharedSkeletonData
+// The bone-name map lives INSIDE SharedSkeletonData at an offset that is
+// auto-detected live (session 40): BS1's map layout SHAPE - {pairs base at
+// +0x00, buckets int32* at +0xC, power-of-two bucket count at +0x10; 16-byte
+// pairs {next, fnameIdx, fnameNum, boneIndex}} - transfers as engine-family
+// shape, but its offset within SharedSkeletonData does not (BS1: +0xAC).
+// bones.cpp scans +0x00..+0x140 in 4-byte steps and accepts the ONE candidate
+// whose full bucket walk yields >= half the bone count in valid
+// {fname_text-resolvable name, index in range} pairs; ambiguity or zero
+// candidates logs and falls back to the raw `vrbones map` dword dump.
+constexpr uint32_t kSkelPoseArrayOffset = 0x44;        // {data, count, max}
+constexpr uint32_t kSkelPoseStride = 0x30;             // hkQsTransform
+constexpr uint32_t kSkelPoseTransOffset = 0x0;         // vec4
+constexpr uint32_t kSkelPoseQuatOffset = 0x10;         // xyzw
+constexpr uint32_t kSkelPoseScaleOffset = 0x20;        // vec4
+// Arm bones per side, from the live name dump (session 40): clavicle, upper
+// arm, lower arm, then the four twist bones. Deliberately NOT part of the
+// hand clusters - consumed by the arms mode (follow/hide) in bones.cpp; the
+// engine's own animation leaves them at the idle pose, which reads as FROZEN
+// arms floating beside driven hands.
+inline constexpr int kBoneArmL[] = {4, 5, 6, 29, 30, 31, 32};
+inline constexpr int kBoneArmR[] = {33, 34, 35, 58, 59, 60, 61};
+inline constexpr int kBoneArmCount = 7;
+
+// --- UObject identity + the holdable (session 41, live-derived at the save) --
+// `vraim oclass` probe on the LIVE AHands actor and two weapon objects:
+// - object's own FName index at +0x28 ('PlayerHands' / 'PlayerMachineGun' /
+//   'PlayerGrenadeLauncher' resolved through GNames);
+// - UClass pointer at +0x30 - a heap object whose dword0 is the SAME in-image
+//   vtable across all three classes (the liveness gate below) and whose own
+//   +0x28 FName is the canonical class name (number 0).
+// BS1's layout shape (name +0x28 / class +0x30) transferred; the UClass
+// vtable RVA is fresh (BS1: 0xE2F04C).
+constexpr uint32_t kUObjectNameIndexOffset = 0x28;
+constexpr uint32_t kUObjectClassOffset = 0x30;
+constexpr uint32_t kUClassVtableRva = 0x11E71F8;
+// The equipped-holdable pointer on the AHands actor. Derived twice, both
+// methods agreeing (session 41): (a) seam-anchored - the weapon object seen
+// at the GetPerfectFireStart detour occurs at EXACTLY ONE pointer slot in
+// hands+0x000..0x800, for two different weapons; (b) switch-diff - a
+// digit-key weapon switch changes exactly this slot, old/new values both
+// resolving as Player<Weapon> class objects. BS1's was +0x45C - same idea,
+// different offset, derived fresh per the hard rule.
+constexpr uint32_t kHandsCurrentHoldableOffset = 0x4B4;
+// The held weapon carries its OWN SkeletonInstance (BS1 session-20 fact,
+// re-proven here): scanning the live holdable +0x000..0x800 for a pointer
+// whose dword0 == base+kSkeletonInstanceVtableRva found exactly one, at
+// +0x430 (same offset as AHands - convergent layout, still derived fresh),
+// owner backpointer == the holdable, pose array valid (grenade launcher: 13
+// bones). This bank is the uniform-weapon-scale lane: the AHands pivot-63
+// scale is inverse-decomposed by attachment math (the ammo-canister proof,
+// session 40), while the weapon's own bank scales its parts together.
+constexpr uint32_t kWeaponSkelInstOffset = 0x430;
+
+struct GpfsImpls {
+    void* weapon = nullptr;   // null = identity gate failed, seam refused
+    void* ability = nullptr;
+};
+// Static build-identity gates (pure image reads): the weapon impl must be
+// reachable through the APlayerWeapon vtable slot (stub-following) AND match
+// its prologue; the ability impl must match its prologue. Fail-soft per slot.
+void resolve_gpfs_impls(const bvr::pattern_scan::ProcessImage& image, GpfsImpls& out);
+
+// --- fire-chain FName index globals (session 39, Lane A) --------------------
+// The same cached-index-global chain that resolves PlayerCalcView, run per
+// fire-chain dispatch name. Offline census 2026-08-03 of the exe found real
+// globals for BeginFiring (0x180B154), UseAbility (0x180C00C) and
+// InitiateDamage (0x180B804) - all initialized by one boot-time batch
+// registration function (the ctor-call run at ~0x976640 filling consecutive
+// 8-byte FName globals from RVA 0x180B14C up). GetPerfectFireStart and
+// ApplyAimError have wide strings but ZERO exec xrefs - no cached global, so
+// no native by-name dispatch SITE exists for them (the live ProcessEvent
+// probe is still the authority on visibility; a name can reach ProcessEvent
+// through script-to-script dispatch without any native global).
+// A name resolving null here is DATA, not an error - the probe uses whatever
+// subset resolved.
+struct FireNames {
+    static constexpr int kMax = 8;
+    const char* name[kMax] = {};
+    const uint8_t* indexGlobal[kMax] = {}; // null = no cached-index global
+    int count = 0;
+};
+void resolve_fire_names(const bvr::pattern_scan::ProcessImage& image, FireNames& out);
+
+// --- gamepad / input drive (session 40) --------------------------------------
+// P1.0 offline gate + derivation (scratchpad pefile/capstone walk of
+// Bioshock2HD.exe on disk; every stop re-derived fresh, BS1 numbers never
+// copied). Full recipe + disasm quotes: ENGINE_NOTES "Session 40".
+// - XINPUT1_3.dll imports exactly ordinals 2 (GetState) and 3 (SetState);
+//   each slot has ONE xref, a FF25 jmp thunk (GetState thunk 0xCDDA2B). E8
+//   census of the thunk: 3 call sites - an any-input boot poller (fn
+//   0x997B10, GetAsyncKeyState family beside it) and TWO inside 0xCD7180.
+// - 0xCD7180 IS UWindowsViewport::UpdateInput: viewport vtable slot 73
+//   (+0x124, jmp stub 0x27ED0), retn 8, args (BOOL reset at ebp+8 - gates a
+//   GetKeyState refresh block - FLOAT dt at ebp+0xC, multiplied into the
+//   axis event dispatches). ZERO static E8 callers - vtable-only dispatch,
+//   and the live count of 2 boot GetState calls total means NOTHING calls
+//   UpdateInput per frame on BS2: BS1's orphaned-pad-path class exactly.
+// - Pad block: branch A (connected global set) calls GetState(0) every call
+//   and re-stamps the global from the result; branch B at 0xCD81FA (global
+//   clear) probes GetState and SETS the global on success - the reconnect
+//   branch EXISTS, so pumping UpdateInput heals the boot "no pad" latch on
+//   the first pumped call; we never write the global ourselves.
+// - UWindowsClient::SetUseController = client vtable slot 73 (+0x124, body
+//   0xCD2680, retn 4): writes client+0xDC (UseController BOOL, read by the
+//   pad block's auto-prompt path), refreshes the localized prompt cache,
+//   notifies through GEngine, SaveConfig-family tail. Slot 72 (+0x120) is
+//   the getter (mov eax,[ecx+0xDC]; ret). Both classes land on slot 73 by
+//   coincidence - banked as TWO constants anyway (BS1's shared-slot trap:
+//   its 0x118 was one constant for both, a layout accident).
+// - UGameEngine global pointer RVA 0x1A638F0: the disconnect handler
+//   0x44E6C0 runs mov ecx,[0x123638F0]; mov ecx,[ecx+0x4C];
+//   call [vtbl+0x124](0) = GEngine->Client->SetUseController(FALSE) - the
+//   global, the engine->client offset 0x4C and the slot confirm each other
+//   in one instruction run. Live identity: [global] must carry vtable
+//   kGameEngineVtableRva (a check BS1's resolver never had).
+// - Client viewports TArray: data client+0x44, count client+0x48 (slot-70
+//   body iterates it; BS1's count was +0x4C - fresh derivation caught the
+//   delta). Viewport identity: vtable RVA below.
+// - RTTI walk fresh: UWindowsClient vtable 0x120B268, UWindowsViewport
+//   0x120B5FC.
+// - Pad-connected global RVA 0x14977A0 (33 refs, written only by the pad
+//   block + reconnect branch). Pad-prompt global RVA 0x1A7F07C. UpdateInput
+//   early-out global RVA 0x1A515D4 (lone bool setter 0x2E5A20; semantics
+//   TBD live - if the stick oracle stalls with the drive armed, read this).
+// - Self-skips (KB/M double-processing guard rails): DI keyboard block skips
+//   when the DI device global [0x1A7F018] is null or client+0xD8 is 0; the
+//   WM mouse block gates on viewport+0x220; the GetKeyState block gates on
+//   the reset arg (the drive passes 0). Same family as BS1; the live KB/M
+//   A/B stays the arbiter.
+// - Ini pad map audit (R10): [Engine.Input]-family XENON_* bindings are the
+//   native console map and align with core's composed behaviors 1:1 -
+//   XENON_RT=BeginFiring, XENON_LT=UseActiveAbility (dual-wield triggers),
+//   DPAD_UP/DOWN=ContextAmmoSelectionUp/Down (thumbrest ammo modifier),
+//   LB/RB=OpenAbility/WeaponMenu radials whose input contexts are swapped
+//   ENGINE-side ([RadialActive] sections) - BS1's radial pitch guard is
+//   likely unnecessary here; verify live before porting it.
+constexpr uint32_t kGameEnginePtrRva = 0x1A638F0;
+constexpr uint32_t kEngineClientOffset = 0x4C;
+constexpr uint32_t kWindowsClientVtableRva = 0x120B268;
+constexpr uint32_t kWindowsViewportVtableRva = 0x120B5FC;
+constexpr uint32_t kClientViewportsDataOffset = 0x44;
+constexpr uint32_t kClientViewportsCountOffset = 0x48;
+constexpr uint32_t kClientSetUseControllerVtblOffset = 0x124; // slot 73, retn 4
+constexpr uint32_t kViewportUpdateInputVtblOffset = 0x124;    // slot 73, retn 8
+constexpr uint32_t kClientUseControllerOffset = 0xDC; // BOOL (documented, unread)
+constexpr uint32_t kXInputGetStateIatRva = 0x1C0DBFC; // XINPUT1_3 ordinal 2 slot
+constexpr uint32_t kXInputSetStateIatRva = 0x1C0DBF8; // ordinal 3 - untouched
+constexpr uint32_t kPadConnectedFlagRva = 0x14977A0;  // documented, never written
 
 // --- heap scan for vtable-identified objects (session 25) -------------------
 // BS2 shape of BS1's scanner (bioshock1r/patterns.cpp - duplicated per the

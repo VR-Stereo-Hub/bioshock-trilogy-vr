@@ -25,6 +25,14 @@ registry picks by host exe name (`BioshockHD.exe` -> bioshock1r, `Bioshock2HD.ex
   If BS2's build affords a better or more native method (it has a native FOV slider, native
   dual-wield, ProcessEvent-by-name event hooking), USE THE BETTER METHOD. Before porting any BS1
   compensation machinery to BS2, first test whether BS2 needs it at all.
+- **KEEP THE PER-GAME MODS DECOUPLED. Duplicate code is fine** (user directive, 2026-07-31
+  session 34; the same was said for the BioShock Infinite mod). Copy a BS1 behaviour into
+  `bioshock2r/` and adapt it rather than promoting it to `src/core/` or parameterising the BS1
+  version - BS1 is the headset-accepted baseline and must not be put at risk to serve BS2, and
+  BS1 regressions cost headset time to even detect. Put something in `src/core/` only when it is
+  genuinely game-agnostic AND new; if a core change is unavoidable, keep it purely additive so
+  no BS1 path changes behaviour. Consolidation and de-duplication are deferred to a dedicated
+  "healing" session in the polish milestone.
 
 ## Session protocol
 

@@ -35,13 +35,19 @@ if ($Matches[1] -ne $version) {
 
 $stage = "$OutDir\bioshock-vr-v$version"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-New-Item -ItemType Directory -Path "$stage\preset" -Force | Out-Null
+# v0.7.0: one zip, two games - a preset folder per game (the BS2 one is
+# optional-by-design, its values are also baked into the DLL).
+New-Item -ItemType Directory -Path "$stage\preset-bs1" -Force | Out-Null
+New-Item -ItemType Directory -Path "$stage\preset-bs2" -Force | Out-Null
 
 Copy-Item "$bin\bioshockvr.dll" $stage
 Copy-Item "$bin\xinput1_3.dll"  $stage
 Copy-Item "$repo\README.md" "$stage\README.txt"
 foreach ($n in @("vrpreset.ini", "hands.ini", "weapons.ini", "HOW-TO-USE.txt")) {
-    Copy-Item "$repo\release\preset\$n" "$stage\preset\$n"
+    Copy-Item "$repo\release\preset-bs1\$n" "$stage\preset-bs1\$n"
+}
+foreach ($n in @("vrpreset.ini", "weapons.ini", "HOW-TO-USE.txt")) {
+    Copy-Item "$repo\release\preset-bs2\$n" "$stage\preset-bs2\$n"
 }
 
 $zip = "$OutDir\bioshock-vr-v$version.zip"

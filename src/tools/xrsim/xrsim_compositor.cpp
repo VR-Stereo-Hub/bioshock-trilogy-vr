@@ -742,9 +742,21 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
     // where it shoots", and it is otherwise a headset-only judgement.
     double aimDevMax = 0.0, aimDevSum = 0.0;
     int aimDevCount = 0;
+    // Per-hand version (BS2 session 41): the legacy number folds EVERY quad
+    // against the RIGHT hand's ray, so a second hand's laser reads as 47-75
+    // deg of "deviation" that is not one (the dual-beam trap, VERIFICATION
+    // 2.8). Here each quad is assigned to the hand whose ray it deviates
+    // least from, and the max/count accumulate per hand. The legacy fields
+    // keep their old semantics so recorded baselines stay comparable.
+    double devMaxH[2] = {0.0, 0.0};
+    int devCountH[2] = {0, 0};
     {
-        const Vec3 aimFwd = v3_norm(quat_rotate(sub.snap.aimWorld[1].q, Vec3{0.0f, 0.0f, -1.0f}));
-        const Vec3 gripPos = sub.snap.gripWorld[1].p;
+        Vec3 aimFwdH[2], gripPosH[2];
+        for (int h = 0; h < 2; ++h) {
+            aimFwdH[h] =
+                v3_norm(quat_rotate(sub.snap.aimWorld[h].q, Vec3{0.0f, 0.0f, -1.0f}));
+            gripPosH[h] = sub.snap.gripWorld[h].p;
+        }
         for (uint32_t i = 0; i < sub.layerCount; ++i) {
             const SimLayer& L = sub.layers[i];
             if (L.type != XR_TYPE_COMPOSITION_LAYER_QUAD) continue;
@@ -755,23 +767,40 @@ std::string build_json(const SimSubmission& sub, const std::vector<LayerStat>& s
             bool tracked = true;
             space_pose(*sp, sub.snap, base, tracked);
             const Pose quadWorld = pose_mul(base, from_xr(L.pose));
-            const Vec3 d = v3_sub(quadWorld.p, gripPos);
-            if (v3_len(d) < 0.05f) continue; // too close to the hand to be meaningful
-            double c = v3_dot(v3_norm(d), aimFwd);
-            if (c > 1.0) c = 1.0;
-            if (c < -1.0) c = -1.0;
-            const double deg = acos(c) * 180.0 / 3.14159265358979323846;
-            aimDevSum += deg;
-            ++aimDevCount;
-            if (deg > aimDevMax) aimDevMax = deg;
+            double degH[2] = {-1.0, -1.0};
+            for (int h = 0; h < 2; ++h) {
+                const Vec3 d = v3_sub(quadWorld.p, gripPosH[h]);
+                if (v3_len(d) < 0.05f) continue; // too close to be meaningful
+                double c = v3_dot(v3_norm(d), aimFwdH[h]);
+                if (c > 1.0) c = 1.0;
+                if (c < -1.0) c = -1.0;
+                degH[h] = acos(c) * 180.0 / 3.14159265358979323846;
+            }
+            // Legacy accumulation: right hand, every quad (unchanged).
+            if (degH[1] >= 0.0) {
+                aimDevSum += degH[1];
+                ++aimDevCount;
+                if (degH[1] > aimDevMax) aimDevMax = degH[1];
+            }
+            // Per-hand: the quad belongs to the nearest ray.
+            int owner = -1;
+            if (degH[0] >= 0.0 && (degH[1] < 0.0 || degH[0] <= degH[1])) owner = 0;
+            else if (degH[1] >= 0.0) owner = 1;
+            if (owner >= 0) {
+                ++devCountH[owner];
+                if (degH[owner] > devMaxH[owner]) devMaxH[owner] = degH[owner];
+            }
         }
     }
 
     sprintf_s(buf, "  \"derived\": {\"eyeSeparationM\": %.6f, \"ipdM\": %.6f, "
                    "\"claimTanH\": %.5f, \"eyeTanH\": %.5f, \"claimRatioH\": %.5f, "
-                   "\"aimRayDots\": %d, \"aimRayMaxDevDeg\": %.4f, \"aimRayMeanDevDeg\": %.4f},\n",
+                   "\"aimRayDots\": %d, \"aimRayMaxDevDeg\": %.4f, \"aimRayMeanDevDeg\": %.4f, "
+                   "\"aimRayDotsL\": %d, \"aimRayMaxDevDegL\": %.4f, "
+                   "\"aimRayDotsR\": %d, \"aimRayMaxDevDegR\": %.4f},\n",
               eyeSep, r.ipdM, claimTanH, eyeTanH, (eyeTanH > 0.0) ? claimTanH / eyeTanH : 0.0,
-              aimDevCount, aimDevMax, (aimDevCount > 0) ? aimDevSum / aimDevCount : 0.0);
+              aimDevCount, aimDevMax, (aimDevCount > 0) ? aimDevSum / aimDevCount : 0.0,
+              devCountH[0], devMaxH[0], devCountH[1], devMaxH[1]);
     out += buf;
 
     sprintf_s(buf, "  \"stats\": {\"meanLumaL\": %.2f, \"meanLumaR\": %.2f, "

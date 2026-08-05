@@ -73,12 +73,23 @@ add_library(bioshockvr SHARED
     game/bioshock1r/recorder.h
     game/bioshock1r/scenedraw.cpp
     game/bioshock1r/scenedraw.h
+    game/bioshock2r/aim.cpp
+    game/bioshock2r/aim.h
     game/bioshock2r/bioshock2r_adapter.cpp
     game/bioshock2r/bioshock2r_adapter.h
+    game/bioshock2r/body.cpp
+    game/bioshock2r/body.h
+    game/bioshock2r/bones.cpp
+    game/bioshock2r/bones.h
     game/bioshock2r/camera.cpp
     game/bioshock2r/camera.h
+    game/bioshock2r/frame_context.h
     game/bioshock2r/game_ini.cpp
     game/bioshock2r/game_ini.h
+    game/bioshock2r/hands.cpp
+    game/bioshock2r/hands.h
+    game/bioshock2r/input_drive.cpp
+    game/bioshock2r/input_drive.h
     game/bioshock2r/patterns.cpp
     game/bioshock2r/patterns.h
     game/bioshock2r/scenedraw.cpp

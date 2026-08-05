@@ -36,6 +36,11 @@ void set_fov_override(float hfovDeg);
 // stale-restore both key on it). Game thread only.
 bool calcview_silent(uint64_t maxAgeMs);
 
+// True when the LAST observed CalcView rode the gameplay view-actor vtable.
+// False = the "menu shape" (pause and friends, which still tick CalcView).
+// Session 42: menukey gate leg. Game thread only.
+bool last_strict_gameplay();
+
 // Full ImGui section: hook status, telemetry, and the M3 camera controls.
 // Called from the overlay through IGameAdapter::drawDebugUi().
 void draw_debug_ui();

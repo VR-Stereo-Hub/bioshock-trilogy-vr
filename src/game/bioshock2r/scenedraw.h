@@ -59,6 +59,12 @@ bool stereo_active();
 // run ONLY the replay (second_pass_replay) - none of its normal body.
 bool second_pass_for_current_thread(float* yawDegOut);
 
+// Side-effect-free variant for observers (bones' absorb-repaint): true while
+// the current thread is inside the second Draw. Unlike the consumer above it
+// increments nothing, so it can be polled without disturbing the pass-2
+// dispatch accounting.
+bool in_second_draw();
+
 // One-toggle "VR stereo" request: posts the on/off intent; the game thread
 // applies camera mode + stereo outside any hooked call (the overlay checkbox
 // draws on the render thread and must never install hooks itself).
@@ -73,6 +79,15 @@ void request_vrstereo(bool on);
 void apply_pending_vrstereo();
 
 // Read-only telemetry section for the overlay (control is commands-only).
+// Session 34: the first-person rig (the Big Daddy helmet). Hiding it is the
+// only lever that gives the FOV back once the viewmodel lens matches a wide
+// world lens - the foreground eye is fixed on this game, so a wider lens simply
+// reveals a mesh sitting inches in front of it. The control lives in the camera
+// overlay next to the FOV fill it trades against; the state lives here, with
+// the draw hooks. `reentry rig hide|show|skip <n>|clear|status` is the seam.
+bool rig_hidden();
+void set_rig_hidden(bool on);
+
 void draw_debug_ui();
 
 } // namespace bvr::b2r::scenedraw

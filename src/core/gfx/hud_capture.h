@@ -200,6 +200,29 @@ bool cinematic_hold();
 // agreement between them is real evidence. `vrcine status` reports both.
 void get_bar_stats(unsigned* skipped, unsigned* intervalsWithBars, unsigned* lastVertexCount);
 
+// ---- Session 42: backbuffer-composite pipelines (BS2 opt-in) -----------------
+// BS2 composites gameswf directly on the BACKBUFFER (bind = RENDER_TARGET
+// only, no SHADER_RESOURCE) and its tonemap is an INDEXED 6-index quad - both
+// fail the BS1-derived fingerprints, so with the flag off the classifier
+// never identifies a HUD target on such a game. Opt-in per game at adapter
+// init; DEFAULT OFF, which keeps every BS1 code path bit-identical.
+void set_backbuffer_composite(bool on);
+bool backbuffer_composite();
+
+// ---- Session 42: auto-arm a frame dump on a classifier edge ------------------
+// The screen kinds that still need fingerprints (loading, FMV entry, whatever a
+// playthrough reaches) are transitions: they are OVER before the 1 Hz command
+// poll could arm `dumpframe` by hand. Stage the arm here and it fires on the
+// selected RISING edge, once, then disarms itself. Default off; when off the
+// cost is one relaxed load per present.
+// `vrcine dumparm bars|screen|letterbox <n>|off`.
+// edge: 0 = off, 1 = bar-draw rising, 2 = screen-only rising, 3 = the
+// letterbox pixel watch rising (session 42 r2: BS2's cutscene bars carry no
+// derivable draw fingerprint yet, but the pixel watch DOES trip inside those
+// scenes - a dump armed on its edge lands mid-cutscene by construction).
+void set_dump_on_edge(int edge, int count);
+void get_dump_on_edge(int* edge, int* count);
+
 // Telemetry for `vrhud status` (per second, reset on read... no - lifetime).
 void get_counters(unsigned* hudDraws, unsigned* redirects, unsigned* leaks,
                   unsigned* intervalsWithHud);

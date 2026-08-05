@@ -14,6 +14,7 @@ namespace {
 
 LPTOP_LEVEL_EXCEPTION_FILTER g_previous = nullptr;
 LONG g_inFilter = 0;
+LONG g_teardown = 0;
 
 // Rich but not a 1.2 GB core: stacks plus the memory those stacks point at, plus
 // module data segments. That combination is what makes a smashed vtable slot or a
@@ -115,8 +116,40 @@ bool always_fatal(DWORD code) {
     }
 }
 
+// BVR_VEH=1: log FIRST-CHANCE access violations (once per unique eip, with a
+// repeat count), independent of who owns the unhandled filter. Diagnostic only
+// (session 38: proved the BS2 exit fault fires with every mod hook skipped).
+// First-chance means SEH-handled faults show here too - a line is "this fault
+// happened", not "this fault was unhandled".
+bool g_vehObserve = false;
+
+void veh_observe_av(const EXCEPTION_RECORD* rec) {
+    static void* s_eips[8];
+    static LONG s_counts[8];
+    void* eip = rec->ExceptionAddress;
+    for (int i = 0; i < 8; ++i) {
+        if (s_eips[i] == eip) {
+            LONG n = InterlockedIncrement(&s_counts[i]);
+            if (n == 2 || n == 100 || n == 10000)
+                BVR_LOG("crash: [veh] first-chance AV at %p seen %ld times", eip, n);
+            return;
+        }
+        if (!s_eips[i] && InterlockedCompareExchangePointer(&s_eips[i], eip, nullptr) == nullptr) {
+            char where[160];
+            describe(eip, where, sizeof(where));
+            ULONG_PTR target = rec->NumberParameters >= 2 ? rec->ExceptionInformation[1] : 0;
+            BVR_LOG("crash: [veh] first-chance AV at %p [%s] touching 0x%08X (tid=%u)",
+                    eip, where, static_cast<unsigned>(target), GetCurrentThreadId());
+            InterlockedIncrement(&s_counts[i]);
+            return;
+        }
+    }
+}
+
 LONG CALLBACK VectoredFilter(EXCEPTION_POINTERS* info) {
     const EXCEPTION_RECORD* rec = info ? info->ExceptionRecord : nullptr;
+    if (rec && g_vehObserve && rec->ExceptionCode == 0xC0000005)
+        veh_observe_av(rec);
     if (rec && always_fatal(rec->ExceptionCode))
         report(info, "vectored (fatal class - would never reach the filter)");
     return EXCEPTION_CONTINUE_SEARCH; // observe only, never swallow
@@ -125,6 +158,22 @@ LONG CALLBACK VectoredFilter(EXCEPTION_POINTERS* info) {
 void report(EXCEPTION_POINTERS* info, const char* reason) {
     // A fault inside MiniDumpWriteDump used to recurse straight back into here.
     if (InterlockedCompareExchange(&g_inFilter, 1, 0) != 0) return;
+
+    // Exit-path fault (session 38): once the window began closing, a fault is
+    // the host's own teardown bug (BS2 faults at +0x4FF0FE on every close,
+    // reproduced with every mod hook skipped). A dump would be noise that eats
+    // the session cap, and returning to the chained filter spins the faulting
+    // instruction for seconds (86k retries observed). Log one line and end the
+    // process now - the user asked to close it.
+    if (InterlockedCompareExchange(&g_teardown, 0, 0) != 0) {
+        const EXCEPTION_RECORD* rec = info ? info->ExceptionRecord : nullptr;
+        char where[160];
+        describe(rec ? rec->ExceptionAddress : nullptr, where, sizeof(where));
+        BVR_LOG("crash: fault during window teardown (code 0x%08X at %s) - known "
+                "host exit-path bug; no dump, terminating cleanly",
+                rec ? rec->ExceptionCode : 0, where);
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
 
     // Repeat-fault suppressor (session 25): a chained filter (BS2's
     // CSERHelper) can CONTINUE_EXECUTION a persistent fault, re-executing the
@@ -245,8 +294,41 @@ LONG WINAPI Filter(EXCEPTION_POINTERS* info) {
 
 } // namespace
 
+// Exit watchdog. The host's exit path can end two ways, and session 38 saw
+// both on BS2: a fault (absorbed above) or a DEADLOCK - the in-game quit
+// blocked after WM_DESTROY with zero CPU and one thread left, surviving well
+// past two minutes. Either way the user asked to close the game, so a close
+// that has not completed within the grace period is ended here. The grace is
+// deliberately longer than any healthy exit measured (vanilla BS2 takes 5-9 s;
+// BS1 exits well inside that), so this never truncates a working shutdown.
+DWORD WINAPI TeardownWatchdog(LPVOID) {
+    constexpr DWORD kGraceMs = 15000;
+    Sleep(kGraceMs);
+    BVR_LOG("crash: still alive %u ms after the window began closing - the host "
+            "exit path is stuck; ending the process",
+            kGraceMs);
+    TerminateProcess(GetCurrentProcess(), 0);
+    return 0;
+}
+
+void note_teardown(const char* why) {
+    if (InterlockedExchange(&g_teardown, 1) != 0) return;
+    BVR_LOG("crash: window teardown noted (%s) - exit-path faults will be "
+            "logged without dumps and end the process directly",
+            why);
+    // Own thread: the close message runs on the game thread, which is exactly
+    // the thread that can deadlock.
+    HANDLE t = CreateThread(nullptr, 0, &TeardownWatchdog, nullptr, 0, nullptr);
+    if (t) CloseHandle(t);
+}
+
+bool teardown_seen() {
+    return InterlockedCompareExchange(&g_teardown, 0, 0) != 0;
+}
+
 void install() {
     g_previous = SetUnhandledExceptionFilter(Filter);
+    g_vehObserve = GetEnvironmentVariableW(L"BVR_VEH", nullptr, 0) != 0;
     // Fatal-class codes (heap corruption, stack overflow, __fastfail) never
     // reach an unhandled-exception filter. First in the chain, observe-only.
     AddVectoredExceptionHandler(1, &VectoredFilter);
