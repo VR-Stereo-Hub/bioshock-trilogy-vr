@@ -17,7 +17,7 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 38 (I3 sim battery GREEN, three sim bugs fixed - branch `si38-inf-headset-bringup`)
+### Infinite: current state after session 38 (I3 DONE as re-scoped: VDXR headset-verified, three sim bugs fixed - branch `si38-inf-headset-bringup`)
 
 **The whole I3 mono-big-screen stack runs on Infinite with ZERO core and ZERO adapter changes** -
 the merged BS2 OpenXR runtime brought the session up on the game's own device first try
@@ -43,14 +43,23 @@ captures; persistent `idle on`; step-starve command latch; Infinite's auto-pause
 after each sim fix; full BS1 lane on the fixed sim (boot -> smoke -> stereo) green with the
 geometric baseline identical (1.018).
 
-**Watch item**: with a LIVE sim session at WM_CLOSE the `DLL_PROCESS_DETACH` breadcrumb does
-not appear (both games; no fault, no dump, prompt exit) - sessionless VDXR exits (s37) did log
-it. Classified sim-lane; VERIFY the breadcrumb on the headset session's VDXR exit.
+**HEADSET VERDICT (user, VDXR / Virtual Desktop, `VirtualDesktopXR` 1.0.10): "looks pretty
+good, no crashes or freezes/hangs"** - head-tracked big screen live, F10 VR A/B confirmed in
+the log (teardown -> re-bring-up on VDXR), alt-tab survived, two boots, clean exits. **I3 is
+DONE as re-scoped by the user**: the SteamVR lane is deferred ("no Steam Link; test SteamVR
+later, not needed for the first version") and the debt is carried explicitly on the I13
+release checklist.
 
-**Headset lanes (checklist in the session-38 log entry): PENDING USER REPORT** - VDXR big
-screen, F10 A/B, alt-tab, exit, second boot; then the SteamVR/Steam Link cross-check. I3's
-Done-when needs BOTH runtimes user-verified; the two sim-verifiable boxes are ticked, the
-cross-check and Done-when boxes are not.
+**Exit breadcrumb resolved to a benign property**: `DLL_PROCESS_DETACH` never logs when an XR
+session is LIVE at exit - sim AND real VDXR, both games; sessionless exits log it. Prompt,
+fault-free, dump-free closes either way; attribute the mechanism during the I13 soak only if
+it ever hides a real teardown bug.
+
+**NEXT SESSION = I4** (6DoF head camera + the flat harness: `simhead`, `vrrec`, servo-vs-write
+discipline). The injection point is already settled - GetPlayerViewPoint returns a raw copy of
+the camera POV (path 2, 100 % census), so I4 injects at the POV/out-params. Build `simhead`
+FIRST; the sim's floor-LOCAL-origin trap (VERIFICATION gotcha 13) applies to every quad-pose
+capture until the healing lane fixes the sim default.
 
 ### Infinite: current state after session 37 (superseded by session 38 above - kept for the derivation trail; branch `si37-inf-merge-and-derisk2`)
 
@@ -5658,9 +5667,14 @@ renders 1.6 m low at a grazing angle); `idle on <ms>` is persistent until `idle 
 `pace free` after step-credit exhaustion latches until the 30 s starve grant; Infinite
 auto-pauses unfocused (foreground before gameplay captures; menu never unattended).
 
-Headset checklists (VDXR then Steam Link, numbered, F10-only judgments) handed to the user;
-results land in this entry's follow-up. I3 boxes: the two sim-verifiable ticked; cross-check
-and Done-when await the user's two-runtime verdict.
+Headset run (user, same build): VDXR lane PASSED - "looks pretty good, no crashes or
+freezes/hangs"; the log shows `VirtualDesktopXR` 1.0.10, the F10 VR A/B as a live VDXR
+teardown/re-bring-up, and two boots. The VDXR exit also lacks the `DLL_PROCESS_DETACH`
+breadcrumb, which RECLASSIFIES the watch item: live-session exits are TerminateProcess-class
+on any runtime (benign - prompt, fault-free, dump-free); sessionless exits log the breadcrumb.
+SteamVR lane deferred by the user (no Steam Link hardware, "not needed for the first
+version") - debt carried on I13. **I3 closed as re-scoped**: Done-when ticked with the
+re-scope recorded; the cross-check box stays open pointing at I13.
 
 ### Session 37 (Infinite) - 2026-08-05 - main merged into the Infinite line, and I2 CLOSED
 

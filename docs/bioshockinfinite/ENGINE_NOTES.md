@@ -389,13 +389,24 @@ over `vr::set_enabled` for scripted A/B). Every number below is from a live run.
   idles on the "frame not begun" path) and auto-resumes on focus regain - foreground the game
   (game-shot does) before any capture that must show gameplay pixels.
 
-### Exit breadcrumb watch item (sim lane only, both games)
+### Exit breadcrumb: absent on ANY live-session exit (resolved to a benign property, s38)
 
-With a LIVE sim session at WM_CLOSE, the process exits promptly (4-6 s), no fault logged, no
-dump - but the `shutdown: DLL_PROCESS_DETACH` breadcrumb does NOT appear, on Infinite AND on
-BS1 (dllmain's own doc: no detach + no fault = TerminateProcess/fail-fast somewhere). Session
-37's sessionless VDXR exits DID log it. Classified as a sim-lane artifact until the headset
-session's VDXR exit says otherwise - watch for the breadcrumb there.
+With a LIVE XR session at exit, the `shutdown: DLL_PROCESS_DETACH` breadcrumb does NOT appear -
+observed on the sim (Infinite twice, BS1 once) AND on the user's real VDXR exit (WM_DESTROY
+noted, no detach line). Session 37's clean detaches were SESSIONLESS (VDXR retry mode), so the
+correct statement is: **Infinite's exit is TerminateProcess-class whenever an XR session is
+live, on any runtime** (dllmain's own doc: no detach + no fault = TerminateProcess/fail-fast).
+In effect it is benign - prompt exit (4-6 s), no fault logged, no dump, user saw no hang -
+so it is recorded as a property, not a defect. Mechanism unattributed (game exit path vs a
+runtime DLL); if it ever matters (e.g. a teardown-ordering bug hides behind it), attribute it
+during the I13 soak.
+
+### Headset verdict (VDXR lane, user, 2026-08-05)
+
+Quest 3 via Virtual Desktop (`VirtualDesktopXR` 1.0.10): head-tracked big screen, "looks
+pretty good, no crashes or freezes/hangs". The log confirms the F10 A/B ran live on VDXR
+(`session teardown (disabled in overlay)` -> `session running` ~5 s later), alt-tab survived,
+two boots. SteamVR lane deferred by the user (no Steam Link hardware; carried on I13).
 
 ### BS1 shared-tool proof run (fixed sim, BS1's shipped v0.7.0 mod via -AllowStale)
 

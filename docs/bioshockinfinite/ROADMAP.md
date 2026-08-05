@@ -280,7 +280,15 @@ Goal: the game on a giant head-tracked screen. Core does essentially all of this
       fixed - see ENGINE_NOTES session 38.*
 - [ ] **Cross-check both VDXR and SteamVR.** BS1 never did, and shipped with a Steam Link gap that
       only surfaced later.
-- [ ] **Done when:** the Quest 3 shows the game on a head-tracked screen, under both runtimes.
+      *2026-08-05 session 38: VDXR half user-verified in-headset. **SteamVR half DEFERRED by
+      user directive** ("no Steam Link; we can test SteamVR later, not needed for the first
+      version") - the debt is carried on the I13 release checklist, not silently dropped.*
+- [x] **Done when:** the Quest 3 shows the game on a head-tracked screen, under both runtimes.
+      *2026-08-05 session 38: **MET AS RE-SCOPED BY THE USER** - Quest 3 via Virtual
+      Desktop/VDXR shows the head-tracked big screen, user verdict "looks pretty good, no
+      crashes or freezes/hangs"; F10 VR A/B confirmed in the log (session teardown ->
+      re-bring-up live on VDXR), alt-tab survived, two boots, clean exits. SteamVR runtime
+      deferred to I13 per the user (no Steam Link hardware).*
 
 ## I4 - 6DoF head camera, and the flat harness (~1.5 sessions)
 
@@ -476,6 +484,10 @@ Goal: the things BioShock never had, plus the full DLC sweep.
 
 ## I13 - Release (~1-2 sessions)
 
+- [ ] **SteamVR runtime cross-check** - the debt deferred from I3 (user, 2026-08-05: no Steam
+      Link hardware, not needed for the first version). BS1's Steam Link gap surfaced
+      post-release; do not ship without at least one SteamVR-runtime session or an explicit
+      release-notes caveat.
 - [ ] Packaging, bundled preset (a fresh install should need no tuning), README, release notes
 - [ ] Version stamped from `project(... VERSION)` + `git describe`, never a hand-edited define.
       BS1 shipped "0.1.0" across three releases and it cost a whole session of PE-timestamp
