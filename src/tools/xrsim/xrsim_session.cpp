@@ -175,9 +175,17 @@ void session_focus_lose(uint32_t holdMs) {
                       session_state_name(g_state));
             return;
         }
-        g_focusLoseHoldMs = holdMs;
     }
     session_force_state(XR_SESSION_STATE_VISIBLE);
+    // AFTER force_state, which resets the hold to sticky (0) on the
+    // FOCUSED->VISIBLE edge. Writing it before (as this function originally
+    // did) meant every timed `focus lose <ms>` was silently sticky and only an
+    // explicit `focus regain` ever came back - unnoticed until session 38
+    // because the BS1 sequence uses the explicit form.
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_focusLoseHoldMs = holdMs;
+    }
 }
 
 // ---------------------------------------------------------------------------
