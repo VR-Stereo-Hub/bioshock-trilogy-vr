@@ -5,6 +5,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
 #include "game/bioshockinf/reflect.h"
@@ -108,10 +109,11 @@ void BioshockInfAdapter::drawDebugUi() {
                 static_cast<unsigned long long>(bvr::d3d11_hook::present_count()),
                 capabilities());
     ImGui::TextDisabled("seam: bsi | buildgate | bsicam | bsivr | vrstereo | vraer | reentry | "
-                        "bsifov | ipd | simhead | recenter | worldscale | vrpreset | vrrec | "
-                        "bsireflect | bsinative | bsicall | vrcmd");
+                        "bsifov | bsilens | ipd | simhead | recenter | worldscale | vrpreset | "
+                        "vrrec | bsireflect | bsinative | bsicall | vrcmd");
 
     camera::draw_debug_ui();
+    lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
     reflect::draw_debug_ui();
 }
@@ -134,6 +136,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     // I4 drive verbs (simhead / recenter / worldscale / vrpreset) + the I5
     // stereo verbs (vrstereo / vraer / ipd / bsifov) + vrrec.
     if (camera::handle_drive_verb(cmd, args)) return true;
+    if (lens::handle_command(cmd, args)) return true;
     if (strcmp(cmd, "reentry") == 0) {
         if (!scenedraw::handle_command(args))
             BVR_LOG("[bsi] reentry: unknown subcommand. reentry status|reset|pulse [n]|"

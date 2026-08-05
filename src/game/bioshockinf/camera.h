@@ -85,6 +85,12 @@ void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float w
 // adapter init; touches no engine state.
 void load_vr_preset();
 
+// The projection claim's vertical half-tangent (I5/I6). The setter exists for
+// the lens decoder's track mode; while the FOV lever is armed the claim
+// re-derives from the lever on every publish, so the lever always wins.
+float claim_tan_v();
+void set_claim_tan_v(float v);
+
 // Overlay section.
 void draw_debug_ui();
 

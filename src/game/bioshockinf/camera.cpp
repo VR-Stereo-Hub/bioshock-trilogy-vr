@@ -5,6 +5,7 @@
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/inf_math.h"
+#include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
 #include "game/bioshockinf/scenedraw.h"
@@ -1065,8 +1066,11 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // fov the layer is tagged with plus the gameplay-view liveness that keeps
     // core's cinematic fallback from quadding a live gameplay projection.
     apply_pending_vrstereo();
-    // I6: enforce the FOV lever BEFORE the claim publish so the claim derives
-    // from what this very dispatch wrote into the camera.
+    // I6: the lens decoder's round tick runs BEFORE the lever and the claim
+    // publish - a track-mode write is deliberately overridden by an armed
+    // lever, and the audit compares against the claim the previous dispatch
+    // published. Then enforce the lever, then publish the claim it implies.
+    lens::tick(now);
     apply_fov_lever(self);
     publish_projection_claim();
 
@@ -1207,6 +1211,14 @@ uint64_t silent_ms() {
     if (last == 0) return 0;
     const uint64_t now = GetTickCount64();
     return now > last ? now - last : 0;
+}
+
+float claim_tan_v() {
+    return g_claimTanV.load(std::memory_order_relaxed);
+}
+
+void set_claim_tan_v(float v) {
+    if (v > 0.05f && v < 4.0f) g_claimTanV.store(v, std::memory_order_relaxed);
 }
 
 void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* worldScale) {
