@@ -849,6 +849,13 @@ void apply_vrstereo(bool on, bool monoOnly = false) {
         bool srArmed = false;
         if (!monoOnly) {
             bvr::vr::set_sr_pair_pacing(true);
+            // Session 42 (the judder investigation): even pair-open cadence.
+            // On a runtime that strictly gates xrWaitFrame this is measured
+            // near-inert (sim: pairs already lock to refresh); on one that
+            // pipelines, it stops the pair rate free-running against the
+            // display (the ~5 Hz beat suspect). F10 checkbox + `vrpace sync`
+            // are the in-headset A/B - default ON with stereo on this game.
+            bvr::vr::set_pace_sync(true);
             srArmed = scenedraw::install() && scenedraw::set_stereo(true);
         }
         BVR_LOG("[bsi] VRSTEREO ON (%s): claim tanV=%.4f hfov=%.1f deg aspect=%.4f%s",
@@ -861,6 +868,11 @@ void apply_vrstereo(bool on, bool monoOnly = false) {
                 srArmed ? " (inter-eye + reentry beats are the acceptance instruments)" : "");
     } else {
         scenedraw::set_stereo(false);
+        // Symmetric off (the BS2 asymmetric-off trap): pair pacing stays set
+        // after OFF, and without eye tags every present walks the wait path -
+        // a still-armed sync would then pace the MONO quad to refresh, which
+        // is not the state the user toggled back to.
+        bvr::vr::set_pace_sync(false);
         bvr::vr::set_alternate_eye(false);
         bvr::vr::set_camera_mode(false);
         g_stereoArmed.store(false, std::memory_order_relaxed);

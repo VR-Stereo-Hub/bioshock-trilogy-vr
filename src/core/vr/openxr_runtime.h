@@ -81,6 +81,11 @@ bool session_live();
 // as per-frame metadata.
 int64_t last_predicted_time();
 
+// Session 42: the last xrWaitFrame's predictedDisplayPeriod in ns (0 with no
+// session, or on a runtime that leaves it unfilled). The runtime's own refresh
+// interval - the input a pair-rate sync targets. Purely informational.
+int64_t display_period_ns();
+
 // True when the user enabled VR camera mode AND a session is running; the
 // adapter drives the game camera from the HMD only while this holds. Frame
 // submission switches from the quad to a projection layer at the same time.
@@ -151,6 +156,16 @@ uint32_t watchdog_fires();
 // is the headset-accepted baseline. The BS2 adapter turns it on; BS1 can opt in
 // later on its own in-headset test.
 void set_pace_detach(bool on);
+
+// Session 42: opt-in pair-rate sync - before OPENING a stereo pair the present
+// thread waits for the next tick of a one-period-per-pair schedule (period =
+// the runtime's predictedDisplayPeriod, or a `vrpace sync <hz>` override).
+// Exists for runtimes whose xrWaitFrame pipelines instead of gating: there the
+// pair rate free-runs at the game's present speed and beats against the
+// display refresh (the Infinite judder suspect). DEFAULT OFF IN CORE, on per
+// game - BS1/BS2 never call this and take no new branch. `vrpace sync` is the
+// live A/B; the overlay checkbox rides under SR pair pacing.
+void set_pace_sync(bool on);
 
 // --- M8: desktop mirror ------------------------------------------------------
 // "vrmirror ..." seam (game thread). Under SequentialReentry stereo the flat

@@ -276,6 +276,30 @@ constexpr uint32_t kPairHoldMaxMs = 500;
 std::atomic<uint32_t> g_srPairs{0}, g_srPairAborts{0};
 std::atomic<bool> g_loggedFirstPair{false};
 
+// Session 42 (Infinite I6 judder): pair-CADENCE statistics. The judder question
+// is not "how many pairs per second" but "how EVENLY are they spaced" - a mean
+// of 13.9 ms with 5 ms of swing reprojects differently every frame while both
+// numbers round to 72/s. Present thread writes at each pair CLOSE; the 1 Hz
+// trace thread reads, derives mean/stddev and window-resets min/max (the reset
+// races lose at most one sample - diagnostics, not accounting). Samples above
+// 1 s are discarded: a load screen or alt-tab would otherwise poison sumsq
+// for the whole window.
+std::atomic<int64_t> g_pairLastCloseQpc{0};
+std::atomic<uint32_t> g_pairIntCount{0};
+std::atomic<uint64_t> g_pairIntSumUs{0};
+std::atomic<uint64_t> g_pairIntSumSqUs{0};
+std::atomic<uint32_t> g_pairIntMinUs{0xFFFFFFFFu};
+std::atomic<uint32_t> g_pairIntMaxUs{0};
+// How long the present thread actually spent BLOCKED in the wait handoff, per
+// trace window. This is the gating discriminator the pairs/s number cannot
+// give: free-running pairs spend ~0 ms/s here; pairs gated by xrWaitFrame
+// spend the whole non-render remainder of each second here.
+std::atomic<uint64_t> g_pairWaitSumUs{0};
+// The runtime's own frame period from xrWaitFrame - never consumed anywhere
+// in this codebase until now (only the sim ever WROTE it). It is the refresh
+// input a pace sync needs, published so the fix can target measured reality.
+std::atomic<int64_t> g_displayPeriodNs{0};
+
 // M8 release blocker (a): the headset-disconnect stall guard. When the
 // headset idles, the runtime drops the session out of FOCUSED and xrWaitFrame
 // starts blocking for seconds per call, dragging the flat window under 1 fps
@@ -446,6 +470,34 @@ uint64_t g_lastKeepaliveMs = 0; // present thread only
 bool g_detachedNow = false;     // present thread only
 std::atomic<uint32_t> g_detachSkips{0}, g_detachKeepalives{0}, g_detachEpisodes{0};
 
+// ---- Session 42: OPT-IN PAIR-RATE SYNC to the display refresh ---------------
+// The Infinite judder investigation. The measured facts (sim, refresh 72,
+// TRACE pairs): when the runtime's xrWaitFrame strictly gates - the sim's free
+// mode does - the wait handoff locks pairs to the refresh (72/s, waitGate
+// ~615 ms/s) and this lever adds nothing. But nothing REQUIRES a runtime to
+// gate: one that pipelines (returns waits early while frames are in flight)
+// lets the pair rate free-run at the game's own present speed - 77-80 pairs/s
+// against a 72 Hz display is a ~5 Hz interference beat, the first suspect for
+// judder-with-good-frames. This lever puts the gate on OUR side of the API:
+// before OPENING a pair (and only then - delaying the closing RIGHT present
+// would stretch the intra-pair gap that pair pacing exists to keep at 1-4 ms),
+// the present thread waits until the next tick of a monotonic
+// one-period-per-pair schedule. Period source: the runtime's own
+// predictedDisplayPeriod, else a commanded Hz (`vrpace sync <hz>`).
+//
+// DEFAULT OFF IN CORE, ON PER GAME (the set_pace_detach pattern): BS1/BS2
+// never call set_pace_sync and never take a single new branch with the flag
+// false. The Infinite adapter arms it with stereo; `vrpace sync on|off` and
+// the overlay checkbox are the live A/B a headset session can drive.
+std::atomic<bool> g_paceSync{false};
+std::atomic<uint32_t> g_paceSyncHz{0}; // 0 = use the runtime's period
+int64_t g_paceSyncNextQpc = 0;         // present thread only; 0 = resync
+std::atomic<uint32_t> g_paceSyncDelays{0};   // pairs actually delayed
+std::atomic<uint64_t> g_paceSyncDelayUs{0};  // total delay imposed
+std::atomic<uint32_t> g_paceSyncResyncs{0};  // schedule re-anchors (late arrivals)
+// pace_sync_gate() itself is defined below phase_record - it needs the QPC
+// plumbing that section owns.
+
 // ---- Session 34: present-path PHASE TIMING ---------------------------------
 // Session 33 concluded that the frame HANDOFF paces the game thread. Its own
 // telemetry refuses that: `lastWait 0 ms` says xrWaitFrame returned instantly,
@@ -501,6 +553,50 @@ void phase_record(int ph, int64_t t0) {
     g_phaseLastUs[ph].store(us, std::memory_order_relaxed);
     if (us > g_phaseMaxUs[ph].load(std::memory_order_relaxed))
         g_phaseMaxUs[ph].store(us, std::memory_order_relaxed);
+}
+
+// Session 42 pair-rate sync (state + rationale at the g_paceSync block above).
+// Delay the opening of the next pair until the schedule's next tick. Coarse
+// Sleep down to the last ~2 ms, then yield-spin on QPC - a raw Sleep quantum
+// would add its own +-1.5 ms of jitter, which is the quantity under repair.
+void pace_sync_gate() {
+    if (!g_paceSync.load(std::memory_order_relaxed) ||
+        !g_srPairPacing.load(std::memory_order_relaxed))
+        return;
+    int64_t periodNs = 0;
+    uint32_t hz = g_paceSyncHz.load(std::memory_order_relaxed);
+    if (hz > 0)
+        periodNs = 1000000000LL / hz;
+    else
+        periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+    if (periodNs <= 0 || g_qpcFreq == 0) return; // nothing to sync to (yet)
+    const int64_t periodQpc = static_cast<int64_t>(
+        static_cast<double>(periodNs) * static_cast<double>(g_qpcFreq) / 1.0e9);
+    if (periodQpc <= 0) return;
+    int64_t now = phase_now();
+    // (Re)anchor: first pair, or the game fell more than two periods behind
+    // (load screen, alt-tab) - chasing a stale schedule would burst-open pairs.
+    if (g_paceSyncNextQpc == 0 || now - g_paceSyncNextQpc > 2 * periodQpc) {
+        if (g_paceSyncNextQpc != 0)
+            g_paceSyncResyncs.fetch_add(1, std::memory_order_relaxed);
+        g_paceSyncNextQpc = now;
+    }
+    if (now < g_paceSyncNextQpc) {
+        g_paceSyncDelays.fetch_add(1, std::memory_order_relaxed);
+        g_paceSyncDelayUs.fetch_add(
+            static_cast<uint64_t>((g_paceSyncNextQpc - now) * 1000000 / g_qpcFreq),
+            std::memory_order_relaxed);
+        for (;;) {
+            int64_t rem = g_paceSyncNextQpc - phase_now();
+            if (rem <= 0) break;
+            int64_t remMs = rem * 1000 / g_qpcFreq;
+            if (remMs > 2)
+                Sleep(static_cast<DWORD>(remMs - 1));
+            else
+                Sleep(0); // yield-spin the tail
+        }
+    }
+    g_paceSyncNextQpc += periodQpc;
 }
 
 // ---- WHAT IS THE PRESENT THREAD INSIDE, RIGHT NOW? -------------------------
@@ -1023,6 +1119,12 @@ DWORD WINAPI trace_thread_proc(void*) {
     uint32_t lastSubmitted = 0;
     uint32_t lastKeepalives = 0;
     uint32_t lastSkips = 0;
+    // Session 42 pair-cadence baselines (deltas per 1 s tick, like presents).
+    uint32_t lastPairs = 0;
+    uint32_t lastPairCount = 0;
+    uint64_t lastPairSumUs = 0;
+    uint64_t lastPairSumSqUs = 0;
+    uint64_t lastPairWaitUs = 0;
     while (g_traceRun.load(std::memory_order_relaxed)) {
         Sleep(1000);
         if (!g_traceRun.load(std::memory_order_relaxed)) break;
@@ -1157,6 +1259,52 @@ DWORD WINAPI trace_thread_proc(void*) {
                   g_lastShouldRender.load(std::memory_order_relaxed) ? 1 : 0, stuck, stage,
                   draw);
         trace_write(line);
+
+        // Session 42: pair CADENCE, one line per tick while pairs flow. This is
+        // the judder instrument - pairs/s alone cannot distinguish "72 evenly
+        // spaced" from "77 free-running with a 5 Hz beat"; the interval spread
+        // and the wait-gate share can. min/max are window-reset by exchange
+        // (the race with a concurrent sample loses at most that sample).
+        {
+            uint32_t pairs = g_srPairs.load(std::memory_order_relaxed);
+            uint32_t cnt = g_pairIntCount.load(std::memory_order_relaxed);
+            uint64_t sum = g_pairIntSumUs.load(std::memory_order_relaxed);
+            uint64_t sumSq = g_pairIntSumSqUs.load(std::memory_order_relaxed);
+            uint64_t waitUs = g_pairWaitSumUs.load(std::memory_order_relaxed);
+            uint32_t dPairs = pairs - lastPairs;
+            uint32_t dCnt = cnt - lastPairCount;
+            uint64_t dSum = sum - lastPairSumUs;
+            uint64_t dSumSq = sumSq - lastPairSumSqUs;
+            uint64_t dWaitUs = waitUs - lastPairWaitUs;
+            lastPairs = pairs;
+            lastPairCount = cnt;
+            lastPairSumUs = sum;
+            lastPairSumSqUs = sumSq;
+            lastPairWaitUs = waitUs;
+            if (dPairs > 0) {
+                uint32_t minUs = g_pairIntMinUs.exchange(0xFFFFFFFFu, std::memory_order_relaxed);
+                uint32_t maxUs = g_pairIntMaxUs.exchange(0, std::memory_order_relaxed);
+                if (minUs == 0xFFFFFFFFu) minUs = 0;
+                uint32_t meanUs = 0, sdUs = 0;
+                if (dCnt > 0) {
+                    meanUs = static_cast<uint32_t>(dSum / dCnt);
+                    uint64_t meanSq = dSum / dCnt * (dSum / dCnt);
+                    uint64_t var = dSumSq / dCnt > meanSq ? dSumSq / dCnt - meanSq : 0;
+                    sdUs = static_cast<uint32_t>(sqrt(static_cast<double>(var)));
+                }
+                int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+                char pl[320];
+                sprintf_s(pl,
+                          "TRACE pairs %u/s | interval us mean=%u sd=%u min=%u max=%u | "
+                          "waitGate %llu ms/s timeouts=%u | period %.2f ms (%.1f Hz)",
+                          dPairs, meanUs, sdUs, minUs, maxUs,
+                          static_cast<unsigned long long>(dWaitUs / 1000),
+                          g_paceTimeouts.load(std::memory_order_relaxed),
+                          periodNs > 0 ? periodNs / 1.0e6 : 0.0,
+                          periodNs > 0 ? 1.0e9 / periodNs : 0.0);
+                trace_write(pl);
+            }
+        }
 
     }
     return 0;
@@ -2022,6 +2170,12 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         BVR_LOG("xr: closed a leaked open frame before waiting (pair aborted?)");
     }
 
+    // Session 42: the opt-in pair-rate sync. This point is reached only by a
+    // pair-OPENING present (the RIGHT present returned at the pair-hold above),
+    // which is the one place a delay respects the intra-pair gap. No-op unless
+    // a game armed it (BS1/BS2 never do).
+    pace_sync_gate();
+
     XrResult r;
     int64_t tPhase = phase_now();
     if (g_paceOffThread.load(std::memory_order_relaxed) && pace_thread_start()) {
@@ -2039,6 +2193,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             signalled = WaitForSingleObject(g_paceDone, deadline) == WAIT_OBJECT_0;
         }
         phase_record(kPhWait, tPhase);
+        // Session 42: accumulate the block for the cadence trace (timeout path
+        // included - the time was spent either way). phase_record just stored
+        // this span's us; reusing it avoids a second QPC conversion.
+        g_pairWaitSumUs.fetch_add(g_phaseLastUs[kPhWait].load(std::memory_order_relaxed),
+                                  std::memory_order_relaxed);
         if (!signalled) {
             // The runtime has not come back yet. Give up on THIS present only -
             // the request stays outstanding and a later present consumes it. The
@@ -2070,8 +2229,14 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             }
         }
         phase_record(kPhWait, tPhase);
+        g_pairWaitSumUs.fetch_add(g_phaseLastUs[kPhWait].load(std::memory_order_relaxed),
+                                  std::memory_order_relaxed);
     }
     g_lastShouldRender.store(g_frameState.shouldRender != XR_FALSE, std::memory_order_relaxed);
+    // Session 42: the runtime's own frame period, previously discarded. 0 stays
+    // 0 on runtimes that do not fill it; consumers must treat that as unknown.
+    g_displayPeriodNs.store(static_cast<int64_t>(g_frameState.predictedDisplayPeriod),
+                            std::memory_order_relaxed);
     if (XR_FAILED(r)) {
         BVR_LOG("xr: xrWaitFrame failed: %s", res_str(r));
         teardown_session("waitframe failed");
@@ -2680,10 +2845,34 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // completing present (mode boundary, stereo toggled mid-pair) falls
     // through to the normal single-present submission and resyncs.
     if (pairSecond) {
-        if (srSign == +1)
+        if (srSign == +1) {
             g_srPairs.fetch_add(1, std::memory_order_relaxed);
-        else
+            // Pair-cadence sample (session 42): stamp the CLOSE of the pair -
+            // the one moment per pair that exists exactly once on exactly one
+            // thread. g_qpcFreq is initialized by the PhaseScope wrapping this
+            // very function, so it is live by the first pair.
+            int64_t nowQpc = phase_now();
+            int64_t prevQpc = g_pairLastCloseQpc.exchange(nowQpc, std::memory_order_relaxed);
+            if (prevQpc != 0 && g_qpcFreq != 0) {
+                uint64_t us64 = static_cast<uint64_t>(nowQpc - prevQpc) * 1000000u /
+                                static_cast<uint64_t>(g_qpcFreq);
+                if (us64 < 1000000u) {
+                    uint32_t us = static_cast<uint32_t>(us64);
+                    g_pairIntCount.fetch_add(1, std::memory_order_relaxed);
+                    g_pairIntSumUs.fetch_add(us, std::memory_order_relaxed);
+                    g_pairIntSumSqUs.fetch_add(static_cast<uint64_t>(us) * us,
+                                               std::memory_order_relaxed);
+                    uint32_t m = g_pairIntMinUs.load(std::memory_order_relaxed);
+                    while (us < m &&
+                           !g_pairIntMinUs.compare_exchange_weak(m, us, std::memory_order_relaxed)) {}
+                    m = g_pairIntMaxUs.load(std::memory_order_relaxed);
+                    while (us > m &&
+                           !g_pairIntMaxUs.compare_exchange_weak(m, us, std::memory_order_relaxed)) {}
+                }
+            }
+        } else {
             g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     bool pairHold = srFrame && srSign < 0 && !pairSecond &&
                     g_srPairPacing.load(std::memory_order_relaxed) &&
@@ -3135,6 +3324,13 @@ void draw_debug_ui() {
         bool pair = g_srPairPacing.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("SR pair pacing (one waitFrame per eye pair)", &pair))
             g_srPairPacing.store(pair, std::memory_order_relaxed);
+        if (pair) {
+            // Session 42 judder A/B: evenly spaced pair opens vs the game's own
+            // present speed. Headset-judgeable, so it must live on a checkbox.
+            bool sync = g_paceSync.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Sync pair rate to headset refresh (judder A/B)", &sync))
+                g_paceSync.store(sync, std::memory_order_relaxed);
+        }
         bool cine = g_cineEnabled.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Cinematic auto-detect (cutscenes/screens)", &cine))
             g_cineEnabled.store(cine, std::memory_order_relaxed);
@@ -3349,6 +3545,10 @@ int64_t last_predicted_time() {
     return static_cast<int64_t>(g_frameState.predictedDisplayTime);
 }
 
+int64_t display_period_ns() {
+    return g_displayPeriodNs.load(std::memory_order_relaxed);
+}
+
 bool vr_camera_mode() {
     return g_cameraMode.load(std::memory_order_relaxed) &&
            g_sessionBegun.load(std::memory_order_relaxed) &&
@@ -3382,6 +3582,14 @@ void set_alternate_eye(bool on) {
 
 void set_sr_pair_pacing(bool on) {
     g_srPairPacing.store(on, std::memory_order_relaxed);
+}
+
+void set_pace_sync(bool on) {
+    bool was = g_paceSync.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: pair-rate sync %s (adapter/preset; `vrpace sync` for the "
+                "live A/B and telemetry)",
+                on ? "ON" : "off");
 }
 
 void handle_pace_command(const char* args) {
@@ -3427,6 +3635,36 @@ void handle_pace_command(const char* args) {
                 on ? "runs the frame loop at most once per keepalive interval, so "
                      "the blocking xrEndFrame costs one hitch per interval"
                    : "runs the frame loop every present, at the runtime's cadence");
+    } else if (strcmp(verb, "sync") == 0) {
+        unsigned hz = 0;
+        if (strncmp(rest, "on", 2) == 0) {
+            g_paceSyncHz.store(0, std::memory_order_relaxed);
+            g_paceSync.store(true, std::memory_order_relaxed);
+            BVR_LOG("xr: pair-rate sync ON (target = the runtime's "
+                    "predictedDisplayPeriod, currently %.2f ms)",
+                    g_displayPeriodNs.load(std::memory_order_relaxed) / 1.0e6);
+        } else if (strncmp(rest, "off", 3) == 0) {
+            g_paceSync.store(false, std::memory_order_relaxed);
+            g_paceSyncNextQpc = 0; // present thread races this benignly: worst
+                                   // case one extra resync, counted
+            BVR_LOG("xr: pair-rate sync OFF (pairs open at the game's own present "
+                    "speed; the runtime's wait may or may not gate them)");
+        } else if (sscanf_s(rest, "%u", &hz) == 1 && hz >= 10 && hz <= 500) {
+            g_paceSyncHz.store(hz, std::memory_order_relaxed);
+            g_paceSync.store(true, std::memory_order_relaxed);
+            BVR_LOG("xr: pair-rate sync ON at a COMMANDED %u Hz (overrides the "
+                    "runtime period; `vrpace sync on` returns to the period)",
+                    hz);
+        } else {
+            BVR_LOG("xr: pair-rate sync %s (hz override %u) | delayed %u pairs, "
+                    "%llu ms total | resyncs %u | usage: vrpace sync on|off|<10..500>",
+                    g_paceSync.load(std::memory_order_relaxed) ? "ON" : "off",
+                    g_paceSyncHz.load(std::memory_order_relaxed),
+                    g_paceSyncDelays.load(std::memory_order_relaxed),
+                    static_cast<unsigned long long>(
+                        g_paceSyncDelayUs.load(std::memory_order_relaxed) / 1000),
+                    g_paceSyncResyncs.load(std::memory_order_relaxed));
+        }
     } else if (strcmp(verb, "simidle") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_simIdle.store(on, std::memory_order_relaxed);
@@ -3446,6 +3684,21 @@ void handle_pace_command(const char* args) {
                 g_paceHandoffs.load(std::memory_order_relaxed),
                 g_paceTimeouts.load(std::memory_order_relaxed),
                 g_simIdle.load(std::memory_order_relaxed) ? "ON" : "off");
+        // Session 42: lifetime pair cadence (the per-second numbers live on the
+        // TRACE pairs line in pacetrace.log; this is the cheap always-there view).
+        {
+            uint32_t cnt = g_pairIntCount.load(std::memory_order_relaxed);
+            uint64_t sum = g_pairIntSumUs.load(std::memory_order_relaxed);
+            int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+            BVR_LOG("xr: pair cadence: pairs %u aborts %u | lifetime mean interval %u us "
+                    "over %u samples | runtime period %.2f ms (%.1f Hz) | per-second "
+                    "jitter on the TRACE pairs line (pacetrace.log)",
+                    g_srPairs.load(std::memory_order_relaxed),
+                    g_srPairAborts.load(std::memory_order_relaxed),
+                    cnt ? static_cast<uint32_t>(sum / cnt) : 0, cnt,
+                    periodNs > 0 ? periodNs / 1.0e6 : 0.0,
+                    periodNs > 0 ? 1.0e9 / periodNs : 0.0);
+        }
         BVR_LOG("xr: detach %s (keepalive every %u ms) | detachedNow=%d | episodes %u "
                 "| unpaced presents %u, keepalive frames %u",
                 g_paceDetach.load(std::memory_order_relaxed) ? "ON" : "off",
@@ -3849,6 +4102,7 @@ void set_sim_hand_pose(int, bool, bool, const float[3], const float[4]) {}
 void clear_sim_hand_poses() {}
 bool session_live() { return false; }
 int64_t last_predicted_time() { return 0; }
+int64_t display_period_ns() { return 0; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
 void set_alternate_eye(bool) {}
@@ -3856,6 +4110,7 @@ void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}
 void set_pace_detach(bool) {}
+void set_pace_sync(bool) {}
 void set_present_stage(const char*) {}
 void set_draw_stage(const char*) {}
 uint32_t watchdog_fires() { return 0; }
