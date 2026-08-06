@@ -230,6 +230,22 @@ runtime.
 
 ## Decision log
 
+- **2026-08-06 (session 43) · Infinite stutter hunt: the spike instrument attributes at the
+  PAIR CLOSE, samples MID-STALL, and the fix gate is evidence-first (user directive).** The
+  1 Hz aggregates could say a second was bad, never which phase carried it; the s43 design
+  answers in two layers that both ship opt-in (default off in core, armed with Infinite
+  stereo, `vrpace spike` seam): (1) at the pair close - the one per-pair single-thread
+  moment - an over-threshold interval snapshots the per-phase last/max tables (maxima reset
+  per spike, so bursts self-scope) plus the UNATTRIBUTED remainder, which is the
+  ours-vs-game discriminator; (2) a 4 ms sampler catches the still-stalled draw thread and
+  stack-captures it through the s34 watchdog, because a stall our phases do not contain can
+  only be named by its own call stack. The user's standing gate, recorded mid-session: no
+  fix attempts until the cause is GUARANTEED by evidence - honored by naming the 30 s GC
+  tick through an A-B-A ini intervention (the DefaultEngine.ini propagation lane was proven
+  as part of the same probe) before the interval change was left in place as the headset
+  candidate. The alternative - trying the community's ranked levers directly - was
+  declined; a lever that moves the spike rate without a named mechanism would have been
+  indistinguishable from path variance.
 - **2026-08-05 (session 42) · Infinite I6/I7: the pair-rate sync gates at PAIR-OPEN only, and
   it ships default-off in core, default-on with Infinite stereo.** The judder investigation
   measured that a strictly-gating xrWaitFrame (the sim's) locks the pair rate to refresh with
