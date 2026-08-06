@@ -379,6 +379,65 @@ Harness note: one `trigL` row came back blank on the first pass and re-ran clean
 (lt=255, and 128 at half pull). That is gotcha 20's attract-movie pump stall eating a
 window, not a mapping fault - re-run a blank row before believing it.
 
+### Layer 2 (does the bit reach the BINDING): what the flat lane can and cannot say
+
+In the TWN2 save, after `bsiexec LoadCheckpoint`, with the z-window instrument armed.
+Two rows are decisive because they measure a specific quantity, not "the picture
+changed":
+
+- **CROUCH (B) - PROVEN, and it is the toggle.** Standing z is flat at -3698.8 across
+  beats; a B press drops it to **-3808.8 and it STAYS** (~110 UU). A second press
+  restores -3698.8, a third drops it again. Persistence is what separates a crouch
+  from a bob, and it is why this row is the one to run first.
+- **JUMP (A) - PROVEN.** From standing -3698.8, an A press gives a beat with
+  **max -3600.1, span 98.6 UU**, and the next beat is back on the ground. The 1 Hz
+  point sample this instrument replaced would have shown nothing at all: the whole
+  arc fits between two beats.
+
+Three rows produce a large, repeatable, self-reverting render change while HELD -
+LB 3.8% of pixels (coverage 23.4%, clustered on the viewmodel hand and the HUD edge),
+RT 21.4%, LT 21.0% - **but the whole-frame diff cannot say WHICH binding fired**: RT
+and LT are 21% from idle with near-identical region maps, and the idle state returns
+to within noise (0.44%) a few seconds later. So the honest reading is "the pad reaches
+the game and each of these does something large", with naming left to the headset,
+where a vigor cast, a muzzle flash and a weapon swap are told apart by eye. Do not
+record these as individually proven from a flat capture.
+
+Two rows are **bit-level only, with the reason**: NextWeapon (this save owns one gun -
+s42's idle-sway-only diff is not a swap proof) and SPRINT. Sprint was attempted three
+times and is **confounded by geometry, proven so by a control**: a continuous walk
+runs 240 UU/s for about two seconds and then stops dead, and a run with **no LS press
+at all** stops at the same point. The checkpoint drops the pawn into an enclosed spot
+with no room for a within-run speed step. Sprint needs an open save or the headset.
+
+Capture trap worth keeping: an effect captured 3 s after the press reads BELOW the
+idle noise floor (LB measured 0.06-0.21 mean against a 0.50 floor) and looks like a
+dead binding. Capture WHILE the control is held, and read `-Grid` coverage rather than
+the mean (VERIFICATION trap 2).
+
+### THE PAUSE MENU DOES NOT CONSUME THE SYNTHETIC PAD (new, s44 - a real blocker)
+
+`START` (menu tap) opens the pause menu - 55.8% of pixels, unambiguous. **Nothing on
+the Touch controller then closes it**: BACK (menu hold), A, B and left-stick nav all
+leave the screen pixel-identical (0.7%), while a keyboard **Escape closes it
+instantly** (back to gameplay within 1.5%, then 0.01% on a second check). In the
+headset that means pressing the menu button strands the player.
+
+The mechanism is narrowed, not guessed. While the menu is up the game **keeps polling
+XInput through our wrapper at ~92/s** (iat 153614 -> 154534 -> 155177 across two
+6-second samples), so this is NOT "the menu stops reading the pad" and NOT a bridge
+failure - the composed state arrives and the UI layer does not act on it. Also
+observed: the game thread parks while the menu is up (no camera dispatch and no
+command lines for the whole window; the Present-pump lease is what keeps the command
+seam alive).
+
+Leading candidate, untested: this game switches active input device on activity, and
+a synthetic pad that never announces itself as a newly-active controller leaves the
+UI in keyboard/mouse context - which is the same SHAPE as the BS2 problem that was
+solved with an A->Enter scancode shim (`menukey`, BS2 s42). That shim is the obvious
+port and it is deliberately NOT done here yet: it needs its own evidence rung, and
+this session's scope is the map, the bindings and aim.
+
 ### The DPad family has no Touch analogue, and what was done about it
 
 Infinite's retail DPad carries `XNavShowPulse`/`BuyoutHack` (up),
