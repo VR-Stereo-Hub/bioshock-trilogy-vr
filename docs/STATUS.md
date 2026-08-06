@@ -17,7 +17,87 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 45 (I8 OPENS: the viewmodel carrier is NAMED and its stick-pitch coupling is PROVEN - branch `si45-inf-hands`)
+### Infinite: current state after session 46 (I8: the ALGEBRA is landed and proven; the actor-transform drive is a measured DEAD END, and the next rung is named - branch `si46-inf-hands-drive`)
+
+**Session 46 (2026-08-06) ran the I8 ladder and landed three commits. The aim
+lane moved onto a new algebra and is provably byte-identical; the viewmodel
+drive was built, armed, measured, and found to write to a field the renderer
+does not read. It ships DISABLED. The headset-visible behaviour of the mod is
+unchanged.**
+
+1. **R1, by intervention: `SetHidden b1` on the FP attachment removes the ENTIRE
+   viewmodel** - arm, hand and pistol - at 3.17 mean-abs / 5.21% changed, against
+   a 0.76 / 2.00% same-position control. Hiding **either** `XSkeletalMeshComponent`
+   on the pawn (+0x2E4, +0x72C) changes **nothing** in first person (0.62 / 1.6%,
+   below the control) under the same demonstrably-working call path. So the
+   attachment is what you SEE, and s45's "which pawn mesh is the arms" question
+   is closed as **neither**.
+2. **R1b: ONE carrier, two hands.** Hiding it takes the arm and the gun together,
+   so per-hand independence is not available from an actor-transform drive. The
+   policy layer is still fully two-handed; only the carrier-owning hand is
+   written and the other is printed as NOT WRITTEN. Three candidates for a second
+   carrier are named in `rig.h`, each with its rung.
+3. **R2: `SetDrawScale` on the attachment DOES render**, with no
+   `ForceUpdateComponents`. But it scales about a pivot at the EYE (the gun
+   shifted rather than shrank), so it is only the right knob once Location is
+   being written absolutely.
+4. **THE ALGEBRA, and it is proven inert.** New bsi-local `frame_context.h/.cpp`:
+   yaw carried as an EXACT int32 (that is the only reason `aimRayMaxDevDeg` reads
+   a literal 0.0000 - the game-yaw term cancels in integer units), published via
+   a seqlock because the ray is built in the aim hook and the context in the
+   camera hook. **1240 dispatches over 14 stations, three roll values x four yaws
+   plus a pitch pair, ALL reading `max|dPitch| = max|dYaw| = max|dRoll| = 0`**,
+   round trip 0.0000 mm, seqlock 0 retries / 0 refusals / 0 foreign writes. Made
+   the default after measuring; `bsiaim source legacy` is the live escape hatch.
+5. **Per-hand aim trims on the ray AND the laser from one pair of atomics.** The
+   rolled-pose oracle reads a CONSTANT 5.8312 deg at all 12 stations (spread
+   0.0000, gate was 0.03) - and the magnitude is the EXACT composed angle
+   `2*acos(cos(p/2)cos(y/2))` to four decimals, not the naive quadrature sum
+   (5.8312 vs 5.8312; 9.9909 vs 9.9909 for an 8/6 trim). The trim composes as a
+   local quaternion exactly as core's laser does.
+6. **R4, THE NEGATIVE THAT REDIRECTS THE MILESTONE.** The rig write LANDS - 812+
+   writes, the fields read BACK our value, the engine does not restamp it - and
+   **nothing renders**. With a deliberately absurd 5 metre offset, all three write
+   points (`cameratail`, `drawentry`, `drawexit`) diff at the idle-animation
+   control level, and a manual `ForceUpdateComponents` while the write was live
+   came in BELOW the control. **The FP attachment ACTOR's transform is not what
+   the renderer reads.** s45's inference from "its pitch tracks control pitch" was
+   reasonable and is now falsified by intervention - the actor is a follower, not
+   the driver.
+7. **THE NEXT RUNG IS ALREADY NAMED**: a `bsifields` walk found
+   **`XFirstPersonAttachment +0x218 -> XSkeletalMeshComponent`** - the
+   first-person arms component, hanging off the ATTACHMENT exactly where R1 said
+   it had to be. UE3 draws a skeletal mesh from its COMPONENT's transform, and
+   `execSetTranslation`/`SetRotation`/`SetScale` are all component natives
+   verified present. One command settles it (below).
+
+**Baseline, banked at session start and unchanged at session end**:
+`aimRayMaxDevDegL/R` **0.0000**, `claimRatioH` **1.00851**, 3 layers / 2 aim
+dots, zero faults - with the new algebra live and the rig released.
+
+**NEXT (session 47), in order**:
+1. **The one command that decides I8's shape**:
+   `bsicallat <the +0x218 component> SetTranslation v0,0,-100` with a WINDOW grab
+   before and after. If the viewmodel moves, the rig retargets to the component
+   and **nothing else changes** - the frame context, the policy layer, the trims,
+   the F10 surface and the write-point selector are all already built and proven.
+   If it does not move, derive the FP actor's Tick slot off its LIVE vtable
+   (`bsivtable` window -> diff against another actor -> counting probe on the
+   differing slots) and hook it aim-seam style. Derive the slot, never guess.
+2. Then arms mode, which now has its component: `HideBoneByName` /
+   `UnHideBoneByName` with `IsBoneHidden` as the verifier, on `+0x218`.
+3. `bsiread` the second `XFirstPersonAttachment` at attachment `+0x024` - almost
+   certainly an archetype rather than a live instance, but it costs one command
+   and it is a candidate for the left-hand carrier.
+4. **Requirement 7 is still open and deliberately so.** It cannot be answered
+   while the write does not reach render: the pitch would be overwritten in a
+   field nobody reads. Per the user's "measure and stop" call, no gate shipped;
+   `publish_vr_gameplay` stays disarmed and the snap-turn landmine stays defused.
+5. Deferred from this session by the user's scope call: the
+   `GetWeaponStartTraceLocation` origin seam. The ray-origin sliders exist and
+   persist but ship visibly DISABLED until it lands.
+
+### Infinite: state after session 45 (I8 OPENS: the viewmodel carrier is NAMED and its stick-pitch coupling is PROVEN - branch `si45-inf-hands`)
 
 **Session 45 (2026-08-06) ran I8's derivation ladder. One commit (`9a065d1`).
 No behaviour change shipped: this session bought knowledge and instruments, and

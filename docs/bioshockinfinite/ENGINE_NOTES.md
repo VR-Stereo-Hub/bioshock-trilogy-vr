@@ -477,6 +477,96 @@ The zero-trim identity is left to the algebra rather than short-circuited. A
 would mean the shipped default configuration never executes the compose path, so
 the first user to type a trim would be the first to run it.
 
+### R4: THE ACTOR TRANSFORM IS NOT WHAT THE RENDERER READS (a clean NEGATIVE)
+
+**This is the session's most important finding and it redirects the milestone.**
+
+The rig writes `Location +0x44` and `Rotation +0x50` absolutely, every frame,
+and the write DEMONSTRABLY LANDS:
+
+```
+rig: armed=1 probe=0 point=cameratail writes=812 reapplies=2430
+rig: LIVE loc=(-19387.9 -110729.0 -3743.8) rot=(-7281 -16384 0) = (-40.0 -90.0 0.0) deg
+rig: last write READ BACK loc=(-19387.9 -110729.0 -3743.8) age 15 ms
+rig: refusals gate=0 thread=0 dead=0 identity=0 fault=0 poisoned=0
+```
+
+Before arming the same fields read `(-19417.9 -110676.5 -3698.8)` / `(0 -16384 0)`
+- the engine's own values - so our value is in the object, it is READ BACK out of
+the object, and the engine is not restamping it away.
+
+**And nothing renders.** With a deliberately absurd **5 metre** forward offset -
+chosen precisely so idle animation cannot confound the read, since the gun should
+fly out of frame - all three live write points produce a frame diff at the
+idle-animation control level:
+
+| write point | writes | mean-abs vs pre-arm | pct changed |
+|---|---|---|---|
+| `cameratail` (present edge, game thread) | 5621 | 0.57 | 1.51% |
+| `drawentry` (DrawDetour depth 0, pre-original) | 6884 | 0.98 | 2.57% |
+| `drawexit` (DrawDetour depth 0, post-original) | 8234 | 1.02 | 2.66% |
+| *(reference)* same-position idle control | - | 0.76 | 2.00% |
+
+Then the escalation the R2 ladder names: a manual `ForceUpdateComponents` on the
+attachment **while the write was live** - `0.24 mean-abs / 0.58% changed`, BELOW
+the control. No effect. `ReattachComponent` was not reached; there is nothing
+for it to fix if `ForceUpdateComponents` moves nothing.
+
+**So: the first-person viewmodel's position and rotation do NOT come from the FP
+attachment ACTOR's transform.** Reconcile that with the two things that ARE true
+and the picture is consistent:
+
+- `SetDrawScale` on this actor **does** render (R2). So the renderer reads
+  *something* off this actor - scale propagates - but not the actor transform.
+- s45 measured the actor's pitch tracking the control pitch unit for unit. That
+  made it look like the driver. It is at most a **follower**: written by the same
+  code that drives the real transform, in parallel, and read by nobody.
+
+The s45 inference "its transform is live and tracks control, therefore it is the
+drive target" was reasonable and is now **falsified by intervention**. This is
+exactly why R2-R4 run before compensation machinery gets built: the milestone
+would otherwise have shipped a per-frame write to a field nothing reads.
+
+### THE NEXT RUNG IS NAMED: `XFirstPersonAttachment +0x218`
+
+A `bsifields` walk of the attachment (read-only, one command) gives:
+
+```
++0x00C -> XEffectSound            +0x0A0 -> XHuman  (Base)
++0x014 -> Level                   +0x0A4 -> XWorldInfo
++0x020 -> Class                   +0x0E4 -> DefaultPhysicsVolume
++0x024 -> XFirstPersonAttachment  +0x218 -> XSkeletalMeshComponent   <-- HERE
++0x08C -> XHuman  (Owner)
+```
+
+**`+0x218` is an `XSkeletalMeshComponent` hanging off the ATTACHMENT**, which is
+precisely where R1 said the first-person arms had to be (neither pawn component
+is them, and hiding the attachment removes the whole viewmodel). It is the
+single best candidate for both open problems:
+
+1. **The real transform source.** UE3 draws a skeletal mesh from its COMPONENT's
+   `Translation`/`Rotation`/`Scale` and cached component-to-world, not from its
+   owner actor's. `execSetTranslation`, `execSetRotation`, `execSetScale` and
+   `execSetScale3D` are all verified present in this build and are COMPONENT
+   natives. Next rung: `bsicallat <component> SetTranslation v0,0,-100` with a
+   window grab - if the viewmodel moves, that is the drive target and the whole
+   rig retargets to it with no change to the algebra, the policy layer or the
+   frame context.
+2. **Arms mode.** `HideBoneByName`/`UnHideBoneByName`/`IsBoneHidden` need a
+   specific component, and this is the only first-person one identified.
+
+Also recorded, NOT claimed: `+0x024` reads as a SECOND `XFirstPersonAttachment`
+at a different address from the carrier. Most likely an archetype/default object
+rather than a live instance - the class-name heuristic resolves anything that
+points at plausible memory (the s45 trap) - but it is a candidate for the
+left-hand carrier question and costs one `bsiread` to settle.
+
+**Requirement 7 is NOT answered this session.** The plan's first test was whether
+an absolute per-frame rig write simply overwrites the pawn-driven pitch. It
+cannot be answered while the write does not reach render: the pitch would be
+overwritten in a field nobody reads. Per the user's "measure and stop" decision,
+no gate was shipped and `publish_vr_gameplay` stays disarmed.
+
 ### PER-HAND AIM TRIMS, and the rolled-pose oracle that proves the algebra
 
 The trims ride BOTH the game-side ray (`ray_pose_from_xr`) and core's

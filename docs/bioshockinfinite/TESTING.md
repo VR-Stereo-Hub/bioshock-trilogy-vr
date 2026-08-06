@@ -723,3 +723,51 @@ Sea adds weapons and a Vigor the base game does not have, so per-weapon aim prof
 them.
 
 `DLC\DLCA` (5.8 GB), `DLC\DLCB` (7.5 GB), `DLC\DLCC` (11.8 GB) - map these to titles in I0.
+
+## Session 46 in-headset checklist (I8 part 2)
+
+**Read this first: NOTHING in this session changes what the viewmodel does.** The
+per-frame write to the FP attachment actor was armed, measured, and found not to
+reach render (ENGINE_NOTES "R4: the actor transform is not what the renderer
+reads"), so it ships DISABLED. The hands and weapon still ride the headset. This
+checklist is therefore a **non-regression pass plus two carried-over judgments** -
+if it is all boring, the session succeeded.
+
+1. **Non-regression sweep, 60 s, do FIRST.** Load the save and just play for a
+   minute. Stereo smoothness unchanged, no new judder, no flicker between eyes,
+   controls unchanged, and the aim dot still follows the right controller. The
+   aim ray was refactored onto a new algebra this session and made the default,
+   so this is the one that matters: it should be **indistinguishable** from the
+   s44b build you accepted. Anything off, `bsiaim source legacy` restores the
+   old formula live, with no rebuild - if the symptom survives that, it predates
+   this session.
+
+2. **Aim through ROLLED poses.** Point at a distant object and roll your wrist
+   through roughly +/-60 deg while holding the aim. The dot must stay on the same
+   spot. Flat measurement says the divergence is a constant 0.0000 at every
+   orientation, but roll is where BioShock 1 lost 28.21 deg and only a headset can
+   confirm it does not swim.
+
+3. **Per-hand aim trim, new this session.** `bsiaim trim r <pitch> <yaw>` (deg,
+   right hand) and `bsiaim trim l ...`. The BEAM and the DOT must move TOGETHER -
+   they are fed from one pair of atomics, so if they separate, say so, that is a
+   real bug. `bsiaim trim r 0 0` to undo.
+
+4. **F10 panel sanity.** The new "HANDS + WEAPON (I8) <-- CALIBRATE HERE" section
+   should open. Everything in it is live EXCEPT the ray-origin sliders and
+   "bullets from the HAND", which are deliberately greyed out with the reason on
+   screen (they would move the beam but not the bullet until the
+   GetWeaponStartTraceLocation seam lands). Arms mode radio stores but does not
+   apply, and says so. Please confirm nothing in there does something surprising.
+
+5. **CARRIED OVER, still unjudged: does the bullet hole land ON the aim dot?**
+   Shoot a flat wall at 3-5 m and look at where the decal appears relative to the
+   dot. This has been owed since s44b.
+
+6. **CARRIED OVER, still unjudged: the thumbrest + flick DPad lane.** Does
+   resting a thumb and flicking read as a usable DPad, or does it misfire?
+
+**Expected noise, not bugs**: the log carries `rig: refusals ... disarmed=N
+noCarrier=N` counters climbing while `bsihands` is on - that is the disabled
+write refusing correctly, once per hand per frame, and is exactly what it should
+do. `bsihands off` silences it.

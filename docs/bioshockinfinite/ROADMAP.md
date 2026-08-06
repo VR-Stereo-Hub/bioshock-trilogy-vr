@@ -612,7 +612,33 @@ port nothing.
       across the pair and the driven view level. So the stick-drags-the-viewmodel defect DOES
       exist here. Separately, the foreground-lens half of the defect class is already dead: I6's
       decoder found ONE lens, 100% of 211 valid samples, weapon and hands drawn.)*
-- [ ] Step 3: only then port compensation machinery, and only the parts proven necessary.
+- [x] Step 3: only then port compensation machinery, and only the parts proven necessary.
+      *(s46: the gate did its job and SAVED the milestone from a wasted lane. The one piece
+      ported - BS2's frame_context/hands/bones split - was ported because the algebra is
+      genuinely shared; the actor-transform DRIVE was built, armed and measured before any
+      compensation was written on top of it, and it turned out the renderer does not read that
+      field at all. Bone bank, adopt-then-compose and zero-scale arm hiding remain UNBUILT,
+      each still waiting on a rung that falsifies the native lane.)*
+- [x] **The one algebra for ray and model** - bsi-local `frame_context.h/.cpp`, integer yaw,
+      seqlock-published. *(s46: PROVEN INERT - 1240 dispatches over 14 stations including three
+      roll values, max|dPitch| = max|dYaw| = max|dRoll| = 0, round trip 0.0000 mm. Made the
+      default after measuring; `bsiaim source legacy` is the live escape hatch.)*
+- [x] **Per-hand aim trims on the ray AND the laser**, from one pair of atomics, no core change.
+      *(s46: rolled-pose oracle constant at 5.8312 deg across 12 stations, spread 0.0000, and the
+      magnitude is the exact composed angle 2*acos(cos(p/2)cos(y/2)) to four decimals.)*
+- [x] **The policy/mechanism split and the F10 calibration surface** - `hands.h/.cpp` (BS2's
+      parallel arrays, wasDriving edge, shared use_aim_pose) and `rig.h/.cpp` (resolve every
+      frame, identity by name AND structure, two-clock dispatch caches, probe mode, write-point
+      selector, last_write read-back oracle). *(s46: pre-arm oracle PASSES - a 1.0 m controller
+      move produces exactly 150.0 UU of target motion at worldScale 150.)*
+- [ ] **THE DRIVE ITSELF - REDIRECTED.** *(s46: the FP attachment ACTOR's transform is NOT what
+      the renderer reads. The write lands and reads back, the engine does not restamp it, and
+      nothing renders at any of three write points even at a 5 m offset, nor with
+      ForceUpdateComponents. Next rung is NAMED: `XFirstPersonAttachment +0x218 ->
+      XSkeletalMeshComponent`, the first-person arms component, tested with one
+      `SetTranslation` call. Everything else is already built and waits on that one answer.)*
+- [ ] **Arms mode** - now has its component (`+0x218`); neither pawn XSkeletalMeshComponent is
+      the arms (s46 R1), so the verb REFUSES rather than guessing until it is wired.
 - [x] UE3 differences that matter: the skeleton is `USkeletalMeshComponent::SpaceBases`, not a
       Havok `hkQsTransform` array; attachment is components and sockets, not the UE2 Base/Owner
       pair. BS1's bone drive transfers in **shape only**. *(s45: and it may not transfer at all.
