@@ -610,6 +610,88 @@ for this threaded renderer (reprojection wobble - error scales with head SPEED).
    your current head speed - if you can, note roughly what it reads during a brisk
    turn (it is the predicted wobble amplitude of a one-generation error).
 
+## S44 controls checklist (I7: the Touch layout, and the aim probe)
+
+Controls now come up LIVE at boot (`inputOn`, a 9th preset key, default on) - you
+should have a working controller the moment you are in the headset, without typing
+anything. Everything below is an F10 control for the same reason.
+
+**1. Non-regression sweep, 60 s, DO THIS FIRST.** Nothing this session touched
+stereo, pacing or the camera, so this must look exactly like the s43b build you
+signed off as "extremely smooth": turn your head steadily left-right, walk a few
+steps, look up and down. **Smoothness must be UNCHANGED - pose lag 2, no new
+judder.** If it is worse, stop and say so; F10 -> "VR stereo (I5)" -> pose
+attribution radios are still there to bisect, and `bsiinput off` disables the whole
+new lane.
+
+**2. Every control on the Touch layout.** Each one was verified flat to produce the
+right XInput bit; what you are judging is that the bit does the RIGHT THING in the
+game. Work down the list and tell me any that misbehave:
+
+| control | expected |
+|---|---|
+| A | jump (and Sky-Hook transfer where one is in range) |
+| B | crouch - toggle, press again to stand |
+| X | reload / hold to hack or use |
+| Y | melee (hold ~0.15 s for the execution) |
+| right trigger | fire |
+| left trigger | vigor cast |
+| left grip | next vigor |
+| right grip | next weapon |
+| left stick | move; also menu navigation |
+| right stick | turn |
+| left stick CLICK | sprint |
+| **right stick CLICK** | **zoom / iron sights** - new here; BioShock 1 deliberately eats this button, Infinite forwards it |
+| left thumbrest HELD + right stick flick | the DPad family (nav pulse, buyout hack, auto hack, quick-toggle cycle left/right). Touch has no DPad, so this is its stand-in |
+| menu button, tap | pause menu |
+| menu button, hold ~0.5 s | back |
+
+Three of these the flat lane could NOT name individually, so they are the ones I most
+need your eye on: **melee, next weapon** (the test save owns one gun) and **sprint**
+(the checkpoint spot is walled in, so a flat speed test had no room to run).
+
+**3. KNOWN BLOCKER - do not be surprised by it.** Pressing the menu button opens the
+pause menu, and **no controller button closes it** (back, A, B and stick navigation
+all do nothing). Press **Escape on the keyboard** to get out. This is not a
+regression from this session and it is not the mod losing the pad - the game keeps
+reading our controller ~92 times a second the whole time the menu is up, it just does
+not act on it. It has its own fix lane. **Avoid the menu button in the headset for
+now.**
+
+**4. Pad map A/B**, if any button feels wrong: F10 -> "INPUT (I7)" has two radios,
+`Infinite` (shipped) and `BioShock 1` (the control). Flipping to BioShock 1 should
+make the faces obviously wrong (B jumps, Y heals, right-stick click stops zooming) -
+that is what tells us a complaint is about the MAP rather than about the binding
+underneath it.
+
+**5. Aim - a probe, not a feature yet. Nothing is armed by default.** F10 -> "AIM
+(I7)". Please read the `divergence` number rather than trusting the picture:
+
+1. Tick **"Install the aim seam (probe, read-only)"**. It observes only and cannot
+   change anything.
+2. Hold the right controller pointing where you are looking - `divergence` should sit
+   near 0.
+3. Now keep your head still and swing the controller off to one side. `divergence`
+   should climb to roughly the angle you swung. That is the gap this lane exists to
+   close.
+4. Turn your HEAD with the controller held still. Flat testing says `divergence`
+   grows the same way, because the shot already follows your head. Please confirm
+   that matches what you feel - **shots should already land where you LOOK.**
+5. Only if you want to try it: tick **"Aim with the RIGHT CONTROLLER"**, then shoot a
+   wall with the controller pointed away from your gaze. **Flat testing could not
+   show the impact moving, and could not build a control to prove that means
+   anything** - so your eye is the deciding instrument here. Tell me whether the
+   holes land where the controller points, where you are looking, or somewhere else
+   entirely. Any of those three answers is useful; the third is the most useful.
+6. Untick both when you are done - the write is unproven and should not stay on.
+
+Expected noise, not bugs: `sr tag ring skewed - cleared` around movie and scene
+transitions, and a ~1 s pause when a checkpoint loads.
+
+Anything off, toggle the newest lever off first - `bsiaim off`, then the F10 pad-map
+radio back to BioShock 1, then `bsiinput off`. If the symptom survives all three, it
+predates this session.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

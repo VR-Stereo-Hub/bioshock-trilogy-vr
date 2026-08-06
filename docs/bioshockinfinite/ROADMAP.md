@@ -502,17 +502,32 @@ Controls half:
       pressed. No UpdateInput pump / SetUseController - Infinite polls XInput itself; BS2's
       activation machinery correctly does not port. Movement was scene-locked in the probe
       save - re-test walking in free roam.)*
-- [ ] **Extract the XR-to-pad mapping table out of core** into a per-game table the adapter
-      supplies. It is currently hardcoded BioShock semantics (B->Y jump, Y->B med hypo, grips to
-      bumpers) living in `core/vr/openxr_input.cpp`. *(s42 audit: Infinite needs
-      straight-through faces (A jump, B crouch, X use, Y melee), RS-click passed through
-      (XToggleZoom - BS1 deliberately eats it), NO synthesized dpad (hack/nav commands
-      here); grips->bumpers and menu press/hold fit as-is. ENGINE_NOTES "audited retail
-      pad map" is the spec; additive opt-in seam or bsi-local duplicate per the
-      decoupling directive - session 43.)*
-- [ ] Infinite-specific mapping work that BioShock has no analogue for: two-weapon carry (not the
-      full wheel), Vigors on the left hand, sprint, hack/lockpick, Elizabeth's item toss, and the
-      Sky-Hook melee.
+- [x] **Extract the XR-to-pad mapping table out of core** into a per-game table the adapter
+      supplies. *(s44 DONE: `PadProfile` enum + two `constexpr PadMap` tables. One atomic in
+      the bridge, default Bioshock1, one relaxed load per compose; the BS1 table reproduces
+      the old literals exactly and BS1/BS2 never call the setter. BS1 inertness PROVEN on the
+      sim lane per control, not asserted - faces, grip hysteresis boundaries, RS-click still
+      eaten, flick still three-way, turn suppression by an A-B pair, claimRatioH 1.01769 ==
+      the banked 1.018, zero faults. Infinite's map measured the same way: faces straight
+      through, RS-click FORWARDED (0x0080), the new fourth flick direction (0x0008 DR), stick
+      polarity. Seam choice and the rejected bsi-local duplicate: ARCHITECTURE decision log.)*
+- [x] **Controls arm at boot** (`inputOn`, a 9th preset key, default on) - a headset boot came
+      up with no controller and no way to fix it, since every in-headset judgment must be an
+      F10 control and reaching F10 needs a controller. *(s44)*
+- [x] Infinite-specific mapping work that BioShock has no analogue for. *(s44: all of it rides
+      the game's OWN bindings through the pad, so it is a mapping question, not new code -
+      two-weapon carry on the bumpers, vigors on LT, sprint on LS-click. The DPad family
+      (nav pulse / buyout hack / auto hack / quick-toggle cycle) has no Touch analogue and,
+      per the user's call, reuses the thumbrest+flick lane with a fourth direction added;
+      menu nav rides the left stick, which this game serves natively via
+      AxisEmulationDefinitions; test-only cheats stay on the keyboard. Sky-Hook melee nuance
+      and item toss are left for the model-sync session - nothing invented.)*
+- [ ] **BLOCKER, new in s44: the pause menu does not consume the synthetic pad.** START opens
+      it and no controller button closes it (keyboard Escape does). NOT the bridge - the game
+      keeps polling XInput through our wrapper at ~92/s the whole time it is up. Leading
+      candidate is the BS2 shape (a synthetic pad never announces itself as the active input
+      device, so the UI stays in keyboard context); BS2's scancode shim is the obvious port,
+      after its own evidence rung.
 - [x] **The Skyline (TBar) control family.** The shipped ini documents an `XInputHandler` chain
       mechanism where commands joined by `+` short-circuit on success, with a large TBar set
       (transfers, boost, dodge, melee transfer, zoom, and the highlight-effect pairs). Any VR remap
@@ -531,15 +546,29 @@ Controls half:
 
 Aim half:
 
-- [ ] Find UE3's fire path; substitute at the origin-and-direction seam so per-weapon spread still
-      applies downstream
+- [~] Find UE3's fire path; substitute at the origin-and-direction seam so per-weapon spread still
+      applies downstream. *(s44 PARTIAL, with a named negative: `APawn::GetBaseAimRotation` is
+      DERIVED - a virtual at pawn vtable +0x2E8, `FRotator* __thiscall (FRotator*)`, `ret 4`,
+      impl read live off the pawn (rva 0x244CC0), body identified by its stock UE3
+      RemoteViewPitch fixup. Hooked, 32k calls, zero faults. The write executes but its
+      DOWNSTREAM EFFECT IS NOT ESTABLISHED and it ships OFF. Next is instrument, not levers:
+      read the trace RESULT, then probe the CONTROLLER's +0x2F4 that this function delegates
+      to. Full account in ENGINE_NOTES.)*
+- [x] **The head-coupled-aim defect does not exist** - falsified by measurement, s44. With the
+      hand parked and only the head moving, the engine's aim tracks the head degree for degree
+      (+40 -> -130, -40 -> -50, back to 0 -> -90). The aim chain is downstream of the camera
+      drive, so shots already land where you LOOK; the open half is aim following the
+      CONTROLLER.
 - [ ] **The FRotator trap**: rotation units are int32s whose float reinterpretation is a denormal,
       so a live fire direction prints as `(0.000 0.000 0.000)`. This cost BS1 a long detour.
       Classify out-params by value, not by position.
-- [ ] Read-only probe hooks (install both, refuse to substitute) so a diagnostic **cannot change
+- [x] Read-only probe hooks (install both, refuse to substitute) so a diagnostic **cannot change
       what it measures**. BS1: "any future 'is this seam involved at all' question should start
-      there."
-- [ ] Respect `ret imm / 4` for every probe (see the RTC warning in ENGINE_NOTES)
+      there." *(s44: `bsiaim probe on` installs read-only and refuses to substitute; `bsiaim on`
+      is the separate explicit write. It is what falsified the head-coupling assumption.)*
+- [x] Respect `ret imm / 4` for every probe (see the RTC warning in ENGINE_NOTES). *(s44: the
+      aim install REFUSES unless it can see `C2 04 00` in the target body, the stricter of the
+      two patterns in the tree.)*
 - [ ] Per-weapon aim profiles keyed by class name, covering the DLC weapons
 - [ ] **Done when:** fully playable from the headset with every action bound (audited against the
       shipped `DefaultInput.ini` command list), and look one way / shoot another - impacts land
@@ -556,6 +585,13 @@ sessions 40-41 (hands split per-controller, the holdable lane, and the animation
 drive whose written-quat/anim-quat discipline is documented in VERIFICATION 2.8) - derive fresh,
 port nothing.
 
+- [ ] **Handoff from s44 (I7):** the user expected the weapon model to stop riding the headset as
+      part of the controls block. It is not - that is this milestone, and I7 deliberately left it
+      alone. What I7 DID leave here: the controller ray is already built and published on the
+      view's own basis (`aim.cpp` `controller_ray`, game yaw + recenter residual), so the model
+      drive can consume the same ray the aim seam does rather than deriving a second one that
+      drifts. The flat sweep also showed the viewmodel moving with the sim's hand pose (2.6%
+      frame diff at +/-35 deg), which is a starting observation for what already tracks what.
 - [ ] Step 1: check what UE3 does natively here.
 - [ ] Step 2: **test whether the BS1/BS2 defect even exists.** BS1's viewmodel renders through a
       separate foreground lens; BS2 has a structurally different second pass fixed at 60 degrees.

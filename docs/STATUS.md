@@ -17,6 +17,92 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
+### Infinite: current state after session 44 (I7 CONTROLS: the pad map lands and is proven both ways; aim seam DERIVED, its write UNPROVEN and off; branch `si44-inf-controls`)
+
+**Session 44 (2026-08-06) ran the I7 controls block: the per-game pad map, the full
+Touch layout, and the aim derivation. Five commits. Nothing merged.**
+
+1. **THE INSTRUMENT FIRST (core, log-only)**: `vrinput padlog on` emits one line per
+   composed BUTTON or trigger EDGE with the bits NAMED. Until now nothing could read
+   the button word the game actually saw, so every claim about an XR-to-pad mapping
+   had to be inferred from a game effect - save-dependent, timing-dependent, and for
+   a melee swing or a weapon cycle on a one-weapon save not observable at all. Plus
+   an adapter-local `loc.z` min/max/last WINDOW on the Infinite heartbeat: the 1 Hz
+   beat is a point sample and a jump's whole arc fits between two of them.
+2. **THE SEAM (core, additive, opt-in)**: `PadProfile` + two `constexpr PadMap`
+   tables. One atomic, default `Bioshock1`, one relaxed load per compose - a single
+   scalar rather than a struct of atomics so a live A/B can never compose a
+   half-switched pad. Table-driven: faces, grips, both stick clicks (0 = "not
+   forwarded", which is how BS1 keeps eating RS-click), whether the flick lane
+   honours the ammomod preference, and the four flick directions (0 = "never
+   emitted", which is how BS1 keeps its three-way select). Choice of seam and the
+   REJECTED bsi-local duplicate: ARCHITECTURE decision log.
+3. **BS1 INERTNESS, MEASURED PER CONTROL** (the banked `claimRatioH` is stereo
+   geometry and cannot see an input regression, so it is the "nothing else moved"
+   control, not the proof): faces still A/Y/X/B, RS-click still produces NOTHING,
+   grips at 0.60/0.75/0.60/0.50 reproduce the 0.70-press / 0.55-release hysteresis
+   exactly, menu tap/hold still START/BACK, flick still DU/DD/DL with **no DR ever**,
+   turn suppression by an A-B pair (rx 32767 -> 0). claimRatioH 1.01769 == 1.018,
+   zero faults, and **zero `pad profile` lines in BS1's log** - it never called the
+   setter.
+4. **INFINITE'S MAP, MEASURED THE SAME WAY**: faces straight through, **RS-click
+   FORWARDED** (0x0080, for XToggleZoom - the headline inversion from BS1), grips ->
+   LB/RB, triggers analog, menu tap/hold, thumbrest+flick -> DU/DD/DL and the **new
+   DR**, stick polarity. Two A-B pairs rather than assumptions. Layer 2 in the save:
+   **CROUCH and JUMP PROVEN by quantity** (crouch is a persistent ~110 UU toggle;
+   jump is a 98.6 UU arc inside one beat). LB/RT/LT each produce a large reverting
+   render change but the whole-frame diff **cannot say which binding fired**;
+   NextWeapon and sprint are bit-level only WITH the reason (one gun; the checkpoint
+   is walled in, proven by a no-click control).
+5. **CONTROLS NOW ARM AT BOOT** - `inputOn`, a 9th preset key, default on. Without it
+   a headset boot had no controller and no way to fix that, since every in-headset
+   judgment must be an F10 control and reaching F10 needs a controller.
+6. **THE AIM SEAM IS DERIVED**: `APawn::GetBaseAimRotation`, a VIRTUAL at pawn vtable
+   **+0x2E8**, `FRotator* __thiscall (FRotator*)`, **`ret 4`**. From the exec thunk
+   the s34 census had already recorded with zero E8 callers; because it is virtual
+   the implementation is read off a LIVE pawn (rva 0x244CC0) and no impl RVA is
+   recorded. Its body identifies it beyond doubt (delegates to the CONTROLLER's
+   +0x2F4; otherwise Rotation at +0x50 with the stock UE3 `[pawn+0x235]<<8`
+   RemoteViewPitch fixup). 32k calls, zero faults.
+7. **AND THE SESSION'S OPENING ASSUMPTION IS FALSIFIED.** "The shot stays where the
+   BODY faces" is **not true here**: with the hand parked and only the head moving,
+   the engine's aim tracks the head degree for degree (+40 -> -130, -40 -> -50, back
+   to 0 -> -90) while the ray holds still. The aim chain is downstream of the camera
+   drive, so **shots already land where you LOOK**. The open half is aim following the
+   CONTROLLER. This is exactly what the evidence-first gate exists for - a fix was
+   about to be built for a defect that does not exist.
+8. **THE WRITE EXECUTES BUT IS UNPROVEN, SO IT SHIPS OFF.** View fixed, two shots 70
+   deg apart in commanded aim: post-shot frames **pixel-identical** (0.08%, zero
+   covered cells) while pre-shot frames differ 2.6% from the viewmodel alone. The
+   positive control could not be built - seeing an impact move needs the same view
+   with different aim, and the only thing producing that is the substitution under
+   test; turning the head instead moves the camera and swamps it at 60.9%. So the
+   negative is real but **UNATTRIBUTED**.
+
+**NEW BLOCKER (s44): the pause menu does not consume the synthetic pad.** START opens
+it (55.8% of pixels) and no controller button closes it - keyboard Escape does. NOT
+the bridge: the game keeps polling XInput through our wrapper at ~92/s the whole time
+it is up (iat 153614 -> 154534 -> 155177), so the state arrives and the UI ignores it.
+Leading candidate is BS2's shape (a synthetic pad never announces itself as the active
+input device). BS2's scancode shim is the obvious port, after its own evidence rung.
+
+**NEXT (session 45), in order**:
+1. **Instrument the trace RESULT, not the picture** - a hit location readout. Every
+   aim conclusion is blocked on it; do not touch a lever until it exists.
+2. **Then probe the CONTROLLER's vtable +0x2F4**, which GetBaseAimRotation delegates
+   to and which a weapon asking the controller directly would use instead - exactly
+   the shape that produces the measured null. Hazard: the camera may read the same
+   path, so check with the drive off before arming anything.
+3. The pause-menu lane (its own evidence rung, then possibly BS2's scancode shim).
+4. Then I8 - the weapon model still rides the headset. The user expected that in this
+   block; it is the next milestone, and I7 left `controller_ray` built on the view's
+   own basis so the model drive can consume the same ray rather than deriving a
+   second one.
+
+**Headset checklist for the user: TESTING.md "S44 controls checklist".** Non-regression
+first (smoothness must be unchanged), then every Touch control, then the aim PROBE
+(read `divergence`; the write stays off unless they choose to try it).
+
 ### Infinite: current state after session 43 (THE STUTTER HUNT: cause NAMED - the 30 s GC tick - fix candidate live, headset verdict pending; branch `si43-inf-stutter`)
 
 **Session 43 (2026-08-06) ran the hunt the user ordered: research first, instrument
@@ -5995,6 +6081,62 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 44 (Infinite) - 2026-08-06 - I7 CONTROLS: the per-game pad map, the Touch layout, and the aim seam derived
+
+Branch `si44-inf-controls` off `bioshock-infinite` at 7c06d09. Five commits, nothing
+merged. Scope held: pad map, bindings, aim - no performance work, no lens work, no
+refactors.
+
+**What landed.** (1) The instrument that was missing: `vrinput padlog on`, one line
+per composed button/trigger EDGE with the bits named, plus a `loc.z` window on the
+Infinite heartbeat. Every previous claim about an XR-to-pad mapping had to be inferred
+from a game effect; now the bit is read directly. (2) `PadProfile` + two `constexpr
+PadMap` tables in core - additive, opt-in, default BioShock 1, one relaxed load per
+compose. (3) The Infinite profile armed at adapter init, `bsiinput padmap` + F10
+radios, and `inputOn` as a 9th preset key so a headset boot comes up with a working
+controller. (4) The aim seam derived and probed. `tools/padsweep.ps1` is committed so
+the sweep is re-run rather than re-derived.
+
+**The BS1 proof was run BEFORE any Infinite work**, deliberately, so a redesign would
+have been cheap. Per control: faces still A/Y/X/B, RS-click still produces nothing,
+grips at 0.60/0.75/0.60/0.50 reproduce the 0.70/0.55 hysteresis exactly, flick still
+DU/DD/DL with no DR ever, turn suppression shown by an A-B pair rather than assumed.
+claimRatioH 1.01769 == the banked 1.018 as the "nothing else moved" control, zero
+faults, and zero `pad profile` lines in BS1's log.
+
+**Two things the flat lane proved outright, and several it honestly could not.**
+Crouch (a persistent ~110 UU toggle) and jump (a 98.6 UU arc inside one beat) are
+quantitative proofs. LB/RT/LT each move 4-21% of the frame but the whole-frame diff
+cannot say WHICH binding fired - RT and LT are near-identical region maps - so they
+are recorded as "reaches the game", not as individually proven. NextWeapon and sprint
+are bit-level only with the reason stated; sprint's confound was PROVEN by a control
+run with no LS press at all, which stopped at the same wall.
+
+**The session's biggest result is a falsification.** The plan opened with "the drive
+adds head yaw to the view out-param only, so the shot stays where the body faces -
+turn your head 90 deg and the shot goes 90 deg off", and authorised a fix for it. The
+probe killed it in one A/B: with the hand parked and only the head moving, the
+engine's aim tracks the head degree for degree. Aim is already head-coupled because
+the aim chain sits downstream of the camera drive. The evidence-first gate stopped a
+fix being built for a defect that does not exist.
+
+**The aim write is implemented, executes at the call rate, and ships OFF** because its
+downstream effect could not be established: two shots 70 deg apart in commanded aim
+produced pixel-identical frames, and the positive control could not be built (seeing
+an impact move needs the same view with different aim, which only the substitution
+under test produces). Named negative, mechanism mapped, next instrument specified -
+read the trace RESULT, then probe the controller's +0x2F4 that this function delegates
+to.
+
+**New blocker found:** the pause menu does not consume the synthetic pad (keyboard
+Escape closes it; the game keeps polling XInput at ~92/s the whole time, so the state
+arrives and the UI ignores it). Recorded with its leading candidate, not fixed - it
+needs its own evidence rung.
+
+**Test-state discipline:** the user's `vrpreset.ini` was backed up before the first
+Infinite run and finished byte-identical (8 keys, 2064x2208, GC interval 300 and pose
+lag 2 all untouched). All three games closed at the end.
 
 ### Session 43 (Infinite) - 2026-08-06 - THE STUTTER HUNT: the 30 s GC tick named by A-B-A, fix candidate live at native res
 
