@@ -435,6 +435,30 @@ Lane (2) above is BUILT and all but the last step is proven live:
   possessed gameplay state, then NextPlasmid onto it. Blocked at 01:2x only by the
   LoadCheckpoint state machine (below), not by any missing machinery.
 
+### The GRANT combination, EXECUTED and FALSIFIED (s43, 2026-08-06)
+
+The full combination ran on the TWN2 save (pistol + 2 vigors) and DID NOT GRANT - the
+dispatch machinery is fine; the registration step is what's missing:
+
+- `bsiload XCore.XWeaponUndertow` -> class 14299130; `bsiload
+  XCore.Default__XWeaponUndertow` -> the CDO 14299288 (class XWeaponUndertow). Both
+  resolve; the `Default__<Class>` CDO path shape works.
+- `bsicallat <pawn> CreateInventory 0x<class>` dispatches and RETURNS - but the
+  NextPlasmid cycle stays 2-long (Devil's Kiss <-> the save's second vigor, cycled 4x
+  by screenshot). The created Inventory (if any) never registers in the plasmid list.
+- `bsicallat <pawn> AcquireWeapon 0x<CDO>` dispatches and RETURNS with a real object
+  parm (vs the SEH fault on null parms - progress on the parm shape), but neither the
+  NextPlasmid nor the NextWeapon cycle grows (vigors here ARE XWeapon* subclasses, so
+  both cycles were checked; the weapon cycle still holds only the pistol).
+- READ: equipping in this engine goes through an index/list layer (GNames has
+  ClientSetEquippedPlasmidIndex / EquippedPlasmidIndex / BackupPlasmidIndex /
+  EquipPlasmid - the last a recorded FindFunction negative on PC and XHuman), so the
+  grant seam is on the LOADOUT/INVENTORY MANAGER object, not the pawn's top-level
+  functions. Next rung when this lane resumes: generalize `bsifields` to walk an
+  explicit object (the s42 option-3 note), walk XHuman for the inventory/loadout
+  manager, and dispatch the list-registration function there. NOT pursued further in
+  s43 - the stutter hunt owns the session (10-min timebox honored).
+
 ### LoadCheckpoint's state machine (s42b, measured the hard way)
 
 - From a SETTLED main menu (save index loaded): loads the NEWEST disk save. Proven twice
@@ -445,9 +469,21 @@ Lane (2) above is BUILT and all but the last step is proven live:
   `disconnect` + LoadCheckpoint goes black/menu-limbo. A fresh process is the only clean
   reset (the intro run writes NO save file - the user's saves are untouched).
 - The reliable sequence: fresh boot -> DISMISS "PRESS ANY KEY" (needs a real keypress -
-  game-click alone did not advance it; extend game-key.ps1 to bsi) -> wait for the menu
-  ~30 s -> `vrcmd` confirms pump=game -> ONE LoadCheckpoint -> 45 s -> verify by
-  GNames/pawn walk, THEN probe.
+  game-click alone did not advance it; `game-key.ps1 -Game bsi -Key Space` since s43) ->
+  wait for the menu ~30 s -> `vrcmd` confirms pump=game -> ONE LoadCheckpoint -> 45 s ->
+  verify by GNames/pawn walk, THEN probe.
+- s43 adds a FOURTH observed behaviour: a LoadCheckpoint dispatched at a menu that LOOKS
+  settled (~90 s after boot, pump=game confirmed) can be a SILENT NO-OP - no load, no
+  intro, PC pointer unchanged, beat cadence unchanged. Verify by `bsifields 1F0 8`
+  (pawn absent + same PC = nothing happened); the remedy is simply ONE more
+  LoadCheckpoint a minute later (s43: the second dispatch loaded TWN2 clean - draws
+  dipped to 26/s, cinematic quad cycled, PC relocated, pawn at +0x1FC). The
+  intro-contamination hazard is only when the dispatch lands at title/attract; the
+  no-op case is safe to retry.
+- The s37 pre-existing freeze hit AGAIN at boot 1 of s43 (frozen at the attract movie
+  ~40 s in, before any seam command: Responding=False, sim frames frozen at 902, log
+  silent from the letterbox-off line). Force-kill + relaunch worked first try -
+  protocol unchanged.
 
 ### The PC field map and the new struct facts (derived live, s42)
 
