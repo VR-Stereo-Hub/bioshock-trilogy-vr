@@ -196,3 +196,151 @@ ZoomedForegroundFOVAngle is why they unbound ADS.
 placement verification (subsumed by the world-pass re-homing experiment),
 per-weapon profiles + the exact wall-calibration flow, pawn-eye-point
 anchoring as the walk-bob decoupling lever.
+
+## Session 43: the Infinite stutter hunt - prior art and levers (2026-08-06)
+
+Context: the s42 VDXR headset run falsified the pacing-beat theory (steady pairs ==
+refresh, sd 0.3-1 ms) and named the judder as recurring HITCH SPIKES: 39-113 ms pair
+intervals in bursts, worse outdoors at native 2064x2208, load-sensitive, binding to head
+turns. Scope directive: fix at native res - streaming/GC/shader/scheduling class only.
+Three research sweeps (vanilla-game community fixes, VR-mod prior art, UE3 internals)
+ran before any code/ini change; findings with sources below, ranked experiments at the
+end. UEVR findings are CONCEPTS ONLY (all-rights-reserved); REFramework is MIT
+(adaptable with attribution).
+
+### A. What this UE3 build (6829, "Icarus") actually does
+
+- **Texture pool**: PC pool size is AUTO-CALCULATED at boot (detected VRAM minus frame
+  buffers minus `TexturePoolSizeReductionMB=40`); the ini `PoolSize=400` is read ONLY
+  with `-ReadTexturePoolFromIni` on the command line, or the pool is removed entirely
+  with `-DisableTexturePool` (both semi-official - relayed by 2K support; the ini
+  comment in `XGame\Config\DefaultEngine.ini` says the same). Sources:
+  https://steamcommunity.com/sharedfiles/filedetails/?id=161397496 ,
+  https://www.pcgamingwiki.com/wiki/BioShock_Infinite ,
+  https://steamcommunity.com/app/8870/discussions/0/618456760265869551/ (root-caused
+  area-load hitches; `-DisableTexturePool` "reduced the stutter about 90 percent").
+  **The load-bearing corollary for VR**: the boot auto-calc knows NOTHING about
+  allocations made after boot - our two 2064x2208 XR swapchains, the mirror, and UE3's
+  own scene targets grown to VR resolution. Pool + our targets can oversubscribe VRAM;
+  WDDM then pages at submit time - a hitch class that worsens exactly on view change.
+- **Streaming IO**: `UseTextureFileCache=TRUE` - mip loads are TFC seek+read; the
+  community fix bundle flips it False (with a raised pool) to kill seek hitches.
+- **GC**: Infinite ships `TimeBetweenPurgingPendingKillObjects=30` in `[Engine.Engine]`
+  (twice the UDK-default rate: a FULL blocking mark-and-sweep every 30 s of gameplay;
+  UE3's mark phase is monolithic on the game thread - order 100 ms on 2013-era object
+  counts). Irrational already tuned the disregard pool (`[Core.System]
+  MaxObjectsNotConsideredByGC=50500`). Sources: UDK MemoryDebugging docs,
+  https://topic.alibabacloud.com/a/reprint-unreal-engine-3-ue3-garbage-collection-mechanism_8_8_31101402.html
+  (mark traverse 0.28 s measured on ~90k objects; 0.12 s after disregard tuning),
+  https://dev.epicgames.com/documentation/unreal-engine/incremental-garbage-collection-in-unreal-engine
+  (reachability was single-frame-blocking until UE5.4).
+- **Level streaming**: when a streamed sub-level flips visible, the GAME thread does the
+  "make visible" work in one frame (component registration, actor init - Epic's own
+  Level Streaming Hitching Guide names this the classic hitch source). Infinite has a
+  purpose-built amortizer for exactly this - `[OpportunisticAsyncLoading]`
+  (Irrational-specific, undocumented elsewhere: BackgroundAsyncPackageLoadingQuantumMS,
+  BackgroundAddToWorldQuantumMS, iteration caps) - **and ships it DISABLED**
+  (`bOpportunisticAsyncLoadingEnabled=FALSE`). Community reports of positionally
+  deterministic hitches ("always occurs in same place", worse outdoors, sprinting
+  across a boundary can crash) match sub-level boundaries. Sources:
+  https://dev.epicgames.com/community/learning/tutorials/qpll/unreal-engine-level-streaming-hitching-guide ,
+  https://steamcommunity.com/app/8870/discussions/0/828934424230653249/
+- **Shader/material first-use hitches are a SEPARATE class**: Irrational's own Technical
+  Director recommended `bInitializeShadersOnDemand=True` (every instance, XEngine.ini
+  `[SystemSettings]`, reportedly also XCompat.ini) for freeze-frame stutter on first
+  appearance of effects/enemies; DXVK-async removing Infinite stutter corroborates a
+  driver-side pipeline-creation component. Sources:
+  https://steamcommunity.com/app/8870/discussions/0/828937420193881844/ ,
+  https://steamcommunity.com/app/8870/discussions/0/3047235828267171330/
+- **Frame caps interact with HITCH frequency**, not just avg fps (uncapped high-refresh
+  causes multi-second transition hangs; 60 fps locks resolved them):
+  https://steamcommunity.com/app/8870/discussions/0/828936718814638699/
+- **Streaming pre-warm APIs exist first-class in UE3**: `PrestreamTextures()` and
+  `UTexture2D::SetForceMipLevelsToBeResident(seconds)` (UDK TextureStreaming docs) -
+  documented for exactly the "about to come on screen" case. No prior art of a VR mod
+  widening the streaming frustum for pre-warm (would be our own invention).
+- **Stat/diag execs**: `stat streaming`, `stat levels`, `stat memory`, `listtextures`,
+  `obj garbage` are C++ exec handlers, present in shipped same-generation UE3 titles
+  (Borderlands 2 verified); Infinite's own XGame.ini debug menu binds
+  "Streaming Stats:stat streaming". Each is a candidate live diagnostic through our
+  bsiexec lane (verify per command by effect - this build killed SCRIPT execs, these
+  are C++). Warning from the debunk pile: `bUseBackgroundLevelStreaming=False` "stops
+  most hitching" but BREAKS later loads - diagnostic only, never ship.
+
+### B. VR-side prior art (how mods live with engine hitches)
+
+- **Nobody masks 40-120 ms stalls better than the compositor already does.** OpenXR
+  spec: after a missed frame the next xrWaitFrame blocks until the stale frame is
+  consumed, then the app re-syncs. Meta compositor: a missed frame is re-displayed with
+  rotational TimeWarp; "occasional missed frames go largely unnoticed" - only SUSTAINED
+  misses judder. ASW engages only after seconds of sustained shortfall (then locks half
+  rate); Virtual Desktop SSW likewise (headset-side extrapolation, forces half rate
+  when engaged) - neither trips on sporadic 3-9 frame gaps, which ride plain ATW.
+  Sources: https://registry.khronos.org/OpenXR/specs/1.0/man/html/xrWaitFrame.html ,
+  https://developers.meta.com/horizon/documentation/unity/os-missed-frames/ ,
+  https://www.uploadvr.com/virtual-desktop-synchronous-spacewarp/
+- **UEVR** (concepts only): no stall-masking machinery at all; delegates to runtime
+  reprojection and advises ASW/motion-smoothing OFF for rate-locked games. Its
+  "Synchronized Sequential" render mode is the analog of our SequentialReentry.
+  https://github.com/praydog/UEVR/blob/master/README.md , https://docs.uevr.io/
+- **vorpX** (concepts only): the one true "submit-side absorption" prior art - a
+  decoupled render-to-headset thread that keeps presenting with fresh poses while the
+  game stalls ("async" mode).
+  https://www.vorpx.com/forums/topic/fluid-sync-vs-async-whats-the-differences/
+- **Luke Ross REAL** (concepts only): AER - every frame, one eye is a rotational
+  reprojection of stale content; evidence that brief stale-rotation content is
+  perceptually acceptable.
+- **HL2VR**: fixed the CAUSE (shipped dxvk-async for shader-compile stutter), did not
+  mask. https://www.pcgamingwiki.com/wiki/Half-Life_2:_VR_Mod
+- **VD encoder discrimination**: the VD performance overlay separates Game Time /
+  Encoding / Network / Decoding per frame - an app hitch shows in Game Time, an encoder
+  hitch spikes Encoding with Game flat. Known Quest 3 encoder spike signatures: AV1 at
+  high bitrate (drop to ~120 Mbps or use HEVC 10-bit ~150). VDXR does not expose
+  encoder timing through OpenXR frame timing - the overlay is the instrument.
+  https://vrdiscord.com/guides/quest-wireless/virtualdesktop.html
+
+### C. The ranked experiment list (lever -> expected effect -> flat measurement)
+
+Metric for every A/B: the s43 spike instrument (spike count/min + worst interval on the
+TRACE pairs line, per-phase attribution per spike), over a matched scripted protocol:
+80 Hz sim, native 2064x2208, same save, 60 s static + a fixed `head orbit` sweep set,
+indoor vs outdoor. Diagnostics are reverted after reading; a lever ships only when the
+CAUSE it matches is named by the instrument (user gate, 2026-08-06).
+
+1. **Texture pool sizing** (`-ReadTexturePoolFromIni` + `PoolSize` raised from 400 in
+   +200 steps toward ~1024-1536; game-folder DefaultEngine.ini is the propagation
+   source for boot-derived XEngine.ini). Expected: fewer/shorter view-change spikes if
+   the auto-calc pool is thrashing (evictions + TFC reloads on every turn). 32-bit LAA
+   caveat: community-safe values cluster 1500-2048 MAX; our process also holds the XR
+   runtime - tune against VA headroom, watch commit. `-DisableTexturePool` is the
+   60-second diagnostic form (90 percent improvement reports).
+2. **`bInitializeShadersOnDemand=True`** (all instances). Expected: collapses
+   FIRST-ENCOUNTER spikes only (new area/effect); zero effect on repeat-visit spikes.
+   Cheap, quality-neutral, TD-endorsed - land early, measure by first-vs-revisit sweep.
+3. **GC cadence discrimination, then scheduling**: the 30 s
+   TimeBetweenPurgingPendingKillObjects timer predicts time-periodic spikes REGARDLESS
+   of view; `obj garbage` (if live) reproduces the spike on demand and prices it.
+   If confirmed: raise the interval (30 -> 90/120) and/or fire GC at quiet moments from
+   the adapter. Expected: removes the view-independent periodic residue.
+4. **Streaming pre-warm** (`PrestreamTextures` / `SetForceMipLevelsToBeResident` via
+   the reflection lane, around head yaw and known boundaries). Expected: moves mip
+   loads ahead of the turn; needs lever 1 first (a full pool would evict the pre-warm).
+5. **[OpportunisticAsyncLoading] enable** (bOpportunisticAsyncLoadingEnabled=TRUE,
+   AssumedFPSWhenVSynced=80, conservative quanta 2-4 ms). Expected: amortizes
+   AddToWorld spikes across frames. Experimental (ships disabled; unknown VR
+   interactions) - only after the instrument names AddToWorld (spike outside our
+   phases + boundary-deterministic).
+6. **Stall-exit pacing hygiene in our lane** (audit, not new machinery): after a game
+   stall, never burst backlogged pairs - one clean re-anchor to the next period (the
+   pace-sync resync path already does this; verify with the spike instrument that
+   post-spike intervals return to period within one pair). Keep VD SSW on Auto/Off for
+   headset A/Bs so a sporadic hitch never triggers a half-rate lock.
+7. **Submit-side re-submit thread** (vorpX concept; REFramework MIT plumbing if ever
+   needed): HIGH risk, mostly duplicates compositor ATW for the projection layer -
+   justified only if quad-layer pose-staleness during stalls is the residual complaint
+   after 1-6.
+
+Debunked/rejected: `bUseBackgroundLevelStreaming=False` (breaks saves/loads), PoolSize
+from system RAM, PoolSize without the launch flag (silent no-op), quality reductions
+(out of scope by directive - and community reports agree they do not fix hitches
+anyway).
