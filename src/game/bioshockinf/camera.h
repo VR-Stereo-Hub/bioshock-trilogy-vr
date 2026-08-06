@@ -85,6 +85,13 @@ void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float w
 // adapter init; touches no engine state.
 void load_vr_preset();
 
+// The `inputOn` registry value as it stands after load_vr_preset (session 44).
+// The adapter applies this DIRECTLY at init rather than through the posting
+// lane: a refused camera hook must not be able to leave the player in the
+// headset with no controller and no way to type a command. Also drains any
+// pending post, so the first detour call does not re-apply it.
+bool input_armed_at_boot();
+
 // The projection claim's vertical half-tangent (I5/I6). The setter exists for
 // the lens decoder's track mode; while the FOV lever is armed the claim
 // re-derives from the lever on every publish, so the lever always wins.

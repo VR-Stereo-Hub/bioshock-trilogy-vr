@@ -7,6 +7,7 @@
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/game_ini.h"
 #include "game/bioshockinf/inf_math.h"
+#include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
@@ -161,6 +162,13 @@ std::atomic<bool> g_stereoArmed{false};
 // install hooks; the detour consumes this on the next call - BS2's
 // request_vrstereo shape.
 std::atomic<int> g_vrstereoPending{-1};
+// I7 (session 44): the synthetic pad's armed state, and its posting lane. ON by
+// default on this game - see cfg_set_input for why a boot must come up with
+// controls live. The adapter applies the boot value directly at init (so a
+// refused camera hook cannot leave the player with no controller); after that
+// the detour drains the pending slot exactly like the stereo toggle.
+std::atomic<bool> g_inputOn{true};
+std::atomic<int> g_inputPending{-1};
 // What publish_projection_claim last computed, for the overlay/heartbeat.
 std::atomic<float> g_lastClaimHfovDeg{0.0f};
 std::atomic<float> g_lastClaimAspect{0.0f};
@@ -770,6 +778,18 @@ void cfg_set_vrstereo(float v) {
 }
 float cfg_get_drive() { return g_driveEnabled.load(std::memory_order_relaxed) ? 1.0f : 0.0f; }
 void cfg_set_drive(float v) { g_driveEnabled.store(v != 0.0f, std::memory_order_relaxed); }
+// Session 44 (I7): the synthetic pad's armed state joins the preset. It has to:
+// `bsiinput` shipped OFF, so a headset boot came up with no controller AND no
+// way to fix that, because anything judged in the headset must be a control -
+// alt-tabbing to type destabilises the XR session. Default ON for this game.
+// The setter POSTS (an F10 preset Load runs on the render thread); the game
+// thread applies it, same lane as the stereo toggle.
+float cfg_get_input() { return g_inputOn.load(std::memory_order_relaxed) ? 1.0f : 0.0f; }
+void cfg_set_input(float v) {
+    const bool on = v != 0.0f;
+    g_inputOn.store(on, std::memory_order_relaxed);
+    g_inputPending.store(on ? 1 : 0, std::memory_order_relaxed);
+}
 
 constexpr config::KeyDesc kConfigKeys[] = {
     {"worldScale", cfg_get_world_scale, cfg_set_world_scale, 1.0f, 500.0f},
@@ -780,6 +800,7 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"resH", cfg_get_res_h, config::detail::latch_wanted_res_h, 480.0f, 16384.0f},
     {"vrstereoOn", cfg_get_vrstereo, cfg_set_vrstereo, 0.0f, 1.0f},
     {"driveHmd", cfg_get_drive, cfg_set_drive, 0.0f, 1.0f},
+    {"inputOn", cfg_get_input, cfg_set_input, 0.0f, 1.0f},
 };
 
 // ---------------------------------------------------------------------------
@@ -904,6 +925,13 @@ void apply_vrstereo(bool on, bool monoOnly = false) {
 void apply_pending_vrstereo() {
     const int pending = g_vrstereoPending.exchange(-1, std::memory_order_relaxed);
     if (pending >= 0) apply_vrstereo(pending != 0);
+}
+
+// I7: a preset Load (render thread) posts the pad's armed state; this drains it
+// on the game thread, next to the stereo one.
+void apply_pending_input() {
+    const int pending = g_inputPending.exchange(-1, std::memory_order_relaxed);
+    if (pending >= 0) input_drive::set_enabled_from_config(pending != 0);
 }
 
 // I6 rung 3: consume a posted resolution change on the game thread. Both
@@ -1202,6 +1230,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // fov the layer is tagged with plus the gameplay-view liveness that keeps
     // core's cinematic fallback from quadding a live gameplay projection.
     apply_pending_vrstereo();
+    apply_pending_input();
     apply_pending_resolution();
     config::tick(); // F10-posted preset save/load ops (file IO on this thread)
     // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
@@ -1396,6 +1425,11 @@ void load_vr_preset() {
     // key names.
     config::init(kConfigKeys, std::size(kConfigKeys));
     config::load_current();
+}
+
+bool input_armed_at_boot() {
+    g_inputPending.store(-1, std::memory_order_relaxed); // the adapter applies it itself
+    return g_inputOn.load(std::memory_order_relaxed);
 }
 
 bool handle_drive_verb(const char* cmd, const char* args) {

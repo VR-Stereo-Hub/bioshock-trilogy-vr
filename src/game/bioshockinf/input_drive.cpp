@@ -86,19 +86,51 @@ void apply(bool on) {
     }
 }
 
+const char* profile_name() {
+    return bvr::input::pad_profile() == bvr::input::PadProfile::Infinite ? "infinite"
+                                                                        : "bioshock1";
+}
+
 } // namespace
+
+void arm_pad_profile() {
+    // The audited retail map (ENGINE_NOTES "The audited retail pad map") is the
+    // spec: straight-through faces, RS-click FORWARDED for XToggleZoom, and a
+    // fourth flick direction for the nav cycle pair. Core's default is BS1's
+    // map and BS1/BS2 never call this.
+    bvr::input::set_pad_profile(bvr::input::PadProfile::Infinite);
+}
+
+bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
+
+void set_enabled_from_config(bool on) { apply(on); }
 
 bool handle_command(const char* cmd, const char* args) {
     if (strcmp(cmd, "bsiinput") != 0) return false;
-    if (args && strncmp(args, "on", 2) == 0) {
+    if (args && strncmp(args, "padmap", 6) == 0) {
+        // The live A/B. `bs1` is not a supported way to play Infinite - it is
+        // the control that shows the map is what changed, so a headset report
+        // of "button X does the wrong thing" can be bisected without a rebuild.
+        const char* rest = args + 6;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "bs1", 3) == 0)
+            bvr::input::set_pad_profile(bvr::input::PadProfile::Bioshock1);
+        else if (strncmp(rest, "inf", 3) == 0)
+            bvr::input::set_pad_profile(bvr::input::PadProfile::Infinite);
+        BVR_LOG("[bsi] input: pad map = %s (bsiinput padmap inf|bs1|status; "
+                "`vrinput padlog on` prints the composed bit for every control)",
+                profile_name());
+    } else if (args && strncmp(args, "on", 2) == 0) {
         apply(true);
     } else if (args && strncmp(args, "off", 3) == 0) {
         apply(false);
     } else {
-        BVR_LOG("[bsi] input: %s, IAT %s | usage: bsiinput on|off|status (vrinput <...> "
-                "reaches the core bridge's own verbs: pitchkill, turnscale, test, ...)",
+        BVR_LOG("[bsi] input: %s, IAT %s, pad map %s | usage: bsiinput on|off|padmap|status "
+                "(vrinput <...> reaches the core bridge's own verbs: padlog, pitchkill, "
+                "turnscale, test, ...)",
                 g_enabled.load(std::memory_order_relaxed) ? "ON" : "off",
-                g_hijacked.load(std::memory_order_relaxed) ? "hijacked" : "not hijacked");
+                g_hijacked.load(std::memory_order_relaxed) ? "hijacked" : "not hijacked",
+                profile_name());
     }
     return true;
 }
@@ -107,7 +139,18 @@ void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("INPUT (I7)")) return;
     bool on = g_enabled.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Synthetic pad (Touch -> XInput via IAT)", &on)) apply(on);
-    ImGui::TextDisabled("bsiinput on|off|status; core verbs via vrinput");
+    // The in-headset A/B for the pad map. Anything judged by eye has to be a
+    // control here rather than a typed command: alt-tabbing to type destabilises
+    // the XR session.
+    int prof = bvr::input::pad_profile() == bvr::input::PadProfile::Infinite ? 1 : 0;
+    ImGui::TextDisabled("Pad map");
+    bool changed = ImGui::RadioButton("Infinite (A jump, B crouch, X use, Y melee, RS zoom)",
+                                      &prof, 1);
+    changed |= ImGui::RadioButton("BioShock 1 (control: B jump, Y med, RS eaten)", &prof, 0);
+    if (changed)
+        bvr::input::set_pad_profile(prof == 1 ? bvr::input::PadProfile::Infinite
+                                              : bvr::input::PadProfile::Bioshock1);
+    ImGui::TextDisabled("bsiinput on|off|padmap|status; core verbs via vrinput");
 }
 
 } // namespace bvr::bsi::input_drive

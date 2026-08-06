@@ -79,6 +79,20 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // (1) is untouched.
     bvr::vr::set_pose_lag(2);
 
+    // I7 controls (session 44). The map FIRST, then the lane: core's default is
+    // BioShock 1's table, which is wrong here on four counts (the face re-route,
+    // the consumed RS-click, the missing fourth flick direction, and the ammomod
+    // preference that does not apply where RS-click is a real binding). Armed
+    // directly rather than through the posting lane, and before the arm, so the
+    // very first composed pad already carries Infinite's map. BS1/BS2 never call
+    // set_pad_profile - their composed pad is byte-identical (proved on the sim
+    // lane, ENGINE_NOTES s44).
+    input_drive::arm_pad_profile();
+    // Then the pad itself, from the preset (`inputOn`, default on). This is what
+    // makes a headset boot come up with a working controller: everything judged
+    // by eye must be an F10 control, and reaching F10 needs a controller.
+    input_drive::set_enabled_from_config(camera::input_armed_at_boot());
+
     BVR_LOG("[bsi] adapter ready - build gate %s, camera hook %s. Command seam is live either "
             "way (Present pump), and hands over to the game thread on the hook's first fire.",
             verified ? "PASSED" : "CLOSED (features stand down)",

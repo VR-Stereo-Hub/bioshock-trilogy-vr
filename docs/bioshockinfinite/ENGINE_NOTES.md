@@ -353,6 +353,43 @@ capture `claimRatioH 1.01769` == the banked 1.018, sim `errors 0`, zero mod faul
 zero crash dumps, and **zero `pad profile` lines in BS1's log** - the setter is never
 called there, which is the direct evidence that BS1 took the default arm.
 
+### Infinite's map, measured (layer 1: the composed bit for every control)
+
+Same instrument, Infinite profile armed at adapter init. The whole layout, read off
+the composed word rather than inferred from a game effect:
+
+| Touch control | composed | retail binding it lands on |
+|---|---|---|
+| A / B / X / Y | `0x1000 A` / `0x2000 B` / `0x4000 X` / `0x8000 Y` | jump / crouch+dodge / reload-hack-use / melee - **straight through** |
+| LS click | `0x0040 LS` | StartSprint |
+| **RS click** | **`0x0080 RS`** | **XToggleZoom - FORWARDED**, the headline BS1 difference |
+| grip L / R (0.70 press, 0.55 release) | `0x0100 LB` / `0x0200 RB` | NextPlasmid / NextWeapon |
+| trigger L / R | `lt=255` (128 at half pull) / `rt=255` | StartFirePlasmid / Fire |
+| menu tap / hold | `0x0010 START` / `0x0020 BACK` | ShowPauseMenu / OnBackButtonPressed |
+| thumbrest + flick up/down/left/**right** | `0x0001 DU` / `0x0002 DD` / `0x0004 DL` / **`0x0008 DR`** | nav + hack; the fourth direction is new |
+| stick L fwd / back, stick R up | `ly=+32767` / `ly=-32767` / `ry=+32767` | polarity, never previously verified here |
+
+Two A-B pairs rather than assumptions, both on the right stick at full deflection:
+**RS-click held reads `0x0080 RS` WITH `rx=32767`** (it is a binding here, so it no
+longer suppresses turn or acts as a modifier - the exact inversion of BS1), and
+**thumbrest held reads `0x0008 DR` with `rx=0`** (the modifier still suppresses turn
+while the stick is pushed past the select threshold).
+
+Harness note: one `trigL` row came back blank on the first pass and re-ran clean
+(lt=255, and 128 at half pull). That is gotcha 20's attract-movie pump stall eating a
+window, not a mapping fault - re-run a blank row before believing it.
+
+### The DPad family has no Touch analogue, and what was done about it
+
+Infinite's retail DPad carries `XNavShowPulse`/`BuyoutHack` (up),
+`XMakeUnstableSelection`/`AutoHack` (down) and `XNavQuickToggleCycleLeft`/`Right`.
+Touch has no DPad. **User's call (session 44)**: reuse the modifier+flick lane as the
+analogue (left thumbrest held, right stick flicked) and give it the fourth direction
+the cycle pair needs; menu navigation stays on the left stick, which this game already
+serves natively through `AxisEmulationDefinitions` (stick extremes raise
+`Gamepad_LeftStick_*` button events); and test-only cheats stay on the keyboard, since
+they are not meant for a controller. Nothing was invented beyond that.
+
 ## LIVE RESULTS (session 43 - the stutter hunt: spike instrument, flat repro)
 
 ### The spike class REPRODUCES FLAT at native 2064x2208 (pre-instrument baseline)
