@@ -462,17 +462,20 @@ reading would have indicated something else moving underneath.
 
 ### Harness facts (session 45)
 
-- **`bsiexec LoadCheckpoint` no-opped TWICE** at a settled main menu with
-  `pump=game` confirmed (GNames 62,158, matching the recorded 62,160 pre-load
-  state), 60-100 s apart, no letterbox transition, pawn absent throughout. The
-  menu's OWN `CONTINUE` then loaded first try. **Boot-to-save recipe that
-  worked**: attract -> `game-key -Key Space` (press only once the PRESS ANY KEY
-  text is actually on screen - an earlier press is swallowed) -> 2K Account
-  "CONNECTING..." dialog resolves (~30 s, not previously recorded) -> settled
-  menu -> `Enter` (MAIN GAME) -> `Enter` (CONTINUE) -> load. Expect a queue of
-  modal award popups on arrival; clear them with repeated `Enter` or the game
-  thread stays parked (the aim seam ran at 0.3 calls/s until they were cleared,
-  vs ~20/s after).
+- **BOOT-TO-SAVE (user directive, 2026-08-06 - this is two keypresses, not an
+  investigation).** **`Space` skips the intro/attract** (not Enter), then
+  **spam `Enter`** (`game-key -Game bsi -Key Enter -Repeat 6 -Delay 900`): it
+  walks MAIN GAME -> CONTINUE on its own AND clears the queue of modal award
+  popups waiting in the save. Until those popups are cleared the game thread is
+  parked - the aim seam ran at 0.3 calls/s versus ~20/s after - which can read
+  as a mod fault. A relaunch after a clean in-gameplay exit boots **straight
+  back into the save**, skipping all of it. If two presses do not get in, ASK
+  THE USER; do not open an investigation. (Session 45 spent real budget on this
+  lane for zero rungs.)
+- **`bsiexec LoadCheckpoint` no-ops on this build** - verified twice at a
+  settled main menu with `pump=game` confirmed (GNames 62,158, matching the
+  recorded 62,160 pre-load state), 60-100 s apart, no letterbox transition,
+  pawn absent throughout. Do not use it and do not investigate why.
 - **`bsicall` vs `bsiexec`**: LoadCheckpoint is a CONSOLE handler, not a
   UFunction. `bsicall LoadCheckpoint` correctly refuses ("not in GNames").
 - **An UNFOCUSED `xrsim-shot` reads `QuadLayers 0` / `AimRayDots 0`** and a
