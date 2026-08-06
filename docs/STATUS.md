@@ -45,7 +45,10 @@ corrected the cheat-lane's foundational assumption.** Three commits.
    streaming), plus the user's new "camera slightly jumpy" observation (instrument
    before theorizing). The 30-min soak stays DEFERRED by user decision. **NEXT SESSION
    (user decision, 2026-08-06): the judder/stutter hunt comes BEFORE the aim/motion
-   work - performance first.** Also: the user banked a save WITH the pistol + two
+   work - performance first. SCOPE DIRECTIVE (user, same night): lowering render
+   resolution in heavy areas is NOT an acceptable fix - the eye-preset observation was
+   diagnostic evidence only; the hitches must be fixed at the user's chosen native
+   resolution (streaming/GC/shader/scheduling class of fix, not a quality trade).** Also: the user banked a save WITH the pistol + two
    vigors, and the cheat-lane verification ran on it same-night (autonomous via
    LoadCheckpoint): `bsicall NextPlasmid` PROVEN BY EFFECT (vigor icon swap + cast hand
    raised + crosshair, 8.5% pixel diff), NextWeapon cycles the single gun (idle-sway
