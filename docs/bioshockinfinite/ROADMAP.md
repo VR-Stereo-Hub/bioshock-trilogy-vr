@@ -588,23 +588,44 @@ sessions 40-41 (hands split per-controller, the holdable lane, and the animation
 drive whose written-quat/anim-quat discipline is documented in VERIFICATION 2.8) - derive fresh,
 port nothing.
 
-- [ ] **Handoff from s44 (I7):** the user expected the weapon model to stop riding the headset as
+- [x] **Handoff from s44 (I7):** *(s45: taken up. `controller_ray` is confirmed as the single ray
+      source the model drive must consume; the frame-context refactor that puts model and ray on
+      one algebra is designed and is session 46's first code rung.)* the user expected the weapon
+      model to stop riding the headset as
       part of the controls block. It is not - that is this milestone, and I7 deliberately left it
       alone. What I7 DID leave here: the controller ray is already built and published on the
       view's own basis (`aim.cpp` `controller_ray`, game yaw + recenter residual), so the model
       drive can consume the same ray the aim seam does rather than deriving a second one that
       drifts. The flat sweep also showed the viewmodel moving with the sim's hand pose (2.6%
       frame diff at +/-35 deg), which is a starting observation for what already tracks what.
-- [ ] Step 1: check what UE3 does natively here.
-- [ ] Step 2: **test whether the BS1/BS2 defect even exists.** BS1's viewmodel renders through a
-      separate foreground lens; BS2 has a structurally different second pass fixed at 60 degrees.
-      Infinite may have neither, one, or a third thing. The identification method to prefer is a
-      **falsifiable quantitative prediction** (sweep the FOV option and predict the magnitude of
-      the error) over another frame capture - that is what settled BS2 in one round.
+- [x] Step 1: check what UE3 does natively here. *(s45: a read-only symbol scan of the retail
+      image verified PRESENT `XFirstPersonAttachment`, `XWeaponModelFirstPerson`,
+      `execGetFirstPersonAttachment`, `execSetTranslation/SetRotation/SetScale/SetScale3D`,
+      `execSetDrawScale/SetHidden/ForceUpdateComponents/ReattachComponent`,
+      `execHideBoneByName/UnHideBoneByName/IsBoneHidden/GetBoneName/GetParentBone`,
+      `execGetSocketByName`, `GetWeaponStartTraceLocation`, `SpaceBases`, and the Morpheme
+      family; and verified ABSENT `execSetLocation`, `LocalAtoms` and `bAbsoluteTranslation`.
+      Presence is a hypothesis, not a fact - each still owes a live rung. ENGINE_NOTES s45.)*
+- [x] Step 2: **test whether the BS1/BS2 defect even exists.** *(s45, ANSWERED by measurement,
+      not by capture. The FP attachment actor's pitch tracks the engine's control pitch EXACTLY,
+      unit for unit - 0 -> 16200 = 89.0 deg under right-stick Y - with its Location bit-identical
+      across the pair and the driven view level. So the stick-drags-the-viewmodel defect DOES
+      exist here. Separately, the foreground-lens half of the defect class is already dead: I6's
+      decoder found ONE lens, 100% of 211 valid samples, weapon and hands drawn.)*
 - [ ] Step 3: only then port compensation machinery, and only the parts proven necessary.
-- [ ] UE3 differences that matter: the skeleton is `USkeletalMeshComponent::SpaceBases`, not a
+- [x] UE3 differences that matter: the skeleton is `USkeletalMeshComponent::SpaceBases`, not a
       Havok `hkQsTransform` array; attachment is components and sockets, not the UE2 Base/Owner
-      pair. BS1's bone drive transfers in **shape only**.
+      pair. BS1's bone drive transfers in **shape only**. *(s45: and it may not transfer at all.
+      The viewmodel carrier is an ACTOR - `XFirstPersonAttachment`, reached as
+      `XHuman+0x0D8 -> list+0x004`, with a live world transform at the standard actor offsets -
+      so position and rotation are an actor-transform problem, not a bone problem. Infinite also
+      animates through Morpheme middleware, which is a strong argument against ever entering the
+      bone lane. Two `XSkeletalMeshComponent`s hang off the pawn (+0x2E4, +0x72C); which is the
+      first-person arms is the next rung's hide test.)*
+- [x] **The derivation instruments** `bsiread` (raw dwords with type heuristics) and typed
+      `bsicallat` args (FVector / FName / byte / int32). *(s45: `bsifields` prints only
+      UObject-typed fields, so a transform was unreadable and no native taking a vector, name or
+      bool was reachable. Both limits closed.)*
 - [ ] The principle that does transfer: **engine-side writes are re-read by the engine, so attached
       objects and effects follow for free; render-side matrix patches leave separate objects
       behind** - the Vigor hand FX above all.

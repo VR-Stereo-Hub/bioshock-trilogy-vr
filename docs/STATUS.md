@@ -17,6 +17,83 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
+### Infinite: current state after session 45 (I8 OPENS: the viewmodel carrier is NAMED and its stick-pitch coupling is PROVEN - branch `si45-inf-hands`)
+
+**Session 45 (2026-08-06) ran I8's derivation ladder. One commit (`9a065d1`).
+No behaviour change shipped: this session bought knowledge and instruments, and
+the baseline it started from is bit-for-bit the baseline it ended on.**
+
+1. **THE INSTRUMENTS FIRST** (the s44 pattern, deliberately): `bsiread <0xaddr>
+   [startHex] [dwords]` - a raw dword readout with float/int32/UObject/TArray
+   heuristics, per-row `is_memory_valid`-gated, no dispatch, no writes. `bsifields`
+   only ever printed fields whose target reads as a UObject, so a transform, a
+   TArray triple or a bone count was literally unreadable. Plus typed argument
+   prefixes on `bsicallat` (`v<x>,<y>,<z>`, `n<Name>`, `b<n>`, `i<n>`) - every
+   native the viewmodel lane needs takes one of those shapes.
+2. **THE FIRST-PERSON OBJECT GRAPH, walked live and reproduced across two boots**:
+   `XHuman+0x0D8` -> an object-pointer LIST, `list+0x004` ->
+   **`XFirstPersonAttachment`**. It is a genuine Actor, established structurally
+   rather than by name: its layout reproduces the pawn's at four independent
+   offsets (Level, Class, XWorldInfo, DefaultPhysicsVolume) and it carries Owner
+   and Base both pointing at the pawn. Two `XSkeletalMeshComponent`s hang off the
+   pawn (+0x2E4, +0x72C); **which one is the first-person arms is NOT established**
+   - that is the hide test, and it is the next rung.
+3. **R0b - THE KEY MEASUREMENT, and it decides the milestone's shape.** The FP
+   attachment actor's pitch tracks the engine's control pitch **exactly, unit for
+   unit**: 0 -> **16200** (89.0 deg) under right-stick Y, with its Location
+   bit-identical across the pair and the driven view staying level. So that actor
+   **is the viewmodel carrier**, which makes it the drive target and makes the
+   bone lane unnecessary for position and rotation - **and requirement 7's defect
+   EXISTS here**: a stick-pitched body drags the viewmodel through +/-89 deg
+   exactly as on BS1/BS2.
+4. **TWO INSTRUMENT LIMITS, both recorded because both produced clean-looking
+   FALSE readings first.** (a) `GetBaseAimRotation` reports **pitch 0.0 always** -
+   it read 0.0 while the true camera pitch was -89 deg, so the s44 aim readout
+   cannot answer any pitch question. (b) **The picture cannot answer "did the
+   viewmodel move"**: idle animation moves the same pixels (a same-position
+   CONTROL pair diffed 11.7% coverage against the signal's 16.8% - same shape,
+   3.6x amplitude, not a discrimination), and the per-eye compositor capture is a
+   **torn SR composite** showing the interior in one half and the exterior in the
+   other. The numbers took one command once the right field was known.
+5. **The stick-Y positive control was necessary and it caught a false negative.**
+   The first Y attempt showed no change at all - because the game auto-pauses
+   unfocused and the stick was never sampled. Stick X moving engine yaw
+   -90.0 -> 107.9 deg under identical focus discipline is what made the second
+   attempt readable.
+
+**Baseline banked before any change, and unchanged by it**: `aimRayMaxDevDegL/R`
+**0.0000** dots-only, **10 quad layers** with both lasers on (L 0.0000 /
+R 0.0198), `claimRatioH` **1.00851**, zero faults - every figure reproducing
+s44b exactly.
+
+**Harness facts (all new, all cost time to find)**: `bsiexec LoadCheckpoint`
+**no-opped twice** at a settled menu with `pump=game` confirmed, while the menu's
+own **CONTINUE** loaded first try - use CONTINUE. An **unfocused `xrsim-shot`
+reads `QuadLayers 0` / `AimRayDots 0`** because the game pauses, which looks
+exactly like "the dots are broken"; foreground before any compositor capture.
+A relaunch after a clean in-gameplay exit boots **straight back into the save**.
+Expect a queue of modal award popups on arrival - until they are cleared the game
+thread is parked (aim seam at 0.3 calls/s, vs ~20/s after). Infinite's saves are
+NOT in `Documents\My Games\...` or `Steam\userdata\*\8870\` - do not conclude
+"no save" from the filesystem, ask the menu.
+
+**NEXT (session 46), in order**:
+1. **R1, the hide test** - `SetHidden b1` on each of the two
+   `XSkeletalMeshComponent`s and on the FP attachment actor, one at a time, with
+   a WINDOW grab before and after. That names the first-person arms and the
+   drive target. The typed-arg lane needed for it is already committed.
+2. **R2** - does a `SetScale` / `SetTranslation` write survive to render, and
+   **R3** - is it restamped every tick (one-shot pokes do not always render even
+   when they land; re-check through a per-frame drive before trusting either
+   direction).
+3. Then the frame-context refactor and the per-hand aim trims (the algebra
+   everything else rests on), then the write-point A/B.
+4. **Requirement 7 now has a proven target**: whatever drives the model must
+   override the attachment's rotation, or the pitch must be killed. The
+   `publish_vr_gameplay` landmine still stands - it arms the snap-turn gate and
+   `take_snap_steps` has no bsi consumer, so turning would stop dead. **Ask
+   before arming it.**
+
 ### Infinite: HEADSET VERDICTS IN (s44b, same night) - I7 CONTROLS AND AIM ARE DONE
 
 **The user tested the s44 build in the headset and returned three verdicts, two of which
