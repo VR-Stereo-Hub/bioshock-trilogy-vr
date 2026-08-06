@@ -477,6 +477,65 @@ The zero-trim identity is left to the algebra rather than short-circuited. A
 would mean the shipped default configuration never executes the compose path, so
 the first user to type a trim would be the first to run it.
 
+### PER-HAND AIM TRIMS, and the rolled-pose oracle that proves the algebra
+
+The trims ride BOTH the game-side ray (`ray_pose_from_xr`) and core's
+`LaserConfig` (`pitchTrimDeg`/`yawTrimDeg`/`posFwdCm`/`posRightCm`/`posUpCm`)
+from ONE pair of atomics per hand, so the beam and the bullet cannot carry
+different ones. **No core change**: core already has every field, and it composes
+its trim with the same `bvr::xrmath::xr_local_trim_quat` in the same order, which
+is the whole reason this works.
+
+**No roll trim, by design.** Roll is innermost in `xr_local_trim_quat`, so it
+cannot steer a ray. Say so in the tooltip rather than shipping a slider that
+does nothing.
+
+**The oracle**: a non-zero trim on ONE hand, swept through 12 stations - three
+roll values x four yaws - plus a pitch pair at roll +45.
+
+> **The divergence is CONSTANT at 5.8312 deg across all 12 stations, spread
+> 0.0000 deg** (gate was <= 0.03). Divergence that varies with ORIENTATION,
+> especially with roll, is the algebra bug that cost BioShock 1 28.21 deg. There
+> is none.
+
+And the magnitude is not merely "about right" - it is the EXACT analytic answer:
+
+| trim (pitch/yaw) | naive quadrature sum | exact composed angle `2*acos(cos(p/2)*cos(y/2))` | measured |
+|---|---|---|---|
+| 5.0 / 3.0 | 5.8310 | **5.8312** | **5.8312** |
+| 8.0 / 6.0 | 10.0000 | **9.9909** | **9.9909** |
+
+Two rotations about perpendicular axes compose to slightly LESS than the
+quadrature sum, and the gap grows with angle (0.0002 deg at 5.8, 0.0091 deg at
+10.0). The instrument reads the composed angle to four decimals in both cases,
+which is a far stronger statement than the tolerance asked for: the trim is
+being composed as a local quaternion exactly as core's laser composes it. Had the
+game side added rotator angles in game space instead, this is the number that
+would have drifted with orientation.
+
+Zeroing both trims returns `aimRayMaxDevDegL/R` to **0.0000** and `claimRatioH`
+to **1.00851**, with `selfcheck 400` still at all-zero deltas.
+
+**INSTRUMENT LIMIT 3 (new, and it invalidates a plausible-looking acceptance
+clause): the simulator buckets BOTH aim dots into `aimRayMaxDevDegL`.** With one
+hand trimmed and the other at zero, the reading was `dotsL = 2, dotsR = 0`, and
+`aimRayMaxDevDegL` carried the trimmed hand's value whichever hand it was.
+So `aimRayMaxDevDegL` is the MAX over both dots, not the left hand's, and
+`aimRayMaxDevDegR` is not computed at all in a dots-only configuration.
+
+Consequences, both worth carrying forward:
+- **"L stays 0.0000 while R carries the trim" is NOT a measurable acceptance
+  clause on this instrument.** What IS measurable - and what was measured - is
+  that the max-over-both-dots equals the trimmed hand's exact composed angle and
+  is invariant across orientation.
+- **A 0.0000 reading proves nothing on its own.** The first oracle run this
+  session returned a clean `R spread 0.0000, L max 0.0000, PASS` while the
+  capture said `1 layer(s): projection` - no quad layers, no dots, nothing to
+  measure. The game thread was parked behind a modal award popup (the s45
+  finding, hit again). **Always read `layerCount` / `aimRayDots` before believing
+  a deviation figure**; zero dots and zero deviation look identical in the
+  derived block.
+
 ## LIVE RESULTS (session 45 - I8: the viewmodel object graph, and two instrument limits)
 
 ### The first-person object graph, walked live from the pawn

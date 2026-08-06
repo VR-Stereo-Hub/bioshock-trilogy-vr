@@ -44,4 +44,33 @@ void draw_debug_ui();
 // before doing any work, so a disarmed lane costs one relaxed load.
 bool wants_install();
 
+// Per-hand AIM tuning (hand 0 = left, 1 = right) for the F10 panel and the
+// vrpreset lane. BS2's aim.h shape; every default is zero, derived fresh.
+//
+// The trims ride BOTH the game-side ray and core's LaserConfig from ONE pair of
+// atomics, so the beam and the bullet cannot carry different ones. There is no
+// roll trim by design: roll is innermost in xr_local_trim_quat, so it cannot
+// steer a ray.
+float trim_pitch(int hand);
+float trim_yaw(int hand);
+void set_trim(int hand, float pitchDeg, float yawDeg);
+
+// Ray ORIGIN offset, cm along the final trimmed basis. Moves the BEAM and the
+// DOT together. It does NOT move the bullet: the engine's own fire start point
+// stands until the GetWeaponStartTraceLocation substitution lands, so these are
+// stored and persisted but must not be presented as an aim adjustment until
+// then - a slider that moves the beam and not the bullet makes the beam lie.
+float pos_fwd_cm(int hand);
+float pos_right_cm(int hand);
+float pos_up_cm(int hand);
+void set_pos(int hand, float fwdCm, float rightCm, float upCm);
+
+// Per-hand laser and dot, and the shared beam/dot length.
+bool laser_hand(int hand);
+void set_laser_hand(int hand, bool on);
+bool dot_hand(int hand);
+void set_dot_hand(int hand, bool on);
+float dot_dist_m();
+void set_dot_dist_m(float m);
+
 } // namespace bvr::bsi::aim
