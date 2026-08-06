@@ -300,6 +300,22 @@ std::atomic<uint64_t> g_pairWaitSumUs{0};
 // input a pace sync needs, published so the fix can target measured reality.
 std::atomic<int64_t> g_displayPeriodNs{0};
 
+// Session 43 (Infinite stutter hunt): SPIKE-TRIGGERED EVIDENCE CAPTURE.
+// The s42 headset run named the judder as 39-113 ms pair intervals in bursts;
+// the 1 Hz aggregates can say THAT a second was bad, never WHICH phase carried
+// the stall. When armed, a pair interval above 2x the display period writes a
+// one-line snapshot to pacetrace.log at the moment of the pair close: the
+// per-phase last table, the per-phase maxima SINCE THE PREVIOUS SPIKE (reset
+// after each snapshot - that is what scopes the attribution to this burst),
+// the live stage markers, and the unattributed remainder (interval minus our
+// two detour halves - large remainder = the stall is the game/GPU, not us).
+// DEFAULT OFF IN CORE (the set_pace_detach pattern): BS1/BS2 never arm it and
+// the disarmed check is one relaxed load on a path that already samples QPC.
+// The Infinite adapter arms it with stereo; `vrpace spike on|off` is the seam.
+std::atomic<bool> g_spikeTrace{false};
+std::atomic<uint32_t> g_spikeCount{0};   // lifetime; TRACE pairs prints the window delta
+std::atomic<uint32_t> g_spikeSeq{0};     // snapshot sequence number in the log
+
 // M8 release blocker (a): the headset-disconnect stall guard. When the
 // headset idles, the runtime drops the session out of FOCUSED and xrWaitFrame
 // starts blocking for seconds per call, dragging the flat window under 1 fps
@@ -881,6 +897,43 @@ void trace_write(const char* line) {
     fflush(g_traceFile); // the process may be killed at any moment
 }
 
+// Session 43: one spike, one line, at the pair close that measured it (present
+// thread - trace_write's FILE* is CRT-locked per call, so the 1 Hz thread and
+// this writer interleave lines, never bytes). Prints the per-phase maxima
+// accumulated since the previous spike, then resets them - consecutive spikes
+// in a burst therefore each carry their OWN attribution window. The
+// unattributed remainder is interval minus both detour-half maxima: when it
+// carries nearly the whole interval, the stall lives outside this file
+// (game sim/draw/GPU/driver), which is exactly the discriminator the hunt
+// needs first.
+void spike_capture(uint32_t intervalUs, int64_t periodNs) {
+    uint32_t seq = g_spikeSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint32_t lastUs[kPhCount], maxUs[kPhCount];
+    for (int i = 0; i < kPhCount; ++i) {
+        lastUs[i] = g_phaseLastUs[i].load(std::memory_order_relaxed);
+        maxUs[i] = g_phaseMaxUs[i].exchange(0, std::memory_order_relaxed);
+    }
+    uint32_t oursUs = maxUs[kPhPresentBegin] + maxUs[kPhPresentEnd];
+    uint32_t unattrUs = intervalUs > oursUs ? intervalUs - oursUs : 0;
+    const char* pstage = g_presentStage.load(std::memory_order_relaxed);
+    const char* dstage = g_drawStage.load(std::memory_order_relaxed);
+    char buf[640];
+    int n = sprintf_s(buf,
+                      "TRACE spike #%u interval %.1f ms (%.1fx period) | unattributed "
+                      "%.1f ms (ours max %.1f) | lastWait %u ms | stage %s draw %s | "
+                      "syncDelays %u | max-since-prev/last us:",
+                      seq, intervalUs / 1000.0,
+                      periodNs > 0 ? intervalUs * 1000.0 / periodNs : 0.0,
+                      unattrUs / 1000.0, oursUs / 1000.0,
+                      g_lastWaitMs.load(std::memory_order_relaxed),
+                      pstage ? pstage : "-", dstage ? dstage : "-",
+                      g_paceSyncDelays.load(std::memory_order_relaxed));
+    for (int i = 0; i < kPhCount && n > 0 && n < static_cast<int>(sizeof(buf)) - 48; ++i)
+        n += sprintf_s(buf + n, sizeof(buf) - n, " %s=%u/%u", kPhaseNames[i], maxUs[i],
+                       lastUs[i]);
+    trace_write(buf);
+}
+
 // ---- Session 34: THE STALL WATCHDOG ----------------------------------------
 // The freeze is a call inside the game that never returns, and the mod is not
 // on that stack - so no amount of our own logging can name it. This suspends
@@ -1125,6 +1178,7 @@ DWORD WINAPI trace_thread_proc(void*) {
     uint64_t lastPairSumUs = 0;
     uint64_t lastPairSumSqUs = 0;
     uint64_t lastPairWaitUs = 0;
+    uint32_t lastSpikes = 0; // session 43: spike count baseline for the window delta
     while (g_traceRun.load(std::memory_order_relaxed)) {
         Sleep(1000);
         if (!g_traceRun.load(std::memory_order_relaxed)) break;
@@ -1271,16 +1325,19 @@ DWORD WINAPI trace_thread_proc(void*) {
             uint64_t sum = g_pairIntSumUs.load(std::memory_order_relaxed);
             uint64_t sumSq = g_pairIntSumSqUs.load(std::memory_order_relaxed);
             uint64_t waitUs = g_pairWaitSumUs.load(std::memory_order_relaxed);
+            uint32_t spikes = g_spikeCount.load(std::memory_order_relaxed);
             uint32_t dPairs = pairs - lastPairs;
             uint32_t dCnt = cnt - lastPairCount;
             uint64_t dSum = sum - lastPairSumUs;
             uint64_t dSumSq = sumSq - lastPairSumSqUs;
             uint64_t dWaitUs = waitUs - lastPairWaitUs;
+            uint32_t dSpikes = spikes - lastSpikes;
             lastPairs = pairs;
             lastPairCount = cnt;
             lastPairSumUs = sum;
             lastPairSumSqUs = sumSq;
             lastPairWaitUs = waitUs;
+            lastSpikes = spikes;
             if (dPairs > 0) {
                 uint32_t minUs = g_pairIntMinUs.exchange(0xFFFFFFFFu, std::memory_order_relaxed);
                 uint32_t maxUs = g_pairIntMaxUs.exchange(0, std::memory_order_relaxed);
@@ -1296,8 +1353,9 @@ DWORD WINAPI trace_thread_proc(void*) {
                 char pl[320];
                 sprintf_s(pl,
                           "TRACE pairs %u/s | interval us mean=%u sd=%u min=%u max=%u | "
-                          "waitGate %llu ms/s timeouts=%u | period %.2f ms (%.1f Hz)",
-                          dPairs, meanUs, sdUs, minUs, maxUs,
+                          "spikes=%u | waitGate %llu ms/s timeouts=%u | period %.2f ms "
+                          "(%.1f Hz)",
+                          dPairs, meanUs, sdUs, minUs, maxUs, dSpikes,
                           static_cast<unsigned long long>(dWaitUs / 1000),
                           g_paceTimeouts.load(std::memory_order_relaxed),
                           periodNs > 0 ? periodNs / 1.0e6 : 0.0,
@@ -2868,6 +2926,22 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     m = g_pairIntMaxUs.load(std::memory_order_relaxed);
                     while (us > m &&
                            !g_pairIntMaxUs.compare_exchange_weak(m, us, std::memory_order_relaxed)) {}
+                    // Session 43: spike-triggered evidence capture. Threshold =
+                    // 2x the display period (fallback 25 ms when the runtime
+                    // has not published one - the worst legitimate pair at any
+                    // supported refresh is well under that). The >= 1 s case
+                    // above stays excluded on purpose: load screens and
+                    // alt-tabs are not judder.
+                    if (g_spikeTrace.load(std::memory_order_relaxed)) {
+                        int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+                        uint32_t thresholdUs = periodNs > 0
+                            ? static_cast<uint32_t>(periodNs / 500) // 2x, ns -> us
+                            : 25000u;
+                        if (us > thresholdUs) {
+                            g_spikeCount.fetch_add(1, std::memory_order_relaxed);
+                            spike_capture(us, periodNs);
+                        }
+                    }
                 }
             }
         } else {
@@ -3592,6 +3666,14 @@ void set_pace_sync(bool on) {
                 on ? "ON" : "off");
 }
 
+void set_spike_trace(bool on) {
+    bool was = g_spikeTrace.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: spike trace %s (pair interval > 2x period -> per-phase "
+                "snapshot in pacetrace.log; %u captured so far)",
+                on ? "ON" : "off", g_spikeCount.load(std::memory_order_relaxed));
+}
+
 void handle_pace_command(const char* args) {
     char verb[16] = {};
     int consumed = 0;
@@ -3665,6 +3747,20 @@ void handle_pace_command(const char* args) {
                         g_paceSyncDelayUs.load(std::memory_order_relaxed) / 1000),
                     g_paceSyncResyncs.load(std::memory_order_relaxed));
         }
+    } else if (strcmp(verb, "spike") == 0) {
+        // Session 43: the spike-triggered evidence capture (state + rationale
+        // at the g_spikeTrace block). Bare `vrpace spike` prints telemetry.
+        if (strncmp(rest, "on", 2) == 0) {
+            set_spike_trace(true);
+        } else if (strncmp(rest, "off", 3) == 0) {
+            set_spike_trace(false);
+        } else {
+            BVR_LOG("xr: spike trace %s | %u spikes captured (threshold 2x period, "
+                    "snapshots in pacetrace.log; spikes/s on the TRACE pairs line) | "
+                    "usage: vrpace spike on|off",
+                    g_spikeTrace.load(std::memory_order_relaxed) ? "ON" : "off",
+                    g_spikeCount.load(std::memory_order_relaxed));
+        }
     } else if (strcmp(verb, "simidle") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_simIdle.store(on, std::memory_order_relaxed);
@@ -3675,7 +3771,7 @@ void handle_pace_command(const char* args) {
     } else {
         BVR_LOG("xr: pace guard %s | wait %s | session %s everFocused=%d | skips %u "
                 "lastWait %u ms | handoffs %u timeouts %u | simidle %s "
-                "(vrpace on|off|thread on|off|detach on|off|simidle on|off|status)",
+                "(vrpace on|off|thread on|off|detach on|off|sync|spike|simidle on|off|status)",
                 g_paceGuard.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_paceOffThread.load(std::memory_order_relaxed) ? "off-thread" : "inline",
                 state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? 1 : 0,
@@ -4111,6 +4207,7 @@ void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}
 void set_pace_detach(bool) {}
 void set_pace_sync(bool) {}
+void set_spike_trace(bool) {}
 void set_present_stage(const char*) {}
 void set_draw_stage(const char*) {}
 uint32_t watchdog_fires() { return 0; }

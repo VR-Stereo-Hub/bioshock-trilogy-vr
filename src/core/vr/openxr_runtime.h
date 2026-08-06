@@ -122,6 +122,8 @@ void set_alternate_eye(bool on);
 //                     keep being submitted, so FOCUSED can still be re-granted -
 //                     session 28's requirement is preserved, not undone.
 //                     Live A/B: with it off the 10 Hz comes straight back.
+//   spike on|off      SESSION 43: the spike-triggered evidence capture (see
+//                     set_spike_trace below); bare `vrpace spike` = telemetry
 //   simidle on|off    flat stand-in for a headset idle: the same guard
 //                     decision runs with the state forced VISIBLE and a 1 s
 //                     sleep in place of the runtime's blocked wait (flat has
@@ -166,6 +168,16 @@ void set_pace_detach(bool on);
 // game - BS1/BS2 never call this and take no new branch. `vrpace sync` is the
 // live A/B; the overlay checkbox rides under SR pair pacing.
 void set_pace_sync(bool on);
+
+// Session 43: opt-in spike-triggered evidence capture. When armed, a pair
+// interval above 2x the runtime's display period writes one snapshot line to
+// pacetrace.log at the pair close: per-phase last + max-since-previous-spike
+// tables, the live stage markers, and the unattributed remainder (interval
+// minus our detour halves - large remainder = the stall is the game/GPU, not
+// this module). The 1 Hz TRACE pairs line carries spikes=<count>/window as the
+// lever-A/B metric. DEFAULT OFF IN CORE, on per game (the set_pace_detach
+// pattern); `vrpace spike on|off` is the live seam.
+void set_spike_trace(bool on);
 
 // --- M8: desktop mirror ------------------------------------------------------
 // "vrmirror ..." seam (game thread). Under SequentialReentry stereo the flat

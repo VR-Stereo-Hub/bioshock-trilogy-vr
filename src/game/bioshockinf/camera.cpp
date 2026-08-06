@@ -856,6 +856,12 @@ void apply_vrstereo(bool on, bool monoOnly = false) {
             // display (the ~5 Hz beat suspect). F10 checkbox + `vrpace sync`
             // are the in-headset A/B - default ON with stereo on this game.
             bvr::vr::set_pace_sync(true);
+            // Session 43 (the stutter hunt): with stereo comes the spike
+            // instrument - any pair interval > 2x period snapshots its
+            // per-phase attribution to pacetrace.log, and the TRACE pairs
+            // line carries spikes/s as the lever-A/B metric. Off with stereo
+            // below; `vrpace spike` is the live seam.
+            bvr::vr::set_spike_trace(true);
             srArmed = scenedraw::install() && scenedraw::set_stereo(true);
         }
         BVR_LOG("[bsi] VRSTEREO ON (%s): claim tanV=%.4f hfov=%.1f deg aspect=%.4f%s",
@@ -872,6 +878,7 @@ void apply_vrstereo(bool on, bool monoOnly = false) {
         // after OFF, and without eye tags every present walks the wait path -
         // a still-armed sync would then pace the MONO quad to refresh, which
         // is not the state the user toggled back to.
+        bvr::vr::set_spike_trace(false);
         bvr::vr::set_pace_sync(false);
         bvr::vr::set_alternate_eye(false);
         bvr::vr::set_camera_mode(false);

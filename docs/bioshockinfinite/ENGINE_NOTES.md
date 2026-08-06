@@ -320,6 +320,27 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 43 - the stutter hunt: spike instrument, flat repro)
+
+### The spike class REPRODUCES FLAT at native 2064x2208 (pre-instrument baseline)
+
+First flat measurement (TWN2 save, indoors at the Blue Ribbon, sim at 80 Hz to match
+the VDXR headset run, stereo + preset armed, s42 TRACE pairs instrument):
+
+- **Static 60 s**: mean pinned at 12.5 ms (= period), sd ~1.1 ms, max 14.7-15.8 ms -
+  ZERO spikes. Steady-state is as clean flat as it was in the headset.
+- **`head orbit 120 6000`** (120 deg/s yaw sweep, both directions): mean rises to
+  13.7-14.3 ms in the sweep seconds (render cost above budget - the pair rate dips
+  below refresh), max 16.6 ms - still no spike-class intervals.
+- **`head orbit 240 6000`**: ONE spike-class interval - **max 36.8 ms (~3 dropped
+  frames) mid-sweep** (15:12:58, sd exploded 1.2 -> 2.9 ms in that second), the rest
+  of the sweep seconds looking like the 120 case.
+
+READ: the hitch class is reproducible flat, is view-change-bound (only during fast
+yaw), and is much milder INDOORS than the user's outdoor headset bursts (39-113 ms
+every few seconds) - consistent with the load-sensitivity diagnostic. The hunt can
+iterate flat; outdoor repro needs the pad lane or an outdoor checkpoint.
+
 ## LIVE RESULTS (session 42 - I6 judder flat half; I7 opens: the exec-surface truth, object dispatch, the pad lane)
 
 ### The judder, measured flat: the wait GATES here, and the instrument now rides every session
