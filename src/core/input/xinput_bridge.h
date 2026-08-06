@@ -109,6 +109,25 @@ AmmoMod ammo_mod();
 void set_ammo_mod(AmmoMod m);
 int take_snap_steps(); // +right/-left steps queued since the last drain
 
+// Session 44 (Infinite I7): WHICH pad map the XR composer builds.
+//
+// The composer's face-button re-route, its consumed RS-click and its
+// synthesized dpad are BioShock 1 semantics, audited against that game's own
+// XENON_* bindings. Infinite's audited retail map disagrees on four counts (it
+// wants straight-through faces, RS-click forwarded for XToggleZoom, and a
+// fourth dpad direction), and a synthetic pad's only job is to land on the
+// bindings the game already ships - so the map has to be per game.
+//
+// DEFAULT Bioshock1 IN CORE, exactly the set_pose_lag contract: BS1 and BS2
+// never call the setter and their composed pad is byte-identical. The Infinite
+// adapter arms its profile once in init(). One atomic and one relaxed load per
+// XR frame - a single scalar rather than a struct of fields so a live A/B can
+// never compose a half-switched pad. The tables themselves live next to the
+// composer in core/vr/openxr_input.cpp.
+enum class PadProfile { Bioshock1 = 0, Infinite = 1 };
+PadProfile pad_profile();
+void set_pad_profile(PadProfile p);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping

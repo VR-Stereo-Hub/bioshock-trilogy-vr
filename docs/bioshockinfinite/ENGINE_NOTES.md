@@ -320,6 +320,39 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 44 - I7: the per-game pad map, Touch bindings, aim)
+
+### The pad-map seam, and the BS1 inertness proof that gates it
+
+The XR-to-pad table is now per game: `bvr::input::PadProfile` (one atomic in the
+bridge, default `Bioshock1`) selects between two `constexpr PadMap` tables next to the
+composer in `core/vr/openxr_input.cpp`. Design rationale and the rejected alternative:
+ARCHITECTURE decision log, 2026-08-06.
+
+**The BS1 proof, measured on the sim lane before a line of Infinite work** (the banked
+`claimRatioH` is a stereo-geometry number and cannot see an input regression, so it is
+the "nothing else moved" control here, not the proof). Boot to gameplay via
+`boot.ps1 -Attach`, `vrinput on`, `vrinput padlog on`, then a per-control sweep:
+
+| control | composed | banked BS1 expectation |
+|---|---|---|
+| Touch A / B / X / Y | `0x1000 A` / `0x8000 Y` / `0x4000 X` / `0x2000 B` | the s19 B->Y, Y->B re-route SURVIVES |
+| LS click | `0x0040 LS` | forwarded |
+| RS click | **no pad edge** | eaten - it is the ammo modifier, never a binding |
+| grip L 0.60 / 0.75 / 0.60 / 0.50 | none / `0x0100 LB` / none (holds) / release | the 0.70 press / 0.55 release hysteresis, exactly |
+| grip R 1.0 | `0x0200 RB` | forwarded |
+| trigger L / R | `lt=255` / `rt=255` | analog passthrough |
+| menu tap / hold >= 500 ms | `0x0010 START` / `0x0020 BACK` | tap-pulse and hold |
+| thumbrest + flick up / down / left | `0x0001 DU` / `0x0002 DD` / `0x0004 DL` | the three ammo slots |
+| thumbrest + flick RIGHT | **no pad edge** | BS1 has no fourth direction, and gains none |
+
+Turn suppression proved by an A-B pair rather than assumed: right stick at full
+deflection with a concurrent A press reads `rx=32767` with no modifier and `rx=0` with
+the thumbrest modifier held. Left stick forward reads `ly=+32767`. Controls: stereo
+capture `claimRatioH 1.01769` == the banked 1.018, sim `errors 0`, zero mod faults,
+zero crash dumps, and **zero `pad profile` lines in BS1's log** - the setter is never
+called there, which is the direct evidence that BS1 took the default arm.
+
 ## LIVE RESULTS (session 43 - the stutter hunt: spike instrument, flat repro)
 
 ### The spike class REPRODUCES FLAT at native 2064x2208 (pre-instrument baseline)

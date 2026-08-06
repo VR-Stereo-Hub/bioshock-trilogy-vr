@@ -1413,3 +1413,22 @@ runtime.
   isolated, effect-verified): the crosshair lane (ShockPlayer.DisableReticle /
   EnableReticle, default hidden per user ask) is the precedent. BS1's Exec SET
   seam stays BS1-only.
+- **The XR-to-pad map is a per-game TABLE selected by an opt-in core enum**
+  (2026-08-06, session 44, Infinite I7). A synthetic pad's only job is to land on
+  the bindings the game already ships, so the table is a property of the GAME, not
+  of the composer - but the composer lives in `core/vr/openxr_input.cpp`, which is
+  compiled only under `BVR_WITH_OPENXR`, has no flat stub, and receives its XR
+  handles from `openxr_runtime.cpp` at five narrow lifecycle points. **A bsi-local
+  duplicate of the composing path was considered and rejected**: an adapter cannot
+  see the action handles, so duplicating it locally would first require publishing
+  raw XR control state OUT of core - strictly more invasive than the alternative,
+  and it would put a second consumer on every action. So: `PadProfile` +
+  `set_pad_profile`/`pad_profile` as one `std::atomic<int>` in
+  `core/input/xinput_bridge` (default `Bioshock1`), and two `constexpr PadMap`
+  tables beside the composer, one relaxed load per compose. This follows the
+  established policy-atom precedent in that same file (`stick_deadzone()`,
+  `ammo_mod()`) and the `set_pose_lag` opt-in contract. A single scalar rather than
+  a struct of per-field atomics deliberately: a live A/B must never compose a
+  half-switched pad, and a partially-populated POD would silently unbind controls
+  to bit 0. The BioShock 1 table reproduces the previous literals exactly - that,
+  not an assertion, is the inertness argument, and it was measured (see below).

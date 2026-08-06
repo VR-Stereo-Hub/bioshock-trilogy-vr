@@ -102,6 +102,10 @@ constexpr int16_t kPitchServoMax = 8000; // ~24% deflection
 std::atomic<float> g_turnScale{1.0f};
 std::atomic<bool> g_snapTurn{false};
 std::atomic<int> g_ammoMod{1}; // AmmoMod::Thumbrest (user's call, session 23)
+// Session 44: which per-game map the XR composer builds. 0 == PadProfile::
+// Bioshock1, the historical hardcoded semantics, so BS1 and BS2 (which never
+// call the setter) compose exactly what they composed before.
+std::atomic<int> g_padProfile{0};
 std::atomic<float> g_snapAngleDeg{45.0f};
 std::atomic<int> g_snapPending{0}; // +right/-left, drained by take_snap_steps
 bool g_snapArmed = true;           // edge re-arm state; g_mutex holds it
@@ -732,6 +736,24 @@ AmmoMod ammo_mod() {
 }
 void set_ammo_mod(AmmoMod m) {
     g_ammoMod.store(static_cast<int>(m), std::memory_order_relaxed);
+}
+
+PadProfile pad_profile() {
+    return static_cast<PadProfile>(g_padProfile.load(std::memory_order_relaxed));
+}
+void set_pad_profile(PadProfile p) {
+    int v = static_cast<int>(p);
+    if (v < 0 || v > static_cast<int>(PadProfile::Infinite))
+        v = static_cast<int>(PadProfile::Bioshock1);
+    const int was = g_padProfile.exchange(v, std::memory_order_relaxed);
+    if (was == v) return;
+    BVR_LOG("input: XR pad profile %s -> %s - which map the XR composer builds. "
+            "BioShock 1 re-routes the Touch faces (B->Y jump, Y->B med hypo), eats "
+            "RS-click as the ammo modifier and synthesizes three dpad directions; "
+            "Infinite passes the faces straight through, FORWARDS RS-click "
+            "(XToggleZoom) and gets a fourth dpad direction. Set once by the game "
+            "adapter; BS1/BS2 never call it.",
+            was == 0 ? "bioshock1" : "infinite", v == 0 ? "bioshock1" : "infinite");
 }
 
 float turn_scale() { return g_turnScale.load(std::memory_order_relaxed); }
