@@ -75,6 +75,7 @@ struct Resolved {
     void* pawn = nullptr;
     void* list = nullptr;
     void* fpa = nullptr;
+    void* mesh = nullptr; // the FP mesh COMPONENT at fpa+0x218 - the drive target
     bool identityOk = false;
     uint32_t epoch = 0;
 };

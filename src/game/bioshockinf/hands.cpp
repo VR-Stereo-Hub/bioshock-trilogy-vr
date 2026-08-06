@@ -68,19 +68,56 @@ void tick(const char* site) {
             g_haveTarget[h] = false;
             continue;
         }
-        const float pos[3] = {hp.px, hp.py, hp.pz};
-        const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
-        GamePose gp = model_pose_from_xr(ctx, pos, quat,
-                                         g_trimPitch[h].load(std::memory_order_relaxed),
-                                         g_trimYaw[h].load(std::memory_order_relaxed),
-                                         g_trimRoll[h].load(std::memory_order_relaxed));
-        // Offsets in the FINAL TRIMMED basis - the basis of gp.rot, which
-        // already carries the trims. In the untrimmed basis the offset would
-        // swing as the trim is tuned, the two knobs would stop being
-        // independent, and neither could be calibrated.
+        // R5: the drive target is the mesh COMPONENT, whose transform is
+        // VIEW-RELATIVE - so the pose is built directly in the head's frame and
+        // never goes through world space at all. That removes the whole
+        // xr_pose_to_game round trip from the model lane (the aim ray still
+        // needs it, because a fire ray IS a world quantity).
         //
-        // cm -> UU by worldScale/100. General in worldScale, which is why it
-        // survives Vengeance's 100 -> UE3's 50 without a second number.
+        // Sign/axis convention, MEASURED not assumed (s46 R5): SetTranslation
+        // v0,0,-40 on the component moved the gun DOWN, so the component's
+        // local frame is UE's usual X forward / Y right / Z up, matching
+        // xr_to_ue's output directly.
+        bvr::vr::HeadPose head{};
+        if (!bvr::vr::get_head_pose(head)) {
+            if (g_wasDriving[h].exchange(false, std::memory_order_relaxed))
+                rig::release("no head pose");
+            g_haveTarget[h] = false;
+            continue;
+        }
+        // Trim first, in the controller's LOCAL frame - the same compose the ray
+        // and core's laser use, so a trimmed model and a trimmed beam stay
+        // congruent.
+        float trim[4], q[4];
+        xr_local_trim_quat(g_trimPitch[h].load(std::memory_order_relaxed) / kRadToDeg,
+                           g_trimYaw[h].load(std::memory_order_relaxed) / kRadToDeg,
+                           g_trimRoll[h].load(std::memory_order_relaxed) / kRadToDeg, trim);
+        const float hq[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+        quat_mul(hq, trim, q);
+
+        // Into the head's local frame: conj(headQuat) applied to both the offset
+        // and the orientation.
+        const float hc[4] = {-head.qx, -head.qy, -head.qz, head.qw};
+        const float dxr[3] = {hp.px - head.px, hp.py - head.py, hp.pz - head.pz};
+        float dLocal[3];
+        quat_rotate(hc[0], hc[1], hc[2], hc[3], dxr, dLocal);
+        float ue[3];
+        xr_to_ue(dLocal, ue);
+
+        float qRel[4];
+        quat_mul(hc, q, qRel);
+        const UeAngles a = ue_angles_from_xr_quat(qRel[0], qRel[1], qRel[2], qRel[3]);
+
+        GamePose gp{};
+        gp.loc.x = ue[0] * ctx.worldScale;
+        gp.loc.y = ue[1] * ctx.worldScale;
+        gp.loc.z = ue[2] * ctx.worldScale;
+        gp.rot.pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian);
+        gp.rot.yaw = static_cast<int32_t>(a.yawRad * kRotUnitsPerRadian);
+        gp.rot.roll = static_cast<int32_t>(a.rollRad * kRotUnitsPerRadian);
+
+        // Offsets in the FINAL TRIMMED basis - unchanged in meaning, just
+        // expressed in the component's frame now.
         float fwd[3], right[3], up[3];
         ue_rot_basis(gp.rot, fwd, right, up);
         const float k = ctx.worldScale / 100.0f;

@@ -35,6 +35,7 @@ void* g_lastPc = nullptr;
 bool g_identityCached = false;
 bool g_identityVerdict = false;
 char g_fpaClass[64] = {};
+char g_meshClass[64] = {};
 
 // The saved engine-authored transform, captured on the first write of a drive
 // episode. Capturing every frame would save our OWN write back and make
@@ -81,6 +82,8 @@ enum NativeId {
     kNSetRotation,
     kNForceUpdateComponents,
     kNSetHidden,
+    kNSetTranslation,
+    kNSetScale,
     kNCount
 };
 
@@ -89,6 +92,11 @@ NativeSlot g_nat[kNCount] = {
     {"SetRotation", -1, nullptr, 0, 0, 0, 0},
     {"ForceUpdateComponents", -1, nullptr, 0, 0, 0, 0},
     {"SetHidden", -1, nullptr, 0, 0, 0, 0},
+    // R5: the two that actually drive the viewmodel. COMPONENT natives, called
+    // on the mesh at attachment +0x218 - not on the actor, whose transform the
+    // renderer ignores.
+    {"SetTranslation", -1, nullptr, 0, 0, 0, 0},
+    {"SetScale", -1, nullptr, 0, 0, 0, 0},
 };
 bool g_namesWarm = false;
 
@@ -206,6 +214,9 @@ bool resolve(Resolved* out) {
         if (out) *out = r;
         return false;
     }
+    // R5: one more hop to the actual drive target. The ACTOR's transform is not
+    // read by the renderer; this COMPONENT's is.
+    read_ptr(r.fpa, patterns::kAttachmentSkelMeshOffset, &r.mesh);
     if (r.fpa != g_lastFpa || r.pc != g_lastPc) {
         bump_epoch(r.fpa != g_lastFpa ? "carrier changed" : "pc changed");
         g_lastFpa = r.fpa;
@@ -230,9 +241,19 @@ bool resolve(Resolved* out) {
             void* level = *reinterpret_cast<void* const*>(a + patterns::kActorLevelOffset);
             g_identityVerdict = owner == r.pawn && base == r.pawn &&
                                 bvr::pattern_scan::is_memory_valid(level, 4);
+            // The drive target must ALSO be present and be what it claims - the
+            // write goes to the component, so the component is what has to pass.
+            if (g_identityVerdict) {
+                g_meshClass[0] = 0;
+                g_identityVerdict =
+                    r.mesh != nullptr &&
+                    reflect::object_class_name(r.mesh, g_meshClass, sizeof g_meshClass) &&
+                    strcmp(g_meshClass, patterns::kSkeletalMeshComponentClass) == 0;
+            }
         }
-        BVR_LOG("[bsi] rig: epoch %u carrier %p class '%s' identity %s", g_epoch, r.fpa,
-                g_fpaClass[0] ? g_fpaClass : "?", g_identityVerdict ? "OK" : "REFUSED");
+        BVR_LOG("[bsi] rig: epoch %u carrier %p '%s' -> mesh %p '%s' identity %s", g_epoch,
+                r.fpa, g_fpaClass[0] ? g_fpaClass : "?", r.mesh,
+                g_meshClass[0] ? g_meshClass : "?", g_identityVerdict ? "OK" : "REFUSED");
     }
     r.identityOk = g_identityVerdict;
     r.epoch = g_epoch;
@@ -261,40 +282,22 @@ bool drive(int hand, const GamePose& target) {
     if (!g_armed.load(std::memory_order_relaxed)) { ++g_ref.disarmed; return false; }
     if (g_probe.load(std::memory_order_relaxed)) { ++g_ref.probeOff; return false; }
 
-    uint8_t* a = static_cast<uint8_t*>(r.fpa);
-    FVector back{};
-    bool ok = false;
-    __try {
-        // Capture the engine's own transform ONCE per drive episode, before the
-        // first write of that episode.
-        if (!g_haveSaved) {
-            g_savedLoc = *reinterpret_cast<const FVector*>(a + patterns::kActorLocationOffset);
-            g_savedRot = *reinterpret_cast<const FRotator*>(a + patterns::kActorRotationOffset);
-            g_savedFpa = r.fpa;
-            g_savedEpoch = g_epoch;
-            g_haveSaved = true;
-        }
-        // ABSOLUTE, both fields, every frame. Absolute makes the several pass-2
-        // dispatches per doubled draw idempotent, the same property the camera's
-        // own pass-2 replay relies on.
-        *reinterpret_cast<FVector*>(a + patterns::kActorLocationOffset) = target.loc;
-        *reinterpret_cast<FRotator*>(a + patterns::kActorRotationOffset) = target.rot;
-        // READ BACK, not echo. An echo proves we computed a number; a read-back
-        // proves the number is in the object. That is what makes last_write an
-        // oracle rather than a mirror.
-        back = *reinterpret_cast<const FVector*>(a + patterns::kActorLocationOffset);
-        ok = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        ++g_ref.fault;
-        if (++g_consecutiveFaults >= 3) {
-            g_poisoned.store(true, std::memory_order_relaxed);
-            g_armed.store(false, std::memory_order_relaxed);
-        }
-        return false;
-    }
-    if (!ok) return false;
+    // R5: the write goes to the COMPONENT, through its own natives. `target` is
+    // the pose in the component's own (view-relative) frame - hands.cpp builds
+    // it there directly, so there is no world round trip and no parent inverse.
+    //
+    // Natives rather than raw field writes because the component almost
+    // certainly caches a component-to-world matrix that the setters refresh; a
+    // raw field poke is exactly the mistake R4 already made once on the actor.
+    // Cost is two ProcessEvent dispatches per rendered frame with the UFunction
+    // already cached - the fname_find scan is nowhere near this path.
+    struct { FVector v; } tparm{target.loc};
+    struct { FRotator r; } rparm{target.rot};
+    const bool okT = call_native(r.mesh, kNSetTranslation, &tparm);
+    const bool okR = call_native(r.mesh, kNSetRotation, &rparm);
+    if (!okT && !okR) return false;
     g_consecutiveFaults = 0;
-    g_writeLoc[hand] = back;
+    g_writeLoc[hand] = target.loc;
     g_writeStamp[hand] = GetTickCount64();
     g_haveWrite[hand] = true;
     ++g_writes;
@@ -302,20 +305,18 @@ bool drive(int hand, const GamePose& target) {
 }
 
 void reapply() {
-    if (!g_haveSaved || !g_armed.load(std::memory_order_relaxed)) return;
+    if (!g_armed.load(std::memory_order_relaxed)) return;
     if (g_probe.load(std::memory_order_relaxed)) return;
     const int h = g_carrierHand.load(std::memory_order_relaxed);
     if (!g_haveWrite[h]) return;
     Resolved r{};
-    if (!resolve(&r) || !r.fpa || !r.identityOk) return;
-    uint8_t* a = static_cast<uint8_t*>(r.fpa);
-    __try {
-        *reinterpret_cast<FVector*>(a + patterns::kActorLocationOffset) = g_writeLoc[h];
-        *reinterpret_cast<FRotator*>(a + patterns::kActorRotationOffset) = g_probeTarget.rot;
-        ++g_reapplies;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        ++g_ref.fault;
-    }
+    if (!resolve(&r) || !r.mesh || !r.identityOk) return;
+    if (GetCurrentThreadId() != camera::camera_tid()) return;
+    struct { FVector v; } tparm{g_writeLoc[h]};
+    struct { FRotator r; } rparm{g_probeTarget.rot};
+    call_native(r.mesh, kNSetTranslation, &tparm);
+    call_native(r.mesh, kNSetRotation, &rparm);
+    ++g_reapplies;
 }
 
 void release(const char* why) {
@@ -331,13 +332,14 @@ void release(const char* why) {
         g_haveWrite[0] = g_haveWrite[1] = false;
         return;
     }
-    uint8_t* a = static_cast<uint8_t*>(r.fpa);
-    __try {
-        *reinterpret_cast<FVector*>(a + patterns::kActorLocationOffset) = g_savedLoc;
-        *reinterpret_cast<FRotator*>(a + patterns::kActorRotationOffset) = g_savedRot;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        ++g_ref.fault;
-    }
+    // The engine restamps the component's relative transform from its animation
+    // every tick, so handing it back is simply writing the authored identity
+    // (zero relative offset) once and stopping. That is why release does not
+    // need a captured "before" for the component the way an actor write would.
+    struct { FVector v; } tz{FVector{0.0f, 0.0f, 0.0f}};
+    struct { FRotator r; } rz{FRotator{0, 0, 0}};
+    call_native(r.mesh, kNSetTranslation, &tz);
+    call_native(r.mesh, kNSetRotation, &rz);
     BVR_LOG("[bsi] rig: released (%s) - the engine's own transform is back", why);
     g_haveSaved = false;
     g_haveWrite[0] = g_haveWrite[1] = false;
