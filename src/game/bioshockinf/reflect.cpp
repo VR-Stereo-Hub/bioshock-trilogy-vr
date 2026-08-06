@@ -197,7 +197,7 @@ void cmd_name_find(const char* args) {
 
 // Defined further down with the object-identity helpers; used here only to
 // label which object a vtable window belongs to.
-bool object_class_name(const void* obj, char* out, size_t outSize);
+bool detail_object_class_name(const void* obj, char* out, size_t outSize);
 
 // Session 44: generalized to an EXPLICIT object and an explicit START SLOT.
 // Both were needed the moment a seam turned out to be a virtual on the PAWN
@@ -238,7 +238,7 @@ void cmd_vtable(const char* args) {
         return;
     }
     char clsName[128] = "";
-    object_class_name(obj, clsName, sizeof clsName);
+    detail_object_class_name(obj, clsName, sizeof clsName);
     BVR_LOG("[bsi] reflect: %s %p vtable %p (rva 0x%X), %d slots from +0x%X:",
             clsName[0] ? clsName : "<latched PC>", obj, (const void*)vtBase, rva_of(vtBase),
             count, startOff);
@@ -580,7 +580,7 @@ const void* object_class(const void* obj) {
     return cls;
 }
 
-bool derive_obj_name_off() {
+bool detail_derive_obj_name_off() {
     if (g_objNameOff >= 0) return true;
     const void* pc = camera::last_player_controller();
     const void* cls = pc ? object_class(pc) : nullptr;
@@ -610,7 +610,7 @@ bool derive_obj_name_off() {
 // Class name of an arbitrary pointer IF it reads as a UObject; empty string
 // otherwise. The gates (readable object, readable class, name index in range,
 // name text readable) are what makes walking raw fields safe.
-bool object_class_name(const void* obj, char* out, size_t outSize) {
+bool detail_object_class_name(const void* obj, char* out, size_t outSize) {
     if (outSize) out[0] = '\0';
     if (g_objNameOff < 0) return false;
     const void* cls = object_class(obj);
@@ -651,13 +651,13 @@ void cmd_fields(const char* args) {
             return;
         }
     }
-    if (!derive_obj_name_off()) {
+    if (!detail_derive_obj_name_off()) {
         BVR_LOG("[bsi] fields: REFUSED - UObject::Name offset did not derive on the PC's "
                 "class object (no candidate dword selected a '*PlayerController' name)");
         return;
     }
     char clsName[128];
-    object_class_name(obj, clsName, sizeof clsName);
+    detail_object_class_name(obj, clsName, sizeof clsName);
     BVR_LOG("[bsi] fields: walking %s %p from +0x%X, %u dwords - every pointer whose "
             "target reads as a UObject, with its class name",
             clsName[0] ? clsName : "<pc>", obj, start, count);
@@ -669,7 +669,7 @@ void cmd_fields(const char* args) {
         const void* p = *reinterpret_cast<const void* const*>(slot);
         if (!p || (reinterpret_cast<uintptr_t>(p) & 3)) continue;
         char nm[128];
-        if (!object_class_name(p, nm, sizeof nm) || !nm[0]) continue;
+        if (!detail_object_class_name(p, nm, sizeof nm) || !nm[0]) continue;
         BVR_LOG("[bsi] fields:   +0x%03X -> %p  class %s", off, p, nm);
         ++shown;
     }
@@ -709,9 +709,9 @@ void cmd_read(const char* args) {
         BVR_LOG("[bsi] read: REFUSED - %p is not readable", (const void*)base);
         return;
     }
-    derive_obj_name_off();
+    detail_derive_obj_name_off();
     char clsName[128] = {};
-    object_class_name(base, clsName, sizeof clsName);
+    detail_object_class_name(base, clsName, sizeof clsName);
     BVR_LOG("[bsi] read: %p (%s) from +0x%X, %u dwords", (const void*)base,
             clsName[0] ? clsName : "not a UObject", start, count);
     for (unsigned i = 0; i < count; ++i) {
@@ -728,7 +728,7 @@ void cmd_read(const char* args) {
         // deriving a layout, never a claim - the caller confirms by A/B.
         char note[192] = {};
         char nm[128];
-        if (u && (u & 3) == 0 && object_class_name(reinterpret_cast<const void*>(u), nm,
+        if (u && (u & 3) == 0 && detail_object_class_name(reinterpret_cast<const void*>(u), nm,
                                                    sizeof nm) &&
             nm[0]) {
             _snprintf_s(note, sizeof note, _TRUNCATE, "  UObject %s", nm);
@@ -804,8 +804,8 @@ void cmd_call_at(const char* args) {
         return;
     }
     char nm[128] = {};
-    derive_obj_name_off();
-    object_class_name(obj, nm, sizeof nm);
+    detail_derive_obj_name_off();
+    detail_object_class_name(obj, nm, sizeof nm);
     alignas(16) uint8_t parms[256] = {};
     char parmKind[96] = " with zeroed parms";
     if (n == 3) {
@@ -955,8 +955,8 @@ void cmd_load(const char* args) {
     } else {
         char cls[128] = {};
         char nm[128] = {};
-        derive_obj_name_off();
-        object_class_name(parms.ret, cls, sizeof cls);
+        detail_derive_obj_name_off();
+        detail_object_class_name(parms.ret, cls, sizeof cls);
         if (g_objNameOff >= 0 && bvr::pattern_scan::is_memory_valid(parms.ret, 0x50)) {
             const int32_t ni = *reinterpret_cast<const int32_t*>(
                 static_cast<const uint8_t*>(parms.ret) + g_objNameOff);
@@ -1100,6 +1100,17 @@ void cmd_exec(const char* args) {
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
     g_image = image;
+}
+
+// Session 46: the rig needs to validate the viewmodel carrier's identity before
+// it writes a byte, so these two leave the anonymous namespace as public API.
+// Thin forwarders rather than a move, so the internal call sites are untouched.
+bool object_class_name(const void* obj, char* out, size_t outSize) {
+    return detail_object_class_name(obj, out, outSize);
+}
+
+bool ensure_obj_name_offset() {
+    return detail_derive_obj_name_off();
 }
 
 void exec_console(const char* cmd) {

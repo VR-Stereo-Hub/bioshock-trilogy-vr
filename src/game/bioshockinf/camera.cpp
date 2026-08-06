@@ -9,6 +9,7 @@
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/game_ini.h"
+#include "game/bioshockinf/hands.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
@@ -769,6 +770,9 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         g_lastPresentSeen = present;
         recorder::on_tick(driveHead ? hp : bvr::vr::HeadPose{}, driveHead, liveHead, *loc,
                           *rot);
+        // I8 write point 3: exactly once per rendered frame, game thread, after
+        // loc/rot are final and the frame context has just been published.
+        hands::on_camera_tail();
     }
 }
 
@@ -1173,6 +1177,9 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
             g_eyeLoc[1] = *loc;
             g_eyeLocValid[1] = true;
             g_srReplayCalls.fetch_add(1, std::memory_order_relaxed);
+            // The doubled draw may re-evaluate the viewmodel over pass 1's rig
+            // write; repaint it or the two eyes render different positions.
+            hands::on_second_pass();
             const uint32_t seq = scenedraw::second_pass_seq();
             if (seq != g_srLastSeq) {
                 g_srLastSeq = seq;

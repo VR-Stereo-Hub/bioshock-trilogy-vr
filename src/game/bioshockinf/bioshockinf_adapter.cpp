@@ -5,6 +5,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/hands.h"
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/aim.h"
 #include "game/bioshockinf/input_drive.h"
@@ -142,12 +143,17 @@ void BioshockInfAdapter::drawDebugUi() {
     config::draw_debug_ui();
     input_drive::draw_debug_ui();
     aim::draw_debug_ui();
+    hands::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
     reflect::draw_debug_ui();
 }
 
 bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
+    if (strcmp(cmd, "bsihands") == 0) {
+        hands::handle_command(args);
+        return true;
+    }
     if (strcmp(cmd, "bsi") == 0) {
         log_status();
         return true;

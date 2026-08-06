@@ -5,6 +5,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/hands.h"
 #include "game/bioshockinf/patterns.h"
 
 #include <MinHook.h>
@@ -227,6 +228,9 @@ void __fastcall DrawDetour(void* self, void* edx, void* a1) {
             callerRva == patterns::kViewportDrawGameplayRetRva &&
             camera::silent_ms() <= 400)
             bvr::vr::sr_push_eye(-1);
+        // I8 write point 1: the latest game-thread moment before the engine
+        // builds this frame's scene. Returns instantly unless it is selected.
+        hands::on_draw_entry();
     }
 
     g_original(self, edx, a1);
@@ -237,6 +241,10 @@ void __fastcall DrawDetour(void* self, void* edx, void* a1) {
         g_lastDrawPresent = present;
         // Depth latch still held: pass 2's camera dispatches attribute as
         // "inside" and the pump stays deferred for the whole pair.
+        // I8 write point 2: after the scene is built. If a write survives HERE
+        // and still renders, the engine reads the transform late - a different
+        // fact about the pipeline, which is why both points exist.
+        hands::on_draw_exit();
         maybe_second_draw(self, edx, a1, callerRva, presentDelta);
         heartbeat(GetTickCount64());
     }

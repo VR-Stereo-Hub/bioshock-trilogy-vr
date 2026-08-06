@@ -31,6 +31,24 @@ bool handle_command(const char* cmd, const char* args);
 // return value; that is why this returns void.
 void exec_console(const char* cmd);
 
+// Class name of an arbitrary pointer IF it reads as a UObject; false and an
+// empty string otherwise. The gates (readable object, readable class, name
+// index in range, name text readable) are what makes walking raw engine fields
+// safe. Promoted from reflect.cpp's anonymous namespace in session 46 so the
+// rig can validate its target's identity before writing to it.
+//
+// THE S45 TRAP, and the reason this is never sufficient on its own: the
+// heuristic will happily resolve a NON-object address that happens to point at
+// plausible memory - `bsifields` named the raw object-pointer list head
+// "XWeaponModelFirstPerson". A class name from a walk is a HINT until the
+// layout corroborates it.
+bool object_class_name(const void* obj, char* out, size_t outSize);
+
+// Derive UObject::Name's offset off the latched PC's class object if it is not
+// known yet. Cheap and idempotent once resolved; false = no PC yet, so
+// object_class_name cannot work. Game thread.
+bool ensure_obj_name_offset();
+
 // Overlay section.
 void draw_debug_ui();
 

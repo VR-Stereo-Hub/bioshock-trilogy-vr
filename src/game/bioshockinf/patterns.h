@@ -95,6 +95,41 @@ inline constexpr uint32_t kCameraPovRotOffset = 0x3C4;     // FRotator, path 2's
 // objects - which is what made the reading credible rather than a guess.
 inline constexpr uint32_t kActorLocationOffset = 0x44;
 inline constexpr uint32_t kActorRotationOffset = 0x50;
+// Confirmed live on the FP attachment in session 46, alongside the canonical
+// UE3 AActor scale fields immediately after the rotator.
+inline constexpr uint32_t kActorDrawScaleOffset = 0x64;   // float
+inline constexpr uint32_t kActorDrawScale3DOffset = 0x68; // FVector
+
+// ---- The first-person viewmodel carrier (sessions 45-46) -------------------
+// XHuman +0x0D8 is an object-POINTER LIST, not a struct: consecutive object
+// pointers at +0x00/+0x04/+0x08/... (XInventoryManager, XFirstPersonAttachment,
+// XWeaponDedicatedMelee, then a run of XWeapon / XWeaponModelFirstPerson). DO
+// NOT read offsets into it as field offsets. Reproduced across three boots at
+// three different addresses with identical offsets, which is what makes them
+// offsets rather than a coincidence.
+inline constexpr uint32_t kPawnAttachmentListOffset = 0x0D8; // XHuman -> the list
+inline constexpr uint32_t kAttachListFpaSlotOffset = 0x004;  // list -> XFirstPersonAttachment
+inline constexpr uint32_t kAttachListWeaponModelSlotOffset = 0x00C; // -> the equipped model
+
+// The class name the resolve must SEE before it writes a byte, plus the four
+// structural offsets that corroborate it. A class name from a walk is only a
+// HINT (session 45: the heuristic named the raw list head
+// "XWeaponModelFirstPerson"), so identity is name AND layout: the FP attachment
+// reproduces the pawn's own actor layout at Level/Class/XWorldInfo/
+// DefaultPhysicsVolume and carries Owner and Base BOTH pointing at the pawn.
+inline constexpr char kFirstPersonAttachmentClass[] = "XFirstPersonAttachment";
+inline constexpr uint32_t kActorLevelOffset = 0x014;
+inline constexpr uint32_t kActorOwnerOffset = 0x08C; // must point AT THE PAWN
+inline constexpr uint32_t kActorBaseOffset = 0x0A0;  // must point AT THE PAWN
+
+// The two XSkeletalMeshComponents on the pawn, allocated adjacently. Session 46
+// R1 settled what they are NOT: hiding either changes NOTHING in first person
+// (0.62 mean-abs, below the 0.76 same-position control) while hiding the FP
+// attachment removes the entire viewmodel. So NEITHER is the first-person arms
+// - the arms hang off the attachment - and arms mode cannot drive them.
+// Recorded so the pair is not re-tested.
+inline constexpr uint32_t kPawnSkelMeshAOffset = 0x2E4;
+inline constexpr uint32_t kPawnSkelMeshBOffset = 0x72C;
 
 // ---- The aim seam (session 44, I7) -----------------------------------------
 // APawn::GetBaseAimRotation is VIRTUAL, and this is its vtable slot.
