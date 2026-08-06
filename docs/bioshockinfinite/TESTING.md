@@ -650,40 +650,30 @@ Three of these the flat lane could NOT name individually, so they are the ones I
 need your eye on: **melee, next weapon** (the test save owns one gun) and **sprint**
 (the checkpoint spot is walled in, so a flat speed test had no room to run).
 
-**3. KNOWN BLOCKER - do not be surprised by it.** Pressing the menu button opens the
-pause menu, and **no controller button closes it** (back, A, B and stick navigation
-all do nothing). Press **Escape on the keyboard** to get out. This is not a
-regression from this session and it is not the mod losing the pad - the game keeps
-reading our controller ~92 times a second the whole time the menu is up, it just does
-not act on it. It has its own fix lane. **Avoid the menu button in the headset for
-now.**
+**3. The pause menu** works from the controller (verified in the headset, s44) - the
+flat lane's "blocker" was a harness focus artifact, not a real one.
 
 **4. Pad map A/B**, if any button feels wrong: F10 -> "INPUT (I7)" has two radios,
-`Infinite` (shipped) and `BioShock 1` (the control). Flipping to BioShock 1 should
-make the faces obviously wrong (B jumps, Y heals, right-stick click stops zooming) -
-that is what tells us a complaint is about the MAP rather than about the binding
-underneath it.
+`Infinite` (shipped) and `BioShock 1` (the control). Flipping to BioShock 1 should make
+the faces obviously wrong - that is what tells us a complaint is about the MAP rather
+than the binding underneath it.
 
-**5. Aim - a probe, not a feature yet. Nothing is armed by default.** F10 -> "AIM
-(I7)". Please read the `divergence` number rather than trusting the picture:
+**5. Aim - now SHIPPED ARMED, both hands.** F10 -> "AIM (I7)".
 
-1. Tick **"Install the aim seam (probe, read-only)"**. It observes only and cannot
-   change anything.
-2. Hold the right controller pointing where you are looking - `divergence` should sit
-   near 0.
-3. Now keep your head still and swing the controller off to one side. `divergence`
-   should climb to roughly the angle you swung. That is the gap this lane exists to
-   close.
-4. Turn your HEAD with the controller held still. Flat testing says `divergence`
-   grows the same way, because the shot already follows your head. Please confirm
-   that matches what you feel - **shots should already land where you LOOK.**
-5. Only if you want to try it: tick **"Aim with the RIGHT CONTROLLER"**, then shoot a
-   wall with the controller pointed away from your gaze. **Flat testing could not
-   show the impact moving, and could not build a control to prove that means
-   anything** - so your eye is the deciding instrument here. Tell me whether the
-   holes land where the controller points, where you are looking, or somewhere else
-   entirely. Any of those three answers is useful; the third is the most useful.
-6. Untick both when you are done - the write is unproven and should not stay on.
+1. **Weapon hand.** Look one way, point the controller another, fire. Shots follow the
+   CONTROLLER. You verified this in s44; re-confirm it survived the dual-hand change.
+2. **Vigor hand.** Same test with the LEFT trigger. The aiming hand follows whichever
+   trigger you pull, and the F10 panel shows `aiming hand RIGHT (weapon)` / `LEFT
+   (vigor)` live, so you can watch it flip.
+3. **Aim dots are ON by default, one per hand.** Each should sit exactly on the ray
+   leaving its OWN controller. Flat measurement puts both at 0.0000 deg with the hands
+   swung to opposite angles, so a dot that looks off its controller in the headset is a
+   real finding worth reporting precisely.
+4. **Dot distance** slider (0.5-15 m) if 3 m is not where you want it.
+5. **Lasers are OFF by default**, one checkbox per hand. Turn them on for the full beam;
+   two beams fill a lot of view, which is why they are not the default.
+6. The calibration question: fire at a wall and say whether the hole lands ON the dot,
+   near it, or somewhere else.
 
 Expected noise, not bugs: `sr tag ring skewed - cleared` around movie and scene
 transitions, and a ~1 s pause when a checkpoint loads.

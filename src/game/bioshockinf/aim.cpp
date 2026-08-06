@@ -1,6 +1,7 @@
 #include "game/bioshockinf/aim.h"
 
 #include "core/hooks/pattern_scan.h"
+#include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
@@ -34,8 +35,14 @@ uint32_t to_rva(const void* p) {
     return (base && p) ? static_cast<uint32_t>(static_cast<const uint8_t*>(p) - base) : 0;
 }
 
-std::atomic<bool> g_probe{false};      // install + observe
-std::atomic<bool> g_substitute{false}; // actually write the out-param
+// HEADSET-VERIFIED (user, 2026-08-06): "aiming is not influenced by the head -
+// the bullet kept going in the same direction as my controller". So the seam IS
+// the fire path and the write SHIPS ARMED. The flat lane's null result was a
+// false negative of the instrument (a window capture cannot show an impact in
+// that scene); the probe/write split stays because it is how the next seam
+// question gets answered without disturbing what it measures.
+std::atomic<bool> g_probe{true};       // install + observe
+std::atomic<bool> g_substitute{true};  // actually write the out-param
 std::atomic<bool> g_installed{false};
 std::atomic<uint32_t> g_calls{0};
 std::atomic<uint32_t> g_subs{0};
@@ -53,6 +60,20 @@ std::atomic<float> g_lastRayPitchDeg{0.0f};
 // is the proof.
 std::atomic<float> g_lastDivergenceDeg{0.0f};
 
+// Which hand the seam last carried (0 left / 1 right), latched from the
+// triggers. Right is the sane default: the weapon hand is what fires first in
+// every scene that has a weapon at all.
+std::atomic<int> g_lastHand{1};
+
+// The aim DOT and the LASER, per hand. Dots default ON (user's call, session
+// 44: "the dot should be on by default for now"); the lasers default off - two
+// full beams are a lot of the view to fill before anyone has asked for them,
+// and they are one checkbox away.
+std::atomic<bool> g_dot[2] = {{true}, {true}};   // [0] left, [1] right
+std::atomic<bool> g_laser[2] = {{false}, {false}};
+std::atomic<float> g_dotDistM{3.0f};
+std::atomic<float> g_dotSizeDeg{0.5f};
+
 uint64_t g_lastLogMs = 0;
 
 // The controller ray, in GAME rotation units, built on exactly the basis the
@@ -60,9 +81,13 @@ uint64_t g_lastLogMs = 0;
 // recenter, pitch and roll absolute from the controller. Using the view's basis
 // is the point - it is what makes "where I look" and "where I shoot" the same
 // coordinate system rather than two parallel derivations that drift.
-bool controller_ray(FRotator* out) {
+//
+// hand: 0 left (vigor), 1 right (weapon). Also hands back the XR-space aim
+// pose, because the laser and the dot both need the ray's ORIGIN and there is
+// no point locating the hand twice in one frame.
+bool controller_ray(int hand, FRotator* out, bvr::vr::HeadPose* poseOut) {
     bvr::vr::HeadPose hp{};
-    if (!bvr::vr::get_hand_pose(1, /*aimPose=*/true, hp)) return false;
+    if (!bvr::vr::get_hand_pose(hand, /*aimPose=*/true, hp)) return false;
     int32_t gameYawUnits = 0, recenterYawUnits = 0;
     if (!camera::aim_basis(&gameYawUnits, &recenterYawUnits)) return false;
 
@@ -75,7 +100,73 @@ bool controller_ray(FRotator* out) {
     // trace, and a rolled controller must not tilt anything downstream that
     // reads this rotation for a basis.
     out->roll = 0;
+    if (poseOut) *poseOut = hp;
     return true;
+}
+
+// WHICH HAND is aiming. The seam is pawn-level and hands back ONE rotation, so
+// something has to decide whose ray it carries. We compose the pad ourselves,
+// so "which trigger is the player pulling" is information the mod already owns
+// - the same attribution BioShock 1 used, in shape. Latched rather than
+// momentary: a shot's trace can run a frame or two after the trigger is
+// released, and flipping the aim back mid-shot would throw it.
+int aiming_hand() {
+    uint8_t lt = 0, rt = 0;
+    bvr::input::last_composed_triggers(&lt, &rt);
+    constexpr uint8_t kPull = 64; // quarter pull, same gate the pad log uses
+    if (rt >= kPull) g_lastHand.store(1, std::memory_order_relaxed);
+    else if (lt >= kPull) g_lastHand.store(0, std::memory_order_relaxed);
+    return g_lastHand.load(std::memory_order_relaxed);
+}
+
+// Publish the aim DOT for one hand: the substituted ray mapped BACK into XR
+// space and placed a fixed distance along itself from the controller.
+//
+// The round trip is the point. The dot could trivially be drawn along the
+// controller's own XR forward and would then always look perfect while proving
+// nothing. Instead it takes the FRotator the seam actually wrote, undoes the
+// game-yaw basis (xrYaw = rayYaw - gameYaw + recenterYaw), rebuilds a direction
+// and converts it - so a basis error shows up as a dot that does NOT sit on the
+// controller's forward, which is exactly the failure worth seeing.
+void publish_dot(int slot, int hand, const FRotator& ray, const bvr::vr::HeadPose& pose,
+                 bool enabled) {
+    bvr::vr::AimDotConfig dc{};
+    dc.enabled = enabled;
+    dc.sizeDeg = g_dotSizeDeg.load(std::memory_order_relaxed);
+    int32_t gameYawUnits = 0, recenterYawUnits = 0;
+    if (enabled && camera::aim_basis(&gameYawUnits, &recenterYawUnits)) {
+        FRotator xrRot{};
+        xrRot.pitch = ray.pitch;
+        xrRot.yaw = wrap_rot(ray.yaw - gameYawUnits + recenterYawUnits);
+        xrRot.roll = 0;
+        float fwd[3], right[3], up[3];
+        ue_rot_basis(xrRot, fwd, right, up);
+        float dirXr[3];
+        ue_to_xr(fwd, dirXr);
+        const float d = g_dotDistM.load(std::memory_order_relaxed);
+        dc.posXr[0] = pose.px + dirXr[0] * d;
+        dc.posXr[1] = pose.py + dirXr[1] * d;
+        dc.posXr[2] = pose.pz + dirXr[2] * d;
+        dc.valid = true;
+    }
+    bvr::vr::set_aim_dot_slot(slot, dc);
+}
+
+// Publish the laser for one hand. The beam is re-derived render-side from the
+// controller pose, so it is fresher than the dot but a parallel computation;
+// the two agreeing is itself the calibration (core's own note on the pair).
+void publish_laser(int slot, int hand, bool enabled) {
+    bvr::vr::LaserConfig lc{};
+    lc.enabled = enabled;
+    lc.hand = hand;
+    lc.dots = 6;
+    lc.nearM = 0.30f;
+    lc.farM = 6.0f;
+    lc.sizeDeg = 0.7f;
+    // No trims: this game's ray is built straight off the aim pose with no
+    // pitch/yaw offset, so the beam must not carry one either or it would stop
+    // agreeing with the shot.
+    bvr::vr::set_laser_slot(slot, lc);
 }
 
 // The seam. Original FIRST, always - this hook observes and adjusts, it never
@@ -89,8 +180,28 @@ FRotator* __fastcall AimDetour(void* self, void* edx, FRotator* outBuf) {
     // Snapshot what the ENGINE thinks before touching anything, so the probe
     // keeps measuring the original even while the write is armed.
     const FRotator engine = *r;
-    FRotator ray{};
-    const bool haveRay = controller_ray(&ray);
+
+    // Both hands, every call. The seam only ever carries ONE of them (the hand
+    // whose trigger is pulled), but the laser and the dot want both - the vigor
+    // hand needs to show where it will cast even while the weapon hand is the
+    // one aiming.
+    const int hand = aiming_hand();
+    FRotator rays[2]{};
+    bvr::vr::HeadPose poses[2]{};
+    bool have[2] = {false, false};
+    for (int h = 0; h < 2; ++h)
+        have[h] = controller_ray(h, &rays[h], &poses[h]);
+
+    // Slot 0 is the RIGHT hand and slot 1 the left, matching BS2's convention
+    // (slot 0 keeps BS1 parity there); a hand whose pose is missing publishes
+    // disabled rather than stale.
+    publish_dot(0, 1, rays[1], poses[1], have[1] && g_dot[1].load(std::memory_order_relaxed));
+    publish_dot(1, 0, rays[0], poses[0], have[0] && g_dot[0].load(std::memory_order_relaxed));
+    publish_laser(0, 1, have[1] && g_laser[1].load(std::memory_order_relaxed));
+    publish_laser(1, 0, have[0] && g_laser[0].load(std::memory_order_relaxed));
+
+    const FRotator ray = rays[hand];
+    const bool haveRay = have[hand];
 
     if (haveRay) {
         g_lastEngineYawDeg.store(static_cast<float>(engine.yaw) / kRotUnitsPerDegree,
@@ -122,9 +233,9 @@ FRotator* __fastcall AimDetour(void* self, void* edx, FRotator* outBuf) {
         // Rotator components as %d ALWAYS, with degrees alongside: an FRotator's
         // int32s reinterpret as denormal floats and print as 0.000, which cost
         // BioShock 1 a long detour.
-        BVR_LOG("[bsi] aim: engine=(%d %d %d)=(%.1f %.1f)deg ray=(%d %d %d)=(%.1f %.1f)deg "
-                "divergence=%.1f deg | ray %s, write %s (%u calls, %u substituted)",
-                engine.pitch, engine.yaw, engine.roll,
+        BVR_LOG("[bsi] aim: hand=%s engine=(%d %d %d)=(%.1f %.1f)deg ray=(%d %d %d)=(%.1f "
+                "%.1f)deg divergence=%.1f deg | ray %s, write %s (%u calls, %u substituted)",
+                hand ? "R" : "L", engine.pitch, engine.yaw, engine.roll,
                 static_cast<float>(engine.pitch) / kRotUnitsPerDegree,
                 static_cast<float>(engine.yaw) / kRotUnitsPerDegree, ray.pitch, ray.yaw,
                 ray.roll, static_cast<float>(ray.pitch) / kRotUnitsPerDegree,
@@ -240,6 +351,32 @@ bool handle_command(const char* cmd, const char* args) {
         g_probe.store(false, std::memory_order_relaxed);
         BVR_LOG("[bsi] aim: probe off (an installed hook stays installed and passes through - "
                 "a thread may still be returning through the trampoline)");
+    } else if (strncmp(args, "laser", 5) == 0 || strncmp(args, "dot", 3) == 0) {
+        // "<laser|dot> [l|r|both] on|off" - default both hands.
+        const bool isLaser = args[0] == 'l' && args[1] == 'a';
+        const char* rest = args + (isLaser ? 5 : 3);
+        while (*rest == ' ') ++rest;
+        int lo = 0, hi = 1;
+        if (*rest == 'l' && rest[1] != 'e') { hi = 0; ++rest; }
+        else if (*rest == 'r') { lo = 1; ++rest; }
+        else if (strncmp(rest, "both", 4) == 0) rest += 4;
+        while (*rest == ' ') ++rest;
+        const bool on = strncmp(rest, "on", 2) == 0;
+        for (int h = lo; h <= hi; ++h)
+            (isLaser ? g_laser : g_dot)[h].store(on, std::memory_order_relaxed);
+        BVR_LOG("[bsi] aim: %s %s for %s | dots L=%d R=%d lasers L=%d R=%d",
+                isLaser ? "laser" : "dot", on ? "ON" : "off",
+                lo == hi ? (lo ? "the RIGHT hand" : "the LEFT hand") : "BOTH hands",
+                g_dot[0].load(std::memory_order_relaxed) ? 1 : 0,
+                g_dot[1].load(std::memory_order_relaxed) ? 1 : 0,
+                g_laser[0].load(std::memory_order_relaxed) ? 1 : 0,
+                g_laser[1].load(std::memory_order_relaxed) ? 1 : 0);
+    } else if (strncmp(args, "dotdist", 7) == 0) {
+        float v = 0.0f;
+        if (sscanf_s(args + 7, "%f", &v) == 1 && v >= 0.3f && v <= 30.0f)
+            g_dotDistM.store(v, std::memory_order_relaxed);
+        BVR_LOG("[bsi] aim: dot distance %.2f m (bsiaim dotdist <0.3..30>)",
+                g_dotDistM.load(std::memory_order_relaxed));
     } else if (strncmp(args, "dump", 4) == 0) {
         int n = 8;
         sscanf_s(args + 4, "%d", &n);
@@ -283,9 +420,34 @@ void draw_debug_ui() {
         if (sub) g_probe.store(true, std::memory_order_relaxed);
         g_substitute.store(sub, std::memory_order_relaxed);
     }
-    ImGui::Text("hook %s   calls %u   substituted %u",
+    ImGui::Text("hook %s   calls %u   substituted %u   aiming hand %s",
                 g_installed.load(std::memory_order_relaxed) ? "LIVE" : "not installed",
-                g_calls.load(std::memory_order_relaxed), g_subs.load(std::memory_order_relaxed));
+                g_calls.load(std::memory_order_relaxed), g_subs.load(std::memory_order_relaxed),
+                g_lastHand.load(std::memory_order_relaxed) ? "RIGHT (weapon)" : "LEFT (vigor)");
+
+    // The overlays, per hand. Both are compositor quads, so they exist only in
+    // the headset - a flat screenshot showing nothing here is not evidence they
+    // are broken.
+    ImGui::Separator();
+    ImGui::TextDisabled("Aim dot (where the shot goes)");
+    bool dotR = g_dot[1].load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Dot: right hand (weapon)", &dotR))
+        g_dot[1].store(dotR, std::memory_order_relaxed);
+    bool dotL = g_dot[0].load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Dot: left hand (vigor)", &dotL))
+        g_dot[0].store(dotL, std::memory_order_relaxed);
+    float dist = g_dotDistM.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Dot distance (m)", &dist, 0.5f, 15.0f, "%.1f"))
+        g_dotDistM.store(dist, std::memory_order_relaxed);
+
+    ImGui::TextDisabled("Aim laser (the beam along the ray)");
+    bool lasR = g_laser[1].load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Laser: right hand (weapon)", &lasR))
+        g_laser[1].store(lasR, std::memory_order_relaxed);
+    bool lasL = g_laser[0].load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Laser: left hand (vigor)", &lasL))
+        g_laser[0].store(lasL, std::memory_order_relaxed);
+    ImGui::Separator();
     // The number to watch in the headset: with the write off it is how wrong
     // the shot is; with it on it should sit at ~0.
     ImGui::Text("divergence %.1f deg  (engine yaw %.1f / ray yaw %.1f)",

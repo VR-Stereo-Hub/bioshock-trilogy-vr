@@ -415,7 +415,7 @@ idle noise floor (LB measured 0.06-0.21 mean against a 0.50 floor) and looks lik
 dead binding. Capture WHILE the control is held, and read `-Grid` coverage rather than
 the mean (VERIFICATION trap 2).
 
-### THE PAUSE MENU DOES NOT CONSUME THE SYNTHETIC PAD (new, s44 - a real blocker)
+### The pause menu: a flat FALSE ALARM, closed by the headset (s44)
 
 `START` (menu tap) opens the pause menu - 55.8% of pixels, unambiguous. **Nothing on
 the Touch controller then closes it**: BACK (menu hold), A, B and left-stick nav all
@@ -431,12 +431,19 @@ observed: the game thread parks while the menu is up (no camera dispatch and no
 command lines for the whole window; the Present-pump lease is what keeps the command
 seam alive).
 
-Leading candidate, untested: this game switches active input device on activity, and
-a synthetic pad that never announces itself as a newly-active controller leaves the
-UI in keyboard/mouse context - which is the same SHAPE as the BS2 problem that was
-solved with an A->Enter scancode shim (`menukey`, BS2 s42). That shim is the obvious
-port and it is deliberately NOT done here yet: it needs its own evidence rung, and
-this session's scope is the map, the bindings and aim.
+**HEADSET VERDICT IN (user, 2026-08-06): "the menu and exiting the menu is working as
+expected from the controllers".** So the pad DOES drive this menu, and there is no
+blocker and nothing to port from BS2. The flat null was a HARNESS artifact.
+
+The most likely cause, and the harness rule that follows: while the pause menu is up
+the game thread parks, and the flat lane drives input through `xrsim-cmd`, which
+deliberately does not foreground the window - so the presses almost certainly landed
+on a game that was unfocused and auto-paused (gotcha 16), even though the composed pad
+kept arriving (which is exactly what the iat counter showed, and why that measurement
+looked like a contradiction). **Do not judge any MENU-context input question from the
+flat lane without asserting focus at the moment of the press and re-asserting it after
+the menu opens** - opening a pause menu is itself a focus event. Better: judge menu
+input in the headset, where it took one minute.
 
 ### THE AIM SEAM: derived and named - APawn::GetBaseAimRotation (s44)
 
@@ -506,7 +513,16 @@ SAME basis the view drive uses: game yaw plus the residual measured off the rece
 pitch absolute, roll deliberately zeroed so a rolled controller cannot tilt anything
 downstream that takes this rotation for a basis). It executes at the call rate.
 
-**But the shot does not visibly follow it, and the flat lane cannot say why.** With
+**HEADSET VERDICT IN (user, 2026-08-06): the substitution WORKS - the seam is the
+fire path.** "Aiming is not influenced by the head; I tried to look in different ways
+and aim in the same place and the bullet kept going in the same direction as my
+controller." So `APawn::GetBaseAimRotation` IS what the weapon trace consumes, and the
+flat null below was a FALSE NEGATIVE of the instrument, not of the seam. The
+substitution now ships ARMED. Keep the rest of this section: it is the record of an
+instrument that could not see a real effect, and of correctly refusing to claim the
+effect on its evidence.
+
+**The flat lane could not see it, and could not say why.** With
 the write armed, the view fixed, and two shots 70 degrees apart in commanded aim
 (-35 and +35), the post-shot frames are **pixel-identical: 0.08% changed, ZERO covered
 cells**, while the pre-shot frames differ by 2.6% (the viewmodel moving with the
@@ -522,19 +538,50 @@ is real but **unattributed**: it is consistent with the pawn seam not being the 
 path, and equally with both shots hitting the same nearby wall or with no
 aim-dependent decal surviving to the capture.
 
-**Therefore the substitution ships OFF** and is not in the preset registry. Per the
-evidence-first gate, the next step is more instrument, not more levers:
+**THE LESSON, recorded because it cost a rung: this scene cannot show an impact.** The
+capture is a game WINDOW grab, and the only thing that responds visibly to firing here
+is the viewmodel and HUD - which sit in the same screen region whatever the aim. The
+checkpoint is also walled in at close range. So "two shots, same view, different aim,
+identical frames" was never going to be evidence either way. **Before using a picture
+diff to judge a direction question again, first establish a positive control that the
+picture can show the direction changing at all** - and if none exists, escalate to a
+trace-result readout or hand it to the headset, which is what settled it here in one
+minute.
 
-1. **Instrument the trace RESULT, not the picture** - a hit location or impact actor
-   readout is what makes any of this falsifiable. Every conclusion above is blocked on
-   it.
-2. **Then probe the CONTROLLER's vtable slot +0x2F4** - the disassembly above shows
-   GetBaseAimRotation itself delegates there, so a weapon that asks the controller
-   directly would bypass the pawn seam entirely and produce exactly the null result
-   measured. That is the leading candidate, and it is derived rather than guessed.
-3. Only then decide where the write belongs. Note the hazard for candidate 2: the
-   camera may read the same path, so substituting it could drag the VIEW onto the
-   controller - check with the drive off before arming it.
+The controller's vtable slot +0x2F4 (which this function delegates to) stays RECORDED
+as the next candidate only if a future weapon or state turns out to bypass the pawn
+seam. It is not needed for the base game: the pawn seam is proven.
+
+### Dual-hand aim, and the laser/dot overlays (s44b, after the headset verdict)
+
+The seam is PAWN-level and hands back ONE rotation, so something has to decide whose
+ray it carries. **Trigger attribution, latched**: the mod composes the pad itself, so
+"which trigger is being pulled" is information it already owns (`last_composed_triggers`,
+quarter-pull gate). Right trigger -> weapon hand, left trigger -> vigor hand, and the
+choice LATCHES rather than being momentary, because a trace can run a frame or two
+after the trigger releases and flipping the aim mid-shot would throw it. Verified flat:
+`hand=R` at rest, `hand=L` the moment the left trigger passes the gate, back to `R` on
+the right.
+
+**Laser and dot use core's EXISTING two-slot API** (`set_laser_slot`/`set_aim_dot_slot`,
+added for BS2's dual wield in s40) - slot 0 right, slot 1 left, matching BS2's
+convention. **No core change was needed for any of this.** Dots default ON (user's
+call), lasers default off.
+
+**The dot round-trips the ray deliberately.** It would be trivial to draw the dot along
+the controller's own XR forward, and it would then always look perfect while proving
+nothing. Instead it takes the FRotator the seam actually wrote, undoes the game-yaw
+basis (`xrYaw = rayYaw - gameYaw + recenterYaw`), rebuilds a direction and converts it
+back with `ue_to_xr` - so a basis error shows up as a dot that does not sit on the
+controller's forward.
+
+**Measured, and this is the strong result**: with the hands swung to OPPOSITE angles
+(left -45/+10, right +45/-10), `aimRayMaxDevDegL` and `aimRayMaxDevDegR` both read
+**0.0000** - each dot sits exactly on its OWN hand's aim ray, which proves both the
+round-trip math and the per-hand attribution in one measurement. With both lasers also
+on, 10 quad layers submit and the deviations stay 0.0000 / 0.0198. Use the PER-HAND
+fields: the legacy `aimRayMaxDevDeg` assumes a single beam and reads 7.59 here, which
+is the documented dual-beam artifact and not a regression.
 
 ### The DPad family has no Touch analogue, and what was done about it
 

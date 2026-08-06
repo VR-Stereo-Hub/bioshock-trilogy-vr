@@ -17,6 +17,55 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
+### Infinite: HEADSET VERDICTS IN (s44b, same night) - I7 CONTROLS AND AIM ARE DONE
+
+**The user tested the s44 build in the headset and returned three verdicts, two of which
+overturn what flat testing had concluded:**
+
+1. **Every button works as expected.** (Thumbrest+flick untested - nothing to select
+   with yet in that save.)
+2. **The pause menu works from the controller**, opening AND exiting. The flat lane's
+   "blocker" was a HARNESS artifact: the menu parks the game thread and `xrsim-cmd`
+   deliberately does not foreground, so the presses landed on an auto-paused window.
+   Nothing to port from BS2. **Harness rule recorded**: never judge a MENU-context
+   input question from the flat lane without asserting focus at the press AND after
+   the menu opens - opening a menu is itself a focus event.
+3. **AIM WORKS AND IS DECOUPLED FROM THE HEAD** - "I tried to look in different ways
+   and aim in the same place and the bullet kept going in the same direction as my
+   controller". So `APawn::GetBaseAimRotation` IS the fire path, and s44's flat null
+   was a FALSE NEGATIVE of the instrument. Refusing to claim the effect on that
+   evidence was right; the picture diff simply could not show it (the only thing that
+   responds visibly to firing in that walled-in checkpoint is the viewmodel, which sits
+   in the same screen region whatever the aim).
+
+**Shipped in response (s44b):**
+
+- **The aim write is ARMED at boot.**
+- **Both hands, decoupled.** The seam is pawn-level and carries ONE rotation, so the
+  hand is chosen by TRIGGER attribution, latched (right = weapon, left = vigor) - a
+  trace can run a frame or two after the trigger releases, and flipping mid-shot would
+  throw it. `aiming hand` is live in the F10 panel.
+- **Aim dot and laser per hand, individually toggleable. Dots ON by default** (user's
+  call), lasers off. Core's EXISTING two-slot API (added for BS2's dual wield) - **no
+  core change was needed.**
+- **The dot round-trips the ray deliberately**: it takes the FRotator the seam actually
+  wrote, undoes the game-yaw basis and converts back to XR, so a basis error shows as a
+  dot off the controller's forward rather than being hidden.
+
+**Flat verification of s44b**: hands swung to OPPOSITE angles (left -45/+10, right
++45/-10) and **both `aimRayMaxDevDegL/R` read 0.0000** - each dot sits exactly on its
+OWN hand's ray, proving the round-trip math and the per-hand attribution in one
+measurement. Hand attribution flips L/R with the triggers. With both lasers on, 10 quad
+layers submit, deviations 0.0000/0.0198. Zero faults. (Use the PER-HAND fields - the
+legacy single-beam `aimRayMaxDevDeg` reads 7.59 with two beams, the documented
+artifact.)
+
+**NEXT (session 45)**: I8 - the weapon model and hands still ride the headset. That is
+the next milestone and the user has been expecting it. `controller_ray` is already
+built on the view's own basis, so the model drive should consume the SAME ray the aim
+seam does rather than deriving a second one that drifts. Aim calibration (does the hole
+land on the dot?) rides the next headset session.
+
 ### Infinite: current state after session 44 (I7 CONTROLS: the pad map lands and is proven both ways; aim seam DERIVED, its write UNPROVEN and off; branch `si44-inf-controls`)
 
 **Session 44 (2026-08-06) ran the I7 controls block: the per-game pad map, the full

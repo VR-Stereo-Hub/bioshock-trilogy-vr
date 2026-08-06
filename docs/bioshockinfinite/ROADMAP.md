@@ -522,12 +522,11 @@ Controls half:
       menu nav rides the left stick, which this game serves natively via
       AxisEmulationDefinitions; test-only cheats stay on the keyboard. Sky-Hook melee nuance
       and item toss are left for the model-sync session - nothing invented.)*
-- [ ] **BLOCKER, new in s44: the pause menu does not consume the synthetic pad.** START opens
-      it and no controller button closes it (keyboard Escape does). NOT the bridge - the game
-      keeps polling XInput through our wrapper at ~92/s the whole time it is up. Leading
-      candidate is the BS2 shape (a synthetic pad never announces itself as the active input
-      device, so the UI stays in keyboard context); BS2's scancode shim is the obvious port,
-      after its own evidence rung.
+- [x] **The pause menu works from the controller** *(s44: flagged as a blocker by the flat lane,
+      then FALSIFIED in the headset the same night - "the menu and exiting the menu is working
+      as expected from the controllers". The flat null was a harness focus artifact: the menu
+      parks the game thread and `xrsim-cmd` does not foreground, so the presses landed on an
+      auto-paused window. Nothing to port from BS2.)*
 - [x] **The Skyline (TBar) control family.** The shipped ini documents an `XInputHandler` chain
       mechanism where commands joined by `+` short-circuit on success, with a large TBar set
       (transfers, boost, dodge, melee transfer, zoom, and the highlight-effect pairs). Any VR remap
@@ -546,14 +545,18 @@ Controls half:
 
 Aim half:
 
-- [~] Find UE3's fire path; substitute at the origin-and-direction seam so per-weapon spread still
-      applies downstream. *(s44 PARTIAL, with a named negative: `APawn::GetBaseAimRotation` is
-      DERIVED - a virtual at pawn vtable +0x2E8, `FRotator* __thiscall (FRotator*)`, `ret 4`,
-      impl read live off the pawn (rva 0x244CC0), body identified by its stock UE3
-      RemoteViewPitch fixup. Hooked, 32k calls, zero faults. The write executes but its
-      DOWNSTREAM EFFECT IS NOT ESTABLISHED and it ships OFF. Next is instrument, not levers:
-      read the trace RESULT, then probe the CONTROLLER's +0x2F4 that this function delegates
-      to. Full account in ENGINE_NOTES.)*
+- [x] Find UE3's fire path; substitute at the origin-and-direction seam so per-weapon spread still
+      applies downstream. *(s44 DONE, HEADSET-VERIFIED: `APawn::GetBaseAimRotation`, a virtual at
+      pawn vtable +0x2E8, `FRotator* __thiscall (FRotator*)`, `ret 4`, impl read live off the
+      pawn. User: "aiming is not influenced by the head - the bullet kept going in the same
+      direction as my controller". The rotation is substituted, so per-weapon spread still
+      applies downstream by construction. Ships ARMED.)*
+- [x] **Both hands, decoupled** *(s44b: trigger attribution, latched - right trigger = weapon
+      hand, left = vigor hand. `aiming hand` is live in the F10 panel.)*
+- [x] **Aim laser and aim dot, per hand, toggleable; dots on by default** *(s44b: core's existing
+      two-slot API, no core change. Measured with the hands at OPPOSITE angles - both
+      `aimRayMaxDevDegL/R` read 0.0000, so each dot sits exactly on its own hand's ray, which
+      proves the round-trip math and the per-hand attribution in one measurement.)*
 - [x] **The head-coupled-aim defect does not exist** - falsified by measurement, s44. With the
       hand parked and only the head moving, the engine's aim tracks the head degree for degree
       (+40 -> -130, -40 -> -50, back to 0 -> -90). The aim chain is downstream of the camera

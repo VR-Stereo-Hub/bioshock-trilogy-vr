@@ -57,6 +57,16 @@ inline void xr_to_ue(const float v[3], float out[3]) {
     out[2] = v[1];  // XR +Y (up)      -> UE +Z
 }
 
+// The exact inverse, written out rather than derived at the call site so the
+// two can be read against each other. The aim DOT needs it: the dot's whole
+// value is that it is the FINAL fire ray mapped BACK into XR space, so a basis
+// error shows up as a dot that does not sit on the controller's own forward.
+inline void ue_to_xr(const float v[3], float out[3]) {
+    out[0] = v[1];  // UE +Y (right)   -> XR +X
+    out[1] = v[2];  // UE +Z (up)      -> XR +Y
+    out[2] = -v[0]; // UE +X (forward) -> XR -Z
+}
+
 // Orthonormal basis of an FRotator (UE's FRotationMatrix rows): X forward,
 // Y right, Z up. The formula is the Vengeance one in SHAPE, kept adapter-local
 // per the decoupling directive - and on this game the frame it encodes is
