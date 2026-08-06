@@ -81,10 +81,22 @@ becomes Infinite's shipped default.** If all three wobble alike, the hypothesis 
 falsified and the next instrument is drive-side (pose age at consume, engine
 camera smoothing) - not more settings.
 
-**NEXT (session 44)**: the s43b pose-lag verdict first; then the deferred aim +
-motion-controls + model-sync block, the per-game pad map (audit spec in
-ENGINE_NOTES), and - only if the user reopens performance - the texture-pool lane
-(researched, ranked, ready) with an outdoor save for flat wandering.
+**S43b VERDICT IN (user, same night): pose lag 2 is "perfect - everything is
+extremely smooth."** The jumpy camera is SOLVED and named: Infinite's threaded
+one-frame-lag renderer presents content two locate generations old; the adapter now
+ships `set_pose_lag(2)` at init (headset-verified; F10 radios + `bsipose` stay for
+re-derivation). The user then authorized the merge: `si43-inf-stutter` ->
+`bioshock-infinite`.
+
+**NEXT (session 44) - CONTROLS + MOTION CONTROLS (the I7 block, BS2's proven shape)**:
+the per-game pad map on the ENGINE_NOTES audit spec (additive opt-in seam or
+bsi-local duplicate; sim per-control sweep as flat acceptance), then full
+Touch-controller bindings through the live IAT lane, then the decoupled-aim
+derivation (instrument first - the aim seam on this engine is underived; the
+viewmodel shares the world lens, so no fg-FOV machinery exists or is needed).
+Model-sync/sliders ride after aim. Only if the user reopens performance: the
+texture-pool lane (researched, ranked, ready) with an outdoor save for flat
+wandering.
 
 ### Infinite: current state after session 42 (superseded by session 43 above - kept for the derivation trail; I6 judder flat half DONE + sync armable; I7 OPEN - pad lane LIVE flat, exec surface truth mapped - branch `si42-inf-judder-bindings`)
 

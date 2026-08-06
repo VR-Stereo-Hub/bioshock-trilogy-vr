@@ -70,6 +70,15 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // Persisted tuning (worldScale). File read only - touches no engine state.
     camera::load_vr_preset();
 
+    // S43b, HEADSET-VERIFIED (user, 2026-08-06): this engine's renderer is
+    // threaded with OneFrameThreadLag, so presented content is TWO locate
+    // generations old - the historical one-back attribution wobbled with head
+    // speed ("jumpy camera"); lag 2 is "extremely smooth". Named by the
+    // in-headset A/B (ENGINE_NOTES s43b); the F10 radios / `bsipose` stay
+    // live for re-derivation. BS1/BS2 never call this - their core default
+    // (1) is untouched.
+    bvr::vr::set_pose_lag(2);
+
     BVR_LOG("[bsi] adapter ready - build gate %s, camera hook %s. Command seam is live either "
             "way (Present pump), and hands over to the game thread on the hook's first fire.",
             verified ? "PASSED" : "CLOSED (features stand down)",

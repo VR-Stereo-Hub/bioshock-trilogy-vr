@@ -589,7 +589,7 @@ boot). Backup: `DefaultEngine.ini.bvr-bak-s43` beside it; restore = copy back.
 *(S43 outcome, user 2026-08-06: stutter resolved to the user's satisfaction by the
 GC lever + the user's own quality settings + headset at 72 Hz - closed.)*
 
-## S43b jumpy-camera checklist (the pose-attribution A/B)
+## S43b jumpy-camera checklist (the pose-attribution A/B) - VERDICT IN: lag 2, "extremely smooth"; now the boot default
 
 The percept: head-coupled camera motion is bouncy/not-life-like, unlike BS1/BS2.
 The suspect: the submitted eye poses are attributed to the wrong locate generation

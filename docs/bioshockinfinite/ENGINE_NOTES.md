@@ -404,6 +404,18 @@ acceptable if the headset agrees); 32-bit address headroom is the watch item on 
 sessions. Signature B (traversal/streaming walk) remains the documented residual with
 the texture-pool lane researched and ranked next.
 
+### The "jumpy camera": SOLVED - pose attribution lag is TWO on this engine (s43b, headset-verified)
+
+**VERDICT (user, 2026-08-06, same night): lag 2 is "perfect - everything is extremely
+smooth."** The A/B named the pipeline depth by intervention: Infinite's threaded
+one-frame-lag renderer presents content TWO locate generations old; the historical
+one-back attribution (BS1's lockstep calibration) left a one-period pose error that
+scaled with head speed - the reported wobble. The adapter now ships
+`set_pose_lag(2)` at init (bioshockinf_adapter.cpp); the F10 radios and `bsipose`
+stay live for re-derivation if the substrate ever changes (a future 1t-style mode
+would move the depth). BS1/BS2 keep the core default (1) untouched - proof in the
+f241d54 commit. Hypothesis notes below kept for the derivation trail.
+
 ### The "jumpy camera" hypothesis and the pose-lag A/B (s43b, verdict pending)
 
 User percept (s42, refined s43b): head-coupled camera motion is jumpy/bouncy, "as if
