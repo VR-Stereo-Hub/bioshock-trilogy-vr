@@ -320,6 +320,169 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 45 - I8: the viewmodel object graph, and two instrument limits)
+
+### The first-person object graph, walked live from the pawn
+
+All addresses are per-boot; the RECIPE is the finding, not the numbers. Boot of
+2026-08-06, Comstock Center Rooftops save.
+
+```
+XPlayerController  +0x1FC -> XHuman (the pawn)          [s42, re-confirmed]
+XHuman   +0x0D8 -> an object-POINTER LIST (see below)
+         +0x218 -> XPlayerController   (the Controller GetBaseAimRotation delegates to)
+         +0x2E4 -> XSkeletalMeshComponent
+         +0x314 -> XInventoryManager
+         +0x72C -> XSkeletalMeshComponent   (a SECOND one)
+list     +0x004 -> XFirstPersonAttachment
+```
+
+**`XFirstPersonAttachment` is a genuine Actor**, and this is established
+structurally rather than by its name: walking it reproduces the pawn's own Actor
+layout at four independent offsets - `+0x014 Level`, `+0x020 Class`,
+`+0x0A4 XWorldInfo`, `+0x0E4 DefaultPhysicsVolume` - and additionally carries
+`+0x08C -> XHuman` (Owner) and `+0x0A0 -> XHuman` (Base). An object that is
+owned by and based on the player pawn, in the actor layout, is the
+first-person attachment the offline symbol scan predicted. So
+`kActorLocationOffset` (0x44) and `kActorRotationOffset` (0x50) apply to it.
+
+**There are TWO `XSkeletalMeshComponent`s on the pawn** (+0x2E4 and +0x72C,
+allocated adjacently). One is the third-person body and one is the
+first-person arms; WHICH IS WHICH IS NOT YET ESTABLISHED - that is the hide
+test (R1), not a guess.
+
+**`XHuman+0x0D8` is a pointer LIST, not a struct.** It reads as consecutive
+object pointers at +0x00/+0x04/+0x08/... (XInventoryManager,
+XFirstPersonAttachment, XWeaponDedicatedMelee, then a run of XWeapon and
+XWeaponModelFirstPerson). An actor's own fields interleave floats, ints and
+bools between pointers; an unbroken run of them does not. Do not read offsets
+into it as field offsets. NOTE the corollary trap: `bsifields` reported the
+list head itself as "class XWeaponModelFirstPerson", because the class-name
+heuristic will happily resolve a non-object address that happens to point at
+plausible memory. A class name from a walk is a HINT until the layout
+corroborates it.
+
+### Symbol presence in the retail image (offline, read-only - hypotheses, not facts)
+
+Verified present by direct search of the native-function table:
+`XFirstPersonAttachment`, `XWeaponModelFirstPerson`, `UXSkeletalMeshComponent`,
+`execGetFirstPersonAttachment`, `execSetTranslation`, `execSetRotation`,
+`execSetScale`, `execSetScale3D`, `execSetDrawScale`, `execSetHidden`,
+`execForceUpdateComponents`, `execReattachComponent`, `execSetOwnerNoSee`,
+`execHideBoneByName`, `execUnHideBoneByName`, `execIsBoneHidden`,
+`execGetBoneName`, `execGetParentBone`, `execMatchRefBone`, `execGetSocketByName`,
+`execGetBoneMatrix`, `execSetForceRefPose`, `execUpdateRBBonesFromSpaceBases`,
+`GetWeaponStartTraceLocation`, `SpaceBases`, `XCamMode_FirstPerson`,
+`XCamMode_IronSights`, and the Morpheme family
+(`XConvertMorphemeTransformsToBoneAtoms`, `UAnimNodeMorphemeSequence`).
+
+Verified ABSENT - recorded so they are not hunted again:
+- **`execSetLocation`** - plain world SetLocation is not in this build's native
+  table. Actor placement is local/floating-section relative
+  (`execXSetLocalLocationAndMoveActor` and family).
+- **`LocalAtoms`** - no name-addressable parent-relative bone array; only
+  `SpaceBases`.
+- **`bAbsoluteTranslation`** - the "detach from the parent transform" escape
+  hatch does not exist here.
+
+Presence proves the class and native exist in the build. It does NOT prove the
+object is instantiated or that a call has effect; every one of these still owes
+a live rung.
+
+### Stick Y DOES pitch the engine, and the aim seam CANNOT SEE IT
+
+Requirement-7 measurement, unchanged build, head static, hands parked:
+
+| right stick Y | pre-drive `engineRot` pitch | final driven pitch |
+|---|---|---|
+| centred | -16204 units = **-89.0 deg** | 0 |
+| +1.0    | +16200 units = **+89.0 deg** | 0 |
+
+So the engine's own camera rotation pitches through its full +/-89 deg range
+under the stick while the driven view stays level (the head drive writes pitch
+absolutely). `pitchErr` flips +89.0 -> -89.0 with it. **The lever requirement 7
+is about is real and large on this game.** Whether it drags the MODEL is still
+open - see the two instrument limits below.
+
+**Positive control**: stick X moved engine yaw -90.0 -> 107.9 deg under the
+identical focus discipline, so a Y null would have been meaningful. It was
+needed: the FIRST Y attempt showed no change for a different reason (the game
+auto-pauses unfocused and the stick was never sampled), and would have read as
+a clean negative.
+
+**INSTRUMENT LIMIT 1: `GetBaseAimRotation`'s pitch is always 0.0.** It read
+`pitch 0.0` at every station while the true camera pitch was -89 deg. The s44
+aim lane's `engine=(...)` readout therefore CANNOT be used for any pitch
+question. Use the camera heartbeat's `engineRot` instead - and note that
+heartbeat is a self-expiring 10-beat burst, re-armed with `bsicam heartbeat on`.
+
+**INSTRUMENT LIMIT 2: the picture cannot answer "did the viewmodel move".**
+Two reasons, both measured:
+1. **Idle animation confounds the same pixels.** A stick-Y A/B diffed 16.8%
+   coverage / 2.42 mean-abs in the lower frame - but the SAME-POSITION control
+   pair diffed 11.7% / 0.667 in the same two clusters. Same shape, 3.6x
+   amplitude: suggestive, not a discrimination.
+2. **The per-eye compositor capture is a TORN SR composite** - one capture
+   showed the interior in its top half and the exterior in its bottom half,
+   with no viewmodel visible at all. For viewmodel-visible pictures use the
+   WINDOW grab (`game-shot`), not `xrsim-shot`.
+
+### R0b: THE VIEWMODEL CARRIER IS THE FP ATTACHMENT ACTOR, AND STICK Y DRAGS IT
+
+Both open questions are closed by one read, with `bsiread` on the FP
+attachment's own Actor transform (`kActorLocationOffset` 0x44,
+`kActorRotationOffset` 0x50 - FRotator is {pitch, yaw, roll}, so pitch is at
++0x50, yaw +0x54, roll +0x58).
+
+| right stick Y | `engineRot` pitch | FP attachment pitch (+0x50) | FP attachment Location |
+|---|---|---|---|
+| centred | 0 | **0** | (-19417.93, -110676.52, -3698.75) |
+| +1.0 | 16200 | **16200** | (-19417.93, -110676.52, -3698.75) |
+
+**The attachment's pitch tracks the engine's control pitch EXACTLY, unit for
+unit** (16200 units = 89.0 deg), and its Location is bit-identical across the
+pair. Yaw held at -16384 (-90.0 deg) in both, matching `engineRot` yaw.
+
+Three things follow:
+
+1. **The FP attachment actor is the viewmodel CARRIER.** Its transform is live,
+   it is in world coordinates, and it tracks the game's own control rotation.
+   That makes it the I8 drive target, and it makes the whole bone lane
+   unnecessary for POSITION and ROTATION.
+2. **Requirement 7's defect EXISTS on this game.** A stick-pitched body drags
+   the viewmodel here exactly as it did on BS1/BS2 - through the full +/-89 deg
+   range - while the VR view stays level. Whatever drives the model must
+   override this rotation, or the pitch must be killed.
+3. The earlier picture-based attempt was measuring a real effect it could not
+   resolve. The numbers took one command once the right field was known.
+
+Location being INVARIANT across the pair is the control that makes the pitch
+number mean something: the stick moves rotation only, so a "both changed"
+reading would have indicated something else moving underneath.
+
+### Harness facts (session 45)
+
+- **`bsiexec LoadCheckpoint` no-opped TWICE** at a settled main menu with
+  `pump=game` confirmed (GNames 62,158, matching the recorded 62,160 pre-load
+  state), 60-100 s apart, no letterbox transition, pawn absent throughout. The
+  menu's OWN `CONTINUE` then loaded first try. **Boot-to-save recipe that
+  worked**: attract -> `game-key -Key Space` (press only once the PRESS ANY KEY
+  text is actually on screen - an earlier press is swallowed) -> 2K Account
+  "CONNECTING..." dialog resolves (~30 s, not previously recorded) -> settled
+  menu -> `Enter` (MAIN GAME) -> `Enter` (CONTINUE) -> load. Expect a queue of
+  modal award popups on arrival; clear them with repeated `Enter` or the game
+  thread stays parked (the aim seam ran at 0.3 calls/s until they were cleared,
+  vs ~20/s after).
+- **`bsicall` vs `bsiexec`**: LoadCheckpoint is a CONSOLE handler, not a
+  UFunction. `bsicall LoadCheckpoint` correctly refuses ("not in GNames").
+- **An UNFOCUSED `xrsim-shot` reads `QuadLayers 0` / `AimRayDots 0`** and a
+  frozen frame, because the game auto-pauses and stops republishing. That looks
+  exactly like "the aim dots are broken". Foreground the window before any
+  compositor capture that must show live state.
+- Infinite's saves are NOT under `Documents\My Games\BioShock Infinite\` (that
+  tree holds only `XGame\Config`) nor under `Steam\userdata\*\8870\`. Do not
+  conclude "there is no save" from the filesystem; ask the menu.
+
 ## LIVE RESULTS (session 44 - I7: the per-game pad map, Touch bindings, aim)
 
 ### The pad-map seam, and the BS1 inertness proof that gates it

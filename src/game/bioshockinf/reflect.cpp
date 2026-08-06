@@ -7,6 +7,7 @@
 #include <imgui.h>
 #include <windows.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -676,6 +677,79 @@ void cmd_fields(const char* args) {
             shown >= 80 ? " - CAPPED, narrow with [startHex]" : "");
 }
 
+// ---- Session 45: the RAW readout (I8's first instrument) --------------------
+// bsiread <0xaddr> [startHex] [dwords] - dump raw dwords with per-row type
+// heuristics.
+//
+// Why this exists: `bsifields` deliberately prints only fields whose target
+// reads as a UObject, which is exactly right for finding objects and useless
+// for everything else. I8 has to see things that are NOT objects - a
+// component-space transform (three floats), a TArray triple {data,Num,Max},
+// a bone count, an FBoneAtom stride. Without a raw readout none of those can
+// be measured, and the milestone's key question ("does the first-person
+// actor's own Location track the camera POV?") cannot even be asked.
+//
+// READ-ONLY and per-row gated: every row re-checks readability, so a walk that
+// runs off the end of a live object stops instead of faulting. No dispatch, no
+// writes, capped output.
+void cmd_read(const char* args) {
+    unsigned addr = 0, start = 0, count = 16;
+    if (!args || !(args[0] == '0' && (args[1] == 'x' || args[1] == 'X')) ||
+        sscanf_s(args + 2, "%x %x %u", &addr, &start, &count) < 1) {
+        BVR_LOG("[bsi] read: usage - bsiread <0xaddr> [startHex] [dwords]. Raw dwords with "
+                "float/int/UObject/TArray/FVector heuristics. Read-only.");
+        return;
+    }
+    if (count > 256) count = 256;
+    void* gateObj = nullptr;
+    const uint8_t* const* gateVt = nullptr;
+    if (!resolve_dispatch_target("read", gateObj, gateVt)) return;
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(addr));
+    if (!bvr::pattern_scan::is_memory_valid(base, 4)) {
+        BVR_LOG("[bsi] read: REFUSED - %p is not readable", (const void*)base);
+        return;
+    }
+    derive_obj_name_off();
+    char clsName[128] = {};
+    object_class_name(base, clsName, sizeof clsName);
+    BVR_LOG("[bsi] read: %p (%s) from +0x%X, %u dwords", (const void*)base,
+            clsName[0] ? clsName : "not a UObject", start, count);
+    for (unsigned i = 0; i < count; ++i) {
+        const uint32_t off = start + i * 4;
+        const uint8_t* slot = base + off;
+        if (!bvr::pattern_scan::is_memory_valid(slot, 4)) {
+            BVR_LOG("[bsi] read:   +0x%03X <unreadable - stopping>", off);
+            break;
+        }
+        const uint32_t u = *reinterpret_cast<const uint32_t*>(slot);
+        float f;
+        memcpy(&f, &u, 4);
+        // Annotations, most specific first. Each is a HINT for a human
+        // deriving a layout, never a claim - the caller confirms by A/B.
+        char note[192] = {};
+        char nm[128];
+        if (u && (u & 3) == 0 && object_class_name(reinterpret_cast<const void*>(u), nm,
+                                                   sizeof nm) &&
+            nm[0]) {
+            _snprintf_s(note, sizeof note, _TRUNCATE, "  UObject %s", nm);
+        } else if (bvr::pattern_scan::is_memory_valid(slot, 12)) {
+            const uint32_t n1 = *reinterpret_cast<const uint32_t*>(slot + 4);
+            const uint32_t n2 = *reinterpret_cast<const uint32_t*>(slot + 8);
+            // TArray is {data, Num, Max} with Num <= Max; require a readable
+            // data pointer so a run of small ints does not read as an array.
+            if (u && (u & 3) == 0 && n1 > 0 && n1 <= n2 && n2 < 0x100000 &&
+                bvr::pattern_scan::is_memory_valid(reinterpret_cast<const void*>(u), 4)) {
+                _snprintf_s(note, sizeof note, _TRUNCATE, "  TArray? Num=%u Max=%u", n1, n2);
+            }
+        }
+        // A plausible float is worth flagging on its own: transforms are the
+        // whole reason this command exists. Denormals are the FRotator trap.
+        const bool plausible = (f == 0.0f) || (fabsf(f) > 1e-6f && fabsf(f) < 1e9f);
+        BVR_LOG("[bsi] read:   +0x%03X  %08X  %-14.4f %11d%s", off, u,
+                plausible ? f : 0.0f, static_cast<int32_t>(u), note);
+    }
+}
+
 // bsicallat <hexaddr> <Func> [float]: cmd_call generalized to an EXPLICIT
 // object address (one bsifields just printed). Same gate stack; the vtable
 // slot interlock carries over unchanged because FindFunction is UObject-level
@@ -684,14 +758,16 @@ void cmd_fields(const char* args) {
 void cmd_call_at(const char* args) {
     unsigned addr = 0;
     char fn[96] = {};
-    char valStr[32] = {};
-    const int n = sscanf_s(args ? args : "", "%x %95s %31s", &addr, fn,
+    char valStr[96] = {};
+    const int n = sscanf_s(args ? args : "", "%x %95s %95s", &addr, fn,
                            static_cast<unsigned>(sizeof fn), valStr,
                            static_cast<unsigned>(sizeof valStr));
     if (n < 2) {
-        BVR_LOG("[bsi] callat: usage - bsicallat <hexaddr> <Func> [floatArg]. The address "
-                "comes from a bsifields line; dispatch is FindFunction+ProcessEvent on "
-                "THAT object. Acceptance is the downstream EFFECT.");
+        BVR_LOG("[bsi] callat: usage - bsicallat <hexaddr> <Func> [arg]. arg is one of: "
+                "<float> | 0x<ptr> | v<x>,<y>,<z> (FVector) | n<Name> (FName) | b<n> (byte) "
+                "| i<n> (int32). The address comes from a bsifields line; dispatch is "
+                "FindFunction+ProcessEvent on THAT object. Acceptance is the downstream "
+                "EFFECT.");
         return;
     }
     const int32_t nameIndex = patterns::fname_find(fn);
@@ -731,19 +807,57 @@ void cmd_call_at(const char* args) {
     derive_obj_name_off();
     object_class_name(obj, nm, sizeof nm);
     alignas(16) uint8_t parms[256] = {};
-    const char* parmKind = " with zeroed parms";
+    char parmKind[96] = " with zeroed parms";
     if (n == 3) {
+        // Session 45 (I8): typed argument prefixes. Every native the viewmodel
+        // lane needs takes a vector, a name, a bool or an int -
+        // SetTranslation(vector), SetScale3D(vector), HideBoneByName(name,byte),
+        // SetHidden(bool) - so a float-or-pointer-only marshaller cannot reach
+        // any of them. The prefixes extend the existing `0x` convention rather
+        // than replacing it, so every s42/s43/s44 invocation still parses.
         if (valStr[0] == '0' && (valStr[1] == 'x' || valStr[1] == 'X')) {
             // Session 42b: a raw pointer argument at parms+0 (an object a
             // bsiload/bsifields line produced) - the grant-lane shape
             // (e.g. CreateInventory(class<Inventory>)).
             const uint32_t p = strtoul(valStr + 2, nullptr, 16);
             memcpy(parms, &p, sizeof p);
-            parmKind = " with pointer parm";
+            _snprintf_s(parmKind, sizeof parmKind, _TRUNCATE, " with pointer parm 0x%X", p);
+        } else if (valStr[0] == 'v' || valStr[0] == 'V') {
+            float v[3] = {0.0f, 0.0f, 0.0f};
+            if (sscanf_s(valStr + 1, "%f,%f,%f", &v[0], &v[1], &v[2]) != 3) {
+                BVR_LOG("[bsi] callat: REFUSED - '%s' is not v<x>,<y>,<z>", valStr);
+                return;
+            }
+            memcpy(parms, v, sizeof v);
+            _snprintf_s(parmKind, sizeof parmKind, _TRUNCATE,
+                        " with FVector parm (%.3f %.3f %.3f)", v[0], v[1], v[2]);
+        } else if (valStr[0] == 'n' || valStr[0] == 'N') {
+            // An FName parm is {index, number}. Refuse a name the engine never
+            // registered rather than passing an index that means something
+            // else - the same rule cmd_call applies to the function name.
+            const int32_t ni = patterns::fname_find(valStr + 1);
+            if (ni < 0) {
+                BVR_LOG("[bsi] callat: REFUSED - FName '%s' is not in GNames (%d entries). "
+                        "A name the engine never registered cannot be passed as one.",
+                        valStr + 1, patterns::fname_count());
+                return;
+            }
+            const int32_t pair[2] = {ni, 0};
+            memcpy(parms, pair, sizeof pair);
+            _snprintf_s(parmKind, sizeof parmKind, _TRUNCATE, " with FName parm '%s' (%d)",
+                        valStr + 1, ni);
+        } else if (valStr[0] == 'b' || valStr[0] == 'B') {
+            const uint8_t b = static_cast<uint8_t>(strtoul(valStr + 1, nullptr, 10));
+            parms[0] = b;
+            _snprintf_s(parmKind, sizeof parmKind, _TRUNCATE, " with byte parm %u", b);
+        } else if (valStr[0] == 'i' || valStr[0] == 'I') {
+            const int32_t iv = static_cast<int32_t>(strtol(valStr + 1, nullptr, 10));
+            memcpy(parms, &iv, sizeof iv);
+            _snprintf_s(parmKind, sizeof parmKind, _TRUNCATE, " with int32 parm %d", iv);
         } else {
             const float v = strtof(valStr, nullptr);
             memcpy(parms, &v, sizeof v);
-            parmKind = " with float parm";
+            _snprintf_s(parmKind, sizeof parmKind, _TRUNCATE, " with float parm %.4f", v);
         }
     }
     BVR_LOG("[bsi] callat: dispatching '%s' (GNames %d)%s on %p (class %s), tid %u", fn,
@@ -1015,6 +1129,10 @@ bool handle_command(const char* cmd, const char* args) {
     }
     if (strcmp(cmd, "bsifields") == 0) {
         cmd_fields(args);
+        return true;
+    }
+    if (strcmp(cmd, "bsiread") == 0) {
+        cmd_read(args);
         return true;
     }
     if (strcmp(cmd, "bsicallat") == 0) {

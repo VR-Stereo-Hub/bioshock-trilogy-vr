@@ -62,7 +62,12 @@ if (Get-Process $proc -ErrorAction SilentlyContinue) {
 # --- guard 2: stale command file ---------------------------------------------
 $cmd = Join-Path $dir "command.txt"
 if (Test-Path $cmd) {
-    $stale = (Get-Content $cmd -Raw).Trim()
+    # -Raw returns $null for a ZERO-BYTE file, and .Trim() on null throws - which
+    # aborted the launch outright (session 45). Clearing command.txt by writing
+    # an empty string rather than deleting it is a normal thing to do between
+    # runs, so the guard must survive it.
+    $raw = Get-Content $cmd -Raw
+    $stale = if ($null -ne $raw) { $raw.Trim() } else { '' }
     Remove-Item $cmd -Force
     if ($stale) { Write-Output "cleared a stale command.txt (would have re-applied at boot): $stale" }
 }
