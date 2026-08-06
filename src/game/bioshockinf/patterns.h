@@ -83,12 +83,46 @@ inline constexpr uint32_t kPcCameraOffset = 0x240;         // lazily-created cam
 inline constexpr uint32_t kPcCachedLocOffset = 0x24C;      // FVector, path 1's source
 inline constexpr uint32_t kPcCachedRotOffset = 0x258;      // FRotator, path 1's source
 inline constexpr uint32_t kPcViewTransformOffset = 0x430;  // 0x40 bytes -> a 4x4 SSE transform
+// The controlled pawn. Session 42's field walk named it by CLASS, live: a
+// `bsifields 1F0 8` on the latched PC reports `+0x1FC -> class XHuman` next to
+// `+0x200 -> class XPlayerReplicationInfo`, and it re-derived identically after
+// a relaunch and a fresh checkpoint load (different addresses, same offsets),
+// which is what makes it an offset rather than a coincidence.
+inline constexpr uint32_t kPcPawnOffset = 0x1FC;
 inline constexpr uint32_t kCameraPovLocOffset = 0x3B8;     // FVector, path 2's source
 inline constexpr uint32_t kCameraPovRotOffset = 0x3C4;     // FRotator, path 2's source
 // AActor, from paths 3 and 4 reading identical offsets off two different
 // objects - which is what made the reading credible rather than a guess.
 inline constexpr uint32_t kActorLocationOffset = 0x44;
 inline constexpr uint32_t kActorRotationOffset = 0x50;
+
+// ---- The aim seam (session 44, I7) -----------------------------------------
+// APawn::GetBaseAimRotation is VIRTUAL, and this is its vtable slot.
+//
+// DERIVATION (offline, from the exec thunk the s34 native-table census already
+// recorded as `execGetBaseAimRotation` at 0x12BF30 with ZERO E8 callers - a
+// thunk, never a hook target). Disassembling the thunk shows the whole shape in
+// nine instructions: it steps the script frame past the 0x41 opcode, then
+//     mov eax, [esi]            ; the object's vtable
+//     mov edx, [eax + 0x2E8]    ; <== THIS SLOT
+//     lea ecx, [esp+4] ; push   ; the hidden return buffer - ONE stack arg
+//     call edx
+//     movq xmm0, [eax] / mov eax, [eax+8]   ; copy 12 bytes = an FRotator
+// So the C++ signature is `FRotator* __thiscall (FRotator* retBuf)`, one stack
+// arg, hence **ret 4** for any probe (the RTC rule in this file's header), and
+// the return value is a POINTER to the buffer, not the rotator itself.
+//
+// A static search for the dispatch pattern `8B 90 E8 02 00 00` finds 8 sites in
+// .text and `8B 81 E8 02 00 00` another 8 - the caller census this slot has,
+// which is small enough to read by hand. Note the displacement alone does NOT
+// prove a vtable dispatch: it must be `load object's vtable` then `call` that
+// slot, so classify each site before believing it.
+//
+// Being virtual is the useful part: the implementation is read off a LIVE pawn
+// (`bsivtable 0x<pawn> 4 0x2E8`) rather than needing a static RVA at all, which
+// is why no impl RVA is recorded here.
+inline constexpr uint32_t kPawnGetBaseAimRotationVtblOffset = 0x2E8;
+inline constexpr uint32_t kPawnGetBaseAimRotationRetImm = 4; // ret imm / 4 == 1 arg
 
 // ---- UE3 reflection (derived offline session 36, DR-I1) --------------------
 //

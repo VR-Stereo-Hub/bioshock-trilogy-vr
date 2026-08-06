@@ -1,5 +1,7 @@
 #include "game/bioshockinf/camera.h"
 
+#include "game/bioshockinf/aim.h"
+
 #include "core/framework/command.h"
 #include "core/gfx/hud_capture.h"
 #include "core/hooks/d3d11_hook.h"
@@ -1262,6 +1264,11 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     if (now - s_lastThrottle >= 1000) {
         s_lastThrottle = now;
         throttled(self, now);
+        // I7 aim: the seam is a VIRTUAL read off the live pawn, so it can only
+        // be installed once a pawn exists - which is a load-time race no init
+        // ordering can win. Retried at 1 Hz while armed, one relaxed load when
+        // not; a refusal logs its own gate.
+        if (aim::wants_install()) aim::try_install();
     }
 }
 
@@ -1375,6 +1382,18 @@ bool hook_live() {
 
 void* last_player_controller() {
     return g_lastSelf.load(std::memory_order_relaxed);
+}
+
+bool aim_basis(int32_t* gameYawUnits, int32_t* recenterYawUnits) {
+    // The drive must be live and a recenter must exist, or "the residual off
+    // the recenter" has no meaning and a substitution would be a guess. Both
+    // reads are of game-thread state, and the aim seam runs on the game thread
+    // (its own interlock checks that), so no lock is needed.
+    if (!g_driveEnabled.load(std::memory_order_relaxed) || !g_haveRecenter || !g_last.valid)
+        return false;
+    if (gameYawUnits) *gameYawUnits = g_last.rot.yaw;
+    if (recenterYawUnits) *recenterYawUnits = g_recenterYawUnits;
+    return true;
 }
 
 uint32_t second_pass_replays() {

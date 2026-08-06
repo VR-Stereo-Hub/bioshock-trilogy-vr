@@ -85,6 +85,15 @@ void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float w
 // adapter init; touches no engine state.
 void load_vr_preset();
 
+// I7 aim (session 44): everything the aim seam needs to build a controller ray
+// in GAME rotation units, from the same basis the view drive uses - so the shot
+// and the view agree by construction instead of by two parallel derivations.
+//   gameYawUnits    the engine's OWN yaw at the last dispatch (pre-drive)
+//   recenterYawUnits the yaw the recenter pinned; the residual is measured off it
+// Returns false unless the drive is live, a recenter exists and the snapshot is
+// fresh - i.e. unless a substitution would be meaningful. Read-only.
+bool aim_basis(int32_t* gameYawUnits, int32_t* recenterYawUnits);
+
 // The `inputOn` registry value as it stands after load_vr_preset (session 44).
 // The adapter applies this DIRECTLY at init rather than through the posting
 // lane: a refused camera hook must not be able to leave the player in the

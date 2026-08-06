@@ -438,6 +438,104 @@ solved with an A->Enter scancode shim (`menukey`, BS2 s42). That shim is the obv
 port and it is deliberately NOT done here yet: it needs its own evidence rung, and
 this session's scope is the map, the bindings and aim.
 
+### THE AIM SEAM: derived and named - APawn::GetBaseAimRotation (s44)
+
+**A virtual, at pawn vtable +0x2E8** (`patterns::kPawnGetBaseAimRotationVtblOffset`).
+Signature `FRotator* __thiscall (FRotator* retBuf)` - ONE stack arg, **`ret 4`**.
+
+Derivation, in the order it actually ran:
+
+1. The s34 native-table census had already recorded `execGetBaseAimRotation` at
+   `0x12BF30` with ZERO E8 callers - a thunk, never a hook target. Disassembling the
+   thunk gives the whole shape in nine instructions: step the script frame past the
+   0x41 opcode, then `mov eax,[esi]` (the vtable), **`mov edx,[eax+0x2E8]`**,
+   `lea ecx,[esp+4]; push` (the hidden return buffer - the one stack arg), `call edx`,
+   then `movq`+`mov` copying 12 bytes = an FRotator. This is the recorded recipe
+   ("disassemble the thunk, the dispatch it makes names the implementation"), and it
+   yields a SLOT rather than an RVA because the function is virtual.
+2. Static confirmation that the slot is small enough to reason about: `8B 90 E8 02 00 00`
+   finds 8 sites in `.text` and `8B 81 E8 02 00 00` another 8. (A displacement alone
+   does not prove a vtable dispatch - the site must load the object's vtable and then
+   `call` that slot.)
+3. **The implementation is read off a LIVE pawn**, which is why no impl RVA is recorded
+   in patterns.h: `bsivtable 0x<pawn> 6 0x2E0` on the XHuman at PC+0x1FC printed
+   `+0x2E8 [186] rva 0x244CC0` (XHuman vtable rva 0xDE1A60).
+4. **The body identifies the function beyond doubt.** `0x244CC0` reads the pawn's
+   Controller at `+0x218`; with one it calls a cast helper (`0x5DCAB0`) and then
+   dispatches through the **CONTROLLER's own vtable slot +0x2F4** with the return
+   buffer; without one it copies the pawn's Rotation at `+0x50` and, if pitch is zero,
+   substitutes `[pawn+0x235] << 8`. That last line is stock UE3's RemoteViewPitch
+   fixup, verbatim. All three exits are `ret 4`, so the arity gate agrees with the
+   thunk's shape.
+
+Live behaviour: the seam fires **once per camera dispatch, ~90/s** in gameplay, and
+took 32,301 calls with 10,372 substitutions and **zero faults**.
+
+### THE PLANNING ASSUMPTION WAS WRONG: aim is ALREADY head-coupled here
+
+Session 44 opened with the reading that "the drive adds head yaw to the view out-param
+only, so the engine's own rotation - and therefore the shot - stays where the BODY
+faces; turn your head 90 deg and the shot goes 90 deg off." **That is false on this
+game, and the probe falsified it in one A/B.**
+
+With the right hand PARKED at a fixed world pose (`hand r to aim ...`, which detaches
+it from the head) and only the head moving:
+
+| head | engine aim | controller ray | divergence |
+|---|---|---|---|
+| 0 | -90.0 deg | -90.0 | 0.0 |
+| +40 | **-130.0** | -90.0 | 40.0 |
+| -40 | **-50.0** | -90.0 | 40.0 |
+| 0 | -90.0 | -90.0 | 0.0 |
+
+The engine's aim tracks the head **degree for degree**. The mechanism is that the aim
+chain is DOWNSTREAM of our camera drive: GetBaseAimRotation delegates to the
+controller, and the controller's rotation reflects the driven view. So head-aim
+coupling comes for free and there is nothing to repair there. What I7 actually wants
+is the remaining half - aim following the CONTROLLER instead of the head.
+
+The complementary leg, head still and the controller moving, is equally clean: hand
++30 -> ray -120 (engine fixed at -90, divergence 30.0); hand -30 -> ray -60
+(divergence 30.0); hand pitch -25 -> ray pitch -25. The ray is controller-driven and
+the engine's aim is not.
+
+### The write seam: implemented, executing - and its downstream effect NOT established
+
+`bsiaim on` substitutes the returned FRotator with the controller ray (built on the
+SAME basis the view drive uses: game yaw plus the residual measured off the recenter,
+pitch absolute, roll deliberately zeroed so a rolled controller cannot tilt anything
+downstream that takes this rotation for a basis). It executes at the call rate.
+
+**But the shot does not visibly follow it, and the flat lane cannot say why.** With
+the write armed, the view fixed, and two shots 70 degrees apart in commanded aim
+(-35 and +35), the post-shot frames are **pixel-identical: 0.08% changed, ZERO covered
+cells**, while the pre-shot frames differ by 2.6% (the viewmodel moving with the
+controller). Firing itself changes 8.7-11% of the frame - but that change is the
+viewmodel and HUD, which sit in the same screen region regardless of aim.
+
+**The positive control could not be built, and that is the honest limit.** To see an
+impact move, two shots need the SAME view and DIFFERENT aim - and the only mechanism
+that produces that configuration is the substitution under test. The obvious
+alternative (turn the head instead) fails because aim and view are coupled: the two
+post-shot frames then differ by 60.9% purely because the camera moved. So the negative
+is real but **unattributed**: it is consistent with the pawn seam not being the fire
+path, and equally with both shots hitting the same nearby wall or with no
+aim-dependent decal surviving to the capture.
+
+**Therefore the substitution ships OFF** and is not in the preset registry. Per the
+evidence-first gate, the next step is more instrument, not more levers:
+
+1. **Instrument the trace RESULT, not the picture** - a hit location or impact actor
+   readout is what makes any of this falsifiable. Every conclusion above is blocked on
+   it.
+2. **Then probe the CONTROLLER's vtable slot +0x2F4** - the disassembly above shows
+   GetBaseAimRotation itself delegates there, so a weapon that asks the controller
+   directly would bypass the pawn seam entirely and produce exactly the null result
+   measured. That is the leading candidate, and it is derived rather than guessed.
+3. Only then decide where the write belongs. Note the hazard for candidate 2: the
+   camera may read the same path, so substituting it could drag the VIEW onto the
+   controller - check with the drive off before arming it.
+
 ### The DPad family has no Touch analogue, and what was done about it
 
 Infinite's retail DPad carries `XNavShowPulse`/`BuyoutHack` (up),

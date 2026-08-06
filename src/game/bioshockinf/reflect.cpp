@@ -194,13 +194,31 @@ void cmd_name_find(const char* args) {
             idx < 0 ? "  (not in the pool)" : "");
 }
 
+// Defined further down with the object-identity helpers; used here only to
+// label which object a vtable window belongs to.
+bool object_class_name(const void* obj, char* out, size_t outSize);
+
+// Session 44: generalized to an EXPLICIT object and an explicit START SLOT.
+// Both were needed the moment a seam turned out to be a virtual on the PAWN
+// rather than on the PC: the old form could only read the latched PC, and only
+// its first 96 slots, while the I7 aim seam lives at +0x2E8 (slot 186).
+// Usage: bsivtable [count] | bsivtable <hexObjAddr> [count] [startSlotHexOff]
 void cmd_vtable(const char* args) {
     int count = 40;
-    sscanf_s(args, "%d", &count);
+    unsigned addr = 0, startOff = 0;
+    // An explicit object always starts with 0x; otherwise the first token is
+    // the count, which keeps every existing bsivtable invocation working.
+    if (args && (args[0] == '0') && (args[1] == 'x' || args[1] == 'X')) {
+        if (sscanf_s(args + 2, "%x %d %x", &addr, &count, &startOff) < 1) return;
+    } else if (args) {
+        sscanf_s(args, "%d", &count);
+    }
     if (count < 1) count = 1;
     if (count > 96) count = 96;
+    startOff &= ~3u; // slots are pointer-aligned
 
-    void* obj = camera::last_player_controller();
+    void* obj = addr ? reinterpret_cast<void*>(static_cast<uintptr_t>(addr))
+                     : camera::last_player_controller();
     if (!obj) {
         BVR_LOG("[bsi] reflect: no live object yet - the camera hook has not fired, and this "
                 "lane deliberately takes objects from hook parameters rather than scanning "
@@ -208,32 +226,45 @@ void cmd_vtable(const char* args) {
         return;
     }
     if (!bvr::pattern_scan::is_memory_valid(obj, 4)) {
-        BVR_LOG("[bsi] reflect: latched object %p is no longer readable", obj);
+        BVR_LOG("[bsi] reflect: object %p is not readable", obj);
         return;
     }
-    const uint8_t* const* vt = *reinterpret_cast<const uint8_t* const* const*>(obj);
+    const uint8_t* const* vtBase = *reinterpret_cast<const uint8_t* const* const*>(obj);
+    const uint8_t* const* vt = vtBase ? vtBase + startOff / sizeof(void*) : nullptr;
     if (!vt || !bvr::pattern_scan::is_memory_valid(vt, count * sizeof(void*))) {
-        BVR_LOG("[bsi] reflect: vtable pointer %p is not readable for %d slots", (void*)vt,
-                count);
+        BVR_LOG("[bsi] reflect: vtable pointer %p is not readable for %d slots from +0x%X",
+                (void*)vtBase, count, startOff);
         return;
     }
-    BVR_LOG("[bsi] reflect: APlayerController %p vtable %p (rva 0x%X), first %d slots:", obj,
-            (const void*)vt, rva_of(vt), count);
+    char clsName[128] = "";
+    object_class_name(obj, clsName, sizeof clsName);
+    BVR_LOG("[bsi] reflect: %s %p vtable %p (rva 0x%X), %d slots from +0x%X:",
+            clsName[0] ? clsName : "<latched PC>", obj, (const void*)vtBase, rva_of(vtBase),
+            count, startOff);
     for (int i = 0; i < count; ++i) {
         const uint8_t* fn = vt[i];
         if (!fn) continue;
         const uint32_t r = rva_of(fn);
-        const bool isPe = (static_cast<uint32_t>(i * 4) == patterns::kProcessEventVtableOffset);
-        const bool isFf = (static_cast<uint32_t>(i * 4) == patterns::kFindFunctionVtableOffset);
-        BVR_LOG("[bsi] reflect:   +0x%02X [%2d] rva 0x%-8X%s", i * 4, i, r,
-                isPe ? "  <== ProcessEvent (offline: slot +0x7C)"
-                     : (isFf ? "  <== FindFunction (offline: slot +0x54)" : ""));
+        // Offsets are ABSOLUTE in the vtable, so a windowed read still names
+        // the slot the exec thunk's `call [reg+disp]` was talking about.
+        const uint32_t off = startOff + static_cast<uint32_t>(i) * 4;
+        const bool isPe = (off == patterns::kProcessEventVtableOffset);
+        const bool isFf = (off == patterns::kFindFunctionVtableOffset);
+        const bool isAim = (off == patterns::kPawnGetBaseAimRotationVtblOffset);
+        BVR_LOG("[bsi] reflect:   +0x%03X [%3d] rva 0x%-8X%s", off, off / 4, r,
+                isPe   ? "  <== ProcessEvent (offline: slot +0x7C)"
+                : isFf ? "  <== FindFunction (offline: slot +0x54)"
+                : isAim
+                    ? "  <== GetBaseAimRotation on a Pawn (offline: exec thunk 0x12BF30 "
+                      "dispatches through this slot)"
+                    : "");
     }
     // The live cross-check that costs nothing: our offline derivation says slot
     // +0x7C holds ProcessEvent. On an APlayerController - an AActor subclass -
     // the expected occupant is AActor::ProcessEvent, NOT the UObject base.
-    const uint32_t idx = patterns::kProcessEventVtableOffset / 4;
-    if (static_cast<int>(idx) < count && vt[idx]) {
+    const uint32_t idx = patterns::kProcessEventVtableOffset / 4 - startOff / 4;
+    if (startOff <= patterns::kProcessEventVtableOffset && static_cast<int>(idx) < count &&
+        vt[idx]) {
         const uint32_t r = rva_of(vt[idx]);
         const char* verdict = "UNEXPECTED - neither derived address";
         if (r == patterns::kActorProcessEventRva)
@@ -595,11 +626,30 @@ bool object_class_name(const void* obj, char* out, size_t outSize) {
 void cmd_fields(const char* args) {
     unsigned start = 0;
     unsigned count = 0x180;
-    if (args) sscanf_s(args, "%x %u", &start, &count);
+    unsigned addr = 0;
+    // Session 44: the explicit-object generalization s43 recorded as owed (the
+    // grant lane needed it to walk the PAWN's inventory list, and the I7 aim
+    // lane needs the pawn too). `0x` prefix = an explicit object, exactly the
+    // convention bsicallat already uses; everything else is the old form.
+    if (args && args[0] == '0' && (args[1] == 'x' || args[1] == 'X')) {
+        if (sscanf_s(args + 2, "%x %x %u", &addr, &start, &count) < 1) return;
+    } else if (args) {
+        sscanf_s(args, "%x %u", &start, &count);
+    }
     if (count > 0x400) count = 0x400;
     void* obj = nullptr;
     const uint8_t* const* vt = nullptr;
     if (!resolve_dispatch_target("fields", obj, vt)) return;
+    if (addr) {
+        // The gate stack above still runs on the PC (it is what proves the
+        // reflection lane is live and on the right thread); only the object
+        // being WALKED changes, and it is read-only either way.
+        obj = reinterpret_cast<void*>(static_cast<uintptr_t>(addr));
+        if (!bvr::pattern_scan::is_memory_valid(obj, 4)) {
+            BVR_LOG("[bsi] fields: REFUSED - explicit object %p is not readable", obj);
+            return;
+        }
+    }
     if (!derive_obj_name_off()) {
         BVR_LOG("[bsi] fields: REFUSED - UObject::Name offset did not derive on the PC's "
                 "class object (no candidate dword selected a '*PlayerController' name)");
