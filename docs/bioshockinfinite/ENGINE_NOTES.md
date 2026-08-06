@@ -477,6 +477,56 @@ The zero-trim identity is left to the algebra rather than short-circuited. A
 would mean the shipped default configuration never executes the compose path, so
 the first user to type a trim would be the first to run it.
 
+### R5: **THE DRIVE TARGET IS THE COMPONENT AT `XFirstPersonAttachment +0x218`**
+
+The R4 negative's follow-up, run the same session. **This is the answer I8 needs.**
+
+Target: `PC +0x1FC -> XHuman +0x0D8 -> list +0x004 -> XFirstPersonAttachment
++0x218 -> XSkeletalMeshComponent`. Two calls, each with a WINDOW grab before and
+after, each against a clean same-position control taken 2 s apart with nothing
+changed.
+
+| call on the component | mean-abs | pct changed | verdict |
+|---|---|---|---|
+| CONTROL (nothing changed, 2 s apart) | 0.74 | 1.99% | - |
+| `SetScale 0.3` | **4.28** | **7.59%** | renders |
+| `SetTranslation v0,0,-40` | **3.90** | **7.25%** | **renders** |
+| restore `SetTranslation v0,0,0` | 0.63 | 1.64% | back to control |
+
+`SetTranslation v0,0,-40` moved the gun unmistakably down and toward the camera,
+with the forearm dropping out of frame - a change no idle animation produces, at
+5.3x the control's amplitude, and fully reversible.
+
+**So the first-person viewmodel is drawn from its COMPONENT's transform, not from
+its owner actor's.** That is stock UE3 behaviour and it is what R4's negative was
+pointing at. The whole I8 drive retargets to this object.
+
+**And note what did NOT happen when the component moved: the ACTOR's transform is
+not the component's parent in any way we can use.** Writing the actor's
+Location/Rotation moved nothing (R4) while writing the component's translation
+moved everything, so the component's world transform is not
+`attachmentTransform x componentRelative`. It is almost certainly camera/view
+relative, which is the normal viewmodel arrangement and is convenient: the frame
+context already holds the camera pose, so the model pose can be expressed
+directly in the camera's frame with no world round trip.
+
+**Consequences for the rig, and they are all simplifications:**
+- Resolve gains ONE more hop (`fpa +0x218`) and `patterns.h` gains one offset.
+- `drive()` stops writing world Location/Rotation raw and instead sets the
+  component's relative translation/rotation. The natives exist and the dispatch
+  helper already caches their UFunction per epoch, so this is a marshalling
+  change, not new machinery.
+- **The algebra, the policy layer, the trims, the offsets, the scale knob, the
+  F10 panel, the write-point selector and the `last_write` oracle are all
+  unchanged.** They were built against a pose, and the pose is still correct -
+  only its destination and its reference frame move.
+- `SetScale` on the component is the scale knob for sub-goal 2, and it renders.
+
+Also confirmed here, again: **`SetScale` moves rather than shrinks**, exactly as
+the actor's `SetDrawScale` did in R2 - consistent with a scale pivot at the eye.
+It becomes the right knob for "believable size" only once translation is being
+written every frame, because then the model scales about the origin WE choose.
+
 ### R4: THE ACTOR TRANSFORM IS NOT WHAT THE RENDERER READS (a clean NEGATIVE)
 
 **This is the session's most important finding and it redirects the milestone.**

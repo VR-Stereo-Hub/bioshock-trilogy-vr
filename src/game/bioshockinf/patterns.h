@@ -128,6 +128,13 @@ inline constexpr uint32_t kActorBaseOffset = 0x0A0;  // must point AT THE PAWN
 // attachment removes the entire viewmodel. So NEITHER is the first-person arms
 // - the arms hang off the attachment - and arms mode cannot drive them.
 // Recorded so the pair is not re-tested.
+// THE DRIVE TARGET (s46 R5, established by intervention). The first-person
+// mesh COMPONENT hangs off the attachment, and it is what the renderer reads:
+// SetTranslation v0,0,-40 on it moved the gun unmistakably (3.90 mean-abs vs a
+// 0.74 control) while writing the ACTOR's Location/Rotation moved nothing.
+inline constexpr uint32_t kAttachmentSkelMeshOffset = 0x218;
+inline constexpr char kSkeletalMeshComponentClass[] = "XSkeletalMeshComponent";
+
 inline constexpr uint32_t kPawnSkelMeshAOffset = 0x2E4;
 inline constexpr uint32_t kPawnSkelMeshBOffset = 0x72C;
 
