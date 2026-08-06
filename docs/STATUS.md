@@ -75,15 +75,35 @@ unchanged.**
 `aimRayMaxDevDegL/R` **0.0000**, `claimRatioH` **1.00851**, 3 layers / 2 aim
 dots, zero faults - with the new algebra live and the rig released.
 
+**LATE-SESSION UPDATE - THE DRIVE IS LIVE AND THE MODEL TRACKS THE CONTROLLER.**
+R5 found the real target (the mesh COMPONENT at `XFirstPersonAttachment +0x218`,
+proven by `SetTranslation v0,0,-40` moving the gun at 3.90 mean-abs vs a 0.74
+control). The rig was retargeted to it, the pose moved to the head's frame, and
+it was ARMED: the written translation tracks the controller EXACTLY - +0.4 m of
+controller = +60 UU on the right axis at worldScale 150, read back out of the
+object, 725 writes, zero faults - and the render follows on the vertical axis
+(the gun visibly rises, 4.83 mean-abs / 12.1%).
+
+**One thing is not right and it is precisely characterised**: with a 60 cm
+isolated offset, UP renders strongly (4.83), FORWARD weakly (1.27) and RIGHT not
+at all (0.49, below the 0.74 control) - although all three are written correctly.
+That is session 47's first question, and it has a test that needs no mod code:
+three direct `bsicallat <mesh> SetTranslation` calls on each axis with window
+grabs. If the asymmetry reproduces with the mod out of the loop, it is the
+engine, not our math. ENGINE_NOTES R6 lists the three candidates.
+
+Baseline after release: `aimRayMaxDevDegL/R` 0.0000, `claimRatioH` 1.00851,
+3 layers - unchanged.
+
 **NEXT (session 47), in order**:
-1. **The one command that decides I8's shape**:
-   `bsicallat <the +0x218 component> SetTranslation v0,0,-100` with a WINDOW grab
-   before and after. If the viewmodel moves, the rig retargets to the component
-   and **nothing else changes** - the frame context, the policy layer, the trims,
-   the F10 surface and the write-point selector are all already built and proven.
-   If it does not move, derive the FP actor's Tick slot off its LIVE vtable
-   (`bsivtable` window -> diff against another actor -> counting probe on the
-   differing slots) and hook it aim-seam style. Derive the slot, never guess.
+1. **THE PER-AXIS QUESTION** (see the update above): why does the component's
+   translation render on Z, weakly on X and not at all on Y? Three direct
+   `bsicallat <mesh> SetTranslation` calls, one per axis, with window grabs and
+   the mod's own drive DISARMED, so the engine is the only thing in the loop.
+   Candidates in ENGINE_NOTES R6: an animation restamp that only overwrites some
+   channels (try `SetForceRefPose`), socket-relative rebuild, or a per-axis
+   write-point sensitivity (R4's write-point A/B was run against the ACTOR, never
+   against the component).
 2. Then arms mode, which now has its component: `HideBoneByName` /
    `UnHideBoneByName` with `IsBoneHidden` as the verifier, on `+0x218`.
 3. `bsiread` the second `XFirstPersonAttachment` at attachment `+0x024` - almost

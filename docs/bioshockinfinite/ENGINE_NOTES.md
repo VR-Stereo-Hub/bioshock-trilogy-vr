@@ -527,6 +527,56 @@ the actor's `SetDrawScale` did in R2 - consistent with a scale pivot at the eye.
 It becomes the right knob for "believable size" only once translation is being
 written every frame, because then the model scales about the origin WE choose.
 
+### R6: THE MODEL MOVES WITH THE CONTROLLER - and one axis does not render
+
+The retargeted drive was armed live. **The viewmodel tracks the controller.**
+
+The pose is now built directly in the HEAD's frame (`conj(headQuat)` applied to
+both the offset and the orientation, then `xr_to_ue`, then `worldScale`) and
+written to the component with `SetTranslation`/`SetRotation`. No world round trip
+in the model lane at all.
+
+**The written value tracks the controller EXACTLY**, read back out of the object:
+
+| controller (XR m) | written component translation (UU) |
+|---|---|
+| (0.2, 1.3, -0.35) | (52.5, 30.0, -45.0) |
+| (0.6, 1.3, -0.35) - **+0.4 m right** | (52.5, **90.0**, -45.0) - **+60 UU in Y** |
+| (0.2, 1.7, -0.35) - **+0.4 m up** | (52.5, 30.0, **15.0**) - **+60 UU in Z** |
+
+0.4 m x worldScale 150 = 60 UU, on the correct axis, both times. 725 writes,
+zero faults, zero identity refusals, and `aimRayMaxDevDegL/R` back to 0.0000 and
+`claimRatioH` to 1.00851 after release.
+
+**AND THE RENDER FOLLOWS - on some axes.** Arming alone moved the frame by 3.60
+mean-abs / 6.23% against a 0.74 control, and the +0.4 m UP sweep visibly raised
+the gun. But isolating each axis with a 60 cm offset gives an uneven signature:
+
+| offset (cm, in the trimmed basis) | mean-abs | pct changed | renders? |
+|---|---|---|---|
+| up (from the hand sweep, +0.4 m) | **4.83** | **12.1%** | yes, strongly |
+| forward 60 | 1.27 | 3.34% | weakly |
+| right 60 | 0.49 | 1.41% | **no** (below the 0.74 control) |
+
+So the component's translation is honoured on Z, partially on X, and not at all
+on Y - even though all three are written correctly and read back. **This is the
+next session's first question and it is well posed**, with a test that needs no
+mod involvement at all: three direct calls on the component,
+`bsicallat <mesh> SetTranslation v0,0,60`, then `v60,0,0`, then `v0,60,0`, each
+with a window grab. If the same asymmetry appears with the mod out of the loop,
+it is the engine (a socket-relative rebuild, or an animation restamp that only
+overwrites some channels) and not our math.
+
+Candidates worth holding but NOT yet tested, in cost order:
+1. The engine restamps the component's relative translation from animation every
+   tick and our write only survives on channels the current animation does not
+   author. `SetTranslation` may need to be paired with something that suppresses
+   the animation's own translation (`SetForceRefPose` is present in the build).
+2. The component is attached to a SOCKET, and socket-relative placement rebuilds
+   some axes from the parent bone each frame.
+3. The write point matters per axis (all three points were tested against the
+   ACTOR in R4, none against the component).
+
 ### R4: THE ACTOR TRANSFORM IS NOT WHAT THE RENDERER READS (a clean NEGATIVE)
 
 **This is the session's most important finding and it redirects the milestone.**
