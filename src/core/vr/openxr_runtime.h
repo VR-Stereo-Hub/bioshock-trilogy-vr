@@ -169,6 +169,22 @@ void set_pace_detach(bool on);
 // live A/B; the overlay checkbox rides under SR pair pacing.
 void set_pace_sync(bool on);
 
+// Session 43b (the Infinite "jumpy camera"): which locate generation the
+// SequentialReentry capture attributes its eyes to. 0 = the fresh locate,
+// 1 = one generation back (the historical default - calibrated on BS1's
+// single-threaded renderer, where "locate N feeds the tick presenting at
+// N+1" holds exactly), 2 = two back (candidate for a threaded ring-buffered
+// renderer with OneFrameThreadLag, i.e. Infinite). Mis-attribution by one
+// generation = a constant one-period pose error that scales with head speed
+// (reprojection wobble). DEFAULT 1 IN CORE - BS1/BS2 never call this and
+// behave byte-identically; the Infinite adapter exposes the in-headset A/B.
+void set_pose_lag(int lag);
+int get_pose_lag();
+// Rotation delta between consecutive locate generations (deg) - the error
+// magnitude one generation of mis-attribution costs at the current head
+// speed. For the adapter's F10 telemetry next to the A/B.
+float get_pose_gen_delta_deg();
+
 // Session 43: opt-in spike-triggered evidence capture. When armed, a pair
 // interval above 2x the runtime's display period writes one snapshot line to
 // pacetrace.log at the pair close: per-phase last + max-since-previous-spike

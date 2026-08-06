@@ -59,13 +59,32 @@ second, cause named by intervention third - no resolution/quality trade anywhere
    do not conclude no-op), and the s43 boot-1 attract freeze hit once more
    (force-kill protocol worked).
 
-**NEXT (session 44)**: the user's headset verdict on the GC lever (S43 checklist in
-TESTING.md - head turns outdoors at native res; pacetrace.log now carries spikes/s
-and per-spike attribution), ideally banking an OUTDOOR save so the flat harness can
-wander the heavy case; if residual traversal spikes remain, the texture-pool lane
-(`-ReadTexturePoolFromIni` + PoolSize steps) is researched, ranked and ready; then
-the deferred aim + motion-controls + model-sync block, and the per-game pad map
-(audit spec in ENGINE_NOTES).
+**S43 same-night addendum (the headset verdict came in)**: the stutter is CLOSED by
+the user's decision - the GC lever + the user's own quality-settings pass + headset
+at 72 Hz ("we're golden"). The user's 10-min VDXR run was measured before that:
+avg 67 pairs/s vs the 80 Hz display (sustained GPU over-budget at native x2 eyes +
+encoder - the continuous-judder component the settings pass addressed) plus burst
+stalls whose stacks matched the flat signatures. PCGamingWiki + the GameFAQs thread
+were mined on request (notes in the session log; skip-intro-movies tweak and the
+BaseEngine.ini third config layer banked for the harness).
+
+**S43b - THE NEW FOCUS: the "jumpy camera"** (user: head-coupled motion is
+bouncy/not-life-like, unlike BS1/BS2). Hypothesis, instrument and A/B are LIVE
+(ENGINE_NOTES s43b): core's one-generation-back pose attribution
+(`g_viewsContent`) assumes BS1's lockstep renderer; Infinite is threaded with
+OneFrameThreadLag, so the content may be TWO generations back - a one-period pose
+error scaling with head speed = reprojection wobble. `set_pose_lag(0|1|2)` (core,
+default 1 = historical, BS1/BS2 untouched), `bsipose` seam, F10 radios + a
+deg/pair error readout. **The user picks the smoothest of three radios in the
+headset (S43b checklist in TESTING.md); that answer names the pipeline depth and
+becomes Infinite's shipped default.** If all three wobble alike, the hypothesis is
+falsified and the next instrument is drive-side (pose age at consume, engine
+camera smoothing) - not more settings.
+
+**NEXT (session 44)**: the s43b pose-lag verdict first; then the deferred aim +
+motion-controls + model-sync block, the per-game pad map (audit spec in
+ENGINE_NOTES), and - only if the user reopens performance - the texture-pool lane
+(researched, ranked, ready) with an outdoor save for flat wandering.
 
 ### Infinite: current state after session 42 (superseded by session 43 above - kept for the derivation trail; I6 judder flat half DONE + sync armable; I7 OPEN - pad lane LIVE flat, exec surface truth mapped - branch `si42-inf-judder-bindings`)
 

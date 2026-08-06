@@ -404,6 +404,31 @@ acceptable if the headset agrees); 32-bit address headroom is the watch item on 
 sessions. Signature B (traversal/streaming walk) remains the documented residual with
 the texture-pool lane researched and ranked next.
 
+### The "jumpy camera" hypothesis and the pose-lag A/B (s43b, verdict pending)
+
+User percept (s42, refined s43b): head-coupled camera motion is jumpy/bouncy, "as if
+every micro movement is translated and the game compensates with more or delayed
+movement" - not present in BS1/BS2. The named candidate: POSE-ATTRIBUTION MISMATCH
+(reprojection wobble). Core's `g_viewsContent` submits captured eyes with the locate
+generation ONE back, on the lockstep assumption "locate N feeds the tick that
+presents at N+1" - calibrated on BS1's 1T renderer (the M4 head-bobbing fix). But
+Infinite's substrate is THREADED and ring-buffered with `OneFrameThreadLag=True`
+(DR-I5), so its presented content may lag the locate by TWO generations; a
+one-generation mis-attribution is a constant one-period pose error that scales with
+head speed - the compositor over/under-reprojects every frame, which is exactly the
+described feel. The wrong-direction alternative (content actually FRESH, lag 0) is
+also covered.
+
+The instrument/fix is one selector: `bvr::vr::set_pose_lag(0|1|2)` (core, default 1
+= the historical behavior, BS1/BS2 never call it - byte-identical), applied at the
+SR capture's eye-pose attribution only. Seams: `bsipose 0|1|2` (desktop) and the F10
+"POSE ATTRIBUTION (jumpy-camera A/B)" radios under VR stereo, with the
+inter-generation head delta (deg/pair) readout = the error magnitude at the current
+head speed. In-headset discrimination: turn the head steadily at each setting; the
+lag that kills the wobble NAMES the pipeline depth. (If none of the three is clean,
+the residual is drive-side - pose age at the game-thread consume, or engine camera
+smoothing on top of the drive - and that is the next instrument, not a blind fix.)
+
 ### The ini propagation lane, PROVEN (s43)
 
 `XGame\Config\DefaultEngine.ini` (game folder) IS the source the boot-derived

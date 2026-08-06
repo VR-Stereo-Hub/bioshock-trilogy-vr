@@ -157,6 +157,24 @@ XrView g_views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 XrView g_viewsContent[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 bool g_viewsContentValid = false;
 bool g_viewsValid = false;
+// Session 43b (the Infinite "jumpy camera"): the lockstep assumption behind
+// g_viewsContent - "locate N feeds the tick that presents at N+1" - was
+// calibrated on BS1's 1T (single-threaded) renderer. Infinite's substrate is
+// threaded and ring-buffered with OneFrameThreadLag, so its content may lag
+// the locate by TWO generations; attributing it one-back leaves a constant
+// one-period pose error that scales with head speed (reprojection wobble -
+// the reported percept). The selector below picks which generation the SR
+// capture attributes: 0 = fresh (g_views), 1 = one back (g_viewsContent,
+// THE DEFAULT = today's behavior, BS1/BS2 never change it), 2 = two back
+// (g_viewsPrev2). The in-headset A/B is the discriminator: whichever lag
+// kills the wobble names the pipeline's true depth by intervention.
+XrView g_viewsPrev2[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+bool g_viewsPrev2Valid = false;
+std::atomic<int> g_poseLag{1};
+// Telemetry: yaw delta between consecutive locate generations (deg) - the
+// size of the attribution error one generation of lag would cause at the
+// current head speed. Read by the adapter's F10 section.
+std::atomic<float> g_poseGenDeltaDeg{0.0f};
 std::atomic<float> g_hfovDeg{0.0f};      // circumscribed symmetric hfov, read cross-thread
 // Session 34: the headset eye's own half-angles in degrees (0 until the first
 // locate). Exposed so an adapter can say, on screen, how much of the eye its
@@ -2395,6 +2413,9 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // layer slides against head motion by one cycle of rotation (the M4-era
     // "head bobbing", glaring once a hand-anchored gun sat next to the
     // zero-latency laser).
+    g_viewsPrev2[0] = g_viewsContent[0]; // s43b: keep one more generation for
+    g_viewsPrev2[1] = g_viewsContent[1]; // the lag-2 attribution candidate
+    g_viewsPrev2Valid = g_viewsContentValid;
     g_viewsContent[0] = g_views[0];
     g_viewsContent[1] = g_views[1];
     g_viewsContentValid = g_viewsValid;
@@ -2417,6 +2438,16 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         g_viewsContent[0] = g_views[0];
         g_viewsContent[1] = g_views[1];
         g_viewsContentValid = true;
+    }
+    // s43b telemetry: inter-generation rotation delta = the pose error ONE
+    // generation of mis-attribution costs at the current head speed.
+    if (g_viewsValid && g_viewsContentValid) {
+        const XrQuaternionf& a = g_views[0].pose.orientation;
+        const XrQuaternionf& b = g_viewsContent[0].pose.orientation;
+        float dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+        if (dot < 0.0f) dot = -dot;
+        if (dot > 1.0f) dot = 1.0f;
+        g_poseGenDeltaDeg.store(2.0f * acosf(dot) * 57.29578f, std::memory_order_relaxed);
     }
 
     // Circumscribed symmetric FOV for the game render, computed once per
@@ -3057,8 +3088,17 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 // Captured content is attributed to the locate generation it
                 // was RENDERED from (g_viewsContent), never the fresh one -
                 // the compositor reprojects from there to display time.
+                // s43b: the generation is selectable (g_poseLag doc at the
+                // state block). Default 1 == the historical g_viewsContent
+                // behavior; only the Infinite adapter ever changes it.
                 if (srFrame) {
-                    g_eyePose[srEye] = g_viewsContent[srEye].pose;
+                    int lag = g_poseLag.load(std::memory_order_relaxed);
+                    if (lag == 0 && g_viewsValid)
+                        g_eyePose[srEye] = g_views[srEye].pose;
+                    else if (lag == 2 && g_viewsPrev2Valid)
+                        g_eyePose[srEye] = g_viewsPrev2[srEye].pose;
+                    else
+                        g_eyePose[srEye] = g_viewsContent[srEye].pose;
                     g_eyeValid[srEye] = true;
                     if (!g_loggedFirstSr.exchange(true))
                         BVR_LOG("xr: first SequentialReentry eye frame captured "
@@ -3724,6 +3764,23 @@ void set_pace_sync(bool on) {
                 on ? "ON" : "off");
 }
 
+void set_pose_lag(int lag) {
+    if (lag < 0) lag = 0;
+    if (lag > 2) lag = 2;
+    int was = g_poseLag.exchange(lag, std::memory_order_relaxed);
+    if (was != lag)
+        BVR_LOG("xr: pose attribution lag %d -> %d generation(s) (0=fresh, "
+                "1=the historical one-back, 2=two-back for a threaded "
+                "one-frame-lag renderer)",
+                was, lag);
+}
+
+int get_pose_lag() { return g_poseLag.load(std::memory_order_relaxed); }
+
+float get_pose_gen_delta_deg() {
+    return g_poseGenDeltaDeg.load(std::memory_order_relaxed);
+}
+
 void set_spike_trace(bool on) {
     bool was = g_spikeTrace.exchange(on, std::memory_order_relaxed);
     if (was != on) {
@@ -4272,6 +4329,9 @@ void handle_pace_command(const char*) {}
 void set_pace_detach(bool) {}
 void set_pace_sync(bool) {}
 void set_spike_trace(bool) {}
+void set_pose_lag(int) {}
+int get_pose_lag() { return 1; }
+float get_pose_gen_delta_deg() { return 0.0f; }
 void set_present_stage(const char*) {}
 void set_draw_stage(const char*) {}
 uint32_t watchdog_fires() { return 0; }

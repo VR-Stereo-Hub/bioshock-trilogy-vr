@@ -586,6 +586,30 @@ boot). Backup: `DefaultEngine.ini.bvr-bak-s43` beside it; restore = copy back.
    is better but not clean, the next flat rung (texture-pool sizing via
    `-ReadTexturePoolFromIni`, already researched) targets the remainder.
 
+*(S43 outcome, user 2026-08-06: stutter resolved to the user's satisfaction by the
+GC lever + the user's own quality settings + headset at 72 Hz - closed.)*
+
+## S43b jumpy-camera checklist (the pose-attribution A/B)
+
+The percept: head-coupled camera motion is bouncy/not-life-like, unlike BS1/BS2.
+The suspect: the submitted eye poses are attributed to the wrong locate generation
+for this threaded renderer (reprojection wobble - error scales with head SPEED).
+
+1. Boot as usual, load your save (or judge at the menu - it renders the same lane).
+2. F10 -> "VR stereo (I5)" -> **POSE ATTRIBUTION (jumpy-camera A/B, s43b)**: three
+   radios - `fresh (0)`, `1 back (default)`, `2 back (threaded)`.
+3. Turn your head steadily left-right at each setting for ~10 s. Judge: does the
+   world stay nailed in place (real-life-like), or does it wobble/drag/bounce in
+   proportion to how fast you turn?
+4. Pick the smoothest and tell me WHICH ONE it was - that single answer names the
+   render pipeline's depth and becomes the shipped default for Infinite.
+5. If ALL THREE wobble the same: say so - that falsifies the attribution hypothesis
+   and moves the instrument to the drive side (pose age at consume/engine smoothing);
+   do not keep hunting settings.
+6. The "head delta between generations" readout under the radios shows deg/pair at
+   your current head speed - if you can, note roughly what it reads during a brisk
+   turn (it is the predicted wobble amplitude of a one-generation error).
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

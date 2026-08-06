@@ -1525,6 +1525,23 @@ bool handle_drive_verb(const char* cmd, const char* args) {
         }
         return true;
     }
+    if (strcmp(cmd, "bsipose") == 0) {
+        // s43b: the pose-attribution lag A/B (core selector, doc at
+        // set_pose_lag). The jumpy-camera hypothesis: Infinite's threaded
+        // one-frame-lag renderer makes the historical one-back attribution
+        // wrong by a generation; whichever lag feels smooth in the headset
+        // names the pipeline depth.
+        int lag = -1;
+        if (sscanf_s(args, "%d", &lag) == 1 && lag >= 0 && lag <= 2) {
+            bvr::vr::set_pose_lag(lag);
+        } else {
+            BVR_LOG("[bsi] pose attribution lag=%d (0=fresh 1=one-back[default] "
+                    "2=two-back) | inter-generation delta %.2f deg/pair | usage: "
+                    "bsipose 0|1|2",
+                    bvr::vr::get_pose_lag(), bvr::vr::get_pose_gen_delta_deg());
+        }
+        return true;
+    }
     if (strcmp(cmd, "simhead") == 0) {
         if (strncmp(args, "off", 3) == 0) {
             g_simHead.deadline = 0;
@@ -1742,6 +1759,26 @@ void draw_debug_ui() {
         ImGui::TextDisabled("lever OFF: claim tracks bsifov tanv (fix manually if the in-game "
                             "slider moved). Lever ON: claim tracks the lever.");
         ImGui::TextDisabled("persist tuning: vrpreset save (worldScale, ipd, claim, lever)");
+        // s43b: the jumpy-camera A/B. Which locate generation the submitted
+        // eyes are attributed to - mis-attribution on this threaded renderer
+        // is the reprojection-wobble suspect. Radio writes the core selector
+        // directly (atomic int, safe from the render thread).
+        ImGui::Separator();
+        ImGui::Text("POSE ATTRIBUTION (jumpy-camera A/B, s43b)");
+        {
+            int lag = bvr::vr::get_pose_lag();
+            bool changed = false;
+            changed |= ImGui::RadioButton("fresh (0)", &lag, 0);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("1 back (default)", &lag, 1);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("2 back (threaded)", &lag, 2);
+            if (changed) bvr::vr::set_pose_lag(lag);
+            ImGui::Text("head delta between generations: %.2f deg/pair",
+                        bvr::vr::get_pose_gen_delta_deg());
+            ImGui::TextDisabled("turn your head steadily; pick the one with no wobble/drag. "
+                                "Wrong lag = the world bounces in proportion to head speed.");
+        }
     }
 
     if (ImGui::CollapsingHeader("RENDER RESOLUTION (I6, applies live + persists)")) {
