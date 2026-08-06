@@ -104,6 +104,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/camera.h
     game/bioshockinf/config.cpp
     game/bioshockinf/config.h
+    game/bioshockinf/frame_context.cpp
+    game/bioshockinf/frame_context.h
     game/bioshockinf/game_ini.cpp
     game/bioshockinf/game_ini.h
     game/bioshockinf/inf_math.h

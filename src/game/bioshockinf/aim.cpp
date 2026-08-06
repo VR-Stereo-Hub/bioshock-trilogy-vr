@@ -5,6 +5,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/patterns.h"
 
@@ -85,9 +86,13 @@ uint64_t g_lastLogMs = 0;
 // hand: 0 left (vigor), 1 right (weapon). Also hands back the XR-space aim
 // pose, because the laser and the dot both need the ray's ORIGIN and there is
 // no point locating the hand twice in one frame.
-bool controller_ray(int hand, FRotator* out, bvr::vr::HeadPose* poseOut) {
-    bvr::vr::HeadPose hp{};
-    if (!bvr::vr::get_hand_pose(hand, /*aimPose=*/true, hp)) return false;
+// THE LEGACY FORMULA, kept VERBATIM as the shadow the refactor is measured
+// against. It is what the user accepted in the headset and what the banked
+// aimRayMaxDevDeg 0.0000 was measured on, so it stays the substituted source
+// until a live selfcheck reads max|d| = 0 - at which point the follow-up commit
+// flips the default and deletes this. That makes the refactor's risk a
+// MEASUREMENT rather than a review.
+bool ray_legacy(const bvr::vr::HeadPose& hp, FRotator* out) {
     int32_t gameYawUnits = 0, recenterYawUnits = 0;
     if (!camera::aim_basis(&gameYawUnits, &recenterYawUnits)) return false;
 
@@ -100,6 +105,126 @@ bool controller_ray(int hand, FRotator* out, bvr::vr::HeadPose* poseOut) {
     // trace, and a rolled controller must not tilt anything downstream that
     // reads this rotation for a basis.
     out->roll = 0;
+    return true;
+}
+
+// --- selfcheck: prove the frame-context chain is INERT -----------------------
+// The value of the refactor commit is that nothing moved, so it ships with the
+// instrument that says so. Deltas are recorded as INTEGERS and never as floats:
+// an FRotator's int32s reinterpret as denormals and print as 0.000 (the trap
+// recorded twice already in this tree), and even a CORRECT
+// (float)d / kRotUnitsPerDegree at %.1f prints a one-unit delta as 0.0 - which
+// is exactly the failure this instrument exists to see. A rotator unit is
+// 0.0055 deg. ZERO is the pass; 1 is a defect, not a rounding.
+// DEFAULT: the frame-context chain, flipped from `legacy` in the same session
+// that measured it. 1240 dispatches across 14 stations - three roll values, four
+// yaws and a pitch pair - read max|dPitch| = max|dYaw| = max|dRoll| = 0 with the
+// position round trip at 0.0000 mm, and aimRayMaxDevDegL/R stayed exactly
+// 0.0000 with the flip live. `bsiaim source legacy` is the escape hatch, and
+// ray_legacy stays as the shadow the selfcheck measures against - deleting it
+// would delete the instrument that proves this.
+std::atomic<bool> g_raySourceFrame{true};
+std::atomic<int32_t> g_scRemaining{0};
+int32_t g_scSamples = 0, g_scPerHand[2] = {0, 0}, g_scMismatches = 0;
+int32_t g_scMaxDPitch = 0, g_scMaxDYaw = 0, g_scMaxDRoll = 0;
+float g_scMaxRoundTripMm = 0.0f;
+bool g_scFirstLatched = false;
+int g_scFirstHand = 0;
+FRotator g_scFirstLegacy{}, g_scFirstFresh{};
+
+void selfcheck_sample(int hand, const FRotator& legacy, const FRotator& fresh,
+                      const FrameContext& ctx, const bvr::vr::HeadPose& hp) {
+    if (g_scRemaining.load(std::memory_order_relaxed) <= 0) return;
+    g_scRemaining.fetch_sub(1, std::memory_order_relaxed);
+
+    const int32_t dPitch = fresh.pitch - legacy.pitch; // RAW: pitch is absolute,
+                                                       // a wrap would hide a
+                                                       // 65536-unit error
+    const int32_t dYaw = wrap_rot(fresh.yaw - legacy.yaw); // yaw IS modular
+    const int32_t dRoll = fresh.roll - legacy.roll;
+    const int32_t aP = dPitch < 0 ? -dPitch : dPitch;
+    const int32_t aY = dYaw < 0 ? -dYaw : dYaw;
+    const int32_t aR = dRoll < 0 ? -dRoll : dRoll;
+    if (aP > g_scMaxDPitch) g_scMaxDPitch = aP;
+    if (aY > g_scMaxDYaw) g_scMaxDYaw = aY;
+    if (aR > g_scMaxDRoll) g_scMaxDRoll = aR;
+    ++g_scSamples;
+    g_scPerHand[hand & 1]++;
+    if (aP || aY || aR) {
+        ++g_scMismatches;
+        if (!g_scFirstLatched) {
+            g_scFirstLatched = true;
+            g_scFirstHand = hand;
+            g_scFirstLegacy = legacy;
+            g_scFirstFresh = fresh;
+            BVR_LOG("[bsi] aim selfcheck: MISMATCH #1 hand=%s legacy=(%d %d %d) "
+                    "frame=(%d %d %d) d=(%d %d %d) units",
+                    hand ? "R" : "L", legacy.pitch, legacy.yaw, legacy.roll, fresh.pitch,
+                    fresh.yaw, fresh.roll, dPitch, dYaw, dRoll);
+        }
+    }
+
+    // The POSITION round trip, on the same sample: game_point_to_xr must undo
+    // xr_pose_to_game. Not bit-exact (a rotation and its transpose, a scale and
+    // its reciprocal) - expect well under 0.01 mm. A sign error in ue_to_xr
+    // shows up here as METRES.
+    const float pos[3] = {hp.px, hp.py, hp.pz};
+    const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+    const GamePose gp = xr_pose_to_game(ctx, pos, quat);
+    float back[3];
+    game_point_to_xr(ctx, gp.loc, back);
+    for (int i = 0; i < 3; ++i) {
+        const float e = fabsf(back[i] - pos[i]) * 1000.0f;
+        if (e > g_scMaxRoundTripMm) g_scMaxRoundTripMm = e;
+    }
+
+    if (g_scRemaining.load(std::memory_order_relaxed) == 0) {
+        BVR_LOG("[bsi] aim selfcheck: %d samples (L %d / R %d) | max|dPitch|=%d "
+                "max|dYaw|=%d max|dRoll|=%d units | mismatches=%d | "
+                "roundTripMax=%.4f mm",
+                g_scSamples, g_scPerHand[0], g_scPerHand[1], g_scMaxDPitch, g_scMaxDYaw,
+                g_scMaxDRoll, g_scMismatches, g_scMaxRoundTripMm);
+        BVR_LOG("[bsi] aim selfcheck: a rotator unit is 0.0055 deg. ZERO is the pass; "
+                "1 is a defect, not a rounding. Source in use: %s",
+                g_raySourceFrame.load(std::memory_order_relaxed) ? "frame" : "legacy");
+        uint32_t pub = 0, ret = 0, ref = 0, foreign = 0;
+        frame_context::stats(&pub, &ret, &ref, &foreign);
+        BVR_LOG("[bsi] aim selfcheck: seqlock publishes=%u retries=%u refusals=%u "
+                "foreignWrites=%u",
+                pub, ret, ref, foreign);
+    }
+}
+
+// hand: 0 left (vigor), 1 right (weapon). Computes BOTH chains every call while
+// the shadow is armed, so the selfcheck measures the production path rather than
+// a re-derivation of it.
+bool controller_ray(int hand, FRotator* out, bvr::vr::HeadPose* poseOut) {
+    bvr::vr::HeadPose hp{};
+    if (!bvr::vr::get_hand_pose(hand, /*aimPose=*/true, hp)) return false;
+
+    FRotator legacy{};
+    const bool haveLegacy = ray_legacy(hp, &legacy);
+
+    FrameContext ctx{};
+    FRotator fresh{};
+    bool haveFresh = false;
+    if (frame_context::read(&ctx)) {
+        const float pos[3] = {hp.px, hp.py, hp.pz};
+        const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+        fresh = ray_pose_from_xr(ctx, pos, quat, 0.0f, 0.0f).rot;
+        haveFresh = true;
+    }
+
+    if (haveLegacy && haveFresh) selfcheck_sample(hand, legacy, fresh, ctx, hp);
+
+    const bool useFrame = g_raySourceFrame.load(std::memory_order_relaxed);
+    if (useFrame) {
+        if (!haveFresh) return false;
+        *out = fresh;
+    } else {
+        if (!haveLegacy) return false;
+        *out = legacy;
+    }
     if (poseOut) *poseOut = hp;
     return true;
 }
@@ -384,6 +509,27 @@ bool handle_command(const char* cmd, const char* args) {
         if (n > 64) n = 64;
         g_dumpLeft.store(n, std::memory_order_relaxed);
         BVR_LOG("[bsi] aim: dumping the next %d calls in full", n);
+    } else if (strncmp(args, "selfcheck", 9) == 0) {
+        int n = 240; // ~12 s at the observed ~20 dispatches/s
+        sscanf_s(args + 9, "%d", &n);
+        if (n < 1) n = 1;
+        if (n > 20000) n = 20000;
+        g_scSamples = g_scMismatches = 0;
+        g_scPerHand[0] = g_scPerHand[1] = 0;
+        g_scMaxDPitch = g_scMaxDYaw = g_scMaxDRoll = 0;
+        g_scMaxRoundTripMm = 0.0f;
+        g_scFirstLatched = false;
+        g_scRemaining.store(n, std::memory_order_relaxed);
+        BVR_LOG("[bsi] aim selfcheck: shadowing the next %d dispatches - the legacy "
+                "formula against the frame-context chain. Deltas are INTEGER rotator "
+                "units; zero is the pass.",
+                n);
+    } else if (strncmp(args, "source", 6) == 0) {
+        const bool frame = strstr(args, "frame") != nullptr;
+        g_raySourceFrame.store(frame, std::memory_order_relaxed);
+        BVR_LOG("[bsi] aim: ray source = %s (%s)", frame ? "frame" : "legacy",
+                frame ? "the frame-context chain - one algebra with the model"
+                      : "the shipped formula, kept as the shadow until selfcheck reads 0");
     } else if (strncmp(args, "on", 2) == 0) {
         g_probe.store(true, std::memory_order_relaxed);
         g_substitute.store(true, std::memory_order_relaxed);

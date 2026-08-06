@@ -23,6 +23,7 @@
 
 namespace bvr::bsi {
 
+using bvr::xrmath::quat_mul;
 using bvr::xrmath::quat_rotate;
 using bvr::xrmath::xr_local_trim_quat;
 

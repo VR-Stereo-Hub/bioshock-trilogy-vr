@@ -7,6 +7,7 @@
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/config.h"
+#include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/game_ini.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/input_drive.h"
@@ -605,6 +606,13 @@ void apply_eye_offset(FVector* loc, const FRotator& rot, int sign) {
 void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
     if (!loc || !rot) return;
 
+    // Captured BEFORE any write, for the frame context published at the tail.
+    // entryLoc is the camera location PRE-head-offset AND PRE-eye-offset, and
+    // entryYawUnits is the engine's OWN yaw - the two quantities every consumer
+    // that places a controller in the world has to share with this drive.
+    const FVector entryLoc = *loc;
+    const int32_t entryYawUnits = rot->yaw;
+
     bvr::vr::HeadPose hp{};
     bool driveHead = false;
     bool liveHead = false;
@@ -730,6 +738,28 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
     g_finalRot = *rot;
     g_finalValid = true;
     g_vrDriving.store(driveHead, std::memory_order_relaxed);
+
+    // Publish the frame context: EVERY dispatch, not on the present edge. The
+    // aim seam fires on the engine's FIRE path, which is not synchronized with
+    // presents, so a context one present old would be up to 11 ms stale on a
+    // moving hand. A publish is ~64 bytes of memcpy and two relaxed stores.
+    {
+        FrameContext fc{};
+        fc.vrDriving = driveHead;
+        fc.haveRecenter = g_haveRecenter;
+        fc.gameYawUnits = entryYawUnits;
+        fc.recenterYawUnits = g_recenterYawUnits;
+        fc.baseX = entryLoc.x;
+        fc.baseY = entryLoc.y;
+        fc.baseZ = entryLoc.z;
+        fc.recenterPx = g_recenterPose.px;
+        fc.recenterPy = g_recenterPose.py;
+        fc.recenterPz = g_recenterPose.pz;
+        fc.worldScale = g_worldScale.load(std::memory_order_relaxed);
+        fc.pc = g_lastSelf.load(std::memory_order_relaxed);
+        fc.stamp = now;
+        frame_context::publish(fc);
+    }
 
     // The vrrec tap, once per rendered frame (present-count edge - the seam
     // itself fires many times per frame). Both record and replay advance on

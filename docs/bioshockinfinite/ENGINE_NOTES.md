@@ -320,6 +320,163 @@ a shipping build folds or strips most `appErrorf` format strings. Only two ancho
 `Failed to find function` (the one that worked) and `Accessed None` (UTF-16, inside the function at
 `0xD80B0`, 1 caller - the script VM's null-property path).
 
+## LIVE RESULTS (session 46 - I8: the carrier is NAMED by intervention, and the one algebra)
+
+### R1: THE VISIBLE VIEWMODEL IS THE FP ATTACHMENT ACTOR, AND IT CARRIES EVERYTHING
+
+The s45 finding was that the FP attachment's *transform* tracks the control
+rotation. That established it as a live carrier; it did not establish that it is
+what you SEE. R1 settles that by intervention, not inference.
+
+Method: `bsicallat <addr> SetHidden b1`, ONE target at a time, un-hidden with
+`b0` between trials, with a **WINDOW grab** before and after each (never
+`xrsim-shot` - the per-eye capture is a torn SR composite, s45). Boot of
+2026-08-06, Blue Ribbon restaurant interior, pistol equipped, right arm and gun
+on screen.
+
+| target | address | result | mean-abs / pct-changed vs its own before |
+|---|---|---|---|
+| `XFirstPersonAttachment` (list+0x004) | `4528C080` | **entire viewmodel gone** - arm, hand and pistol | **3.17 / 5.21%** |
+| `XSkeletalMeshComponent` (pawn+0x2E4) | `09CFF600` | no visible change | 0.62 / 1.63% |
+| `XSkeletalMeshComponent` (pawn+0x72C) | `09CFEA00` | 0.62 / 1.61% | |
+| CONTROL: same position, nothing hidden | - | idle animation only | 0.76 / 2.00% |
+
+**The control is what makes the two nulls mean something.** Both mesh components
+land *below* the same-position control's own number, under a call path that is
+demonstrably working (the same `SetHidden`, the same `bsicallat`, the same
+UFunction `14265F20`, dispatched on the same tid) - so this is "no effect", not
+"no dispatch". The scene outside the viewmodel quadrant is untouched in every
+case: the `bbox` is `(0.5,0.25)-(1,1)` for the signal *and* the control.
+
+Three things follow:
+
+1. **The `XFirstPersonAttachment` actor is the drive target, confirmed
+   visually.** Its transform is live, it is in world coordinates, and hiding it
+   removes what the player sees.
+2. **Neither `XSkeletalMeshComponent` on the pawn is the first-person arms.**
+   Both are third-person body meshes, invisible from first person. The s45 "which
+   is which" question is CLOSED as "neither" - the arms hang off the FP
+   attachment. Recorded so the candidate pair is not re-tested.
+3. **Arms mode cannot use `HideBoneByName` on either of them.** Whatever mesh
+   component carries the arms is *under the FP attachment*, and it is not yet
+   named. That is arms mode's blocking rung, and the mechanism REFUSES rather
+   than picking one.
+
+### R1b: ONE CARRIER, TWO HANDS - the constraint on the whole milestone
+
+There is exactly ONE `XFirstPersonAttachment`, at `list+0x004`, with ONE actor
+transform. Hiding it removes the arm *and* the gun together, so they are not
+separable through the actor transform. **Per-hand independence is not available
+from an actor-transform drive alone.** The policy layer is still built two-handed
+(BS2's parallel arrays), and the second hand's target is still computed and
+printed - but only the carrier-owning hand is written, and the status readout
+says so out loud rather than reporting a silent zero.
+
+The full list walk, reproducing s45 exactly at fresh addresses:
+
+```
+list +0x000 XInventoryManager        +0x010..+0x01C XWeapon x4
+     +0x004 XFirstPersonAttachment   +0x020..+0x028 XWeaponModelFirstPerson x3
+     +0x008 XWeaponDedicatedMelee    +0x02C XAKAudioEventID
+     +0x00C XWeaponModelFirstPerson  (the equipped weapon's model)
+```
+
+There is **no second `XFirstPersonAttachment` in the list**. Caveat kept
+explicit: no Vigor was equipped in this save, so the left/vigor hand was not
+rendering and its carrier is UNTESTED. That candidate stays open.
+
+### R2: A TRANSFORM WRITE ON THE CARRIER REACHES RENDER, WITH NO HELP
+
+`bsicallat 0x4528C080 SetDrawScale 0.5`: the field at `+0x064` read `3F000000`
+(0.5) afterwards, and the render changed - **2.50 mean-abs / 5.25% changed**,
+against the 0.76 / 2.00% same-position control. **No `ForceUpdateComponents` and
+no `ReattachComponent` were needed**, so the escalation ladder those two sit on
+is not entered.
+
+**But the change reads as a SHIFT, not a shrink** - the gun stayed about the same
+apparent size and moved. That is what a uniform scale about a pivot at the eye
+does: halving both the size and the distance leaves the angular size roughly
+unchanged. So **`DrawScale` on this actor scales about the eye point**, which
+makes it the wrong knob for "believable size" *on its own* - it only becomes the
+right one once the drive is writing Location absolutely every frame, because then
+the model scales about the origin WE chose.
+
+The canonical UE3 `AActor` layout is confirmed live on this object:
+`+0x044 Location` (FVector), `+0x050 Rotation` (FRotator), `+0x064 DrawScale`
+(float), `+0x068 DrawScale3D` (FVector).
+
+### R3: the transform is stable between engine ticks at rest
+
+`Location` at `+0x044` read `C697B3DB` (-19417.9277) unchanged across three
+reads over 5 s, and `Rotation.pitch` at `+0x050` held at `8`, with the stick
+centred. Consistent with s45: location is bit-stable, rotation tracks the
+control pitch. The corollary is that a one-shot poke to rotation WILL be
+restamped the moment the stick moves, which is why the drive is per-frame and
+absolute rather than a poke.
+
+### drawTid == cameraTid, so a draw-thread write point may dispatch natives
+
+`[bsi] camera: thread split - camera tid 9296, present tid 20420` and
+`[bsi][reentry] beat: ... drawTid=9296 presentTid=20420`, reproduced across two
+boots (second boot: 6728 / 9456, again equal). **The scene-draw detour runs on
+the game thread**, so the `DrawEntry` / `DrawExit` write points are NOT
+cross-thread engine access and may legally dispatch a UFunction. Recorded because
+the alternative would have forced those two points to be raw-write-only.
+
+### THE ONE ALGEBRA: `frame_context`, and its inertness proof
+
+`src/game/bioshockinf/frame_context.h/.cpp` - the view transform the drive
+produced, published once per dispatch, consumed by both the aim ray and the model
+drive so a gun drawn with one transform and a bullet fired with another cannot
+happen. Duplicate-and-adapt of BS2's, with **two deliberate departures**:
+
+1. **Yaw is carried as an EXACT int32**, not float radians. `publish_dot` inverts
+   with `wrap_rot(ray.yaw - gameYawUnits + recenterYawUnits)`, and substituting
+   `ray.yaw = gameYawUnits + wrap_rot(handYawUnits - recenterYawUnits)` cancels
+   the `gameYawUnits` term EXACTLY in int32 - no rounding, however large the game
+   yaw. Through float radians (a 24-bit mantissa over a value up to 32768, then
+   truncated) the residue is a rotator unit or two, the dot sits ~0.005-0.01 deg
+   off the controller forward, and `aimRayMaxDevDeg` stops reading a literal
+   0.0000. One rotator unit is 0.0055 deg.
+2. **Published via a SEQLOCK**, not passed. The ray is built in the aim hook
+   (which fires on the engine's fire path) while the context is produced in the
+   camera hook, so there is no call chain to pass it down. Writer never blocks;
+   readers retry on an odd/changed sequence and refuse rather than hand back a
+   torn or stale snapshot.
+
+`baseX/Y/Z` is the `drive_view` **entry `*loc`** - PRE-head-offset AND
+PRE-eye-offset. Anything else and every hand sits half an IPD sideways and
+differs between eyes.
+
+**The lroundf-yaw / truncating-pitch asymmetry is preserved VERBATIM.** Yaw uses
+`lroundf` because it must cancel exactly; pitch uses a bare truncating cast, not
+because truncation is better but because that is what shipped, what the headset
+accepted, and what the banked 0.0000 was measured on. Promoting it would move the
+pitch by up to one unit every frame - a silent behaviour change inside a refactor
+whose whole claim is that it has none.
+
+**PROVEN INERT, and that is the entire value of the commit.** The legacy formula
+is kept as a shadow (`ray_legacy`) and `bsiaim selfcheck [n]` runs both,
+recording deltas as **INTEGERS** (an FRotator's int32s reinterpret as denormals
+and print as `0.000`; and even a correct `%.1f` of degrees prints a one-unit
+delta as `0.0`, which is the exact failure the instrument exists to see).
+
+> **1240 dispatches over 14 stations - three roll values x four yaws, plus a
+> pitch pair at roll +45 - every one reading `max|dPitch|=0 max|dYaw|=0
+> max|dRoll|=0 mismatches=0`, position round trip `0.0000 mm`. Seqlock: 416,904
+> publishes, 0 retries, 0 refusals, 0 foreign writes. With the frame chain made
+> the default: `aimRayMaxDevDegL/R` **0.0000**, `claimRatioH` **1.00851**,
+> 3 layers / 2 aim dots, zero faults - the s45 baseline exactly.**
+
+Rolled poses are in the sweep on purpose: divergence that varies with
+ORIENTATION, especially with roll, is the algebra bug that cost BioShock 1
+28.21 deg. A zero-roll test cannot see it.
+
+The zero-trim identity is left to the algebra rather than short-circuited. A
+`if (all trims zero) skip the compose` branch would make the identity trivial AND
+would mean the shipped default configuration never executes the compose path, so
+the first user to type a trim would be the first to run it.
+
 ## LIVE RESULTS (session 45 - I8: the viewmodel object graph, and two instrument limits)
 
 ### The first-person object graph, walked live from the pawn
