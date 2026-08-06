@@ -111,6 +111,54 @@ bool g_snapArmed = true;           // edge re-arm state; g_mutex holds it
 std::atomic<bool> g_stickLog{false};
 uint64_t g_lastStickLogMs = 0; // g_mutex
 
+// Session 44: the composed BUTTON word, edge-triggered ("vrinput padlog on").
+// sticklog covers the axes; until now nothing could read the buttons the game
+// actually saw, so every claim about an XR-to-pad mapping had to be inferred
+// from a game EFFECT - save-dependent, timing-dependent, and for a melee swing
+// or a weapon cycle on a one-weapon save not observable at all. This is the
+// direct instrument: press a Touch control, read the bit. Log-only.
+//
+// The comparison is against the last LOGGED state, not the last composed one,
+// so a change suppressed by the rate cap is still emitted on the next call
+// rather than lost. Triggers are compared as a two-state bucket so an analog
+// resting value cannot chatter.
+std::atomic<bool> g_padLog{false};
+uint16_t g_padLogButtons = 0; // g_mutex
+bool g_padLogLt = false, g_padLogRt = false;
+uint64_t g_padLogMs = 0;
+constexpr uint8_t kPadLogTrigOn = 64;  // quarter pull
+constexpr uint64_t kPadLogMinMs = 15;  // flood guard, not a sample interval
+
+// Names the set bits so a sweep can assert on text instead of on a hex word.
+void format_buttons(uint16_t b, char* out, size_t cap) {
+    struct Bit { uint16_t mask; const char* name; };
+    static const Bit kBits[] = {
+        {XINPUT_GAMEPAD_DPAD_UP, "DU"},        {XINPUT_GAMEPAD_DPAD_DOWN, "DD"},
+        {XINPUT_GAMEPAD_DPAD_LEFT, "DL"},      {XINPUT_GAMEPAD_DPAD_RIGHT, "DR"},
+        {XINPUT_GAMEPAD_START, "START"},       {XINPUT_GAMEPAD_BACK, "BACK"},
+        {XINPUT_GAMEPAD_LEFT_THUMB, "LS"},     {XINPUT_GAMEPAD_RIGHT_THUMB, "RS"},
+        {XINPUT_GAMEPAD_LEFT_SHOULDER, "LB"},  {XINPUT_GAMEPAD_RIGHT_SHOULDER, "RB"},
+        {XINPUT_GAMEPAD_A, "A"},               {XINPUT_GAMEPAD_B, "B"},
+        {XINPUT_GAMEPAD_X, "X"},               {XINPUT_GAMEPAD_Y, "Y"},
+    };
+    out[0] = '\0';
+    size_t n = 0;
+    for (const Bit& bit : kBits) {
+        if (!(b & bit.mask)) continue;
+        const size_t len = strlen(bit.name);
+        if (n + len + 2 >= cap) break;
+        if (n) out[n++] = '+';
+        memcpy(out + n, bit.name, len);
+        n += len;
+    }
+    if (!n && cap) {
+        const char* none = "-";
+        memcpy(out, none, 2);
+        return;
+    }
+    out[n] = '\0';
+}
+
 // Self-expiring test slots: the command seam polls at 1 Hz, so a "hold" must
 // outlive its command inside the DLL. deadline == 0 means empty.
 struct TimedStick { int16_t x = 0, y = 0; uint64_t deadline = 0; };
@@ -335,6 +383,26 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
         g_lastStickLogMs = now;
         BVR_LOG("[input] stick composed lx=%d ly=%d rx=%d ry=%d pkt=%u",
                 out.lx, out.ly, out.rx, out.ry, g_packet);
+    }
+
+    // Session 44 pad-map instrument: one line per BUTTON-word or trigger-bucket
+    // EDGE. Sticks ride the line for context but never trigger it, or a resting
+    // thumb would emit continuously.
+    if (g_padLog.load(std::memory_order_relaxed)) {
+        const bool lt = out.lt >= kPadLogTrigOn;
+        const bool rt = out.rt >= kPadLogTrigOn;
+        if ((out.buttons != g_padLogButtons || lt != g_padLogLt || rt != g_padLogRt) &&
+            now - g_padLogMs >= kPadLogMinMs) {
+            g_padLogButtons = out.buttons;
+            g_padLogLt = lt;
+            g_padLogRt = rt;
+            g_padLogMs = now;
+            char names[96];
+            format_buttons(out.buttons, names, sizeof names);
+            BVR_LOG("[input] pad 0x%04X %s lt=%u rt=%u lx=%d ly=%d rx=%d ry=%d pkt=%u",
+                    out.buttons, names, out.lt, out.rt, out.lx, out.ly, out.rx, out.ry,
+                    g_packet);
+        }
     }
 
     if (!g_loggedFirstCompose.exchange(true, std::memory_order_relaxed))
@@ -785,6 +853,20 @@ void handle_command(const char* args) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_stickLog.store(on, std::memory_order_relaxed);
         BVR_LOG("input: stick log %s (composed pad @10 Hz)", on ? "ON" : "off");
+    } else if (strcmp(verb, "padlog") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_padLog.store(on, std::memory_order_relaxed);
+        if (on) {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_padLogButtons = 0; // the first press after arming always prints
+            g_padLogLt = g_padLogRt = false;
+            g_padLogMs = 0;
+        }
+        BVR_LOG("input: pad log %s - one line per composed BUTTON or trigger EDGE "
+                "(sticks ride the line for context but never trigger it). This is the "
+                "instrument that answers 'which XInput bit does this Touch control "
+                "produce' directly, instead of inferring it from a game effect.",
+                on ? "ON" : "off");
     } else if (strcmp(verb, "test") == 0) {
         char what[16] = {};
         consumed = 0;

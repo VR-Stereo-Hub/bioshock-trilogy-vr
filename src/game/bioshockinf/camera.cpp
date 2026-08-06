@@ -484,6 +484,20 @@ struct Snapshot {
 };
 Snapshot g_last;
 
+// Session 44 (I7 controls): the ENGINE's own view Z, windowed between
+// heartbeats. The 1 Hz beat is a POINT sample and a jump's whole airborne arc
+// fits between two of them, so "did A jump" was unanswerable; crouch and sprint
+// want a STEP rather than an instant too. This accumulates the pre-drive value,
+// so the head offset never enters it - what moves this number is the pawn.
+// Written only on the latched camera thread (the detour turns foreign tids away
+// before the snapshot), consumed and reset by the heartbeat.
+struct ZWindow {
+    float min = 0.0f, max = 0.0f, last = 0.0f;
+    float prevX = 0.0f, prevY = 0.0f, travel = 0.0f; // horizontal ground travel
+    bool valid = false;
+};
+ZWindow g_zWin;
+
 // ---------------------------------------------------------------------------
 // The 1 Hz probe. `this` is an engine pointer we did not create, so every read
 // is SEH-guarded and the guarded body is POD-only: no logging and no allocation
@@ -979,6 +993,17 @@ void throttled(void* self, uint64_t now) {
             g_last.loc.x, g_last.loc.y, g_last.loc.z, g_last.rot.pitch, g_last.rot.yaw,
             g_last.rot.roll, g_last.rot.pitch * kRotToDeg, g_last.rot.yaw * kRotToDeg,
             g_last.rot.roll * kRotToDeg, perSec, count);
+    if (g_zWin.valid) {
+        // The I7 controls instrument. Read it as: zSpan > ~30 UU with last back
+        // near min = a JUMP happened inside this second; last sitting a step
+        // BELOW min-of-the-previous-beat and staying there = CROUCH; travel/s
+        // stepping up mid-walk with the stick unchanged = SPRINT.
+        BVR_LOG("[bsi] camera: z window min=%.1f max=%.1f last=%.1f span=%.1f | "
+                "ground travel %.1f UU this beat",
+                g_zWin.min, g_zWin.max, g_zWin.last, g_zWin.max - g_zWin.min, g_zWin.travel);
+        g_zWin.valid = false; // re-seed from the next dispatch
+        g_zWin.travel = 0.0f;
+    }
     if (g_last.sourceValid) {
         // The delta between the source the ACTIVE path read and the value
         // actually handed back. Non-zero means the documented 4x4 transform is
@@ -1129,6 +1154,25 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     g_last.rot = outRot;
     g_last.valid = true;
     g_lastSelf.store(self, std::memory_order_relaxed);
+
+    // Z window + ground travel (I7 controls instrument): every dispatch, not
+    // every beat. Travel is summed per dispatch rather than measured end-to-end
+    // so a there-and-back walk still reads as motion.
+    if (!g_zWin.valid) {
+        g_zWin.min = g_zWin.max = outLoc.z;
+        g_zWin.prevX = outLoc.x;
+        g_zWin.prevY = outLoc.y;
+        g_zWin.valid = true;
+    } else {
+        if (outLoc.z < g_zWin.min) g_zWin.min = outLoc.z;
+        if (outLoc.z > g_zWin.max) g_zWin.max = outLoc.z;
+        const float dx = outLoc.x - g_zWin.prevX;
+        const float dy = outLoc.y - g_zWin.prevY;
+        g_zWin.travel += sqrtf(dx * dx + dy * dy);
+        g_zWin.prevX = outLoc.x;
+        g_zWin.prevY = outLoc.y;
+    }
+    g_zWin.last = outLoc.z;
 
     if (!g_loggedFirstFire.exchange(true)) {
         BVR_LOG("[bsi] camera: FIRST FIRE - GetPlayerViewPoint detour live. this=%p tid=%u "
