@@ -315,6 +315,17 @@ std::atomic<int64_t> g_displayPeriodNs{0};
 std::atomic<bool> g_spikeTrace{false};
 std::atomic<uint32_t> g_spikeCount{0};   // lifetime; TRACE pairs prints the window delta
 std::atomic<uint32_t> g_spikeSeq{0};     // snapshot sequence number in the log
+// The IN-PROGRESS sampler (s43 escalation): the pair-close snapshot proved the
+// stall lives OUTSIDE our phases (unattributed 27-340 ms of every wander
+// spike), so the next question is WHICH ENGINE FUNCTION - answerable only by
+// catching the stalled thread mid-stall. A 4 ms poller watches the age of the
+// last pair close; once it exceeds the sample threshold (2.5x period) with no
+// new close, it stack-captures the draw thread (and the rest, via the s34
+// watchdog machinery) ONCE per episode, rate-limited. RVAs go to
+// pacetrace.log; tools/disasm-rva.py turns them into engine names.
+std::atomic<uint32_t> g_spikeStacks{0};        // captures taken (telemetry + cap)
+constexpr uint32_t kSpikeStackMax = 40;        // per-session log bound
+HANDLE g_spikeSamplerThread = nullptr;
 
 // M8 release blocker (a): the headset-disconnect stall guard. When the
 // headset idles, the runtime drops the session out of FOCUSED and xrWaitFrame
@@ -1167,6 +1178,48 @@ void watchdog_capture(uint32_t tid, const char* what, int64_t stuckMs) {
     watchdog_all_threads();
 }
 
+// Session 43: the spike-in-progress sampler (rationale at g_spikeStacks).
+// 4 ms poll while armed, 50 ms idle poll while not. One capture per episode:
+// an episode is "the pair that has not closed yet", identified by the QPC of
+// the PREVIOUS close - once a new close lands, the episode key changes and the
+// sampler re-arms. The 900 ms ceiling matches the pair-stat exclusion: a load
+// screen or alt-tab is not judder, and suspending threads through one helps
+// nobody. 2 s between captures bounds burst cost; kSpikeStackMax bounds the
+// session log.
+DWORD WINAPI spike_sampler_proc(void*) {
+    int64_t sampledEpisode = 0;
+    uint64_t lastCaptureMs = 0;
+    while (g_traceRun.load(std::memory_order_relaxed)) {
+        if (!g_spikeTrace.load(std::memory_order_relaxed) ||
+            g_spikeStacks.load(std::memory_order_relaxed) >= kSpikeStackMax) {
+            Sleep(50);
+            continue;
+        }
+        Sleep(4);
+        int64_t lastClose = g_pairLastCloseQpc.load(std::memory_order_relaxed);
+        if (lastClose == 0 || lastClose == sampledEpisode || g_qpcFreq == 0) continue;
+        int64_t ageUs = (phase_now() - lastClose) * 1000000 / g_qpcFreq;
+        int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+        int64_t thresholdUs = periodNs > 0 ? periodNs / 400 : 31250; // 2.5x period
+        if (thresholdUs < 20000) thresholdUs = 20000;
+        if (ageUs < thresholdUs || ageUs > 900000) continue;
+        uint64_t nowMs = GetTickCount64();
+        if (nowMs - lastCaptureMs < 2000) continue;
+        sampledEpisode = lastClose;
+        lastCaptureMs = nowMs;
+        g_spikeStacks.fetch_add(1, std::memory_order_relaxed);
+        char hdr[160];
+        sprintf_s(hdr, "SPIKE-SAMPLE #%u mid-stall age %lld ms (draw tid %u, then all threads):",
+                  g_spikeStacks.load(std::memory_order_relaxed),
+                  static_cast<long long>(ageUs / 1000),
+                  g_lastDrawTidSticky.load(std::memory_order_relaxed));
+        trace_write(hdr);
+        watchdog_capture(g_lastDrawTidSticky.load(std::memory_order_relaxed),
+                         "spike-draw", ageUs / 1000);
+    }
+    return 0;
+}
+
 DWORD WINAPI trace_thread_proc(void*) {
     uint32_t lastPresents = 0;
     uint32_t lastSubmitted = 0;
@@ -1375,6 +1428,11 @@ void trace_thread_start() {
     if (g_traceThread)
         BVR_LOG("xr: pace trace started - 1 Hz from its OWN thread, so it keeps "
                 "reporting while the present thread is blocked");
+    // Session 43: the spike-in-progress sampler rides the same run flag. While
+    // the spike trace is disarmed (BS1/BS2 always; Infinite without stereo) it
+    // is a 20 Hz relaxed-load poll that takes no action.
+    if (!g_spikeSamplerThread)
+        g_spikeSamplerThread = CreateThread(nullptr, 0, &spike_sampler_proc, nullptr, 0, nullptr);
 }
 
 // The DETACHED-PACING decision for one present, factored out so the flat
@@ -3668,10 +3726,16 @@ void set_pace_sync(bool on) {
 
 void set_spike_trace(bool on) {
     bool was = g_spikeTrace.exchange(on, std::memory_order_relaxed);
-    if (was != on)
+    if (was != on) {
+        // Re-arming resets the STACK budget, not the spike counter: boot 4 of
+        // s43 spent all 40 stack captures on menu/load stalls and reached
+        // gameplay with a mute sampler. The spike counter itself keeps
+        // counting (the TRACE pairs deltas depend on it being monotonic).
+        if (on) g_spikeStacks.store(0, std::memory_order_relaxed);
         BVR_LOG("xr: spike trace %s (pair interval > 2x period -> per-phase "
                 "snapshot in pacetrace.log; %u captured so far)",
                 on ? "ON" : "off", g_spikeCount.load(std::memory_order_relaxed));
+    }
 }
 
 void handle_pace_command(const char* args) {

@@ -341,6 +341,79 @@ yaw), and is much milder INDOORS than the user's outdoor headset bursts (39-113 
 every few seconds) - consistent with the load-sensitivity diagnostic. The hunt can
 iterate flat; outdoor repro needs the pad lane or an outdoor checkpoint.
 
+### WALKING is the real flat trigger, and every spike is OUTSIDE our code
+
+The pad lane moves the pawn in the TWN2 save (30 s stick-forward = 1770 UU; the s42
+"scene-locked" observation was that probe save's scripted state, not a lane defect).
+A 100 s turn-and-walk wander at native res reproduced the HEADSET SIGNATURE flat:
+7 spikes (29-350 ms, bursts, sd exploding to 47 ms in the bad seconds). The s43
+pair-close snapshot's verdict on every one: `unattributed` carries 27-340 ms while
+our two detour halves carry <= 12 ms (one normal gated wait) - the stall is the
+GAME side, never capture/submit/pacing. The SR lane is exonerated as the carrier.
+
+### The spike-in-progress sampler names two stall signatures (s43)
+
+The escalation instrument (4 ms poller; when the open pair's age exceeds 2.5x period
+it stack-captures the draw thread + all threads via the s34 watchdog machinery, once
+per episode, 2 s rate-limit, 40/session cap - `SPIKE-SAMPLE` lines in pacetrace.log):
+
+- **Signature A - the 30-second grid.** Samples land on an EXACT 30 s cadence
+  (:16/:46 wall-clock marks, idle or wandering alike), ~30-50 ms stalls. Mid-stall
+  the game thread (draw tid) sits in ntdll at a wait, through a repeated exe chain
+  (ret RVAs 0x4BA248 <- 0x4BCE6D <- 0x4BEBCA, plus 0xC47A70/0xC47F90/0xC4812D and
+  0xBC712B frames): the 0x4BA248 call site is `mov eax,[edx+0x10]; push 0x64;
+  call eax` - a virtual event-Wait(100 ms) in a loop (FEvent::Wait shape). EVERY
+  other thread is also parked in ntdll waits at that moment - nobody is computing;
+  the game thread is waiting on a barrier. 30 s == this build's
+  `TimeBetweenPurgingPendingKillObjects=30` ([Engine.Engine]; XEngine.ini:98,
+  regenerated from DefaultEngine.ini:300) - the GC tick's flush barrier is the
+  prime suspect (UE3 GC flushes async loading before collecting; the wait-with-
+  timeout loop matches a flush, not the CPU mark phase). CONFIRMATION PROBE below.
+- **Signature B - off-grid, view/traversal-bound.** Mid-stall the game thread is in
+  ntdll under a DEEP REPETITIVE chain (ret RVAs 0xA7F3C5/0xC30928/0xAA2083/0xAA217E/
+  0xD7C5CC repeating, entered via 0x4639F3, 0xC42400) - an iterate-and-wait shape:
+  0xAA217E's call target 0xA7F1E0 walks an object array testing flag words and
+  calling two virtuals per element (streaming/level-visibility update shape), and
+  the thread ends in a wait inside that walk (IO?). This is the streaming-class
+  stall the head-turn/walking trigger produces. Named by shape, not yet by string -
+  further naming deferred unless the levers miss.
+
+### THE CAUSE, NAMED AND CONFIRMED BY A-B-A: the 30-second GC tick (s43)
+
+`TimeBetweenPurgingPendingKillObjects` intervention, same save, same sim (80 Hz),
+native 2064x2208, matched protocols:
+
+| leg | interval | idle window | wander (5 rounds turn+walk) |
+|---|---|---|---|
+| A (boots 3-4) | 30 | spike/sample grid at EXACT 30 s marks (:16/:46), 29-50 ms stalls | 4-7 spikes (29-350 ms, bursts) |
+| B (boot 5) | 300 | grid GONE for 3 min (one post-load settle burst ~60 s after load) | **0 spikes** |
+| A' (boot 6, reversal) | 30 | periodic stalls RETURN - 39.9 + 33.6 ms spikes plus a 16.6 ms sub-threshold tick at ~30/60 s spacing | - |
+
+Nuance recorded honestly: the tick's cost VARIES with accumulated garbage - on a
+fresh-loaded idle scene some ticks stay under the 25 ms spike threshold (the A' leg),
+while during traversal they stack with streaming work into the 40-350 ms bursts the
+headset feels. Mechanism fit: UE3's timed full GC flushes async loading first (the
+Signature-A event-wait barrier), and its cost scales with object/garbage churn -
+exactly the "worse outdoors / worse while moving" load sensitivity.
+
+**The candidate fix (headset verdict pending): `TimeBetweenPurgingPendingKillObjects=300`
+in the game folder's DefaultEngine.ini** (backup `.bvr-bak-s43` beside it). Risk notes:
+UE3 still GCs on level transitions regardless of the timer, so garbage does not grow
+unbounded; a 300 s timed GC will cost more when it does fire (rare enough to be
+acceptable if the headset agrees); 32-bit address headroom is the watch item on long
+sessions. Signature B (traversal/streaming walk) remains the documented residual with
+the texture-pool lane researched and ranked next.
+
+### The ini propagation lane, PROVEN (s43)
+
+`XGame\Config\DefaultEngine.ini` (game folder) IS the source the boot-derived
+per-user XEngine.ini regenerates from: changing
+`TimeBetweenPurgingPendingKillObjects` 30 -> 300 in DefaultEngine.ini:300 appeared
+verbatim in XEngine.ini:98 on the next boot. This is the write lane for every
+[TextureStreaming]/[Engine.Engine]/[SystemSettings] lever (XEngine.ini itself is
+never edited - hard rule upheld). Discipline: timestamped `.bvr-bak-s43` backup
+beside the original before the first edit; probes reverted after reading.
+
 ## LIVE RESULTS (session 42 - I6 judder flat half; I7 opens: the exec-surface truth, object dispatch, the pad lane)
 
 ### The judder, measured flat: the wait GATES here, and the instrument now rides every session
@@ -493,12 +566,14 @@ dispatch machinery is fine; the registration step is what's missing:
   game-click alone did not advance it; `game-key.ps1 -Game bsi -Key Space` since s43) ->
   wait for the menu ~30 s -> `vrcmd` confirms pump=game -> ONE LoadCheckpoint -> 45 s ->
   verify by GNames/pawn walk, THEN probe.
-- s43 adds a FOURTH observed behaviour: a LoadCheckpoint dispatched at a menu that LOOKS
-  settled (~90 s after boot, pump=game confirmed) can be a SILENT NO-OP - no load, no
-  intro, PC pointer unchanged, beat cadence unchanged. Verify by `bsifields 1F0 8`
-  (pawn absent + same PC = nothing happened); the remedy is simply ONE more
-  LoadCheckpoint a minute later (s43: the second dispatch loaded TWN2 clean - draws
-  dipped to 26/s, cinematic quad cycled, PC relocated, pawn at +0x1FC). The
+- s43 adds a FOURTH observed behaviour: the load can be SLOW - a LoadCheckpoint
+  dispatched at a settled menu (pump=game confirmed) can take 60-100 s before the
+  transition fires (boot 3: dispatch ~15:41:1x, pawn still absent at +35 s, letterbox
+  transition at +60 s, pawn present after). It first read as a "silent no-op cured by
+  a retry" (boot 2: retry + load completed together) - the truer model is one slow
+  load. Discipline: after dispatch, poll `bsifields 1F0 8` every ~30 s up to ~2 min
+  before concluding anything; a retry into a load-in-flight has not misfired yet but
+  is unnecessary. The
   intro-contamination hazard is only when the dispatch lands at title/attract; the
   no-op case is safe to retry.
 - The s37 pre-existing freeze hit AGAIN at boot 1 of s43 (frozen at the attract movie

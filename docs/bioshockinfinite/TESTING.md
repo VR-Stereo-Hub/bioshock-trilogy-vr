@@ -555,6 +555,37 @@ it defaults ON with stereo). Load your save. Everything is F10; never type in-he
    `TRACE pairs` lines under VDXR are the measurement half of the verdict (pairs/s vs
    72, sd, waitGate). Report the feel; the log carries the numbers.
 
+## S43 stutter verdict checklist (VDXR, native 2064x2208 - the hitch-spike A/B)
+
+The s43 flat hunt NAMED the dominant flat spike source: the engine's 30-second GC tick
+(`TimeBetweenPurgingPendingKillObjects=30`) parks the game thread on a flush barrier
+for 30-50+ ms - proven by intervention (interval -> 300: the 30 s spike grid vanished
+in 3 min idle AND the matched wander protocol went 4-7 spikes -> 0), with the reversal
+leg's grid-return closing the A-B-A. The candidate ships as
+`TimeBetweenPurgingPendingKillObjects=300` in the GAME FOLDER's
+`XGame\Config\DefaultEngine.ini` (line ~300; the boot-derived XEngine.ini picks it up -
+verify `Documents\My Games\...\XGame\Config\XEngine.ini` line ~98 reads 300 after
+boot). Backup: `DefaultEngine.ini.bvr-bak-s43` beside it; restore = copy back.
+
+1. Boot as usual (preset auto-arms everything; the spike instrument + sampler ride
+   with stereo automatically - nothing to press). Load your save.
+2. **The verdict line: head turns OUTDOORS at native 2064x2208.** Smooth, or still
+   hitching in bursts? Compare against the s42 memory (39-113 ms bursts every few
+   seconds).
+3. If you can: 60 s standing still in a quiet spot, then 60 s walking + turning
+   through new streets. The old signature was bursts every few seconds while moving.
+4. Optional across-boot A/B (each leg needs a restart, so only if you have patience):
+   restore the backup (interval back to 30), reboot, same spot - the difference IS
+   the lever.
+5. Afterwards, desktop: keep `%LOCALAPPDATA%\BioshockVR\bsi\pacetrace.log`. The
+   `TRACE pairs ... spikes=N` field counts hitch-class intervals per second, and
+   every `TRACE spike`/`SPIKE-SAMPLE` line carries the attribution. Report the feel;
+   the log carries the numbers.
+6. Known open residuals, not regressions: a one-time settle burst ~60 s after a
+   checkpoint load; traversal (streaming) spikes may remain outdoors - if the feel
+   is better but not clean, the next flat rung (texture-pool sizing via
+   `-ReadTexturePoolFromIni`, already researched) targets the remainder.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

@@ -467,7 +467,16 @@ resolution has BOTH proven levers (DR-I8: `XUserOptions.ini ResolutionX/Y` honou
       matter, not a pacing defect. The hitch-source hunt (texture streaming vs GC vs
       shaders vs encoder) and the user's "camera slightly jumpy" observation carry
       forward as their own item; the lens/FOV/resolution/config milestone itself is
-      complete.
+      complete. *(s43, 2026-08-06: THE HUNT RAN - spike instrument + mid-stall stack
+      sampler in core (opt-in, BS1-proofed), flat repro via the walking pad lane at
+      native 2064x2208, and the dominant source NAMED BY A-B-A: the engine's 30 s GC
+      tick (TimeBetweenPurgingPendingKillObjects=30 -> 300 removed the idle spike
+      grid and took the matched wander from 4-7 spikes to 0; reversal returned it).
+      Candidate fix live in the game folder's DefaultEngine.ini (backup beside it);
+      headset verdict pending - S43 checklist in TESTING.md. Streaming/traversal
+      residual documented with the texture-pool lane researched next; the "jumpy
+      camera" observation stays open - not instrumented separately this session,
+      the spike correlation instrument now exists for it.)*
       Standing I8 guard from the user: the lever must not break the viewmodels -
       **ANSWERED 2026-08-06 on the user's pistol save, weapon and hands DRAWN**: lens1 ==
       the lever claim exactly (tanV 1.2634, 100% of 211 valid samples, delta 0.0%), NO

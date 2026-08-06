@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 42" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 43" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,57 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 42 (I6 judder flat half DONE + sync armable; I7 OPEN - pad lane LIVE flat, exec surface truth mapped - branch `si42-inf-judder-bindings`)
+### Infinite: current state after session 43 (THE STUTTER HUNT: cause NAMED - the 30 s GC tick - fix candidate live, headset verdict pending; branch `si43-inf-stutter`)
+
+**Session 43 (2026-08-06) ran the hunt the user ordered: research first, instrument
+second, cause named by intervention third - no resolution/quality trade anywhere.**
+
+1. **RESEARCH (rung 1a, committed before any change)**: `docs/RESEARCH.md` "Session 43"
+   - three sourced sweeps (vanilla Infinite stutter fixes, VR-mod prior art with
+   license flags, UE3 GC/streaming internals) ending in a 7-entry ranked experiment
+   list. Load-bearing facts: PC texture pool is auto-calculated at boot (ini PoolSize
+   only honored with `-ReadTexturePoolFromIni`; pool auto-calc is blind to our XR
+   swapchains), this build ships GC every 30 s
+   (`TimeBetweenPurgingPendingKillObjects=30`) and its own AddToWorld amortizer
+   DISABLED, and no VR mod masks 40-120 ms stalls better than the compositor already
+   does - the ecosystem consensus is fix-the-cause.
+2. **THE SPIKE INSTRUMENT (core, opt-in, BS1-proofed)**: pair intervals > 2x period
+   snapshot per-phase last/max tables + stage markers + the unattributed remainder to
+   pacetrace.log (`TRACE spike`), `spikes=N` rides the 1 Hz TRACE pairs line, and a
+   4 ms sampler stack-captures the stalled draw thread mid-stall (`SPIKE-SAMPLE`,
+   watchdog machinery reused). Armed with Infinite stereo; `vrpace spike` is the seam.
+3. **THE FLAT REPRO**: the pad lane WALKS in the TWN2 save (s42 scene-lock was that
+   save's scripted state) - a 100 s turn-and-walk wander at native 2064x2208
+   reproduced the headset signature (4-7 spikes, 29-350 ms, bursts, sd exploding) and
+   EVERY spike carried 27-340 ms outside our code vs <= 12 ms inside - the SR
+   lane/pacing/capture are exonerated.
+4. **THE CAUSE, NAMED BY A-B-A** (`docs/bioshockinfinite/ENGINE_NOTES.md` s43 LIVE
+   RESULTS): the 30-second spike grid is the engine's timed GC (game thread parked on
+   an FEvent::Wait(100 ms) flush barrier, everyone else idle - Signature A; the
+   traversal serialize-walk is Signature B). Intervention 30 -> 300 in the game
+   folder's DefaultEngine.ini (the PROVEN propagation source of boot-derived
+   XEngine.ini): idle grid GONE, matched wander 4-7 -> 0 spikes; reversal leg brought
+   the periodic stalls back (cost varies with garbage - some idle ticks stay
+   sub-threshold). **The candidate fix is LIVE: interval=300, backup
+   `DefaultEngine.ini.bvr-bak-s43` beside it.**
+5. **Rung 0 (grant demo): the combination is FALSIFIED, honestly recorded** -
+   `bsiload` resolves class AND `Default__` CDO, CreateInventory(class) and
+   AcquireWeapon(CDO) both dispatch and return, but neither registers in the
+   NextPlasmid/NextWeapon cycles: the missing seam is the loadout/inventory-manager
+   list registration (needs bsifields explicit-object generalization - next time the
+   lane opens). LoadCheckpoint facts extended: loads can take 60-100 s (poll the pawn,
+   do not conclude no-op), and the s43 boot-1 attract freeze hit once more
+   (force-kill protocol worked).
+
+**NEXT (session 44)**: the user's headset verdict on the GC lever (S43 checklist in
+TESTING.md - head turns outdoors at native res; pacetrace.log now carries spikes/s
+and per-spike attribution), ideally banking an OUTDOOR save so the flat harness can
+wander the heavy case; if residual traversal spikes remain, the texture-pool lane
+(`-ReadTexturePoolFromIni` + PoolSize steps) is researched, ranked and ready; then
+the deferred aim + motion-controls + model-sync block, and the per-game pad map
+(audit spec in ENGINE_NOTES).
+
+### Infinite: current state after session 42 (superseded by session 43 above - kept for the derivation trail; I6 judder flat half DONE + sync armable; I7 OPEN - pad lane LIVE flat, exec surface truth mapped - branch `si42-inf-judder-bindings`)
 
 **Session 42 (2026-08-05) closed I6's last flat item, opened I7's controls half, and
 corrected the cheat-lane's foundational assumption.** Three commits.
@@ -5914,6 +5964,33 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 43 (Infinite) - 2026-08-06 - THE STUTTER HUNT: the 30 s GC tick named by A-B-A, fix candidate live at native res
+
+Branch `si43-inf-stutter` off `si42-inf-judder-bindings` (9dfcc44). Research rung first
+(RESEARCH.md s43: vanilla fixes, VR prior art with license flags, UE3 internals -> a
+7-entry ranked experiment list, committed before any change). Instrument rung second:
+spike-triggered evidence capture in core (pair-close snapshot: per-phase last/max +
+stage markers + the unattributed remainder; `spikes=N` on the TRACE pairs line; a 4 ms
+mid-stall sampler reusing the s34 watchdog stack capture) - opt-in via `vrpace spike`,
+armed with Infinite stereo, BS1 sim-lane proof named in the commit. Flat repro third:
+the pad lane WALKS in the TWN2 save, and a turn-and-walk wander at native 2064x2208
+reproduced the headset burst signature with EVERY spike outside our code (<= 12 ms in
+our phases vs 27-340 ms unattributed) - SR/pacing exonerated. The cause fell to an
+A-B-A intervention: the EXACT 30 s spike grid (game thread on an FEvent::Wait(100)
+flush barrier, all threads idle) is the engine's timed GC
+(TimeBetweenPurgingPendingKillObjects=30); setting 300 via the game folder's
+DefaultEngine.ini (the propagation lane to boot-derived XEngine.ini, proven this
+session) removed the idle grid AND took the matched wander from 4-7 spikes to 0; the
+reversal leg brought the periodic stalls back. Candidate fix left LIVE (backup
+`.bvr-bak-s43` beside it); headset verdict + an outdoor save are the session-44 asks;
+the texture-pool lane is ranked next for any traversal residual. Rung 0's grant
+combination was executed and FALSIFIED honestly (CreateInventory/AcquireWeapon
+dispatch+return but never register in the plasmid/weapon cycles - the loadout-manager
+registration is the missing seam); LoadCheckpoint's slow-load behaviour (60-100 s)
+and one more attract freeze recorded. game-key.ps1 grew `-Game bsi`. The user's
+mid-session directive - no fixes until the cause is guaranteed by evidence - is
+recorded in the plan and honored by the A-B-A.
 
 ### Session 42 (Infinite) - 2026-08-05 - I6 judder flat half + I7 opens: pad lane live, the exec surface mapped honest
 
