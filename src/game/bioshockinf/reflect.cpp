@@ -676,6 +676,111 @@ void cmd_fields(const char* args) {
             shown >= 80 ? " - CAPPED, narrow with [startHex]" : "");
 }
 
+// ---- Session 45b: the two readers the I8 derivation was missing -------------
+// bsifields names a UObject a POINTER FIELD reaches, but a UE3 Components list
+// is a TArray {Data, Num, Max} - the Data buffer is not a UObject, so the s44
+// walker skips it silently. bsiarray walks the triple; bsidump is the typed
+// raw view for deriving non-object layout (bone counts, transform banks).
+// Read-only, command-driven, same gate stack as bsifields.
+
+// bsiarray 0x<obj> <offHex> [n]: interpret obj+off as TArray<void*> and name
+// every element that reads as a UObject.
+void cmd_array(const char* args) {
+    unsigned addr = 0, off = 0, n = 32;
+    if (!args || sscanf_s(args, "%x %x %u", &addr, &off, &n) < 2 || !addr) {
+        BVR_LOG("[bsi] array: usage - bsiarray 0x<obj> <offHex> [n]. Reads the TArray "
+                "{Data,Num,Max} triple at obj+off and names each element's class. The "
+                "offset comes from a bsidump/bsifields pass (e.g. a pawn's Components).");
+        return;
+    }
+    void* pcObj = nullptr;
+    const uint8_t* const* pcVt = nullptr;
+    if (!resolve_dispatch_target("array", pcObj, pcVt)) return;
+    if (!derive_obj_name_off()) {
+        BVR_LOG("[bsi] array: REFUSED - UObject::Name offset did not derive");
+        return;
+    }
+    const uint8_t* obj = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(addr));
+    if (!bvr::pattern_scan::is_memory_valid(obj + off, 12)) {
+        BVR_LOG("[bsi] array: REFUSED - %p+0x%X is not readable as a TArray triple",
+                (const void*)obj, off);
+        return;
+    }
+    const void* const* data = *reinterpret_cast<const void* const* const*>(obj + off);
+    const int32_t num = *reinterpret_cast<const int32_t*>(obj + off + 4);
+    const int32_t max = *reinterpret_cast<const int32_t*>(obj + off + 8);
+    BVR_LOG("[bsi] array: %p+0x%X = {Data %p, Num %d, Max %d}", (const void*)obj, off,
+            (const void*)data, num, max);
+    // The triple's own invariants are the acceptance gate: a garbage offset
+    // fails them long before an element read could fault.
+    if (num < 0 || max < num || num > 0x10000) {
+        BVR_LOG("[bsi] array: NOT a live TArray (invariants failed) - wrong offset");
+        return;
+    }
+    if (num == 0) {
+        BVR_LOG("[bsi] array: empty (Num 0)");
+        return;
+    }
+    if (!data ||
+        !bvr::pattern_scan::is_memory_valid(data, static_cast<size_t>(num) * sizeof(void*))) {
+        BVR_LOG("[bsi] array: Data buffer unreadable for %d elements - wrong offset or "
+                "not a pointer array",
+                num);
+        return;
+    }
+    if (n > 64) n = 64;
+    int shown = 0;
+    for (int32_t i = 0; i < num && shown < static_cast<int>(n); ++i) {
+        const void* e = data[i];
+        if (!e) continue;
+        char nm[128];
+        if (object_class_name(e, nm, sizeof nm) && nm[0]) {
+            BVR_LOG("[bsi] array:   [%2d] %p  class %s", i, e, nm);
+        } else {
+            BVR_LOG("[bsi] array:   [%2d] %p  (not a UObject)", i, e);
+        }
+        ++shown;
+    }
+    if (num > static_cast<int32_t>(n))
+        BVR_LOG("[bsi] array: ... %d more (raise [n], cap 64)", num - static_cast<int32_t>(n));
+}
+
+// bsidump 0x<addr> [dwords] [startHex]: one line per dword - hex, float and
+// int32 readings side by side, UObject pointers named. This is the layout
+// triage BS2 ran as `vrbones map`, generalized to any address.
+void cmd_dump(const char* args) {
+    unsigned addr = 0, count = 0x40, start = 0;
+    if (!args || sscanf_s(args, "%x %u %x", &addr, &count, &start) < 1 || !addr) {
+        BVR_LOG("[bsi] dump: usage - bsidump 0x<addr> [dwords] [startHexOff]. Typed raw "
+                "view: hex | float | int per dword, UObject pointers named.");
+        return;
+    }
+    void* pcObj = nullptr;
+    const uint8_t* const* pcVt = nullptr;
+    if (!resolve_dispatch_target("dump", pcObj, pcVt)) return;
+    derive_obj_name_off(); // best-effort: pointer naming degrades gracefully
+    if (count > 0x200) count = 0x200;
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(addr));
+    BVR_LOG("[bsi] dump: %p from +0x%X, %u dwords", (const void*)base, start, count);
+    for (unsigned i = 0; i < count; ++i) {
+        const uint32_t off = start + i * 4;
+        if (!bvr::pattern_scan::is_memory_valid(base + off, 4)) {
+            BVR_LOG("[bsi] dump:   +0x%03X <unreadable - stopped>", off);
+            break;
+        }
+        const uint32_t u = *reinterpret_cast<const uint32_t*>(base + off);
+        float f;
+        memcpy(&f, &u, 4);
+        char nm[128] = {};
+        if (u > 0x10000 && (u & 3) == 0)
+            object_class_name(reinterpret_cast<const void*>(static_cast<uintptr_t>(u)), nm,
+                              sizeof nm);
+        BVR_LOG("[bsi] dump:   +0x%03X  0x%08X  f=%- 12.6g i=%-11d%s%s", off, u,
+                static_cast<double>(f), static_cast<int32_t>(u), nm[0] ? "  -> class " : "",
+                nm);
+    }
+}
+
 // bsicallat <hexaddr> <Func> [float]: cmd_call generalized to an EXPLICIT
 // object address (one bsifields just printed). Same gate stack; the vtable
 // slot interlock carries over unchanged because FindFunction is UObject-level
@@ -684,14 +789,16 @@ void cmd_fields(const char* args) {
 void cmd_call_at(const char* args) {
     unsigned addr = 0;
     char fn[96] = {};
-    char valStr[32] = {};
-    const int n = sscanf_s(args ? args : "", "%x %95s %31s", &addr, fn,
+    char valStr[96] = {};
+    const int n = sscanf_s(args ? args : "", "%x %95s %95s", &addr, fn,
                            static_cast<unsigned>(sizeof fn), valStr,
                            static_cast<unsigned>(sizeof valStr));
     if (n < 2) {
-        BVR_LOG("[bsi] callat: usage - bsicallat <hexaddr> <Func> [floatArg]. The address "
-                "comes from a bsifields line; dispatch is FindFunction+ProcessEvent on "
-                "THAT object. Acceptance is the downstream EFFECT.");
+        BVR_LOG("[bsi] callat: usage - bsicallat <hexaddr> <Func> [0x<ptr>|i:<int>|"
+                "n:<Name>|<float>]. The address comes from a bsifields line; dispatch is "
+                "FindFunction+ProcessEvent on THAT object. Parms are echoed back after the "
+                "call (s45b) so out-params/returns are readable. Acceptance is still the "
+                "downstream EFFECT.");
         return;
     }
     const int32_t nameIndex = patterns::fname_find(fn);
@@ -740,6 +847,23 @@ void cmd_call_at(const char* args) {
             const uint32_t p = strtoul(valStr + 2, nullptr, 16);
             memcpy(parms, &p, sizeof p);
             parmKind = " with pointer parm";
+        } else if (valStr[0] == 'i' && valStr[1] == ':') {
+            // s45b: int32 at parms+0 (e.g. GetBoneName(int BoneIndex)).
+            const int32_t v = atoi(valStr + 2);
+            memcpy(parms, &v, sizeof v);
+            parmKind = " with int parm";
+        } else if (valStr[0] == 'n' && valStr[1] == ':') {
+            // s45b: FName {Index, Number=0} at parms+0, looked up from the
+            // pool by TEXT (e.g. MatchRefBone(name Bone)). A missing name is
+            // a refusal, not a zero - index 0 is 'None' and would silently
+            // ask about the wrong bone.
+            const int32_t idx = patterns::fname_find(valStr + 2);
+            if (idx < 0) {
+                BVR_LOG("[bsi] callat: REFUSED - FName '%s' not in GNames", valStr + 2);
+                return;
+            }
+            memcpy(parms, &idx, sizeof idx);
+            parmKind = " with FName parm";
         } else {
             const float v = strtof(valStr, nullptr);
             memcpy(parms, &v, sizeof v);
@@ -763,6 +887,24 @@ void cmd_call_at(const char* args) {
         BVR_LOG("[bsi] callat: '%s' (UFunction %p) returned. NOT acceptance - measure the "
                 "downstream effect.",
                 fn, func);
+        // s45b: echo the parm block back. UE3 writes out-params and the return
+        // value into this block, so the first dwords ARE the answer for the
+        // reader natives (GetFirstPersonAttachment -> [0] is the object,
+        // MatchRefBone -> the int past the FName, GetBoneLocation -> a vec3).
+        // Interpretation is the caller's job - this only shows the bytes.
+        for (int i = 0; i < 8; ++i) {
+            uint32_t u;
+            memcpy(&u, parms + i * 4, 4);
+            float fv;
+            memcpy(&fv, &u, 4);
+            char pnm[128] = {};
+            if (u > 0x10000 && (u & 3) == 0)
+                object_class_name(reinterpret_cast<const void*>(static_cast<uintptr_t>(u)),
+                                  pnm, sizeof pnm);
+            BVR_LOG("[bsi] callat:   parms[%d] +0x%02X  0x%08X  f=%- 12.6g i=%-11d%s%s", i,
+                    i * 4, u, static_cast<double>(fv), static_cast<int32_t>(u),
+                    pnm[0] ? "  -> class " : "", pnm);
+        }
     }
 }
 
@@ -1021,6 +1163,14 @@ bool handle_command(const char* cmd, const char* args) {
         cmd_call_at(args);
         return true;
     }
+    if (strcmp(cmd, "bsiarray") == 0) {
+        cmd_array(args);
+        return true;
+    }
+    if (strcmp(cmd, "bsidump") == 0) {
+        cmd_dump(args);
+        return true;
+    }
     if (strcmp(cmd, "bsiload") == 0) {
         cmd_load(args);
         return true;
@@ -1036,6 +1186,7 @@ bool handle_command(const char* cmd, const char* args) {
             BVR_LOG("[bsi] reflect: GNames Num=%d Max=%d | native table %s | commands: "
                     "bsireflect selftest | bsinative <Class> <Func> | bsinames <start> [n] | "
                     "bsiname <text> | bsivtable [n] | bsicall <Func> [floatArg] | "
+                    "bsiarray 0x<obj> <off> [n] | bsidump 0x<addr> [n] [start] | "
                     "bsiexec <console cmd>",
                     patterns::fname_count(), patterns::fname_max(),
                     g_table.base ? "seeded" : "not seeded yet");
