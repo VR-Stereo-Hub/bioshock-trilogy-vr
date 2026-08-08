@@ -69,11 +69,44 @@ bioshockinf-local**, so no BS1/BS2 inertness proof is owed and none could be nee
    dialogs freeze the world while the render keeps presenting (positive control
    before judging any intervention picture).
 
-**NEXT**: the in-headset verdict (TESTING.md "S45b hands checklist") - decoupling,
-believable size (left hand expects a trim: constant mirrored-frame offset seen flat),
-arms modes, animations-in-hand, rolled-pose sync, hole-vs-dot. Then per-weapon
-profiles + the arsenal save, origin substitution only if the hole-vs-dot verdict
-demands it, animtrans, and the reapply-burst gate refinement.
+**HEADSET VERDICTS IN (user, 2026-08-09).** What works, verbatim scope: hand and gun
+models move correctly with the controllers; models and lasers in sync, NO drift; the
+sliders work for model and aim; hand scale is very good and scales the weapon
+correctly; aiming with both hands works, hands independent. **The I8 core is
+headset-confirmed.**
+
+**The six findings, with their readings:**
+
+1. **THE PERSISTENT STANCE ANIMATION (the headline next item)**: the weapon's idle
+   stance HOLDS a non-forward pose until firing resets it. The user wants exactly the
+   PERSISTENT stance suppressed while keeping every transient (reload, the occasional
+   left-hand vigor flourish they explicitly like). Since the drive pins the grip
+   POSITION, the stance can only enter through the ADOPTED anchor/cluster quats -
+   candidate levers, in evidence order: (a) measure which bones the stance writes
+   (bsibones vs a post-fire sample), (b) `bDisableFirstPersonAttachmentSubtleFidget`
+   exists in the FName pool - a possible source-side kill, (c) pin the ANCHOR quat to
+   a captured ready-pose reference while adopting everything else, (d) a time-domain
+   high-pass (persistent deviation servoed out, transients pass). Do NOT re-tune the
+   left wrist before this lands (user's own sequencing).
+2. **Hole lands slightly ABOVE the dot** and 3. **bullets visibly leave the screen
+   center, not the gun** - read as ONE root cause: the engine's trace ORIGIN is still
+   the camera/eye while our dot ray starts at the hand; two parallel rays from
+   different origins never agree on a finite wall. The fix is the fire-ORIGIN seam
+   (BS1's origin-substitution shape, this engine's derivation - the s44 "instrument
+   the trace result" rung is the front door; AXWeapon's native list is already dumped).
+   Expect 2 to collapse when 3 lands; only then bake any residual as aim trim.
+4. **Arms-hide wrist cap looks strange** - the wrist-boundary vertices pinch to the
+   collapsed grip point. Cosmetic; candidates: keep the forearm twist bones (arm22/21)
+   driven and hide only upper arm/parent, or collapse to a wrist-offset point.
+5. **Left wrist angle reads unnatural** - BLOCKED behind finding 1 by design, then
+   it is trim territory (the constant mirrored-frame offset was seen flat too).
+6. **Anim toggle OFF misaligns the models** - recorded, NOT to be fixed (user keeps
+   animations on; rigid mode uses the boot-time snapshot which embeds whatever stance
+   was live at resolve).
+
+**NEXT SESSION**: finding 1 (measure -> choose lever -> ship with a toggle), findings
+2+3 (the origin seam, hole==dot as acceptance), finding 4 if cheap. Then per-weapon
+profiles + the arsenal save, animtrans, the reapply-burst gate refinement.
 
 ### Infinite: HEADSET VERDICTS IN (s44b, same night) - I7 CONTROLS AND AIM ARE DONE
 
