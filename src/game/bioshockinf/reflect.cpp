@@ -626,7 +626,7 @@ bool object_class_name(const void* obj, char* out, size_t outSize) {
     const int32_t metaIdx = *reinterpret_cast<const int32_t*>(
         static_cast<const uint8_t*>(clsOfCls) + g_objNameOff);
     if (metaIdx <= 0 || metaIdx >= patterns::fname_count()) return false;
-    char metaName[32];
+    char metaName[patterns::kFNameTextBufMin]; // fname_text refuses smaller buffers
     if (!patterns::fname_text(metaIdx, metaName, sizeof metaName)) return false;
     if (strcmp(metaName, "Class") != 0) return false;
     const int32_t idx =

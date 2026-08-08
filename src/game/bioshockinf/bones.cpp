@@ -42,7 +42,7 @@ int g_parent[kMaxBones];
 int g_grip[2] = {-1, -1};                 // 0 = L_Grip, 1 = R_Grip
 bool g_cluster[2][kMaxBones] = {};        // grip subtree, incl. the grip itself
 bool g_armSet[2][kMaxBones] = {};         // PlayerHands[LR]*arm* chains
-char g_names[kMaxBones][40];              // resolve-time copies, diagnostics only
+char g_names[kMaxBones][64];              // resolve-time copies (fname_text needs >= 64)
 
 // ---- write state ------------------------------------------------------------
 // One written bank, disjoint per-hand masks (a bone can only be in one hand's
@@ -187,37 +187,40 @@ bool read_ref_skeleton() {
                 num);
         return false;
     }
-    // Grip subtrees: walk each bone's parent chain to a grip. Roots included.
+    // Membership by NAME (the live rig is name-flat - every RefSkeleton
+    // parent reads 0, so there is no subtree to walk; the names carry the
+    // structure instead, measured s45b):
+    //   bone 0            PlayerHandsChest           - never driven
+    //   1 / 22            L_Grip / R_Grip            - the anchors
+    //   *armPalm/*Digit*  the HAND                   - grip cluster (rigid
+    //                       with the controller; fingers must survive hide)
+    //   *arm1/21/22, *_ArmParent  the ARM CHAIN      - follow/hide set
+    // Side comes from the letter before "arm" ("...Larm...", "...RArm...",
+    // "L_Arm...", case-insensitive).
     for (int i = 0; i < num; ++i) {
-        int p = i;
-        for (int guard = 0; guard < num; ++guard) {
-            if (p == g_grip[0]) {
-                g_cluster[0][i] = true;
-                break;
-            }
-            if (p == g_grip[1]) {
-                g_cluster[1][i] = true;
-                break;
-            }
-            if (p == 0) break;
-            p = g_parent[p];
+        if (i == g_grip[0]) {
+            g_cluster[0][i] = true;
+            continue;
         }
-    }
-    // Arm chains, classified by name: "...L_Arm...", "...Larm..." and the R
-    // twins ("PlayerHandsL_ArmParent", "PlayerHandsLarm1", "PlayerHandsLarm21"
-    // live). Case-insensitive; a bone already in a grip cluster stays there.
-    for (int i = 0; i < num; ++i) {
-        if (g_cluster[0][i] || g_cluster[1][i]) continue;
-        char low[40];
-        for (size_t k = 0; k < sizeof low; ++k) {
+        if (i == g_grip[1]) {
+            g_cluster[1][i] = true;
+            continue;
+        }
+        char low[64];
+        low[sizeof low - 1] = '\0';
+        for (size_t k = 0; k < sizeof low - 1; ++k) {
             low[k] = static_cast<char>(tolower(static_cast<unsigned char>(g_names[i][k])));
             if (!g_names[i][k]) break;
         }
         const char* arm = strstr(low, "arm");
         if (!arm || arm == low) continue;
-        char side = *(arm - 1) == '_' && arm - 1 > low ? *(arm - 2) : *(arm - 1);
-        if (side == 'l') g_armSet[0][i] = true;
-        if (side == 'r') g_armSet[1][i] = true;
+        const char side = (*(arm - 1) == '_' && arm - 1 > low) ? *(arm - 2) : *(arm - 1);
+        const int h = side == 'l' ? 0 : (side == 'r' ? 1 : -1);
+        if (h < 0) continue;
+        if (strstr(low, "palm") || strstr(low, "digit"))
+            g_cluster[h][i] = true;
+        else
+            g_armSet[h][i] = true;
     }
     int cl = 0, cr = 0, al = 0, ar = 0;
     for (int i = 0; i < num; ++i) {
