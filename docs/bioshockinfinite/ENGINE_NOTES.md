@@ -2387,3 +2387,66 @@ time; start this one early.
   **Do not spend another session on key binds, launch flags or ini edits to enable the console.**
   Go through `APlayerController::ConsoleCommand` (native, impl RVA `0x136070`) or straight to the
   gameplay natives. *(Session 34, user-verified in-game.)*
+
+## I8 - the first-person model vocabulary (session 45b, offline)
+
+Re-ran the native-table dump fresh over the disk image (scratchpad recipe re-written, same
+8-byte `{name, thunk}` shape; 2647 entries, matching the s34 census exactly) and swept the live
+GNames dump for the model/skeleton vocabulary. Everything below is structural fact from the exe
+image or a name-pool line; nothing has been observed live yet.
+
+### The first-person model chain has NAMES
+
+- **`AXPawn::GetFirstPersonAttachment`** (thunk rva `0x4F88C0`) - the pawn hands out its
+  first-person rig through a named native. This is the front door for R1c's live walk: dispatch
+  it (or find the backing property `FirstPersonAttachment`, FName present) instead of guessing
+  component offsets.
+- **`XFirstPersonAttachment`** and **`XFirstPersonMeshActorBase`** are live classes
+  (`AttachFirstPersonMesh` / `DetachFirstPersonMesh` natives; `Default__` CDOs in GNames).
+  `XFirstPersonStaticMeshActor` and `XSongbirdFirstPersonAttachment` also exist - the FP rig is
+  an ACTOR-attachment family, not a bare component on the pawn.
+- **Weapon models are split classes AND split hands**: `XWeaponModel`, `XWeaponModelFirstPerson`,
+  `XWeaponModelThirdPerson` (+DLC variants), with properties `CurrentFPWeaponModel`,
+  `CurrentTPWeaponModel`, **`CachedLHWeaponModel`, `CachedRHWeaponModel`** - the engine itself
+  models a left-hand and right-hand holdable separately. `AXWeaponModelThirdPerson` carries
+  `SetEquipSocket`/`SetUnEquipSocket`; the FP variant has no socket natives (its attach path is
+  the FP-attachment lane above).
+- `XSeqAct_SetPlayerHandsMesh` / `XSeqVar_PlayerHands` (Kismet surface for the hands mesh) and
+  `XCamMode_FirstPerson` exist; `OnFinishedLoweringHands`, `ClearAnimStateRequiresTwoHandFallback`
+  and `XAnimNotify_TwoHandedFallbackGunShift` say hands state is animation-driven with a
+  two-handed fallback lane.
+
+### The skeletal data model is stock UE3 (despite Morpheme)
+
+- FName pool carries **`SpaceBases`, `LocalAtoms`, `CachedSpaceBases`, `CachedLocalAtoms`,
+  `RefSkeleton`, `BoneAtom`, `bKeepSpaceBases`, `ParentBoneMap`, `BoneName/BoneNames/BoneIndex`**
+  - the classic UE3 skeletal component layout by name. The ROADMAP's "SpaceBases, not Havok"
+  expectation is confirmed at the vocabulary level; offsets still owed live (R1d).
+- **`USkeletalMeshComponent` keeps the full stock bone API as natives** (43): `MatchRefBone`
+  (name -> index), `GetBoneLocation/GetBoneMatrix/GetBoneQuaternion/GetBoneAxis`, `GetBoneName`,
+  `GetParentBone`, `HideBone/HideBoneByName/IsBoneHidden/UnHideBone/UnHideBoneByName`,
+  `GetSocketByName/GetSocketBoneName`, `SetForceRefPose`, `ForceSkelUpdate`,
+  `UpdateRBBonesFromSpaceBases` (the name proves SpaceBases is the render-feeding bank),
+  `UpdateAnimations`, `SetParentAnimComponent`, `SetSkeletalMesh`, `SetAnimTreeTemplate`.
+- **Morpheme (NaturalMotion) is integrated INTO the AnimNode tree**, not replacing it:
+  `MorphemeNetwork`, `AnimNodeMorphemeSequence`, `XMorphemeNotifierAnimNodeSequence`,
+  `XCore.XMorphemeAction`, plus `USkeletalMeshComponent::ForceMorphemeAnimTeleport`. The stock
+  AnimNode family (AnimNodeSequence/Slot/BlendPerBone/AimOffset...) is all present too.
+  Implication for the drive: whatever evaluates bones each frame (Morpheme or stock), the
+  adopt-then-compose design only cares WHETHER the bank restamps - that is R1e's oracle, and no
+  Morpheme-specific handling is assumed or ported.
+- **`UPrimitiveComponent` has component-level transform/visibility natives**: `SetTranslation`,
+  `SetRotation`, `SetScale`, `SetScale3D`, `SetHidden`, `SetOwnerNoSee`, `SetOnlyOwnerSee`,
+  `SetDepthPriorityGroup`, `SetViewOwnerDepthPriorityGroup`. If the FP rig proves to be a whole
+  attached actor/component, a component-transform drive is a candidate lane the remasters never
+  had - to be weighed against the bone lane on R1e evidence, not preference.
+- Socket machinery is stock: `SkeletalMeshSocket` (+CDO), `Sockets`, `AttachToSocket`,
+  `BoneOrSocketName`, `ParentAttachmentBoneOrSocketName`, `ChildAttachmentBoneOrSocketAttachName`.
+
+### Derivation notes
+
+- Dump recipe: PE section walk, ASCII `<Class>exec<Function>` strings (preceding-NUL required -
+  the linker pools literals by suffix), 8-byte `{nameVA, implVA}` scan over `.data`/`.rdata`,
+  2647/2647 resolved. Dump artifact stays in the scratchpad (game-derived).
+- GNames sweep used the existing live dump (`%LOCALAPPDATA%\BioshockVR\bsi\gnames.txt`, s42;
+  indices are per-boot and were not used - text only).
