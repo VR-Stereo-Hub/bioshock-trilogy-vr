@@ -42,6 +42,8 @@ int g_parent[kMaxBones];
 int g_grip[2] = {-1, -1};                 // 0 = L_Grip, 1 = R_Grip
 bool g_cluster[2][kMaxBones] = {};        // grip subtree, incl. the grip itself
 bool g_armSet[2][kMaxBones] = {};         // PlayerHands[LR]*arm* chains
+bool g_armKeep[2][kMaxBones] = {};        // s46: the forearm-TWIST subset (arm21/arm22)
+                                          // - hide style 1 keeps these driven
 char g_names[kMaxBones][64];              // resolve-time copies (fname_text needs >= 64)
 
 // ---- write state ------------------------------------------------------------
@@ -171,6 +173,7 @@ bool read_ref_skeleton() {
     g_grip[0] = g_grip[1] = -1;
     memset(g_cluster, 0, sizeof g_cluster);
     memset(g_armSet, 0, sizeof g_armSet);
+    memset(g_armKeep, 0, sizeof g_armKeep);
     for (int i = 0; i < num; ++i) {
         const uint8_t* e = data + static_cast<size_t>(i) * patterns::kMeshBoneStride;
         const int32_t nameIdx =
@@ -217,10 +220,15 @@ bool read_ref_skeleton() {
         const char side = (*(arm - 1) == '_' && arm - 1 > low) ? *(arm - 2) : *(arm - 1);
         const int h = side == 'l' ? 0 : (side == 'r' ? 1 : -1);
         if (h < 0) continue;
-        if (strstr(low, "palm") || strstr(low, "digit"))
+        if (strstr(low, "palm") || strstr(low, "digit")) {
             g_cluster[h][i] = true;
-        else
+        } else {
             g_armSet[h][i] = true;
+            // s46 hide style 1: the forearm-twist bones (arm21/arm22) can stay
+            // driven while the upper arm collapses - a mesh fact by NAME, like
+            // everything else in this classifier.
+            if (strstr(low, "arm21") || strstr(low, "arm22")) g_armKeep[h][i] = true;
+        }
     }
     int cl = 0, cr = 0, al = 0, ar = 0;
     for (int i = 0; i < num; ++i) {
@@ -461,7 +469,7 @@ void tick_resolve(uint64_t nowMs) {
 }
 
 bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale,
-           int armsMode, bool animMode) {
+           int armsMode, bool animMode, int hideStyle, const float wristDeg[3]) {
     if (hand < 0 || hand > 1) return false;
     if (!g_comp) return false;
     if (!rig_intact()) {
@@ -499,6 +507,31 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     quat_from_rotator(target.rot, qt);
     quat_mul(qaInv, qt, qtc); // controller rotation, expressed in component space
 
+    // s46 (headset finding 5): the per-hand ARM-RELATIVE wrist adjustment - an
+    // extra quat W in the ARM chain's compose only, about the grip. Algebra:
+    // qtcArm = qtc (x) W is EXACTLY "rotate the chain about the grip point
+    // with the axes riding the controller" (qtc x W x conj(qtc) is W in the
+    // driven frame, and conjugation cancels in both the quat and the dp term).
+    // W is built about the identity ROTATOR-frame axes (X fwd, Y right, Z up -
+    // the ue_rot_basis frame quat_from_rotator encodes), NOT xr_local_trim_quat
+    // (XR axes - wrong frame here). Signs: +pitch up, +yaw right, +roll
+    // clockwise; roll innermost, matching the trim-slider conventions.
+    float qtcArm[4];
+    const bool wristActive = wristDeg && (wristDeg[0] != 0.0f || wristDeg[1] != 0.0f ||
+                                          wristDeg[2] != 0.0f);
+    if (wristActive) {
+        constexpr float kDegToRad = 3.14159265f / 180.0f;
+        float qy[4], qp[4], qr[4], t[4], w[4];
+        bvr::xrmath::quat_axis_angle(0.0f, 0.0f, 1.0f, wristDeg[1] * kDegToRad, qy);
+        bvr::xrmath::quat_axis_angle(0.0f, -1.0f, 0.0f, wristDeg[0] * kDegToRad, qp);
+        bvr::xrmath::quat_axis_angle(-1.0f, 0.0f, 0.0f, wristDeg[2] * kDegToRad, qr);
+        quat_mul(qp, qr, t);
+        quat_mul(qy, t, w);
+        quat_mul(qtc, w, qtcArm);
+    } else {
+        memcpy(qtcArm, qtc, sizeof qtcArm);
+    }
+
     // Adopt the engine pose for everything we are about to write.
     const bool useAnim = animMode;
     for (int i = 0; i < g_boneCount; ++i) {
@@ -514,23 +547,44 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         const bool inCluster = g_cluster[hand][i];
         const bool inArms = armsMode != 0 && g_armSet[hand][i];
         if (!inCluster && !inArms) continue;
-        const uint8_t kind = (inArms && armsMode == 2) ? 2 : 0;
+        // s46: hide is now a per-BONE decision - style 1 keeps the forearm
+        // twist bones (arm21/arm22) driven so the wrist cap keeps its taper
+        // instead of pinching every arm bone into one point.
+        const bool hideThis =
+            inArms && armsMode == 2 && !(hideStyle == 1 && g_armKeep[hand][i]);
+        const uint8_t kind = hideThis ? 2 : 0;
         float wq[8];
         if (kind == 2) {
-            // hide: collapse ONTO the driven grip and zero the scale - the
-            // collapse is what degenerates the cross-boundary skin blend to
-            // the wrist instead of stretching a web (BS2 s41, shape only).
+            // hide: collapse the bone and zero the scale - the collapse is
+            // what degenerates the cross-boundary skin blend to the wrist
+            // instead of stretching a web (BS2 s41, shape only). Style 0
+            // collapses ONTO the driven grip; style 2 onto a point a hand's
+            // breadth BEHIND it (along the controller's own -forward), so the
+            // boundary ring pinches behind the wrist rather than inside it.
             memcpy(wq, src[i], 32);
-            wq[4] = ptc[0];
-            wq[5] = ptc[1];
-            wq[6] = ptc[2];
+            float cp[3] = {ptc[0], ptc[1], ptc[2]};
+            if (hideStyle == 2) {
+                const float back[3] = {-10.0f * fc.worldScale * 0.01f, 0.0f, 0.0f};
+                float rb[3];
+                bvr::xrmath::quat_rotate(qtc[0], qtc[1], qtc[2], qtc[3], back, rb);
+                cp[0] += rb[0];
+                cp[1] += rb[1];
+                cp[2] += rb[2];
+            }
+            wq[4] = cp[0];
+            wq[5] = cp[1];
+            wq[6] = cp[2];
             wq[7] = 0.0f;
         } else {
+            // Arm bones take qtcArm (the wrist-adjusted compose) in BOTH the
+            // quat and the dp rotation - one rigid rotation about the grip;
+            // using it in only one of the two would shear the chain apart.
+            const float* q = inArms ? qtcArm : qtc;
             float dp[3] = {(src[i][4] - aT[0]) * scale, (src[i][5] - aT[1]) * scale,
                            (src[i][6] - aT[2]) * scale};
             float rp[3];
-            bvr::xrmath::quat_rotate(qtc[0], qtc[1], qtc[2], qtc[3], dp, rp);
-            quat_mul(qtc, src[i], wq); // src[i][0..3] is the quat
+            bvr::xrmath::quat_rotate(q[0], q[1], q[2], q[3], dp, rp);
+            quat_mul(q, src[i], wq); // src[i][0..3] is the quat
             wq[4] = ptc[0] + rp[0];
             wq[5] = ptc[1] + rp[1];
             wq[6] = ptc[2] + rp[2];

@@ -54,8 +54,19 @@ void tick_resolve(uint64_t nowMs);
 // Drive one hand's cluster (and its arm chain per armsMode) toward the
 // game-space target. Pass-1 game thread only. Returns false when the rig is
 // not resolved or the identity gates refused.
+//
+// s46 additions:
+//  - hideStyle (armsMode 2 only): 0 = collapse all four arm bones onto the
+//    grip (the s45b behaviour), 1 = keep the forearm-twist bones arm21/arm22
+//    driven and collapse only arm1/ArmParent, 2 = collapse onto a point ~10 cm
+//    BEHIND the grip along the controller's forward.
+//  - wristDeg: per-call ARM-RELATIVE wrist adjustment {pitch, yaw, roll} in
+//    degrees, an extra quat in the ARM chain's compose only, about the grip -
+//    hand cluster, aim and laser untouched (headset finding 5's mechanism:
+//    the hand-vs-forearm RELATIVE angle is the adopted engine pose, which no
+//    rigid model trim can change). nullptr or zeros = byte-identical compose.
 bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale,
-           int armsMode, bool animMode);
+           int armsMode, bool animMode, int hideStyle, const float wristDeg[3]);
 
 // Stop driving one hand (or both when hand < 0). Clears masks; no restore
 // write - see the restamp fact above.
