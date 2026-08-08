@@ -796,6 +796,63 @@ void cmd_dump(const char* args) {
     }
 }
 
+// bsidiff 0x<addr> [dwords]: snapshot-compare (s46). The first call on a range
+// snapshots it; each later call on the SAME range prints only the dwords that
+// CHANGED since the previous call, then re-snapshots. Built for the UBOOL
+// hunt: snapshot the object, flip the game-side switch, diff - the changed
+// dword names the offset. (The bsidump before/after alternative is ~80
+// interleaved log lines per probe, per candidate class.)
+constexpr unsigned kDiffCapDwords = 0x200;
+uintptr_t g_diffAddr = 0;
+unsigned g_diffCount = 0;
+uint32_t g_diffSnap[kDiffCapDwords];
+
+void cmd_diff(const char* args) {
+    unsigned addr = 0, count = 0x40;
+    if (!args || sscanf_s(args, "%x %u", &addr, &count) < 1 || !addr) {
+        BVR_LOG("[bsi] diff: usage - bsidiff 0x<addr> [dwords]. First call snapshots the "
+                "range; later calls print only CHANGED dwords, then re-snapshot.");
+        return;
+    }
+    void* pcObj = nullptr;
+    const uint8_t* const* pcVt = nullptr;
+    if (!resolve_dispatch_target("diff", pcObj, pcVt)) return;
+    if (count == 0) count = 1;
+    if (count > kDiffCapDwords) count = kDiffCapDwords;
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(addr));
+    if (!bvr::pattern_scan::is_memory_valid(base, count * 4)) {
+        BVR_LOG("[bsi] diff: %p unreadable for %u dwords - refusing", (const void*)base,
+                count);
+        return;
+    }
+    if (g_diffAddr != addr || g_diffCount != count) {
+        memcpy(g_diffSnap, base, count * 4);
+        g_diffAddr = addr;
+        g_diffCount = count;
+        BVR_LOG("[bsi] diff: snapshot %u dwords at %p - intervene, then re-run the same "
+                "bsidiff",
+                count, (const void*)base);
+        return;
+    }
+    unsigned changed = 0, shown = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        const uint32_t now = *reinterpret_cast<const uint32_t*>(base + i * 4);
+        if (now == g_diffSnap[i]) continue;
+        ++changed;
+        if (shown < 40) {
+            float fo, fn;
+            memcpy(&fo, &g_diffSnap[i], 4);
+            memcpy(&fn, &now, 4);
+            BVR_LOG("[bsi] diff:   +0x%03X  0x%08X -> 0x%08X  (f %.6g -> %.6g)", i * 4,
+                    g_diffSnap[i], now, static_cast<double>(fo), static_cast<double>(fn));
+            ++shown;
+        }
+        g_diffSnap[i] = now;
+    }
+    BVR_LOG("[bsi] diff: %u changed dword(s) at %p%s", changed, (const void*)base,
+            changed > shown ? " (capped at 40 lines)" : "");
+}
+
 // bsicallat <hexaddr> <Func> [float]: cmd_call generalized to an EXPLICIT
 // object address (one bsifields just printed). Same gate stack; the vtable
 // slot interlock carries over unchanged because FindFunction is UObject-level
@@ -1206,6 +1263,10 @@ bool handle_command(const char* cmd, const char* args) {
     }
     if (strcmp(cmd, "bsidump") == 0) {
         cmd_dump(args);
+        return true;
+    }
+    if (strcmp(cmd, "bsidiff") == 0) {
+        cmd_diff(args);
         return true;
     }
     if (strcmp(cmd, "bsiload") == 0) {

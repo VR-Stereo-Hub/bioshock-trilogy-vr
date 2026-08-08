@@ -264,6 +264,134 @@ void adopt_one(int hand, int i) {
     g_animValid[i] = true;
 }
 
+// ---- the s46 stance instrument: bank snapshots ------------------------------
+// Four slots of raw SpaceBases atoms, captured SYNCHRONOUSLY in the command
+// handler (the drive may be OFF during a measurement - engine truth - so no
+// deferral to a drive tick that would never run). Gated on the game thread
+// (the pump the camera hook owns) and the rig identity gates; a diff refuses
+// across rig generations (a level transition between snaps would silently
+// compare different skeleton instances).
+struct SnapSlot {
+    bool valid = false;
+    uint8_t* bank = nullptr;
+    int boneCount = 0;
+    uint32_t resolves = 0;        // rig generation
+    uint32_t midDrawRestamps = 0; // restamp-cadence context for the diff
+    uint64_t stampMs = 0;
+    float atoms[kMaxBones][8];
+    bool torn[kMaxBones];
+};
+SnapSlot g_snap[4];
+
+// Geodesic angle between two bone quats, degrees. abs() of the 4-D dot:
+// Morpheme is free to restamp q as -q, and without it a sign flip reads as
+// ~360 deg of phantom stance. Normalized first (the torn-read class exists).
+float quat_angle_deg(const float* a, const float* b) {
+    const float na = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3]);
+    const float nb = sqrtf(b[0] * b[0] + b[1] * b[1] + b[2] * b[2] + b[3] * b[3]);
+    if (na < 1e-6f || nb < 1e-6f) return 0.0f;
+    float d = fabsf((a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) / (na * nb));
+    if (d > 1.0f) d = 1.0f;
+    return 2.0f * acosf(d) * 57.29578f;
+}
+
+bool cmd_snap(const char* rest) {
+    int slot = -1;
+    if (sscanf_s(rest, "%d", &slot) != 1 || slot < 0 || slot > 3) {
+        BVR_LOG("[bsi] bones: usage - bsibones snap <0-3>");
+        return true;
+    }
+    const uint32_t camTid = camera::camera_tid();
+    if (camTid == 0 || GetCurrentThreadId() != camTid) {
+        BVR_LOG("[bsi] bones: snap REFUSED - not on the game thread (tid=%u camera=%u); "
+                "the camera hook must own the pump",
+                GetCurrentThreadId(), camTid);
+        return true;
+    }
+    if (!g_comp || !rig_intact()) {
+        BVR_LOG("[bsi] bones: snap REFUSED - rig not resolved/intact");
+        return true;
+    }
+    SnapSlot& s = g_snap[slot];
+    int torn = 0;
+    for (int i = 0; i < g_boneCount; ++i) {
+        memcpy(s.atoms[i], g_bank + static_cast<size_t>(i) * kAtom, 32);
+        const float* q = s.atoms[i];
+        const float n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+        s.torn[i] = !(n2 > 0.5f && n2 < 2.0f);
+        torn += s.torn[i];
+    }
+    s.valid = true;
+    s.bank = g_bank;
+    s.boneCount = g_boneCount;
+    s.resolves = g_resolves;
+    s.midDrawRestamps = g_midDrawRestamps;
+    s.stampMs = GetTickCount64();
+    BVR_LOG("[bsi] bones: snap %d - %d bones from bank %p (gen %u, %d torn)", slot,
+            g_boneCount, (void*)g_bank, g_resolves, torn);
+    return true;
+}
+
+bool cmd_snap_diff(const char* rest) {
+    int a = -1, b = -1;
+    if (sscanf_s(rest, "%d %d", &a, &b) != 2 || a < 0 || a > 3 || b < 0 || b > 3) {
+        BVR_LOG("[bsi] bones: usage - bsibones diff <slotA> <slotB>");
+        return true;
+    }
+    const SnapSlot& A = g_snap[a];
+    const SnapSlot& B = g_snap[b];
+    if (!A.valid || !B.valid) {
+        BVR_LOG("[bsi] bones: diff REFUSED - slot %d %s, slot %d %s", a,
+                A.valid ? "ok" : "empty", b, B.valid ? "ok" : "empty");
+        return true;
+    }
+    if (A.bank != B.bank || A.boneCount != B.boneCount || A.resolves != B.resolves) {
+        BVR_LOG("[bsi] bones: diff REFUSED - different rig generations (bank %p/%p, "
+                "bones %d/%d, gen %u/%u)",
+                (void*)A.bank, (void*)B.bank, A.boneCount, B.boneCount, A.resolves,
+                B.resolves);
+        return true;
+    }
+    float ang[kMaxBones], dist[kMaxBones];
+    int idx[kMaxBones];
+    for (int i = 0; i < A.boneCount; ++i) {
+        ang[i] = quat_angle_deg(A.atoms[i], B.atoms[i]);
+        const float dx = B.atoms[i][4] - A.atoms[i][4];
+        const float dy = B.atoms[i][5] - A.atoms[i][5];
+        const float dz = B.atoms[i][6] - A.atoms[i][6];
+        dist[i] = sqrtf(dx * dx + dy * dy + dz * dz);
+        idx[i] = i;
+    }
+    // insertion sort by angle, descending (43 bones)
+    for (int i = 1; i < A.boneCount; ++i) {
+        const int v = idx[i];
+        int j = i - 1;
+        while (j >= 0 && ang[idx[j]] < ang[v]) {
+            idx[j + 1] = idx[j];
+            --j;
+        }
+        idx[j + 1] = v;
+    }
+    int moved = 0;
+    for (int i = 0; i < A.boneCount; ++i)
+        if (ang[i] > 0.5f) ++moved;
+    BVR_LOG("[bsi] bones: diff %d->%d dt=%llums restamps+%u | %d/%d bones moved >0.5deg "
+            "(worst 15 below)",
+            a, b, static_cast<unsigned long long>(B.stampMs - A.stampMs),
+            B.midDrawRestamps - A.midDrawRestamps, moved, A.boneCount);
+    for (int k = 0; k < 15 && k < A.boneCount; ++k) {
+        const int i = idx[k];
+        if (ang[i] <= 0.01f && dist[i] <= 0.01f) break; // noise floor - stop early
+        BVR_LOG("[bsi] bones:   #%2d %-22s %7.2f deg  d=%6.2f UU  scale %.3f->%.3f%s%s%s%s%s",
+                i, g_names[i], ang[i], dist[i], A.atoms[i][7], B.atoms[i][7],
+                g_cluster[0][i] ? "  [L cluster]" : "",
+                g_cluster[1][i] ? "  [R cluster]" : "",
+                g_armSet[0][i] ? "  [L arm]" : "", g_armSet[1][i] ? "  [R arm]" : "",
+                (A.torn[i] || B.torn[i]) ? "  [TORN]" : "");
+    }
+    return true;
+}
+
 } // namespace
 
 void tick_resolve(uint64_t nowMs) {
@@ -501,6 +629,8 @@ bool handle_command(const char* cmd, const char* args) {
         release("command", -1);
         return true;
     }
+    if (args && strncmp(args, "snap", 4) == 0) return cmd_snap(args + 4);
+    if (args && strncmp(args, "diff", 4) == 0) return cmd_snap_diff(args + 4);
     // status (default)
     BVR_LOG("[bsi] bones: rig %s comp=%p bones=%d resolves=%u fails=%u | drives L=%u "
             "R=%u adopts L=%u R=%u midDrawRestamps=%u reapplies=%u gateRefusals=%u",
