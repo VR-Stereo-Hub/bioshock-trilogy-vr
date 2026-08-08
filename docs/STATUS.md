@@ -98,8 +98,14 @@ headset-confirmed.**
 4. **Arms-hide wrist cap looks strange** - the wrist-boundary vertices pinch to the
    collapsed grip point. Cosmetic; candidates: keep the forearm twist bones (arm22/21)
    driven and hide only upper arm/parent, or collapse to a wrist-offset point.
-5. **Left wrist angle reads unnatural** - BLOCKED behind finding 1 by design, then
-   it is trim territory (the constant mirrored-frame offset was seen flat too).
+5. **Left wrist angle reads unnatural** - BLOCKED behind finding 1 by design, and
+   the user's correction (2026-08-09) is load-bearing: **a model trim CANNOT fix
+   this.** In follow mode the arm rides the hand with the same composed rotation, so
+   a trim rotates hand+arm as one rigid piece - the hand-vs-forearm RELATIVE angle is
+   the ADOPTED ENGINE POSE (the held vigor stance), i.e. finding 1's mechanism. If a
+   bad angle survives the stance fix, the lever is a new ARM-RELATIVE wrist
+   adjustment: an extra quat in the ARM chain's compose only (about the grip), hand/
+   aim/laser untouched - the cluster/arm split in bones.cpp already supports it.
 6. **Anim toggle OFF misaligns the models** - recorded, NOT to be fixed (user keeps
    animations on; rigid mode uses the boot-time snapshot which embeds whatever stance
    was live at resolve).
