@@ -124,6 +124,42 @@ inline constexpr uint32_t kActorRotationOffset = 0x50;
 inline constexpr uint32_t kPawnGetBaseAimRotationVtblOffset = 0x2E8;
 inline constexpr uint32_t kPawnGetBaseAimRotationRetImm = 4; // ret imm / 4 == 1 arg
 
+// ---- The fire-ORIGIN seam (session 46, I8) ---------------------------------
+// AXPawn::XGetWeaponStartTraceLocation - where the weapon trace STARTS. The
+// s45b headset findings 2+3 (hole above the dot; bullets leaving the screen
+// center) are one defect: this function returns the CAMERA viewpoint while the
+// aim dot's ray starts at the HAND - two parallel rays from different origins.
+//
+// DERIVATION (offline s46, the s44 thunk recipe re-run):
+//   1. Native-table dump (2079 rows resolved by the recorded PE-walk recipe)
+//      names `AXPawnexecXGetWeaponStartTraceLocation` thunk at 0x4F9430 and
+//      `...FloatingLocation` thunk at 0x4F94B0.
+//   2. The Location thunk evaluates ONE optional Weapon param and calls THIS
+//      implementation directly: `call 0x5344A0` with (FVector* out, Weapon*)
+//      pushed - `__thiscall`, 2 stack args, hence **ret 8** (C2 08 00 sits at
+//      impl+0x61). It returns the retbuf pointer in eax; the copy-back is 12
+//      bytes (a plain FVector).
+//   3. The Floating variant's impl (0x53C500) CALLS this one, then appends a
+//      4th dword read from pawn+0xBC - so 0x5344A0 is the single choke point
+//      for both natives. E8 census: Floating has 13 callers (the C++ fire
+//      sites), this inner one has 2 (its own thunk + the Floating wrapper).
+//   4. THE BODY IS THE DIAGNOSIS: with a controller it calls
+//      controller->vtbl[+0x210] (returns the camera object, called once to
+//      null-test and once for the dispatch) and then calls THE EXACT
+//      kGetPlayerViewPointRva impl (0x1E10C0) - the function the camera drive
+//      already detours. The trace origin IS the (VR-driven) camera eye, read
+//      from the disassembly, not inferred. The camera itself never calls
+//      either native (it reads GetPlayerViewPoint directly), so a hook here
+//      cannot feed back into the view - the s44 collision hazard is
+//      structurally absent at this seam.
+inline constexpr uint32_t kXGetWeaponStartTraceLocationImplRva = 0x5344A0;
+inline constexpr uint8_t kXGetWeaponStartTraceLocationRetImm = 8; // 2 stack args
+// First 13 bytes at the impl, pinned as the install gate (same discipline as
+// kGetPlayerViewPointPrologue): sub esp,0x24; push esi; mov esi,ecx;
+// cmp dword ptr [esi+0x218], 0  (the Controller null-test that opens the body).
+inline constexpr uint8_t kXGetWeaponStartTraceLocationPrologue[] = {
+    0x83, 0xEC, 0x24, 0x56, 0x8B, 0xF1, 0x83, 0xBE, 0x18, 0x02, 0x00, 0x00, 0x00};
+
 // ---- UE3 reflection (derived offline session 36, DR-I1) --------------------
 //
 // Derivation, in full, because it is reusable and it is what made the frameless

@@ -536,6 +536,10 @@ void draw_debug_ui() {
     ImGui::TextDisabled("bsiaim probe on|off | on|off | dump <n> | status");
 }
 
+int last_aiming_hand() {
+    return g_lastHand.load(std::memory_order_relaxed);
+}
+
 float trim_get(int hand, int axis) {
     return g_aimTrim[hand & 1][axis & 1].load(std::memory_order_relaxed);
 }

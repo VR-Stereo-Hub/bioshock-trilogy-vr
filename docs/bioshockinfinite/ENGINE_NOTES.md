@@ -552,6 +552,54 @@ The controller's vtable slot +0x2F4 (which this function delegates to) stays REC
 as the next candidate only if a future weapon or state turns out to bypass the pawn
 seam. It is not needed for the base game: the pawn seam is proven.
 
+### THE FIRE-ORIGIN SEAM: AXPawn::XGetWeaponStartTraceLocation (s46)
+
+The s45b headset findings 2+3 (hole above the dot; bullets leaving the screen center)
+are one defect: **the weapon trace STARTS at the camera viewpoint while the aim dot's
+ray starts at the hand**. Two parallel rays from different origins never agree on a
+finite wall, and the angular gap shrinks with wall distance (origin parallax) where a
+direction error would stay constant.
+
+Derivation (offline s46, the s44 thunk recipe re-run over the disk image):
+
+1. **The native-table dump re-ran clean** (recorded PE-walk recipe: preceding-NUL
+   `<Class>exec<Function>` strings, 8-byte {nameVA, implVA} pairs, impl must land in
+   .text). 2,079 rows resolved this time - the s34 census counted 2,647 against the
+   in-memory table, so the offline regex misses some pooled-suffix names (e.g.
+   `execXGetWeaponStartTraceFloatingLocation`, found by a manual string search); use
+   the offline dump to FIND candidates, `bsinative` to verify them live.
+2. `AXPawn::execXGetWeaponStartTraceLocation` thunk at **0x4F9430**: evaluates ONE
+   optional Weapon param, then `call 0x5344A0` with (FVector* retbuf, Weapon*) pushed
+   - the implementation named in two instructions, `__thiscall`, 2 stack args, hence
+   **ret 8** (`C2 08 00` at impl+0x61), retbuf pointer returned in eax, 12-byte copy
+   back into the script Result.
+3. `AXPawn::execXGetWeaponStartTraceFloatingLocation` thunk at **0x4F94B0**, impl
+   **0x53C500**: calls the SAME inner impl 0x5344A0, then appends a 4th dword read
+   from pawn+0xBC (a 16-byte Result). E8 census: the Floating impl has **13 callers**
+   (the C++ fire/trace sites); the inner impl has **2** (its own thunk + the Floating
+   wrapper). **0x5344A0 is therefore the single choke point for both natives.**
+4. **The body is the diagnosis.** With a controller the inner impl calls
+   controller->vtbl[+0x210] (returns the camera object; called once as a null test,
+   once for the dispatch) and then calls **the exact `kGetPlayerViewPointRva` impl
+   (0x1E10C0)** - the function the camera drive already detours. The trace origin IS
+   the (VR-driven) camera eye, read from the disassembly, not inferred. The recorded
+   s44 hazard ("the camera may read the same path") is settled in the safe direction:
+   the camera never calls this native - the dependency is one-way, so a hook here
+   cannot feed back into the view.
+
+The seam (fire.cpp, `bsifire`): MinHook detour at 0x5344A0, installed lazily from the
+camera tick behind THREE gates (build gate, pinned 13-byte prologue, `C2 08 00` arity
+scan). Call the original first; substitute only when `self` is the latched PC's pawn
+(`kPcPawnOffset` - the native answers for every pawn on the map, NPCs included); the
+replacement origin is `gp.loc` from the SAME `ray_pose_from_xr` chain the dot uses,
+for the SAME latched aiming hand (`aim::last_aiming_hand()` - one latch decides
+rotation and origin together), plus the AIM block's ray-origin sliders converted
+cm -> UU via `worldScale/100` (the dot applies the same sliders in XR meters). xyz
+only - the Floating wrapper appends its own 4th dword after we return. A displacement
+over 200 UU (~1.3 m at 150 UU/m; camera-to-hand measures 60-90 UU) refuses the write
+rather than clamping - past that the basis is broken, and a melee/Sky-Hook SHORT
+trace must never start past its target (BS1's wrench lesson).
+
 ### Dual-hand aim, and the laser/dot overlays (s44b, after the headset verdict)
 
 The seam is PAWN-level and hands back ONE rotation, so something has to decide whose

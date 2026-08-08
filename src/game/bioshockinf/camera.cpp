@@ -2,6 +2,7 @@
 
 #include "game/bioshockinf/aim.h"
 #include "game/bioshockinf/bones.h"
+#include "game/bioshockinf/fire.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/hands.h"
 
@@ -1361,6 +1362,9 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         // ordering can win. Retried at 1 Hz while armed, one relaxed load when
         // not; a refusal logs its own gate.
         if (aim::wants_install()) aim::try_install();
+        // s46: the fire-ORIGIN seam rides the same lazy lane (static RVA, but
+        // it needs the build gate and MinHook init, and 1 Hz retry is free).
+        if (fire::wants_install()) fire::try_install();
         // I8: the rig resolve rides the same lazy lane for the same reason
         // (needs a live pawn), and re-resolves after a drop at 3 s inside.
         bones::tick_resolve(now);

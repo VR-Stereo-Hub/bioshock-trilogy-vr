@@ -44,6 +44,12 @@ void draw_debug_ui();
 // before doing any work, so a disarmed lane costs one relaxed load.
 bool wants_install();
 
+// s46: the trigger-latched aiming hand (0 left, 1 right), for the fire-origin
+// seam. ONE latch decides rotation and origin together - a second latch could
+// disagree mid-shot (a trace can run a frame after the trigger releases).
+// Read-only: the latch itself updates inside the aim detour.
+int last_aiming_hand();
+
 // I8 (s45b) preset plumbing: per-hand aim trim (axis 0 pitch, 1 yaw - no roll
 // slot, roll cannot move a ray) and ray-origin offsets (axis 0 fwd, 1 right,
 // 2 up, cm). The trim rides the fire ray, the laser AND the dot together.
