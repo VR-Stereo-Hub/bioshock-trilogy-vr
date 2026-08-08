@@ -4,6 +4,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/aim.h"
+#include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
@@ -78,6 +79,9 @@ FVector* __fastcall FireStartDetour(void* self, void* edx, FVector* out, void* w
                                                  patterns::kPcPawnOffset);
     if (!pawn || self != pawn) return r;
     g_playerCalls.fetch_add(1, std::memory_order_relaxed);
+    // s46 stance glue: a player shot resets the SubtleFidget stance, so it
+    // opens the ready-pose capture window (bones.cpp).
+    bones::note_player_fire();
 
     const FVector engine = *r;
     g_lastEngine[0].store(engine.x, std::memory_order_relaxed);

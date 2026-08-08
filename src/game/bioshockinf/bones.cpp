@@ -50,6 +50,37 @@ char g_names[kMaxBones][64];              // resolve-time copies (fname_text nee
 // One written bank, disjoint per-hand masks (a bone can only be in one hand's
 // mask by construction - the two grip subtrees are disjoint and the arm sets
 // are side-classified).
+// ---- s46: the ready-pose glue (the persistent-stance kill) ------------------
+// MEASURED MECHANISM (s46 snaps, drive off): the "weapon idle stance" is the
+// attachment's SubtleFidget lane (dispatching StartSubtleFidget reproduces it
+// on demand) - a discrete second pose the LEFT cluster holds: grip+palm rotate
+// RIGIDLY ~101 deg with finger-curl on top, re-entering ~2.5 min after a shot
+// and holding until the next one; post-fire is the READY pose by definition,
+// and stance-vs-ready-vs-stance closes to the 0.5 deg idle noise floor.
+// Source-side kills are dead on this retail build (console `set` nulled even
+// the bHidden positive control; script execs already measured dead, s42).
+//
+// THE GLUE: fold corr = qRef (x) conj(src[anchor]) into the compose, per hand.
+// The anchor then writes qtc (x) qRef - the controller carrying the CAPTURED
+// ready pose - and every other bone keeps its pose RELATIVE to the anchor:
+// a rigid whole-hand engine rotation S multiplies src[anchor] AND src[i] on
+// the left, so conj(src[anchor]) cancels it exactly (quats double-cover, and
+// the sign cancels in the pair), while articulated animation relative to the
+// grip (finger curls, reload, the vigor flourish's articulation) passes
+// through untouched. This is what "pin the anchor quat" has to MEAN on a
+// name-flat component-space bank: every atom is absolute, so pinning one
+// bone's quat alone would shear the mesh at the grip-palm boundary.
+//
+// qRef auto-captures 1.2 s after every player shot (fire.cpp's seam calls
+// note_player_fire; the engine itself resets the stance on fire, so the
+// post-fire window IS the ready pose - the mechanism mirrors the game's own
+// reset), and a manual capture command exists for pacifist scenes.
+std::atomic<bool> g_stanceKill{true};
+float g_readyQuat[2][4] = {};
+std::atomic<bool> g_readyValid[2] = {};
+std::atomic<uint64_t> g_captureAtMs[2] = {}; // 0 = nothing pending, per hand
+uint32_t g_readyCaptures[2] = {};
+
 float g_written[kMaxBones][8];            // quat[4], trans[3], scale
 bool g_writtenMask[2][kMaxBones] = {};
 uint8_t g_writeKind[2][kMaxBones] = {};   // 0 full, 2 hidden/collapsed
@@ -281,6 +312,7 @@ void adopt_one(int hand, int i) {
 // compare different skeleton instances).
 struct SnapSlot {
     bool valid = false;
+    bool fromWritten = false; // s46: our written bank instead of SpaceBases
     uint8_t* bank = nullptr;
     int boneCount = 0;
     uint32_t resolves = 0;        // rig generation
@@ -288,6 +320,7 @@ struct SnapSlot {
     uint64_t stampMs = 0;
     float atoms[kMaxBones][8];
     bool torn[kMaxBones];
+    bool have[kMaxBones]; // written-bank snaps: only masked bones are real
 };
 SnapSlot g_snap[4];
 
@@ -305,10 +338,16 @@ float quat_angle_deg(const float* a, const float* b) {
 
 bool cmd_snap(const char* rest) {
     int slot = -1;
-    if (sscanf_s(rest, "%d", &slot) != 1 || slot < 0 || slot > 3) {
-        BVR_LOG("[bsi] bones: usage - bsibones snap <0-3>");
+    char which[16] = {};
+    const int n = sscanf_s(rest, "%d %15s", &slot, which,
+                           static_cast<unsigned>(sizeof which));
+    if (n < 1 || slot < 0 || slot > 3) {
+        BVR_LOG("[bsi] bones: usage - bsibones snap <0-3> [written] (default: the raw "
+                "SpaceBases bank = engine truth at the poll point; `written` = OUR last "
+                "composed writes, driven bones only)");
         return true;
     }
+    const bool fromWritten = n == 2 && strncmp(which, "written", 7) == 0;
     const uint32_t camTid = camera::camera_tid();
     if (camTid == 0 || GetCurrentThreadId() != camTid) {
         BVR_LOG("[bsi] bones: snap REFUSED - not on the game thread (tid=%u camera=%u); "
@@ -321,22 +360,31 @@ bool cmd_snap(const char* rest) {
         return true;
     }
     SnapSlot& s = g_snap[slot];
-    int torn = 0;
+    int torn = 0, have = 0;
     for (int i = 0; i < g_boneCount; ++i) {
-        memcpy(s.atoms[i], g_bank + static_cast<size_t>(i) * kAtom, 32);
+        if (fromWritten) {
+            s.have[i] = g_writtenMask[0][i] || g_writtenMask[1][i];
+            memcpy(s.atoms[i], g_written[i], 32);
+        } else {
+            s.have[i] = true;
+            memcpy(s.atoms[i], g_bank + static_cast<size_t>(i) * kAtom, 32);
+        }
+        have += s.have[i];
         const float* q = s.atoms[i];
         const float n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
-        s.torn[i] = !(n2 > 0.5f && n2 < 2.0f);
+        s.torn[i] = s.have[i] && !(n2 > 0.5f && n2 < 2.0f);
         torn += s.torn[i];
     }
     s.valid = true;
+    s.fromWritten = fromWritten;
     s.bank = g_bank;
     s.boneCount = g_boneCount;
     s.resolves = g_resolves;
     s.midDrawRestamps = g_midDrawRestamps;
     s.stampMs = GetTickCount64();
-    BVR_LOG("[bsi] bones: snap %d - %d bones from bank %p (gen %u, %d torn)", slot,
-            g_boneCount, (void*)g_bank, g_resolves, torn);
+    BVR_LOG("[bsi] bones: snap %d - %d bones from %s (gen %u, %d torn, %d covered)", slot,
+            g_boneCount, fromWritten ? "OUR WRITTEN bank" : "the raw SpaceBases bank",
+            g_resolves, torn, have);
     return true;
 }
 
@@ -363,6 +411,12 @@ bool cmd_snap_diff(const char* rest) {
     float ang[kMaxBones], dist[kMaxBones];
     int idx[kMaxBones];
     for (int i = 0; i < A.boneCount; ++i) {
+        if (!A.have[i] || !B.have[i]) { // written-bank snaps: undriven bones
+            ang[i] = 0.0f;
+            dist[i] = 0.0f;
+            idx[i] = i;
+            continue;
+        }
         ang[i] = quat_angle_deg(A.atoms[i], B.atoms[i]);
         const float dx = B.atoms[i][4] - A.atoms[i][4];
         const float dy = B.atoms[i][5] - A.atoms[i][5];
@@ -541,6 +595,63 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     const float(*src)[8] = useAnim ? g_anim : g_ref;
     if (!useAnim && !g_refValid) return false;
 
+    // s46: a pending post-fire ready capture, per hand. The adopted anchor
+    // quat IS the engine's ready pose right now (the shot reset the stance);
+    // normalize and bank it. Re-captured on every shot - self-heals across
+    // weapon switches. The window EXPIRES after 3 s: a hand that was not
+    // driving through the window must not capture a later pose (the stance
+    // re-onsets in minutes, and banking IT as "ready" would invert the glue).
+    const uint64_t captureAt = g_captureAtMs[hand].load(std::memory_order_relaxed);
+    if (captureAt != 0) {
+        const uint64_t tick = GetTickCount64();
+        if (tick >= captureAt + 3000) {
+            g_captureAtMs[hand].store(0, std::memory_order_relaxed);
+        } else if (tick >= captureAt && g_animValid[anchor]) {
+            const float* q = g_anim[anchor];
+            const float n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+            if (n2 > 0.5f && n2 < 2.0f) {
+                const float inv = 1.0f / sqrtf(n2);
+                for (int k = 0; k < 4; ++k) g_readyQuat[hand][k] = q[k] * inv;
+                const bool first =
+                    !g_readyValid[hand].exchange(true, std::memory_order_relaxed);
+                ++g_readyCaptures[hand];
+                g_captureAtMs[hand].store(0, std::memory_order_relaxed);
+                if (first)
+                    BVR_LOG("[bsi] bones: ready pose captured for %c (post-fire anchor "
+                            "quat %.3f %.3f %.3f %.3f) - the stance glue is live for "
+                            "this hand",
+                            hand ? 'R' : 'L', g_readyQuat[hand][0], g_readyQuat[hand][1],
+                            g_readyQuat[hand][2], g_readyQuat[hand][3]);
+            }
+        }
+    }
+
+    // s46: the ready-pose glue - corr cancels the rigid stance component (see
+    // the block comment at the top). Identity when off or before a capture.
+    float corr[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    if (g_stanceKill.load(std::memory_order_relaxed) &&
+        g_readyValid[hand].load(std::memory_order_relaxed)) {
+        const float* qa2 = src[anchor];
+        const float n2 = qa2[0] * qa2[0] + qa2[1] * qa2[1] + qa2[2] * qa2[2] + qa2[3] * qa2[3];
+        if (n2 > 0.5f && n2 < 2.0f) {
+            float cj[4];
+            quat_conj(qa2, cj);
+            const float inv = 1.0f / sqrtf(n2);
+            for (int k = 0; k < 4; ++k) cj[k] *= inv;
+            quat_mul(g_readyQuat[hand], cj, corr);
+        }
+    }
+    // Fold the glue in as the INNERMOST factor (it corrects src before
+    // anything else sees it): wq = qtc (x) [wrist] (x) corr (x) src, and the
+    // same factor rotates the dp term, so the whole hand stays one rigid map.
+    if (corr[3] != 1.0f || corr[0] != 0.0f || corr[1] != 0.0f || corr[2] != 0.0f) {
+        float t2[4];
+        quat_mul(qtc, corr, t2);
+        memcpy(qtc, t2, sizeof t2);
+        quat_mul(qtcArm, corr, t2);
+        memcpy(qtcArm, t2, sizeof t2);
+    }
+
     // Compose: q_i = qtc (x) srcQ_i ; p_i = ptc + qtc*(srcT_i - srcT_anchor)*scale.
     const float* aT = &src[anchor][4];
     for (int i = 0; i < g_boneCount; ++i) {
@@ -652,6 +763,18 @@ void on_world_change(const char* why) {
     drop(why);
 }
 
+void note_player_fire() {
+    // Game thread (the fire seam's detour). The engine resets the stance on a
+    // shot; 1.2 s later the pose has settled at READY (recoil is ~0.3-0.5 s)
+    // and the stance re-onset is minutes away - the capture window.
+    const uint64_t at = GetTickCount64() + 1200;
+    g_captureAtMs[0].store(at, std::memory_order_relaxed);
+    g_captureAtMs[1].store(at, std::memory_order_relaxed);
+}
+
+bool stance_kill() { return g_stanceKill.load(std::memory_order_relaxed); }
+void set_stance_kill(bool on) { g_stanceKill.store(on, std::memory_order_relaxed); }
+
 bool last_write(int hand, FVector& loc, FRotator& rot, uint32_t& drives, uint32_t& adopts) {
     if (hand < 0 || hand > 1 || !g_drives[hand]) return false;
     loc.x = g_lastWriteLoc[hand][0];
@@ -685,6 +808,28 @@ bool handle_command(const char* cmd, const char* args) {
     }
     if (args && strncmp(args, "snap", 4) == 0) return cmd_snap(args + 4);
     if (args && strncmp(args, "diff", 4) == 0) return cmd_snap_diff(args + 4);
+    if (args && strncmp(args, "glue", 4) == 0) {
+        const char* rest = args + 4;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "on", 2) == 0) set_stance_kill(true);
+        else if (strncmp(rest, "off", 3) == 0) set_stance_kill(false);
+        else if (strncmp(rest, "capture", 7) == 0) {
+            // Manual capture for pacifist scenes: treat "now" as post-fire.
+            const uint64_t at = GetTickCount64();
+            g_captureAtMs[0].store(at, std::memory_order_relaxed);
+            g_captureAtMs[1].store(at, std::memory_order_relaxed);
+            BVR_LOG("[bsi] bones: glue capture requested - the CURRENT pose becomes the "
+                    "ready reference (make sure the stance is not held right now; firing "
+                    "once is the reliable reset)");
+            return true;
+        }
+        BVR_LOG("[bsi] bones: glue %s | ready L=%s(%u) R=%s(%u) | bsibones glue "
+                "on|off|capture",
+                g_stanceKill.load() ? "ON" : "off",
+                g_readyValid[0].load() ? "captured" : "-", g_readyCaptures[0],
+                g_readyValid[1].load() ? "captured" : "-", g_readyCaptures[1]);
+        return true;
+    }
     // status (default)
     BVR_LOG("[bsi] bones: rig %s comp=%p bones=%d resolves=%u fails=%u | drives L=%u "
             "R=%u adopts L=%u R=%u midDrawRestamps=%u reapplies=%u gateRefusals=%u",
@@ -705,6 +850,19 @@ void draw_debug_ui() {
                 g_boneCount, g_resolves);
     ImGui::Text("drives L %u R %u | adopts L %u R %u | reapplies %u", g_drives[0],
                 g_drives[1], g_adopts[0], g_adopts[1], g_reapplies);
+    // s46: the persistent-stance kill. The ready pose auto-captures ~1 s
+    // after every shot; the button is the pacifist fallback.
+    bool glue = g_stanceKill.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("kill persistent stance (glue captured ready pose)", &glue))
+        set_stance_kill(glue);
+    ImGui::SameLine();
+    ImGui::Text("ready L:%s R:%s", g_readyValid[0].load(std::memory_order_relaxed) ? "ok" : "-",
+                g_readyValid[1].load(std::memory_order_relaxed) ? "ok" : "-");
+    if (ImGui::Button("capture ready pose NOW (fire a shot first)")) {
+        const uint64_t at = GetTickCount64();
+        g_captureAtMs[0].store(at, std::memory_order_relaxed);
+        g_captureAtMs[1].store(at, std::memory_order_relaxed);
+    }
 }
 
 } // namespace bvr::bsi::bones

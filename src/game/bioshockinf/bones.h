@@ -79,6 +79,15 @@ void reapply();
 // World/possession change: drop the resolved rig entirely and re-resolve.
 void on_world_change(const char* why);
 
+// s46: the fire seam calls this on every PLAYER shot (game thread). Schedules
+// a ready-pose capture 1.2 s out for both hands - the engine resets the
+// SubtleFidget stance on fire, so the post-fire pose IS the ready reference
+// the stance glue pins to (mechanism and numbers in the bones.cpp block
+// comment "the ready-pose glue").
+void note_player_fire();
+bool stance_kill();
+void set_stance_kill(bool on);
+
 bool handle_command(const char* cmd, const char* args);
 void draw_debug_ui();
 

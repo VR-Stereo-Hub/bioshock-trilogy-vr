@@ -552,6 +552,51 @@ The controller's vtable slot +0x2F4 (which this function delegates to) stays REC
 as the next candidate only if a future weapon or state turns out to bypass the pawn
 seam. It is not needed for the base game: the pawn seam is proven.
 
+### THE PERSISTENT STANCE: the SubtleFidget lane, measured and glued (s46)
+
+The s45b headset finding 1 ("the weapon idle stance HOLDS an off-forward pose until
+firing resets it"). Measured flat with the new `bsibones snap/diff` instrument (raw
+SpaceBases atoms, drive OFF, sign-safe geodesic angles):
+
+- **The stance is a discrete second pose of the LEFT (vigor) hand**: grip+palm rotate
+  RIGIDLY ~101 deg (identical angle to the hundredth - the rigid signature) with
+  finger curl on top (digits 96-145 deg), translations ~50 UU. The right hand's
+  stance component in this scene is ZERO (its idle noise is 0.5-1.2 deg over 16 s).
+- **It is a stable attractor, not an oscillation**: post-fire the pose returns to
+  READY; the stance re-enters after ~2.5 min of idle and HOLDS;
+  stance-vs-ready-vs-stance closes to the idle noise floor (0.52 deg).
+- **The mechanism is the attachment's SubtleFidget lane, proven by intervention**:
+  `bsicallat 0x<attachment> StartSubtleFidget` (ProcessEvent) reproduces the
+  stance-shaped left-hand swing on demand (L_Grip 178 deg mid-animation). The GNames
+  vocabulary around it: `SubtleFidgetAnimAction`, `SubtleFidgetTimeRange`,
+  `bDisableSubtleFidget`, `bDisableFirstPersonAttachmentSubtleFidget`,
+  `XFidgetAnimationSelection`.
+- **Source-side kills are DEAD on this retail build.** UE3's console
+  `set <Class> <Prop> <Value>` runs (ConsoleCommand dispatches, s37) but writes
+  nothing: a `bsidiff` snapshot-compare on the live attachment (noise baseline: TWO
+  churning dwords in 2 KB) showed zero new changes for `set XFirstPersonAttachment
+  bDisableSubtleFidget True` AND for the positive control `set XFirstPersonAttachment
+  bHidden True` (a stock AActor bool in the low bitfields whose effect would also
+  have been visible). Consistent with the script-exec strips already measured in s42.
+  Do not spend more boots on `set`-by-name; the FINAL_RELEASE handler is gone.
+
+**THE LEVER SHIPPED - the ready-pose glue** (bones.cpp, `bsibones glue on|off|capture`,
+F10 checkbox, default ON): fold `corr = qRef (x) conj(src[anchor])` into the compose
+per hand. The anchor then writes `qtc (x) qRef` (the controller carrying the CAPTURED
+ready pose) and every other driven bone keeps its pose RELATIVE to the anchor - a
+rigid whole-hand engine rotation multiplies `src[anchor]` and `src[i]` on the left,
+so the conjugate cancels it exactly, while articulation relative to the grip (finger
+curls, reload, the vigor flourish's articulation) passes through untouched. On this
+NAME-FLAT COMPONENT-SPACE bank this is what "pin the anchor quat" has to mean:
+every atom is absolute, so pinning one bone's quat alone would shear the mesh at the
+grip-palm boundary. `qRef` auto-captures 1.2 s after every player shot (the fire
+seam calls `bones::note_player_fire`; the engine itself resets the stance on fire,
+so the post-fire window IS ready by definition; the window expires after 3 s so a
+non-driving hand can never bank a later stance as "ready"). Measured ready anchors:
+RIGHT ~identity (-0.004 -0.011 0.006 1.000) - which is why the s45b five-station
+acceptance matched commanded to the unit - LEFT (0.933 -0.252 0.070 -0.249), the
+authored vigor base the glue preserves.
+
 ### THE FIRE-ORIGIN SEAM: AXPawn::XGetWeaponStartTraceLocation (s46)
 
 The s45b headset findings 2+3 (hole above the dot; bullets leaving the screen center)
