@@ -682,6 +682,38 @@ Anything off, toggle the newest lever off first - `bsiaim off`, then the F10 pad
 radio back to BioShock 1, then `bsiinput off`. If the symptom survives all three, it
 predates this session.
 
+## S45b hands checklist (I8: the viewmodel off the headset)
+
+Everything below is judged in the headset; the flat lane already proved the numbers
+(ground truth 150.0 UU/m exact, five-station rolled sweep at 0.0000 deg deviation both
+hands, stick-Y bit-identical). All levers are F10 controls in "HANDS + MODEL (I8)".
+
+1. **Non-regression FIRST (60 s).** Smoothness unchanged (pose lag 2), all Touch
+   controls unchanged, aim still follows the controller, dots on the hands. Bisect
+   lever: the "drive hands/weapon from the controllers" checkbox - off returns the
+   engine viewmodel.
+2. **Decoupling**: move the head with the controllers still - hands and pistol must
+   PARK. Walk around them, look from above/side.
+3. **Position/rotation/scale**: tune with the L/R radio + model trim/offset/scale
+   sliders. The LEFT hand is expected to need a trim (the mirrored grip frame showed a
+   constant offset flat); report the values that feel right - they persist via SAVE.
+4. **Arms mode A/B** (radio): follow (default) vs hide (hand+gun only - flat-verified
+   no skin web) vs game (engine arms - expected to read frozen/detached).
+5. **Animations**: fire and reload - the animation must play INSIDE the driven hand.
+   A/B: the "engine animations on driven hands" checkbox off = rigid pose.
+6. **Model-vs-laser sync THROUGH ROLLED poses**: laser on (R), sweep the controller
+   including full wrist rolls - divergence CONSTANT (a fixed offset = trim it away) is
+   fine; divergence that GROWS with orientation is a real finding, report the pose.
+7. **Carried from s44**: fire at a wall - does the hole land ON the dot? And if
+   anything selectable/hackable is around: left thumbrest held + right-stick flick.
+
+Expected noise: the sr-tag-ring lines at scene transitions, a ~1 s checkpoint-load
+pause, and hands parked mid-air during load screens (the drive holds the last pose
+while the world is gone - it re-adopts on the first live frame).
+
+Anything off: the hands checkbox off first, then `bsiaim off`. If the symptom survives
+both, it predates this session.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

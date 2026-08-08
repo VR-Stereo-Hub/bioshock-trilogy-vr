@@ -588,26 +588,42 @@ sessions 40-41 (hands split per-controller, the holdable lane, and the animation
 drive whose written-quat/anim-quat discipline is documented in VERIFICATION 2.8) - derive fresh,
 port nothing.
 
-- [ ] **Handoff from s44 (I7):** the user expected the weapon model to stop riding the headset as
+- [x] **Handoff from s44 (I7):** the user expected the weapon model to stop riding the headset as
       part of the controls block. It is not - that is this milestone, and I7 deliberately left it
       alone. What I7 DID leave here: the controller ray is already built and published on the
       view's own basis (`aim.cpp` `controller_ray`, game yaw + recenter residual), so the model
       drive can consume the same ray the aim seam does rather than deriving a second one that
       drifts. The flat sweep also showed the viewmodel moving with the sim's hand pose (2.6%
       frame diff at +/-35 deg), which is a starting observation for what already tracks what.
-- [ ] Step 1: check what UE3 does natively here.
-- [ ] Step 2: **test whether the BS1/BS2 defect even exists.** BS1's viewmodel renders through a
-      separate foreground lens; BS2 has a structurally different second pass fixed at 60 degrees.
-      Infinite may have neither, one, or a third thing. The identification method to prefer is a
-      **falsifiable quantitative prediction** (sweep the FOV option and predict the magnitude of
-      the error) over another frame capture - that is what settled BS2 in one round.
-- [ ] Step 3: only then port compensation machinery, and only the parts proven necessary.
-- [ ] UE3 differences that matter: the skeleton is `USkeletalMeshComponent::SpaceBases`, not a
+      *(s45b: taken up - `frame_context.h` publishes ONE basis from drive_view and both the ray
+      and the model consume it; 0.0000 deg deviation at five stations incl. rolled.)*
+- [x] Step 1: check what UE3 does natively here. *(s45b: the FP rig is an XFirstPersonAttachment
+      ACTOR reached by the pawn's own `GetFirstPersonAttachment` native; its
+      XSkeletalMeshComponent at +0x218 renders hands AND weapon in one 43-bone skeleton
+      (PlayerHands*/L_Grip/R_Grip), animated by Morpheme networks; the weapon hangs off the grip
+      subtree, so driving grips carries the holdable for free. Full trail in ENGINE_NOTES.)*
+- [x] Step 2: **test whether the BS1/BS2 defect even exists.** *(s45b: the lens half was already
+      settled - no fg lens, s41/s44. The head-riding itself is structural: the attachment's
+      LocalToWorld follows the camera, so SpaceBases writes composed through the live L2W
+      INVERSE cancel it exactly - no counter-modeling, no render-side patches. Poke oracles
+      falsified BS2's "engine never restamps scale" on this build - adoption takes whole atoms
+      and release is stop-writing.)*
+- [x] Step 3: only then port compensation machinery, and only the parts proven necessary.
+      *(s45b: ported IN SHAPE - per-hand parallel arrays, adopt-then-compose, qtc = conj(qa) x qt
+      preserving authored frames, arms game/follow/hide with the collapse rule, pass-2 verbatim
+      reapply. NOT ported, each with its measured reason: scale-row pinning (engine restamps
+      scale here), explicit release-restore (engine self-heals), the wskel weapon lane (no part
+      inverse-scales - the pistol scales WITH the hand), pitch kill (stick-Y measured: model
+      bit-identical under full stick-up).)*
+- [x] UE3 differences that matter: the skeleton is `USkeletalMeshComponent::SpaceBases`, not a
       Havok `hkQsTransform` array; attachment is components and sockets, not the UE2 Base/Owner
-      pair. BS1's bone drive transfers in **shape only**.
-- [ ] The principle that does transfer: **engine-side writes are re-read by the engine, so attached
+      pair. BS1's bone drive transfers in **shape only**. *(s45b: confirmed and derived -
+      32-byte FBoneAtom {quat, trans, uniform scale}, SpaceBases +0x290, LocalAtoms +0x29C,
+      RefSkeleton mesh+0x74 stride 0x50 and NAME-FLAT (parents all 0; names carry structure).)*
+- [x] The principle that does transfer: **engine-side writes are re-read by the engine, so attached
       objects and effects follow for free; render-side matrix patches leave separate objects
-      behind** - the Vigor hand FX above all.
+      behind** - the Vigor hand FX above all. *(s45b: the drive is engine-side SpaceBases writes;
+      the pistol followed the driven grip with no separate handling from the first frame.)*
 - [ ] World scale calibration, and the world/viewmodel scale split if it proves necessary
 - [ ] **Test from the START of the game, not only from a loaded-out save** (user directive,
       2026-07-31). A reflection-conjured arsenal is convenient but unrepresentative: the opening

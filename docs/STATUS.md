@@ -17,6 +17,64 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
+### Infinite: current state after session 45b (I8 FLAT HALF DONE - hands and weapon OFF the headset, calibration surface live; branch `si45b-inf-hands`, headset verdict pending)
+
+**Session 45b (2026-08-08/09) is the REDO of I8's opening block** (the user discarded
+the original s45/s46 results; branch `si45b-inf-hands` off the s44b tip - the old
+`si45-inf-hands`/`si46-*` branches were left untouched and unread). Everything below
+was derived fresh this session. **ZERO core/tools changes - the whole session is
+bioshockinf-local**, so no BS1/BS2 inertness proof is owed and none could be needed.
+
+1. **THE RIG, DERIVED BY INTERVENTION**: pawn `GetFirstPersonAttachment()` (native,
+   by-name) -> XFirstPersonAttachment actor -> XSkeletalMeshComponent at +0x218 = THE
+   viewmodel renderer: ONE 43-bone skeleton (PlayerHands*, L_Grip 1, R_Grip 22)
+   carrying BOTH hands AND the weapon (HideBoneByName(PlayerHandsChest) removed
+   everything; R_Grip alone removed hand+pistol, forearm stayed). SpaceBases +0x290
+   (32-byte FBoneAtoms; the GetBoneLocation cross-check picked it over LocalAtoms to
+   0.1 UU), LocalToWorld +0x60, RefSkeleton mesh+0x74 (NAME-FLAT - parents all 0,
+   names carry the structure). All in patterns.h with derivations in ENGINE_NOTES.
+2. **THE ORACLES THAT SHAPED THE DESIGN**: Morpheme restamps BOTH banks - trans, quat
+   AND SCALE - at tick cadence even while auto-paused. So BS2's never-adopt-scale rule
+   does not transfer (adoption takes whole atoms), release = stop writing (engine
+   self-heals; BS1's freed-skeleton release hazard is deleted by design), and the
+   drive writes per pass-1 camera dispatch with pass-2 verbatim reapply.
+3. **THE DRIVE** (bones/hands/frame_context.cpp|.h, BS2's shape, zero numbers):
+   FrameContext published once per dispatch by drive_view; the aim ray AND the model
+   consume the same pure chains (trim as a quat in the controller's LOCAL frame, the
+   laser's own algebra). Per-hand everything; cluster = grip+palm+digits by name; arms
+   game/follow/hide (default follow, hide = collapse+zero-scale); adopt-then-compose
+   with qtc = conj(qa) x qt; per-hand edge-triggered release.
+4. **FLAT ACCEPTANCE, ALL EXACT**: ground truth 1.000 m -> 150.0 UU (worldScale 150),
+   zero cross-axis; five stations INCLUDING 60/-90 deg ROLL -> written rotator matches
+   commanded to THE UNIT, aimRayMaxDevDegL/R = 0.0000 at every station both hands;
+   arms-hide leaves hand+gun with no skin web; scale 0.5 shrinks hand AND pistol
+   uniformly about the grip (anchor loc unchanged to the digit - **the BS2
+   inverse-scale drum trap did NOT reproduce; no separate weapon lane needed**);
+   SR gates 90/90/180/90; zero faults.
+5. **STICK-Y: MEASURED, NO DEFECT.** Full stick-up for 3 s - written model pose
+   bit-identical, picture at noise floor. publish_vr_gameplay stays UNCALLED; the
+   take_snap_steps landmine never arises.
+6. **CALIBRATION SURFACE**: F10 "HANDS + MODEL (I8)" (L/R radio + one slider set:
+   trim P/Y/R, offset F/R/U, scale; arms radio; anim checkbox) + AIM block gains
+   per-hand trim P/Y and ray-origin F/R/U (trim rides ray+laser+dot together).
+   **vrpreset registry 9 -> 36 keys** (user-approved batch; animTrans deliberately
+   not persisted - not implemented). Seam verbs: bsihands, bsibones, bsiaim trim/origin.
+7. **New instruments**: bsiarray (TArray walker), bsidump (typed triage), bsicallat
+   parm ECHO (readable returns - it resolved the whole rig in one step), i:/n: arg
+   shapes, and the UClass-fixpoint hardening of object_class_name (a raw cache struct
+   at pawn+0x0D8 walked as a fake weapon-model object under the old gate).
+8. **Traps recorded** (ENGINE_NOTES): fname_text's 64-byte buffer contract (silent
+   empty strings cost a boot); the sim's `hand X aim pose` DEAD SLOT (aimWorld is
+   always grip+aimtrim - drive stations via `grip pose` + `aimtrim 0 0`); modal
+   dialogs freeze the world while the render keeps presenting (positive control
+   before judging any intervention picture).
+
+**NEXT**: the in-headset verdict (TESTING.md "S45b hands checklist") - decoupling,
+believable size (left hand expects a trim: constant mirrored-frame offset seen flat),
+arms modes, animations-in-hand, rolled-pose sync, hole-vs-dot. Then per-weapon
+profiles + the arsenal save, origin substitution only if the hole-vs-dot verdict
+demands it, animtrans, and the reapply-burst gate refinement.
+
 ### Infinite: HEADSET VERDICTS IN (s44b, same night) - I7 CONTROLS AND AIM ARE DONE
 
 **The user tested the s44 build in the headset and returned three verdicts, two of which
@@ -6130,6 +6188,46 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 45b (Infinite) - 2026-08-08/09 - I8 flat half: the rig derived by intervention, the drive lands, every acceptance number exact
+
+Branch `si45b-inf-hands` off the s44b tip (536649d) - the REDO: the user discarded the
+original s45/s46 branches unread ("terrible results"); nothing from them was consulted.
+Six commits, nothing merged, ZERO core/tools files touched.
+
+**Derivation before code, all in one boot on the TWN2 save.** The s45b instruments
+(bsiarray, bsidump, bsicallat parm echo + i:/n: args) turned the pawn's own
+`GetFirstPersonAttachment` native into the front door; the viewmodel renderer fell out
+as ONE XSkeletalMeshComponent (43 bones, hands AND pistol) on an attachment ACTOR whose
+LocalToWorld rides the camera - the head-coupling is structural, and composing
+SpaceBases writes through the live L2W inverse is what cancels it. Identification was
+by intervention (HideBoneByName removed the viewmodel; R_Grip alone took hand+pistol
+and left the forearm), bank identity by the engine's own GetBoneLocation (0.1 UU),
+and the design rested on poke oracles: Morpheme restamps trans+quat+SCALE at tick
+cadence even auto-paused, so BS2's scale-row pinning does not transfer, adoption takes
+whole atoms, and release is stop-writing.
+
+**The drive is BS2's shape with this game's facts**: one FrameContext feeding both the
+ray and the model (agreement by construction), per-hand parallel arrays, name-derived
+clusters (grip+palm+digits vs the 4-bone arm chain - the rig is NAME-FLAT, parents all
+zero), arms game/follow/hide with the collapse rule, adopt-then-compose, pass-2
+verbatim reapply on the camera fork. Acceptance: 1.000 m = 150.0 UU exact; five
+stations incl. 60/-90 roll wrote the commanded rotator TO THE UNIT with
+aimRayMaxDevDegL/R 0.0000 throughout; hide leaves hand+gun clean; scale 0.5 shrinks
+hand+pistol uniformly about an unmoved anchor - the BS2 inverse-scale trap did not
+reproduce, so no separate weapon lane; stick-Y moved NOTHING (bit-identical pose), so
+publish_vr_gameplay stays uncalled and the snap landmine never arises.
+
+**Calibration surface**: F10 HANDS+MODEL section (L/R radio convention) + aim trim/
+origin on ray+laser+dot together; vrpreset 9 -> 36 keys (the user-approved batch).
+Four traps recorded in ENGINE_NOTES, two of which cost a boot each: fname_text's
+64-byte buffer contract, and the sim's dead `hand X aim pose` slot (aimWorld is always
+grip+aimtrim). The other two: the UClass-fixpoint gate (a raw loadout-cache struct
+walked as a fake UObject), and modal freezes vs the positive-control rule.
+
+**Test-state discipline**: user's vrpreset.ini byte-identical at session end (backed
+up first), XUserOptions untouched, no strays in the repo, all games closed. Headset
+verdict rides TESTING.md "S45b hands checklist".
 
 ### Session 44 (Infinite) - 2026-08-06 - I7 CONTROLS: the per-game pad map, the Touch layout, and the aim seam derived
 
