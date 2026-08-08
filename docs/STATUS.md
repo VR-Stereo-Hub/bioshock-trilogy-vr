@@ -17,6 +17,83 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
+### Infinite: current state after session 46 (I8 part 2: STANCE KILLED, BULLETS FROM THE GUN, wrist levers built - all flat-green; branch `si46b-inf-stance-origin`, headset verdict pending)
+
+**Session 46 (2026-08-09) worked exactly the four open s45b headset findings.
+Everything bioshockinf-local, ZERO core changes, all levers behind toggles, no merge.**
+
+1. **FINDING 1 CLOSED FLAT - the persistent stance is the SubtleFidget lane, and the
+   READY-POSE GLUE kills it.** Measured with the new `bsibones snap/diff` (drive off,
+   raw bank): the stance is a discrete second pose of the LEFT hand - grip+palm rotate
+   RIGIDLY 101.11 deg with finger curl on top, re-entering ~2.5 min after a shot and
+   HOLDING; `bsicallat <attach> StartSubtleFidget` reproduces it on demand. Console
+   `set`-by-name is DEAD on this retail build (even the `bHidden` positive control
+   nulled under `bsidiff`), so the lever is compose-side: fold
+   `corr = qRef x conj(src[anchor])` into the bones compose per hand - the anchor pins
+   to controller x captured-ready, ALL relative articulation (fingers, reload, the
+   vigor flourish's articulation) passes through by construction. qRef AUTO-CAPTURES
+   1.2 s after every player shot (the fire seam signals it; the engine itself resets
+   the stance on fire). **A-B-A flat: 0.33 deg drift through a stance onset with the
+   glue ON -> uniform 101.11 deg the instant it goes OFF -> 0.06 deg back ON. Default
+   ON.** `bsibones glue on|off|capture` + F10 checkbox + capture button.
+2. **FINDINGS 2+3 CLOSED FLAT - the fire-ORIGIN seam.** Derivation (offline dump
+   re-run + thunk disasm, full trail in ENGINE_NOTES): `AXPawn::
+   XGetWeaponStartTraceLocation` impl 0x5344A0 - its body calls the camera's OWN
+   GetPlayerViewPoint (the hooked kGetPlayerViewPointRva!), so the trace origin IS
+   the camera eye - the diagnosed parallax root, read from the disassembly. The
+   Floating variant (13 C++ callers) routes through the same impl = one choke point;
+   the camera never calls it, so no feedback hazard. Probe measured live: ONE call
+   per player shot, engine origin 77.4 UU (51.6 cm) from the hand - the exact
+   headset hole-vs-dot magnitude. `bsifire on` substitutes xyz with the SAME
+   ray_pose_from_xr origin the dot uses (latched hand shared via
+   aim::last_aiming_hand, origin sliders cm->UU, 200 UU cap for melee/Sky-Hook
+   short traces, player-pawn gate - NPCs call the same native). Both hands verified
+   (vigor cast routes through the seam too, left origin mirrors right). **SHIPS
+   ARMED**; `bsifire off` is the bisect lever. New fire.cpp/.h.
+3. **FINDING 4 (wrist cap): three hide styles behind `bsihands hidestyle 0|1|2`** +
+   F10 radio (arms=hide only). Flat captures: style 0 (current collapse-at-grip) is
+   a clean taper; **style 1 (keep forearm twist) is BROKEN - a giant skin hood**
+   (kept twist bones stretch skin against the collapsed upper arm; capture in the
+   scratchpad); style 2 (collapse ~10 cm behind the wrist) gives a slightly longer
+   clean stub. Headset A/B is styles 0 vs 2; style 1 stays for completeness only.
+4. **FINDING 5 (left wrist): the per-hand ARM-RELATIVE wrist quat is BUILT and
+   inert** - `bsihands wrist l|r <p y r>` + F10 sliders, an extra quat in the ARM
+   chain compose only, about the grip (qtcArm = qtc x W in quat AND dp term).
+   Smoke: 20 deg commanded -> EXACTLY the 4 left arm bones at 20.00 deg, cluster
+   and right hand untouched. NOT persisted (defaults 0; a preset key waits until
+   the headset says it earns its keep). Expectation: finding 1's glue fixes the
+   wrist angle outright - the sliders are the fallback tuner.
+5. **New instruments** (all game-thread gated): `bsibones snap <0-3> [written]` /
+   `bsibones diff <a> <b>` (raw-bank or written-bank atom snapshots, sign-safe
+   geodesic angles, rig-generation interlock), `bsidiff <hexaddr> <dwords>`
+   (snapshot-compare, prints only CHANGED dwords - the UBOOL hunt instrument; the
+   attachment's noise baseline is 2 dwords in 2 KB).
+6. **Non-regression flat battery, all green on the shipping build**: three stations
+   including full rolls - `aimRayMaxDevDegL/R = 0.0000 both hands` (per-hand fields;
+   the legacy single field reads 86 deg with two dots, the documented artifact);
+   scale 0.5 uniform on every right-hand bone; arms follow/hide/game transitions;
+   per-hand release + re-enable; SR gates 90/90/180/90; single rig resolve, zero
+   fails; first shot on the shipping build SUBSTITUTED with both ready poses
+   captured; game alive, no new crash dumps (the three in CrashDumps predate the
+   session: 00:15-00:46).
+7. **Traps this session**: an EMPTY command.txt (zero bytes) crashes launch-game.ps1
+   (`.Trim()` on null) - DELETE the file, never truncate it; the offline native-dump
+   regex misses pooled-suffix exec names (2079 vs the s34 census 2647 - e.g. the
+   Floating variant), so use the dump to FIND and `bsinative` to VERIFY; game-shot
+   saves extensionless files (img-diff takes them as-is).
+
+**HEADSET PENDING (next session opens with it): the S46 checklist in
+docs/bioshockinfinite/TESTING.md.** Judgments owed: stance gone with transients
+alive (fire/reload/VIGOR FLOURISH - flagged risk: if the flourish died, the glue ate
+its rigid component; report and we re-scope), bullets from the gun, hole ON dot at a
+near and a far wall, wrist-cap 0-vs-2, left-wrist feel, the standing non-regression
+sweep. **vrpreset.ini and XUserOptions.ini verified byte-identical at session end;
+nothing else touched.**
+
+**NEXT after the headset verdict**: per-weapon aim/model profiles + the arsenal save,
+animtrans, the reapply-burst gate refinement, world-scale calibration, and the
+test-from-game-start pass (ROADMAP I8's two open boxes).
+
 ### Infinite: current state after session 45b (I8 FLAT HALF DONE - hands and weapon OFF the headset, calibration surface live; branch `si45b-inf-hands`, headset verdict pending)
 
 **Session 45b (2026-08-08/09) is the REDO of I8's opening block** (the user discarded
@@ -6227,6 +6304,48 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 46 (Infinite) - 2026-08-09 - I8 part 2: the stance killed, bullets from the gun, the wrist levers built
+
+Branch `si46b-inf-stance-origin` off the s45b tip (f260f22). Six commits, nothing
+merged, ZERO core/tools changes. The four open s45b headset findings, in order.
+
+**Measure first, everywhere.** New instruments: `bsibones snap/diff` (bank/written
+atom snapshots, sign-safe geodesic angles, rig-generation interlock) and `bsidiff`
+(changed-dwords-only snapshot compare). The stance measured as a discrete LEFT-hand
+pose (grip+palm rigid 101.11 deg + finger curl, re-onset ~2.5 min, holds), REPRODUCED
+on demand by `bsicallat <attach> StartSubtleFidget` - the SubtleFidget lane named as
+the mechanism by intervention. Console `set`-by-name proven dead (bHidden positive
+control nulled) - one boot, pre-committed pivot to the compose-side lever.
+
+**The ready-pose glue** (the (c) lever, generalized correctly for a name-flat
+component-space bank): corr = qRef x conj(src[anchor]) folded per hand into the
+compose; anchor pins to controller x captured-ready, relative articulation passes.
+qRef auto-captures 1.2 s after every player shot via the new fire seam. A-B-A:
+0.33 deg through a stance onset ON, uniform 101.11 deg the instant OFF, 0.06 back ON.
+
+**The fire-origin seam**: offline dump re-run + thunk disasm named
+AXPawn::XGetWeaponStartTraceLocation impl 0x5344A0, whose body calls the EXACT
+GetPlayerViewPoint impl the camera drive hooks - trace origin = camera eye, the
+parallax root read from the disassembly. One choke point (the Floating wrapper's 13
+C++ callers route through it), no camera feedback (one-way dependency). Probe: one
+call per player shot, 77.4 UU / 51.6 cm engine-vs-hand - the headset's hole-vs-dot
+magnitude. Substitution ships ARMED (xyz only, player-pawn gate, 200 UU cap, latched
+hand shared with the aim seam, origin sliders cm->UU). Both hands verified; vigor
+casts route through the same seam.
+
+**Wrist-cap styles** 0/1/2: style 1 (keep forearm twist) REJECTED flat - giant skin
+hood; 0 vs 2 (pinch behind wrist) go to the headset. **Arm-relative wrist quat**
+built inert and exact (20 deg commanded = 20.00 on exactly the 4 arm bones).
+
+**Battery green on the shipping build**: 3 stations incl. rolls at 0.0000 both
+hands, scale 0.5 uniform, arms transitions, release cycle, SR 90/90/180/90, single
+resolve/zero fails, first-shot substitution + auto-captures, no new crash dumps.
+vrpreset.ini and XUserOptions.ini byte-identical at close.
+
+Traps recorded: zero-byte command.txt crashes launch-game.ps1 (delete, never
+truncate); the offline dump regex misses pooled-suffix exec names (verify with
+bsinative); game-shot saves extensionless files.
 
 ### Session 45b (Infinite) - 2026-08-08/09 - I8 flat half: the rig derived by intervention, the drive lands, every acceptance number exact
 

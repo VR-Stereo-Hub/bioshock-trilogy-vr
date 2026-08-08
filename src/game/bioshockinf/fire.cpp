@@ -35,8 +35,13 @@ uint32_t to_rva(const void* p) {
     return (base && p) ? static_cast<uint32_t>(static_cast<const uint8_t*>(p) - base) : 0;
 }
 
-std::atomic<bool> g_probe{true};        // install + observe (read-only)
-std::atomic<bool> g_substitute{false};  // rewrite the returned origin
+// SHIPS ARMED (s46): the flat acceptance was unambiguous - the probe measured
+// the engine origin at the camera (77.4 UU / 51.6 cm from the hand, the exact
+// hole-vs-dot parallax the headset reported), and the substitution moved the
+// trace start to the correct per-hand origin on both hands with zero faults.
+// The headset judges hole-on-dot; `bsifire off` is the bisect lever.
+std::atomic<bool> g_probe{true};       // install + observe (read-only)
+std::atomic<bool> g_substitute{true};  // rewrite the returned origin
 std::atomic<bool> g_installed{false};
 
 // Counters. The native dispatches on ANY AXPawn - NPCs ask it too - so the

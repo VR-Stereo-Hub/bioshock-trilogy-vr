@@ -714,6 +714,47 @@ while the world is gone - it re-adopts on the first live frame).
 Anything off: the hands checkbox off first, then `bsiaim off`. If the symptom survives
 both, it predates this session.
 
+## S46 checklist (I8 part 2: the stance, the bullet origin, and the wrist)
+
+Everything below is judged in the headset; the flat lane already proved the numbers
+(stance glue A-B-A 0.33 -> 101.11 -> 0.06 deg; fire origin substituted at 77.4 UU
+from the camera on both hands; three stations at 0.0000 deg deviation; wrist quat
+exact to 20.00 deg on exactly the arm chain). All levers are live toggles.
+
+1. **Non-regression FIRST (60 s).** Hands/gun still track the controllers with no
+   drift, models and lasers in sync, sliders and scale still work, both hands aim
+   independently, smoothness unchanged. Bisect: the "drive hands/weapon" checkbox.
+2. **THE STANCE (headline)**: idle for ~3 minutes without firing. The weapon/hands
+   must HOLD their forward pose - no off-forward drift-and-stick. Then verify the
+   transients are ALIVE: fire (muzzle/recoil anim plays in the hand), reload, and
+   wait for the occasional LEFT-hand vigor flourish. **If the flourish is gone or
+   reads wrong, say so** - the glue passes its articulation through but cancels its
+   whole-hand swing, and only you can judge whether what remains still reads as the
+   flourish. Bisect: the "kill persistent stance" checkbox (bones block of the
+   HANDS panel) / `bsibones glue off`.
+3. **BULLETS FROM THE GUN**: fire while watching the muzzle - the shot should
+   visibly leave the WEAPON, not the screen center. Bisect: `bsifire off`.
+4. **HOLE ON THE DOT, two distances**: fire at a NEAR wall (~1-2 m) and a FAR wall
+   (10+ m) - the hole must land ON the dot at both. (With `bsifire off` the near
+   hole lands ~half a meter off the dot and the error shrinks with distance - that
+   is the old parallax, useful as the A/B.)
+5. **Wrist cap A/B** (arms = hide): flip the "wrist cap" radio between "pinch at
+   grip" (0) and "pinch behind wrist" (2). Skip style 1 - flat capture shows a
+   giant skin hood. Report which reads better.
+6. **Left wrist angle**: after (2) holds, does the left hand-vs-forearm angle read
+   natural now? If an angle survives, tune the per-hand "wrist pitch/yaw/roll"
+   sliders (HANDS panel, L radio) and report the values that feel right - they are
+   NOT persisted yet.
+7. **Vigor cast**: cast with the left hand - the effect should originate from the
+   left hand (the cast routes through the same origin seam, verified flat).
+
+Expected noise: unchanged from s45b (sr-tag-ring lines at transitions, checkpoint
+pause, hands parked during loads). The stance glue arms itself on your FIRST shot
+(per boot); before that shot the stance can still appear - fire once and it is
+gone. Anything off: `bsibones glue off` first, then `bsifire off`, then the hands
+checkbox - whichever clears it names the lever; if none do, it predates this
+session.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

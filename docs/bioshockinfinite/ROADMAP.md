@@ -630,6 +630,13 @@ port nothing.
       hours have no weapon at all, then the Sky-Hook alone, then one gun. Calibration that only
       holds with a full loadout is not calibration. The user will produce the combat/weapons save
       at this milestone rather than earlier, precisely so both ends get covered.
+- [x] **The four s45b headset findings, worked s46 (flat-green, headset pending)**: the
+      persistent stance = the SubtleFidget lane, killed by the ready-pose glue (A-B-A
+      0.33 -> 101.11 -> 0.06 deg, default ON); the fire ORIGIN seam
+      (AXPawn::XGetWeaponStartTraceLocation reads the camera's GetPlayerViewPoint -
+      substituted to the aiming hand, ships armed, 77.4 UU measured parallax); wrist-cap
+      hide styles 0/2 (style 1 rejected flat - skin hood); the per-hand arm-relative
+      wrist quat, built inert. TESTING.md "S46 checklist" is the verdict list.
 - [ ] **Done when:** the weapon is one with the right controller and the Vigor hand one with the
       left, inspectable from any angle, believable size, effects attached, and **they do not move
       with the head** - user-verified in the headset.
