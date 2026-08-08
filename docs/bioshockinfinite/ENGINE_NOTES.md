@@ -2450,3 +2450,103 @@ image or a name-pool line; nothing has been observed live yet.
   2647/2647 resolved. Dump artifact stays in the scratchpad (game-derived).
 - GNames sweep used the existing live dump (`%LOCALAPPDATA%\BioshockVR\bsi\gnames.txt`, s42;
   indices are per-boot and were not used - text only).
+
+## I8 - the first-person rig, derived live and DRIVEN (session 45b)
+
+The offsets and the restamp facts live beside their constants in `patterns.h` ("The
+first-person rig"). This section records the derivation trail, the traps, and the flat
+acceptance numbers for the drive that now consumes them (bones.cpp / hands.cpp /
+frame_context.h).
+
+### The derivation trail (one boot, command seam only)
+
+1. `bsicallat 0x<pawn> GetFirstPersonAttachment` -> parms[0] = the XFirstPersonAttachment
+   actor (the s45b callat parm-echo made the reader natives usable in one step).
+2. `bsifields 0x<attachment>` -> ONE XSkeletalMeshComponent at +0x218; SkeletalMesh at
+   comp +0x21C, THREE XMorphemeNetwork pointers (+0x224/+0x228/+0x244), PhysicsAsset +0x274.
+3. `bsidump` triples: SpaceBases {Data,43,43} at +0x290, LocalAtoms at +0x29C, both
+   32-byte FBoneAtoms {quat, trans, UNIFORM scale}; L2W FMatrix at +0x60 (row-vector,
+   row 3 = translation); RequiredBones byte-identity map at +0x2DC.
+4. **SpaceBases vs LocalAtoms settled by the engine's own native**: on a frozen-coherent
+   snapshot, L2W(SpaceBases[L_Grip].trans) == GetBoneLocation(L_Grip) to 0.1/0.4/0.0 UU;
+   the LocalAtoms candidate missed by >100 UU. The auto-pause freeze is a FEATURE here:
+   dispatches keep running while the world holds still, so multi-read derivations are
+   coherent.
+5. **Identification by intervention, not inference**: HideBoneByName(PlayerHandsChest)
+   removed BOTH hands AND the equipped pistol; UnHide restored. Hiding only R_Grip
+   removed the right hand + pistol while the FOREARM stayed - the weapon rides the grip,
+   and the arm chain is structurally separate. (First hide read as a no-op because a
+   MODAL had frozen the scene - a positive control caught it; see traps.)
+6. RefSkeleton on the mesh at +0x74 (stride 0x50, FName +0x00, parent +0x48): 43 bones,
+   and the live rig is NAME-FLAT - every ParentIndex reads 0. The NAMES carry the
+   structure: bone 0 PlayerHandsChest; 1 L_Grip + 2..21 PlayerHandsLarm{Palm,Digit11..53,
+   22,21,1}+L_ArmParent; 22 R_Grip + 23..42 the RArm twins. Cluster membership is
+   name-classified per resolve (grip+palm+digits = the hand; arm1/21/22/ArmParent = the
+   arm chain), never baked.
+
+### The restamp oracles (poke, read back, both banks)
+
+- SpaceBases translations restamp in <2 s even with the world auto-paused - Morpheme
+  evaluates continuously. A one-shot write cannot survive; the drive writes per pass-1
+  camera dispatch (post-tick, inside the draw) and pass 2 replays verbatim.
+- **SpaceBases SCALE restamps too** (0.3 -> 1.0 inside a second). BS2's load-bearing
+  "the engine never restamps scale" DOES NOT HOLD on UE3+Morpheme. Consequences, all
+  taken in bones.cpp: adoption takes whole 32-byte atoms (still guarded by the
+  memcmp-vs-our-write rule and the quat-norm check), release is just "stop writing"
+  (the next tick restores engine truth - no restore write through a maybe-stale pointer,
+  which also deletes BS1's freed-skeleton release hazard), and a stale zero-scale from
+  arms-hide self-heals.
+- LocalAtoms restamps identically (it is the anim source, not our target).
+
+### The drive's flat acceptance (sim lane, worldScale 150)
+
+- **Ground truth**: `hand l grip pose` +1.000 m in XR X moved the written model loc by
+  EXACTLY +150.0 UU, zero cross-axis drift; commanded identity orientation wrote
+  rot (0, -16384, 0) on the game's -90 deg yaw base.
+- **Five-station orientation sweep INCLUDING ROLL** (0/0/0, 45/10/0, -30/20/60,
+  0/-15/-90, 20/5/45): written model rotator matched the commanded pose to THE UNIT on
+  every axis at every station (e.g. roll 60 = 10923, pitch 10 = 1820), position
+  bit-stable, and `aimRayMaxDevDegL/R` read 0.0000 at ALL stations, both hands, dots
+  live. Divergence constant (zero) across orientations = no euler-add algebra error by
+  the diagnostic signature. Model and ray consume the SAME FrameContext + pure chains
+  (frame_context.h), so agreement is construction, not tuning.
+- **Arms hide**: hand + pistol float with the forearm gone, no skin web (collapse onto
+  the grip + zero scale). `arms game` restores engine arms; transitions self-heal via
+  the engine restamp.
+- **Stick-Y (the I8 requirement-7 measurement)**: full stick-up held for 3 s - written
+  model pose BIT-IDENTICAL, picture at idle-noise floor. The stick does not move the
+  model on this game; publish_vr_gameplay stays UNCALLED and the snap-step landmine
+  never arises. (While VR-driven the camera pitch is absolute from the HMD, so the
+  whole stick-pitch class is structurally absent.)
+- **Scale about the anchor**: `bsihands scale r 0.5` shrank hand AND pistol together,
+  uniformly, about the grip; written anchor loc unchanged to the digit. NO part
+  inverse-scaled - BS2's ammo-drum trap did not reproduce (the holdable hangs off the
+  grip subtree; one scale path). The separate weapon-skeleton lane is NOT needed for
+  the pistol; re-check per weapon when the arsenal save exists.
+- SR gates unchanged (draws/s=90 2nd/s=90 presents/s=180 camReplays/s=90), zero mod
+  faults, bones reapplies live on the pass-2 fork.
+
+### Traps recorded (each cost a probe or a boot)
+
+- **`fname_text` refuses buffers under kFNameTextBufMin (64)** - a 32-byte name buffer
+  fails SILENTLY (empty string), which read as "RefSkeleton has no L_Grip" and, in the
+  strict class gate, as "nothing is a UObject". Any new fname_text caller takes a
+  64-byte buffer minimum.
+- **The sim's `hand <h> aim pose ...` writes a slot NOTHING consumes**: xrsim_frame.cpp
+  builds aimWorld from gripWorld + aimtrim every frame and never reads rig.aim. Drive
+  hand stations with `hand <h> grip pose ...` (+ `hand <h> aimtrim 0 0` to null the
+  default -40 pitch aim offset), or `hand <h> to grip ...` for sweeps. The dead slot is
+  left as-is this session (a sim change would touch every game's test lane).
+- **object_class_name now requires the UClass fixpoint** (class-of-class must name
+  "Class"): the pawn's +0x0D8 loadout-cache STRUCT walked as a convincing fake
+  "XWeaponModelFirstPerson" under the old gate (its +0x20 held an instance pointer).
+  The struct itself is real treasure - {XInventoryManager*, XFirstPersonAttachment*,
+  XWeaponDedicatedMelee*, XWeaponModelFirstPerson*, XWeapon*[4],
+  XWeaponModelFirstPerson*[3]} - but it is a raw cache, not a UObject.
+- **A modal dialog freezes the WORLD while the render keeps presenting** (90 draws/s,
+  byte-identical frames). Before judging any intervention from a picture: two
+  no-intervention shots must DIFFER first (the positive control that caught the
+  "gear unlocked" modal masking the first hide test).
+- pawn +0x2E4 is the pawn's OWN XSkeletalMeshComponent (third-person body) - not the
+  viewmodel; inventory manager at pawn +0x314 with melee + 4 XWeapon slots at
+  +0x1FC..+0x20C (the s43 grant-lane lead, unchanged).
