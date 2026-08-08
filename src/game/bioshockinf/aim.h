@@ -44,4 +44,12 @@ void draw_debug_ui();
 // before doing any work, so a disarmed lane costs one relaxed load.
 bool wants_install();
 
+// I8 (s45b) preset plumbing: per-hand aim trim (axis 0 pitch, 1 yaw - no roll
+// slot, roll cannot move a ray) and ray-origin offsets (axis 0 fwd, 1 right,
+// 2 up, cm). The trim rides the fire ray, the laser AND the dot together.
+float trim_get(int hand, int axis);
+void trim_set(int hand, int axis, float v);
+float origin_get(int hand, int axis);
+void origin_set(int hand, int axis, float v);
+
 } // namespace bvr::bsi::aim

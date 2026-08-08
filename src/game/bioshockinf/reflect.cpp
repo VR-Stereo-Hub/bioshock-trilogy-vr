@@ -614,6 +614,21 @@ bool object_class_name(const void* obj, char* out, size_t outSize) {
     if (g_objNameOff < 0) return false;
     const void* cls = object_class(obj);
     if (!cls) return false;
+    // s45b hardening: require the UClass FIXPOINT. A genuine instance's +0x20
+    // is a UClass whose own class names "Class"; a raw struct whose +0x20
+    // happens to hold an INSTANCE pointer passes every readability gate and
+    // then prints that instance's NAME as a "class" - measured live on the
+    // pawn's +0x0D8 loadout-cache struct, which walked as a convincing fake
+    // XWeaponModelFirstPerson until this check. One extra indirection buys
+    // out the whole false-positive class.
+    const void* clsOfCls = object_class(cls);
+    if (!clsOfCls) return false;
+    const int32_t metaIdx = *reinterpret_cast<const int32_t*>(
+        static_cast<const uint8_t*>(clsOfCls) + g_objNameOff);
+    if (metaIdx <= 0 || metaIdx >= patterns::fname_count()) return false;
+    char metaName[32];
+    if (!patterns::fname_text(metaIdx, metaName, sizeof metaName)) return false;
+    if (strcmp(metaName, "Class") != 0) return false;
     const int32_t idx =
         *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(cls) + g_objNameOff);
     if (idx <= 0 || idx >= patterns::fname_count()) return false;
@@ -1132,6 +1147,28 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
 
 void exec_console(const char* cmd) {
     cmd_exec(cmd);
+}
+
+bool call_on_object(void* obj, const char* funcName, void* parms) {
+    if (!obj || !parms) return false;
+    const int32_t nameIndex = patterns::fname_find(funcName);
+    if (nameIndex < 0) return false;
+    void* pcObj = nullptr;
+    const uint8_t* const* pcVt = nullptr;
+    if (!resolve_dispatch_target("call_on_object", pcObj, pcVt)) return false;
+    if (!bvr::pattern_scan::is_memory_valid(obj, sizeof(void*))) return false;
+    const uint8_t* const* vt = *reinterpret_cast<const uint8_t* const* const*>(obj);
+    const size_t slotsNeeded = patterns::kProcessEventVtableOffset / 4 + 1;
+    if (!vt || !bvr::pattern_scan::is_memory_valid(vt, slotsNeeded * sizeof(void*)))
+        return false;
+    const uint32_t ffRva = rva_of(vt[patterns::kFindFunctionVtableOffset / 4]);
+    const uint32_t peRva = rva_of(vt[patterns::kProcessEventVtableOffset / 4]);
+    if (ffRva != patterns::kFindFunctionRva ||
+        (peRva != patterns::kActorProcessEventRva && peRva != patterns::kProcessEventRva))
+        return false;
+    void* func = nullptr;
+    uint32_t code = 0;
+    return call_by_name_seh(obj, vt, nameIndex, parms, &func, &code) == 0;
 }
 
 bool handle_command(const char* cmd, const char* args) {

@@ -1,6 +1,9 @@
 #include "game/bioshockinf/camera.h"
 
 #include "game/bioshockinf/aim.h"
+#include "game/bioshockinf/bones.h"
+#include "game/bioshockinf/frame_context.h"
+#include "game/bioshockinf/hands.h"
 
 #include "core/framework/command.h"
 #include "core/gfx/hud_capture.h"
@@ -494,6 +497,11 @@ struct Snapshot {
 };
 Snapshot g_last;
 
+// I8: the per-dispatch view basis (frame_context.h). Game thread only, pass 1
+// only - written at the end of drive_view, consumed by hands::on_view in the
+// same dispatch and by aim.cpp's ray build.
+bvr::bsi::FrameContext g_frameCtx;
+
 // Session 44 (I7 controls): the ENGINE's own view Z, windowed between
 // heartbeats. The 1 Hz beat is a POINT sample and a jump's whole airborne arc
 // fits between two of them, so "did A jump" was unanswerable; crouch and sprint
@@ -640,6 +648,10 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
     }
 
     if (driveHead) {
+        // I8: the engine camera BEFORE the head drive - the shared origin the
+        // FrameContext publishes so the aim ray and the hand model place the
+        // controller through the identical transform this dispatch used.
+        const FVector engineLoc = *loc;
         const UeAngles a = ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
         if (g_recenterRequested.exchange(false, std::memory_order_relaxed) || !g_haveRecenter) {
             g_recenterPose = hp;
@@ -691,8 +703,23 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         g_headOffX.store(ox, std::memory_order_relaxed);
         g_headOffY.store(oy, std::memory_order_relaxed);
         g_headOffZ.store(oz, std::memory_order_relaxed);
+
+        // I8: publish the basis (pass 1, game thread only). One producer, two
+        // consumers - aim.cpp's ray and hands.cpp's model - which is what
+        // makes "no model-vs-ray drift" a construction rather than a tune.
+        g_frameCtx.valid = g_haveRecenter;
+        g_frameCtx.engineLocX = engineLoc.x;
+        g_frameCtx.engineLocY = engineLoc.y;
+        g_frameCtx.engineLocZ = engineLoc.z;
+        g_frameCtx.gameYawUnits = gameYawUnits;
+        g_frameCtx.recenterYawUnits = g_recenterYawUnits;
+        g_frameCtx.recenterPx = g_recenterPose.px;
+        g_frameCtx.recenterPy = g_recenterPose.py;
+        g_frameCtx.recenterPz = g_recenterPose.pz;
+        g_frameCtx.worldScale = scale;
     } else {
         g_pitchErrDeg = 0.0f;
+        g_frameCtx.valid = false;
     }
 
     // The eye offset, applied LAST so the final camera is base + half-IPD
@@ -793,6 +820,30 @@ void cfg_set_input(float v) {
     g_inputPending.store(on ? 1 : 0, std::memory_order_relaxed);
 }
 
+// I8 (s45b): the hands/aim calibration joins the preset - 27 new keys, the
+// growth the user approved at plan time (9 -> 36). Templates rather than 54
+// hand-rolled stubs; each instantiation is a distinct plain function pointer,
+// which is all KeyDesc needs. Suffix convention: L/R per hand, matching BS2's
+// key shape. animTrans is deliberately NOT persisted - the wrist-travel blend
+// is not implemented on this game yet, and a key that stores nothing would be
+// a lie in the file.
+template <int H, int A> float cfg_get_htrim() { return hands::trim_get(H, A); }
+template <int H, int A> void cfg_set_htrim(float v) { hands::trim_set(H, A, v); }
+template <int H, int A> float cfg_get_hoff() { return hands::offset_get(H, A); }
+template <int H, int A> void cfg_set_hoff(float v) { hands::offset_set(H, A, v); }
+template <int H> float cfg_get_hscale() { return hands::scale_get(H); }
+template <int H> void cfg_set_hscale(float v) { hands::scale_set(H, v); }
+template <int H, int A> float cfg_get_atrim() { return aim::trim_get(H, A); }
+template <int H, int A> void cfg_set_atrim(float v) { aim::trim_set(H, A, v); }
+template <int H, int A> float cfg_get_apos() { return aim::origin_get(H, A); }
+template <int H, int A> void cfg_set_apos(float v) { aim::origin_set(H, A, v); }
+float cfg_get_arms() { return static_cast<float>(hands::arms_mode()); }
+void cfg_set_arms(float v) { hands::set_arms_mode(static_cast<int>(v)); }
+float cfg_get_anim() { return hands::anim_mode() ? 1.0f : 0.0f; }
+void cfg_set_anim(float v) { hands::set_anim_mode(v != 0.0f); }
+float cfg_get_handson() { return hands::enabled() ? 1.0f : 0.0f; }
+void cfg_set_handson(float v) { hands::set_enabled(v != 0.0f); }
+
 constexpr config::KeyDesc kConfigKeys[] = {
     {"worldScale", cfg_get_world_scale, cfg_set_world_scale, 1.0f, 500.0f},
     {"claimTanV", cfg_get_claim_tanv, cfg_set_claim_tanv, 0.05f, 4.0f},
@@ -803,6 +854,35 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"vrstereoOn", cfg_get_vrstereo, cfg_set_vrstereo, 0.0f, 1.0f},
     {"driveHmd", cfg_get_drive, cfg_set_drive, 0.0f, 1.0f},
     {"inputOn", cfg_get_input, cfg_set_input, 0.0f, 1.0f},
+    // ---- I8 hands/model (s45b) ----
+    {"handTrimPitchL", cfg_get_htrim<0, 0>, cfg_set_htrim<0, 0>, -180.0f, 180.0f},
+    {"handTrimYawL", cfg_get_htrim<0, 1>, cfg_set_htrim<0, 1>, -180.0f, 180.0f},
+    {"handTrimRollL", cfg_get_htrim<0, 2>, cfg_set_htrim<0, 2>, -180.0f, 180.0f},
+    {"handTrimPitchR", cfg_get_htrim<1, 0>, cfg_set_htrim<1, 0>, -180.0f, 180.0f},
+    {"handTrimYawR", cfg_get_htrim<1, 1>, cfg_set_htrim<1, 1>, -180.0f, 180.0f},
+    {"handTrimRollR", cfg_get_htrim<1, 2>, cfg_set_htrim<1, 2>, -180.0f, 180.0f},
+    {"handOffFwdL", cfg_get_hoff<0, 0>, cfg_set_hoff<0, 0>, -60.0f, 60.0f},
+    {"handOffRightL", cfg_get_hoff<0, 1>, cfg_set_hoff<0, 1>, -60.0f, 60.0f},
+    {"handOffUpL", cfg_get_hoff<0, 2>, cfg_set_hoff<0, 2>, -60.0f, 60.0f},
+    {"handOffFwdR", cfg_get_hoff<1, 0>, cfg_set_hoff<1, 0>, -60.0f, 60.0f},
+    {"handOffRightR", cfg_get_hoff<1, 1>, cfg_set_hoff<1, 1>, -60.0f, 60.0f},
+    {"handOffUpR", cfg_get_hoff<1, 2>, cfg_set_hoff<1, 2>, -60.0f, 60.0f},
+    {"handScaleL", cfg_get_hscale<0>, cfg_set_hscale<0>, 0.05f, 20.0f},
+    {"handScaleR", cfg_get_hscale<1>, cfg_set_hscale<1>, 0.05f, 20.0f},
+    {"armsMode", cfg_get_arms, cfg_set_arms, 0.0f, 2.0f},
+    {"animMode", cfg_get_anim, cfg_set_anim, 0.0f, 1.0f},
+    {"handsOn", cfg_get_handson, cfg_set_handson, 0.0f, 1.0f},
+    // ---- I8 aim calibration (s45b) ----
+    {"aimTrimPitchL", cfg_get_atrim<0, 0>, cfg_set_atrim<0, 0>, -30.0f, 30.0f},
+    {"aimTrimYawL", cfg_get_atrim<0, 1>, cfg_set_atrim<0, 1>, -30.0f, 30.0f},
+    {"aimTrimPitchR", cfg_get_atrim<1, 0>, cfg_set_atrim<1, 0>, -30.0f, 30.0f},
+    {"aimTrimYawR", cfg_get_atrim<1, 1>, cfg_set_atrim<1, 1>, -30.0f, 30.0f},
+    {"aimPosFwdL", cfg_get_apos<0, 0>, cfg_set_apos<0, 0>, -60.0f, 60.0f},
+    {"aimPosRightL", cfg_get_apos<0, 1>, cfg_set_apos<0, 1>, -60.0f, 60.0f},
+    {"aimPosUpL", cfg_get_apos<0, 2>, cfg_set_apos<0, 2>, -60.0f, 60.0f},
+    {"aimPosFwdR", cfg_get_apos<1, 0>, cfg_set_apos<1, 0>, -60.0f, 60.0f},
+    {"aimPosRightR", cfg_get_apos<1, 1>, cfg_set_apos<1, 1>, -60.0f, 60.0f},
+    {"aimPosUpR", cfg_get_apos<1, 2>, cfg_set_apos<1, 2>, -60.0f, 60.0f},
 };
 
 // ---------------------------------------------------------------------------
@@ -1148,6 +1228,11 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
                 g_srLastSeq = seq;
                 g_srReplayBursts.fetch_add(1, std::memory_order_relaxed);
             }
+            // I8: pass 2 must render the SAME skeleton pass 1 baked, or one
+            // eye shows the engine pose and the other ours - BS1's live-proven
+            // binocular rivalry. Verbatim, idempotent, 100 ms staleness gate
+            // inside; never a re-locate.
+            bones::reapply();
         }
         return;
     }
@@ -1260,6 +1345,13 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // simhead/recenter takes effect on this very call).
     drive_view(loc, rot, now);
 
+    // I8: the model drive, AFTER drive_view published the FrameContext (the
+    // model write must never precede the ray basis it has to agree with).
+    // This dispatch sits INSIDE the draw, after the world tick - so the write
+    // lands post-anim-restamp; the adopt counters in bones.cpp measure
+    // whether anything restamps later in the same draw.
+    hands::on_view(g_frameCtx, now);
+
     static uint64_t s_lastThrottle = 0;
     if (now - s_lastThrottle >= 1000) {
         s_lastThrottle = now;
@@ -1269,6 +1361,9 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         // ordering can win. Retried at 1 Hz while armed, one relaxed load when
         // not; a refusal logs its own gate.
         if (aim::wants_install()) aim::try_install();
+        // I8: the rig resolve rides the same lazy lane for the same reason
+        // (needs a live pawn), and re-resolves after a drop at 3 s inside.
+        bones::tick_resolve(now);
     }
 }
 
@@ -1291,6 +1386,10 @@ void log_status() {
 }
 
 } // namespace
+
+const bvr::bsi::FrameContext& frame_context() {
+    return g_frameCtx;
+}
 
 bool install(const bvr::pattern_scan::ProcessImage& image) {
     (void)image;

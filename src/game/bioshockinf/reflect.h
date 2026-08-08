@@ -31,6 +31,16 @@ bool handle_command(const char* cmd, const char* args);
 // return value; that is why this returns void.
 void exec_console(const char* cmd);
 
+// Dispatch a UFunction BY NAME on an explicit object from adapter code - the
+// bsicallat lane (FindFunction +0x54 then ProcessEvent +0x7C, SEH-isolated)
+// with all of its gates: build gate, game-thread interlock, GNames populated,
+// vtable-slot RVA match on THE OBJECT. `parms` is the caller's zeroed block
+// (args in, out-params/return back out); pass at least 64 bytes. Returns true
+// only when the function resolved AND the dispatch returned without fault -
+// which is NOT acceptance of any effect, only of delivery. Added s45b for the
+// bone rig resolve (GetFirstPersonAttachment); instruments-only otherwise.
+bool call_on_object(void* obj, const char* funcName, void* parms);
+
 // Overlay section.
 void draw_debug_ui();
 

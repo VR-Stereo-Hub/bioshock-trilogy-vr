@@ -361,6 +361,70 @@ inline constexpr uint8_t kViewportDrawRetImm = 4;
 // (BS2's three-gate design).
 inline constexpr uint32_t kViewportDrawGameplayRetRva = 0x206309;
 
+// ---- The first-person rig (session 45b, I8 - derived LIVE) ------------------
+//
+// The chain, every link measured on a live TWN2 save (ENGINE_NOTES "I8 - the
+// first-person rig, derived live"):
+//   PC +0x1FC -> XHuman pawn
+//   pawn.GetFirstPersonAttachment() [native, by-name dispatch] ->
+//     XFirstPersonAttachment (an ACTOR: Level +0x14, owner XHuman +0x8C)
+//   attachment +0x218 -> XSkeletalMeshComponent  <== THE VIEWMODEL RENDERER
+// Proven by intervention, not inference: HideBoneByName(PlayerHandsChest) on
+// that component removed BOTH hands AND the equipped pistol from the frame;
+// UnHide restored them. Hiding only R_Grip removed the right hand AND the
+// pistol while the forearm stayed - so the weapon rides the grip subtree and
+// a grip-cluster drive carries the holdable for free.
+inline constexpr uint32_t kFpAttachMeshCompOffset = 0x218;
+
+// XSkeletalMeshComponent layout (typed-dump derivation, cross-checked against
+// the engine's own natives):
+//   +0x000 native vtable (identity gate below)
+//   +0x014 Outer / +0x038 Owner  == the XFirstPersonAttachment
+//   +0x060 LocalToWorld FMatrix, ROW-VECTOR convention (world = local * M);
+//          rows 0-2 orthonormal rotation images, row 3 = world translation.
+//          Verified: L2W(SpaceBases[L_Grip].trans) == GetBoneLocation(L_Grip)
+//          to 0.1/0.4/0.0 UU on a frozen-coherent snapshot.
+//   +0x21C SkeletalMesh   +0x224/+0x228/+0x244 XMorphemeNetwork   +0x274 PhysicsAsset
+//   +0x290 SpaceBases  TArray<FBoneAtom> (COMPONENT space - the render feed;
+//          the winner of the GetBoneLocation cross-check above)
+//   +0x29C LocalAtoms  TArray<FBoneAtom> (parent space - loses the same check
+//          by >100 UU)
+//   +0x2DC RequiredBones-shaped TArray<BYTE> (identity map 0..42 live)
+// FBoneAtom is 32 bytes: quat xyzw at +0x00, translation xyz at +0x10,
+// UNIFORM SCALE (one float) at +0x1C. NOT the Vengeance 48-byte hkQsTransform.
+inline constexpr uint32_t kSkelCompVtableRva = 0xDEA648;
+inline constexpr uint32_t kSkelCompOuterOffset = 0x14;
+inline constexpr uint32_t kSkelCompOwnerOffset = 0x38;
+inline constexpr uint32_t kSkelCompLocalToWorldOffset = 0x60;
+inline constexpr uint32_t kSkelCompSkelMeshOffset = 0x21C;
+inline constexpr uint32_t kSkelCompSpaceBasesOffset = 0x290;
+inline constexpr uint32_t kSkelCompLocalAtomsOffset = 0x29C;
+inline constexpr uint32_t kBoneAtomStride = 0x20;
+inline constexpr uint32_t kBoneAtomQuatOffset = 0x00;
+inline constexpr uint32_t kBoneAtomTransOffset = 0x10;
+inline constexpr uint32_t kBoneAtomScaleOffset = 0x1C;
+
+// USkeletalMesh::RefSkeleton at +0x74: TArray<FMeshBone>, stride 0x50.
+// Element: FName {Index +0x00, Number +0x04}, authored quat +0x10, authored
+// pos +0x20, NumChildren +0x44, ParentIndex +0x48. Identified live: element 0
+// named PlayerHandsChest (root, 4 children), element 1 L_Grip, element 22
+// R_Grip - matching MatchRefBone/GetBoneName exactly. The FP arms rig has 43
+// bones; grip subtrees are the hand clusters, PlayerHands[LR]arm* the arm
+// chains. Names/indices are MESH facts (re-read per resolve, never baked).
+inline constexpr uint32_t kSkelMeshRefSkeletonOffset = 0x74;
+inline constexpr uint32_t kMeshBoneStride = 0x50;
+inline constexpr uint32_t kMeshBoneNameOffset = 0x00;
+inline constexpr uint32_t kMeshBoneParentOffset = 0x48;
+
+// THE RESTAMP FACTS the drive design rests on (poke oracles, s45b):
+//   - SpaceBases translations restamp within <2 s even with the world
+//     auto-paused (Morpheme evaluates continuously) - a one-shot write cannot
+//     survive; the drive writes EVERY pass-1 dispatch and repaints pass 2.
+//   - SpaceBases SCALE restamps too (poked 0.3 -> back to 1.0 inside a
+//     second). The BS2 rule "the engine never restamps scale" DOES NOT HOLD
+//     here; adoption takes whole atoms and a stale zero-scale self-heals.
+//   - LocalAtoms restamps identically; it is the anim source, not our target.
+
 // **A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT.** `XEngine.ini` says
 // `FOVAngle=70` and `MaxUserFOVOffsetPercent=15`, which session 34 read as "the
 // native slider spans roughly 70 to 80.5 degrees". The RENDERED frustum spans

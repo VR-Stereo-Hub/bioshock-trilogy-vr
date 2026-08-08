@@ -17,6 +17,7 @@
 
 #include "core/hooks/pattern_scan.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshockinf/frame_context.h"
 
 #include <cstdint>
 
@@ -93,6 +94,14 @@ void load_vr_preset();
 // Returns false unless the drive is live, a recenter exists and the snapshot is
 // fresh - i.e. unless a substitution would be meaningful. Read-only.
 bool aim_basis(int32_t* gameYawUnits, int32_t* recenterYawUnits);
+
+// I8 (session 45b): the full per-dispatch view basis - aim_basis plus the
+// pre-drive engine camera location, the recenter XR position and the live
+// world scale - published by drive_view pass 1. The ray chain and the model
+// chain both consume THIS object, which is what makes model-vs-ray agreement
+// a construction. Returns a reference whose .valid is false whenever the
+// head drive did not drive the last dispatch. Game thread only.
+const bvr::bsi::FrameContext& frame_context();
 
 // The `inputOn` registry value as it stands after load_vr_preset (session 44).
 // The adapter applies this DIRECTLY at init rather than through the posting

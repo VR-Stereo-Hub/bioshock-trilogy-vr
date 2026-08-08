@@ -5,6 +5,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/patterns.h"
 
@@ -74,6 +75,18 @@ std::atomic<bool> g_laser[2] = {{false}, {false}};
 std::atomic<float> g_dotDistM{3.0f};
 std::atomic<float> g_dotSizeDeg{0.5f};
 
+// I8 (s45b): per-hand aim trim (pitch/yaw ONLY - roll is innermost in the
+// trim quat and cannot move a ray) and per-hand ray-origin offsets. Defaults
+// 0 = byte-equivalent to the headset-verified s44 behaviour. The SAME trim is
+// fed to core's laser (render side, same xr_local_trim_quat algebra) so beam
+// and shot keep agreeing; the dot inherits it through the round trip of the
+// WRITTEN rotator. Origin offsets move the dot/laser origin only - this
+// game's fire seam substitutes rotation, not origin (GetBaseAimRotation), so
+// there is no trace-origin write to shift; the headset hole-vs-dot verdict
+// decides whether an origin seam is ever needed.
+std::atomic<float> g_aimTrim[2][2] = {};   // [hand][0 pitch, 1 yaw] deg
+std::atomic<float> g_aimPosCm[2][3] = {};  // [hand][fwd, right, up] cm
+
 uint64_t g_lastLogMs = 0;
 
 // The controller ray, in GAME rotation units, built on exactly the basis the
@@ -88,18 +101,20 @@ uint64_t g_lastLogMs = 0;
 bool controller_ray(int hand, FRotator* out, bvr::vr::HeadPose* poseOut) {
     bvr::vr::HeadPose hp{};
     if (!bvr::vr::get_hand_pose(hand, /*aimPose=*/true, hp)) return false;
-    int32_t gameYawUnits = 0, recenterYawUnits = 0;
-    if (!camera::aim_basis(&gameYawUnits, &recenterYawUnits)) return false;
+    const FrameContext& fc = camera::frame_context();
+    if (!fc.valid) return false;
 
-    const UeAngles a = ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
-    const int32_t handYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));
-    const int32_t residual = wrap_rot(handYawUnits - recenterYawUnits);
-    out->pitch = static_cast<int32_t>(a.pitchRad * kRotUnitsPerRadian);
-    out->yaw = gameYawUnits + residual;
-    // Roll is deliberately left at zero: an aim ROTATOR's roll does not steer a
-    // trace, and a rolled controller must not tilt anything downstream that
-    // reads this rotation for a basis.
-    out->roll = 0;
+    // s45b: the shared PURE chain (frame_context.h) - the identical compose
+    // the model drive uses, roll dropped at the rotator write. At zero trims
+    // this is the s44-proven derivation (the only delta is lroundf on pitch,
+    // sub-unit); with trims it composes them as a quat in the controller's
+    // LOCAL frame, the one algebra that holds at every orientation.
+    const float pos[3] = {hp.px, hp.py, hp.pz};
+    const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+    const GamePose gp =
+        ray_pose_from_xr(fc, pos, quat, g_aimTrim[hand][0].load(std::memory_order_relaxed),
+                         g_aimTrim[hand][1].load(std::memory_order_relaxed));
+    *out = gp.rot;
     if (poseOut) *poseOut = hp;
     return true;
 }
@@ -141,12 +156,20 @@ void publish_dot(int slot, int hand, const FRotator& ray, const bvr::vr::HeadPos
         xrRot.roll = 0;
         float fwd[3], right[3], up[3];
         ue_rot_basis(xrRot, fwd, right, up);
-        float dirXr[3];
+        float dirXr[3], rightXr[3], upXr[3];
         ue_to_xr(fwd, dirXr);
+        ue_to_xr(right, rightXr);
+        ue_to_xr(up, upXr);
         const float d = g_dotDistM.load(std::memory_order_relaxed);
-        dc.posXr[0] = pose.px + dirXr[0] * d;
-        dc.posXr[1] = pose.py + dirXr[1] * d;
-        dc.posXr[2] = pose.pz + dirXr[2] * d;
+        // s45b: the ray-origin offsets, in the trimmed ray's own frame, cm ->
+        // meters. Origin moves, direction does not - the dot stays the round
+        // trip of the WRITTEN rotator.
+        const float f = g_aimPosCm[hand][0].load(std::memory_order_relaxed) * 0.01f;
+        const float rr = g_aimPosCm[hand][1].load(std::memory_order_relaxed) * 0.01f;
+        const float u = g_aimPosCm[hand][2].load(std::memory_order_relaxed) * 0.01f;
+        dc.posXr[0] = pose.px + dirXr[0] * d + dirXr[0] * f + rightXr[0] * rr + upXr[0] * u;
+        dc.posXr[1] = pose.py + dirXr[1] * d + dirXr[1] * f + rightXr[1] * rr + upXr[1] * u;
+        dc.posXr[2] = pose.pz + dirXr[2] * d + dirXr[2] * f + rightXr[2] * rr + upXr[2] * u;
         dc.valid = true;
     }
     bvr::vr::set_aim_dot_slot(slot, dc);
@@ -163,9 +186,15 @@ void publish_laser(int slot, int hand, bool enabled) {
     lc.nearM = 0.30f;
     lc.farM = 6.0f;
     lc.sizeDeg = 0.7f;
-    // No trims: this game's ray is built straight off the aim pose with no
-    // pitch/yaw offset, so the beam must not carry one either or it would stop
-    // agreeing with the shot.
+    // s45b: the beam carries EXACTLY the ray's trim and origin offsets -
+    // render-side it composes them with the same xr_local_trim_quat the game
+    // side used, so beam and shot agree at every controller orientation by
+    // shared algebra. Zero trims = the s44 behaviour, bit for bit.
+    lc.pitchTrimDeg = g_aimTrim[hand][0].load(std::memory_order_relaxed);
+    lc.yawTrimDeg = g_aimTrim[hand][1].load(std::memory_order_relaxed);
+    lc.posFwdCm = g_aimPosCm[hand][0].load(std::memory_order_relaxed);
+    lc.posRightCm = g_aimPosCm[hand][1].load(std::memory_order_relaxed);
+    lc.posUpCm = g_aimPosCm[hand][2].load(std::memory_order_relaxed);
     bvr::vr::set_laser_slot(slot, lc);
 }
 
@@ -371,6 +400,33 @@ bool handle_command(const char* cmd, const char* args) {
                 g_dot[1].load(std::memory_order_relaxed) ? 1 : 0,
                 g_laser[0].load(std::memory_order_relaxed) ? 1 : 0,
                 g_laser[1].load(std::memory_order_relaxed) ? 1 : 0);
+    } else if (strncmp(args, "trim", 4) == 0) {
+        char hs[4] = {};
+        float p = 0, y = 0;
+        if (sscanf_s(args + 4, " %3s %f %f", hs, 4u, &p, &y) == 3) {
+            const int h = (*hs == 'l' || *hs == 'L') ? 0 : 1;
+            g_aimTrim[h][0].store(p, std::memory_order_relaxed);
+            g_aimTrim[h][1].store(y, std::memory_order_relaxed);
+            BVR_LOG("[bsi] aim: trim %c = pitch %.2f yaw %.2f deg (no roll slot - roll "
+                    "cannot move a ray)",
+                    h ? 'R' : 'L', p, y);
+        } else {
+            BVR_LOG("[bsi] aim: usage - bsiaim trim l|r <pitchDeg> <yawDeg>");
+        }
+    } else if (strncmp(args, "origin", 6) == 0) {
+        char hs[4] = {};
+        float f = 0, r = 0, u = 0;
+        if (sscanf_s(args + 6, " %3s %f %f %f", hs, 4u, &f, &r, &u) == 4) {
+            const int h = (*hs == 'l' || *hs == 'L') ? 0 : 1;
+            g_aimPosCm[h][0].store(f, std::memory_order_relaxed);
+            g_aimPosCm[h][1].store(r, std::memory_order_relaxed);
+            g_aimPosCm[h][2].store(u, std::memory_order_relaxed);
+            BVR_LOG("[bsi] aim: origin %c = fwd %.1f right %.1f up %.1f cm (dot+laser "
+                    "origin only - this game's fire seam is rotation-only)",
+                    h ? 'R' : 'L', f, r, u);
+        } else {
+            BVR_LOG("[bsi] aim: usage - bsiaim origin l|r <fwd> <right> <up> (cm)");
+        }
     } else if (strncmp(args, "dotdist", 7) == 0) {
         float v = 0.0f;
         if (sscanf_s(args + 7, "%f", &v) == 1 && v >= 0.3f && v <= 30.0f)
@@ -440,6 +496,29 @@ void draw_debug_ui() {
     if (ImGui::SliderFloat("Dot distance (m)", &dist, 0.5f, 15.0f, "%.1f"))
         g_dotDistM.store(dist, std::memory_order_relaxed);
 
+    // s45b: the aim CALIBRATION block - trim pitch/yaw (no roll: it cannot
+    // move a ray) + ray-origin offsets, per hand behind one radio (BS1's
+    // one-slider-set convention). The laser and dot carry these exactly.
+    ImGui::Separator();
+    static int aimHand = 1;
+    ImGui::TextDisabled("Aim calibration (trim moves shot+dot+laser together)");
+    ImGui::RadioButton("tune L##aim", &aimHand, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton("tune R##aim", &aimHand, 1);
+    float tv = g_aimTrim[aimHand][0].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("aim trim pitch (deg)", &tv, -30.0f, 30.0f))
+        g_aimTrim[aimHand][0].store(tv, std::memory_order_relaxed);
+    tv = g_aimTrim[aimHand][1].load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("aim trim yaw (deg)", &tv, -30.0f, 30.0f))
+        g_aimTrim[aimHand][1].store(tv, std::memory_order_relaxed);
+    const char* axesP[3] = {"ray origin fwd (cm)", "ray origin right (cm)",
+                            "ray origin up (cm)"};
+    for (int a = 0; a < 3; ++a) {
+        tv = g_aimPosCm[aimHand][a].load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat(axesP[a], &tv, -60.0f, 60.0f))
+            g_aimPosCm[aimHand][a].store(tv, std::memory_order_relaxed);
+    }
+
     ImGui::TextDisabled("Aim laser (the beam along the ray)");
     bool lasR = g_laser[1].load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Laser: right hand (weapon)", &lasR))
@@ -455,6 +534,19 @@ void draw_debug_ui() {
                 g_lastEngineYawDeg.load(std::memory_order_relaxed),
                 g_lastRayYawDeg.load(std::memory_order_relaxed));
     ImGui::TextDisabled("bsiaim probe on|off | on|off | dump <n> | status");
+}
+
+float trim_get(int hand, int axis) {
+    return g_aimTrim[hand & 1][axis & 1].load(std::memory_order_relaxed);
+}
+void trim_set(int hand, int axis, float v) {
+    g_aimTrim[hand & 1][axis & 1].store(v, std::memory_order_relaxed);
+}
+float origin_get(int hand, int axis) {
+    return g_aimPosCm[hand & 1][axis % 3].load(std::memory_order_relaxed);
+}
+void origin_set(int hand, int axis, float v) {
+    g_aimPosCm[hand & 1][axis % 3].store(v, std::memory_order_relaxed);
 }
 
 } // namespace bvr::bsi::aim
