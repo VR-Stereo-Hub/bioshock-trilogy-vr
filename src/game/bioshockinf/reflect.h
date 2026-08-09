@@ -31,6 +31,14 @@ bool handle_command(const char* cmd, const char* args);
 // return value; that is why this returns void.
 void exec_console(const char* cmd);
 
+// s47: class name of an arbitrary pointer IF it reads as a genuine UObject
+// (UClass-fixpoint gated - the s45b hardening against raw structs that walk
+// as fake objects). Best-effort derives the UObject::Name offset first, so a
+// call before a PlayerController exists returns false cleanly. Game thread.
+// `out` needs >= 64 bytes (the fname_text buffer contract). Added for the I8
+// per-weapon profile scaffold; instruments-only otherwise.
+bool class_name_of(const void* obj, char* out, size_t outSize);
+
 // Dispatch a UFunction BY NAME on an explicit object from adapter code - the
 // bsicallat lane (FindFunction +0x54 then ProcessEvent +0x7C, SEH-isolated)
 // with all of its gates: build gate, game-thread interlock, GNames populated,

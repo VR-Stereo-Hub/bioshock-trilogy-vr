@@ -120,6 +120,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/lens.h
     game/bioshockinf/patterns.cpp
     game/bioshockinf/patterns.h
+    game/bioshockinf/profiles.cpp
+    game/bioshockinf/profiles.h
     game/bioshockinf/recorder.cpp
     game/bioshockinf/recorder.h
     game/bioshockinf/reflect.cpp

@@ -13,6 +13,7 @@
 #include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
+#include "game/bioshockinf/profiles.h"
 #include "game/bioshockinf/recorder.h"
 #include "game/bioshockinf/reflect.h"
 #include "game/bioshockinf/scenedraw.h"
@@ -176,6 +177,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (fire::handle_command(cmd, args)) return true;
     if (hands::handle_command(cmd, args)) return true;
     if (bones::handle_command(cmd, args)) return true;
+    if (profiles::handle_command(cmd, args)) return true;
     if (strcmp(cmd, "reentry") == 0) {
         if (!scenedraw::handle_command(args))
             BVR_LOG("[bsi] reentry: unknown subcommand. reentry status|reset|pulse [n]|"

@@ -1206,6 +1206,13 @@ void exec_console(const char* cmd) {
     cmd_exec(cmd);
 }
 
+bool class_name_of(const void* obj, char* out, size_t outSize) {
+    // Best-effort derive first, the internal callers' own pattern: a no-op
+    // once the offset is known, a clean false before a PC exists.
+    derive_obj_name_off();
+    return object_class_name(obj, out, outSize);
+}
+
 bool call_on_object(void* obj, const char* funcName, void* parms) {
     if (!obj || !parms) return false;
     const int32_t nameIndex = patterns::fname_find(funcName);

@@ -9,6 +9,7 @@
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/patterns.h"
+#include "game/bioshockinf/profiles.h"
 
 #include <MinHook.h>
 #include <imgui.h>
@@ -94,6 +95,9 @@ FVector* __fastcall FireStartDetour(void* self, void* edx, FVector* out, void* w
     g_lastEngine[2].store(engine.z, std::memory_order_relaxed);
     g_lastWeaponRva.store(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(weapon)),
                           std::memory_order_relaxed);
+    // s47: the per-weapon profile scaffold latches the weapon CLASS NAME here
+    // (once per pointer change; a null param latches "(none)").
+    profiles::note_weapon_object(weapon);
 
     // The hand origin, from the SAME chain the aim dot uses: same latched
     // hand, same trim, same frame basis - agreement by construction.
