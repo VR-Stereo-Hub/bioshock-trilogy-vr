@@ -31,6 +31,33 @@ using ProcessEventFn = void(__fastcall*)(void* self, void* edx, void* func, void
 std::atomic<int> g_mode{1};
 std::atomic<bool> g_installed{false};
 
+// s48b: the property-side stance kill, and what the live A/Bs measured:
+//  1. bDisableSubtleFidget SET on the INSTANCE: stance re-entered anyway.
+//  2. SubtleFidgetTimeRange {120, 240} s (EXACTLY the measured 2-4 min
+//     re-onset window) starved to {1e9, 1e9} on the INSTANCE, write verified
+//     held: stance re-entered anyway. The live scheduler reads neither
+//     instance property.
+//  3. The ARCHETYPE (the spawn template at the ObjectArchetype slot, itself
+//     an XFirstPersonAttachment carrying the authored {120, 240}): starved
+//     too, bools set on both - **stance re-entered anyway (+5:20)**. FOUR
+//     property-side hypotheses are now falsified with held writes verified;
+//     the live consumer keeps its OWN copy of the timing - the
+//     XFidgetAnimationSelection anim-tree node is the next hunt (find the
+//     instance off the component's anim tree and starve or neutralize THERE).
+// This lane therefore ships DEFAULT OFF (evidence-first: no memory write
+// without a proven effect); it stays as the property-side layer for the
+// eventual layered kill and as the ready-made apply plumbing once the real
+// consumer is found. Self-deriving offsets (0x214/0x1, 0x26C on this build);
+// the walk refuses on layout drift.
+std::atomic<bool> g_rootKill{false};
+void* g_appliedOn = nullptr;   // attachment instance last applied to
+bool g_walkRefused = false;    // one refusal disables the lane for the boot
+uint32_t g_boolOff = 0, g_boolMask = 0;
+uint32_t g_rangeOff = 0;
+float g_rangeSaved[2] = {120.0f, 240.0f}; // authored values, for the OFF lever
+constexpr float kStarve = 1.0e9f;
+uint32_t g_applies = 0;
+
 void** g_slot = nullptr;          // the patched vtable slot
 ProcessEventFn g_orig = nullptr;  // its original occupant
 int32_t g_startIdx = -1;          // GNames index of StartSubtleFidget
@@ -88,6 +115,72 @@ void uninstall(const char* why) {
 }
 
 } // namespace
+
+void tick_apply() {
+    if (!g_rootKill.load(std::memory_order_relaxed) || g_walkRefused) return;
+    void* attach = bones::attachment();
+    if (!attach || attach == g_appliedOn) return;
+    char cls[64] = {};
+    if (!reflect::class_name_of(attach, cls, sizeof cls) ||
+        strcmp(cls, "XFirstPersonAttachment") != 0)
+        return; // not resolved far enough yet - retry next tick
+    if (!g_rangeOff) {
+        const bool haveBool = reflect::find_bool_property_bit(
+            attach, "bDisableSubtleFidget", &g_boolOff, &g_boolMask);
+        const bool haveRange = reflect::find_property_offset(
+            attach, "SubtleFidgetTimeRange", "StructProperty", &g_rangeOff);
+        if (!haveRange) {
+            g_walkRefused = true; // a 600+-field walk must not spin at 1 Hz
+            BVR_LOG("[bsi] fidget: root kill REFUSED - SubtleFidgetTimeRange did not "
+                    "derive (bool %s); the stance stays this boot",
+                    haveBool ? "found" : "also missing");
+            return;
+        }
+        BVR_LOG("[bsi] fidget: derived SubtleFidgetTimeRange at attachment+0x%X%s",
+                g_rangeOff,
+                haveBool ? " (and bDisableSubtleFidget for the defense bit)" : "");
+    }
+    // Starve the instance AND its archetype (the ObjectArchetype slot sits at
+    // Name+0xC per the s48 layout; the archetype is itself an
+    // XFirstPersonAttachment carrying the authored range, and is the template
+    // future spawns copy from).
+    void* targets[2] = {attach, nullptr};
+    const int nameOff = reflect::uobject_name_offset();
+    if (nameOff >= 0 &&
+        bvr::pattern_scan::is_memory_valid(static_cast<uint8_t*>(attach) + nameOff + 0xC,
+                                           4)) {
+        void* arch = *reinterpret_cast<void**>(static_cast<uint8_t*>(attach) + nameOff + 0xC);
+        char acls[64] = {};
+        if (arch && reflect::class_name_of(arch, acls, sizeof acls) &&
+            strcmp(acls, "XFirstPersonAttachment") == 0)
+            targets[1] = arch;
+    }
+    for (void* t : targets) {
+        if (!t) continue;
+        float* range = reinterpret_cast<float*>(static_cast<uint8_t*>(t) + g_rangeOff);
+        if (!bvr::pattern_scan::is_memory_valid(range, 8)) continue;
+        // Bank the authored values once (the OFF lever restores them) - but
+        // only when they read authored, not our own starve.
+        if (t == attach && range[0] < kStarve * 0.5f && range[0] > 0.0f) {
+            g_rangeSaved[0] = range[0];
+            g_rangeSaved[1] = range[1];
+        }
+        range[0] = kStarve;
+        range[1] = kStarve;
+        if (g_boolMask) {
+            uint8_t* p = static_cast<uint8_t*>(t) + g_boolOff;
+            if (bvr::pattern_scan::is_memory_valid(p, 4))
+                *reinterpret_cast<uint32_t*>(p) |= g_boolMask;
+        }
+    }
+    g_appliedOn = attach;
+    ++g_applies;
+    BVR_LOG("[bsi] fidget: stance starve applied on attachment %p%s%p - "
+            "SubtleFidgetTimeRange {%.0f, %.0f} -> {1e9, 1e9}%s (apply #%u)",
+            attach, targets[1] ? " + archetype " : " (no archetype) ",
+            targets[1] ? targets[1] : nullptr, g_rangeSaved[0], g_rangeSaved[1],
+            g_boolMask ? " + bDisableSubtleFidget set" : "", g_applies);
+}
 
 bool wants_install() {
     return g_mode.load(std::memory_order_relaxed) != 0 &&
@@ -161,6 +254,40 @@ bool handle_command(const char* cmd, const char* args) {
     if (strcmp(cmd, "bsifidget") != 0) return false;
     if (!args) args = "";
     while (*args == ' ') ++args;
+    if (strncmp(args, "root", 4) == 0) {
+        const char* rest = args + 4;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "on", 2) == 0) {
+            g_rootKill.store(true, std::memory_order_relaxed);
+            g_appliedOn = nullptr; // re-apply on the next tick
+        } else if (strncmp(rest, "off", 3) == 0) {
+            g_rootKill.store(false, std::memory_order_relaxed);
+            // Restore the authored range and clear the bit so OFF is a true
+            // A/B lever, not just stop-applying.
+            if (g_appliedOn) {
+                if (g_rangeOff) {
+                    float* range = reinterpret_cast<float*>(
+                        static_cast<uint8_t*>(g_appliedOn) + g_rangeOff);
+                    if (bvr::pattern_scan::is_memory_valid(range, 8)) {
+                        range[0] = g_rangeSaved[0];
+                        range[1] = g_rangeSaved[1];
+                    }
+                }
+                if (g_boolMask) {
+                    uint8_t* p = static_cast<uint8_t*>(g_appliedOn) + g_boolOff;
+                    if (bvr::pattern_scan::is_memory_valid(p, 4))
+                        *reinterpret_cast<uint32_t*>(p) &= ~g_boolMask;
+                }
+            }
+            g_appliedOn = nullptr;
+        }
+        BVR_LOG("[bsi] fidget: root kill %s (applies=%u, range %s+0x%X {%.0f, %.0f} "
+                "authored, bool +0x%X mask 0x%X)",
+                g_rootKill.load() ? "ON" : "off", g_applies,
+                g_rangeOff ? "attachment" : "underived", g_rangeOff, g_rangeSaved[0],
+                g_rangeSaved[1], g_boolOff, g_boolMask);
+        return true;
+    }
     if (strncmp(args, "probe", 5) == 0) {
         g_mode.store(1, std::memory_order_relaxed);
         BVR_LOG("[bsi] fidget: PROBE - StartSubtleFidget passes through and is logged "
@@ -185,13 +312,15 @@ bool handle_command(const char* cmd, const char* args) {
 }
 
 void draw_debug_ui() {
-    // s48: demoted from "root kill" to observer - the stance starts natively
-    // (see the header); the block stays available for the layered kill later.
-    bool on = g_mode.load(std::memory_order_relaxed) == 2;
-    if (ImGui::Checkbox("block StartSubtleFidget events (NOT the stance root - s48)", &on))
-        g_mode.store(on ? 2 : 1, std::memory_order_relaxed);
+    // s48b: the property-side starve - measured INSUFFICIENT (the anim-tree
+    // node keeps its own timing copy); kept as a layer, default off.
+    bool root = g_rootKill.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("stance property starve (s48b: NOT sufficient alone)", &root)) {
+        handle_command("bsifidget", root ? "root on" : "root off");
+    }
     ImGui::SameLine();
-    ImGui::Text("seen %u blocked %u", g_startSeen.load(std::memory_order_relaxed),
+    ImGui::Text("applies %u | events seen %u blocked %u", g_applies,
+                g_startSeen.load(std::memory_order_relaxed),
                 g_blocked.load(std::memory_order_relaxed));
 }
 

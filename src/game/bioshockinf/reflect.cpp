@@ -1281,28 +1281,37 @@ void cmd_prop(const char* args) {
         BVR_LOG("[bsi] prop: 0x%08X does not walk as a UObject", addr);
         return;
     }
-    // Children on the class, then Next on the first field. UStruct's links sit
-    // past UField's own header; scan windows sized to that reality.
-    const int childOff = find_link_offset(cls, 0x28, 0xC0);
+    // s48b RE-derivation, anchored on the derived Name offset. Measured on
+    // this build (typed dumps of the class, its first child Function and the
+    // +0x34 super, cross-checked by NAME semantics - the super names
+    // XFirstPersonMeshActorBase): UObject = {..., HashNext +0x0C (the trap
+    // the first scan fell into - a hash-bucket chain of unrelated objects),
+    // Outer +0x14, Name +0x18/+0x1C, Class +0x20, ObjectArchetype +0x24
+    // (Class-classed on classes and SHARED between two classes, which is what
+    // falsified +0x24 as a link - two nodes cannot share a Next)}. So
+    // UField::Next = Name+0x10 = +0x28 (the first child's +0x28 points 0x40
+    // bytes away - adjacent allocation, a true sibling) and UStruct's
+    // SuperStruct/Children pair sits at +0x34/+0x38. The scans below still
+    // DERIVE (fixpoint-gated) but start PAST the archetype slot.
+    const int nameOff = uobject_name_offset();
+    const int childOff = find_link_offset(cls, nameOff + 0x1C, 0xC0);
     if (childOff < 0) {
-        BVR_LOG("[bsi] prop: no Children link found on class '%s' (%p) in +0x28..0xC0",
-                clsName, cls);
+        BVR_LOG("[bsi] prop: no Children link found on class '%s' (%p)", clsName, cls);
         return;
     }
     const void* first = *reinterpret_cast<const void* const*>(
         static_cast<const uint8_t*>(cls) + childOff);
-    const int nextOff = find_link_offset(first, 0x04, 0x40);
+    const int nextOff = find_link_offset(first, nameOff + 0x10, nameOff + 0x10);
     if (nextOff < 0) {
-        BVR_LOG("[bsi] prop: no Next link on the first field %p (class Children +0x%X)",
-                first, childOff);
+        BVR_LOG("[bsi] prop: first field %p carries no Next at name+0x10 - layout "
+                "drifted from the s48 derivation, refusing (re-derive by bsidump)",
+                first);
         return;
     }
-    // s48b: SuperStruct link - properties live up the CLASS CHAIN, and the
-    // first walk (4 fields on the leaf class) proved a single level is not
-    // enough. A super candidate is a pointer whose target classes as "Class"
-    // but is NOT the +0x20 self-class slot and NOT named "Class" itself.
+    // SuperStruct: the first Class-classed pointer past the archetype slot
+    // that is not the metaclass, not named "Class", and not Children.
     int superOff = -1;
-    for (int off = 0x24; off <= 0xC0 && superOff < 0; off += 4) {
+    for (int off = nameOff + 0x14; off <= 0xC0 && superOff < 0; off += 4) {
         if (off == childOff) continue;
         const void* p = *reinterpret_cast<const void* const*>(
             static_cast<const uint8_t*>(cls) + off);
@@ -1337,16 +1346,17 @@ void cmd_prop(const char* args) {
             char pcls[64] = {};
             class_name_of(cur, pcls, sizeof pcls);
             const bool match = want[0] && !dumpAll && _stricmp(nm, want) == 0;
-            if ((dumpAll || match) && bvr::pattern_scan::is_memory_valid(cur, 0x50)) {
+            if ((dumpAll || match) && bvr::pattern_scan::is_memory_valid(cur, 0x58)) {
                 const uint32_t* d = static_cast<const uint32_t*>(cur);
-                // Raw metadata dwords - the ascending column across a class's
-                // fields identifies Offset empirically; for a BoolProperty the
-                // power-of-two dword nearby is the BitMask.
-                BVR_LOG("[bsi] prop:   [%s] %p %-14s %-28s d30=%u d34=%u d38=%u d3C=%u "
-                        "d40=%u d44=%u d48=0x%X d4C=0x%X",
-                        wname, cur, pcls, nm[0] ? nm : "(unnamed)", d[0x30 / 4],
-                        d[0x34 / 4], d[0x38 / 4], d[0x3C / 4], d[0x40 / 4], d[0x44 / 4],
-                        d[0x48 / 4], d[0x4C / 4]);
+                // Raw metadata dwords past UField (+0x28) - the ascending
+                // column across a class's fields identifies Offset
+                // empirically; for a BoolProperty the power-of-two dword
+                // nearby is the BitMask.
+                BVR_LOG("[bsi] prop:   [%s] %p %-14s %-28s d28=%u d2C=%u d30=%u d34=%u "
+                        "d38=0x%X d3C=0x%X d40=%u d44=%u d48=0x%X d4C=0x%X d50=0x%X",
+                        wname, cur, pcls, nm[0] ? nm : "(unnamed)", d[0x28 / 4],
+                        d[0x2C / 4], d[0x30 / 4], d[0x34 / 4], d[0x38 / 4], d[0x3C / 4],
+                        d[0x40 / 4], d[0x44 / 4], d[0x48 / 4], d[0x4C / 4], d[0x50 / 4]);
                 if (match)
                     BVR_LOG("[bsi] prop:   ^^ MATCH on class '%s' - eyeball Offset, then "
                             "bsipropbit",
@@ -1391,6 +1401,95 @@ void cmd_propbit(const char* args) {
     BVR_LOG("[bsi] prop: 0x%08X+0x%X mask 0x%X: %s%s (dword 0x%08X -> 0x%08X)", addr, off,
             mask, (before & mask) ? "was SET" : "was clear",
             setTo < 0 ? "" : (setTo ? ", now SET" : ", now CLEAR"), before, *dw);
+}
+
+// The silent chain walk itself: the UProperty object for propName on obj's
+// class chain, or nullptr. Shared by the bool and generic accessors below.
+const void* find_property_object(const void* obj, const char* propName) {
+    if (!obj || !propName) return nullptr;
+    if (!derive_obj_name_off()) return nullptr;
+    const int nameOff = g_objNameOff;
+    const void* cls = object_class(obj);
+    if (!cls) return nullptr;
+    // The s48-derived link layout, re-scanned (not assumed) each call - the
+    // same anchored windows cmd_prop uses.
+    const int childOff = find_link_offset(cls, nameOff + 0x1C, 0xC0);
+    if (childOff < 0) return nullptr;
+    const void* first = *reinterpret_cast<const void* const*>(
+        static_cast<const uint8_t*>(cls) + childOff);
+    const int nextOff = find_link_offset(first, nameOff + 0x10, nameOff + 0x10);
+    if (nextOff < 0) return nullptr;
+    int superOff = -1;
+    for (int off = nameOff + 0x14; off <= 0xC0 && superOff < 0; off += 4) {
+        if (off == childOff) continue;
+        const void* p = *reinterpret_cast<const void* const*>(
+            static_cast<const uint8_t*>(cls) + off);
+        if (!p || p == cls) continue;
+        char c2[64] = {};
+        if (!class_name_of(p, c2, sizeof c2) || strcmp(c2, "Class") != 0) continue;
+        char n2[64] = {};
+        const int32_t ni2 = object_name_index(p);
+        if (ni2 > 0) patterns::fname_text(ni2, n2, sizeof n2);
+        if (strcmp(n2, "Class") == 0) continue;
+        superOff = off;
+    }
+    int guard = 0;
+    const void* walkCls = cls;
+    for (int level = 0; level < 12 && walkCls; ++level) {
+        const void* cur = *reinterpret_cast<const void* const*>(
+            static_cast<const uint8_t*>(walkCls) + childOff);
+        while (cur && field_like(cur) && guard++ < 4096) {
+            char nm[64] = {};
+            const int32_t ni = object_name_index(cur);
+            if (ni > 0) patterns::fname_text(ni, nm, sizeof nm);
+            if (_stricmp(nm, propName) == 0) return cur;
+            if (!bvr::pattern_scan::is_memory_valid(
+                    static_cast<const uint8_t*>(cur) + nextOff, 4))
+                break;
+            cur = *reinterpret_cast<const void* const*>(static_cast<const uint8_t*>(cur) +
+                                                        nextOff);
+        }
+        if (superOff < 0) break;
+        walkCls = *reinterpret_cast<const void* const*>(
+            static_cast<const uint8_t*>(walkCls) + superOff);
+    }
+    return nullptr;
+}
+
+bool find_bool_property_bit(const void* obj, const char* propName, uint32_t* outByteOff,
+                            uint32_t* outMask) {
+    if (!outByteOff || !outMask) return false;
+    const void* p = find_property_object(obj, propName);
+    if (!p) return false;
+    char pcls[64] = {};
+    class_name_of(p, pcls, sizeof pcls);
+    if (strcmp(pcls, "BoolProperty") != 0) return false;
+    if (!bvr::pattern_scan::is_memory_valid(p, 0x5C)) return false;
+    const uint32_t* d = static_cast<const uint32_t*>(p);
+    // UProperty::Offset at +0x48, UBoolProperty::BitMask at +0x58 (the s48
+    // typed dump); gated for plausibility - one bit, small offset.
+    const uint32_t off = d[0x48 / 4];
+    const uint32_t mask = d[0x58 / 4];
+    if (off == 0 || off > 0x4000) return false;
+    if (mask == 0 || (mask & (mask - 1)) != 0) return false;
+    *outByteOff = off;
+    *outMask = mask;
+    return true;
+}
+
+bool find_property_offset(const void* obj, const char* propName, const char* expectClass,
+                          uint32_t* outByteOff) {
+    if (!outByteOff) return false;
+    const void* p = find_property_object(obj, propName);
+    if (!p) return false;
+    char pcls[64] = {};
+    class_name_of(p, pcls, sizeof pcls);
+    if (expectClass && strcmp(pcls, expectClass) != 0) return false;
+    if (!bvr::pattern_scan::is_memory_valid(p, 0x4C)) return false;
+    const uint32_t off = static_cast<const uint32_t*>(p)[0x48 / 4];
+    if (off == 0 || off > 0x4000) return false;
+    *outByteOff = off;
+    return true;
 }
 
 bool call_on_object(void* obj, const char* funcName, void* parms) {

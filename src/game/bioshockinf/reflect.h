@@ -51,6 +51,21 @@ int32_t object_name_index(const void* obj);
 // same pointer itself).
 int32_t uobject_name_offset();
 
+// s48b: silent UProperty-chain search (the bsiprop walk without the prints).
+// Walks obj's class chain (Children/Next/Super links anchored on the derived
+// Name offset - the s48 layout derivation, ENGINE_NOTES) for a BoolProperty
+// named propName and hands back ITS OWN recorded byte offset and bitmask -
+// self-deriving every boot, so a game patch moves the property and this moves
+// with it (or refuses) instead of writing through a stale constant. Game
+// thread; one-shot cost ~hundreds of gated reads - never on a cadence.
+bool find_bool_property_bit(const void* obj, const char* propName, uint32_t* outByteOff,
+                            uint32_t* outMask);
+
+// s48b: generic form - the property's byte offset, gated on its class naming
+// expectClass (nullptr = any). Same walk, same one-shot discipline.
+bool find_property_offset(const void* obj, const char* propName, const char* expectClass,
+                          uint32_t* outByteOff);
+
 // Dispatch a UFunction BY NAME on an explicit object from adapter code - the
 // bsicallat lane (FindFunction +0x54 then ProcessEvent +0x7C, SEH-isolated)
 // with all of its gates: build gate, game-thread interlock, GNames populated,

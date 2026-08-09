@@ -46,6 +46,16 @@ namespace bvr::bsi::fidget {
 bool wants_install();
 bool try_install();
 
+// s48b: THE ROOT KILL - STARVES the fidget scheduler on the resolved
+// attachment: SubtleFidgetTimeRange (authored {120, 240} s = exactly the
+// measured 2-4 min re-onset) is written to {1e9, 1e9}, so the idle-stance
+// timer can never arm; bDisableSubtleFidget is set alongside as free defense
+// (measured insufficient alone - likely spawn-sampled). Offsets self-derive
+// from the UProperty objects each boot; refuses on drift. Called from the
+// camera's 1 Hz lane; re-applies after every re-resolve (levels recreate the
+// attachment). `bsifidget root off` restores the authored range - a true A/B.
+void tick_apply();
+
 bool handle_command(const char* cmd, const char* args);
 void draw_debug_ui();
 
