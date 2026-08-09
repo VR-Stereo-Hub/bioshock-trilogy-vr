@@ -302,8 +302,24 @@ void __cdecl PostRequestDetour(void* runtime, void* desc, void* params) {
     }
     const bool block = ours && g_reqMode.load(std::memory_order_relaxed) == 2 &&
                        id == g_reqBlockId.load(std::memory_order_relaxed);
-    // NPC networks post too - ours always logs; foreign posts 1-in-64.
-    if (ours || (g_reqCalls.load(std::memory_order_relaxed) & 63) == 0) {
+    // Two flood guards (measured: the game drives the 'Lowered' control param
+    // at 90 Hz through this funnel): ours logs only on a CHANGE of (id,
+    // caller) or every 5 s as a heartbeat; foreign posts log 1-in-64.
+    static uint32_t lastId = 0xFFFFFFFF, lastCaller = 0;      // game thread only
+    static uint64_t lastLogMs = 0;
+    bool logIt = false;
+    if (ours) {
+        const uint64_t now = GetTickCount64();
+        if (id != lastId || callerRva != lastCaller || now - lastLogMs > 5000) {
+            logIt = true;
+            lastId = id;
+            lastCaller = callerRva;
+            lastLogMs = now;
+        }
+    } else if ((g_reqCalls.load(std::memory_order_relaxed) & 63) == 0) {
+        logIt = true;
+    }
+    if (logIt) {
         BVR_LOG("[bsi] fidget: net request id=%u type=%u {%08X %08X %08X %08X} on "
                 "runtime %p (%s) from caller rva 0x%X - %s",
                 id, type, d[0], d[1], d[2], d[3], runtime,
