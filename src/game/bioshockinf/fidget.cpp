@@ -276,25 +276,37 @@ bool try_install_act() {
 std::atomic<int> g_reqMode{1}; // 1 = probe, 2 = block g_reqBlockId, 0 = silent
 std::atomic<bool> g_reqInstalled{false};
 std::atomic<uint32_t> g_reqBlockId{0xFFFFFFFF};
-using PostRequestFn = void(__fastcall*)(void* self, void* edx, void* desc, int pri);
+using PostRequestFn = void(__cdecl*)(void* runtime, void* desc, void* params);
 PostRequestFn g_reqOrig = nullptr;
 std::atomic<uint32_t> g_reqCalls{0};
 std::atomic<uint32_t> g_reqBlocked{0};
 
-void __fastcall PostRequestDetour(void* self, void* edx, void* desc, int pri) {
+// The FP network's Morpheme runtime ([network+0x118]) - what the inner post
+// receives as its first arg.
+void* fp_runtime() {
+    uint8_t* net = static_cast<uint8_t*>(fp_network());
+    if (!net || !bvr::pattern_scan::is_memory_valid(net + 0x118, 4)) return nullptr;
+    return *reinterpret_cast<void**>(net + 0x118);
+}
+
+void __cdecl PostRequestDetour(void* runtime, void* desc, void* params) {
     g_reqCalls.fetch_add(1, std::memory_order_relaxed);
     const uint32_t callerRva = rva_of(_ReturnAddress());
-    const bool ours = self && self == fp_network();
+    const bool ours = runtime && runtime == fp_runtime();
     uint32_t d[4] = {};
-    if (desc && bvr::pattern_scan::is_memory_valid(desc, 16)) memcpy(d, desc, 16);
+    uint32_t id = 0xFFFF, type = 0xFF;
+    if (desc && bvr::pattern_scan::is_memory_valid(desc, 16)) {
+        memcpy(d, desc, 16);
+        id = *reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(desc) + 8);
+        type = *reinterpret_cast<const uint8_t*>(static_cast<const uint8_t*>(desc) + 0xC);
+    }
     const bool block = ours && g_reqMode.load(std::memory_order_relaxed) == 2 &&
-                       d[0] == g_reqBlockId.load(std::memory_order_relaxed);
-    // NPC networks post on every state change - a full log would flood the
-    // game thread. Ours always logs; foreign posts log 1-in-64 as a heartbeat.
+                       id == g_reqBlockId.load(std::memory_order_relaxed);
+    // NPC networks post too - ours always logs; foreign posts 1-in-64.
     if (ours || (g_reqCalls.load(std::memory_order_relaxed) & 63) == 0) {
-        BVR_LOG("[bsi] fidget: net request {%08X %08X %08X %08X} pri=%d on %p (%s) from "
-                "caller rva 0x%X - %s",
-                d[0], d[1], d[2], d[3], pri, self,
+        BVR_LOG("[bsi] fidget: net request id=%u type=%u {%08X %08X %08X %08X} on "
+                "runtime %p (%s) from caller rva 0x%X - %s",
+                id, type, d[0], d[1], d[2], d[3], runtime,
                 ours ? "the FP network" : "another network", callerRva,
                 block ? "BLOCKED" : "passed");
     }
@@ -302,43 +314,33 @@ void __fastcall PostRequestDetour(void* self, void* edx, void* desc, int pri) {
         g_reqBlocked.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (g_reqOrig) g_reqOrig(self, edx, desc, pri);
+    if (g_reqOrig) g_reqOrig(runtime, desc, params);
 }
 
 bool try_install_req() {
     if (g_reqInstalled.load(std::memory_order_relaxed)) return true;
     if (!patterns::rva_trusted()) return false;
-    uint8_t* impl = const_cast<uint8_t*>(patterns::image_base()) + patterns::kPostRequestRva;
+    uint8_t* impl =
+        const_cast<uint8_t*>(patterns::image_base()) + patterns::kPostRequestInnerRva;
     if (!bvr::pattern_scan::is_memory_valid(impl, 0x100)) return false;
-    if (memcmp(impl, patterns::kPostRequestPrologue,
-               sizeof patterns::kPostRequestPrologue) != 0) {
+    if (memcmp(impl, patterns::kPostRequestInnerPrologue,
+               sizeof patterns::kPostRequestInnerPrologue) != 0) {
         BVR_LOG("[bsi] fidget: req REFUSED - prologue at rva 0x%X does not match the "
                 "derivation (stale build?)",
-                patterns::kPostRequestRva);
+                patterns::kPostRequestInnerRva);
         return false;
     }
-    bool sawRet = false;
-    for (size_t i = 0; i + 2 < 0x100; ++i) {
-        if (impl[i] == 0xC2 && impl[i + 1] == patterns::kPostRequestRetImm &&
-            impl[i + 2] == 0x00) {
-            sawRet = true;
-            break;
-        }
-    }
-    if (!sawRet) {
-        BVR_LOG("[bsi] fidget: req REFUSED - no `ret 8` in the first 0x100 bytes at rva "
-                "0x%X (arg count drifted?)",
-                patterns::kPostRequestRva);
-        return false;
-    }
+    // __cdecl (the wrapper does `add esp, 0xC` after the call): a `ret imm`
+    // anywhere before the first plain ret would mean the shape drifted.
+    // (A cdecl pass-through detour is arity-safe; the gate is the prologue.)
     if (MH_CreateHook(impl, reinterpret_cast<void*>(&PostRequestDetour),
                       reinterpret_cast<void**>(&g_reqOrig)) != MH_OK)
         return false;
     if (MH_EnableHook(impl) != MH_OK) return false;
     g_reqInstalled.store(true, std::memory_order_relaxed);
-    BVR_LOG("[bsi] fidget: request-post hooked at rva 0x%X (every request entering any "
-            "Morpheme network; 8 callers). Mode: %s.",
-            patterns::kPostRequestRva,
+    BVR_LOG("[bsi] fidget: request-post hooked at the INNER funnel rva 0x%X (all five "
+            "post paths converge here). Mode: %s.",
+            patterns::kPostRequestInnerRva,
             g_reqMode.load() == 2 ? "BLOCK (configured id on the FP network)"
                                   : "PROBE (log every request)");
     return true;

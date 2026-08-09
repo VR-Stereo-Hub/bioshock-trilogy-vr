@@ -229,10 +229,20 @@ inline constexpr uint8_t kStartSubtleFidgetImplPrologue[] = {0x56, 0x8B, 0xF1, 0
 // that gates on [obj+0x167C]&2 and zeroes floats at +0x1674/+0x1680 first).
 // The ASCII "rqHandFidget" is NOT in the exe - request names are asset data,
 // resolved by FName at runtime.
-inline constexpr uint32_t kPostRequestRva = 0x5CEF00;
-inline constexpr uint8_t kPostRequestRetImm = 0x08; // 2 stack args
-inline constexpr uint8_t kPostRequestPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0,
-                                                   0x83, 0xEC, 0x10, 0x8B, 0x55, 0x08};
+inline constexpr uint32_t kPostRequestRva = 0x5CEF00; // wrapper - record only
+// s49b correction: 0x5CEF00 is only ONE of the post wrappers (a live fire
+// posted NOTHING through it). The FUNNEL is the inner post 0x5CED00 - all
+// five E8 callers converge there: 0x5CEEE6 (wrapper0), 0x5CEF38 (wrapper1 =
+// kPostRequestRva's body), 0x5CEF88 (wrapper2 0x5CEF50, float arg, 40
+// callers - the attachment's 0x51B8AC/0x51B9DE sites among them), 0x5D0407,
+// and 0x5D1B2A (inside the by-name resolver). Shape: __cdecl(runtime =
+// [network+0x118], desc*, params*), plain-ret (caller cleans, add esp 0xC at
+// the wrapper), jump table on the descriptor TYPE byte [desc+0xC] (0..4),
+// request-id WORD at [desc+8] (0xFFFF = invalid, early-out).
+inline constexpr uint32_t kPostRequestInnerRva = 0x5CED00;
+inline constexpr uint8_t kPostRequestInnerPrologue[] = {0x55, 0x8B, 0xEC, 0x83,
+                                                        0xE4, 0xF0, 0x8B, 0x4D,
+                                                        0x08, 0x8B, 0x45, 0x10};
 inline constexpr uint32_t kResetSubtleFidgetRva = 0x51B6C0; // the engine's own
 // reset-to-ready - recorded as the Plan-B pin (callable on the attachment when
 // the +0x214 bit-0x2 flip marks an onset; posts the ready request through the
