@@ -10,6 +10,7 @@
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/fidget.h"
 #include "game/bioshockinf/fire.h"
+#include "game/bioshockinf/fxorigin.h"
 #include "game/bioshockinf/hands.h"
 #include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
@@ -149,6 +150,7 @@ void BioshockInfAdapter::drawDebugUi() {
     hands::draw_debug_ui();
     aim::draw_debug_ui();
     fire::draw_debug_ui();
+    fxorigin::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
     reflect::draw_debug_ui();
@@ -176,6 +178,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (input_drive::handle_command(cmd, args)) return true;
     if (aim::handle_command(cmd, args)) return true;
     if (fire::handle_command(cmd, args)) return true;
+    if (fxorigin::handle_command(cmd, args)) return true;
     if (fidget::handle_command(cmd, args)) return true;
     if (hands::handle_command(cmd, args)) return true;
     if (bones::handle_command(cmd, args)) return true;

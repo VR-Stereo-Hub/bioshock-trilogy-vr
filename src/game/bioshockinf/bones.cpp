@@ -924,11 +924,12 @@ void release(const char* why, int hand) {
     if (hand < 0) g_refValid = false;
 }
 
-void reapply() {
-    if (!g_comp || !g_bank) return;
+int reapply() {
+    if (!g_comp || !g_bank) return 0;
     const uint64_t now = GetTickCount64();
-    if (!rig_intact()) return;
+    if (!rig_intact()) return 0;
     bool any = false;
+    int differed = 0;
     for (int h = 0; h < 2; ++h) {
         const uint64_t age = now - g_writeStampMs[h];
         if (age > 100) { // stale - leave the engine alone
@@ -943,7 +944,9 @@ void reapply() {
         bool wrote = false;
         for (int i = 0; i < g_boneCount; ++i) {
             if (!g_writtenMask[h][i]) continue;
-            memcpy(g_bank + static_cast<size_t>(i) * kAtom, g_written[i], 32);
+            uint8_t* dst = g_bank + static_cast<size_t>(i) * kAtom;
+            if (memcmp(dst, g_written[i], 32) != 0) ++differed;
+            memcpy(dst, g_written[i], 32);
             wrote = true;
         }
         if (wrote) {
@@ -953,6 +956,7 @@ void reapply() {
         }
     }
     if (any) ++g_reapplies;
+    return differed;
 }
 
 void on_world_change(const char* why) {

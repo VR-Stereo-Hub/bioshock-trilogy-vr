@@ -82,8 +82,11 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
 void release(const char* why, int hand);
 
 // Pass-2 verbatim repaint of everything the last pass-1 drive wrote (100 ms
-// staleness gate). Called from the camera detour's second-pass fork.
-void reapply();
+// staleness gate). Called from the camera detour's second-pass fork and the
+// s50 fxorigin attach-update detour. Returns how many driven atoms DIFFERED
+// from the bank before the repaint (0 = nobody overwrote since the last
+// write) - the s50 eval-ordering instrument; callers may ignore it.
+int reapply();
 
 // World/possession change: drop the resolved rig entirely and re-resolve.
 void on_world_change(const char* why);

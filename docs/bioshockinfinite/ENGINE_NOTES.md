@@ -200,7 +200,7 @@ T+8.5 s, no gap and no retry needed.
 | adapter | NVIDIA GeForce RTX 4060 |
 | frame inspector | **15/15 context vtable slots hooked** on the game's own immediate context |
 | one lite frame dump | 482 events, 68 resources |
-| lifetime draw census after ~22k presents | DrawIndexed 7,002,643 · Draw 524,784 · DrawIndexedInstanced 807,738 · DrawInstanced 0 · SetRenderTargets 1,409,381 · ClearRTV 398,619 · ClearDSV 225,272 |
+| lifetime draw census after ~22k presents | DrawIndexed 7,002,643 Â· Draw 524,784 Â· DrawIndexedInstanced 807,738 Â· DrawInstanced 0 Â· SetRenderTargets 1,409,381 Â· ClearRTV 398,619 Â· ClearDSV 225,272 |
 
 **A free half-answer for DR-I8.** The live `XEngine.ini` says `ResX=2560` / `ResY=1440`, and the
 backbuffer at first Present is 2560x1440. So Infinite's config resolution **is** honoured by the
@@ -731,6 +731,103 @@ seam latches its Weapon param's class once per pointer change - **measured: the
 optional param arrives NULL on ordinary shots**, so the pawn-side
 current-weapon source is I9 derivation work (with the arsenal save), not a
 guess here. `bsiprofiles` prints the latch and lookup result.
+
+### s50: THE FX-ORIGIN HUNT - the frozen family mapped, the attach lane exonerated
+
+**The flat repro (banked, on-demand).** The held vigor charge is the persistent
+repro the s49b handoff predicted: cycle to Enrage (`grip l squeeze` = NextPlasmid,
+slot walk below), hold LT - a large flame plume + a white "ready" sparkle render
+at a fixed camera-relative spot while the driven hand moves freely. Positive
+control green: the FX are unmissable in a game-shot, and the A/B across a 40 cm
+commanded hand move shows the plume/sparkle frozen while socket FX ride.
+Enrage's lane: HOLD = charge (plume), RELEASE = throw (the trap burned the Blue
+Ribbon carpet on release - releases are casts; mind the salts budget, and
+`Restart Checkpoint` refills salts but REPLAYS the award-dialog queue: clear
+~4 modal dialogs with `btn a press` before any input lands).
+
+**TWO FX POPULATIONS, cleanly split by the flat A/B:**
+- **Riders** (already correct, no fix needed): fingertip flames on the vigor
+  hand, embers on the weapon hand - anything attached to the child model
+  components. They ride because the child components (see the rig map below)
+  are positioned by the parent's attachment walker from SpaceBases, which the
+  render-side drive keeps composed.
+- **Frozen** (the headset symptom family): the charge plume, the vigor-ready
+  sparkle - and per the s48/s49b headset verdicts the muzzle flash and tracer.
+  They track the CAMERA anchor at the authored offset (head-yaw test: the
+  plume keeps its camera-relative spot), animate subtly, and with the drive
+  released the authored arm lands EXACTLY inside the flame - the frozen
+  transform IS the authored pose under the camera anchor.
+
+**THE FALSIFICATION LADDER for the frozen population's position source:**
+1. *Tick-time SpaceBases reads* (the strongest prior - built the attach-update
+   hook on it): FALSIFIED by measurement. The dirty-count instrument in the
+   fxorigin detour (memcmp bank vs written before each pre-walk reapply) read
+   **cleanTicks 12181 / dirtyTicks 2** over ~10 min - the engine's eval almost
+   never restamps SpaceBases while the drive runs, so SpaceBases holds the
+   COMPOSED atoms at any tick moment, and the frozen FX stay frozen anyway.
+   (Corollary: the s45b "restamps within <2 s" fact was measured with the
+   drive OFF; with the 90 Hz render-side writes on, our atoms stand.)
+2. *GetPlayerViewPoint consumers*: FALSIFIED - `bsicam callers` census is
+   IDENTICAL with and without the charge (same 10 return-RVAs, rates scale
+   with presents; the only newcomer ever is the fire native at 0x5344E8 on a
+   cast). No per-frame camera-function read feeds the FX.
+3. *Attachments arrays*: FALSIFIED everywhere reachable - the FP component
+   carries exactly THREE attachments (the child model comps, no PSCs); the
+   child comps' arrays are EMPTY; both pawn skelcomps' arrays are EMPTY; the
+   attachment actor's `Components` (Actor property, Offset +0x28) holds only
+   [the driven XSkeletalMeshComponent, one XAKAudioGameObjectComponent...];
+   the script-side XEmitterPool (WorldInfo+0x4B0) is EMPTY (+0x100..0x1EC all
+   zero) - the C++ effect lane does not use it.
+4. *XEffectPlaybackManager internals* (WorldInfo+0x530; its C++ vtable at
+   image RVA 0xD778C8 is UObject boilerplate + one stub; the work lives in
+   the XEffectPlaybackManagerTickHelper at manager+0x2C): record bank at
+   manager+0x58/{count 113, max 128, data +0x60} = {handlerObj, payload, 0, 0}
+   stride 0x10; payloads carry world-position pairs at +0x20/+0x30 - but the
+   count does NOT change with charge on/off, and the charge record was not
+   identified before the timebox. **The frozen family's per-frame position
+   writer remains UNFOUND** - the open lanes are the tick-helper call tree
+   and a LocalAtoms/Morpheme-arena consumer hunt.
+
+**NEW LAYOUTS BANKED (all derived this session):**
+- **The attachment walker** (the per-tick child positioner):
+  `kSkelCompUpdateAttachmentsRva 0x2A1B20`, **vtable slot 43** of
+  kSkelCompVtableRva (derivation: capstone sweep for functions touching
+  SpaceBases +0x290/+0x294 AND LocalToWorld +0x60 -> 102 candidates ->
+  intersect with the 125 vtable entries -> two survivors; slot 115 (0x2A2130)
+  is attach/detach MANAGEMENT, slot 43 is the pure walker). Zero stack args,
+  plain ret, epilogue 8B E5 5D C3.
+- **Attachments TArray at component+0x1F0/+0x1F4, stride 0x30**: {+0x00 child
+  Component*, +0x04/+0x08 BoneName FName idx/num, +0x0C RelLoc, +0x18 RelRot,
+  +0x24 RelScale (zeros = 1.0)}. Bone resolve via the by-name helper rva
+  0x290530 against the mesh at +0x21C, bounds vs SpaceBases Num, atom read at
+  Data + idx*0x20.
+- **The FP rig's child models**: the driven component's 3 attachments are
+  XSkeletalMeshComponents at **L_Grip (the vigor hand model), PlayerHandsLarm22
+  (forearm prop), R_Grip (the weapon model)** - "the weapon rides the grip
+  subtree" now has its exact mechanism, and it is why the whole holdable + its
+  socket FX ride the drive with zero extra work.
+- **ParentAnimComponent redirect**: component+0x2F4 (parent comp*), +0x2F8
+  (bone index remap array), +0x2FC (remap count) - the by-name bone getters
+  (rvas 0x296880 quat / 0x2969E0 translation) redirect through it into the
+  PARENT's SpaceBases; their mode!=1 fallback goes to helpers 0x2769F0 /
+  0x276E70, which compose parent atoms with a child-held offset pair at
+  child+0x500/+0x510.
+- **Pawn skelcomps**: pawn+0x2E4 and +0x2FC are the two third-person
+  XSkeletalMeshComponents (both attachment-free during a charge).
+- **The weapon slots, corrected live**: pawn+0x314 -> XInventoryManager;
+  manager+0x1FC melee, +0x200..+0x20C four XWeapon slots; slot archetypes this
+  save: **+0x200 Plasmid_EnrageFounder (the "devil face" icon = ENRAGE, not
+  Devil's Kiss), +0x204 PistolFounder**. The vigor IS an XWeapon in slot 0;
+  `grip l squeeze` (NextPlasmid) cycles vigors only.
+
+**WHAT SHIPPED (fxorigin.cpp, `bsifx`):** the attach-walker hook stays as (a)
+the dirty-count ordering instrument and (b) edge cover - the 1-2 eval-restamp
+ticks per 10 min would otherwise put one authored-pose frame on every
+attachment; the pre-walk reapply absorbs them. Default probe+reapply ON,
+`bsifx off` is the bisect. Install gates: pinned prologue + **vtable-slot
+identity** (the slot must still hold the RVA - a stronger class-binding gate
+than bytes alone, new this session) + inverted arity (plain-ret, no ret-imm).
+It is documented in code and here as NOT the frozen-family fix.
 
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
@@ -2213,13 +2310,13 @@ Infinite is **UNKNOWN**, `bioshockinf` publishes no `set_ray_block_offset`, and 
 ASCII strings present in `.rdata` (the UE3 FName pool stores names as plain ASCII), byte-scanned
 from the disk image:
 
-`PlayerController` · `UpdateRotation` · `PlayerCamera` · `CameraActor` · `SceneView` · `FOVAngle` ·
-`GetPlayerViewPoint` · `MatineeCamera` · `ForceSkelUpdate` · `CheatManager` · `ConsoleCommand` ·
-`XPlayerController` · `XHud` · `ToggleHUD` · `Scaleform` · `GFxMovie` · `PostProcessVolume`
+`PlayerController` Â· `UpdateRotation` Â· `PlayerCamera` Â· `CameraActor` Â· `SceneView` Â· `FOVAngle` Â·
+`GetPlayerViewPoint` Â· `MatineeCamera` Â· `ForceSkelUpdate` Â· `CheatManager` Â· `ConsoleCommand` Â·
+`XPlayerController` Â· `XHud` Â· `ToggleHUD` Â· `Scaleform` Â· `GFxMovie` Â· `PostProcessVolume`
 
 UTF-16 strings present (UE3 `Exec` handlers compare wide literals via `ParseCommand`):
-`SETRES` · `Stereoscopic3D` · `StartupMovie` · `FullScreenMovie` · `MotionBlur` · `Bloom` ·
-`DepthOfField` · `HUD` · `SizeX`
+`SETRES` Â· `Stereoscopic3D` Â· `StartupMovie` Â· `FullScreenMovie` Â· `MotionBlur` Â· `Bloom` Â·
+`DepthOfField` Â· `HUD` Â· `SizeX`
 
 Notably **absent**: `CalcView` (that is the Vengeance name - UE3 uses `GetPlayerViewPoint` /
 `CalcCamera` / `Camera.UpdateViewTarget`), and `bStereo` / `StereoSeparation` / `EyeSeparation` /

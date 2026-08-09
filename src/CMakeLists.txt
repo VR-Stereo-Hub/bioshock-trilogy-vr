@@ -109,6 +109,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/fire.cpp
     game/bioshockinf/fire.h
     game/bioshockinf/frame_context.h
+    game/bioshockinf/fxorigin.cpp
+    game/bioshockinf/fxorigin.h
     game/bioshockinf/hands.cpp
     game/bioshockinf/hands.h
     game/bioshockinf/config.cpp

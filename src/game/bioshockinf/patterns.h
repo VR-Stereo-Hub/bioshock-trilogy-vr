@@ -567,6 +567,36 @@ inline constexpr uint32_t kMeshBoneParentOffset = 0x48;
 //     here; adoption takes whole atoms and a stale zero-scale self-heals.
 //   - LocalAtoms restamps identically; it is the anim source, not our target.
 
+// ---- THE FX-ORIGIN SEAM: the attachment updater (s50, I8) -------------------
+//
+// XSkeletalMeshComponent's per-tick ATTACHMENT UPDATER - the function that
+// positions every attached child component (the vigor charge plume, the ready
+// sparkle, pooled muzzle/tracer emitters) from SpaceBases. Derivation
+// (ENGINE_NOTES "s50: THE FX-ORIGIN SEAM"):
+//   1. Offline capstone sweep of .text for functions addressing BOTH
+//      SpaceBases (+0x290 Data / +0x294 Num) AND LocalToWorld (+0x60):
+//      102 candidates.
+//   2. Intersected with the 125 .text entries of the class vtable
+//      (kSkelCompVtableRva): TWO survive - 0x2A1B20 (slot 43) and 0x2A2130
+//      (slot 115). Slot 115 takes a stack arg and MODIFIES the Attachments
+//      array (attach/detach management); slot 43 is the pure per-tick walker.
+//   3. 0x2A1B20 disassembly: loops the Attachments TArray at +0x1F0/+0x1F4
+//      (stride 0x30: +0x00 child Component, +0x04/+0x08 BoneName FName,
+//      +0x0C RelLoc, +0x18 RelRot, +0x24 RelScale), resolves the bone via the
+//      mesh (+0x21C), bounds-checks vs SpaceBases Num, reads the atom at
+//      Data + idx*0x20, builds the child transform. Plain `ret` (zero stack
+//      args), epilogue 8B E5 5D C3.
+// The flat mechanism proof (s50): drive OFF -> the charge flame sits exactly
+// on the authored hand; drive ON -> the hand moves, the flame keeps the
+// authored transform. The engine positions attachments from TICK-TIME
+// SpaceBases; the render-side compose never reaches them.
+inline constexpr uint32_t kSkelCompUpdateAttachmentsRva = 0x2A1B20;
+inline constexpr uint32_t kSkelCompUpdateAttachmentsVtableSlot = 43;
+inline constexpr uint32_t kSkelCompAttachmentsOffset = 0x1F0;
+// push ebp; mov ebp,esp; and esp,-0x10; sub esp,0x114; (xorps...)
+inline constexpr uint8_t kSkelCompUpdateAttachmentsPrologue[] = {
+    0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0x14, 0x01, 0x00, 0x00, 0x0F};
+
 // **A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT.** `XEngine.ini` says
 // `FOVAngle=70` and `MaxUserFOVOffsetPercent=15`, which session 34 read as "the
 // native slider spans roughly 70 to 80.5 degrees". The RENDERED frustum spans
