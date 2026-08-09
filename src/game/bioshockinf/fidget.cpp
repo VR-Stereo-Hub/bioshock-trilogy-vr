@@ -300,29 +300,38 @@ void __cdecl PostRequestDetour(void* runtime, void* desc, void* params) {
         id = *reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(desc) + 8);
         type = *reinterpret_cast<const uint8_t*>(static_cast<const uint8_t*>(desc) + 0xC);
     }
+    // The typed payload: every jump-table case reads the value(s) from the
+    // params block ([eax] first). Log the first float - for type 0/1/2 that
+    // IS the posted value (bool/int/float).
+    float val = 0.0f;
+    if (params && bvr::pattern_scan::is_memory_valid(params, 4)) memcpy(&val, params, 4);
     const bool block = ours && g_reqMode.load(std::memory_order_relaxed) == 2 &&
                        id == g_reqBlockId.load(std::memory_order_relaxed);
-    // Two flood guards (measured: the game drives the 'Lowered' control param
-    // at 90 Hz through this funnel): ours logs only on a CHANGE of (id,
-    // caller) or every 5 s as a heartbeat; foreign posts log 1-in-64.
-    static uint32_t lastId = 0xFFFFFFFF, lastCaller = 0;      // game thread only
+    // Flood guards (measured: 'Lowered' is driven at 90 Hz): ours logs on a
+    // CHANGE of (id, caller, VALUE) - value quantized to 1/64 so a ramp logs
+    // its steps without per-frame spam - or every 5 s as a heartbeat; foreign
+    // posts log 1-in-64. Per-id last-values ride a tiny open-address table.
+    static uint32_t lastKey[64];                              // game thread only
     static uint64_t lastLogMs = 0;
     bool logIt = false;
     if (ours) {
         const uint64_t now = GetTickCount64();
-        if (id != lastId || callerRva != lastCaller || now - lastLogMs > 5000) {
+        const uint32_t slot = id & 63;
+        const uint32_t key =
+            (id << 20) ^ (callerRva & 0xFFFFF) ^
+            (static_cast<uint32_t>(static_cast<int32_t>(val * 64.0f)) << 8);
+        if (lastKey[slot] != key || now - lastLogMs > 5000) {
             logIt = true;
-            lastId = id;
-            lastCaller = callerRva;
+            lastKey[slot] = key;
             lastLogMs = now;
         }
     } else if ((g_reqCalls.load(std::memory_order_relaxed) & 63) == 0) {
         logIt = true;
     }
     if (logIt) {
-        BVR_LOG("[bsi] fidget: net request id=%u type=%u {%08X %08X %08X %08X} on "
-                "runtime %p (%s) from caller rva 0x%X - %s",
-                id, type, d[0], d[1], d[2], d[3], runtime,
+        BVR_LOG("[bsi] fidget: net request id=%u type=%u val=%.4f {%08X %08X %08X %08X} "
+                "on runtime %p (%s) from caller rva 0x%X - %s",
+                id, type, static_cast<double>(val), d[0], d[1], d[2], d[3], runtime,
                 ours ? "the FP network" : "another network", callerRva,
                 block ? "BLOCKED" : "passed");
     }
