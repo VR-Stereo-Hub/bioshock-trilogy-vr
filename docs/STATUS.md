@@ -17,7 +17,44 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 49 (StartSubtleFidget DECODED and falsified as the root, the Morpheme residual named, the gameplay lens verdict: ONE frustum; branch `si49-inf-stance-lens-tracer`)
+### Infinite: current state after session 49b (THE STANCE IS KILLED - the 'Lowered' clamp, A-B-A proven, ships default ON; branch `si49-inf-stance-lens-tracer`)
+
+**Session 49b (2026-08-10, continuing s49 on the user's priority-1-only
+directive) KILLED THE STANCE AT THE ROOT.** The mechanism, named end to end:
+the 101-deg stance is the **lowered-idle settle inside the FP Morpheme
+graph** - the game drives the control param **'Lowered' (id 2)** into the FP
+network at 90 Hz; a fire posts 0.0 (raised) and it ramps back to 1.0 in ~7 s;
+the graph then settles into the stance 150-240 s later with NO message
+entering the network at the onset. **The kill: the funnel hook rewrites every
+FP-network 'Lowered' post to 0.0** - the graph stays in the raised subgraph
+(the ready pose) where no settle exists. A-B-A on the live save: clamp ON =
+435 s idle, 0/43 bones (every unclamped leg entered within 150-240 s);
+clamp OFF = the stance returned on schedule with the exact L_Grip 101.11
+signature; the shipping auto-derive (descriptor at attachment+0x2CC,
+name-verified, refuse-on-drift) armed itself 36 ms after the rig resolve and
+held a 407 s green leg with the fire/aim battery clean. **Ships DEFAULT ON**;
+`bsifidget req clamp off` is the in-headset bisect (F10: "STANCE KILL"
+checkbox). The boot pose still needs the established fire-once ritual (the
+clamp prevents re-entry, not exit from the pre-settled load state).
+
+Also this session: the Morpheme message-lane fully mapped (the inner post
+funnel 0x5CED00, typed control-param messages, the wrappers, the engine's
+descriptor cache on the attachment), falsifications 7 (funnel silent at
+onset) and 8 (TwoHandFallback_Weight - which A-B-A-proved to own the s48
+"40-deg alert-relax" pose pair, on demand via the new `bsifidget post`),
+and the manual param-poster experiment platform. Eight falsified levers now
+documented in ENGINE_NOTES; the ladder ended at the real root.
+
+**NEXT SESSION**: (1) headset verdict on the stance kill (checklist below) -
+plus judge whether the always-raised weapon reads right in VR (it is exactly
+the VR-correct behavior: hands follow controllers, no autonomous relax);
+(2) the tracer/visible bullet origin (recon banked in s49: walk
+XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot);
+(3) the FOV-edge symptom as a headset/compositor question (projection split
+eliminated by the s49 one-lens verdict). Later: wrist refinement,
+SingleLineCheck for the dynamic dot.
+
+### Infinite: state after session 49 (kept for the record; superseded by s49b above) (StartSubtleFidget DECODED and falsified as the root, the Morpheme residual named, the gameplay lens verdict: ONE frustum; branch `si49-inf-stance-lens-tracer`)
 
 **Session 49 (2026-08-09, late) worked the three s48 verdicts in priority
 order. Zero core changes, all bioshockinf-local, nothing merged.**
@@ -6505,6 +6542,28 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 49b (Infinite) - 2026-08-10 - THE STANCE KILL: the 'Lowered' clamp, A-B-A proven, default ON
+
+Same branch, continuing s49 under the user's "priority 1 only until fixed"
+directive. Six more boots. The ladder ran: the request-post funnel derived
+(wrappers -> inner post 0x5CED00, typed control-param messages, param FName
+in the descriptor) and hooked with values logged - falsification 7 (nothing
+enters the network at the onset). The engine's own reset-to-ready decoded -
+its descriptor cache on the attachment (+0x294..+0x2F8) named five params;
+Plan B (call the reset as a pin) falsified by DATA (it posts
+ZipLine_IsBollard, not a pose). The manual poster (`bsifidget post`) built;
+TwoHandFallback_Weight A-B-A'd as the 40-deg alert-relax pose pair
+(falsification 8: the stance enters with the weight held). Then the live
+value log caught the FIRE flipping 'Lowered' 1->0 and the ramp back - the
+mechanism: the stance is the Morpheme lowered-idle settle. THE KILL: clamp
+every FP-network 'Lowered' post to 0.0 (the game's own 90 Hz driver is the
+carrier). A-B-A: ON = 435 s idle, 0/43 bones; OFF = stance back on schedule
+(L_Grip 101.11); shipping auto-derive (name-verified descriptor, refuse on
+drift) self-armed at +36 ms and held 407 s green with the battery clean.
+Ships DEFAULT ON; `bsifidget req clamp off` bisects; boot pose still needs
+the fire-once ritual. Traps: bsibones snap has slots 0-3 only; the eaten-
+write pump trap recurs. Inis restored byte-identical; nothing merged.
 
 ### Session 49 (Infinite) - 2026-08-09 - StartSubtleFidget decoded and falsified, the Morpheme residual, one-lens verdict
 

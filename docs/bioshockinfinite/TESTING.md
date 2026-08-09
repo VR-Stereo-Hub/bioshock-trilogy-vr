@@ -813,6 +813,36 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S49b checklist (THE STANCE KILL; branch `si49-inf-stance-lens-tracer`)
+
+**The stance is KILLED in this build, default ON.** Flat-proven A-B-A: with
+the kill armed the left hand held ready for 7+ minutes (every unkilled leg
+entered the stance within 2.5-4 min); disarming brought the stance back on
+schedule; re-armed, it self-derives every boot and refuses on drift.
+
+1. **Non-regression sweep FIRST (60 s)**: tracking, sync, both-hand aim,
+   hole-on-dot, locomotion (campin), wrist bend - none of these paths were
+   touched; flag anything off.
+2. **THE HEADLINE: the stance.** Load, fire once (the boot pose still starts
+   in the stance - the established ritual clears it; the kill then prevents
+   every re-entry). Then play/idle normally for 5+ minutes without firing:
+   the left hand must NEVER drift into the bent-wrist stance or the raised
+   "alert" arm. The in-headset A/B: F10 -> BSI FIDGET -> "STANCE KILL
+   ('Lowered' clamp)" checkbox, or `bsifidget req clamp off` (stance returns
+   within 2.5-4 min) / `bsifidget req clamp auto` (kill re-arms).
+3. **Judge the side effect: the weapon never "lowers".** The kill pins the
+   Morpheme graph in the raised/ready subgraph - the exact pose the hands
+   compose from. Watch for any place it reads wrong (walking longer
+   stretches, ziplines/Sky-Hook, scripted moments). Cinematics park the
+   hands anyway; report anything odd.
+4. **40-deg alert-relax**: should also be gone while the kill is armed (its
+   pose pair rides the same lowered subgraph). If any left-arm drift
+   survives, note WHEN (it is a separate param - TwoHandFallback_Weight -
+   and we can clamp that too with one command: `bsifidget req clamp 24 0`).
+
+Expected noise: unchanged. Anything off: the STANCE KILL checkbox first -
+if the symptom survives the kill being OFF, it predates this session.
+
 ## S49 checklist (stance instruments + the lens verdict; branch `si49-inf-stance-lens-tracer`)
 
 State honestly: **the idle stance is STILL NOT fixed.** s49 falsified two more

@@ -732,6 +732,84 @@ optional param arrives NULL on ordinary shots**, so the pawn-side
 current-weapon source is I9 derivation work (with the arsenal save), not a
 guess here. `bsiprofiles` prints the latch and lookup result.
 
+### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
+
+**The mechanism, named end to end.** The 101-deg stance is the lowered-idle
+settle inside the FP Morpheme graph. The game drives a control param
+**'Lowered' (GNames 35027, network param id 2)** into the FP network at 90 Hz;
+the FIRE posts Lowered=0.0 (weapon raised) and the game ramps it back to 1.0
+within ~7 s; 150-240 s later the graph - sitting in the lowered subgraph -
+settles into the 101-deg left-hand idle pose with NO message of any kind
+entering the network at the onset (falsification 7: the funnel probe with
+typed VALUES logged saw nothing at four independent onsets). The raised
+subgraph - the post-fire ready pose - has no such settle.
+
+**THE KILL: clamp 'Lowered' to 0.0 on every FP-network post.** The game's own
+90 Hz driver becomes the carrier: the funnel hook (kPostRequestInnerRva)
+rewrites the posted value for the derived param id when the target runtime is
+the FP network's ([component+0x228] -> [+0x118]). Measured on the live save:
+
+| leg | clamp | idle | verdict |
+|---|---|---|---|
+| A (boot 9) | ON (manual) | 435 s | **0/43 bones moved** - no stance (every unclamped leg entered within 150-240 s; authored max 240 s) |
+| B (boot 9, A-B-A) | OFF | 347 s | stance RETURNED, exact signature (L_Grip 101.11) |
+| shipping (boot 10) | AUTO (self-armed 36 ms post-resolve, name-verified) | 407 s | 0 L-cluster entries; worst mover 5.24 deg R-digit micro-relax; 109 posts clamped |
+
+Battery on the shipping leg: fire seam substituting (77.4 UU), aim ray live,
+no crash dumps.
+
+**Self-derivation (no hardcoded ids).** The reset-to-ready function
+(kResetSubtleFidgetRva 0x51B6C0) caches engine-authored param descriptors ON
+THE ATTACHMENT: +0x294 TwoHandFallback_Weight (id 24), +0x2A4 _SmoothFactor
+(25), +0x2B4 _AnimSelectionWeight (26), **+0x2CC Lowered (id 2)**,
++0x2F0/+0x2F8 ZipLine_IsBollard (15 - what that function actually posts;
+its "reset" is zipline/param cache maintenance, NOT a pose yanker - read
+before wiring, falsified as Plan B by data). The auto-clamp reads the +0x2CC
+descriptor, verifies its FName reads 'Lowered', takes the param id from the
+descriptor's own id word, and refuses on any mismatch. `bsifidget req clamp
+off` = the A/B bisect; `auto` re-arms; `<id> <val>` = manual.
+
+**The Morpheme message-lane map (for the record).** Control params post
+through wrappers 0x5CEF00 (int arg, cvtsi2ss) / 0x5CEF50 (float, 40 callers)
+into the inner funnel **0x5CED00** (__cdecl(runtime, desc16, params); jump
+table on the descriptor TYPE byte [+0xC] 0..4 = bool/int/float/vec3/vec4 ->
+queue messages 0x17/0x16/0x15/0x18/0x19; param id WORD at [desc+8], 0xFFFF
+invalid; descriptor dword0 = the param FName). Five callers converge there.
+rq* STATE requests do NOT use this funnel (the fire posts only its
+GenericSingleAnim_GunHand_* params) - state transitions evaluate inside the
+runtime. **TwoHandFallback_Weight toggles the s48 "40-deg alert-relax" pose
+pair ON DEMAND** (`bsifidget post 294 0|1`, A-B-A'd with identical per-bone
+magnitudes both directions) - that second idle lane is this param's pose
+pair, and the stance still enters with the weight held 0 (falsification 8).
+The runtime arena ([net+0x118], ~0x2500 bytes) holds per-record frame-stamp
+tables (+0xE0.., stride 0x10; ready-subgraph records freeze during the stance
+and restamp on fire); no [0.5,400]-range float accumulator exists in it.
+
+**Falsification ladder, final count** (all held writes / live A-Bs):
+(1) ProcessEvent block s48; (2) instance bDisableSubtleFidget s48b;
+(3) instance TimeRange starve s48b; (4) archetype starve s48b;
+(5) StartSubtleFidget impl block s49; (6) by-name action block 41347 s49;
+(7) the message funnel - silent at onset with values visible s49b;
+(8) TwoHandFallback_Weight held 0 s49b. THE ROOT: the 'Lowered'-gated
+Morpheme lowered-idle settle - killed by the clamp.
+
+**Boot-pose note:** the clamp prevents RE-ENTRY, not exit - a checkpoint
+loads with the graph already settled (the s47 boot-pose finding), so the
+established fire-once ritual still clears the boot pose; the clamp then
+keeps it away permanently.
+
+**New command surface** (fidget.cpp): `bsifidget req clamp auto|off|<id>
+<val>` (auto = DEFAULT ON), `bsifidget post <descHexOff> <float>` (manual
+param poster through the engine's float wrapper - the experiment platform
+that found the lever), `bsifidget req probe|block <hexId>|off`, plus the s49
+`act`/`impl` surfaces (probe instruments). F10: "STANCE KILL ('Lowered'
+clamp)" checkbox, default on.
+
+**Traps:** `bsibones snap` has slots 0-3 ONLY - `snap 4+` prints usage and
+captures NOTHING (cost one mis-measured leg); the game-cmd eaten-write trap
+recurs even at 4-6 s spacing when the pump lags (verify the dispatch line,
+resend); the clamp is FP-network-gated - NPC networks are untouched.
+
 ### s49: StartSubtleFidget DECODED, falsifications five and six, the Morpheme residual - and the gameplay lens verdict
 
 **THE EXEC CENSUS, re-derived offline (recipe re-run, zero boots).** A Python PE
