@@ -240,6 +240,10 @@ inline constexpr uint32_t kPostRequestRva = 0x5CEF00; // wrapper - record only
 // the wrapper), jump table on the descriptor TYPE byte [desc+0xC] (0..4),
 // request-id WORD at [desc+8] (0xFFFF = invalid, early-out).
 inline constexpr uint32_t kPostRequestInnerRva = 0x5CED00;
+// The float wrapper (wrapper2): __thiscall(network)(desc16*, float), ret 8 -
+// the form the game uses for float control params (40 callers). Consumed by
+// the manual poster `bsifidget post`.
+inline constexpr uint32_t kPostRequestFloatRva = 0x5CEF50;
 inline constexpr uint8_t kPostRequestInnerPrologue[] = {0x55, 0x8B, 0xEC, 0x83,
                                                         0xE4, 0xF0, 0x8B, 0x4D,
                                                         0x08, 0x8B, 0x45, 0x10};

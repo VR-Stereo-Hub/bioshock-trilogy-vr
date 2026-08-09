@@ -342,6 +342,56 @@ void __cdecl PostRequestDetour(void* runtime, void* desc, void* params) {
     if (g_reqOrig) g_reqOrig(runtime, desc, params);
 }
 
+// s49b: the manual param poster - the lever-experiment platform. Posts an
+// ENGINE-CACHED descriptor (attachment+off; the reset-to-ready function
+// caches TwoHandFallback_Weight/+0x294, SmoothFactor/+0x2A4,
+// AnimSelectionWeight/+0x2B4, Lowered/+0x2CC, ZipLine_IsBollard/+0x2F0) with
+// an arbitrary float through the engine's own float wrapper (0x5CEF50,
+// __thiscall(network)(desc, float)) - byte-identical to how the game itself
+// drives the FP network's control params.
+// thiscall shape via fastcall-with-dummy-edx (the established detour idiom).
+using PostFloatFn = void(__fastcall*)(void* network, void* edx, void* desc, float val);
+
+bool cmd_post(const char* rest) {
+    unsigned off = 0;
+    float val = 0.0f;
+    if (sscanf_s(rest, "%x %f", &off, &val) != 2) {
+        BVR_LOG("[bsi] fidget: usage - bsifidget post <descHexOffOnAttachment> <float> "
+                "(e.g. post 2CC 0 = Lowered:=0 via the engine's own wrapper)");
+        return true;
+    }
+    if (!patterns::rva_trusted()) return true;
+    uint8_t* attach = static_cast<uint8_t*>(bones::attachment());
+    void* net = fp_network();
+    if (!attach || !net) {
+        BVR_LOG("[bsi] fidget: post REFUSED - attachment/network not resolved");
+        return true;
+    }
+    uint8_t* desc = attach + off;
+    if (!bvr::pattern_scan::is_memory_valid(desc, 16)) {
+        BVR_LOG("[bsi] fidget: post REFUSED - attachment+0x%X unreadable", off);
+        return true;
+    }
+    const uint16_t id = *reinterpret_cast<const uint16_t*>(desc + 8);
+    if (id == 0xFFFF) {
+        BVR_LOG("[bsi] fidget: post REFUSED - descriptor at +0x%X is unresolved "
+                "(id 0xFFFF)",
+                off);
+        return true;
+    }
+    const int32_t nameIdx = *reinterpret_cast<const int32_t*>(desc);
+    char nm[patterns::kFNameTextBufMin] = {};
+    if (nameIdx > 0 && nameIdx < patterns::fname_count())
+        patterns::fname_text(nameIdx, nm, sizeof nm);
+    PostFloatFn post = reinterpret_cast<PostFloatFn>(
+        const_cast<uint8_t*>(patterns::image_base()) + patterns::kPostRequestFloatRva);
+    post(net, nullptr, desc, val);
+    BVR_LOG("[bsi] fidget: POSTED '%s' (id %u, desc attachment+0x%X) = %.4f on the FP "
+            "network",
+            nm[0] ? nm : "?", id, off, static_cast<double>(val));
+    return true;
+}
+
 bool try_install_req() {
     if (g_reqInstalled.load(std::memory_order_relaxed)) return true;
     if (!patterns::rva_trusted()) return false;
@@ -637,6 +687,11 @@ bool handle_command(const char* cmd, const char* args) {
                     g_actBlocked.load(std::memory_order_relaxed));
         }
         return true;
+    }
+    if (strncmp(args, "post", 4) == 0) {
+        const char* rest = args + 4;
+        while (*rest == ' ') ++rest;
+        return cmd_post(rest);
     }
     if (strncmp(args, "req", 3) == 0) {
         const char* rest = args + 3;
