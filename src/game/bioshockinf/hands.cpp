@@ -30,12 +30,13 @@ std::atomic<bool> g_animMode{true};
 std::atomic<bool> g_useAimPose{true};
 std::atomic<bool> g_wasDriving[2] = {};
 uint32_t g_frames[2] = {};
-// s46: arms-hide wrist-cap style (0 collapse-at-grip / 1 keep forearm twist /
-// 2 collapse behind the wrist) and the per-hand ARM-RELATIVE wrist adjustment
-// (deg, arm chain only, about the grip - headset finding 5's lever). Neither
-// is persisted this session: the wrist trim defaults 0 = inert, and a preset
-// key earns its place only after the headset says the lever earns its keep.
-std::atomic<int> g_hideStyle{0};
+// s48: ONE arms-hide mode with a tunable wrist-cap depth (cm behind the grip;
+// the s46 style radio was headset-rejected - 0 was "skin dives into the
+// wrist", 1 was a skin hood, 2 was decent but its stretch needs in-headset
+// tuning, hence a slider). Default 10 = the s46 style-2 geometry. The wrist
+// sliders are the s48 hand-cluster BEND (see bones.h); defaults 0 = inert.
+// Neither is persisted: a preset key earns its place on a headset verdict.
+std::atomic<float> g_capDepthCm{10.0f};
 std::atomic<float> g_wristDeg[2][3] = {};
 
 bool is_verb(const char* args, const char* verb) {
@@ -88,7 +89,7 @@ void on_view(const FrameContext& fc, uint64_t nowMs) {
                                    g_wristDeg[h][1].load(std::memory_order_relaxed),
                                    g_wristDeg[h][2].load(std::memory_order_relaxed)};
         if (bones::drive(fc, gp, h, g_scale[h].load(std::memory_order_relaxed), armsMode,
-                         animMode, g_hideStyle.load(std::memory_order_relaxed), wristDeg)) {
+                         animMode, g_capDepthCm.load(std::memory_order_relaxed), wristDeg)) {
             g_wasDriving[h].store(true, std::memory_order_relaxed);
             ++g_frames[h];
         }
@@ -210,14 +211,19 @@ bool handle_command(const char* cmd, const char* args) {
         return true;
     }
     if (is_verb(args, "hidestyle")) {
-        int s = -1;
-        if (sscanf_s(args + 9, " %d", &s) == 1 && s >= 0 && s <= 2) {
-            g_hideStyle.store(s, std::memory_order_relaxed);
-            BVR_LOG("[bsi] hands: hide style %d (0 collapse-at-grip / 1 keep forearm "
-                    "twist / 2 collapse behind the wrist) - visible with arms=hide only",
-                    s);
+        BVR_LOG("[bsi] hands: hidestyle was removed (s48 headset verdict) - the one hide "
+                "mode pinches behind the wrist; tune it with `bsihands capdepth <cm>`");
+        return true;
+    }
+    if (is_verb(args, "capdepth")) {
+        float d = -1.0f;
+        if (sscanf_s(args + 8, " %f", &d) == 1 && d >= 0.0f && d <= 30.0f) {
+            g_capDepthCm.store(d, std::memory_order_relaxed);
+            BVR_LOG("[bsi] hands: wrist cap depth = %.1f cm behind the grip (arms=hide "
+                    "only; 0 = collapse at the grip)",
+                    d);
         } else {
-            BVR_LOG("[bsi] hands: usage - bsihands hidestyle 0|1|2");
+            BVR_LOG("[bsi] hands: usage - bsihands capdepth <0..30 cm>");
         }
         return true;
     }
@@ -229,8 +235,8 @@ bool handle_command(const char* cmd, const char* args) {
             g_wristDeg[h][0] = p;
             g_wristDeg[h][1] = y;
             g_wristDeg[h][2] = r;
-            BVR_LOG("[bsi] hands: wrist %c = %.1f %.1f %.1f deg (ARM chain only, about "
-                    "the grip - hand/aim/laser untouched)",
+            BVR_LOG("[bsi] hands: wrist bend %c = %.1f %.1f %.1f deg (hand cluster about "
+                    "the grip, forearm stays - visual only, aim/laser untouched)",
                     h ? 'R' : 'L', p, y, r);
         } else {
             BVR_LOG("[bsi] hands: usage - bsihands wrist l|r <pitch> <yaw> <roll>");
@@ -254,8 +260,8 @@ bool handle_command(const char* cmd, const char* args) {
         return true;
     }
     BVR_LOG("[bsi] hands: verbs - on off status pose aim|grip arms game|follow|hide "
-            "anim on|off trim l|r <p y r> offset l|r <f r u> scale [l|r] <v> "
-            "hidestyle 0|1|2 wrist l|r <p y r>");
+            "anim on|off animtrans on|off trim l|r <p y r> offset l|r <f r u> "
+            "scale [l|r] <v> capdepth <cm> wrist l|r <p y r>");
     return true;
 }
 
@@ -294,11 +300,11 @@ void draw_debug_ui() {
         scale_set(1, v);
     }
 
-    // s46 (headset finding 5): the ARM-RELATIVE wrist adjustment - rotates the
-    // arm chain about the grip, hand/aim/laser untouched. Rides the tuning-hand
-    // radio like every other per-hand slider. Zero = inert.
-    const char* axesW[3] = {"wrist pitch (deg, arm vs hand)", "wrist yaw (deg, arm vs hand)",
-                            "wrist roll (deg, arm vs hand)"};
+    // s48: the wrist BEND - tilts the hand cluster about the grip while the
+    // forearm keeps the controller rotation (visual only; aim untouched).
+    // Rides the tuning-hand radio like every other per-hand slider. 0 = inert.
+    const char* axesW[3] = {"wrist bend pitch (deg)", "wrist bend yaw (deg)",
+                            "wrist bend roll (deg)"};
     for (int a = 0; a < 3; ++a) {
         v = g_wristDeg[tuneHand][a].load(std::memory_order_relaxed);
         if (ImGui::SliderFloat(axesW[a], &v, -60.0f, 60.0f)) g_wristDeg[tuneHand][a] = v;
@@ -313,19 +319,12 @@ void draw_debug_ui() {
     if (ImGui::RadioButton("hide", &arms, 2)) set_arms_mode(arms);
     ImGui::SameLine();
     if (ImGui::RadioButton("game", &arms, 0)) set_arms_mode(arms);
-    // s46 (headset finding 4): the wrist-cap style, meaningful with arms=hide.
+    // s48 (headset verdict): one hide mode; the depth slider is the stretch
+    // tuner (0 = the rejected collapse-at-grip, 10 = the s46 "decent" pinch).
     if (arms == 2) {
-        int hs = g_hideStyle.load(std::memory_order_relaxed);
-        ImGui::Text("wrist cap:");
-        ImGui::SameLine();
-        if (ImGui::RadioButton("pinch at grip", &hs, 0))
-            g_hideStyle.store(hs, std::memory_order_relaxed);
-        ImGui::SameLine();
-        if (ImGui::RadioButton("keep forearm twist", &hs, 1))
-            g_hideStyle.store(hs, std::memory_order_relaxed);
-        ImGui::SameLine();
-        if (ImGui::RadioButton("pinch behind wrist", &hs, 2))
-            g_hideStyle.store(hs, std::memory_order_relaxed);
+        float d = g_capDepthCm.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("wrist cap depth (cm behind grip)", &d, 0.0f, 30.0f))
+            g_capDepthCm.store(d, std::memory_order_relaxed);
     }
 
     bool anim = g_animMode.load(std::memory_order_relaxed);

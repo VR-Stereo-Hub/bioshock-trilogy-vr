@@ -38,6 +38,14 @@ struct FrameContext {
     float engineLocX = 0.0f;     // engine camera loc BEFORE the head drive (out-params
     float engineLocY = 0.0f;     //   as the original returned them)
     float engineLocZ = 0.0f;
+    // s48: the camera loc the drive WROTE this dispatch (pre-eye-offset base =
+    // engineLoc + the head's XR offset). The bones drive composes the hand
+    // RELATIVE to this, which cancels engineLoc - and with it the one-frame
+    // locomotion phase skew between fc and the attachment's L2W (measured
+    // 9.26 UU of model wobble at walk speed, s48).
+    float writtenLocX = 0.0f;
+    float writtenLocY = 0.0f;
+    float writtenLocZ = 0.0f;
     int32_t gameYawUnits = 0;    // engine's own pre-drive yaw (the aim_basis yaw)
     int32_t recenterYawUnits = 0;
     float recenterPx = 0.0f, recenterPy = 0.0f, recenterPz = 0.0f; // XR meters

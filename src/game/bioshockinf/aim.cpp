@@ -8,6 +8,7 @@
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/patterns.h"
+#include "game/bioshockinf/reflect.h"
 
 #include <MinHook.h>
 #include <imgui.h>
@@ -86,6 +87,108 @@ std::atomic<float> g_dotSizeDeg{0.5f};
 std::atomic<float> g_aimTrim[2][2] = {};   // [hand][0 pitch, 1 yaw] deg
 std::atomic<float> g_aimPosCm[2][3] = {};  // [hand][fwd, right, up] cm
 
+// s48: the DYNAMIC dot (headset request: a fixed-distance dot is hard to read
+// against far walls). Per hand, the engine's own `Actor.Trace` native is
+// dispatched on the player pawn along the aim ray (the SEH-isolated
+// call_on_object lane, throttled to 20 Hz per hand) and the dot sits AT the
+// hit. Parms layout note: HitLocation is the FIRST parameter, offset 0, so
+// reading the hit does not depend on the size of the later TraceHitInfo
+// struct; the block is 256 zeroed bytes, far past any layout guess. The
+// `bsiaim dyndot test` one-shot proves the layout live (hit distance against
+// a known wall) before the per-frame path arms.
+std::atomic<bool> g_dynDot{false};
+std::atomic<float> g_dynDistM[2] = {};   // last hit distance, meters; 0 = miss
+uint64_t g_dynLastMs[2] = {};            // per-hand throttle (game thread only)
+std::atomic<uint32_t> g_dynTraces{0}, g_dynHits{0}, g_dynFails{0};
+std::atomic<int> g_dynTestShot{0};       // one-shot verbose log request
+// Dispatch one trace for a hand. Game thread (the aim detour). Returns the
+// hit distance in METERS along the ray, or 0 on miss/failure.
+float dyn_trace(int hand, const bvr::vr::HeadPose& hp, const FrameContext& fc) {
+    // MEASURED s48: plain "Trace" is NOT in this build's name pool (Irrational
+    // stripped the stock Actor trace surface; only X-variants survive), so the
+    // script-dispatch route cannot work. Resolve ONCE (the fname_find linear
+    // scan must never ride a cadence) and fail fast until the C++
+    // UWorld::SingleLineCheck derivation exists.
+    static int32_t s_traceIdx = -2;
+    if (s_traceIdx == -2) {
+        s_traceIdx = patterns::fname_find("Trace");
+        if (s_traceIdx < 0)
+            BVR_LOG("[bsi] aim: dyndot UNAVAILABLE on this build - 'Trace' is not in the "
+                    "name pool (stripped script surface). Needs the SingleLineCheck C++ "
+                    "derivation; the dot falls back to the fixed distance.");
+    }
+    if (s_traceIdx < 0) {
+        if (g_dynTestShot.load(std::memory_order_relaxed) > 0)
+            g_dynTestShot.store(0, std::memory_order_relaxed);
+        return 0.0f;
+    }
+    void* pc = camera::last_player_controller();
+    if (!pc || !bvr::pattern_scan::is_memory_valid(pc, patterns::kPcPawnOffset + 4))
+        return 0.0f;
+    void* pawn = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(pc) +
+                                                 patterns::kPcPawnOffset);
+    if (!pawn) return 0.0f;
+
+    const float pos[3] = {hp.px, hp.py, hp.pz};
+    const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+    const GamePose gp = ray_pose_from_xr(fc, pos, quat,
+                                         g_aimTrim[hand][0].load(std::memory_order_relaxed),
+                                         g_aimTrim[hand][1].load(std::memory_order_relaxed));
+    float fwd[3], right[3], up[3];
+    ue_rot_basis(gp.rot, fwd, right, up);
+    const float uuPerCm = fc.worldScale * 0.01f;
+    const float f = g_aimPosCm[hand][0].load(std::memory_order_relaxed) * uuPerCm;
+    const float rr = g_aimPosCm[hand][1].load(std::memory_order_relaxed) * uuPerCm;
+    const float u = g_aimPosCm[hand][2].load(std::memory_order_relaxed) * uuPerCm;
+    const float start[3] = {gp.loc.x + fwd[0] * f + right[0] * rr + up[0] * u,
+                            gp.loc.y + fwd[1] * f + right[1] * rr + up[1] * u,
+                            gp.loc.z + fwd[2] * f + right[2] * rr + up[2] * u};
+    const float reachUu = 60.0f * fc.worldScale; // 60 m
+    const float end[3] = {start[0] + fwd[0] * reachUu, start[1] + fwd[1] * reachUu,
+                          start[2] + fwd[2] * reachUu};
+
+    // Actor.Trace parms, sequential 4-aligned UE3 layout:
+    //   +0  out HitLocation (FVector)   +12 out HitNormal (FVector)
+    //   +24 TraceEnd (FVector)          +36 TraceStart (FVector)
+    //   +48 bTraceActors (UBOOL)        +52 Extent (FVector)
+    //   +64 out TraceHitInfo / flags / return Actor* (never read - see above)
+    alignas(16) uint8_t parms[256] = {};
+    memcpy(parms + 24, end, 12);
+    memcpy(parms + 36, start, 12);
+    *reinterpret_cast<int32_t*>(parms + 48) = 1; // trace actors too
+    g_dynTraces.fetch_add(1, std::memory_order_relaxed);
+    if (!reflect::call_on_object(pawn, "Trace", parms)) {
+        g_dynFails.fetch_add(1, std::memory_order_relaxed);
+        if (g_dynTestShot.load(std::memory_order_relaxed) > 0) {
+            g_dynTestShot.fetch_sub(1, std::memory_order_relaxed);
+            BVR_LOG("[bsi] aim: dyndot TEST hand=%c - dispatch REFUSED (gate stack)",
+                    hand ? 'R' : 'L');
+        }
+        return 0.0f;
+    }
+    float hit[3];
+    memcpy(hit, parms + 0, 12);
+    const bool haveHit = hit[0] != 0.0f || hit[1] != 0.0f || hit[2] != 0.0f;
+    const float dx = hit[0] - start[0], dy = hit[1] - start[1], dz = hit[2] - start[2];
+    const float distUu = haveHit ? sqrtf(dx * dx + dy * dy + dz * dz) : 0.0f;
+    const float distM = fc.worldScale > 1.0f ? distUu / fc.worldScale : 0.0f;
+    if (g_dynTestShot.load(std::memory_order_relaxed) > 0) {
+        g_dynTestShot.fetch_sub(1, std::memory_order_relaxed);
+        BVR_LOG("[bsi] aim: dyndot TEST hand=%c start=(%.1f %.1f %.1f) hit=%s(%.1f %.1f "
+                "%.1f) dist=%.1f UU = %.2f m | traces=%u hits=%u fails=%u",
+                hand ? 'R' : 'L', start[0], start[1], start[2], haveHit ? "" : "NONE ",
+                hit[0], hit[1], hit[2], distUu, distM,
+                g_dynTraces.load(std::memory_order_relaxed),
+                g_dynHits.load(std::memory_order_relaxed),
+                g_dynFails.load(std::memory_order_relaxed));
+    }
+    if (!haveHit) return 0.0f;
+    g_dynHits.fetch_add(1, std::memory_order_relaxed);
+    // Clamp to sane dot territory: nearer than 30 cm swallows the dot in the
+    // muzzle, farther than 60 m is the no-hit fallback anyway.
+    return distM < 0.30f ? 0.30f : (distM > 60.0f ? 60.0f : distM);
+}
+
 uint64_t g_lastLogMs = 0;
 
 // The controller ray, in GAME rotation units, built on exactly the basis the
@@ -159,7 +262,13 @@ void publish_dot(int slot, int hand, const FRotator& ray, const bvr::vr::HeadPos
         ue_to_xr(fwd, dirXr);
         ue_to_xr(right, rightXr);
         ue_to_xr(up, upXr);
-        const float d = g_dotDistM.load(std::memory_order_relaxed);
+        // s48: dynamic distance when armed and the last trace hit; the fixed
+        // slider distance is the fallback (miss, disabled, or trace failure).
+        float d = g_dotDistM.load(std::memory_order_relaxed);
+        if (g_dynDot.load(std::memory_order_relaxed)) {
+            const float dd = g_dynDistM[hand].load(std::memory_order_relaxed);
+            if (dd > 0.0f) d = dd;
+        }
         // s45b: the ray-origin offsets, in the trimmed ray's own frame, cm ->
         // meters. Origin moves, direction does not - the dot stays the round
         // trip of the WRITTEN rotator.
@@ -219,6 +328,22 @@ FRotator* __fastcall AimDetour(void* self, void* edx, FRotator* outBuf) {
     bool have[2] = {false, false};
     for (int h = 0; h < 2; ++h)
         have[h] = controller_ray(h, &rays[h], &poses[h]);
+
+    // s48: refresh the dynamic dot distances, 20 Hz per hand (a trace per
+    // dispatch would be 90/s per hand for no visible gain).
+    if (g_dynDot.load(std::memory_order_relaxed) || g_dynTestShot.load(std::memory_order_relaxed) > 0) {
+        const FrameContext& fc = camera::frame_context();
+        const uint64_t nowDyn = GetTickCount64();
+        for (int h = 0; h < 2; ++h) {
+            if (!have[h] || !fc.valid) continue;
+            if (!g_dot[h].load(std::memory_order_relaxed) &&
+                g_dynTestShot.load(std::memory_order_relaxed) == 0)
+                continue;
+            if (nowDyn - g_dynLastMs[h] < 50) continue;
+            g_dynLastMs[h] = nowDyn;
+            g_dynDistM[h].store(dyn_trace(h, poses[h], fc), std::memory_order_relaxed);
+        }
+    }
 
     // Slot 0 is the RIGHT hand and slot 1 the left, matching BS2's convention
     // (slot 0 keeps BS1 parity there); a hand whose pose is missing publishes
@@ -379,6 +504,31 @@ bool handle_command(const char* cmd, const char* args) {
         g_probe.store(false, std::memory_order_relaxed);
         BVR_LOG("[bsi] aim: probe off (an installed hook stays installed and passes through - "
                 "a thread may still be returning through the trampoline)");
+    } else if (strncmp(args, "dyndot", 6) == 0) {
+        const char* rest = args + 6;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "on", 2) == 0) {
+            g_dynDot.store(true, std::memory_order_relaxed);
+            BVR_LOG("[bsi] aim: DYNAMIC dot ON - the dot sits on the traced hit point "
+                    "(20 Hz per hand; fixed distance is the miss fallback)");
+        } else if (strncmp(rest, "off", 3) == 0) {
+            g_dynDot.store(false, std::memory_order_relaxed);
+            BVR_LOG("[bsi] aim: dynamic dot off - fixed %.2f m",
+                    g_dotDistM.load(std::memory_order_relaxed));
+        } else if (strncmp(rest, "test", 4) == 0) {
+            g_dynTestShot.store(4, std::memory_order_relaxed);
+            BVR_LOG("[bsi] aim: dyndot TEST armed - the next 4 traces log start/hit/dist "
+                    "in full");
+        } else {
+            BVR_LOG("[bsi] aim: dyndot %s | distL=%.2fm distR=%.2fm traces=%u hits=%u "
+                    "fails=%u | bsiaim dyndot on|off|test",
+                    g_dynDot.load() ? "ON" : "off",
+                    g_dynDistM[0].load(std::memory_order_relaxed),
+                    g_dynDistM[1].load(std::memory_order_relaxed),
+                    g_dynTraces.load(std::memory_order_relaxed),
+                    g_dynHits.load(std::memory_order_relaxed),
+                    g_dynFails.load(std::memory_order_relaxed));
+        }
     } else if (strncmp(args, "laser", 5) == 0 || strncmp(args, "dot", 3) == 0) {
         // "<laser|dot> [l|r|both] on|off" - default both hands.
         const bool isLaser = args[0] == 'l' && args[1] == 'a';
@@ -491,6 +641,11 @@ void draw_debug_ui() {
     bool dotL = g_dot[0].load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Dot: left hand (vigor)", &dotL))
         g_dot[0].store(dotL, std::memory_order_relaxed);
+    // s48: the dynamic dot is BLOCKED on this build - "Trace" is stripped from
+    // the name pool, so the script-dispatch route cannot resolve; the lever
+    // waits on the UWorld::SingleLineCheck C++ derivation (machinery is in,
+    // bsiaim dyndot arms it once a trace source exists).
+    ImGui::TextDisabled("dynamic dot: pending SingleLineCheck derivation (s48 note)");
     float dist = g_dotDistM.load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("Dot distance (m)", &dist, 0.5f, 15.0f, "%.1f"))
         g_dotDistM.store(dist, std::memory_order_relaxed);

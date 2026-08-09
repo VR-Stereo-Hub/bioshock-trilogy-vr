@@ -11,6 +11,7 @@
 #include "core/hooks/pattern_scan.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/fidget.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/reflect.h"
 
@@ -42,8 +43,6 @@ int g_parent[kMaxBones];
 int g_grip[2] = {-1, -1};                 // 0 = L_Grip, 1 = R_Grip
 bool g_cluster[2][kMaxBones] = {};        // grip subtree, incl. the grip itself
 bool g_armSet[2][kMaxBones] = {};         // PlayerHands[LR]*arm* chains
-bool g_armKeep[2][kMaxBones] = {};        // s46: the forearm-TWIST subset (arm21/arm22)
-                                          // - hide style 1 keeps these driven
 char g_names[kMaxBones][64];              // resolve-time copies (fname_text needs >= 64)
 
 // ---- write state ------------------------------------------------------------
@@ -75,7 +74,11 @@ char g_names[kMaxBones][64];              // resolve-time copies (fname_text nee
 // note_player_fire; the engine itself resets the stance on fire, so the
 // post-fire window IS the ready pose - the mechanism mirrors the game's own
 // reset), and a manual capture command exists for pacifist scenes.
-std::atomic<bool> g_stanceKill{true};
+// s48: default OFF - the glue was headset-REJECTED as the stance fix (it pins
+// the driven bones while the anim still owns the rest of the model). The
+// SubtleFidget ROOT KILL (fidget.cpp) replaces it; the glue stays as a bisect
+// lever and as the compose correction the animtrans lever shares.
+std::atomic<bool> g_stanceKill{false};
 float g_readyQuat[2][4] = {};
 std::atomic<bool> g_readyValid[2] = {};
 std::atomic<uint64_t> g_captureAtMs[2] = {}; // 0 = nothing pending, per hand
@@ -94,6 +97,24 @@ uint32_t g_readyCaptures[2] = {};
 // next shot (the glue only cancels the stance's rotation).
 std::atomic<bool> g_animTrans{false};
 float g_readyTrans[2][3] = {};
+// s48: the LOCOMOTION fix. Headset verdict: stick-walking moves the model;
+// flat: 9.26 UU (6.2 cm) of rigid component-space translation on both driven
+// anchors at walk speed vs 0.81 UU stationary - one frame of walk speed. The
+// mechanism: the hand target is built on THIS dispatch's fc.engineLoc while
+// the L2W the compose inverts embeds the camera the engine placed the
+// attachment with (a frame out of phase under locomotion). camPin composes
+// the hand RELATIVE to the camera the drive WROTE this dispatch
+// (fc.writtenLoc): target - writtenCam cancels engineLoc exactly, so no
+// engine-phase term survives in translation. The lag probe (`bsibones lag`)
+// measures c0 = R_l2w^-1 * (writtenCam - L2Wt) - camPin is exact when c0 is
+// zero/constant-in-camera-frame - measured BEFORE this default was decided:
+// c0 = 0.00 exactly on all axes stationary (7.7k samples); walking, c0 spans
+// 11.2 UU (the lag made visible) and camPin cuts the driven-anchor wobble
+// 9.26 -> 1.72 UU (the residual is view-bob rotation, second-order). ON.
+std::atomic<bool> g_camPin{true};
+uint64_t g_lagUntilMs = 0;
+float g_lagMin[3], g_lagMax[3];
+uint32_t g_lagSamples = 0;
 // Past this the basis is broken (authored peaks measure <= 72 UU), or tRef is
 // stale garbage - fall back to the anchor-pinned compose for the frame.
 constexpr float kAnimTransMaxUu = 120.0f;
@@ -228,7 +249,6 @@ bool read_ref_skeleton() {
     g_grip[0] = g_grip[1] = -1;
     memset(g_cluster, 0, sizeof g_cluster);
     memset(g_armSet, 0, sizeof g_armSet);
-    memset(g_armKeep, 0, sizeof g_armKeep);
     for (int i = 0; i < num; ++i) {
         const uint8_t* e = data + static_cast<size_t>(i) * patterns::kMeshBoneStride;
         const int32_t nameIdx =
@@ -279,10 +299,6 @@ bool read_ref_skeleton() {
             g_cluster[h][i] = true;
         } else {
             g_armSet[h][i] = true;
-            // s46 hide style 1: the forearm-twist bones (arm21/arm22) can stay
-            // driven while the upper arm collapses - a mesh fact by NAME, like
-            // everything else in this classifier.
-            if (strstr(low, "arm21") || strstr(low, "arm22")) g_armKeep[h][i] = true;
         }
     }
     int cl = 0, cr = 0, al = 0, ar = 0;
@@ -569,6 +585,8 @@ void travel_tick() {
     }
 }
 
+void* attachment() { return g_attach; }
+
 void tick_resolve(uint64_t nowMs) {
     if (g_comp) {
         if (rig_intact()) return;
@@ -636,7 +654,7 @@ void tick_resolve(uint64_t nowMs) {
 }
 
 bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale,
-           int armsMode, bool animMode, int hideStyle, const float wristDeg[3]) {
+           int armsMode, bool animMode, float capDepthCm, const float wristDeg[3]) {
     if (hand < 0 || hand > 1) return false;
     if (!g_comp) return false;
     if (!rig_intact()) {
@@ -659,10 +677,41 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     quat_conj(qa, qaInv);
 
     // World target -> component space. Row-vector inverse: l_j = dot(row_j, w).
-    const float w[3] = {target.loc.x - t[0], target.loc.y - t[1], target.loc.z - t[2]};
+    // s48 camPin: the reference origin is the camera the drive WROTE this
+    // dispatch, not the L2W translation - see the block comment at g_camPin.
+    // (The L2W ROTATION is still the frame; rotational phase error at turn
+    // speed is second-order and was not the reported defect.)
+    const bool camPin = g_camPin.load(std::memory_order_relaxed) && fc.valid;
+    const float w[3] = {target.loc.x - (camPin ? fc.writtenLocX : t[0]),
+                        target.loc.y - (camPin ? fc.writtenLocY : t[1]),
+                        target.loc.z - (camPin ? fc.writtenLocZ : t[2])};
     float ptc[3] = {r0[0] * w[0] + r0[1] * w[1] + r0[2] * w[2],
                     r1[0] * w[0] + r1[1] * w[1] + r1[2] * w[2],
                     r2[0] * w[0] + r2[1] * w[1] + r2[2] * w[2]};
+
+    // s48: the lag probe - c0 = R^-1*(writtenCam - L2Wt), min/max per axis.
+    if (g_lagUntilMs != 0 && fc.valid && hand == 1) {
+        const uint64_t lagNow = GetTickCount64();
+        if (lagNow > g_lagUntilMs) {
+            g_lagUntilMs = 0;
+            BVR_LOG("[bsi] bones: lag c0 over %u samples - x[%.2f..%.2f] y[%.2f..%.2f] "
+                    "z[%.2f..%.2f] UU (span %.2f %.2f %.2f)",
+                    g_lagSamples, g_lagMin[0], g_lagMax[0], g_lagMin[1], g_lagMax[1],
+                    g_lagMin[2], g_lagMax[2], g_lagMax[0] - g_lagMin[0],
+                    g_lagMax[1] - g_lagMin[1], g_lagMax[2] - g_lagMin[2]);
+        } else {
+            const float e[3] = {fc.writtenLocX - t[0], fc.writtenLocY - t[1],
+                                fc.writtenLocZ - t[2]};
+            const float el[3] = {r0[0] * e[0] + r0[1] * e[1] + r0[2] * e[2],
+                                 r1[0] * e[0] + r1[1] * e[1] + r1[2] * e[2],
+                                 r2[0] * e[0] + r2[1] * e[1] + r2[2] * e[2]};
+            for (int k = 0; k < 3; ++k) {
+                if (g_lagSamples == 0 || el[k] < g_lagMin[k]) g_lagMin[k] = el[k];
+                if (g_lagSamples == 0 || el[k] > g_lagMax[k]) g_lagMax[k] = el[k];
+            }
+            ++g_lagSamples;
+        }
+    }
     // Sanity refusal: a target absurdly far from the component means the basis
     // or the context is broken - refuse rather than teleport the mesh. 2000 UU
     // is ~13 m at the user's calibrated 150 UU/m.
@@ -674,16 +723,18 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     quat_from_rotator(target.rot, qt);
     quat_mul(qaInv, qt, qtc); // controller rotation, expressed in component space
 
-    // s46 (headset finding 5): the per-hand ARM-RELATIVE wrist adjustment - an
-    // extra quat W in the ARM chain's compose only, about the grip. Algebra:
-    // qtcArm = qtc (x) W is EXACTLY "rotate the chain about the grip point
-    // with the axes riding the controller" (qtc x W x conj(qtc) is W in the
-    // driven frame, and conjugation cancels in both the quat and the dp term).
+    // s48 rework (headset verdict: "the sliders move the ARM, not the wrist"):
+    // the extra quat W now rides the HAND CLUSTER's compose - the hand (and
+    // its holdable) tilts about the grip while the forearm keeps the plain
+    // controller rotation, which is what reads as BENDING THE WRIST. (The s46
+    // version put W on the arm chain instead: the same relative wrist angle,
+    // but the elbow's long lever arm made it read as sweeping the whole arm.)
     // W is built about the identity ROTATOR-frame axes (X fwd, Y right, Z up -
     // the ue_rot_basis frame quat_from_rotator encodes), NOT xr_local_trim_quat
     // (XR axes - wrong frame here). Signs: +pitch up, +yaw right, +roll
-    // clockwise; roll innermost, matching the trim-slider conventions.
-    float qtcArm[4];
+    // clockwise; roll innermost, matching the trim-slider conventions. Purely
+    // visual: aim, laser and the fire origin never see it.
+    float qtcHand[4];
     const bool wristActive = wristDeg && (wristDeg[0] != 0.0f || wristDeg[1] != 0.0f ||
                                           wristDeg[2] != 0.0f);
     if (wristActive) {
@@ -694,9 +745,9 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         bvr::xrmath::quat_axis_angle(-1.0f, 0.0f, 0.0f, wristDeg[2] * kDegToRad, qr);
         quat_mul(qp, qr, t);
         quat_mul(qy, t, w);
-        quat_mul(qtc, w, qtcArm);
+        quat_mul(qtc, w, qtcHand);
     } else {
-        memcpy(qtcArm, qtc, sizeof qtcArm);
+        memcpy(qtcHand, qtc, sizeof qtcHand);
     }
 
     // Adopt the engine pose for everything we are about to write.
@@ -764,8 +815,8 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         float t2[4];
         quat_mul(qtc, corr, t2);
         memcpy(qtc, t2, sizeof t2);
-        quat_mul(qtcArm, corr, t2);
-        memcpy(qtcArm, t2, sizeof t2);
+        quat_mul(qtcHand, corr, t2);
+        memcpy(qtcHand, t2, sizeof t2);
     }
 
     // Compose: q_i = qtc (x) srcQ_i ; p_i = ptc + qtc*(srcT_i - aT)*scale.
@@ -790,24 +841,21 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         const bool inCluster = g_cluster[hand][i];
         const bool inArms = armsMode != 0 && g_armSet[hand][i];
         if (!inCluster && !inArms) continue;
-        // s46: hide is now a per-BONE decision - style 1 keeps the forearm
-        // twist bones (arm21/arm22) driven so the wrist cap keeps its taper
-        // instead of pinching every arm bone into one point.
-        const bool hideThis =
-            inArms && armsMode == 2 && !(hideStyle == 1 && g_armKeep[hand][i]);
+        // s48: ONE hide mode (the headset A/B rejected the alternatives) -
+        // collapse every arm bone to a point capDepthCm BEHIND the grip along
+        // the controller's -forward, zero scale. Depth 0 = the old collapse-
+        // at-grip; the depth is an F10 slider so the residual stretch is
+        // tunable in the headset instead of baked here.
+        const bool hideThis = inArms && armsMode == 2;
         const uint8_t kind = hideThis ? 2 : 0;
         float wq[8];
         if (kind == 2) {
-            // hide: collapse the bone and zero the scale - the collapse is
-            // what degenerates the cross-boundary skin blend to the wrist
-            // instead of stretching a web (BS2 s41, shape only). Style 0
-            // collapses ONTO the driven grip; style 2 onto a point a hand's
-            // breadth BEHIND it (along the controller's own -forward), so the
-            // boundary ring pinches behind the wrist rather than inside it.
+            // The collapse is what degenerates the cross-boundary skin blend
+            // to the wrist instead of stretching a web (BS2 s41, shape only).
             memcpy(wq, src[i], 32);
             float cp[3] = {ptc[0], ptc[1], ptc[2]};
-            if (hideStyle == 2) {
-                const float back[3] = {-10.0f * fc.worldScale * 0.01f, 0.0f, 0.0f};
+            if (capDepthCm > 0.01f) {
+                const float back[3] = {-capDepthCm * fc.worldScale * 0.01f, 0.0f, 0.0f};
                 float rb[3];
                 bvr::xrmath::quat_rotate(qtc[0], qtc[1], qtc[2], qtc[3], back, rb);
                 cp[0] += rb[0];
@@ -819,10 +867,11 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
             wq[6] = cp[2];
             wq[7] = 0.0f;
         } else {
-            // Arm bones take qtcArm (the wrist-adjusted compose) in BOTH the
-            // quat and the dp rotation - one rigid rotation about the grip;
-            // using it in only one of the two would shear the chain apart.
-            const float* q = inArms ? qtcArm : qtc;
+            // s48: the CLUSTER takes qtcHand (the wrist-bend compose) in BOTH
+            // the quat and the dp rotation - one rigid rotation about the
+            // grip; using it in only one of the two would shear the hand
+            // apart. The arm chain keeps the plain controller rotation.
+            const float* q = inArms ? qtc : qtcHand;
             float dp[3] = {(src[i][4] - aT[0]) * scale, (src[i][5] - aT[1]) * scale,
                            (src[i][6] - aT[2]) * scale};
             float rp[3];
@@ -958,6 +1007,28 @@ bool handle_command(const char* cmd, const char* args) {
     if (args && strncmp(args, "snap", 4) == 0) return cmd_snap(args + 4);
     if (args && strncmp(args, "diff", 4) == 0) return cmd_snap_diff(args + 4);
     if (args && strncmp(args, "travel", 6) == 0) return cmd_travel(args + 6);
+    if (args && strncmp(args, "lag", 3) == 0) {
+        float secs = 5.0f;
+        sscanf_s(args + 3, "%f", &secs);
+        if (secs < 1.0f) secs = 1.0f;
+        if (secs > 30.0f) secs = 30.0f;
+        g_lagSamples = 0;
+        g_lagUntilMs = GetTickCount64() + static_cast<uint64_t>(secs * 1000.0f);
+        BVR_LOG("[bsi] bones: lag probe ARMED for %.1f s (needs the drive ON; reports "
+                "writtenCam-vs-L2W offset in the component frame)",
+                secs);
+        return true;
+    }
+    if (args && strncmp(args, "campin", 6) == 0) {
+        const char* rest = args + 6;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "on", 2) == 0) g_camPin.store(true, std::memory_order_relaxed);
+        else if (strncmp(rest, "off", 3) == 0) g_camPin.store(false, std::memory_order_relaxed);
+        BVR_LOG("[bsi] bones: campin %s (hand composed relative to the written camera - "
+                "the locomotion fix)",
+                g_camPin.load() ? "ON" : "off");
+        return true;
+    }
     if (args && strncmp(args, "glue", 4) == 0) {
         const char* rest = args + 4;
         while (*rest == ' ') ++rest;
@@ -1003,10 +1074,12 @@ void draw_debug_ui() {
                 g_boneCount, g_resolves);
     ImGui::Text("drives L %u R %u | adopts L %u R %u | reapplies %u", g_drives[0],
                 g_drives[1], g_adopts[0], g_adopts[1], g_reapplies);
-    // s46: the persistent-stance kill. The ready pose auto-captures ~1 s
-    // after every shot; the button is the pacifist fallback.
+    // s48: the stance fix is the ROOT KILL (block the trigger); the s46 glue
+    // below is demoted to a bisect lever, default off.
+    fidget::draw_debug_ui();
     bool glue = g_stanceKill.load(std::memory_order_relaxed);
-    if (ImGui::Checkbox("kill persistent stance (glue captured ready pose)", &glue))
+    if (ImGui::Checkbox("stance glue (s46 fallback, off - superseded by the root kill)",
+                        &glue))
         set_stance_kill(glue);
     ImGui::SameLine();
     ImGui::Text("ready L:%s R:%s", g_readyValid[0].load(std::memory_order_relaxed) ? "ok" : "-",

@@ -51,22 +51,26 @@ namespace bvr::bsi::bones {
 // Resolve/refresh the rig lazily (camera 1 Hz throttle calls this). Fail-soft.
 void tick_resolve(uint64_t nowMs);
 
+// s48: the resolved XFirstPersonAttachment actor (nullptr before resolve /
+// after a drop). The fidget filter scopes its event block to this object.
+void* attachment();
+
 // Drive one hand's cluster (and its arm chain per armsMode) toward the
 // game-space target. Pass-1 game thread only. Returns false when the rig is
 // not resolved or the identity gates refused.
 //
-// s46 additions:
-//  - hideStyle (armsMode 2 only): 0 = collapse all four arm bones onto the
-//    grip (the s45b behaviour), 1 = keep the forearm-twist bones arm21/arm22
-//    driven and collapse only arm1/ArmParent, 2 = collapse onto a point ~10 cm
-//    BEHIND the grip along the controller's forward.
-//  - wristDeg: per-call ARM-RELATIVE wrist adjustment {pitch, yaw, roll} in
-//    degrees, an extra quat in the ARM chain's compose only, about the grip -
-//    hand cluster, aim and laser untouched (headset finding 5's mechanism:
-//    the hand-vs-forearm RELATIVE angle is the adopted engine pose, which no
-//    rigid model trim can change). nullptr or zeros = byte-identical compose.
+// s48 shapes (the s46 alternatives were headset-rejected):
+//  - capDepthCm (armsMode 2 only): the ONE hide mode - every arm bone
+//    collapses to a point capDepthCm behind the grip along the controller's
+//    -forward, zero scale. 0 = collapse at the grip.
+//  - wristDeg: per-call wrist BEND {pitch, yaw, roll} in degrees - an extra
+//    quat in the HAND CLUSTER's compose, about the grip, while the forearm
+//    keeps the plain controller rotation (that relative change at the wrist
+//    is what reads as bending it; the s46 arm-side version read as sweeping
+//    the arm). Purely visual - aim, laser and fire origin never see it.
+//    nullptr or zeros = byte-identical compose.
 bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale,
-           int armsMode, bool animMode, int hideStyle, const float wristDeg[3]);
+           int armsMode, bool animMode, float capDepthCm, const float wristDeg[3]);
 
 // Stop driving one hand (or both when hand < 0). Clears masks; no restore
 // write - see the restamp fact above.

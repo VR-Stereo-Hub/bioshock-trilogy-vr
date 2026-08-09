@@ -2,6 +2,7 @@
 
 #include "game/bioshockinf/aim.h"
 #include "game/bioshockinf/bones.h"
+#include "game/bioshockinf/fidget.h"
 #include "game/bioshockinf/fire.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/hands.h"
@@ -712,6 +713,9 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         g_frameCtx.engineLocX = engineLoc.x;
         g_frameCtx.engineLocY = engineLoc.y;
         g_frameCtx.engineLocZ = engineLoc.z;
+        g_frameCtx.writtenLocX = engineLoc.x + ox;
+        g_frameCtx.writtenLocY = engineLoc.y + oy;
+        g_frameCtx.writtenLocZ = engineLoc.z + oz;
         g_frameCtx.gameYawUnits = gameYawUnits;
         g_frameCtx.recenterYawUnits = g_recenterYawUnits;
         g_frameCtx.recenterPx = g_recenterPose.px;
@@ -1371,6 +1375,9 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         // I8: the rig resolve rides the same lazy lane for the same reason
         // (needs a live pawn), and re-resolves after a drop at 3 s inside.
         bones::tick_resolve(now);
+        // s48: the SubtleFidget root kill needs the resolved attachment, so it
+        // rides behind the resolve on the same 1 Hz lane.
+        if (fidget::wants_install()) fidget::try_install();
     }
 }
 
