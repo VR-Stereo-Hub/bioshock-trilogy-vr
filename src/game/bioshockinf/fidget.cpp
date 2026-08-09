@@ -285,6 +285,16 @@ std::atomic<uint32_t> g_reqBlockId{0xFFFFFFFF};
 std::atomic<int32_t> g_reqClampId{-1}; // -1 = off
 std::atomic<uint32_t> g_reqClampBits{0};
 std::atomic<uint32_t> g_reqClamped{0};
+// AUTO mode (the shipping default): self-derive the clamp each boot from the
+// ENGINE-CACHED 'Lowered' descriptor at attachment+0x2CC (the reset-to-ready
+// function caches it there; verified by reading the descriptor's own FName).
+// Refuses on any mismatch and stays off for the boot - no write without the
+// derivation holding. `bsifidget req clamp off` is the A/B bisect;
+// `bsifidget req clamp auto` re-arms.
+constexpr uint32_t kLoweredDescOff = 0x2CC;
+std::atomic<bool> g_clampAuto{true};
+void* g_clampDerivedOn = nullptr; // attachment the auto-derive last ran for
+bool g_clampRefused = false;
 using PostRequestFn = void(__cdecl*)(void* runtime, void* desc, void* params);
 PostRequestFn g_reqOrig = nullptr;
 std::atomic<uint32_t> g_reqCalls{0};
@@ -483,7 +493,51 @@ void uninstall(const char* why) {
 
 } // namespace
 
+// s49b THE SHIPPING KILL: self-derive the 'Lowered' clamp once per resolved
+// attachment. The A/B that proved it: clamp ON -> 435 s idle with ZERO
+// L-cluster movement (every unclamped leg entered the 101-deg stance within
+// 150-240 s); the mechanism: the stance is the lowered-idle settle inside the
+// Morpheme graph, and pinning the game's own 90 Hz 'Lowered' post to 0.0
+// keeps the graph in the raised subgraph where no settle exists.
+void tick_clamp() {
+    if (!g_clampAuto.load(std::memory_order_relaxed) || g_clampRefused) return;
+    void* attach = bones::attachment();
+    if (!attach || attach == g_clampDerivedOn) return;
+    if (!g_reqInstalled.load(std::memory_order_relaxed)) return; // hook first
+    char cls[64] = {};
+    if (!reflect::class_name_of(attach, cls, sizeof cls) ||
+        strcmp(cls, "XFirstPersonAttachment") != 0)
+        return; // not resolved far enough - retry next tick
+    const uint8_t* desc = static_cast<const uint8_t*>(attach) + kLoweredDescOff;
+    if (!bvr::pattern_scan::is_memory_valid(desc, 16)) return;
+    const int32_t nameIdx = *reinterpret_cast<const int32_t*>(desc);
+    const uint16_t id = *reinterpret_cast<const uint16_t*>(desc + 8);
+    char nm[patterns::kFNameTextBufMin] = {};
+    if (nameIdx <= 0 || nameIdx >= patterns::fname_count() ||
+        !patterns::fname_text(nameIdx, nm, sizeof nm) || strcmp(nm, "Lowered") != 0 ||
+        id == 0xFFFF) {
+        // Descriptor not yet resolved by the engine (equip pending) is normal
+        // early in a load - only refuse permanently on a NAME mismatch.
+        if (nm[0] && strcmp(nm, "Lowered") != 0) {
+            g_clampRefused = true;
+            BVR_LOG("[bsi] fidget: auto-clamp REFUSED - descriptor at attachment+0x%X "
+                    "names '%s', not 'Lowered' (layout drift?); the stance stays this "
+                    "boot",
+                    kLoweredDescOff, nm);
+        }
+        return;
+    }
+    g_reqClampBits.store(0, std::memory_order_relaxed); // 0.0f
+    g_reqClampId.store(id, std::memory_order_relaxed);
+    g_clampDerivedOn = attach;
+    BVR_LOG("[bsi] fidget: STANCE KILL armed - 'Lowered' (param id %u, descriptor "
+            "attachment+0x%X, name verified) clamps to 0.0 on every FP-network post. "
+            "`bsifidget req clamp off` is the A/B bisect.",
+            id, kLoweredDescOff);
+}
+
 void tick_apply() {
+    tick_clamp();
     if (!g_rootKill.load(std::memory_order_relaxed) || g_walkRefused) return;
     void* attach = bones::attachment();
     if (!attach || attach == g_appliedOn) return;
@@ -718,15 +772,25 @@ bool handle_command(const char* cmd, const char* args) {
             const char* crest = rest + 5;
             while (*crest == ' ') ++crest;
             if (strncmp(crest, "off", 3) == 0) {
+                g_clampAuto.store(false, std::memory_order_relaxed);
                 g_reqClampId.store(-1, std::memory_order_relaxed);
-                BVR_LOG("[bsi] fidget: req clamp OFF (%u posts were clamped)",
+                g_clampDerivedOn = nullptr;
+                BVR_LOG("[bsi] fidget: req clamp OFF (%u posts were clamped) - the "
+                        "stance can re-enter; `bsifidget req clamp auto` re-arms",
                         g_reqClamped.load(std::memory_order_relaxed));
+            } else if (strncmp(crest, "auto", 4) == 0) {
+                g_clampAuto.store(true, std::memory_order_relaxed);
+                g_clampRefused = false;
+                g_clampDerivedOn = nullptr; // re-derive next tick
+                BVR_LOG("[bsi] fidget: req clamp AUTO - re-deriving the 'Lowered' "
+                        "clamp on the next camera tick");
             } else {
                 int id = -1;
                 float v = 0.0f;
                 if (sscanf_s(crest, "%d %f", &id, &v) == 2 && id >= 0) {
                     uint32_t bits = 0;
                     memcpy(&bits, &v, 4);
+                    g_clampAuto.store(false, std::memory_order_relaxed); // manual wins
                     g_reqClampBits.store(bits, std::memory_order_relaxed);
                     g_reqClampId.store(id, std::memory_order_relaxed);
                     BVR_LOG("[bsi] fidget: req CLAMP - param id %d is rewritten to %.4f "
@@ -828,6 +892,14 @@ bool handle_command(const char* cmd, const char* args) {
 }
 
 void draw_debug_ui() {
+    // s49b: THE stance kill - the 'Lowered' clamp (A/B-proven root lever).
+    bool kill = g_reqClampId.load(std::memory_order_relaxed) >= 0 ||
+                g_clampAuto.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("STANCE KILL ('Lowered' clamp, s49b A/B-proven)", &kill)) {
+        handle_command("bsifidget", kill ? "req clamp auto" : "req clamp off");
+    }
+    ImGui::SameLine();
+    ImGui::Text("clamped %u posts", g_reqClamped.load(std::memory_order_relaxed));
     // s49: the impl hook - the root lever. Radio mirrors `bsifidget impl ...`.
     int implMode = g_implMode.load(std::memory_order_relaxed);
     ImGui::Text("stance root (StartSubtleFidget impl):");
