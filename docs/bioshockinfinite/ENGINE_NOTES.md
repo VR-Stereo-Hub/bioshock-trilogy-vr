@@ -732,6 +732,94 @@ optional param arrives NULL on ordinary shots**, so the pawn-side
 current-weapon source is I9 derivation work (with the arsenal save), not a
 guess here. `bsiprofiles` prints the latch and lookup result.
 
+### s48: the stance is NATIVE, the locomotion pin, and the verdict fixes
+
+**THE STANCE ROOT HUNT - the ProcessEvent theory built, proven mechanical, then
+FALSIFIED as the root.** The s46 glue was headset-rejected (it pins driven bones
+while the anim owns the rest of the model). fidget.cpp patches the ProcessEvent
+slot (+0x7C) in the attachment's OWN vtable (occupant verified = AActor::
+ProcessEvent 0x19A150; one-int-compare name filter against pre-resolved GNames
+2172 = StartSubtleFidget; block gated to the resolved attachment object).
+Mechanics PROVEN both ways: probe mode observed the dispatch passing (6-66 s
+after a shot), filter mode observed one refused. Then the CLEAN boot (filter
+armed from resolve, no probe contamination): fire at T0, snaps at +5 s / +90 s /
++8 min - **the stance fully re-entered (the exact 96-145 deg digit signature)
+with events=1, startSeen=0, blocked=0**. The dispatch is a sometimes-fired
+notification; **the anim starts NATIVELY** (the XFidgetAnimationSelection
+machinery). Default mode: probe. The surviving root is the engine's own gate,
+`bDisableSubtleFidget` (and/or `bDisableFirstPersonAttachmentSubtleFidget` -
+both in GNames; console `set` already proven dead s46, so the bit must be set
+in memory). **bsiprop/bsipropbit exist for exactly that**: bsiprop derives the
+UProperty chain live (measured on XFirstPersonAttachment's class: Children at
+class+0x38, Next at field+0xC; only 4 fields on the leaf class, so the walker
+now follows the SuperStruct chain - super-link = a class-classed pointer that
+is neither the +0x20 metaclass slot nor named "Class") and dumps each
+property's metadata dwords so the ascending column names Offset empirically;
+bsipropbit reads/flips one masked bit. The finish needs one booted save:
+walk -> eyeball Offset (+BitMask for the bool) -> set -> fire -> 5-min idle A/B.
+
+**Bonus stance-family finding: a SECOND idle lane.** Post-fire, the whole LEFT
+arm+hand system relaxes by a rigid, uniform 40.00 deg within ~90 s (every L
+bone exactly 40.00 deg, grip to digits to arm) - an alert-decay pose, distinct
+from the 101.11 deg SubtleFidget stance. Every earlier session snapped its
+"ready" reference within seconds of a shot, so the glue has been banking the
+ALERT pose, and part of the user's "arm rises" report may be this lane. If the
+UBOOL kills SubtleFidget but a 40-deg drift remains, this is the next suspect.
+
+**LOCOMOTION (verdict 2) - measured, mechanism named, fixed.** Stick-walking
+put a rigid 9.26 UU (6.2 cm) translation wobble on BOTH driven anchors in
+component space (stationary noise 0.81 UU) - about one frame of walk speed.
+Mechanism: the hand target is built on THIS dispatch's fc.engineLoc while the
+attachment L2W embeds the camera the engine last placed it with - one frame
+out of phase under locomotion. The lag probe (`bsibones lag`) measured
+c0 = R_l2w^-1(writtenCam - L2Wt): **0.00 exactly on all axes stationary**
+(the attachment origin IS the written camera), spanning 11.2 UU walking (the
+lag made visible). The fix - **camPin, default ON**: the compose's dp base is
+the camera the drive WROTE this dispatch (fc.writtenLoc, new FrameContext
+field), so engineLoc cancels and no engine-phase term survives in translation.
+Walking travel drops 9.26 -> 1.72 UU; the residual is L2W ROTATION phase
+(view-bob), second-order. `bsibones campin on|off` is the bisect.
+
+**WRIST (verdict 3) - the bend moved to the HAND CLUSTER.** The s46 arm-side
+quat read as sweeping the whole arm (the elbow's lever arm). Now W rides the
+cluster compose (hand+holdable tilt about the grip; forearm keeps the plain
+controller rotation). Flat: the written diff shows exactly the R cluster
+rotating rigidly with ZERO arm entries - the s46 inversion. Purely visual;
+aim/laser/fire never see it.
+
+**FIRE ORIGIN (verdict 4) - the trace is NOT the symptom.** Flat: two shots at
+hand positions 30 cm apart - the engine origin stayed frozen at the camera,
+the SUBSTITUTED origin followed the hand (43.8 UU). So the trace start is
+correct and controller-live; the "bullet leaves a fixed screen point" the
+headset sees must be the TRACER/muzzle FX spawn - a separate seam. Vocabulary
+staked out in GNames for the hunt: TracerEffect/TracerFX/TracerSocketNames/
+TracerSocketIndex, MuzzleSocketName, XEPT_WeaponTracer/XEPT_WeaponMuzzle,
+RecentTracerParticles. Next session: find what feeds the tracer its start.
+
+**ARMS HIDE (verdict 5) - one mode, tunable depth.** The style radio is gone;
+hide = collapse every arm bone to capDepthCm behind the grip (zero scale).
+`bsihands capdepth <0..30>` + F10 slider, default 10 (the s46 "decent" pinch);
+0 reproduces the rejected collapse-at-grip for A/B. The residual stretch is
+now tunable in-headset instead of baked.
+
+**DYNAMIC DOT (verdict 6) - honestly infeasible tonight.** Plain `Trace` (and
+FastTrace/SingleLineCheck) are STRIPPED from this build's name pool (exact-
+match verified against the live-dumped GNames) - script dispatch cannot reach
+a world line check; TraceComponent needs a target component. The full dyndot
+machinery is in aim.cpp (20 Hz per-hand throttle, hit -> dot distance, miss
+falls back to the slider, one-shot `bsiaim dyndot test`), hardened to resolve
+the name ONCE and fail fast - it arms the moment a UWorld::SingleLineCheck
+C++ derivation lands (next-session item). Found and fixed along the way: a
+per-cadence fname_find (the documented freeze hazard) and a test counter that
+spun on the failure path.
+
+**Boot-recipe drift (trap).** Two consecutive sim boots wedged in menu states
+the recipe never hit before (one needed a second Space+Enter volley; the next
+played an intro cinematic then went LOG-SILENT - even the reentry beat stopped
+- with the process alive). Suspect: earlier Enter spam moved the menu cursor
+off Continue (possibly onto New Game). Do not grind this - verify the save
+state with the user on the next boot.
+
 ### Dual-hand aim, and the laser/dot overlays (s44b, after the headset verdict)
 
 The seam is PAWN-level and hands back ONE rotation, so something has to decide whose

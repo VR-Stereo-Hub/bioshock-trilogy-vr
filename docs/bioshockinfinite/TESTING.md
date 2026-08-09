@@ -780,6 +780,36 @@ exact, and the per-weapon table is an empty scaffold. Two items for the headset:
    (Boot auto-capture is measured impossible from the resolve pose; the manual
    F10 capture button exists but captures the stance if pressed pre-shot.)
 
+## S48 checklist (the verdict fixes; branch `si48-inf-verdict-fixes`)
+
+State honestly: **the idle stance is NOT yet fixed in this build.** The s46 glue
+was retired per your verdict (default off), the ProcessEvent block was built and
+then measured to NOT be the anim's root (it starts natively), and the true root
+- the engine's own bDisableSubtleFidget switch - is one derivation step away
+(the property walker is built; it needs a booted save, which the flat harness
+could not reach this session). Expect the stance until that lands; everything
+else below is live.
+
+1. **Non-regression FIRST (60 s)**: tracking, sync, sliders, scale, both-hand
+   aim, hole-on-dot - all unchanged from what you verified.
+2. **LOCOMOTION (the fix to judge)**: walk with the left stick while holding
+   the weapon steady - the model must no longer shift/swim with movement
+   (flat: 6.2 cm of wobble down to 1.1 cm). Bisect: `bsibones campin off`.
+3. **Wrist bend sliders**: HANDS panel, per-hand "wrist bend P/Y/R" - they now
+   tilt the HAND (and gun) about the grip while the forearm stays, i.e. an
+   actual wrist bend instead of the arm sweep you rejected. Purely visual;
+   aim is untouched. Report values that read natural (still unpersisted).
+4. **Arms hide**: the style radio is gone; one mode with a "wrist cap depth"
+   slider (arms=hide). Default 10 cm = the pinch you called decent; slide it
+   and report where the stretch reads best (0 = the old collapse-at-grip).
+5. **Fire origin**: unchanged and confirmed correct flat (the trace follows
+   the controller). The "bullet from a fixed screen point" you saw is the
+   visible tracer EFFECT - that spawn seam is next session's hunt, so expect
+   it to look the same for now.
+6. **Dynamic dot**: not possible yet on this build (the script trace surface
+   is stripped); needs one more derivation session. The dot stays fixed-
+   distance; the slider still works.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

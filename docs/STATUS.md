@@ -17,7 +17,50 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 47 (I8 part 3: the REMAINDER worked - boot pose measured, gate cleared, ANIMTRANS built, scale audited; branch `si47-inf-i8-remainder`, S46+S47 headset verdicts pending)
+### Infinite: current state after session 48 (VERDICT FIXES: locomotion pinned, wrist bend reworked, one hide mode - and the stance root hunt narrowed to the UBOOL; branch `si48-inf-verdict-fixes`)
+
+**Session 48 (2026-08-09, same night) worked the six S46+S47 headset verdicts
+(recorded verbatim in the s47 section below). Zero core changes, all
+bioshockinf-local, nothing merged.** Landed and flat-proven:
+
+1. **Locomotion swim FIXED (verdict 2)**: measured 9.26 UU of rigid model wobble
+   at walk speed, mechanism named (one-frame phase skew between fc.engineLoc and
+   the attachment L2W - the lag probe read the skew directly, 11.2 UU walking,
+   0.00 stationary), fixed by composing the hand relative to the WRITTEN camera
+   (camPin, default ON, `bsibones campin off` bisects). 9.26 -> 1.72 UU.
+2. **Wrist sliders now bend the WRIST (verdict 3)**: the extra quat moved from
+   the arm chain to the hand cluster - hand tilts about the grip, forearm
+   stays. Flat diff: cluster-only rotation, zero arm entries.
+3. **One arms-hide mode (verdict 5)**: style radio deleted; pinch-behind-wrist
+   with an F10 depth slider (`bsihands capdepth`, default 10 cm, 0 = old mode).
+4. **Fire origin (verdict 4)**: flat-proven the TRACE follows the controller
+   (engine origin frozen, substituted origin moved 43.8 UU with a 30 cm hand
+   move). The headset symptom is the visible TRACER FX spawn - vocabulary
+   staked out in ENGINE_NOTES, the seam hunt is next session's item.
+5. **Dynamic dot (verdict 6): infeasible via script on this build** - `Trace`
+   is stripped from the name pool (verified). Machinery built and parked; it
+   arms when a UWorld::SingleLineCheck C++ derivation lands.
+6. **THE STANCE (verdict 1) - root found to be NATIVE, kill one step away.**
+   The glue is retired (default off, user verdict). The ProcessEvent vtable
+   filter was built, proven to block the StartSubtleFidget dispatch when it
+   fires - and then the clean-boot A/B FALSIFIED it as the root: the stance
+   re-entered in 8 min with ZERO dispatches (events=1, startSeen=0). The anim
+   starts natively; the surviving root is the engine's own
+   `bDisableSubtleFidget` UBOOL. The property-chain walker (bsiprop) and the
+   bit lever (bsipropbit) are built and verified up to the super-chain walk;
+   **finishing needs one booted save** - the last two flat boots wedged in
+   menu states (see the trap note in ENGINE_NOTES; the save/menu state may
+   have drifted - verify the save on next boot). ALSO found: a second idle
+   lane - a uniform 40.00 deg post-fire alert-relax of the whole left arm
+   within ~90 s, distinct from the 101.11 stance; recorded as the next
+   suspect if a drift survives the UBOOL.
+
+**NEXT SESSION opener**: boot to the save (user drives), then: bsiprop walk ->
+bDisableSubtleFidget offset -> bsipropbit set -> fire -> 5-min idle A/B; if
+green, wire the bit-set into the resolve path and retire the stance machinery.
+Then the tracer-FX spawn seam, and the SingleLineCheck derivation for dyndot.
+
+### Infinite: state after session 47 (I8 part 3 - kept for the verdict record; superseded by s48 above)
 
 **Session 47 (2026-08-09) worked the I8 remainder that does NOT ride the pending
 s46 headset verdicts. Nothing verdict-riding was touched (glue algebra, fire
@@ -51,9 +94,30 @@ entry and ENGINE_NOTES ("s47" sections).**
 6. **Battery green** on the final build (substituted first shot, both captures,
    0.0000 deg per-hand deviations, no new dumps, inis byte-identical).
 
-**HEADSET PENDING (one session, S46 + S47 together): the S46 checklist plus the
-"S47 additions" section in docs/bioshockinfinite/TESTING.md** - the animtrans
-A/B (optional, off by default) and the first-shot-arming ergonomics question.
+**HEADSET VERDICTS IN (user, 2026-08-09, S46+S47 tested together) - six findings,
+worked from s48 on branch `si48-inf-verdict-fixes`:**
+
+1. **The stance glue is REJECTED as the approach.** It holds the wrist/grip but
+   the SubtleFidget anim still plays on the rest of the model (arm rises, left
+   wrist reads wrong). User directive: kill the stance at the ROOT - stop the
+   code from ever triggering the anim (it fires on an idle timer) - instead of
+   compose-side glue that "will break with different weapons and is currently
+   breaking since it affects the whole model."
+2. **Locomotion moves the model**: walking with the left stick shifts the
+   hands/weapon - unacceptable in VR (affects aim). Stick motion must not
+   disturb the model.
+3. **The wrist sliders move the ARM, not the wrist** - they read as sweeping the
+   whole arm rather than bending the wrist; rework.
+4. **Fire origin: correct on a static screen, but NOT following the controller/
+   model** - the visible bullet still leaves a fixed screen point instead of
+   riding the weapon.
+5. **Arms hide: remove the style choice.** Style 0 (collapse-at-grip) still bad
+   (skin dives into the wrist); pinch-behind-wrist is decent but shows a
+   stretch as if still connected - keep it as the only mode and fix the stretch
+   if possible.
+6. **Aim itself is FIXED - hole lands on the dot.** New request: a DYNAMIC dot
+   (project to the actual hit point) because a fixed-distance dot is hard to
+   read against far walls; assess feasibility honestly.
 
 **NEXT after the headset verdicts**: per-weapon profile VALUES + the arsenal save
 (I9 - the user produces the save), world-scale calibration in the headset, the
@@ -6346,6 +6410,52 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 48 (Infinite) - 2026-08-09 - the verdict fixes: locomotion pinned, wrist/hide reworked, the stance proven native
+
+Branch `si48-inf-verdict-fixes` off the s47 tip (ca1d438), same night as the
+S46+S47 headset verdicts (all six recorded in STATUS). Zero core changes, no
+merge. The evidence trail, in order:
+
+**The stance (verdict 1)**: glue retired on the user's directive. Built the
+ProcessEvent vtable-slot filter on the attachment (slot +0x7C occupant verified
+= AActor::ProcessEvent; int-compare against GNames 2172; self-gated block) as
+the root kill - probe observed the dispatch passing, filter observed it
+blocked. Then the CLEAN boot falsified the premise: stance fully re-entered in
+8 min with events=1/startSeen=0/blocked=0 - **the anim starts natively**; the
+dispatch is a notification. Filter demoted to observer (default probe). Built
+bsiprop (UProperty chain walker - Children/Next/Super link offsets DERIVED
+live: +0x38/+0xC on this build's UClass; leaf class carries only 4 fields, so
+supers matter) and bsipropbit (masked-bit read/write) to reach the surviving
+root, bDisableSubtleFidget; the finishing walk needs a booted save - the last
+two boots wedged in drifted menu states (trap recorded). Bonus finding: a
+SECOND idle lane, a rigid uniform 40.00 deg alert-relax of the whole left arm
+~90 s post-fire - every prior "ready" reference was actually the alert pose.
+
+**Locomotion (verdict 2)**: reproduced flat (travel window: 9.26 UU rigid
+wobble both anchors at walk speed vs 0.81 stationary), mechanism measured with
+the new lag probe (c0 = R^-1(writtenCam - L2Wt): 0.00 exact stationary - the
+attachment origin IS the written camera - spanning 11.2 UU walking), fixed by
+camPin (dp base = fc.writtenLoc, the camera written THIS dispatch, so
+engineLoc cancels; new FrameContext field). 9.26 -> 1.72 UU, default ON.
+
+**Wrist (verdict 3)**: the bend quat moved from the arm chain to the hand
+cluster; flat diff shows cluster-only rigid rotation, zero arm rows.
+
+**Fire origin (verdict 4)**: trace origin follows the controller (engine
+frozen, ours moved 43.8 UU for a 30 cm hand move) - the symptom is the tracer
+FX spawn; GNames vocabulary staked for the hunt.
+
+**Hide (verdict 5)**: one mode + capdepth slider (default 10 cm).
+
+**Dyndot (verdict 6)**: `Trace`/FastTrace/SingleLineCheck stripped from the
+name pool (exact-match verified) - script dispatch cannot trace; machinery
+parked behind the future SingleLineCheck derivation. Fixed en route: a
+per-cadence fname_find and a spinning test counter.
+
+Inis byte-identical, command.txt deleted, games closed. The stance remains
+visible in this build until the UBOOL lands - stated plainly in the S48
+checklist.
 
 ### Session 47 (Infinite) - 2026-08-09 - I8 part 3, the remainder: boot pose measured, gate cleared, animtrans, scale audit, profile scaffold
 
