@@ -72,11 +72,33 @@ fidget.cpp's tick_apply (instance + archetype starve, self-derived offsets)
 ships DEFAULT OFF as the ready plumbing for whichever object the anim-tree
 hunt names; `bsifidget root off` restores authored values.
 
-**NEXT SESSION opener**: the stance consumer hunt continues one level deeper -
+**HEADSET VERDICTS on the s48 build (user, 2026-08-09, late):**
+
+1. **Locomotion fix CONFIRMED** - "great". camPin is headset-verified.
+2. **Wrist sliders better** - refinement wanted later, not now.
+3. **STANCE stays PRIORITY 1** - it makes testing everything else harder; the
+   directive is unchanged: stop the TRIGGER, at the root.
+4. **NEW: model/aim drift near the FOV EDGE** - the hand/gun model does not
+   move uniformly with the controller; approaching the edge of the view it
+   pulls closer to the headset and drifts off the aim. The user flags it as
+   the BS1-shaped problem. NOTE: the "no fg lens on Infinite" conclusion
+   (s41/s44) predates the current stereo lens levers - and the standing rule
+   says a lens question is never settled by a mono check. Re-open as a LENS/
+   PROJECTION question: measure IN STEREO with the hand commanded to edge
+   stations, model-vs-dot screen positions compared (the sim's per-eye
+   captures + img metrics), before any counter-modeling is even considered.
+5. **The VISIBLE bullet origin still reads fixed in space** - it does not ride
+   the controller. The TRACE is flat-proven to follow the hand (43.8 UU for a
+   30 cm move, this build), so this is the tracer/muzzle-FX spawn seam -
+   confirm with the staked GNames vocabulary and substitute or re-parent it.
+
+**NEXT SESSION, in the user's priority order**: (1) the stance trigger kill -
 the XFidgetAnimationSelection anim-tree node (it holds its own copy of the
-timing, sampled at creation; find it off the component's anim tree, starve or
-neutralize it there). Then the tracer-FX spawn seam, and the SingleLineCheck
-derivation for dyndot.
+{120, 240} timing, sampled at creation; find it off the component's anim tree,
+starve/neutralize THERE - the walker toolchain and apply plumbing are ready);
+(2) the FOV-edge model/aim drift - stereo edge-station measurement first;
+(3) the tracer-FX spawn seam. Later: wrist slider refinement, SingleLineCheck
+for the dynamic dot.
 
 ### Infinite: state after session 47 (I8 part 3 - kept for the verdict record; superseded by s48 above)
 
