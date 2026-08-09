@@ -1375,9 +1375,12 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         // I8: the rig resolve rides the same lazy lane for the same reason
         // (needs a live pawn), and re-resolves after a drop at 3 s inside.
         bones::tick_resolve(now);
-        // s48: the SubtleFidget root kill needs the resolved attachment, so it
-        // rides behind the resolve on the same 1 Hz lane.
+        // s48: the SubtleFidget observer and the root kill both need the
+        // resolved attachment, so they ride behind the resolve on the same
+        // 1 Hz lane. tick_apply re-arms the engine's own disable bit on every
+        // fresh attachment (level transitions recreate it).
         if (fidget::wants_install()) fidget::try_install();
+        fidget::tick_apply();
     }
 }
 
