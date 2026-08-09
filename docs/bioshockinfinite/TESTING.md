@@ -813,6 +813,37 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S49 checklist (stance instruments + the lens verdict; branch `si49-inf-stance-lens-tracer`)
+
+State honestly: **the idle stance is STILL NOT fixed.** s49 falsified two more
+root levers with live A/Bs (six total): blocking the StartSubtleFidget native
+impl outright, and blocking the 'SubtleFidget' anim action by name at the
+Morpheme network's play entry - the stance re-entered through both. The
+residual is a Morpheme-internal transition (the network's own state machine);
+that hunt has the vocabulary (rqHandFidget) and the tooling staked for next
+session. Expect the stance until then; fire once to clear it whenever it
+appears. What IS new and armed:
+
+1. **Two probe hooks ride every boot** (default probe, log-only): the impl
+   hook (`bsifidget impl probe|block|off`) and the action hook
+   (`bsifidget act probe|block <idx>|off`). If you want to see the timer chain
+   live: fire once, wait 2-4 min, and the log prints the impl call + the
+   'SubtleFidget' action with its caller. `bsifidget act block 41347` refuses
+   the action (flat-proven mechanical; does NOT stop the pose - recorded).
+2. **The lens question is SETTLED for the projection-split mechanism**: in
+   gameplay with the viewmodel rendering, the decoder read lens1 100% /
+   lens2 0% over 281 rounds - no foreground frustum exists on this build. The
+   FOV-edge model drift you reported is NOT a BS1-style lens split. Next
+   session approaches it as a headset-side/compositor question - nothing to
+   judge in this build yet.
+3. **Non-regression sweep** (60 s): tracking, sync, both-hand aim, hole on
+   dot, locomotion pin (campin), wrist bend - all untouched this session;
+   flat battery was not re-run in full, so flag anything off.
+
+Expected noise: unchanged from s48. Anything off: `bsifidget act off` and
+`bsifidget impl off` first (they are the only new default-on machinery, both
+log-only), then the s48 levers; if the symptom survives, it predates s49.
+
 ## Testing discipline
 
 - **Stereo-only.** Never judge a lens, scale or depth question from a mono screenshot. Mono

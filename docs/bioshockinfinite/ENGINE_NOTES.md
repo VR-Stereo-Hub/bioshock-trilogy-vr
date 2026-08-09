@@ -732,6 +732,107 @@ optional param arrives NULL on ordinary shots**, so the pawn-side
 current-weapon source is I9 derivation work (with the arsenal save), not a
 guess here. `bsiprofiles` prints the latch and lookup result.
 
+### s49: StartSubtleFidget DECODED, falsifications five and six, the Morpheme residual - and the gameplay lens verdict
+
+**THE EXEC CENSUS, re-derived offline (recipe re-run, zero boots).** A Python PE
+scan for NUL-preceded `<Class>exec<Function>` ASCII strings found 2647 - the
+s45b count exactly. Saved to `%LOCALAPPDATA%\BioshockVR\bsi\exec_census_s49.txt`.
+The pivotal row: `AXFirstPersonAttachmentexecStartSubtleFidget` EXISTS -
+StartSubtleFidget is a NATIVE function, so native code reaches its body without
+ProcessEvent, which is what dissolved the s48 events=1 mystery.
+
+**StartSubtleFidget fully decoded (thunk 0x503750, impl 0x51BA00 - constants +
+derivation trail in patterns.h).** The impl IS the scheduler: it gates on the
+s48b bool ([this+0x214]&1 - hence that falsification: honest bit, wrong lever,
+and the disable path still re-arms), plays the anim action BY NAME
+([this+0x274] FName) on the action player - which the getter at 0x7033C0
+reveals to be **the runtime XMorphemeNetwork at [component+0x228]** - via the
+network's play-anim-action-by-name entry 0x5D1520, then RE-ARMS ITSELF:
+random-in-SubtleFidgetTimeRange ([this+0x26C]) into the SetTimer-family
+0x249D60 with the FName cached at globals {0x13FEC50,0x13FEC54} (live-read
+{2172,0} = 'StartSubtleFidget'; neighbors {0x13FEC58,0x13FEC5C} = {2173,0} =
+'ClearAnimStateRequiresTwoHandFallback'). The fire/equip arm site (call at VA
+0x91B80A) uses the same globals and range. **DO NOT poke the name global**: the
+SetTimer immediate path derefs its FindFunction result unchecked - a poisoned
+name is a crash, not a kill.
+
+**FALSIFICATION FIVE (the impl hook, clean leg).** MinHook detour at 0x51BA00
+(probe logs every call; block refuses for the resolved attachment and thereby
+also skips the self re-arm). Protocol: fire at T0, snap 0 at +4 s, watch 300 s:
+**ZERO impl calls - and the full stance signature re-entered anyway** (L_Grip
+101.14, 40/43 bones, the [L cluster] pattern). The natural first onset after a
+checkpoint load does NOT go through StartSubtleFidget.
+
+**FALSIFICATION SIX (the by-name action block).** Second MinHook at 0x5D1520
+(`bsifidget act probe|block <idx>`; the probe logs name text + self + FP-network
+attribution + CALLER RETURN RVA). Positive control green end-to-end: an induced
+`bsicallat StartSubtleFidget` logged the impl AND the action -
+**'SubtleFidget' idx 41347** on the FP network from caller rva 0x51BA93 (the
+impl's own call site). Then `act block 41347`: two natural timer fires arrived
+(+151.6 s, +193.1 s - the impl chain lives once primed), both plays BLOCKED -
+**and the stance still re-entered** (42/43 bones, arm included). A further
+induced-with-block test moved the pose to the exact stance signature with the
+play refused. **The pose change does not come from a by-name anim action at
+all.** Also observed: a cold read of attachment+0x274 gave 41341 before any
+play; the live call passes 41347 - do not trust the cold read.
+
+**THE RESIDUAL, named honestly: the stance is a MORPHEME-INTERNAL transition.**
+Six falsified levers now: ProcessEvent block (s48), instance bool, instance
+range starve, archetype starve (s48b), impl block, by-name action block (s49).
+The component has NO stock AnimTree (the walk shows only the Morpheme pair:
++0x224 asset network / +0x228 runtime network, plus the notifier sequence at
+net+0x104 whose AnimSeqName reads 'None' - a shim, not the player). The FP
+request vocabulary cluster (GNames 57658-57677) includes **rqHandFidget**
+(57667) - the request-layer name for the next hunt. Next rungs: the Morpheme
+runtime's request/transition machinery off the runtime network (bsichase-able
+raw structures), or the string-xref hunt for "rqHandFidget" in .rdata to name
+the poster. Property-side negatives banked: attachment +0x200..+0x600 has ZERO
+mutating dwords across a fire; the runtime network's first 0x800 only frame
+counters; the network SET's 119-241 sweep hits are a static ascending curve
+table (+0x46C..+0x4A8, 0.90->150), not a clock.
+
+**TRAP (self-inflicted, recorded):** with the s48 ProcessEvent vtable filter
+installed, `bsicallat` REFUSES (its +0x7C occupant gate sees OUR PeDetour).
+`bsifidget off` restores the slot first. The PE filter is proven useless on
+this build and now ships uninstalled-by-default in spirit (probe mode remains
+available but the timer path never routes through the slot).
+
+**THE GAMEPLAY LENS VERDICT (the check s41 never ran): ONE lens, no viewmodel
+frustum.** `bsilens on` armed in gameplay at the Blue Ribbon save with the
+viewmodel rendering: 301 rounds, 281 published, 5645 valid samples -
+**lens1 support 100% (tanH 1.1810, tanV 1.2634 at 2064x2208 - the vertical-
+referenced law holds), lens2 support 0%**. There is NO second frustum on this
+build in gameplay. The BS1-shaped foreground-lens counter-modeling is
+measured-unnecessary; the headset FOV-edge model drift must have another
+mechanism (compositor distortion/claim interaction at high off-axis angle, or
+model geometry, or reprojection - a headset-side question next). The
+model-vs-dot pixel comparison was attempted (6 stations x 3 isolation captures,
+banked in the session scratchpad) but the Blue Ribbon scene's ambient motion
+(NPCs, flags, viewmodel idle sway) contaminates window-grab isolation diffs
+even at -CellMean 20 - a static-view scene or analytic-JSON dot positions are
+the way if pixels are ever needed again.
+
+**Tracer recon (P5, partial).** All staked names confirmed live in the pool;
+the census shows NO script natives for the weapon-FX dispatch (XEPT_* consumers
+are pure C++; only EmitterPool GetPooledComponent/ReturnToPool exist
+script-side). The weapon objects are reachable: pawn+0x314 ->
+XInventoryManager; ON THE MANAGER: +0x1FC XWeaponDedicatedMelee, +0x200..+0x20C
+four XWeapon slots (the s45b "pawn+0x0D8 loadout cache" note is corrected -
++0xD8 does not hold it on this pawn state). **TracerFX / TracerSocketNames /
+MuzzleSocketName are NOT properties of XWeapon** (950-field chain walked, zero
+matches) - they live on another class (XWeaponModelFirstPerson or an FX
+definition object); the walked XWeapon slot 1 carries projectile classes
+(XHomingProjectile etc. - a launcher, not the equipped pistol). Next session:
+identify the equipped slot, walk the FP weapon model's chain, and bsidiff
+RecentTracerParticles across a shot.
+
+**Boot recipe refinement (the s48 wedge trap, resolved).** The Enter-spam lane
+wedged again (top-level menu, presses not advancing). The deterministic lane:
+game-shot to SEE the menu, then `game-click` MAIN GAME -> CONTINUE (window
+coords straight from the shot). One boot also skipped the menu entirely after
+Space (straight into the save, one award dialog needing Enter) - the menu state
+VARIES; always look before keying.
+
 ### s48: the stance is NATIVE, the locomotion pin, and the verdict fixes
 
 **THE STANCE ROOT HUNT - the ProcessEvent theory built, proven mechanical, then

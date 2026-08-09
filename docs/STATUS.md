@@ -17,7 +17,62 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 48 (VERDICT FIXES: locomotion pinned, wrist bend reworked, one hide mode - and the stance root hunt narrowed to the UBOOL; branch `si48-inf-verdict-fixes`)
+### Infinite: current state after session 49 (StartSubtleFidget DECODED and falsified as the root, the Morpheme residual named, the gameplay lens verdict: ONE frustum; branch `si49-inf-stance-lens-tracer`)
+
+**Session 49 (2026-08-09, late) worked the three s48 verdicts in priority
+order. Zero core changes, all bioshockinf-local, nothing merged.**
+
+1. **STANCE (priority 1): two more root levers built, both FALSIFIED live -
+   six falsifications total - and the real mechanism cornered.** Offline
+   derivation (exec census re-run, zero boots): StartSubtleFidget is a NATIVE
+   function; its impl (0x51BA00, fully decoded in ENGINE_NOTES) IS the
+   scheduler - plays anim action 'SubtleFidget' (41347) by name on the runtime
+   XMorphemeNetwork (component+0x228) and re-arms its own SetTimer from
+   SubtleFidgetTimeRange. Two MinHook choke points built with positive
+   controls green end-to-end (`bsifidget impl ...` at the impl, `bsifidget
+   act ...` at the network's play-by-name entry 0x5D1520 with caller-RVA
+   attribution): **blocking the impl - stance re-entered with ZERO impl calls
+   (falsification 5); blocking the action by name - two natural plays refused
+   and the stance re-entered anyway (falsification 6).** The pose mover is a
+   MORPHEME-INTERNAL transition (the network's own state machine; the FP
+   request vocabulary has rqHandFidget staked). Next rungs: the Morpheme
+   request/transition layer off the runtime network, or the "rqHandFidget"
+   string-xref hunt. Both hooks ship as default-probe instruments.
+2. **FOV-EDGE DRIFT (the lens question): the missing s41 check finally RAN,
+   in gameplay, and the projection-split hypothesis is DEAD** - bsilens with
+   the viewmodel rendering: 301 rounds, lens1 support 100% (tanH 1.1810 /
+   tanV 1.2634, vertical-referenced law holds), **lens2 0%. No foreground
+   frustum exists on this build**; BS1-style counter-modeling is
+   measured-unnecessary. The pixel-level model-vs-dot station protocol was
+   attempted (6 stations x 3 isolation captures) but the live scene's ambient
+   motion (NPCs/flags/viewmodel sway) drowns window-grab isolation diffs -
+   the symptom stays open as a headset-side/compositor question with the
+   game-side mechanism eliminated.
+3. **TRACER (recon): vocabulary confirmed live; the dispatch is pure C++ (no
+   script natives); weapons reachable via pawn+0x314 -> XInventoryManager
+   (+0x1FC melee, +0x200..+0x20C four XWeapon slots - corrects the s45b
+   pawn+0xD8 note); TracerFX/TracerSocketNames/MuzzleSocketName are NOT on
+   XWeapon's 950-field chain** - they live on the FP weapon model or an FX
+   definition object. Next: identify the equipped slot, walk
+   XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot.
+4. Tooling landed: `bsichase` pointer-chain walker, `bones::component()`,
+   both fidget hooks; boot recipe hardened (click-driven menu navigation -
+   the Enter-spam wedge is beaten by game-shot + game-click MAIN GAME ->
+   CONTINUE). Traps recorded: `bsiaim dotdist` is eaten by the `dot` prefix
+   branch (turns BOTH dots off); the PE vtable filter breaks bsicallat's
+   occupant gate (`bsifidget off` first); a game-cmd write during load-time
+   pump lag is eaten silently (re-send after resolve).
+
+**NEXT SESSION, in priority order**: (1) the Morpheme-internal stance
+transition - hunt the request/transition machinery off the runtime network
+(raw bsichase descent) and/or the rqHandFidget poster via string xref; the
+apply plumbing and both choke hooks are ready for whatever it names.
+(2) The tracer feed: equipped-slot identification, the FP weapon model walk,
+RecentTracerParticles bsidiff across a shot, then the seam choice.
+(3) The FOV-edge symptom as a headset/compositor question (the game
+projection is exonerated). Later: wrist refinement, SingleLineCheck.
+
+### Infinite: state after session 48 (kept for the falsification record; superseded by s49 above) (VERDICT FIXES: locomotion pinned, wrist bend reworked, one hide mode - and the stance root hunt narrowed to the UBOOL; branch `si48-inf-verdict-fixes`)
 
 **Session 48 (2026-08-09, same night) worked the six S46+S47 headset verdicts
 (recorded verbatim in the s47 section below). Zero core changes, all
@@ -6450,6 +6505,28 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 49 (Infinite) - 2026-08-09 - StartSubtleFidget decoded and falsified, the Morpheme residual, one-lens verdict
+
+Branch `si49-inf-stance-lens-tracer` off 4d46a73. Three boots (one menu wedge,
+beaten with the new click-driven recipe). The stance hunt: the offline exec
+census re-derivation revealed StartSubtleFidget is NATIVE; its impl (0x51BA00)
+decoded end-to-end (the self-re-arming SetTimer scheduler, the by-name
+'SubtleFidget' action play into the runtime Morpheme network at comp+0x228, the
+cached FName globals). Two MinHook choke points landed with green positive
+controls (impl hook; network play-by-name hook with caller-RVA attribution) -
+and BOTH falsified as the root with live A/Bs: the stance re-entered with zero
+impl calls (falsification 5) and with the action blocked by name
+(falsification 6). Residual named: a Morpheme-internal transition
+(rqHandFidget vocabulary staked). The lens: bsilens finally ran IN GAMEPLAY -
+lens1 100%, lens2 0% over 281 rounds; no viewmodel frustum exists; the
+edge-drift symptom is not a projection split (pixel station protocol attempted,
+drowned by ambient scene motion - captures banked). Tracer recon: weapons
+reachable via pawn+0x314 inventory manager; Tracer*/Muzzle* NOT on XWeapon's
+950 fields - the FP-model walk is next. Tooling: bsichase, bones::component(),
+bsifidget impl/act surfaces. Traps recorded: bsiaim dotdist eaten by the dot
+prefix; the PE filter breaks bsicallat's gate; load-time pump lag eats
+game-cmd writes. Inis restored byte-identical; nothing merged.
 
 ### Session 48 (Infinite) - 2026-08-09 - the verdict fixes: locomotion pinned, wrist/hide reworked, the stance proven native
 
