@@ -45,14 +45,30 @@ onset) and 8 (TwoHandFallback_Weight - which A-B-A-proved to own the s48
 and the manual param-poster experiment platform. Eight falsified levers now
 documented in ENGINE_NOTES; the ladder ended at the real root.
 
-**NEXT SESSION**: (1) headset verdict on the stance kill (checklist below) -
-plus judge whether the always-raised weapon reads right in VR (it is exactly
-the VR-correct behavior: hands follow controllers, no autonomous relax);
-(2) the tracer/visible bullet origin (recon banked in s49: walk
-XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot);
-(3) the FOV-edge symptom as a headset/compositor question (projection split
-eliminated by the s49 one-lens verdict). Later: wrist refinement,
-SingleLineCheck for the dynamic dot.
+**HEADSET VERDICTS on the s49b build (user, 2026-08-10):**
+
+1. **THE STANCE KILL IS CONFIRMED - "everything looks awesome, the fix
+   worked as I expected."** No regressions observed; both hands unaffected;
+   the idle stance never enters; normal idle animation remains and reads
+   right. The 40-deg alert-relax lane is also gone (the user confirms both
+   hand drifts vanished together - consistent with both riding the lowered
+   subgraph). Merged to `bioshock-infinite` per the user's call.
+2. **FOV-edge drift, refined observation (the next lens-session's input):
+   it is ASYMMETRIC by direction.** Moving the RIGHT hand LEFT of center:
+   the hand model comes CLOSER to the face (very visible, feels less
+   controlled); moving it RIGHT: the model reads pushed slightly AWAY.
+   Near/far error that flips sign with horizontal off-axis direction - a
+   translation-space or basis asymmetry, not a symmetric scale effect;
+   projection split already eliminated (s49 one-lens verdict).
+
+**NEXT SESSION**: (1) the tracer/visible bullet origin (recon banked in s49:
+walk XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot);
+(2) the FOV-edge drift with the asymmetry observation above as the entry
+point (check the hand-model compose chain for a view-dependent term - the
+sign flip suggests something like an eye/head-relative offset entering the
+model transform, not the lens); (3) vigor-cast spot-check under the clamp
+(active cast anims ride a different lane - expected fine, not yet
+headset-verified). Later: wrist refinement, SingleLineCheck.
 
 ### Infinite: state after session 49 (kept for the record; superseded by s49b above) (StartSubtleFidget DECODED and falsified as the root, the Morpheme residual named, the gameplay lens verdict: ONE frustum; branch `si49-inf-stance-lens-tracer`)
 
