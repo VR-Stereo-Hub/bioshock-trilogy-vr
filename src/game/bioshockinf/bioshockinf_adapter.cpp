@@ -8,6 +8,7 @@
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/aim.h"
 #include "game/bioshockinf/bones.h"
+#include "game/bioshockinf/fidget.h"
 #include "game/bioshockinf/fire.h"
 #include "game/bioshockinf/hands.h"
 #include "game/bioshockinf/input_drive.h"
@@ -175,6 +176,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (input_drive::handle_command(cmd, args)) return true;
     if (aim::handle_command(cmd, args)) return true;
     if (fire::handle_command(cmd, args)) return true;
+    if (fidget::handle_command(cmd, args)) return true;
     if (hands::handle_command(cmd, args)) return true;
     if (bones::handle_command(cmd, args)) return true;
     if (profiles::handle_command(cmd, args)) return true;

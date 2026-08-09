@@ -39,6 +39,18 @@ void exec_console(const char* cmd);
 // per-weapon profile scaffold; instruments-only otherwise.
 bool class_name_of(const void* obj, char* out, size_t outSize);
 
+// s48: the OBJECT's own FName index (not its class's) - the cheap identity for
+// hot paths: one gated 4-byte read once the UObject::Name offset has derived,
+// -1 before that or on any gate failure. The fidget filter compares this
+// against a pre-resolved index instead of doing text work per event.
+int32_t object_name_index(const void* obj);
+
+// s48: the derived UObject::Name byte offset itself (-1 until derived). For
+// hot paths that must read a name index per event without per-read gates -
+// the caller owns the safety argument (e.g. the engine was about to use the
+// same pointer itself).
+int32_t uobject_name_offset();
+
 // Dispatch a UFunction BY NAME on an explicit object from adapter code - the
 // bsicallat lane (FindFunction +0x54 then ProcessEvent +0x7C, SEH-isolated)
 // with all of its gates: build gate, game-thread interlock, GNames populated,
