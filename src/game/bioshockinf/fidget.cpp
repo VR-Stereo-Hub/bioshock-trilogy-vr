@@ -276,6 +276,15 @@ bool try_install_act() {
 std::atomic<int> g_reqMode{1}; // 1 = probe, 2 = block g_reqBlockId, 0 = silent
 std::atomic<bool> g_reqInstalled{false};
 std::atomic<uint32_t> g_reqBlockId{0xFFFFFFFF};
+// s49b THE LEVER: clamp one control param's posted VALUE on the FP network.
+// Derived live: the fire posts 'Lowered' (id 2) = 0.0 (weapon raised) and the
+// game ramps it back to 1.0 within ~7 s; the 101-deg stance settles minutes
+// later INSIDE the lowered-idle subgraph. The game re-posts 'Lowered' at
+// 90 Hz, so rewriting every post pins the graph in the RAISED subgraph -
+// where the post-fire ready pose lives and no idle settle exists.
+std::atomic<int32_t> g_reqClampId{-1}; // -1 = off
+std::atomic<uint32_t> g_reqClampBits{0};
+std::atomic<uint32_t> g_reqClamped{0};
 using PostRequestFn = void(__cdecl*)(void* runtime, void* desc, void* params);
 PostRequestFn g_reqOrig = nullptr;
 std::atomic<uint32_t> g_reqCalls{0};
@@ -305,6 +314,15 @@ void __cdecl PostRequestDetour(void* runtime, void* desc, void* params) {
     // IS the posted value (bool/int/float).
     float val = 0.0f;
     if (params && bvr::pattern_scan::is_memory_valid(params, 4)) memcpy(&val, params, 4);
+    // The clamp rewrites the posted value BEFORE the log so the log shows
+    // what the network actually receives.
+    if (ours && static_cast<int32_t>(id) == g_reqClampId.load(std::memory_order_relaxed) &&
+        params && bvr::pattern_scan::is_memory_valid(params, 4)) {
+        const uint32_t bits = g_reqClampBits.load(std::memory_order_relaxed);
+        memcpy(params, &bits, 4);
+        memcpy(&val, &bits, 4);
+        g_reqClamped.fetch_add(1, std::memory_order_relaxed);
+    }
     const bool block = ours && g_reqMode.load(std::memory_order_relaxed) == 2 &&
                        id == g_reqBlockId.load(std::memory_order_relaxed);
     // Flood guards (measured: 'Lowered' is driven at 90 Hz): ours logs on a
@@ -696,6 +714,32 @@ bool handle_command(const char* cmd, const char* args) {
     if (strncmp(args, "req", 3) == 0) {
         const char* rest = args + 3;
         while (*rest == ' ') ++rest;
+        if (strncmp(rest, "clamp", 5) == 0) {
+            const char* crest = rest + 5;
+            while (*crest == ' ') ++crest;
+            if (strncmp(crest, "off", 3) == 0) {
+                g_reqClampId.store(-1, std::memory_order_relaxed);
+                BVR_LOG("[bsi] fidget: req clamp OFF (%u posts were clamped)",
+                        g_reqClamped.load(std::memory_order_relaxed));
+            } else {
+                int id = -1;
+                float v = 0.0f;
+                if (sscanf_s(crest, "%d %f", &id, &v) == 2 && id >= 0) {
+                    uint32_t bits = 0;
+                    memcpy(&bits, &v, 4);
+                    g_reqClampBits.store(bits, std::memory_order_relaxed);
+                    g_reqClampId.store(id, std::memory_order_relaxed);
+                    BVR_LOG("[bsi] fidget: req CLAMP - param id %d is rewritten to %.4f "
+                            "on every FP-network post (the 90 Hz driver becomes the "
+                            "carrier)",
+                            id, static_cast<double>(v));
+                } else {
+                    BVR_LOG("[bsi] fidget: usage - bsifidget req clamp <id> <val> | "
+                            "req clamp off");
+                }
+            }
+            return true;
+        }
         if (strncmp(rest, "probe", 5) == 0) {
             g_reqMode.store(1, std::memory_order_relaxed);
             BVR_LOG("[bsi] fidget: req PROBE - every Morpheme request is logged with its "
