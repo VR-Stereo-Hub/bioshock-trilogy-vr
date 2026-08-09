@@ -266,6 +266,84 @@ bool try_install_act() {
     return true;
 }
 
+// ---- s49b: the REQUEST-POST probe - the Morpheme network's front door -------
+// Falsifications 5+6 proved the stance neither starts via StartSubtleFidget
+// nor via a by-name anim action. The next layer down is the request lane:
+// EVERY request entering any XMorphemeNetwork passes kPostRequestRva (8 E8
+// callers; derivation in patterns.h). Probe logs the 16-byte descriptor, the
+// priority arg, FP-network attribution and the CALLER return RVA. Block mode
+// refuses a configured descriptor dword0 (the request id) on the FP network.
+std::atomic<int> g_reqMode{1}; // 1 = probe, 2 = block g_reqBlockId, 0 = silent
+std::atomic<bool> g_reqInstalled{false};
+std::atomic<uint32_t> g_reqBlockId{0xFFFFFFFF};
+using PostRequestFn = void(__fastcall*)(void* self, void* edx, void* desc, int pri);
+PostRequestFn g_reqOrig = nullptr;
+std::atomic<uint32_t> g_reqCalls{0};
+std::atomic<uint32_t> g_reqBlocked{0};
+
+void __fastcall PostRequestDetour(void* self, void* edx, void* desc, int pri) {
+    g_reqCalls.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t callerRva = rva_of(_ReturnAddress());
+    const bool ours = self && self == fp_network();
+    uint32_t d[4] = {};
+    if (desc && bvr::pattern_scan::is_memory_valid(desc, 16)) memcpy(d, desc, 16);
+    const bool block = ours && g_reqMode.load(std::memory_order_relaxed) == 2 &&
+                       d[0] == g_reqBlockId.load(std::memory_order_relaxed);
+    // NPC networks post on every state change - a full log would flood the
+    // game thread. Ours always logs; foreign posts log 1-in-64 as a heartbeat.
+    if (ours || (g_reqCalls.load(std::memory_order_relaxed) & 63) == 0) {
+        BVR_LOG("[bsi] fidget: net request {%08X %08X %08X %08X} pri=%d on %p (%s) from "
+                "caller rva 0x%X - %s",
+                d[0], d[1], d[2], d[3], pri, self,
+                ours ? "the FP network" : "another network", callerRva,
+                block ? "BLOCKED" : "passed");
+    }
+    if (block) {
+        g_reqBlocked.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (g_reqOrig) g_reqOrig(self, edx, desc, pri);
+}
+
+bool try_install_req() {
+    if (g_reqInstalled.load(std::memory_order_relaxed)) return true;
+    if (!patterns::rva_trusted()) return false;
+    uint8_t* impl = const_cast<uint8_t*>(patterns::image_base()) + patterns::kPostRequestRva;
+    if (!bvr::pattern_scan::is_memory_valid(impl, 0x100)) return false;
+    if (memcmp(impl, patterns::kPostRequestPrologue,
+               sizeof patterns::kPostRequestPrologue) != 0) {
+        BVR_LOG("[bsi] fidget: req REFUSED - prologue at rva 0x%X does not match the "
+                "derivation (stale build?)",
+                patterns::kPostRequestRva);
+        return false;
+    }
+    bool sawRet = false;
+    for (size_t i = 0; i + 2 < 0x100; ++i) {
+        if (impl[i] == 0xC2 && impl[i + 1] == patterns::kPostRequestRetImm &&
+            impl[i + 2] == 0x00) {
+            sawRet = true;
+            break;
+        }
+    }
+    if (!sawRet) {
+        BVR_LOG("[bsi] fidget: req REFUSED - no `ret 8` in the first 0x100 bytes at rva "
+                "0x%X (arg count drifted?)",
+                patterns::kPostRequestRva);
+        return false;
+    }
+    if (MH_CreateHook(impl, reinterpret_cast<void*>(&PostRequestDetour),
+                      reinterpret_cast<void**>(&g_reqOrig)) != MH_OK)
+        return false;
+    if (MH_EnableHook(impl) != MH_OK) return false;
+    g_reqInstalled.store(true, std::memory_order_relaxed);
+    BVR_LOG("[bsi] fidget: request-post hooked at rva 0x%X (every request entering any "
+            "Morpheme network; 8 callers). Mode: %s.",
+            patterns::kPostRequestRva,
+            g_reqMode.load() == 2 ? "BLOCK (configured id on the FP network)"
+                                  : "PROBE (log every request)");
+    return true;
+}
+
 void __fastcall PeDetour(void* self, void* edx, void* func, void* parms, void* result) {
     g_events.fetch_add(1, std::memory_order_relaxed);
     // One raw 4-byte read. Safety argument: `func` is the UFunction the engine
@@ -383,6 +461,9 @@ bool wants_install() {
     if (g_actMode.load(std::memory_order_relaxed) != 0 &&
         !g_actInstalled.load(std::memory_order_relaxed))
         return true;
+    if (g_reqMode.load(std::memory_order_relaxed) != 0 &&
+        !g_reqInstalled.load(std::memory_order_relaxed))
+        return true;
     return g_mode.load(std::memory_order_relaxed) != 0 &&
            !g_installed.load(std::memory_order_relaxed) && bones::attachment() != nullptr;
 }
@@ -393,6 +474,7 @@ bool try_install() {
     // rig resolve cannot delay the route instrument.
     if (g_implMode.load(std::memory_order_relaxed) != 0) try_install_impl();
     if (g_actMode.load(std::memory_order_relaxed) != 0) try_install_act();
+    if (g_reqMode.load(std::memory_order_relaxed) != 0) try_install_req();
     if (g_installed.load(std::memory_order_relaxed)) return true;
     if (!patterns::rva_trusted()) return false;
     void* attach = bones::attachment();
@@ -526,6 +608,39 @@ bool handle_command(const char* cmd, const char* args) {
                     g_actBlockIdx.load(std::memory_order_relaxed),
                     g_actCalls.load(std::memory_order_relaxed),
                     g_actBlocked.load(std::memory_order_relaxed));
+        }
+        return true;
+    }
+    if (strncmp(args, "req", 3) == 0) {
+        const char* rest = args + 3;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "probe", 5) == 0) {
+            g_reqMode.store(1, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fidget: req PROBE - every Morpheme request is logged with its "
+                    "descriptor and caller rva");
+        } else if (strncmp(rest, "block", 5) == 0) {
+            unsigned id = 0;
+            if (sscanf_s(rest + 5, "%x", &id) == 1) {
+                g_reqBlockId.store(id, std::memory_order_relaxed);
+                g_reqMode.store(2, std::memory_order_relaxed);
+                BVR_LOG("[bsi] fidget: req BLOCK - descriptor dword0 0x%08X on the FP "
+                        "network is refused at the post entry",
+                        id);
+            } else {
+                BVR_LOG("[bsi] fidget: req block needs a hex descriptor id - bsifidget "
+                        "req block <hexId>");
+            }
+        } else if (strncmp(rest, "off", 3) == 0) {
+            g_reqMode.store(0, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fidget: req OFF - requests pass through silently (hook stays)");
+        } else {
+            BVR_LOG("[bsi] fidget: req %s mode=%d blockId=0x%08X | calls=%u blocked=%u | "
+                    "bsifidget req probe|block <hexId>|off",
+                    g_reqInstalled.load() ? "INSTALLED" : "not installed",
+                    g_reqMode.load(std::memory_order_relaxed),
+                    g_reqBlockId.load(std::memory_order_relaxed),
+                    g_reqCalls.load(std::memory_order_relaxed),
+                    g_reqBlocked.load(std::memory_order_relaxed));
         }
         return true;
     }

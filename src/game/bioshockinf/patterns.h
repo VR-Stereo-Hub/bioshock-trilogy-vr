@@ -207,6 +207,36 @@ inline constexpr uint8_t kStartSubtleFidgetImplPrologue[] = {0x56, 0x8B, 0xF1, 0
 // FName global pair. The global is NOT poked: the timer fire path resolves
 // the name FindFunctionChecked-style (null deref on failure), so a poisoned
 // name index is a crash, not a kill.
+// s49b: the Morpheme REQUEST layer, decoded from the attachment's
+// reset-to-ready function (RVA 0x51B6C0, __thiscall zero-arg, `ret` after
+// add esp - the function containing the 0x51B80A SetTimer arm). That body:
+// resolves FOUR request descriptors by FName (attachment props +0x27C/+0x284/
+// +0x28C/+0x2C4, Number dwords following each) via 0x5D1A20 =
+// "resolve-request-descriptor-by-name(nameIdx, nameNum, 1)" on the network
+// (23 callers), caches the 16-byte descriptors at attachment +0x294..+0x2E3
+// (+ a fifth via 0x5D1CF0 at +0x2F0), validity-tests one at +0x2F8
+// (0x5CE120), POSTS it via kPostRequestRva, re-arms the fidget SetTimer,
+// clears BIT 0x2 of [attachment+0x214] (a second state bit beside
+// bDisableSubtleFidget's 0x1) and zeroes the float at +0x2EC.
+//
+// kPostRequestRva = THE choke for every request entering any XMorphemeNetwork:
+// __thiscall(network, void* desc16, int pri), `ret 8`; reads [network+0x118]
+// (the Morpheme runtime) and forwards to the inner post 0x5CED00. Exactly
+// EIGHT E8 callers: 0x51B7E5 (the reset above), 0x54B62E, four at
+// 0x6C15D6/0x6C1604/0x6C167A/0x6C16A7 (a multi-network state applier that
+// posts cached descriptors from a big object's +0x1A60/+0x1A70 into
+// [component+0x228] networks), and 0x7DA1EA/0x7DA257 (a state-change poster
+// that gates on [obj+0x167C]&2 and zeroes floats at +0x1674/+0x1680 first).
+// The ASCII "rqHandFidget" is NOT in the exe - request names are asset data,
+// resolved by FName at runtime.
+inline constexpr uint32_t kPostRequestRva = 0x5CEF00;
+inline constexpr uint8_t kPostRequestRetImm = 0x08; // 2 stack args
+inline constexpr uint8_t kPostRequestPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0,
+                                                   0x83, 0xEC, 0x10, 0x8B, 0x55, 0x08};
+inline constexpr uint32_t kResetSubtleFidgetRva = 0x51B6C0; // the engine's own
+// reset-to-ready - recorded as the Plan-B pin (callable on the attachment when
+// the +0x214 bit-0x2 flip marks an onset; posts the ready request through the
+// engine's own path).
 inline constexpr uint32_t kPlayAnimActionByNameRva = 0x5D1520;
 // s49 second-instrument derivation: the "action player" the impl fetches IS
 // the runtime XMorphemeNetwork - the getter at kGetAnimActionPlayerRva reads
