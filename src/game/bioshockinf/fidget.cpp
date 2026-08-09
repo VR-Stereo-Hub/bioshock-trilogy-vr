@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstring>
 
+#include <MinHook.h>
+
 #include "core/hooks/pattern_scan.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/bones.h"
@@ -70,6 +72,109 @@ std::atomic<uint32_t> g_blocked{0};
 uint32_t rva_of(const void* p) {
     const uint8_t* base = patterns::image_base();
     return (base && p) ? static_cast<uint32_t>(static_cast<const uint8_t*>(p) - base) : 0;
+}
+
+// ---- s49: the IMPL hook - the choke point every dispatch route reaches ------
+// AXFirstPersonAttachment::StartSubtleFidget's C++ body (kStartSubtleFidget-
+// ImplRva). Every route to the event - the SetTimer executor (which does NOT
+// go through the attachment's vtable +0x7C on this build; that is why the s48
+// clean boot read events=1), script dispatch, CallFunction - executes the
+// native thunk, and the thunk calls THIS. Blocking here also skips the impl's
+// own re-arm tail (it SetTimers itself from SubtleFidgetTimeRange), so a
+// blocked chain stays down until the next equip/fire-reset arm site fires.
+// 1 = probe (log every call, pass through - the route instrument),
+// 2 = block for the resolved attachment, 0 = pass silently (hook stays).
+std::atomic<int> g_implMode{1};
+std::atomic<bool> g_implInstalled{false};
+using StartFidgetFn = void(__fastcall*)(void* self, void* edx);
+StartFidgetFn g_implOrig = nullptr;
+uint8_t* g_implTarget = nullptr;
+std::atomic<uint32_t> g_implCalls{0};
+std::atomic<uint32_t> g_implOurs{0};
+std::atomic<uint32_t> g_implBlocked{0};
+uint64_t g_implLastMs = 0; // game-thread writes only (the impl runs game-side)
+
+void __fastcall StartFidgetImplDetour(void* self, void* edx) {
+    g_implCalls.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t now = GetTickCount64();
+    const uint64_t since = g_implLastMs ? now - g_implLastMs : 0;
+    g_implLastMs = now;
+    const bool ours = self == bones::attachment();
+    if (ours) g_implOurs.fetch_add(1, std::memory_order_relaxed);
+    const bool block = ours && g_implMode.load(std::memory_order_relaxed) == 2;
+    BVR_LOG("[bsi] fidget: StartSubtleFidget IMPL on %p (%s, %+.1f s since last) - %s",
+            self, ours ? "THE attachment" : "another object",
+            static_cast<double>(since) / 1000.0,
+            block ? "BLOCKED (anim + self re-arm both skipped)" : "passed through");
+    if (block) {
+        g_implBlocked.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (g_implOrig) g_implOrig(self, edx);
+}
+
+bool try_install_impl() {
+    if (g_implInstalled.load(std::memory_order_relaxed)) return true;
+    if (!patterns::rva_trusted()) return false;
+    uint8_t* impl =
+        const_cast<uint8_t*>(patterns::image_base()) + patterns::kStartSubtleFidgetImplRva;
+    if (!bvr::pattern_scan::is_memory_valid(impl, 0x100)) {
+        BVR_LOG("[bsi] fidget: impl REFUSED - rva 0x%X not readable",
+                patterns::kStartSubtleFidgetImplRva);
+        return false;
+    }
+    // Gate 1: the pinned prologue (push esi; mov esi,ecx; test [esi+0x214],1 -
+    // the bDisableSubtleFidget test doubles as an identity check).
+    if (memcmp(impl, patterns::kStartSubtleFidgetImplPrologue,
+               sizeof patterns::kStartSubtleFidgetImplPrologue) != 0) {
+        BVR_LOG("[bsi] fidget: impl REFUSED - prologue at rva 0x%X does not match the "
+                "derivation (stale build?)",
+                patterns::kStartSubtleFidgetImplRva);
+        return false;
+    }
+    // Gate 2: the arity. __thiscall, ZERO stack args - the body must end in a
+    // plain `pop esi; ret` (5E C3, at impl+0xCB in the derivation) with no
+    // `ret imm` before it, or the detour's signature is wrong for this build.
+    size_t retOff = 0;
+    for (size_t i = 0; i + 1 < 0x100; ++i) {
+        if (impl[i] == 0x5E && impl[i + 1] == 0xC3) {
+            retOff = i + 1;
+            break;
+        }
+    }
+    if (!retOff) {
+        BVR_LOG("[bsi] fidget: impl REFUSED - no `pop esi; ret` in the first 0x100 bytes "
+                "at rva 0x%X",
+                patterns::kStartSubtleFidgetImplRva);
+        return false;
+    }
+    for (size_t i = 0; i + 2 < retOff; ++i) {
+        if (impl[i] == 0xC2 && impl[i + 2] == 0x00) {
+            BVR_LOG("[bsi] fidget: impl REFUSED - `ret imm` at +0x%zX before the plain ret "
+                    "(arg count drifted?)",
+                    i);
+            return false;
+        }
+    }
+    if (MH_CreateHook(impl, reinterpret_cast<void*>(&StartFidgetImplDetour),
+                      reinterpret_cast<void**>(&g_implOrig)) != MH_OK) {
+        BVR_LOG("[bsi] fidget: MH_CreateHook failed at rva 0x%X",
+                patterns::kStartSubtleFidgetImplRva);
+        return false;
+    }
+    if (MH_EnableHook(impl) != MH_OK) {
+        BVR_LOG("[bsi] fidget: MH_EnableHook failed at rva 0x%X",
+                patterns::kStartSubtleFidgetImplRva);
+        return false;
+    }
+    g_implTarget = impl;
+    g_implInstalled.store(true, std::memory_order_relaxed);
+    BVR_LOG("[bsi] fidget: StartSubtleFidget IMPL hooked at rva 0x%X (every dispatch "
+            "route reaches this body: thunk, timer executor, C++). Mode: %s.",
+            patterns::kStartSubtleFidgetImplRva,
+            g_implMode.load() == 2 ? "BLOCK (for the resolved attachment)"
+                                   : "PROBE (log only)");
+    return true;
 }
 
 void __fastcall PeDetour(void* self, void* edx, void* func, void* parms, void* result) {
@@ -183,11 +288,18 @@ void tick_apply() {
 }
 
 bool wants_install() {
+    if (g_implMode.load(std::memory_order_relaxed) != 0 &&
+        !g_implInstalled.load(std::memory_order_relaxed))
+        return true;
     return g_mode.load(std::memory_order_relaxed) != 0 &&
            !g_installed.load(std::memory_order_relaxed) && bones::attachment() != nullptr;
 }
 
 bool try_install() {
+    // s49: the impl hook rides the same 1 Hz lane but has no attachment
+    // dependency (static RVA + prologue gate) - attempt it first so a slow
+    // rig resolve cannot delay the route instrument.
+    if (g_implMode.load(std::memory_order_relaxed) != 0) try_install_impl();
     if (g_installed.load(std::memory_order_relaxed)) return true;
     if (!patterns::rva_trusted()) return false;
     void* attach = bones::attachment();
@@ -288,6 +400,34 @@ bool handle_command(const char* cmd, const char* args) {
                 g_rangeSaved[1], g_boolOff, g_boolMask);
         return true;
     }
+    if (strncmp(args, "impl", 4) == 0) {
+        const char* rest = args + 4;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "probe", 5) == 0) {
+            g_implMode.store(1, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fidget: impl PROBE - every StartSubtleFidget impl call is "
+                    "logged and passes through (installs on the next camera tick if not "
+                    "yet)");
+        } else if (strncmp(rest, "block", 5) == 0) {
+            g_implMode.store(2, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fidget: impl BLOCK - StartSubtleFidget on the resolved "
+                    "attachment is refused at the native body (anim + self re-arm both "
+                    "skipped)");
+        } else if (strncmp(rest, "off", 3) == 0) {
+            g_implMode.store(0, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fidget: impl OFF - calls pass through silently (hook stays "
+                    "installed)");
+        } else {
+            BVR_LOG("[bsi] fidget: impl %s mode=%d | calls=%u ours=%u blocked=%u | "
+                    "bsifidget impl probe|block|off",
+                    g_implInstalled.load() ? "INSTALLED" : "not installed",
+                    g_implMode.load(std::memory_order_relaxed),
+                    g_implCalls.load(std::memory_order_relaxed),
+                    g_implOurs.load(std::memory_order_relaxed),
+                    g_implBlocked.load(std::memory_order_relaxed));
+        }
+        return true;
+    }
     if (strncmp(args, "probe", 5) == 0) {
         g_mode.store(1, std::memory_order_relaxed);
         BVR_LOG("[bsi] fidget: PROBE - StartSubtleFidget passes through and is logged "
@@ -300,18 +440,38 @@ bool handle_command(const char* cmd, const char* args) {
         g_mode.store(0, std::memory_order_relaxed);
         uninstall("bsifidget off");
     } else {
-        BVR_LOG("[bsi] fidget: %s mode=%d | events=%u startSeen=%u blocked=%u | "
-                "bsifidget probe|on|off|status",
+        BVR_LOG("[bsi] fidget: %s mode=%d | events=%u startSeen=%u blocked=%u | impl %s "
+                "mode=%d calls=%u ours=%u blocked=%u | bsifidget probe|on|off | "
+                "bsifidget impl probe|block|off | bsifidget root on|off",
                 g_installed.load() ? "INSTALLED" : "not installed",
                 g_mode.load(std::memory_order_relaxed),
                 g_events.load(std::memory_order_relaxed),
                 g_startSeen.load(std::memory_order_relaxed),
-                g_blocked.load(std::memory_order_relaxed));
+                g_blocked.load(std::memory_order_relaxed),
+                g_implInstalled.load() ? "INSTALLED" : "not installed",
+                g_implMode.load(std::memory_order_relaxed),
+                g_implCalls.load(std::memory_order_relaxed),
+                g_implOurs.load(std::memory_order_relaxed),
+                g_implBlocked.load(std::memory_order_relaxed));
     }
     return true;
 }
 
 void draw_debug_ui() {
+    // s49: the impl hook - the root lever. Radio mirrors `bsifidget impl ...`.
+    int implMode = g_implMode.load(std::memory_order_relaxed);
+    ImGui::Text("stance root (StartSubtleFidget impl):");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("probe##fidgetimpl", implMode == 1))
+        handle_command("bsifidget", "impl probe");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("BLOCK##fidgetimpl", implMode == 2))
+        handle_command("bsifidget", "impl block");
+    ImGui::SameLine();
+    ImGui::Text("calls %u ours %u blocked %u",
+                g_implCalls.load(std::memory_order_relaxed),
+                g_implOurs.load(std::memory_order_relaxed),
+                g_implBlocked.load(std::memory_order_relaxed));
     // s48b: the property-side starve - measured INSUFFICIENT (the anim-tree
     // node keeps its own timing copy); kept as a layer, default off.
     bool root = g_rootKill.load(std::memory_order_relaxed);

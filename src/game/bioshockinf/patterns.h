@@ -160,6 +160,58 @@ inline constexpr uint8_t kXGetWeaponStartTraceLocationRetImm = 8; // 2 stack arg
 inline constexpr uint8_t kXGetWeaponStartTraceLocationPrologue[] = {
     0x83, 0xEC, 0x24, 0x56, 0x8B, 0xF1, 0x83, 0xBE, 0x18, 0x02, 0x00, 0x00, 0x00};
 
+// ---- The SubtleFidget native impl (derived offline s49) ---------------------
+// AXFirstPersonAttachment::StartSubtleFidget's C++ IMPLEMENTATION - the single
+// choke point every dispatch route reaches (ProcessEvent, the timer executor,
+// CallFunction: all execute the UFunction's native thunk at 0x503750, whose
+// body is `mov ecx,esi; call 0x51BA00`; C++ callers would call the impl
+// directly - E8 census: the thunk is the ONLY direct caller).
+//
+// DERIVATION (offline s49, zero boots):
+//   1. Census string `AXFirstPersonAttachmentexecStartSubtleFidget` at file
+//      offset 0xD9793C -> VA 0x119853C; the 8-byte {nameVA, implVA} native-
+//      table pair at VA 0x1338C30 names the exec thunk VA 0x903750.
+//   2. Thunk disasm: parses one optional bytecode arg, then
+//      `mov ecx,esi; call 0x91BA00; ret 8` -> impl VA 0x91BA00 = RVA 0x51BA00,
+//      __thiscall, ZERO stack args (plain C3 ret at impl+0xCB).
+//   3. THE BODY IS THE SCHEDULER (this is the s48 mystery resolved): gates on
+//      [this+0x214]&1 (bDisableSubtleFidget - the s48b-derived bit!) and
+//      [this+0x5C]&4, fetches the action player off the mesh component
+//      ([this+0x218] -> call 0x7033C0), plays the anim action by name
+//      (call 0x5D1520 with the FName pair at [this+0x274]/[+0x278]), then
+//      RE-ARMS ITSELF: samples SubtleFidgetTimeRange (lea ecx,[this+0x26C];
+//      call 0x3C4970 = random-in-range) and calls 0x249D60 = SetTimer-family
+//      (93 callers) with the FName cached in the file-static globals
+//      {VA 0x13FEC50 = index, 0x13FEC54 = number} - live-read {2172, 0} =
+//      'StartSubtleFidget'. The equip/fire-reset arm site (call at VA
+//      0x91B80A) uses the SAME globals and the SAME [this+0x26C] range.
+//   4. WHY EVERY s48/s48b FALSIFICATION HAPPENED: the impl checks the
+//      INSTANCE bool at +0x214 honestly - but when disabled it STILL re-arms
+//      the timer (the disable early-out jumps to the re-arm tail), and the
+//      s48b property starves could not reach the timer record already armed;
+//      more importantly the clean-boot ProcessEvent filter saw events=1
+//      because the timer executor does not route through the attachment's
+//      vtable +0x7C slot on this build - the impl below is upstream of ALL of
+//      that.
+inline constexpr uint32_t kStartSubtleFidgetImplRva = 0x51BA00;
+inline constexpr uint32_t kStartSubtleFidgetThunkRva = 0x503750; // record only
+// First 10 bytes at the impl, pinned as the install gate: push esi;
+// mov esi,ecx; test byte ptr [esi+0x214],1 - the bDisableSubtleFidget test
+// doubles as an identity check (the +0x214 offset is the s48b-derived bit).
+inline constexpr uint8_t kStartSubtleFidgetImplPrologue[] = {0x56, 0x8B, 0xF1, 0xF6,
+                                                             0x86, 0x14, 0x02, 0x00,
+                                                             0x00, 0x01};
+// Recorded, not consumed: the by-name anim-action player the impl calls
+// (12 E8 callers - the next choke rung if a second start lane ever shows),
+// its getter off the component, the SetTimer-family entry, and the cached
+// FName global pair. The global is NOT poked: the timer fire path resolves
+// the name FindFunctionChecked-style (null deref on failure), so a poisoned
+// name index is a crash, not a kill.
+inline constexpr uint32_t kPlayAnimActionByNameRva = 0x5D1520;
+inline constexpr uint32_t kGetAnimActionPlayerRva = 0x7033C0;
+inline constexpr uint32_t kSetTimerFamilyRva = 0x249D60;
+inline constexpr uint32_t kFidgetTimerFNameGlobalRva = 0xFFEC50;
+
 // ---- UE3 reflection (derived offline session 36, DR-I1) --------------------
 //
 // Derivation, in full, because it is reusable and it is what made the frameless
