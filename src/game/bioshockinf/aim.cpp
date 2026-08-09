@@ -80,10 +80,9 @@ std::atomic<float> g_dotSizeDeg{0.5f};
 // 0 = byte-equivalent to the headset-verified s44 behaviour. The SAME trim is
 // fed to core's laser (render side, same xr_local_trim_quat algebra) so beam
 // and shot keep agreeing; the dot inherits it through the round trip of the
-// WRITTEN rotator. Origin offsets move the dot/laser origin only - this
-// game's fire seam substitutes rotation, not origin (GetBaseAimRotation), so
-// there is no trace-origin write to shift; the headset hole-vs-dot verdict
-// decides whether an origin seam is ever needed.
+// WRITTEN rotator. Origin offsets move the dot/laser origin AND (since s46)
+// the trace origin: fire.cpp's seam applies the same sliders cm -> UU via
+// worldScale/100, so one slider set moves dot + laser + fire origin together.
 std::atomic<float> g_aimTrim[2][2] = {};   // [hand][0 pitch, 1 yaw] deg
 std::atomic<float> g_aimPosCm[2][3] = {};  // [hand][fwd, right, up] cm
 
@@ -421,8 +420,8 @@ bool handle_command(const char* cmd, const char* args) {
             g_aimPosCm[h][0].store(f, std::memory_order_relaxed);
             g_aimPosCm[h][1].store(r, std::memory_order_relaxed);
             g_aimPosCm[h][2].store(u, std::memory_order_relaxed);
-            BVR_LOG("[bsi] aim: origin %c = fwd %.1f right %.1f up %.1f cm (dot+laser "
-                    "origin only - this game's fire seam is rotation-only)",
+            BVR_LOG("[bsi] aim: origin %c = fwd %.1f right %.1f up %.1f cm (moves dot, "
+                    "laser AND the s46 fire-origin substitution together)",
                     h ? 'R' : 'L', f, r, u);
         } else {
             BVR_LOG("[bsi] aim: usage - bsiaim origin l|r <fwd> <right> <up> (cm)");
