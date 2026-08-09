@@ -3,9 +3,11 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 #include <MinHook.h>
+#include <intrin.h>
 
 #include "core/hooks/pattern_scan.h"
 #include "core/util/log.h"
@@ -177,6 +179,93 @@ bool try_install_impl() {
     return true;
 }
 
+// ---- s49b: the ACTION-PLAY probe - one rung below StartSubtleFidget ---------
+// The s49 clean leg falsified the StartSubtleFidget lane outright (stance
+// re-entered with ZERO impl calls), so the starter is one of the OTHER 11
+// callers of the network's play-anim-action-by-name entry - or a Morpheme-
+// internal transition that never goes by name. This probe decides which: it
+// logs every by-name action entering any XMorphemeNetwork (name text, self,
+// whether self is the FP attachment's runtime network at component+0x228,
+// and the CALLER's return RVA - the return address names the scheduler).
+// Block mode refuses one configured name index on the FP network only.
+std::atomic<int> g_actMode{1}; // 1 = probe, 2 = block g_actBlockIdx, 0 = silent
+std::atomic<bool> g_actInstalled{false};
+std::atomic<int32_t> g_actBlockIdx{-1};
+using PlayActionFn = void(__fastcall*)(void* self, void* edx, int32_t nameIdx,
+                                       int32_t nameNum, uint32_t a3, float blend,
+                                       uint32_t a5);
+PlayActionFn g_actOrig = nullptr;
+std::atomic<uint32_t> g_actCalls{0};
+std::atomic<uint32_t> g_actBlocked{0};
+
+void* fp_network() {
+    uint8_t* comp = static_cast<uint8_t*>(bones::component());
+    if (!comp || !bvr::pattern_scan::is_memory_valid(comp + 0x228, 4)) return nullptr;
+    return *reinterpret_cast<void**>(comp + 0x228);
+}
+
+void __fastcall PlayActionDetour(void* self, void* edx, int32_t nameIdx, int32_t nameNum,
+                                 uint32_t a3, float blend, uint32_t a5) {
+    g_actCalls.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t callerRva = rva_of(_ReturnAddress());
+    const bool ours = self && self == fp_network();
+    char name[patterns::kFNameTextBufMin] = {};
+    if (nameIdx > 0 && nameIdx < patterns::fname_count())
+        patterns::fname_text(nameIdx, name, sizeof name);
+    const bool block = ours && g_actMode.load(std::memory_order_relaxed) == 2 &&
+                       nameIdx == g_actBlockIdx.load(std::memory_order_relaxed);
+    BVR_LOG("[bsi] fidget: anim action '%s' (idx %d num %d, a3=%u blend=%.2f a5=%u) on "
+            "%p (%s) from caller rva 0x%X - %s",
+            name[0] ? name : "?", nameIdx, nameNum, a3, static_cast<double>(blend), a5,
+            self, ours ? "the FP network" : "another network", callerRva,
+            block ? "BLOCKED" : "passed");
+    if (block) {
+        g_actBlocked.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (g_actOrig) g_actOrig(self, edx, nameIdx, nameNum, a3, blend, a5);
+}
+
+bool try_install_act() {
+    if (g_actInstalled.load(std::memory_order_relaxed)) return true;
+    if (!patterns::rva_trusted()) return false;
+    uint8_t* impl =
+        const_cast<uint8_t*>(patterns::image_base()) + patterns::kPlayAnimActionByNameRva;
+    if (!bvr::pattern_scan::is_memory_valid(impl, 0x200)) return false;
+    if (memcmp(impl, patterns::kPlayAnimActionByNamePrologue,
+               sizeof patterns::kPlayAnimActionByNamePrologue) != 0) {
+        BVR_LOG("[bsi] fidget: act REFUSED - prologue at rva 0x%X does not match the "
+                "derivation (stale build?)",
+                patterns::kPlayAnimActionByNameRva);
+        return false;
+    }
+    bool sawRet = false;
+    for (size_t i = 0; i + 2 < 0x200; ++i) {
+        if (impl[i] == 0xC2 && impl[i + 1] == patterns::kPlayAnimActionByNameRetImm &&
+            impl[i + 2] == 0x00) {
+            sawRet = true;
+            break;
+        }
+    }
+    if (!sawRet) {
+        BVR_LOG("[bsi] fidget: act REFUSED - no `ret 0x%X` in the first 0x200 bytes at "
+                "rva 0x%X (arg count drifted?)",
+                patterns::kPlayAnimActionByNameRetImm, patterns::kPlayAnimActionByNameRva);
+        return false;
+    }
+    if (MH_CreateHook(impl, reinterpret_cast<void*>(&PlayActionDetour),
+                      reinterpret_cast<void**>(&g_actOrig)) != MH_OK)
+        return false;
+    if (MH_EnableHook(impl) != MH_OK) return false;
+    g_actInstalled.store(true, std::memory_order_relaxed);
+    BVR_LOG("[bsi] fidget: anim-action-by-name hooked at rva 0x%X (the network's play "
+            "entry, 12 callers). Mode: %s.",
+            patterns::kPlayAnimActionByNameRva,
+            g_actMode.load() == 2 ? "BLOCK (configured name on the FP network)"
+                                  : "PROBE (log every by-name action)");
+    return true;
+}
+
 void __fastcall PeDetour(void* self, void* edx, void* func, void* parms, void* result) {
     g_events.fetch_add(1, std::memory_order_relaxed);
     // One raw 4-byte read. Safety argument: `func` is the UFunction the engine
@@ -291,6 +380,9 @@ bool wants_install() {
     if (g_implMode.load(std::memory_order_relaxed) != 0 &&
         !g_implInstalled.load(std::memory_order_relaxed))
         return true;
+    if (g_actMode.load(std::memory_order_relaxed) != 0 &&
+        !g_actInstalled.load(std::memory_order_relaxed))
+        return true;
     return g_mode.load(std::memory_order_relaxed) != 0 &&
            !g_installed.load(std::memory_order_relaxed) && bones::attachment() != nullptr;
 }
@@ -300,6 +392,7 @@ bool try_install() {
     // dependency (static RVA + prologue gate) - attempt it first so a slow
     // rig resolve cannot delay the route instrument.
     if (g_implMode.load(std::memory_order_relaxed) != 0) try_install_impl();
+    if (g_actMode.load(std::memory_order_relaxed) != 0) try_install_act();
     if (g_installed.load(std::memory_order_relaxed)) return true;
     if (!patterns::rva_trusted()) return false;
     void* attach = bones::attachment();
@@ -398,6 +491,42 @@ bool handle_command(const char* cmd, const char* args) {
                 g_rootKill.load() ? "ON" : "off", g_applies,
                 g_rangeOff ? "attachment" : "underived", g_rangeOff, g_rangeSaved[0],
                 g_rangeSaved[1], g_boolOff, g_boolMask);
+        return true;
+    }
+    if (strncmp(args, "act", 3) == 0) {
+        const char* rest = args + 3;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "probe", 5) == 0) {
+            g_actMode.store(1, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fidget: act PROBE - every by-name anim action is logged with "
+                    "its caller rva");
+        } else if (strncmp(rest, "block", 5) == 0) {
+            int idx = -1;
+            if (sscanf_s(rest + 5, "%d", &idx) == 1 && idx > 0) {
+                g_actBlockIdx.store(idx, std::memory_order_relaxed);
+                g_actMode.store(2, std::memory_order_relaxed);
+                char nm[patterns::kFNameTextBufMin] = {};
+                if (idx < patterns::fname_count())
+                    patterns::fname_text(idx, nm, sizeof nm);
+                BVR_LOG("[bsi] fidget: act BLOCK - name idx %d ('%s') on the FP network "
+                        "is refused at the play entry",
+                        idx, nm[0] ? nm : "?");
+            } else {
+                BVR_LOG("[bsi] fidget: act block needs a GNames index - bsifidget act "
+                        "block <idx>");
+            }
+        } else if (strncmp(rest, "off", 3) == 0) {
+            g_actMode.store(0, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fidget: act OFF - actions pass through silently (hook stays)");
+        } else {
+            BVR_LOG("[bsi] fidget: act %s mode=%d blockIdx=%d | calls=%u blocked=%u | "
+                    "bsifidget act probe|block <idx>|off",
+                    g_actInstalled.load() ? "INSTALLED" : "not installed",
+                    g_actMode.load(std::memory_order_relaxed),
+                    g_actBlockIdx.load(std::memory_order_relaxed),
+                    g_actCalls.load(std::memory_order_relaxed),
+                    g_actBlocked.load(std::memory_order_relaxed));
+        }
         return true;
     }
     if (strncmp(args, "impl", 4) == 0) {

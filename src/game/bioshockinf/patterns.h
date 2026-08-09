@@ -208,6 +208,16 @@ inline constexpr uint8_t kStartSubtleFidgetImplPrologue[] = {0x56, 0x8B, 0xF1, 0
 // the name FindFunctionChecked-style (null deref on failure), so a poisoned
 // name index is a crash, not a kill.
 inline constexpr uint32_t kPlayAnimActionByNameRva = 0x5D1520;
+// s49 second-instrument derivation: the "action player" the impl fetches IS
+// the runtime XMorphemeNetwork - the getter at kGetAnimActionPlayerRva reads
+// [component+0x228] (the s45b-mapped runtime network slot) and IsA-gates it.
+// So 0x5D1520 is the network's play-anim-action-by-name entry: __thiscall,
+// FIVE stack args (nameIndex, nameNumber, 0, float blend, 0), SEH-framed
+// prologue, `ret 0x14` at +0x99. 12 E8 callers total - the by-name choke
+// point for EVERY scripted anim action entering the FP network.
+inline constexpr uint8_t kPlayAnimActionByNameRetImm = 0x14; // 5 stack args
+inline constexpr uint8_t kPlayAnimActionByNamePrologue[] = {
+    0x6A, 0xFF, 0x68, 0x58, 0xEB, 0x04, 0x01, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00};
 inline constexpr uint32_t kGetAnimActionPlayerRva = 0x7033C0;
 inline constexpr uint32_t kSetTimerFamilyRva = 0x249D60;
 inline constexpr uint32_t kFidgetTimerFNameGlobalRva = 0xFFEC50;
