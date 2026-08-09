@@ -820,6 +820,61 @@ played an intro cinematic then went LOG-SILENT - even the reentry beat stopped
 off Continue (possibly onto New Game). Do not grind this - verify the save
 state with the user on the next boot.
 
+### s48b: the UProperty layout, and the stance root found in the SCHEDULER
+
+The bsiprop walk's first version produced garbage chains; the typed-dump
+re-derivation (cross-checked by NAME SEMANTICS - the +0x34 target names
+`XFirstPersonMeshActorBase`, the perfect superclass) pinned this build's
+object layout, now the anchored scan windows in reflect.cpp:
+
+| Slot | Offset | Note |
+|---|---|---|
+| UObject::HashNext | +0x0C | the trap: walks to unrelated hash neighbors |
+| UObject::Outer | +0x14 | function -> its class; class -> package |
+| UObject::Name | +0x18/+0x1C | the runtime-derived anchor (FName index/number) |
+| UObject::Class | +0x20 | |
+| UObject::ObjectArchetype | +0x24 | Class-classed on classes and SHARED - what falsified it as a link (two nodes cannot share a Next) |
+| UField::Next | +0x28 | = Name+0x10; the first child's +0x28 points 0x40 bytes away - adjacent allocation, a true sibling |
+| UStruct::SuperStruct | +0x34 | |
+| UStruct::Children | +0x38 | |
+| UProperty::ArrayDim / ElementSize | +0x2C / +0x30 | |
+| UProperty::Offset | +0x48 | |
+| UBoolProperty::BitMask | +0x58 | |
+
+`bsiprop <obj> [name|*]` walks the full super chain (XFirstPersonAttachment:
+635 fields; XHuman: 2053); `bsipropbit <obj> <off> <mask> [0|1]` flips a bit.
+reflect exposes the silent forms (`find_property_object` / `find_bool_
+property_bit` / `find_property_offset`) - self-deriving every boot, refusing
+on drift, never on a cadence.
+
+**The stance kill, measured in two steps on the live save:**
+
+1. `bDisableSubtleFidget` found ON XFirstPersonAttachment (BoolProperty,
+   offset 0x214, mask 0x1). SET on the live attachment -> **the stance still
+   re-entered within 2.5 min** of the next reset. The bool is not the live
+   gate (or is spawn-sampled). It stays set as free defense.
+2. `SubtleFidgetTimeRange` (StructProperty, offset 0x26C) read **{120, 240}
+   seconds - exactly the s46-measured 2-4 min re-onset window**, closing the
+   mechanism end to end (the scheduler samples the range when it re-arms on a
+   fire/reset). STARVING it (both floats -> 1e9, written while the timer was
+   spent so no mid-write sample; max first so a partial write still reads a
+   safe long range) - **write verified held, and the stance STILL re-entered
+   within the authored window**. The live scheduler reads neither instance
+   property. The ARCHETYPE (ObjectArchetype slot -> another
+   XFirstPersonAttachment carrying the authored {120, 240}) was then starved
+   too, bools set on both - **stance re-entered again (+5:20)**. FOUR
+   property-side hypotheses falsified with held writes: the consumer keeps its
+   OWN timing copy, captured before any write could land - the
+   XFidgetAnimationSelection anim-tree node (reachable off the component's
+   anim tree) is the next hunt. `SubtleFidgetAnimAction` (NameProperty,
+   0x274) also mapped for that session.
+
+fidget.cpp's `tick_apply` wires the property-side starve (instance +
+archetype, self-derived offsets, authored values banked for the OFF restore) -
+**shipping DEFAULT OFF** per the falsifications above: no memory write without
+a proven effect. It is the ready-made apply plumbing for whichever object the
+anim-tree hunt names.
+
 ### Dual-hand aim, and the laser/dot overlays (s44b, after the headset verdict)
 
 The seam is PAWN-level and hands back ONE rotation, so something has to decide whose

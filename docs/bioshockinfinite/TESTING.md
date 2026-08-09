@@ -783,12 +783,15 @@ exact, and the per-weapon table is an empty scaffold. Two items for the headset:
 ## S48 checklist (the verdict fixes; branch `si48-inf-verdict-fixes`)
 
 State honestly: **the idle stance is NOT yet fixed in this build.** The s46 glue
-was retired per your verdict (default off), the ProcessEvent block was built and
-then measured to NOT be the anim's root (it starts natively), and the true root
-- the engine's own bDisableSubtleFidget switch - is one derivation step away
-(the property walker is built; it needs a booted save, which the flat harness
-could not reach this session). Expect the stance until that lands; everything
-else below is live.
+was retired per your verdict (default off), and s48b then falsified FOUR
+root-kill hypotheses with verified-held writes on the live save: the
+ProcessEvent event (starts natively without it), the instance
+bDisableSubtleFidget bool, the instance SubtleFidgetTimeRange (authored
+{120, 240} s - exactly the observed 2-4 min re-onset - starved to 1e9), and
+the archetype's copies of both. The consumer keeps its own private timing (the
+anim-tree selection node) - that hunt opens the next session with the walker
+toolchain already built. Expect the stance until then; fire once to clear it
+whenever it appears. Everything else below is live.
 
 1. **Non-regression FIRST (60 s)**: tracking, sync, sliders, scale, both-hand
    aim, hole-on-dot - all unchanged from what you verified.

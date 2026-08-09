@@ -55,10 +55,28 @@ bioshockinf-local, nothing merged.** Landed and flat-proven:
    within ~90 s, distinct from the 101.11 stance; recorded as the next
    suspect if a drift survives the UBOOL.
 
-**NEXT SESSION opener**: boot to the save (user drives), then: bsiprop walk ->
-bDisableSubtleFidget offset -> bsipropbit set -> fire -> 5-min idle A/B; if
-green, wire the bit-set into the resolve path and retire the stance machinery.
-Then the tracer-FX spawn seam, and the SingleLineCheck derivation for dyndot.
+**s48b (same night, user granted the machine): the property-side hunt ran to
+completion and narrowed further.** The UProperty layout was fully derived (the
+first walk's links were falsified by name semantics and re-anchored - table in
+ENGINE_NOTES) and the walker now covers full super chains (635 fields on the
+attachment class, 2053 on XHuman). Measured on the live save, in order:
+`bDisableSubtleFidget` (attachment+0x214, mask 0x1) SET -> stance returned;
+`SubtleFidgetTimeRange` (attachment+0x26C) read **{120, 240} s - exactly the
+measured 2-4 min re-onset window, the mechanism confirmed end to end** -
+starved to {1e9, 1e9}, write verified held -> stance returned anyway (the live
+scheduler reads neither instance property); the ObjectArchetype (the spawn
+template, authored {120, 240}) starved too, bools set on both -> **stance
+returned again (+5:20). Four property-side hypotheses falsified with held
+writes** - the consumer keeps its own timing copy (the anim-tree node).
+fidget.cpp's tick_apply (instance + archetype starve, self-derived offsets)
+ships DEFAULT OFF as the ready plumbing for whichever object the anim-tree
+hunt names; `bsifidget root off` restores authored values.
+
+**NEXT SESSION opener**: the stance consumer hunt continues one level deeper -
+the XFidgetAnimationSelection anim-tree node (it holds its own copy of the
+timing, sampled at creation; find it off the component's anim tree, starve or
+neutralize it there). Then the tracer-FX spawn seam, and the SingleLineCheck
+derivation for dyndot.
 
 ### Infinite: state after session 47 (I8 part 3 - kept for the verdict record; superseded by s48 above)
 
