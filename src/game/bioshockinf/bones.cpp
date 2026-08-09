@@ -80,6 +80,23 @@ float g_readyQuat[2][4] = {};
 std::atomic<bool> g_readyValid[2] = {};
 std::atomic<uint64_t> g_captureAtMs[2] = {}; // 0 = nothing pending, per hand
 uint32_t g_readyCaptures[2] = {};
+// s47: ANIMTRANS - authored anchor TRAVEL pass-through. Measured (travel
+// instrument, drive off): the reload anim moves the R anchor 21 UU (14 cm)
+// and the L anchor 72 UU (48 cm, the cross-over rack); fire moves R 5-7 UU.
+// All of it is discarded by the anchor-pin compose (dp is relative to the
+// CURRENT anchor - which is exactly the translation analogue of the stance
+// glue: whole-hand travel cancels, articulation relative to the grip passes).
+// With animtrans ON the dp base becomes the banked READY anchor translation
+// (captured with qRef), so the anchor departs from the controller by exactly
+// the authored travel. OFF by default, NOT persisted; asymmetries the headset
+// must judge: the glue still cancels the anim's whole-hand ROTATION while its
+// travel passes, and a stance re-onset leaks its ~50 UU translation until the
+// next shot (the glue only cancels the stance's rotation).
+std::atomic<bool> g_animTrans{false};
+float g_readyTrans[2][3] = {};
+// Past this the basis is broken (authored peaks measure <= 72 UU), or tRef is
+// stale garbage - fall back to the anchor-pinned compose for the frame.
+constexpr float kAnimTransMaxUu = 120.0f;
 
 float g_written[kMaxBones][8];            // quat[4], trans[3], scale
 bool g_writtenMask[2][kMaxBones] = {};
@@ -93,6 +110,13 @@ float g_lastWriteLoc[2][3] = {};
 int32_t g_lastWriteRot[2][3] = {};
 uint32_t g_drives[2] = {}, g_adopts[2] = {}, g_reapplies = 0, g_gateRefusals = 0;
 uint32_t g_midDrawRestamps = 0; // pass-1 sentinel found the bank != our write
+// s47: the reapply-gate staleness instrument (carried from s45b - "does pass-2
+// ever replay a stale write across transitions/loads?"). Counters only; the
+// 100 ms gate itself is untouched. A "gap" is a write older than 50 ms (~4-5
+// frames at 90 Hz) still being replayed - the class the concern names.
+uint64_t g_reapplyMaxAgeMs = 0;       // oldest write actually replayed
+uint32_t g_reapplyAfterGapMs50 = 0;   // replays of a write older than 50 ms
+uint32_t g_reapplySkippedStale = 0;   // hands the 100 ms gate refused while masked
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -454,7 +478,96 @@ bool cmd_snap_diff(const char* rest) {
     return true;
 }
 
+// ---- s47: the animtrans evidence instrument ---------------------------------
+// Peak ANCHOR (grip) travel over a timed window, sampled per pass-1 camera
+// dispatch (~90 Hz - a game-cmd-timed snap would miss a sub-second reload or
+// recoil peak). Raw-bank reads: the protocol runs with the drive OFF so the
+// bank is engine truth; a driven hand is FLAGGED in the report rather than
+// refused (a driven anchor is pinned to the controller and reads ~0 travel by
+// construction, which would be our write, not the anim).
+uint64_t g_travelUntilMs = 0; // 0 = idle
+bool g_travelStartValid[2] = {};
+float g_travelStartT[2][3];
+float g_travelStartQ[2][4];
+float g_travelPeakUu[2];
+float g_travelPeakDeg[2];
+bool g_travelSawDriven[2];
+uint32_t g_travelSamples = 0;
+
+bool cmd_travel(const char* rest) {
+    float secs = 5.0f;
+    sscanf_s(rest, "%f", &secs);
+    if (secs < 0.5f) secs = 0.5f;
+    if (secs > 60.0f) secs = 60.0f;
+    const uint32_t camTid = camera::camera_tid();
+    if (camTid == 0 || GetCurrentThreadId() != camTid) {
+        BVR_LOG("[bsi] bones: travel REFUSED - not on the game thread");
+        return true;
+    }
+    if (!g_comp || !rig_intact()) {
+        BVR_LOG("[bsi] bones: travel REFUSED - rig not resolved/intact");
+        return true;
+    }
+    memset(g_travelStartValid, 0, sizeof g_travelStartValid);
+    memset(g_travelPeakUu, 0, sizeof g_travelPeakUu);
+    memset(g_travelPeakDeg, 0, sizeof g_travelPeakDeg);
+    memset(g_travelSawDriven, 0, sizeof g_travelSawDriven);
+    g_travelSamples = 0;
+    g_travelUntilMs = GetTickCount64() + static_cast<uint64_t>(secs * 1000.0f);
+    BVR_LOG("[bsi] bones: travel window ARMED for %.1f s - sampling both anchors per "
+            "dispatch (run with the drive OFF for engine truth)",
+            secs);
+    return true;
+}
+
 } // namespace
+
+void travel_tick() {
+    if (g_travelUntilMs == 0) return;
+    const uint64_t now = GetTickCount64();
+    if (!g_comp || !rig_intact()) return; // dropped rig: hold; report at expiry
+    if (now <= g_travelUntilMs) {
+        for (int h = 0; h < 2; ++h) {
+            const int a = g_grip[h];
+            if (a < 0 || a >= g_boneCount) continue;
+            const float* atom = reinterpret_cast<const float*>(
+                g_bank + static_cast<size_t>(a) * kAtom);
+            const float n2 = atom[0] * atom[0] + atom[1] * atom[1] + atom[2] * atom[2] +
+                             atom[3] * atom[3];
+            if (!(n2 > 0.5f && n2 < 2.0f)) continue; // torn - skip the sample
+            if (g_writtenMask[h][a]) g_travelSawDriven[h] = true;
+            if (!g_travelStartValid[h]) {
+                memcpy(g_travelStartQ[h], atom, 16);
+                memcpy(g_travelStartT[h], atom + 4, 12);
+                g_travelStartValid[h] = true;
+                continue;
+            }
+            const float dx = atom[4] - g_travelStartT[h][0];
+            const float dy = atom[5] - g_travelStartT[h][1];
+            const float dz = atom[6] - g_travelStartT[h][2];
+            const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (d > g_travelPeakUu[h]) g_travelPeakUu[h] = d;
+            const float ang = quat_angle_deg(atom, g_travelStartQ[h]);
+            if (ang > g_travelPeakDeg[h]) g_travelPeakDeg[h] = ang;
+        }
+        ++g_travelSamples;
+        return;
+    }
+    g_travelUntilMs = 0;
+    const FrameContext& fc = camera::frame_context();
+    const float uuPerCm = fc.valid ? fc.worldScale * 0.01f : 0.0f;
+    for (int h = 0; h < 2; ++h) {
+        if (!g_travelStartValid[h]) {
+            BVR_LOG("[bsi] bones: travel %c - no samples", h ? 'R' : 'L');
+            continue;
+        }
+        BVR_LOG("[bsi] bones: travel %c peak %.2f UU (%.1f cm) / %.2f deg over %u samples%s",
+                h ? 'R' : 'L', g_travelPeakUu[h],
+                uuPerCm > 0.0f ? g_travelPeakUu[h] / uuPerCm : -1.0f, g_travelPeakDeg[h],
+                g_travelSamples,
+                g_travelSawDriven[h] ? "  [DRIVEN - sampled OUR writes, not the anim]" : "");
+    }
+}
 
 void tick_resolve(uint64_t nowMs) {
     if (g_comp) {
@@ -612,6 +725,9 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
             if (n2 > 0.5f && n2 < 2.0f) {
                 const float inv = 1.0f / sqrtf(n2);
                 for (int k = 0; k < 4; ++k) g_readyQuat[hand][k] = q[k] * inv;
+                // s47: bank the ready anchor TRANSLATION too - the animtrans
+                // pass-through's dp base (same capture, same self-healing).
+                for (int k = 0; k < 3; ++k) g_readyTrans[hand][k] = q[4 + k];
                 const bool first =
                     !g_readyValid[hand].exchange(true, std::memory_order_relaxed);
                 ++g_readyCaptures[hand];
@@ -652,8 +768,24 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         memcpy(qtcArm, t2, sizeof t2);
     }
 
-    // Compose: q_i = qtc (x) srcQ_i ; p_i = ptc + qtc*(srcT_i - srcT_anchor)*scale.
+    // Compose: q_i = qtc (x) srcQ_i ; p_i = ptc + qtc*(srcT_i - aT)*scale.
+    // aT (the dp base) is the CURRENT anchor translation - which pins the
+    // anchor to the controller and cancels all whole-hand travel. s47
+    // animtrans: with the lever ON (and a ready capture to reference), the
+    // base becomes the banked READY anchor translation instead, so authored
+    // anchor travel (recoil kick, the reload rack) reaches the written pose
+    // as a controller-relative offset. Anim mode only: the rigid snapshot has
+    // no authored travel, and its resolve-time ref (the boot stance) against
+    // a post-fire tRef would leak a permanent stance offset.
     const float* aT = &src[anchor][4];
+    if (useAnim && g_animTrans.load(std::memory_order_relaxed) &&
+        g_readyValid[hand].load(std::memory_order_relaxed)) {
+        const float tx = src[anchor][4] - g_readyTrans[hand][0];
+        const float ty = src[anchor][5] - g_readyTrans[hand][1];
+        const float tz = src[anchor][6] - g_readyTrans[hand][2];
+        if (tx * tx + ty * ty + tz * tz <= kAnimTransMaxUu * kAnimTransMaxUu)
+            aT = g_readyTrans[hand];
+    }
     for (int i = 0; i < g_boneCount; ++i) {
         const bool inCluster = g_cluster[hand][i];
         const bool inArms = armsMode != 0 && g_armSet[hand][i];
@@ -748,11 +880,26 @@ void reapply() {
     if (!rig_intact()) return;
     bool any = false;
     for (int h = 0; h < 2; ++h) {
-        if (now - g_writeStampMs[h] > 100) continue; // stale - leave the engine alone
+        const uint64_t age = now - g_writeStampMs[h];
+        if (age > 100) { // stale - leave the engine alone
+            // s47 instrument: was there anything the gate actually refused?
+            for (int i = 0; i < g_boneCount; ++i)
+                if (g_writtenMask[h][i]) {
+                    ++g_reapplySkippedStale;
+                    break;
+                }
+            continue;
+        }
+        bool wrote = false;
         for (int i = 0; i < g_boneCount; ++i) {
             if (!g_writtenMask[h][i]) continue;
             memcpy(g_bank + static_cast<size_t>(i) * kAtom, g_written[i], 32);
+            wrote = true;
+        }
+        if (wrote) {
             any = true;
+            if (age > g_reapplyMaxAgeMs) g_reapplyMaxAgeMs = age;
+            if (age > 50) ++g_reapplyAfterGapMs50;
         }
     }
     if (any) ++g_reapplies;
@@ -774,6 +921,8 @@ void note_player_fire() {
 
 bool stance_kill() { return g_stanceKill.load(std::memory_order_relaxed); }
 void set_stance_kill(bool on) { g_stanceKill.store(on, std::memory_order_relaxed); }
+bool anim_trans() { return g_animTrans.load(std::memory_order_relaxed); }
+void set_anim_trans(bool on) { g_animTrans.store(on, std::memory_order_relaxed); }
 
 bool last_write(int hand, FVector& loc, FRotator& rot, uint32_t& drives, uint32_t& adopts) {
     if (hand < 0 || hand > 1 || !g_drives[hand]) return false;
@@ -808,6 +957,7 @@ bool handle_command(const char* cmd, const char* args) {
     }
     if (args && strncmp(args, "snap", 4) == 0) return cmd_snap(args + 4);
     if (args && strncmp(args, "diff", 4) == 0) return cmd_snap_diff(args + 4);
+    if (args && strncmp(args, "travel", 6) == 0) return cmd_travel(args + 6);
     if (args && strncmp(args, "glue", 4) == 0) {
         const char* rest = args + 4;
         while (*rest == ' ') ++rest;
@@ -832,10 +982,13 @@ bool handle_command(const char* cmd, const char* args) {
     }
     // status (default)
     BVR_LOG("[bsi] bones: rig %s comp=%p bones=%d resolves=%u fails=%u | drives L=%u "
-            "R=%u adopts L=%u R=%u midDrawRestamps=%u reapplies=%u gateRefusals=%u",
+            "R=%u adopts L=%u R=%u midDrawRestamps=%u reapplies=%u gateRefusals=%u | "
+            "reapply maxAge=%llums afterGap50=%u skippedStale=%u",
             g_comp ? "RESOLVED" : "not resolved", (void*)g_comp, g_boneCount, g_resolves,
             g_resolveFails, g_drives[0], g_drives[1], g_adopts[0], g_adopts[1],
-            g_midDrawRestamps, g_reapplies, g_gateRefusals);
+            g_midDrawRestamps, g_reapplies, g_gateRefusals,
+            static_cast<unsigned long long>(g_reapplyMaxAgeMs), g_reapplyAfterGapMs50,
+            g_reapplySkippedStale);
     for (int h = 0; h < 2; ++h)
         if (g_drives[h])
             BVR_LOG("[bsi] bones:   %c last write loc=(%.1f %.1f %.1f) rot=(%d %d %d)",
@@ -863,6 +1016,11 @@ void draw_debug_ui() {
         g_captureAtMs[0].store(at, std::memory_order_relaxed);
         g_captureAtMs[1].store(at, std::memory_order_relaxed);
     }
+    // s47: the animtrans A/B lever (measured travel: reload moves R 14 cm,
+    // L 48 cm - all discarded when off). Needs the ready capture; unpersisted.
+    bool at2 = g_animTrans.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("authored anchor travel (animtrans, off = hand pinned)", &at2))
+        set_anim_trans(at2);
 }
 
 } // namespace bvr::bsi::bones

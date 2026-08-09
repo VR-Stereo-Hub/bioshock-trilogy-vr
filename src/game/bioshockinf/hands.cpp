@@ -165,8 +165,14 @@ bool handle_command(const char* cmd, const char* args) {
         return true;
     }
     if (is_verb(args, "animtrans")) {
-        BVR_LOG("[bsi] hands: animtrans is not implemented on this game yet - the anchor "
-                "glues to the controller (authored wrist travel rides the next session)");
+        if (strstr(args, "on"))
+            bones::set_anim_trans(true);
+        else if (strstr(args, "off"))
+            bones::set_anim_trans(false);
+        BVR_LOG("[bsi] hands: animtrans %s (authored anchor travel passes through as a "
+                "controller-relative offset; needs the post-fire ready capture; anim mode "
+                "only; NOT persisted - a preset key waits on the headset verdict)",
+                bones::anim_trans() ? "ON" : "off");
         return true;
     }
     if (is_verb(args, "anim")) {

@@ -1352,6 +1352,9 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // lands post-anim-restamp; the adopt counters in bones.cpp measure
     // whether anything restamps later in the same draw.
     hands::on_view(g_frameCtx, now);
+    // s47: the animtrans travel window samples here - same dispatch point, so
+    // the raw bank is post-anim-restamp exactly like the drive's own reads.
+    bones::travel_tick();
 
     static uint64_t s_lastThrottle = 0;
     if (now - s_lastThrottle >= 1000) {

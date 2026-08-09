@@ -79,6 +79,12 @@ void reapply();
 // World/possession change: drop the resolved rig entirely and re-resolve.
 void on_world_change(const char* why);
 
+// s47: the animtrans evidence instrument - per-dispatch sampling of the timed
+// `bsibones travel <secs>` window (peak anchor travel through fire/reload).
+// Called from the camera detour's pass-1 path, right after hands::on_view;
+// one relaxed compare when no window is armed.
+void travel_tick();
+
 // s46: the fire seam calls this on every PLAYER shot (game thread). Schedules
 // a ready-pose capture 1.2 s out for both hands - the engine resets the
 // SubtleFidget stance on fire, so the post-fire pose IS the ready reference
@@ -87,6 +93,13 @@ void on_world_change(const char* why);
 void note_player_fire();
 bool stance_kill();
 void set_stance_kill(bool on);
+
+// s47: ANIMTRANS - pass authored anchor travel through as a controller-
+// relative offset (dp base = the banked ready anchor translation instead of
+// the current one). OFF by default, never persisted; the measured case for
+// and against lives in the bones.cpp block comment.
+bool anim_trans();
+void set_anim_trans(bool on);
 
 bool handle_command(const char* cmd, const char* args);
 void draw_debug_ui();
