@@ -61,14 +61,29 @@ documented in ENGINE_NOTES; the ladder ended at the real root.
    translation-space or basis asymmetry, not a symmetric scale effect;
    projection split already eliminated (s49 one-lens verdict).
 
-**NEXT SESSION**: (1) the tracer/visible bullet origin (recon banked in s49:
-walk XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot);
-(2) the FOV-edge drift with the asymmetry observation above as the entry
-point (check the hand-model compose chain for a view-dependent term - the
-sign flip suggests something like an eye/head-relative offset entering the
-model transform, not the lens); (3) vigor-cast spot-check under the clamp
-(active cast anims ride a different lane - expected fine, not yet
-headset-verified). Later: wrist refinement, SingleLineCheck.
+**Post-verdict additions (user, 2026-08-10, same night):** vigor CAST anims
+confirmed normal under the clamp. Two new items from the headset: (a) the
+occasional VIGOR FLOURISH (the 'SubtleFidget' show-off action) is lost with
+the idle lane killed - user asks for it on a BUTTON (thumbrest + key; the
+trigger function is known and callable - reflect::call_on_object(attachment,
+"StartSubtleFidget") reproduced it all session; needs a raised-subgraph
+visual test + must not re-arm anything behind the clamp); (b) **the vigor
+CHARGE/READY effect freezes in place** while holding the vigor key instead
+of following the hand (tested with the fire vigor) - same FX-origin family
+as the tracer: engine-side FX positions are still camera/authored-anchored
+while the model rides the driven bones. The hold-to-charge FX is a BETTER
+flat test subject than the short-lived tracer streak (persistent,
+reproducible on demand).
+
+**NEXT SESSION**: (1) THE FX-ORIGIN SEAM - one origin for model, laser,
+bullet, tracer, muzzle flash AND the vigor charge FX (recon banked in s49:
+walk XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot;
+use the held fire-vigor charge as the persistent flat repro); (2) the
+FOV-edge drift with the asymmetry observation above as the entry point
+(check the hand-model compose chain for a view-dependent term - the sign
+flip suggests an eye/head-relative offset entering the model transform, not
+the lens); (3) the flourish-on-a-button feature (small, needs its visual
+test). Later: wrist refinement, SingleLineCheck.
 
 ### Infinite: state after session 49 (kept for the record; superseded by s49b above) (StartSubtleFidget DECODED and falsified as the root, the Morpheme residual named, the gameplay lens verdict: ONE frustum; branch `si49-inf-stance-lens-tracer`)
 
