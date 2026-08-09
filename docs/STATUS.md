@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 43" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 47" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -16,6 +16,48 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
+
+### Infinite: current state after session 47 (I8 part 3: the REMAINDER worked - boot pose measured, gate cleared, ANIMTRANS built, scale audited; branch `si47-inf-i8-remainder`, S46+S47 headset verdicts pending)
+
+**Session 47 (2026-08-09) worked the I8 remainder that does NOT ride the pending
+s46 headset verdicts. Nothing verdict-riding was touched (glue algebra, fire
+substitution, wrist-cap styles, wrist sliders byte-identical), ZERO core changes,
+nothing merged. Evidence first on every item; full numbers in the s47 session-log
+entry and ENGINE_NOTES ("s47" sections).**
+
+1. **Boot-time glue arming: CLOSED as impossible, by measurement.** The
+   boot/checkpoint-load pose IS the 101.11 deg stance (measured at 23 s
+   post-resolve, stable, and at 2 min never-fired) - a resolve-time qRef capture
+   would pin the stance and invert the glue. First-shot arming stays; the
+   pre-first-shot stance is now a certainty, not a maybe (TESTING note upgraded).
+2. **The reapply-burst gate (carried s45b): CLOSED measured-no-defect.** New
+   staleness counters in `bsibones` status: 33,255 replays across every reachable
+   gap class, skippedStale=0, maxAge=63 ms. The edge-triggered release is the
+   real protection; the 100 ms gate is untouched backstop.
+3. **ANIMTRANS built from evidence, ships OFF and unpersisted.** New `bsibones
+   travel` peak tracker measured the discarded authored anchor travel: reload
+   R 14 cm / L 48 cm, fire R 3-5 cm. The lever passes it through (dp base = the
+   ready anchor translation banked with qRef; anim mode + capture + 120 UU
+   fallback). Driven A/B flat: off = pinned, on = authored travel to 1 UU with
+   rotation still glued. `bsihands animtrans on|off` + F10 checkbox; no preset
+   key (the precedent stands).
+4. **World-scale groundwork (I8 open box)**: 1 m -> exactly 150.0 UU re-verified;
+   the cm->UU audit table (ENGINE_NOTES) shows every adapter conversion on the
+   live fc.worldScale; stale aim.cpp comments corrected. Calibration itself =
+   headset, box stays open.
+5. **Per-weapon profile SCAFFOLD** (I9 prep): class-name-keyed empty table +
+   `reflect::class_name_of` + fire-seam latch + `bsiprofiles`. Measured: the
+   seam's Weapon param is NULL on ordinary shots -> pawn-side source is I9 work.
+6. **Battery green** on the final build (substituted first shot, both captures,
+   0.0000 deg per-hand deviations, no new dumps, inis byte-identical).
+
+**HEADSET PENDING (one session, S46 + S47 together): the S46 checklist plus the
+"S47 additions" section in docs/bioshockinfinite/TESTING.md** - the animtrans
+A/B (optional, off by default) and the first-shot-arming ergonomics question.
+
+**NEXT after the headset verdicts**: per-weapon profile VALUES + the arsenal save
+(I9 - the user produces the save), world-scale calibration in the headset, the
+test-from-game-start pass, and whatever the verdicts re-scope.
 
 ### Infinite: current state after session 46 (I8 part 2: STANCE KILLED, BULLETS FROM THE GUN, wrist levers built - all flat-green; branch `si46b-inf-stance-origin`, headset verdict pending)
 
@@ -6304,6 +6346,53 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 47 (Infinite) - 2026-08-09 - I8 part 3, the remainder: boot pose measured, gate cleared, animtrans, scale audit, profile scaffold
+
+Branch `si47-inf-i8-remainder` off the s46 tip (7245fa6). The S46 headset verdicts
+were NOT in - nothing riding them was touched (glue algebra, fire substitution,
+wrist-cap styles, wrist sliders all byte-identical), nothing merged, ZERO core
+changes, all bioshockinf-local. Three sim boots, evidence before every lever.
+
+**Boot-time glue arming: measured IMPOSSIBLE, closed.** Two boots (drive off, raw
+bank): the never-fired idle pose (run A, 2 min) AND the resolve-time pose (run B,
+23 s after `rig RESOLVED`, stable over a 10 s window) are both the full 101.11 deg
+stance vs post-fire ready. The boot/checkpoint pose IS the stance - capturing qRef
+at resolve would pin the stance and invert the glue. First-shot arming stays, now
+as a measured certainty (TESTING note upgraded).
+
+**The reapply-burst gate (carried s45b): measured-no-defect, closed.** Counters in
+reapply() (maxAge / afterGap50 / skippedStale, in `bsibones` status). One boot,
+every reachable gap class (drive toggle, tracking loss, pause): 33,255 replays,
+skippedStale=0, maxAge=63 ms, afterGap50=6 (0.018%, same generation). The
+edge-triggered release clears masks before staleness can accumulate; level
+transitions stay covered by the rig-generation gate.
+
+**ANIMTRANS: measured, then built.** New `bsibones travel <secs>` peak tracker
+(~90 Hz per-dispatch anchor sampling). Engine truth, two runs each, repeatable:
+reload moves R 21 UU (14 cm) and L 72 UU (48 cm, the cross-over rack); fire moves
+R 5-7 UU; idle noise 0-2.7 UU. That earned the lever: dp base switches to the
+ready anchor TRANSLATION banked alongside qRef (anim mode + valid capture +
+120 UU broken-basis fallback). `bsihands animtrans on|off` + F10 checkbox,
+default OFF, NOT persisted. Driven A/B: off = pinned (0.81 UU noise); on = the
+authored travel to 1 UU (71.72/20.98) with rotation still glued (0.77 deg both).
+
+**World-scale prep (I8 open box)**: 1.000 m -> exactly +150.0 UU, single-axis,
+zero cross-axis; the full cm->UU audit table is in ENGINE_NOTES (every adapter
+conversion rides the live fc.worldScale; the dot's cm->XR-meters is correctly
+scale-free; two stale "fire seam is rotation-only" comments in aim.cpp fixed).
+
+**Per-weapon profile SCAFFOLD** (I9 prep): profiles.cpp keyed by weapon class
+name via the new `reflect::class_name_of` (UClass-fixpoint, best-effort derive);
+zero entries, nothing consumed, nothing persisted; `bsiprofiles` status verb.
+Measured: the fire seam's optional Weapon param is NULL on ordinary shots - the
+pawn-side current-weapon source is I9 derivation work with the arsenal save.
+
+**Battery green on the final build**: first shot SUBSTITUTED (77.4 UU), both
+ready poses captured, aimRayMaxDevDegL/R = 0.0000 at opposite-angle stations
+(legacy field 86 deg = the documented dual-beam artifact), 2 dots + projection
+layers present, game alive, no new crash dumps, vrpreset.ini and XUserOptions.ini
+verified byte-identical (fc /b), command.txt deleted.
 
 ### Session 46 (Infinite) - 2026-08-09 - I8 part 2: the stance killed, bullets from the gun, the wrist levers built
 

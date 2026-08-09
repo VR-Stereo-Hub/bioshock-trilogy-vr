@@ -625,6 +625,21 @@ port nothing.
       behind** - the Vigor hand FX above all. *(s45b: the drive is engine-side SpaceBases writes;
       the pistol followed the driven grip with no separate handling from the first frame.)*
 - [ ] World scale calibration, and the world/viewmodel scale split if it proves necessary
+      *(s47 groundwork, flat: ground truth re-verified exact - 1.000 m commanded -> +150.0 UU
+      written, single-axis, zero cross-axis at worldScale 150 - and the cm->UU audit table in
+      ENGINE_NOTES shows every adapter conversion riding the live `fc.worldScale` (the dot's
+      cm->XR-meters is correctly scale-free). The calibration itself is a headset judgment;
+      box stays open.)*
+- [x] **The I8 remainder, worked s47 (flat-green, headset pending)**: boot-time glue arming
+      measured IMPOSSIBLE (the boot/checkpoint pose IS the stance - 101.11 deg at the anchor,
+      stable from resolve; capturing it would invert the glue - first-shot arming stays); the
+      reapply-burst gate closed measured-no-defect (33,255 replays, skippedStale=0, maxAge
+      63 ms - the edge-triggered release, not the timer, is the protection); ANIMTRANS built
+      from evidence (reload travel R 14 cm / L 48 cm measured with the new `bsibones travel`
+      peak tracker, pass-through exact to 1 UU in the driven A/B; default OFF, unpersisted);
+      the per-weapon profile SCAFFOLD (class-name key via the new `reflect::class_name_of`,
+      zero entries - values wait for the I9 arsenal save; the fire seam's Weapon param is
+      NULL on ordinary shots, so the pawn-side source is I9 derivation).
 - [ ] **Test from the START of the game, not only from a loaded-out save** (user directive,
       2026-07-31). A reflection-conjured arsenal is convenient but unrepresentative: the opening
       hours have no weapon at all, then the Sky-Hook alone, then one gun. Calibration that only

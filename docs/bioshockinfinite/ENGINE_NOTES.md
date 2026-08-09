@@ -597,6 +597,25 @@ RIGHT ~identity (-0.004 -0.011 0.006 1.000) - which is why the s45b five-station
 acceptance matched commanded to the unit - LEFT (0.933 -0.252 0.070 -0.249), the
 authored vigor base the glue preserves.
 
+**s47: THE BOOT POSE IS THE STANCE - boot-time glue arming is impossible from the
+resolve pose, first-shot arming stays.** Measured twice on the shipping s46 build
+(drive off, raw bank, `bsibones snap/diff`):
+
+- Run A (aged boot, ~2 min idle, NEVER fired): idle pose vs post-first-shot ready =
+  the exact stance signature (L_Grip/Palm 101.11 deg rigid, digits 96-145 deg,
+  translations 40-58 UU). The stance does not need a prior shot to onset.
+- Run B (fresh boot, snap 23 s after `rig RESOLVED` - the earliest the harness
+  reaches the seam): the resolve-time pose is ALREADY the full stance (L_Grip
+  101.11 deg vs post-fire), and it is STABLE (10 s stability diff: L cluster at
+  the noise floor; only R_Grip 2.72 deg idle drift).
+
+So the boot/checkpoint-load pose is the STANCE, not ready: capturing qRef at rig
+resolve would bank the stance as "ready" and INVERT the glue (pin the stance,
+cancel ready). The glue therefore stays armed by the FIRST SHOT each boot (or the
+manual F10 capture button), exactly as s46 shipped it; the S46 checklist note
+("before your first shot the stance can appear - fire once and it is gone") is
+now a measured certainty rather than a possibility.
+
 ### THE FIRE-ORIGIN SEAM: AXPawn::XGetWeaponStartTraceLocation (s46)
 
 The s45b headset findings 2+3 (hole above the dot; bullets leaving the screen center)
@@ -644,6 +663,74 @@ only - the Floating wrapper appends its own 4th dword after we return. A displac
 over 200 UU (~1.3 m at 150 UU/m; camera-to-hand measures 60-90 UU) refuses the write
 rather than clamping - past that the basis is broken, and a melee/Sky-Hook SHORT
 trace must never start past its target (BS1's wrench lesson).
+
+### The s47 remainder: reapply gate measured clean, ANIMTRANS, the scale audit
+
+**The reapply-burst gate closes as measured-no-defect (carried from s45b).** s47
+instrumented `bones::reapply()` (counters only, the 100 ms gate untouched):
+`maxAge` = oldest write actually replayed, `afterGap50` = replays of a write older
+than 50 ms, `skippedStale` = hands the gate refused while masked bones existed.
+One boot, ~2 min driving, every reachable gap class exercised (drive off/on, hand
+tracking loss, pause menu): **33,255 replays, skippedStale = 0, maxAge = 63 ms,
+afterGap50 = 6** (0.018% - hitchy frames, same rig generation, correct current
+pose). The gate never has anything stale to refuse because the edge-triggered
+release clears the masks the moment a drive stops - the discipline, not the
+timer, is the protection. A true level transition was not scriptable flat; that
+path is covered by the rig-generation gate (`rig_intact` drops the rig, and the
+snap-diff generation interlock proved generations increment across loads).
+
+**ANIMTRANS: authored anchor travel, measured and passed through.** New
+instrument `bsibones travel <secs>` samples both anchors per pass-1 dispatch
+(~90 Hz peak tracker - game-cmd-timed snaps would miss a sub-second peak). With
+the drive off (raw bank = engine truth), two runs each, repeatable to 0.6 UU:
+
+| Window | L anchor peak | R anchor peak |
+|---|---|---|
+| idle 5 s | 0.00 UU | 2.72 UU (1.8 cm) / 6.25 deg |
+| fire | 51-53 UU (the stance->ready swing) | 4.7-7.5 UU (3-5 cm) / 23-53 deg |
+| reload | 72.4 UU (48.3 cm - the cross-over rack) | 21.2-21.8 UU (14.1-14.5 cm) / 79-81 deg |
+
+The anchor-pin compose discards ALL of it (dp relative to the CURRENT anchor is
+exactly the translation analogue of the stance glue: whole-hand travel cancels,
+grip-relative articulation passes). 14-48 cm is far above the noise floor, so
+the lever shipped: **`bsihands animtrans on|off` + F10 checkbox, default OFF,
+NOT persisted** - with the lever on, the dp base becomes the READY anchor
+translation banked alongside qRef at every post-fire capture, so authored travel
+reaches the written pose as a controller-relative offset. Gated to anim mode +
+a valid capture, with a 120 UU broken-basis fallback (authored peaks measure
+<= 72 UU). Driven A/B, flat: off = anchors pinned (0.81 UU noise); on = written
+anchors travel L 71.72 / R 20.98 UU through a reload - the authored numbers to
+1 UU - while rotation stays glued (0.77 deg both states). Headset caveats, by
+design: the glue still cancels the anim's whole-hand ROTATION while its travel
+passes (hand slides without turning), and a stance re-onset leaks its ~50 UU
+translation until the next shot (the glue cancels only the stance's rotation).
+
+**World-scale groundwork (I8 open box).** Ground truth re-verified on this
+branch: 1.000 m commanded on one sim axis -> exactly +150.0 UU written,
+single-axis, zero cross-axis (worldScale 150). The cm->UU conversion audit -
+every conversion in the adapter, all through the live `fc.worldScale`:
+
+| Site | Conversion |
+|---|---|
+| `hands.cpp` grip offsets | `worldScale / 100` |
+| `fire.cpp` ray-origin sliders | `worldScale * 0.01` |
+| `bones.cpp` hide style 2 (10 cm behind wrist) | `10 * worldScale * 0.01` |
+| `frame_context.h` XR meters -> UU | `* worldScale` |
+| `camera.cpp` eye offset | `ipd (m) * worldScale` |
+| `aim.cpp` dot/laser origin | `cm * 0.01` -> XR METERS (correct: XR space is metric, no worldScale belongs there) |
+
+One slider storage (`g_aimPosCm`) feeds dot, laser AND fire origin; the fire
+seam is the only game-UU consumer. Two stale s45b comments in aim.cpp claiming
+"the fire seam is rotation-only" were corrected (s46 shipped the origin seam).
+
+**Per-weapon profile scaffold (I9 prep).** `profiles.cpp/.h`: a table keyed by
+weapon CLASS NAME (durable across object churn and DLC), read via the new
+`reflect::class_name_of` (the UClass-fixpoint walker, best-effort offset
+derive). Zero entries, nothing consumes overrides, nothing persisted. The fire
+seam latches its Weapon param's class once per pointer change - **measured: the
+optional param arrives NULL on ordinary shots**, so the pawn-side
+current-weapon source is I9 derivation work (with the arsenal save), not a
+guess here. `bsiprofiles` prints the latch and lookup result.
 
 ### Dual-hand aim, and the laser/dot overlays (s44b, after the headset verdict)
 

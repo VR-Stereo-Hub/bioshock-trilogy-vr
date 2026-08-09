@@ -750,10 +750,35 @@ exact to 20.00 deg on exactly the arm chain). All levers are live toggles.
 
 Expected noise: unchanged from s45b (sr-tag-ring lines at transitions, checkpoint
 pause, hands parked during loads). The stance glue arms itself on your FIRST shot
-(per boot); before that shot the stance can still appear - fire once and it is
-gone. Anything off: `bsibones glue off` first, then `bsifire off`, then the hands
+(per boot); before that shot the LEFT hand WILL hold the stance - s47 measured
+the boot/checkpoint-load pose to BE the stance (101.11 deg at the anchor, stable
+from resolve), which is also why the glue cannot self-arm at boot: capturing the
+resolve pose would pin the stance instead of ready. Fire once and it is gone.
+Anything off: `bsibones glue off` first, then `bsifire off`, then the hands
 checkbox - whichever clears it names the lever; if none do, it predates this
 session.
+
+## S47 additions (test together with the S46 list)
+
+The s47 flat lane added no default-on behaviour: the reapply gate closed as
+measured-no-defect (counters only), the world-scale ground truth re-verified
+exact, and the per-weapon table is an empty scaffold. Two items for the headset:
+
+1. **ANIMTRANS A/B (optional, default OFF).** After your first shot (the glue
+   capture), tick "authored anchor travel (animtrans)" in the HANDS bones block
+   (or `bsihands animtrans on`) and reload / fire. ON = the hands leave the
+   controllers by the authored anim travel (measured: reload moves the right
+   hand 14 cm, the LEFT hand 48 cm on its cross-over rack), with rotation still
+   glued - judge whether that reads as "the anim came alive" or as "my hand
+   detached". Known caveats: the hand slides without turning (rotation stays
+   glued by design), and if the idle stance re-onsets while it is ON the left
+   hand sits ~35 cm off the controller until the next shot. It is a pure A/B
+   toggle; OFF returns to the pinned s46 behaviour and nothing is persisted.
+2. **First-shot arming ergonomics.** Knowing the stance is now CERTAIN before
+   the first shot each boot: does "fire once after loading" feel acceptable as
+   the arming ritual, or should a future session hunt a pacifist-safe source?
+   (Boot auto-capture is measured impossible from the resolve pose; the manual
+   F10 capture button exists but captures the stance if pressed pre-shot.)
 
 ## Testing discipline
 
