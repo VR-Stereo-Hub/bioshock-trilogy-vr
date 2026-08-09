@@ -55,6 +55,11 @@ void tick_resolve(uint64_t nowMs);
 // after a drop). The fidget filter scopes its event block to this object.
 void* attachment();
 
+// s49: the resolved XSkeletalMeshComponent (attachment+0x218; nullptr before
+// resolve / after a drop). The anim-tree hunt walks the fidget consumer off
+// this object, and the fidget re-target self-derives from it each boot.
+void* component();
+
 // Drive one hand's cluster (and its arm chain per armsMode) toward the
 // game-space target. Pass-1 game thread only. Returns false when the rig is
 // not resolved or the identity gates refused.

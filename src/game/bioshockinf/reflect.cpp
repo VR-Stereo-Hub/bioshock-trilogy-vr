@@ -796,6 +796,92 @@ void cmd_dump(const char* args) {
     }
 }
 
+// bsichase 0x<addr> <offHex> <offHex> ...: follow a pointer chain. Each hop
+// reads the pointer at cur+off, names the target when it walks as a UObject
+// (class + own name), and continues from it; the terminal target gets a
+// 16-dword typed dump. Read-only. Built s49 for the anim-tree hunt: a
+// Morpheme-side descent is raw C++ pointers that bsifields skips silently,
+// and re-walking a proven chain after a rig re-resolve costs ONE command
+// instead of N manual bsidump/eyeball/retype hops.
+void cmd_chase(const char* args) {
+    unsigned addr = 0;
+    int pos = 0;
+    if (!args || sscanf_s(args, " 0x%x%n", &addr, &pos) < 1 || !addr) {
+        BVR_LOG("[bsi] chase: usage - bsichase 0x<addr> <offHex> <offHex> ... Follows "
+                "the pointer at cur+off hop by hop, naming every target that reads as a "
+                "UObject; the final target gets a 16-dword typed dump. Max 16 hops.");
+        return;
+    }
+    void* pcObj = nullptr;
+    const uint8_t* const* pcVt = nullptr;
+    if (!resolve_dispatch_target("chase", pcObj, pcVt)) return;
+    derive_obj_name_off(); // best-effort: naming degrades gracefully
+    const uint8_t* cur = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(addr));
+    {
+        char nm[128] = {};
+        object_class_name(cur, nm, sizeof nm);
+        BVR_LOG("[bsi] chase: start %p%s%s", (const void*)cur, nm[0] ? "  class " : "", nm);
+    }
+    const char* p = args + pos;
+    int hop = 0;
+    while (hop < 16) {
+        unsigned off = 0;
+        int used = 0;
+        if (sscanf_s(p, " %x%n", &off, &used) < 1) break;
+        p += used;
+        ++hop;
+        const uint8_t* slot = cur + off;
+        if (!bvr::pattern_scan::is_memory_valid(slot, sizeof(void*))) {
+            BVR_LOG("[bsi] chase: hop %d STOPPED - %p+0x%X is not readable", hop,
+                    (const void*)cur, off);
+            return;
+        }
+        const uint8_t* next = *reinterpret_cast<const uint8_t* const*>(slot);
+        if (!next || (reinterpret_cast<uintptr_t>(next) & 3) ||
+            !bvr::pattern_scan::is_memory_valid(next, 4)) {
+            BVR_LOG("[bsi] chase: hop %d STOPPED - +0x%X holds %p (null/unaligned/"
+                    "unreadable)",
+                    hop, off, (const void*)next);
+            return;
+        }
+        char cls[128] = {};
+        char own[patterns::kFNameTextBufMin] = {};
+        if (object_class_name(next, cls, sizeof cls)) {
+            const int32_t nameIdx =
+                g_objNameOff >= 0
+                    ? *reinterpret_cast<const int32_t*>(next + g_objNameOff)
+                    : -1;
+            if (nameIdx > 0 && nameIdx < patterns::fname_count())
+                patterns::fname_text(nameIdx, own, sizeof own);
+        }
+        BVR_LOG("[bsi] chase: hop %d  +0x%03X -> %p%s%s%s%s", hop, off, (const void*)next,
+                cls[0] ? "  class " : "  (not a UObject)", cls, own[0] ? "  name " : "",
+                own);
+        cur = next;
+    }
+    if (hop == 0) {
+        BVR_LOG("[bsi] chase: no offsets given - nothing followed");
+        return;
+    }
+    for (unsigned i = 0; i < 16; ++i) {
+        const uint32_t off = i * 4;
+        if (!bvr::pattern_scan::is_memory_valid(cur + off, 4)) {
+            BVR_LOG("[bsi] chase:   +0x%03X <unreadable - stopped>", off);
+            break;
+        }
+        const uint32_t u = *reinterpret_cast<const uint32_t*>(cur + off);
+        float f;
+        memcpy(&f, &u, 4);
+        char nm[128] = {};
+        if (u > 0x10000 && (u & 3) == 0)
+            object_class_name(reinterpret_cast<const void*>(static_cast<uintptr_t>(u)), nm,
+                              sizeof nm);
+        BVR_LOG("[bsi] chase:   +0x%03X  0x%08X  f=%- 12.6g i=%-11d%s%s", off, u,
+                static_cast<double>(f), static_cast<int32_t>(u), nm[0] ? "  -> class " : "",
+                nm);
+    }
+}
+
 // bsidiff 0x<addr> [dwords]: snapshot-compare (s46). The first call on a range
 // snapshots it; each later call on the SAME range prints only the dwords that
 // CHANGED since the previous call, then re-snapshots. Built for the UBOOL
@@ -1559,6 +1645,10 @@ bool handle_command(const char* cmd, const char* args) {
         cmd_dump(args);
         return true;
     }
+    if (strcmp(cmd, "bsichase") == 0) {
+        cmd_chase(args);
+        return true;
+    }
     if (strcmp(cmd, "bsidiff") == 0) {
         cmd_diff(args);
         return true;
@@ -1579,7 +1669,7 @@ bool handle_command(const char* cmd, const char* args) {
                     "bsireflect selftest | bsinative <Class> <Func> | bsinames <start> [n] | "
                     "bsiname <text> | bsivtable [n] | bsicall <Func> [floatArg] | "
                     "bsiarray 0x<obj> <off> [n] | bsidump 0x<addr> [n] [start] | "
-                    "bsiexec <console cmd>",
+                    "bsichase 0x<addr> <off> <off> ... | bsiexec <console cmd>",
                     patterns::fname_count(), patterns::fname_max(),
                     g_table.base ? "seeded" : "not seeded yet");
         }

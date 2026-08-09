@@ -586,6 +586,7 @@ void travel_tick() {
 }
 
 void* attachment() { return g_attach; }
+void* component() { return g_comp; }
 
 void tick_resolve(uint64_t nowMs) {
     if (g_comp) {
