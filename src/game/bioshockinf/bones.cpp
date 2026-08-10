@@ -112,6 +112,22 @@ float g_readyTrans[2][3] = {};
 // 11.2 UU (the lag made visible) and camPin cuts the driven-anchor wobble
 // 9.26 -> 1.72 UU (the residual is view-bob rotation, second-order). ON.
 std::atomic<bool> g_camPin{true};
+// s50 (user report, mid-session): "shooting shouldn't affect the left hand".
+// Flat-measured: a single right-hand pistol shot swings the LEFT anchor's
+// composed rotation 95.58 deg (idle control 0.00; the right hand's own recoil
+// 21.25) - the engine's fire anim moves the AUTHORED left grip and the
+// adopt-then-compose lane passes whole-hand authored swings through
+// (q_i = qtc (x) src[i] has no conj(src[anchor]) factor). The retired s46
+// glue implements exactly that missing cancellation and measured 95.58 ->
+// 0.14 deg with all else equal - but ALWAYS-on it would also cancel the
+// flourish's arm sweep and the cast anims the headset already accepted. So:
+// FIRE-SCOPED - the glue correction auto-engages for kFireGlueMs around each
+// player shot (note_player_fire) and stays out of every other anim's way.
+// `bsibones fireglue on|off` is the A/B; needs a ready capture (self-heals
+// on every shot at +1.2 s, so only the first-ever shot of a boot leaks).
+std::atomic<bool> g_fireGlue{true};
+std::atomic<uint64_t> g_fireGlueUntilMs{0};
+constexpr uint64_t kFireGlueMs = 1500;
 uint64_t g_lagUntilMs = 0;
 float g_lagMin[3], g_lagMax[3];
 uint32_t g_lagSamples = 0;
@@ -796,8 +812,15 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
 
     // s46: the ready-pose glue - corr cancels the rigid stance component (see
     // the block comment at the top). Identity when off or before a capture.
+    // s50: ALSO engaged fire-scoped (kFireGlueMs after a player shot) - the
+    // fire anim's authored left-grip swing measured 95.58 deg through the
+    // compose; the glue cancels it to 0.14 with the window keeping every
+    // other anim (flourish, casts) untouched.
+    const bool fireGlueActive =
+        g_fireGlue.load(std::memory_order_relaxed) &&
+        GetTickCount64() < g_fireGlueUntilMs.load(std::memory_order_relaxed);
     float corr[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    if (g_stanceKill.load(std::memory_order_relaxed) &&
+    if ((g_stanceKill.load(std::memory_order_relaxed) || fireGlueActive) &&
         g_readyValid[hand].load(std::memory_order_relaxed)) {
         const float* qa2 = src[anchor];
         const float n2 = qa2[0] * qa2[0] + qa2[1] * qa2[1] + qa2[2] * qa2[2] + qa2[3] * qa2[3];
@@ -968,6 +991,8 @@ void note_player_fire() {
     // Game thread (the fire seam's detour). The engine resets the stance on a
     // shot; 1.2 s later the pose has settled at READY (recoil is ~0.3-0.5 s)
     // and the stance re-onset is minutes away - the capture window.
+    // s50: the same event opens the fire-glue window (see g_fireGlue).
+    g_fireGlueUntilMs.store(GetTickCount64() + kFireGlueMs, std::memory_order_relaxed);
     const uint64_t at = GetTickCount64() + 1200;
     g_captureAtMs[0].store(at, std::memory_order_relaxed);
     g_captureAtMs[1].store(at, std::memory_order_relaxed);
@@ -1022,6 +1047,20 @@ bool handle_command(const char* cmd, const char* args) {
         BVR_LOG("[bsi] bones: lag probe ARMED for %.1f s (needs the drive ON; reports "
                 "writtenCam-vs-L2W offset in the component frame)",
                 secs);
+        return true;
+    }
+    if (args && strncmp(args, "fireglue", 8) == 0) {
+        const char* rest = args + 8;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "on", 2) == 0) g_fireGlue.store(true, std::memory_order_relaxed);
+        else if (strncmp(rest, "off", 3) == 0)
+            g_fireGlue.store(false, std::memory_order_relaxed);
+        BVR_LOG("[bsi] bones: fireglue %s (glue correction for %llu ms around each "
+                "player shot - kills the fire anim's 95-deg left-hand swing; ready "
+                "captures L=%s R=%s)",
+                g_fireGlue.load() ? "ON" : "off",
+                static_cast<unsigned long long>(kFireGlueMs),
+                g_readyValid[0].load() ? "ok" : "-", g_readyValid[1].load() ? "ok" : "-");
         return true;
     }
     if (args && strncmp(args, "campin", 6) == 0) {

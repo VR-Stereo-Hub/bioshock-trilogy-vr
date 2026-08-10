@@ -950,6 +950,32 @@ no-ops above).
   flat-proven: sim `thumbrest l on` + `btn a press` -> FLOURISH #2, gesture
   6.27, return 0.68.
 
+### s50 part 5: THE FIRE-SWING - "shooting shouldn't affect the left hand", fixed fire-scoped
+
+**The defect, flat-measured** (user report mid-session; travel instrument at
+~90 Hz through a single right-hand pistol shot): the LEFT anchor's COMPOSED
+rotation swings **95.58 deg** (idle control 0.00; the firing hand's own
+recoil 21-24 deg). Mechanism: the engine's fire anim moves the AUTHORED left
+grip on the shared FP graph, and the adopt-then-compose lane passes
+whole-hand authored swings straight through - `q_i = qtc (x) src[i]` carries
+src[anchor]'s absolute motion because the conj(src[anchor]) factor of the
+full rigid map `T_ctrl o T_authoredGrip^-1 o T_authoredBone` is absent (its
+omission is also what lets the ready-pose glue work: the glue's corr =
+readyQuat (x) conj(src[anchor]) IS that factor, referenced to the banked
+ready pose).
+
+**The fix: FIRE-SCOPED GLUE, default ON.** The s46 glue machinery (retired
+as a stance fix, headset-rejected for pinning driven bones while the anim
+owned the rest) is exactly the right cancellation for THIS transient - but
+always-on it would also cancel the flourish's arm sweep and the cast anims
+the headset already accepted. So `note_player_fire` (the fire seam) opens a
+1500 ms window during which the glue correction engages; outside it nothing
+changes. A-B-A on a fresh boot: fireglue ON = **L 0.00 deg** through a shot;
+OFF = **95.58** (the exact signature); ON again + `bsiflourish` = the
+gesture still plays at full amplitude (img-diff 8.18). Needs a ready capture
+(self-heals +1.2 s after every shot; only the first-ever shot of a boot
+leaks one transient). **`bsibones fireglue on|off`** is the in-headset A/B.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle
