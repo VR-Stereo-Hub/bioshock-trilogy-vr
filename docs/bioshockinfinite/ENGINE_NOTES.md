@@ -829,6 +829,33 @@ identity** (the slot must still hold the RVA - a stronger class-binding gate
 than bytes alone, new this session) + inverted arity (plain-ret, no ret-imm).
 It is documented in code and here as NOT the frozen-family fix.
 
+**PART 2 - the effect playback TICK, decoded to its per-record update:**
+- The tick-helper object (manager+0x2C, class XEffectPlaybackManagerTickHelper,
+  outer = the manager at +0x14) carries a tick-interface vtable whose slot-36
+  thunk is `fld [esp+4]; this -= 0x28; call 0x436490` - **rva 0x436490 IS the
+  effect playback tick(deltaTime)**.
+- The tick iterates an active-effect table: data `[tickee+0x3C]`, count
+  `[tickee+0x40]`, **stride 0x74**. Per record: +0x18 LOCATION (FVector),
+  +0x28 rotation, +0x3C..+0x65 playback params, **+0x68 the effect's
+  component** (flag-gated: skips when [comp+0x5C]&0x20 or [comp+8]&0x2000),
+  +0x6C/+0x70 a frame/stamp pair compared against globals 0x135DC68/0x135DC6C,
+  plus a relevance call (rva 0x436350) before the update runs.
+- The per-record update = **rva 0x3EC4C0**, `this` = the component,
+  **13 stack args (`ret 0x34`)**: (record, &rec.location, &rec.rotation,
+  rec+0x3C.., 0). The location arrives BY POINTER - a rewrite there moves the
+  effect for that update.
+- **Hooked as `bsifx u probe|on|off|dump` (fxupdate lane, default OFF both).**
+  Install green (prologue + ret-0x34 gates). LIVE RESULT that stops tonight's
+  hunt: with the Enrage charge held and the plume visibly camera-anchored,
+  the seam fires only **~2 calls/s with fp=0** (no record's component is
+  owned by the FP attachment or the pawn) - the gated "relevant" record set
+  is tiny, and the plume's 90 Hz position feed is NOT this path either.
+  Next session's fork: (a) probe 0x3EC4C0's OTHER callers (E8 census), (b)
+  log ALL records through the seam (the dump verb currently logs FP-gated
+  only), (c) instrument the tick 0x436490 itself (log the table count + a
+  record sweep while charging), (d) the record's +0x6C/+0x70 stamp pair vs
+  the 0x135DC68 globals may reveal a second, hotter update path.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

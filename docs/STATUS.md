@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 47" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 50" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,61 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 49b (THE STANCE IS KILLED - the 'Lowered' clamp, A-B-A proven, ships default ON; branch `si49-inf-stance-lens-tracer`)
+### Infinite: current state after session 50 (FX-origin hunt - the frozen family mapped, the position feed still unfound, session PAUSED ON A QUESTION; branch `si50-inf-fx-edge-flourish`)
+
+**Session 50 (2026-08-10, overnight) worked s49b item 1 (the FX-origin seam)
+and went deep without landing the family fix. Items 2 (FOV-edge drift) and 3
+(flourish button) were NOT started per the strict-order directive; a fourth
+item arrived mid-session (user: firing perturbs the LEFT hand - "shooting
+shouldn't affect the left hand") and is queued behind them.**
+
+**What is PROVEN and banked (flat, this session):**
+- The held vigor charge is the on-demand repro exactly as predicted. The FX
+  split cleanly in two: **riders** (fingertip flames, weapon embers - socket
+  FX on the child model components; they follow the driven hand ALREADY) and
+  the **frozen family** (the charge plume, the vigor-ready sparkle, and per
+  the headset the muzzle flash + tracer) which tracks the CAMERA anchor at
+  the authored offset - with the drive released, the authored arm lands
+  exactly inside the flame.
+- **Every strong theory for the frozen family's position source was
+  falsified by measurement** (ENGINE_NOTES "s50"): tick-time SpaceBases reads
+  (the engine's eval almost never restamps SpaceBases while the drive runs -
+  cleanTicks 12181/12183 on the new instrument), GetPlayerViewPoint consumers
+  (caller census identical with/without charge), every reachable Attachments
+  array (FP comp -> only the 3 child models; children/pawn comps/actor
+  Components -> empty/no PSCs), the script-side XEmitterPool (empty). The
+  effect playback tick was decoded to its per-record update (rva 0x3EC4C0,
+  hooked probe-only as `bsifx u`) - and ALSO exonerated: ~2 calls/s, none
+  first-person, while the plume updates at 90 Hz.
+- **New engine knowledge:** the attachment walker (rva 0x2A1B20, vtable slot
+  43) + FAttachment layout; the FP rig's child-model architecture (vigor hand
+  at L_Grip, prop at PlayerHandsLarm22, weapon at R_Grip - why holdables ride
+  for free); ParentAnimComponent redirect (+0x2F4/+0x2F8/+0x2FC); the vigor
+  IS an XWeapon (slot 0 = Plasmid_EnrageFounder - the save's "devil face"
+  vigor is ENRAGE; slot 1 = PistolFounder); the effect manager + tick-helper
+  + record-table layout. All with derivations in ENGINE_NOTES.
+- **Shipped code (all bioshockinf-local):** `bsifx` - the attach-walker hook
+  (default ON: the dirty-count instrument + eval-restamp edge cover, honestly
+  documented as NOT the family fix) and `bsifx u` - the effect-update probe
+  (default OFF, next session's instrument). Both behind prologue + arity
+  gates, plus a NEW vtable-slot identity gate on the walker.
+
+**Session harness notes:** award dialogs REPLAY on every checkpoint load
+(~4 modal `btn a press` dismissals before any input lands); Enrage HOLD =
+charge, RELEASE = throw (a stray release burned the Blue Ribbon carpet and
+drained the salts - `Restart Checkpoint` refills them); the game eats
+trigger edges while unfocused-paused, so sim input needs the
+foreground-then-edge pattern (focused-input.ps1 in the session scratchpad).
+
+**THE QUESTION FOR THE USER (session paused here per the ask-when-blocked
+rule):** the frozen family's per-frame position writer survived every lane I
+could derive tonight. Options I see: (a) next session continues the hunt
+with the banked forks (probe ALL records through 0x3EC4C0 + its other
+callers, instrument the tick table, the record stamp-pair globals); (b) you
+have a hunch/knowledge that redirects it; (c) re-scope - accept camera-
+anchored FX for now, proceed to items 2/3. Say the word.
+
+### Infinite: state after session 49b (kept for the record; superseded by s50 above) (THE STANCE IS KILLED - the 'Lowered' clamp, A-B-A proven, ships default ON; branch `si49-inf-stance-lens-tracer`)
 
 **Session 49b (2026-08-10, continuing s49 on the user's priority-1-only
 directive) KILLED THE STANCE AT THE ROOT.** The mechanism, named end to end:
@@ -6573,6 +6627,35 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 50 (Infinite) - 2026-08-10 (overnight) - the FX-origin hunt: frozen family mapped, position feed unfound, paused on a question
+
+Branch `si50-inf-fx-edge-flourish` off a7ba268. Item 1 of the s49b handoff
+only (strict order held; items 2/3 untouched; a 4th user item - firing
+perturbs the left hand - queued mid-session). The held Enrage charge proved
+out as the on-demand flat repro and split the FX in two: socket FX on the
+child model components RIDE the driven hand already (the vigor hand model
+attaches at L_Grip, the weapon at R_Grip - the attachment walker positions
+them from SpaceBases, which the render-side drive keeps composed), while the
+charge plume + ready sparkle (and per the headset, muzzle flash + tracer)
+stay CAMERA-ANCHORED at the authored offset. Four falsification lanes ran
+against the frozen family's position source: tick-time SpaceBases (the new
+dirty-count instrument: the eval restamps SpaceBases only 2 ticks in 12183 -
+our atoms stand, and the FX freeze anyway), GetPlayerViewPoint consumers
+(caller census identical with/without charge), all reachable attach lanes
+(child comps, pawn comps, actor Components, script XEmitterPool - empty),
+and the decoded effect-playback tick's per-record update (rva 0x3EC4C0,
+probe-hooked: ~2 calls/s, zero first-person - not the 90 Hz feed). Landed:
+the attach-walker hook (rva 0x2A1B20, vtable slot 43 + a new vtable-slot
+identity install gate) as instrument + eval-restamp edge cover, the
+`bsifx u` effect-update probe (default off), and a page of new layouts in
+ENGINE_NOTES (FAttachment, ParentAnimComponent redirect, the vigor-is-an-
+XWeapon slot map, the effect manager + tick-helper + record table). Session
+paused on the ask-when-blocked rule with three options for the user
+(continue the banked forks / redirect / re-scope). Harness: award dialogs
+replay on every checkpoint load; Enrage release = throw (burned the carpet,
+drained salts; Restart Checkpoint refills); trigger edges need the
+foreground-then-edge pattern. Inis restored byte-identical; nothing merged.
 
 ### Session 49b (Infinite) - 2026-08-10 - THE STANCE KILL: the 'Lowered' clamp, A-B-A proven, default ON
 

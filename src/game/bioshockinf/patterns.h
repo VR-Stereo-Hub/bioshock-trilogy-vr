@@ -597,6 +597,28 @@ inline constexpr uint32_t kSkelCompAttachmentsOffset = 0x1F0;
 inline constexpr uint8_t kSkelCompUpdateAttachmentsPrologue[] = {
     0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0x14, 0x01, 0x00, 0x00, 0x0F};
 
+// ---- THE EFFECT-UPDATE SEAM: per-record playback update (s50, I8) ----------
+//
+// The frozen-FX family's per-frame position feed. Derivation (ENGINE_NOTES
+// "s50", part 2): XEffectPlaybackManagerTickHelper's tick-interface thunk
+// (helper vtable slot 36: fld [esp+4]; this -= 0x28; jmp) leads to the real
+// tick at rva 0x436490, which iterates an active-effect table (stride 0x74,
+// [tickee+0x3C]/[tickee+0x40]) and calls THIS function once per live record:
+//   this  = the effect's component            (record+0x68)
+//   arg1  = the record                        (push esi)
+//   arg2  = &record.location (FVector)        (lea +0x18)
+//   arg3  = &record.rotation                  (lea +0x28)
+//   args 4..13 = record fields +0x3C..+0x65 and a literal 0
+// `ret 0x34` -> 13 stack args (the RTC rule). The location buffer arrives BY
+// POINTER, so a detour can rewrite it before the original consumes it - the
+// same call-original-substitute-the-buffer shape as fire.cpp, one level up.
+inline constexpr uint32_t kEffectUpdateRva = 0x3EC4C0;
+inline constexpr uint8_t kEffectUpdateRetImm = 0x34;
+// push -1; push 0x103d6c0 (EH frame; absolute is stable - fixed image base
+// behind the build gate); mov eax, fs:[0]
+inline constexpr uint8_t kEffectUpdatePrologue[] = {
+    0x6A, 0xFF, 0x68, 0xC0, 0xD6, 0x03, 0x01, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00};
+
 // **A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT.** `XEngine.ini` says
 // `FOVAngle=70` and `MaxUserFOVOffsetPercent=15`, which session 34 read as "the
 // native slider spans roughly 70 to 80.5 degrees". The RENDERED frustum spans

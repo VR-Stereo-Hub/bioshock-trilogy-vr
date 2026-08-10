@@ -813,6 +813,29 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S50 notes (FX-origin hunt; branch `si50-inf-fx-edge-flourish` - NO new headset checklist)
+
+Session 50 landed instruments, not perceptual changes - there is nothing new
+to judge in the headset beyond the standing s49b sweep. What changed in the
+build:
+
+- **`bsifx`** (default ON): the attachment-walker hook - repaints the composed
+  atoms before the engine positions attached child components. Measured a
+  no-op in steady state (the render drive already covers it); it absorbs the
+  rare eval-restamp ticks. `bsifx off` is the bisect if anything about the
+  weapon/vigor-hand models or their socket FX looks NEW-wrong.
+- **`bsifx u probe|on|off|dump <n>`** (default OFF): the effect-update seam
+  probe (per-record playback update, rva 0x3EC4C0). `u on` arms a
+  first-person position substitution that is NOT yet proven to catch the
+  frozen FX - treat it as an experiment lever only.
+- The frozen-FX family (charge plume, ready sparkle, muzzle flash, tracer)
+  is UNCHANGED this build - still camera-anchored. The hunt's state and the
+  open question to the user are in STATUS.md.
+- Flat-harness traps learned: award dialogs replay on every checkpoint load
+  (spam `btn a press` ~4x before any input works); Enrage HOLD charges and
+  RELEASE throws (mind the salts; `Restart Checkpoint` refills them); a sim
+  trigger edge only registers while the game window is FOCUSED.
+
 ## S49b checklist (THE STANCE KILL; branch `si49-inf-stance-lens-tracer`)
 
 **The stance is KILLED in this build, default ON.** Flat-proven A-B-A: with
