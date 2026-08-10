@@ -153,6 +153,9 @@ std::atomic<float> g_hudWidthM{1.25f};
 std::atomic<float> g_hudUpM{-0.10f};
 std::atomic<uint32_t> g_hudFramesSubmitted{0};
 std::atomic<bool> g_loggedFirstHudQuad{false};
+// s52: the HUD quad's texture provider (Infinite's GFx lane). Null = BS1's
+// bvr::hud::texture() path, byte-identical for games that never set it.
+std::atomic<HudTextureProviderFn> g_hudTexProvider{nullptr};
 
 // Cached backbuffer RTV for the post-capture window HUD composite.
 ID3D11RenderTargetView* g_backbufferRtv = nullptr;
@@ -3471,10 +3474,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
     }
 
     // HUD floating quad (session 19): head-locked, fed from the gameswf
-    // capture. Submitted only in projection mode with fresh HUD content and
+    // capture - or, s52, from a game-registered provider (Infinite's GFx
+    // lane). Submitted only in projection mode with fresh HUD content and
     // a live view space.
     if (layerCount && projectionMode && g_viewSpace != XR_NULL_HANDLE) {
-        ID3D11Texture2D* hudTex = bvr::hud::texture(g_context); // alpha-repaired
+        HudTextureProviderFn prov = g_hudTexProvider.load(std::memory_order_relaxed);
+        ID3D11Texture2D* hudTex =
+            prov ? prov(g_context) : bvr::hud::texture(g_context); // alpha-repaired
         if (hudTex) {
             D3D11_TEXTURE2D_DESC hd{};
             hudTex->GetDesc(&hd);
@@ -4532,6 +4538,10 @@ void get_hud_quad(float* distM, float* widthM, float* upM) {
     if (upM) *upM = g_hudUpM.load(std::memory_order_relaxed);
 }
 
+void set_hud_texture_provider(HudTextureProviderFn fn) {
+    g_hudTexProvider.store(fn, std::memory_order_relaxed);
+}
+
 void sr_push_eye(int eyeSign) {
     uint32_t head = g_srHead.load(std::memory_order_relaxed);
     uint32_t tail = g_srTail.load(std::memory_order_acquire);
@@ -4628,6 +4638,7 @@ void get_hud_quad(float* d, float* w, float* u) {
     if (w) *w = 0;
     if (u) *u = 0;
 }
+void set_hud_texture_provider(HudTextureProviderFn) {}
 
 } // namespace bvr::vr
 

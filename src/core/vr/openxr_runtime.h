@@ -11,6 +11,8 @@
 #include <cstdint>
 
 struct IDXGISwapChain;
+struct ID3D11DeviceContext;
+struct ID3D11Texture2D;
 
 namespace bvr::vr {
 
@@ -444,6 +446,13 @@ void set_aim_dot_slot(int slot, const AimDotConfig& cfg);
 // the VR preset; sliders in the VR overlay section.
 void set_hud_quad(float distM, float widthM, float upM);
 void get_hud_quad(float* distM, float* widthM, float* upM);
+
+// s52 (Infinite I9): the HUD quad's texture source, as a provider seam. When
+// set, the quad consumer prefers the provider's texture; null (the default,
+// and a null provider RESULT) falls through to bvr::hud::texture() - BS1's
+// path, byte-identical for games that never call this.
+using HudTextureProviderFn = ID3D11Texture2D* (*)(ID3D11DeviceContext* ctx);
+void set_hud_texture_provider(HudTextureProviderFn fn);
 
 // Session 33: the session's state as a short string ("FOCUSED", "SYNCHRONIZED",
 // "none"...) and whether it has EVER been FOCUSED. Cheap, for a heartbeat.

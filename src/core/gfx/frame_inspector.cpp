@@ -12,6 +12,7 @@
 
 #include "core/gfx/frame_inspector.h"
 
+#include "core/gfx/gfx_hud.h"
 #include "core/gfx/hud_capture.h"
 
 #include "core/util/log.h"
@@ -586,6 +587,22 @@ void STDMETHODCALLTYPE DrawIndexedDetour(ID3D11DeviceContext* ctx, UINT indexCou
         capture_draw_state(ctx, ev);
         --t_suppress;
     }
+    // s52 (Infinite I9): the GFx HUD lane - same substitution discipline as
+    // the session-19 block in DrawDetour (bind through the ORIGINAL SetRT so
+    // the classifier's own tracking never rolls). Armed-off cost: one relaxed
+    // load. Unlike BS1's gameswf, this game's UI run uses DrawIndexed too.
+    if (t_suppress == 0) {
+        bvr::gfx_hud::Decision d = bvr::gfx_hud::on_draw_indexed(ctx, indexCount);
+        if (d.redirectRtv) {
+            ++t_suppress;
+            g_origOMSetRenderTargets(ctx, 1, &d.redirectRtv, d.redirectDsv);
+            --t_suppress;
+        } else if (d.restoreRtv) {
+            ++t_suppress;
+            g_origOMSetRenderTargets(ctx, 1, &d.restoreRtv, d.restoreDsv);
+            --t_suppress;
+        }
+    }
     g_origDrawIndexed(ctx, indexCount, startIndex, baseVertex);
 }
 
@@ -629,6 +646,19 @@ void STDMETHODCALLTYPE DrawDetour(ID3D11DeviceContext* ctx, UINT vertexCount, UI
             --t_suppress;
         }
     }
+    // s52: the GFx HUD lane (Infinite) - see the DrawIndexed block.
+    if (t_suppress == 0) {
+        bvr::gfx_hud::Decision gd = bvr::gfx_hud::on_draw(ctx, vertexCount);
+        if (gd.redirectRtv) {
+            ++t_suppress;
+            g_origOMSetRenderTargets(ctx, 1, &gd.redirectRtv, gd.redirectDsv);
+            --t_suppress;
+        } else if (gd.restoreRtv) {
+            ++t_suppress;
+            g_origOMSetRenderTargets(ctx, 1, &gd.restoreRtv, gd.restoreDsv);
+            --t_suppress;
+        }
+    }
     g_origDraw(ctx, vertexCount, startVertex);
 }
 
@@ -668,6 +698,7 @@ void STDMETHODCALLTYPE OMSetRenderTargetsDetour(ID3D11DeviceContext* ctx, UINT n
                                                 ID3D11DepthStencilView* dsv) {
     g_callCensus[CxSetRT].fetch_add(1, std::memory_order_relaxed);
     if (t_suppress == 0) bvr::hud::on_setrt(numViews, rtvs, dsv);
+    if (t_suppress == 0) bvr::gfx_hud::on_setrt(numViews, rtvs, dsv);
     if (should_record()) {
         ++t_suppress;
         Event& ev = push_event(EventKind::SetRenderTargets, _ReturnAddress(),

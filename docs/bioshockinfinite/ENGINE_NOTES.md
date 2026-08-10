@@ -1224,6 +1224,47 @@ Populi variants and `Plasmid_Unlock_*` gear-side items, untested).
 `kMgrWeaponSlotsOffset 0x200` (dense list, first null ends it),
 `kUObjectArchetypeOffset 0x24`.
 
+### s52 part 3: THE HUD ON A QUAD - the GFx positional classifier, live
+
+**The frame structure (framedump census, gameplay with HUD visible):** the
+eye image reaches the backbuffer through ONE full-screen `DrawIndexed a=6`
+(no depth bound, srv0 = a full-res fmt-26 R11G11B10 RT, vp = backbuffer
+dims) - the tonemap blit; EVERY later backbuffer draw is the UI run
+(`ret 0x492284` DrawIndexed batches + `ret 0x4920FF` Draws, dsv=depth BOUND,
+srv0 = BC3/atlas textures 2052x620, 832x64, 1024x1024...). The blit and the
+UI run SHARE ret 0x492284 (both GFx-family), so a return-address classifier
+cannot separate them - the POSITIONAL rule can, exactly as DR-I7 predicted.
+
+**The shipped mechanism (`core/gfx/gfx_hud.cpp`, adapter lane
+`bioshockinf/hud.cpp`):** detect the boundary blit per present window;
+REDIRECT every later backbuffer draw into a transparent-cleared capture RT;
+feed that RT to the existing session-19 HUD quad via the new
+`vr::set_hud_texture_provider` seam (BS1's `bvr::hud::texture()` path
+untouched when unset). The present-time eye capture then carries a HUD-free
+image with NO eye-source rerouting - the fmt-26 copy problem never arises.
+Frames with no boundary blit (Bink movies, loading screens, menus without a
+scene) classify NOTHING - the movie/loading image stays on the backbuffer
+and the stale-publish quad shows it, which is what makes the lane
+cinematics-safe by construction. The redirect engages only while
+`vr::session_live()` (hud::tick) so a flat boot keeps its window HUD.
+
+**Measured live (Blue Ribbon save, sim):** boundaries on 94% of frames (the
+rest are load/menu presents - the designed miss); 1.09M HUD draws
+redirected across 30k frames with zero classifier flap; the pause menu
+lands ON THE QUAD (readable panel, scene grayed behind); award dialogs land
+on the quad too (they are UI-run content - the dark backdrop seen on the
+panel was the dialog's own dim layer, not an alpha bug).
+
+**Full-screen effects fork ANSWERED:** the RPG explosion (sparks, smoke,
+debris) is SCENE-SPACE - already across the whole eye image, nothing to
+route. The hurt/damage overlay is GFx: full-screen-ish post-boundary draws
+ran ~0.3/frame at rest and ~3.6/frame during an RPG self-hit. Those are
+tiny-count draws (<= 12 indices/vertices), so gfx_hud passes them through
+to the EYE IMAGE (default ON, `bsihud fx on|off` + F10 checkbox is the
+in-headset A/B); census proof: redirected == hudDraws - bigPostDraws
+exactly, and the at-rest passthrough leaks no visible widget into the eye
+captures. Verbs: `bsihud on|off|status|redirect on|off|fx on|off`.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

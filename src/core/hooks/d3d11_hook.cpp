@@ -2,6 +2,7 @@
 
 #include "core/framework/command.h"
 #include "core/gfx/frame_inspector.h"
+#include "core/gfx/gfx_hud.h"
 #include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
 #include "core/util/crash.h"
@@ -132,6 +133,7 @@ HRESULT WINAPI PresentDetour(IDXGISwapChain* swapchain, UINT syncInterval, UINT 
             device->GetImmediateContext(&context);
             if (context) {
                 hud::on_present(context, swapchain);
+                gfx_hud::on_present(context, swapchain); // s52: the GFx HUD lane
                 context->Release();
             }
             device->Release();

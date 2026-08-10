@@ -14,6 +14,7 @@
 #include "game/bioshockinf/fire.h"
 #include "game/bioshockinf/fxorigin.h"
 #include "game/bioshockinf/hands.h"
+#include "game/bioshockinf/hud.h"
 #include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
 #include "game/bioshockinf/patterns.h"
@@ -81,6 +82,9 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // s52: per-weapon overrides (weapons.ini). File read only; applies happen
     // on the game thread's identity poll (profiles::tick).
     profiles::init();
+    // s52: the GFx HUD lane - classifier armed; the redirect engages per-tick
+    // only while an XR session is live (hud::tick).
+    hud::init();
 
     // S43b, HEADSET-VERIFIED (user, 2026-08-06): this engine's renderer is
     // threaded with OneFrameThreadLag, so presented content is TWO locate
@@ -169,6 +173,7 @@ void BioshockInfAdapter::drawDebugUi() {
     aim::draw_debug_ui();
     fire::draw_debug_ui();
     fxorigin::draw_debug_ui();
+    hud::draw_debug_ui();
     profiles::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
@@ -203,6 +208,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (bones::handle_command(cmd, args)) return true;
     if (profiles::handle_command(cmd, args)) return true;
     if (arsenal::handle_command(cmd, args)) return true;
+    if (hud::handle_command(cmd, args)) return true;
     if (strcmp(cmd, "reentry") == 0) {
         if (!scenedraw::handle_command(args))
             BVR_LOG("[bsi] reentry: unknown subcommand. reentry status|reset|pulse [n]|"

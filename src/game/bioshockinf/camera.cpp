@@ -15,6 +15,7 @@
 #include "core/util/log.h"
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/game_ini.h"
+#include "game/bioshockinf/hud.h"
 #include "game/bioshockinf/profiles.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/input_drive.h"
@@ -1407,6 +1408,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     apply_pending_resolution();
     config::tick(); // F10-posted preset save/load ops (file IO on this thread)
     profiles::tick(); // s52: ~1 Hz equipped-weapon identity poll + capture/apply
+    hud::tick();      // s52: HUD-redirect gate follows the XR session's liveness
     // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
     // Load restores the whole session shape - the user's call, overriding the
     // earlier latch-then-click design). Same game-thread lane as the picker.

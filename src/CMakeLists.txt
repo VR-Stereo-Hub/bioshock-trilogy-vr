@@ -23,6 +23,8 @@ add_library(bioshockvr SHARED
     core/gfx/blit.h
     core/gfx/frame_inspector.cpp
     core/gfx/frame_inspector.h
+    core/gfx/gfx_hud.cpp
+    core/gfx/gfx_hud.h
     core/gfx/hud_capture.cpp
     core/gfx/hud_capture.h
     core/hooks/d3d11_hook.cpp
@@ -117,6 +119,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/fxorigin.h
     game/bioshockinf/hands.cpp
     game/bioshockinf/hands.h
+    game/bioshockinf/hud.cpp
+    game/bioshockinf/hud.h
     game/bioshockinf/config.cpp
     game/bioshockinf/config.h
     game/bioshockinf/game_ini.cpp
