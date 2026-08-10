@@ -813,28 +813,46 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
-## S50 notes (FX-origin hunt; branch `si50-inf-fx-edge-flourish` - NO new headset checklist)
+## S50 checklist (eye tags, THE FLOURISH BUTTON, the fire-swing kill; branch `si50-inf-fx-edge-flourish`)
 
-Session 50 landed instruments, not perceptual changes - there is nothing new
-to judge in the headset beyond the standing s49b sweep. What changed in the
-build:
+Three levers this build, all default ON, all flat-proven, each with its own
+in-headset A/B. The frozen-FX family (charge plume, ready sparkle, muzzle
+flash, tracer) is UNCHANGED - the hunt was re-scoped by your call and its
+instruments are banked for a later session.
 
-- **`bsifx`** (default ON): the attachment-walker hook - repaints the composed
-  atoms before the engine positions attached child components. Measured a
-  no-op in steady state (the render drive already covers it); it absorbs the
-  rare eval-restamp ticks. `bsifx off` is the bisect if anything about the
-  weapon/vigor-hand models or their socket FX looks NEW-wrong.
-- **`bsifx u probe|on|off|dump <n>`** (default OFF): the effect-update seam
-  probe (per-record playback update, rva 0x3EC4C0). `u on` arms a
-  first-person position substitution that is NOT yet proven to catch the
-  frozen FX - treat it as an experiment lever only.
-- The frozen-FX family (charge plume, ready sparkle, muzzle flash, tracer)
-  is UNCHANGED this build - still camera-anchored. The hunt's state and the
-  open question to the user are in STATUS.md.
-- Flat-harness traps learned: award dialogs replay on every checkpoint load
-  (spam `btn a press` ~4x before any input works); Enrage HOLD charges and
-  RELEASE throws (mind the salts; `Restart Checkpoint` refills them); a sim
-  trigger edge only registers while the game window is FOCUSED.
+1. **Non-regression sweep FIRST (60 s)**: tracking, sync, both-hand aim,
+   hole-on-dot, locomotion, the stance still dead (fire once, idle 3+ min -
+   the s49b kill is untouched). Anything off: the three new checkboxes/
+   commands below first.
+2. **THE FLOURISH BUTTON: touch the LEFT THUMBREST and press A.** Expect the
+   full show-off gesture on the vigor hand ~2 s after the press (the graph
+   blends into the lowered lane first), the pose returning to ready ~5 s
+   later, NO 101-deg settle stick, and NO jump firing while your thumb is on
+   the rest (A alone still jumps). `bsiflourish` from the console fires the
+   same lane. Judge: does the gesture read right? Is the ~2 s lead
+   acceptable, or should the window/lead be tuned (both are constants -
+   kFlourishLeadMs/kFlourishTailMs)?
+3. **THE FIRE-SWING: fire the pistol and WATCH YOUR LEFT HAND.** It should
+   stay exactly on the controller through the shot (the 95.6 deg whip is
+   killed). A/B: `bsibones fireglue off` brings the whip back within one
+   shot; `on` restores. Also judge the RIGHT hand through shots - the glue
+   window also damps the weapon-hand recoil visual for 1.5 s (measured 21 ->
+   ~6 deg residual): better, worse, or tune?
+4. **THE FOV-EDGE DRIFT: the eye-tag A/B.** Hold your right hand at a fixed
+   depth and sweep it LEFT of view center, then RIGHT (the s49b symptom:
+   left pulls closer, right pushes away). Then `bsicam eyetag off` (the old
+   tags) and repeat. Judge: does the drift shrink/vanish with the new tags
+   (default, `eyetag on`)? If the asymmetry reads IDENTICAL in both modes,
+   say so - that exonerates the pose tags and the next suspects are
+   runtime-side. (Flat could not reproduce this one - the sim's runtime has
+   no cant; the fix is correct-by-construction, your eyes are the
+   instrument.)
+5. Watch for anything NEW-wrong near the weapon/vigor-hand models or their
+   socket FX (`bsifx off` is the bisect for the attach-walker edge cover;
+   measured a steady-state no-op).
+
+Expected noise: unchanged. The award-dialog queue replays on every
+checkpoint load (a few A presses); Enrage HOLD charges, RELEASE throws.
 
 ## S49b checklist (THE STANCE KILL; branch `si49-inf-stance-lens-tracer`)
 

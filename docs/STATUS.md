@@ -17,13 +17,41 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 50 (FX-origin hunt - the frozen family mapped, the position feed still unfound, session PAUSED ON A QUESTION; branch `si50-inf-fx-edge-flourish`)
+### Infinite: current state after session 50 (three fixes shipped - eye tags, THE FLOURISH BUTTON, the fire-swing kill; FX-origin re-scoped by the user; branch `si50-inf-fx-edge-flourish`, NOT merged)
 
-**Session 50 (2026-08-10, overnight) worked s49b item 1 (the FX-origin seam)
-and went deep without landing the family fix. Items 2 (FOV-edge drift) and 3
-(flourish button) were NOT started per the strict-order directive; a fourth
-item arrived mid-session (user: firing perturbs the LEFT hand - "shooting
-shouldn't affect the left hand") and is queued behind them.**
+**Session 50 (2026-08-10, overnight) worked the s49b items in strict order.
+Item 1 (FX-origin) hit the ask-when-blocked rule mid-session; the user
+answered "re-scope, move on" - items 2, 3 and the mid-session item 4 then
+ALL landed with flat proof. Everything below awaits the headset verdict
+(checklist in TESTING "S50").**
+
+**SHIPPED THIS SESSION (all default ON, each with its own A/B lever):**
+1. **Rendered-pose eye tags** (item 2, the FOV-edge drift lever) - the
+   projection layer now describes the parallel camera the game actually
+   renders (located-pair midpoint +- ipd-slider/2) instead of the runtime's
+   raw located per-eye poses. The compose chain itself was exonerated for
+   the sign-flipping depth symptom; the pose-tag claim-vs-render violation
+   is the one mechanism found that produces it (cant/IPD delta -> off-center
+   disparity error, near-field visible). Identity on the sim (flat-proven);
+   core change additive + opt-in, BS1/BS2 untouched. A/B: `bsicam eyetag
+   on|off`.
+2. **THE FLOURISH BUTTON** (item 3) - **left thumbrest (touched) + A**, or
+   `bsiflourish`. Why it was lost: under the clamp a SubtleFidget play is a
+   visual NO-OP (the response lives in the lowered subgraph). The shipped
+   recipe holds 'Lowered' at 1.0 for a 6.3 s window (clamp-value override),
+   fires the engine impl after a 1.8 s blend-in, then the kill resumes.
+   Flat A-B-A: baseline -> 8.15 (full gesture) -> 0.5 (ready, no stick).
+   A is consumed while the rest is touched (no jump under the chord); the
+   SetTimer re-arm is measured benign. BS1/BS2 pads untouched.
+3. **The fire-swing kill** (item 4, user mid-session: "shooting shouldn't
+   affect the left hand") - flat-measured 95.58 deg of left-anchor rotation
+   through one right-hand shot (idle 0.00); the engine's fire anim moves the
+   authored left grip and the compose passed it through. Fix: the s46 glue
+   correction, FIRE-SCOPED (1500 ms around each player shot) so the
+   flourish/cast anims stay untouched. A-B-A: ON 0.00 / OFF 95.58 / ON +
+   flourish still full-amplitude. A/B: `bsibones fireglue on|off`.
+
+**ITEM 1 (FX-origin) - re-scoped by the user, banked for a later session:**
 
 **What is PROVEN and banked (flat, this session):**
 - The held vigor charge is the on-demand repro exactly as predicted. The FX
@@ -63,13 +91,17 @@ drained the salts - `Restart Checkpoint` refills them); the game eats
 trigger edges while unfocused-paused, so sim input needs the
 foreground-then-edge pattern (focused-input.ps1 in the session scratchpad).
 
-**THE QUESTION FOR THE USER (session paused here per the ask-when-blocked
-rule):** the frozen family's per-frame position writer survived every lane I
-could derive tonight. Options I see: (a) next session continues the hunt
-with the banked forks (probe ALL records through 0x3EC4C0 + its other
-callers, instrument the tick table, the record stamp-pair globals); (b) you
-have a hunch/knowledge that redirects it; (c) re-scope - accept camera-
-anchored FX for now, proceed to items 2/3. Say the word.
+**The user's mid-session call: re-scope (option c).** The hunt resumes in a
+later session from the banked forks: probe ALL records through the
+effect-update seam (rva 0x3EC4C0, `bsifx u` - installed, probe default off)
+and its other callers, instrument the decoded tick table (helper vtable
+slot 36 -> rva 0x436490, stride-0x74 records), and the record stamp-pair
+globals (0x135DC68/6C). The riders half of the family (weapon + vigor-hand
+models and their socket FX) follows the driven hand ALREADY.
+
+**NEXT SESSION:** headset verdicts on the three levers above (checklist in
+TESTING "S50"), then either the FX-origin hunt's banked forks or the s49b
+leftovers (wrist refinement, SingleLineCheck) per the user's call.
 
 ### Infinite: state after session 49b (kept for the record; superseded by s50 above) (THE STANCE IS KILLED - the 'Lowered' clamp, A-B-A proven, ships default ON; branch `si49-inf-stance-lens-tracer`)
 
@@ -6628,7 +6660,38 @@ and it resumes.
 
 ## Session log (newest first)
 
-### Session 50 (Infinite) - 2026-08-10 (overnight) - the FX-origin hunt: frozen family mapped, position feed unfound, paused on a question
+### Session 50 (Infinite) - 2026-08-10 (overnight) - FX-origin hunt re-scoped; eye tags, THE FLOURISH BUTTON, and the fire-swing kill shipped
+
+Second half (after the user's mid-session "re-scope" call on item 1): three
+levers landed, each flat-proven with its own A/B. (2) RENDERED-POSE EYE TAGS
+- the FOV-edge drift's one surviving mechanism: the projection layer tagged
+the runtime's located per-eye poses over images rendered from OUR parallel
+camera (base +- ipd-slider/2); the claim now matches the render (located
+midpoint + nlerp orientation +- ipd/2). Identity on the sim (EyeSeparationM
+0.063 both modes, per-eye diffs under the ambient floor); the compose chain
+itself exonerated by inspection + the s48 lag probe; core change additive,
+BSI-armed only; `bsicam eyetag on|off`. (3) THE FLOURISH BUTTON - measured
+twice that a SubtleFidget play under the clamp is a visual no-op (the
+response lives in the lowered subgraph; the natural timer chain fires all
+session as no-ops - the flourish was un-answered, not un-scheduled). The
+shipped recipe: a 6.3 s 'Lowered'=1.0 window (clamp-value override inside
+the funnel rewrite), the engine impl called at +1.8 s via the trampoline
+(SEH-isolated), the kill resumes on lapse. A-B-A img-diff 0.5 -> 8.15 ->
+0.5. Chord: left thumbrest + A (core XR-composer addition, BSI-armed only,
+A consumed under the chord), plus `bsiflourish`. (4) the mid-session user
+report "shooting shouldn't affect the left hand": the travel instrument
+measured a 95.58 deg left-anchor rotation through one right-hand shot
+(idle 0.00) - the fire anim moves the authored left grip and the compose
+passes whole-hand authored swings through. Fix: the retired s46 glue
+correction, FIRE-SCOPED to 1500 ms around each player shot. A-B-A: 0.00 /
+95.58 / 0.00 with the flourish still full-amplitude. First half: the
+FX-origin hunt (part 1 of this log entry, below) - the frozen family
+mapped, four position-source theories falsified by measurement, the
+attach-walker + effect-update seams derived and probe-hooked, re-scoped by
+the user. All levers to the headset checklist (TESTING "S50"); inis
+restored byte-identical; nothing merged.
+
+### Session 50 part 1 (Infinite) - 2026-08-10 (overnight) - the FX-origin hunt: frozen family mapped, position feed unfound, paused on a question
 
 Branch `si50-inf-fx-edge-flourish` off a7ba268. Item 1 of the s49b handoff
 only (strict order held; items 2/3 untouched; a 4th user item - firing
