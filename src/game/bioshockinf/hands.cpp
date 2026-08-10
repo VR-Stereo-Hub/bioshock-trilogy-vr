@@ -9,6 +9,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/bones.h"
+#include "game/bioshockinf/cine.h"
 
 #include "imgui.h"
 
@@ -58,7 +59,11 @@ bool g_lastGpValid[2] = {};
 
 void on_view(const FrameContext& fc, uint64_t nowMs) {
     (void)nowMs;
-    const bool want = g_on.load(std::memory_order_relaxed) && fc.valid;
+    // s52: a cinematic hold releases the hand drive THROUGH this tick's own
+    // per-hand edge (the BS2 s29 lesson: never release from the cine edge
+    // itself) - the game's authored hands come back the next engine restamp.
+    const bool want =
+        g_on.load(std::memory_order_relaxed) && fc.valid && !cine::hold();
     const bool useAim = g_useAimPose.load(std::memory_order_relaxed);
     const int armsMode = g_armsMode.load(std::memory_order_relaxed);
     const bool animMode = g_animMode.load(std::memory_order_relaxed);

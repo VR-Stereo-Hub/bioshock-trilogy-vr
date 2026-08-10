@@ -109,6 +109,11 @@ void last_composed_buttons(uint16_t* buttons);
 // off - no other game's composed pad changes by a single bit.
 void arm_flourish_chord(bool on);
 uint32_t flourish_chord_edges();
+// s52: cinematic-scoped chord suspension - while true the chord neither
+// consumes A nor counts edges, so an interactive cinematic's confirm press
+// reaches the game. Set/cleared by the game adapter's cinematic gate; BS1/
+// BS2 never call it (their chord is never armed anyway).
+void set_flourish_chord_suspended(bool on);
 
 // Session 22: the FINAL composed sticks the game consumed (post merge/
 // pitchkill/turn controls) - the movement-wonkiness instrument reads them.

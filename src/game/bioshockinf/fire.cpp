@@ -6,6 +6,7 @@
 #include "game/bioshockinf/aim.h"
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/cine.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/patterns.h"
@@ -101,8 +102,9 @@ FVector* __fastcall FireStartDetour(void* self, void* edx, FVector* out, void* w
 
     // The hand origin, from the SAME chain the aim dot uses: same latched
     // hand, same trim, same frame basis - agreement by construction.
+    // s52: authored cinematics keep their own trace origins (cine::hold).
     const FrameContext& fc = camera::frame_context();
-    if (!fc.valid) {
+    if (!fc.valid || cine::hold()) {
         g_noCtx.fetch_add(1, std::memory_order_relaxed);
         return r;
     }

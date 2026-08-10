@@ -1265,6 +1265,47 @@ in-headset A/B); census proof: redirected == hudDraws - bigPostDraws
 exactly, and the at-rest passthrough leaks no visible widget into the eye
 captures. Verbs: `bsihud on|off|status|redirect on|off|fx on|off`.
 
+### s52 part 4: THE CINEMATIC GATE - Matinee detector, head radio, chord suspension
+
+**The two-class insight that shrank the work:** Bink FMV needs NO detector on
+this architecture - the camera seam goes silent while presents continue, so
+every drive stops writing by construction (hands/aim/fire all hang off
+camera-driven ticks), core's stale-publish leg quads the movie (the exact
+pre-drive-era behaviour the user already judged perfect), and the gfx_hud
+classifier touches nothing (no boundary blit in a movie frame - measured: the
+6% of frames without a boundary count zero HUD draws). Only ENGINE MATINEE
+needs detection, because there the camera keeps dispatching with an authored
+view target.
+
+**The detector (`cine.cpp`):** ~2 Hz game-thread poll of the PC's
+`GetViewTarget` (ProcessEvent by name, GNames 17299; no-arg - return at
+parms+0), class-named via the fixpoint-gated walker, hysteresis 2 polls.
+Verdict = class contains Matinee/CameraActor/Cinematic. Live: 464+ polls,
+0 fails, and the possession chain is visible in the edge log ('' ->
+XPlayerController at the menu -> XHuman on possession). `bsicine force
+on|off` fakes a hold for edge testing.
+
+**Measured on the forced hold:** exactly ONE `bones::release` per hand ("21
+bones handed back to the engine's restamp"), released from the hands tick's
+own per-hand edge (the BS2 s29 lesson); re-arm on close with no flap; the
+flourish chord SUSPENDED on open / resumed on close (`set_flourish_chord_
+suspended`, new core seam - A passes through to interactive prompts, the
+raffle lesson); the HEAD RADIO both ways under `head rot 30`: "fixed head"
+pins the final rot to the engine's own (lane=off, authored camera untouched,
+eye offsets still apply), "head look" (default, `cineHeadLook` key) composes
+-120 = -90 + 30 additive. aim ray substitution, laser/dot publishes and the
+fire-origin substitution carry the same one-line `!cine::hold()` gates
+(hands-gate shape); their runtime A/B rides the headset cinematic run.
+
+**Harness note (recorded, NOT a mod bug):** in three consecutive sim boots
+the game stopped calling XInputGetState entirely - the bridge's iat counter
+climbed while getstate[0] read 0/s, and a `vrinput test press A 2000` with
+padlog on composed NOTHING (compose_over only runs on the game's own calls).
+XUserOptions.ini byte-identical throughout; earlier boots of the SAME
+binaries polled fine (the first gfx_hud build had a working pad). Reads as a
+boot-time "no pad" latch race in the game. The headset lane is unaffected
+(every VDXR session drives the same synthetic bridge with real Touch input).
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

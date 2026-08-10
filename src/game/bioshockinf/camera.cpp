@@ -13,6 +13,7 @@
 #include "core/input/xinput_bridge.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
+#include "game/bioshockinf/cine.h"
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/game_ini.h"
 #include "game/bioshockinf/hud.h"
@@ -657,12 +658,17 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         hp.qw = q[3];
         driveHead = true; // sim lane stays ungated for flat tests
         lane = "sim";
-    } else if (g_driveEnabled.load(std::memory_order_relaxed) && bvr::vr::get_head_pose(hp)) {
+    } else if (g_driveEnabled.load(std::memory_order_relaxed) &&
+               !(cine::hold() && !cine::head_look()) && bvr::vr::get_head_pose(hp)) {
         // Live lane. Gated on the adapter's own flag plus a valid located
         // pose - NOT on vr_camera_mode(): camera mode flips core's submission
         // from the quad to a projection layer, and I4 is the MonoTracked rung
         // (head-driven camera UNDER the quad). set_camera_mode is never
         // called anywhere in this adapter until I5.
+        // s52: the cinematic HEAD RADIO - "fixed head" suspends the drive for
+        // the hold (authored camera untouched, per-eye offsets still apply
+        // below); "head look" (default) leaves the additive drive on, which
+        // the stereo-only build already proved comfortable in cinematics.
         driveHead = true;
         liveHead = true;
         lane = "live";
@@ -925,6 +931,8 @@ float cfg_get_snapturn() { return bvr::input::snap_turn() ? 1.0f : 0.0f; }
 void cfg_set_snapturn(float v) { bvr::input::set_snap_turn(v != 0.0f); }
 float cfg_get_snapangle() { return bvr::input::snap_angle_deg(); }
 void cfg_set_snapangle(float v) { bvr::input::set_snap_angle_deg(v); }
+float cfg_get_cinehead() { return cine::head_look() ? 1.0f : 0.0f; }
+void cfg_set_cinehead(float v) { cine::set_head_look(v != 0.0f); }
 
 constexpr config::KeyDesc kConfigKeys[] = {
     {"worldScale", cfg_get_world_scale, cfg_set_world_scale, 1.0f, 500.0f},
@@ -970,6 +978,7 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"inputBodyFollow", cfg_get_bodyfollow, cfg_set_bodyfollow, 0.0f, 1.0f},
     {"inputSnapTurn", cfg_get_snapturn, cfg_set_snapturn, 0.0f, 1.0f},
     {"inputSnapAngleDeg", cfg_get_snapangle, cfg_set_snapangle, 15.0f, 90.0f},
+    {"cineHeadLook", cfg_get_cinehead, cfg_set_cinehead, 0.0f, 1.0f},
 };
 
 // ---------------------------------------------------------------------------
@@ -1409,6 +1418,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     config::tick(); // F10-posted preset save/load ops (file IO on this thread)
     profiles::tick(); // s52: ~1 Hz equipped-weapon identity poll + capture/apply
     hud::tick();      // s52: HUD-redirect gate follows the XR session's liveness
+    cine::tick(now);  // s52: ~2 Hz view-target poll (the Matinee detector)
     // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
     // Load restores the whole session shape - the user's call, overriding the
     // earlier latch-then-click design). Same game-thread lane as the picker.

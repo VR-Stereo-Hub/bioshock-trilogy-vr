@@ -9,6 +9,7 @@
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/aim.h"
 #include "game/bioshockinf/arsenal.h"
+#include "game/bioshockinf/cine.h"
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/fidget.h"
 #include "game/bioshockinf/fire.h"
@@ -174,6 +175,7 @@ void BioshockInfAdapter::drawDebugUi() {
     fire::draw_debug_ui();
     fxorigin::draw_debug_ui();
     hud::draw_debug_ui();
+    cine::draw_debug_ui();
     profiles::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
@@ -209,6 +211,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (profiles::handle_command(cmd, args)) return true;
     if (arsenal::handle_command(cmd, args)) return true;
     if (hud::handle_command(cmd, args)) return true;
+    if (cine::handle_command(cmd, args)) return true;
     if (strcmp(cmd, "reentry") == 0) {
         if (!scenedraw::handle_command(args))
             BVR_LOG("[bsi] reentry: unknown subcommand. reentry status|reset|pulse [n]|"

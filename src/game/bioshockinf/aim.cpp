@@ -5,6 +5,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
+#include "game/bioshockinf/cine.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/patterns.h"
@@ -348,10 +349,15 @@ FRotator* __fastcall AimDetour(void* self, void* edx, FRotator* outBuf) {
     // Slot 0 is the RIGHT hand and slot 1 the left, matching BS2's convention
     // (slot 0 keeps BS1 parity there); a hand whose pose is missing publishes
     // disabled rather than stale.
-    publish_dot(0, 1, rays[1], poses[1], have[1] && g_dot[1].load(std::memory_order_relaxed));
-    publish_dot(1, 0, rays[0], poses[0], have[0] && g_dot[0].load(std::memory_order_relaxed));
-    publish_laser(0, 1, have[1] && g_laser[1].load(std::memory_order_relaxed));
-    publish_laser(1, 0, have[0] && g_laser[0].load(std::memory_order_relaxed));
+    // s52: no beams through an authored shot - the laser/dot quads drop for
+    // the duration of a cinematic hold and return on release.
+    const bool noCine = !cine::hold();
+    publish_dot(0, 1, rays[1], poses[1],
+                noCine && have[1] && g_dot[1].load(std::memory_order_relaxed));
+    publish_dot(1, 0, rays[0], poses[0],
+                noCine && have[0] && g_dot[0].load(std::memory_order_relaxed));
+    publish_laser(0, 1, noCine && have[1] && g_laser[1].load(std::memory_order_relaxed));
+    publish_laser(1, 0, noCine && have[0] && g_laser[0].load(std::memory_order_relaxed));
 
     const FRotator ray = rays[hand];
     const bool haveRay = have[hand];
@@ -372,7 +378,10 @@ FRotator* __fastcall AimDetour(void* self, void* edx, FRotator* outBuf) {
         g_lastDivergenceDeg.store(sqrtf(dYaw * dYaw + dPitch * dPitch),
                                   std::memory_order_relaxed);
 
-        if (g_substitute.load(std::memory_order_relaxed)) {
+        if (g_substitute.load(std::memory_order_relaxed) && !cine::hold()) {
+            // s52: an authored cinematic keeps its own aim - the substituted
+            // ray would swing the shot camera / tracked props with the
+            // controller during a hold.
             *r = ray;
             g_subs.fetch_add(1, std::memory_order_relaxed);
         }

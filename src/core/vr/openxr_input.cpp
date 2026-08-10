@@ -149,6 +149,10 @@ bool g_thumbrestSeen[2] = {false, false};
 // game thread. Left thumbrest for the same reason the flick modifier uses
 // it: the chord is necessarily cross-hand (A sits under the right thumb).
 std::atomic<bool> g_flourishChordArmed{false};
+// s52: cinematic-scoped suspension - while set, the chord neither consumes A
+// nor counts edges, so an interactive prompt's confirm press reaches the
+// game (the raffle lesson). Set/cleared by the adapter's cinematic gate.
+std::atomic<bool> g_flourishChordSuspended{false};
 std::atomic<uint32_t> g_flourishChordEdges{0};
 bool g_chordAWasDown = false;
 XrAction g_poseL = XR_NULL_HANDLE;     // grip poses - hand position (M7 hands)
@@ -643,7 +647,8 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // s50 (Infinite): the flourish chord - see the state block. The edge
         // requires the rest ALREADY touched at the press, so a plain jump
         // with a thumb that later brushes the rest never fires it.
-        if (g_flourishChordArmed.load(std::memory_order_relaxed)) {
+        if (g_flourishChordArmed.load(std::memory_order_relaxed) &&
+            !g_flourishChordSuspended.load(std::memory_order_relaxed)) {
             const bool aDown = read_bool(session, g_btnA);
             if (restL) {
                 pad.buttons &= ~map.faceA; // consume A while chorded
@@ -732,6 +737,13 @@ void arm_flourish_chord(bool on) {
 
 uint32_t flourish_chord_edges() {
     return bvr::vr::g_flourishChordEdges.load(std::memory_order_relaxed);
+}
+
+void set_flourish_chord_suspended(bool on) {
+    const bool was =
+        bvr::vr::g_flourishChordSuspended.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr-input: flourish chord %s", on ? "SUSPENDED (A passes through)" : "resumed");
 }
 
 } // namespace bvr::input
