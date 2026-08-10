@@ -176,6 +176,7 @@ void BioshockInfAdapter::drawDebugUi() {
     fxorigin::draw_debug_ui();
     hud::draw_debug_ui();
     cine::draw_debug_ui();
+    arsenal::draw_debug_ui();
     profiles::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();

@@ -1078,7 +1078,11 @@ void cmd_call_at(const char* args) {
 void* do_load_object(const char* args) {
     while (args && *args == ' ') ++args;
     if (!args || !*args) return nullptr;
-    const int32_t nameIndex = patterns::fname_find("DynamicLoadObject");
+    // s52 round 2: index cached per boot - the give-all button loads 13
+    // archetypes in one tick, and 13 whole-pool scans would hitch seconds.
+    static int32_t s_dloIdx = -1;
+    if (s_dloIdx < 0) s_dloIdx = patterns::fname_find("DynamicLoadObject");
+    const int32_t nameIndex = s_dloIdx;
     if (nameIndex < 0) {
         BVR_LOG("[bsi] load: REFUSED - 'DynamicLoadObject' not in GNames");
         return nullptr;

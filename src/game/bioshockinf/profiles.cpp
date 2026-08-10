@@ -159,32 +159,42 @@ void load_file() {
 }
 
 // The equipped identity for one selector (0 gun / 1 vigor), as the archetype
-// name. False when the reflection gates are closed or nothing is equipped.
-bool equipped_key(int selector, char* out, size_t outSize) {
+// name. Tri-state (s52 round 2): Unavailable = gates closed / unreadable -
+// keep the last key, do NOTHING; Empty = the hand genuinely holds nothing -
+// the synthetic "NoWeapon"/"NoVigor" key, so the bare hands get their own
+// tunable entry (the user's early-game misaligned-arms verdict; dialing that
+// entry's scale to the floor IS the hide-arms fallback); Ok = archetype name.
+enum class KeyState { Unavailable, Empty, Ok };
+KeyState equipped_key(int selector, char* out, size_t outSize) {
     out[0] = '\0';
     void* pc = camera::last_player_controller();
     if (!pc || !bvr::pattern_scan::is_memory_valid(pc, patterns::kPcPawnOffset + 4))
-        return false;
+        return KeyState::Unavailable;
     void* pawn = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(pc) +
                                                  patterns::kPcPawnOffset);
-    if (!pawn) return false;
+    if (!pawn) return KeyState::Unavailable;
     // fname_find never on a cadence (the s52 stutter) - index cached per boot.
     static int32_t s_gewIdx = -1;
     if (s_gewIdx < 0) s_gewIdx = reflect::find_function_index("GetEquippedWeapon");
-    if (s_gewIdx < 0) return false;
+    if (s_gewIdx < 0) return KeyState::Unavailable;
     uint8_t parms[64] = {};
     memcpy(parms, &selector, sizeof selector);
-    if (!reflect::call_on_object_by_index(pawn, s_gewIdx, parms)) return false;
+    if (!reflect::call_on_object_by_index(pawn, s_gewIdx, parms))
+        return KeyState::Unavailable;
     void* instance = nullptr;
     memcpy(&instance, parms + 4, sizeof instance); // return slot after the selector
-    if (!instance ||
-        !bvr::pattern_scan::is_memory_valid(instance, patterns::kUObjectArchetypeOffset + 4))
-        return false;
+    if (!instance) {
+        strcpy_s(out, outSize, selector == 0 ? "NoWeapon" : "NoVigor");
+        return KeyState::Empty;
+    }
+    if (!bvr::pattern_scan::is_memory_valid(instance, patterns::kUObjectArchetypeOffset + 4))
+        return KeyState::Unavailable;
     void* archetype = *reinterpret_cast<void* const*>(
         static_cast<const uint8_t*>(instance) + patterns::kUObjectArchetypeOffset);
     const int32_t ni = reflect::object_name_index(archetype);
-    if (ni <= 0 || ni >= patterns::fname_count()) return false;
-    return patterns::fname_text(ni, out, outSize) && out[0];
+    if (ni <= 0 || ni >= patterns::fname_count()) return KeyState::Unavailable;
+    return (patterns::fname_text(ni, out, outSize) && out[0]) ? KeyState::Ok
+                                                              : KeyState::Unavailable;
 }
 
 // selector 0 (gun) rides the RIGHT hand's levers (hand 1); selector 1
@@ -193,7 +203,7 @@ constexpr int kHandForSelector[2] = {1, 0};
 
 void poll_hand(int selector) {
     char key[64];
-    if (!equipped_key(selector, key, sizeof key)) return;
+    if (equipped_key(selector, key, sizeof key) == KeyState::Unavailable) return;
     const int hand = kHandForSelector[selector];
     char* cur = g_key[hand];
     if (strcmp(cur, key) == 0) return;

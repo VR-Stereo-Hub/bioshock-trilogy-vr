@@ -6898,6 +6898,30 @@ the derivations; TESTING "S52" carries the headset checklist.
   some boots; not the mod; two flat checks moved to the headset list). inis
   restored byte-identical (never modified); weapons.ini test file removed;
   the granted arsenal was never saved in-game (sim-only state).
+- **ROUND 2 (same night, first headset verdicts)**: stutter fix CONFIRMED by
+  the user; five fixes landed off the headset list: (1) SNAP TURN sign
+  flipped back to BS1's drain - the sim smooth-turn derivation was ALIASED
+  (1 Hz reads of a fast yaw wrap); the headset read "flick right snaps
+  left"; the eye beats the sampler. (2) Cinematics RECENTER on the
+  hold-open edge - a cutscene starts centered on the current head
+  direction (camera::request_recenter, fired from cine's apply_hold).
+  (3) The double-hands cutscenes are the scripted FIRST-PERSON ones (view
+  target stays XHuman - the Matinee leg cannot see them); the detector
+  grew the APlayerController.bCinematicMode leg (s48b property-bit walker,
+  one-shot derive + per-poll bit read). (4) EMPTY HANDS became their own
+  profile keys ("NoWeapon"/"NoVigor" via the tri-state identity poll) -
+  tunable with the same sliders; scale-to-floor IS the hide-arms fallback.
+  (5) HUD quad sliders in F10 HUD (I9) (distance/width/up; width scales
+  the icons) + hudDistM/hudWidthM/hudUpM preset keys. PLUS the F10
+  ARSENAL (I9 cheat) section: GIVE ALL + per-weapon buttons (render
+  thread posts, arsenal::tick drains on the game thread; all grant
+  function indices cached - the fname_find rule). `bsigive all` is the
+  verb twin. KNOWN LIMIT (measured): grants need a level with item assets
+  resident - the pre-raffle intro's PreCoalescedItemAssets is empty and
+  the cooked CoalescedItems package refuses demand-load (bare + dotted
+  probed); from the fair onward everything resolves. Flat smoke: hold
+  recenter + cine fields + edges verified; the give-all code path is the
+  same that granted 10 slots in the town save.
 - **HOTFIX 2 (same night, user report "clear stuttering, unplayable")**: the
   s52 cadenced pollers (cine 2 Hz GetViewTarget, profiles 1 Hz
   GetEquippedWeapon x2) each ran `fname_find` - the deliberate WHOLE-POOL

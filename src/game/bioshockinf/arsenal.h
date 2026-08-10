@@ -22,9 +22,14 @@
 
 namespace bvr::bsi::arsenal {
 
-// `bsigive <ArchetypeName|Full.Path> [ammo]` | `bsigive list`.
-// A bare name gets the "PreCoalescedItemAssets." package prefix. Returns
-// false when the command is not ours.
+// `bsigive <ArchetypeName|Full.Path> [ammo]` | `bsigive all` | `bsigive
+// list`. A bare name gets the "PreCoalescedItemAssets." package prefix.
+// Returns false when the command is not ours.
 bool handle_command(const char* cmd, const char* args);
+
+// s52 round 2: the F10 GIVE buttons post a pending grant (render thread);
+// tick() drains it on the game thread (camera detour block).
+void tick();
+void draw_debug_ui();
 
 } // namespace bvr::bsi::arsenal

@@ -122,6 +122,11 @@ void set_claim_tan_v(float v);
 bool body_follow_head();
 void set_body_follow_head(bool on);
 
+// s52 round 2: programmatic recenter (same latch the `recenter` verb sets).
+// The cinematic gate fires it on a hold-open edge so a cutscene starts
+// centered on wherever the player is looking.
+void request_recenter();
+
 // s51: edge-telemetry taps - read-only copies of the last dispatch's chain
 // stages (game thread only, same discipline as frame_context()). False until
 // the corresponding stage has run once.

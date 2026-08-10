@@ -890,6 +890,30 @@ pitch), `bsihud off` (panel), `bsicine force off`/`bsicine head look`
 (cinematics), `bsibones fireglue anchor` (shoulders) - if a symptom survives
 its lever, it predates this session.
 
+### S52 round 2 (post-verdict fixes - re-judge these five)
+
+1. **Snap turn direction**: flick right now snaps RIGHT (the drain sign was
+   flipped back off your verdict).
+2. **Cutscene start direction**: every cinematic hold now RECENTERS on your
+   current head direction at its first frame - scenes should begin where
+   you are looking, and gameplay resumes with that fresh baseline.
+3. **Double hands in scripted cutscenes**: the detector now also reads
+   APlayerController.bCinematicMode, which is what the first-person
+   scripted scenes set (new-game intro). Expect ONLY the game's authored
+   hands there now. `bsicine status` prints the bit if one still slips
+   through - note WHICH scene.
+4. **Bare hands (no weapon/vigor)**: they are their own profile entries now
+   ("NoWeapon"/"NoVigor") - hold nothing, tune the HANDS trim/offset/scale
+   sliders, and the values stick to the bare-hand state only. Scale near
+   the floor = hidden arms, if the rotation never looks right.
+5. **HUD size/position**: F10 -> HUD (I9) -> panel distance / width (this
+   scales the icons) / height. `vrpreset save` makes it the default;
+   `vrpreset saveas <name>` banks presets.
+6. **THE ARSENAL BUTTONS**: F10 -> ARSENAL (I9 cheat) -> GIVE ALL (or
+   per-weapon buttons) - grants land on the next game tick. NOTE: works
+   from any save at/after the fair; the pre-raffle intro has no item
+   assets to load from (measured), and nothing to tune there anyway.
+
 ## S51 checklist (the SHOULDERS kill, the FOV-edge discriminators + THE EDGE-TELEMETRY RUN; branch `si51-inf-shoulders-edge-fx`)
 
 Two fixes/instrument sets this build. The fire-swing fix is flat-proven A-B-A;

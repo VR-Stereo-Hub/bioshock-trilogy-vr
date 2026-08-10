@@ -21,6 +21,7 @@ std::atomic<bool> g_force{false};
 std::atomic<bool> g_headLook{true}; // the radio; persisted as cineHeadLook
 uint64_t g_lastPollMs = 0;
 char g_vtClass[64] = "";   // last view-target class (game thread; display)
+bool g_cineModeBit = false; // last bCinematicMode read (display)
 int g_matineeStreak = 0;   // hysteresis: 2 consecutive verdicts flip the hold
 int g_normalStreak = 0;
 uint32_t g_edges = 0;
@@ -44,10 +45,16 @@ void apply_hold(bool on, const char* why) {
     // hold that press must reach the game (the raffle's "throw the ball"
     // prompt ate NOTHING in the stereo-only build - never again).
     bvr::input::set_flourish_chord_suspended(on);
+    // s52 round 2 (headset verdict): a cutscene must START centered on
+    // wherever the player is looking - re-baseline the head-look residual at
+    // the open edge so the authored view (or the head-look compose on top of
+    // it) begins at the current head direction, not the pre-scene body yaw.
+    if (on) camera::request_recenter();
     BVR_LOG("[bsi] cine: hold %s (%s) - hands/aim/fire release via their own "
-            "ticks; head radio = %s",
+            "ticks; head radio = %s%s",
             on ? "OPEN" : "closed", why,
-            g_headLook.load(std::memory_order_relaxed) ? "head look" : "fixed head");
+            g_headLook.load(std::memory_order_relaxed) ? "head look" : "fixed head",
+            on ? "; recentered on the current head" : "");
 }
 
 } // namespace
@@ -61,6 +68,28 @@ void tick(uint64_t nowMs) {
     }
     void* pc = camera::last_player_controller();
     if (!pc) return;
+
+    // s52 round 2 (headset verdict: "I can see BOTH hands in most cutscenes
+    // at the beginning of a new game"): the scripted FIRST-PERSON cutscenes
+    // never repossess the camera - the view target stays the pawn, so the
+    // Matinee leg below cannot see them. The engine-side signal for those is
+    // APlayerController.bCinematicMode (Kismet's Toggle Cinematic Mode sets
+    // it). One-shot property derivation (the s48b walker), then a plain
+    // gated bit read per poll.
+    static uint32_t s_cineOff = 0, s_cineMask = 0;
+    static int s_cineState = 0; // 0 underived, 1 derived, -1 unavailable
+    if (s_cineState == 0)
+        s_cineState =
+            reflect::find_bool_property_bit(pc, "bCinematicMode", &s_cineOff, &s_cineMask)
+                ? 1
+                : -1;
+    bool cineModeBit = false;
+    if (s_cineState == 1 &&
+        bvr::pattern_scan::is_memory_valid(pc, s_cineOff + 4))
+        cineModeBit = (*reinterpret_cast<const uint32_t*>(
+                           static_cast<const uint8_t*>(pc) + s_cineOff) &
+                       s_cineMask) != 0;
+
     // fname_find is a whole-pool linear scan - NEVER on a cadence (the s52
     // stutter: this poll at 500 ms scanned ~70k names per tick and hitched
     // the game 2-3 times a second). Resolve once, dispatch by index.
@@ -90,9 +119,11 @@ void tick(uint64_t nowMs) {
         BVR_LOG("[bsi] cine: view target class '%s' -> '%s'", g_vtClass, cls);
         strcpy_s(g_vtClass, cls);
     }
-    if (is_cinematic_class(cls)) {
+    g_cineModeBit = cineModeBit;
+    if (is_cinematic_class(cls) || cineModeBit) {
         g_normalStreak = 0;
-        if (++g_matineeStreak >= 2) apply_hold(true, cls);
+        if (++g_matineeStreak >= 2)
+            apply_hold(true, cineModeBit ? "bCinematicMode" : cls);
     } else {
         g_matineeStreak = 0;
         if (++g_normalStreak >= 2) apply_hold(false, cls);
@@ -137,12 +168,13 @@ bool handle_command(const char* cmd, const char* args) {
             BVR_LOG("[bsi] cine: head radio = %s (bsicine head look|fixed)",
                     head_look() ? "head look" : "fixed head");
     } else {
-        BVR_LOG("[bsi] cine: hold %s%s, radio %s, view target '%s' | polls %u fails %u "
-                "edges %u | usage: bsicine status|force on|off|head look|fixed",
+        BVR_LOG("[bsi] cine: hold %s%s, radio %s, view target '%s', bCinematicMode=%d | "
+                "polls %u fails %u edges %u | usage: bsicine status|force on|off|"
+                "head look|fixed",
                 hold() ? "OPEN" : "closed",
                 g_force.load(std::memory_order_relaxed) ? " (FORCED)" : "",
-                head_look() ? "head look" : "fixed head", g_vtClass, g_polls, g_pollFails,
-                g_edges);
+                head_look() ? "head look" : "fixed head", g_vtClass,
+                g_cineModeBit ? 1 : 0, g_polls, g_pollFails, g_edges);
     }
     return true;
 }

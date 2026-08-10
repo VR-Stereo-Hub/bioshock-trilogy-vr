@@ -95,7 +95,18 @@ void draw_debug_ui() {
     const bvr::gfx_hud::Census c = bvr::gfx_hud::census();
     ImGui::Text("boundaries %u  hud draws %u (last %u)  redirected %u", c.boundaries,
                 c.hudDraws, c.lastFrameHud, c.redirected);
-    ImGui::TextDisabled("quad size/distance: VR overlay section (set_hud_quad sliders)");
+    // s52 round 2: quad placement sliders (headset verdict: icons too small,
+    // position/size need live tuning). WIDTH scales the whole panel - and
+    // with it every icon; DIST pushes it away; UP raises/lowers. Persisted
+    // as hudDistM/hudWidthM/hudUpM (vrpreset save = the new defaults;
+    // vrpreset saveas <name> = presets).
+    float q[3];
+    bvr::vr::get_hud_quad(&q[0], &q[1], &q[2]);
+    bool ch = ImGui::SliderFloat("panel distance (m)", &q[0], 0.4f, 4.0f);
+    ch |= ImGui::SliderFloat("panel width (m) - scales the icons", &q[1], 0.3f, 4.0f);
+    ch |= ImGui::SliderFloat("panel height offset (m)", &q[2], -1.5f, 1.5f);
+    if (ch) bvr::vr::set_hud_quad(q[0], q[1], q[2]);
+    ImGui::TextDisabled("save with vrpreset save (defaults) / saveas <name> (preset)");
 }
 
 } // namespace bvr::bsi::hud

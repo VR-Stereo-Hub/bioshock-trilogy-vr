@@ -1,6 +1,7 @@
 #include "game/bioshockinf/camera.h"
 
 #include "game/bioshockinf/aim.h"
+#include "game/bioshockinf/arsenal.h"
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/fidget.h"
 #include "game/bioshockinf/fire.h"
@@ -692,16 +693,16 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         // yaw, the FrameContext basis and every laser/model consumer agree
         // within the frame (BS2's drain order). Shifting recenterYaw moves the
         // residual exactly like a physical head turn; no engine yaw is
-        // written. SIGN IS PER-GAME (sim-derived s52): this build's
-        // stick-right smooth turn DECREASES yaw units, so a +right snap step
-        // must also decrease the final yaw - recenterYaw goes UP, the
-        // opposite of BS1's drain. Steps only queue while core's snap mode is
-        // on AND the vr-gameplay gate below is fresh, so this drains nothing
-        // on a stock boot.
+        // written. SIGN: BS1's drain (`- units`), HEADSET-VERIFIED s52 round
+        // 2 - the first sim derivation flipped it off aliased smooth-turn
+        // yaw samples (1 Hz reads of a fast wrap are ambiguous) and the
+        // headset read "flick right snaps left"; the eye beats the sampler.
+        // Steps only queue while core's snap mode is on AND the vr-gameplay
+        // gate below is fresh, so this drains nothing on a stock boot.
         if (int steps = bvr::input::take_snap_steps()) {
             const int32_t units = static_cast<int32_t>(
                 lroundf(bvr::input::snap_angle_deg() * kRotUnitsPerDegree * steps));
-            g_recenterYawUnits = wrap_rot(g_recenterYawUnits + units);
+            g_recenterYawUnits = wrap_rot(g_recenterYawUnits - units);
             BVR_LOG("[bsi] snap turn %+d step(s) (%.0f deg each)", steps,
                     bvr::input::snap_angle_deg());
         }
@@ -933,6 +934,20 @@ float cfg_get_snapangle() { return bvr::input::snap_angle_deg(); }
 void cfg_set_snapangle(float v) { bvr::input::set_snap_angle_deg(v); }
 float cfg_get_cinehead() { return cine::head_look() ? 1.0f : 0.0f; }
 void cfg_set_cinehead(float v) { cine::set_head_look(v != 0.0f); }
+// s52 round 2: the HUD quad's placement as preset keys (headset verdict:
+// icons too small, position/size need live tuning + persistence). The quad
+// state lives in core (set_hud_quad); these read-modify-write one component.
+template <int C> float cfg_get_hudquad() {
+    float v[3];
+    bvr::vr::get_hud_quad(&v[0], &v[1], &v[2]);
+    return v[C];
+}
+template <int C> void cfg_set_hudquad(float nv) {
+    float v[3];
+    bvr::vr::get_hud_quad(&v[0], &v[1], &v[2]);
+    v[C] = nv;
+    bvr::vr::set_hud_quad(v[0], v[1], v[2]);
+}
 
 constexpr config::KeyDesc kConfigKeys[] = {
     {"worldScale", cfg_get_world_scale, cfg_set_world_scale, 1.0f, 500.0f},
@@ -979,6 +994,10 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"inputSnapTurn", cfg_get_snapturn, cfg_set_snapturn, 0.0f, 1.0f},
     {"inputSnapAngleDeg", cfg_get_snapangle, cfg_set_snapangle, 15.0f, 90.0f},
     {"cineHeadLook", cfg_get_cinehead, cfg_set_cinehead, 0.0f, 1.0f},
+    // ---- s52 round 2: HUD quad placement ----
+    {"hudDistM", cfg_get_hudquad<0>, cfg_set_hudquad<0>, 0.4f, 4.0f},
+    {"hudWidthM", cfg_get_hudquad<1>, cfg_set_hudquad<1>, 0.3f, 4.0f},
+    {"hudUpM", cfg_get_hudquad<2>, cfg_set_hudquad<2>, -1.5f, 1.5f},
 };
 
 // ---------------------------------------------------------------------------
@@ -1419,6 +1438,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     profiles::tick(); // s52: ~1 Hz equipped-weapon identity poll + capture/apply
     hud::tick();      // s52: HUD-redirect gate follows the XR session's liveness
     cine::tick(now);  // s52: ~2 Hz view-target poll (the Matinee detector)
+    arsenal::tick();  // s52r2: F10 GIVE buttons drain here (game thread)
     // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
     // Load restores the whole session shape - the user's call, overriding the
     // earlier latch-then-click design). Same game-thread lane as the picker.
@@ -1688,6 +1708,8 @@ void load_vr_preset() {
     config::init(kConfigKeys, std::size(kConfigKeys));
     config::load_current();
 }
+
+void request_recenter() { g_recenterRequested.store(true, std::memory_order_relaxed); }
 
 bool body_follow_head() { return g_bodyFollowHead.load(std::memory_order_relaxed); }
 void set_body_follow_head(bool on) {
