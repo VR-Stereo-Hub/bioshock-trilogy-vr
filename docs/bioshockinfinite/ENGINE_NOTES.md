@@ -976,6 +976,51 @@ gesture still plays at full amplitude (img-diff 8.18). Needs a ready capture
 (self-heals +1.2 s after every shot; only the first-ever shot of a boot
 leaks one transient). **`bsibones fireglue on|off`** is the in-headset A/B.
 
+### s51: THE FIRE-SWING, round 2 - the arm articulation named, killed by full-hand substitution
+
+**The all-bones instrument** (`bsibones travel all [secs]`, bones.cpp travel lane): same
+sample point and torn-read guard as the s47 anchors-only travel, but a per-bone peak
+table across the whole SpaceBases bank, sorted worst-first at expiry with driven/cluster/
+arm/UNDRIVEN tags. Cadence note: the sampler runs per camera-detour dispatch which fires
+~1350/s (many GetPlayerViewPoint calls per frame), not the assumed ~90 Hz - fine for a
+peak detector, but do not read the sample count as a frame count.
+
+**The verdict table (one right-hand pistol shot, fireglue ON in s50 anchor mode):**
+- `L_Grip` **0.10 deg** - the s50 anchor glue works exactly as measured.
+- `PlayerHandsChest` (the ONLY undriven bone) **0.00 deg / 0.00 UU** - the s51 prime
+  suspect ("engine-owned chest/clavicle bones") is FALSIFIED. There are no other
+  undriven bones: the name-flat rig classifies 42 of 43, and the whole signature lives
+  INSIDE the driven mask.
+- The guilty motion: the rest of the LEFT chain - `Larm21` 133.54 deg / 55.6 cm,
+  `Larm22` 125.60, every L digit 74-115 deg, palm 90.47, `Larm1` 115.09 deg at 131.49 UU
+  (87.7 cm!), `L_ArmParent` 95.66 deg (the s50 "95.58" was THIS bone's class of motion,
+  seen through the anchor before the corr). Right side through its own shot: 6.34 deg
+  cluster (the s50-damped recoil), 21-26 deg arm bones. Idle control: R cluster 3.32 deg
+  (aim-substitution wiggle), everything else 0.00.
+
+**The mechanism:** corr = readyQuat (x) conj(src[anchor]) cancels the anchor's ABSOLUTE
+motion only; every other bone's ANCHOR-RELATIVE articulation passes through by design
+(that is what lets fingers articulate). The fire anim articulates the whole arm relative
+to the grip - the hand stays pinned to the controller while the arm flails around it:
+exactly the headset's "the arm/SHOULDERS jump and come back".
+
+**THE FIX (fire-scoped FULL-HAND READY SUBSTITUTION, default ON):** the +1.2 s post-shot
+ready capture now banks the whole hand's atoms (quat AND translation - the arm bones
+translate ~87 cm; both masks unconditionally, so a later armsMode widen finds its bones
+banked). During the fire window the compose reads the banked atoms instead of the live
+source for every banked bone of the hand; corr and the dp base aT switch to the banked
+anchor so the source lane stays self-consistent (corr collapses to ~identity) - the hand
+renders its banked ready articulation rigidly attached to the controller for 1500 ms.
+- A-B-A (same boot): FULL = L side 0.00-0.16 deg, chest 0.00, R at idle noise (4.8-6.3
+  deg) | `fireglue anchor` (the s50 behavior) = the EXACT signature back (Larm21 133.53,
+  L_ArmParent 95.58) | FULL again = clean. Flourish after: img-diff 8.43 mid-gesture
+  (s50 reference 8.15-8.18), settled 0.70. Side effect to judge in the headset: the
+  window now freezes the RIGHT hand's remaining recoil articulation too (6->~5 deg,
+  i.e. none) - `bsibones fireglue anchor` is the bisect if the dead recoil reads wrong.
+- Levers: `bsibones fireglue on|off|full|anchor` (on/full = the fix, anchor = s50
+  corr-only, off = nothing). First-ever shot of a boot still leaks by design (no bank
+  yet); self-heals at +1.2 s per shot.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

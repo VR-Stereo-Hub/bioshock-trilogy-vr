@@ -128,6 +128,26 @@ std::atomic<bool> g_camPin{true};
 std::atomic<bool> g_fireGlue{true};
 std::atomic<uint64_t> g_fireGlueUntilMs{0};
 constexpr uint64_t kFireGlueMs = 1500;
+// s51: the anchor glue was NOT enough. Headset verdict on the s50 build:
+// "firing makes the arm/SHOULDERS jump and come back" - and the all-bones
+// travel table names the mechanism: with fireglue ON the LEFT ANCHOR reads
+// 0.10 deg (the corr works) while the rest of the left DRIVEN chain swings
+// 74-133 deg / up to 87.7 cm (Larm21 133.54, Larm22 125.60, Larm1 115.09 at
+// 131 UU). corr = readyQuat (x) conj(src[anchor]) cancels only the anchor's
+// ABSOLUTE motion; every other bone's ANCHOR-RELATIVE articulation passes
+// through by design (that is what lets fingers articulate) - and the fire
+// anim articulates the whole arm relative to the grip. The chest (the one
+// undriven bone) measured 0.00: the engine-owned-bones theory is falsified.
+// THE FIX: during the fire window substitute the WHOLE HAND's source atoms
+// (quat AND translation - the arm bones translate ~87 cm) from a ready bank
+// captured at the same +1.2 s post-shot moment as readyQuat. corr then
+// collapses to identity and the hand renders its banked ready articulation
+// rigidly attached to the controller. `bsibones fireglue anchor` bisects
+// back to the s50 anchor-only behavior.
+std::atomic<bool> g_fireGlueFull{true};   // full-hand ready substitution
+float g_readyAtoms[kMaxBones][8];         // per-bone ready bank (hands disjoint)
+bool g_readyAtomsHave[kMaxBones] = {};
+std::atomic<bool> g_readyAllValid[2] = {};
 uint64_t g_lagUntilMs = 0;
 float g_lagMin[3], g_lagMax[3];
 uint32_t g_lagSamples = 0;
@@ -525,8 +545,26 @@ float g_travelPeakUu[2];
 float g_travelPeakDeg[2];
 bool g_travelSawDriven[2];
 uint32_t g_travelSamples = 0;
+// s51: the ALL-BONES variant (`bsibones travel all [secs]`). The s50 headset
+// verdict said the fire jump survives with the DRIVEN anchors provably glued
+// (A-B-A 95.58 -> 0.00), so the guilty motion lives on bones the drive does
+// not own - this samples the whole bank through one fire window and names
+// them. Anchors-only travel stays untouched: it is the established signature.
+bool g_travelAll = false; // the armed window samples all bones, not the anchors
+bool g_travelAllStartValid[kMaxBones];
+float g_travelAllStartT[kMaxBones][3];
+float g_travelAllStartQ[kMaxBones][4];
+float g_travelAllPeakUu[kMaxBones];
+float g_travelAllPeakDeg[kMaxBones];
+bool g_travelAllSawDriven[kMaxBones];
 
 bool cmd_travel(const char* rest) {
+    while (*rest == ' ') ++rest;
+    bool all = false;
+    if (strncmp(rest, "all", 3) == 0) {
+        all = true;
+        rest += 3;
+    }
     float secs = 5.0f;
     sscanf_s(rest, "%f", &secs);
     if (secs < 0.5f) secs = 0.5f;
@@ -544,11 +582,15 @@ bool cmd_travel(const char* rest) {
     memset(g_travelPeakUu, 0, sizeof g_travelPeakUu);
     memset(g_travelPeakDeg, 0, sizeof g_travelPeakDeg);
     memset(g_travelSawDriven, 0, sizeof g_travelSawDriven);
+    memset(g_travelAllStartValid, 0, sizeof g_travelAllStartValid);
+    memset(g_travelAllPeakUu, 0, sizeof g_travelAllPeakUu);
+    memset(g_travelAllPeakDeg, 0, sizeof g_travelAllPeakDeg);
+    memset(g_travelAllSawDriven, 0, sizeof g_travelAllSawDriven);
+    g_travelAll = all;
     g_travelSamples = 0;
     g_travelUntilMs = GetTickCount64() + static_cast<uint64_t>(secs * 1000.0f);
-    BVR_LOG("[bsi] bones: travel window ARMED for %.1f s - sampling both anchors per "
-            "dispatch (run with the drive OFF for engine truth)",
-            secs);
+    BVR_LOG("[bsi] bones: travel window ARMED for %.1f s - sampling %s per dispatch",
+            secs, all ? "ALL bones (per-bone peak table at expiry)" : "both anchors");
     return true;
 }
 
@@ -559,6 +601,32 @@ void travel_tick() {
     const uint64_t now = GetTickCount64();
     if (!g_comp || !rig_intact()) return; // dropped rig: hold; report at expiry
     if (now <= g_travelUntilMs) {
+        if (g_travelAll) {
+            for (int i = 0; i < g_boneCount && i < kMaxBones; ++i) {
+                const float* atom = reinterpret_cast<const float*>(
+                    g_bank + static_cast<size_t>(i) * kAtom);
+                const float n2 = atom[0] * atom[0] + atom[1] * atom[1] +
+                                 atom[2] * atom[2] + atom[3] * atom[3];
+                if (!(n2 > 0.5f && n2 < 2.0f)) continue; // torn - skip the sample
+                if (g_writtenMask[0][i] || g_writtenMask[1][i])
+                    g_travelAllSawDriven[i] = true;
+                if (!g_travelAllStartValid[i]) {
+                    memcpy(g_travelAllStartQ[i], atom, 16);
+                    memcpy(g_travelAllStartT[i], atom + 4, 12);
+                    g_travelAllStartValid[i] = true;
+                    continue;
+                }
+                const float dx = atom[4] - g_travelAllStartT[i][0];
+                const float dy = atom[5] - g_travelAllStartT[i][1];
+                const float dz = atom[6] - g_travelAllStartT[i][2];
+                const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (d > g_travelAllPeakUu[i]) g_travelAllPeakUu[i] = d;
+                const float ang = quat_angle_deg(atom, g_travelAllStartQ[i]);
+                if (ang > g_travelAllPeakDeg[i]) g_travelAllPeakDeg[i] = ang;
+            }
+            ++g_travelSamples;
+            return;
+        }
         for (int h = 0; h < 2; ++h) {
             const int a = g_grip[h];
             if (a < 0 || a >= g_boneCount) continue;
@@ -588,6 +656,44 @@ void travel_tick() {
     g_travelUntilMs = 0;
     const FrameContext& fc = camera::frame_context();
     const float uuPerCm = fc.valid ? fc.worldScale * 0.01f : 0.0f;
+    if (g_travelAll) {
+        g_travelAll = false;
+        // Descending by peak rotation, every bone listed - the whole point is
+        // to name the movers OUTSIDE the driven mask, so nothing is filtered.
+        int order[kMaxBones];
+        const int n = g_boneCount < kMaxBones ? g_boneCount : kMaxBones;
+        for (int i = 0; i < n; ++i) order[i] = i;
+        for (int i = 1; i < n; ++i) {
+            const int v = order[i];
+            int j = i - 1;
+            while (j >= 0 && g_travelAllPeakDeg[order[j]] < g_travelAllPeakDeg[v]) {
+                order[j + 1] = order[j];
+                --j;
+            }
+            order[j + 1] = v;
+        }
+        BVR_LOG("[bsi] bones: travel ALL - per-bone peaks over %u samples "
+                "(deg / UU / cm; sorted worst-first)",
+                g_travelSamples);
+        for (int k = 0; k < n; ++k) {
+            const int i = order[k];
+            if (!g_travelAllStartValid[i]) {
+                BVR_LOG("[bsi] bones:   %2d %-24s  NO SAMPLES", i, g_names[i]);
+                continue;
+            }
+            const bool inSet = g_cluster[0][i] || g_cluster[1][i] || g_armSet[0][i] ||
+                               g_armSet[1][i];
+            BVR_LOG("[bsi] bones:   %2d %-24s  %7.2f deg  %7.2f UU (%.1f cm)%s%s%s%s%s%s",
+                    i, g_names[i], g_travelAllPeakDeg[i], g_travelAllPeakUu[i],
+                    uuPerCm > 0.0f ? g_travelAllPeakUu[i] / uuPerCm : -1.0f,
+                    g_travelAllSawDriven[i] ? "  [driven]" : "",
+                    g_cluster[0][i] ? "  [L cluster]" : "",
+                    g_cluster[1][i] ? "  [R cluster]" : "",
+                    g_armSet[0][i] ? "  [L arm]" : "", g_armSet[1][i] ? "  [R arm]" : "",
+                    inSet ? "" : "  [UNDRIVEN]");
+        }
+        return;
+    }
     for (int h = 0; h < 2; ++h) {
         if (!g_travelStartValid[h]) {
             BVR_LOG("[bsi] bones: travel %c - no samples", h ? 'R' : 'L');
@@ -798,6 +904,21 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
                 for (int k = 0; k < 3; ++k) g_readyTrans[hand][k] = q[4 + k];
                 const bool first =
                     !g_readyValid[hand].exchange(true, std::memory_order_relaxed);
+                // s51: bank the whole hand's ready articulation in the same
+                // instant (both masks unconditionally - a later armsMode widen
+                // must still find its bones banked when the anim was adopted).
+                for (int i = 0; i < g_boneCount; ++i) {
+                    if (!g_cluster[hand][i] && !g_armSet[hand][i]) continue;
+                    if (!g_animValid[i]) continue;
+                    const float* a = g_anim[i];
+                    const float an2 =
+                        a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3];
+                    if (!(an2 > 0.5f && an2 < 2.0f)) continue;
+                    memcpy(g_readyAtoms[i], a, 32);
+                    g_readyAtomsHave[i] = true;
+                }
+                g_readyAllValid[hand].store(g_readyAtomsHave[anchor],
+                                            std::memory_order_relaxed);
                 ++g_readyCaptures[hand];
                 g_captureAtMs[hand].store(0, std::memory_order_relaxed);
                 if (first)
@@ -819,10 +940,16 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     const bool fireGlueActive =
         g_fireGlue.load(std::memory_order_relaxed) &&
         GetTickCount64() < g_fireGlueUntilMs.load(std::memory_order_relaxed);
+    // s51: full-hand substitution (see the block comment at g_fireGlueFull).
+    // corr and aT must come from the SAME source lane as the bones, or the
+    // hand would wobble with the live anchor while its bones sit banked.
+    const bool fireGlueFull = fireGlueActive &&
+                              g_fireGlueFull.load(std::memory_order_relaxed) &&
+                              g_readyAllValid[hand].load(std::memory_order_relaxed);
     float corr[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     if ((g_stanceKill.load(std::memory_order_relaxed) || fireGlueActive) &&
         g_readyValid[hand].load(std::memory_order_relaxed)) {
-        const float* qa2 = src[anchor];
+        const float* qa2 = fireGlueFull ? g_readyAtoms[anchor] : src[anchor];
         const float n2 = qa2[0] * qa2[0] + qa2[1] * qa2[1] + qa2[2] * qa2[2] + qa2[3] * qa2[3];
         if (n2 > 0.5f && n2 < 2.0f) {
             float cj[4];
@@ -853,8 +980,10 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     // no authored travel, and its resolve-time ref (the boot stance) against
     // a post-fire tRef would leak a permanent stance offset.
     const float* aT = &src[anchor][4];
-    if (useAnim && g_animTrans.load(std::memory_order_relaxed) &&
-        g_readyValid[hand].load(std::memory_order_relaxed)) {
+    if (fireGlueFull) {
+        aT = &g_readyAtoms[anchor][4]; // the banked lane's own anchor base
+    } else if (useAnim && g_animTrans.load(std::memory_order_relaxed) &&
+               g_readyValid[hand].load(std::memory_order_relaxed)) {
         const float tx = src[anchor][4] - g_readyTrans[hand][0];
         const float ty = src[anchor][5] - g_readyTrans[hand][1];
         const float tz = src[anchor][6] - g_readyTrans[hand][2];
@@ -872,11 +1001,16 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         // tunable in the headset instead of baked here.
         const bool hideThis = inArms && armsMode == 2;
         const uint8_t kind = hideThis ? 2 : 0;
+        // s51: the banked ready atom replaces the live source for the whole
+        // hand during the fire window (unbanked bones keep the live lane
+        // until the next capture re-banks - one-capture staleness at most).
+        const float* sI =
+            (fireGlueFull && g_readyAtomsHave[i]) ? g_readyAtoms[i] : src[i];
         float wq[8];
         if (kind == 2) {
             // The collapse is what degenerates the cross-boundary skin blend
             // to the wrist instead of stretching a web (BS2 s41, shape only).
-            memcpy(wq, src[i], 32);
+            memcpy(wq, sI, 32);
             float cp[3] = {ptc[0], ptc[1], ptc[2]};
             if (capDepthCm > 0.01f) {
                 const float back[3] = {-capDepthCm * fc.worldScale * 0.01f, 0.0f, 0.0f};
@@ -896,15 +1030,15 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
             // grip; using it in only one of the two would shear the hand
             // apart. The arm chain keeps the plain controller rotation.
             const float* q = inArms ? qtc : qtcHand;
-            float dp[3] = {(src[i][4] - aT[0]) * scale, (src[i][5] - aT[1]) * scale,
-                           (src[i][6] - aT[2]) * scale};
+            float dp[3] = {(sI[4] - aT[0]) * scale, (sI[5] - aT[1]) * scale,
+                           (sI[6] - aT[2]) * scale};
             float rp[3];
             bvr::xrmath::quat_rotate(q[0], q[1], q[2], q[3], dp, rp);
-            quat_mul(q, src[i], wq); // src[i][0..3] is the quat
+            quat_mul(q, sI, wq); // sI[0..3] is the quat
             wq[4] = ptc[0] + rp[0];
             wq[5] = ptc[1] + rp[1];
             wq[6] = ptc[2] + rp[2];
-            wq[7] = src[i][7] * scale; // engine-adopted scale x hand scale
+            wq[7] = sI[7] * scale; // engine-adopted scale x hand scale
         }
         memcpy(g_written[i], wq, 32);
         memcpy(g_bank + static_cast<size_t>(i) * kAtom, wq, 32);
@@ -1055,12 +1189,23 @@ bool handle_command(const char* cmd, const char* args) {
         if (strncmp(rest, "on", 2) == 0) g_fireGlue.store(true, std::memory_order_relaxed);
         else if (strncmp(rest, "off", 3) == 0)
             g_fireGlue.store(false, std::memory_order_relaxed);
-        BVR_LOG("[bsi] bones: fireglue %s (glue correction for %llu ms around each "
-                "player shot - kills the fire anim's 95-deg left-hand swing; ready "
-                "captures L=%s R=%s)",
+        else if (strncmp(rest, "full", 4) == 0) {
+            g_fireGlue.store(true, std::memory_order_relaxed);
+            g_fireGlueFull.store(true, std::memory_order_relaxed);
+        } else if (strncmp(rest, "anchor", 6) == 0) {
+            // the s50 anchor-only behavior - the in-headset bisect for s51
+            g_fireGlue.store(true, std::memory_order_relaxed);
+            g_fireGlueFull.store(false, std::memory_order_relaxed);
+        }
+        BVR_LOG("[bsi] bones: fireglue %s mode=%s (window %llu ms per player shot; "
+                "full = whole-hand ready substitution, anchor = s50 corr-only; "
+                "ready captures L=%s R=%s, full banks L=%s R=%s)",
                 g_fireGlue.load() ? "ON" : "off",
+                g_fireGlueFull.load() ? "FULL" : "anchor",
                 static_cast<unsigned long long>(kFireGlueMs),
-                g_readyValid[0].load() ? "ok" : "-", g_readyValid[1].load() ? "ok" : "-");
+                g_readyValid[0].load() ? "ok" : "-", g_readyValid[1].load() ? "ok" : "-",
+                g_readyAllValid[0].load() ? "ok" : "-",
+                g_readyAllValid[1].load() ? "ok" : "-");
         return true;
     }
     if (args && strncmp(args, "campin", 6) == 0) {
@@ -1138,6 +1283,14 @@ void draw_debug_ui() {
     bool at2 = g_animTrans.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("authored anchor travel (animtrans, off = hand pinned)", &at2))
         set_anim_trans(at2);
+    // s51: the fire-swing levers, in-headset A/B without alt-tabbing.
+    bool fg = g_fireGlue.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("FIRE GLUE (window around each shot)", &fg))
+        g_fireGlue.store(fg, std::memory_order_relaxed);
+    ImGui::SameLine();
+    bool fgFull = g_fireGlueFull.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("full-hand (off = s50 anchor-only)", &fgFull))
+        g_fireGlueFull.store(fgFull, std::memory_order_relaxed);
 }
 
 } // namespace bvr::bsi::bones
