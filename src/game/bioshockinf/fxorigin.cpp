@@ -13,6 +13,7 @@
 
 #include <MinHook.h>
 #include <imgui.h>
+#include <intrin.h>
 #include <windows.h>
 
 #include <atomic>
@@ -115,6 +116,34 @@ std::atomic<uint32_t> g_fxFpCalls{0};   // owner == attachment or pawn
 std::atomic<uint32_t> g_fxSubs{0};
 std::atomic<int> g_fxDumpLeft{0};
 uint64_t g_fxLastLogMs = 0;
+// s51 fork (i): the runtime caller census (the static E8 census counts 194
+// call sites - only the runtime one can say which fire during a charge).
+// Same fixed-slot shape as camera.cpp's GetPlayerViewPoint census.
+constexpr int kFxCallerSlots = 24;
+struct FxCallerSlot {
+    uint32_t rva;
+    uint32_t count;
+};
+FxCallerSlot g_fxCallers[kFxCallerSlots] = {};
+uint32_t g_fxCallerOverflow = 0;
+
+void fx_note_caller(void* retAddr) {
+    const uint32_t rva =
+        static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(retAddr) -
+                              patterns::image_base());
+    for (int i = 0; i < kFxCallerSlots; ++i) {
+        if (g_fxCallers[i].rva == rva) {
+            ++g_fxCallers[i].count;
+            return;
+        }
+        if (g_fxCallers[i].rva == 0) {
+            g_fxCallers[i].rva = rva;
+            g_fxCallers[i].count = 1;
+            return;
+        }
+    }
+    ++g_fxCallerOverflow;
+}
 
 // The same displacement refusal the fire seam uses: a substitution that moves
 // an effect absurdly far means a broken basis, not a long arm.
@@ -142,11 +171,40 @@ uint32_t __fastcall EffectUpdateDetour(void* self, void* edx, void* rec, FVector
                                        uint32_t a7, uint32_t a8, uint32_t a9, uint32_t a10,
                                        uint32_t a11, uint32_t a12, uint32_t a13) {
     g_fxCalls.fetch_add(1, std::memory_order_relaxed);
+    fx_note_caller(_ReturnAddress());
     void* owner = nullptr;
     const bool fp = owner_is_first_person(self, &owner);
     bool wrote = false;
     FVector engine{};
     int hand = 1;
+    // s51 fork (i): the dump verb logs ALL records, not FP-gated - the frozen
+    // family's writer was proven NOT to be an FP-owned record through this
+    // seam (s50: ~2 calls/s, fp=0, plume at 90 Hz), so an FP-gated dump can
+    // never show the interesting population. loc is NULLABLE outside the tick
+    // path (measured: 310 census calls, zero with a location buffer).
+    {
+        int dump = g_fxDumpLeft.load(std::memory_order_relaxed);
+        if (dump > 0) {
+            g_fxDumpLeft.fetch_sub(1, std::memory_order_relaxed);
+            char cls[64] = "?";
+            reflect::class_name_of(self, cls, sizeof cls);
+            const FrameContext& fc = camera::frame_context();
+            float dcam = -1.0f;
+            if (loc && fc.valid) {
+                const float dx = loc->x - fc.writtenLocX;
+                const float dy = loc->y - fc.writtenLocY;
+                const float dz = loc->z - fc.writtenLocZ;
+                dcam = sqrtf(dx * dx + dy * dy + dz * dz);
+            }
+            BVR_LOG("[bsi] fxupdate: rec %p comp=%p (%s) owner=%p fp=%d loc=%s(%.1f %.1f "
+                    "%.1f) dCam=%.1f caller=0x%X",
+                    rec, self, cls, owner, fp ? 1 : 0, loc ? "" : "NULL",
+                    loc ? loc->x : 0.0f, loc ? loc->y : 0.0f, loc ? loc->z : 0.0f, dcam,
+                    static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(
+                                              _ReturnAddress()) -
+                                          patterns::image_base()));
+        }
+    }
     if (fp && loc) {
         g_fxFpCalls.fetch_add(1, std::memory_order_relaxed);
         engine = *loc;
@@ -188,10 +246,8 @@ uint32_t __fastcall EffectUpdateDetour(void* self, void* edx, void* rec, FVector
             }
         }
         const uint64_t now = GetTickCount64();
-        int dump = g_fxDumpLeft.load(std::memory_order_relaxed);
-        if (dump > 0 || now - g_fxLastLogMs >= 2000) {
-            if (dump > 0) g_fxDumpLeft.fetch_sub(1, std::memory_order_relaxed);
-            else g_fxLastLogMs = now;
+        if (now - g_fxLastLogMs >= 2000) {
+            g_fxLastLogMs = now;
             char cls[64] = "?";
             reflect::class_name_of(self, cls, sizeof cls);
             BVR_LOG("[bsi] fxupdate: FP record %p comp=%p (%s) owner=%p loc=(%.1f %.1f "
@@ -265,17 +321,156 @@ bool fx_try_install() {
     return true;
 }
 
+// ---- THE EFFECT PLAYBACK TICK (s51 fork ii) ---------------------------------
+//
+// Probe-only, default OFF. The one job: capture the live `this` (the tickee)
+// so `bsifx t dump` can walk the record table (patterns.h shape) on the game
+// thread, name the plume record by its camera-near location, and read the
+// stamp pair against the globals. `ret 8` = TWO stack args (the RTC rule).
+using EffectTickFn = void(__fastcall*)(void* self, void* edx, uint32_t a1, uint32_t a2);
+
+EffectTickFn g_tickOriginal = nullptr;
+std::atomic<bool> g_tickProbe{false};
+std::atomic<bool> g_tickInstalled{false};
+std::atomic<void*> g_tickee{nullptr};
+std::atomic<uint32_t> g_tickCalls{0};
+
+void __fastcall EffectTickDetour(void* self, void* edx, uint32_t a1, uint32_t a2) {
+    g_tickCalls.fetch_add(1, std::memory_order_relaxed);
+    g_tickee.store(self, std::memory_order_relaxed);
+    g_tickOriginal(self, edx, a1, a2);
+}
+
+bool tick_wants_install() {
+    return g_tickProbe.load(std::memory_order_relaxed) &&
+           !g_tickInstalled.load(std::memory_order_relaxed);
+}
+
+bool tick_try_install() {
+    if (g_tickInstalled.load(std::memory_order_relaxed)) return true;
+    if (!patterns::rva_trusted()) {
+        BVR_LOG("[bsi] fxtick: REFUSED - build gate closed");
+        return false;
+    }
+    uint8_t* impl = const_cast<uint8_t*>(patterns::image_base()) + patterns::kEffectTickRva;
+    if (!bvr::pattern_scan::is_memory_valid(impl, 0x400)) {
+        BVR_LOG("[bsi] fxtick: REFUSED - rva 0x%X not readable", patterns::kEffectTickRva);
+        return false;
+    }
+    if (memcmp(impl, patterns::kEffectTickPrologue,
+               sizeof patterns::kEffectTickPrologue) != 0) {
+        BVR_LOG("[bsi] fxtick: REFUSED - prologue at rva 0x%X does not match the "
+                "derivation (stale build?)",
+                patterns::kEffectTickRva);
+        return false;
+    }
+    bool sawRet = false;
+    for (size_t i = 0; i + 2 < 0x400; ++i) {
+        if (impl[i] == 0xC2 && impl[i + 1] == patterns::kEffectTickRetImm &&
+            impl[i + 2] == 0x00) {
+            sawRet = true;
+            break;
+        }
+    }
+    if (!sawRet) {
+        BVR_LOG("[bsi] fxtick: REFUSED - no `ret 0x%X` in the first 0x400 bytes at rva 0x%X",
+                patterns::kEffectTickRetImm, patterns::kEffectTickRva);
+        return false;
+    }
+    if (MH_CreateHook(impl, reinterpret_cast<void*>(&EffectTickDetour),
+                      reinterpret_cast<void**>(&g_tickOriginal)) != MH_OK) {
+        BVR_LOG("[bsi] fxtick: MH_CreateHook failed at rva 0x%X", patterns::kEffectTickRva);
+        return false;
+    }
+    if (MH_EnableHook(impl) != MH_OK) {
+        BVR_LOG("[bsi] fxtick: MH_EnableHook failed at rva 0x%X", patterns::kEffectTickRva);
+        return false;
+    }
+    g_tickInstalled.store(true, std::memory_order_relaxed);
+    BVR_LOG("[bsi] fxtick: effect playback tick hooked - rva 0x%X (probe-only: capture "
+            "the tickee, count calls)",
+            patterns::kEffectTickRva);
+    return true;
+}
+
+// The table walk behind `bsifx t dump` - game thread only (the tickee is a
+// live engine object; walking it while its own tick mutates it on the same
+// thread is safe, from another thread is not).
+void tick_dump_table() {
+    if (bvr::bsi::camera::camera_tid() == 0 ||
+        GetCurrentThreadId() != bvr::bsi::camera::camera_tid()) {
+        BVR_LOG("[bsi] fxtick: dump REFUSED - not on the game thread");
+        return;
+    }
+    const uint8_t* tickee = static_cast<const uint8_t*>(
+        g_tickee.load(std::memory_order_relaxed));
+    if (!tickee) {
+        BVR_LOG("[bsi] fxtick: dump - no tickee captured yet (bsifx t probe first, and "
+                "the tick must fire once)");
+        return;
+    }
+    if (!bvr::pattern_scan::is_memory_valid(tickee, 0x44)) {
+        BVR_LOG("[bsi] fxtick: dump - tickee %p unreadable (stale?)", tickee);
+        return;
+    }
+    const uint8_t* data = *reinterpret_cast<const uint8_t* const*>(
+        tickee + patterns::kEffectTickTableDataOffset);
+    const int32_t count = *reinterpret_cast<const int32_t*>(
+        tickee + patterns::kEffectTickTableCountOffset);
+    const uint32_t* stampGlobals = reinterpret_cast<const uint32_t*>(
+        patterns::image_base() + patterns::kEffectRecStampGlobalRva);
+    uint32_t g0 = 0, g1 = 0;
+    if (bvr::pattern_scan::is_memory_valid(stampGlobals, 8)) {
+        g0 = stampGlobals[0];
+        g1 = stampGlobals[1];
+    }
+    BVR_LOG("[bsi] fxtick: table dump - tickee=%p data=%p count=%d | stamp globals "
+            "%u/%u | tick calls=%u",
+            tickee, data, count, g0, g1, g_tickCalls.load(std::memory_order_relaxed));
+    if (!data || count <= 0 || count > 4096 ||
+        !bvr::pattern_scan::is_memory_valid(data, static_cast<size_t>(count) *
+                                                      patterns::kEffectRecStride)) {
+        BVR_LOG("[bsi] fxtick: table unreadable/empty - nothing to walk");
+        return;
+    }
+    const FrameContext& fc = camera::frame_context();
+    for (int i = 0; i < count; ++i) {
+        const uint8_t* rec = data + static_cast<size_t>(i) * patterns::kEffectRecStride;
+        const float* loc = reinterpret_cast<const float*>(rec + patterns::kEffectRecLocOffset);
+        const int32_t* rot = reinterpret_cast<const int32_t*>(rec +
+                                                              patterns::kEffectRecRotOffset);
+        void* comp = *reinterpret_cast<void* const*>(rec + patterns::kEffectRecCompOffset);
+        const uint32_t* stamp = reinterpret_cast<const uint32_t*>(
+            rec + patterns::kEffectRecStampOffset);
+        float dcam = -1.0f;
+        if (fc.valid) {
+            const float dx = loc[0] - fc.writtenLocX;
+            const float dy = loc[1] - fc.writtenLocY;
+            const float dz = loc[2] - fc.writtenLocZ;
+            dcam = sqrtf(dx * dx + dy * dy + dz * dz);
+        }
+        char cls[64] = "-";
+        if (comp) reflect::class_name_of(comp, cls, sizeof cls);
+        BVR_LOG("[bsi] fxtick:   #%02d rec=%p loc=(%.1f %.1f %.1f) dCam=%.1f rot=(%d %d "
+                "%d) comp=%p (%s) stamp=%u/%u%s",
+                i, rec, loc[0], loc[1], loc[2], dcam, rot[0], rot[1], rot[2], comp, cls,
+                stamp[0], stamp[1],
+                (stamp[0] == g0 && stamp[1] == g1) ? "  [CURRENT]" : "");
+    }
+}
+
 } // namespace
 
 bool wants_install() {
     return ((g_probe.load(std::memory_order_relaxed) ||
              g_substitute.load(std::memory_order_relaxed)) &&
             !g_installed.load(std::memory_order_relaxed)) ||
-           fx_wants_install();
+           fx_wants_install() || tick_wants_install();
 }
 
 bool try_install() {
     if (fx_wants_install()) fx_try_install();
+    if (tick_wants_install()) tick_try_install();
     if (g_installed.load(std::memory_order_relaxed)) return true;
     if (!patterns::rva_trusted()) {
         BVR_LOG("[bsi] fxorigin: REFUSED - build gate closed");
@@ -362,7 +557,9 @@ bool handle_command(const char* cmd, const char* args) {
     while (*args == ' ') ++args;
 
     // The effect-update seam: `bsifx u probe|on|off|dump <n>|status`.
-    if (args[0] == 'u' && (args[1] == ' ' || args[1] == '\0')) {
+    // (command.txt lines carry the trailing newline - it terminates a token.)
+    if (args[0] == 'u' && (args[1] == ' ' || args[1] == '\0' || args[1] == '\n' ||
+                           args[1] == '\r')) {
         const char* sub = args[1] ? args + 2 : "";
         while (*sub == ' ') ++sub;
         if (strncmp(sub, "probe", 5) == 0) {
@@ -386,7 +583,20 @@ bool handle_command(const char* cmd, const char* args) {
             if (n < 1) n = 1;
             if (n > 200) n = 200;
             g_fxDumpLeft.store(n, std::memory_order_relaxed);
-            BVR_LOG("[bsi] fxupdate: dumping the next %d FP record updates", n);
+            BVR_LOG("[bsi] fxupdate: dumping the next %d record updates (ALL records, "
+                    "fp-tagged - s51)",
+                    n);
+        } else if (strncmp(sub, "callers", 7) == 0) {
+            // s51 fork (i): the runtime census (194 static call sites; which
+            // ones actually fire, and how often, during a charge).
+            uint32_t total = 0;
+            for (int i = 0; i < kFxCallerSlots && g_fxCallers[i].rva; ++i) {
+                BVR_LOG("[bsi] fxupdate: caller 0x%06X x%u", g_fxCallers[i].rva,
+                        g_fxCallers[i].count);
+                total += g_fxCallers[i].count;
+            }
+            BVR_LOG("[bsi] fxupdate: callers total %u, overflowed slots %u (of %d)",
+                    total, g_fxCallerOverflow, kFxCallerSlots);
         } else {
             BVR_LOG("[bsi] fxupdate: installed=%d probe=%d write=%d | calls=%u fp=%u "
                     "subs=%u | bsifx u probe|on|off|dump <n>|status",
@@ -396,6 +606,28 @@ bool handle_command(const char* cmd, const char* args) {
                     g_fxCalls.load(std::memory_order_relaxed),
                     g_fxFpCalls.load(std::memory_order_relaxed),
                     g_fxSubs.load(std::memory_order_relaxed));
+        }
+        return true;
+    }
+
+    // s51 fork (ii): the tick-table lane: `bsifx t probe|dump|status`.
+    if (args[0] == 't' && (args[1] == ' ' || args[1] == '\0' || args[1] == '\n' ||
+                           args[1] == '\r')) {
+        const char* sub = args[1] ? args + 2 : "";
+        while (*sub == ' ') ++sub;
+        if (strncmp(sub, "probe", 5) == 0) {
+            g_tickProbe.store(true, std::memory_order_relaxed);
+            BVR_LOG("[bsi] fxtick: PROBE armed - installs on the next camera tick "
+                    "(captures the tickee; `bsifx t dump` walks the record table)");
+        } else if (strncmp(sub, "dump", 4) == 0) {
+            tick_dump_table();
+        } else {
+            BVR_LOG("[bsi] fxtick: installed=%d probe=%d tickee=%p calls=%u | bsifx t "
+                    "probe|dump|status",
+                    g_tickInstalled.load(std::memory_order_relaxed) ? 1 : 0,
+                    g_tickProbe.load(std::memory_order_relaxed) ? 1 : 0,
+                    g_tickee.load(std::memory_order_relaxed),
+                    g_tickCalls.load(std::memory_order_relaxed));
         }
         return true;
     }

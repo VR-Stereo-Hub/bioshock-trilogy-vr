@@ -619,6 +619,34 @@ inline constexpr uint8_t kEffectUpdateRetImm = 0x34;
 inline constexpr uint8_t kEffectUpdatePrologue[] = {
     0x6A, 0xFF, 0x68, 0xC0, 0xD6, 0x03, 0x01, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00};
 
+// ---- THE EFFECT PLAYBACK TICK + RECORD TABLE (s51; decoded s50) -------------
+//
+// The tick the s50 decode named (helper slot-36 thunk -> here), read fresh by
+// capstone this session: standard SEH prologue, `mov edi, ecx` thiscall,
+// `ret 8` at 0x43684B (TWO stack args - the thunk's fld [esp+4] notwithstand-
+// ing, the RTC rule reads the ret imm). Body facts verified by disasm: the
+// per-record call site 0x436588 E8s to kEffectUpdateRva (also present in the
+// 194-caller static census); the record stamp pair is compared against the
+// globals at VA 0x135DC68/0x135DC6C (cmp sites 0x436526/0x436537/0x436713/
+// 0x436720) - as an RVA that is 0xF5DC68 (.data). Table shape from the s50
+// decode (ENGINE_NOTES s50 part 2): data [this+0x3C], count [this+0x40],
+// stride 0x74; per record +0x18 location, +0x28 rotation, +0x68 component,
+// +0x6C/+0x70 the stamp pair. Hooked PROBE-ONLY (bsifx t), default OFF; the
+// captured `this` is what lets `bsifx t dump` walk the live table.
+inline constexpr uint32_t kEffectTickRva = 0x436490;
+inline constexpr uint8_t kEffectTickRetImm = 0x8;
+// push -1; push 0x103f718 (EH frame); mov eax, fs:[0]
+inline constexpr uint8_t kEffectTickPrologue[] = {
+    0x6A, 0xFF, 0x68, 0x18, 0xF7, 0x03, 0x01, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00};
+inline constexpr uint32_t kEffectTickTableDataOffset = 0x3C;
+inline constexpr uint32_t kEffectTickTableCountOffset = 0x40;
+inline constexpr uint32_t kEffectRecStride = 0x74;
+inline constexpr uint32_t kEffectRecLocOffset = 0x18;
+inline constexpr uint32_t kEffectRecRotOffset = 0x28;
+inline constexpr uint32_t kEffectRecCompOffset = 0x68;
+inline constexpr uint32_t kEffectRecStampOffset = 0x6C;      // dword pair +0x6C/+0x70
+inline constexpr uint32_t kEffectRecStampGlobalRva = 0xF5DC68; // VA 0x135DC68, pair +4
+
 // **A CONFIG VALUE IS A CLAIM, NOT A MEASUREMENT.** `XEngine.ini` says
 // `FOVAngle=70` and `MaxUserFOVOffsetPercent=15`, which session 34 read as "the
 // native slider spans roughly 70 to 80.5 degrees". The RENDERED frustum spans

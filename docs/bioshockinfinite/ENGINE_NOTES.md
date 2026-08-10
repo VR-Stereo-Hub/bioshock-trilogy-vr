@@ -1065,6 +1065,55 @@ depth bends names the guilty stage. Parser: session scratchpad edgelog-analyze.p
 silently no-ops. The edgelog `on` verb hit exactly this; terminator set now includes
 \n\r.
 
+### s51 part 3: THE FX-ORIGIN FORKS - the whole s50 record lane exonerated at runtime
+
+The three banked forks were run in order, and every one FALSIFIED. The frozen
+family's 90 Hz position writer is still unfound - but the record-table theory is
+now closed with live evidence, and the instruments stay banked.
+
+**Fork (i) - the caller census of 0x3EC4C0.** Static (pe-xref, E8+FollowStubs):
+**194 call sites**, zero via stubs, zero absolute-dword refs - the per-record
+update is called from all over the effect natives, so only a runtime census
+discriminates. Runtime (the new 24-slot `_ReturnAddress` census in the fxupdate
+detour, `bsifx u callers`): exactly **5 live callers** during gameplay + a held
+Enrage charge - 0x5EC393 dominant (~2/s; disasm context: `lea edx,[esi+0x90];
+push edx; mov ecx,edi; call` - a different argument shape than the tick's),
+0x7C157B steady, 0x6C078B / 0x342171 / 0x6C0ABF rare. (0x342171 = ret of the
+static site 0x34216C - the census cross-checks.) The tick's site 0x436588 NEVER
+appears.
+
+**Fork (i) - the all-records dump** (`bsifx u dump <n>`, now ALL records with an
+fp tag; loc is NULLABLE outside the tick path - first attempt logged nothing
+because every live call passes loc=NULL): during a held charge with the plume
+visibly camera-anchored, the seam's ENTIRE population is **six SkeletalMeshActor
+records cycling at ~0.4 Hz each, all loc=NULL, all fp=0** - scene NPCs. No FP
+record, no camera-near location, no plume.
+
+**Fork (ii) - the tick 0x436490.** Hooked probe-only (`bsifx t probe`, gates:
+prologue + ret-imm 0x8 + rva_trusted - the ret 8 read fresh at 0x43684B, and
+the stamp-compare sites 0x436526/0x436537/0x436713/0x436720 confirmed against
+the globals VA 0x135DC68/6C = RVA 0xF5DC68). Result: **calls = 0. The decoded
+effect playback tick NEVER RUNS** - not at the menu, not in gameplay, not
+during a held charge. The record table is never iterated; `bsifx t dump` (the
+table walker, game-thread-gated) has no tickee to walk.
+
+**Fork (iii) - the stamp-pair globals**: moot - the only decoded consumers are
+the compare sites inside the never-running tick.
+
+**Consequence:** the one-poke experiment has NO target - the plume record does
+not exist in this lane. The XEffectPlaybackManager tick-helper/record-table
+machinery is a COLD PATH on this build (plausibly a legacy or editor lane); the
+frozen family's per-frame writer lives somewhere none of the five falsified
+lanes touch (SpaceBases reads, GetPlayerViewPoint, Attachments, XEmitterPool,
+and now the entire record lane). Next hunt starts from the LIVE callers of
+0x3EC4C0 (what IS 0x5EC393's loop?) or from a render-side particle-system
+transform hunt - with `bsifx t`/`bsifx u dump`/`bsifx u callers` all banked.
+
+**Defaults after s51: unchanged** - `bsifx` probe+reapply ON, `bsifx u` OFF,
+`bsifx t` OFF. Both `u`/`t` lane detections and the edgelog verb now treat the
+command.txt trailing newline as a token terminator (the recorder.h trap, hit
+twice this session).
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle
