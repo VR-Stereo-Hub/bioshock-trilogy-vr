@@ -684,44 +684,51 @@ playable-with, both fully instrumented, neither blocks the ladder:**
 
 Per-weapon presets (pulled to the FRONT of this milestone by user call, s51 close-out):
 
-- [ ] **The cheated arsenal** (user directive 2026-08-10: "we need to cheat the other
-      weapons since we don't have them yet - only the pistol"). Grant weapons by name
-      through the PROVEN reflection lane - `AXPawn::SetWeapon` + `AXWeapon::AddAmmo`
-      via ProcessEvent (`bsicall`, s37; ENGINE_NOTES "Console, cheats and the Exec
-      seam") - then save that loadout as the calibration save. The 2026-07-31
-      "test from the START" rule STANDS for regression coverage; the cheated arsenal
-      is for DERIVING values, which is exactly what it is representative of.
-- [ ] Fill the s47 profile scaffold (profiles.h - class-name key, zero entries today):
-      per-weapon aim trim P/Y, ray-origin F/R/U, model trim/offset/scale deltas -
-      live-tunable in the headset (F10 sliders per the in-headset-controls rule),
-      derived per weapon, persisted per class name via vrpreset.
-- [ ] The vigor hand is a weapon too (slot 0 IS an XWeapon, s50) - decide whether
-      vigors share one profile or get per-vigor entries.
+- [x] **The cheated arsenal** (s52, commit 0e4a41c: `bsigive <Archetype> [ammo]`).
+      The route CORRECTED in derivation: identity is the ARCHETYPE (all weapons are
+      class XWeapon), and the grant is DynamicLoadObject("PreCoalescedItemAssets.
+      <Archetype>") -> pawn AcquireWeapon(archetype) -> manager EquipWeapon(instance)
+      -> AddAmmo - the s43 falsification was the CDO-vs-archetype shape. The
+      calibration SAVE is the user's headset half. The 2026-07-31 "test from the
+      START" rule STANDS for regression coverage.
+- [x] Fill the s47 profile scaffold (s52: ARCHETYPE-name key; auto-capture on
+      switch-away, apply-on-equip, weapons.ini persistence, F10 WEAPON PROFILES;
+      values derived in the headset are the remaining half)
+- [x] The vigor hand is a weapon too - per-vigor BY CONSTRUCTION (each vigor is its
+      own archetype key; GetEquippedWeapon(1) answers the vigor hand)
 - [ ] **Done when:** switching weapons in the headset lands every weapon aligned
       (aim ray on the muzzle, model seated in the hand) with no global-tune
       compromise, values surviving a save/load round trip.
 
 HUD/menus/effects half:
 
-- [ ] Scaleform GFx classifier ONLY IF a surface needs one beyond the positional rule
-      (`hud_capture` is a worked example, not a library)
-- [ ] Health / Salts / Shield / ammo / Vigor selection on a readable panel in both eyes
-- [ ] Pause menu, upgrade menus (Veni Vidi Vigor machines, gear), and the hacking/lockpick UI
-- [ ] Full-screen effects. The BS1 rule that generalizes: effects authored in **stage space cannot
-      be made full-screen by routing them** to a different target - that needs different geometry.
-- [ ] Any backbuffer-content detector must sample **before** our own writers. BS1's letterbox
-      detector worked every time flat and never in the headset for exactly this reason.
+- [x] Scaleform GFx classifier: NOT needed - the positional rule shipped as core
+      `gfx_hud.cpp` (s52, a2aea90): boundary = the only full-screen depth-free a=6
+      backbuffer DrawIndexed; everything after = the UI run, redirected
+- [x] Health / Salts / Shield / ammo / Vigor selection on a readable panel in both eyes
+      (s52 sim captures; headset readability judgment pending)
+- [x] Pause menu on the panel (s52 capture); upgrade/vending/hacking UI expected on the
+      same lane - headset confirm pending
+- [x] Full-screen effects (s52): the explosion family is SCENE-SPACE (already full-view);
+      the GFx hurt-flash class passes through to the eye image (`bsihud fx`, census-proven)
+- [x] Backbuffer-content detectors: nothing consumes the letterbox watch on Infinite; the
+      gfx_hud classifier reads the draw stream BEFORE our writers by construction
 
 Cinematics half:
 
-- [ ] **Bink FMV** through `binkw32.dll` (100+ `.bik` files: attract movie, credits, voxophone and
-      PSA reels, per-Vigor tutorials)
-- [ ] **Engine-rendered Matinee** scenes (`MatineeCamera` is in the FName pool)
-- [ ] These are two different problems; BS1 only had one. Expect different handling for each.
+- [x] **Bink FMV**: covered by the silence architecture (s52, e8dc538) - the camera seam
+      goes silent, drives stop writing by construction, the stale-publish quad shows the
+      movie; gfx_hud classifies nothing without a boundary blit. Headset visual confirm
+      on the attract pending.
+- [x] **Engine-rendered Matinee**: the s52 detector (GetViewTarget poll) + hold gates -
+      hands/aim/laser/fire release edge-clean; headset regression run pending
+- [x] These are two different problems - confirmed, and they got different handling
+      (silence vs detector)
 - [ ] Correct projection claim throughout - BS1's cinematics rendered their own FOV while the claim
-      said something else, and read as a fisheye
-- [ ] Selectable rig behaviour during cutscenes (authored / authored + head look / off), as BS1
-      ships it
+      said something else, and read as a fisheye (judge on the headset Matinee run)
+- [x] Selectable rig behaviour during cutscenes: the s52 HEAD RADIO (head look default /
+      fixed head; `cineHeadLook`, F10) - the "off" third mode deferred until a scene
+      demands it
 - [ ] Subtitles readable in stereo
 - [ ] **Done when:** a non-developer can read their health and ammo and navigate the menus from
       inside the headset, and both cinematic classes play correctly in stereo with no fisheye and

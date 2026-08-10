@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 50" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 52" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,111 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 51 (the SHOULDERS killed, the FOV-edge discriminators + edge telemetry shipped, the FX record lane exonerated; branch `si51-inf-shoulders-edge-fx`, NOT merged)
+### Infinite: current state after session 52 (the I7 INPUT LANE landed - stick pitch killed + body follows head; THE CHEATED ARSENAL + per-weapon presets; the HUD ON A QUAD; the CINEMATIC GATE + head radio; branch `si52-inf-input-arsenal-hud-cine`, NOT merged)
+
+**Session 52 (2026-08-10, evening) worked the four handoff items in strict
+order; all four landed flat-proven and committed (882a420, 0e4a41c, a2aea90,
+e8dc538). Checklist in TESTING "S52". Full derivations in ENGINE_NOTES "s52
+part 1-4".**
+
+**1. THE TWO INPUT FIXES (commit 882a420).** The I7 lane arrived: drive_view
+now publishes `publish_vr_gameplay` + `publish_pitch_error` + the new
+`publish_move_yaw_offset` every dispatch (all self-expiring; the I4
+abstention comment retired). RIGHT-STICK Y IS DEAD: the camera-side engine
+pitch is the stick-driven basis (clamps +/-89; the aim seam's engine value
+FLATTENS pitch - wrong instrument), and with the kill on, a held full-up
+stick composes as the servo value; the servo converges the manufactured +89
+error back toward the head (sign correct un-inverted). Infinite opts out of
+the BS1 bumper lift (`set_pitch_kill_lift_on_bumpers(false)`, new core seam)
+- no ry leak with a grip held, measured. BODY FOLLOWS HEAD: the composer
+rotates the movement stick by the published head residual - walk heading
+matched the CAMERA facing to 0.5 deg under `head rot 90` while engine yaw
+sat still; `bsibody off` control reverted to game yaw. SNAP TURN wired
+(BS2's drain order); the drain sign is `+units` - the OPPOSITE of BS1
+(stick-right DECREASES yaw units on this build; flick right measured +45
+the wrong way on the copied sign, flipped, both directions re-proven).
+Levers: `bsibody on|off|status`, F10 BODY FOLLOWS HEAD checkbox, core
+pitchkill/snap controls now live via the gate; keys inputPitchKill/
+inputBodyFollow/inputSnapTurn/inputSnapAngleDeg. Known limits (documented):
+the pawn itself does not turn (no body.cpp counterpart - past ~90 deg
+residual the rig/laser may desync); the pause menu keeps the camera seam
+dispatching, so stick MENU nav is rotated while the head is off-center.
+
+**2. THE CHEATED ARSENAL + PER-WEAPON PRESETS (commit 0e4a41c).** The
+identity fact that re-pointed the s47 scaffold: every carried weapon and
+vigor is literal `class XWeapon` - the durable key is the ARCHETYPE name
+(UObject+0x24). `GetEquippedWeapon(int)` via ProcessEvent answers BOTH hands
+(0 = gun, 1 = vigor; return at parms+4). THE GRANT RECIPE (every rung
+measured; corrects s43 - AcquireWeapon wants the ARCHETYPE, not the CDO):
+`DynamicLoadObject("PreCoalescedItemAssets.<Archetype>")` -> pawn
+`AcquireWeapon(archetype)` (the carried list GREW 4->10) -> manager
+`EquipWeapon(instance)` (pawn-side EquipWeapon is a no-op) -> instance
+`AddAmmo(i:n)`. `bsigive <Archetype> [ammo]` automates it; `bsigive list`
+names the carried slots; the whole base roster granted in one sim pass
+(Sniper/RPG/Carbine/HandCannon/Shotgun + MurderOfCrows). bsigive on a gun
+DROPS the replaced carried gun (the game's carry-2 rule) - by design.
+PRESETS: profiles.cpp rework - per-archetype entries holding one hand's full
+lever set (aim trim P/Y, ray origin F/R/U, model trim/offset/scale), ~1 Hz
+identity poll, AUTO-CAPTURE on switch-away (hold weapon, tune sliders,
+switch = saved), apply-on-equip, persisted to `bsi\weapons.ini`
+(`<Archetype>.<lever>=v`), empty-entry path leaves levers untouched
+(byte-identical default, proven in the logs). Round trip proven: tuned
+sniper trim survived capture -> file -> re-equip OVERRIDE APPLIED. Verbs:
+`bsiprofiles list|save|clear`, F10 WEAPON PROFILES section.
+
+**3. THE HUD ON A QUAD (commit a2aea90; ENGINE_NOTES s52 part 3).** The DR-I7
+positional rule implemented as core `gfx_hud.cpp` + adapter `hud.cpp`: the
+eye blit = the ONLY full-screen depth-free `DrawIndexed a=6` into the
+backbuffer (srv0 = full-res fmt-26 RT; the UI run SHARES its retRva, so
+position is the only separator); every later backbuffer draw redirects into
+a transparent capture RT that feeds the session-19 HUD quad via the new
+`vr::set_hud_texture_provider` seam. The present-time eye capture is then
+HUD-free with NO eye-source rerouting. Live: boundaries on 94% of frames,
+1M+ draws redirected flap-free; per-eye captures show the eye image clean +
+the panel carrying health/ammo/widgets in both eyes; the PAUSE MENU lands on
+the quad readable; award dialogs too (the dark pane IS the dialog's dim
+layer). FULL-SCREEN EFFECTS: the RPG explosion is SCENE-SPACE (fills the eye
+image, nothing to route); the GFx hurt-flash class (tiny-count full-screen
+draws, ~0.3/frame rest vs ~3.6/frame during a self-hit) PASSES THROUGH to
+the eye image (default ON; census proof redirected == hudDraws -
+bigPostDraws exactly). Movie/loading frames have no boundary -> classify
+NOTHING (cinematics-safe by construction). The redirect engages only with a
+live XR session - flat boots keep the window HUD. Verbs: `bsihud
+on|off|status|redirect|fx`; F10 "HUD (I9)".
+
+**4. THE CINEMATIC GATE (commit e8dc538; ENGINE_NOTES s52 part 4).** Bink
+needs NO detector (camera-silence architecture: drives stop writing, the
+stale-publish quad shows the movie - the pre-drive behaviour the user judged
+perfect). The MATINEE detector: ~2 Hz `GetViewTarget` poll (GNames 17299),
+class-name verdict (Matinee/CameraActor/Cinematic substring), hysteresis 2;
+possession chain visible in the edge log. On a forced hold: EXACTLY one
+bones::release per hand (via the hands tick's own edge - the s29 lesson),
+re-arm clean, the flourish chord SUSPENDED (A passes to interactive prompts
+- the raffle lesson; new core seam `set_flourish_chord_suspended`); HEAD
+RADIO both modes proven under `head rot 30` (fixed = authored rot untouched,
+look = additive compose; default look, key `cineHeadLook`, F10 radio).
+aim/laser/fire substitutions carry the same one-line hold gates (hands-gate
+shape); their runtime A/B rides the headset cinematic run. `bsicine
+status|force|head look|fixed`.
+
+**Traps and notes:** the SIM PAD OUTAGE (harness, not the mod): three
+consecutive boots stopped calling XInputGetState entirely (bridge test-press
+composes nothing because compose_over never runs); same binaries polled fine
+in earlier boots; XUserOptions byte-identical. Cost this session: the chord
+consumption A/B and the aim-subs-freeze check moved to the headset
+checklist. Boot menu state still VARIES (two boots straight into the save,
+two via MAIN GAME -> CONTINUE). The dumpframe-vs-flash timing chase (1 Hz
+command poll) never caught a hurt-flash frame - the gfx_hud census is the
+instrument that answered it instead.
+
+**NEXT SESSION:** the user's headset verdicts on all four items (checklist
+in TESTING "S52"); the calibration save (cycle the cheated arsenal, tune
+each weapon, save in-game); then the remaining I9 surface per verdicts
+(subtitles in stereo, upgrade/vending menus, the attract Bink visual
+confirm, the raffle interactive prompt) and the parked polish items
+(FOV-edge, FX-origin) per user priority.
+
+### Infinite: state after session 51 (kept for the record; superseded by s52 above) (the SHOULDERS killed, the FOV-edge discriminators + edge telemetry shipped, the FX record lane exonerated; branch `si51-inf-shoulders-edge-fx`, merged into the s52 line)
 
 **Session 51 (2026-08-10, overnight) worked the three s50-handoff items in
 strict order; all three landed flat-proven and committed. Checklist in
@@ -6763,6 +6867,37 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 52 (Infinite) - 2026-08-10 (evening) - the I7 input lane, THE CHEATED ARSENAL + presets, the HUD on a quad, the cinematic gate
+
+Branch `si52-inf-input-arsenal-hud-cine` from `bioshock-infinite` f1b78a8; four
+items in strict order, all flat-proven and committed; NOT merged (headset
+verdict pending). Commits: 882a420 (input), 0e4a41c (arsenal+presets),
+a2aea90 (HUD quad), e8dc538 (cinematics). ENGINE_NOTES s52 parts 1-4 carry
+the derivations; TESTING "S52" carries the headset checklist.
+
+- **Input**: publish_vr_gameplay/pitch_error/move_yaw_offset from drive_view;
+  right-stick Y provably dead (camera-pitch instrument, +/-89 clamp,
+  A/B/servo-convergence proven); bumper-lift opt-out (no ry leak); body
+  follows head (walk heading == camera facing to 0.5 deg; off-control
+  reverts); snap turn wired, drain sign FLIPPED vs BS1 (sim-derived).
+- **Arsenal**: weapon identity = ARCHETYPE name (all weapons class XWeapon);
+  GetEquippedWeapon(0/1) = both hands' getter; grant recipe load-archetype ->
+  AcquireWeapon(archetype) -> manager EquipWeapon -> AddAmmo (s43 corrected:
+  the CDO was the wrong shape, the archetype grants); `bsigive` + auto-
+  capture per-weapon presets (weapons.ini), round trip proven.
+- **HUD**: gfx_hud positional classifier (DR-I7 verbatim: the a=6 depth-free
+  eye blit, then the UI run); redirect -> capture RT -> the session-19 quad
+  via a new provider seam; eye image HUD-free, pause menu readable on the
+  panel; scene-space effects untouched, GFx flash-class passes through
+  (census-proven); movie frames classify nothing.
+- **Cinematics**: Bink covered by the silence architecture (no code); Matinee
+  detector = GetViewTarget poll; one release per hand on hold edges, chord
+  suspension (A reaches interactive prompts), head radio look/fixed proven.
+- **Harness**: the SIM PAD OUTAGE recorded (game stops polling XInput on
+  some boots; not the mod; two flat checks moved to the headset list). inis
+  restored byte-identical (never modified); weapons.ini test file removed;
+  the granted arsenal was never saved in-game (sim-only state).
 
 ### Session 51 (Infinite) - 2026-08-10 (overnight) - the SHOULDERS killed (full-hand substitution), the FOV-edge discriminators + THE EDGE TELEMETRY, the FX record lane exonerated
 

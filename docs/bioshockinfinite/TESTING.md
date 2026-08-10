@@ -813,6 +813,83 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S52 checklist (the input lane, THE CHEATED ARSENAL, the HUD quad, the cinematic gate; branch `si52-inf-input-arsenal-hud-cine`)
+
+Four features this build, all flat-proven. Everything judged by eye has an F10
+control (BSI section) - never alt-tab. Expected noise unchanged: award
+dialogs replay per load; Enrage HOLD charges / RELEASE throws.
+
+1. **Non-regression sweep FIRST (60 s)**: tracking, sync, both-hand aim,
+   hole-on-dot, stance still dead (fire once, idle 3+ min), SHOULDERS still
+   dead (fire the pistol, watch the left arm), flourish chord still fires
+   (left thumbrest + A - and note the chord now pauses during cinematics).
+2. **BODY FOLLOWS HEAD (the locomotion feel)**: look 90 deg left or right,
+   push stick forward - you should walk WHERE YOU LOOK. A/B: F10 -> INPUT ->
+   "BODY FOLLOWS HEAD" checkbox off = the old game-yaw walking. Judge
+   comfort at partial angles (45 deg) and while strafing. KNOWN LIMIT: the
+   pawn/body itself does not turn - past ~90 deg of head-yaw the weapon
+   laser or rig may misbehave; report what you see, a body-yaw-sync lane is
+   the known follow-up.
+3. **RIGHT-STICK Y: the verdict.** Push the right stick up/down hard, watch
+   the weapon model / muzzle vfx / aim: NOTHING should move (before this
+   build the whole aim basis pitched). Also try it WHILE holding a grip
+   (weapon/vigor cycle) - the kill must hold through the squeeze. Left/right
+   on the same stick must still smooth-turn. Optional: F10 core input
+   section has SNAP TURN (45 deg default) - flick right = turn right; snap,
+   then walk - direction must compose with no double-turn.
+4. **THE ARSENAL + PER-WEAPON TUNING (the calibration session).** In
+   command.txt or console: `bsigive list` shows the carried slots;
+   `bsigive <Archetype> [ammo]` grants + equips. Base roster:
+   PistolFounder, MachineGunFounder, ShotgunFounder, CarbineFounder,
+   HandCannonFounder, SniperRifleFounder, RPGFounder; vigors
+   Plasmid_DevilsKiss, Plasmid_MurderOfCrowsFounder, Plasmid_BuckingBronco-
+   Founder, Plasmid_UndertowFounder, Plasmid_VoltSwarmFounder, Plasmid_Charge
+   (+ the owned Enrage). NOTE: giving a gun DROPS the currently carried
+   replaced gun on the floor (the game's carry-2 rule) - pick it back up or
+   re-give. THE TUNING WORKFLOW: hold a weapon, tune with the existing F10
+   AIM (trim P/Y, origin F/R/U) and HANDS (trim/offset/scale) sliders -
+   sliders address the hand HOLDING the weapon (right = guns, left = vigor)
+   - then SWITCH weapons: the outgoing weapon's values AUTO-CAPTURE. F10 ->
+   WEAPON PROFILES shows the live gun/vigor keys and has SAVE (writes
+   weapons.ini). When the loadout feels right, SAVE THE GAME IN-GAME - that
+   save is the calibration save. Values survive relaunch (weapons.ini loads
+   at boot, applies on equip).
+5. **THE HUD QUAD**: health/salts/shield/ammo/vigor now live on a floating
+   panel (both eyes); the world image itself is HUD-free. Judge
+   readability + placement: the panel size/distance sliders are in the core
+   VR overlay section (set_hud_quad). Pause menu + upgrade/vending menus:
+   open them - they should land readable on the panel and navigate with the
+   pad. A/B: F10 -> HUD (I9) -> lane off = everything back in-world (flat
+   style). If anything looks WRONG near the panel, `bsihud off` first.
+6. **FULL-SCREEN EFFECTS**: take a hit (or RPG the floor) - the red hurt
+   flash and the explosion must cover your WHOLE view, not just the panel.
+   A/B: F10 -> HUD (I9) -> "Full-screen FX stay on the eye image" off puts
+   the flash class on the panel instead. If a stray HUD element ever pins
+   itself to your view (a leaked widget), report it and toggle the same
+   checkbox - that is the discriminator.
+7. **CINEMATICS - the regression + the radio.** Play into any Matinee scene
+   (or use LOAD CHAPTER to reach one; you drive, per the navigation rule).
+   Expect: your hand drive RELEASES (the game's authored hands and
+   animations play, no fighting), the aim laser/dot disappear for the
+   duration, and everything resumes clean at the end (stance/shoulders
+   still good after). THE HEAD RADIO: F10 -> CINEMATICS (I9) - "Head look"
+   (default, additive - the stereo-only-era behaviour you liked) vs "Fixed
+   head" (authored camera untouched). Judge both in one scene.
+8. **THE INTERACTIVE PROMPT (the raffle)**: if you reach the raffle (LOAD
+   CHAPTER lane - ask first if save state is precious), the "throw the
+   ball" prompt MUST accept your press even with a thumb resting on the
+   left thumbrest (the chord pauses during cinematics). Positive control:
+   in normal gameplay the same chord still fires the flourish.
+9. **Two flat checks that moved to the headset** (the sim pad went dead in
+   the last boots - harness, not the mod): (a) confirm the chord suspension
+   A/B of item 8; (b) during a Matinee, confirm the gun does NOT track your
+   controller (the aim substitution freeze).
+
+Anything off: `bsibody off` (locomotion), `vrinput pitchkill off` (stick
+pitch), `bsihud off` (panel), `bsicine force off`/`bsicine head look`
+(cinematics), `bsibones fireglue anchor` (shoulders) - if a symptom survives
+its lever, it predates this session.
+
 ## S51 checklist (the SHOULDERS kill, the FOV-edge discriminators + THE EDGE-TELEMETRY RUN; branch `si51-inf-shoulders-edge-fx`)
 
 Two fixes/instrument sets this build. The fire-swing fix is flat-proven A-B-A;
