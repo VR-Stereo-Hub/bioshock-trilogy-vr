@@ -713,10 +713,13 @@ void* attachment() { return g_attach; }
 void* component() { return g_comp; }
 
 int side_bones(int hand, int32_t* outFname, const char** outName, int maxCount) {
-    // s53: the hide module's per-side enumeration - the grip first (its
-    // subtree carries the hand AND the holdable, s45b), then the arm-chain
-    // bones. FName indices come from RefSkeleton's own entries - no pool
-    // scans, so this is cadence-safe. Pointers into g_names stay valid until
+    // s53: the hide module's per-side enumeration - the grip first, then the
+    // WHOLE cluster (palm + digits), then the arm chain. The cluster is
+    // explicit because the live rig is parent-flat (every RefSkeleton parent
+    // reads 0), so the engine's HideBoneByName does NOT cascade from the
+    // grip to the hand bones - headset-measured s53: grip+arm hides left the
+    // bare HANDS floating. FName indices come from RefSkeleton's own entries
+    // - no pool scans, cadence-safe. Pointers into g_names stay valid until
     // the next drop; callers consume them immediately on the game thread.
     if (hand < 0 || hand > 1 || !g_comp || g_boneCount <= 0) return 0;
     int n = 0;
@@ -726,7 +729,8 @@ int side_bones(int hand, int32_t* outFname, const char** outName, int maxCount) 
         ++n;
     }
     for (int i = 0; i < g_boneCount && n < maxCount; ++i) {
-        if (!g_armSet[hand][i]) continue;
+        if (i == g_grip[hand]) continue;
+        if (!g_cluster[hand][i] && !g_armSet[hand][i]) continue;
         outFname[n] = g_nameIdx[i];
         if (outName) outName[n] = g_names[i];
         ++n;

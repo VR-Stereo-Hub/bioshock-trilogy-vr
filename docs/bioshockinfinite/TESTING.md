@@ -815,13 +815,16 @@ whenever it appears. Everything else below is live.
 
 ## S53 checklist (THE FP-RIG HIDE done right; branch `claude/bioshock-fp-rig-hide-fa6342`)
 
-The hide gate ships ARMED: cutscene rig = **force-hide**, empty hands =
-**whole limb bone-hidden** (grip + arm chain per side) outside holds. The
-lever is BONE (HideBoneByName - the only lever that removes limb AND weapon
-together; actor bHidden was measured INEFFECTIVE and comp SetHidden leaves
-the weapon model floating). Everything is a control in F10 -> HANDS + MODEL:
-the "hide rig" checkbox, the "cutscene rig" radio (force-hide / game-managed
-/ cine off) and the "hide lever" radio (actor / owner / comp / bone). Escape
+The hide gate ships ARMED (s53b defaults, post-headset-round-1): cutscene rig
+= **force-hide** and BOTH-hands-empty both use the **owner+grips composite**
+(SetOwnerNoSee fully hides the mesh - headset-confirmed - and the two grip
+bone-hides take any attached weapon down with it); a SINGLE empty hand uses
+that side's bone composite, which now enumerates grip + palm/digits + arm
+chain explicitly (the flat rig does not cascade grip hides - round 1 measured
+the bare hands surviving a grip+arm-only hide). Controls in F10 -> HANDS +
+MODEL: the "hide rig" checkbox, the "cutscene rig" radio (force-hide /
+game-managed / cine off) and the "hide lever" radio (owner+grips / comp /
+bone / actor - leave on owner+grips; actor is measured inert). Escape
 hatches: `bsihide auto off`, or the checkbox.
 
 1. **FIRST MINUTE - the two round-4 falsifiers, rowboat save:** (a) the

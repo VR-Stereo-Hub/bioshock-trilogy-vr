@@ -1327,12 +1327,16 @@ the first.**
 
 **The lever-effect table (all A/B'd on the live view, same scene/loadout):**
 
-| lever | dispatch | visual effect |
+| lever | dispatch | visual effect (sim + HEADSET s53) |
 |---|---|---|
-| actor `bHidden` bit | direct write, readback 1 | NONE - hands + pistol keep rendering |
-| comp `SetHidden(1)` | HiddenGame reads 1 | arms/hands mesh GONE, **weapon model keeps floating** (a separate attached component) |
-| bone `HideBoneByName` (grip + arm chain) | s45b + s53 | limb AND holdable gone - **the only complete hide**; production default |
-| comp `SetOwnerNoSee` | dispatches, bit sets | untested visually (component already carries `bOnlyOwnerSee=1` in gameplay - the FP rig is owner-only by construction) |
+| actor `bHidden` bit | direct write, readback 1 | NONE - hands + pistol keep rendering (headset: "the old behavior") |
+| comp `SetHidden(1)` | HiddenGame reads 1 | mesh fully GONE (headset-confirmed) but an attached **weapon model keeps floating** (sim) |
+| comp `SetOwnerNoSee(1)` | bOwnerNoSee sets | mesh fully GONE (headset-confirmed); same floating-weapon caveat expected -> **production composite = owner + both grips bone-hidden** |
+| bone `HideBoneByName` grip+arm | headset | arms gone but **the bare HANDS stayed** - the rig is parent-flat, grip hides do NOT cascade to palm/digits (revises the s45b "R_Grip hid hand+pistol" reading); the composite now enumerates the whole cluster explicitly |
+
+The s45b grip observation still holds for the HOLDABLE: an attached weapon
+rides the grip bone's scale (the pistol vanished with R_Grip) - which is
+exactly the leg the owner composite keeps.
 
 **The derived levers (one-shot walk on the live rig, `bsihide derive`):**
 

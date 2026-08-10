@@ -71,13 +71,16 @@ const char* cine_mode_name(int m) {
 // those are the atomics.
 std::atomic<bool> g_auto{true}; // the s53 feature ships armed; F10 + bsihide auto off
 std::atomic<int> g_cineMode{kCineForce}; // user directive: cine hold hides; A/B radio
-// s53 sim lever verdicts (Comstock Rooftops, pistol equipped, window A/B):
-// actor bHidden=1 left hands AND pistol rendering (the FP path ignores it);
-// comp SetHidden removed the arms mesh but the WEAPON MODEL kept floating (a
-// separate attached component); bone HideBoneByName removes limb + holdable
-// together (s45b + today). Bone is the only complete hide -> the default.
-std::atomic<int> g_lever{kLeverBone};
-int g_activeLever = kLeverBone;        // the lever the current latches used
+// s53 lever verdicts, sim + HEADSET: actor bHidden is INEFFECTIVE (bit set,
+// hands+pistol keep rendering; headset-confirmed "the old behavior"); bone
+// grip+arm hides left the bare HANDS floating in the headset (the rig is
+// parent-flat - no cascade; the composite now includes the cluster); comp
+// SetHidden and owner SetOwnerNoSee both fully hide the mesh (headset-
+// confirmed) but leave an attached WEAPON floating (sim) - so the OWNER
+// rig-wide path also bone-hides the two grips to take the holdable down
+// with it. Owner is the production default.
+std::atomic<int> g_lever{kLeverOwner};
+int g_activeLever = kLeverOwner;       // the lever the current latches used
 bool g_rigHidden = false;
 bool g_handHidden[2] = {};
 void* g_appliedAttach = nullptr;
@@ -131,12 +134,13 @@ bool dispatch_bone(void* comp, int32_t fnIdx, int32_t boneFname, bool logFail,
     return ok;
 }
 
-// Whole-limb per side: the grip (subtree = hand + holdable) plus the arm
-// chain ("whole limb gone" - the user's s53 call).
+// Whole-limb per side: grip + cluster (palm/digits) + arm chain ("whole limb
+// gone" - the user's s53 call; the cluster is explicit because the flat rig
+// does not cascade grip hides, headset-measured).
 bool bone_side(void* comp, int hand, bool hideIt, bool verbose) {
-    int32_t fn[24];
-    const char* nm[24];
-    const int n = bones::side_bones(hand, fn, nm, 24);
+    int32_t fn[32];
+    const char* nm[32];
+    const int n = bones::side_bones(hand, fn, nm, 32);
     if (n <= 0) return false;
     bool ok = true;
     for (int i = 0; i < n; ++i)
@@ -229,16 +233,34 @@ bool derive(bool verbose) {
 
 // ---- lever application ------------------------------------------------------
 
-// The rig-wide levers (bone is handled per side by the caller). The lever is
-// an explicit argument so restores always run through the lever that APPLIED
-// the state, even after the selector moved on.
+// The two grips alone - the OWNER composite's weapon leg: SetOwnerNoSee hides
+// the arms MESH but an attached holdable is its own component and keeps
+// rendering (sim s53); zero-scaling the grips takes it down with them.
+bool grips_only(void* comp, bool hideIt) {
+    bool ok = true;
+    for (int h = 0; h < 2; ++h) {
+        int32_t fn[2];
+        if (bones::side_bones(h, fn, nullptr, 2) < 1) return false;
+        ok &= dispatch_bone(comp, hideIt ? g_idxHideBone : g_idxUnHideBone, fn[0],
+                            false, nullptr);
+    }
+    return ok;
+}
+
+// The rig-wide levers. The lever is an explicit argument so restores always
+// run through the lever that APPLIED the state, even after the selector moved
+// on. The production default (owner) is a COMPOSITE: SetOwnerNoSee for the
+// mesh + both grips bone-hidden for any attached holdable.
 bool apply_rig(bool hideIt, int lever, bool verbose) {
     void* attach = bones::attachment();
     void* comp = bones::component();
     if (!attach || !comp) return false;
     bool ok = false;
     switch (lever) {
-        case kLeverOwner: ok = dispatch_bool(comp, g_idxSetOwnerNoSee, hideIt); break;
+        case kLeverOwner:
+            ok = dispatch_bool(comp, g_idxSetOwnerNoSee, hideIt);
+            ok = grips_only(comp, hideIt) && ok;
+            break;
         case kLeverComp: ok = dispatch_bool(comp, g_idxSetHidden, hideIt); break;
         case kLeverActor: ok = write_bit(attach, g_actorHiddenOff, g_actorHiddenMask,
                                          hideIt); break;
@@ -451,6 +473,9 @@ void tick(uint64_t nowMs) {
     // scoped by the cine policy: during a hold the scene owns the rig - the
     // per-hand empty hides stand down so they can never fight an authored
     // hand moment (only the force policy asserts anything during a hold).
+    // s53 headset call: BOTH hands empty uses the RIG-WIDE lever (the owner
+    // composite - "truly hidden"); a single empty hand (skyhook-era) uses
+    // that side's bone composite, best-effort.
     const bool hold = cine::hold();
     const int cineMode = g_cineMode.load(std::memory_order_relaxed);
     bool wantRig = hold && cineMode == kCineForce;
@@ -458,13 +483,11 @@ void tick(uint64_t nowMs) {
     const bool perHandCapable = g_idxHideBone >= 0 && g_idxUnHideBone >= 0;
     if (!hold && profiles::hide_empty_hands()) {
         const bool e[2] = {profiles::hand_empty(0), profiles::hand_empty(1)};
-        if (perHandCapable) {
+        if (e[0] && e[1]) {
+            wantRig = true;
+        } else if (perHandCapable) {
             wantHand[0] = e[0];
             wantHand[1] = e[1];
-        } else if (e[0] && e[1]) {
-            // Rig-wide fallback: both-empty hides; skyhook-era left-only-empty
-            // stays visible (the accepted trade, user call s53).
-            wantRig = true;
         }
     }
     if (lever == kLeverBone) {
@@ -721,13 +744,13 @@ void draw_debug_ui() {
     int lever = g_lever.load(std::memory_order_relaxed);
     ImGui::Text("hide lever:");
     ImGui::SameLine();
-    bool changed = ImGui::RadioButton("actor", &lever, kLeverActor);
-    ImGui::SameLine();
-    changed |= ImGui::RadioButton("owner", &lever, kLeverOwner);
+    bool changed = ImGui::RadioButton("owner+grips", &lever, kLeverOwner);
     ImGui::SameLine();
     changed |= ImGui::RadioButton("comp", &lever, kLeverComp);
     ImGui::SameLine();
     changed |= ImGui::RadioButton("bone", &lever, kLeverBone);
+    ImGui::SameLine();
+    changed |= ImGui::RadioButton("actor", &lever, kLeverActor);
     if (changed) g_lever.store(lever, std::memory_order_relaxed);
     ImGui::TextDisabled("hide: %s, cine %s, lever %s, rig=%d L=%d R=%d, applies %u "
                         "reasserts %u%s",
