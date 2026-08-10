@@ -1584,10 +1584,8 @@ bool find_property_offset(const void* obj, const char* propName, const char* exp
     return true;
 }
 
-bool call_on_object(void* obj, const char* funcName, void* parms) {
-    if (!obj || !parms) return false;
-    const int32_t nameIndex = patterns::fname_find(funcName);
-    if (nameIndex < 0) return false;
+bool call_on_object_by_index(void* obj, int32_t nameIndex, void* parms) {
+    if (!obj || !parms || nameIndex < 0) return false;
     void* pcObj = nullptr;
     const uint8_t* const* pcVt = nullptr;
     if (!resolve_dispatch_target("call_on_object", pcObj, pcVt)) return false;
@@ -1605,6 +1603,17 @@ bool call_on_object(void* obj, const char* funcName, void* parms) {
     uint32_t code = 0;
     return call_by_name_seh(obj, vt, nameIndex, parms, &func, &code) == 0;
 }
+
+bool call_on_object(void* obj, const char* funcName, void* parms) {
+    // fname_find is a LINEAR scan of the whole pool (~70k entries, ~hundreds
+    // of ms) - fine command-driven, NEVER on a cadence (the recorded rule;
+    // re-learned the hard way s52: two pollers through here stuttered the
+    // whole game at 2-3 Hz). Cadenced callers use find_function_index once +
+    // call_on_object_by_index.
+    return call_on_object_by_index(obj, patterns::fname_find(funcName), parms);
+}
+
+int32_t find_function_index(const char* funcName) { return patterns::fname_find(funcName); }
 
 void* load_object(const char* path) { return do_load_object(path); }
 

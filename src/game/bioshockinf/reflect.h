@@ -76,6 +76,15 @@ bool find_property_offset(const void* obj, const char* propName, const char* exp
 // bone rig resolve (GetFirstPersonAttachment); instruments-only otherwise.
 bool call_on_object(void* obj, const char* funcName, void* parms);
 
+// s52: the by-INDEX variant for cadenced callers. fname_find is a linear
+// scan of the whole pool (~70k entries, hundreds of ms) - running it per
+// poll stuttered the entire game at 2-3 Hz (the "fname_find never on a
+// cadence" rule, re-proven). Resolve once with find_function_index (retry
+// until >= 0 - GNames fills late), cache the index for the process
+// lifetime (indices are stable per boot), then dispatch by index.
+bool call_on_object_by_index(void* obj, int32_t fnameIndex, void* parms);
+int32_t find_function_index(const char* funcName);
+
 // s52: DynamicLoadObject by full path from adapter code (the bsiload lane as a
 // callable - the arsenal's rung 1). All of bsiload's gates and its trailing-
 // whitespace trim apply; returns the loaded object or null. Game thread.

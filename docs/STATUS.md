@@ -6898,6 +6898,16 @@ the derivations; TESTING "S52" carries the headset checklist.
   some boots; not the mod; two flat checks moved to the headset list). inis
   restored byte-identical (never modified); weapons.ini test file removed;
   the granted arsenal was never saved in-game (sim-only state).
+- **HOTFIX 2 (same night, user report "clear stuttering, unplayable")**: the
+  s52 cadenced pollers (cine 2 Hz GetViewTarget, profiles 1 Hz
+  GetEquippedWeapon x2) each ran `fname_find` - the deliberate WHOLE-POOL
+  linear scan (~70k names) - per poll, freezing the game ~300 ms in a
+  perfect 500 ms rhythm (edgelog dt series: 300/47/47/47/47/300...). The
+  recorded "fname_find never on a cadence" rule, violated by its own
+  author. Fix: `reflect::call_on_object_by_index` +
+  `find_function_index` - resolve once per boot, dispatch by cached index
+  (cine, profiles, and the dyndot Trace all converted). Verified: the same
+  edgelog run reads a flat 46-47 ms, max 47, zero teeth.
 - **HOTFIX (same night, user report)**: a FLAT launch (no headset) with the
   preset's sticky `vrstereoOn=1` ran the SR doubling + per-eye offsets with
   NO session - alternating two-view window at half rate ("completely

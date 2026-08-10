@@ -158,7 +158,9 @@ float dyn_trace(int hand, const bvr::vr::HeadPose& hp, const FrameContext& fc) {
     memcpy(parms + 36, start, 12);
     *reinterpret_cast<int32_t*>(parms + 48) = 1; // trace actors too
     g_dynTraces.fetch_add(1, std::memory_order_relaxed);
-    if (!reflect::call_on_object(pawn, "Trace", parms)) {
+    // s52: dispatch by the index cached above - the by-name path re-runs the
+    // fname_find linear scan per call, which must never ride a cadence.
+    if (!reflect::call_on_object_by_index(pawn, s_traceIdx, parms)) {
         g_dynFails.fetch_add(1, std::memory_order_relaxed);
         if (g_dynTestShot.load(std::memory_order_relaxed) > 0) {
             g_dynTestShot.fetch_sub(1, std::memory_order_relaxed);

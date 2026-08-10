@@ -168,9 +168,13 @@ bool equipped_key(int selector, char* out, size_t outSize) {
     void* pawn = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(pc) +
                                                  patterns::kPcPawnOffset);
     if (!pawn) return false;
+    // fname_find never on a cadence (the s52 stutter) - index cached per boot.
+    static int32_t s_gewIdx = -1;
+    if (s_gewIdx < 0) s_gewIdx = reflect::find_function_index("GetEquippedWeapon");
+    if (s_gewIdx < 0) return false;
     uint8_t parms[64] = {};
     memcpy(parms, &selector, sizeof selector);
-    if (!reflect::call_on_object(pawn, "GetEquippedWeapon", parms)) return false;
+    if (!reflect::call_on_object_by_index(pawn, s_gewIdx, parms)) return false;
     void* instance = nullptr;
     memcpy(&instance, parms + 4, sizeof instance); // return slot after the selector
     if (!instance ||

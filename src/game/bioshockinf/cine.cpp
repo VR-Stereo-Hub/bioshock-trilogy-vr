@@ -61,8 +61,14 @@ void tick(uint64_t nowMs) {
     }
     void* pc = camera::last_player_controller();
     if (!pc) return;
+    // fname_find is a whole-pool linear scan - NEVER on a cadence (the s52
+    // stutter: this poll at 500 ms scanned ~70k names per tick and hitched
+    // the game 2-3 times a second). Resolve once, dispatch by index.
+    static int32_t s_gvtIdx = -1;
+    if (s_gvtIdx < 0) s_gvtIdx = reflect::find_function_index("GetViewTarget");
+    if (s_gvtIdx < 0) return; // GNames not populated yet
     uint8_t parms[64] = {};
-    if (!reflect::call_on_object(pc, "GetViewTarget", parms)) {
+    if (!reflect::call_on_object_by_index(pc, s_gvtIdx, parms)) {
         ++g_pollFails;
         return; // gates closed (menu, load) - the hold keeps its last state;
                 // the stop-writing property covers the silent stretch anyway
