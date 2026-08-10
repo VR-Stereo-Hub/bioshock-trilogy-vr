@@ -10,6 +10,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/cine.h"
+#include "game/bioshockinf/profiles.h"
 
 #include "imgui.h"
 
@@ -67,13 +68,17 @@ void on_view(const FrameContext& fc, uint64_t nowMs) {
     const bool useAim = g_useAimPose.load(std::memory_order_relaxed);
     const int armsMode = g_armsMode.load(std::memory_order_relaxed);
     const bool animMode = g_animMode.load(std::memory_order_relaxed);
+    // s52 round 3: an EMPTY hand releases (authored arms - kills the bare-
+    // hand misrotation and the double hands in scripted intro scenes).
+    const bool hideEmpty = profiles::hide_empty_hands();
     for (int h = 0; h < 2; ++h) {
+        const bool wantHand = want && !(hideEmpty && profiles::hand_empty(h));
         bvr::vr::HeadPose hp{};
-        if (!want || !bvr::vr::get_hand_pose(h, useAim, hp)) {
+        if (!wantHand || !bvr::vr::get_hand_pose(h, useAim, hp)) {
             // Edge-triggered release: a left-hand loss must never disturb the
             // right hand's live drive.
             if (g_wasDriving[h].exchange(false, std::memory_order_relaxed))
-                bones::release(want ? "hand untracked" : "gate closed", h);
+                bones::release(wantHand ? "hand untracked" : "gate closed", h);
             continue;
         }
         const float pos[3] = {hp.px, hp.py, hp.pz};

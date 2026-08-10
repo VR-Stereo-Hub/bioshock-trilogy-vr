@@ -46,6 +46,17 @@ void tick();
 // The fire seam's legacy latch (s47) - kept as status-line context only.
 void note_weapon_object(void* weaponObj);
 
+// s52 round 3 (headset verdict): when a hand holds NOTHING, release the
+// controller drive for it entirely - the game's authored arms play instead
+// (which also kills the double hands in every scripted intro scene and the
+// weird bare-hand rotation in one stroke). Default ON; F10 checkbox +
+// `handsHideEmpty` preset key.
+bool hide_empty_hands();
+void set_hide_empty_hands(bool on);
+// True when the identity poll last read that hand as empty (hand 0 = L /
+// vigor side, 1 = R / gun side). Game thread.
+bool hand_empty(int hand);
+
 // `bsiprofiles` - status | list | save | clear <key>|all | apply. Returns
 // false when the command is not ours.
 bool handle_command(const char* cmd, const char* args);

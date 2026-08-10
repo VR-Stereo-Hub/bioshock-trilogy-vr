@@ -660,7 +660,7 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         driveHead = true; // sim lane stays ungated for flat tests
         lane = "sim";
     } else if (g_driveEnabled.load(std::memory_order_relaxed) &&
-               !(cine::hold() && !cine::head_look()) && bvr::vr::get_head_pose(hp)) {
+               !(cine::camera_hold() && !cine::head_look()) && bvr::vr::get_head_pose(hp)) {
         // Live lane. Gated on the adapter's own flag plus a valid located
         // pose - NOT on vr_camera_mode(): camera mode flips core's submission
         // from the quad to a projection layer, and I4 is the MonoTracked rung
@@ -934,6 +934,8 @@ float cfg_get_snapangle() { return bvr::input::snap_angle_deg(); }
 void cfg_set_snapangle(float v) { bvr::input::set_snap_angle_deg(v); }
 float cfg_get_cinehead() { return cine::head_look() ? 1.0f : 0.0f; }
 void cfg_set_cinehead(float v) { cine::set_head_look(v != 0.0f); }
+float cfg_get_hideempty() { return profiles::hide_empty_hands() ? 1.0f : 0.0f; }
+void cfg_set_hideempty(float v) { profiles::set_hide_empty_hands(v != 0.0f); }
 // s52 round 2: the HUD quad's placement as preset keys (headset verdict:
 // icons too small, position/size need live tuning + persistence). The quad
 // state lives in core (set_hud_quad); these read-modify-write one component.
@@ -994,6 +996,7 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"inputSnapTurn", cfg_get_snapturn, cfg_set_snapturn, 0.0f, 1.0f},
     {"inputSnapAngleDeg", cfg_get_snapangle, cfg_set_snapangle, 15.0f, 90.0f},
     {"cineHeadLook", cfg_get_cinehead, cfg_set_cinehead, 0.0f, 1.0f},
+    {"handsHideEmpty", cfg_get_hideempty, cfg_set_hideempty, 0.0f, 1.0f},
     // ---- s52 round 2: HUD quad placement ----
     {"hudDistM", cfg_get_hudquad<0>, cfg_set_hudquad<0>, 0.4f, 4.0f},
     {"hudWidthM", cfg_get_hudquad<1>, cfg_set_hudquad<1>, 0.3f, 4.0f},

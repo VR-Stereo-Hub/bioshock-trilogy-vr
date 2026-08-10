@@ -34,7 +34,12 @@
 namespace bvr::bsi::cine {
 
 void tick(uint64_t nowMs); // game thread (camera detour block)
-bool hold();               // a Matinee-class hold (or a forced one) is open
+// s52 round 3, two flavors: hold() = ANY hold (camera-owned cinematic OR an
+// input-locked scripted FP animation) - the hands/aim/fire/chord consumers;
+// camera_hold() = only the camera-owned kind - drive_view's head radio and
+// the open-edge recenter (a door grab must not snap the world).
+bool hold();
+bool camera_hold();
 bool head_look();          // radio: true = additive head look during holds
 void set_head_look(bool on);
 

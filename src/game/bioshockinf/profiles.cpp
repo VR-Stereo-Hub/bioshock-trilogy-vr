@@ -56,6 +56,13 @@ void* g_lastWeapon = reinterpret_cast<void*>(~0u);
 char g_lastClass[64] = "(no shot yet)";
 uint32_t g_latches = 0;
 
+// s52 round 3: empty-hand release (see the header).
+std::atomic<bool> g_hideEmpty{true};
+
+bool key_is_empty(const char* key) {
+    return strcmp(key, "NoWeapon") == 0 || strcmp(key, "NoVigor") == 0;
+}
+
 Slots read_levers(int hand) {
     Slots s{};
     s.aimTrimP = aim::trim_get(hand, 0);
@@ -259,6 +266,16 @@ void tick() {
     }
 }
 
+bool hide_empty_hands() { return g_hideEmpty.load(std::memory_order_relaxed); }
+void set_hide_empty_hands(bool on) {
+    if (g_hideEmpty.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[bsi] profiles: empty-hand release %s (bare hands %s)", on ? "ON" : "off",
+                on ? "play the game's authored arms" : "track the controllers");
+}
+bool hand_empty(int hand) {
+    return hand >= 0 && hand < 2 && key_is_empty(g_key[hand]);
+}
+
 void note_weapon_object(void* weaponObj) {
     if (weaponObj == g_lastWeapon) return;
     g_lastWeapon = weaponObj;
@@ -325,6 +342,9 @@ void draw_debug_ui() {
     ImGui::Text("%d entries, %u applies, %u captures", g_count, g_applies, g_captures);
     ImGui::TextDisabled("tune with the AIM/HANDS sliders above; switching weapons");
     ImGui::TextDisabled("auto-captures the outgoing weapon's values");
+    bool he = hide_empty_hands();
+    if (ImGui::Checkbox("Release BARE hands (no weapon/vigor = authored arms)", &he))
+        set_hide_empty_hands(he);
     if (ImGui::Button("SAVE weapons.ini")) g_pendSave.store(true, std::memory_order_relaxed);
     ImGui::SameLine();
     if (ImGui::Button("CLEAR all")) g_pendClearAll.store(true, std::memory_order_relaxed);

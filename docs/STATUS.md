@@ -6898,6 +6898,31 @@ the derivations; TESTING "S52" carries the headset checklist.
   some boots; not the mod; two flat checks moved to the headset list). inis
   restored byte-identical (never modified); weapons.ini test file removed;
   the granted arsenal was never saved in-game (sim-only state).
+- **ROUND 3 (same night, second headset verdicts)**: snap turn + cine-start
+  recenter CONFIRMED by the user; the DOUBLE HANDS persisted in every
+  scripted FP hand scene (box handoff, doors - the view target stays the
+  pawn and bCinematicMode does not cover them all). Fixes: (1) the cinema
+  gate SPLIT into camera_hold (Matinee/cinematic-bit: recenter + head
+  radio) vs SCRIPTED hold (hand/aim/fire release only, head keeps driving,
+  NO recenter - a door grab must not snap the world). The scripted signal
+  is the engine's own IsMoveInputIgnored/IsLookInputIgnored QUERY functions
+  polled by cached index at 500 ms - after TWO falsified variants
+  ("IgnoreMoveInput" resolves to a FUNCTION and a null-class property find
+  matched it, reading garbage = permanent hold; the bIgnore* bool mirrors
+  do not exist on this build). VERIFIED in the exact reported scene: the
+  rowboat box handoff shows ONLY the authored hand, movement provably
+  locked, head look free. (2) EMPTY-HAND RELEASE (default ON,
+  `handsHideEmpty` key, F10 checkbox in WEAPON PROFILES): a hand holding
+  nothing releases its drive - authored arms play (kills the bare-hand
+  misrotation, the intro double hands, and the sprint-arms weirdness for
+  the bare case in one stroke; per-key scale-to-floor remains the literal
+  hide option). (3) CROSSHAIR hide DEFERRED with the reason measured: the
+  crosshair is a Scaleform CLIK widget (XClikHUDCrosshair) - the HUD
+  object's property chain carries NO crosshair state (full walk, zero
+  rows), so hiding it needs a GFx-invoke lane (a future derivation; also
+  the subtitle/HUD-tweak power tool). The sim pad outage persisted all
+  night (harness); the profiles identity poll now proves the empty keys
+  live (gun[R]='NoWeapon' vigor[L]='NoVigor' on the rowboat save).
 - **ROUND 2 (same night, first headset verdicts)**: stutter fix CONFIRMED by
   the user; five fixes landed off the headset list: (1) SNAP TURN sign
   flipped back to BS1's drain - the sim smooth-turn derivation was ALIASED
