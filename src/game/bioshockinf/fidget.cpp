@@ -319,8 +319,16 @@ std::atomic<uint32_t> g_flourishTriggers{0};
 std::atomic<uint32_t> g_flourishRefusals{0};
 uint32_t g_chordEdgesSeen = 0;   // game thread: last chord counter drained
 bool g_chordEdgesPrimed = false; // first poll adopts the counter, no trigger
-constexpr uint64_t kFlourishLeadMs = 1800; // blend into the lowered lane first
-constexpr uint64_t kFlourishTailMs = 4500; // the gesture, then the kill resumes
+// s50b (headset verdict: "the 2 seconds before it starts is bad"): the lead
+// and tail are LIVE-TUNABLE - `bsiflourish lead <ms>` / `bsiflourish tail
+// <ms>` - so the floor can be found in the headset without rebuilds. Flat
+// floor probe: the gesture articulates at FULL amplitude at lead 200 (and
+// 500; img-diff 5.4-6.6 class at capture, same as 1800) - the graph's blend
+// into the lowered lane is far faster than the s50 guess. Default 200; if
+// the headset sees a clipped start, `bsiflourish lead 400` etc. The tail
+// only needs to outlast the gesture (~3-4 s); the kill resumes on lapse.
+std::atomic<uint64_t> g_flourishLeadMs{200};  // blend into the lowered lane first
+std::atomic<uint64_t> g_flourishTailMs{4500}; // the gesture, then the kill resumes
 
 // The FP network's Morpheme runtime ([network+0x118]) - what the inner post
 // receives as its first arg.
@@ -661,17 +669,18 @@ bool flourish() {
         g_flourishRefusals.fetch_add(1, std::memory_order_relaxed);
         return false; // one at a time - a re-press mid-gesture is a no-op
     }
-    g_flourishHoldUntilMs.store(now + kFlourishLeadMs + kFlourishTailMs,
-                                std::memory_order_relaxed);
-    g_flourishImplAtMs = now + kFlourishLeadMs;
+    const uint64_t lead = g_flourishLeadMs.load(std::memory_order_relaxed);
+    const uint64_t tail = g_flourishTailMs.load(std::memory_order_relaxed);
+    g_flourishHoldUntilMs.store(now + lead + tail, std::memory_order_relaxed);
+    g_flourishImplAtMs = now + lead;
     g_flourishTriggers.fetch_add(1, std::memory_order_relaxed);
     BVR_LOG("[bsi] fidget: FLOURISH #%u - 'Lowered' window open %llu+%llu ms, "
             "StartSubtleFidget at +%llu ms (trigger it with the left-thumbrest+A "
             "chord or `bsiflourish`)",
             g_flourishTriggers.load(std::memory_order_relaxed),
-            static_cast<unsigned long long>(kFlourishLeadMs),
-            static_cast<unsigned long long>(kFlourishTailMs),
-            static_cast<unsigned long long>(kFlourishLeadMs));
+            static_cast<unsigned long long>(lead),
+            static_cast<unsigned long long>(tail),
+            static_cast<unsigned long long>(lead));
     return true;
 }
 
@@ -786,16 +795,47 @@ bool handle_command(const char* cmd, const char* args) {
     // s50: the flourish trigger - its own command so the sim (and the user's
     // console muscle memory) can fire it without the chord.
     if (strcmp(cmd, "bsiflourish") == 0) {
-        if (args && strncmp(args, "status", 6) == 0) {
-            BVR_LOG("[bsi] fidget: flourish triggers=%u refusals=%u window=%s | the "
-                    "chord is LEFT THUMBREST (touched) + A; `bsiflourish` fires it "
-                    "directly",
+        if (args) {
+            while (*args == ' ') ++args;
+        } else {
+            args = "";
+        }
+        if (strncmp(args, "status", 6) == 0) {
+            BVR_LOG("[bsi] fidget: flourish triggers=%u refusals=%u window=%s "
+                    "lead=%llums tail=%llums | chord = LEFT THUMBREST + A; "
+                    "`bsiflourish [lead <ms>|tail <ms>|status]`",
                     g_flourishTriggers.load(std::memory_order_relaxed),
                     g_flourishRefusals.load(std::memory_order_relaxed),
                     GetTickCount64() <
                             g_flourishHoldUntilMs.load(std::memory_order_relaxed)
                         ? "OPEN"
-                        : "closed");
+                        : "closed",
+                    static_cast<unsigned long long>(
+                        g_flourishLeadMs.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(
+                        g_flourishTailMs.load(std::memory_order_relaxed)));
+            return true;
+        }
+        // s50b: the in-headset tuners. Lead 0 is legal (fire the impl on the
+        // very next dispatch - the graph may clip the blend; your eyes judge).
+        if (strncmp(args, "lead", 4) == 0) {
+            unsigned ms = 0;
+            if (sscanf_s(args + 4, "%u", &ms) == 1 && ms <= 10000) {
+                g_flourishLeadMs.store(ms, std::memory_order_relaxed);
+                BVR_LOG("[bsi] fidget: flourish lead = %u ms", ms);
+            } else {
+                BVR_LOG("[bsi] usage: bsiflourish lead <0..10000 ms>");
+            }
+            return true;
+        }
+        if (strncmp(args, "tail", 4) == 0) {
+            unsigned ms = 0;
+            if (sscanf_s(args + 4, "%u", &ms) == 1 && ms >= 1000 && ms <= 20000) {
+                g_flourishTailMs.store(ms, std::memory_order_relaxed);
+                BVR_LOG("[bsi] fidget: flourish tail = %u ms", ms);
+            } else {
+                BVR_LOG("[bsi] usage: bsiflourish tail <1000..20000 ms>");
+            }
             return true;
         }
         flourish();

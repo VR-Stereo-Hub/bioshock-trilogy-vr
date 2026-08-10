@@ -99,9 +99,39 @@ slot 36 -> rva 0x436490, stride-0x74 records), and the record stamp-pair
 globals (0x135DC68/6C). The riders half of the family (weapon + vigor-hand
 models and their socket FX) follows the driven hand ALREADY.
 
-**NEXT SESSION:** headset verdicts on the three levers above (checklist in
-TESTING "S50"), then either the FX-origin hunt's banked forks or the s49b
-leftovers (wrist refinement, SingleLineCheck) per the user's call.
+**HEADSET VERDICTS on the s50 build (user, 2026-08-10, same night):**
+1. **FLOURISH: WORKS** - the chord fires the gesture. The ~2 s lead was
+   rejected ("bad"); s50b response: the lead/tail are now LIVE-TUNABLE
+   (`bsiflourish lead <ms>` / `tail <ms>`) and the default is **200 ms**
+   (flat-proven full amplitude at 200; the s50 1800 was over-cautious).
+   Re-judge; tune live if the start reads clipped.
+2. **FIRE-SWING: STILL PRESENT** - "firing makes the arm/SHOULDERS jump and
+   come back". The fire-glue provably zeros the DRIVEN ANCHORS' swing (the
+   A-B-A stands), so what the user sees must live elsewhere: the prime
+   suspect is the UNDRIVEN bones (chest/clavicle - "shoulders" - which the
+   engine owns by design and the fire anim moves), and/or engine restamps
+   beating the rewrite cadence render-side. NEXT: an all-bones peak
+   instrument (travel currently samples only the two anchors), then decide
+   whether to drive/correct the chest bones fire-scoped too.
+3. **FOV-EDGE DRIFT: UNCHANGED** - worst on the LEFT (weapon pulls toward
+   the camera "by a lot"). The rendered-pose eye tags did not move the
+   symptom - consistent with VDXR already reporting parallel same-IPD views
+   (the fix is identity there, exactly as on the sim). The pose-tag
+   mechanism is now EXONERATED alongside the compose chain and the lens
+   split. NEXT instruments: (a) log the actual VDXR located view poses/fovs
+   in a headset session (one command + the log tells whether any per-eye
+   cant/IPD delta even exists); (b) a HAND-ANCHORED reference quad (the aim
+   dot machinery, parked at the grip pose) - in-headset, if the quad and the
+   hand model separate laterally the error is in the projection/submission
+   lane, if they move together the hand's world position itself moves: one
+   look, two hypothesis families discriminated.
+
+Also flat-found while probing: the muzzle SMOKE trail is another
+camera-anchored frozen-family member (visible in a slow-pace capture).
+
+**NEXT SESSION:** (1) the fire-swing's undriven-bones instrument + fix,
+(2) the FOV-edge discriminator instruments above, (3) flourish lead verdict
+(tuner shipped), then the FX-origin banked forks per the user's call.
 
 ### Infinite: state after session 49b (kept for the record; superseded by s50 above) (THE STANCE IS KILLED - the 'Lowered' clamp, A-B-A proven, ships default ON; branch `si49-inf-stance-lens-tracer`)
 
