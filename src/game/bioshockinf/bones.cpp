@@ -165,10 +165,6 @@ bool g_refValid = false;
 uint64_t g_writeStampMs[2] = {};
 float g_lastWriteLoc[2][3] = {};
 int32_t g_lastWriteRot[2][3] = {};
-// s52 round 4: whole-hand hide - while set, EVERY bone of that hand's
-// cluster + arm chain takes the kind-2 collapse (zero scale) instead of the
-// pose compose. Set only inside drive_hidden's delegation.
-bool g_hideWhole[2] = {};
 uint32_t g_drives[2] = {}, g_adopts[2] = {}, g_reapplies = 0, g_gateRefusals = 0;
 uint32_t g_midDrawRestamps = 0; // pass-1 sentinel found the bank != our write
 // s47: the reapply-gate staleness instrument (carried from s45b - "does pass-2
@@ -1003,7 +999,7 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         // the controller's -forward, zero scale. Depth 0 = the old collapse-
         // at-grip; the depth is an F10 slider so the residual stretch is
         // tunable in the headset instead of baked here.
-        const bool hideThis = g_hideWhole[hand] || (inArms && armsMode == 2);
+        const bool hideThis = inArms && armsMode == 2;
         const uint8_t kind = hideThis ? 2 : 0;
         // s51: the banked ready atom replaces the live source for the whole
         // hand during the fire window (unbanked bones keep the live lane
@@ -1065,33 +1061,6 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     g_lastWriteRot[hand][2] = target.rot.roll;
     ++g_drives[hand];
     return true;
-}
-
-bool drive_hidden(const FrameContext& fc, int hand) {
-    if (hand < 0 || hand > 1) return false;
-    // Collapse target: wherever this hand last was (any point works at zero
-    // scale; the last-write pose avoids target-sanity refusals and LOD
-    // surprises). Falls back below the camera base on a fresh rig.
-    GamePose park{};
-    if (g_writeStampMs[hand]) {
-        park.loc.x = g_lastWriteLoc[hand][0];
-        park.loc.y = g_lastWriteLoc[hand][1];
-        park.loc.z = g_lastWriteLoc[hand][2];
-        park.rot.pitch = g_lastWriteRot[hand][0];
-        park.rot.yaw = g_lastWriteRot[hand][1];
-        park.rot.roll = g_lastWriteRot[hand][2];
-    } else {
-        park.loc.x = fc.writtenLocX;
-        park.loc.y = fc.writtenLocY;
-        park.loc.z = fc.writtenLocZ - 2.0f * fc.worldScale; // 2 m below the eyes
-    }
-    g_hideWhole[hand] = true;
-    // armsMode 1 keeps the arm chain in the write mask so it collapses too;
-    // scale/anim/wrist are irrelevant on the kind-2 path.
-    const bool ok = drive(fc, park, hand, 1.0f, /*armsMode=*/1, /*animMode=*/false,
-                          /*capDepthCm=*/0.0f, nullptr);
-    g_hideWhole[hand] = false;
-    return ok;
 }
 
 void release(const char* why, int hand) {

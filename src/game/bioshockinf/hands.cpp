@@ -63,29 +63,16 @@ void on_view(const FrameContext& fc, uint64_t nowMs) {
     // s52: a cinematic hold releases the hand drive THROUGH this tick's own
     // per-hand edge (the BS2 s29 lesson: never release from the cine edge
     // itself) - the game's authored hands come back the next engine restamp.
-    const bool want = g_on.load(std::memory_order_relaxed) && fc.valid;
+    const bool want =
+        g_on.load(std::memory_order_relaxed) && fc.valid && !cine::hold();
     const bool useAim = g_useAimPose.load(std::memory_order_relaxed);
     const int armsMode = g_armsMode.load(std::memory_order_relaxed);
     const bool animMode = g_animMode.load(std::memory_order_relaxed);
-    // s52 round 4 (headset verdict: released hands FREEZE in view - in the
-    // states that need hiding the game never animates the normal FP rig, so
-    // a release is a freeze-frame, not a hide). HIDE = keep DRIVING the hand
-    // at zero scale every frame (bones::drive_hidden): scripted/cinematic
-    // holds hide both hands; an empty hand hides alone (skyhook-right +
-    // bare-left keeps the skyhook).
+    // s52 round 3: an EMPTY hand releases (authored arms - kills the bare-
+    // hand misrotation and the double hands in scripted intro scenes).
     const bool hideEmpty = profiles::hide_empty_hands();
-    const bool cineHold = cine::hold();
     for (int h = 0; h < 2; ++h) {
-        // Hiding deliberately ignores fc.valid: at zero scale a stale basis
-        // is irrelevant, and the fixed-head radio (fc invalid during a
-        // camera hold) must not un-hide the hands.
-        const bool hideHand = g_on.load(std::memory_order_relaxed) &&
-                              (cineHold || (hideEmpty && profiles::hand_empty(h)));
-        if (hideHand) {
-            if (bones::drive_hidden(fc, h)) g_wasDriving[h].store(true, std::memory_order_relaxed);
-            continue;
-        }
-        const bool wantHand = want;
+        const bool wantHand = want && !(hideEmpty && profiles::hand_empty(h));
         bvr::vr::HeadPose hp{};
         if (!wantHand || !bvr::vr::get_hand_pose(h, useAim, hp)) {
             // Edge-triggered release: a left-hand loss must never disturb the

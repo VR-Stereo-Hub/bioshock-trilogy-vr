@@ -77,15 +77,6 @@ void* component();
 bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale,
            int armsMode, bool animMode, float capDepthCm, const float wristDeg[3]);
 
-// s52 round 4: fully HIDE one hand - every cluster + arm bone driven to the
-// kind-2 collapse (zero scale) at its last pose, EVERY call. Release alone
-// cannot hide: in the states that need hiding (scripted FP scenes, bare
-// hands) the game never animates the normal FP rig, so released bones
-// freeze visibly at their last written pose (headset-measured). Per-frame
-// zero-scale writes are what keeps the hand gone through restamps; the
-// reapply lane replays them like any other driven atom.
-bool drive_hidden(const FrameContext& fc, int hand);
-
 // Stop driving one hand (or both when hand < 0). Clears masks; no restore
 // write - see the restamp fact above.
 void release(const char* why, int hand);
