@@ -122,7 +122,9 @@ void maybe_second_draw(void* self, void* edx, void* a1, uint32_t callerRva,
     bool pulse = false;
     if (g_pulseCount.load(std::memory_order_relaxed) > 0)
         pulse = g_pulseCount.fetch_sub(1, std::memory_order_relaxed) > 0;
-    const bool stereo = g_stereo.load(std::memory_order_relaxed);
+    // s52 hotfix: the doubling needs a live session (see stereo_active);
+    // pulses stay sessionless - they are the flat A/B instrument.
+    const bool stereo = stereo_active();
     if (!pulse && !stereo) return;
 
     // Deny-by-default caller gate: ONLY the census-verified per-tick
@@ -221,9 +223,10 @@ void __fastcall DrawDetour(void* self, void* edx, void* a1) {
         g_draws.fetch_add(1, std::memory_order_relaxed);
         // Pass-1 eye tag, pushed BEFORE the original so the tag is in the
         // ring by the time this pass's Present pops it. Gated exactly like
-        // the doubling so tags and doubles can never go one-sided.
-        if (g_stereo.load(std::memory_order_relaxed) &&
-            !g_poisoned.load(std::memory_order_relaxed) &&
+        // the doubling so tags and doubles can never go one-sided (s52: incl.
+        // the session-liveness term - a sessionless boot must not fill a
+        // ring nothing drains, the "sr tag ring skewed" spam).
+        if (stereo_active() && !g_poisoned.load(std::memory_order_relaxed) &&
             callerRva == patterns::kViewportDrawGameplayRetRva &&
             camera::silent_ms() <= 400)
             bvr::vr::sr_push_eye(-1);
@@ -326,7 +329,14 @@ bool hook_live() {
 }
 
 bool stereo_active() {
-    return g_stereo.load(std::memory_order_relaxed);
+    // s52 hotfix (user report, 2026-08-10): ARMED is sticky (the vrstereo
+    // toggle / the preset's vrstereoOn), but ACTIVE requires a live XR
+    // session. Without this, a FLAT boot with a stereo-armed preset doubles
+    // every frame into an alternating two-eye window at half rate - with no
+    // compositor to submit to. The moment a session exists (headset
+    // connected, or the sim), the doubling and the eye offsets engage; the
+    // arm flag itself never changes under this gate.
+    return g_stereo.load(std::memory_order_relaxed) && bvr::vr::session_live();
 }
 
 bool set_stereo(bool on) {

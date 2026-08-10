@@ -6898,6 +6898,17 @@ the derivations; TESTING "S52" carries the headset checklist.
   some boots; not the mod; two flat checks moved to the headset list). inis
   restored byte-identical (never modified); weapons.ini test file removed;
   the granted arsenal was never saved in-game (sim-only state).
+- **HOTFIX (same night, user report)**: a FLAT launch (no headset) with the
+  preset's sticky `vrstereoOn=1` ran the SR doubling + per-eye offsets with
+  NO session - alternating two-view window at half rate ("completely
+  broken... alternating between 2 screens"). NOT an s52 feature regression:
+  the arm path never had a session gate; the user's preset arrived stereo-
+  armed from the s51 headset night. Fix: `scenedraw::stereo_active()` now
+  requires `bvr::vr::session_live()` (arm flag stays sticky; doubling, eye
+  offsets and the sr eye tags all key off it; `reentry pulse` stays
+  sessionless as the flat A/B instrument). Verified both ways: flat =
+  single view, draws==presents, no inter-eye, no ring-skew spam; sim
+  session = doubling + inter-eye 9.448 back exactly.
 
 ### Session 51 (Infinite) - 2026-08-10 (overnight) - the SHOULDERS killed (full-hand substitution), the FOV-edge discriminators + THE EDGE TELEMETRY, the FX record lane exonerated
 
