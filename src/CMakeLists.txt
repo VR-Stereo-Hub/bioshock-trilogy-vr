@@ -119,8 +119,12 @@ add_library(bioshockvr SHARED
     game/bioshockinf/frame_context.h
     game/bioshockinf/fxorigin.cpp
     game/bioshockinf/fxorigin.h
+    game/bioshockinf/gfx.cpp
+    game/bioshockinf/gfx.h
     game/bioshockinf/hands.cpp
     game/bioshockinf/hands.h
+    game/bioshockinf/hide.cpp
+    game/bioshockinf/hide.h
     game/bioshockinf/hud.cpp
     game/bioshockinf/hud.h
     game/bioshockinf/config.cpp

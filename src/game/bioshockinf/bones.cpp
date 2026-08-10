@@ -44,6 +44,7 @@ int g_grip[2] = {-1, -1};                 // 0 = L_Grip, 1 = R_Grip
 bool g_cluster[2][kMaxBones] = {};        // grip subtree, incl. the grip itself
 bool g_armSet[2][kMaxBones] = {};         // PlayerHands[LR]*arm* chains
 char g_names[kMaxBones][64];              // resolve-time copies (fname_text needs >= 64)
+int32_t g_nameIdx[kMaxBones];             // s53: RefSkeleton's own stored FName indices
 
 // ---- write state ------------------------------------------------------------
 // One written bank, disjoint per-hand masks (a bone can only be in one hand's
@@ -290,6 +291,7 @@ bool read_ref_skeleton() {
         const int32_t nameIdx =
             *reinterpret_cast<const int32_t*>(e + patterns::kMeshBoneNameOffset);
         g_parent[i] = *reinterpret_cast<const int32_t*>(e + patterns::kMeshBoneParentOffset);
+        g_nameIdx[i] = nameIdx;
         if (!patterns::fname_text(nameIdx, g_names[i], sizeof g_names[i]))
             g_names[i][0] = '\0';
         if (strcmp(g_names[i], "L_Grip") == 0) g_grip[0] = i;
@@ -709,6 +711,28 @@ void travel_tick() {
 
 void* attachment() { return g_attach; }
 void* component() { return g_comp; }
+
+int side_bones(int hand, int32_t* outFname, const char** outName, int maxCount) {
+    // s53: the hide module's per-side enumeration - the grip first (its
+    // subtree carries the hand AND the holdable, s45b), then the arm-chain
+    // bones. FName indices come from RefSkeleton's own entries - no pool
+    // scans, so this is cadence-safe. Pointers into g_names stay valid until
+    // the next drop; callers consume them immediately on the game thread.
+    if (hand < 0 || hand > 1 || !g_comp || g_boneCount <= 0) return 0;
+    int n = 0;
+    if (g_grip[hand] >= 0 && n < maxCount) {
+        outFname[n] = g_nameIdx[g_grip[hand]];
+        if (outName) outName[n] = g_names[g_grip[hand]];
+        ++n;
+    }
+    for (int i = 0; i < g_boneCount && n < maxCount; ++i) {
+        if (!g_armSet[hand][i]) continue;
+        outFname[n] = g_nameIdx[i];
+        if (outName) outName[n] = g_names[i];
+        ++n;
+    }
+    return n;
+}
 
 void tick_resolve(uint64_t nowMs) {
     if (g_comp) {

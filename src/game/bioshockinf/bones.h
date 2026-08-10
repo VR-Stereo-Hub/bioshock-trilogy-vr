@@ -60,6 +60,13 @@ void* attachment();
 // this object, and the fidget re-target self-derives from it each boot.
 void* component();
 
+// s53: per-side bone identity for the hide module - the grip first (its
+// subtree carries the hand and the holdable), then the arm-chain bones, as
+// RefSkeleton's OWN stored FName indices (cadence-safe: no pool scans) plus
+// optional resolve-time name copies (outName may be null). Returns the count
+// written; 0 when the rig is not resolved.
+int side_bones(int hand, int32_t* outFname, const char** outName, int maxCount);
+
 // Drive one hand's cluster (and its arm chain per armsMode) toward the
 // game-space target. Pass-1 game thread only. Returns false when the rig is
 // not resolved or the identity gates refused.

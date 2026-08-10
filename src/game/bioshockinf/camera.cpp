@@ -8,6 +8,7 @@
 #include "game/bioshockinf/fxorigin.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/hands.h"
+#include "game/bioshockinf/hide.h"
 
 #include "core/framework/command.h"
 #include "core/gfx/hud_capture.h"
@@ -1442,6 +1443,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     hud::tick();      // s52: HUD-redirect gate follows the XR session's liveness
     cine::tick(now);  // s52: ~2 Hz view-target poll (the Matinee detector)
     arsenal::tick();  // s52r2: F10 GIVE buttons drain here (game thread)
+    hide::tick(now);  // s53: FP-rig visibility gate - AFTER cine (fresh hold verdict)
     // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
     // Load restores the whole session shape - the user's call, overriding the
     // earlier latch-then-click design). Same game-thread lane as the picker.

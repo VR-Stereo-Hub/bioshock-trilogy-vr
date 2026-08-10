@@ -10,6 +10,7 @@
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/cine.h"
+#include "game/bioshockinf/hide.h"
 #include "game/bioshockinf/profiles.h"
 
 #include "imgui.h"
@@ -357,6 +358,10 @@ void draw_debug_ui() {
     bool aim = g_useAimPose.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("aim-pose family (off = grip, A/B only)", &aim))
         g_useAimPose.store(aim, std::memory_order_relaxed);
+
+    // s53: the FP-rig visibility lane (cutscene / empty-hand hide) lives with
+    // the hand controls the user already calibrates from.
+    hide::draw_debug_ui();
 
     bones::draw_debug_ui();
 }
