@@ -51,6 +51,17 @@ std::atomic<bool> g_pitchKill{true};
 std::atomic<bool> g_vrGameplay{false};
 std::atomic<uint64_t> g_vrGameplayLastMs{0};
 constexpr uint64_t kVrGameplayStaleMs = 500;
+// s52: whether a held bumper lifts the pitch kill (the BS1/BS2 radial-wheel
+// semantics). Infinite opts out - see the header note. Default preserves the
+// historical behaviour bit-for-bit for games that never call the setter.
+std::atomic<bool> g_pitchLiftOnBumpers{true};
+
+// s52 (Infinite I9): head-relative locomotion - the published head-vs-body
+// yaw residual the composer rotates the movement stick by. Same self-expiring
+// slot shape as the pitch error above; stale or zero composes byte-identical
+// sticks, which is the whole cross-game safety argument.
+std::atomic<float> g_moveYawOffDeg{0.0f};
+std::atomic<uint64_t> g_moveYawOffMs{0};
 
 // ---- Session 30: the pitch SERVO, and why zeroing the stick was not enough ---
 //
@@ -328,12 +339,18 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     // selection (session 19 part 2 - the wheel was unselectable). The game
     // side snapshots the PC pitch at bumper-down and restores it at release,
     // so the look-pitch the wheel state also accumulates cannot stick.
-    bool turnGate = g_vrGameplay.load(std::memory_order_relaxed) &&
-                    now - g_vrGameplayLastMs.load(std::memory_order_relaxed) <=
-                        kVrGameplayStaleMs &&
-                    !(out.buttons &
-                      (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER));
-    if (g_pitchKill.load(std::memory_order_relaxed) && turnGate) {
+    bool gameplayFresh = g_vrGameplay.load(std::memory_order_relaxed) &&
+                         now - g_vrGameplayLastMs.load(std::memory_order_relaxed) <=
+                             kVrGameplayStaleMs;
+    bool bumperHeld = (out.buttons & (XINPUT_GAMEPAD_LEFT_SHOULDER |
+                                      XINPUT_GAMEPAD_RIGHT_SHOULDER)) != 0;
+    bool turnGate = gameplayFresh && !bumperHeld;
+    // s52: the pitch kill's bumper lift is per-game policy now - on Infinite a
+    // bumper is a momentary cycle tap, not a radial hold, and a lifted kill
+    // would leak stick pitch into the engine basis on every weapon switch.
+    bool pitchGate = gameplayFresh &&
+                     (!bumperHeld || !g_pitchLiftOnBumpers.load(std::memory_order_relaxed));
+    if (g_pitchKill.load(std::memory_order_relaxed) && pitchGate) {
         out.ry = pitch_servo_stick(now);
         g_pitchServoLast.store(out.ry, std::memory_order_relaxed);
     }
@@ -365,6 +382,32 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
                 out.rx = static_cast<int16_t>(v > 32767.0f    ? 32767
                                               : v < -32768.0f ? -32768
                                                               : lroundf(v));
+            }
+        }
+    }
+    // s52 head-relative locomotion: rotate the movement stick by the published
+    // head-vs-body yaw residual so stick-forward tracks the head's facing.
+    // Gated on the publisher's own freshness rather than turnGate: the bumper
+    // lift must not snap the walk direction mid-stride, and the publisher only
+    // publishes while its drive owns a gameplay view (Infinite; BS1/BS2 never
+    // publish, so the stamp stays 0 and this block never runs there).
+    {
+        uint64_t stamp = g_moveYawOffMs.load(std::memory_order_relaxed);
+        if (stamp && now - stamp <= kVrGameplayStaleMs && (out.lx || out.ly)) {
+            float deg = g_moveYawOffDeg.load(std::memory_order_relaxed);
+            if (deg != 0.0f) {
+                const float r = deg * 0.01745329252f;
+                const float c = cosf(r), s = sinf(r);
+                const float x = static_cast<float>(out.lx);
+                const float y = static_cast<float>(out.ly);
+                const float xr = x * c + y * s;  // clockwise from above:
+                const float yr = y * c - x * s;  // +deg deflects forward toward +x
+                out.lx = static_cast<int16_t>(xr > 32767.0f    ? 32767
+                                              : xr < -32768.0f ? -32768
+                                                               : lroundf(xr));
+                out.ly = static_cast<int16_t>(yr > 32767.0f    ? 32767
+                                              : yr < -32768.0f ? -32768
+                                                               : lroundf(yr));
             }
         }
     }
@@ -692,6 +735,19 @@ void publish_pitch_error(float headMinusEngineDeg) {
     g_pitchErrMs.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
+void set_pitch_kill_lift_on_bumpers(bool lift) {
+    bool was = g_pitchLiftOnBumpers.exchange(lift, std::memory_order_relaxed);
+    if (was != lift)
+        BVR_LOG("input: pitch-kill bumper lift %s",
+                lift ? "ON (radial states read stick Y)"
+                     : "off (the kill holds through bumper presses)");
+}
+
+void publish_move_yaw_offset(float deg) {
+    g_moveYawOffDeg.store(deg, std::memory_order_relaxed);
+    g_moveYawOffMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
 void set_pitch_kill(bool on) {
     bool was = g_pitchKill.exchange(on, std::memory_order_relaxed);
     if (was != on)
@@ -837,6 +893,17 @@ void handle_command(const char* args) {
                     g_pitchServoLast.load(std::memory_order_relaxed), kPitchServoDeadDeg,
                     kPitchServoGain, kPitchServoMax);
         }
+    } else if (strcmp(verb, "moveyaw") == 0) {
+        // s52 status-only: the head-relative-locomotion publish, for the sim
+        // gates. The lever lives game-side (`bsibody`); this reads the slot.
+        uint64_t stamp = g_moveYawOffMs.load(std::memory_order_relaxed);
+        uint64_t age = stamp ? GetTickCount64() - stamp : 0;
+        BVR_LOG("input: move-yaw offset %.2f deg (%s%llu ms ago), bumper lift %s "
+                "(vrinput moveyaw is status-only; toggle via the game adapter)",
+                g_moveYawOffDeg.load(std::memory_order_relaxed),
+                stamp ? "published " : "NEVER published, ",
+                static_cast<unsigned long long>(age),
+                g_pitchLiftOnBumpers.load(std::memory_order_relaxed) ? "on" : "off");
     } else if (strcmp(verb, "turnscale") == 0) {
         float s = 0.0f;
         if (sscanf_s(rest, "%f", &s) == 1) {

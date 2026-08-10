@@ -2,6 +2,7 @@
 
 #include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
+#include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/patterns.h"
 
 #include <atomic>
@@ -99,6 +100,10 @@ void arm_pad_profile() {
     // fourth flick direction for the nav cycle pair. Core's default is BS1's
     // map and BS1/BS2 never call this.
     bvr::input::set_pad_profile(bvr::input::PadProfile::Infinite);
+    // s52: this game's bumpers are momentary weapon/plasmid cycle taps, not
+    // BS1's radial holds - the pitch kill must hold through them or every
+    // grip squeeze leaks stick pitch into the engine basis.
+    bvr::input::set_pitch_kill_lift_on_bumpers(false);
 }
 
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
@@ -150,7 +155,12 @@ void draw_debug_ui() {
     if (changed)
         bvr::input::set_pad_profile(prof == 1 ? bvr::input::PadProfile::Infinite
                                               : bvr::input::PadProfile::Bioshock1);
-    ImGui::TextDisabled("bsiinput on|off|padmap|status; core verbs via vrinput");
+    // s52: body-follows-head. The pitch-kill and snap-turn controls live in
+    // core's own INPUT overlay section; this one is adapter state.
+    bool bf = camera::body_follow_head();
+    if (ImGui::Checkbox("BODY FOLLOWS HEAD (stick walks along head yaw)", &bf))
+        camera::set_body_follow_head(bf);
+    ImGui::TextDisabled("bsiinput on|off|padmap|status; bsibody on|off; core verbs via vrinput");
 }
 
 } // namespace bvr::bsi::input_drive

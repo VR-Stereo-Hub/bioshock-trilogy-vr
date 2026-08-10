@@ -10,6 +10,7 @@
 
 #include "core/framework/command.h"
 #include "core/gfx/hud_capture.h"
+#include "core/input/xinput_bridge.h"
 #include "core/hooks/d3d11_hook.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/config.h"
@@ -104,11 +105,22 @@ float recenter_yaw_rad() { return g_recenterYawUnits / kRotUnitsPerRadian; }
 // heartbeat reports the FINAL rot by design - so it shows the head's pitch,
 // never the engine's, and could not by itself show the engine's pitch stuck
 // (the BS1 -88.9 lesson; the engine base itself is on the heartbeat as
-// engineRot, from the pre-drive snapshot). NOTE: unlike BS2, the error is
-// LOGGED ONLY - it is never published to the input bridge in I4
-// (publish_vr_gameplay would arm the shared pitch kill and seize right-stick
-// Y; that lane is I7's).
+// engineRot, from the pre-drive snapshot). s52: the I7 lane arrived - the
+// error IS published now (drive_view), arming core's pitch kill + servo, so
+// the stick can no longer move the engine pitch the vfx/trace basis reads.
 float g_pitchErrDeg = 0.0f;
+
+// s52: body-follows-head locomotion. While on, drive_view publishes the yaw
+// residual to the input bridge and the composer rotates the movement stick so
+// stick-forward walks along the head's facing. `bsibody on|off|status`, F10
+// checkbox, persisted as inputBodyFollow.
+std::atomic<bool> g_bodyFollowHead{true};
+// Residual-units -> composer-degrees sign. The composer rotates the stick
+// clockwise-from-above per +deg (forward deflects toward +x); whether this
+// build's +yaw residual means "head turned right" is a SIM derivation (s52
+// flat gate: walk under `head rot 90 0 0` must track the head), not an
+// assumption - flip here if the pawn tracks the mirror heading instead.
+constexpr float kMoveYawSign = 1.0f;
 
 // What the last drive actually did, for the heartbeat. Game thread only.
 const char* g_driveLane = "off";
@@ -667,6 +679,25 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
             BVR_LOG("[bsi] vr camera recentered (yaw %.1f deg)", a.yawRad * kRadToDeg);
         }
 
+        // s52 snap turn (the I7 input lane): shift the recenter composite one
+        // step per queued edge BEFORE the residual math, so this dispatch's
+        // yaw, the FrameContext basis and every laser/model consumer agree
+        // within the frame (BS2's drain order). Shifting recenterYaw moves the
+        // residual exactly like a physical head turn; no engine yaw is
+        // written. SIGN IS PER-GAME (sim-derived s52): this build's
+        // stick-right smooth turn DECREASES yaw units, so a +right snap step
+        // must also decrease the final yaw - recenterYaw goes UP, the
+        // opposite of BS1's drain. Steps only queue while core's snap mode is
+        // on AND the vr-gameplay gate below is fresh, so this drains nothing
+        // on a stock boot.
+        if (int steps = bvr::input::take_snap_steps()) {
+            const int32_t units = static_cast<int32_t>(
+                lroundf(bvr::input::snap_angle_deg() * kRotUnitsPerDegree * steps));
+            g_recenterYawUnits = wrap_rot(g_recenterYawUnits + units);
+            BVR_LOG("[bsi] snap turn %+d step(s) (%.0f deg each)", steps,
+                    bvr::input::snap_angle_deg());
+        }
+
         // Rotation: yaw ADDITIVE (the game's own yaw plus the head-look
         // residual, so stick/mouse turning and game scripting keep working);
         // pitch and roll ABSOLUTE from the head - on the out-param only, the
@@ -723,13 +754,34 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
         g_frameCtx.writtenLocZ = engineLoc.z + oz;
         g_frameCtx.gameYawUnits = gameYawUnits;
         g_frameCtx.recenterYawUnits = g_recenterYawUnits;
+        g_frameCtx.residualYawUnits = residualUnits;
         g_frameCtx.recenterPx = g_recenterPose.px;
         g_frameCtx.recenterPy = g_recenterPose.py;
         g_frameCtx.recenterPz = g_recenterPose.pz;
         g_frameCtx.worldScale = scale;
+
+        // s52: the I7 input lane arrives. The gameplay gate arms core's stick-
+        // pitch kill (the stick may no longer drive the engine pitch the vfx/
+        // trace basis reads); the pitch error feeds the servo that steers the
+        // engine's own pitch back under the head through the game's own input
+        // path; the yaw residual is the head-relative-locomotion source. All
+        // three self-expire in core within 500 ms if this seam goes silent
+        // (menus that stop dispatching, level loads), failing open to stock
+        // stick behaviour - the same fail-safe BS1/BS2 rely on.
+        bvr::input::publish_vr_gameplay(true);
+        bvr::input::publish_pitch_error(g_pitchErrDeg);
+        bvr::input::publish_move_yaw_offset(
+            g_bodyFollowHead.load(std::memory_order_relaxed)
+                ? kMoveYawSign * static_cast<float>(residualUnits) / kRotUnitsPerDegree
+                : 0.0f);
     } else {
         g_pitchErrDeg = 0.0f;
         g_frameCtx.valid = false;
+        // Drive not driving this dispatch: close the gates now rather than
+        // letting them age out - 500 ms of stale kill on a live stick is half
+        // a second of dead look input after `bsicam off`.
+        bvr::input::publish_vr_gameplay(false);
+        bvr::input::publish_move_yaw_offset(0.0f);
     }
 
     // The eye offset, applied LAST so the final camera is base + half-IPD
@@ -857,6 +909,20 @@ float cfg_get_anim() { return hands::anim_mode() ? 1.0f : 0.0f; }
 void cfg_set_anim(float v) { hands::set_anim_mode(v != 0.0f); }
 float cfg_get_handson() { return hands::enabled() ? 1.0f : 0.0f; }
 void cfg_set_handson(float v) { hands::set_enabled(v != 0.0f); }
+// ---- s52 input (the I7 lane): all core atomics or adapter atomics, safe
+// from any thread, no game-thread posting needed ----
+float cfg_get_pitchkill() { return bvr::input::pitch_kill() ? 1.0f : 0.0f; }
+void cfg_set_pitchkill(float v) { bvr::input::set_pitch_kill(v != 0.0f); }
+float cfg_get_bodyfollow() {
+    return g_bodyFollowHead.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+}
+void cfg_set_bodyfollow(float v) {
+    g_bodyFollowHead.store(v != 0.0f, std::memory_order_relaxed);
+}
+float cfg_get_snapturn() { return bvr::input::snap_turn() ? 1.0f : 0.0f; }
+void cfg_set_snapturn(float v) { bvr::input::set_snap_turn(v != 0.0f); }
+float cfg_get_snapangle() { return bvr::input::snap_angle_deg(); }
+void cfg_set_snapangle(float v) { bvr::input::set_snap_angle_deg(v); }
 
 constexpr config::KeyDesc kConfigKeys[] = {
     {"worldScale", cfg_get_world_scale, cfg_set_world_scale, 1.0f, 500.0f},
@@ -897,6 +963,11 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"aimPosFwdR", cfg_get_apos<1, 0>, cfg_set_apos<1, 0>, -60.0f, 60.0f},
     {"aimPosRightR", cfg_get_apos<1, 1>, cfg_set_apos<1, 1>, -60.0f, 60.0f},
     {"aimPosUpR", cfg_get_apos<1, 2>, cfg_set_apos<1, 2>, -60.0f, 60.0f},
+    // ---- s52 input (the I7 lane) ----
+    {"inputPitchKill", cfg_get_pitchkill, cfg_set_pitchkill, 0.0f, 1.0f},
+    {"inputBodyFollow", cfg_get_bodyfollow, cfg_set_bodyfollow, 0.0f, 1.0f},
+    {"inputSnapTurn", cfg_get_snapturn, cfg_set_snapturn, 0.0f, 1.0f},
+    {"inputSnapAngleDeg", cfg_get_snapangle, cfg_set_snapangle, 15.0f, 90.0f},
 };
 
 // ---------------------------------------------------------------------------
@@ -1604,6 +1675,12 @@ void load_vr_preset() {
     config::load_current();
 }
 
+bool body_follow_head() { return g_bodyFollowHead.load(std::memory_order_relaxed); }
+void set_body_follow_head(bool on) {
+    bool was = g_bodyFollowHead.exchange(on, std::memory_order_relaxed);
+    if (was != on) BVR_LOG("[bsi] body-follows-head %s", on ? "ON" : "off");
+}
+
 bool input_armed_at_boot() {
     g_inputPending.store(-1, std::memory_order_relaxed); // the adapter applies it itself
     return g_inputOn.load(std::memory_order_relaxed);
@@ -1626,6 +1703,31 @@ bool handle_drive_verb(const char* cmd, const char* args) {
         } else {
             BVR_LOG("[bsi] usage: worldscale <uuPerMeter> (current %.1f)",
                     g_worldScale.load(std::memory_order_relaxed));
+        }
+        return true;
+    }
+    if (strcmp(cmd, "bsibody") == 0) {
+        // s52 body-follows-head. Terminator-safe match (the trailing-newline
+        // trap): "on"/"off" must be followed by whitespace/NUL, not more word.
+        auto tok = [&](const char* w) {
+            const size_t n = strlen(w);
+            if (strncmp(args, w, n) != 0) return false;
+            const char c = args[n];
+            return c == '\0' || c == ' ' || c == '\n' || c == '\r' || c == '\t';
+        };
+        if (tok("on")) {
+            g_bodyFollowHead.store(true, std::memory_order_relaxed);
+            BVR_LOG("[bsi] body-follows-head ON (stick walks along head yaw)");
+        } else if (tok("off")) {
+            g_bodyFollowHead.store(false, std::memory_order_relaxed);
+            BVR_LOG("[bsi] body-follows-head off (stick walks along game yaw)");
+        } else {
+            BVR_LOG("[bsi] body-follows-head %s | residual %.1f deg (game yaw %+d units, "
+                    "recenter %+d) | usage: bsibody on|off|status; `vrinput moveyaw` reads "
+                    "the composer slot",
+                    g_bodyFollowHead.load(std::memory_order_relaxed) ? "ON" : "off",
+                    static_cast<float>(g_frameCtx.residualYawUnits) / kRotUnitsPerDegree,
+                    g_frameCtx.gameYawUnits, g_frameCtx.recenterYawUnits);
         }
         return true;
     }

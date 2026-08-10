@@ -48,6 +48,11 @@ struct FrameContext {
     float writtenLocZ = 0.0f;
     int32_t gameYawUnits = 0;    // engine's own pre-drive yaw (the aim_basis yaw)
     int32_t recenterYawUnits = 0;
+    // s52: the head-look residual this dispatch composed (headYaw - recenter,
+    // wrapped). Instrumentation + the body-follow publisher's source of truth;
+    // consumers deriving it themselves from head pose would be one dispatch
+    // stale.
+    int32_t residualYawUnits = 0;
     float recenterPx = 0.0f, recenterPy = 0.0f, recenterPz = 0.0f; // XR meters
     float worldScale = 50.0f;    // UU per meter (live slider value)
 };

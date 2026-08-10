@@ -1114,6 +1114,65 @@ transform hunt - with `bsifx t`/`bsifx u dump`/`bsifx u callers` all banked.
 command.txt trailing newline as a token terminator (the recorder.h trap, hit
 twice this session).
 
+### s52 part 1: THE I7 INPUT LANE ARRIVES - stick pitch killed, body follows head
+
+**What landed.** `drive_view` now publishes to the core input bridge every
+dispatch it drives: `publish_vr_gameplay(true)` (arms the shared stick-pitch
+kill + turn controls), `publish_pitch_error(g_pitchErrDeg)` (the servo), and
+`publish_move_yaw_offset(residual)` (head-relative locomotion, new core API);
+the not-driving branch publishes the gate false + offset 0 so `bsicam off`
+does not leave 500 ms of dead stick. The I4 abstention comment ("that lane is
+I7's") is retired. New core seams, all additive and self-expiring, BS1/BS2
+never call them: `set_pitch_kill_lift_on_bumpers(false)` (Infinite opt-out:
+its bumpers are momentary cycle taps, not BS1 radial holds - measured: no ry
+leak with a grip held), `publish_move_yaw_offset(deg)` (composer rotates the
+MOVEMENT stick clockwise-from-above per +deg while fresh). Snap-turn drain
+wired into drive_view BEFORE the residual math (BS2's order). Verbs/keys:
+`bsibody on|off|status`, `vrinput moveyaw` (status), F10 BODY FOLLOWS HEAD
+checkbox, preset keys inputPitchKill/inputBodyFollow/inputSnapTurn/
+inputSnapAngleDeg.
+
+**Sim-derived facts (all measured on the Blue Ribbon save, xrsim):**
+- **The engine CAMERA pitch is the stick-driven basis, and it clamps at
+  +/-89 deg.** Right-stick Y with the kill off drove it to the +89 clamp in
+  ~4 s (pitchErr read -89). `GetBaseAimRotation`'s engine value FLATTENS
+  pitch (prints 0.0 throughout) - the aim log line is NOT a pitch
+  instrument; the camera-seam heartbeat (`bsicam heartbeat`, engineRot) and
+  `vrinput pitchservo status` (err) are.
+- **The servo sign is correct un-inverted on this build** (err shrank
+  monotonically -89 -> -8 under stick=-8000). Convergence is ~0.5 deg/s at
+  max deflection and slows near zero (the game's own pad-pitch response
+  curve); irrelevant in real play because the kill prevents accumulation -
+  the servo only ever corrects drift.
+- **Smooth-turn direction: stick-right DECREASES yaw units on this build.**
+  Consequence: the snap drain sign is `recenterYaw + units` for a +right
+  step - the OPPOSITE of BS1's drain. Copied-then-flipped after the sim
+  showed a right flick turning the camera +45 (left). One more entry for
+  the never-copy-a-number ledger.
+- **Head-relative locomotion verified end-to-end**: head rot 90 in the sim
+  -> residual -90 units-side -> composer offset -90 deg -> walk heading
+  matched the CAMERA facing within 0.5 deg (134.7 vs 134.3) while engine
+  yaw sat unchanged at -135.7. `kMoveYawSign = +1` with the composer's
+  clockwise contract. Control: `bsibody off` reverted the walk to the game
+  yaw (wall-slide consistent). Snap composes by construction: the step
+  shifts the same recenter the residual and the rotation both read, in the
+  same dispatch.
+- **The pause menu KEEPS the camera seam dispatching** (drive lines
+  continue, publishes stay fresh) - so the pitch kill and the stick
+  rotation stay armed in the pause menu. With the head off-recenter, pad
+  MENU navigation on the left stick is rotated too (at 90 deg residual,
+  up reads as right). Known v1 limitation; head-neutral menuing is
+  unaffected, mouse menuing is unaffected. Revisit when I9 grows a real
+  menu/cinematic state signal.
+- **Melee (pad Y) and trigger fire both dispatch through the fire seam**
+  (calls counter incremented per press, SUBSTITUTED, clampRefused=0), and
+  the flourish chord fired #1 with lead 200/tail 4500 - the protect list
+  survived the input changes.
+- The bridge status line `getstate[0] 0 total` is MISLEADING while input is
+  flowing (the trigger fired the gun the same second) - do not read it as
+  "the game is not polling"; the packet counter and a measured effect are
+  the real signals.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

@@ -63,6 +63,27 @@ void publish_pitch_error(float headMinusEngineDeg);
 void set_pitch_kill(bool on);
 bool pitch_kill();
 
+// s52 (Infinite I9): per-game policy for the bumper LIFT on the pitch kill.
+// BS1/BS2 lift the kill while a grip/bumper is held because their radial
+// wheels read stick Y for selection (session 19 part 2). Infinite has no
+// radial states - its bumpers are momentary weapon/plasmid cycle taps - so
+// the adapter opts out and the kill holds through a bumper press. Default
+// true = the historical semantics; BS1 and BS2 never call the setter, so
+// their composed pad is byte-identical.
+void set_pitch_kill_lift_on_bumpers(bool lift);
+
+// s52 (Infinite I9): head-relative locomotion. The game adapter publishes the
+// head-vs-body yaw residual (degrees) once per view dispatch; while fresh and
+// nonzero the composer rotates the MOVEMENT stick vector clockwise-from-above
+// (+x right, +y forward) by this angle before the game sees it, so stick-
+// forward walks along the head's facing rather than the game yaw's. The sign
+// contract is the composer's rotation direction - the publisher owns mapping
+// its residual sign onto it. Deliberately independent of the turn gate's
+// bumper lift (a grip tap must not snap the walk direction mid-stride).
+// Self-expires like the other publishes: a stopped publisher (menu, drive
+// off, BS1/BS2 which never call it) composes byte-identical sticks.
+void publish_move_yaw_offset(float deg);
+
 // Radial stick deadzone (fraction 0..0.5) applied by the XR composer.
 float stick_deadzone();
 
