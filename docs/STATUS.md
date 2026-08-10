@@ -17,7 +17,71 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 52 (the I7 INPUT LANE landed - stick pitch killed + body follows head; THE CHEATED ARSENAL + per-weapon presets; the HUD ON A QUAD; the CINEMATIC GATE + head radio; branch `si52-inf-input-arsenal-hud-cine`, NOT merged)
+### Infinite: current state after session 53 (THE FP-RIG HIDE armed on the game's own bone lever; the s52 hide falsifications explained by measurement; the GFx screen model mapped; branch `claude/bioshock-fp-rig-hide-fa6342`, NOT merged)
+
+**Session 53 (2026-08-11) attacked the round-4 revert head-on: derive the
+game's OWN visibility levers, A/B them on the live view, and ship the hide as
+policy on the winning lever.** Commits `6b83cfb` (probe surfaces) +
+`308dc31` (gate armed). Derivations in ENGINE_NOTES "s53"; headset checklist
+in TESTING "S53"; everything below is sim/flat-proven, awaiting the headset.
+
+1. **THE LEVER VERDICTS (the session's spine).** All four candidate levers
+   derived one-shot on the live rig (`bsihide derive`: bHidden actor+0x5C
+   mask 4; HiddenGame/bOwnerNoSee/bOnlyOwnerSee all in comp+0xD4; SetHidden/
+   SetOwnerNoSee/HideBoneByName/UnHideBoneByName/IsBoneHidden/MatchRefBone
+   indices cached) and A/B'd on the live view in an armed chapter
+   (LOAD CHAPTER -> Comstock Rooftops, pistol + Enrage): **actor bHidden is
+   INEFFECTIVE** (bit written+read 1, hands and pistol keep rendering - the
+   FP path ignores it; it merely TRACKS scene state, 1 in the rowboat's
+   no-hands phases, 0 at authored moments/gameplay); **comp SetHidden hides
+   the arms mesh but the weapon model keeps floating** (separate attached
+   component); **bone HideBoneByName removes limb AND holdable together**
+   (s45b re-proven) - the production default.
+2. **THE GATE (hide.cpp, armed by default).** Policy consumes the untouched
+   round-3 conditions: `cine::hold()` -> rig-wide hide (cine radio: force /
+   game-managed / off, default FORCE per the user directive - the box-handoff
+   risk is the first headset A/B); `hand_empty(h)` outside holds -> per-hand
+   whole-limb bone hide (user call: no floating forearms). Edge-driven with a
+   500 ms re-assert watchdog, per-boot derive with refused latch, instance-
+   only writes, rig-drop/re-resolve safe (fresh rigs spawn visible), fault
+   latch after 8 failed applies, F10 controls in HANDS + MODEL. Flat-proven
+   live: empty-hand possession bone-hid both limbs, the arriving chapter
+   loadout unhid them on the next profiles poll, zero reasserts, zero fights.
+3. **THE DOUBLES' IDENTITY, narrowed.** `bsihide who` proved scripted scenes
+   NEVER swap the attachment (stale-rig hypothesis dead), and the bHidden
+   ineffectiveness explains round 4's "zero-scale hides nothing the user can
+   see" the same way. Remaining suspect for headset doubles: the PAWN's own
+   third-person body, visible only from the offset VR camera ("hands to the
+   right and left of the character") - `bsihide pawn 0|1` (SetOwnerNoSee on
+   pawn Mesh, derived per boot) is the one-command headset A/B.
+4. **THE GFx LANE (bsigfx, crosshair kill rung 3 partial).** All machinery
+   names live in the pool (HideableHUDWidgetNames 4835,
+   NumReasonsToShowElement 36595, XSeqAct_HideHUDElement 10586, HUDMovie,
+   FlashCommand, XClikHUDCrosshair 8654; SetVariableBool does NOT exist).
+   `myHUD` (derived at PC+0x2B4) is a BARE `HUD`-class object even in
+   gameplay - none of the machinery is on it. The screen MODEL mapped by
+   walks: UI screens are GFxMoviePlayer-family UObjects (SwfMovie asset
+   +0x34, PC +0x5C) owning CLIK widget UObjects; reachable so far:
+   XGameViewportClient +0xF0 -> GFxInteraction; the HUD screen INSTANCE (the
+   crosshair widget's owner) is the open hunt - needs an object-enumeration
+   or GFx-advance-hook lane next session. `bsigfx` ships: hud/prop/cmd
+   (FlashCommand)/element list/element +-N/setb/getb.
+5. **Traps burned this session:** the s37 attract-movie freeze hit once
+   (force-kill + relaunch protocol worked); game-shot captures RACE command
+   dispatch (the game pauses unfocused - a "hidden" capture can show the
+   pre-dispatch frame; read the log bits, not the pixels, for state);
+   `xrsim head rot` arg order is (yaw?, pitch, roll) - the second arg pitches;
+   an additive `head pos` during a scripted scene can put the camera inside
+   geometry - reset pose + `bsicam drive off` restores the authored view.
+
+**NEXT SESSION: the headset block (TESTING "S53" first minute = round-4
+falsifiers: intro text intact, doubles gone), then the s52 verdicts (TESTING
+"S52"/"S52 round 2": arsenal tuning from a fair save + calibration save, HUD
+sliders, raffle chord, Matinee gun-track, sprint arms, subtitles), fixes
+in-session, then the crosshair instance hunt (the GFx screen-manager lane) +
+preset keys for whatever survives the verdicts.**
+
+### Infinite: state after session 52 (superseded by s53 above) (the I7 INPUT LANE landed - stick pitch killed + body follows head; THE CHEATED ARSENAL + per-weapon presets; the HUD ON A QUAD; the CINEMATIC GATE + head radio; branch `si52-inf-input-arsenal-hud-cine`, NOT merged)
 
 **Session 52 (2026-08-10, evening) worked the four handoff items in strict
 order; all four landed flat-proven and committed (882a420, 0e4a41c, a2aea90,
@@ -6867,6 +6931,67 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 53 (Infinite) - 2026-08-11 - THE FP-RIG HIDE done right: the lever A/B, the bone-lever gate, the GFx screen model
+
+- **The mandate**: round 4's revert record (zero-scale falsified in-headset,
+  release freezes hands) -> find the game's OWN hide lever, flip it live,
+  wire it to the round-3 conditions. Branch `claude/bioshock-fp-rig-hide-fa6342`
+  off `si52` tip 9e38f7a; commits `6b83cfb` (bsihide + bsigfx probe surfaces)
+  and `308dc31` (gate armed, bone default).
+- **DERIVED (one-shot, cached per boot)**: bHidden actor+0x5C mask 0x4;
+  HiddenGame comp+0xD4 mask 0x20; bOwnerNoSee mask 0x40; bOnlyOwnerSee mask
+  0x80 (and the FP component carries bOnlyOwnerSee=1 in gameplay - the rig is
+  owner-only by construction); indices for SetHidden/SetOwnerNoSee/
+  HideBoneByName/UnHideBoneByName/IsBoneHidden/MatchRefBone. SetHiddenGame
+  does not exist; console `set` stays dead; all writes are instance bits or
+  native dispatch.
+- **MEASURED, and it reshaped the design** (rowboat save + Comstock Rooftops
+  chapter, window A/B with a pistol equipped): (a) scripted scenes NEVER swap
+  the attachment (`bsihide who` = SAME throughout - the stale-rig pivot is
+  dead); (b) the game TRACKS scenes on bHidden (1 through no-hands phases,
+  0 at the authored moment - timestamped flip caught live) **but bHidden does
+  NOT hide the FP rig** - bit set+verified 1 with hands and pistol still
+  rendering. The FP path ignores actor visibility - which also explains why
+  round 4's rig-side manipulations changed nothing the user could see;
+  (c) comp SetHidden hides the arms mesh but the WEAPON MODEL floats on
+  (separate component); (d) bone HideBoneByName removes limb + holdable
+  together - the only complete hide, now the production default.
+- **SHIPPED (hide.cpp, armed)**: cine hold -> rig-wide bone hide behind a
+  POLICY radio (force / game-managed / off; force default per the user
+  directive - the authored box-handoff hand is the known risk, first headset
+  A/B); empty hand outside holds -> per-hand whole-limb bone hide (user
+  call). Edge-driven + 500 ms watchdog, refused-latch derive, rig-drop-safe,
+  fault latch, F10 controls in HANDS + MODEL, `bsihide` command surface
+  (status/derive/who/diff/actor/comp/owner/bone/hand/pawn/lever/cine/auto).
+  Flat-proven live: possession with empty hands bone-hid both limbs, the
+  chapter loadout's arrival unhid them, 0 reasserts / 0 failures.
+- **The pawn-body suspect**: with the rig exonerated twice, the headset
+  doubles ("hands to the right and left of the character") are likely the
+  pawn's OWN third-person mesh, visible only from the offset VR camera.
+  `bsihide pawn 0|1` (SetOwnerNoSee on pawn Mesh, derived at pawn+0x2E4 via
+  the Mesh property) is the one-command headset A/B.
+- **The GFx lane (crosshair kill, rung 3 PARTIAL)**: every machinery name
+  lives (HideableHUDWidgetNames 4835, NumReasonsToShowElement 36595,
+  XSeqAct_HideHUDElement 10586, XClikHUDCrosshair 8654, FlashCommand,
+  HUDMovie; SetVariableBool/GetVariableBool do NOT exist on this build) but
+  `myHUD` (PC+0x2B4) is a bare `HUD` object in EVERY level probed - none of
+  the machinery is on it, and no HUDMovie property either. Walks mapped the
+  screen model: XGameViewportClient(+0xF0)->GFxInteraction; UI screens are
+  GFxMoviePlayer-family UObjects (SwfMovie +0x34, PC +0x5C) owning CLIK
+  widget UObjects (XClikLabel's Outer = XModalTrainingTextScreen). The HUD
+  screen INSTANCE is the open hunt - needs an object-enumeration or
+  GFx-advance-hook lane. `bsigfx` shipped (hud/prop/cmd/element/setb/getb);
+  the CDO-load shortcut failed (four path shapes, all null).
+- **Traps**: the s37 attract freeze recurred once (force-kill + relaunch,
+  protocol unchanged); game-shot captures RACE command dispatch (game pauses
+  unfocused - trust the log's bit readbacks over pixels for state); xrsim
+  `head rot` pitches on the SECOND arg; `head pos` offsets during scripted
+  scenes can bury the camera in geometry (`bsicam drive off` restores the
+  authored view for observation).
+- **NEXT**: headset block (TESTING "S53" minute one = intro text + doubles;
+  the cine-radio and pawn A/Bs), then the s52 verdict list, then the HUD
+  screen-instance hunt for the crosshair + preset keys post-verdict.
 
 ### Session 52 (Infinite) - 2026-08-10 (evening) - the I7 input lane, THE CHEATED ARSENAL + presets, the HUD on a quad, the cinematic gate
 
