@@ -76,6 +76,11 @@ bool find_property_offset(const void* obj, const char* propName, const char* exp
 // bone rig resolve (GetFirstPersonAttachment); instruments-only otherwise.
 bool call_on_object(void* obj, const char* funcName, void* parms);
 
+// s52: DynamicLoadObject by full path from adapter code (the bsiload lane as a
+// callable - the arsenal's rung 1). All of bsiload's gates and its trailing-
+// whitespace trim apply; returns the loaded object or null. Game thread.
+void* load_object(const char* path);
+
 // Overlay section.
 void draw_debug_ui();
 

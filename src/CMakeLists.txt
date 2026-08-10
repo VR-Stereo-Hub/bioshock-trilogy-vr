@@ -98,6 +98,8 @@ add_library(bioshockvr SHARED
     game/bioshock2r/scenedraw.h
     game/bioshockinf/aim.cpp
     game/bioshockinf/aim.h
+    game/bioshockinf/arsenal.cpp
+    game/bioshockinf/arsenal.h
     game/bioshockinf/bioshockinf_adapter.cpp
     game/bioshockinf/bioshockinf_adapter.h
     game/bioshockinf/bones.cpp

@@ -89,6 +89,19 @@ inline constexpr uint32_t kPcViewTransformOffset = 0x430;  // 0x40 bytes -> a 4x
 // a relaunch and a fresh checkpoint load (different addresses, same offsets),
 // which is what makes it an offset rather than a coincidence.
 inline constexpr uint32_t kPcPawnOffset = 0x1FC;
+// s52 (the cheated arsenal, derived live with bsichase/bsidump on the Blue
+// Ribbon save): pawn+0x314 -> XInventoryManager (the s50 layout, first code
+// consumer). On the manager: +0x1FC the dedicated melee (SkyhookMelee
+// archetype), +0x200.. the carried XWeapon list (it GROWS on AcquireWeapon -
+// five entries observed; +0x2A0 held the live count). Every carried weapon is
+// literal class XWeapon; the IDENTITY is the ObjectArchetype at UObject+0x24
+// (PistolFounder, Plasmid_EnrageFounder, ...), NOT the class - class_name_of
+// answers "XWeapon" for all of them.
+inline constexpr uint32_t kPawnInventoryMgrOffset = 0x314;
+inline constexpr uint32_t kMgrMeleeSlotOffset = 0x1FC;
+inline constexpr uint32_t kMgrWeaponSlotsOffset = 0x200;
+inline constexpr uint32_t kMgrWeaponSlotMax = 12; // read guard, not engine truth
+inline constexpr uint32_t kUObjectArchetypeOffset = 0x24;
 inline constexpr uint32_t kCameraPovLocOffset = 0x3B8;     // FVector, path 2's source
 inline constexpr uint32_t kCameraPovRotOffset = 0x3C4;     // FRotator, path 2's source
 // AActor, from paths 3 and 4 reading identical offsets off two different

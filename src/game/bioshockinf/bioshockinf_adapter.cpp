@@ -8,6 +8,7 @@
 #include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/config.h"
 #include "game/bioshockinf/aim.h"
+#include "game/bioshockinf/arsenal.h"
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/fidget.h"
 #include "game/bioshockinf/fire.h"
@@ -77,6 +78,9 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
 
     // Persisted tuning (worldScale). File read only - touches no engine state.
     camera::load_vr_preset();
+    // s52: per-weapon overrides (weapons.ini). File read only; applies happen
+    // on the game thread's identity poll (profiles::tick).
+    profiles::init();
 
     // S43b, HEADSET-VERIFIED (user, 2026-08-06): this engine's renderer is
     // threaded with OneFrameThreadLag, so presented content is TWO locate
@@ -165,6 +169,7 @@ void BioshockInfAdapter::drawDebugUi() {
     aim::draw_debug_ui();
     fire::draw_debug_ui();
     fxorigin::draw_debug_ui();
+    profiles::draw_debug_ui();
     lens::draw_debug_ui();
     scenedraw::draw_debug_ui();
     reflect::draw_debug_ui();
@@ -197,6 +202,7 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (hands::handle_command(cmd, args)) return true;
     if (bones::handle_command(cmd, args)) return true;
     if (profiles::handle_command(cmd, args)) return true;
+    if (arsenal::handle_command(cmd, args)) return true;
     if (strcmp(cmd, "reentry") == 0) {
         if (!scenedraw::handle_command(args))
             BVR_LOG("[bsi] reentry: unknown subcommand. reentry status|reset|pulse [n]|"

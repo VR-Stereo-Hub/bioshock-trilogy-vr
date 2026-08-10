@@ -1073,27 +1073,25 @@ void cmd_call_at(const char* args) {
 // out of the parms block and logged with its class and name, so the next
 // command can feed it onward (bsicallat ... 0x<ptr>). This is how a weapon or
 // Vigor CLASS/archetype becomes a pointer an inventory grant can consume.
-void cmd_load(const char* args) {
+// s52: the bsiload core as a callable (the arsenal's rung 1). Same gates,
+// same trim, same logging; returns the loaded object or null.
+void* do_load_object(const char* args) {
     while (args && *args == ' ') ++args;
-    if (!args || !*args) {
-        BVR_LOG("[bsi] load: usage - bsiload <Full.Object.Path>   e.g. bsiload "
-                "XGame.XWeaponMurderOfCrows. Returns the object pointer for bsicallat.");
-        return;
-    }
+    if (!args || !*args) return nullptr;
     const int32_t nameIndex = patterns::fname_find("DynamicLoadObject");
     if (nameIndex < 0) {
         BVR_LOG("[bsi] load: REFUSED - 'DynamicLoadObject' not in GNames");
-        return;
+        return nullptr;
     }
     void* obj = nullptr;
     const uint8_t* const* vt = nullptr;
-    if (!resolve_dispatch_target("load", obj, vt)) return;
+    if (!resolve_dispatch_target("load", obj, vt)) return nullptr;
     static wchar_t s_wide[512]; // game thread only (the tid gate above)
     int written =
         MultiByteToWideChar(CP_UTF8, 0, args, -1, s_wide, static_cast<int>(_countof(s_wide)));
     if (written <= 0) {
         BVR_LOG("[bsi] load: REFUSED - path did not convert to UTF-16");
-        return;
+        return nullptr;
     }
     // Trim trailing CR/LF/space: command.txt lines arrive with the line ending
     // attached. ConsoleCommand's own parser eats it, but an OBJECT PATH match
@@ -1127,29 +1125,37 @@ void cmd_load(const char* args) {
     if (r == 1) {
         BVR_LOG("[bsi] load: FindFunction('DynamicLoadObject') returned null - the Object "
                 "statics are not reachable through this chain");
-    } else if (r == 2) {
+        return nullptr;
+    }
+    if (r == 2) {
         BVR_LOG("[bsi] load: FAULT 0x%08X - swallowed by SEH", code);
-    } else if (!parms.ret) {
-        // Diagnose a layout mismatch vs a genuine miss: show every dword the
-        // callee may have written. A pointer in an unexpected slot means the
-        // signature differs from stock UE3; all-zero after the FString means a
-        // real not-found.
-        const uint32_t* d = reinterpret_cast<const uint32_t*>(&parms);
-        BVR_LOG("[bsi] load: returned NULL - parms dwords after call: "
-                "[3]=0x%08X [4]=0x%08X [5]=0x%08X (FString triple omitted)",
-                d[3], d[4], d[5]);
+        return nullptr;
+    }
+    return parms.ret;
+}
+
+void cmd_load(const char* args) {
+    while (args && *args == ' ') ++args;
+    if (!args || !*args) {
+        BVR_LOG("[bsi] load: usage - bsiload <Full.Object.Path>   e.g. bsiload "
+                "XGame.XWeaponMurderOfCrows. Returns the object pointer for bsicallat.");
+        return;
+    }
+    void* ret = do_load_object(args);
+    if (!ret) {
+        BVR_LOG("[bsi] load: returned NULL - not found (or a refusal logged above)");
     } else {
         char cls[128] = {};
         char nm[128] = {};
         derive_obj_name_off();
-        object_class_name(parms.ret, cls, sizeof cls);
-        if (g_objNameOff >= 0 && bvr::pattern_scan::is_memory_valid(parms.ret, 0x50)) {
+        object_class_name(ret, cls, sizeof cls);
+        if (g_objNameOff >= 0 && bvr::pattern_scan::is_memory_valid(ret, 0x50)) {
             const int32_t ni = *reinterpret_cast<const int32_t*>(
-                static_cast<const uint8_t*>(parms.ret) + g_objNameOff);
+                static_cast<const uint8_t*>(ret) + g_objNameOff);
             if (ni > 0 && ni < patterns::fname_count()) patterns::fname_text(ni, nm, sizeof nm);
         }
         BVR_LOG("[bsi] load: LOADED %p  class %s  name %s  -> use it as bsicallat's 0x arg",
-                parms.ret, cls[0] ? cls : "?", nm[0] ? nm : "?");
+                ret, cls[0] ? cls : "?", nm[0] ? nm : "?");
     }
 }
 
@@ -1599,6 +1605,8 @@ bool call_on_object(void* obj, const char* funcName, void* parms) {
     uint32_t code = 0;
     return call_by_name_seh(obj, vt, nameIndex, parms, &func, &code) == 0;
 }
+
+void* load_object(const char* path) { return do_load_object(path); }
 
 bool handle_command(const char* cmd, const char* args) {
     if (strcmp(cmd, "bsinative") == 0) {

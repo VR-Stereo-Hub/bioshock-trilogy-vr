@@ -1173,6 +1173,57 @@ inputSnapAngleDeg.
   "the game is not polling"; the packet counter and a measured effect are
   the real signals.
 
+### s52 part 2: THE CHEATED ARSENAL - grant recipe derived, weapon identity cracked
+
+**The identity fact that reshapes I9's presets: every carried weapon and vigor
+is literal `class XWeapon`.** `bsichase` on all five manager slots printed
+`class XWeapon name XWeapon`; the s50 "slot archetypes" wording was exact - the
+durable identity is the **ObjectArchetype at UObject+0x24** (this save:
+melee `SkyhookMelee`, slots `Plasmid_EnrageFounder`, `PistolFounder`,
+`Plasmid_DevilsKiss`, `MachineGunFounder`). `class_name_of` answers "XWeapon"
+for every gun, so the s47 profile scaffold's class-name key was re-pointed at
+the ARCHETYPE name.
+
+**The identity getter**: `AXPawn::GetEquippedWeapon(int selector)` via
+ProcessEvent - **selector 0 = the GUN hand, selector 1 = the VIGOR hand**;
+the return lands at parms+4 (after the selector). Measured: 0 answered the
+pistol then the freshly equipped shotgun; 1 answered the Enrage instance. One
+getter, both hands - the profiles identity poll uses exactly this.
+(`GetEquippedPlasmid` does not exist; `EquippedPlasmidIndex` is an
+IntProperty on XInventoryManager at +0x2A8 - read once, not needed.)
+
+**THE GRANT RECIPE (every rung measured live, s52):**
+1. `DynamicLoadObject("PreCoalescedItemAssets.<Archetype>")` - archetype
+   objects live in the top-level package **PreCoalescedItemAssets** (Outer
+   chain: archetype -> PreCoalescedItemAssets -> null). Loads weapons the
+   level never spawned (ShotgunFounder resolved on the Blue Ribbon save).
+2. `AXPawn::AcquireWeapon(archetype)` - a NEW XWeapon instance joins the
+   manager's carried list (+0x200 list grew 4 -> 5; the live count at
+   manager+0x2A0 followed). **This corrects s43**: AcquireWeapon wants the
+   ARCHETYPE - the CDO and the class both dispatch clean and grant nothing,
+   which is exactly what s43 measured and falsified.
+3. `XInventoryManager::EquipWeapon(instance)` - **manager-side**; the pawn's
+   own `EquipWeapon(instance)` dispatches clean and does NOT switch
+   (measured). GetEquippedWeapon(0) flipped to the shotgun instance after the
+   manager call; the HUD swapped to the shotgun icon.
+4. `AXWeapon::AddAmmo(int)` on the instance - the shotgun went from empty to
+   4 loaded + reserve on `i:20` (the game clamps into clip/reserve itself).
+
+`bsigive <ArchetypeName> [ammo]` (arsenal.cpp) automates all four rungs +
+logs the GetEquippedWeapon echo as the measured acceptance; `bsigive list`
+prints the carried list with archetype names. Base-game archetype roster
+(GNames): PistolFounder, MachineGunFounder, ShotgunFounder, CarbineFounder,
+HandCannonFounder, SniperRifleFounder, RPGFounder + `Plasmid_EnrageFounder,
+Plasmid_DevilsKiss, Plasmid_BuckingBroncoFounder, Plasmid_Charge,
+Plasmid_MurderOfCrowsFounder, Plasmid_UndertowFounder,
+Plasmid_VoltSwarmFounder, Plasmid_ReturnToSenderInsta` (plus `*VP` Vox-
+Populi variants and `Plasmid_Unlock_*` gear-side items, untested).
+
+**Inventory offsets now in code** (patterns.h, first code consumers):
+`kPawnInventoryMgrOffset 0x314`, `kMgrMeleeSlotOffset 0x1FC`,
+`kMgrWeaponSlotsOffset 0x200` (dense list, first null ends it),
+`kUObjectArchetypeOffset 0x24`.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle
