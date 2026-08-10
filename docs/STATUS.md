@@ -17,7 +17,74 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 50 (three fixes shipped - eye tags, THE FLOURISH BUTTON, the fire-swing kill; FX-origin re-scoped by the user; branch `si50-inf-fx-edge-flourish`, NOT merged)
+### Infinite: current state after session 51 (the SHOULDERS killed, the FOV-edge discriminators + edge telemetry shipped, the FX record lane exonerated; branch `si51-inf-shoulders-edge-fx`, NOT merged)
+
+**Session 51 (2026-08-10, overnight) worked the three s50-handoff items in
+strict order; all three landed flat-proven and committed. Checklist in
+TESTING "S51". A power loss mid-session cost nothing (all state on disk).**
+
+**1. THE FIRE-SWING, ROUND 2 - fixed (commit cfa2964).** The new all-bones
+instrument (`bsibones travel all [secs]` - per-bone peak table over the whole
+bank, sorted worst-first) named the real mechanism in ONE shot: with the s50
+anchor glue ON, the LEFT ANCHOR reads 0.10 deg but the rest of the left chain
+swings 74-133 deg / up to 87.7 cm (Larm21 133.54) - the corr cancels only the
+anchor's ABSOLUTE motion, and the fire anim's ANCHOR-RELATIVE arm articulation
+passes through by design. The chest (the only undriven bone) measured 0.00 -
+the s50 "engine-owned bones" theory is FALSIFIED. Fix: the +1.2 s ready
+capture now banks the WHOLE hand's atoms; during the 1500 ms fire window the
+compose substitutes them for the live source (corr collapses to identity) -
+the hand renders its ready articulation rigidly on the controller. A-B-A:
+FULL = left 0.00-0.16 deg / `anchor` mode = the exact 133.53/95.58 signature
+back / FULL again clean; flourish still 8.43 img-diff; stance 4.5 min idle =
+0 L-cluster movers. Levers: `bsibones fireglue on|off|full|anchor` + two F10
+checkboxes. Known feel change to judge: the right hand's residual recoil
+articulation is frozen too during the window.
+
+**2. THE FOV-EDGE DISCRIMINATORS (commit a90322b; ENGINE_NOTES s51 part 2).**
+Three instruments, none claiming the fix, all flat-verified on the sim:
+- **Hand ref quad** (`bsicam handquad on|off|l|r`, F10): core parks a 1.5-deg
+  compositor quad AT the located grip per present. Sim: quad == grip to 1e-4
+  across three stations. In-headset one-look: quad-vs-hand SEPARATE = the
+  projection/submission lane is guilty; TOGETHER = the composed hand position
+  itself bends.
+- **VDXR view logger** (`bsicam viewlog [n]`): bounded burst of located
+  per-eye pose/fov + derived eyeSep/CANT/fov-asymmetry. Sim null: 0.0630 m
+  lateral, cant 0.0000.
+- **THE EDGE TELEMETRY LANE** (`bsicam edgelog on|off`, new edgelog.cpp):
+  ~30 Hz in-memory ring -> 110-column TSV on `off` (located views, submitted
+  tags + claim, consumed head pose, written camera + per-eye cameras, grip
+  pose, composed model targets, component L2W, frame ids). Sim sweep null
+  baseline banked: lateral chain EXACTLY linear at worldScale (rms 0.000),
+  tags identity, eye pair exact. The headset run instructions are in the
+  checklist - after the run the TSV alone lets the next session find which
+  stage's numbers bend where the perceived depth bends.
+
+**3. THE FX-ORIGIN FORKS - all three falsified (commit f7a232a; ENGINE_NOTES
+s51 part 3).** The s50-decoded record lane is EXONERATED at runtime: the
+effect playback tick 0x436490 NEVER RUNS (hooked probe-only, calls=0 through
+a held charge), and the per-record update's entire live population is six
+SkeletalMeshActor scene records with NULL location buffers (5 live callers of
+194 static; 0x5EC393 dominant). No plume record exists in the lane, so the
+planned one-poke experiment had no target - the honest outcome. SIX lanes now
+falsified for the frozen family's writer. Banked instruments: `bsifx u dump`
+(all-records), `bsifx u callers` (runtime census), `bsifx t probe|dump|status`
+(tick + table walker). Defaults unchanged: bsifx ON, u/t OFF.
+
+**Traps hit and documented:** the command.txt trailing-newline token trap
+(recorder.h) bit TWICE (edgelog `on`, bsifx `u`/`t` lane detection) - fixed
+and noted in ENGINE_NOTES; the travel sampler cadence is ~1350/s (camera
+detour fires many times per frame), fine for peak detection but not a frame
+counter.
+
+**NEXT SESSION:** (1) headset verdicts - the shoulders A/B, the hand-quad
+one-look, the viewlog cant line, THE EDGE-TELEMETRY TSV (the insurance:
+analyze it regardless of the verdicts), flourish lead-200 re-judgment;
+(2) whichever way the hand-quad discriminates, follow that half of the
+hypothesis space with the telemetry data; (3) FX-origin next forks: what is
+the live caller 0x5EC393's loop, and/or a render-side particle transform
+hunt.
+
+### Infinite: state after session 50 (kept for the record; superseded by s51 above) (three fixes shipped - eye tags, THE FLOURISH BUTTON, the fire-swing kill; FX-origin re-scoped by the user; branch `si50-inf-fx-edge-flourish`, NOT merged)
 
 **Session 50 (2026-08-10, overnight) worked the s49b items in strict order.
 Item 1 (FX-origin) hit the ask-when-blocked rule mid-session; the user
@@ -6689,6 +6756,34 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 51 (Infinite) - 2026-08-10 (overnight) - the SHOULDERS killed (full-hand substitution), the FOV-edge discriminators + THE EDGE TELEMETRY, the FX record lane exonerated
+
+Three items in strict order, all flat-proven and committed on
+`si51-inf-shoulders-edge-fx` (from s50 tip 0a17918; a mains power loss
+mid-session cost nothing). (1) FIRE-SWING ROUND 2: the new
+`bsibones travel all` per-bone peak table named the mechanism in one shot -
+the s50 corr pins the anchor (0.10 deg) while the fire anim's anchor-RELATIVE
+articulation swings the rest of the left chain 74-133 deg / 87.7 cm; the
+chest (the only undriven bone) read 0.00, falsifying the engine-owned-bones
+theory outright. Fix: the ready capture banks the whole hand; the fire window
+substitutes the banked atoms for the live source (corr collapses to
+identity). A-B-A exact (full ~0 / anchor 133.53-95.58 / full ~0), flourish
+8.43, stance 4.5-min idle clean. `bsibones fireglue on|off|full|anchor` +
+F10. (2) FOV-EDGE: three discriminators - the hand-anchored compositor quad
+(core builds it AT the located grip per present; sim: quad==grip to 1e-4),
+the VDXR view logger (located per-eye pose/fov + eyeSep/cant/fov-asym,
+bounded burst), and THE EDGE-TELEMETRY LANE (`bsicam edgelog`, ~30 Hz ring,
+110-column TSV of the whole chain per sample; sim sweep null baseline banked:
+lateral chain exactly linear at worldScale, rms 0.000). (3) FX-ORIGIN FORKS:
+all three falsified live - the decoded tick 0x436490 NEVER RUNS (probe
+calls=0 through a held charge), the update seam's whole population is six
+SkeletalMeshActor scene records with NULL loc buffers (5 live callers of 194
+static, 0x5EC393 dominant), the stamp-pair gate is inside the cold tick, and
+the one-poke experiment therefore had no target. Six lanes down for the
+frozen family. Command-seam trailing-newline trap hit twice, fixed, and
+documented. Headset checklist: TESTING "S51" (the shoulders A/B, the
+hand-quad one-look, viewlog, THE EDGE-TELEMETRY RUN, flourish lead-200).
 
 ### Session 50 (Infinite) - 2026-08-10 (overnight) - FX-origin hunt re-scoped; eye tags, THE FLOURISH BUTTON, and the fire-swing kill shipped
 

@@ -813,6 +813,68 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S51 checklist (the SHOULDERS kill, the FOV-edge discriminators + THE EDGE-TELEMETRY RUN; branch `si51-inf-shoulders-edge-fx`)
+
+Two fixes/instrument sets this build. The fire-swing fix is flat-proven A-B-A;
+the FOV-edge items are DISCRIMINATORS - none claims to fix the drift, together
+they guarantee the next session starts from data. FX-origin: no behavior
+change (three more lanes falsified flat; nothing to judge).
+
+1. **Non-regression sweep FIRST (60 s)**: tracking, sync, both-hand aim,
+   hole-on-dot, locomotion, stance still dead (fire once, idle 3+ min),
+   flourish chord still fires (left thumbrest + A).
+2. **THE SHOULDERS: fire the pistol and watch the LEFT ARM, not just the
+   hand.** s50 pinned the hand while the arm flailed around it (133 deg
+   measured); now the WHOLE hand renders its ready articulation rigidly on
+   the controller through each shot. Expect: no arm/shoulder jump at all.
+   A/B: `bsibones fireglue anchor` (or F10 -> BSI -> uncheck "full-hand")
+   brings the s50 arm-flail back within one shot; `bsibones fireglue full`
+   restores. Side effect to judge: the RIGHT hand's recoil articulation is
+   now also frozen for 1.5 s per shot (the s50 residual wiggle is gone) -
+   if the dead recoil reads WRONG, say so; `anchor` is the compromise mode.
+3. **THE HAND-QUAD ONE-LOOK (the FOV-edge discriminator).** `bsicam handquad
+   on` (or F10 -> "HAND REF QUAD") - a small red dot rides your right
+   controller, drawn by the COMPOSITOR at the located grip pose (correct by
+   construction). Hold the right hand at fixed depth, sweep LEFT of center
+   (where the drift is worst), watch the dot vs the rendered hand model ONCE:
+   - they SEPARATE (laterally or in depth) => the error is in the game-render/
+     projection/submission lane - the hand's world position is right and the
+     picture of it is wrong;
+   - they move TOGETHER (both drift toward you) => the composed hand position
+     itself bends off-center - the compose chain re-opens despite the s50
+     inspection.
+   Either answer kills half the remaining hypothesis space. `bsicam handquad
+   off` when done.
+4. **THE VIEW LOGGER (one command, 5 seconds).** Any time mid-session:
+   `bsicam viewlog`. Ten frames of VDXR's located per-eye poses land in the
+   log with derived lines - eyeSep (expect ~your IPD, lateral), **cant (the
+   question - sim baseline is 0.0000)** and per-eye fov asymmetry. Nothing to
+   look at in the headset; the log is the deliverable.
+5. **THE EDGE-TELEMETRY RUN - the session's insurance policy (~2 min).**
+   Leave every default ON (eyetag, fireglue, clamp). Then:
+   a. `bsicam edgelog on` (console or command.txt - it confirms ARMED in the
+      log; safe for minutes, zero per-frame I/O).
+   b. Stand still in an open spot, head as still as you can, eyes free.
+   c. HOLD the right hand at a fixed comfortable depth (~40 cm) and sweep it
+      slowly LEFT -> center -> RIGHT and back, ~5 s per traverse, **4 full
+      traverses** (~60-90 s). Exaggerate nothing; the drift you normally see
+      is exactly the signal.
+   d. `bsicam edgelog off` - it flushes `edgelog-<n>.tsv` into
+      %LOCALAPPDATA%\BioshockVR\bsi\ and logs the path. Done - nothing to
+      judge; the file lets the next session plot where the chain thinks the
+      hand is at every stage and see which stage bends. OPTIONAL but
+      valuable: repeat a-d once with `bsicam eyetag off`, then `eyetag on`.
+6. **Flourish lead re-judgment**: the chord now leads by 200 ms (s50's ~2 s
+   lead was rejected). If the gesture start reads clipped, tune live:
+   `bsiflourish lead 400` (etc., 0-10000) until it reads right, and report
+   the number that felt best.
+7. Anything NEW-wrong near the weapon/vigor-hand models: `bsifx off` first
+   (unchanged from s50), then `bsibones fireglue anchor`.
+
+Expected noise: unchanged (award dialogs on checkpoint loads; Enrage HOLD
+charges / RELEASE throws). The one deliberate feel change is item 2's frozen
+right-hand recoil.
+
 ## S50 checklist (eye tags, THE FLOURISH BUTTON, the fire-swing kill; branch `si50-inf-fx-edge-flourish`)
 
 Three levers this build, all default ON, all flat-proven, each with its own
