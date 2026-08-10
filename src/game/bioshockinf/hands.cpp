@@ -50,6 +50,10 @@ int hand_arg(const char* s) {
     return (*s == 'l' || *s == 'L') ? 0 : 1;
 }
 
+// s51: last composed model target per hand (game thread; edge telemetry).
+GamePose g_lastGp[2];
+bool g_lastGpValid[2] = {};
+
 } // namespace
 
 void on_view(const FrameContext& fc, uint64_t nowMs) {
@@ -88,12 +92,22 @@ void on_view(const FrameContext& fc, uint64_t nowMs) {
         const float wristDeg[3] = {g_wristDeg[h][0].load(std::memory_order_relaxed),
                                    g_wristDeg[h][1].load(std::memory_order_relaxed),
                                    g_wristDeg[h][2].load(std::memory_order_relaxed)};
+        // s51: publish the composed model target for the edge-telemetry lane
+        // (game thread only, same as every consumer of this function).
+        g_lastGp[h] = gp;
+        g_lastGpValid[h] = true;
         if (bones::drive(fc, gp, h, g_scale[h].load(std::memory_order_relaxed), armsMode,
                          animMode, g_capDepthCm.load(std::memory_order_relaxed), wristDeg)) {
             g_wasDriving[h].store(true, std::memory_order_relaxed);
             ++g_frames[h];
         }
     }
+}
+
+bool last_model_target(int h, GamePose& out) {
+    if (h < 0 || h > 1 || !g_lastGpValid[h]) return false;
+    out = g_lastGp[h];
+    return true;
 }
 
 // ---- preset plumbing ---------------------------------------------------------

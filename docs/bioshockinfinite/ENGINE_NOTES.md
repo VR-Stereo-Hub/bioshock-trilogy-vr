@@ -1021,6 +1021,50 @@ renders its banked ready articulation rigidly attached to the controller for 150
   corr-only, off = nothing). First-ever shot of a boot still leaks by design (no bank
   yet); self-heals at +1.2 s per shot.
 
+### s51 part 2: THE FOV-EDGE INSTRUMENTS - hand quad, view logger, edge telemetry
+
+Three discriminators shipped for the drift that has now survived three exonerations
+(projection split s49, compose chain s50, eye-tag claim s50). None is a fix; together
+they guarantee the next session starts from data.
+
+**(a) The hand-anchored reference quad** (`bsicam handquad on|off|l|r`, F10 checkbox
+"HAND REF QUAD", default OFF): core builds a 1.5-deg quad AT the located grip pose per
+present, on the render thread, from the same locate generation as the projection layer
+(openxr_runtime `build_hand_ref_quad` - the aim-dot billboard shape, but zero
+game-thread hops: `input_get_hand_pose(grip)` inline). Compositor-correct by
+construction. Layer budget widened 12 -> 13 of the 16 runtimes must accept. Sim gate:
+across three grip stations the submitted quad pose equals `handR.grip` to 1e-4 in the
+capture JSON (hq-left/center/right captures). THE ONE-LOOK: hand sweeps off-center -
+quad and rendered hand SEPARATE = game-render/projection/submission lane; move
+TOGETHER = the composed hand world position itself bends (compose chain re-opens).
+
+**(b) The VDXR view logger** (`bsicam viewlog [n]`, core `arm_view_log`, bounded 1-60
+frame burst at the locate site): per frame both eyes' located pos/quat/fov plus
+derived eyeSep vector, inter-eye orientation delta (CANT - the question), per-eye fov
+asymmetry. Sim null baseline: sep 0.0630 m purely lateral, cant 0.0000 deg, fovAsym
+L +10 / R -10 (the sim's mirrored asymmetric lenses, correctly exposed). A headset
+run of `bsicam viewlog` answers whether VDXR reports ANY per-eye cant/IPD delta.
+
+**(c) THE EDGE-TELEMETRY LANE** (`bsicam edgelog on|off|status`, new edgelog.cpp,
+default OFF): ~30 Hz in-memory ring (32768-sample cap ~18 min, zero per-sample
+I/O/logging), flushed to `<data dir>\edgelog-<tick>.tsv` (110 columns) on `off`. Per
+sample: both eyes' located pose+fov and submitted tags + claim tangents (new core
+`EdgeViewSnapshot`, mutex-guarded, armed-only), consumed head pose, frame-context
+base, final camera, both per-eye cameras, right grip XR pose, both composed model
+targets (new `hands::last_model_target`), component L2W rows+t, present/second-pass
+ids. Sim sweep null baseline (1174 samples, hand stations -0.3..0.3 m at fixed
+depth): 0 NaN, located constant-parallel, tags identity, lateral chain EXACTLY
+linear at worldScale (150.00 UU/m, rms 0.000), eye pair symmetric about the written
+base at exactly ipd*worldScale (9.449/9.450 UU), L2W translation span 0.000. The
+headset comparison: whichever column's relation to grip-x BENDS where the perceived
+depth bends names the guilty stage. Parser: session scratchpad edgelog-analyze.py
+(rebuild from the column header - it is self-describing).
+
+**Command-seam trap re-learned:** command.txt lines arrive WITH the trailing newline
+(recorder.h documents it); a verb parser that requires space-or-NUL after the token
+silently no-ops. The edgelog `on` verb hit exactly this; terminator set now includes
+\n\r.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

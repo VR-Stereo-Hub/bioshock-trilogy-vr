@@ -104,6 +104,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/bones.h
     game/bioshockinf/camera.cpp
     game/bioshockinf/camera.h
+    game/bioshockinf/edgelog.cpp
+    game/bioshockinf/edgelog.h
     game/bioshockinf/fidget.cpp
     game/bioshockinf/fidget.h
     game/bioshockinf/fire.cpp

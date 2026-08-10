@@ -127,6 +127,44 @@ void set_eye_tag_rendered(bool on);
 bool eye_tag_rendered();
 void set_eye_tag_ipd_mm(float mm);
 
+// --- s51 (Infinite): hand-anchored reference quad -----------------------------
+// A small compositor quad parked AT the located grip pose, built per present
+// on the render thread from the same locate generation as the projection
+// layer - compositor-correct by construction. The in-headset discriminator:
+// sweep the hand off-center; quad and rendered hand model SEPARATING means
+// the game-render/projection/submission lane is wrong, moving TOGETHER means
+// the composed hand world position itself is wrong. Default OFF - additive,
+// armed by the Infinite adapter only.
+void set_hand_ref_quad(bool on, int hand, float sizeDeg);
+bool hand_ref_quad_on();
+
+// --- s51 (Infinite): VDXR view logger ----------------------------------------
+// Log the runtime's LOCATED view poses/fovs per eye for the next n frames
+// (bounded burst, self-expiring): per frame both eyes' position + orientation
+// + fov angles, plus derived inter-eye position delta, orientation delta
+// (cant) and per-eye fov asymmetry. Answers in the log whether ANY per-eye
+// cant/IPD delta exists under a runtime (VDXR) without a picture verdict.
+void arm_view_log(int frames);
+
+// --- s51 (Infinite): edge-telemetry snapshot ---------------------------------
+// The render-thread half of the FOV-edge telemetry lane: when armed, each
+// present banks the located views, the submitted per-eye pose tags and the
+// claimed fov tangents under a small mutex; the game-thread sampler copies
+// them out. OFF by default - zero work on BS1/BS2 unless an adapter arms it.
+struct EdgeViewSnapshot {
+    bool valid = false;
+    uint64_t stampMs = 0;       // GetTickCount64 at fill
+    float locPos[2][3];         // located view positions, m (XR space)
+    float locQuat[2][4];        // located view orientations, xyzw
+    float locFov[2][4];         // located fov angles L/R/U/D, radians
+    float tagPos[2][3];         // submitted (claimed) per-eye pose tags
+    float tagQuat[2][4];
+    float claimTanH = 0.0f;     // claimed symmetric half-fov tangents
+    float claimTanV = 0.0f;
+};
+void set_edge_snapshot(bool on);
+bool get_edge_snapshot(EdgeViewSnapshot& out);
+
 // --- M8: headset-disconnect stall guard --------------------------------------
 // "vrpace ..." seam (game thread). When the session leaves FOCUSED after
 // having held it, presents skip the blocking xrWaitFrame so the flat window

@@ -23,6 +23,11 @@ void on_view(const FrameContext& fc, uint64_t nowMs);
 // bsihands <verb>. Whole-token verbs (the BS2 "off"/"offset" prefix bug rule).
 bool handle_command(const char* cmd, const char* args);
 
+// s51: the last composed model target for a hand (game thread; false before
+// the first drive). The edge-telemetry sampler records it per sample so the
+// "where does the chain THINK the hand is" question has the compose stage.
+bool last_model_target(int h, GamePose& out);
+
 void draw_debug_ui();
 
 // Preset plumbing (config KeyDesc getters/setters live in camera.cpp).

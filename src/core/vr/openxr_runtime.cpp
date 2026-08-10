@@ -117,6 +117,23 @@ std::atomic<float> g_dot2X{0.0f}, g_dot2Y{0.0f}, g_dot2Z{0.0f};
 std::atomic<float> g_dot2SizeDeg{0.5f};
 std::atomic<uint64_t> g_dot2StampMs{0};
 constexpr uint64_t kDotStaleMs = 250; // matches aim.cpp's ray_for() freshness gate
+// s51 (Infinite FOV-edge discriminator): a reference quad parked AT the
+// located grip pose, compositor-correct by construction - core positions it
+// per present from the SAME locate the projection layer uses, no game-thread
+// hop. In the headset: if this quad and the rendered hand model separate
+// while the hand sweeps off-center, the error is in the game-render/
+// projection/submission lane; if they move together, the hand's composed
+// world position itself is wrong. Default OFF; armed by the adapter.
+std::atomic<bool> g_handQuadOn{false};
+std::atomic<int> g_handQuadHand{1}; // 0 = left, 1 = right
+std::atomic<float> g_handQuadSizeDeg{1.5f};
+std::atomic<bool> g_loggedFirstHandQuad{false};
+// s51: the VDXR view logger's remaining-frames counter (bounded burst).
+std::atomic<int> g_viewLogLeft{0};
+// s51: the edge-telemetry snapshot (armed only; game thread copies out).
+std::atomic<bool> g_edgeSnapOn{false};
+std::mutex g_edgeSnapMutex;
+EdgeViewSnapshot g_edgeSnap;
 
 // Controls (overlay writes, render thread reads).
 std::atomic<bool> g_enabled{true};        // kill switch: tears the session down
@@ -2479,6 +2496,43 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         XR_SUCCEEDED(xrLocateViews(g_session, &vli, &vs, 2, &viewCount, g_views)) &&
         viewCount == 2 && (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
     phase_record(kPhLocate, tPhase);
+    // s51: the VDXR view logger - a bounded, self-expiring burst (the fov-watch
+    // lesson: nothing unthrottled lives on the present path). Answers whether
+    // the runtime reports ANY per-eye cant/IPD delta.
+    if (g_viewsValid && g_viewLogLeft.load(std::memory_order_relaxed) > 0) {
+        g_viewLogLeft.fetch_sub(1, std::memory_order_relaxed);
+        const XrView& L = g_views[0];
+        const XrView& R = g_views[1];
+        const float dx = R.pose.position.x - L.pose.position.x;
+        const float dy = R.pose.position.y - L.pose.position.y;
+        const float dz = R.pose.position.z - L.pose.position.z;
+        // Inter-eye orientation delta (the cant question): angle of qL^-1*qR.
+        const float dot = L.pose.orientation.x * R.pose.orientation.x +
+                          L.pose.orientation.y * R.pose.orientation.y +
+                          L.pose.orientation.z * R.pose.orientation.z +
+                          L.pose.orientation.w * R.pose.orientation.w;
+        const float cl = fminf(1.0f, fabsf(dot));
+        const float cantDeg = 2.0f * acosf(cl) * 57.29578f;
+        BVR_LOG("xr: viewlog L pos %.4f %.4f %.4f quat %.4f %.4f %.4f %.4f fov "
+                "%.2f/%.2f/%.2f/%.2f",
+                L.pose.position.x, L.pose.position.y, L.pose.position.z,
+                L.pose.orientation.x, L.pose.orientation.y, L.pose.orientation.z,
+                L.pose.orientation.w, L.fov.angleLeft * 57.29578f,
+                L.fov.angleRight * 57.29578f, L.fov.angleUp * 57.29578f,
+                L.fov.angleDown * 57.29578f);
+        BVR_LOG("xr: viewlog R pos %.4f %.4f %.4f quat %.4f %.4f %.4f %.4f fov "
+                "%.2f/%.2f/%.2f/%.2f",
+                R.pose.position.x, R.pose.position.y, R.pose.position.z,
+                R.pose.orientation.x, R.pose.orientation.y, R.pose.orientation.z,
+                R.pose.orientation.w, R.fov.angleLeft * 57.29578f,
+                R.fov.angleRight * 57.29578f, R.fov.angleUp * 57.29578f,
+                R.fov.angleDown * 57.29578f);
+        BVR_LOG("xr: viewlog derived: eyeSep %.4f m (d %.4f %.4f %.4f) | cant %.4f deg "
+                "| fovAsym L %.2f R %.2f deg",
+                sqrtf(dx * dx + dy * dy + dz * dz), dx, dy, dz, cantDeg,
+                (fabsf(L.fov.angleLeft) - fabsf(L.fov.angleRight)) * 57.29578f,
+                (fabsf(R.fov.angleLeft) - fabsf(R.fov.angleRight)) * 57.29578f);
+    }
     if (!g_viewsContentValid && g_viewsValid) {
         // Session start: no previous generation yet - better a one-frame
         // fresh-pose attribution than none.
@@ -2835,6 +2889,48 @@ uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
     return build_aim_dot_slot(quad, 0);
 }
 
+// s51: the hand-anchored reference quad (see the state block comment). Same
+// no-second-algebra rule as the aim dot: the position IS the located grip
+// point in g_space, no offset, no ray math - only billboarding and sizing.
+uint32_t build_hand_ref_quad(XrCompositionLayerQuad* quad) {
+    if (!g_handQuadOn.load(std::memory_order_relaxed)) return 0;
+    if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
+    float p[3], hq[4];
+    if (!input_get_hand_pose(g_handQuadHand.load(std::memory_order_relaxed),
+                             /*aimPose=*/false, p, hq))
+        return 0; // untracked hand: no quad rather than a stale one
+    float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
+                     (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
+                     (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
+    float toHead[3] = {head[0] - p[0], head[1] - p[1], head[2] - p[2]};
+    float len = sqrtf(toHead[0] * toHead[0] + toHead[1] * toHead[1] + toHead[2] * toHead[2]);
+    if (len < 0.02f) return 0; // inside the head
+    toHead[0] /= len; toHead[1] /= len; toHead[2] /= len;
+
+    constexpr float kDegToRad = 3.14159265f / 180.0f;
+    const float sizeRad = g_handQuadSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+
+    XrCompositionLayerQuad& q = *quad;
+    q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    q.space = g_space;
+    q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    q.subImage.swapchain = g_laserSwapchain;
+    q.subImage.imageRect = {
+        {0, 0}, {static_cast<int32_t>(kLaserTexSize), static_cast<int32_t>(kLaserTexSize)}};
+    q.pose.position = {p[0], p[1], p[2]};
+    q.pose.orientation = quat_facing(toHead);
+    const float side = 2.0f * len * tanf(sizeRad * 0.5f);
+    q.size = {side, side};
+
+    if (!g_loggedFirstHandQuad.exchange(true))
+        BVR_LOG("xr: hand ref quad live (grip %c at xr %.3f %.3f %.3f, %.2f m from the "
+                "head) - compositor-correct by construction",
+                g_handQuadHand.load(std::memory_order_relaxed) ? 'R' : 'L', p[0], p[1],
+                p[2], len);
+    return 1;
+}
+
 // Yaw of an XR-space orientation (forward = -Z, right = +X), for the pose
 // audit. Absolute convention is arbitrary; only deltas are read.
 float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
@@ -2916,11 +3012,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
     XrCompositionLayerQuad laserQuads[kMaxLaserDots] = {};
     XrCompositionLayerQuad dotQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerQuad dot2Quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerQuad handQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     // The game frame is layer 0; the aim laser(s) add one quad per dot on top -
-    // BOTH slots share the kMaxLaserDots budget - then up to two aim dots and
-    // the HUD quad (worst case 12 of the 16 runtimes must accept).
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 3] = {};
+    // BOTH slots share the kMaxLaserDots budget - then up to two aim dots, the
+    // s51 hand ref quad and the HUD quad (worst case 13 of the 16 runtimes
+    // must accept).
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 4] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -3232,6 +3330,35 @@ void on_present_end(IDXGISwapChain* swapchain) {
                         }
                         projViews[eye].fov = {-halfH, halfH, halfV, -halfV};
                     }
+                    // s51: bank the edge-telemetry snapshot (armed only; the
+                    // game-thread sampler copies it out - see the header).
+                    if (g_edgeSnapOn.load(std::memory_order_relaxed)) {
+                        std::lock_guard<std::mutex> lk(g_edgeSnapMutex);
+                        g_edgeSnap.valid = g_viewsValid;
+                        g_edgeSnap.stampMs = GetTickCount64();
+                        for (int e = 0; e < 2; ++e) {
+                            g_edgeSnap.locPos[e][0] = g_views[e].pose.position.x;
+                            g_edgeSnap.locPos[e][1] = g_views[e].pose.position.y;
+                            g_edgeSnap.locPos[e][2] = g_views[e].pose.position.z;
+                            g_edgeSnap.locQuat[e][0] = g_views[e].pose.orientation.x;
+                            g_edgeSnap.locQuat[e][1] = g_views[e].pose.orientation.y;
+                            g_edgeSnap.locQuat[e][2] = g_views[e].pose.orientation.z;
+                            g_edgeSnap.locQuat[e][3] = g_views[e].pose.orientation.w;
+                            g_edgeSnap.locFov[e][0] = g_views[e].fov.angleLeft;
+                            g_edgeSnap.locFov[e][1] = g_views[e].fov.angleRight;
+                            g_edgeSnap.locFov[e][2] = g_views[e].fov.angleUp;
+                            g_edgeSnap.locFov[e][3] = g_views[e].fov.angleDown;
+                            g_edgeSnap.tagPos[e][0] = projViews[e].pose.position.x;
+                            g_edgeSnap.tagPos[e][1] = projViews[e].pose.position.y;
+                            g_edgeSnap.tagPos[e][2] = projViews[e].pose.position.z;
+                            g_edgeSnap.tagQuat[e][0] = projViews[e].pose.orientation.x;
+                            g_edgeSnap.tagQuat[e][1] = projViews[e].pose.orientation.y;
+                            g_edgeSnap.tagQuat[e][2] = projViews[e].pose.orientation.z;
+                            g_edgeSnap.tagQuat[e][3] = projViews[e].pose.orientation.w;
+                        }
+                        g_edgeSnap.claimTanH = tanf(halfH);
+                        g_edgeSnap.claimTanV = tanf(halfV);
+                    }
                     // Pose-tag audit (session 21, armed by `fovaudit pose on`):
                     // tagged-vs-consumed yaw, rate-limited. In-headset only.
                     if (stereo && g_poseAudit.load(std::memory_order_relaxed)) {
@@ -3314,13 +3441,15 @@ void on_present_end(IDXGISwapChain* swapchain) {
                                           kMaxLaserDots - static_cast<int>(dots));
         uint32_t aimDot = build_aim_dot_slot(&dotQuad, 0);
         uint32_t aimDot2 = build_aim_dot_slot(&dot2Quad, 1);
+        uint32_t handRef = build_hand_ref_quad(&handQuad);
         // ONE acquire feeds every quad that referenced this swapchain, lasers
         // and aim dots alike - two acquires in a frame would be invalid.
-        if ((dots || dots2 || aimDot || aimDot2) && !publish_laser_image()) {
+        if ((dots || dots2 || aimDot || aimDot2 || handRef) && !publish_laser_image()) {
             dots = 0;
             dots2 = 0;
             aimDot = 0;
             aimDot2 = 0;
+            handRef = 0;
         }
         for (uint32_t i = 0; i < dots + dots2; ++i)
             layers[layerCount++] =
@@ -3331,6 +3460,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
         if (aimDot2)
             layers[layerCount++] =
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dot2Quad);
+        if (handRef)
+            layers[layerCount++] =
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&handQuad);
         g_laserLayersSubmitted.store(dots + dots2, std::memory_order_relaxed);
         g_dotLayersSubmitted.store(aimDot + aimDot2, std::memory_order_relaxed);
     } else {
@@ -3827,6 +3959,44 @@ bool eye_tag_rendered() { return g_eyeTagRendered.load(std::memory_order_relaxed
 
 void set_eye_tag_ipd_mm(float mm) {
     if (mm > 30.0f && mm < 90.0f) g_eyeTagIpdMm.store(mm, std::memory_order_relaxed);
+}
+
+void set_hand_ref_quad(bool on, int hand, float sizeDeg) {
+    const bool was = g_handQuadOn.exchange(on, std::memory_order_relaxed);
+    if (hand == 0 || hand == 1) g_handQuadHand.store(hand, std::memory_order_relaxed);
+    if (sizeDeg > 0.1f && sizeDeg < 20.0f)
+        g_handQuadSizeDeg.store(sizeDeg, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: hand ref quad = %s (hand %c, %.1f deg) - parked at the located "
+                "grip pose, the FOV-edge one-look discriminator",
+                on ? "ON" : "off", g_handQuadHand.load(std::memory_order_relaxed) ? 'R' : 'L',
+                g_handQuadSizeDeg.load(std::memory_order_relaxed));
+}
+
+bool hand_ref_quad_on() { return g_handQuadOn.load(std::memory_order_relaxed); }
+
+void set_edge_snapshot(bool on) {
+    const bool was = g_edgeSnapOn.exchange(on, std::memory_order_relaxed);
+    if (was != on) BVR_LOG("xr: edge-telemetry snapshot %s", on ? "ARMED" : "off");
+    if (!on) {
+        std::lock_guard<std::mutex> lk(g_edgeSnapMutex);
+        g_edgeSnap.valid = false;
+    }
+}
+
+bool get_edge_snapshot(EdgeViewSnapshot& out) {
+    std::lock_guard<std::mutex> lk(g_edgeSnapMutex);
+    out = g_edgeSnap;
+    return out.valid;
+}
+
+void arm_view_log(int frames) {
+    if (frames < 1) frames = 10;
+    if (frames > 60) frames = 60;
+    g_viewLogLeft.store(frames, std::memory_order_relaxed);
+    BVR_LOG("xr: view log ARMED for %d frames (located per-eye pose + fov, plus "
+            "inter-eye deltas)",
+            frames);
 }
 
 void set_sr_pair_pacing(bool on) {
@@ -4403,6 +4573,11 @@ void set_alternate_eye(bool) {}
 void set_eye_tag_rendered(bool) {}
 bool eye_tag_rendered() { return false; }
 void set_eye_tag_ipd_mm(float) {}
+void set_hand_ref_quad(bool, int, float) {}
+bool hand_ref_quad_on() { return false; }
+void arm_view_log(int) {}
+void set_edge_snapshot(bool) {}
+bool get_edge_snapshot(EdgeViewSnapshot&) { return false; }
 void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}

@@ -116,6 +116,13 @@ bool input_armed_at_boot();
 float claim_tan_v();
 void set_claim_tan_v(float v);
 
+// s51: edge-telemetry taps - read-only copies of the last dispatch's chain
+// stages (game thread only, same discipline as frame_context()). False until
+// the corresponding stage has run once.
+bool last_head_pose(bvr::vr::HeadPose& out);       // the consumed head pose
+bool final_camera(FVector& loc, FRotator& rot);    // written camera, post-eye
+bool eye_loc(int e, FVector& out);                 // per-eye camera, 0=L 1=R
+
 // Overlay section.
 void draw_debug_ui();
 

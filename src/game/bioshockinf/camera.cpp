@@ -17,6 +17,7 @@
 #include "game/bioshockinf/inf_math.h"
 #include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
+#include "game/bioshockinf/edgelog.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/recorder.h"
 #include "game/bioshockinf/reflect.h"
@@ -114,6 +115,9 @@ const char* g_driveLane = "off";
 FVector g_finalLoc{};
 FRotator g_finalRot{};
 bool g_finalValid = false;
+// s51: the consumed head pose of the last driven dispatch (edge telemetry).
+bvr::vr::HeadPose g_lastHp{};
+bool g_lastHpValid = false;
 
 // ---------------------------------------------------------------------------
 // I5 stereo state (session 40). Rung 1 is the projection flip: the adapter
@@ -762,6 +766,10 @@ void drive_view(FVector* loc, FRotator* rot, uint64_t now) {
     g_finalLoc = *loc;
     g_finalRot = *rot;
     g_finalValid = true;
+    if (driveHead) {
+        g_lastHp = hp;
+        g_lastHpValid = true;
+    }
     g_vrDriving.store(driveHead, std::memory_order_relaxed);
 
     // The vrrec tap, once per rendered frame (present-count edge - the seam
@@ -1360,6 +1368,8 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // s47: the animtrans travel window samples here - same dispatch point, so
     // the raw bank is post-anim-restamp exactly like the drive's own reads.
     bones::travel_tick();
+    // s51: the edge-telemetry sampler - one relaxed load while disarmed.
+    edgelog::tick(now);
 
     // s50: the flourish lane - per dispatch (the chord edge and the delayed
     // impl call both need better than 1 Hz timing). Two relaxed loads when
@@ -1417,6 +1427,27 @@ void log_status() {
 
 const bvr::bsi::FrameContext& frame_context() {
     return g_frameCtx;
+}
+
+// s51: edge-telemetry taps (game thread; read-only copies of the last
+// dispatch's chain stages).
+bool last_head_pose(bvr::vr::HeadPose& out) {
+    if (!g_lastHpValid) return false;
+    out = g_lastHp;
+    return true;
+}
+
+bool final_camera(FVector& loc, FRotator& rot) {
+    if (!g_finalValid) return false;
+    loc = g_finalLoc;
+    rot = g_finalRot;
+    return true;
+}
+
+bool eye_loc(int e, FVector& out) {
+    if (e < 0 || e > 1 || !g_eyeLocValid[e]) return false;
+    out = g_eyeLoc[e];
+    return true;
 }
 
 bool install(const bvr::pattern_scan::ProcessImage& image) {
@@ -1839,6 +1870,30 @@ bool handle_command(const char* args) {
                     bvr::vr::eye_tag_rendered() ? "RENDERED-POSE" : "located");
         return true;
     }
+    // s51: the FOV-edge discriminator instruments.
+    if (strncmp(args, "handquad", 8) == 0) {
+        const char* v = args + 8;
+        while (*v == ' ') ++v;
+        if (strncmp(v, "on", 2) == 0) bvr::vr::set_hand_ref_quad(true, 1, 1.5f);
+        else if (strncmp(v, "off", 3) == 0) bvr::vr::set_hand_ref_quad(false, 1, 1.5f);
+        else if (*v == 'l') bvr::vr::set_hand_ref_quad(true, 0, 1.5f);
+        else if (*v == 'r') bvr::vr::set_hand_ref_quad(true, 1, 1.5f);
+        else
+            BVR_LOG("[bsi] camera: handquad %s | bsicam handquad on|off|l|r (compositor "
+                    "quad parked at the located grip - the one-look discriminator)",
+                    bvr::vr::hand_ref_quad_on() ? "ON" : "off");
+        return true;
+    }
+    if (strncmp(args, "viewlog", 7) == 0) {
+        int n = 10;
+        sscanf_s(args + 7, "%d", &n);
+        bvr::vr::arm_view_log(n);
+        return true;
+    }
+    if (strncmp(args, "edgelog", 7) == 0) {
+        edgelog::handle_verb(args + 7);
+        return true;
+    }
     if (strncmp(args, "vtprobe", 7) == 0) {
         unsigned va = 0, slot = 0;
         if (sscanf_s(args + 7, "%x %x", &va, &slot) == 2 && va != 0 && slot < 0x10000) {
@@ -1972,6 +2027,12 @@ void draw_debug_ui() {
             float ipd = g_ipdMm.load(std::memory_order_relaxed);
             if (ImGui::SliderFloat("IPD (mm)", &ipd, 50.0f, 75.0f, "%.1f"))
                 g_ipdMm.store(ipd, std::memory_order_relaxed);
+        }
+        // s51: the FOV-edge one-look discriminator (right grip by default).
+        {
+            bool hq = bvr::vr::hand_ref_quad_on();
+            if (ImGui::Checkbox("HAND REF QUAD (compositor dot at the R grip)", &hq))
+                bvr::vr::set_hand_ref_quad(hq, 1, 1.5f);
         }
         // I6: the FOV lever. Checkbox + slider write the atomic only; the
         // engine write happens per dispatch in the detour (apply_fov_lever).
