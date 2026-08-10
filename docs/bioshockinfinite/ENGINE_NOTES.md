@@ -856,6 +856,60 @@ It is documented in code and here as NOT the frozen-family fix.
   record sweep while charging), (d) the record's +0x6C/+0x70 stamp pair vs
   the 0x135DC68 globals may reveal a second, hotter update path.
 
+### s50 part 3: THE FOV-EDGE DRIFT - the compose chain exonerated, the eye-tag claim fixed
+
+**The symptom (headset, s49b):** right hand LEFT of view center -> the model
+reads CLOSER to the face; RIGHT of center -> slightly AWAY. A depth error
+that flips sign with horizontal off-axis direction, hand near view center =
+correct. Projection split eliminated (s49 one-lens verdict, do not
+re-litigate).
+
+**The compose chain is CLEAN for this symptom, by inspection + prior
+measurement** (all pure functions, stationary head = the symptom's
+condition):
+- `xr_pose_to_game` position math: lateral XR offsets map to lateral game
+  offsets; no lateral->depth coupling exists in the formula.
+- `bones::drive`: rendered world pos = target + (L2W_t - writtenLoc); the
+  s48 lag probe measured that delta 0.00 UU stationary. Rotation: atoms
+  compose via qaInv then render via the same L2W rotation - exact inverse
+  pair.
+- Pass-2 repaints pass-1 atoms verbatim; the component L2W does not change
+  between passes (it updates at tick, not per pass) - one world position,
+  two eyes, correct stereo geometry.
+
+**THE ONE CLAIM-VS-RENDER VIOLATION FOUND - the projection layer's per-eye
+POSE TAGS** (the same bug class as the s28 fov claim, and the project's own
+standard applies: the claim must match the render):
+- The game renders each eye from the ADAPTER's camera: written base
+  +-ipdMm/2000*worldScale along the FINAL rotator's right axis
+  (`apply_eye_offset`), both eyes PARALLEL.
+- The layer tagged each eye's image with the RUNTIME'S LOCATED view pose
+  (`g_eyePose[e] = views[e].pose`, per the pose-lag generation). Wherever
+  the located pair differs from the parallel render pair - per-eye CANT, a
+  different IPD - the compositor's per-eye reprojection works from a false
+  premise. The injected disparity error is zero at view center and grows
+  toward the edges with opposite sign left vs right; on the far world it is
+  sub-perceptual, on a 0.3-0.7 m hand the vergence sensitivity (~1/d^2)
+  makes it a visible near/far drift. This is the only mechanism found that
+  produces the reported sign-flip with a stationary head.
+- **THE FIX (core, additive, opt-in): rendered-pose eye tags.** With
+  `set_eye_tag_rendered(true)` the tag is rebuilt per eye from the SAME
+  locate generation: midpoint position, hemisphere-guarded nlerp
+  orientation, +-ipdMm/2000 along that orientation's right axis (signs match
+  apply_eye_offset). On a runtime whose views are already parallel at the
+  slider's IPD this is IDENTITY - flat-proven on the sim: `EyeSeparationM
+  0.063` in both modes, per-eye img-diff 0.13/0.20 mean (under the 0.4
+  ambient floor). Default OFF in core; the Infinite adapter arms it at init
+  (BS1/BS2 byte-identical behavior). **`bsicam eyetag on|off` is the
+  in-headset A/B**; the ipd mirror (`set_eye_tag_ipd_mm`) tracks the F10
+  slider at 1 Hz.
+- HONESTY NOTE: the sim has no cant, so the SYMPTOM itself is not
+  flat-reproducible - the fix is correct-by-construction (claim==render)
+  and the perceptual verdict is the headset A/B. If the drift survives
+  `eyetag on` vs `off` unchanged, this term is exonerated too and the next
+  suspects are runtime-side (VDXR's located-view geometry vs its display
+  model).
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

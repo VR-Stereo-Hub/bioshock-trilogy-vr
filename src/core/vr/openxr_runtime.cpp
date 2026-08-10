@@ -255,6 +255,53 @@ int g_currentEye = 0;                    // eye slot the next captured frame bel
 XrPosef g_eyePose[2] = {};               // pose claimed for each eye's held image
 bool g_eyeValid[2] = {false, false};     // eye slot holds a released image + pose
 
+// s50 (Infinite): rendered-pose eye tags - see the header comment. Default
+// OFF; only an adapter arms it (additive, BS1/BS2 untouched). The ipd mirror
+// tracks the arming adapter's slider so the tag reconstructs the SAME offset
+// apply_eye_offset baked into the render.
+std::atomic<bool> g_eyeTagRendered{false};
+std::atomic<float> g_eyeTagIpdMm{63.0f};
+
+// Rebuild one eye's layer tag as the PARALLEL camera the game rendered:
+// midpoint of the located pair, nlerp'd shared orientation, +-ipd/2 along
+// that orientation's right axis (eye 0 = left = -x, matching the adapter's
+// apply_eye_offset signs). Identity when the located pair is already
+// parallel at the same IPD.
+XrPosef parallel_eye_tag(const XrPosef& l, const XrPosef& r, int eye, float ipdMm) {
+    float q[4] = {l.orientation.x + r.orientation.x, l.orientation.y + r.orientation.y,
+                  l.orientation.z + r.orientation.z, l.orientation.w + r.orientation.w};
+    // nlerp at t=0.5 with hemisphere guard: located pairs are near-identical,
+    // but a sign-flipped quat pair would cancel - fall back to the left eye.
+    const float dot = l.orientation.x * r.orientation.x + l.orientation.y * r.orientation.y +
+                      l.orientation.z * r.orientation.z + l.orientation.w * r.orientation.w;
+    if (dot < 0.0f) {
+        q[0] = l.orientation.x;
+        q[1] = l.orientation.y;
+        q[2] = l.orientation.z;
+        q[3] = l.orientation.w;
+    }
+    const float n = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (n > 1e-6f) {
+        q[0] /= n;
+        q[1] /= n;
+        q[2] /= n;
+        q[3] /= n;
+    } else {
+        q[0] = q[1] = q[2] = 0.0f;
+        q[3] = 1.0f;
+    }
+    const float half = (eye == 0 ? -0.5f : 0.5f) * ipdMm / 1000.0f;
+    const float axis[3] = {half, 0.0f, 0.0f}; // XR +X = right in view space
+    float off[3];
+    bvr::xrmath::quat_rotate(q[0], q[1], q[2], q[3], axis, off);
+    XrPosef out{};
+    out.orientation = {q[0], q[1], q[2], q[3]};
+    out.position = {(l.position.x + r.position.x) * 0.5f + off[0],
+                    (l.position.y + r.position.y) * 0.5f + off[1],
+                    (l.position.z + r.position.z) * 0.5f + off[2]};
+    return out;
+}
+
 // M4 rung 2 (SequentialReentry): SPSC eye-tag ring, game thread pushes at
 // engine submit, render thread pops at Present-tail (see header). Normal
 // depth is <= 2 (one L/R pair in flight); deeper means a skew - the consumer
@@ -3093,19 +3140,34 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 // behavior; only the Infinite adapter ever changes it.
                 if (srFrame) {
                     int lag = g_poseLag.load(std::memory_order_relaxed);
+                    // Pick the pose GENERATION as a pair - the s50 rendered
+                    // tag needs both eyes of the same locate to reconstruct
+                    // the parallel render camera.
+                    const XrView* gen;
                     if (lag == 0 && g_viewsValid)
-                        g_eyePose[srEye] = g_views[srEye].pose;
+                        gen = g_views;
                     else if (lag == 2 && g_viewsPrev2Valid)
-                        g_eyePose[srEye] = g_viewsPrev2[srEye].pose;
+                        gen = g_viewsPrev2;
                     else
-                        g_eyePose[srEye] = g_viewsContent[srEye].pose;
+                        gen = g_viewsContent;
+                    if (g_eyeTagRendered.load(std::memory_order_relaxed))
+                        g_eyePose[srEye] =
+                            parallel_eye_tag(gen[0].pose, gen[1].pose, srEye,
+                                             g_eyeTagIpdMm.load(std::memory_order_relaxed));
+                    else
+                        g_eyePose[srEye] = gen[srEye].pose;
                     g_eyeValid[srEye] = true;
                     if (!g_loggedFirstSr.exchange(true))
                         BVR_LOG("xr: first SequentialReentry eye frame captured "
                                 "(eye %c)", srEye == 0 ? 'L' : 'R');
                 } else if (aerActive && target == g_currentEye &&
                            imageSign == currentEyeSign) {
-                    g_eyePose[g_currentEye] = g_viewsContent[g_currentEye].pose;
+                    if (g_eyeTagRendered.load(std::memory_order_relaxed))
+                        g_eyePose[g_currentEye] = parallel_eye_tag(
+                            g_viewsContent[0].pose, g_viewsContent[1].pose, g_currentEye,
+                            g_eyeTagIpdMm.load(std::memory_order_relaxed));
+                    else
+                        g_eyePose[g_currentEye] = g_viewsContent[g_currentEye].pose;
                     g_eyeValid[g_currentEye] = true;
                     eyeCaptured = true;
                 }
@@ -3752,6 +3814,21 @@ void set_alternate_eye(bool on) {
             on ? "ON" : "off");
 }
 
+void set_eye_tag_rendered(bool on) {
+    const bool was = g_eyeTagRendered.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: eye tags = %s (rendered = the parallel pair the game drew: "
+                "located midpoint +-ipd/2 along its right axis; located = the "
+                "runtime's raw per-eye poses, the historical behavior)",
+                on ? "RENDERED-POSE" : "located");
+}
+
+bool eye_tag_rendered() { return g_eyeTagRendered.load(std::memory_order_relaxed); }
+
+void set_eye_tag_ipd_mm(float mm) {
+    if (mm > 30.0f && mm < 90.0f) g_eyeTagIpdMm.store(mm, std::memory_order_relaxed);
+}
+
 void set_sr_pair_pacing(bool on) {
     g_srPairPacing.store(on, std::memory_order_relaxed);
 }
@@ -4323,6 +4400,9 @@ int64_t display_period_ns() { return 0; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
 void set_alternate_eye(bool) {}
+void set_eye_tag_rendered(bool) {}
+bool eye_tag_rendered() { return false; }
+void set_eye_tag_ipd_mm(float) {}
 void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}

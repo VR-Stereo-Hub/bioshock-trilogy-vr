@@ -108,6 +108,25 @@ void set_sr_pair_pacing(bool on);
 // the measured cause of the hard freeze (session 34).
 void set_alternate_eye(bool on);
 
+// --- s50 (Infinite): rendered-pose eye tags ----------------------------------
+// The projection layer historically tags each eye's image with the RUNTIME'S
+// located view pose. The game, however, renders each eye from the ADAPTER'S
+// camera: the written base offset half-IPD (the adapter's ipd slider) along
+// the head's right axis, both eyes PARALLEL. Wherever the runtime's located
+// views differ from that - per-eye cant, a different IPD - the layer's claim
+// misdescribes the render and the compositor's per-eye reprojection injects
+// an off-center-growing disparity error (invisible on the far world, a
+// near-field depth drift on the hands: the Infinite "FOV-edge" symptom).
+// With this ON the tag is rebuilt as the parallel pair the game actually
+// rendered: midpoint of the located pair, nlerp'd shared orientation,
+// +-ipdMm/2000 along that orientation's right axis. On a runtime whose views
+// are already parallel at the same IPD (the sim) this is bit-for-bit
+// identity. Default OFF - BS1/BS2 behavior is untouched unless an adapter
+// arms it (keep-the-mods-decoupled: additive, opt-in).
+void set_eye_tag_rendered(bool on);
+bool eye_tag_rendered();
+void set_eye_tag_ipd_mm(float mm);
+
 // --- M8: headset-disconnect stall guard --------------------------------------
 // "vrpace ..." seam (game thread). When the session leaves FOCUSED after
 // having held it, presents skip the blocking xrWaitFrame so the flat window

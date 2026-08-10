@@ -1375,6 +1375,9 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         if (fire::wants_install()) fire::try_install();
         // s50: the FX-origin seam (attachment updater) - same lazy lane.
         if (fxorigin::wants_install()) fxorigin::try_install();
+        // s50: keep the eye-tag reconstruction on the SAME ipd the eye offset
+        // bakes into the render (the slider is live-tunable in F10).
+        bvr::vr::set_eye_tag_ipd_mm(g_ipdMm.load(std::memory_order_relaxed));
         // I8: the rig resolve rides the same lazy lane for the same reason
         // (needs a live pawn), and re-resolves after a drop at 3 s inside.
         bones::tick_resolve(now);
@@ -1815,6 +1818,20 @@ bool handle_command(const char* args) {
     }
     if (strncmp(args, "callers", 7) == 0) {
         dump_callers();
+        return true;
+    }
+    if (strncmp(args, "eyetag", 6) == 0) {
+        // s50: the rendered-pose eye-tag A/B (the FOV-edge drift lever). ON =
+        // the projection layer describes the parallel camera the game drew;
+        // OFF = the runtime's located per-eye poses (historical).
+        const char* v = args + 6;
+        while (*v == ' ') ++v;
+        if (strncmp(v, "on", 2) == 0) bvr::vr::set_eye_tag_rendered(true);
+        else if (strncmp(v, "off", 3) == 0) bvr::vr::set_eye_tag_rendered(false);
+        else
+            BVR_LOG("[bsi] camera: eyetag %s | bsicam eyetag on|off (rendered-pose "
+                    "layer tags - the s50 FOV-edge lever)",
+                    bvr::vr::eye_tag_rendered() ? "RENDERED-POSE" : "located");
         return true;
     }
     if (strncmp(args, "vtprobe", 7) == 0) {

@@ -86,6 +86,15 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // (1) is untouched.
     bvr::vr::set_pose_lag(2);
 
+    // s50: rendered-pose eye tags, DEFAULT ON for Infinite (the FOV-edge
+    // lever). The projection layer then describes the parallel camera this
+    // adapter actually renders (base +- ipd/2 along the head's right) instead
+    // of the runtime's located per-eye poses - identical on a parallel-view
+    // runtime (the sim), removes the cant/IPD claim-vs-render mismatch under
+    // VDXR. `bsicam eyetag off` is the in-headset A/B. BS1/BS2 never call
+    // this - their tags stay historical.
+    bvr::vr::set_eye_tag_rendered(true);
+
     // I7 controls (session 44). The map FIRST, then the lane: core's default is
     // BioShock 1's table, which is wrong here on four counts (the face re-route,
     // the consumed RS-click, the missing fourth flick direction, and the ammomod
