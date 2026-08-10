@@ -665,6 +665,42 @@ same instruments and the same eye-image rule, so they ship together here too. No
 the Infinite eye image needs NO classifier (the positional rule - srv0 of the last full-screen
 a=6 DrawIndexed into the backbuffer - is HUD-free by construction).
 
+**Deferred INTO this milestone by user call (2026-08-10, s51 close-out) - both
+playable-with, both fully instrumented, neither blocks the ladder:**
+
+- [ ] **The FOV-edge near-field drift** (hand pulls toward the camera off-center, worst
+      left; stationary head). Exonerated so far: projection split (s49), compose chain
+      (s50), eye-tag claim (s50). Pick it back up WITH the s51 discriminators - the
+      hand-ref quad one-look (`bsicam handquad on`), the VDXR view logger
+      (`bsicam viewlog`), and THE EDGE-TELEMETRY RUN (`bsicam edgelog`, TESTING S51
+      item 5) - the TSV decides which half of the hypothesis space to follow.
+- [ ] **The FX-origin frozen family** (muzzle flash, tracer, vigor charge plume, ready
+      sparkle, muzzle smoke - all camera-anchored at the authored hand pose). SIX lanes
+      falsified (ENGINE_NOTES s50 + s51 part 3; the decoded record lane is COLD at
+      runtime). Next leads: the live 0x3EC4C0 caller 0x5EC393's loop, or a render-side
+      particle transform hunt; instruments banked (`bsifx u dump|callers`, `bsifx t`).
+      Fallback if the hunt keeps stalling: hide the camera-anchored FP effects
+      (the hand-attached riders already read correctly).
+
+Per-weapon presets (pulled to the FRONT of this milestone by user call, s51 close-out):
+
+- [ ] **The cheated arsenal** (user directive 2026-08-10: "we need to cheat the other
+      weapons since we don't have them yet - only the pistol"). Grant weapons by name
+      through the PROVEN reflection lane - `AXPawn::SetWeapon` + `AXWeapon::AddAmmo`
+      via ProcessEvent (`bsicall`, s37; ENGINE_NOTES "Console, cheats and the Exec
+      seam") - then save that loadout as the calibration save. The 2026-07-31
+      "test from the START" rule STANDS for regression coverage; the cheated arsenal
+      is for DERIVING values, which is exactly what it is representative of.
+- [ ] Fill the s47 profile scaffold (profiles.h - class-name key, zero entries today):
+      per-weapon aim trim P/Y, ray-origin F/R/U, model trim/offset/scale deltas -
+      live-tunable in the headset (F10 sliders per the in-headset-controls rule),
+      derived per weapon, persisted per class name via vrpreset.
+- [ ] The vigor hand is a weapon too (slot 0 IS an XWeapon, s50) - decide whether
+      vigors share one profile or get per-vigor entries.
+- [ ] **Done when:** switching weapons in the headset lands every weapon aligned
+      (aim ray on the muzzle, model seated in the hand) with no global-tune
+      compromise, values surviving a save/load round trip.
+
 HUD/menus/effects half:
 
 - [ ] Scaleform GFx classifier ONLY IF a surface needs one beyond the positional rule
