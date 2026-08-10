@@ -6898,6 +6898,25 @@ the derivations; TESTING "S52" carries the headset checklist.
   some boots; not the mod; two flat checks moved to the headset list). inis
   restored byte-identical (never modified); weapons.ini test file removed;
   the granted arsenal was never saved in-game (sim-only state).
+- **ROUND 4 (2026-08-11) - ATTEMPTED AND REVERTED (77e1eb5 -> revert
+  256a244; user call: "revert, fix next session")**: releasing is NOT
+  hiding - in the states that need hiding the game never animates the
+  normal FP rig, so released bones FREEZE visibly at their last pose
+  (headset-measured: "frozen in place, can't control them"). The attempt
+  drove every cluster + arm bone to the kind-2 collapse (ZERO SCALE) per
+  frame (`bones::drive_hidden` / `g_hideWhole`, reusing the s48 armsMode-2
+  collapse widened to the whole hand). The SIM looked clean through the
+  entire rowboat intro (no frozen rig, authored scene intact to the dock) -
+  but the HEADSET verdict was: (a) the intro cutscene TEXT broke, and (b)
+  the double hands were STILL there. LESSON: the flat lane is NOT a
+  sufficient oracle for this feature - the sim never reproduced either
+  symptom. NEXT-SESSION mechanism candidates, in order: find the game's
+  OWN hide lever for the FP attachment (vanilla must hide it in scenes -
+  hunt bHidden/HiddenGame/SetHiddenGame on XFirstPersonAttachment or its
+  component, or the show/hide call sites around scripted-scene starts);
+  component-level hide beats bone-level collapse. What ships on the branch
+  is the ROUND 3 state below (release-based; frozen-hands-in-view is the
+  KNOWN OPEN issue).
 - **ROUND 3 (same night, second headset verdicts)**: snap turn + cine-start
   recenter CONFIRMED by the user; the DOUBLE HANDS persisted in every
   scripted FP hand scene (box handoff, doors - the view target stays the
