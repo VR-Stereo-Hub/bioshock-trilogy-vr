@@ -1306,6 +1306,79 @@ binaries polled fine (the first gfx_hud build had a working pad). Reads as a
 boot-time "no pad" latch race in the game. The headset lane is unaffected
 (every VDXR session drives the same synthetic bridge with real Touch input).
 
+### s53: THE FP-RIG VISIBILITY LEVERS - derived, then A/B'd on the LIVE view
+
+**Two headline measurements, and the second falsifies the obvious reading of
+the first.**
+
+1. **The game TRACKS scene state on the attachment's stock `bHidden` bit**
+   (rowboat save, `bsihide who`): 1 through the no-hands phases of the
+   scripted scene, flipping **1 -> 0** at the authored hand moment/docking,
+   and 0 in gameplay. The returned attachment/component were IDENTICAL to
+   bones' cached pair the whole way (`SAME`): **the round-4 "doubles are a
+   stale rig" hypothesis is DEAD** - scripted scenes do not swap the
+   attachment.
+2. **But `bHidden` does NOT hide the FP rig** (Comstock Rooftops chapter,
+   pistol equipped, window A/B): with the bit written 1 and read back 1, both
+   hands AND the pistol kept rendering - the FP attachment's render path
+   ignores actor bHidden. The bit is a scene-state CORRELATE, not the hide
+   mechanism; whatever hides the rig in vanilla scenes is elsewhere (posed
+   out of view by authored anims, or a deeper render-path switch).
+
+**The lever-effect table (all A/B'd on the live view, same scene/loadout):**
+
+| lever | dispatch | visual effect |
+|---|---|---|
+| actor `bHidden` bit | direct write, readback 1 | NONE - hands + pistol keep rendering |
+| comp `SetHidden(1)` | HiddenGame reads 1 | arms/hands mesh GONE, **weapon model keeps floating** (a separate attached component) |
+| bone `HideBoneByName` (grip + arm chain) | s45b + s53 | limb AND holdable gone - **the only complete hide**; production default |
+| comp `SetOwnerNoSee` | dispatches, bit sets | untested visually (component already carries `bOnlyOwnerSee=1` in gameplay - the FP rig is owner-only by construction) |
+
+**The derived levers (one-shot walk on the live rig, `bsihide derive`):**
+
+| lever | where | value |
+|---|---|---|
+| `bHidden` | attachment (AActor bitfield) | +0x5C mask 0x4 |
+| `HiddenGame` | component (UPrimitiveComponent) | +0xD4 mask 0x20 |
+| `bOwnerNoSee` | component | +0xD4 mask 0x40 |
+| `bOnlyOwnerSee` | component | +0xD4 mask 0x80 |
+
+FName indices (boot-stable, cached): SetHidden 20780, SetOwnerNoSee 20818,
+HideBoneByName 17378, UnHideBoneByName 21808, IsBoneHidden 17724, MatchRefBone
+18294. `SetHiddenGame` does NOT exist in the pool (-1). Console `set` stays
+dead (s46) - all writes are direct instance bits or native dispatch.
+
+**What this means for the hide design (hide.cpp):** the production lever is
+BONE (both scopes; a rig-wide hide = both sides' composites). Blanket-hiding
+through a cine hold could still eat the game's authored hand moments (the box
+handoff animates the same bones), so the cine scope stays a POLICY radio the
+headset must judge: `force` (bone-hide both limbs through the hold, watchdog
+re-asserting; the user-directed default) vs `game` (touch nothing during
+holds) vs `off`. Empty-hand hides are per-hand bone composites (grip + arm
+chain, whole limb - user call) and stand down during any hold so the two
+scopes never fight. Flat-proven on a live chapter load: empty-hand possession
+hid both limbs, the arriving chapter loadout (pistol + Enrage) unhid them on
+the next 1 Hz profiles poll, zero reasserts/failures.
+
+**The doubles' remaining suspect - the PAWN BODY.** Zero-scaling our rig
+(round 4) left the headset doubles intact, and the scene never swaps the
+attachment - so the doubles may not be the FP rig at all but the pawn's own
+third-person mesh, visible only because the VR camera sits off the authored
+head point ("hands to the right and left of the character"). `bsihide pawn
+0|1` (SetOwnerNoSee on the pawn's `Mesh` component, derived per boot) is the
+one-command headset A/B for this.
+
+**Scaleform/HUD names confirmed in the pool (bsigfx lane, crosshair kill):**
+`HideableHUDWidgetNames` 4835, `NumReasonsToShowElement` 36595,
+`XSeqAct_HideHUDElement` 10586, `HUDMovie` 33307, `FlashCommand` 32140,
+`XClikHUDCrosshair` 8654. `SetVariableBool`/`GetVariableBool` do NOT exist on
+this build (the GFx variable natives are named differently - rung-4 fallback
+needs a fresh name hunt if rung 3 fails). **The intro/Lighthouse level's
+`myHUD` (PC+0x2B4) is a bare `HUD`-class object carrying NONE of the element
+machinery and no `HUDMovie` property** - the real XHud family exists only in
+gameplay-proper levels; the element-array walk and the pixel A/B need a
+chapter with a HUD (fair onward).
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

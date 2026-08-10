@@ -813,6 +813,43 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S53 checklist (THE FP-RIG HIDE done right; branch `claude/bioshock-fp-rig-hide-fa6342`)
+
+The hide gate ships ARMED: cutscene rig = **force-hide**, empty hands =
+**whole limb bone-hidden** (grip + arm chain per side) outside holds. The
+lever is BONE (HideBoneByName - the only lever that removes limb AND weapon
+together; actor bHidden was measured INEFFECTIVE and comp SetHidden leaves
+the weapon model floating). Everything is a control in F10 -> HANDS + MODEL:
+the "hide rig" checkbox, the "cutscene rig" radio (force-hide / game-managed
+/ cine off) and the "hide lever" radio (actor / owner / comp / bone). Escape
+hatches: `bsihide auto off`, or the checkbox.
+
+1. **FIRST MINUTE - the two round-4 falsifiers, rowboat save:** (a) the
+   intro cutscene TEXT must render intact (the zero-scale attempt broke it);
+   (b) the double/frozen controller hands must be GONE through the whole
+   scene. Look around (left/right/down) mid-scene - the s53 sim measured the
+   game itself hiding the rig (bHidden=1) through the no-hands phases, so
+   anything you still see floating is a REAL finding, not our drive.
+2. **The authored hand moments must SURVIVE**: the box handoff and any
+   scripted reach must still show the game's own hand. If force-hide has
+   eaten them (blank reach), flip the radio to "game-managed" and re-judge
+   the same scene edge - that radio is the s53 A/B and either verdict is a
+   result.
+3. **If doubles persist in BOTH radio modes**: they are probably NOT the FP
+   rig at all but the pawn's own body seen from the offset VR camera. One
+   command while you look at them: `bsihide pawn 1` (hides the pawn mesh for
+   the owner view; `bsihide pawn 0` restores). Report which lever killed
+   them - this decides the next wiring.
+4. **Empty-hand hide in gameplay**: with bare hands (start of game), both
+   limbs should be GONE (no misrotated arms, no sprint-arms weirdness, no
+   frozen hands). Draw a weapon - the weapon hand comes back driven; holster
+   to bare - gone again. The skyhook-era left-only case: left may stay
+   visible if only the rig-wide lever survived (accepted trade).
+5. **Scene-end resume**: when the scripted scene closes, driven hands must
+   come back within a beat (the release/re-arm edge), with no hidden-rig
+   hangover (a rig stuck invisible = the watchdog failed - `bsihide status`
+   and report the counters).
+
 ## S52 checklist (the input lane, THE CHEATED ARSENAL, the HUD quad, the cinematic gate; branch `si52-inf-input-arsenal-hud-cine`)
 
 Four features this build, all flat-proven. Everything judged by eye has an F10

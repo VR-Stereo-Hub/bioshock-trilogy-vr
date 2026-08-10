@@ -48,13 +48,36 @@ int32_t g_idxSetHidden = -1, g_idxSetHiddenGame = -1, g_idxSetOwnerNoSee = -1;
 int32_t g_idxHideBone = -1, g_idxUnHideBone = -1;
 int32_t g_idxIsBoneHidden = -1, g_idxMatchRefBone = -1;
 
+// ---- cine policy ------------------------------------------------------------
+// s53 sim measurement (rowboat save): the game MANAGES the attachment's
+// bHidden itself - 1 through the no-hands phases of a scripted scene, 0 for
+// its authored hand moments and gameplay. So the cine scope is a POLICY
+// question the headset must judge:
+//  - game:  trust the game's own management, we touch nothing during holds
+//    (risk: the round-4 doubles were our STALE driven bones becoming visible
+//    when the game unhides for an authored moment);
+//  - force: assert the hide through the whole hold, watchdog re-asserting
+//    against the game's unhide (risk: authored hand moments - the box
+//    handoff - lose their hands too);
+//  - off:   cine scope disabled entirely (bisect lever).
+enum CineMode : int { kCineGame = 0, kCineForce = 1, kCineOff = 2 };
+const char* cine_mode_name(int m) {
+    return m == kCineGame ? "game" : (m == kCineForce ? "force" : "off");
+}
+
 // ---- the auto gate ----------------------------------------------------------
 // Latches are plain bools: every reader/writer is the game thread (tick and
 // the command pump share it). Only the F10 checkbox/radio cross threads, and
 // those are the atomics.
-std::atomic<bool> g_auto{false}; // production default decided by the s53 verdicts
-std::atomic<int> g_lever{kLeverOwner}; // provisional until the sim/headset A/B
-int g_activeLever = kLeverOwner;       // the lever the current latches used
+std::atomic<bool> g_auto{true}; // the s53 feature ships armed; F10 + bsihide auto off
+std::atomic<int> g_cineMode{kCineForce}; // user directive: cine hold hides; A/B radio
+// s53 sim lever verdicts (Comstock Rooftops, pistol equipped, window A/B):
+// actor bHidden=1 left hands AND pistol rendering (the FP path ignores it);
+// comp SetHidden removed the arms mesh but the WEAPON MODEL kept floating (a
+// separate attached component); bone HideBoneByName removes limb + holdable
+// together (s45b + today). Bone is the only complete hide -> the default.
+std::atomic<int> g_lever{kLeverBone};
+int g_activeLever = kLeverBone;        // the lever the current latches used
 bool g_rigHidden = false;
 bool g_handHidden[2] = {};
 void* g_appliedAttach = nullptr;
@@ -322,6 +345,41 @@ void cmd_who() {
     }
 }
 
+// The pawn-body probe (s53): if the headset doubles survive an FP-rig hide,
+// they are the PAWN's own third-person body - visible only because the VR
+// camera sits off the authored head point. A/B lever: SetOwnerNoSee on the
+// pawn's Mesh component. Probe-only until a headset verdict makes it policy.
+void cmd_pawn(bool hideIt) {
+    void* pawn = live_pawn();
+    if (!pawn) {
+        BVR_LOG("[bsi] hide: pawn REFUSED - no pawn");
+        return;
+    }
+    static uint32_t s_meshOff = 0;
+    static bool s_refused = false;
+    if (!s_meshOff && !s_refused) {
+        if (!reflect::find_property_offset(pawn, "Mesh", "ObjectProperty", &s_meshOff)) {
+            s_refused = true;
+            BVR_LOG("[bsi] hide: pawn - 'Mesh' did not derive on the pawn's chain");
+            return;
+        }
+        BVR_LOG("[bsi] hide: pawn - derived Mesh at pawn+0x%X", s_meshOff);
+    }
+    if (!s_meshOff || !is_memory_valid(static_cast<uint8_t*>(pawn) + s_meshOff, 4))
+        return;
+    void* mesh = *reinterpret_cast<void**>(static_cast<uint8_t*>(pawn) + s_meshOff);
+    char cls[64] = {};
+    if (mesh) reflect::class_name_of(mesh, cls, sizeof cls);
+    if (!mesh) {
+        BVR_LOG("[bsi] hide: pawn - Mesh slot is null");
+        return;
+    }
+    const bool ok = dispatch_bool(mesh, g_idxSetOwnerNoSee, hideIt);
+    BVR_LOG("[bsi] hide: pawn mesh %p (%s) SetOwnerNoSee(%d) -> %s | bOwnerNoSee now %d",
+            mesh, cls[0] ? cls : "?", hideIt ? 1 : 0, ok ? "dispatched" : "FAILED",
+            read_bit(mesh, g_ownerNoSeeOff, g_ownerNoSeeMask));
+}
+
 // Arm reflect's bsidiff over the flag regions - run once to snapshot, cross
 // the scene edge, run the SAME subcommand again to name the writer.
 void cmd_diff(const char* which) {
@@ -389,11 +447,16 @@ void tick(uint64_t nowMs) {
         g_activeLever = lever;
     }
 
-    // Desired state from the s52-round-3 conditions (unchanged and correct).
-    bool wantRig = cine::hold();
+    // Desired state from the s52-round-3 conditions (unchanged and correct),
+    // scoped by the cine policy: during a hold the scene owns the rig - the
+    // per-hand empty hides stand down so they can never fight an authored
+    // hand moment (only the force policy asserts anything during a hold).
+    const bool hold = cine::hold();
+    const int cineMode = g_cineMode.load(std::memory_order_relaxed);
+    bool wantRig = hold && cineMode == kCineForce;
     bool wantHand[2] = {false, false};
     const bool perHandCapable = g_idxHideBone >= 0 && g_idxUnHideBone >= 0;
-    if (profiles::hide_empty_hands()) {
+    if (!hold && profiles::hide_empty_hands()) {
         const bool e[2] = {profiles::hand_empty(0), profiles::hand_empty(1)};
         if (perHandCapable) {
             wantHand[0] = e[0];
@@ -491,9 +554,10 @@ bool handle_command(const char* cmd, const char* args) {
                            static_cast<unsigned>(sizeof a1), a2,
                            static_cast<unsigned>(sizeof a2));
     if (n < 1 || strcmp(sub, "status") == 0) {
-        BVR_LOG("[bsi] hide: %s | lever %s | derived %s%s | latches rig=%d L=%d R=%d "
-                "| applies %u reasserts %u failstreak %u%s",
+        BVR_LOG("[bsi] hide: %s | cine %s | lever %s | derived %s%s | latches rig=%d "
+                "L=%d R=%d | applies %u reasserts %u failstreak %u%s",
                 g_auto.load(std::memory_order_relaxed) ? "AUTO ON" : "auto off",
+                cine_mode_name(g_cineMode.load(std::memory_order_relaxed)),
                 lever_name(g_lever.load(std::memory_order_relaxed)),
                 g_derived ? "yes" : "no", g_deriveRefused ? " (REFUSED)" : "",
                 g_rigHidden ? 1 : 0, g_handHidden[0] ? 1 : 0, g_handHidden[1] ? 1 : 0,
@@ -508,8 +572,23 @@ bool handle_command(const char* cmd, const char* args) {
                     read_bit(bones::component(), g_onlyOwnerOff, g_onlyOwnerMask));
         if (n < 1)
             BVR_LOG("[bsi] hide: verbs - status derive who diff actor|comp | "
-                    "actor|comp|owner 0|1 | bone <Name> 0|1 | hand l|r 0|1 | "
-                    "lever owner|comp|actor|bone | auto on|off");
+                    "actor|comp|owner|pawn 0|1 | bone <Name> 0|1 | hand l|r 0|1 | "
+                    "lever owner|comp|actor|bone | cine game|force|off | auto on|off");
+        return true;
+    }
+    if (strcmp(sub, "cine") == 0) {
+        int want = -1;
+        if (strcmp(a1, "game") == 0) want = kCineGame;
+        else if (strcmp(a1, "force") == 0) want = kCineForce;
+        else if (strcmp(a1, "off") == 0) want = kCineOff;
+        if (want < 0) {
+            BVR_LOG("[bsi] hide: cine %s | usage: bsihide cine game|force|off",
+                    cine_mode_name(g_cineMode.load(std::memory_order_relaxed)));
+            return true;
+        }
+        g_cineMode.store(want, std::memory_order_relaxed);
+        BVR_LOG("[bsi] hide: cine -> %s (takes effect on the next tick edge)",
+                cine_mode_name(want));
         return true;
     }
     if (strcmp(sub, "derive") == 0) {
@@ -592,6 +671,10 @@ bool handle_command(const char* cmd, const char* args) {
                 read_bit(comp, g_ownerNoSeeOff, g_ownerNoSeeMask));
         return true;
     }
+    if (strcmp(sub, "pawn") == 0) {
+        cmd_pawn(onArg);
+        return true;
+    }
     if (strcmp(sub, "bone") == 0 && n >= 3) {
         const bool boneOn = strcmp(a2, "1") == 0;
         // Command-time pool scan is fine (never a cadence).
@@ -626,22 +709,32 @@ void draw_debug_ui() {
         g_auto.store(on, std::memory_order_relaxed);
         // The tick's unhide-all path restores on the next game dispatch.
     }
+    int cineMode = g_cineMode.load(std::memory_order_relaxed);
+    ImGui::Text("cutscene rig:");
+    ImGui::SameLine();
+    bool cchanged = ImGui::RadioButton("force-hide", &cineMode, kCineForce);
+    ImGui::SameLine();
+    cchanged |= ImGui::RadioButton("game-managed", &cineMode, kCineGame);
+    ImGui::SameLine();
+    cchanged |= ImGui::RadioButton("cine off", &cineMode, kCineOff);
+    if (cchanged) g_cineMode.store(cineMode, std::memory_order_relaxed);
     int lever = g_lever.load(std::memory_order_relaxed);
     ImGui::Text("hide lever:");
     ImGui::SameLine();
-    bool changed = ImGui::RadioButton("owner", &lever, kLeverOwner);
+    bool changed = ImGui::RadioButton("actor", &lever, kLeverActor);
+    ImGui::SameLine();
+    changed |= ImGui::RadioButton("owner", &lever, kLeverOwner);
     ImGui::SameLine();
     changed |= ImGui::RadioButton("comp", &lever, kLeverComp);
     ImGui::SameLine();
-    changed |= ImGui::RadioButton("actor", &lever, kLeverActor);
-    ImGui::SameLine();
     changed |= ImGui::RadioButton("bone", &lever, kLeverBone);
     if (changed) g_lever.store(lever, std::memory_order_relaxed);
-    ImGui::TextDisabled("hide: %s, lever %s, rig=%d L=%d R=%d, applies %u "
+    ImGui::TextDisabled("hide: %s, cine %s, lever %s, rig=%d L=%d R=%d, applies %u "
                         "reasserts %u%s",
-                        on ? "ON" : "off", lever_name(lever), g_rigHidden ? 1 : 0,
-                        g_handHidden[0] ? 1 : 0, g_handHidden[1] ? 1 : 0, g_applies,
-                        g_reasserts, g_faultLatched ? " FAULT-LATCHED" : "");
+                        on ? "ON" : "off", cine_mode_name(cineMode), lever_name(lever),
+                        g_rigHidden ? 1 : 0, g_handHidden[0] ? 1 : 0,
+                        g_handHidden[1] ? 1 : 0, g_applies, g_reasserts,
+                        g_faultLatched ? " FAULT-LATCHED" : "");
 }
 
 } // namespace bvr::bsi::hide
