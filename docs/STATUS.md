@@ -6898,6 +6898,21 @@ the derivations; TESTING "S52" carries the headset checklist.
   some boots; not the mod; two flat checks moved to the headset list). inis
   restored byte-identical (never modified); weapons.ini test file removed;
   the granted arsenal was never saved in-game (sim-only state).
+- **ROUND 4 (2026-08-11, third headset verdicts)**: releasing is NOT hiding -
+  in the states that need hiding the game never animates the normal FP rig,
+  so released bones FREEZE visibly at their last pose (headset-measured:
+  "frozen in place, can't control them"). THE HIDE: `bones::drive_hidden` -
+  every cluster + arm bone driven to the kind-2 collapse (ZERO SCALE) each
+  frame, reusing the s48 armsMode-2 collapse machinery widened to the whole
+  hand (`g_hideWhole`); the reapply lane replays the zero-scale rows like
+  any driven atom, so nothing can restamp the hand visible. hands.cpp hides
+  during ANY cine hold (both hands) and per-hand when empty; hiding
+  deliberately ignores fc.valid (zero scale makes a stale basis irrelevant,
+  and the fixed-head radio must not un-hide). Sim-verified through the
+  entire rowboat intro: no controller hands, no frozen rig, authored scene
+  intact to the lighthouse dock (the authored cinematic hands are a
+  SEPARATE mesh - a frozen released rig could not have animated the box
+  reach, so hiding our rig cannot break the scenes).
 - **ROUND 3 (same night, second headset verdicts)**: snap turn + cine-start
   recenter CONFIRMED by the user; the DOUBLE HANDS persisted in every
   scripted FP hand scene (box handoff, doors - the view target stays the
