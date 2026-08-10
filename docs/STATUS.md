@@ -76,13 +76,20 @@ and noted in ENGINE_NOTES; the travel sampler cadence is ~1350/s (camera
 detour fires many times per frame), fine for peak detection but not a frame
 counter.
 
-**NEXT SESSION:** (1) headset verdicts - the shoulders A/B, the hand-quad
-one-look, the viewlog cant line, THE EDGE-TELEMETRY TSV (the insurance:
-analyze it regardless of the verdicts), flourish lead-200 re-judgment;
-(2) whichever way the hand-quad discriminates, follow that half of the
-hypothesis space with the telemetry data; (3) FX-origin next forks: what is
-the live caller 0x5EC393's loop, and/or a render-side particle transform
-hunt.
+**HEADSET VERDICTS on the s51 build (user, 2026-08-10, same night):**
+1. **SHOULDERS: PERFECT** - no jump on shots OR plasmid throws. The
+   full-hand substitution ships as the default; no tuning requested.
+2. **FOV-EDGE DRIFT: DEFERRED by the user to a polish milestone** -
+   "playable for now". The discriminator instruments (hand quad, viewlog,
+   edgelog) stay shipped and OFF; run them when the item is picked back up.
+3. **FLOURISH: ACCEPTED at lead 200 / tail 4500** - defaults stand.
+4. FX-origin: user asked for a plain-terms explanation + a decision on
+   whether to keep hunting (see the s51 close-out discussion).
+
+**NEXT SESSION:** per the user's calls - FOV-edge and FX-origin both sit
+behind the user's prioritization; the live FX leads remain (the 0x5EC393
+caller loop, a render-side particle transform hunt) with all instruments
+banked.
 
 ### Infinite: state after session 50 (kept for the record; superseded by s51 above) (three fixes shipped - eye tags, THE FLOURISH BUTTON, the fire-swing kill; FX-origin re-scoped by the user; branch `si50-inf-fx-edge-flourish`, NOT merged)
 
