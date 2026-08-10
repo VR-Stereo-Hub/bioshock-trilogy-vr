@@ -910,6 +910,46 @@ standard applies: the claim must match the render):
   suspects are runtime-side (VDXR's located-view geometry vs its display
   model).
 
+### s50 part 4: THE FLOURISH BUTTON - the lowered window, measured and shipped
+
+**Why the flourish was lost (measured, twice):** under the stance-kill clamp
+('Lowered' held 0.0) a StartSubtleFidget play is a VISUAL NO-OP - the impl
+runs, the by-name action posts on the FP network, and nothing articulates
+(img-diff at noise floor, the fxorigin dirty instrument silent). The
+SubtleFidget response lives in the LOWERED subgraph; with the graph pinned
+raised it has nowhere to play. The natural SetTimer chain still fires
+(observed +133/+143/+151/+172/+184 s intervals all session) - every fire a
+no-op. The flourish was not un-scheduled; it was un-answered.
+
+**The recipe (flat A-B-A):** hold 'Lowered' at 1.0 for a few seconds (the
+flourish window overrides the CLAMP VALUE inside the funnel rewrite - the
+game's own 90 Hz driver carries it), wait ~1.8 s for the graph to blend into
+the lowered lane, call the engine's StartSubtleFidget IMPL on the attachment
+(the ORIGINAL trampoline - probe/block modes and the PE vtable filter never
+interfere), let the window lapse ~4.5 s later - the kill's 0.0 resumes and
+the pose returns to ready. Measured: baseline -> mid-gesture img-diff
+**8.15** (the full theatrical arm sweep) -> +5 s **6.36** -> settled
+**0.5-1.4** = baseline. No stance risk: the settle needs 150-240 s, the
+window is 6.3 s, and the clamp legs stayed green all session. The impl's
+SetTimer re-arm is benign by the same measurement (its later fires are the
+no-ops above).
+
+**Shipped:**
+- `fidget::flourish()` + `flourish_tick()` (per camera dispatch): the window
+  (`g_flourishHoldUntilMs` read inside PostRequestDetour's clamp branch), the
+  delayed SEH-isolated impl call, refusals when the attachment/trampoline is
+  unresolved or a window is already open.
+- **`bsiflourish`** (fires it; `bsiflourish status` = counters) - the sim
+  lane and console lane.
+- **THE CHORD: left thumbrest (touched) + A.** Core XR composer addition,
+  armed by the Infinite adapter only (`bvr::input::arm_flourish_chord`) -
+  while the rest is touched A is CONSUMED (jump does not fire under the
+  chord) and each rising A edge bumps a counter `flourish_tick` drains on
+  the game thread (first poll adopts the count - no phantom trigger). BS1/
+  BS2 composed pads are untouched by construction (flag default off). Chord
+  flat-proven: sim `thumbrest l on` + `btn a press` -> FLOURISH #2, gesture
+  6.27, return 0.68.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

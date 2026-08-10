@@ -2,6 +2,7 @@
 
 #include "core/framework/command.h"
 #include "core/hooks/d3d11_hook.h"
+#include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshockinf/camera.h"
@@ -104,6 +105,10 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // set_pad_profile - their composed pad is byte-identical (proved on the sim
     // lane, ENGINE_NOTES s44).
     input_drive::arm_pad_profile();
+    // s50: the flourish chord (left thumbrest + A) - the XR composer consumes
+    // A while the rest is touched and counts the edges; fidget::flourish_tick
+    // drains them on the game thread. Infinite-only (default off in core).
+    bvr::input::arm_flourish_chord(true);
     // Then the pad itself, from the preset (`inputOn`, default on). This is what
     // makes a headset boot come up with a working controller: everything judged
     // by eye must be an F10 control, and reaching F10 needs a controller.

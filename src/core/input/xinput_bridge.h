@@ -81,6 +81,14 @@ void last_composed_bumpers(bool* lb, bool* rb);
 // read-only; session 42 consumer is BS2's menukey lane (pad-A -> Enter).
 void last_composed_buttons(uint16_t* buttons);
 
+// s50 (Infinite): the FLOURISH CHORD - left thumbrest touched + A pressed.
+// arm_flourish_chord(true) makes the XR composer consume A while the left
+// thumbrest is touched and count rising A edges; flourish_chord_edges() is
+// the monotonic counter the adapter polls on its game-thread tick. Default
+// off - no other game's composed pad changes by a single bit.
+void arm_flourish_chord(bool on);
+uint32_t flourish_chord_edges();
+
 // Session 22: the FINAL composed sticks the game consumed (post merge/
 // pitchkill/turn controls) - the movement-wonkiness instrument reads them.
 void last_composed_sticks(int16_t* lx, int16_t* ly, int16_t* rx, int16_t* ry);

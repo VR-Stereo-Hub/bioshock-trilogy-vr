@@ -10,6 +10,7 @@
 #include <intrin.h>
 
 #include "core/hooks/pattern_scan.h"
+#include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/patterns.h"
@@ -300,6 +301,27 @@ PostRequestFn g_reqOrig = nullptr;
 std::atomic<uint32_t> g_reqCalls{0};
 std::atomic<uint32_t> g_reqBlocked{0};
 
+// ---- s50: THE FLOURISH BUTTON ----------------------------------------------
+// The user's vigor flourish, lost with the stance kill, back on demand. The
+// measured recipe (all flat, this session): hold 'Lowered' at 1.0 (the
+// window below overrides the clamp value - the game's own 90 Hz driver is
+// the carrier), give the graph a blend-in lead, then call the engine's
+// StartSubtleFidget IMPL on the attachment (the ORIGINAL, so probe/block
+// modes never interfere) - the full show-off gesture articulates; when the
+// window lapses the clamp's 0.0 resumes and the pose returns to ready
+// (A-B-A: img-diff 0.51 -> 8.14 -> 0.50 against baseline). The impl re-arms
+// its own SetTimer once per call - measured benign: a timer fire under the
+// held clamp plays into the raised subgraph as a visual no-op and the
+// stance stays dead (every clamp leg green all session).
+std::atomic<uint64_t> g_flourishHoldUntilMs{0}; // the 'Lowered'=1.0 window
+uint64_t g_flourishImplAtMs = 0;                // game thread: pending impl call
+std::atomic<uint32_t> g_flourishTriggers{0};
+std::atomic<uint32_t> g_flourishRefusals{0};
+uint32_t g_chordEdgesSeen = 0;   // game thread: last chord counter drained
+bool g_chordEdgesPrimed = false; // first poll adopts the counter, no trigger
+constexpr uint64_t kFlourishLeadMs = 1800; // blend into the lowered lane first
+constexpr uint64_t kFlourishTailMs = 4500; // the gesture, then the kill resumes
+
 // The FP network's Morpheme runtime ([network+0x118]) - what the inner post
 // receives as its first arg.
 void* fp_runtime() {
@@ -328,7 +350,17 @@ void __cdecl PostRequestDetour(void* runtime, void* desc, void* params) {
     // what the network actually receives.
     if (ours && static_cast<int32_t>(id) == g_reqClampId.load(std::memory_order_relaxed) &&
         params && bvr::pattern_scan::is_memory_valid(params, 4)) {
-        const uint32_t bits = g_reqClampBits.load(std::memory_order_relaxed);
+        uint32_t bits = g_reqClampBits.load(std::memory_order_relaxed);
+        // s50 FLOURISH WINDOW: while it holds, the kill's 0.0 becomes 1.0 -
+        // the graph blends into the lowered lane, where the SubtleFidget
+        // response actually lives (flat-measured: the action is a visual
+        // no-op with 'Lowered' at 0, the full show-off gesture at 1). The
+        // window is a few seconds; the settle needs 150-240 s - no stance
+        // risk, and the A-B-A (base -> flourish -> base) measured clean.
+        if (GetTickCount64() < g_flourishHoldUntilMs.load(std::memory_order_relaxed)) {
+            const float one = 1.0f;
+            memcpy(&bits, &one, 4);
+        }
         memcpy(params, &bits, 4);
         memcpy(&val, &bits, 4);
         g_reqClamped.fetch_add(1, std::memory_order_relaxed);
@@ -603,6 +635,70 @@ void tick_apply() {
             g_boolMask ? " + bDisableSubtleFidget set" : "", g_applies);
 }
 
+// ---- s50: the flourish trigger + tick ---------------------------------------
+
+// SEH isolation for the raw impl call - engine code on a live object; a fault
+// must not take the camera thread down. No unwindable objects in this frame.
+int call_impl_seh(StartFidgetFn fn, void* self) {
+    __try {
+        fn(self, nullptr);
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 1;
+    }
+}
+
+bool flourish() {
+    const uint64_t now = GetTickCount64();
+    void* attach = bones::attachment();
+    if (!attach || !g_implOrig) {
+        g_flourishRefusals.fetch_add(1, std::memory_order_relaxed);
+        BVR_LOG("[bsi] fidget: flourish REFUSED - %s",
+                attach ? "impl trampoline not installed" : "attachment not resolved");
+        return false;
+    }
+    if (now < g_flourishHoldUntilMs.load(std::memory_order_relaxed)) {
+        g_flourishRefusals.fetch_add(1, std::memory_order_relaxed);
+        return false; // one at a time - a re-press mid-gesture is a no-op
+    }
+    g_flourishHoldUntilMs.store(now + kFlourishLeadMs + kFlourishTailMs,
+                                std::memory_order_relaxed);
+    g_flourishImplAtMs = now + kFlourishLeadMs;
+    g_flourishTriggers.fetch_add(1, std::memory_order_relaxed);
+    BVR_LOG("[bsi] fidget: FLOURISH #%u - 'Lowered' window open %llu+%llu ms, "
+            "StartSubtleFidget at +%llu ms (trigger it with the left-thumbrest+A "
+            "chord or `bsiflourish`)",
+            g_flourishTriggers.load(std::memory_order_relaxed),
+            static_cast<unsigned long long>(kFlourishLeadMs),
+            static_cast<unsigned long long>(kFlourishTailMs),
+            static_cast<unsigned long long>(kFlourishLeadMs));
+    return true;
+}
+
+void flourish_tick(uint64_t nowMs) {
+    // The chord counter (XR composer bumps it; default unarmed on every game
+    // but Infinite). First poll adopts the count so a stale counter from a
+    // session reload can never fire a phantom flourish.
+    const uint32_t edges = bvr::input::flourish_chord_edges();
+    if (!g_chordEdgesPrimed) {
+        g_chordEdgesPrimed = true;
+        g_chordEdgesSeen = edges;
+    } else if (edges != g_chordEdgesSeen) {
+        g_chordEdgesSeen = edges;
+        flourish();
+    }
+    // The pending impl call, once the lowered blend-in has had its lead.
+    if (g_flourishImplAtMs != 0 && nowMs >= g_flourishImplAtMs) {
+        g_flourishImplAtMs = 0;
+        void* attach = bones::attachment();
+        if (attach && g_implOrig) {
+            if (call_impl_seh(g_implOrig, attach) != 0)
+                BVR_LOG("[bsi] fidget: flourish impl call FAULTED (SEH) - window "
+                        "left to lapse");
+        }
+    }
+}
+
 bool wants_install() {
     if (g_implMode.load(std::memory_order_relaxed) != 0 &&
         !g_implInstalled.load(std::memory_order_relaxed))
@@ -687,6 +783,24 @@ bool try_install() {
 }
 
 bool handle_command(const char* cmd, const char* args) {
+    // s50: the flourish trigger - its own command so the sim (and the user's
+    // console muscle memory) can fire it without the chord.
+    if (strcmp(cmd, "bsiflourish") == 0) {
+        if (args && strncmp(args, "status", 6) == 0) {
+            BVR_LOG("[bsi] fidget: flourish triggers=%u refusals=%u window=%s | the "
+                    "chord is LEFT THUMBREST (touched) + A; `bsiflourish` fires it "
+                    "directly",
+                    g_flourishTriggers.load(std::memory_order_relaxed),
+                    g_flourishRefusals.load(std::memory_order_relaxed),
+                    GetTickCount64() <
+                            g_flourishHoldUntilMs.load(std::memory_order_relaxed)
+                        ? "OPEN"
+                        : "closed");
+            return true;
+        }
+        flourish();
+        return true;
+    }
     if (strcmp(cmd, "bsifidget") != 0) return false;
     if (!args) args = "";
     while (*args == ' ') ++args;

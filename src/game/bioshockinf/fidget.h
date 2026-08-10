@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 // s48: the SubtleFidget ProcessEvent OBSERVER (and optional filter).
 //
 // The s46 compose-side glue was headset-REJECTED (2026-08-09): it pins the
@@ -58,5 +59,18 @@ void tick_apply();
 
 bool handle_command(const char* cmd, const char* args);
 void draw_debug_ui();
+
+// ---- s50: THE FLOURISH BUTTON ----------------------------------------------
+// The vigor flourish on demand (left thumbrest + A, or `bsiflourish`). The
+// measured recipe: hold 'Lowered' at 1.0 through the clamp for a few seconds
+// (the SubtleFidget response lives in the lowered lane - with the kill's 0.0
+// the action is a visual no-op), call the engine impl after a blend-in lead,
+// let the window lapse back to the kill. A-B-A flat-proven; the impl's own
+// SetTimer re-arm is measured benign under the clamp (timer fires play as
+// no-ops). flourish() is game-thread; a no-op without a resolved attachment
+// + installed impl trampoline. flourish_tick runs per camera dispatch: it
+// drains the chord counter and places the delayed impl call.
+bool flourish();
+void flourish_tick(uint64_t nowMs);
 
 } // namespace bvr::bsi::fidget

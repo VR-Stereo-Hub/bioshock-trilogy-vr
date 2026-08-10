@@ -141,6 +141,16 @@ XrAction g_menu = XR_NULL_HANDLE;
 XrAction g_thumbrestL = XR_NULL_HANDLE;
 XrAction g_thumbrestR = XR_NULL_HANDLE;
 bool g_thumbrestSeen[2] = {false, false};
+
+// s50 (Infinite): the FLOURISH CHORD - left thumbrest touched + A pressed.
+// Armed by the adapter only (default off - BS1/BS2 composers byte-identical).
+// While the rest is touched, A is consumed (jump never fires under the
+// chord) and each rising A edge bumps the counter the adapter polls on the
+// game thread. Left thumbrest for the same reason the flick modifier uses
+// it: the chord is necessarily cross-hand (A sits under the right thumb).
+std::atomic<bool> g_flourishChordArmed{false};
+std::atomic<uint32_t> g_flourishChordEdges{0};
+bool g_chordAWasDown = false;
 XrAction g_poseL = XR_NULL_HANDLE;     // grip poses - hand position (M7 hands)
 XrAction g_poseR = XR_NULL_HANDLE;
 XrAction g_aimL = XR_NULL_HANDLE;      // AIM poses - where the controller POINTS.
@@ -629,6 +639,19 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                 g_flickArmed = true;
         }
         if (now < g_flickPulseUntilMs) pad.buttons |= g_flickPulseBit;
+
+        // s50 (Infinite): the flourish chord - see the state block. The edge
+        // requires the rest ALREADY touched at the press, so a plain jump
+        // with a thumb that later brushes the rest never fires it.
+        if (g_flourishChordArmed.load(std::memory_order_relaxed)) {
+            const bool aDown = read_bool(session, g_btnA);
+            if (restL) {
+                pad.buttons &= ~map.faceA; // consume A while chorded
+                if (aDown && !g_chordAWasDown)
+                    g_flourishChordEdges.fetch_add(1, std::memory_order_relaxed);
+            }
+            g_chordAWasDown = aDown;
+        }
     }
 
     // Left menu: short press pulses START on release, holding it past the
@@ -694,5 +717,23 @@ void input_draw_debug_ui() {
 }
 
 } // namespace bvr::vr
+
+// s50: the flourish-chord accessors live in bvr::input beside the other
+// composed-state readers; the state itself is the XR composer's (same TU).
+namespace bvr::input {
+
+void arm_flourish_chord(bool on) {
+    const bool was = bvr::vr::g_flourishChordArmed.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr-input: flourish chord %s (left thumbrest + A; A is consumed "
+                "while the rest is touched)",
+                on ? "ARMED" : "off");
+}
+
+uint32_t flourish_chord_edges() {
+    return bvr::vr::g_flourishChordEdges.load(std::memory_order_relaxed);
+}
+
+} // namespace bvr::input
 
 #endif // BVR_WITH_OPENXR

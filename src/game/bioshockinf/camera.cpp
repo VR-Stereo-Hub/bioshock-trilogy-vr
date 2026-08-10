@@ -1361,6 +1361,11 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // the raw bank is post-anim-restamp exactly like the drive's own reads.
     bones::travel_tick();
 
+    // s50: the flourish lane - per dispatch (the chord edge and the delayed
+    // impl call both need better than 1 Hz timing). Two relaxed loads when
+    // idle.
+    fidget::flourish_tick(now);
+
     static uint64_t s_lastThrottle = 0;
     if (now - s_lastThrottle >= 1000) {
         s_lastThrottle = now;
