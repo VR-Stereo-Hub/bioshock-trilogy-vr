@@ -19,6 +19,7 @@
 #include "xrsim_internal.h"
 
 #include <cstring>
+#include <thread>
 
 namespace xrsim {
 
@@ -265,7 +266,9 @@ static XrResult impl_WaitFrame(XrSession session, const XrFrameWaitInfo*,
         state->type = XR_TYPE_FRAME_STATE;
         state->predictedDisplayTime = g_snapshot.displayTime;
         state->predictedDisplayPeriod = period;
-        state->shouldRender = XR_TRUE;
+        // Session 54: `focus norender on` models VDXR's measured behaviour -
+        // shouldRender held FALSE for the whole not-FOCUSED episode.
+        state->shouldRender = session_should_render() ? XR_TRUE : XR_FALSE;
     }
 
     g_gate.waited.fetch_add(1);
@@ -309,6 +312,17 @@ static XrResult impl_EndFrame(XrSession session, const XrFrameEndInfo* info) noe
     }
     if (info->layerCount > kMaxLayers) return XR_ERROR_LAYER_LIMIT_EXCEEDED;
 
+    // Session 54: `focus throttle <ms>` - while the session is not FOCUSED the
+    // runtime blocks xrEndFrame, exactly as VDXR was measured doing (~87 ms per
+    // call at the raffle wedge). The block is inside the call, so an app that
+    // runs its frame loop inline on the present thread is paced by it - the
+    // game-freeze half of the wedge, reproducible on a desk.
+    {
+        const uint32_t throttleMs = g.focusThrottleMs;
+        if (throttleMs > 0 && current_session_state() != XR_SESSION_STATE_FOCUSED)
+            std::this_thread::sleep_for(std::chrono::milliseconds(throttleMs));
+    }
+
     // The mod hands us pointers into its own STACK FRAME (openxr_runtime.cpp
     // builds `layers[]` as a local). Everything must be copied out before this
     // function returns; nothing app-owned may be read afterwards.
@@ -347,7 +361,7 @@ static XrResult impl_EndFrame(XrSession session, const XrFrameEndInfo* info) noe
     }
 
     g_gate.ended.fetch_add(1);
-    session_note_submitted_frame();
+    session_note_submitted_frame(sub.layerCount > 0);
     session_pump_state();
 
     // Decide whether this frame is a capture BEFORE compositing: the compositor

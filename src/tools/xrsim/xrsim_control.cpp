@@ -453,10 +453,17 @@ void apply_line(const char* line) {
     if (a.is(0, "focus")) {
         if (a.is(1, "lose")) session_focus_lose(a.u(2, 0));
         else if (a.is(1, "regain")) session_force_state(XR_SESSION_STATE_FOCUSED);
-        else if (a.is(1, "policy")) g.focusPolicy = a.is(2, "permissive") ? FocusPolicy::Permissive
-                                                                         : FocusPolicy::Vdxr;
+        else if (a.is(1, "policy")) {
+            if (a.is(2, "permissive")) g.focusPolicy = FocusPolicy::Permissive;
+            else if (a.is(2, "vdxr-layers") || a.is(2, "layers"))
+                g.focusPolicy = FocusPolicy::VdxrLayers;
+            else g.focusPolicy = FocusPolicy::Vdxr;
+        }
         else if (a.is(1, "frames")) g.focusFrames = a.u(2, 3);
-        else set_error("focus needs lose, regain, policy or frames");
+        // Session 54, the VDXR park model (see FocusPolicy in xrsim_common.h).
+        else if (a.is(1, "norender")) g.focusNoRender = !a.is(2, "off");
+        else if (a.is(1, "throttle")) g.focusThrottleMs = a.u(2, 0);
+        else set_error("focus needs lose, regain, policy, frames, norender or throttle");
         return;
     }
     if (a.is(0, "hazard")) {
@@ -560,6 +567,12 @@ void apply_line(const char* line) {
         g.pacing.hz = 90.0;
         g.pacing.idleBlockMs = 0;
         g.hazards = Hazards{};
+        // Session 54: the VDXR park model resets with the script, so one .xrs
+        // cannot leak its focus behaviour into the next.
+        g.focusPolicy = FocusPolicy::Vdxr;
+        g.focusFrames = 3;
+        g.focusNoRender = false;
+        g.focusThrottleMs = 0;
         g.captureCountdown.store(0);
         g.captureEvery.store(0);
         g.captureLayers.store(true);
@@ -619,7 +632,13 @@ void write_state_json() {
     fprintf(f, "  \"sessionRunning\": %s,\n", session_is_running() ? "true" : "false");
     fprintf(f, "  \"actionsAttached\": %s,\n", actions_attached() ? "true" : "false");
     fprintf(f, "  \"focusPolicy\": \"%s\",\n",
-            g.focusPolicy == FocusPolicy::Vdxr ? "vdxr" : "permissive");
+            g.focusPolicy == FocusPolicy::Vdxr
+                ? "vdxr"
+                : (g.focusPolicy == FocusPolicy::VdxrLayers ? "vdxr-layers" : "permissive"));
+    fprintf(f, "  \"focusNoRender\": %s,\n", g.focusNoRender ? "true" : "false");
+    fprintf(f, "  \"focusThrottleMs\": %u,\n", g.focusThrottleMs);
+    fprintf(f, "  \"layeredFrames\": %llu,\n",
+            static_cast<unsigned long long>(session_layered_frames()));
     fprintf(f, "  \"paceMode\": \"%s\",\n",
             g.pacing.mode == PaceMode::Step ? "step"
                                             : (g.pacing.mode == PaceMode::Turbo ? "turbo" : "free"));

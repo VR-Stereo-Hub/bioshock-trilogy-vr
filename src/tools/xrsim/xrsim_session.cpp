@@ -22,6 +22,8 @@ XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 uint64_t g_createdMs = 0;
 uint64_t g_framesSubmitted = 0;
 uint64_t g_framesAtFocusLoss = 0;
+uint64_t g_layeredSubmitted = 0;    // frames carrying >= 1 composition layer
+uint64_t g_layeredAtFocusLoss = 0;  // VdxrLayers promotion baseline
 uint64_t g_focusLostMs = 0;
 uint32_t g_focusLoseHoldMs = 0;   // 0 = hold until told otherwise
 bool g_focusHeldDown = false;     // an explicit `focus lose` is sticky
@@ -110,6 +112,7 @@ void session_pump_state() {
         if (g_focusLoseHoldMs > 0 && now_ms() - g_focusLostMs >= g_focusLoseHoldMs) {
             g_focusHeldDown = false;
             g_framesAtFocusLoss = g_framesSubmitted;
+            g_layeredAtFocusLoss = g_layeredSubmitted;
         } else {
             return; // stay wherever the operator put us
         }
@@ -121,14 +124,24 @@ void session_pump_state() {
         break;
     case XR_SESSION_STATE_VISIBLE: {
         // Vdxr policy: FOCUSED has to be earned by actually submitting frames.
-        // Permissive: it comes back as soon as nothing is holding it down.
-        const bool earned = (g.focusPolicy == FocusPolicy::Permissive) ||
-                            (g_framesSubmitted >= g_framesAtFocusLoss + g.focusFrames);
+        // VdxrLayers (session 54): only LAYER-CARRYING frames count - the
+        // raffle wedge measured VDXR parking a session for minutes while empty
+        // frames flowed at 72/s. Permissive: it comes back as soon as nothing
+        // is holding it down.
+        const bool earned =
+            (g.focusPolicy == FocusPolicy::Permissive) ||
+            (g.focusPolicy == FocusPolicy::Vdxr &&
+             g_framesSubmitted >= g_framesAtFocusLoss + g.focusFrames) ||
+            (g.focusPolicy == FocusPolicy::VdxrLayers &&
+             g_layeredSubmitted >= g_layeredAtFocusLoss + g.focusFrames);
         if (earned) {
             if (g_focusLostMs != 0) {
-                XRSIM_LOG("xrsim: FOCUSED regained after %llu ms unfocused (%llu frames submitted)",
+                XRSIM_LOG("xrsim: FOCUSED regained after %llu ms unfocused (%llu frames "
+                          "submitted, %llu layered)",
                           static_cast<unsigned long long>(now_ms() - g_focusLostMs),
-                          static_cast<unsigned long long>(g_framesSubmitted - g_framesAtFocusLoss));
+                          static_cast<unsigned long long>(g_framesSubmitted - g_framesAtFocusLoss),
+                          static_cast<unsigned long long>(g_layeredSubmitted -
+                                                          g_layeredAtFocusLoss));
                 g_focusLostMs = 0;
             }
             set_state_locked(XR_SESSION_STATE_FOCUSED);
@@ -140,9 +153,20 @@ void session_pump_state() {
     }
 }
 
-void session_note_submitted_frame() {
+void session_note_submitted_frame(bool layered) {
     std::lock_guard<std::mutex> lock(g_mutex);
     ++g_framesSubmitted;
+    if (layered) ++g_layeredSubmitted;
+}
+
+bool session_should_render() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return !(g.focusNoRender && g_state != XR_SESSION_STATE_FOCUSED);
+}
+
+uint64_t session_layered_frames() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_layeredSubmitted;
 }
 
 void session_force_state(XrSessionState state) {
@@ -157,10 +181,12 @@ void session_force_state(XrSessionState state) {
         g_focusLoseHoldMs = 0;
         g_focusLostMs = now_ms();
         g_framesAtFocusLoss = g_framesSubmitted;
+        g_layeredAtFocusLoss = g_layeredSubmitted;
     }
     if (state == XR_SESSION_STATE_FOCUSED) {
         g_focusHeldDown = false;
         g_framesAtFocusLoss = 0;
+        g_layeredAtFocusLoss = 0;
     }
     set_state_locked(state);
 }
@@ -214,6 +240,8 @@ static XrResult impl_CreateSession(XrInstance instance, const XrSessionCreateInf
     g_running = false;
     g_framesSubmitted = 0;
     g_framesAtFocusLoss = 0;
+    g_layeredSubmitted = 0;
+    g_layeredAtFocusLoss = 0;
     g_focusLostMs = 0;
     g_focusHeldDown = false;
     g_createdMs = now_ms();

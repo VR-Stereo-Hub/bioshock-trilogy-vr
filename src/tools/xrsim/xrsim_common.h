@@ -202,7 +202,12 @@ struct Hazards {
 // Session 28 measured that VDXR will not re-grant FOCUSED to an app that submits
 // nothing. That is one runtime's behaviour observed once, not a law, so both
 // readings are selectable: baking in only one would manufacture confidence.
-enum class FocusPolicy : uint8_t { Vdxr = 0, Permissive };
+// Session 54 added the third reading, measured at the raffle wedge: VDXR parked
+// a session at VISIBLE for minutes while the app submitted a continuous stream
+// of EMPTY (zero-layer) frames - so VdxrLayers counts only layer-carrying
+// frames toward re-promotion. Vdxr keeps its original any-frame meaning so the
+// existing scripts keep their semantics.
+enum class FocusPolicy : uint8_t { Vdxr = 0, Permissive, VdxrLayers };
 
 // ---------------------------------------------------------------------------
 // SEH
