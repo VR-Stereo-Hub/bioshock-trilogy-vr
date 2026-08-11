@@ -1542,6 +1542,41 @@ seconds; the sequence itself never stalls, it waits indefinitely.
   for this build per the no-number-transfer rule). Acceptance: raffle save,
   full VR on, prompt appears and a pad press throws.
 
+### s54 part 4: THE VIEW-CONSUMER FILTER - the raffle root fix, derived, shipped, accepted
+
+**The fix for s54 part 3's mechanism, landed the same night.** GetPlayerViewPoint
+serves the renderer AND gameplay; the filter hands the VR pose to the RENDER
+caller only and leaves every other consumer's out-params untouched (authored
+view, no eye offsets - what gameplay always deserved).
+
+**The render caller, derived live (2026-08-11):**
+
+- Caller census at the raffle (`bsicam callers`, 6 s window, SR stereo, 90
+  draws/s / 180 presents/s): four active sites - 0x26B499 at 90/s (draw
+  rate), 0x1E1367 at 90/s, 0x22587F at 90/s, 0x203E73 at 180/s (present
+  rate); nine more idle in-scene, including 0x5344E8 = inside
+  kXGetWeaponStartTraceLocationImplRva (the weapon-trace consumer, named).
+- One-shot backtraces (`bsicam stack <rva>`): **0x26B499's parent frame is
+  0x1FE05F - the KNOWN scene-draw outer frame from the s43 reentry
+  derivation.** That is the scene-build path -> `kViewRenderCallerRva =
+  0x26B499` (patterns.h, this derivation). 0x203E73's parent 0x21E03E
+  (present-rate; not the scene build - left authored, no regression seen).
+- Implementation (camera.cpp): `vf_is_render(callerRva)` gates the
+  `drive_view` call in the detour - a non-render dispatch does NO drive work
+  at all (no recenter latch, no snap drain, no SR base cache, no publishes,
+  no eye offset), so the render dispatch remains the single per-frame state
+  driver. Empty render set or `bsicam vfilter off` = the historical
+  substitute-for-all (fail-open; also the live A/B - the raffle break comes
+  back with it). Seeded at install behind the same build gate as the hook.
+- **Acceptance (flat, full VR - pad on, camera on, stereo on, session on)**:
+  the raffle throw completed on the FIRST controller press after the reveal
+  (pad A -> `SCRIPTED hold closed` 6 s later). The five-run broken matrix
+  (STATUS s54d) never once accepted a pad press.
+
+Carried caveats: if a headset run shows fire-origin/HUD-marker/audio-listener
+regressions, the affected consumer's caller can be added to the render set
+live (`bsicam vfilter add <hexRva>`) and the verdict recorded here.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

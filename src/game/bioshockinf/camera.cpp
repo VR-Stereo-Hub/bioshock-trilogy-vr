@@ -297,6 +297,55 @@ void note_caller(uint32_t rva) {
     ++g_callerOverflow;
 }
 
+// ---------------------------------------------------------------------------
+// s54e: THE VIEW-CONSUMER FILTER - the raffle-wedge ROOT FIX.
+//
+// GetPlayerViewPoint is the engine's single view read, and it serves TWO
+// masters: the renderer (which must see the VR head pose) and gameplay
+// (interaction/Use traces, weapon start traces, AI - which must see the
+// AUTHORED view, or their aim/reach gates evaluate against a camera that sits
+// meters off the authored eye point in engine units). Substituting for every
+// caller is what broke the raffle's throw interaction since the earliest
+// builds: with the VR view active its prompt never ARMS - no visual, no
+// accepted press, pad and keyboard alike - and stripping the substitution
+// mid-stall releases the very next press (five-run matrix, STATUS s54d).
+//
+// The filter: substitute (drive_view) ONLY for callers in the render set;
+// every other dispatch keeps the engine's own out-params untouched - which
+// also means gameplay consumers no longer see per-eye offsets (they always
+// deserved the authored view; BS1/BS2 reached the same end via their aim
+// seams). The set is seeded from patterns (kViewRenderCallerRva, the
+// scene-build call site backtraced to the known 0x1FE05F scene-draw root)
+// when the build gate passed; an EMPTY set fails OPEN to substitute-for-all
+// (the pre-s54e behaviour). `bsicam vfilter` is the live lever.
+std::atomic<bool> g_vfOn{true};
+constexpr size_t kVfSlots = 4;
+std::atomic<uint32_t> g_vfRender[kVfSlots] = {};
+std::atomic<uint64_t> g_vfRenderCalls{0};   // dispatches given the VR view
+std::atomic<uint64_t> g_vfAuthoredCalls{0}; // dispatches left authored
+
+bool vf_is_render(uint32_t rva) {
+    if (!g_vfOn.load(std::memory_order_relaxed)) return true;
+    bool any = false;
+    for (auto& s : g_vfRender) {
+        const uint32_t v = s.load(std::memory_order_relaxed);
+        if (!v) continue;
+        any = true;
+        if (v == rva) return true;
+    }
+    return !any; // empty set = unarmed = the historical substitute-for-all
+}
+
+void vf_add(uint32_t rva) {
+    for (auto& s : g_vfRender) {
+        uint32_t expected = 0;
+        if (s.load(std::memory_order_relaxed) == rva) return;
+        if (s.compare_exchange_strong(expected, rva, std::memory_order_relaxed)) return;
+    }
+    BVR_LOG("[bsi] vfilter: render set FULL (%u slots) - 0x%X not added",
+            static_cast<unsigned>(kVfSlots), rva);
+}
+
 uint32_t to_rva(const void* p) {
     const patterns::Symbols& s = patterns::symbols();
     if (!s.imageBase) return 0xFFFFFFFFu;
@@ -1372,9 +1421,10 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         return;
     }
 
-    // Rung 3a census: which return address is calling, at what rate.
+    // Rung 3a census: which return address is calling, at what rate. The RVA
+    // also feeds the s54e view-consumer filter at the drive below.
+    const uint32_t callerRva = to_rva(_ReturnAddress());
     {
-        const uint32_t callerRva = to_rva(_ReturnAddress());
         note_caller(callerRva);
         maybe_backtrace(callerRva, _AddressOfReturnAddress());
         maybe_scene_probe(_AddressOfReturnAddress());
@@ -1467,7 +1517,19 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // The I4 drive, AFTER the snapshot (so the observation instruments keep
     // measuring the original) and after the command poll (so a just-dispatched
     // simhead/recenter takes effect on this very call).
-    drive_view(loc, rot, now);
+    //
+    // s54e: gated by the view-consumer filter - only the render-path caller
+    // gets the VR pose (and the eye offsets, and the drive's per-frame state
+    // work: recenter latch, snap drain, SR base cache, input publishes, the
+    // vrrec tap). Every other consumer keeps the engine's authored out-params
+    // verbatim, which is what lets scripted interactive prompts (the raffle
+    // throw) arm and accept input under full VR.
+    if (vf_is_render(callerRva)) {
+        g_vfRenderCalls.fetch_add(1, std::memory_order_relaxed);
+        drive_view(loc, rot, now);
+    } else {
+        g_vfAuthoredCalls.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // I8: the model drive, AFTER drive_view published the FrameContext (the
     // model write must never precede the ray basis it has to agree with).
@@ -1637,6 +1699,17 @@ bool install(const bvr::pattern_scan::ProcessImage& image) {
             "the write target is the detour's out-params ONLY, never engine memory; with "
             "the drive off the hook observes only.",
             addr, patterns::kGetPlayerViewPointRva, patterns::kGetPlayerViewPointRetImm);
+
+    // s54e: seed the view-consumer filter's render set. Same trust chain as
+    // the hook itself: the build gate above already passed, so the derived
+    // scene-build caller RVA is meaningful on this image. An empty set would
+    // fail open to the historical substitute-for-all.
+    vf_add(patterns::kViewRenderCallerRva);
+    BVR_LOG("[bsi] camera: view-consumer filter armed - the VR pose goes to the "
+            "scene-build caller 0x%X only; every other GetPlayerViewPoint consumer "
+            "(interaction/weapon/AI traces) reads the AUTHORED view. `bsicam vfilter` "
+            "is the live lever (s54e, the raffle root fix).",
+            patterns::kViewRenderCallerRva);
     return true;
 }
 
@@ -1999,6 +2072,47 @@ bool handle_command(const char* args) {
         dump_callers();
         return true;
     }
+    if (strncmp(args, "vfilter", 7) == 0) {
+        // s54e: the view-consumer filter lever (the raffle root fix's A/B).
+        const char* v = args + 7;
+        while (*v == ' ') ++v;
+        if (strncmp(v, "on", 2) == 0) {
+            g_vfOn.store(true, std::memory_order_relaxed);
+            BVR_LOG("[bsi] vfilter: ON (VR pose to the render set only)");
+        } else if (strncmp(v, "off", 3) == 0) {
+            g_vfOn.store(false, std::memory_order_relaxed);
+            BVR_LOG("[bsi] vfilter: off (historical substitute-for-all - the raffle-class "
+                    "interaction break comes BACK in this mode)");
+        } else if (strncmp(v, "clear", 5) == 0) {
+            for (auto& s : g_vfRender) s.store(0, std::memory_order_relaxed);
+            BVR_LOG("[bsi] vfilter: render set cleared (empty set fails open to "
+                    "substitute-for-all)");
+        } else if (strncmp(v, "add", 3) == 0) {
+            unsigned rva = 0;
+            if (sscanf_s(v + 3, "%x", &rva) == 1 && rva) {
+                vf_add(rva);
+                BVR_LOG("[bsi] vfilter: added render caller 0x%X", rva);
+            } else {
+                BVR_LOG("[bsi] usage: bsicam vfilter add <hexRva>");
+            }
+        } else {
+            char set[80] = {};
+            int n = 0;
+            for (auto& s : g_vfRender) {
+                const uint32_t r = s.load(std::memory_order_relaxed);
+                if (r) n += sprintf_s(set + n, sizeof(set) - n, " 0x%X", r);
+            }
+            BVR_LOG("[bsi] vfilter: %s | render set:%s | VR-view calls %llu, authored "
+                    "calls %llu | usage: bsicam vfilter on|off|add <hexRva>|clear|status",
+                    g_vfOn.load(std::memory_order_relaxed) ? "ON" : "off",
+                    n ? set : " (empty - fails open)",
+                    static_cast<unsigned long long>(
+                        g_vfRenderCalls.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(
+                        g_vfAuthoredCalls.load(std::memory_order_relaxed)));
+        }
+        return true;
+    }
     if (strncmp(args, "eyetag", 6) == 0) {
         // s50: the rendered-pose eye-tag A/B (the FOV-edge drift lever). ON =
         // the projection layer describes the parallel camera the game drew;
@@ -2312,6 +2426,18 @@ void draw_debug_ui() {
                 bvr::d3d11_hook::last_present_tid());
     ImGui::Text("paths: cached %u | camera %u | target %u | unreadable %u", g_pathCached.load(),
                 g_pathCamera.load(), g_pathTarget.load(), g_pathUnknown.load());
+    // s54e: the view-consumer filter (the raffle root fix). OFF restores the
+    // historical substitute-for-all - and the interaction break with it.
+    {
+        bool vf = g_vfOn.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("View filter (VR pose to the renderer only)", &vf))
+            g_vfOn.store(vf, std::memory_order_relaxed);
+        ImGui::Text("view calls: VR %llu / authored %llu",
+                    static_cast<unsigned long long>(
+                        g_vfRenderCalls.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(
+                        g_vfAuthoredCalls.load(std::memory_order_relaxed)));
+    }
     if (g_last.valid) {
         ImGui::Text("engine loc (%.1f %.1f %.1f)", g_last.loc.x, g_last.loc.y, g_last.loc.z);
         ImGui::Text("engine rot (%d %d %d) = (%.1f %.1f %.1f) deg", g_last.rot.pitch,
