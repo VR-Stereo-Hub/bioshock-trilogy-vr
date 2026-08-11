@@ -495,8 +495,15 @@ std::atomic<uint32_t> g_paceTimeouts{0}, g_paceHandoffs{0};
 constexpr int kPaceReqWait = 0;
 constexpr int kPaceReqFeedCycle = 1;
 constexpr int kPaceReqFeedFinish = 2;
+// s54b: close an already-begun frame (the pair-hold spanning a demote) with an
+// empty xrEndFrame ON THE PACE THREAD. The 2026-08-11 doff freeze taught the
+// lesson: at the demote edge the present thread must make NO blocking XR call
+// at all - the inline idle-close was the one such call left on the detach
+// path, and a doff-teardown VDXR can sit inside xrEndFrame indefinitely.
+constexpr int kPaceReqCloseOpen = 3;
 std::atomic<int> g_paceReqKind{kPaceReqWait};
 std::atomic<int> g_paceResKind{kPaceReqWait};
+std::atomic<int64_t> g_feedCloseTimeNs{0}; // displayTime for a CloseOpen request
 // Teardown deferral: destroying a session while the pace thread is parked inside
 // xrWaitFrame on it is a use-after-free inside the runtime. If a wait will not
 // come back, we keep the session alive (which is exactly today's behaviour) and
@@ -971,7 +978,15 @@ DWORD WINAPI pace_thread_proc(void*) {
         XrResult r = XR_ERROR_SESSION_LOST;
         uint64_t t0 = GetTickCount64();
         if (s != XR_NULL_HANDLE) {
-            if (kind == kPaceReqFeedFinish) {
+            if (kind == kPaceReqCloseOpen) {
+                // s54b: the frame is already BEGUN on the present thread (a
+                // pair-hold spanned the demote); it only owes its end, and
+                // that end must not be able to block the game.
+                XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+                idle.displayTime = g_feedCloseTimeNs.load(std::memory_order_relaxed);
+                idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+                r = xrEndFrame(s, &idle);
+            } else if (kind == kPaceReqFeedFinish) {
                 // The wait already completed (banked in g_paceFrameState by the
                 // previous request); this request only owes its begin+end.
                 fs = g_paceFrameState;
@@ -980,7 +995,8 @@ DWORD WINAPI pace_thread_proc(void*) {
                 XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
                 r = xrWaitFrame(s, &fwi, &fs);
             }
-            if (kind != kPaceReqWait && XR_SUCCEEDED(r))
+            if ((kind == kPaceReqFeedCycle || kind == kPaceReqFeedFinish) &&
+                XR_SUCCEEDED(r))
                 r = feed_submit_cycle(s, fs);
         }
         uint32_t ms = static_cast<uint32_t>(GetTickCount64() - t0);
@@ -995,7 +1011,9 @@ DWORD WINAPI pace_thread_proc(void*) {
                         ms, state_str(g_state));
             }
         }
-        g_paceFrameState = fs; // handed over by the SetEvent below
+        // A CloseOpen result carries no frame state - never clobber a banked
+        // wait with zeros (FeedFinish reads it).
+        if (kind != kPaceReqCloseOpen) g_paceFrameState = fs;
         g_paceResKind.store(kind, std::memory_order_relaxed);
         g_paceResult.store(static_cast<int>(r), std::memory_order_relaxed);
         SetEvent(g_paceDone);
@@ -2425,12 +2443,31 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     if (detach_skip_decision(GetTickCount64(), g_state == XR_SESSION_STATE_FOCUSED)) {
         // No BLOCKING OpenXR call on this thread this present. A frame must
         // never be left open across this return.
+        const bool feedArmed = g_paceFeed.load(std::memory_order_relaxed);
         if (g_frameOpen) {
-            XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
-            idle.displayTime = g_frameState.predictedDisplayTime;
-            idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-            xrEndFrame(g_session, &idle);
-            g_frameOpen = false;
+            if (feedArmed && pace_thread_start()) {
+                // s54b (the doff freeze): the close goes to the PACE thread.
+                // A doff-teardown VDXR can sit inside xrEndFrame indefinitely,
+                // and this thread pumping is what everything else (DXGI
+                // included) deadlocks behind. One request at a time: if one
+                // is outstanding, retry the close next present.
+                if (!g_paceOutstanding) {
+                    g_feedCloseTimeNs.store(g_frameState.predictedDisplayTime,
+                                            std::memory_order_relaxed);
+                    g_paceReqKind.store(kPaceReqCloseOpen, std::memory_order_relaxed);
+                    g_paceOutstanding = true;
+                    SetEvent(g_paceReq);
+                    g_frameOpen = false;
+                }
+            } else {
+                // The legacy detach lever (BS2's session-34 A/B) keeps its
+                // historical inline close - behaviour unchanged without feed.
+                XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+                idle.displayTime = g_frameState.predictedDisplayTime;
+                idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+                xrEndFrame(g_session, &idle);
+                g_frameOpen = false;
+            }
         }
         g_srPairOpen = false;
         // Session 54: THE FEED. Keep the compositor fed with layer-carrying

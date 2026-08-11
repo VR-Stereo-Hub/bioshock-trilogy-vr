@@ -70,7 +70,16 @@ const char* cine_mode_name(int m) {
 // the command pump share it). Only the F10 checkbox/radio cross threads, and
 // those are the atomics.
 std::atomic<bool> g_auto{true}; // the s53 feature ships armed; F10 + bsihide auto off
-std::atomic<int> g_cineMode{kCineForce}; // user directive: cine hold hides; A/B radio
+// s54b DEFAULT FLIP, force -> game-managed. Evidence: the raffle's scripted
+// hold STALLED with the rig force-hidden (2026-08-11 headset run: hold opened
+// 16:00:28, rig owner-hidden at the same edge, announcer stopped, the throw
+// prompt never appeared - all while FOCUSED with input live), and s53 already
+// measured the game fighting the force-hide 15 reasserts in that exact scene.
+// A raffle-class sequence appears to GATE on its authored hand/ball moment;
+// hiding the rig through it is the prime progression-blocker suspect. Force
+// stays on the radio as the A/B; the cost of game-managed is cosmetic
+// (possible double hands in scripted scenes) vs a blocked sequence.
+std::atomic<int> g_cineMode{kCineGame};
 // s53 lever verdicts, sim + HEADSET: actor bHidden is INEFFECTIVE (bit set,
 // hands+pistol keep rendering; headset-confirmed "the old behavior"); bone
 // grip+arm hides left the bare HANDS floating in the headset (the rig is
