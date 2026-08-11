@@ -1513,6 +1513,35 @@ on a sim boot (2026-08-11):
   0x<hex>` chases to the owning screen object, then the bsigfx setb/cmd
   levers.
 
+### s54 part 3: THE INTERACTION SYSTEM READS THE SUBSTITUTED VIEW - the raffle wedge's true mechanism
+
+**Cornered flat on the sim in five controlled runs (full matrix in STATUS
+s54d).** The raffle "deadlock" is the throw INTERACTION failing under the VR
+view: the button-hint/Use system evaluates off the engine view that the
+camera drive substitutes, so with the drive (and/or the stereo replay) active
+its aim/reach gate never passes - the prompt never arms and no press
+registers, pad or keyboard. Strip the substitution mid-stall (`bsicam drive
+off` + `vrstereo off`) and the very next key press completes the throw within
+seconds; the sequence itself never stalls, it waits indefinitely.
+
+- **The prompt system's vocabulary (GNames, this build)**: `XClikButtonHint`
+  8608, `XClikButtonHintsContainer` 8624 (live pooled instances confirmed
+  mid-stall via `bsigfx scan` - two hints, six containers), plus
+  `UsePromptButtonHints` 2837, `ButtonHintData` 2679, and the function
+  `ForceInvalidateButtonHints` 2166 (the system's own refresh lever - a
+  candidate probe/kick for the fix's acceptance).
+- **Discriminating facts**: camera ON with stereo OFF still breaks it (run
+  4); the synthetic pad OFF alone does not fix it (run 5); myHUD stays the
+  bare HUD class even in this gameplay level (element arrays refuse to
+  derive - the machinery lives on the widget pool, not myHUD); an apparent
+  ~9-minute re-arm across two runs was falsified by a third - the release
+  correlates with the STRIP, not the clock.
+- **Fix direction (s55)**: call-site discrimination on the GetPlayerViewPoint
+  substitution - the interaction/trace consumers get the authored view, the
+  render path keeps the VR pose (the BS1/BS2 aim-seam pattern, derived fresh
+  for this build per the no-number-transfer rule). Acceptance: raffle save,
+  full VR on, prompt appears and a pad press throws.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

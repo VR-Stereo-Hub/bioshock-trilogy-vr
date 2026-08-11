@@ -7008,6 +7008,54 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 54d addendum - 2026-08-11 (night) - THE RAFFLE WEDGE MECHANISM CORNERED FLAT: the VR VIEW breaks the interaction system
+
+**The scene-stall reproduced FLAT against the sim on the user's save, and five
+controlled runs cornered it.** The raffle sequence NEVER stalls - it waits at
+the throw INTERACTION, whose prompt never arms and whose presses never
+register while the VR view is active. Verbatim run matrix (config AT the
+reveal / at press time -> result):
+
+| run | pad | camera | stereo | result |
+|---|---|---|---|---|
+| 1 (flat) | on | on | on | broken; released by keys AFTER stripping cam+stereo+pad |
+| 2 (user, flat) | off | off | off | **works immediately, prompt visible** |
+| 3 (flat) | on | on | on | broken; pad A/B/X/Y/triggers/grip/click ALL dead; released with keys after `bsivr off` |
+| 4 (flat) | on | on | OFF | broken (prompt absent on the flat screen too) - **stereo alone exonerated as necessary** |
+| 5 (flat) | OFF | on | on | broken - **the pad exonerated as the sole cause**; then cam+stereo stripped MID-STALL -> E/F/Space released it WITHIN SECONDS (18:34:19) |
+
+- **The mechanism**: the interaction/button-hint system (GNames vocabulary:
+  `XClikButtonHint`/`XClikButtonHintsContainer`/`UsePromptButtonHints`/
+  `ForceInvalidateButtonHints`; live instances confirmed mid-stall by `bsigfx
+  scan`) evaluates off the ENGINE VIEW - the same view the camera drive
+  substitutes with the VR pose. With the VR view active the throw
+  interaction's aim/reach gate never passes: no prompt, no accepted press,
+  on pad AND keyboard alike. Restore the authored view (`bsicam drive off` +
+  `vrstereo off`) and the very next press completes the throw. Camera ALONE
+  breaks it (run 4). A ~9-minute "re-arm" pattern seen in runs 1/3 was a
+  COINCIDENCE of when the strips happened - run 5 falsified the timer.
+- **Why "VR off fixes it" was always observed**: the master toggle strips the
+  view substitution (and everything else) - the presses the user then made
+  registered. vrstereo-off alone not releasing (headset, s53) fits too: the
+  BSI one-toggle leaves the camera drive on - see run 4's mirror.
+- **Why it "predates everything"**: the camera substitution is the oldest
+  feature in the mod. Every era had it; every era wedged at the raffle.
+- **THE FIX (s55, the real work): call-site discrimination on the camera
+  seam** - gameplay/interaction consumers of GetPlayerViewPoint (the Use
+  trace, the hint arming) must read the AUTHORED view; only the render path
+  gets the VR pose. Same class of seam BS1/BS2 grew (their aim/fire seams);
+  Infinite's camera hook already logs caller context - derive the
+  interaction call site's RVA and filter. `ForceInvalidateButtonHints` +
+  the ButtonHint instances are the probe surface for proving the arming
+  live; the raffle save is the acceptance test (prompt appears + pad press
+  throws, full VR on).
+- **WORKAROUND until then (headset protocol)**: at any scripted interactive
+  beat that won't offer its prompt: F10 -> camera OFF + stereo OFF, press
+  the interact, then both back ON. (The old VR-toggle protocol also works -
+  it is the same strip with extra teardown.)
+- The doff/alt-tab crash of s54b remains SEPARATE and open (the s54c revert
+  removed the feed that surfaced it; the park protocol stands).
+
 ### Session 54c addendum - 2026-08-11 (evening) - BOTH s54b SUSPECTS FALSIFIED; REVERTED BY USER DIRECTIVE; the suspect set narrows to the CAMERA+STEREO era
 
 Second raffle replay on the s54b build (cine hide game-managed, feed armed
