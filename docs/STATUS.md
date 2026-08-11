@@ -7008,6 +7008,37 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 54c addendum - 2026-08-11 (evening) - BOTH s54b SUSPECTS FALSIFIED; REVERTED BY USER DIRECTIVE; the suspect set narrows to the CAMERA+STEREO era
+
+Second raffle replay on the s54b build (cine hide game-managed, feed armed
+with the demote-edge close moved off-thread):
+
+- **The raffle stalled IDENTICALLY with game-managed** - the hide gate is
+  EXONERATED for the scene wedge. Default reverted to force (the user
+  directive stands; it was never the blocker).
+- **Alt-tab still broke the game with the feed armed** - the CloseOpen
+  hardening was not sufficient (or not the mechanism). BY USER DIRECTIVE the
+  feed is DISARMED (adapter no longer calls set_pace_feed); Infinite returns
+  to the pre-s54 session handling: a VISIBLE episode throttles the game
+  (~10 Hz) and may park until an external VD action or the F10 VR toggle.
+  THE WEDGE PROTOCOL IS BACK: F10 -> VR enabled off, beat, on. The feed
+  machinery stays in core, default off; `vrpace feed on` is a controlled-
+  experiment lever only. The sim model + vdxr-park.xrs remain (they encode
+  measured VDXR behaviour and the park regression).
+- **The user's directive on the scene wedge (verbatim intent): it predates
+  the input lane, arsenal, hide, aim - EVERYTHING except "normal VR + stereo
+  rendering and related headset features". Do not touch model/controls
+  machinery for it.** The s55 suspect set is therefore: the camera
+  substitution (GetPlayerViewPoint detour + drive), the stereo reentry
+  (second scene draw + camera replay per frame), XR frame pacing (the game
+  ticking at headset cadence), and the xinput proxy shim itself (present
+  since day zero). The cleanest first bisect at the raffle: `vrstereo off`
+  BEFORE the scene, replay - if the sequence completes, split camera-only
+  vs stereo-only next; if it still stalls, the shim/pacing lanes take over.
+  A flat repro would be gold: the save sits right before the raffle; the
+  walk to the trigger is short (~50 s) - candidate for a game-cmd/key
+  scripted approach next session (or the user drives to the trigger flat).
+
 ### Session 54b addendum - 2026-08-11 (afternoon) - THE HEADSET VERDICT REFRAMES THE WEDGE: two bugs, not one
 
 The user replayed the raffle with the pace feed armed. **The scene stalled

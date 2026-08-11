@@ -815,15 +815,16 @@ whenever it appears. Everything else below is live.
 
 ## S54 checklist (THE RAFFLE-WEDGE ROOT FIX - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`)
 
-The wedge is root-caused (ENGINE_NOTES s54) and the fix ships ARMED: while the
-session is not FOCUSED the present thread detaches (game free-runs) and the
-pace thread re-submits the last real layer set, so VDXR keeps seeing a
-rendering app. Flat-proven against the sim's measured-VDXR model
-(`tools/xrsim/vdxr-park.xrs`: feed off = parked VISIBLE forever, feed on =
-self-heals in hold+0.2 s with 444 presents unpaced). Levers: F10 -> the VR
-section's "Feed the compositor while parked" checkbox, `vrpace feed on|off`,
-`vrpace` (bare) for the cycle counters. The OLD protocol (F10 -> VR enabled
-off/on) remains the fallback if anything below fails.
+**s54c: THE FEED IS DISARMED (user directive)** - with it armed, alt-tab/doff
+froze the game outright (worse than the throttle it replaced), and the raffle
+scene-stall it targeted turned out not to be the session park at all (it
+stalls fully FOCUSED with input live; the park was only ever the amplifier).
+The checklist below is KEPT for a future controlled dashboard A/B (`vrpace
+feed on` is the lever now - nothing arms it by default); items 1-3 only, on
+an expendable save. THE WEDGE PROTOCOL IS BACK: any stall/park -> F10 -> VR
+enabled off, beat, on. The scene-stall investigation moved to the s55 plan
+in STATUS (camera/stereo/pacing/shim suspect set - user directive: leave
+model/controls machinery out of it).
 
 1. **The on-demand demotion, quiet spot first (this is the A-B-A trigger):**
    double-tap to open the VD dashboard mid-gameplay, keep it open ~10 s,
