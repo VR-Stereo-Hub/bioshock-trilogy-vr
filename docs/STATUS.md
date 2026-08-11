@@ -74,12 +74,25 @@ in TESTING "S53"; everything below is sim/flat-proven, awaiting the headset.
    an additive `head pos` during a scripted scene can put the camera inside
    geometry - reset pose + `bsicam drive off` restores the authored view.
 
-**NEXT SESSION: the headset block (TESTING "S53" first minute = round-4
-falsifiers: intro text intact, doubles gone), then the s52 verdicts (TESTING
-"S52"/"S52 round 2": arsenal tuning from a fair save + calibration save, HUD
-sliders, raffle chord, Matinee gun-track, sprint arms, subtitles), fixes
-in-session, then the crosshair instance hunt (the GFx screen-manager lane) +
-preset keys for whatever survives the verdicts.**
+**NEXT SESSION (s54), in the user's priority order: (1) ROOT-CAUSE THE
+SESSION-STATE DEADLOCK (the raffle wedge - see the s53 addendum below; the
+user explicitly rejected a watchdog band-aid: find the mechanism, fix the
+root). Prime suspect from the code's own comments: the unfocused-pacing
+skip-guard starves the compositor of frames while the session is VISIBLE,
+and VDXR may need submitted frames to re-grant FOCUSED - bring-up paces
+freely for exactly that reason (openxr_runtime.cpp ~2122 "the next bring-up
+must pace freely again (bring-up needs frames)", the skip decisions at ~909/
+~2293/~2388, and g_paceSkips). The user's proven manual release (VR enabled
+off/on) resets g_everFocused, which is precisely the free-pacing path -
+consistent. Reproduce by dropping focus (VD dashboard) mid-game, watch
+paceSkips while VISIBLE, A/B the skip-guard, A-B-A the fix. (2) The remaining
+headset verdicts (rowboat re-check under the s53b owner+grips defaults: intro
+text, doubles, box-handoff hand, cine-radio default decision - currently
+game-managed after the live flip; single-empty-hand case; then TESTING
+"S52": arsenal tuning + calibration save, HUD sliders, Matinee gun-track,
+sprint arms, subtitles). (3) The crosshair: the HUD-screen instance hunt
+(ENGINE_NOTES s53 GFx screen model; myHUD is bare, CDO loads null - needs an
+object-enumeration or GFx-advance-hook lane).**
 
 ### Infinite: state after session 52 (superseded by s53 above) (the I7 INPUT LANE landed - stick pitch killed + body follows head; THE CHEATED ARSENAL + per-weapon presets; the HUD ON A QUAD; the CINEMATIC GATE + head radio; branch `si52-inf-input-arsenal-hud-cine`, NOT merged)
 
@@ -6992,6 +7005,35 @@ and it resumes.
 - **NEXT**: headset block (TESTING "S53" minute one = intro text + doubles;
   the cine-radio and pawn A/Bs), then the s52 verdict list, then the HUD
   screen-instance hunt for the crosshair + preset keys post-verdict.
+
+### Session 53 addendum - THE RAFFLE DEADLOCK: an OLD session-state bug, released by a VR-enabled toggle
+
+- **User report (live, mid-headset-block)**: at the raffle the game deadlocks -
+  the announcer stops, no input begins the confrontation. **The user has seen
+  this since the EARLY builds (camera + stereo only - it predates motion
+  controls, the input lane and the s53 hide gate entirely).** This time
+  `vrstereo off` did NOT release it (their remembered lever from the earlier
+  hit); toggling **"VR enabled" off -> on (F10; full session teardown +
+  re-bring-up) released it INSTANTLY** - announcer resumed, prompt appeared,
+  and it stayed fixed after re-enabling.
+- **The log during the stuck state**: continuous `xr: present phases (state
+  VISIBLE shouldRender=0)` - the session was parked in VISIBLE, not FOCUSED.
+  Per the OpenXR spec, action state (our entire controller bridge) is only
+  live while FOCUSED - a session stuck VISIBLE means the game receives no
+  synthesized input at all, and the game's own pause/focus handling can stall
+  scripted timelines with it. Teardown + re-create re-earns FOCUSED, which is
+  exactly why the user's toggle works.
+- **Work item (core, next session)**: a session-state watchdog - if the
+  session sits VISIBLE while the game window is foreground for more than a
+  few seconds, log loudly (and consider an automatic re-bring-up, which the
+  user has now proven safe mid-game). Until then the PROTOCOL on any
+  "announcer stopped / nothing accepts input" wedge: F10 -> VR enabled off,
+  wait a beat, back on.
+- Note: the hide gate was initially suspected (its raffle-hold force-hide had
+  15 watchdog reasserts - the game visibly fighting to show the authored
+  ball hand) and was flipped to game-managed live as a first attempt; it was
+  NOT the deadlock cause, but the 15-reassert fight stands as evidence that
+  raffle-class scenes want the rig visible - the box-handoff A/B question.
 
 ### Session 52 (Infinite) - 2026-08-10 (evening) - the I7 input lane, THE CHEATED ARSENAL + presets, the HUD on a quad, the cinematic gate
 
