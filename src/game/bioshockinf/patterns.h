@@ -52,18 +52,6 @@ inline constexpr uint32_t kExpectedImageBase = 0x00400000;
 inline constexpr uint32_t kGetPlayerViewPointRva = 0x1E10C0;
 inline constexpr uint32_t kGetPlayerViewPointThunkRva = 0x129280;
 
-// s54e: the RENDER-path caller of GetPlayerViewPoint - the return RVA of the
-// scene-build path's call. Derived live 2026-08-11 (ENGINE_NOTES s54 part 4):
-// the caller census at the raffle showed four active sites; the one-shot
-// backtrace for 0x26B499 carried parent 0x1FE05F, which is the KNOWN
-// scene-draw outer frame (the s43 reentry derivation), and its rate matches
-// the draw rate exactly. The view-consumer filter substitutes the VR pose for
-// THIS caller only; every other consumer (interaction traces - the raffle
-// throw's gate - weapon traces at 0x5344E8 inside
-// kXGetWeaponStartTraceLocationImplRva, AI/audio ticks) reads the authored
-// view, which is what un-breaks scripted interactive prompts under VR.
-inline constexpr uint32_t kViewRenderCallerRva = 0x26B499;
-
 // The first 12 bytes living at kGetPlayerViewPointRva, read live in session 35
 // and used as an install-time gate: if the running build does not have exactly
 // these bytes here, the RVA means something else and the hook REFUSES rather

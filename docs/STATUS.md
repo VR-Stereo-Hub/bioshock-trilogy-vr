@@ -7008,30 +7008,6 @@ and it resumes.
 
 ## Session log (newest first)
 
-### Session 54e addendum - 2026-08-11 (late night) - THE ROOT FIX SHIPPED AND ACCEPTED: the view-consumer filter
-
-**The s54d mechanism got its root fix the same night, user-directed ("no
-quick hack - fix it from the core").** The view-consumer filter
-(camera.cpp + patterns.h `kViewRenderCallerRva`; ENGINE_NOTES "s54 part 4"):
-the VR pose now goes ONLY to the scene-build caller (0x26B499, census +
-backtrace to the known 0x1FE05F scene-draw root); every other
-GetPlayerViewPoint consumer - interaction traces, weapon traces (0x5344E8
-named), AI/per-frame ticks - reads the game's own authored view, vanilla
-semantics. Non-render dispatches skip drive_view entirely (no eye offsets,
-no state churn); the render dispatch stays the single per-frame state
-driver. Armed at install behind the existing build gate; fail-open to
-substitute-for-all on an unrecognized build; `bsicam vfilter
-on|off|add|clear|status` + an F10 checkbox are the levers, and OFF is the
-live A/B that brings the raffle break back.
-
-**ACCEPTED flat under FULL VR** (pad + camera + stereo + session all on,
-nothing stripped): the raffle throw completed on the FIRST controller press
-after the reveal - `pad A -> SCRIPTED hold closed` in 6 s, where the s54d
-five-run matrix never once accepted a pad press. Pending headset verdicts
-(s55 checklist material): the prompt's visibility on the HUD quad in-headset,
-fire-origin/HUD-marker/audio-listener spot checks (any regression = add that
-consumer's caller to the render set live and record it).
-
 ### Session 54d addendum - 2026-08-11 (night) - THE RAFFLE WEDGE MECHANISM CORNERED FLAT: the VR VIEW breaks the interaction system
 
 **The scene-stall reproduced FLAT against the sim on the user's save, and five
