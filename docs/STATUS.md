@@ -7008,6 +7008,53 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 54f addendum - 2026-08-12 - the s54e view-consumer filter FALSIFIED IN THE HEADSET (stereo broken) and REVERTED; the s55 derivation plan
+
+**s54e (commit af23824: VR pose to caller 0x26B499 only, everything else
+authored) passed its flat raffle acceptance and then BROKE VR RENDERING in
+the headset**: each eye a COMPLETELY different image, smearing on head
+motion, no 3D. REVERTED (2b1b169), rebuilt, installed, and sim-validated
+(eye-check numbers below). The s54d MECHANISM stands un-falsified - the
+interaction system reads the substituted view, and giving it the authored
+view mid-stall made the very next press register, twice. What failed is the
+FIX SHAPE: "0x26B499 is THE render caller" was wrong or incomplete.
+
+- **Why it broke (s55 must verify)**: the renderer does not consume the view
+  (only) through 0x26B499. With only that site substituted, one stereo pass
+  rendered from an UNSUBSTITUTED consumer (authored view) while the reentry
+  pass replayed the VR-substituted SR base cached by 0x26B499's dispatch -
+  a different world per eye, plus reprojection smear from layer tags that no
+  longer described the rendered content. Prime suspects for the real render
+  consumer(s): the present-rate caller 0x203E73 (parent 0x21E03E) and the
+  cached-POV / view-transform paths (PC+0x24C/0x258/0x430) that other sites
+  may refresh. The flat acceptance NEVER CHECKED THE PER-EYE IMAGES after
+  the change - the raffle-throw oracle covered the interaction half only.
+  The stereo-only-testing rule exists for exactly this and was violated.
+- **The s55 approach - INVERT to a measured DENYLIST**: keep
+  substitute-for-all as the baseline (stereo known-good, raffle known-bad)
+  and derive the INTERACTION consumer's call site(s): caller-census DIFFS
+  near/far from an interactable and during the raffle wait (the site that
+  fires while a prompt is evaluated), `bsicam stack` backtraces to confirm,
+  then give ONLY that site the authored view. After EVERY trial run the
+  eye check below, THEN the raffle acceptance (prompt arms + pad press
+  throws), then A-B-A. The end state must be AUTOMATIC (armed at install
+  behind the build gate, zero user levers) and preserve full 3D - user
+  directive; a targeted mechanism is fine only if it self-applies to every
+  raffle-class prompt.
+- **THE PER-TRIAL EYE CHECK (mandatory after ANY view-path change; sim, no
+  headset needed)**: boot the save, `vrstereo on`, then:
+  1. `xrsim-shot A` - projection layer present, EyeSeparationM ~0.063;
+  2. `img-diff A_left A_right` - healthy baseline (this save, reverted
+     build, 2026-08-12): mean ~53-56, pct-changed ~77% (composite includes
+     the HUD/laser quads - not pure parallax); a per-eye-different WORLD
+     reads far outside this band;
+  3. `xrsim-cmd "head rot 25 0 0"`, settle ~3 s, `xrsim-shot B`;
+  4. `img-diff A_left B_left` AND `A_right B_right` - BOTH large (healthy
+     ~21-31 mean): the view moved in BOTH eyes;
+  5. `img-diff B_left B_right` - back near the baseline band.
+  Any leg out of band = the trial broke stereo: revert the trial first.
+  (Wrap as tools/eye-check.ps1 first thing next session.)
+
 ### Session 54d addendum - 2026-08-11 (night) - THE RAFFLE WEDGE MECHANISM CORNERED FLAT: the VR VIEW breaks the interaction system
 
 **The scene-stall reproduced FLAT against the sim on the user's save, and five
