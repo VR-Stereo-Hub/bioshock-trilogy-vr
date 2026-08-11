@@ -813,6 +813,48 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S54 checklist (THE RAFFLE-WEDGE ROOT FIX - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`)
+
+The wedge is root-caused (ENGINE_NOTES s54) and the fix ships ARMED: while the
+session is not FOCUSED the present thread detaches (game free-runs) and the
+pace thread re-submits the last real layer set, so VDXR keeps seeing a
+rendering app. Flat-proven against the sim's measured-VDXR model
+(`tools/xrsim/vdxr-park.xrs`: feed off = parked VISIBLE forever, feed on =
+self-heals in hold+0.2 s with 444 presents unpaced). Levers: F10 -> the VR
+section's "Feed the compositor while parked" checkbox, `vrpace feed on|off`,
+`vrpace` (bare) for the cycle counters. The OLD protocol (F10 -> VR enabled
+off/on) remains the fallback if anything below fails.
+
+1. **The on-demand demotion, quiet spot first (this is the A-B-A trigger):**
+   double-tap to open the VD dashboard mid-gameplay, keep it open ~10 s,
+   close it. With the feed ON (default): the game must KEEP RUNNING at full
+   rate underneath (listen - ambient audio/announcers must not stall), and
+   within a beat or two of closing the dashboard the controllers must work
+   again. Note roughly how long re-promotion takes - that latency is VD's
+   answer to the open policy question (log: `session state FOCUSED` /
+   `ATTACHED ... presents ran unpaced`).
+2. **The control leg (proves causation):** `vrpace feed off`, same
+   dashboard open/close. Expect the OLD behaviour: the game crawls (~10
+   presents/s - audio stutters/stalls) while the dashboard is up and may
+   stay input-dead after it closes (the park). If it parks: `vrpace feed on`
+   and confirm the log shows a feed episode + FOCUSED returning by itself -
+   that is the A-B-A on real hardware. Do not sit in the park longer than
+   you care to; the VR toggle still rescues.
+3. **Headset doff/re-don:** take the headset off for ~15 s mid-gameplay
+   (game window stays foreground), put it back on. Feed ON should give you
+   the game exactly where you left it, running, controllers live within a
+   couple of seconds. This is the other suspected wedge trigger.
+4. **THE RAFFLE ITSELF (the scene that named the bug):** play the raffle
+   through with feed ON. The announcer must never stall; the ball-throw
+   prompt must accept input. If anything wedges: `vrpace` (bare) + grab
+   the log window around it - the feed cycle counters and TRACE lines are
+   the evidence - then VR off/on to carry on.
+5. **Judder/comfort check (the fix must not cost anything while healthy):**
+   normal gameplay with feed ON - the feed does NOTHING while FOCUSED
+   (cycles counter must not climb during play; `vrpace` shows it). Any new
+   judder/hitch during ordinary play is a finding against the episode-edge
+   handoff - report it with a `vrpace` dump.
+
 ## S53 checklist (THE FP-RIG HIDE done right; branch `claude/bioshock-fp-rig-hide-fa6342`)
 
 The hide gate ships ARMED (s53b defaults, post-headset-round-1): cutscene rig

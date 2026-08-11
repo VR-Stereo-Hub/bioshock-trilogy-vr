@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 52" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 54" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,57 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 53 (THE FP-RIG HIDE armed on the game's own bone lever; the s52 hide falsifications explained by measurement; the GFx screen model mapped; branch `claude/bioshock-fp-rig-hide-fa6342`, NOT merged)
+### Infinite: current state after session 54 (THE RAFFLE WEDGE ROOT-CAUSED AND FIXED - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`, NOT merged)
+
+**Session 54 (2026-08-11) root-caused the session-state deadlock from LAST
+NIGHT'S OWN LOGS - no new instrumentation was needed - and shipped the fix,
+flat-proven against a sim model built from the measured numbers.** Full
+mechanism + derivation in ENGINE_NOTES "s54"; headset checklist in TESTING
+"S54"; the s53 state below still describes the hide gate / GFx / verdict work,
+all of which carries forward untouched.
+
+1. **THE MECHANISM (measured, pacetrace.log + bioshockvr.log, boot
+   02:32-03:52):** VDXR demotes FOCUSED -> VISIBLE holding `shouldRender=0`
+   (trigger external, unconfirmed); our inline frame loop then submits
+   ZERO-LAYER frames (every layer is gated on shouldRender), which VDXR (a)
+   refuses to re-promote on - parked VISIBLE for minutes at 72 empty
+   frames/s - and (b) throttles to **~87 ms per xrEndFrame, inline on the
+   present thread**, pacing the game to ~10 presents/s (~5 fps): the
+   announcer stalls, scripted timelines crawl - and this half needs no input
+   lane, which is why the wedge predates it. Input-death is the other half
+   (actions live only while FOCUSED). Both s53 recoveries happened WITHOUT
+   teardown (external, VD-side); the VR toggle "works" because teardown
+   removes the throttled calls instantly and bring-up paces freely with real
+   frames. The old skip-guard suspect is EXONERATED (neutered by default;
+   paceSkips 0 throughout; detach was off everywhere).
+2. **THE FIX (core, opt-in per game - BSI arms it, BS1/BS2 take no new
+   branch):** `set_pace_feed` = detach + keepalives that CARRY LAYERS. While
+   not-FOCUSED-after-focus the present thread detaches (game free-runs) and
+   the pace thread re-runs the frame cycle, re-submitting the last healthy
+   projection/screen layer (no re-acquire needed - the compositor uses the
+   most-recently-released image). Levers: `vrpace feed on|off`, F10 checkbox.
+3. **FLAT-PROVEN (`tools/xrsim/vdxr-park.xrs`):** the sim grew the
+   measured-VDXR model (`focus norender on`, `focus policy vdxr-layers`,
+   `focus throttle 87`). Feed OFF = the park reproduced (10 s eligible, ~90
+   empty frames, still VISIBLE); feed ON = self-healed (FOCUSED 2.2 s after
+   the loss; ATTACHED reported 444 presents ran unpaced - the game free-ran
+   the whole episode). Regressions green: unfocused-pacing 12/12, smoke 5/5.
+4. **Open on the headset (TESTING "S54"):** VD's real re-promotion latency
+   with layers flowing (dashboard open/close A-B-A), the doff/re-don case,
+   and the raffle itself. Until those pass, the old wedge protocol (F10 ->
+   VR enabled off/on) stays the fallback.
+
+**NEXT SESSION (s55): (1) the S54 headset A-B-A (dashboard, doff, THE
+RAFFLE - the root fix's real-hardware verdict); (2) the remaining s53/s52
+verdicts, unchanged from the s53 handoff below (rowboat re-check under the
+s53b owner+grips defaults, cine-radio default decision, single-empty-hand,
+then TESTING "S52": arsenal tuning + calibration save, HUD sliders, Matinee
+gun-track, sprint arms, subtitles; preset keys land after verdicts); (3) the
+crosshair HUD-screen instance hunt (ENGINE_NOTES s53 GFx screen model - an
+object-instance enumerator, bsichase into GFxInteraction, or a GFx-advance
+hook).**
+
+### Infinite: state after session 53 (superseded by s54 above) (THE FP-RIG HIDE armed on the game's own bone lever; the s52 hide falsifications explained by measurement; the GFx screen model mapped; branch `claude/bioshock-fp-rig-hide-fa6342`, NOT merged)
 
 **Session 53 (2026-08-11) attacked the round-4 revert head-on: derive the
 game's OWN visibility levers, A/B them on the live view, and ship the hide as
@@ -6944,6 +6994,43 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 54 (Infinite) - 2026-08-11 - THE RAFFLE WEDGE ROOT-CAUSED (log archaeology) AND FIXED (the pace feed)
+
+Branch `claude/bioshock-session-deadlock-root-28d444` from d49dcff. The
+user's directive was ROOT, not band-aid - and the root was already ON DISK:
+last night's pacetrace.log + bioshockvr.log recorded both wedge episodes at
+1 Hz. Full derivation in ENGINE_NOTES "s54"; checklist in TESTING "S54".
+
+- **The mechanism, measured end to end**: VDXR demotes to VISIBLE holding
+  shouldRender=0 -> our inline loop submits zero-layer frames (layers gated
+  on shouldRender) -> VDXR refuses to re-promote on empty frames (parked
+  VISIBLE for minutes at 72 empty frames/s) AND throttles their xrEndFrame
+  to ~87 ms inline on the present thread -> the game runs at ~10 presents/s:
+  announcer stalls, input effectively dead (plus actions are spec-dead while
+  not FOCUSED). Predates the input lane because the throttle half needs no
+  input lane. Both s53 recoveries were external (no teardown involved); the
+  VR toggle works by removing the throttled calls + free-pacing bring-up.
+  Skip-guard suspect exonerated (neutered by default, paceSkips 0).
+- **The trap that nearly misled the read**: pacetrace.log appends across
+  DAYS - two nights both have a "03:02:24". Segment by file offset, not
+  timestamp (recorded in ENGINE_NOTES s54).
+- **The fix**: core `set_pace_feed` (opt-in; BSI arms, BS1/BS2 no new
+  branch, snapshot banking gated on the flag): while not-FOCUSED-after-focus
+  the present thread detaches and the pace thread re-submits the last
+  healthy layer set with fresh displayTime (request protocol grew
+  wait/feed-cycle/feed-finish kinds; snapshot invalidated before swapchains
+  die; 1 s backoff on a failed cycle). `vrpace feed on|off` + F10 checkbox.
+- **The sim grew the measured-VDXR model** (focus norender / policy
+  vdxr-layers / throttle <ms>, all reset-safe, defaults untouched) and
+  `tools/xrsim/vdxr-park.xrs`: feed OFF = the park reproduced on a desk;
+  feed ON = self-healed (FOCUSED 2.2 s after the loss, 444 presents ran
+  unpaced through the episode). unfocused-pacing 12/12 and smoke 5/5 stay
+  green; xrsim-selftest PASS (empty frames still promote under the default
+  policy).
+- Items 2 (s53/s52 headset verdicts) and 3 (crosshair instance hunt) not
+  reached - they need the user in the headset / a gameplay save; carried to
+  s55 with the S54 A-B-A first.
 
 ### Session 53 (Infinite) - 2026-08-11 - THE FP-RIG HIDE done right: the lever A/B, the bone-lever gate, the GFx screen model
 
