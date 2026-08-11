@@ -1,6 +1,9 @@
 #include "game/bioshockinf/gfx.h"
 
+#include <windows.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "core/hooks/pattern_scan.h"
@@ -200,6 +203,175 @@ void cmd_getb(const char* movieStr, const char* path) {
             path, movie, ok ? "dispatched" : "FAILED", r);
 }
 
+// ---- s54: the object-INSTANCE enumerator (the crosshair-kill hunt) ----------
+// The s53 screen-model dead end: every GFx machinery NAME lives in the pool
+// but no live walk reaches the HUD screen INSTANCE (myHUD is bare, the CDO
+// loads null, GFxInteraction's walks found only sibling screens). This is the
+// sanctioned next lane from the s53 handoff: sweep the process's committed
+// private RW memory for aligned dwords equal to the target's FName INDEX at
+// the derived UObject::Name offset, then validate each candidate with the
+// UClass fixpoint (reflect::class_name_of - the s45b anti-fake gate). One
+// index finds the whole family: UE3 instance names reuse the base FName index
+// with a nonzero number ("XClikHUDCrosshair_3" = {8654, 4}), so the UClass,
+// the CDO and every live instance all match. READ-ONLY, one-shot, game
+// thread; costs a multi-second hitch on a big heap - never on a cadence (the
+// fname_find rule), and flat lanes only while the user plays.
+
+// SEH-guarded raw sweep (another engine thread can free pages mid-scan; a
+// faulting region is abandoned, not fatal). No C++ objects inside (C2712).
+int scan_region_seh(const uint8_t* base, size_t size, int32_t value,
+                    const uint8_t** out, int cap, int have) {
+    int n = have;
+    __try {
+        for (size_t o = 0; o + 8 <= size; o += 4) {
+            if (*reinterpret_cast<const int32_t*>(base + o) == value) {
+                if (n < cap) out[n] = base + o;
+                ++n;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return n;
+}
+
+void cmd_scan(const char* nameArg, const char* capArg) {
+    const int32_t nameOff = reflect::uobject_name_offset();
+    if (nameOff < 0) {
+        BVR_LOG("[bsi] gfx: scan REFUSED - UObject::Name not derived yet (needs a "
+                "latched PC; enter gameplay first)");
+        return;
+    }
+    const int32_t idx = patterns::fname_find(nameArg);
+    if (idx < 0) {
+        BVR_LOG("[bsi] gfx: scan REFUSED - '%s' not in GNames (%d entries)", nameArg,
+                patterns::fname_count());
+        return;
+    }
+    int printCap = capArg[0] ? atoi(capArg) : 32;
+    if (printCap < 1) printCap = 1;
+    if (printCap > 128) printCap = 128;
+
+    // Raw dword matches first (bounded), validation after - class_name_of does
+    // FName reads and must not run inside the SEH sweep.
+    constexpr int kRawCap = 1024;
+    static const uint8_t* s_raw[kRawCap]; // game thread only
+    const uint64_t t0 = GetTickCount64();
+    int raw = 0;
+    uint64_t bytes = 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (const uint8_t* p = reinterpret_cast<const uint8_t*>(0x10000);
+         VirtualQuery(p, &mbi, sizeof mbi) == sizeof mbi &&
+         p < reinterpret_cast<const uint8_t*>(0x7FFE0000);
+         p = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize) {
+        const bool wantProtect =
+            (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) &&
+            !(mbi.Protect & PAGE_GUARD);
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && wantProtect) {
+            raw = scan_region_seh(static_cast<const uint8_t*>(mbi.BaseAddress),
+                                  mbi.RegionSize, idx, s_raw, kRawCap, raw);
+            bytes += mbi.RegionSize;
+        }
+    }
+    const int kept = raw > kRawCap ? kRawCap : raw;
+    int objects = 0;
+    for (int i = 0; i < kept; ++i) {
+        const uint8_t* cand = s_raw[i] - nameOff;
+        char cls[64] = {};
+        if (!reflect::class_name_of(cand, cls, sizeof cls) || !cls[0]) continue;
+        ++objects;
+        if (objects > printCap) continue;
+        const int32_t number = *reinterpret_cast<const int32_t*>(s_raw[i] + 4);
+        BVR_LOG("[bsi] gfx: scan hit %p  class=%-28s name=%s%s%d", cand, cls, nameArg,
+                number ? "_" : " #", number ? number - 1 : 0);
+    }
+    BVR_LOG("[bsi] gfx: scan '%s' (fname %d): %llu MB swept in %llu ms, %d raw "
+            "dword hits%s, %d validated UObjects%s - chase one with bsifields "
+            "0x<hex> / bsiprop 0x<hex> *",
+            nameArg, idx, static_cast<unsigned long long>(bytes >> 20),
+            static_cast<unsigned long long>(GetTickCount64() - t0), raw,
+            raw > kRawCap ? " (TRUNCATED at 1024 - narrow the name)" : "", objects,
+            objects > printCap ? " (print-capped; bsigfx scan <Name> <cap>)" : "");
+}
+
+// bsigfx scanc <hexClass> [cap]: the CLASS-POINTER flavor - enumerate live
+// INSTANCES of a UClass found by `scan` (candidate = dword address - 0x20,
+// the execIsA-derived UObject::Class slot). Catches instances whose own name
+// does not reuse the class's FName index (renamed widgets, sub-objects).
+void cmd_scanc(const char* clsArg, const char* capArg) {
+    const int32_t nameOff = reflect::uobject_name_offset();
+    if (nameOff < 0) {
+        BVR_LOG("[bsi] gfx: scanc REFUSED - UObject::Name not derived yet");
+        return;
+    }
+    const uint8_t* cls =
+        reinterpret_cast<const uint8_t*>(strtoul(clsArg, nullptr, 16));
+    char clsName[64] = {};
+    if (!cls || !reflect::class_name_of(cls, clsName, sizeof clsName) ||
+        strcmp(clsName, "Class") != 0) {
+        BVR_LOG("[bsi] gfx: scanc REFUSED - %p does not validate as a UClass "
+                "(take the pointer from a `bsigfx scan <Name>` hit with "
+                "class=Class)",
+                cls);
+        return;
+    }
+    int printCap = capArg[0] ? atoi(capArg) : 32;
+    if (printCap < 1) printCap = 1;
+    if (printCap > 128) printCap = 128;
+
+    constexpr int kRawCap = 1024;
+    static const uint8_t* s_raw[kRawCap]; // game thread only
+    const uint64_t t0 = GetTickCount64();
+    int raw = 0;
+    uint64_t bytes = 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (const uint8_t* p = reinterpret_cast<const uint8_t*>(0x10000);
+         VirtualQuery(p, &mbi, sizeof mbi) == sizeof mbi &&
+         p < reinterpret_cast<const uint8_t*>(0x7FFE0000);
+         p = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize) {
+        const bool wantProtect =
+            (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) &&
+            !(mbi.Protect & PAGE_GUARD);
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && wantProtect) {
+            raw = scan_region_seh(static_cast<const uint8_t*>(mbi.BaseAddress),
+                                  mbi.RegionSize,
+                                  static_cast<int32_t>(
+                                      reinterpret_cast<intptr_t>(cls)),
+                                  s_raw, kRawCap, raw);
+            bytes += mbi.RegionSize;
+        }
+    }
+    const int kept = raw > kRawCap ? kRawCap : raw;
+    int objects = 0;
+    for (int i = 0; i < kept; ++i) {
+        const uint8_t* cand = s_raw[i] - 0x20; // UObject::Class slot
+        char instCls[64] = {};
+        if (!reflect::class_name_of(cand, instCls, sizeof instCls) || !instCls[0])
+            continue;
+        // The fixpoint validated the CLASS, not the candidate - any struct
+        // holding the UClass pointer at some slot lands here (measured: 82
+        // fakes in one tight stride-0x58 cluster vs 1 real HUD instance). A
+        // real UObject also carries a resolvable Name; fakes read garbage.
+        char nm[patterns::kFNameTextBufMin] = {};
+        const int32_t nmIdx = reflect::object_name_index(cand);
+        if (nmIdx <= 0 || !patterns::fname_text(nmIdx, nm, sizeof nm) || !nm[0])
+            continue;
+        ++objects;
+        if (objects > printCap) continue;
+        BVR_LOG("[bsi] gfx: scanc hit %p  instance of %-24s name=%s", cand, instCls,
+                nm);
+    }
+    char ownName[patterns::kFNameTextBufMin] = {};
+    const int32_t ownIdx = reflect::object_name_index(cls);
+    if (ownIdx > 0) patterns::fname_text(ownIdx, ownName, sizeof ownName);
+    BVR_LOG("[bsi] gfx: scanc %p ('%s' instances): %llu MB in %llu ms, %d raw%s, "
+            "%d validated%s",
+            cls, ownName[0] ? ownName : "?",
+            static_cast<unsigned long long>(bytes >> 20),
+            static_cast<unsigned long long>(GetTickCount64() - t0), raw,
+            raw > kRawCap ? " (TRUNCATED)" : "", objects,
+            objects > printCap ? " (print-capped)" : "");
+}
+
 } // namespace
 
 bool handle_command(const char* cmd, const char* args) {
@@ -213,7 +385,16 @@ bool handle_command(const char* cmd, const char* args) {
     if (n < 1) {
         BVR_LOG("[bsi] gfx: verbs - hud | prop <Name> | cmd <FlashCommand> | element "
                 "list | element <Name> <+N|-N> | setb <hexMovie> <path> 0|1 | getb "
-                "<hexMovie> <path>");
+                "<hexMovie> <path> | scan <Name> [printCap] | scanc <hexClass> "
+                "[printCap] (s54 instance sweeps - a visible hitch, flat lanes only)");
+        return true;
+    }
+    if (strcmp(sub, "scan") == 0 && n >= 2) {
+        cmd_scan(a1, n >= 3 ? a2 : "");
+        return true;
+    }
+    if (strcmp(sub, "scanc") == 0 && n >= 2) {
+        cmd_scanc(a1, n >= 3 ? a2 : "");
         return true;
     }
     if (strcmp(sub, "hud") == 0) {

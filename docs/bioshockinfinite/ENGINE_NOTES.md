@@ -1478,6 +1478,41 @@ announcer-freeze half is structurally gone. Regressions green:
 "S54"): VD's real re-promotion latency with layers flowing, and the raffle
 itself.
 
+### s54 part 2: THE OBJECT-INSTANCE ENUMERATOR - the crosshair hunt's missing tool, proven live
+
+**The s53 dead end** (myHUD bare, CDO loads null 4 ways, GFxInteraction walks
+reach only sibling screens) needed a way to FIND UObject instances without a
+pointer chain. `bsigfx scan` / `bsigfx scanc` are that tool, validated live
+on a sim boot (2026-08-11):
+
+- **`bsigfx scan <Name> [printCap]`** - sweeps every committed private RW
+  region for aligned dwords equal to `<Name>`'s FName INDEX at the derived
+  UObject::Name offset, validates candidates with the s45b UClass fixpoint.
+  ONE index finds the whole family because UE3 instance names reuse the base
+  index with a number ("HUD_0" = {5258, 1}). Measured: `scan HUD` -> the
+  UClass (0x13CDC584, class=Class), the Package, and the LIVE INSTANCE
+  HUD_0 - the exact pointer `bsigfx hud` reads off the PC. ~780 MB swept in
+  ~400 ms on the game thread (a one-shot hitch; never on a cadence, flat
+  lanes only while the user plays - it also costs an fname_find).
+- **`bsigfx scanc <hexClass> [printCap]`** - the class-pointer flavor:
+  matches dwords equal to a UClass pointer, candidate = address - 0x20 (the
+  execIsA Class slot). The fixpoint alone is NOT a sufficient gate here (it
+  validates the CLASS, not the candidate - 82 fakes in one stride-0x58
+  cluster passed it), so scanc additionally requires a resolvable
+  UObject::Name. Measured after the gate: 85 raw -> 3 validated = the CDO
+  (**Default__HUD - found directly, bypassing the s53 "CDO loads null"
+  wall**), the live instance, and one surviving stray (garbage that carries
+  both a class pointer and a name-range int; read the names, the tool is a
+  probe not an oracle).
+- **The crosshair status on THIS boot** (the Enter-spam save level):
+  `scan XClikHUDCrosshair` found ONLY the UClass - zero instances - and
+  `scan HUDMovie` only an ObjectProperty descriptor; consistent with the
+  s53 finding that the real XHud family exists only in gameplay-proper
+  levels. **The next step is the same two commands in the user's gameplay
+  save**: instances found there get `bsiprop 0x<hex> *` / `bsifields
+  0x<hex>` chases to the owning screen object, then the bsigfx setb/cmd
+  levers.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

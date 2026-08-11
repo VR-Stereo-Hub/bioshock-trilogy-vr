@@ -57,15 +57,28 @@ all of which carries forward untouched.
    and the raffle itself. Until those pass, the old wedge protocol (F10 ->
    VR enabled off/on) stays the fallback.
 
+5. **BONUS - THE OBJECT-INSTANCE ENUMERATOR shipped and proven live
+   (crosshair-hunt item 3, first lane; ENGINE_NOTES "s54 part 2").**
+   `bsigfx scan <Name>` (FName-index sweep; one index finds class + package
+   + instances - UE3 reuses the base index with a number) and `bsigfx scanc
+   <hexClass>` (class-pointer sweep, name-gated after 82 fixpoint-passing
+   fakes taught the lesson). Live validation: `scan HUD` found the UClass,
+   the Package and the LIVE myHUD instance (pointer-identical to `bsigfx
+   hud`); `scanc` found those plus **Default__HUD - the CDO the s53 "loads
+   null 4 ways" wall could never reach**. ~780 MB in ~400 ms, one-shot
+   game-thread hitch (never on a cadence). On this boot's save level
+   `XClikHUDCrosshair` has NO instances (UClass only) - the hunt's next
+   step is the same two commands in the user's gameplay-proper save.
+
 **NEXT SESSION (s55): (1) the S54 headset A-B-A (dashboard, doff, THE
 RAFFLE - the root fix's real-hardware verdict); (2) the remaining s53/s52
 verdicts, unchanged from the s53 handoff below (rowboat re-check under the
 s53b owner+grips defaults, cine-radio default decision, single-empty-hand,
 then TESTING "S52": arsenal tuning + calibration save, HUD sliders, Matinee
 gun-track, sprint arms, subtitles; preset keys land after verdicts); (3) the
-crosshair HUD-screen instance hunt (ENGINE_NOTES s53 GFx screen model - an
-object-instance enumerator, bsichase into GFxInteraction, or a GFx-advance
-hook).**
+crosshair hunt CONTINUES with the new enumerator in the gameplay save:
+`bsigfx scan XClikHUDCrosshair` + `bsigfx scan HUDMovie`, chase hits with
+bsiprop/bsifields to the owning screen, then the setb/cmd levers.**
 
 ### Infinite: state after session 53 (superseded by s54 above) (THE FP-RIG HIDE armed on the game's own bone lever; the s52 hide falsifications explained by measurement; the GFx screen model mapped; branch `claude/bioshock-fp-rig-hide-fa6342`, NOT merged)
 
@@ -7028,9 +7041,15 @@ last night's pacetrace.log + bioshockvr.log recorded both wedge episodes at
   unpaced through the episode). unfocused-pacing 12/12 and smoke 5/5 stay
   green; xrsim-selftest PASS (empty frames still promote under the default
   policy).
-- Items 2 (s53/s52 headset verdicts) and 3 (crosshair instance hunt) not
-  reached - they need the user in the headset / a gameplay save; carried to
-  s55 with the S54 A-B-A first.
+- **Item 3's first lane LANDED same-session**: the object-instance
+  enumerator (`bsigfx scan` by FName index / `bsigfx scanc` by class
+  pointer, name-gated after 82 fixpoint-passing fakes) proven live on a sim
+  boot - found the HUD UClass + Package + the live myHUD instance +
+  **Default__HUD, the CDO the s53 null-load wall never reached**. The save
+  level this boot reaches has NO XClikHUDCrosshair instances (UClass only) -
+  the hunt resumes with the same commands in the gameplay-proper save.
+- Item 2 (s53/s52 headset verdicts) untouched - user-in-headset only;
+  carried to s55 with the S54 A-B-A first.
 
 ### Session 53 (Infinite) - 2026-08-11 - THE FP-RIG HIDE done right: the lever A/B, the bone-lever gate, the GFx screen model
 
