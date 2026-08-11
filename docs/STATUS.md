@@ -7008,6 +7008,40 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 54b addendum - 2026-08-11 (afternoon) - THE HEADSET VERDICT REFRAMES THE WEDGE: two bugs, not one
+
+The user replayed the raffle with the pace feed armed. **The scene stalled
+again - and this time the log proves it is NOT the session park**: the whole
+wedge ran FOCUSED at 144 presents/s, input live (the user could open the
+menu), sounds playing, head tracking fine. The game's own scripted
+input-lock opened at 16:00:28 ("cine: SCRIPTED hold OPEN"), our gate
+FORCE-HID the rig at the same edge, and the sequence stalled inside the
+lock - announcer silent, the throw prompt never appeared. The park
+root-caused this morning is real and stays fixed, but it was the AMPLIFIER
+of the old hits (any VD demote turned into 5 fps + dead input), not the
+raffle's own stall. The s53 "released by the VR toggle" reading also
+weakens: the user now believes the FOCUSED flips in that log were their own
+alt-tabs.
+
+- **Scene-stall prime suspect: the s53 force-hide through the raffle hold**
+  (s53 measured the game fighting it 15 reasserts in this exact scene; a
+  raffle-class sequence appears to gate on its authored hand/ball moment).
+  s54b flips the cine radio DEFAULT to game-managed (force stays as the
+  A/B); the retry protocol is simply "replay the raffle on the new build".
+  If it still stalls: bisect ladder = `bsifidget req clamp off` (the
+  Lowered clamp posts into the FP network all through the scene), then
+  `bsiaim drive off`, then `vrstereo off` - one lever per attempt.
+- **The doff CRASH (new)**: removing the headset mid-wedge froze the game
+  instantly - draw thread wedged in a win32u syscall, presents 0, Windows
+  ghosted it (the user's "warning/error"), close -> WM_DESTROY -> the
+  KNOWN exit-path fault. The one blocking XR call the present thread could
+  make at that edge (the inline idle-close of a pair-open frame) moved to
+  the pace thread (CloseOpen request kind). Whether that was the freeze's
+  cause is UNPROVEN - the next doff is the A/B; if it still freezes, the
+  suspect moves to VD/VDXR's own display handling and `vrpace feed off`
+  is the isolation lever.
+- vdxr-park.xrs 21/21 green on the s54b build; installed to the game.
+
 ### Session 54 (Infinite) - 2026-08-11 - THE RAFFLE WEDGE ROOT-CAUSED (log archaeology) AND FIXED (the pace feed)
 
 Branch `claude/bioshock-session-deadlock-root-28d444` from d49dcff. The
