@@ -218,6 +218,18 @@ uint32_t watchdog_fires();
 // later on its own in-headset test.
 void set_pace_detach(bool on);
 
+// Session 54: THE PACE FEED - keepalives that CARRY LAYERS (the raffle-wedge
+// root fix; mechanism in ENGINE_NOTES bioshockinfinite s54). While the session
+// is not FOCUSED after having held it, the present thread detaches (feed
+// implies detach) and the pace thread runs the frame cycle itself,
+// re-submitting the last healthy projection/screen layer with a fresh
+// displayTime - so the game is never paced by a parked session AND the runtime
+// keeps seeing a rendering app, which is what VDXR re-promotes. DEFAULT OFF IN
+// CORE, on per game (the set_pace_detach pattern): BS1/BS2 never call this and
+// take no new branch - even the snapshot banking is gated on the flag. The
+// Infinite adapter arms it; `vrpace feed on|off` is the live A/B.
+void set_pace_feed(bool on);
+
 // Session 42: opt-in pair-rate sync - before OPENING a stereo pair the present
 // thread waits for the next tick of a one-period-per-pair schedule (period =
 // the runtime's predictedDisplayPeriod, or a `vrpace sync <hz>` override).

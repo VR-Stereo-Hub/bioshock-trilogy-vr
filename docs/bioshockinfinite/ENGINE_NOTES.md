@@ -1383,6 +1383,101 @@ machinery and no `HUDMovie` property** - the real XHud family exists only in
 gameplay-proper levels; the element-array walk and the pixel A/B need a
 chapter with a HUD (fair onward).
 
+### s54: THE SESSION-STATE DEADLOCK ROOT-CAUSED - from last night's own logs
+
+**No new instrumentation was needed: the s53 raffle wedge was fully recorded
+by the 1 Hz pace trace** (`%LOCALAPPDATA%\BioshockVR\bsi\pacetrace.log`) and
+the game log, boot 02:32-03:52 on 2026-08-11. Wedge #1 ran 03:02:24 ->
+03:07:41 (the raffle); wedge #2 03:08:56 -> 03:11:34; a third VISIBLE episode
+(03:23:03 -> exit) was ordinary post-session headset-off.
+
+**TRAP (cost the first read): pacetrace.log is append-mode across DAYS.** An
+old night's lines carry the same wall-clock stamps as the current boot - two
+different nights both have a "03:02:24". Always segment by file OFFSET (the
+current boot is the tail), never by timestamp alone; cross-check counter
+styles (that boot ran 144 presents/s; an earlier night ran 180).
+
+**The measured chain (every rung from the trace/log, not inference):**
+
+1. **Onset (VD-side, trigger unconfirmed):** VDXR demotes FOCUSED -> VISIBLE
+   with `shouldRender=0`, mid-gameplay, game window still foreground
+   (`TRACE VISIBLE detached=0 fg=1`, 03:02:24). Desktop focus dropped 5 s
+   later (user or VD, indistinguishable at 1 Hz).
+2. **Zero submission (ours, spec-compliant):** the frame loop keeps running
+   inline, but every composition layer is gated on `shouldRender`
+   (openxr_runtime.cpp eye path + HUD quad), so `xrEndFrame` goes out with
+   `layerCount=0`: `presents/s 72 submitted/s 0` (the submitted counter only
+   counts layer-carrying frames).
+3. **The throttle = the game freeze:** once VD's compositor is busy elsewhere
+   (from 03:05:20 - correlates with the user re-donning the headset onto the
+   dashboard/void), it throttles the EMPTY frame loop: `xrEndFrame` blocks
+   **~87 ms per call, inline on the present thread** (`lastEnd 87 ms`; phase
+   heartbeat `endFrame=88k us`), pacing the game to **~10 presents/s ~ 5
+   fps**. Scripted timelines crawl, the announcer's audio stalls, input
+   processing starves. This rung needs no VR input lane at all - which is why
+   the wedge predates it (early camera+stereo builds, physical gamepad).
+   Before the throttle engaged (03:02:24-03:05:11) the empty loop cost ~1 ms
+   and the game merely halved (72 presents/s) - the SEVERITY varies with VD's
+   compositor state; the park is the constant.
+4. **Input death (current builds' second half):** per OpenXR, action state is
+   live only while FOCUSED - the whole controller bridge reads inactive for
+   the entire episode.
+5. **The park:** VDXR did NOT re-promote for minutes despite a continuous
+   stream of empty frames. Both wedge recoveries happened WITHOUT teardown
+   (03:07:41, 03:11:34), externally triggered (dashboard close / headset
+   re-don; they correlate with `fg` flips). Matches BS2 s36 verbatim ("state
+   parked VISIBLE, shouldRender=0, forever" on empty keepalives) - whose
+   queued real fix, "keepalives that carry layers", is what s54 ships.
+6. **Why "VR enabled" off/on releases it INSTANTLY:** teardown removes the
+   throttled inline XR calls (the game leaps from ~10 fps to full speed
+   mid-toggle - the announcer resumes), and bring-up resets `g_everFocused`
+   so pacing runs free with REAL layer frames until FOCUSED is re-earned.
+
+**Exonerated suspects:** the s28 skip-guard (`pace_should_skip`) is neutered
+by default (`g_paceOffThread=true` returns before the skip) and `g_paceSkips`
+stayed 0; detached pacing (`g_paceDetach`) defaults false and nothing on the
+BSI adapter arms it - `detached=0` throughout the wedge. The s53 addendum's
+"skip-guard starves the compositor" hypothesis was the right SHAPE (frame
+starvation vs re-promotion) but the wrong lever: the starvation is the
+shouldRender=0 layer gate, and the pacing is VD's own empty-frame throttle.
+
+**The fix (SHIPPED this session): `set_pace_feed` - detach + layer-carrying
+keepalives, opt-in per game (BSI arms it; BS1/BS2 take no new branch).**
+While `everFocused && !FOCUSED`, the present thread detaches (no blocking XR
+calls - the game free-runs), and the pace thread runs the frame cycle itself,
+re-submitting the last healthy projection layer with a fresh
+`predictedDisplayTime`. Key OpenXR fact making this cheap: the compositor
+composites the most-recently-RELEASED swapchain image, so re-submitting a
+cached layer struct needs no acquire, no D3D11 copy, no context contention.
+If VD throttles the feed thread's endFrame to 87 ms, that costs nothing - it
+is off the game thread, and ~11 layered fps is still a rendering app.
+Mechanics: the pace-thread request protocol grew a KIND (wait / feed-cycle /
+feed-finish - the last begins+ends a wait that completed unbegun just before
+the episode, because per spec the next xrWaitFrame blocks until the previous
+frame is begun); the snapshot banks at each healthy inline submit (projection
+or screen quad, gated on the feed flag so BS1/BS2 do no new work) and is
+invalidated in destroy_swapchains before the handles die; a failed feed cycle
+backs off 1 s so a broken session is never spun on at present rate. Levers:
+`vrpace feed on|off`, the F10 "Feed the compositor while parked" checkbox,
+cycle counters on bare `vrpace`.
+
+**Flat acceptance (sim, `tools/xrsim/vdxr-park.xrs`, 2026-08-11).** The sim
+grew the measured-VDXR model: `focus norender on` (shouldRender=0 while not
+FOCUSED), `focus policy vdxr-layers` (only layer-carrying frames earn
+re-promotion; `vdxr` keeps its any-frame meaning so old scripts hold), and
+`focus throttle 87` (xrEndFrame blocks 87 ms while not FOCUSED). Against that
+model, on the live game: **feed OFF = the wedge reproduced** (10 s of
+eligibility after the hold expired, ~90 empty frames, state still parked
+VISIBLE); **feed ON = self-healed**: VISIBLE -> DETACHED -> "pace feed live" ->
+FOCUSED 2.2 s after the loss (the scripted 2 s hold + 3 layered frames at the
+throttled cadence), and the ATTACHED line reported **444 presents ran
+unpaced** - the game free-ran through the whole episode, so the
+announcer-freeze half is structurally gone. Regressions green:
+`unfocused-pacing.xrs` 12/12 (~90 fps every leg), `smoke.xrs` 5/5
+(projection+quad, healthy stereo captures). Open on the headset (TESTING
+"S54"): VD's real re-promotion latency with layers flowing, and the raffle
+itself.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

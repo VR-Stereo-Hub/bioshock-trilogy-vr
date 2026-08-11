@@ -107,6 +107,18 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // this - their tags stay historical.
     bvr::vr::set_eye_tag_rendered(true);
 
+    // s54: THE PACE FEED, the raffle-wedge root fix (ENGINE_NOTES s54). When
+    // VDXR demotes the session to VISIBLE (dashboard, doff, its own hiccup) it
+    // holds shouldRender=0; the inline loop then submits zero-layer frames,
+    // VDXR refuses to re-promote on those AND throttles their xrEndFrame to
+    // ~87 ms - pacing the game to ~10 presents/s, which is the announcer-stops
+    // raffle wedge the user has hit since the earliest builds. With the feed
+    // armed the present thread detaches for the episode (game free-runs) and
+    // the pace thread re-submits the last healthy layer set, so VD keeps
+    // seeing a rendering app and hands FOCUSED back on its own. `vrpace feed
+    // off` is the live A/B; BS1/BS2 never arm this.
+    bvr::vr::set_pace_feed(true);
+
     // I7 controls (session 44). The map FIRST, then the lane: core's default is
     // BioShock 1's table, which is wrong here on four counts (the face re-route,
     // the consumed RS-click, the missing fourth flick direction, and the ammomod

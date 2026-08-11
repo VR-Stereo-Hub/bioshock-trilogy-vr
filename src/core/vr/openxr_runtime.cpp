@@ -484,6 +484,19 @@ bool g_paceOutstanding = false; // present thread only
 XrFrameState g_paceFrameState{XR_TYPE_FRAME_STATE}; // handed over via g_paceDone
 std::atomic<int> g_paceResult{0};
 std::atomic<uint32_t> g_paceTimeouts{0}, g_paceHandoffs{0};
+// Session 54: the pace-thread request now has a KIND, written by the present
+// thread before SetEvent(g_paceReq) and echoed back in g_paceResKind with the
+// result. Wait = the classic single xrWaitFrame. FeedCycle = a whole
+// wait+begin+end cycle submitting the feed snapshot (see THE PACE FEED below).
+// FeedFinish = begin+end from the ALREADY-banked wait result - needed because
+// a wait that completed just before an episode began must still be matched by
+// a begin (per spec the next xrWaitFrame blocks until the previous frame is
+// begun), and the present thread is detached and must not do it inline.
+constexpr int kPaceReqWait = 0;
+constexpr int kPaceReqFeedCycle = 1;
+constexpr int kPaceReqFeedFinish = 2;
+std::atomic<int> g_paceReqKind{kPaceReqWait};
+std::atomic<int> g_paceResKind{kPaceReqWait};
 // Teardown deferral: destroying a session while the pace thread is parked inside
 // xrWaitFrame on it is a use-after-free inside the runtime. If a wait will not
 // come back, we keep the session alive (which is exactly today's behaviour) and
@@ -581,6 +594,44 @@ std::atomic<uint32_t> g_paceKeepaliveMs{0};
 uint64_t g_lastKeepaliveMs = 0; // present thread only
 bool g_detachedNow = false;     // present thread only
 std::atomic<uint32_t> g_detachSkips{0}, g_detachKeepalives{0}, g_detachEpisodes{0};
+
+// ---- Session 54: THE PACE FEED - keepalives that CARRY LAYERS ---------------
+// The raffle-wedge root cause, measured from the s53 logs (ENGINE_NOTES s54):
+// when VDXR demotes to VISIBLE it holds shouldRender=0, so the inline frame
+// loop submits zero-layer frames; VDXR then (a) refuses to re-promote an app
+// that submits no layers (the BS2 session-36 finding, re-measured: parked
+// VISIBLE for minutes at 72 empty frames/s) and (b) throttles the empty loop's
+// xrEndFrame to ~87 ms per call, pacing the game thread to ~10 presents/s -
+// the announcer-stops half of the wedge.
+//
+// The feed fixes both halves at once: while the session is not FOCUSED (after
+// having held it), the present thread DETACHES (the existing session-34 lever,
+// implied by feed) so the game free-runs, and the pace thread runs the frame
+// cycle itself, re-submitting the last healthy layer set with a fresh
+// predictedDisplayTime. No re-acquire and no D3D11 work is needed: the
+// compositor composites a swapchain's most-recently-RELEASED image, so a
+// cached layer struct is a complete keepalive. Stale poses are fine - the
+// compositor reprojects, and a frozen-but-present app is exactly what VD
+// re-promotes.
+//
+// DEFAULT OFF IN CORE, ON PER GAME (the set_pace_detach pattern): BS1/BS2
+// never arm it and take no new branch - even the snapshot banking is gated on
+// the flag. The Infinite adapter arms it; `vrpace feed on|off` is the live A/B.
+std::atomic<bool> g_paceFeed{false};
+std::atomic<uint32_t> g_feedCycles{0};  // frame cycles run by the pace thread
+std::atomic<uint32_t> g_feedLayered{0}; // of those, cycles that carried a layer
+uint64_t g_feedErrorHoldMs = 0;         // present thread only: backoff after a failed cycle
+std::mutex g_feedSnapMutex;
+struct FeedSnap {
+    bool valid = false;
+    bool isProj = false;
+    XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    XrCompositionLayerProjectionView views[2] = {
+        {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+        {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+    XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+};
+FeedSnap g_feedSnap; // guarded by g_feedSnapMutex; proj.views is fixed up at use
 
 // ---- Session 42: OPT-IN PAIR-RATE SYNC to the display refresh ---------------
 // The Infinite judder investigation. The measured facts (sim, refresh 72,
@@ -858,17 +909,79 @@ const char* state_str(XrSessionState s) {
 // The pace thread body: park, wait a frame, publish, signal. The ONLY place
 // xrWaitFrame is called once g_paceOffThread is on. It may block forever without
 // consequence - nothing else runs on this thread.
+
+// Session 54: one feed frame - begin, then end carrying the snapshot layer.
+// Pace thread only, and only while the present thread is detached (so no other
+// thread is inside the frame loop). The snapshot is copied out under its lock
+// and submitted outside it: xrEndFrame may block ~87 ms under VD's
+// unfocused-app throttle and must never hold the lock across that.
+XrResult feed_submit_cycle(XrSession s, const XrFrameState& fs) {
+    XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
+    XrResult r = xrBeginFrame(s, &fbi);
+    if (XR_FAILED(r)) return r;
+
+    FeedSnap snap;
+    {
+        std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+        snap = g_feedSnap;
+    }
+    XrCompositionLayerProjection proj{};
+    XrCompositionLayerQuad quad{};
+    const XrCompositionLayerBaseHeader* layer = nullptr;
+    if (snap.valid) {
+        if (snap.isProj) {
+            proj = snap.proj;
+            proj.views = snap.views; // the banked copy, never the dead stack pointer
+            layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
+        } else {
+            quad = snap.quad;
+            layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+        }
+    }
+
+    XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
+    fei.displayTime = fs.predictedDisplayTime;
+    fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    fei.layerCount = layer ? 1 : 0;
+    fei.layers = layer ? &layer : nullptr;
+    r = xrEndFrame(s, &fei);
+    if (XR_SUCCEEDED(r)) {
+        if (g_feedCycles.fetch_add(1, std::memory_order_relaxed) == 0)
+            BVR_LOG("xr: pace feed live - re-submitting the last %s layer while the "
+                    "session is not FOCUSED (the game thread is detached and free)",
+                    layer ? (snap.isProj ? "projection" : "screen-quad") : "EMPTY (no snapshot yet)");
+        if (layer) {
+            g_feedLayered.fetch_add(1, std::memory_order_relaxed);
+            // Feed frames count as submitted so the TRACE submitted/s column -
+            // the instrument that diagnosed the wedge - shows them. Never
+            // concurrent with the inline increment: feed runs only detached.
+            ++g_framesSubmitted;
+        }
+    }
+    return r;
+}
+
 DWORD WINAPI pace_thread_proc(void*) {
     while (g_paceRun.load(std::memory_order_relaxed)) {
         if (WaitForSingleObject(g_paceReq, INFINITE) != WAIT_OBJECT_0) break;
         if (!g_paceRun.load(std::memory_order_relaxed)) break;
+        const int kind = g_paceReqKind.load(std::memory_order_relaxed);
         XrSession s = g_session; // a request is only posted with a live session
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         XrResult r = XR_ERROR_SESSION_LOST;
         uint64_t t0 = GetTickCount64();
         if (s != XR_NULL_HANDLE) {
-            XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
-            r = xrWaitFrame(s, &fwi, &fs);
+            if (kind == kPaceReqFeedFinish) {
+                // The wait already completed (banked in g_paceFrameState by the
+                // previous request); this request only owes its begin+end.
+                fs = g_paceFrameState;
+                r = XR_SUCCESS;
+            } else {
+                XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
+                r = xrWaitFrame(s, &fwi, &fs);
+            }
+            if (kind != kPaceReqWait && XR_SUCCEEDED(r))
+                r = feed_submit_cycle(s, fs);
         }
         uint32_t ms = static_cast<uint32_t>(GetTickCount64() - t0);
         g_lastWaitMs.store(ms, std::memory_order_relaxed);
@@ -876,12 +989,14 @@ DWORD WINAPI pace_thread_proc(void*) {
             static uint64_t lastStallLogMs = 0;
             if (t0 - lastStallLogMs > 5000) {
                 lastStallLogMs = t0;
-                BVR_LOG("xr: xrWaitFrame blocked %u ms on the pace thread (state "
+                BVR_LOG("xr: %s blocked %u ms on the pace thread (state "
                         "%s) - the present thread was NOT held by it",
+                        kind == kPaceReqWait ? "xrWaitFrame" : "a feed cycle",
                         ms, state_str(g_state));
             }
         }
         g_paceFrameState = fs; // handed over by the SetEvent below
+        g_paceResKind.store(kind, std::memory_order_relaxed);
         g_paceResult.store(static_cast<int>(r), std::memory_order_relaxed);
         SetEvent(g_paceDone);
     }
@@ -1528,7 +1643,11 @@ void trace_thread_start() {
 // session without a headset, so the real path is unreachable on a desk, and
 // three builds went to the user unverified because of it.
 bool detach_skip_decision(uint64_t now, bool focused) {
-    if (!g_paceDetach.load(std::memory_order_relaxed)) {
+    // Session 54: the pace feed IMPLIES detach - feeding only makes sense with
+    // the present thread out of the frame loop. `vrpace detach` stays the
+    // independent legacy lever (BS2's session-34/36 A/B).
+    if (!g_paceDetach.load(std::memory_order_relaxed) &&
+        !g_paceFeed.load(std::memory_order_relaxed)) {
         g_detachedNow = false; // never leave the flag set behind a disabled lever
         return false;
     }
@@ -1687,6 +1806,14 @@ void destroy_hud_swapchain() {
 }
 
 void destroy_swapchains() {
+    // Session 54: the feed snapshot references these swapchains - drop it
+    // BEFORE they die so a feed cycle can never submit a dead handle. (Feed
+    // cycles cannot be in flight here: teardown drains the outstanding pace
+    // request first, and the resize rebuild runs only on the attached path.)
+    {
+        std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+        g_feedSnap.valid = false;
+    }
     for (int i = 0; i < 2; ++i) {
         if (g_swapchains[i] != XR_NULL_HANDLE) {
             xrDestroySwapchain(g_swapchains[i]);
@@ -1824,6 +1951,11 @@ void teardown_session(const char* why) {
     g_everFocused = false;
     g_unfocusedSinceMs = 0;
     g_framesSubmitted = 0;
+    g_feedErrorHoldMs = 0; // a fresh session gets a fresh feed
+    // The req/res kinds reset with the request protocol so a stale FEED result
+    // can never be misread by the next session's first inline consume.
+    g_paceReqKind.store(kPaceReqWait, std::memory_order_relaxed);
+    g_paceResKind.store(kPaceReqWait, std::memory_order_relaxed);
     g_nextRetryMs = GetTickCount64() + 5000; // cooldown before the next attempt
 }
 
@@ -2291,8 +2423,8 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // pump_events above stays here and is non-blocking, which is what lets the
     // return to FOCUSED be seen at all.
     if (detach_skip_decision(GetTickCount64(), g_state == XR_SESSION_STATE_FOCUSED)) {
-        // No OpenXR call at all this present. A frame must never be left open
-        // across this return.
+        // No BLOCKING OpenXR call on this thread this present. A frame must
+        // never be left open across this return.
         if (g_frameOpen) {
             XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
             idle.displayTime = g_frameState.predictedDisplayTime;
@@ -2301,6 +2433,45 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             g_frameOpen = false;
         }
         g_srPairOpen = false;
+        // Session 54: THE FEED. Keep the compositor fed with layer-carrying
+        // frames from the PACE thread so the runtime can re-promote (the
+        // detached-with-nothing-submitted state is exactly the measured park).
+        // Request-driven: at most one cycle in flight, posted per present, so
+        // the single-caller frame-loop discipline is preserved and the feed
+        // cadence is min(present rate, runtime cadence).
+        if (g_paceFeed.load(std::memory_order_relaxed) && g_sessionBegun &&
+            pace_thread_start()) {
+            uint64_t now = GetTickCount64();
+            if (g_paceOutstanding &&
+                WaitForSingleObject(g_paceDone, 0) == WAIT_OBJECT_0) {
+                const int kind = g_paceResKind.load(std::memory_order_relaxed);
+                const XrResult r =
+                    static_cast<XrResult>(g_paceResult.load(std::memory_order_relaxed));
+                g_paceOutstanding = false;
+                if (kind == kPaceReqWait && XR_SUCCEEDED(r)) {
+                    // A wait completed unbegun (posted before the episode).
+                    // Per spec the next xrWaitFrame blocks until this frame is
+                    // begun - hand it to the pace thread to finish as a feed
+                    // frame instead of beginning it inline.
+                    g_paceReqKind.store(kPaceReqFeedFinish, std::memory_order_relaxed);
+                    g_paceOutstanding = true;
+                    SetEvent(g_paceReq);
+                } else if (XR_FAILED(r)) {
+                    // Do not spin on a broken session at present rate; events
+                    // (pumped above) drive teardown/recovery.
+                    g_feedErrorHoldMs = now + 1000;
+                    static std::atomic<bool> loggedFeedFail{false};
+                    if (!loggedFeedFail.exchange(true))
+                        BVR_LOG("xr: feed cycle failed: %s (backing off 1 s between "
+                                "attempts; logged once)", res_str(r));
+                }
+            }
+            if (!g_paceOutstanding && now >= g_feedErrorHoldMs) {
+                g_paceReqKind.store(kPaceReqFeedCycle, std::memory_order_relaxed);
+                g_paceOutstanding = true;
+                SetEvent(g_paceReq);
+            }
+        }
         return;
     }
 
@@ -2382,6 +2553,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     if (g_paceOffThread.load(std::memory_order_relaxed) && pace_thread_start()) {
         // One request outstanding at a time keeps wait:begin at 1:1.
         if (!g_paceOutstanding) {
+            g_paceReqKind.store(kPaceReqWait, std::memory_order_relaxed);
             g_paceOutstanding = true;
             SetEvent(g_paceReq);
         }
@@ -2407,6 +2579,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             return;
         }
         g_paceOutstanding = false;
+        // Session 54: the completed request may be a FEED cycle from the
+        // just-ended detached episode. Its frame was fully begun+ended on the
+        // pace thread - there is nothing to consume inline. Take one dropped
+        // present; the next one posts a fresh WAIT and paces normally.
+        if (g_paceResKind.load(std::memory_order_relaxed) != kPaceReqWait) return;
         g_paceHandoffs.fetch_add(1, std::memory_order_relaxed);
         g_frameState = g_paceFrameState;
         r = static_cast<XrResult>(g_paceResult.load(std::memory_order_relaxed));
@@ -3545,6 +3722,24 @@ void on_present_end(IDXGISwapChain* swapchain) {
     if (layerCount && ++g_framesSubmitted == 1)
         BVR_LOG("xr: first frame submitted to the headset (%ux%u quad)", g_swapW, g_swapH);
 
+    // Session 54: bank the feed snapshot - the layer set the pace thread will
+    // re-submit while the session is parked not-FOCUSED. Projection (g_lastLayer
+    // 2) or the screen quad (1); the HUD/laser quads are skipped, a keepalive
+    // does not need them. Gated on the feed lever so BS1/BS2 do no new work.
+    if (g_paceFeed.load(std::memory_order_relaxed) && layerCount &&
+        (g_lastLayer == 2 || g_lastLayer == 1)) {
+        std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+        g_feedSnap.valid = true;
+        g_feedSnap.isProj = (g_lastLayer == 2);
+        if (g_feedSnap.isProj) {
+            g_feedSnap.proj = proj;
+            g_feedSnap.views[0] = projViews[0];
+            g_feedSnap.views[1] = projViews[1];
+        } else {
+            g_feedSnap.quad = quad;
+        }
+    }
+
     // AER sign publish, AFTER submit: eye flip only once an offset frame was
     // actually captured, so CalcView for the next game frame simulates exactly
     // the eye the next Present's copy will feed (design: STATUS.md session 2).
@@ -3664,6 +3859,19 @@ void draw_debug_ui() {
             "How often the frame loop runs while unfocused. Each one costs a "
             "single ~100 ms hitch; between them the game runs free. Too rare and "
             "the headset may be slower to hand focus back.");
+
+        // Session 54: the raffle-wedge root fix.
+        bool feed = g_paceFeed.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Feed the compositor while parked (raffle-wedge fix)", &feed))
+            set_pace_feed(feed);
+        ImGui::TextWrapped(
+            "ON = while the session is not FOCUSED the pace thread re-submits the "
+            "last real image (layers included), so the runtime keeps seeing a "
+            "rendering app and hands FOCUSED back on its own - the raffle-class "
+            "wedge cannot park. OFF = empty frames only, the measured park.");
+        ImGui::Text("feed cycles %u (%u layered)",
+                    g_feedCycles.load(std::memory_order_relaxed),
+                    g_feedLayered.load(std::memory_order_relaxed));
 
         // The phase table. This is the instrument that named the blocking call;
         // it stays visible because "which call owns the frame time" is the only
@@ -4091,6 +4299,13 @@ void handle_pace_command(const char* args) {
                 on ? "runs the frame loop at most once per keepalive interval, so "
                      "the blocking xrEndFrame costs one hitch per interval"
                    : "runs the frame loop every present, at the runtime's cadence");
+    } else if (strcmp(verb, "feed") == 0) {
+        // Session 54: the raffle-wedge root fix A/B (see set_pace_feed).
+        bool on = strncmp(rest, "off", 3) != 0;
+        set_pace_feed(on);
+        BVR_LOG("xr: (feed %s via vrpace; cycles so far %u, %u layered)",
+                on ? "on" : "off", g_feedCycles.load(std::memory_order_relaxed),
+                g_feedLayered.load(std::memory_order_relaxed));
     } else if (strcmp(verb, "sync") == 0) {
         unsigned hz = 0;
         if (strncmp(rest, "on", 2) == 0) {
@@ -4176,6 +4391,16 @@ void handle_pace_command(const char* args) {
                 g_detachEpisodes.load(std::memory_order_relaxed),
                 g_detachSkips.load(std::memory_order_relaxed),
                 g_detachKeepalives.load(std::memory_order_relaxed));
+        BVR_LOG("xr: feed %s | cycles %u (%u layered) | snapshot %s "
+                "(vrpace feed on|off - keepalives that carry layers, s54)",
+                g_paceFeed.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_feedCycles.load(std::memory_order_relaxed),
+                g_feedLayered.load(std::memory_order_relaxed),
+                [] {
+                    std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+                    return g_feedSnap.valid ? (g_feedSnap.isProj ? "projection" : "screen-quad")
+                                            : "none";
+                }());
         // The phase table is the whole point of the instrument: it says WHICH
         // call owns the frame time, which is the question session 33 answered
         // by inference and got wrong.
@@ -4251,6 +4476,14 @@ void set_pace_detach(bool on) {
     BVR_LOG("xr: detached pacing %s by the game adapter (an unfocused session "
             "will %space the game thread)",
             on ? "ENABLED" : "disabled", on ? "no longer " : "");
+}
+
+void set_pace_feed(bool on) {
+    if (g_paceFeed.exchange(on, std::memory_order_relaxed) == on) return;
+    BVR_LOG("xr: pace feed %s by the game adapter - while the session is not "
+            "FOCUSED the present thread detaches and the pace thread re-submits "
+            "the last healthy layer set (keepalives that carry layers, s54)",
+            on ? "ENABLED" : "disabled");
 }
 
 void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* swapH) {
