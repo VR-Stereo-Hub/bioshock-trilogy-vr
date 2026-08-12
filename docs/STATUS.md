@@ -49,14 +49,50 @@ TESTING "S56"; the s54 state below carries forward otherwise.
 4. **A-B-A**: `vdeny off` = sharp + interaction break returns (user-judged
    live); `on` = fixed. The lever needs no reinstall; restart re-seeds.
 
-**NEXT SESSION (s57): (1) the remaining s53/s52 headset verdicts (rowboat
-under s53b defaults, cine-radio default, single-empty-hand, TESTING "S52":
-arsenal tuning + calibration save, HUD sliders, Matinee gun-track, sprint
-arms, subtitles); (2) the crosshair hunt (`bsigfx scan XClikHUDCrosshair` /
-`scan HUDMovie` in the gameplay save, chase with bsiprop/bsifields, then the
-setb/cmd levers); (3) opportunistic: re-verify other scripted interactive
-beats (doors, the box handoff) inherit the fix - the deny set is global by
-construction, but only the raffle chain is proven.**
+**HEADSET VERDICTS IN (user, post-s56 play session, 2026-08-12):**
+- **CLOSED - scripted scenes clean**: the boat scene, door opens and the
+  other cinematics all played correctly, NO double hands - the s53b hide
+  defaults (owner+grips composite) and the s56 deny set are accepted
+  together; the s53 rowboat re-check and the scripted-beat inheritance
+  check are done.
+- **FAIL - sprint stance**: sprinting changes the model position; very bad
+  in VR. Wanted: sprint must not affect the model AT ALL (kill the trigger
+  at the root - the s49b 'Lowered'-clamp shape is the template: probe the
+  FP-network request while sprinting with `bsifidget req probe`, then clamp).
+- **REGRESSION - melee**: melee attack animation is now weird, and the
+  melee-execution mini-cutscene shows NO hand at all (tested vigor-only and
+  vigor+weapon). Suspects: the s53 hide gate not releasing for the
+  execution scene class (it may not register as a cine hold), and/or the
+  bone drive fighting the attack anim (the s50/s51 fire-swing shape).
+  Melee worked well before the cine/model rounds - corner by A/B at a melee
+  with `bsihide`/`bsibones` levers.
+
+**NEXT SESSION (s57), user-prioritized - the model lane:**
+1. **Sprint stance kill**: derive the sprint request/anim on the FP network
+   (fidget probe while sprinting), clamp at the root, default-on. VR sprint
+   must leave the viewmodel untouched.
+2. **Melee fix**: (a) attack anim - likely needs a melee window where the
+   hand drive releases to the authored swing (fire-swing template);
+   (b) execution mini-cutscene - the authored hand must SHOW (hide gate
+   release for that scene class). A-B-A with levers, then headset.
+3. **Per-loadout hand offsets**: hand pose offsets keyed by LOADOUT CLASS -
+   vigor-only (currently rotated/positioned wrong), empty+empty, and the
+   existing weapon(+vigor) profiles untouched. Saving must be bucket-local:
+   a vigor-only tweak must not leak into the two-hand preset, and
+   empty-hands tweaks stay in the empty bucket (verify the existing
+   profiles.cpp keying - the equipped-identity poll may currently lump
+   vigor-only with empty).
+4. **The crosshair hunt**: `bsigfx scan XClikHUDCrosshair` / `scan HUDMovie`
+   in the gameplay save, chase with bsiprop/bsifields, then the setb/cmd
+   levers - disable the flat-screen crosshair.
+5. **Exploratory (non-blocking)**: "hand without the arm" - zero-scale the
+   arm chain above the wrist (s53 bone lever) so the driven hand floats
+   with only a wrist pinch instead of the skin-weight stretch during
+   authored gestures (flourish); alternative/complement: release the hand
+   to the authored anim inside detected gesture windows (fire-swing shape).
+   Full disconnection is impossible at runtime (it lives in skin weights);
+   this is the closest cheap approximation - A/B it, keep it only if it
+   reads better in the headset.
 
 ### Infinite: state after session 54 (superseded by s55 above) (THE RAFFLE WEDGE ROOT-CAUSED AND FIXED - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`, NOT merged)
 
