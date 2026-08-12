@@ -202,21 +202,6 @@ bool g_quietPrevHave[kMaxBones] = {};
 uint64_t g_quietPrevMs[2] = {};
 bool g_quietOk[2] = {true, true};
 uint32_t g_captureQuietSkips[2] = {};
-// s57d (headset verdict: the reload-then-shoot loop survived both bank
-// fixes): the loop is the window-EDGE SNAP, not the bank. A shot's window
-// holds the banked pose while the reload plays UNDERNEATH it; at expiry
-// the hand snaps from the held pose to wherever the reload is mid-anim,
-// and the next immediate shot snaps it back - one snap per edge, timing-
-// dependent (hence "semi-consistent"), invisible when idle because source
-// == bank at release. Fix: every NATURAL glue release blends bank -> live
-// source over kGlueFadeMs per hand (nlerp quats, lerp trans/scale/aT; corr
-// is identity in full mode so nothing else changes). The melee cancel
-// stays an instant cut - the accepted swing must not be damped.
-constexpr uint64_t kGlueFadeMs = 250;
-bool g_glueWasFull[2] = {};
-uint64_t g_glueFadeStartMs[2] = {};
-uint32_t g_glueFades[2] = {};
-uint64_t g_glueFadeLogMs = 0;
 // s57: the stump cuff (option A). wq[7]=0 collapses verts to the collapse
 // point and the mixed-weight ring pinches INSIDE the hand (headset-rejected);
 // a small epsilon keeps the ring open so the sleeve verts form a symmetric
@@ -1146,56 +1131,6 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     const bool fireGlueFull = fireGlueActive &&
                               g_fireGlueFull.load(std::memory_order_relaxed) &&
                               g_readyAllValid[hand].load(std::memory_order_relaxed);
-    // s57d: the release fade weight (see the kGlueFadeMs block comment).
-    // w = 1 while fully glued, ramps 1 -> 0 over kGlueFadeMs after a natural
-    // release; cancel_fire_glue() clears the edge state so a melee cancel
-    // stays an instant cut.
-    float glueW = 0.0f;
-    {
-        const uint64_t gNow = GetTickCount64();
-        if (fireGlueFull) {
-            glueW = 1.0f;
-            g_glueFadeStartMs[hand] = 0;
-        } else {
-            if (g_glueWasFull[hand]) {
-                g_glueFadeStartMs[hand] = gNow;
-                ++g_glueFades[hand];
-                // The snap instrument: how far the hand WOULD have jumped.
-                if (gNow - g_glueFadeLogMs >= 500) {
-                    g_glueFadeLogMs = gNow;
-                    float mDeg = 0.0f, mUu = 0.0f;
-                    for (int i = 0; i < g_boneCount; ++i) {
-                        if (!g_cluster[hand][i] && !g_armSet[hand][i]) continue;
-                        if (!g_readyAtomsHave[i] || !g_animValid[i]) continue;
-                        const float* a = g_readyAtoms[i];
-                        const float* b = src[i];
-                        float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-                        if (dot < 0.0f) dot = -dot;
-                        if (dot > 1.0f) dot = 1.0f;
-                        const float dDeg = 2.0f * acosf(dot) * 57.29578f;
-                        const float dx = b[4] - a[4], dy = b[5] - a[5], dz = b[6] - a[6];
-                        const float dUu = sqrtf(dx * dx + dy * dy + dz * dz);
-                        if (dDeg > mDeg) mDeg = dDeg;
-                        if (dUu > mUu) mUu = dUu;
-                    }
-                    BVR_LOG("[bsi] bones: glue release %c - %.1f deg / %.1f cm snap "
-                            "absorbed over %u ms fade (fades L=%u R=%u)",
-                            hand ? 'R' : 'L', mDeg, mUu * 100.0f / fc.worldScale,
-                            static_cast<unsigned>(kGlueFadeMs), g_glueFades[0],
-                            g_glueFades[1]);
-                }
-            }
-            if (g_glueFadeStartMs[hand] != 0) {
-                const uint64_t el = gNow - g_glueFadeStartMs[hand];
-                if (el >= kGlueFadeMs) {
-                    g_glueFadeStartMs[hand] = 0;
-                } else if (g_readyAllValid[hand].load(std::memory_order_relaxed)) {
-                    glueW = 1.0f - static_cast<float>(el) / kGlueFadeMs;
-                }
-            }
-        }
-        g_glueWasFull[hand] = fireGlueFull;
-    }
     float corr[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     if ((g_stanceKill.load(std::memory_order_relaxed) || fireGlueActive) &&
         g_readyValid[hand].load(std::memory_order_relaxed)) {
@@ -1230,15 +1165,8 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     // no authored travel, and its resolve-time ref (the boot stance) against
     // a post-fire tRef would leak a permanent stance offset.
     const float* aT = &src[anchor][4];
-    float aTblend[3];
     if (fireGlueFull) {
         aT = &g_readyAtoms[anchor][4]; // the banked lane's own anchor base
-    } else if (glueW > 0.001f && g_readyAtomsHave[anchor]) {
-        // s57d fade: the dp base eases bank -> live with the same weight.
-        for (int k = 0; k < 3; ++k)
-            aTblend[k] = src[anchor][4 + k] * (1.0f - glueW) +
-                         g_readyAtoms[anchor][4 + k] * glueW;
-        aT = aTblend;
     } else if (useAnim && g_animTrans.load(std::memory_order_relaxed) &&
                g_readyValid[hand].load(std::memory_order_relaxed)) {
         const float tx = src[anchor][4] - g_readyTrans[hand][0];
@@ -1261,30 +1189,8 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
         // s51: the banked ready atom replaces the live source for the whole
         // hand during the fire window (unbanked bones keep the live lane
         // until the next capture re-banks - one-capture staleness at most).
-        // s57d: during the release fade the two lanes nlerp (sign-corrected,
-        // renormalized) so the held pose eases into the live anim instead of
-        // snapping (the reload-then-shoot loop's mechanism).
-        const float* sI = src[i];
-        float sBlend[8];
-        if (fireGlueFull && g_readyAtomsHave[i]) {
-            sI = g_readyAtoms[i];
-        } else if (glueW > 0.001f && g_readyAtomsHave[i]) {
-            const float* s0 = src[i];
-            const float* b = g_readyAtoms[i];
-            float dot = s0[0] * b[0] + s0[1] * b[1] + s0[2] * b[2] + s0[3] * b[3];
-            const float sgn = dot < 0.0f ? -1.0f : 1.0f;
-            for (int k = 0; k < 4; ++k)
-                sBlend[k] = s0[k] * (1.0f - glueW) + b[k] * sgn * glueW;
-            const float n2b = sBlend[0] * sBlend[0] + sBlend[1] * sBlend[1] +
-                              sBlend[2] * sBlend[2] + sBlend[3] * sBlend[3];
-            if (n2b > 1e-6f) {
-                const float inv = 1.0f / sqrtf(n2b);
-                for (int k = 0; k < 4; ++k) sBlend[k] *= inv;
-                for (int k = 4; k < 8; ++k)
-                    sBlend[k] = s0[k] * (1.0f - glueW) + b[k] * glueW;
-                sI = sBlend;
-            }
-        }
+        const float* sI =
+            (fireGlueFull && g_readyAtomsHave[i]) ? g_readyAtoms[i] : src[i];
         float wq[8];
         if (kind == 2) {
             // The collapse is what degenerates the cross-boundary skin blend
@@ -1416,22 +1322,10 @@ void cancel_fire_glue(const char* why) {
     // s57 melee: a swing must not render frozen (the fire window from a
     // preceding shot) and must not poison the ready bank (the +1.2 s
     // capture would bank a mid-swing pose). Silent - per-press cadence.
-    // s57d: also an INSTANT cut - clearing the edge state keeps the release
-    // fade from damping the swing's first frames (the accepted feel).
     (void)why;
     g_fireGlueUntilMs.store(0, std::memory_order_relaxed);
     g_captureAtMs[0].store(0, std::memory_order_relaxed);
     g_captureAtMs[1].store(0, std::memory_order_relaxed);
-    g_glueWasFull[0] = g_glueWasFull[1] = false;
-    g_glueFadeStartMs[0] = g_glueFadeStartMs[1] = 0;
-}
-
-void note_reload_break() {
-    // s57d: a reload started - end the fire window NOW so the authored
-    // reload plays instead of being swallowed by the held pose; the release
-    // fade absorbs the handoff. Captures stay scheduled (the quiet gate
-    // already refuses mid-reload poses).
-    g_fireGlueUntilMs.store(0, std::memory_order_relaxed);
 }
 
 bool sprint_kill() { return g_sprintKill.load(std::memory_order_relaxed); }

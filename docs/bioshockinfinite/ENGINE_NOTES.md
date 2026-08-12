@@ -1833,26 +1833,6 @@ three verdicts fixed, one deferred).**
   s51 fact: fire swing = anchor 0.10 deg, arm chain 133; reloads read
   quiet at the grip). The metric is now the MAX across the hand's whole
   driven set - the same set the capture banks.
-- **s57d - the loop's REAL mechanism (survived both bank fixes; user repro
-  shoot->reload->shoot chained)**: the glitch is the window-EDGE SNAP, not
-  the bank. A shot's 1500 ms window holds the banked pose while the reload
-  plays UNDERNEATH; at expiry the hand snaps to wherever the reload is
-  mid-anim, the next immediate shot snaps it back - one snap per edge,
-  landing-point-dependent (hence semi-consistent), invisible from idle
-  (source == bank at release). Two-part fix: (1) every NATURAL glue release
-  now FADES bank -> live source over 250 ms per hand (nlerp quats + lerp
-  trans/aT; corr is already identity in full mode; melee's cancel stays an
-  instant cut so the accepted swing is undamped); a release instrument logs
-  the absorbed snap ("glue release R - X deg / Y cm snap absorbed").
-  (2) a RELOAD-class anim action on the FP network (the act-by-name detour,
-  substring "eload") would end the fire window early through the same fade
-  - but the flat probe shows reloads do NOT pass that lane on this build
-  (six chained reloads, zero reload-named actions), so the wire is inert
-  and the fade alone carries the fix. MEASURED on the user's exact repro
-  (shoot->reload chained x6): every cycle released with a 165-179 deg /
-  43-51 cm would-be snap, all absorbed by the fade. Residual (cosmetic,
-  headset to judge): the fire hold still masks the reload anim's first
-  ~1 s; the next knob is shortening kFireGlueMs.
 - **Melee-then-shoot lurch (s57c)**: a live melee window was itself a
   classification criterion, so a REAL gunshot within 1.5 s of a melee
   inherited the melee class, skipped its fire glue, and the authored fire
