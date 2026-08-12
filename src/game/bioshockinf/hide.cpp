@@ -508,6 +508,11 @@ void tick(uint64_t nowMs) {
         wantRig = false;
         wantHand[0] = wantHand[1] = false;
     }
+    // s57b: during the SWING itself the gun hand hides (its authored melee
+    // articulation lurches through the compose - headset verdict); never
+    // during the execution (swing_hide_hand returns -1 there).
+    const int swingHide = melee::swing_hide_hand();
+    if (swingHide >= 0 && perHandCapable && !hold) wantHand[swingHide] = true;
     if (lever == kLeverBone) {
         // The bone lever IS per-side - fold the rig scope into both hands so
         // the two scopes never fight over the same dispatches.

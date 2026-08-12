@@ -52,6 +52,15 @@ bool hide_release();
 // `release` only, while the window is live).
 bool drive_release(int hand);
 
+// hide.cpp: the hand to bone-hide during the SWING (s57b headset verdict:
+// the melee anim also articulates the GUN arm, which lurches through the
+// compose - the user wants it gone for the swing). Returns 1 (right) for
+// the first ~0.9 s of the window, -1 otherwise - and ALWAYS -1 during the
+// execution release (the authored execution shows everything).
+int swing_hide_hand();
+bool hide_gun();
+void set_hide_gun(bool on); // config key meleeHideGun
+
 // Persisted mode (0 off | 1 glueskip | 2 release); config key meleeFixMode.
 int mode();
 void set_mode(int m);

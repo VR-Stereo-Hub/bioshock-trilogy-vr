@@ -869,6 +869,35 @@ Anything off: `bsibones sprintglue off` (sprint), `bsimelee mode off`
 bucket), stump scale slider to 0 (the old pinch). If a symptom survives its
 lever, it predates this session.
 
+### S57 round 2 (post-verdict fixes - re-judge these, same evening's build)
+
+Accepted first round: melee swing + execution, stump cuff + depth, sprint
+kill core. Fixed off your verdicts:
+
+1. **Post-sprint snap**: the glue now holds ~0.7 s past the stick drop (the
+   sprint-exit anim blends out under it). Sprint, stop, watch the hands -
+   the snap should be gone. If a residue remains, tune flat-style:
+   `bsibones sprintglue tail <ms>` (0-3000, default 700) and report the ms
+   that reads clean.
+2. **Reload-then-shoot glitch loop**: fire mid-reload, keep shooting - the
+   bent-pose loop must be gone (the ready capture now refuses moving
+   poses; a reload can never enter the bank). Also confirm normal shots
+   still look right (the capture still lands once the hands settle).
+3. **Melee gun-hand teleport**: melee with a gun equipped - the RIGHT
+   hand + gun vanish for ~0.9 s around the swing (your call) while the
+   skyhook swing plays, then return on the controller. The execution still
+   shows EVERYTHING. A/B: F10 -> MELEE window -> "hide the gun hand during
+   the swing" off = the lurching gun back.
+4. **Cinematics regression** (deferred from round 1): play any scripted
+   scene - authored hands, no doubles, resumes clean.
+5. **KNOWN, NOT FIXED YET (s58 priority 1): interactions aim with the
+   BODY, not your head.** That is the s56 partition working as shipped -
+   the interaction consumers deliberately read the engine view because the
+   VR view stalled the raffle. The finer split (USE-targeting follows the
+   head, scripted gates keep the engine view) is next session's derivation.
+   Until then: face interactables with the right stick (or walk into
+   them) as before.
+
 ## S54 checklist (THE RAFFLE-WEDGE ROOT FIX - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`)
 
 **s54c: THE FEED IS DISARMED (user directive)** - with it armed, alt-tab/doff

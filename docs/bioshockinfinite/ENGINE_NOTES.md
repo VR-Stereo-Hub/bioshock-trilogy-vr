@@ -1814,6 +1814,37 @@ cap-depth (back-offset) + the new "stump scale" (both in HANDS + MODEL, arms
 = hide). `bsibones stumpscale <0..0.3>`. Unpersisted pending the headset
 verdict (the capDepth precedent).
 
+**s57b - the same-evening headset round (melee/execution/stump ACCEPTED;
+three verdicts fixed, one deferred).**
+- **Post-sprint snap** (user: "after sprinting the model snaps and comes
+  back"): the glue released the instant the stick dropped, into the game's
+  still-blending sprint-EXIT anim - the blend tail passed through as a
+  snap. Fix: a release TAIL (default 700 ms, `bsibones sprintglue tail
+  <ms>`, force-off exercises it) holds the substitution through the blend.
+- **Reload-then-shoot glitch loop** (pre-existing, surfaced by play): the
+  +1.2 s ready capture can land MID-RELOAD and bank a bent pose; every
+  later fire window substitutes it until a quiet second re-banks. Fix: the
+  capture is QUIET-GATED - source-anchor motion since the last >=100 ms
+  sample must be < 3 deg / 3 UU, else the capture retries per drive until
+  the 3 s window expires (an expired window keeps the previous good bank -
+  a mid-anim pose can never enter). Counters: sprintglue status
+  `quietSkips L/R`.
+- **Melee gun-hand lurch** (user: left/skyhook swing perfect, the RIGHT
+  hand teleports forward): the melee anim also articulates the gun arm and
+  it passes the compose. Fix per user call: the RIGHT limb bone-hides for
+  the first 900 ms of the swing window (`kSwingHideMs`; gun disappears with
+  the limb - the grip-subtree fact), NEVER during the execution release.
+  `bsimelee hidegun on|off`, F10 checkbox, key `meleeHideGun`, default on.
+- **DEFERRED to s58 - head-directed interaction.** User: interactions aim
+  where the CHARACTER faces (right stick), not where the head looks. This
+  is the s56 partition working as built: interaction consumers were denied
+  the substituted view BECAUSE reading the VR head stalled the raffle-class
+  view-cone gates. The fix is a finer split: find WHICH denied caller
+  answers USE-target selection (flat caller census near an interactable,
+  un-deny candidates one at a time), give only IT the VR view, and gate the
+  change on the raffle-class beats staying green (the s56 acceptance is at
+  stake - eye-check + the TESTING "S56" chain are the regression fence).
+
 **Traps (s57):** (a) the SIM PAD OUTAGE recurred (`vrinput status`:
 getstate[0] 0 total) - keyboard is the fallback drive lane (game-key.ps1 +
 the overlapping-hold scratchpad variant; W/S/A/D move, LeftShift sprints, V

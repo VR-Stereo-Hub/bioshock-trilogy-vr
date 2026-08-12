@@ -30,8 +30,14 @@ constexpr uint64_t kWindowMs = 1500;
 // After the execution hold closes, policy resumes after this tail (the game
 // restamps its own visibility around the handback).
 constexpr uint64_t kExecTailMs = 300;
+// s57b: how long the GUN hand stays bone-hidden after a melee dispatch -
+// the swing itself (~0.6 s) plus a beat; shorter than the full window so
+// the gun is back before the next input matters.
+constexpr uint64_t kSwingHideMs = 900;
 
 std::atomic<int> g_mode{1}; // 0 off (control) | 1 glueskip (default) | 2 release
+std::atomic<bool> g_hideGun{true};       // s57b: hide the gun hand for the swing
+std::atomic<uint64_t> g_hideUntilMs{0};
 std::atomic<uint64_t> g_windowUntilMs{0};
 std::atomic<uint64_t> g_testUntilMs{0}; // `bsimelee swing [ms]` - the pad-free flat lane
 std::atomic<uint64_t> g_lastYDownMs{0};
@@ -102,8 +108,23 @@ bool classify_dispatch(uint64_t nowMs, bool holdOpen) {
                 static_cast<unsigned long long>(kWindowMs));
     }
     g_windowUntilMs.store(nowMs + kWindowMs, std::memory_order_relaxed);
+    g_hideUntilMs.store(nowMs + kSwingHideMs, std::memory_order_relaxed);
     g_dispatches.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+int swing_hide_hand() {
+    if (g_mode.load(std::memory_order_relaxed) == 0 ||
+        !g_hideGun.load(std::memory_order_relaxed))
+        return -1;
+    if (g_execRelease.load(std::memory_order_relaxed)) return -1;
+    return GetTickCount64() < g_hideUntilMs.load(std::memory_order_relaxed) ? 1 : -1;
+}
+
+bool hide_gun() { return g_hideGun.load(std::memory_order_relaxed); }
+void set_hide_gun(bool on) {
+    if (g_hideGun.exchange(on, std::memory_order_relaxed) != on)
+        BVR_LOG("[bsi] melee: gun-hand swing hide %s", on ? "ON" : "off");
 }
 
 bool hide_release() {
@@ -139,6 +160,15 @@ bool handle_command(const char* cmd, const char* args) {
         else if (strncmp(m, "glueskip", 8) == 0) set_mode(1);
         else if (strncmp(m, "release", 7) == 0) set_mode(2);
         else BVR_LOG("[bsi] melee: unknown mode - off|glueskip|release");
+        return true;
+    }
+    if (strncmp(args, "hidegun", 7) == 0) {
+        const char* h = args + 7;
+        while (*h == ' ') ++h;
+        if (strncmp(h, "on", 2) == 0) set_hide_gun(true);
+        else if (strncmp(h, "off", 3) == 0) set_hide_gun(false);
+        else BVR_LOG("[bsi] melee: hidegun %s | bsimelee hidegun on|off",
+                     hide_gun() ? "ON" : "off");
         return true;
     }
     if (strncmp(args, "swing", 5) == 0) {
@@ -178,6 +208,9 @@ void draw_debug_ui() {
     if (ImGui::RadioButton("glueskip##melee", m == 1)) set_mode(1);
     ImGui::SameLine();
     if (ImGui::RadioButton("release##melee", m == 2)) set_mode(2);
+    bool hg = g_hideGun.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("hide the gun hand during the swing (s57b)", &hg))
+        set_hide_gun(hg);
     ImGui::Text("  windows %u  execution releases %u",
                 g_windows.load(std::memory_order_relaxed),
                 g_execReleases.load(std::memory_order_relaxed));

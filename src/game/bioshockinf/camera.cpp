@@ -1005,6 +1005,8 @@ float cfg_get_sprintkill() { return bones::sprint_kill() ? 1.0f : 0.0f; }
 void cfg_set_sprintkill(float v) { bones::set_sprint_kill(v != 0.0f); }
 float cfg_get_meleemode() { return static_cast<float>(melee::mode()); }
 void cfg_set_meleemode(float v) { melee::set_mode(static_cast<int>(v + 0.5f)); }
+float cfg_get_meleehidegun() { return melee::hide_gun() ? 1.0f : 0.0f; }
+void cfg_set_meleehidegun(float v) { melee::set_hide_gun(v != 0.0f); }
 float cfg_get_xhairhide() { return xhair::enabled() ? 1.0f : 0.0f; }
 void cfg_set_xhairhide(float v) { xhair::set_enabled(v != 0.0f); }
 // s52 round 2: the HUD quad's placement as preset keys (headset verdict:
@@ -1075,6 +1077,7 @@ constexpr config::KeyDesc kConfigKeys[] = {
     // ---- s57 model lane ----
     {"sprintKill", cfg_get_sprintkill, cfg_set_sprintkill, 0.0f, 1.0f},
     {"meleeFixMode", cfg_get_meleemode, cfg_set_meleemode, 0.0f, 2.0f},
+    {"meleeHideGun", cfg_get_meleehidegun, cfg_set_meleehidegun, 0.0f, 1.0f},
     {"hudCrosshairHide", cfg_get_xhairhide, cfg_set_xhairhide, 0.0f, 1.0f},
 };
 

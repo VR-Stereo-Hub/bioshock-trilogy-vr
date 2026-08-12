@@ -79,12 +79,30 @@ a boot disarmed inside a second vignette); the trailing-newline token trap
 bit a THIRD time (`bsixhair on`); the spawn is nose-to-a-wall (W reads like
 idle on img-diff - back up + strafe first, ~1900 UU corridor).
 
-**NEXT SESSION (s58): (1) the S57 headset checklist (TESTING "S57" - sprint
-feel incl. release edge, melee swing glueskip-vs-release, the execution
-with a staggered enemy, vigor-only #solo tuning, crosshair in combat +
-transition flashes, cuff scale/depth tuning); (2) verdict-driven fixes;
-(3) the remaining TESTING "S52" verdicts (arsenal tuning + calibration
-save, HUD sliders, subtitles) if headset time remains.**
+**HEADSET VERDICTS IN (same evening) + THE s57b ROUND SHIPPED:**
+- **ACCEPTED**: melee swing + execution ("working perfectly"), stump cuff +
+  depth ("decent for now"), sprint kill core.
+- **FIXED same evening (s57b, re-judge)**: post-sprint SNAP (the glue now
+  holds a 700 ms release tail through the sprint-exit anim blend;
+  `sprintglue tail <ms>`); the reload-then-shoot GLITCH LOOP (the ready
+  capture is quiet-gated - moving poses are refused per drive, ~2700
+  refusals measured across one fire+reload, banks land clean after
+  settling); the melee GUN-HAND lurch (right limb bone-hides for the first
+  0.9 s of the swing, never the execution; `bsimelee hidegun`, F10, key
+  `meleeHideGun`).
+- **DEFERRED - s58 PRIORITY 1: head-directed interaction.** Interactions
+  aim with the BODY (right stick), not the head - the s56 partition as
+  built (interaction consumers deliberately read the engine view; the VR
+  view stalled the raffle). s58 plan: flat caller census near an
+  interactable, find WHICH denied caller answers USE-target selection,
+  un-deny only it, and fence with the raffle-class beats + eye-check (the
+  s56 acceptance must survive). ENGINE_NOTES "s57b" carries the notes.
+
+**NEXT SESSION (s58): (1) the head-directed interaction split (above -
+the one big open item); (2) re-judge the three s57b fixes (TESTING "S57
+round 2") + the cinematics regression check the user deferred; (3) the
+remaining TESTING "S52" verdicts (arsenal tuning + calibration save, HUD
+sliders, subtitles) if headset time remains.**
 
 ### Infinite: state after session 56 (superseded by s57 above) (THE INTERACTION-VIEW FIX SHIPPED AND HEADSET-ACCEPTED - the raffle chain plays end to end under full VR, automatic at install; branch `claude/bioshock-interaction-view-fix-c1be42`, NOT merged)
 
@@ -7157,6 +7175,21 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 57b - 2026-08-12 (same evening) - headset verdicts in; three fixes shipped, interaction split deferred to s58
+
+Melee swing + execution, stump cuff, sprint-kill core: ACCEPTED. Fixed off
+the verdicts (all flat-verified + eye-check PASS): (1) the post-sprint SNAP
+- a 700 ms glue release tail rides out the sprint-exit anim blend
+(`sprintglue tail <ms>`); (2) the reload-then-shoot glitch loop - the ready
+capture is QUIET-GATED (motion < 3 deg / 3 UU per 100 ms sample, retries
+per drive; ~2700 refusals measured across one fire+reload, banks land only
+on settled poses); (3) the melee gun-hand lurch - the right limb bone-hides
+for the swing's first 0.9 s (never the execution; mid-swing capture shows
+gun+hand gone, unhide edge clean). DEFERRED s58 priority 1: head-directed
+interaction (the s56 partition needs a finer split - USE-targeting to the
+VR view, scripted view-cone gates keep the engine view; caller census +
+raffle-fence next session).
 
 ### Session 57 - 2026-08-12 (late night) - THE MODEL LANE: sprint falsified-then-glued, melee window, loadout buckets, the crosshair hunt LANDED, stump cuff
 

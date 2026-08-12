@@ -176,6 +176,26 @@ uint32_t g_sprintEngages = 0;
 constexpr uint16_t kPadLeftThumb = 0x0040; // XINPUT_GAMEPAD_LEFT_THUMB
 constexpr float kSprintEnterMag = 0.50f;
 constexpr float kSprintExitMag = 0.35f;
+// s57b (headset verdict "after sprinting the model snaps"): the glue must
+// outlive the sprint by a TAIL - the game's sprint-exit anim blends out for
+// a few hundred ms after the stick drops, and releasing into that blend
+// passes the tail of the pump through the compose as a visible snap. The
+// glue holds until the exit anim has settled back at ready.
+std::atomic<uint32_t> g_sprintTailMs{700};
+std::atomic<uint64_t> g_sprintTailUntilMs{0};
+// s57b (headset verdict "reload then shoot glitches until I stop"): the
+// +1.2 s ready capture can land MID-RELOAD and bank a bent pose - every
+// later fire window then substitutes it (the melee poison's sibling). The
+// capture is now QUIET-GATED: it retries every drive until the source
+// anchor has been still (< kQuietDeg / kQuietUu over the last >=100 ms
+// sample) or the 3 s window expires - a mid-anim pose can never enter the
+// bank, and an expired window keeps the previous good bank.
+constexpr float kQuietDeg = 3.0f;
+constexpr float kQuietUu = 3.0f;
+float g_quietPrev[2][8];
+uint64_t g_quietPrevMs[2] = {};
+bool g_quietOk[2] = {true, true};
+uint32_t g_captureQuietSkips[2] = {};
 // s57: the stump cuff (option A). wq[7]=0 collapses verts to the collapse
 // point and the mixed-weight ring pinches INSIDE the hand (headset-rejected);
 // a small epsilon keeps the ring open so the sleeve verts form a symmetric
@@ -869,7 +889,11 @@ void update_sprint_from_input(uint64_t now) {
                 mag, kSprintExitMag);
     } else if (active && mag < kSprintExitMag && !g_sprintForce.load(std::memory_order_relaxed)) {
         active = false;
-        BVR_LOG("[bsi] bones: sprint glue released (stick %.2f)", mag);
+        const uint32_t tail = g_sprintTailMs.load(std::memory_order_relaxed);
+        g_sprintTailUntilMs.store(now + tail, std::memory_order_relaxed);
+        BVR_LOG("[bsi] bones: sprint glue released (stick %.2f) - %u ms tail covers "
+                "the exit-anim blend",
+                mag, tail);
     }
     if (g_sprintForce.load(std::memory_order_relaxed)) active = true;
     g_sprintActive.store(active, std::memory_order_relaxed);
@@ -990,11 +1014,37 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     // weapon switches. The window EXPIRES after 3 s: a hand that was not
     // driving through the window must not capture a later pose (the stance
     // re-onsets in minutes, and banking IT as "ready" would invert the glue).
+    // s57b: the quiet metric - source-anchor motion since the last >=100 ms
+    // sample. Feeds the capture gate below (see kQuietDeg block comment).
+    if (g_animValid[anchor]) {
+        const uint64_t qNow = GetTickCount64();
+        if (g_quietPrevMs[hand] == 0) {
+            memcpy(g_quietPrev[hand], g_anim[anchor], 32);
+            g_quietPrevMs[hand] = qNow;
+        } else if (qNow - g_quietPrevMs[hand] >= 100) {
+            const float* a = g_quietPrev[hand];
+            const float* b = g_anim[anchor];
+            float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+            if (dot < 0.0f) dot = -dot;
+            if (dot > 1.0f) dot = 1.0f;
+            const float dDeg = 2.0f * acosf(dot) * 57.29578f;
+            const float dx = b[4] - a[4], dy = b[5] - a[5], dz = b[6] - a[6];
+            const float dUu = sqrtf(dx * dx + dy * dy + dz * dz);
+            g_quietOk[hand] = dDeg <= kQuietDeg && dUu <= kQuietUu;
+            memcpy(g_quietPrev[hand], b, 32);
+            g_quietPrevMs[hand] = qNow;
+        }
+    }
+
     const uint64_t captureAt = g_captureAtMs[hand].load(std::memory_order_relaxed);
     if (captureAt != 0) {
         const uint64_t tick = GetTickCount64();
         if (tick >= captureAt + 3000) {
             g_captureAtMs[hand].store(0, std::memory_order_relaxed);
+        } else if (tick >= captureAt && g_animValid[anchor] && !g_quietOk[hand]) {
+            // s57b: pose still moving (a reload, a cast) - retry next drive;
+            // an expired window keeps the previous good bank.
+            ++g_captureQuietSkips[hand];
         } else if (tick >= captureAt && g_animValid[anchor]) {
             const float* q = g_anim[anchor];
             const float n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
@@ -1041,8 +1091,11 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     // other anim (flourish, casts) untouched.
     // s57: the sprint glue rides the same substitution (its own lever - the
     // fire lever's A/B must not change sprint behavior and vice versa).
-    const bool sprintGlueActive = g_sprintKill.load(std::memory_order_relaxed) &&
-                                  g_sprintActive.load(std::memory_order_relaxed);
+    // s57b: the release TAIL keeps it engaged through the exit-anim blend.
+    const bool sprintGlueActive =
+        g_sprintKill.load(std::memory_order_relaxed) &&
+        (g_sprintActive.load(std::memory_order_relaxed) ||
+         GetTickCount64() < g_sprintTailUntilMs.load(std::memory_order_relaxed));
     const bool fireGlueActive =
         (g_fireGlue.load(std::memory_order_relaxed) &&
          GetTickCount64() < g_fireGlueUntilMs.load(std::memory_order_relaxed)) ||
@@ -1351,14 +1404,26 @@ bool handle_command(const char* cmd, const char* args) {
                 for (int h = 0; h < 2; ++h)
                     if (!g_readyAllValid[h].load(std::memory_order_relaxed))
                         g_captureAtMs[h].store(at, std::memory_order_relaxed);
+            } else {
+                // Force-off exercises the release tail like a real stick drop.
+                g_sprintTailUntilMs.store(GetTickCount64() +
+                                              g_sprintTailMs.load(std::memory_order_relaxed),
+                                          std::memory_order_relaxed);
             }
+        } else if (strncmp(rest, "tail", 4) == 0) {
+            unsigned ms = 0;
+            if (sscanf_s(rest + 4, "%u", &ms) == 1 && ms <= 3000)
+                g_sprintTailMs.store(ms, std::memory_order_relaxed);
         }
-        BVR_LOG("[bsi] bones: sprintglue %s force=%s active=%s engages=%u banks L=%s "
-                "R=%s | bsibones sprintglue on|off|force on|off",
+        BVR_LOG("[bsi] bones: sprintglue %s force=%s active=%s tail=%ums engages=%u "
+                "banks L=%s R=%s quietSkips L=%u R=%u | bsibones sprintglue "
+                "on|off|force on|off|tail <ms>",
                 g_sprintKill.load() ? "ON" : "off", g_sprintForce.load() ? "ON" : "-",
-                g_sprintActive.load() ? "ACTIVE" : "idle", g_sprintEngages,
+                g_sprintActive.load() ? "ACTIVE" : "idle",
+                g_sprintTailMs.load(std::memory_order_relaxed), g_sprintEngages,
                 g_readyAllValid[0].load() ? "ok" : "-",
-                g_readyAllValid[1].load() ? "ok" : "-");
+                g_readyAllValid[1].load() ? "ok" : "-", g_captureQuietSkips[0],
+                g_captureQuietSkips[1]);
         return true;
     }
     if (args && strncmp(args, "stumpscale", 10) == 0) {
