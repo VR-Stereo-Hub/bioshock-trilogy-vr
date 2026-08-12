@@ -325,19 +325,35 @@ uint32_t to_rva(const void* p) {
 // proceed live, one `bsicam vdeny add` at a time, with the eye check gating
 // every trial. Seeding at install happens only once a site is derived,
 // eye-checked and raffle-accepted (patterns.h will carry it).
+//
+// s56: an ALLOW-ONLY mode joins it as a DERIVATION INSTRUMENT: the listed
+// set becomes the allow set - substitute the VR view ONLY for listed callers,
+// give everyone else the authored view. That is the s54e polarity that broke
+// stereo in the headset, so it is never the install default and every trial
+// under it is eye-checked; its value is speed - allow{scene-build} hands the
+// authored view to every gameplay caller AT ONCE, so the complete render set
+// falls out of a few flat eye-check runs instead of one raffle visit per
+// site. The shipped fix stays a deny set (mode=deny, the fail-open shape).
 std::atomic<bool> g_vdOn{true};
-constexpr size_t kVdSlots = 4;
+std::atomic<bool> g_vdAllowMode{false}; // false = deny mode (shipped shape)
+constexpr size_t kVdSlots = 16;
 std::atomic<uint32_t> g_vdDeny[kVdSlots] = {};
 std::atomic<uint64_t> g_vdDenied{0};      // dispatches left authored (deny hit)
 std::atomic<uint64_t> g_vdSubstituted{0}; // dispatches given the VR view
 
 bool vd_is_denied(uint32_t rva) {
     if (!g_vdOn.load(std::memory_order_relaxed)) return false;
+    bool listed = false;
     for (auto& s : g_vdDeny) {
         const uint32_t v = s.load(std::memory_order_relaxed);
-        if (v && v == rva) return true;
+        if (v && v == rva) {
+            listed = true;
+            break;
+        }
     }
-    return false; // empty set = deny nothing = substitute-for-all
+    if (g_vdAllowMode.load(std::memory_order_relaxed))
+        return !listed; // allow-only: substitute ONLY for listed callers
+    return listed; // deny mode: empty set = deny nothing = substitute-for-all
 }
 
 void vd_add(uint32_t rva) {
@@ -1696,6 +1712,17 @@ bool install(const bvr::pattern_scan::ProcessImage& image) {
             "the write target is the detour's out-params ONLY, never engine memory; with "
             "the drive off the hook observes only.",
             addr, patterns::kGetPlayerViewPointRva, patterns::kGetPlayerViewPointRetImm);
+
+    // s56: seed the view-consumer deny set (patterns.h carries the derivation).
+    // Same build gate as the hook itself - rva_trusted() held above, and the
+    // RVAs in the set were derived against exactly that image identity. The
+    // fix is automatic and lever-free by directive; `bsicam vdeny` stays the
+    // dev surface (clear/off = the historical substitute-for-all for A/B).
+    for (uint32_t rva : patterns::kViewConsumerDenyRvas) vd_add(rva);
+    BVR_LOG("[bsi] vdeny: seeded %u denied view consumers at install (mode deny; "
+            "gameplay callers read the AUTHORED view, the scene build keeps the VR pose)",
+            static_cast<unsigned>(sizeof(patterns::kViewConsumerDenyRvas) /
+                                  sizeof(patterns::kViewConsumerDenyRvas[0])));
     return true;
 }
 
@@ -2073,26 +2100,50 @@ bool handle_command(const char* args) {
                     "break comes BACK in this mode; stereo is unaffected)");
         } else if (strncmp(v, "clear", 5) == 0) {
             for (auto& s : g_vdDeny) s.store(0, std::memory_order_relaxed);
-            BVR_LOG("[bsi] vdeny: deny set cleared (deny nothing = substitute-for-all)");
+            BVR_LOG("[bsi] vdeny: set cleared (deny mode: deny nothing = substitute-for-all; "
+                    "allow mode: allow nothing = authored everywhere)");
+        } else if (strncmp(v, "mode", 4) == 0) {
+            // s56: allow-only is the DERIVATION polarity (s54e's shape) - the
+            // listed set becomes the allow set. Never the install default.
+            const char* m = v + 4;
+            while (*m == ' ') ++m;
+            if (strncmp(m, "allow", 5) == 0) {
+                g_vdAllowMode.store(true, std::memory_order_relaxed);
+                BVR_LOG("[bsi] vdeny: mode ALLOW-ONLY (substitute the VR view ONLY for listed "
+                        "callers - the s54e polarity, derivation only, eye-check every trial)");
+            } else if (strncmp(m, "deny", 4) == 0) {
+                g_vdAllowMode.store(false, std::memory_order_relaxed);
+                BVR_LOG("[bsi] vdeny: mode deny (listed callers read the authored view - "
+                        "the shipped shape)");
+            } else {
+                BVR_LOG("[bsi] usage: bsicam vdeny mode deny|allow");
+            }
         } else if (strncmp(v, "add", 3) == 0) {
             unsigned rva = 0;
             if (sscanf_s(v + 3, "%x", &rva) == 1 && rva) {
                 vd_add(rva);
-                BVR_LOG("[bsi] vdeny: added denied caller 0x%X (reads the authored view)", rva);
+                BVR_LOG("[bsi] vdeny: added caller 0x%X (%s)", rva,
+                        g_vdAllowMode.load(std::memory_order_relaxed)
+                            ? "allow mode: gets the VR view"
+                            : "deny mode: reads the authored view");
             } else {
                 BVR_LOG("[bsi] usage: bsicam vdeny add <hexRva>");
             }
         } else {
-            char set[80] = {};
+            char set[220] = {};
             int n = 0;
             for (auto& s : g_vdDeny) {
                 const uint32_t r = s.load(std::memory_order_relaxed);
                 if (r) n += sprintf_s(set + n, sizeof(set) - n, " 0x%X", r);
             }
-            BVR_LOG("[bsi] vdeny: %s | deny set:%s | authored (denied) %llu, VR-substituted "
-                    "%llu | usage: bsicam vdeny on|off|add <hexRva>|clear|status",
+            const bool allow = g_vdAllowMode.load(std::memory_order_relaxed);
+            BVR_LOG("[bsi] vdeny: %s | mode %s | set:%s | authored (denied) %llu, "
+                    "VR-substituted %llu | usage: bsicam vdeny on|off|mode deny|allow|"
+                    "add <hexRva>|clear|status",
                     g_vdOn.load(std::memory_order_relaxed) ? "ON" : "off",
-                    n ? set : " (empty - deny nothing)",
+                    allow ? "ALLOW-ONLY" : "deny",
+                    n ? set : (allow ? " (empty - authored everywhere)"
+                                     : " (empty - deny nothing)"),
                     static_cast<unsigned long long>(g_vdDenied.load(std::memory_order_relaxed)),
                     static_cast<unsigned long long>(
                         g_vdSubstituted.load(std::memory_order_relaxed)));
@@ -2414,7 +2465,8 @@ void draw_debug_ui() {
                 g_pathCamera.load(), g_pathTarget.load(), g_pathUnknown.load());
     // s55: view-consumer denylist counters (read-only - the fix is automatic;
     // `bsicam vdeny` is the dev lever, no user action required or offered).
-    ImGui::Text("view deny: authored %llu / VR %llu",
+    ImGui::Text("view deny (%s): authored %llu / VR %llu",
+                g_vdAllowMode.load(std::memory_order_relaxed) ? "ALLOW-ONLY" : "deny",
                 static_cast<unsigned long long>(g_vdDenied.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(
                     g_vdSubstituted.load(std::memory_order_relaxed)));

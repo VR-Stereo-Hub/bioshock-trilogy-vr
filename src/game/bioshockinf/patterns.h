@@ -279,6 +279,64 @@ inline constexpr uint32_t kGetAnimActionPlayerRva = 0x7033C0;
 inline constexpr uint32_t kSetTimerFamilyRva = 0x249D60;
 inline constexpr uint32_t kFidgetTimerFNameGlobalRva = 0xFFEC50;
 
+// ---- The view-consumer DENY SET (derived s55/s56) --------------------------
+// GetPlayerViewPoint (kGetPlayerViewPointRva) serves the renderer AND
+// gameplay. The camera drive substitutes the VR head pose into the out-params
+// per dispatch; gameplay consumers (Use/interaction traces, button hints,
+// scripted look/facing triggers) evaluating against that pose never pass
+// their aim/reach gates, which is why raffle-class scripted interactive beats
+// wedge under VR (s54d, proven by strip-mid-stall). The fix: callers in this
+// set keep the engine's AUTHORED out-params; everyone else (the scene build,
+// unknown callers) gets the VR view. Fail-open = substitute-for-all = the
+// stereo-known-good historical behaviour.
+//
+// DERIVATION (s55 offline capstone census + s56 live flat + s56 HEADSET
+// bisect - the headset leg is load-bearing, see 0x1E1367):
+// - The RENDER set is {0x26B499, 0x1E1367}:
+//   0x26B499 (scene build, parent 0x1FE05F, the s43 scene-draw outer frame):
+//     stereo pairing lives in the pass-1 base stamp + pass-2 camReplay inside
+//     the detour, both fed by this dispatch. Proven flat s56:
+//     allow-only{0x26B499} keeps camReplays/s == draws/s.
+//   0x1E1367 (fn 0x1E1350, GetActorEyesViewPoint wrapper, DIRECT-call
+//     flavor): MUST keep the VR pose. Denying it produces an OFFSET-DEPENDENT
+//     post-process smear in the headset - the world is sharp only while the
+//     head aligns with the authored view and turns into radial blur/warp
+//     everywhere else (VDXR, user-judged, 4-flip bisect s56: full-set smear,
+//     minus-the-per-draw-sites smear, minus-1E1367 SHARP, off sharp). The
+//     flat sim NEVER shows this (discrete yaw + settle leaves no continuous
+//     divergence), which is why s54e/s55 flat evidence kept mis-attributing
+//     it. The s55 "deny{0x1E1367} arms the raffle lady" observation was
+//     confounded - the interaction path is covered by the VIRTUAL flavor
+//     0x1E13DC below (headset s56: raffle chain perfect with 0x1E1367
+//     substituting).
+// - 0x203E73 (fn 0x203E40) discards both out-params (pop esi; ret) -
+//   EXONERATED, deliberately absent from the set.
+// - Each denied caller, with its evidence:
+//   0x1E13DC (fn 0x1E13C0, the eyes-viewpoint wrapper's VIRTUAL flavor,
+//     call [vtbl+0x2F4]) - the interaction-consumer read: with it denied
+//     (and 0x1E1367 substituting) the raffle lady arms, the take-ball press
+//     is accepted and the whole chain plays (headset s56).
+//   0x22587F - per-draw publisher into globals (VA 0x13AB894 + 0x132FFF0
+//     family); part of the press-accept set since s55.
+//   0x5EA483 (fn 0x5EA400, single parent 0x5EBCA7 in the 0x5EBxxx scripted-
+//     sequence native cluster) - per-local-player "is the player looking at
+//     the target" view-cone gate (viewpoint -> target delta into the cone
+//     check at 0x5EA380). THE post-take-ball stall: denying it live unstuck
+//     the stalled reveal beat IN THE SAME SECOND (s56).
+//   0x5B2C8C, 0x59C87D, 0x244CF4, 0x52F301 (audio-listener-shaped),
+//   0x5344E8 (inside kXGetWeaponStartTraceLocationImplRva), 0x61C289,
+//   0x5F9A94 - the remaining census callers, all gameplay-shaped, denied so
+//   every raffle-class gate in un-visited scenes reads the authored view
+//   (the fix must self-apply, not be scene-specific). Headset s56: this
+//   exact 10-caller set is sharp on head motion AND played the raffle chain
+//   end to end with no stalls.
+inline constexpr uint32_t kSceneBuildViewCallerRva = 0x26B499; // record only
+inline constexpr uint32_t kEyesViewDirectCallerRva = 0x1E1367; // record only - NEVER deny
+inline constexpr uint32_t kViewConsumerDenyRvas[] = {
+    0x1E13DC, 0x22587F, 0x5EA483, 0x5B2C8C, 0x59C87D,
+    0x244CF4, 0x52F301, 0x5344E8, 0x61C289, 0x5F9A94,
+};
+
 // ---- UE3 reflection (derived offline session 36, DR-I1) --------------------
 //
 // Derivation, in full, because it is reusable and it is what made the frameless
