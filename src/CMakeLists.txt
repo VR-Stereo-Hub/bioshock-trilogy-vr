@@ -125,6 +125,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/hands.h
     game/bioshockinf/hide.cpp
     game/bioshockinf/hide.h
+    game/bioshockinf/hint.cpp
+    game/bioshockinf/hint.h
     game/bioshockinf/hud.cpp
     game/bioshockinf/hud.h
     game/bioshockinf/config.cpp

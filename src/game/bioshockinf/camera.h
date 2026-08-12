@@ -50,6 +50,14 @@ uint64_t silent_ms();
 // it is only known to have been valid at the last dispatch.
 void* last_player_controller();
 
+// s58: head-directed USE policy (config `interactHeadUse`, default on). ON
+// removes the USE-target consumer (patterns.h kInteractionUseViewCallerRva)
+// from the seeded deny set so USE arming follows the composed head view;
+// OFF restores the full s56 body-locked set. Enforced by the setter in
+// whichever order config load / F10 / commands run.
+bool head_use_enabled();
+void set_head_use(bool on);
+
 // Rung 3c: how many doubled draws have had their camera replayed (one BURST
 // per pass-2 attempt, however many times the seam dispatched inside it).
 // The SR acceptance gate is bursts == scenedraw's second-draw count.

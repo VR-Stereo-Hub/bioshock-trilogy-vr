@@ -10,6 +10,7 @@
 #include "game/bioshockinf/hands.h"
 #include "game/bioshockinf/hide.h"
 #include "game/bioshockinf/melee.h"
+#include "game/bioshockinf/hint.h"
 #include "game/bioshockinf/xhair.h"
 
 #include "core/framework/command.h"
@@ -367,6 +368,24 @@ void vd_add(uint32_t rva) {
     BVR_LOG("[bsi] vdeny: deny set FULL (%u slots) - 0x%X not added",
             static_cast<unsigned>(kVdSlots), rva);
 }
+
+bool vd_del(uint32_t rva) {
+    bool hit = false;
+    for (auto& s : g_vdDeny) {
+        if (s.load(std::memory_order_relaxed) == rva) {
+            s.store(0, std::memory_order_relaxed);
+            hit = true;
+        }
+    }
+    return hit;
+}
+
+// s58: head-directed USE. ON (default) removes the USE-target consumer
+// 0x1E13DC from the deny set so it reads the composed head view - USE
+// arming follows where the HEAD looks; OFF restores the full s56 set (the
+// s57b body-locked behaviour). The setter enforces the invariant whichever
+// order config load / F10 / commands arrive in.
+std::atomic<bool> g_headUse{true};
 
 // One-shot stack backtrace, armed per caller return RVA (`bsicam stack
 // <hexRva>`): the next detour call whose immediate caller matches logs the
@@ -1009,6 +1028,8 @@ float cfg_get_meleehidegun() { return melee::hide_gun() ? 1.0f : 0.0f; }
 void cfg_set_meleehidegun(float v) { melee::set_hide_gun(v != 0.0f); }
 float cfg_get_xhairhide() { return xhair::enabled() ? 1.0f : 0.0f; }
 void cfg_set_xhairhide(float v) { xhair::set_enabled(v != 0.0f); }
+float cfg_get_headuse() { return head_use_enabled() ? 1.0f : 0.0f; }
+void cfg_set_headuse(float v) { set_head_use(v != 0.0f); }
 // s52 round 2: the HUD quad's placement as preset keys (headset verdict:
 // icons too small, position/size need live tuning + persistence). The quad
 // state lives in core (set_hud_quad); these read-modify-write one component.
@@ -1079,6 +1100,7 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"meleeFixMode", cfg_get_meleemode, cfg_set_meleemode, 0.0f, 2.0f},
     {"meleeHideGun", cfg_get_meleehidegun, cfg_set_meleehidegun, 0.0f, 1.0f},
     {"hudCrosshairHide", cfg_get_xhairhide, cfg_set_xhairhide, 0.0f, 1.0f},
+    {"interactHeadUse", cfg_get_headuse, cfg_set_headuse, 0.0f, 1.0f},
 };
 
 // ---------------------------------------------------------------------------
@@ -1525,6 +1547,7 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
                       // BEFORE hide (the hide gate reads this tick's verdict)
     hide::tick(now);  // s53: FP-rig visibility gate - AFTER cine (fresh hold verdict)
     xhair::tick(now); // s57: the flat-crosshair kill (sweep + bit watchdog)
+    hint::tick(now);  // s58: the prompt oracle (read-only; idle unless watching)
     // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
     // Load restores the whole session shape - the user's call, overriding the
     // earlier latch-then-click design). Same game-thread lane as the picker.
@@ -1742,7 +1765,28 @@ bool install(const bvr::pattern_scan::ProcessImage& image) {
             "gameplay callers read the AUTHORED view, the scene build keeps the VR pose)",
             static_cast<unsigned>(sizeof(patterns::kViewConsumerDenyRvas) /
                                   sizeof(patterns::kViewConsumerDenyRvas[0])));
+    // s58: apply the head-directed USE policy on top of the fresh seed (the
+    // setter removes kInteractionUseViewCallerRva when the policy is on).
+    set_head_use(g_headUse.load(std::memory_order_relaxed));
     return true;
+}
+
+bool head_use_enabled() { return g_headUse.load(std::memory_order_relaxed); }
+
+void set_head_use(bool on) {
+    g_headUse.store(on, std::memory_order_relaxed);
+    const uint32_t rva = patterns::kInteractionUseViewCallerRva;
+    if (on) {
+        if (vd_del(rva))
+            BVR_LOG("[bsi] headuse: ON - USE consumer 0x%X un-denied (USE arming "
+                    "follows the composed head view)",
+                    rva);
+    } else {
+        vd_add(rva);
+        BVR_LOG("[bsi] headuse: off - USE consumer 0x%X denied again (body-locked "
+                "USE, the raw s56 set)",
+                rva);
+    }
 }
 
 bool has_fired() {
@@ -2148,6 +2192,21 @@ bool handle_command(const char* args) {
             } else {
                 BVR_LOG("[bsi] usage: bsicam vdeny add <hexRva>");
             }
+        } else if (strncmp(v, "del", 3) == 0) {
+            // s58: one-at-a-time un-deny for the interaction-caller sweep -
+            // clear+9-re-adds worked but was 10x the command traffic per leg.
+            unsigned rva = 0;
+            if (sscanf_s(v + 3, "%x", &rva) == 1 && rva) {
+                const bool hit = vd_del(rva);
+                BVR_LOG("[bsi] vdeny: %s 0x%X%s", hit ? "removed caller" : "no such caller",
+                        rva,
+                        hit ? (g_vdAllowMode.load(std::memory_order_relaxed)
+                                   ? " (allow mode: back to authored)"
+                                   : " (deny mode: gets the VR view again)")
+                            : " in the set");
+            } else {
+                BVR_LOG("[bsi] usage: bsicam vdeny del <hexRva>");
+            }
         } else {
             char set[220] = {};
             int n = 0;
@@ -2158,7 +2217,7 @@ bool handle_command(const char* args) {
             const bool allow = g_vdAllowMode.load(std::memory_order_relaxed);
             BVR_LOG("[bsi] vdeny: %s | mode %s | set:%s | authored (denied) %llu, "
                     "VR-substituted %llu | usage: bsicam vdeny on|off|mode deny|allow|"
-                    "add <hexRva>|clear|status",
+                    "add <hexRva>|del <hexRva>|clear|status",
                     g_vdOn.load(std::memory_order_relaxed) ? "ON" : "off",
                     allow ? "ALLOW-ONLY" : "deny",
                     n ? set : (allow ? " (empty - authored everywhere)"

@@ -3,6 +3,7 @@
 #include "core/gfx/gfx_hud.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/xhair.h"
 
 #include <imgui.h>
@@ -110,6 +111,10 @@ void draw_debug_ui() {
     ImGui::TextDisabled("save with vrpreset save (defaults) / saveas <name> (preset)");
     // s57: the flat-crosshair kill lives with the HUD controls.
     xhair::draw_debug_ui();
+    // s58: head-directed USE - arming follows the head view (0x1E13DC
+    // un-denied) vs the s56 body-locked set. `bsicam vdeny` stays the dev A/B.
+    bool hu = camera::head_use_enabled();
+    if (ImGui::Checkbox("HEAD-DIRECTED USE (s58)", &hu)) camera::set_head_use(hu);
 }
 
 } // namespace bvr::bsi::hud

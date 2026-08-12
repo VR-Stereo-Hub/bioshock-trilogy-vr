@@ -336,6 +336,16 @@ inline constexpr uint32_t kViewConsumerDenyRvas[] = {
     0x1E13DC, 0x22587F, 0x5EA483, 0x5B2C8C, 0x59C87D,
     0x244CF4, 0x52F301, 0x5344E8, 0x61C289, 0x5F9A94,
 };
+// s58: the USE-target consumer inside the s56 deny set - the eyes-viewpoint
+// wrapper's VIRTUAL flavor. Cornered flat at a vending machine with the
+// PC ButtonUseTarget (+0x176C, name-derived) as the oracle: un-denying ONLY
+// this caller flips USE-target arming from the pawn facing to the composed
+// head view (pawn yaw + head residual, cone half-angle between 45 and 60 deg)
+// in BOTH directions, A/B/A with restore; the other nine candidates were
+// clean negatives (full table in ENGINE_NOTES s58). The head-use policy
+// (config `interactHeadUse`, default on) removes exactly this RVA from the
+// seeded set - the s56 partition is otherwise untouched.
+inline constexpr uint32_t kInteractionUseViewCallerRva = 0x1E13DC;
 
 // ---- UE3 reflection (derived offline session 36, DR-I1) --------------------
 //
