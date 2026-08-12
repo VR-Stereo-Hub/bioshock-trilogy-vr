@@ -732,6 +732,12 @@ Cinematics half:
       (0x26B499 + 0x1E1367 keep the VR pose - the latter is render-side, headset-proven).
       **Raffle chain headset-accepted end to end with no stalls.** Every raffle-class
       beat inherits by construction; re-verify others opportunistically (TESTING "S56")
+- [x] **Head-directed USE (s58, the finer split)**: flat-shipped - 0x1E13DC (the
+      eyes-viewpoint VIRTUAL flavor) cornered as THE USE-target consumer by a 10-caller
+      A/B/A sweep against the PC `ButtonUseTarget` oracle (+0x176C, name-derived);
+      the head-use policy un-denies exactly it (config `interactHeadUse` default on,
+      F10 checkbox, `bsicam vdeny add|del` the dev A/B). Eye-check + soak green.
+      **Headset checklist TESTING "S58" pending** (feel + the raffle-chain re-verify)
 - [ ] Correct projection claim throughout - BS1's cinematics rendered their own FOV while the claim
       said something else, and read as a fisheye (judge on the headset Matinee run)
 - [x] Selectable rig behaviour during cutscenes: the s52 HEAD RADIO (head look default /

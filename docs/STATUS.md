@@ -17,7 +17,64 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 57 (THE MODEL LANE LANDED FLAT - sprint glue, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`, NOT merged, awaiting the headset checklist)
+### Infinite: current state after session 58 (HEAD-DIRECTED USE SHIPPED FLAT - 0x1E13DC cornered as THE USE consumer, policy default-on; branch `claude/bioshock-head-interaction-bebe6d`, NOT merged, awaiting the headset checklist)
+
+**Session 58 (2026-08-13) closed the deal-breaker at the mechanism level:
+USE-target selection follows the HEAD. The s56 10-caller deny set stays
+intact except that the head-use policy un-denies exactly 0x1E13DC (the
+eyes-viewpoint VIRTUAL flavor - ENGINE_NOTES s56's prime suspect,
+confirmed). Evidence-first, per the s58 ladder:**
+
+1. **The oracle**: the GFx ButtonHint widget lane was a dead end (no
+   IsShown on the CLIK hint classes; the container's entries TArray is
+   sticky bookkeeping - it survives hide/walk-away; show/hide is pure
+   ActionScript). The REAL oracle: **`XPlayerController.ButtonUseTarget`
+   (InterfaceProperty, +0x176C this build, derived by name)** - the
+   interaction system's live selected USE target. `bsihint` prints it;
+   `bsihint watch on` edge-logs target changes. Whole vocabulary banked in
+   ENGINE_NOTES s58 (PossibleUseObjects, LastUsedTime +0x424, ...).
+2. **The sweep (user-parked at a vending machine, full VR sim)**: control =
+   body-locked (armed with head 60 off; null with body 90 off + head
+   compensating). Un-denying **0x1E13DC alone** INVERTS both legs (head
+   rules); the other NINE candidates read identical to control - clean
+   negatives, full table in ENGINE_NOTES. Cone half-angle 45-60 deg,
+   applies to whichever view the consumer reads. Two mechanism findings:
+   loot containers (XLootContainerStaticMeshActor) arm by PROXIMITY alone
+   (facing irrelevant - they never discriminate); the sim `head rot +X`
+   maps to MINUS X on the written view yaw (the compensated leg is
+   body+X/head+X, not head-X - the wrong sign cost three legs).
+3. **The fence (flat, all green)**: eye-check PASS all legs incl. pairing
+   90/90 with the un-deny live in gameplay; 4-min soak - aim seam
+   calls==substituted throughout (no s55-class freeze), replays healthy;
+   fresh boot on the shipped build seeds 10 then logs `headuse: ON`,
+   save loads to free play normally. The raffle-class chain is the
+   HEADSET's leg (TESTING "S58" step 3) - judged low-risk because the s54
+   stall was the FULL substitution under a sim head that never looks at
+   targets, in the headset the head IS the pointer, and scripted holds
+   suspend the drive (authored gates keep the authored view).
+4. **Ship shape**: patterns.h `kInteractionUseViewCallerRva = 0x1E13DC`;
+   `camera::set_head_use()` enforces the invariant (seed-then-del); config
+   key `interactHeadUse` default ON; F10 -> HUD -> "HEAD-DIRECTED USE
+   (s58)"; `bsicam vdeny del <hexRva>` added (16-slot set, runtime A/B, no
+   reinstall). New read-only instrument module `hint.cpp` (`bsihint`).
+
+**Traps burned (s58)**: the game PAUSES on focus loss and the pause MENU
+does not close on refocus (fidget-silence + quads=1 = the tell; `game-key
+Esc` resumes - NEVER Enter, RESTART CHECKPOINT is two slots down); the sim
+idle hand pose parks the FP arm across the whole view (`hand l|r offset`
+clears captures); this save's spawn is the Town Center fair plaza and its
+load cycle closes in ~90 s with NO scripted-hold markers (the "~3 min
+beat" was save-specific); Infinite has NO manual saves - user positioning
+is per-boot standing state, not savable.
+
+**NEXT (s58 close-out): the numbered headset checklist is TESTING "S58"** -
+head-vs-body feel at machines/doors/kinetoscopes + loot unchanged, the F10
+A/B both ways, the FULL raffle chain re-verify (any stall: flip the s58
+checkbox off mid-beat and report which beat), one sharpness sweep. After
+acceptance: merge to `bioshock-infinite`. Secondary backlog unchanged
+(TESTING "S52" leftovers; the reload glitch stays parked post-release).
+
+### Infinite: state after session 57 (superseded by s58 above) (THE MODEL LANE LANDED FLAT - sprint glue, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`, NOT merged, awaiting the headset checklist)
 
 **Session 57 (2026-08-12) worked the five user-prioritized items; all five are
 implemented, flat-proven at the mechanism level, and installed. Eye-check
@@ -7202,6 +7259,37 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 58 - 2026-08-13 - HEAD-DIRECTED USE: 0x1E13DC cornered by the ButtonUseTarget oracle, policy shipped flat
+
+On branch `claude/bioshock-head-interaction-bebe6d` (off origin/bioshock-infinite
+@ bb0df6a). The deal-breaker session, evidence-first per the s58 ladder; full
+derivation in ENGINE_NOTES "s58", headset checklist TESTING "S58".
+
+- **The oracle hunt**: the planned GFx ButtonHint widget lane FALSIFIED as a
+  live signal (no IsShown on the hint classes; the container entries TArray
+  is sticky through hide/walk-away - show/hide is ActionScript-only). The
+  validated oracle: `XPlayerController.ButtonUseTarget` (InterfaceProperty
+  +0x176C, by-name), the live facing-gated USE target. `bsihint` (new
+  hint.cpp instrument) prints it + edge-logs changes in watch mode.
+- **The sweep**: at a user-parked vending machine, body yaw via relative
+  mouse + head yaw via xrsim, A/B/A per candidate with restore verified:
+  un-denying **0x1E13DC alone** flips USE arming to the composed head view
+  in BOTH directions; all nine other deny-set callers = control. Cone
+  half-angle 45-60 deg. Findings: loot containers arm by proximity only;
+  `head rot +X` = MINUS X on the written view yaw (sign trap, cost 3 legs).
+- **The fence**: eye-check PASS (pairing 90/90) with the un-deny live;
+  4-min soak clean (aim calls==substituted, no s55 freeze); shipped-build
+  fresh boot seeds 10 -> `headuse: ON`, save to free play normal. The
+  raffle chain re-verify is the headset's leg (judged low-risk: scripted
+  holds suspend the drive; in the headset the head IS the pointer).
+- **Ship**: `kInteractionUseViewCallerRva`, `camera::set_head_use()`
+  (seed-then-del invariant), config `interactHeadUse` default ON, F10
+  "HEAD-DIRECTED USE (s58)", `bsicam vdeny del` (new verb), hint.cpp.
+- **Traps**: pause-on-focus-loss leaves a MENU refocus cannot close
+  (Esc, never Enter - RESTART CHECKPOINT is two slots down); sim idle
+  hands block the captures (`hand l|r offset`); this save = fair-plaza
+  spawn, ~90 s load cycle, NO scripted-hold markers; no manual saves.
 
 ### Session 57b - 2026-08-12 (same evening) - headset verdicts in; three fixes shipped, interaction split deferred to s58
 

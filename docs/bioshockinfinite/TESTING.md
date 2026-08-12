@@ -813,6 +813,40 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S58 checklist (HEAD-DIRECTED USE; branch `claude/bioshock-head-interaction-bebe6d`)
+
+One mechanism this build: USE-target selection now follows your HEAD (the
+0x1E13DC un-deny, flat-proven at a vending machine with the ButtonUseTarget
+oracle - ENGINE_NOTES s58). Default ON. The A/B lever is F10 -> HUD ->
+"HEAD-DIRECTED USE (s58)" (off = the old body-locked behaviour); the log
+mirror is `bsihint watch on` (one line per USE-target change - leave it on
+for the session, it is cheap). Expected outcomes are written next to each
+step; report any step that reads differently.
+
+1. **Head-vs-body targeting feel (the deal-breaker item)**: stand near a
+   vending machine / door / kinetoscope. Keep the right stick (body) OFF it
+   and LOOK at it - the use prompt must arm where you look. Look away - it
+   must drop. Then the old failure: body facing it, head turned away - the
+   prompt should now follow your HEAD, not the body. Try a loot box too:
+   loot arms by PROXIMITY (facing never mattered for it) - no change
+   expected there.
+2. **A/B the checkbox**: F10 -> HUD -> "HEAD-DIRECTED USE (s58)" OFF =
+   interactions go back to body-locked (the s57 complaint returns). Back
+   ON = head-directed. Confirm both directions live.
+3. **THE RAFFLE-CLASS CHAIN, full re-verify (the s56 acceptance is at
+   stake)**: play the raffle end to end - activate, take-ball (look at the
+   basket when you press), announcer within seconds, reveal, apprehension,
+   the skyhook-counter QTE press, control back in free play. NO stalls
+   anywhere. If ANY beat stalls: F10 off the s58 checkbox and retry the
+   beat - report which beat and whether off unstuck it (that is the one
+   fact the flat lane cannot measure).
+4. **Doors and kinetoscopes**: open a door, view a kinetoscope - prompt
+   arms on look, the press works, the beat plays normally.
+5. **One sharpness sweep**: move your head in every direction in free play -
+   the image must stay SHARP everywhere (the 0x1E1367 smear class is
+   headset-only; s58 never touched the render set, so any new smear is a
+   stop-ship report).
+
 ## S57 checklist (THE MODEL LANE - sprint kill, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`)
 
 Five items this build, all flat-proven at the mechanism level; the LOOK

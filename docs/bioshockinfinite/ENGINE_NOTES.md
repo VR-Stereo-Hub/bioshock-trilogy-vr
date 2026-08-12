@@ -1896,7 +1896,97 @@ own); (e) the command.txt trailing-NEWLINE token trap (s51, recorder.h) bit
 a THIRD time - a verb check that requires `'\0'|' '` after the token
 silently degrades `<cmd> on` to a status print; accept `\n`/`\r` too.
 
-### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
+### s58: HEAD-DIRECTED USE - 0x1E13DC cornered as THE USE-target consumer; the PC ButtonUseTarget oracle; the finer split shipped
+
+**The result: un-denying ONLY 0x1E13DC (the eyes-viewpoint wrapper's VIRTUAL
+flavor, the s56 prime suspect) flips USE-target selection from the pawn
+facing to the COMPOSED HEAD VIEW (pawn yaw + head residual), both directions,
+A/B/A clean, with every other s56 deny-set caller a clean negative. Shipped
+as the head-use policy: patterns.h `kInteractionUseViewCallerRva = 0x1E13DC`,
+`set_head_use()` removes exactly that RVA from the seeded set (config
+`interactHeadUse` default ON, F10 "HEAD-DIRECTED USE (s58)" in the HUD
+section, `bsicam vdeny add|del 1E13DC` the dev A/B). The s56 partition is
+otherwise untouched; `vdeny del <hexRva>` was added for one-at-a-time
+un-deny (before s58, only on|off|add|clear|mode existed).**
+
+**THE ORACLE (the sweep's ground truth): `XPlayerController.ButtonUseTarget`,
+InterfaceProperty at PC+0x176C (this build; derive BY NAME per boot - the
+shipped instrument does).** The interaction system's live selected USE
+target: {object ptr, iface vtbl} pair, set while the arming cone holds, null
+otherwise. Read it raw (`bsidump 0x<PC> 2 176C`) or via `bsihint` (status
+prints it; `bsihint watch on` edge-logs every target change - the headset
+A/B surface). Neighbors banked from the same walk: `bIsUsingButtonUseTarget`
++0x68C, `ActiveProximityUseTargets` +0x1784, `UseTargetPercentUsed` +0x1790,
+`AllPossibleButtonUseTargets` +0x1B60, `PossibleUseObjects` +0x1B6C,
+`PointFromWhichToInitiateUse` +0x1B78, `ViewDirectionAtTimeOfUseInitiation`
++0x1B88, `LastUsedTime` +0x424 (PlayerController base; stamps on successful
+use). PC located via the detour's `last_player_controller()`.
+
+**Dead ends recorded so they are not re-hunted:**
+- **The GFx widget lane CANNOT be a live oracle.** XClikButtonHint /
+  XClikButtonHintsContainer carry NO IsShown (the xhair-style derivation
+  REFUSES - that bool is XClikHUDCrosshair's, not CLIK-generic). The
+  container's `CurrentButtonHintEntries` TArray (+0xB4) DOES fill when hints
+  display (pause menu container read Num 2; the gameplay container Num 1 at
+  a prompt) but it is STICKY - it holds the last-shown entries through
+  hide/look-away/walk-away, and near-vs-far differential dumps of container
+  +0xC0..0xE8 and widget +0x80..0x108 are byte-identical. Show/hide happens
+  purely in ActionScript (`_visible`), invisible to UProperty space.
+- **Loot containers (XLootContainerStaticMeshActor) arm by PROXIMITY alone**:
+  ButtonUseTarget holds them at 90 and even 180 deg of pawn yaw away. They
+  cannot discriminate head-vs-body; use a FACING-GATED class (vending
+  machine XVendingMachine here; doors/kinetoscopes same family) for any
+  view-split trial.
+- **The sim head-yaw SIGN trap (cost three legs): `head rot +X` maps to
+  MINUS X on the written engine view yaw** (drive_view: yaw = game yaw +
+  head residual; the residual sign is inverted vs the command). A
+  "compensated" leg is body+X with head **+X** (same sign), NOT head -X -
+  the wrong sign DOUBLES the offset. Confirmed against the `bsicam
+  heartbeat` written-view yaw (90.3 -> 120.8 for body+30).
+
+**The sweep (vending machine, user-parked; full VR sim session; per leg:
+body yaw via relative mouse (0.0488 deg/mickey, linear), head via xrsim,
+oracle read per config, restore verified between candidates):**
+
+| candidate un-denied | body ON target, head 60 off | body 90 off, head compensating | verdict |
+|---|---|---|---|
+| none (CONTROL, full s56 set) | ARMED (body rules) | null | body-locked baseline |
+| **0x1E13DC** | **null** | **ARMED** | **THE USE consumer - head rules** |
+| 0x22587F, 0x5B2C8C, 0x59C87D, 0x244CF4, 0x52F301, 0x5344E8, 0x61C289, 0x5F9A94, 0x5EA483 | ARMED | null | clean negatives (identical to control) |
+
+- Cone quantification: control (authored view = pawn) arms out to 45 deg of
+  pawn yaw, dead at 90 - the vending cone half-angle is between 45 and 60.
+  Un-denied, the same cone applies to the composed head view: head-only
+  offsets 10/20/30 armed, 60 dead; compensated body+30/head+30 armed
+  (view back on target), body+30/head-30 dead (the sign trap, view 60 off).
+- 0x1E1367 (render smear) and 0x26B499 (scene build) were never touched.
+
+**The regression fence (flat legs, all green):** eye-check PASS all legs
+with 1E13DC un-denied in gameplay (pairing 90/90, interocular 50.1/79.6%,
+moved 43.0/43.6, sep 0.0630); a 4-minute soak with the trial state held -
+aim seam calls==substituted the whole way (416k -> 437k, no s55-class
+freeze), camReplays healthy, no anomaly markers; fresh boot on the SHIPPED
+build seeds 10 then logs `headuse: ON - USE consumer 0x1E13DC un-denied`.
+The scripted-beat fence is the headset raffle chain (TESTING "S58") - the
+flat save has no boot hold to canary (this save's unequip/re-equip cycle
+closed in the first ~90 s, no `SCRIPTED hold` markers - the "~3 min beat"
+of s57 is save-specific, worth knowing).
+
+**Why the raffle-class risk is judged low (to be headset-confirmed):** the
+s54 stall was the FULL substitution (publisher 0x22587F, the 0x5EA483
+scripted cone helper, everything) under a sim head that never looked at the
+targets. The s58 split un-denies one caller, in the headset the user's head
+IS the pointing device (looking at the basket/lady is the natural pose),
+and scripted holds suspend the drive entirely (cine camera hold), so
+authored-camera gates during cinematics read the authored view regardless.
+
+**Session traps:** (a) the game PAUSES on focus loss and the pause menu
+does NOT close on refocus - fidget-churn silence + quads=1 on a capture is
+the tell, `game-key Esc` resumes (never Enter - it activates the selected
+menu item, and RESTART CHECKPOINT sits two slots down); (b) the sim idle
+hand pose parks the FP arm across the view - `hand l|r offset 0.25 ±0.2
+-0.5` clears the captures; (c) this save's spawn is the Town Center fair
+plaza (AD board / ice-cream cart / benches), NOT a corridor.
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle
 settle inside the FP Morpheme graph. The game drives a control param
