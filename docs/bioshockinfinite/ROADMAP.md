@@ -782,6 +782,15 @@ Goal: the things BioShock never had, plus the full DLC sweep.
       is s57's last-priority item; B replaces it entirely if built.)
 - [ ] The cross-game consolidation ("healing") pass shared with BS1/BS2 - see the main
       ROADMAP's polish milestone; Infinite's duplicated adapter code joins it.
+- [ ] **The reload-then-shoot model glitch (s57, user-parked 2026-08-13).** Chained
+      shoot->reload->shoot makes the hand model glitch between the held fire pose and the
+      reload anim's compose pass-through - minor and inconsistent; the accepted build keeps
+      it. Two deep fixes (release fade, reload hold) were flat-clean but HEADSET-FALSIFIED
+      (glitch stayed, sprint + execution regressed) and reverted - the full do-not-reuse
+      record and the lessons live in ENGINE_NOTES "s57d/s57e REVERTED". Rule for the next
+      attempt: reload + sprint + melee-execution must be A/B'd in the SAME headset session
+      (they share the substitution machinery), and the flat spread metric alone is not an
+      acceptance instrument.
 
 ---
 

@@ -93,10 +93,11 @@ idle on img-diff - back up + strafe first, ~1900 UU corridor).
 - **s57d/e REVERTED (2026-08-13, user verdict)**: the reload-then-shoot
   deep fixes (release fade + reload hold) were headset-falsified - the
   glitch stayed and sprint + melee-execution regressed; src is back to
-  byte-identical s57c (the accepted build). The reload glitch is PARKED as
-  a known minor inconsistency; any future attempt must headset-A/B reload
-  + sprint + execution together (do-not-reuse record in ENGINE_NOTES
-  "s57d/s57e REVERTED"). The melee fixes and everything else stay.
+  byte-identical s57c (the accepted build). The melee fixes and everything
+  else stay. **USER RE-VERDICT after the revert: everything back to
+  normal.** The reload glitch is MOVED TO THE POST-RELEASE BACKLOG
+  (bioshockinfinite/ROADMAP.md; do-not-reuse record in ENGINE_NOTES
+  "s57d/s57e REVERTED"). s57 is CLOSED and merged to `bioshock-infinite`.
 - **DEFERRED - s58 PRIORITY 1: head-directed interaction.** Interactions
   aim with the BODY (right stick), not the head - the s56 partition as
   built (interaction consumers deliberately read the engine view; the VR
@@ -105,11 +106,30 @@ idle on img-diff - back up + strafe first, ~1900 UU corridor).
   un-deny only it, and fence with the raffle-class beats + eye-check (the
   s56 acceptance must survive). ENGINE_NOTES "s57b" carries the notes.
 
-**NEXT SESSION (s58): (1) the head-directed interaction split (above -
-the one big open item); (2) re-judge the three s57b fixes (TESTING "S57
-round 2") + the cinematics regression check the user deferred; (3) the
-remaining TESTING "S52" verdicts (arsenal tuning + calibration save, HUD
-sliders, subtitles) if headset time remains.**
+**NEXT SESSION (s58): THE HEAD-DIRECTED INTERACTION SPLIT - the user's
+DEAL-BREAKER, the session's single focus.** Interactions must target where
+the HEAD looks while every interactive cinematic / scripted view-cone gate
+(the raffle class) keeps working. Evidence-first ladder: (1) build the flat
+PROMPT ORACLE - the interaction prompt is a GFx widget (XClikButtonHint
+instances were live in the s57 crosshair walk); its IsShown bits at a
+derived offset are a log-readable "prompt visible" signal, which makes the
+whole caller sweep automatable; (2) with the oracle live and the head yawed
+off the body axis (sim `head rot`), sweep the 10-caller deny set - un-deny
+ONE candidate at a time (`bsicam vdeny` is runtime-togglable, 16 slots) and
+read which caller makes the prompt follow the HEAD; prime suspect first:
+0x1E13DC (the eyes-viewpoint VIRTUAL flavor - ENGINE_NOTES s56 named it
+the interaction path), NEVER touch 0x1E1367 (render smear) or 0x26B499;
+(3) regression fence per candidate: the load-time scripted beat must still
+complete + re-equip (the free flat canary every boot), `bsicam callers`
+mid-any-stall, eye-check leg 0 per build; (4) if ONE caller serves both
+USE-targeting and the beat gates (no view split can work), the fallback is
+the TRACE-SEAM substitution - find the USE/interaction trace native (the
+fire.cpp XGetWeaponStartTraceLocation shape) and substitute the head (or
+hand-laser) ray directly, leaving the s56 partition untouched; (5) headset:
+user positions at interactables + saves, judges head-vs-body targeting,
+then re-runs the raffle-class chain (TESTING "S56"). Secondary if time:
+TESTING "S52" leftovers (arsenal tuning + calibration save, HUD sliders,
+subtitles).
 
 ### Infinite: state after session 56 (superseded by s57 above) (THE INTERACTION-VIEW FIX SHIPPED AND HEADSET-ACCEPTED - the raffle chain plays end to end under full VR, automatic at install; branch `claude/bioshock-interaction-view-fix-c1be42`, NOT merged)
 
