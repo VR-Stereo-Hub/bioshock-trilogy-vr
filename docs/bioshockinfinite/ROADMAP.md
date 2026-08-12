@@ -771,6 +771,18 @@ Goal: the things BioShock never had, plus the full DLC sweep.
       playing, not by any check that was run.**
 - [ ] Merge `bioshock-infinite` into `main`
 
+## Post-release backlog (worth trying, not release-gated; user-curated)
+
+- [ ] **Two-bone arm IK (the "hand without the arm" ceiling, s57 option B).** Shoulder anchored
+      to the body, forearm + upper-arm atoms computed per frame (heuristic elbow pole:
+      down-and-slightly-out) so the wrist lands on the driven hand - the full arm tracks the
+      controller: no skin-weight stretch, no stump, and flourish-class stretching disappears by
+      construction. Textbook math on the existing bones.cpp atom writes; the cost is the
+      elbow-tuning headset loop. (The cheap cousin - the collapse-point stump drive, option A -
+      is s57's last-priority item; B replaces it entirely if built.)
+- [ ] The cross-game consolidation ("healing") pass shared with BS1/BS2 - see the main
+      ROADMAP's polish milestone; Infinite's duplicated adapter code joins it.
+
 ---
 
 ## Deferred / post-v1

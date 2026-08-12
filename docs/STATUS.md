@@ -85,24 +85,18 @@ TESTING "S56"; the s54 state below carries forward otherwise.
 4. **The crosshair hunt**: `bsigfx scan XClikHUDCrosshair` / `scan HUDMovie`
    in the gameplay save, chase with bsiprop/bsifields, then the setb/cmd
    levers - disable the flat-screen crosshair.
-5. **Exploratory (non-blocking): the wrist stump/arm problem.** The plain
+5. **LAST PRIORITY - the wrist stump look (option A only).** The plain
    zero-scale hide EXISTS and is REJECTED by the user (the pinch lands
-   inside the hand and looks wrong). Why: zero-scaled verts collapse toward
-   the bone's CURRENT (authored) position, which is arbitrary relative to
-   the driven hand. Two escalating fixes:
-   (A) CHEAP - drive the collapse point: write a forearm atom that parks
+   inside the hand). Why: zero-scaled verts collapse toward the bone's
+   CURRENT (authored) position, arbitrary relative to the driven hand. The
+   fix to try: DRIVE THE COLLAPSE POINT - write a forearm atom that parks
    the bone just behind the driven wrist along the hand's arm axis with a
-   small epsilon scale (5-15%) instead of zero - the mixed-weight ring
+   small epsilon scale (5-15%) instead of zero, so the mixed-weight ring
    forms a symmetric capped stub/cuff aligned with the hand (the sleeve
    verts form the cap). Two F10 sliders (scale, back-offset), tuned in the
-   headset. Same atom machinery as bones.cpp.
-   (B) THE CEILING - two-bone arm IK: shoulder anchored to the body,
-   forearm + upper-arm atoms computed per frame (heuristic elbow pole:
-   down-and-slightly-out) so the wrist lands on the driven hand - full arm
-   tracks the controller, no stretch, no stump, and flourish-class stretch
-   disappears by construction. Textbook math on the existing atom writes;
-   its cost is the elbow-tuning headset loop. Try A first; B if A still
-   reads wrong.
+   headset. Same atom machinery as bones.cpp. The ceiling version (two-bone
+   arm IK, option B) is MOVED TO THE POST-RELEASE BACKLOG
+   (bioshockinfinite/ROADMAP.md, after I11) by user call 2026-08-12.
 
 ### Infinite: state after session 54 (superseded by s55 above) (THE RAFFLE WEDGE ROOT-CAUSED AND FIXED - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`, NOT merged)
 
