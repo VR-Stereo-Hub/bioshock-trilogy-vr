@@ -9,6 +9,7 @@
 #include "game/bioshockinf/cine.h"
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/inf_math.h"
+#include "game/bioshockinf/melee.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/profiles.h"
 
@@ -88,7 +89,16 @@ FVector* __fastcall FireStartDetour(void* self, void* edx, FVector* out, void* w
     g_playerCalls.fetch_add(1, std::memory_order_relaxed);
     // s46 stance glue: a player shot resets the SubtleFidget stance, so it
     // opens the ready-pose capture window (bones.cpp).
-    bones::note_player_fire();
+    // s57: melee dispatches through this SAME seam (weapon=NULL either way -
+    // the param does not discriminate; the Y-edge does, melee.cpp). A
+    // melee-classified dispatch must NOT open the fire window (it would
+    // freeze the authored swing) and must CANCEL a live one plus its pending
+    // captures (a mid-swing bank poisons later shots). With a cine hold
+    // already open (the raffle skyhook QTE) the pre-s57 path runs unchanged.
+    if (melee::classify_dispatch(GetTickCount64(), cine::hold()))
+        bones::cancel_fire_glue("melee dispatch");
+    else
+        bones::note_player_fire();
 
     const FVector engine = *r;
     g_lastEngine[0].store(engine.x, std::memory_order_relaxed);

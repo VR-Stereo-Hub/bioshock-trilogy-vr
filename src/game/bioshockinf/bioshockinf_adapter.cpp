@@ -20,6 +20,8 @@
 #include "game/bioshockinf/hud.h"
 #include "game/bioshockinf/input_drive.h"
 #include "game/bioshockinf/lens.h"
+#include "game/bioshockinf/melee.h"
+#include "game/bioshockinf/xhair.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/profiles.h"
 #include "game/bioshockinf/recorder.h"
@@ -222,6 +224,8 @@ bool BioshockInfAdapter::handleCommand(const char* cmd, const char* args) {
     if (fidget::handle_command(cmd, args)) return true;
     if (hands::handle_command(cmd, args)) return true;
     if (hide::handle_command(cmd, args)) return true;
+    if (melee::handle_command(cmd, args)) return true;
+    if (xhair::handle_command(cmd, args)) return true;
     if (gfx::handle_command(cmd, args)) return true;
     if (bones::handle_command(cmd, args)) return true;
     if (profiles::handle_command(cmd, args)) return true;

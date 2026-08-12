@@ -293,6 +293,42 @@ void cmd_scan(const char* nameArg, const char* capArg) {
             objects > printCap ? " (print-capped; bsigfx scan <Name> <cap>)" : "");
 }
 
+// s57: the scan machinery as a callable (see gfx.h). Same sweep as cmd_scan,
+// but the caller wants only live INSTANCES: candidates whose class NAME
+// equals the target name (the UClass reads class=Class, the CDO's own name
+// is Default__X and never matches the scanned FName index).
+int find_instances_impl(const char* className, void** out, int cap) {
+    const int32_t nameOff = reflect::uobject_name_offset();
+    if (nameOff < 0) return -1;
+    const int32_t idx = patterns::fname_find(className);
+    if (idx < 0) return -1;
+    constexpr int kRawCap = 1024;
+    static const uint8_t* s_raw[kRawCap]; // game thread only
+    int raw = 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (const uint8_t* p = reinterpret_cast<const uint8_t*>(0x10000);
+         VirtualQuery(p, &mbi, sizeof mbi) == sizeof mbi &&
+         p < reinterpret_cast<const uint8_t*>(0x7FFE0000);
+         p = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize) {
+        const bool wantProtect =
+            (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) &&
+            !(mbi.Protect & PAGE_GUARD);
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && wantProtect)
+            raw = scan_region_seh(static_cast<const uint8_t*>(mbi.BaseAddress),
+                                  mbi.RegionSize, idx, s_raw, kRawCap, raw);
+    }
+    const int kept = raw > kRawCap ? kRawCap : raw;
+    int n = 0;
+    for (int i = 0; i < kept && n < cap; ++i) {
+        uint8_t* cand = const_cast<uint8_t*>(s_raw[i]) - nameOff;
+        char cls[64] = {};
+        if (!reflect::class_name_of(cand, cls, sizeof cls) || !cls[0]) continue;
+        if (strcmp(cls, className) != 0) continue;
+        out[n++] = cand;
+    }
+    return n;
+}
+
 // bsigfx scanc <hexClass> [cap]: the CLASS-POINTER flavor - enumerate live
 // INSTANCES of a UClass found by `scan` (candidate = dword address - 0x20,
 // the execIsA-derived UObject::Class slot). Catches instances whose own name
@@ -373,6 +409,10 @@ void cmd_scanc(const char* clsArg, const char* capArg) {
 }
 
 } // namespace
+
+int find_instances(const char* className, void** out, int cap) {
+    return find_instances_impl(className, out, cap);
+}
 
 bool handle_command(const char* cmd, const char* args) {
     if (strcmp(cmd, "bsigfx") != 0) return false;

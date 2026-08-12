@@ -3,6 +3,7 @@
 #include "core/gfx/gfx_hud.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
+#include "game/bioshockinf/xhair.h"
 
 #include <imgui.h>
 
@@ -107,6 +108,8 @@ void draw_debug_ui() {
     ch |= ImGui::SliderFloat("panel height offset (m)", &q[2], -1.5f, 1.5f);
     if (ch) bvr::vr::set_hud_quad(q[0], q[1], q[2]);
     ImGui::TextDisabled("save with vrpreset save (defaults) / saveas <name> (preset)");
+    // s57: the flat-crosshair kill lives with the HUD controls.
+    xhair::draw_debug_ui();
 }
 
 } // namespace bvr::bsi::hud

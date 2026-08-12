@@ -9,9 +9,11 @@
 #include <cstring>
 
 #include "core/hooks/pattern_scan.h"
+#include "core/input/xinput_bridge.h"
 #include "core/util/log.h"
 #include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/fidget.h"
+#include "game/bioshockinf/melee.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/reflect.h"
 
@@ -149,6 +151,37 @@ std::atomic<bool> g_fireGlueFull{true};   // full-hand ready substitution
 float g_readyAtoms[kMaxBones][8];         // per-bone ready bank (hands disjoint)
 bool g_readyAtomsHave[kMaxBones] = {};
 std::atomic<bool> g_readyAllValid[2] = {};
+// s57: the SPRINT glue. The probe falsified the s49b clamp shape for sprint:
+// NOTHING posts at the Morpheme message funnel and no by-name anim action
+// fires on a sprint edge - the state machine is driven inside the runtime.
+// What the travel-all A/B DID show: the sprint arm-pump is authored
+// articulation passing through the compose exactly like the s51 fire swing
+// (L cluster 103-124 deg / up to 70.8 cm sprinting vs 0.00 walking). So the
+// kill reuses the PROVEN machinery: the full-hand ready substitution held
+// while the composed pad says sprint - LS-click edge with the stick above
+// the enter threshold, exit when the stick drops below the exit threshold
+// (the game's own SprintEnter/ExitInputThreshold semantics, XHuman props).
+// Deliberately NOT ended on fire/melee: if the game auto-resumes sprint
+// after an attack our glue must still be holding, and the worst case of
+// over-holding is a frozen walk bob until the stick drops. A missing bank
+// captures at the ENGAGE instant (the input edge leads the anim ramp by at
+// most one drive, so the banked pose is the pre-sprint hold pose).
+// `bsibones sprintglue force on` is the pad-free flat lane (sim pad outage).
+std::atomic<bool> g_sprintKill{true};
+std::atomic<bool> g_sprintForce{false};
+std::atomic<bool> g_sprintActive{false};
+bool g_sprintPrevLs = false;
+uint64_t g_sprintPollMs = 0;
+uint32_t g_sprintEngages = 0;
+constexpr uint16_t kPadLeftThumb = 0x0040; // XINPUT_GAMEPAD_LEFT_THUMB
+constexpr float kSprintEnterMag = 0.50f;
+constexpr float kSprintExitMag = 0.35f;
+// s57: the stump cuff (option A). wq[7]=0 collapses verts to the collapse
+// point and the mixed-weight ring pinches INSIDE the hand (headset-rejected);
+// a small epsilon keeps the ring open so the sleeve verts form a symmetric
+// capped cuff behind the wrist instead. Tuned by the F10 slider next to the
+// cap-depth one (hands.cpp); not persisted until a headset verdict.
+std::atomic<float> g_stumpScale{0.10f};
 uint64_t g_lagUntilMs = 0;
 float g_lagMin[3], g_lagMax[3];
 uint32_t g_lagSamples = 0;
@@ -804,10 +837,51 @@ void tick_resolve(uint64_t nowMs) {
             pawn, attach, comp, num, bank);
 }
 
+namespace {
+
+// s57: the sprint tracker (see g_sprintKill). Game thread, throttled to 10 ms
+// so the per-hand drive calls share one poll. The composed pad updates when
+// the game polls XInput - dead only in the sim's pad-outage boots, where
+// `sprintglue force on` stands in.
+void update_sprint_from_input(uint64_t now) {
+    if (now - g_sprintPollMs < 10) return;
+    g_sprintPollMs = now;
+    uint16_t buttons = 0;
+    bvr::input::last_composed_buttons(&buttons);
+    int16_t lx = 0, ly = 0, rx = 0, ry = 0;
+    bvr::input::last_composed_sticks(&lx, &ly, &rx, &ry);
+    const float mag =
+        sqrtf(static_cast<float>(lx) * lx + static_cast<float>(ly) * ly) / 32767.0f;
+    const bool ls = (buttons & kPadLeftThumb) != 0;
+    const bool lsEdge = ls && !g_sprintPrevLs;
+    g_sprintPrevLs = ls;
+    bool active = g_sprintActive.load(std::memory_order_relaxed);
+    if (!active && lsEdge && mag >= kSprintEnterMag) {
+        active = true;
+        ++g_sprintEngages;
+        // A hand without a bank captures NOW - the engage instant still shows
+        // the pre-sprint pose (the input edge leads the anim ramp).
+        for (int h = 0; h < 2; ++h)
+            if (!g_readyAllValid[h].load(std::memory_order_relaxed))
+                g_captureAtMs[h].store(now, std::memory_order_relaxed);
+        BVR_LOG("[bsi] bones: sprint glue ENGAGED (LS edge, stick %.2f) - hands hold "
+                "the banked pose until the stick drops below %.2f",
+                mag, kSprintExitMag);
+    } else if (active && mag < kSprintExitMag && !g_sprintForce.load(std::memory_order_relaxed)) {
+        active = false;
+        BVR_LOG("[bsi] bones: sprint glue released (stick %.2f)", mag);
+    }
+    if (g_sprintForce.load(std::memory_order_relaxed)) active = true;
+    g_sprintActive.store(active, std::memory_order_relaxed);
+}
+
+} // namespace
+
 bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale,
            int armsMode, bool animMode, float capDepthCm, const float wristDeg[3]) {
     if (hand < 0 || hand > 1) return false;
     if (!g_comp) return false;
+    update_sprint_from_input(GetTickCount64());
     if (!rig_intact()) {
         drop("identity gate failed at drive");
         ++g_gateRefusals;
@@ -965,9 +1039,14 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     // fire anim's authored left-grip swing measured 95.58 deg through the
     // compose; the glue cancels it to 0.14 with the window keeping every
     // other anim (flourish, casts) untouched.
+    // s57: the sprint glue rides the same substitution (its own lever - the
+    // fire lever's A/B must not change sprint behavior and vice versa).
+    const bool sprintGlueActive = g_sprintKill.load(std::memory_order_relaxed) &&
+                                  g_sprintActive.load(std::memory_order_relaxed);
     const bool fireGlueActive =
-        g_fireGlue.load(std::memory_order_relaxed) &&
-        GetTickCount64() < g_fireGlueUntilMs.load(std::memory_order_relaxed);
+        (g_fireGlue.load(std::memory_order_relaxed) &&
+         GetTickCount64() < g_fireGlueUntilMs.load(std::memory_order_relaxed)) ||
+        sprintGlueActive;
     // s51: full-hand substitution (see the block comment at g_fireGlueFull).
     // corr and aT must come from the SAME source lane as the bones, or the
     // hand would wobble with the live anchor while its bones sit banked.
@@ -1051,7 +1130,8 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
             wq[4] = cp[0];
             wq[5] = cp[1];
             wq[6] = cp[2];
-            wq[7] = 0.0f;
+            // s57 stump cuff: epsilon instead of zero (see g_stumpScale).
+            wq[7] = g_stumpScale.load(std::memory_order_relaxed);
         } else {
             // s48: the CLUSTER takes qtcHand (the wrist-bend compose) in BOTH
             // the quat and the dp rotation - one rigid rotation about the
@@ -1160,6 +1240,25 @@ void note_player_fire() {
     g_captureAtMs[1].store(at, std::memory_order_relaxed);
 }
 
+void cancel_fire_glue(const char* why) {
+    // s57 melee: a swing must not render frozen (the fire window from a
+    // preceding shot) and must not poison the ready bank (the +1.2 s
+    // capture would bank a mid-swing pose). Silent - per-press cadence.
+    (void)why;
+    g_fireGlueUntilMs.store(0, std::memory_order_relaxed);
+    g_captureAtMs[0].store(0, std::memory_order_relaxed);
+    g_captureAtMs[1].store(0, std::memory_order_relaxed);
+}
+
+bool sprint_kill() { return g_sprintKill.load(std::memory_order_relaxed); }
+void set_sprint_kill(bool on) { g_sprintKill.store(on, std::memory_order_relaxed); }
+float stump_scale() { return g_stumpScale.load(std::memory_order_relaxed); }
+void set_stump_scale(float s) {
+    if (s < 0.0f) s = 0.0f;
+    if (s > 0.30f) s = 0.30f;
+    g_stumpScale.store(s, std::memory_order_relaxed);
+}
+
 bool stance_kill() { return g_stanceKill.load(std::memory_order_relaxed); }
 void set_stance_kill(bool on) { g_stanceKill.store(on, std::memory_order_relaxed); }
 bool anim_trans() { return g_animTrans.load(std::memory_order_relaxed); }
@@ -1234,6 +1333,40 @@ bool handle_command(const char* cmd, const char* args) {
                 g_readyValid[0].load() ? "ok" : "-", g_readyValid[1].load() ? "ok" : "-",
                 g_readyAllValid[0].load() ? "ok" : "-",
                 g_readyAllValid[1].load() ? "ok" : "-");
+        return true;
+    }
+    if (args && strncmp(args, "sprintglue", 10) == 0) {
+        const char* rest = args + 10;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "on", 2) == 0) set_sprint_kill(true);
+        else if (strncmp(rest, "off", 3) == 0) set_sprint_kill(false);
+        else if (strncmp(rest, "force", 5) == 0) {
+            const char* f = rest + 5;
+            while (*f == ' ') ++f;
+            const bool on = strncmp(f, "on", 2) == 0;
+            g_sprintForce.store(on, std::memory_order_relaxed);
+            if (on) {
+                // The pad-free flat lane: engage as if the LS edge fired.
+                const uint64_t at = GetTickCount64();
+                for (int h = 0; h < 2; ++h)
+                    if (!g_readyAllValid[h].load(std::memory_order_relaxed))
+                        g_captureAtMs[h].store(at, std::memory_order_relaxed);
+            }
+        }
+        BVR_LOG("[bsi] bones: sprintglue %s force=%s active=%s engages=%u banks L=%s "
+                "R=%s | bsibones sprintglue on|off|force on|off",
+                g_sprintKill.load() ? "ON" : "off", g_sprintForce.load() ? "ON" : "-",
+                g_sprintActive.load() ? "ACTIVE" : "idle", g_sprintEngages,
+                g_readyAllValid[0].load() ? "ok" : "-",
+                g_readyAllValid[1].load() ? "ok" : "-");
+        return true;
+    }
+    if (args && strncmp(args, "stumpscale", 10) == 0) {
+        float s = -1.0f;
+        if (sscanf_s(args + 10, "%f", &s) == 1) set_stump_scale(s);
+        BVR_LOG("[bsi] bones: stumpscale %.2f (arms-hide collapse epsilon; 0 = the "
+                "rejected pinch, 0.05-0.15 = the cuff) | bsibones stumpscale <0..0.3>",
+                stump_scale());
         return true;
     }
     if (args && strncmp(args, "campin", 6) == 0) {
@@ -1311,6 +1444,15 @@ void draw_debug_ui() {
     bool at2 = g_animTrans.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("authored anchor travel (animtrans, off = hand pinned)", &at2))
         set_anim_trans(at2);
+    // s57: the sprint kill - the model must not move while sprinting.
+    bool sk = g_sprintKill.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("SPRINT KILL (hands hold pose while sprinting, s57)", &sk))
+        set_sprint_kill(sk);
+    ImGui::SameLine();
+    ImGui::Text("%s (engages %u)",
+                g_sprintActive.load(std::memory_order_relaxed) ? "ACTIVE" : "idle",
+                g_sprintEngages);
+    melee::draw_debug_ui();
     // s51: the fire-swing levers, in-headset A/B without alt-tabbing.
     bool fg = g_fireGlue.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("FIRE GLUE (window around each shot)", &fg))

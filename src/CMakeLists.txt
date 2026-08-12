@@ -136,6 +136,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/input_drive.h
     game/bioshockinf/lens.cpp
     game/bioshockinf/lens.h
+    game/bioshockinf/melee.cpp
+    game/bioshockinf/melee.h
     game/bioshockinf/patterns.cpp
     game/bioshockinf/patterns.h
     game/bioshockinf/profiles.cpp
@@ -146,6 +148,8 @@ add_library(bioshockvr SHARED
     game/bioshockinf/reflect.h
     game/bioshockinf/scenedraw.cpp
     game/bioshockinf/scenedraw.h
+    game/bioshockinf/xhair.cpp
+    game/bioshockinf/xhair.h
     game/shared/ue_math.h
 )
 set_target_properties(bioshockvr PROPERTIES PREFIX "")

@@ -9,6 +9,7 @@
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/camera.h"
 #include "game/bioshockinf/cine.h"
+#include "game/bioshockinf/melee.h"
 #include "game/bioshockinf/patterns.h"
 #include "game/bioshockinf/profiles.h"
 #include "game/bioshockinf/reflect.h"
@@ -495,6 +496,17 @@ void tick(uint64_t nowMs) {
             wantHand[0] = e[0];
             wantHand[1] = e[1];
         }
+    }
+    // s57 melee: the swing window and the execution hold release EVERYTHING -
+    // the authored swing/execution animates the FP rig itself (the vigor-only
+    // right hand reads empty and would be bone-hidden mid-swing; the
+    // execution's hold would force-hide the rig the game is animating - the
+    // exact s53 "authored hand moments" warning, observed as the no-hand
+    // execution). Edge-driven applies below unhide, and the watchdog only
+    // fires while a hide is latched, so it goes quiet for free.
+    if (melee::hide_release()) {
+        wantRig = false;
+        wantHand[0] = wantHand[1] = false;
     }
     if (lever == kLeverBone) {
         // The bone lever IS per-side - fold the rig scope into both hands so

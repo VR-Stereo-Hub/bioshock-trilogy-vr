@@ -11,6 +11,7 @@
 #include "game/bioshockinf/bones.h"
 #include "game/bioshockinf/cine.h"
 #include "game/bioshockinf/hide.h"
+#include "game/bioshockinf/melee.h"
 #include "game/bioshockinf/profiles.h"
 
 #include "imgui.h"
@@ -73,7 +74,10 @@ void on_view(const FrameContext& fc, uint64_t nowMs) {
     // hand misrotation and the double hands in scripted intro scenes).
     const bool hideEmpty = profiles::hide_empty_hands();
     for (int h = 0; h < 2; ++h) {
-        const bool wantHand = want && !(hideEmpty && profiles::hand_empty(h));
+        // s57 melee `release` mode: the drive stands down for the swing
+        // window so the authored melee anim plays 1:1 (glueskip keeps it).
+        const bool wantHand = want && !(hideEmpty && profiles::hand_empty(h)) &&
+                              !melee::drive_release(h);
         bvr::vr::HeadPose hp{};
         if (!wantHand || !bvr::vr::get_hand_pose(h, useAim, hp)) {
             // Edge-triggered release: a left-hand loss must never disturb the
@@ -350,6 +354,11 @@ void draw_debug_ui() {
         float d = g_capDepthCm.load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("wrist cap depth (cm behind grip)", &d, 0.0f, 30.0f))
             g_capDepthCm.store(d, std::memory_order_relaxed);
+        // s57 stump cuff: the collapse epsilon - 0 is the rejected pinch,
+        // 0.05-0.15 forms the capped cuff. Tuned live in the headset.
+        float ss = bones::stump_scale();
+        if (ImGui::SliderFloat("stump scale (0 = pinch, ~0.1 = cuff)", &ss, 0.0f, 0.30f))
+            bones::set_stump_scale(ss);
     }
 
     bool anim = g_animMode.load(std::memory_order_relaxed);

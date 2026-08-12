@@ -9,6 +9,8 @@
 #include "game/bioshockinf/frame_context.h"
 #include "game/bioshockinf/hands.h"
 #include "game/bioshockinf/hide.h"
+#include "game/bioshockinf/melee.h"
+#include "game/bioshockinf/xhair.h"
 
 #include "core/framework/command.h"
 #include "core/gfx/hud_capture.h"
@@ -998,6 +1000,13 @@ float cfg_get_cinehead() { return cine::head_look() ? 1.0f : 0.0f; }
 void cfg_set_cinehead(float v) { cine::set_head_look(v != 0.0f); }
 float cfg_get_hideempty() { return profiles::hide_empty_hands() ? 1.0f : 0.0f; }
 void cfg_set_hideempty(float v) { profiles::set_hide_empty_hands(v != 0.0f); }
+// ---- s57 model-lane keys ----
+float cfg_get_sprintkill() { return bones::sprint_kill() ? 1.0f : 0.0f; }
+void cfg_set_sprintkill(float v) { bones::set_sprint_kill(v != 0.0f); }
+float cfg_get_meleemode() { return static_cast<float>(melee::mode()); }
+void cfg_set_meleemode(float v) { melee::set_mode(static_cast<int>(v + 0.5f)); }
+float cfg_get_xhairhide() { return xhair::enabled() ? 1.0f : 0.0f; }
+void cfg_set_xhairhide(float v) { xhair::set_enabled(v != 0.0f); }
 // s52 round 2: the HUD quad's placement as preset keys (headset verdict:
 // icons too small, position/size need live tuning + persistence). The quad
 // state lives in core (set_hud_quad); these read-modify-write one component.
@@ -1063,6 +1072,10 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"hudDistM", cfg_get_hudquad<0>, cfg_set_hudquad<0>, 0.4f, 4.0f},
     {"hudWidthM", cfg_get_hudquad<1>, cfg_set_hudquad<1>, 0.3f, 4.0f},
     {"hudUpM", cfg_get_hudquad<2>, cfg_set_hudquad<2>, -1.5f, 1.5f},
+    // ---- s57 model lane ----
+    {"sprintKill", cfg_get_sprintkill, cfg_set_sprintkill, 0.0f, 1.0f},
+    {"meleeFixMode", cfg_get_meleemode, cfg_set_meleemode, 0.0f, 2.0f},
+    {"hudCrosshairHide", cfg_get_xhairhide, cfg_set_xhairhide, 0.0f, 1.0f},
 };
 
 // ---------------------------------------------------------------------------
@@ -1505,7 +1518,10 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     hud::tick();      // s52: HUD-redirect gate follows the XR session's liveness
     cine::tick(now);  // s52: ~2 Hz view-target poll (the Matinee detector)
     arsenal::tick();  // s52r2: F10 GIVE buttons drain here (game thread)
+    melee::tick(now); // s57: Y-edge + swing window + execution-hold release -
+                      // BEFORE hide (the hide gate reads this tick's verdict)
     hide::tick(now);  // s53: FP-rig visibility gate - AFTER cine (fresh hold verdict)
+    xhair::tick(now); // s57: the flat-crosshair kill (sweep + bit watchdog)
     // Session-41 headset feedback: a loaded preset's resolution APPLIES (one
     // Load restores the whole session shape - the user's call, overriding the
     // earlier latch-then-click design). Same game-thread lane as the picker.

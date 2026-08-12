@@ -26,4 +26,12 @@ namespace bvr::bsi::gfx {
 
 bool handle_command(const char* cmd, const char* args); // bsigfx
 
+// s57: the enumerator as a callable - sweep for live INSTANCES whose class
+// name equals `className` (the `bsigfx scan` machinery; the UClass and CDO
+// are filtered out). Returns the count written to out (<= cap). READ-ONLY,
+// one-shot heap sweep (~0.5 s hitch on a 1 GB heap) on the GAME thread -
+// never on a cadence. Returns -1 when the prerequisites are missing
+// (UObject::Name underived / the name not in GNames).
+int find_instances(const char* className, void** out, int cap);
+
 } // namespace bvr::bsi::gfx

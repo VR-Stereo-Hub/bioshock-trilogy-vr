@@ -113,6 +113,24 @@ void note_player_fire();
 bool stance_kill();
 void set_stance_kill(bool on);
 
+// s57 melee: close a live fire-glue window and drop pending ready captures -
+// a melee swing must render live (not the banked freeze) and its mid-swing
+// pose must never enter the bank. Called from the fire seam on a
+// melee-classified dispatch (melee.cpp).
+void cancel_fire_glue(const char* why);
+
+// s57: the SPRINT glue - the full-hand ready substitution held while the
+// composed pad says sprint (mechanism + falsification record in the bones.cpp
+// block comment at g_sprintKill). Default ON; config key sprintKill.
+bool sprint_kill();
+void set_sprint_kill(bool on);
+
+// s57: the stump-cuff collapse epsilon (armsMode 2): 0 = the headset-rejected
+// zero-scale pinch, 0.05-0.15 = a capped cuff behind the wrist. Clamped to
+// [0, 0.30]; unpersisted until a headset verdict (the capDepth precedent).
+float stump_scale();
+void set_stump_scale(float s);
+
 // s47: ANIMTRANS - pass authored anchor travel through as a controller-
 // relative offset (dp base = the banked ready anchor translation instead of
 // the current one). OFF by default, never persisted; the measured case for

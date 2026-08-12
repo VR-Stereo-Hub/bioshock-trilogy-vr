@@ -60,7 +60,9 @@ uint32_t g_latches = 0;
 std::atomic<bool> g_hideEmpty{true};
 
 bool key_is_empty(const char* key) {
-    return strcmp(key, "NoWeapon") == 0 || strcmp(key, "NoVigor") == 0;
+    // Prefix, not equality: the s57 loadout-class suffix ("NoWeapon#solo")
+    // must still read as an empty hand - the hide gate feeds off this.
+    return strncmp(key, "NoWeapon", 8) == 0 || strncmp(key, "NoVigor", 7) == 0;
 }
 
 Slots read_levers(int hand) {
@@ -208,9 +210,7 @@ KeyState equipped_key(int selector, char* out, size_t outSize) {
 // (vigor) the LEFT's (hand 0) - this game never crosses them.
 constexpr int kHandForSelector[2] = {1, 0};
 
-void poll_hand(int selector) {
-    char key[64];
-    if (equipped_key(selector, key, sizeof key) == KeyState::Unavailable) return;
+void poll_hand(int selector, const char* key) {
     const int hand = kHandForSelector[selector];
     char* cur = g_key[hand];
     if (strcmp(cur, key) == 0) return;
@@ -237,6 +237,34 @@ void poll_hand(int selector) {
     strcpy_s(g_key[hand], 64, key);
 }
 
+// s57: the LOADOUT CLASS keys the buckets. Raw per-hand identity alone lumps
+// vigor-only with the two-hand loadouts: the vigor archetype entry was shared
+// between vigor+gun and vigor-only (the user's "vigor-only hand is rotated
+// wrong" - tuning one leaked into the other), and "NoWeapon" was shared with
+// empty+empty. With a gun equipped the keys stay EXACTLY the raw archetype
+// names - every existing weapons.ini entry keeps meaning what it meant.
+// Vigor-only suffixes BOTH hands with '#solo' ('#', never '.', which the ini
+// parser splits on - profiles.cpp load_file). Empty+empty keeps the bare
+// synthetic names and becomes its own bucket by construction. The gun-hand
+// verdict is the class discriminator, so an Unavailable gun poll skips the
+// whole tick (vigor-only vs vigor+gun would be unknowable).
+void poll_both() {
+    char raw[2][64]; // indexed by SELECTOR (0 gun, 1 vigor)
+    const KeyState st[2] = {equipped_key(0, raw[0], sizeof raw[0]),
+                            equipped_key(1, raw[1], sizeof raw[1])};
+    if (st[0] == KeyState::Unavailable) return;
+    const bool vigorOnly = st[0] == KeyState::Empty && st[1] == KeyState::Ok;
+    for (int sel = 0; sel < 2; ++sel) {
+        if (st[sel] == KeyState::Unavailable) continue;
+        char eff[64];
+        if (vigorOnly)
+            _snprintf_s(eff, sizeof eff, _TRUNCATE, "%s#solo", raw[sel]);
+        else
+            strcpy_s(eff, raw[sel]);
+        poll_hand(sel, eff);
+    }
+}
+
 } // namespace
 
 void init() {
@@ -254,8 +282,7 @@ void tick() {
         g_key[0][0] = g_key[1][0] = '\0';
         BVR_LOG("[bsi] profiles: table cleared");
     }
-    poll_hand(0);
-    poll_hand(1);
+    poll_both();
     if (g_pendSave.exchange(false, std::memory_order_relaxed)) {
         // Bank the live levers for the CURRENT keys first, so "save" means
         // "save what I am looking at", not "save the last switch".
