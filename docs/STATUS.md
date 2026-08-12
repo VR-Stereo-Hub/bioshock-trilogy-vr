@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 54" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 57" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,76 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 56 (THE INTERACTION-VIEW FIX SHIPPED AND HEADSET-ACCEPTED - the raffle chain plays end to end under full VR, automatic at install; branch `claude/bioshock-interaction-view-fix-c1be42`, NOT merged)
+### Infinite: current state after session 57 (THE MODEL LANE LANDED FLAT - sprint glue, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`, NOT merged, awaiting the headset checklist)
+
+**Session 57 (2026-08-12) worked the five user-prioritized items; all five are
+implemented, flat-proven at the mechanism level, and installed. Eye-check
+PASS (all legs incl. leg 0 pairing 90/90) on the final build. Derivations in
+ENGINE_NOTES "s57"; the numbered headset checklist is TESTING "S57" - the
+LOOK verdicts (sprint feel, melee swing, execution hand, vigor-only tuning,
+crosshair in combat, cuff) are the open items.**
+
+1. **SPRINT KILL (bones.cpp sprint glue).** The s49b clamp shape was
+   FALSIFIED first: a proven sprint posts NOTHING at the Morpheme message
+   funnel and no by-name anim action - the state machine is driven inside
+   the runtime. What sprint actually does: authored arm-pump articulation
+   passes the compose exactly like the s51 fire swing (L cluster 103-124
+   deg / 70.8 cm vs 0.00 walking). The kill reuses the proven machinery:
+   the full-hand ready substitution held while the composed pad says sprint
+   (LS edge + stick >= 0.5, exit < 0.35; capture-at-engage when the bank is
+   missing; NOT ended on fire - over-hold is safe). Flat A-B-A: worst
+   driven bone 124.38 -> 0.10 -> 124.38 deg. `bsibones sprintglue
+   on|off|force on|off`, F10 "SPRINT KILL", key `sprintKill`, default ON.
+2. **MELEE (melee.cpp).** Root cause measured: melee dispatches through the
+   fire seam with weapon=NULL like gunshots - fireglue froze every swing
+   and the +1.2 s capture banked MID-SWING poses (watched live), poisoning
+   later shots; the execution's scripted hold force-hid the rig the game
+   was animating (the s53 warning, verbatim). The fix: the Y-press edge
+   (composed pad) classifies a dispatch as melee UNLESS a hold is already
+   open (the raffle-QTE rule, byte-identical, proven by 7000+ holdSkips);
+   a melee dispatch skips/cancels fireglue + captures and opens a 1500 ms
+   window that releases the empty-hand hides; a hold opening INSIDE the
+   window (the execution) releases the hide gate until it closes + 300 ms.
+   Flat: capture counters held under a classified swing, incremented
+   without. Modes off|glueskip(default)|release; `bsimelee`, F10 radio,
+   key `meleeFixMode`. The execution needs a staggered enemy = user leg.
+3. **LOADOUT BUCKETS (profiles.cpp).** Verified: keying was per-hand only -
+   vigor-only SHARED the vigor archetype entry with vigor+gun (the leak the
+   user felt) and "NoWeapon" with empty+empty. Now the loadout class forms
+   the effective keys: gun present = raw names (existing entries
+   untouched), vigor-only = `<Vigor>#solo` + `NoWeapon#solo`, empty+empty =
+   the bare synthetic names. key_is_empty is prefix-matched so the hide
+   gate still sees suffixed empties. Existing sliders/auto-capture work
+   unchanged on the corrected keys.
+4. **CROSSHAIR HIDE (xhair.cpp) - the hunt LANDED.** The s53 wall fell: the
+   widget's Outer is the HUD screen instance XSinglePlayerGFxHUD; the
+   widget's IsShown/IsCenterpointVisible bools live at +0x118 (masks
+   0x1/0x2, live-verified). Policy default ON (`hudCrosshairHide`): sweep
+   (the s54 enumerator as a callable) for live instances per level, clear
+   both bits, 1 s watchdog - the game re-asserted 7x in one boot and lost
+   every time. `bsixhair on|off|derive`, F10 in HUD (I9). Headset judges
+   the visual (flat can't arbitrate the out-of-combat dot).
+5. **STUMP CUFF (option A).** The armsMode-2 collapse writes epsilon scale
+   (default 0.10, slider 0-0.30 next to cap depth) instead of zero - the
+   capped-stub ring is visible in the flat captures where the pinch was.
+   `bsibones stumpscale`; unpersisted pending the headset verdict.
+
+**Traps burned:** the sim pad outage recurred (keyboard drive lane is the
+fallback: W/S/A/D + LeftShift sprint + V melee; `force`/`swing` levers make
+the glue/window testable pad-free); the save's load beat cycles
+ForceUnequip for ~3 min and must NOT be keyed into (one Space mid-beat left
+a boot disarmed inside a second vignette); the trailing-newline token trap
+bit a THIRD time (`bsixhair on`); the spawn is nose-to-a-wall (W reads like
+idle on img-diff - back up + strafe first, ~1900 UU corridor).
+
+**NEXT SESSION (s58): (1) the S57 headset checklist (TESTING "S57" - sprint
+feel incl. release edge, melee swing glueskip-vs-release, the execution
+with a staggered enemy, vigor-only #solo tuning, crosshair in combat +
+transition flashes, cuff scale/depth tuning); (2) verdict-driven fixes;
+(3) the remaining TESTING "S52" verdicts (arsenal tuning + calibration
+save, HUD sliders, subtitles) if headset time remains.**
+
+### Infinite: state after session 56 (superseded by s57 above) (THE INTERACTION-VIEW FIX SHIPPED AND HEADSET-ACCEPTED - the raffle chain plays end to end under full VR, automatic at install; branch `claude/bioshock-interaction-view-fix-c1be42`, NOT merged)
 
 **Session 56 (2026-08-12) finished the render/gameplay view partition and
 shipped it: the deny set {0x1E13DC, 0x22587F, 0x5EA483, 0x5B2C8C, 0x59C87D,
@@ -7088,6 +7157,37 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 57 - 2026-08-12 (late night) - THE MODEL LANE: sprint falsified-then-glued, melee window, loadout buckets, the crosshair hunt LANDED, stump cuff
+
+On branch `claude/bioshock-model-lane-sprint-melee-7e33e4` (off
+`bioshock-infinite` @ c1db3d4). Full derivations in ENGINE_NOTES "s57";
+headset checklist in TESTING "S57". All five user-prioritized items landed
+flat-proven; eye-check PASS (leg 0 pairing 90/90) on the final build.
+
+- **Sprint**: the s49b clamp shape falsified (nothing at the message funnel,
+  no by-name action - the runtime drives the state internally); the sprint
+  arm-pump measured as compose pass-through (L 103-124 deg / 70.8 cm vs 0.00
+  walking) and killed with the fireglue-full substitution held on the
+  input-derived sprint state. A-B-A 124.38 -> 0.10 -> 124.38 deg.
+- **Melee**: weapon=NULL at the seam for melee too (param discriminator
+  dead); the Y-edge classifies instead, holds-open dispatches exempt (the
+  QTE rule); melee skips/cancels fireglue + the poison capture (watched
+  banking a mid-swing pose live) and the execution hold releases the hide
+  gate. Counter-proven A/B; the execution look needs the user at a
+  staggered enemy.
+- **Profiles**: per-hand keying confirmed as the vigor-only leak; loadout-
+  class suffix `#solo` added (gun-present keys byte-identical; empty
+  prefix-match keeps the hide gate honest).
+- **Crosshair**: the owning screen reached (widget Outer =
+  XSinglePlayerGFxHUD); IsShown/centerpoint bits at +0x118 cleared by a
+  default-on policy with per-level re-derive + watchdog (game re-asserted
+  7x, lost each time). `bsixhair` A/B lever.
+- **Stump**: collapse epsilon 0.10 (slider) replaces zero scale - capped
+  stub visible flat; tuning is the user's.
+- Traps: pad outage again (keyboard lane + force/swing test levers), the
+  load beat must play untouched (~3 min), token-newline trap third bite,
+  nose-to-wall spawn.
 
 ### Session 56 - 2026-08-12 (night) - THE INTERACTION-VIEW FIX SHIPPED: third gate found flat, the smear pinned in the headset, deny set seeded at install, raffle chain accepted end to end
 

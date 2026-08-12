@@ -813,6 +813,62 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S57 checklist (THE MODEL LANE - sprint kill, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`)
+
+Five items this build, all flat-proven at the mechanism level; the LOOK
+verdicts are yours. Everything has an F10 control (HANDS + MODEL and HUD
+sections) - never alt-tab. Defaults are the intended shipping state.
+
+1. **SPRINT (the "sprint moves the model" fail)**: sprint normally
+   (LS click + stick). The viewmodel must NOT move at all - the hands hold
+   their pose rigidly on the controllers for the whole sprint, walk bob and
+   everything else unchanged. A/B: F10 -> HANDS + MODEL -> "SPRINT KILL"
+   checkbox off = the old arm-pump swim returns. Judge the release edge too
+   (stick drop below ~1/3 = the pose unfreezes - any visible snap?). Note:
+   firing mid-sprint freezes the recoil articulation for that window (the
+   fire-glue behavior, unchanged); say if it reads wrong WHILE sprinting.
+2. **MELEE swing**: melee at air and at an enemy (pad Y). The swing must
+   look like the game's own melee again (the frozen/weird swing is the
+   `bsimelee mode off` A/B leg). Two modes to compare if the default reads
+   off: F10 "MELEE window" radio - `glueskip` (default, drive keeps
+   running = the pre-regression state) vs `release` (drive lets go for
+   1.5 s - the authored swing plays 1:1, the hand may detach from the
+   controller for that beat). Also fire a gun right after a melee - the
+   post-melee shots must NOT inherit a bent pose (the bank poison is
+   fixed; if a shot ever renders mid-swing arms, report it).
+3. **MELEE EXECUTION (the no-hand mini-cutscene)**: walk me to a staggered
+   enemy (hold Y ~0.15 s). The authored execution hands must SHOW for the
+   whole beat (both loadouts you tested: vigor-only and vigor+weapon), and
+   your VR hands must come back cleanly after. A/B: `bsimelee mode off`
+   restores the broken no-hand behavior.
+4. **VIGOR-ONLY hand offsets**: go vigor-only (no gun), tune the LEFT hand
+   with the usual HANDS/AIM sliders - the values now live in a
+   `<Vigor>#solo` bucket: switch to gun+vigor and back and confirm the
+   two-hand pose did NOT move, then that your vigor-only tweak is still
+   there. WEAPON PROFILES (F10) shows the live keys - vigor-only reads
+   `...#solo`. Save with `bsiprofiles save` (weapons.ini) when it feels
+   right.
+5. **CROSSHAIR**: the flat-screen crosshair/center dot should be GONE (on
+   the HUD panel too), including IN COMBAT. The aim laser/dot are
+   untouched. A/B: F10 -> HUD (I9) -> "hide the game crosshair" off =
+   crosshair back. If it ever REAPPEARS mid-fight, note it and check
+   `bsixhair` - a reasserts count climbing means the game fights the hide
+   (the watchdog should win within a second).
+6. **STUMP CUFF (arms = hide only)**: F10 -> HANDS + MODEL -> arms "hide" -
+   two sliders now: "wrist cap depth" (unchanged) and "stump scale" (NEW,
+   default 0.10). 0 = the pinch you rejected; tune scale + depth until the
+   wrist reads as a clean capped cuff. Report the numbers (both are
+   unpersisted until your verdict).
+7. **Regression sweep (60 s)**: normal gunfire still stance/shoulder-clean
+   (fire once, idle); the raffle-class interactions still accept presses
+   (any door/kinetoscope); a cinematic still plays with authored hands, no
+   doubles (the s56/s53b state must survive this build).
+
+Anything off: `bsibones sprintglue off` (sprint), `bsimelee mode off`
+(melee), `bsixhair off` (crosshair), `bsiprofiles clear <key>` (a bad
+bucket), stump scale slider to 0 (the old pinch). If a symptom survives its
+lever, it predates this session.
+
 ## S54 checklist (THE RAFFLE-WEDGE ROOT FIX - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`)
 
 **s54c: THE FEED IS DISARMED (user directive)** - with it armed, alt-tab/doff

@@ -1699,6 +1699,139 @@ with `xr: instance created on runtime 'bvr-xrsim'` from a fresh byte
 offset; (c) Virtual Desktop running does not stop the sim launch, but the
 game process it leaves behind DOES hold the DLLs (LNK1168 on install).
 
+### s57: THE MODEL LANE - sprint falsified at the funnel and glued at the compose; melee discriminated by the Y edge; the crosshair'S OWNING SCREEN reached
+
+**SPRINT - the s49b clamp shape FALSIFIED, the glue shipped instead.** Probe
+boot (user's gameplay save, keyboard lane W+LeftShift because the sim pad
+was out - see traps): a proven sprint leg (fire-seam loc snapshots: walk
+~696 UU/s, sprint covers the full corridor; XHuman `LastSprintTime` at
++0x1750 refreshes to game-now while sprinting) posts NOTHING at the Morpheme
+message funnel 0x5CED00 - not on the FP network, not on any network beyond
+the flood guard, and `bsifidget act` sees no by-name anim action either. The
+sprint state machine is driven INSIDE the runtime (direct control-param
+write or state binding - the message funnel and the by-name action lane are
+both blind to it; the s49b WARNING about `rq*` state requests, confirmed).
+What the model actually does: `bsibones travel all 3` walking = R cluster
+6.34 deg (walk bob), L side 0.00; SPRINTING = the LEFT side swings
+103-124 deg / up to 70.8 cm (Larm1 103.54 at 106 UU) THROUGH the drive -
+authored anchor-relative articulation passing the compose, the exact s51
+fire-swing mechanism. So the kill is the PROVEN machinery, not a new root:
+the full-hand ready substitution (fireglue-full) held while the composed pad
+says sprint - LS-click edge with stick mag >= 0.50, released when mag drops
+below 0.35 (the game's own SprintEnterInputThreshold/SprintExitInputThreshold
+semantics; both live on XHuman, offsets 0x308C/0x3094). Deliberately NOT
+ended on fire/melee (the game may auto-resume sprint after an attack; the
+worst over-hold is a frozen walk bob until the stick drops). A missing bank
+captures at the engage instant. Levers: `bsibones sprintglue on|off|force
+on|off` (force = the pad-free flat lane), F10 "SPRINT KILL", config key
+`sprintKill` (default on). Flat A-B-A (keyboard sprint legs, glue idle /
+`force on` / force off): worst driven bone **124.38 deg -> 0.10 deg ->
+124.38 deg** (identical control signature both ways; every driven bone
+<= 0.10 in the glued leg). XHuman sprint-adjacent facts banked for later:
+`PawnSprintState` struct +0xCF8 (48 bytes, static through sprint),
+`SprintingPct` +0x1748 = 1.457 CONSTANT (a speed multiplier, not live
+state), `bShouldSprintOnMove` +0x6D8 mask 0x?, sprint speed-ish float 800 at
++0x174C.
+
+**MELEE - the regression mechanism and the window (melee.cpp).** Measured:
+melee (pad Y / key V - the binding chain is `XPerformTBarMeleeTransfer +
+XPerformDedicatedMeleeAttackNonBlocking + StartHoldActivatedControl 0.15
+XPerformDedicatedMeleeExecution`, DefaultInput.ini) dispatches through the
+fire seam with **weapon=NULL, exactly like gunshots** - the s57-plan
+weapon-param discriminator is DEAD (one V press = two same-millisecond
+dispatches, both SUBSTITUTED, then `anim action 'StopCustomAnimation'` from
+caller 0x6DB4F8 at swing end). The regression, observed live: 1.2 s after a
+V press the fireglue capture banked the MID-SWING pose ("ready pose captured
+for L, anchor quat 0.933 -0.252 0.070 -0.249" - a swung left anchor vs R's
+near-identity), poisoning the bank for subsequent gunshots, while the 1500 ms
+window froze the swing itself. The working discriminator: the Y-PRESS EDGE
+off the mod's own composed pad (`bvr::input::last_composed_buttons`,
+causally upstream of the chain); a player fire-seam dispatch within 600 ms
+of a Y edge (or inside a live window) is melee - UNLESS `cine::hold()` is
+already OPEN at dispatch, which keeps the raffle skyhook QTE byte-identical
+(its press arrives mid-hold; counter `holdSkips` proved the rule live -
+7000+ hold-open dispatches classified as not-melee during one load beat).
+On a melee dispatch: skip note_player_fire AND cancel any live fire window +
+pending captures (mixed combat), open the 1500 ms melee window (refreshed on
+spam): the per-hand EMPTY hides release (vigor-only: the swing hand is
+"NoWeapon"-hidden and must show), and a hold OPENING inside the window is
+the EXECUTION mini-cutscene - the hide gate releases rig-wide until that
+hold closes + 300 ms (the no-hand execution was the s53 force-hide eating
+the authored execution hand, with the 500 ms watchdog re-asserting; the
+policy-level release makes the watchdog moot since nothing stays latched).
+Modes: `bsimelee mode off` (control = the broken behavior) | `glueskip`
+(default - the pre-s50 state the user judged good; the drive keeps running)
+| `release` (drive released for the window - the headset A/B alternative).
+`bsimelee swing [ms]` classifies the next dispatches as melee without a pad
+(the flat lane). Config key `meleeFixMode`.
+
+**PROFILES - the loadout-class buckets (profiles.cpp).** Verified keying
+before the change: per-hand only - vigor-only shared the vigor archetype
+entry with vigor+gun (the user's "vigor-only hand is wrong" leak) and
+"NoWeapon" with empty+empty. Now the two raw keys are read first and the
+CLASS derives the effective keys: gun equipped = raw names (every existing
+weapons.ini entry untouched); vigor-only = `<Vigor>#solo` + `NoWeapon#solo`
+('#' because the ini parser splits on the first '.'); empty+empty = the bare
+synthetic names (its own bucket by construction). `key_is_empty` became a
+PREFIX match so `NoWeapon#solo` still feeds hand_empty/the hide gate. An
+Unavailable gun poll skips the whole tick (the class is unknowable without
+it). Flat: the load beat's ForceUnequip cycle exercised empty+empty
+(unsuffixed) and gun+vigor (raw) transitions in one boot; the vigor-only
+suffix is exercised in the headset run.
+
+**CROSSHAIR - the owning screen reached, the kill shipped (xhair.cpp).** In
+the gameplay save `bsigfx scan XClikHUDCrosshair` finds LIVE instances (2 on
+the probe boot's spot, 4 after a reload). The widget's Outer (+0x14) is
+**XSinglePlayerGFxHUD** - the HUD screen instance the s53 hunt could never
+reach (myHUD stays a bare HUD object even in gameplay; the
+HideableHUDWidgetNames/NumReasonsToShowElement arrays exist on NO live
+chain; XGameHUD's `DisabledHUDWidgets` TArray +0x634 is {0,0,0} - nothing to
+grow without the engine allocator, parked; `CurrentCrosshairName`
+NameProperty at XGameHUD+0x640 noted). The widget carries BoolProperty
+`IsShown` and `IsCenterpointVisible` BOTH at +0x118, masks 0x1/0x2 in
+declaration order (live verification: the active crosshair instance read 3,
+the parked spare read 2). Clearing both stuck through minutes of idle AND a
+fire press - no flat re-assert observed. The policy (default on, key
+`hudCrosshairHide`): sweep for instances only in live gameplay with
+exponential backoff (5 s -> 80 s cap; the sweep is the one-shot ~0.5 s
+enumerator, never a cadence), derive the IsShown offset BY NAME on a live
+instance (refuse-latch on mismatch), clear both bits, 1 s watchdog re-clears
+(counter `reasserts` - combat is the expected fighter, headset will tell),
+`bsixhair off` restores each instance's original bits. Landed live: "IsShown
+derived at +0x118", instances cached+cleared each level (4 on one load, 2
+after the intro beat - the drop/re-sweep cycle works), and the game DOES
+fight it: **7 re-asserts in one boot** (scene/beat transitions re-show the
+crosshair; the 1 s watchdog re-cleared every time - in the headset a brief
+flash at a transition is the expected residue, report if visible). The
+VISUAL kill is headset-judged (out of combat the crosshair is a dot the flat
+captures cannot arbitrate).
+
+**STUMP (option A).** The armsMode-2 collapse now writes `wq[7] =
+stumpScale` (default 0.10, clamp 0-0.30) instead of 0.0 - the epsilon keeps
+the mixed-weight ring open so the sleeve verts form a capped cuff behind the
+wrist instead of the rejected inside-the-hand pinch. Sliders: the existing
+cap-depth (back-offset) + the new "stump scale" (both in HANDS + MODEL, arms
+= hide). `bsibones stumpscale <0..0.3>`. Unpersisted pending the headset
+verdict (the capDepth precedent).
+
+**Traps (s57):** (a) the SIM PAD OUTAGE recurred (`vrinput status`:
+getstate[0] 0 total) - keyboard is the fallback drive lane (game-key.ps1 +
+the overlapping-hold scratchpad variant; W/S/A/D move, LeftShift sprints, V
+melees, all from DefaultInput.ini), and the new `force`/`swing` levers make
+the glue/window flat-testable without a pad; (b) the boot save's spot is
+nose-to-a-wall - a W leg reads IDENTICAL to idle on img-diff (3.79 vs 3.83);
+back up first and mind the ~1900 UU corridor (the ENGINE_NOTES "enclosed
+spot" warning, still alive); (c) sprint needs FORWARD movement - a backpedal
+leg never sprints (two identical-speed legs proved nothing); (d) the
+load-time scripted beat cycles ForceUnequip/re-equip for MINUTES on this
+save - wait for "SCRIPTED hold closed" AND an archetype re-equip in the
+profiles log before any trial, and do NOT press keys into the beat (a Space
+mid-beat left one boot disarmed with a second input-locked vignette a few
+meters into the corridor; untouched, the beat closes and re-arms on its
+own); (e) the command.txt trailing-NEWLINE token trap (s51, recorder.h) bit
+a THIRD time - a verb check that requires `'\0'|' '` after the token
+silently degrades `<cmd> on` to a status print; accept `\n`/`\r` too.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle
