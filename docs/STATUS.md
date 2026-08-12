@@ -90,6 +90,13 @@ idle on img-diff - back up + strafe first, ~1900 UU corridor).
   settling); the melee GUN-HAND lurch (right limb bone-hides for the first
   0.9 s of the swing, never the execution; `bsimelee hidegun`, F10, key
   `meleeHideGun`).
+- **s57d/e REVERTED (2026-08-13, user verdict)**: the reload-then-shoot
+  deep fixes (release fade + reload hold) were headset-falsified - the
+  glitch stayed and sprint + melee-execution regressed; src is back to
+  byte-identical s57c (the accepted build). The reload glitch is PARKED as
+  a known minor inconsistency; any future attempt must headset-A/B reload
+  + sprint + execution together (do-not-reuse record in ENGINE_NOTES
+  "s57d/s57e REVERTED"). The melee fixes and everything else stay.
 - **DEFERRED - s58 PRIORITY 1: head-directed interaction.** Interactions
   aim with the BODY (right stick), not the head - the s56 partition as
   built (interaction consumers deliberately read the engine view; the VR

@@ -1833,6 +1833,27 @@ three verdicts fixed, one deferred).**
   s51 fact: fire swing = anchor 0.10 deg, arm chain 133; reloads read
   quiet at the grip). The metric is now the MAX across the hand's whole
   driven set - the same set the capture banks.
+- **s57d/s57e REVERTED (headset falsification, kept as the do-not-reuse
+  record; commits 78fbdce + e4dcffd, reverted 0cd4b17..)**: two rounds
+  attacked the reload-then-shoot glitch beyond s57c - (d) a 250 ms release
+  FADE on every natural glue release (bank -> live nlerp; measured
+  absorbing 165-179 deg releases) and (e) the RELOAD HOLD (extend the glue
+  past window end while the hand is loud, pad-X-gated, quiet-released).
+  Both were flat-clean (written-pose articulation spread 34 deg -> 0.00,
+  twice, eye-checks green) and the HEADSET FALSIFIED THE STACK: the reload
+  glitch remained (now more consistent) and sprint + melee-execution
+  REGRESSED - the flat spread metric cannot see whatever the user sees,
+  and the fade/hold interact with the sprint tail and the execution
+  release in ways no sim leg measured. User verdict: the pre-d state was
+  much better and the reload glitch is a minor inconsistency - REVERTED to
+  exactly s57c (src byte-identical to a24eb6c). LESSONS: (1) travel-all
+  component-space readings fold PAWN YAW into per-bone values - the
+  per-bone SPREAD is the yaw-immune articulation metric (this part is
+  real and reusable); (2) a glue-release rework touches sprint/melee/
+  execution paths that share the substitution - the next attempt at the
+  reload polish must A/B those three on the headset in the SAME session;
+  (3) the reload anim does NOT pass the act-by-name lane (six chained
+  reloads, zero reload-named actions) - that probe result stands.
 - **Melee-then-shoot lurch (s57c)**: a live melee window was itself a
   classification criterion, so a REAL gunshot within 1.5 s of a melee
   inherited the melee class, skipped its fire glue, and the authored fire

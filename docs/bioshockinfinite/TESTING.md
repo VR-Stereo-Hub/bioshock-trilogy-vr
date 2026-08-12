@@ -879,12 +879,15 @@ kill core. Fixed off your verdicts:
    the snap should be gone. If a residue remains, tune flat-style:
    `bsibones sprintglue tail <ms>` (0-3000, default 700) and report the ms
    that reads clean.
-2. **Reload-then-shoot glitch loop (s57c re-fix)**: the exact repro -
-   shoot, reload before idle, shoot immediately after the reload - and
-   repeat it several times (it was inconsistent). The bent-pose loop must
-   be gone: the quiet gate now watches the WHOLE hand (round 1 watched
-   only the grip, which reloads barely move). Also confirm normal shots
-   still look right.
+2. **Reload-then-shoot glitch: KNOWN, PARKED (s57d/e reverted)**: the two
+   deeper fixes (release fade, reload hold) were headset-falsified - the
+   glitch stayed and sprint/execution regressed - and the build is back to
+   exactly the s57c state you called much better. The minor reload
+   inconsistency is accepted for now; a future attempt must A/B reload +
+   sprint + execution in the same headset session (ENGINE_NOTES s57d/e
+   record). Re-confirm on this build: sprint (incl. the stop, no snap),
+   melee swing + gun-hand hide, melee-then-shoot, the execution, and that
+   the reload glitch is back to its OLD minor/inconsistent form.
 3. **Melee gun-hand teleport**: melee with a gun equipped - the RIGHT
    hand + gun vanish for ~0.9 s around the swing (your call) while the
    skyhook swing plays, then return on the controller. The execution still
