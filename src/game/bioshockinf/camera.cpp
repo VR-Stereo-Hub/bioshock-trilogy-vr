@@ -305,6 +305,51 @@ uint32_t to_rva(const void* p) {
     return d < s.imageSize ? static_cast<uint32_t>(d) : 0xFFFFFFFFu;
 }
 
+// ---------------------------------------------------------------------------
+// s55: THE VIEW-CONSUMER DENYLIST - the raffle-wedge root fix, take 2.
+//
+// GetPlayerViewPoint serves the renderer AND gameplay. The s54d five-run
+// matrix proved the interaction/button-hint system evaluates off the view we
+// substitute with the VR pose, so scripted interactive prompts (the raffle
+// throw) never arm under VR. The s54e fix inverted the seam as an ALLOWLIST
+// (VR pose only to the derived scene-build caller 0x26B499) - it fixed the
+// raffle flat and then BROKE STEREO in the headset (one world per eye): the
+// renderer consumes the view through MORE than that one call site (STATUS
+// s54f). Reverted.
+//
+// This is the same seam with the SAFE polarity: substitute-for-all stays the
+// baseline (stereo known-good), and ONLY callers in the deny set keep the
+// engine's authored out-params. An empty set denies nothing - byte-for-byte
+// the historical behaviour - so fail-open lands on the stereo-known-good
+// side, and the derivation (which sites are the interaction consumers) can
+// proceed live, one `bsicam vdeny add` at a time, with the eye check gating
+// every trial. Seeding at install happens only once a site is derived,
+// eye-checked and raffle-accepted (patterns.h will carry it).
+std::atomic<bool> g_vdOn{true};
+constexpr size_t kVdSlots = 4;
+std::atomic<uint32_t> g_vdDeny[kVdSlots] = {};
+std::atomic<uint64_t> g_vdDenied{0};      // dispatches left authored (deny hit)
+std::atomic<uint64_t> g_vdSubstituted{0}; // dispatches given the VR view
+
+bool vd_is_denied(uint32_t rva) {
+    if (!g_vdOn.load(std::memory_order_relaxed)) return false;
+    for (auto& s : g_vdDeny) {
+        const uint32_t v = s.load(std::memory_order_relaxed);
+        if (v && v == rva) return true;
+    }
+    return false; // empty set = deny nothing = substitute-for-all
+}
+
+void vd_add(uint32_t rva) {
+    for (auto& s : g_vdDeny) {
+        uint32_t expected = 0;
+        if (s.load(std::memory_order_relaxed) == rva) return;
+        if (s.compare_exchange_strong(expected, rva, std::memory_order_relaxed)) return;
+    }
+    BVR_LOG("[bsi] vdeny: deny set FULL (%u slots) - 0x%X not added",
+            static_cast<unsigned>(kVdSlots), rva);
+}
+
 // One-shot stack backtrace, armed per caller return RVA (`bsicam stack
 // <hexRva>`): the next detour call whose immediate caller matches logs the
 // whole return chain as RVAs. This is how the scene-build ROOT is derived -
@@ -1372,9 +1417,10 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
         return;
     }
 
-    // Rung 3a census: which return address is calling, at what rate.
+    // Rung 3a census: which return address is calling, at what rate. The RVA
+    // also feeds the s55 view-consumer denylist at the drive below.
+    const uint32_t callerRva = to_rva(_ReturnAddress());
     {
-        const uint32_t callerRva = to_rva(_ReturnAddress());
         note_caller(callerRva);
         maybe_backtrace(callerRva, _AddressOfReturnAddress());
         maybe_scene_probe(_AddressOfReturnAddress());
@@ -1467,7 +1513,20 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     // The I4 drive, AFTER the snapshot (so the observation instruments keep
     // measuring the original) and after the command poll (so a just-dispatched
     // simhead/recenter takes effect on this very call).
-    drive_view(loc, rot, now);
+    //
+    // s55: gated by the view-consumer DENYLIST - a denied caller (a derived
+    // interaction/gameplay consumer) keeps the engine's authored out-params
+    // verbatim, so its aim/reach gates evaluate against the authored eye
+    // point and scripted interactive prompts (the raffle throw) arm under
+    // full VR. Every OTHER dispatch substitutes exactly as it always has -
+    // the render path is untouched by construction, which is what the s54e
+    // allowlist got wrong (STATUS s54f).
+    if (!vd_is_denied(callerRva)) {
+        g_vdSubstituted.fetch_add(1, std::memory_order_relaxed);
+        drive_view(loc, rot, now);
+    } else {
+        g_vdDenied.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // I8: the model drive, AFTER drive_view published the FrameContext (the
     // model write must never precede the ray basis it has to agree with).
@@ -1999,6 +2058,47 @@ bool handle_command(const char* args) {
         dump_callers();
         return true;
     }
+    if (strncmp(args, "vdeny", 5) == 0) {
+        // s55: the view-consumer denylist lever (derivation + A/B surface).
+        // Empty set or "off" = substitute-for-all, the stereo-known-good
+        // baseline - the safe direction by construction.
+        const char* v = args + 5;
+        while (*v == ' ') ++v;
+        if (strncmp(v, "on", 2) == 0) {
+            g_vdOn.store(true, std::memory_order_relaxed);
+            BVR_LOG("[bsi] vdeny: ON (denied callers read the AUTHORED view)");
+        } else if (strncmp(v, "off", 3) == 0) {
+            g_vdOn.store(false, std::memory_order_relaxed);
+            BVR_LOG("[bsi] vdeny: off (substitute-for-all - the raffle-class interaction "
+                    "break comes BACK in this mode; stereo is unaffected)");
+        } else if (strncmp(v, "clear", 5) == 0) {
+            for (auto& s : g_vdDeny) s.store(0, std::memory_order_relaxed);
+            BVR_LOG("[bsi] vdeny: deny set cleared (deny nothing = substitute-for-all)");
+        } else if (strncmp(v, "add", 3) == 0) {
+            unsigned rva = 0;
+            if (sscanf_s(v + 3, "%x", &rva) == 1 && rva) {
+                vd_add(rva);
+                BVR_LOG("[bsi] vdeny: added denied caller 0x%X (reads the authored view)", rva);
+            } else {
+                BVR_LOG("[bsi] usage: bsicam vdeny add <hexRva>");
+            }
+        } else {
+            char set[80] = {};
+            int n = 0;
+            for (auto& s : g_vdDeny) {
+                const uint32_t r = s.load(std::memory_order_relaxed);
+                if (r) n += sprintf_s(set + n, sizeof(set) - n, " 0x%X", r);
+            }
+            BVR_LOG("[bsi] vdeny: %s | deny set:%s | authored (denied) %llu, VR-substituted "
+                    "%llu | usage: bsicam vdeny on|off|add <hexRva>|clear|status",
+                    g_vdOn.load(std::memory_order_relaxed) ? "ON" : "off",
+                    n ? set : " (empty - deny nothing)",
+                    static_cast<unsigned long long>(g_vdDenied.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(
+                        g_vdSubstituted.load(std::memory_order_relaxed)));
+        }
+        return true;
+    }
     if (strncmp(args, "eyetag", 6) == 0) {
         // s50: the rendered-pose eye-tag A/B (the FOV-edge drift lever). ON =
         // the projection layer describes the parallel camera the game drew;
@@ -2312,6 +2412,12 @@ void draw_debug_ui() {
                 bvr::d3d11_hook::last_present_tid());
     ImGui::Text("paths: cached %u | camera %u | target %u | unreadable %u", g_pathCached.load(),
                 g_pathCamera.load(), g_pathTarget.load(), g_pathUnknown.load());
+    // s55: view-consumer denylist counters (read-only - the fix is automatic;
+    // `bsicam vdeny` is the dev lever, no user action required or offered).
+    ImGui::Text("view deny: authored %llu / VR %llu",
+                static_cast<unsigned long long>(g_vdDenied.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(
+                    g_vdSubstituted.load(std::memory_order_relaxed)));
     if (g_last.valid) {
         ImGui::Text("engine loc (%.1f %.1f %.1f)", g_last.loc.x, g_last.loc.y, g_last.loc.z);
         ImGui::Text("engine rot (%d %d %d) = (%.1f %.1f %.1f) deg", g_last.rot.pitch,
