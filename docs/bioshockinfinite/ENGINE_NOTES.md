@@ -1853,6 +1853,27 @@ three verdicts fixed, one deferred).**
   43-51 cm would-be snap, all absorbed by the fade. Residual (cosmetic,
   headset to judge): the fire hold still masks the reload anim's first
   ~1 s; the next knob is shortening kFireGlueMs.
+- **s57e - the loop CLOSED (survived the fade too; user re-verdict)**: the
+  fade polished the discontinuity but the 165-179 deg releases ARE the
+  reload anim's pass-through - fading INTO a 170-deg excursion is still
+  the excursion. The class fix: DO NOT RELEASE INTO A LOUD HAND. When the
+  fire window ends with the hand still mid-anim AND pad X (reload) was
+  pressed in that window's era (or `bsibones rhold test` flat), the hold
+  EXTENDS until the whole-hand quiet metric passes (cap 4 s), then the
+  fade releases from a settled pose (== bank, invisible). X-gated so
+  casts/flourish (accepted pass-throughs) are untouched; melee's cancel
+  zeroes the window so it can never extend. MEASURED (travel-all over the
+  chained repro, written-pose peaks): rhold OFF = the glitch, per-bone
+  spread 153/145/136/130/122 deg (34-deg articulation spread); rhold ON =
+  two runs, EVERY driven bone at exactly 76.11 / 75.77 deg with 0.00
+  spread - a pure pawn-yaw basis rotation, i.e. the rendered hand rigid on
+  the controller throughout. INSTRUMENT CAVEAT (recorded): travel-all
+  measures COMPONENT-space atoms - a pawn/view yaw under a world-stable
+  held hand reads as uniform per-bone "motion"; the SPREAD across a hand's
+  bones is the yaw-immune articulation metric. Residual by design: chained
+  reloads render with the hand held (the reload anim masked); a SOLO
+  reload (no shot within 1.5 s) still plays fully. Lever `bsibones rhold
+  on|off|test [ms]`, F10 "RELOAD HOLD", default on.
 - **Melee-then-shoot lurch (s57c)**: a live melee window was itself a
   classification criterion, so a REAL gunshot within 1.5 s of a melee
   inherited the melee class, skipped its fire glue, and the authored fire

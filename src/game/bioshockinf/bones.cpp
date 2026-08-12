@@ -217,6 +217,24 @@ bool g_glueWasFull[2] = {};
 uint64_t g_glueFadeStartMs[2] = {};
 uint32_t g_glueFades[2] = {};
 uint64_t g_glueFadeLogMs = 0;
+// s57e (the loop survived the fade too - user re-verdict): the 165-179 deg
+// releases the fade absorbed ARE the reload animation itself passing
+// through the compose - the same pass-through class as the fire swing and
+// the sprint pump. Fading into a 170-deg excursion is still a 170-deg
+// excursion. THE fix for the class: do not release into a LOUD hand. When
+// the fire window ends while the hand is still mid-anim AND the RELOAD
+// button (pad X) was pressed during that window's era, the hold EXTENDS
+// until the whole-hand quiet metric passes (cap kReloadHoldCapMs), then
+// releases through the fade - near-invisible, because the settled pose is
+// the banked ready pose. X-gated so vigor casts and the flourish (accepted
+// pass-throughs) stay untouched. `bsibones rhold test [ms]` is the
+// pad-free flat lane.
+std::atomic<bool> g_reloadHold{true};
+std::atomic<uint64_t> g_lastXDownMs{0};
+bool g_prevX = false;
+std::atomic<uint64_t> g_rholdTestUntilMs{0};
+constexpr uint64_t kReloadHoldCapMs = 4000;
+std::atomic<uint32_t> g_reloadHoldTicks{0}; // drives spent extending
 // s57: the stump cuff (option A). wq[7]=0 collapses verts to the collapse
 // point and the mixed-weight ring pinches INSIDE the hand (headset-rejected);
 // a small epsilon keeps the ring open so the sleeve verts form a symmetric
@@ -896,6 +914,10 @@ void update_sprint_from_input(uint64_t now) {
     const bool ls = (buttons & kPadLeftThumb) != 0;
     const bool lsEdge = ls && !g_sprintPrevLs;
     g_sprintPrevLs = ls;
+    // s57e: the X (reload/use) edge feeds the reload hold.
+    const bool xBtn = (buttons & 0x4000) != 0; // XINPUT_GAMEPAD_X
+    if (xBtn && !g_prevX) g_lastXDownMs.store(now, std::memory_order_relaxed);
+    g_prevX = xBtn;
     bool active = g_sprintActive.load(std::memory_order_relaxed);
     if (!active && lsEdge && mag >= kSprintEnterMag) {
         active = true;
@@ -1132,14 +1154,30 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     // s57: the sprint glue rides the same substitution (its own lever - the
     // fire lever's A/B must not change sprint behavior and vice versa).
     // s57b: the release TAIL keeps it engaged through the exit-anim blend.
+    const uint64_t glueNowT = GetTickCount64();
     const bool sprintGlueActive =
         g_sprintKill.load(std::memory_order_relaxed) &&
         (g_sprintActive.load(std::memory_order_relaxed) ||
-         GetTickCount64() < g_sprintTailUntilMs.load(std::memory_order_relaxed));
-    const bool fireGlueActive =
-        (g_fireGlue.load(std::memory_order_relaxed) &&
-         GetTickCount64() < g_fireGlueUntilMs.load(std::memory_order_relaxed)) ||
-        sprintGlueActive;
+         glueNowT < g_sprintTailUntilMs.load(std::memory_order_relaxed));
+    const uint64_t glueUntil = g_fireGlueUntilMs.load(std::memory_order_relaxed);
+    const bool windowLive = g_fireGlue.load(std::memory_order_relaxed) && glueNowT < glueUntil;
+    // s57e: the RELOAD HOLD (see the g_reloadHold block comment) - the
+    // window's end defers while the hand is loud, X-gated to reload-era
+    // presses (or the flat test lane). Melee's cancel zeroes glueUntil, so
+    // a cancelled window can never extend.
+    bool reloadHold = false;
+    if (!windowLive && glueUntil != 0 && g_fireGlue.load(std::memory_order_relaxed) &&
+        g_reloadHold.load(std::memory_order_relaxed) &&
+        glueNowT < glueUntil + kReloadHoldCapMs && !g_quietOk[hand]) {
+        const uint64_t windowOpen = glueUntil - kFireGlueMs;
+        const uint64_t x = g_lastXDownMs.load(std::memory_order_relaxed);
+        const bool xInEra = x != 0 && x + 300 >= windowOpen && x <= glueNowT;
+        if (xInEra || glueNowT < g_rholdTestUntilMs.load(std::memory_order_relaxed)) {
+            reloadHold = true;
+            g_reloadHoldTicks.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    const bool fireGlueActive = windowLive || sprintGlueActive || reloadHold;
     // s51: full-hand substitution (see the block comment at g_fireGlueFull).
     // corr and aT must come from the SAME source lane as the bones, or the
     // hand would wobble with the live anchor while its bones sit banked.
@@ -1557,6 +1595,29 @@ bool handle_command(const char* cmd, const char* args) {
                 g_captureQuietSkips[1]);
         return true;
     }
+    if (args && strncmp(args, "rhold", 5) == 0) {
+        const char* rest = args + 5;
+        while (*rest == ' ') ++rest;
+        if (strncmp(rest, "on", 2) == 0) g_reloadHold.store(true, std::memory_order_relaxed);
+        else if (strncmp(rest, "off", 3) == 0)
+            g_reloadHold.store(false, std::memory_order_relaxed);
+        else if (strncmp(rest, "test", 4) == 0) {
+            unsigned ms = 15000;
+            sscanf_s(rest + 4, "%u", &ms);
+            if (ms > 60000) ms = 60000;
+            g_rholdTestUntilMs.store(GetTickCount64() + ms, std::memory_order_relaxed);
+            BVR_LOG("[bsi] bones: rhold test lane ARMED for %u ms (window-end loudness "
+                    "extends the hold as if X was pressed)",
+                    ms);
+            return true;
+        }
+        BVR_LOG("[bsi] bones: rhold %s holdTicks=%u lastX=%s | bsibones rhold "
+                "on|off|test [ms]",
+                g_reloadHold.load() ? "ON" : "off",
+                g_reloadHoldTicks.load(std::memory_order_relaxed),
+                g_lastXDownMs.load(std::memory_order_relaxed) ? "seen" : "-");
+        return true;
+    }
     if (args && strncmp(args, "stumpscale", 10) == 0) {
         float s = -1.0f;
         if (sscanf_s(args + 10, "%f", &s) == 1) set_stump_scale(s);
@@ -1648,6 +1709,11 @@ void draw_debug_ui() {
     ImGui::Text("%s (engages %u)",
                 g_sprintActive.load(std::memory_order_relaxed) ? "ACTIVE" : "idle",
                 g_sprintEngages);
+    // s57e: the reload hold - the shoot->reload->shoot chain must not dump
+    // the hand into the reload anim's pass-through at window end.
+    bool rh = g_reloadHold.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("RELOAD HOLD (keep pose until the hand settles, s57e)", &rh))
+        g_reloadHold.store(rh, std::memory_order_relaxed);
     melee::draw_debug_ui();
     // s51: the fire-swing levers, in-headset A/B without alt-tabbing.
     bool fg = g_fireGlue.load(std::memory_order_relaxed);
