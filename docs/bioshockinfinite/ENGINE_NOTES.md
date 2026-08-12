@@ -1824,11 +1824,23 @@ three verdicts fixed, one deferred).**
 - **Reload-then-shoot glitch loop** (pre-existing, surfaced by play): the
   +1.2 s ready capture can land MID-RELOAD and bank a bent pose; every
   later fire window substitutes it until a quiet second re-banks. Fix: the
-  capture is QUIET-GATED - source-anchor motion since the last >=100 ms
-  sample must be < 3 deg / 3 UU, else the capture retries per drive until
-  the 3 s window expires (an expired window keeps the previous good bank -
-  a mid-anim pose can never enter). Counters: sprintglue status
-  `quietSkips L/R`.
+  capture is QUIET-GATED - motion since the last >=100 ms sample must be
+  < 3 deg / 3 UU, else the capture retries per drive until the 3 s window
+  expires (an expired window keeps the previous good bank - a mid-anim
+  pose can never enter). Counters: sprintglue status `quietSkips L/R`.
+  **s57c correction (the verdict survived round 1)**: the gate first
+  watched only the ANCHOR - the one bone authored anims barely move (the
+  s51 fact: fire swing = anchor 0.10 deg, arm chain 133; reloads read
+  quiet at the grip). The metric is now the MAX across the hand's whole
+  driven set - the same set the capture banks.
+- **Melee-then-shoot lurch (s57c)**: a live melee window was itself a
+  classification criterion, so a REAL gunshot within 1.5 s of a melee
+  inherited the melee class, skipped its fire glue, and the authored fire
+  swing lurched through (the "hand teleports when shooting after melee").
+  Only the Y edge / test lever classify now - each melee press carries its
+  own edge, so spam still refreshes - and a non-melee dispatch CLOSES the
+  window and the swing hide (the gun must be visible and glued while
+  firing).
 - **Melee gun-hand lurch** (user: left/skyhook swing perfect, the RIGHT
   hand teleports forward): the melee anim also articulates the gun arm and
   it passes the compose. Fix per user call: the RIGHT limb bone-hides for

@@ -98,9 +98,22 @@ bool classify_dispatch(uint64_t nowMs, bool holdOpen) {
     const bool test = nowMs < g_testUntilMs.load(std::memory_order_relaxed);
     const bool yRecent =
         nowMs - g_lastYDownMs.load(std::memory_order_relaxed) <= kYAssocMs;
-    const bool live = window_live(nowMs);
-    if (!test && !yRecent && !live) return false;
-    if (!live) {
+    // s57c: a live WINDOW is deliberately NOT a criterion - a real gunshot
+    // fired within 1.5 s of a melee was inheriting the melee classification,
+    // which skipped its fire glue and let the authored fire swing lurch
+    // through (the user's "melee then shoot teleports the hand"). Only the
+    // Y edge (or the test lever) says melee; each melee press carries its
+    // own edge, so spam still refreshes the window. A NON-melee dispatch
+    // instead CLOSES the window and the swing hide - the melee is over, the
+    // gun is firing and must be visible with normal fire-glue behavior.
+    if (!test && !yRecent) {
+        if (window_live(nowMs)) {
+            g_windowUntilMs.store(0, std::memory_order_relaxed);
+            g_hideUntilMs.store(0, std::memory_order_relaxed);
+        }
+        return false;
+    }
+    if (!window_live(nowMs)) {
         g_windows.fetch_add(1, std::memory_order_relaxed);
         BVR_LOG("[bsi] melee: window OPEN (%s) - fireglue skipped/cancelled for "
                 "%llu ms, empty-hand hides released",

@@ -186,13 +186,19 @@ std::atomic<uint64_t> g_sprintTailUntilMs{0};
 // s57b (headset verdict "reload then shoot glitches until I stop"): the
 // +1.2 s ready capture can land MID-RELOAD and bank a bent pose - every
 // later fire window then substitutes it (the melee poison's sibling). The
-// capture is now QUIET-GATED: it retries every drive until the source
-// anchor has been still (< kQuietDeg / kQuietUu over the last >=100 ms
-// sample) or the 3 s window expires - a mid-anim pose can never enter the
-// bank, and an expired window keeps the previous good bank.
+// capture is QUIET-GATED: it retries every drive until the hand has been
+// still (< kQuietDeg / kQuietUu over the last >=100 ms sample) or the 3 s
+// window expires - a mid-anim pose can never enter the bank, and an
+// expired window keeps the previous good bank.
+// s57c (the verdict survived round 1): the gate first watched only the
+// ANCHOR - the one bone authored anims barely move (s51: fire swing =
+// anchor 0.10 deg while the arm chain swings 133; a reload moves palm/
+// digits/arm the same way). The metric is now the MAX across the hand's
+// whole driven set - the same set the capture banks.
 constexpr float kQuietDeg = 3.0f;
 constexpr float kQuietUu = 3.0f;
-float g_quietPrev[2][8];
+float g_quietPrevAll[kMaxBones][8]; // per-bone prev sample (hands disjoint)
+bool g_quietPrevHave[kMaxBones] = {};
 uint64_t g_quietPrevMs[2] = {};
 bool g_quietOk[2] = {true, true};
 uint32_t g_captureQuietSkips[2] = {};
@@ -1014,24 +1020,43 @@ bool drive(const FrameContext& fc, const GamePose& target, int hand, float scale
     // weapon switches. The window EXPIRES after 3 s: a hand that was not
     // driving through the window must not capture a later pose (the stance
     // re-onsets in minutes, and banking IT as "ready" would invert the glue).
-    // s57b: the quiet metric - source-anchor motion since the last >=100 ms
-    // sample. Feeds the capture gate below (see kQuietDeg block comment).
-    if (g_animValid[anchor]) {
+    // s57b/s57c: the quiet metric - MAX source motion across the hand's whole
+    // driven set since the last >=100 ms sample. Feeds the capture gate below
+    // (see the kQuietDeg block comment; the anchor alone was blind to
+    // anchor-relative articulation - reloads read quiet at the grip).
+    {
         const uint64_t qNow = GetTickCount64();
         if (g_quietPrevMs[hand] == 0) {
-            memcpy(g_quietPrev[hand], g_anim[anchor], 32);
+            for (int i = 0; i < g_boneCount; ++i) {
+                if (!g_cluster[hand][i] && !g_armSet[hand][i]) continue;
+                if (!g_animValid[i]) continue;
+                memcpy(g_quietPrevAll[i], g_anim[i], 32);
+                g_quietPrevHave[i] = true;
+            }
             g_quietPrevMs[hand] = qNow;
         } else if (qNow - g_quietPrevMs[hand] >= 100) {
-            const float* a = g_quietPrev[hand];
-            const float* b = g_anim[anchor];
-            float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-            if (dot < 0.0f) dot = -dot;
-            if (dot > 1.0f) dot = 1.0f;
-            const float dDeg = 2.0f * acosf(dot) * 57.29578f;
-            const float dx = b[4] - a[4], dy = b[5] - a[5], dz = b[6] - a[6];
-            const float dUu = sqrtf(dx * dx + dy * dy + dz * dz);
-            g_quietOk[hand] = dDeg <= kQuietDeg && dUu <= kQuietUu;
-            memcpy(g_quietPrev[hand], b, 32);
+            float maxDeg = 0.0f, maxUu = 0.0f;
+            for (int i = 0; i < g_boneCount; ++i) {
+                if (!g_cluster[hand][i] && !g_armSet[hand][i]) continue;
+                if (!g_animValid[i] || !g_quietPrevHave[i]) continue;
+                const float* a = g_quietPrevAll[i];
+                const float* b = g_anim[i];
+                float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+                if (dot < 0.0f) dot = -dot;
+                if (dot > 1.0f) dot = 1.0f;
+                const float dDeg = 2.0f * acosf(dot) * 57.29578f;
+                const float dx = b[4] - a[4], dy = b[5] - a[5], dz = b[6] - a[6];
+                const float dUu = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (dDeg > maxDeg) maxDeg = dDeg;
+                if (dUu > maxUu) maxUu = dUu;
+            }
+            for (int i = 0; i < g_boneCount; ++i) {
+                if (!g_cluster[hand][i] && !g_armSet[hand][i]) continue;
+                if (!g_animValid[i]) continue;
+                memcpy(g_quietPrevAll[i], g_anim[i], 32);
+                g_quietPrevHave[i] = true;
+            }
+            g_quietOk[hand] = maxDeg <= kQuietDeg && maxUu <= kQuietUu;
             g_quietPrevMs[hand] = qNow;
         }
     }

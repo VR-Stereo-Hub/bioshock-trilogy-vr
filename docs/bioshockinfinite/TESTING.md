@@ -879,15 +879,21 @@ kill core. Fixed off your verdicts:
    the snap should be gone. If a residue remains, tune flat-style:
    `bsibones sprintglue tail <ms>` (0-3000, default 700) and report the ms
    that reads clean.
-2. **Reload-then-shoot glitch loop**: fire mid-reload, keep shooting - the
-   bent-pose loop must be gone (the ready capture now refuses moving
-   poses; a reload can never enter the bank). Also confirm normal shots
-   still look right (the capture still lands once the hands settle).
+2. **Reload-then-shoot glitch loop (s57c re-fix)**: the exact repro -
+   shoot, reload before idle, shoot immediately after the reload - and
+   repeat it several times (it was inconsistent). The bent-pose loop must
+   be gone: the quiet gate now watches the WHOLE hand (round 1 watched
+   only the grip, which reloads barely move). Also confirm normal shots
+   still look right.
 3. **Melee gun-hand teleport**: melee with a gun equipped - the RIGHT
    hand + gun vanish for ~0.9 s around the swing (your call) while the
    skyhook swing plays, then return on the controller. The execution still
    shows EVERYTHING. A/B: F10 -> MELEE window -> "hide the gun hand during
    the swing" off = the lurching gun back.
+3b. **Melee then IMMEDIATE shot (s57c)**: melee and fire within the next
+   second - the shot must render like any normal shot (glued, gun
+   visible). Round 1 misclassified that shot as melee and the fire swing
+   lurched through.
 4. **Cinematics regression** (deferred from round 1): play any scripted
    scene - authored hands, no doubles, resumes clean.
 5. **KNOWN, NOT FIXED YET (s58 priority 1): interactions aim with the
