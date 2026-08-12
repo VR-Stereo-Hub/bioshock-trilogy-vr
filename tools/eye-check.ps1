@@ -14,9 +14,32 @@
 # interocular mean 46.5-46.8 / pct 73-75%, moved means 28.9/29.7, sep 0.0630 -
 # the s54f note recorded 53-56/77% at a different spot; the band is scene-
 # dependent inside [40, 70], which is why the band is that wide):
+#   0. PAIRING (added s56): a FRESH `[reentry] beat` line from the game log
+#      must show camReplays/s >= 80% of draws/s. This is the leg that actually
+#      catches the s54e break class: an s56 A/B proved that when the pass-2
+#      camera replay dies (both eyes render the same world, or split worlds),
+#      legs 1-5 STILL PASS - the compositor presents the two identical images
+#      at the two layer poses, so the interocular img-diff stays in band. The
+#      replay rate is the ground truth for the per-eye pairing; it collapsed
+#      90 -> 0 within 5 s of disabling the view drive while every image leg
+#      stayed green.
 #   1. shot A: a projection layer is present and EyeSeparationM is ~0.063.
 #   2. img-diff A_left vs A_right: mean ~53-56, pct-changed ~77% - two eyes of
 #      ONE world. A per-eye-different WORLD reads far outside this band.
+#      s56 recalibration (mean floor 40 -> 30): (a) the s56 negative control
+#      measured MONO (both eyes the identical image) at mean 54.8 - IN BAND -
+#      because the compositor presents the pair at the two layer poses, so the
+#      floor never detected the mono failure it was imagined to guard; leg 0
+#      is the mono gate. (b) A deny set that includes 0x1E1367 (a DERIVATION
+#      trial only - the shipped set never denies it, see patterns.h) moves the
+#      FP arm, and at arm-heavy framings the interocular mean drops to ~37-39
+#      (A/B-proven same-spot: trial set 37.9, off 54.6, pairing green both
+#      ways). The UPPER bound still catches the s54e split-world class.
+#      LIMITATION (s56, learned in the headset): NO flat leg can see the
+#      offset-dependent post-process smear that denying 0x1E1367 causes on
+#      real hardware - the discrete yaw + settle leaves no continuous
+#      head-vs-authored divergence. Any trial that touches the render set
+#      (0x26B499, 0x1E1367) still requires a headset sharpness check.
 #   3. head yaw +25 deg (xrsim "head rot 25 0 0" - the FIRST arg yaws), settle,
 #      shot B.
 #   4. img-diff A_left vs B_left AND A_right vs B_right: BOTH large (~21-31
@@ -43,9 +66,15 @@ param(
     # PASS bands. Defaults are the 2026-08-12 calibration with margin; override
     # only with a measured reason and record the recalibration in the header.
     [double]$EyeSepLo = 0.05,   [double]$EyeSepHi = 0.08,
-    [double]$OcularMeanLo = 40, [double]$OcularMeanHi = 70,
+    [double]$OcularMeanLo = 30, [double]$OcularMeanHi = 70,
     [double]$OcularPctLo = 60,  [double]$OcularPctHi = 90,
     [double]$MovedMeanMin = 12,
+    # Leg 0 (pairing): the game log carrying the `[reentry] beat` lines, and
+    # the minimum camReplays/s as a fraction of draws/s. 0.8 leaves room for a
+    # beat straddling a load hitch; healthy is 1.0 (90/90).
+    [string]$GameLog = "$env:LOCALAPPDATA\BioshockVR\bsi\bioshockvr.log",
+    [double]$PairMinFrac = 0.8,
+    [int]$BeatWaitSec = 14,
     [switch]$NoFocus
 )
 
@@ -101,6 +130,40 @@ function Add-Leg([string]$name, [bool]$pass, [string]$measured, [string]$band) {
 }
 
 try {
+    # Leg 0: the stereo PAIRING gate (s56). Wait for a beat line written AFTER
+    # this moment - a stale pre-trial beat could carry a healthy rate from
+    # before the lever flip - then require camReplays/s >= PairMinFrac*draws/s.
+    # This is the only leg that sees the s54e break class (see header).
+    $pairPass = $false; $pairMeasured = "no game log"
+    if (Test-Path $GameLog) {
+        $startLen = (Get-Item $GameLog).Length
+        $beatLine = $null
+        $deadline = (Get-Date).AddSeconds($BeatWaitSec)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 900
+            $fs = [System.IO.File]::Open($GameLog, 'Open', 'Read', 'ReadWrite')
+            try {
+                if ($fs.Length -gt $startLen) {
+                    $fs.Seek($startLen, 'Begin') | Out-Null
+                    $sr = New-Object System.IO.StreamReader($fs)
+                    $fresh = $sr.ReadToEnd()
+                    $m = [regex]::Matches($fresh, '\[reentry\] beat: draws/s=(\d+).*?camReplays/s=(\d+)')
+                    if ($m.Count -gt 0) { $beatLine = $m[$m.Count - 1]; break }
+                }
+            } finally { $fs.Close() }
+        }
+        if ($beatLine) {
+            $draws = [int]$beatLine.Groups[1].Value
+            $replays = [int]$beatLine.Groups[2].Value
+            $pairPass = ($draws -gt 0) -and ($replays -ge $PairMinFrac * $draws)
+            $pairMeasured = "draws/s=$draws camReplays/s=$replays"
+        } else {
+            $pairMeasured = "no fresh beat line within ${BeatWaitSec}s"
+        }
+    }
+    Add-Leg "0 pairing (camReplay)" $pairPass $pairMeasured `
+        ("camReplays/s >= {0:P0} of draws/s, fresh beat" -f $PairMinFrac)
+
     # Leg 1: shot A - projection layer + eye separation.
     $A = & $shotScript -Dir $Dir -Out (Join-Path $outDir "A") -Quiet
     $projOk = @($A.LayerTypes) -contains "projection"
