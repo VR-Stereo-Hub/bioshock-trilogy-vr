@@ -47,9 +47,14 @@ carries forward otherwise.
 4. **Open:** (a) attribution isolation (0x1E1367 alone vs both - the press
    was only tested under both); (b) the THROW acceptance + A-B-A + then
    patterns.h seeding behind the build gate (automatic, zero user levers -
-   the user directive); (c) the post-take-ball reveal never fired in ~8 min
-   before the user's shutdown ended the run - not proven stuck, re-run
-   clean; (d) boot-1 aim-seam `substituted` freeze during deny churn
+   the user directive); (c) **the post-take-ball stall IS a reproduction**
+   (user, post-session: the announcer should follow the ball within SECONDS,
+   not minutes) - a SECOND view-poisoned gate sits after the take-ball beat,
+   likely a scripted facing/look trigger on a different consumer; next
+   session A/Bs the remaining per-draw sites (0x22587F solo, 0x1E13DC,
+   0x5B2C8C, 0x59C87D, 0x244CF4, 0x52F301) live at that beat with the same
+   deny-toggle method that cornered the first gate (one confound to clear:
+   the stray pre-reveal pad-A press); (d) boot-1 aim-seam `substituted` freeze during deny churn
    (cleared by reload - watch); (e) deny{0x1E1367} changed the rendered
    framing - eye-check gates any build denying it.
 
