@@ -224,6 +224,13 @@ void __fastcall PlayActionDetour(void* self, void* edx, int32_t nameIdx, int32_t
         g_actBlocked.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    // s57d: a RELOAD-class action on the FP network ends the fire-glue
+    // window early (bones' release fade absorbs the transition) - otherwise
+    // the held window swallows the reload's first second and dumps the hand
+    // mid-anim at expiry (the reload-then-shoot snap loop). Substring match;
+    // verified against the live action name by the s57d flat probe.
+    if (ours && (strstr(name, "eload") || strstr(name, "RELOAD")))
+        bones::note_reload_break();
     if (g_actOrig) g_actOrig(self, edx, nameIdx, nameNum, a3, blend, a5);
 }
 

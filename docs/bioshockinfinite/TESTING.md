@@ -879,12 +879,15 @@ kill core. Fixed off your verdicts:
    the snap should be gone. If a residue remains, tune flat-style:
    `bsibones sprintglue tail <ms>` (0-3000, default 700) and report the ms
    that reads clean.
-2. **Reload-then-shoot glitch loop (s57c re-fix)**: the exact repro -
-   shoot, reload before idle, shoot immediately after the reload - and
-   repeat it several times (it was inconsistent). The bent-pose loop must
-   be gone: the quiet gate now watches the WHOLE hand (round 1 watched
-   only the grip, which reloads barely move). Also confirm normal shots
-   still look right.
+2. **Reload-then-shoot glitch loop (s57d re-fix - the real mechanism)**:
+   the loop was the window-edge SNAP (the fire window held the pose over
+   the playing reload, then dumped the hand mid-anim at expiry), not the
+   bank. Now every release fades over 250 ms, and a reload ends the fire
+   window early so the reload animation plays fully. The chained repro -
+   shoot->reload->shoot->reload 5-6x, no idle - must stay smooth: expect
+   the reload anim visible each cycle and no snapping between poses. Also
+   confirm single shots still feel unchanged (the fire-hold engage is
+   still instant).
 3. **Melee gun-hand teleport**: melee with a gun equipped - the RIGHT
    hand + gun vanish for ~0.9 s around the swing (your call) while the
    skyhook swing plays, then return on the controller. The execution still

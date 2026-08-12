@@ -116,8 +116,13 @@ void set_stance_kill(bool on);
 // s57 melee: close a live fire-glue window and drop pending ready captures -
 // a melee swing must render live (not the banked freeze) and its mid-swing
 // pose must never enter the bank. Called from the fire seam on a
-// melee-classified dispatch (melee.cpp).
+// melee-classified dispatch (melee.cpp). Instant cut - no release fade.
 void cancel_fire_glue(const char* why);
+
+// s57d: a reload-class anim action started on the FP network (fidget's act
+// detour) - the fire window ends early with the release FADE so the
+// authored reload plays instead of snapping out of a held pose at expiry.
+void note_reload_break();
 
 // s57: the SPRINT glue - the full-hand ready substitution held while the
 // composed pad says sprint (mechanism + falsification record in the bones.cpp
