@@ -1542,6 +1542,81 @@ seconds; the sequence itself never stalls, it waits indefinitely.
   for this build per the no-number-transfer rule). Acceptance: raffle save,
   full VR on, prompt appears and a pad press throws.
 
+### s54 part 4 (FALSIFIED - kept as the do-not-reuse record): the s54e ALLOWLIST view filter
+
+**Restored from commit af23824 after the revert 2b1b169 wiped it; the headset
+falsified the SHAPE, not the census data - the numbers below are real and s55
+built on them.** The s54e fix handed the VR pose to caller 0x26B499 only
+(`kViewRenderCallerRva`, since deleted from patterns.h) and left every other
+consumer authored. It passed the flat raffle acceptance (first pad-A press
+threw) and then BROKE STEREO IN THE HEADSET: one world per eye, smear on head
+motion, no 3D - the renderer does NOT consume the view through 0x26B499 alone
+(STATUS s54f). DO NOT reuse the allowlist polarity; s55's denylist is the
+correct-by-construction inversion (empty set = substitute-for-all =
+stereo-known-good).
+
+- Caller census at the raffle (SR stereo, 90 draws/s / 180 presents/s), four
+  active: 0x26B499 at draw rate (parent 0x1FE05F = the s43 scene-draw outer
+  frame - the scene-build caller), 0x1E1367 at 90/s, 0x22587F at 90/s,
+  0x203E73 at present rate (parent 0x21E03E); nine more idle in-scene incl.
+  0x5344E8 (inside kXGetWeaponStartTraceLocationImplRva).
+- The mid-stall-active set {0x1E1367, 0x22587F, 0x203E73} became s55's
+  candidate list; the s55 disasm (part below) named all three.
+
+### s55: THE VIEW-CONSUMER DENYLIST - mechanism landed; the interaction consumer cornered LIVE at the raffle activation
+
+**The inversion of s54e with the safe polarity**: substitute-for-all stays
+the baseline; callers in a deny set (max 4 slots) keep the engine's authored
+out-params - `vd_is_denied(callerRva)` gates ONLY the `drive_view` call in
+the detour (camera.cpp; census/pump/ticks unconditional; the pass-2 SR replay
+fork untouched). Empty set = deny nothing = the historical behaviour, so
+fail-open lands on the stereo-known-good side. `bsicam vdeny
+on|off|add <hexRva>|clear|status` is the dev lever; F10 shows read-only
+counters. NOT yet seeded at install - patterns.h gets the constant only after
+the full acceptance ladder (throw + A-B-A) passes.
+
+**The candidate sites, named by offline capstone (image on disk, 2026-08-12):**
+
+| ret RVA | containing function | identity |
+|---|---|---|
+| 0x1E1367 | 0x1E1350 (thin wrapper, 6 int3 after GetPlayerViewPoint's own body) | **eyes-viewpoint wrapper, DIRECT-call flavor**: `call 0x5E10C0` (the impl), then returns {loc, [this+0xBC]} and {rot-ish, [this+0xBC]} through two 16-byte out-structs. The classic GetActorEyesViewPoint shape every Use-trace routes through. Fires ~2.6x/present in free play AND during the s54 mid-stall census. |
+| 0x1E13DC | 0x1E13C0 | the SAME wrapper, VIRTUAL flavor (`call [vtbl+0x2F4]`). 4x/draw in free play, idle mid-stall. |
+| 0x22587F | loop head ~0x225815 | **global view publisher**: iterates `[0x13AA024]`'s +0x1B0 array (players), picks the entry whose [+0x2C] object has [+0x1FC] set, then calls GetPlayerViewPoint with **loc out-param = GLOBAL VA 0x13AB894** and refreshes globals 0x132FFF0/0x1330000/0x132FFFC + counter 0x1330008. Once per draw, also active mid-stall. Any gameplay system reading those globals sees whatever this call wrote. |
+| 0x203E73 | 0x203E40 | camera-refresh tick: reads PC+0x240 (the camera), sets PC+0x248 bit 0, calls GetPlayerViewPoint into stack locals and **DISCARDS both out-params** (`pop esi; ret`). Runs the impl for its internal caching only; since the detour never writes engine memory, denying it is a provable no-op - EXONERATED as a deny target, and it was never a render consumer either (s54f suspicion resolved). |
+| 0x5B2C8C / 0x59C87D / 0x244CF4 / 0x52F301 | 0x5B2C00 / 0x59C7D0 / 0x244CC0 / 0x52F040 | free-play per-draw consumers (parents 0x5B3B0D / - / 0x58D806 / 0x5914AE+0x591ACD); 0x52F301's function builds sign-flipped listener-like transforms (audio suspect); 0x244CC0 reads [this+0x218] and falls back to [this+0x50] verbatim. All idle during the s54 mid-stall census, so none is the interaction gate. |
+
+- **Near/far census (this session): NO GetPlayerViewPoint caller is
+  proximity-gated** - identical per-draw deltas at the raffle lady and far
+  from any interactable (third dump: 320/320 for six sites over 640
+  presents). The interaction evaluation runs continuously; its gate is
+  internal (aim/reach result), not call-rate.
+- **THE LIVE RESULT (fresh boot, user-positioned at the raffle lady, full VR
+  on - pad+camera+stereo+session)**: probe matrix with per-config compositor
+  captures. Baseline and deny{0x22587F}: lady idle, basket held low, no
+  hint. Deny{0x1E1367} (m2) and deny{both} (m3): **the lady RAISES the
+  basket toward the player and an interaction marker appears over it** - her
+  offer behaviour itself keys off the view the wrapper returns. `btn x
+  press` under deny{both}: **the take-ball interaction FIRED** - fidget
+  logged `ForceUnequip`, then `cine: SCRIPTED hold OPEN` (03:32:28) - the
+  first accepted raffle-chain interaction under full VR in the project's
+  history (the five-run s54d matrix never accepted one).
+- **Attribution still open**: the accepted press ran with BOTH sites denied;
+  the basket-raise A/B says 0x1E1367 is the (primary) consumer, 0x22587F's
+  necessity is untested in isolation. Next session: minimal-set isolation,
+  then the THROW acceptance + A-B-A, then patterns.h seeding.
+- **Open observations (verify next session):** (1) after the take-ball hold
+  opened, the announcer/reveal never fired in ~8 min (s54 saw ~2.5 min to
+  the reveal) - suspects: the pre-reveal pad-A press, a scene precondition,
+  or an unrelated wedge; the run was abandoned at the user's shutdown, NOT
+  proven stuck. (2) On boot 1 the aim seam's `substituted` counter froze at
+  59379 while calls kept climbing, starting near the first deny add and
+  persisting through `vdeny clear` - reset by the reload; watch whether deny
+  churn can stall the aim-ray substitution. (3) Denying 0x1E1367 visibly
+  changed the RENDERED framing (m2/m3 vs m0/m1 camera height/angle) - the
+  wrapper may feed a render-adjacent path too; the eye check MUST gate any
+  build that denies it (the s55 eye checks on the empty-set build passed:
+  interocular 46.8-58.1 mean / 73-77%, both-eye motion 29-33).
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

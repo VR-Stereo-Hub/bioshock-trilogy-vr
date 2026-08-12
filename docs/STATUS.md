@@ -17,7 +17,51 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 54 (THE RAFFLE WEDGE ROOT-CAUSED AND FIXED - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`, NOT merged)
+### Infinite: current state after session 55 (THE DENYLIST LANDED + THE INTERACTION CONSUMER CORNERED LIVE - first accepted raffle interaction under full VR; branch `claude/bioshock-interaction-view-denylist-5f89c7`, NOT merged)
+
+**Session 55 (2026-08-12) built the s54f plan: the eye check is now a tool,
+the view-consumer DENYLIST is landed (safe polarity - empty set = the
+stereo-known-good substitute-for-all), and a live A/B at the raffle lady
+cornered the interaction consumer.** Full derivation in ENGINE_NOTES "s55"
+(and the restored "s54 part 4" falsification record); the s54 state below
+carries forward otherwise.
+
+1. **tools/eye-check.ps1** - the mandatory per-trial stereo check as one
+   command (5 legs, calibrated bands, PASS/FAIL table, exit code, evidence
+   folder). Calibrated on the known-good build; both s55 runs green
+   (interocular mean 46.8-58.1 / 73-77% changed, both-eye motion 29-33,
+   sep 0.0630).
+2. **`bsicam vdeny` (camera.cpp)** - deny set (4 slots) gating ONLY
+   drive_view; denied callers keep authored out-params; counters in F10;
+   NOT install-seeded yet (that waits for the full acceptance ladder).
+3. **THE CORNERING (live, fresh boot, full VR on):** offline capstone named
+   the candidates (0x1E1367 = eyes-viewpoint wrapper direct flavor at
+   0x1E1350; 0x22587F = per-draw view publisher into GLOBAL 0x13AB894;
+   0x203E73 discards its out-params - exonerated). Probe matrix at the
+   lady: deny{0x1E1367} makes her RAISE the basket + an interaction marker
+   appears; deny{both} + pad X = **the take-ball interaction FIRED
+   (`ForceUnequip` + `cine: SCRIPTED hold OPEN`)** - the first accepted
+   raffle-chain interaction under full VR ever (s54d's matrix accepted
+   none). Near/far census: no caller is proximity-gated - the gate is
+   internal.
+4. **Open:** (a) attribution isolation (0x1E1367 alone vs both - the press
+   was only tested under both); (b) the THROW acceptance + A-B-A + then
+   patterns.h seeding behind the build gate (automatic, zero user levers -
+   the user directive); (c) the post-take-ball reveal never fired in ~8 min
+   before the user's shutdown ended the run - not proven stuck, re-run
+   clean; (d) boot-1 aim-seam `substituted` freeze during deny churn
+   (cleared by reload - watch); (e) deny{0x1E1367} changed the rendered
+   framing - eye-check gates any build denying it.
+
+**NEXT SESSION (s56): (1) minimal-set isolation at the lady (0x1E1367
+alone -> press; then 0x22587F alone), (2) the full raffle run to the THROW
+under the winning set - eye check, then acceptance (prompt arms + pad press
+throws), then A-B-A, then seed patterns.h + install-arm + TESTING "S55"
+headset checklist; (3) the s53/s52 headset verdicts and the crosshair hunt
+(`bsigfx scan XClikHUDCrosshair` / `scan HUDMovie` in the gameplay save),
+both unchanged from the s54 handoff below.**
+
+### Infinite: state after session 54 (superseded by s55 above) (THE RAFFLE WEDGE ROOT-CAUSED AND FIXED - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`, NOT merged)
 
 **Session 54 (2026-08-11) root-caused the session-state deadlock from LAST
 NIGHT'S OWN LOGS - no new instrumentation was needed - and shipped the fix,
@@ -7007,6 +7051,37 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 55 - 2026-08-12 (night) - eye-check tooled, DENYLIST landed, the interaction consumer cornered live at the raffle lady
+
+Executed the s54f plan on branch `claude/bioshock-interaction-view-denylist-5f89c7`
+(worktree off 12140e0). Full technical record in ENGINE_NOTES "s55"; summary:
+
+- **tools/eye-check.ps1** wraps the 5-leg stereo check; calibrated on the
+  known-good build (interocular 46.8/73.3% at the fairground - the s54f
+  53-56/77% numbers are scene-dependent, band [40,70] holds); both s55 runs
+  PASS, including on the vdeny build with the set empty.
+- **vdeny (camera.cpp)**: deny set gates only drive_view; empty = historical
+  substitute-for-all; `bsicam vdeny` lever + F10 counters. Un-seeded by
+  design until the acceptance ladder passes.
+- **Derivation**: near/far census killed the proximity hypothesis (all nine
+  in-scene callers fire per-draw everywhere); offline capstone named the
+  mid-stall candidates - 0x1E1367 (eyes-viewpoint wrapper, direct flavor),
+  0x22587F (view -> GLOBAL 0x13AB894 publisher), 0x203E73 (out-params
+  DISCARDED - exonerated, and it resolves s54f's render-suspect question).
+- **The live A/B (fresh boot, user walked to the lady, full VR)**:
+  deny{1E1367} -> she raises the basket + interaction marker; deny{both} +
+  pad X -> `ForceUnequip` + `cine: SCRIPTED hold OPEN` = the take-ball
+  interaction ACCEPTED under full VR (a first across every era of the mod).
+- **Aborted at the user's shutdown**: the announcer/reveal after take-ball
+  did not fire within ~8 min (one confounding pre-reveal pad-A press was
+  sent); run abandoned, not proven stuck. Boot-1 oddities to watch: the aim
+  seam's `substituted` counter froze during deny churn (reload cleared it);
+  deny{1E1367} visibly shifted the rendered framing.
+- The first-boot "heavy stutter every 5-10 s" the user reported matched
+  beat-log dips to 57-77 draws/s; it vanished on the second boot with the
+  harness quiet - prime suspect is harness focus-steals during censusing,
+  unresolved.
 
 ### Session 54f addendum - 2026-08-12 - the s54e view-consumer filter FALSIFIED IN THE HEADSET (stereo broken) and REVERTED; the s55 derivation plan
 
