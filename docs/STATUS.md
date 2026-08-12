@@ -17,7 +17,12 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 58 (HEAD-DIRECTED USE SHIPPED FLAT - 0x1E13DC cornered as THE USE consumer, policy default-on; branch `claude/bioshock-head-interaction-bebe6d`, NOT merged, awaiting the headset checklist)
+### Infinite: current state after session 58 (HEAD-DIRECTED USE ACCEPTED IN THE HEADSET AND MERGED - 0x1E13DC cornered as THE USE consumer, policy default-on; merged to `bioshock-infinite`)
+
+**HEADSET VERDICT (user, 2026-08-13): "everything worked as expected" -
+the full TESTING "S58" checklist passed: head-directed targeting feel, the
+F10 A/B both ways, the COMPLETE raffle chain with no stalls, doors and
+kinetoscopes, and the sharpness sweep. s58 is CLOSED and merged.**
 
 **Session 58 (2026-08-13) closed the deal-breaker at the mechanism level:
 USE-target selection follows the HEAD. The s56 10-caller deny set stays
@@ -67,12 +72,32 @@ load cycle closes in ~90 s with NO scripted-hold markers (the "~3 min
 beat" was save-specific); Infinite has NO manual saves - user positioning
 is per-boot standing state, not savable.
 
-**NEXT (s58 close-out): the numbered headset checklist is TESTING "S58"** -
-head-vs-body feel at machines/doors/kinetoscopes + loot unchanged, the F10
-A/B both ways, the FULL raffle chain re-verify (any stall: flip the s58
-checkbox off mid-beat and report which beat), one sharpness sweep. After
-acceptance: merge to `bioshock-infinite`. Secondary backlog unchanged
-(TESTING "S52" leftovers; the reload glitch stays parked post-release).
+**NEXT SESSION (s59): THE MISSING-HANDS SCRIPTED-BEAT CLASS.** A
+pre-existing regression (user: present BEFORE the s58 changes; likely from
+the cine/model/hide rounds s52-s57, NOT the melee-execution fix which s57
+already closed): in a SUBSET of scripted first-person beats the authored
+hands never show. The user's observed split (2026-08-13):
+- **Hands VISIBLE (correct)**: raffle beats generally (taking the ball
+  from the basket shows the hand fully), the intro cutscene, door opens,
+  melee executions (the s57 fix holds).
+- **Hands HIDDEN (the regression class)**: (1) DRINKING A VIGOR;
+  (2) the tattoo-poster beat in the city - flat raises the right hand to
+  look at the AD mark, in VR no hand appears at all so it reads as plain
+  talk; (3) raising the winning ball #77 after the raffle draw - the ONLY
+  hidden-hand moment inside the otherwise-correct raffle chain.
+The suggestive pattern: all three are "look at your own hand" beats -
+brief authored FP-hand vignettes - while the working beats are full
+scripted holds. Suspects, evidence-first: do these beats open a `cine`
+hold at all (if NOT, the s53 hide gate / bones substitution never gets a
+release edge); what does the loadout/profiles keying read during them
+(a ForceUnequip into empty-hands would hide via the empty-hand policy);
+does the bones drive keep substituting through them (the s51 fire-swing
+mechanism eating the authored raise). Instruments ready: `bsihide` levers,
+`bsibones` travel/spread, the cine hold log, profiles keying log,
+`bsifidget act` (though reload proved act-by-name can be blind), and the
+vigor-drink is triggerable on demand (equip a new vigor). Secondary
+backlog unchanged (TESTING "S52" leftovers; reload glitch parked
+post-release).
 
 ### Infinite: state after session 57 (superseded by s58 above) (THE MODEL LANE LANDED FLAT - sprint glue, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`, NOT merged, awaiting the headset checklist)
 
@@ -7259,6 +7284,17 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 58 (close-out, same day) - HEADSET ACCEPTED, merged to bioshock-infinite; s59 = the missing-hands scripted-beat class
+
+User verdict on the full TESTING "S58" checklist: "everything worked as
+expected" - head-directed targeting, the F10 A/B, the complete raffle
+chain (no stalls), doors/kinetoscopes, sharpness sweep. Fast-forward
+merged to `bioshock-infinite`. Next session's target banked with the
+user's observations (see the current-state section): the missing-hands
+scripted-beat class - vigor drink, the tattoo-poster hand raise, the
+ball-77 raise; all "look at your own hand" vignettes, while full scripted
+holds show hands correctly.
 
 ### Session 58 - 2026-08-13 - HEAD-DIRECTED USE: 0x1E13DC cornered by the ButtonUseTarget oracle, policy shipped flat
 

@@ -737,7 +737,8 @@ Cinematics half:
       A/B/A sweep against the PC `ButtonUseTarget` oracle (+0x176C, name-derived);
       the head-use policy un-denies exactly it (config `interactHeadUse` default on,
       F10 checkbox, `bsicam vdeny add|del` the dev A/B). Eye-check + soak green.
-      **Headset checklist TESTING "S58" pending** (feel + the raffle-chain re-verify)
+      **HEADSET ACCEPTED 2026-08-13** (feel + F10 A/B + full raffle chain, no stalls,
+      sharpness clean); merged to `bioshock-infinite`
 - [ ] Correct projection claim throughout - BS1's cinematics rendered their own FOV while the claim
       said something else, and read as a fisheye (judge on the headset Matinee run)
 - [x] Selectable rig behaviour during cutscenes: the s52 HEAD RADIO (head look default /

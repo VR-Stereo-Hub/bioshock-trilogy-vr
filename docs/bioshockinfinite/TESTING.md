@@ -813,7 +813,7 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
-## S58 checklist (HEAD-DIRECTED USE; branch `claude/bioshock-head-interaction-bebe6d`)
+## S58 checklist (HEAD-DIRECTED USE; branch `claude/bioshock-head-interaction-bebe6d`) - ACCEPTED 2026-08-13, all five steps ("everything worked as expected"); merged to bioshock-infinite
 
 One mechanism this build: USE-target selection now follows your HEAD (the
 0x1E13DC un-deny, flat-proven at a vending machine with the ButtonUseTarget
