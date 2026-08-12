@@ -17,54 +17,46 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 55 (THE DENYLIST LANDED + THE INTERACTION CONSUMER CORNERED LIVE - first accepted raffle interaction under full VR; branch `claude/bioshock-interaction-view-denylist-5f89c7`, NOT merged)
+### Infinite: current state after session 56 (THE INTERACTION-VIEW FIX SHIPPED AND HEADSET-ACCEPTED - the raffle chain plays end to end under full VR, automatic at install; branch `claude/bioshock-interaction-view-fix-c1be42`, NOT merged)
 
-**Session 55 (2026-08-12) built the s54f plan: the eye check is now a tool,
-the view-consumer DENYLIST is landed (safe polarity - empty set = the
-stereo-known-good substitute-for-all), and a live A/B at the raffle lady
-cornered the interaction consumer.** Full derivation in ENGINE_NOTES "s55"
-(and the restored "s54 part 4" falsification record); the s54 state below
-carries forward otherwise.
+**Session 56 (2026-08-12) finished the render/gameplay view partition and
+shipped it: the deny set {0x1E13DC, 0x22587F, 0x5EA483, 0x5B2C8C, 0x59C87D,
+0x244CF4, 0x52F301, 0x5344E8, 0x61C289, 0x5F9A94} is seeded automatically
+at install behind the build gate (patterns.h `kViewConsumerDenyRvas`), zero
+user levers, full 3D preserved. USER-ACCEPTED IN THE HEADSET: sharp on head
+motion in every direction, and the whole raffle chain - activate, take-ball,
+announcer within seconds, reveal, apprehension, skyhook QTE, control back -
+played with no stalls.** Full derivation in ENGINE_NOTES "s56"; checklist in
+TESTING "S56"; the s54 state below carries forward otherwise.
 
-1. **tools/eye-check.ps1** - the mandatory per-trial stereo check as one
-   command (5 legs, calibrated bands, PASS/FAIL table, exit code, evidence
-   folder). Calibrated on the known-good build; both s55 runs green
-   (interocular mean 46.8-58.1 / 73-77% changed, both-eye motion 29-33,
-   sep 0.0630).
-2. **`bsicam vdeny` (camera.cpp)** - deny set (4 slots) gating ONLY
-   drive_view; denied callers keep authored out-params; counters in F10;
-   NOT install-seeded yet (that waits for the full acceptance ladder).
-3. **THE CORNERING (live, fresh boot, full VR on):** offline capstone named
-   the candidates (0x1E1367 = eyes-viewpoint wrapper direct flavor at
-   0x1E1350; 0x22587F = per-draw view publisher into GLOBAL 0x13AB894;
-   0x203E73 discards its out-params - exonerated). Probe matrix at the
-   lady: deny{0x1E1367} makes her RAISE the basket + an interaction marker
-   appears; deny{both} + pad X = **the take-ball interaction FIRED
-   (`ForceUnequip` + `cine: SCRIPTED hold OPEN`)** - the first accepted
-   raffle-chain interaction under full VR ever (s54d's matrix accepted
-   none). Near/far census: no caller is proximity-gated - the gate is
-   internal.
-4. **Open:** (a) attribution isolation (0x1E1367 alone vs both - the press
-   was only tested under both); (b) the THROW acceptance + A-B-A + then
-   patterns.h seeding behind the build gate (automatic, zero user levers -
-   the user directive); (c) **the post-take-ball stall IS a reproduction**
-   (user, post-session: the announcer should follow the ball within SECONDS,
-   not minutes) - a SECOND view-poisoned gate sits after the take-ball beat,
-   likely a scripted facing/look trigger on a different consumer; next
-   session A/Bs the remaining per-draw sites (0x22587F solo, 0x1E13DC,
-   0x5B2C8C, 0x59C87D, 0x244CF4, 0x52F301) live at that beat with the same
-   deny-toggle method that cornered the first gate (one confound to clear:
-   the stray pre-reveal pad-A press); (d) boot-1 aim-seam `substituted` freeze during deny churn
-   (cleared by reload - watch); (e) deny{0x1E1367} changed the rendered
-   framing - eye-check gates any build denying it.
+1. **The third gate**: mid-stall caller census (flat) found 0x5EA483 - a
+   per-local-player "is the player looking at the target" view-cone helper
+   in the scripted-sequence native cluster, absent from the s55 map;
+   denying it unstuck the stalled reveal beat in the same log second.
+2. **The 0x1E1367 correction (headset bisect, 4 live flips)**: the
+   eyes-viewpoint wrapper's DIRECT flavor is a RENDER consumer - denying it
+   causes an offset-dependent post-process smear (sharp only when the head
+   aligns with the authored view) that NO flat instrument can see. It is
+   never denied; the interaction path reads through the VIRTUAL flavor
+   0x1E13DC. This corrects s55's attribution and closes its framing-shift
+   observation.
+3. **The eye check made honest (tools/eye-check.ps1)**: a negative control
+   proved the s55 image legs are blind to the pairing break (mono reads
+   in-band - the compositor presents identical eyes at two poses); leg 0
+   (camReplays/s >= 80% of draws/s from a FRESH beat line) is now the
+   pairing/mono gate, validated in both directions; interocular floor
+   40 -> 30. vdeny widened to 16 slots + an allow-only DERIVATION mode.
+4. **A-B-A**: `vdeny off` = sharp + interaction break returns (user-judged
+   live); `on` = fixed. The lever needs no reinstall; restart re-seeds.
 
-**NEXT SESSION (s56): (1) minimal-set isolation at the lady (0x1E1367
-alone -> press; then 0x22587F alone), (2) the full raffle run to the THROW
-under the winning set - eye check, then acceptance (prompt arms + pad press
-throws), then A-B-A, then seed patterns.h + install-arm + TESTING "S55"
-headset checklist; (3) the s53/s52 headset verdicts and the crosshair hunt
-(`bsigfx scan XClikHUDCrosshair` / `scan HUDMovie` in the gameplay save),
-both unchanged from the s54 handoff below.**
+**NEXT SESSION (s57): (1) the remaining s53/s52 headset verdicts (rowboat
+under s53b defaults, cine-radio default, single-empty-hand, TESTING "S52":
+arsenal tuning + calibration save, HUD sliders, Matinee gun-track, sprint
+arms, subtitles); (2) the crosshair hunt (`bsigfx scan XClikHUDCrosshair` /
+`scan HUDMovie` in the gameplay save, chase with bsiprop/bsifields, then the
+setb/cmd levers); (3) opportunistic: re-verify other scripted interactive
+beats (doors, the box handoff) inherit the fix - the deny set is global by
+construction, but only the raffle chain is proven.**
 
 ### Infinite: state after session 54 (superseded by s55 above) (THE RAFFLE WEDGE ROOT-CAUSED AND FIXED - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`, NOT merged)
 
@@ -7056,6 +7048,39 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 56 - 2026-08-12 (night) - THE INTERACTION-VIEW FIX SHIPPED: third gate found flat, the smear pinned in the headset, deny set seeded at install, raffle chain accepted end to end
+
+On branch `claude/bioshock-interaction-view-fix-c1be42` (tip-identical to the
+s55 branch). Full record in ENGINE_NOTES "s56"; checklist in TESTING "S56":
+
+- **Instrument audit first**: a negative control (drive fully off) passed
+  every s55 eye-check leg while `camReplays/s` collapsed 90 -> 0 - the image
+  legs are blind to the pairing break (mono reads in-band). Leg 0 (fresh-beat
+  camReplays/s >= 80% of draws/s) added and validated in both directions;
+  interocular floor 40 -> 30. vdeny widened (16 slots, allow-only derivation
+  mode); allow-only{0x26B499} proved the pairing is fed by the scene caller
+  alone.
+- **First flat raffle playthrough**: the 11-deny trial advanced past s55's
+  wall (take-ball accepted, reveal played) then stalled pre-throw; live
+  census named a caller absent from the s55 map - 0x5EA483, the scripted-
+  sequence "is the player looking at the target" cone gate; denying it
+  unstuck the beat in the same log second. Chain then ran to the skyhook
+  QTE (fire press accepted) and free play.
+- **The headset bisect (user, VDXR, 4 live flips)**: the seeded 11-set
+  produced an offset-dependent post-process smear no flat leg can see;
+  bisect pinned it to 0x1E1367 alone - the eyes-viewpoint wrapper's DIRECT
+  flavor is a RENDER consumer, never to be denied; 0x1E13DC (virtual
+  flavor) carries the interaction path. s55's attribution corrected, its
+  framing-shift observation explained.
+- **Shipped**: patterns.h `kViewConsumerDenyRvas` (10 callers) +
+  `kEyesViewDirectCallerRva` (never-deny marker), seeded in camera
+  `install()` behind the build gate - automatic, zero levers. **Headset
+  acceptance: sharp in all directions + the full raffle chain with no
+  stalls, user-played.** Final sim eye-check green on the shipped build;
+  A-B-A via `vdeny off/on` live.
+- New traps recorded: menu-contaminated eye-check trials (quads=1 tell),
+  xrsim-launch's stale-runtime misread after a VDXR boot.
 
 ### Session 55 - 2026-08-12 (night) - eye-check tooled, DENYLIST landed, the interaction consumer cornered live at the raffle lady
 

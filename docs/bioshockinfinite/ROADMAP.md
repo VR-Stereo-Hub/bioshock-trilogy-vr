@@ -724,6 +724,14 @@ Cinematics half:
       hands/aim/laser/fire release edge-clean; headset regression run pending
 - [x] These are two different problems - confirmed, and they got different handling
       (silence vs detector)
+- [x] **Scripted INTERACTIVE beats under VR (the raffle wedge, s54-s56)**: root-caused -
+      the interaction/trigger system evaluates GetPlayerViewPoint against the substituted
+      VR pose and its gates never pass - and fixed at the root (s56): the view-consumer
+      deny set (patterns.h `kViewConsumerDenyRvas`, 10 gameplay callers incl. the
+      0x5EA483 look-cone gate) is seeded at install, automatic, render path untouched
+      (0x26B499 + 0x1E1367 keep the VR pose - the latter is render-side, headset-proven).
+      **Raffle chain headset-accepted end to end with no stalls.** Every raffle-class
+      beat inherits by construction; re-verify others opportunistically (TESTING "S56")
 - [ ] Correct projection claim throughout - BS1's cinematics rendered their own FOV while the claim
       said something else, and read as a fisheye (judge on the headset Matinee run)
 - [x] Selectable rig behaviour during cutscenes: the s52 HEAD RADIO (head look default /

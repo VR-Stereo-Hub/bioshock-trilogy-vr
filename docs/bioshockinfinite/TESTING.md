@@ -896,6 +896,37 @@ hatches: `bsihide auto off`, or the checkbox.
    hangover (a rig stuck invisible = the watchdog failed - `bsihide status`
    and report the counters).
 
+## S56 checklist (the interaction-view fix, SHIPPED and headset-accepted 2026-08-12; branch `claude/bioshock-interaction-view-fix-c1be42`)
+
+The view-consumer deny set is AUTOMATIC: seeded at install behind the build
+gate, no levers. `bsicam vdeny status` should report 10 callers, mode deny.
+The 2026-08-12 acceptance already passed all of this live (user in the
+headset); re-run it after any view-path or camera change:
+
+1. **Stereo sharpness (the 0x1E1367 gate - flat CANNOT see this)**: in the
+   headset, hold your gaze off the body's aim direction in each of the four
+   directions and roll. The world must stay SHARP everywhere. An
+   offset-dependent radial blur/warp (sharp only dead-center) = a render
+   caller got denied - `bsicam vdeny status` and compare against
+   patterns.h's kViewConsumerDenyRvas.
+2. **The raffle chain, end to end, no stalls**: walk to the raffle lady ->
+   basket raises + marker appears on approach -> press accepted for the
+   take-ball (`cine: SCRIPTED hold OPEN` in the log) -> the announcer
+   continues within SECONDS (not minutes) -> reveal -> throw beat ->
+   apprehension -> skyhook QTE accepts fire -> `SCRIPTED hold closed`,
+   control back. Any multi-minute wait = a view-gated trigger is reading a
+   substituted view: run `bsicam callers` twice mid-stall and look for an
+   active caller absent from the deny set (the s56 method that found
+   0x5EA483).
+3. **A-B-A lever (no reinstall needed)**: `bsicam vdeny off` = the
+   historical substitute-for-all (interaction break returns, stereo
+   unaffected); `bsicam vdeny on` restores the fix. The seeded set survives
+   toggling; only a process restart re-seeds from patterns.h.
+4. **Flat regression (every view-path change)**: `.\tools\eye-check.ps1
+   -Label <trial>` - leg 0 (pairing) is the mono gate; run it IN GAMEPLAY
+   (quads=3, aimRayDots=2), never on a menu (radial-blur backdrop = a
+   contaminated trial).
+
 ## S52 checklist (the input lane, THE CHEATED ARSENAL, the HUD quad, the cinematic gate; branch `si52-inf-input-arsenal-hud-cine`)
 
 Four features this build, all flat-proven. Everything judged by eye has an F10

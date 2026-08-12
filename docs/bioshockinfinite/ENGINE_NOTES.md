@@ -1617,6 +1617,88 @@ the full acceptance ladder (throw + A-B-A) passes.
   build that denies it (the s55 eye checks on the empty-set build passed:
   interocular 46.8-58.1 mean / 73-77%, both-eye motion 29-33).
 
+### s56: THE RENDER/GAMEPLAY VIEW PARTITION SHIPPED - the deny set seeded at install; the 0x1E1367 smear pinned in the HEADSET
+
+**The shipped fix (patterns.h `kViewConsumerDenyRvas`, seeded in
+camera.cpp's `install()` behind `rva_trusted()`, zero user levers): deny
+{0x1E13DC, 0x22587F, 0x5EA483, 0x5B2C8C, 0x59C87D, 0x244CF4, 0x52F301,
+0x5344E8, 0x61C289, 0x5F9A94}; NEVER deny 0x26B499 (scene build) or
+0x1E1367 (see the smear below). Headset-accepted 2026-08-12: sharp on head
+motion in every direction AND the full raffle chain (activate -> take-ball
+-> announcer within seconds -> reveal -> apprehension -> skyhook QTE ->
+control back) with no stalls, user-played.**
+
+**Mechanism widened (camera.cpp):** kVdSlots 4 -> 16; `bsicam vdeny mode
+deny|allow` adds an ALLOW-ONLY mode (substitute ONLY for listed callers) as
+a DERIVATION instrument - it is the s54e polarity, never the install
+default; the shipped shape stays the deny set (fail-open =
+substitute-for-all).
+
+**The flat-instrument audit (the session's second spine):**
+- **Negative control**: allow-only + empty set (= authored everywhere, the
+  drive fully off) and the s55 eye check STILL PASSED every leg - while the
+  beat's `camReplays/s` collapsed 90 -> 0 within 5 s. Legs 1-5 measure
+  compositor pose-parallax, which survives identical per-eye images: MONO
+  READS IN-BAND (interocular mean 54.8). The s55 claim that the image legs
+  catch the s54e break class is FALSIFIED.
+- **Leg 0 (pairing)** added to eye-check.ps1: a FRESH `[reentry] beat` must
+  show camReplays/s >= 80% of draws/s. Validated both directions live
+  (FAILs on the dead-replay state, PASSes healthy). This is the mono/pairing
+  gate; the interocular mean floor dropped 40 -> 30 (it never detected
+  anything real; the UPPER bound still catches split worlds).
+- **Stereo pairing ownership proven**: the pass-1 base stamp + pass-2 replay
+  inside the detour are fed solely by the scene-caller dispatch -
+  allow-only{0x26B499} keeps camReplays at 90/90 with all else authored.
+- **LIMITATION (headset-learned): no flat leg sees the 0x1E1367 smear** -
+  the sim's discrete yaw + settle leaves no continuous head-vs-authored
+  divergence. Trials touching the render set need a headset sharpness check.
+
+**The THIRD gate found and named (flat, mid-stall census):** with the
+10+1E1367 set denied the raffle advanced past s55's wall (take-ball
+accepted, reveal PLAYED) then stalled pre-throw-prompt. Live census showed a
+caller ABSENT from the s55 map running per-draw: **0x5EA483, fn 0x5EA400
+(single static parent 0x5EBCA7, the 0x5EBxxx scripted-sequence native
+cluster that also hosts the ForceUnequip caller 0x5EBE00). Body: per local
+player, GetPlayerViewPoint -> delta to a target -> normalize -> the cone
+check at 0x5EA380 (arg 0x12), aggregated to a bool - "is the player looking
+at the target".** `vdeny add 5EA483` unstuck the stalled beat IN THE SAME
+LOG SECOND (18:39:01.601: the add echo and `EndUnequip` share a timestamp).
+The scene then ran: apprehension, office-door flashback, a FIRE press
+accepted for the skyhook-counter QTE, `SCRIPTED hold closed`, free play,
+eye check green.
+
+**THE HEADSET BISECT (the load-bearing correction):** the user ran the
+11-caller seeded build under VDXR: offset-dependent post-process SMEAR -
+sharp only while the head aligns with the authored view, radial blur/warp
+everywhere else (the farther off-axis, the worse). Four live flips, user
+judging, no reinstalls: full 11-set = smear; {1E1367, 1E13DC, 5EA483} =
+smear; vdeny off = SHARP; {1E13DC, 5EA483} = SHARP; the full set minus
+1E1367 = SHARP. **0x1E1367 (the eyes-viewpoint wrapper's DIRECT flavor) is
+a RENDER-side consumer - denying it feeds a post-process/temporal basis the
+authored view while the eyes render the VR pose.** The s55 "deny{0x1E1367}
+arms the lady" attribution was confounded: with 0x1E1367 substituting and
+0x1E13DC (the VIRTUAL flavor) denied, the raffle arms, accepts and plays -
+the interaction path reads through the virtual dispatch. (This also
+retro-explains s55's open observation 3 - the framing shift - and the FP-arm
+reframing measured flat this session: trial-set leg-5 interocular 37.9 vs
+54.6 off, pairing green both ways.)
+
+**s55 opens closed:** (1) the 8-min stall = the 0x5EA483 gate (+ the
+throw-prompt timer eaten by the stall); (2) the aim-seam `substituted`
+freeze did NOT recur outside scripted holds (holds legitimately freeze it -
+the cine release); (3) the framing shift = the 0x1E1367 render role, now
+never denied.
+
+**Traps (new, all cost time):** (a) the boot recipe's Enter spam can leave a
+MENU open - a trial captured there is contaminated (the pause/main-menu
+radial-blur backdrop tanks the interocular legs; quads=1 instead of 3 and
+aimRayDots=0 are the tell - verify before any eye check); (b)
+xrsim-launch's runtime check can read a STALE `runtime` log line from an
+earlier VDXR boot and abort a launch that actually took the sim - confirm
+with `xr: instance created on runtime 'bvr-xrsim'` from a fresh byte
+offset; (c) Virtual Desktop running does not stop the sim launch, but the
+game process it leaves behind DOES hold the DLLs (LNK1168 on install).
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle
