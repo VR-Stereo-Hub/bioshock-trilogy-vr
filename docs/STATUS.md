@@ -17,7 +17,22 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; the tattoo-poster NON-HOLD beat deferred to the roadmap)
+### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; **v0.8.0 RELEASED same night** - Infinite's first public build; the tattoo-poster NON-HOLD beat deferred to the roadmap)
+
+**v0.8.0 SHIPPED (2026-08-13, from `bioshock-infinite` @ e6e568f):**
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.8.0 - one zip,
+three games (new `preset-bsi` folder; README gained the three-games table;
+package.ps1 extended). BS1 + BS2 sanity-checked in the sim on the release
+branch before tagging (BS1: alternate-eye stereo live, HUD quad, camera hook
+healthy; BS2: stereo live, 3 quads, aim dots 2/2 - both branches contained:
+origin/main and origin/bioshock-2 are ancestors of the release commit).
+Release notes in docs/RELEASE_NOTES.md; Discord announcement text in
+dist/discord-v0.8.0.md (untracked - regenerate from RELEASE_NOTES if lost).
+Infinite is labeled EARLY ACCESS: tested range = game start through the early
+city; Skyline/late chapters/DLC unswept. Known-issues list (user-supplied +
+backlog) is in the notes: loading-area artifacts (the tower bells), model
+jank, vigor-only hand position, aim/model calibration unfinished, the
+tattoo-poster beat, reload glitch, FOV-edge drift, FX-origin family.
 
 **HEADSET VERDICT (user, same night): "most of the things are perfect" -
 vigor drink shows the authored hands (release ~166 ms after hold-open),
