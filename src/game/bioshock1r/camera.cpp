@@ -1047,6 +1047,60 @@ void poll_command_file(uint64_t now) {
 }
 
 // XR -> Unreal conversion lives in ue_math.h (shared with the aim ray).
+// The black-bands warning, said once, in the one place that knows both numbers.
+//
+// The eye is essentially square (54 x 55 deg half-angles on a Quest 3), so a
+// 16:9 backbuffer has to render a MUCH wider horizontal FOV to fill it - the
+// core computes that requirement and logs it, and the adapter reads back what
+// the engine actually renders. When the two disagree the difference is not
+// subtle: it is black bars at the top and bottom of the headset image for the
+// whole session, and the fix is one integer in the game's own ini.
+//
+// Worth a loud line because the game's options menu REWRITES HorizontalFOV
+// whenever any video setting is touched, so this is not a one-time repair.
+constexpr float kFovMismatchWarnDeg = 5.0f;
+
+void warn_fov_mismatch_once(bool strictGameplay) {
+    static bool s_checked = false;
+    if (s_checked || !strictGameplay) return;
+
+    // Read what the scene is ACTUALLY rendered at, not the settings option.
+    // The option pointer is frequently unavailable (`fovaudit: option=-1` on a
+    // normal session, measured), and the only other candidate - the frame
+    // camera's fov - reads the engine default 100 on the title screen and
+    // during scripted cameras, so latching on either warns on correctly
+    // configured launches. The decoded scene tangent is the number that
+    // actually decides whether there are bars, and requiring it FRESH and in a
+    // gameplay view keeps scripted-camera lenses out of the comparison.
+    float tanH = 0.0f, tanV = 0.0f;
+    unsigned long long age = 0;
+    if (!bvr::hud::fov_watch(&tanH, &tanV, &age, 500) || tanH <= 0.0f) return;
+    const float want = bvr::vr::suggested_hfov_deg();
+    if (want <= 0.0f) return; // headset requirement not computed yet
+    const float actualHfovDeg = 2.0f * atanf(tanH) * kRadToDeg;
+    s_checked = true;
+    if (fabsf(want - actualHfovDeg) <= kFovMismatchWarnDeg) {
+        BVR_LOG("[b1r] fov check: the world renders %.0f deg and this headset wants "
+                "%.0f - no bars",
+                actualHfovDeg, want);
+        return;
+    }
+
+    const wchar_t* ini = game_ini::path();
+    BVR_LOG("[b1r] FOV MISMATCH: this headset needs hfov %.0f deg at the current "
+            "backbuffer, but the game renders %.0f - expect BLACK BARS top and "
+            "bottom for the whole session.",
+            want, actualHfovDeg);
+    BVR_LOG("[b1r]   fix: set HorizontalFOV=%.0f in [ShockGame.ShockUserSettings] of "
+            "%ls (the lock beside it is bHorizontalFOVLock; [Engine.RenderConfig] "
+            "carries its own HorizontalFOVLock)",
+            want, (ini && *ini) ? ini : L"%APPDATA%\\BioshockHD\\Bioshock\\Bioshock.ini");
+    BVR_LOG("[b1r]   the options menu rewrites HorizontalFOV whenever you touch a "
+            "video setting, so re-check it after visiting that screen. "
+            "'gfov %.0f' forces it for this session only.",
+            want);
+}
+
 UeAngles hmd_angles(const bvr::vr::HeadPose& hp) {
     return ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
 }
@@ -1175,6 +1229,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // scripted cameras bypass CalcView entirely).
     bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
     bvr::vr::publish_gameplay_view(strictGameplay);
+    warn_fov_mismatch_once(strictGameplay);
 
     // Controller-bound recenter: the XR action layer raises a latch on the
     // render thread when the bound gesture fires (core/input/xinput_bridge.h);
