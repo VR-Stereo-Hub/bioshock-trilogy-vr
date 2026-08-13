@@ -17,7 +17,17 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - per-hold rig hide flat-shipped on the rotation channel; branch `claude/bioshock-own-rig-discrimination-890e1e`, awaiting the headset checklist)
+### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; the tattoo-poster NON-HOLD beat deferred to the roadmap)
+
+**HEADSET VERDICT (user, same night): "most of the things are perfect" -
+vigor drink shows the authored hands (release ~166 ms after hold-open),
+doors single-handed, executions intact, the long multi-phase hold played
+all three gate branches live (hide -> show at the hand moment -> re-hide on
+the game's bHidden park), the intro chain clean. ONE exception: the
+tattoo-poster beat still hides the hand - the player CAN WALK during it, so
+it is a NON-HOLD beat the gate never sees (deferred with full mechanism
+notes to ROADMAP I9; likely the empty-hand hide eating the authored raise
+after the beat's ForceUnequip). s59 is CLOSED and merged.**
 
 **Session 59 (2026-08-13) closed the s58b missing-hands regression at the
 mechanism level, flat. The s53 cine-hold rig hide is now PER-HOLD (cine

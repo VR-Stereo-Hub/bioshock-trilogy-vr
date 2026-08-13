@@ -738,8 +738,26 @@ Cinematics half:
       bHidden==0 (paired door/drink trace: 67 vs 180 deg - ENGINE_NOTES s59; bHidden
       and who-identity both falsified as discriminators). Degrades to always-hide on
       any signal failure; F10 radio + slider. Flat fence + eye-check green;
-      **headset checklist pending (TESTING "S59": drink, doors, execution, raffle
-      sweep)**
+      **HEADSET ACCEPTED 2026-08-13** ("most of the things are perfect"): drink hands
+      show, doors single-handed, executions intact, the intro chain clean - the one
+      exception is the tattoo-poster beat, deferred below
+- [ ] **The tattoo-poster NON-HOLD beat (deferred from s59 by user call, 2026-08-13,
+      "pretty small specific thing")**: the right-hand AD-mark check in the city still
+      shows NO hand. Mechanism (user observation + s59 architecture): the player CAN
+      STILL WALK during it - the game never locks input, so `cine::hold()` never
+      opens and the s59 gate never engages; this is a NON-HOLD authored beat, a
+      different class from every s59-fixed vignette. Prime suspect: the beat
+      ForceUnequips the right hand, the empty-hand policy bone-hides that limb
+      (hide.cpp empty-hand leg, `!hold`-scoped), and the authored raise plays into a
+      hidden limb - the s57 melee window solved the same shape for swings (timed
+      release keyed on an event edge). Fix directions, in order: (a) detect the
+      beat's anim action by name at the fidget anim-action hook (0x5D1520 - the
+      probe's fidget lane logs every by-name action; one flat walk past the poster
+      with `bsihide probe on` + the fidget log names it) and open a timed empty-hand
+      release, the melee-window shape; (b) if the beat posts nothing by name, an
+      articulation release for the empty-hand scope (grip rotation through a
+      released-empty limb outside holds = authored beat). Instruments ready:
+      `bsihide probe`, `bones::anchor_atoms`, the fidget action log.
 - [x] **Head-directed USE (s58, the finer split)**: flat-shipped - 0x1E13DC (the
       eyes-viewpoint VIRTUAL flavor) cornered as THE USE-target consumer by a 10-caller
       A/B/A sweep against the PC `ButtonUseTarget` oracle (+0x176C, name-derived);
