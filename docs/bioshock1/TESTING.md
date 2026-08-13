@@ -423,3 +423,17 @@ evidence, and both need a headset.
   way), Present-hook reentrancy, MinHook targets moved by a game update (check the build line
   at the top of ENGINE_NOTES.md).
 - The mod must always fail soft: if a scan/hook fails, log it and let the game run flat.
+
+## S60 headset checklist (feedback quick wins, 2026-08-13)
+
+Both items are F10-toggleable live - no relaunch needed for the A/B.
+
+1. **Instant move direction (the 180-arc fix).** Walk forward and snap your head
+   ~180 quickly, stick still held. Expected: your walk direction flips with your
+   head immediately - no arc, no curve. A/B: F10 > Body / locomotion (M7.5) >
+   "Instant move direction" checkbox OFF reproduces the old arcing walk.
+   If the walk ever goes the WRONG way (mirrored) with the box ON, report it -
+   that is a sign flip and toggling OFF restores the old behaviour.
+2. **Boot preset auto-load.** After a fresh launch (before pressing VR PRESET 1),
+   open F10 and check your tuned slider values (world scale, aim trims, HUD size)
+   already show YOUR numbers, not defaults. VR PRESET 1 still arms VR as before.
