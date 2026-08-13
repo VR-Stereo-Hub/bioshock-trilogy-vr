@@ -85,8 +85,8 @@ Keep an attribution comment in any file carrying their code.
 2. **Roomscale body-follow + snap-turn pivot** (likely 2 sessions) - pawn follows
    physical displacement WITH collision; BS1/BS2 probe `AActor::Move`/`MoveSmooth` exec
    natives (BioVR's research doc ranks them - vr-features-research.md in their repo);
-   Infinite separately. Fixes the snap-turn pivot for free. Consider STAGE/LOCAL_FLOOR
-   reference space while in there.
+   Infinite separately. Fixes the snap-turn pivot for free. **Do NOT bundle the
+   standing/floor recenter work here** - see rung 8.
 3. **SteamVR support** - adapt BioVR's `OpenXRShim` (OpenXR-on-OpenVR DLL; their
    docs/modules/shim.md documents the GetProjectionRaw U/D trap that cost them weeks) +
    add Index/Vive/WMR interaction profiles to `openxr_input.cpp` + a loader-choice
@@ -103,6 +103,12 @@ Keep an attribution comment in any file carrying their code.
 7. **HUD element hiding** - BS1 enemy health bars + lock-on icon (uscript property hunt
    via the Exec `set` seam; fallback per-draw skip), BS2 check, + the BSI crosshair
    re-sweep fix from the s60 diagnosis.
+8. **LAST / maybe never: standing-pose (floor-based) recenter** - STAGE/LOCAL_FLOOR
+   reference space + seated/standing modes (the parked ROADMAP item). **Demoted to the
+   very end by the user (s60b headset verdict): "the standing and seated reset view both
+   worked fine for me... it's good enough for now."** The s60b both-sticks chord
+   recenters to wherever the head is at the click, and that satisfies the use case.
+   Only pick this up if a later headset session produces an actual complaint.
 
 ### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; **v0.8.0 RELEASED same night** - Infinite's first public build; the tattoo-poster NON-HOLD beat deferred to the roadmap)
 
@@ -7475,10 +7481,25 @@ the F10 Ctrl+click tip "perfect".** Round-2 asks landed the same day:
   to end on BS1 and BSI (queued -> drained -> "vr camera recentered" same
   frame, twice, both press orders); BS2 is the same duplicated shape,
   headset-checked via TESTING S60b.
-- **Deferred per the user's own rule**: STANDING-pose recenter (LOCAL_FLOOR /
-  seated-standing modes) is the parked ROADMAP item and stays in its session;
-  controller-driven F10 (open/use/close from the controllers) is ladder rung 6
-  (the F10 overhaul).
+- **Deferred**: controller-driven F10 (open/use/close from the controllers) is
+  ladder rung 6 (the F10 overhaul). STANDING-pose recenter went to rung 8
+  (last / maybe never) after the headset verdict below.
+
+**ROUND-2 HEADSET VERDICTS (user, same night): auto-VR at boot "working for
+BS1 and BS2"; the both-sticks chord "working as expected in all 3 games".**
+Follow-ups from that pass, all landed:
+
+- The auto-VR opt-out was made reachable WITHOUT the overlay (the user's "just
+  in case it bugs out" ask): the F10 checkbox already existed, and `autoVr=1`
+  is now a documented, commented key in both shipped `release/preset-bs*/
+  vrpreset.ini` files, with a TROUBLESHOOTING section and a README pointer -
+  so a user whose launch is unusable can flip it with the game closed.
+- **Standing/floor-based recenter DEMOTED to ladder rung 8** on the user's own
+  verdict: "the standing and seated reset view both worked fine for me... it's
+  good enough for now." The chord's recenter-to-current-head-pose covers it.
+
+**s60b is CLOSED.** Everything is on `mod-followups`; `main` still holds
+v0.8.0 until the whole feedback list ships as the next release.
 
 ### Session 60 - 2026-08-13 - FEEDBACK QUICK WINS (all three games) + the post-v0.8.0 session ladder
 
