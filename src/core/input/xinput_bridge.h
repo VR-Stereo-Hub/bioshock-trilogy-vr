@@ -162,6 +162,59 @@ enum class PadProfile { Bioshock1 = 0, Infinite = 1 };
 PadProfile pad_profile();
 void set_pad_profile(PadProfile p);
 
+// Controller-bound recenter. The F10 overlay's Recenter button and the
+// `recenter` seam command both need a keyboard, which is exactly what a player
+// in a headset does not have; the runtime's own recenter is worse than nothing
+// here, because it slides the LOCAL reference space out from under the cached
+// recenter yaw and the world lands on a wrong heading.
+//
+// Thumbrest = the RIGHT thumbrest touch + RIGHT stick click chord (mirrors the
+// left-thumbrest-as-modifier idiom above); Click = right stick click HELD past
+// kRecenterHoldMs, the fallback for controllers whose thumb cannot reach the
+// pad and the stick at once. Both consume the right stick CLICK, so both stand
+// down while the ammo modifier is configured to consume it (see
+// openxr_input.cpp) - two consumers of one button is a bug, not a feature.
+enum class RecenterBind { Off = 0, Thumbrest = 1, Click = 2 };
+RecenterBind recenter_bind();
+void set_recenter_bind(RecenterBind m);
+
+// Recenter resets the body-follow probe (camera.cpp -> body::on_reset), so a
+// repeated trigger would keep re-probing the transfer; the cooldown is the
+// cheapest way to make a held or fumbled gesture harmless. The hold is the
+// Click bind's arming time.
+constexpr uint64_t kRecenterCooldownMs = 500;
+constexpr uint64_t kRecenterHoldMs = 1000;
+
+// The game layer publishes "the equipped weapon has no ammo types" once per
+// frame, next to the vr-gameplay gate. While that holds, the ammo-select
+// modifier has nothing to select, so the recenter bind may take the right stick
+// click even in an ammomod mode that would otherwise own it - which is what
+// makes the bind usable out of the box, before any left-thumbrest touch has
+// been seen. Self-expiring on the same rule as the gameplay gate, so a stopped
+// publisher fails CLOSED (back to the plain guard).
+void publish_ammoless_weapon(bool on);
+bool ammoless_weapon_active();
+
+// The XR action layer publishes whether the bind is actually armed each frame,
+// so the overlay and `vrinput status` report the real state instead of
+// re-deriving the guard and drifting out of step with it.
+void publish_recenter_armed(bool armed);
+bool recenter_armed();
+
+// The XR action layer raises the request when the bound gesture fires (render
+// thread); the game adapter drains it once per frame on the GAME thread and
+// turns it into its own recenter, because what "recenter" means is the
+// adapter's business - core has no camera. Latching: a request raised between
+// two drains survives to the next one.
+void request_recenter();
+bool take_recenter_request();
+
+// The vr-gameplay gate (publish_vr_gameplay) with its staleness rule applied -
+// "a real gameplay view is on screen right now". Recenter stands down outside
+// it: firing mid-cutscene, while the authored camera drives, is the case most
+// likely to look broken.
+bool vr_gameplay_active();
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping
@@ -175,6 +228,9 @@ bool hijack_import_slot(void** slot);
 //   pitchkill on|off|status
 //   turnscale <0.1..4> | snap on|off | snapangle <deg> | sticklog on|off
 //   padlog on|off                     composed BUTTON word, edge-triggered
+
+//   ammomod click|thumbrest|both      ammo-select modifier
+//   recenterbind thumbrest|click|off  controller-bound VR recenter
 //   swing ...                         wrench swing-to-attack (core/input/swing.h)
 //   test stick l|r <x> <y> [holdMs]   raw -32768..32767
 //   test trig  l|r <0..255> [holdMs]
