@@ -74,6 +74,18 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
 void set_hide_inactive(bool on);
 bool hide_inactive();
 
+// Session 61: per-cluster viewmodel scale (1.0 = authored; `vrhands scale`).
+// The cluster's anchor-relative translations shrink by s (scale about the
+// anchor - the anchor write-loc is unchanged, which is the proof metric) and
+// the hkQsTransform .s channel is written for the probe-mode-selected bones
+// only, NEVER for the weapon-attach (43) or muzzle (44) bones - the s16
+// "cluster scale blows the weapon up" test always wrote 43's .s; leaving the
+// channel engine-owned entirely is the cell it never tested (BS2's bisection
+// localised its identical blowup to the pivot's own scale channel). hand -1 =
+// both. Probe modes: `vrbones scalemode <0..3>`.
+void set_scale(int hand, float s);
+float scale(int hand);
+
 // Session 20: freeze the drive's reference against the idle animation's
 // breathing (default ON; `vrhands swaykill on|off`). Real animations pass an
 // anchor-delta threshold and re-freeze when they settle. Measured baseline:

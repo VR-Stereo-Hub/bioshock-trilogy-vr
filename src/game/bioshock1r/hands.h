@@ -43,8 +43,10 @@ void on_calcview(const FrameContext& ctx);
 //                           fields)
 //   pose aim|grip           aim = the ray the laser and bullets use (default),
 //                           so the barrel agrees with them by construction
-//   scale <f>               NOT WIRED YET - no confirmed DrawScale field on
-//                           this build; gun size is an open item
+//   scale [l|r|both] <f>    per-cluster viewmodel scale about the anchor
+//                           (session 61; 1.0 = authored, no side = both;
+//                           probe modes via `vrbones scalemode` - see
+//                           bones.h set_scale for the s16-dead-end story)
 //   probe [n]               log every AHands + player-weapon instance, choose none
 //   hand l|r|auto           which controller drives the model (auto = the hand
 //                           whose trigger was last pulled; default)
