@@ -3432,10 +3432,10 @@ in the simulator with A-B-A round trips; no new engine offsets were needed.**
 ### 1. The s16 "chain scale is fatal" verdict was CONFOUNDED - the working cluster lever
 
 The s16 dead-end test (part 2 above) scaled bones 27-42 and still WROTE bone
-43''s `.s` at its authored value. BS2''s later live bisection (its ENGINE_NOTES
+43's `.s` at its authored value. BS2's later live bisection (its ENGINE_NOTES
 "the inverse-scaled ammo canister") localised the identical blowup to the
-attach pivot''s own scale CHANNEL being inverse-decomposed by the attachment
-math - and BS1 never tested "scale the chain, never touch the pivot''s channel".
+attach pivot's own scale CHANNEL being inverse-decomposed by the attachment
+math - and BS1 never tested "scale the chain, never touch the pivot's channel".
 That cell is the lever:
 
 - **Recipe (bones.cpp drive loop): anchor-relative translations scale by s for
@@ -3455,7 +3455,7 @@ That cell is the lever:
 - **A-B-A exact**: round-trip diff 0.21% channels changed vs a 0.75% ambient
   floor (animated light shafts), zero strong cells.
 - **The engine does NOT restamp the scale channel** (counter in
-  `vrbones status`: 0 across every run - BS2 behaviour, not Infinite''s), so
+  `vrbones status`: 0 across every run - BS2 behaviour, not Infinite's), so
   the drive PINS the scale rows of scale-written bones at reference
   recapture (never re-adopts its own write; adopting would compound
   refS * s^n) and hands the authored `.s` back explicitly on the off edge
@@ -3464,9 +3464,9 @@ That cell is the lever:
   cluster-sans-43/44 / fingers-only / wrist-only / translation-only) - mode 0
   is the ship mode; 1-3 were never needed since mode 0 passed outright.
 
-### 2. Uniform weapon scale: drive the holdable''s OWN SkeletonInstance (wskel lane)
+### 2. Uniform weapon scale: drive the holdable's OWN SkeletonInstance (wskel lane)
 
-BS2 session-41''s shipped design ports cleanly because BS1 weapons have carried
+BS2 session-41's shipped design ports cleanly because BS1 weapons have carried
 their own skeleton all along (s20 - it is how the muzzle bone was found):
 
 - **Resolution**: `hands::current_holdable()` (raw class-agnostic +0x45C read;
@@ -3475,7 +3475,7 @@ their own skeleton all along (s20 - it is how the muzzle bone was found):
   holstered pistol while the wrench was equipped) -> existing `resolve_skel()`
   at the SAME `+0x3FC` slot as the rig (pistol: 8 bones - R_Grip at the
   component origin, pistol_body, hammer, Trigger, Barrel, over, DrumParent,
-  drum). No vtable scan needed, unlike BS2''s +0x430 hunt.
+  drum). No vtable scan needed, unlike BS2's +0x430 hunt.
 - **Compose, per frame**: translations *= ws (uniform about the component
   origin = the grip), quats ADOPTED from the engine (32-byte compare per bone;
   drum/recoil animations keep playing while scaled - 1.7 adopts/drive
@@ -3488,7 +3488,7 @@ their own skeleton all along (s20 - it is how the muzzle bone was found):
   the engine never restamps scale, so "just stop writing" would leave the
   gun scaled forever.
 - **Flat proof**: `vrhands wscale 0.5` halves the pistol uniformly about the
-  grip - body, drum, hammer together, NO inverse-scaled part (BS2''s ammo-
+  grip - body, drum, hammer together, NO inverse-scaled part (BS2's ammo-
   canister trap does not exist in this lane by construction). Numeric A-B-A:
   the post-release bank re-dumps the pre-scale bone positions to the last
   digit. 1390 drives at 0.5 rendered exactly half - no compounding.
@@ -3499,7 +3499,7 @@ their own skeleton all along (s20 - it is how the muzzle bone was found):
   Wrench renders authored size; its HAND still scales via lane 1. Expect the
   same for any future rigid holdable.
 - **Weapon switching**: drop-and-rebind proven live (pistol -> wrench -> 
-  pistol via `game-key` scancode 1/2 - note s30''s "weapon switching cannot be
+  pistol via `game-key` scancode 1/2 - note s30's "weapon switching cannot be
   driven flat" predates the s35 scancode key lane and no longer holds for
   number-key selection).
 
@@ -3510,7 +3510,7 @@ hands section (model scale 0.2-4.0 per tuning hand + "scale both hands",
 weapon scale 0.3-2.5), preset keys `handScaleL`/`handScaleR`/`wScale`
 (save/load round-trip verified through a cold boot: 47 values, scales live
 and wskel auto-bound at the loaded value). Ship defaults are 1.0 - the
-calibration numbers are the user''s to set in-headset (BS2''s 0.771/0.760/0.770
+calibration numbers are the user's to set in-headset (BS2's 0.771/0.760/0.770
 are BS2-rig numbers and were deliberately not copied).
 
 Routes NOT taken this session, for the record: DrawScale re-test on the new
