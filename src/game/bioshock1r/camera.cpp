@@ -847,6 +847,47 @@ void save_vr_preset() {
     aim::save_weapon_profiles();
 }
 
+// The three preferences that must be known BEFORE the preset is armed.
+//
+// load_vr_preset_values() only runs from apply_vr_preset(), which is exactly
+// the thing autoPresetOnGameplay is supposed to trigger - read the flag there
+// and it can never bootstrap itself (measured: the flag persisted correctly and
+// was never honoured on the next launch). recenterBind has the same shape: the
+// XR action layer consumes it whether or not the preset has been armed.
+//
+// Deliberately a SEPARATE, narrow reader rather than hoisting the whole value
+// load to init: applying every persisted slider at startup would change what
+// the mod does before the preset is pressed, which is not this change's job.
+void load_startup_prefs() {
+    wchar_t path[MAX_PATH];
+    vr_preset_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f) return; // no file = shipped defaults
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        char key[48] = {};
+        float v = 0.0f;
+        if (sscanf_s(line, "%47[^=]=%f", key, static_cast<unsigned>(sizeof key), &v) != 2)
+            continue;
+        if (strcmp(key, "autoPresetOnGameplay") == 0)
+            g_autoPresetOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "autoRecenterOnGameplay") == 0)
+            g_autoRecenterOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "recenterBind") == 0) {
+            const int rb = static_cast<int>(v);
+            if (rb >= 0 && rb <= 2)
+                bvr::input::set_recenter_bind(static_cast<bvr::input::RecenterBind>(rb));
+        }
+    }
+    fclose(f);
+    if (g_autoPresetOnGameplay.load(std::memory_order_relaxed) ||
+        g_autoRecenterOnGameplay.load(std::memory_order_relaxed))
+        BVR_LOG("[b1r] startup prefs: autopreset=%d autorecenter=%d recenterBind=%d",
+                g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? 1 : 0,
+                g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? 1 : 0,
+                static_cast<int>(bvr::input::recenter_bind()));
+}
+
 void load_vr_preset_values() {
     wchar_t path[MAX_PATH];
     vr_preset_path(path, MAX_PATH);
@@ -1933,6 +1974,7 @@ bool install(void* eventPlayerCalcView) {
     g_target = eventPlayerCalcView;
     g_hookLive.store(true, std::memory_order_relaxed);
     BVR_LOG("[b1r] calcview hook installed (target %p)", eventPlayerCalcView);
+    load_startup_prefs(); // must precede any auto-arm decision (see the reader)
     return true;
 }
 
