@@ -410,3 +410,11 @@ Exactly what BS1 fell back to. Saves are fair game (standing permission) and BS2
 `Documents\BioshockHD\BioShock2\SaveGames`. Make one save with everything unlocked in an open area
 and reuse it as the test fixture - it also removes the per-session save-loading step that currently
 needs a human.
+
+## S60 headset checklist (feedback quick wins, 2026-08-13)
+
+**Instant move direction (BS1 parity, default ON).** Same test as BS1's S60 item 1:
+walk forward, snap the head ~180 - the walk should flip instantly, no arc. A/B via
+F10 > Body / locomotion (M7.5) > "Instant move direction". BS2's sign was NOT
+sim-verified (BS1's was; BS2 is the same duplicated shape) - if the walk mirrors
+with the box ON, toggle OFF and report; that is the one open question.

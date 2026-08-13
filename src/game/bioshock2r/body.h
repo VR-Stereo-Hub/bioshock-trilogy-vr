@@ -44,7 +44,7 @@ int32_t on_calcview(void* pc, void* viewActor, int32_t gameYawUnits,
 void on_reset(const char* why);
 
 // `vrbody on|off|status|rate <perSec>|deadzone <deg>|max <degPerSec>|
-//  field pc|pawn|both|probe on|off|poke <deg>` (BS1 grammar).
+//  field pc|pawn|both|probe on|off|poke <deg>|movedir on|off` (BS1 grammar).
 void handle_command(const char* args);
 
 // Overlay section (render thread only).
@@ -56,5 +56,12 @@ bool enabled();
 float rate_per_sec();
 float deadzone_deg();
 void set_tuning(float ratePerSec, float deadzoneDeg);
+
+// Instant move direction (feedback session 2026-08-13, BS1 shape): while on,
+// camera.cpp publishes the not-yet-transferred body error to the input bridge
+// each CalcView and core rotates the movement stick by it. Persisted as
+// vrpreset key `moveDirInstant` (append-only).
+bool move_dir_instant();
+void set_move_dir_instant(bool on);
 
 } // namespace bvr::b2r::body

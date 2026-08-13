@@ -25,6 +25,85 @@ The Infinite "Current state" section sits above the BS1/BS2 one rather than disp
 two ladders' handoffs do not fight over the same lines. Both are current; read the one for the
 game you are working on.
 
+### POST-v0.8.0 FEEDBACK PROGRAM (session 60, 2026-08-13) - current state and the session ladder
+
+**Branch discipline for this program (user directive, s60): everything lands on the
+integration branch `mod-followups` (off `main` @ 747efc5), one session branch at a time
+merged INTO `mod-followups` - NOT into `main`. `mod-followups` merges to `main` only when
+the whole feedback list is done and the next version ships.**
+
+**Standing permission (user, s60): explicit green light from the BioVRDev author to COPY
+CODE from https://github.com/BioVRDev/Bioshock-Remastered-VR** (mutual collaboration; the
+old concepts-only boundary is lifted - see RESEARCH.md "BioVRDev analysis", updated s60).
+Keep an attribution comment in any file carrying their code.
+
+**Session 60 shipped the quick wins (all sim-verified, flat):**
+
+1. **Instant move direction, BS1+BS2, default ON** - the reported "arc on a fast 180
+   head turn while walking" is the body transfer's 180 deg/s slew cap; the fix publishes
+   the not-yet-transferred body error to core's dormant s52 stick-rotation lane
+   (Infinite's own mechanism; the error - not the raw residual - so the body transfer
+   can never double-count). F10 checkbox in the body section, `vrbody movedir on|off`,
+   preset key `moveDirInstant` (append-only). Sim-verified on BS1: composed stick rotates
+   at the snap and decays over the absorb window; with the body parked, the walk tracks
+   the camera from the first sample (sign +1 confirmed). **BS2's in-headset A/B rides
+   the F10 toggle - add to the next headset checklist.**
+2. **BS1 preset values auto-load at boot** (BS2 parity, values only, nothing arms).
+3. **F10 usability**: BS1 preset/save buttons pinned at the top; BS1 picker ini read
+   throttled to 1 Hz; BS1 picker warns on StartupFullscreen=True and explains the
+   exit-clobber recovery; all three games show a "Ctrl+click any slider to type an exact
+   value" tip.
+4. **docs/TROUBLESHOOTING.md** (ships in the zip as TROUBLESHOOTING.txt): the 32-bit
+   ActiveRuntime key, broken 32-bit implicit API layers (ReShade -32), the SteamVR
+   32-bit gap, XR_RUNTIME_JSON, per-game resolution/windowed guidance. README's false
+   "Steam Link/SteamVR works" claims corrected (issues #21/#30).
+
+**Session 60 diagnostics (recorded, fixes deferred to the ladder):**
+
+- **HUD sliders (feedback item "check them"): PASS** - preset A/B in the sim moved the
+  HUD quad exactly (dist 1.30->2.60, width 1.25->2.00, up -0.10->+0.30 all reflected in
+  the compositor quad layer). Same `set_hud_quad` path the sliders call. BS2 shares the
+  core block.
+- **BS1 custom resolution (issues #32/#23): the mod's lane WORKS** - `vrres 2704x2704`
+  wrote both ini pairs, survived a clean quit UNCLOBBERED, and the game booted at
+  2704x2704. The failure mode is NOT the write: remaining suspects are the game's
+  boot-time "revert options?" dialog (answer No!), exclusive fullscreen, and non-Steam
+  layouts. TROUBLESHOOTING.md documents the recovery; a write-on-exit belt-and-braces
+  can ride a later session.
+- **BSI crosshair hide (feedback "it doesn't work"): mechanism healthy, ROOT CAUSE
+  candidate found** - on a fresh boot the sweep derived IsShown (+0x118), cached 4
+  instances and cleared them (reasserts 0). BUT `xhair.cpp` never re-sweeps while cached
+  instances stay alive: a per-weapon crosshair widget spawned AFTER the sweep (first
+  weapon draw) is never found - visible forever. Fix wants a re-sweep trigger on
+  weapon-change (arsenal knows) vs the ~0.5 s sweep hitch - design + headset time,
+  deferred to the HUD-hiding session.
+
+**THE SESSION LADDER (user-ordered, s60):**
+
+1. **BS1 hand & weapon scaling** - engine research (ROADMAP.md:665-678 routes; BioVR
+   has no scaling either - no prior art).
+2. **Roomscale body-follow + snap-turn pivot** (likely 2 sessions) - pawn follows
+   physical displacement WITH collision; BS1/BS2 probe `AActor::Move`/`MoveSmooth` exec
+   natives (BioVR's research doc ranks them - vr-features-research.md in their repo);
+   Infinite separately. Fixes the snap-turn pivot for free. Consider STAGE/LOCAL_FLOOR
+   reference space while in there.
+3. **SteamVR support** - adapt BioVR's `OpenXRShim` (OpenXR-on-OpenVR DLL; their
+   docs/modules/shim.md documents the GetProjectionRaw U/D trap that cost them weeks) +
+   add Index/Vive/WMR interaction profiles to `openxr_input.cpp` + a loader-choice
+   install step. Their clone is at C:/Users/user/AppData/Local/Temp/biovr (re-clone if
+   gone - scratchpad paths are too long for git).
+4. **BS2 left-eye flicker** (issue #31: chapter 2+, VDXR; another report on SteamVR) -
+   FIRST collect the 12+ min `[flick]` instrumented log from the user (never collected,
+   ENGINE_NOTES 2363-2385), plus a chapter-2 save repro. Restamp race vs pair-break.
+5. **Two-handed grips for BS1** - adapt BioVR M6-S2 (their docs/modules/hands.md; grab
+   anchor = the game's own animated off-hand, latched on engine-owned frames) onto our
+   ROADMAP.md:505-517 spec.
+6. **F10 menu overhaul** - controller navigation (laser -> virtual mouse, DR-6/DR-7),
+   tabs with debug separated, pre-preset readability (issue #36).
+7. **HUD element hiding** - BS1 enemy health bars + lock-on icon (uscript property hunt
+   via the Exec `set` seam; fallback per-draw skip), BS2 check, + the BSI crosshair
+   re-sweep fix from the s60 diagnosis.
+
 ### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; **v0.8.0 RELEASED same night** - Infinite's first public build; the tattoo-poster NON-HOLD beat deferred to the roadmap)
 
 **v0.8.0 SHIPPED (2026-08-13, from `bioshock-infinite` @ e6e568f):**
@@ -7375,6 +7454,36 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 60 - 2026-08-13 - FEEDBACK QUICK WINS (all three games) + the post-v0.8.0 session ladder
+
+On branch `claude/mod-feedback-fixes-c6bbe7` (off `main` @ 747efc5), merged into the new
+integration branch `mod-followups` - the user's branch discipline for the whole feedback
+program (main gets one merge at the next release). Triage source: the user's 14-item
+feedback list + the GitHub tracker (#9-#38) + the BioVRDev repo, which the user got an
+explicit green light to copy code from (RESEARCH.md boundary updated).
+
+- **Shipped**: instant move direction for BS1/BS2 (the 180-arc fix - publishes the
+  not-yet-transferred body error into core's s52 stick lane, default ON, sim-verified
+  mechanism AND sign on BS1); BS1 boot preset-value auto-load; F10 usability (pinned BS1
+  preset block, 1 Hz ini read, fullscreen warning, Ctrl+click tip x3 games);
+  docs/TROUBLESHOOTING.md + README SteamVR-claim corrections + zip packaging.
+- **Diagnosed, deferred**: HUD sliders PASS (quad follows preset A/B exactly); BS1
+  custom-resolution lane WORKS (2704x2704 wrote, survived a clean quit, booted - the
+  #32 suspects are the revert dialog / fullscreen); BSI crosshair hide root-cause
+  candidate: no re-sweep while cached instances live, so per-weapon widgets spawned
+  after the sweep are never hidden.
+- **Traps burned**: the sim (VDXR policy) freezes pose delivery when the game loses
+  focus - every PowerShell tool invocation can steal focus, so foreground (ALT-tap +
+  SetForegroundWindow + verify) INSIDE the same invocation as the test, and read the
+  heartbeat calls/s (278 focused vs 143 not) as the focus tell. BS1 auto-continues into
+  the newest save on launch (boot.ps1 "0 presses"). The walk-direction ground truth
+  needs UE's LEFT-handed frame (facing yaw 0 = +x, +y is to the RIGHT) - a
+  right-handed compass reading mislabels every direction test. The first BS1 save spot
+  (Vita-Chamber corner) has electrified water - stick-forward there kills the player.
+- **Next session**: BS1 hand & weapon scaling research (ladder rung 1), or - if the
+  user prefers a headset session first - the S60 checklist: BS2 movedir A/B, BS1 feel
+  check of the turn fix.
 
 ### Session 58 (close-out, same day) - HEADSET ACCEPTED, merged to bioshock-infinite; s59 = the missing-hands scripted-beat class
 

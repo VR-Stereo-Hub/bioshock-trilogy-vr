@@ -106,6 +106,14 @@ uint64_t g_crosshairAssertMs = 0;            // game thread only
 std::atomic<bool> g_lockOnDisabled{true};
 int g_lockOnApplied = -1;
 uint64_t g_lockOnAssertMs = 0;
+// Residual-units -> composer-degrees sign for the instant-move-direction
+// publish (feedback session 2026-08-13; Infinite camera.cpp kMoveYawSign
+// convention). The composer rotates the stick clockwise-from-above per +deg
+// (forward deflects toward +x); whether this build's +yaw residual means
+// "head turned right" is a SIM derivation (walk under a yawed head must track
+// the head), not an assumption - flip here if the walk tracks the mirror
+// heading instead.
+constexpr float kMoveYawSign = 1.0f;
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
@@ -767,6 +775,7 @@ void save_vr_preset() {
     fprintf(f, "aimPosRUp=%.1f\n", aim::pos_up_cm(1));
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
+    fprintf(f, "moveDirInstant=%d\n", body::move_dir_instant() ? 1 : 0);
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
@@ -844,6 +853,7 @@ void load_vr_preset_values() {
         else if (strcmp(key, "aimPosRUp") == 0) pru = v;
         else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
+        else if (strcmp(key, "moveDirInstant") == 0) body::set_move_dir_instant(v != 0.0f);
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
@@ -1738,6 +1748,24 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // These two are the same integer, which is what makes the invariant a
         // theorem instead of a tolerance.
         if (moved) g_recenterYawUnits = wrap_rot(g_recenterYawUnits + moved);
+
+        // Feedback session (2026-08-13): instant move direction. Publish the
+        // NOT-YET-TRANSFERRED body error (residual minus what the transfer
+        // just took) and core rotates the movement stick by it (the Infinite
+        // s52 lane, dormant for BS1 until now). Zero whenever the body is
+        // caught up - steady-state input is bit-identical; during the
+        // slew-capped window of a fast head turn it is exactly the arc gap.
+        // If the body probe self-disabled (write never sticks), moved is
+        // always 0 and the full residual is published - degrading to
+        // Infinite's model, so the walk still tracks the head. Publishing an
+        // explicit 0 when off/not-driving closes the gate now instead of
+        // riding the core lane's 500 ms staleness window.
+        bvr::input::publish_move_yaw_offset(
+            (vrDrove && body::move_dir_instant())
+                ? kMoveYawSign *
+                      static_cast<float>(wrap_rot(residualUnits - moved)) /
+                      kRotUnitsPerDegree
+                : 0.0f);
     }
 
     // Session 22 snap turn: shift the recenter composite by one step per
@@ -1782,6 +1810,20 @@ bool install(void* eventPlayerCalcView) {
         MH_RemoveHook(eventPlayerCalcView);
         return false;
     }
+
+    // Feedback session (2026-08-13), BS2 camera.cpp:2512-2520 parity: load the
+    // tuned slider VALUES at boot so users get their saved setup without
+    // hunting for the preset button. Values only - load_vr_preset_values()
+    // never arms anything (no vr::set_enabled, no camera mode, no vrstereo,
+    // no console_exec); "VR PRESET 1" stays the only arming path. The loaded
+    // values become the per-weapon BASELINE (seeding rule: no profile may
+    // exist before a value source does); aim::init later loads weapons.ini
+    // OVER this ordering-safely, and reapply is a no-op at boot (key empty).
+    // BS2's input auto-arm ("on") is deliberately NOT ported - that was a
+    // BS2-local session-41 decision and would change BS1's boot behaviour.
+    load_vr_preset_values();
+    aim::note_preset_baseline();
+    aim::reapply_weapon_profile();
 
     g_target = eventPlayerCalcView;
     g_hookLive.store(true, std::memory_order_relaxed);
@@ -1874,6 +1916,7 @@ void draw_debug_ui() {
     }
 
     ImGui::Text("CalcView hook: LIVE @ %p", g_target);
+    ImGui::TextDisabled("Tip: Ctrl+click any slider to type an exact value");
 
     // Calls/sec sampled on the UI thread once per second.
     static uint64_t lastSample = 0;
@@ -1911,6 +1954,21 @@ void draw_debug_ui() {
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
                            "option hfov: settings object not resolved");
 
+    // ---- PRESET: always visible, at the TOP (feedback session 2026-08-13,
+    // BS2 camera.cpp:2604-2618 parity - buried inside a section these read
+    // as sub-options and new users never find them). The buttons MOVED here
+    // from the "VR camera (M3/M4)" header - not copied, duplicate labels
+    // would collide as ImGui IDs.
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.0f),
+                       "PRESET - applies / saves ALL settings and values");
+    if (ImGui::Button("VR PRESET 1 - everything on"))
+        g_vrPresetPending.store(true, std::memory_order_relaxed);
+    ImGui::SameLine();
+    if (ImGui::Button("Save preset values"))
+        g_vrPresetSavePending.store(true, std::memory_order_relaxed);
+    ImGui::Separator();
+
     if (ImGui::CollapsingHeader("VR camera (M3/M4)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text(g_vrDriving.load(std::memory_order_relaxed)
                         ? "camera: driven by HMD pose"
@@ -1919,11 +1977,6 @@ void draw_debug_ui() {
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed));
-        if (ImGui::Button("VR PRESET 1 - everything on"))
-            g_vrPresetPending.store(true, std::memory_order_relaxed);
-        ImGui::SameLine();
-        if (ImGui::Button("Save preset values"))
-            g_vrPresetSavePending.store(true, std::memory_order_relaxed);
         bool xhair = g_crosshairVisible.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Flat-screen crosshair (default off in VR)", &xhair))
             g_crosshairVisible.store(xhair, std::memory_order_relaxed);
@@ -1941,7 +1994,16 @@ void draw_debug_ui() {
             static int s_w = 0, s_h = 0;
             unsigned liveW = 0, liveH = 0;
             bvr::vr::fov_audit(nullptr, nullptr, nullptr, &liveW, &liveH);
-            game_ini::Viewport v = game_ini::read_viewport();
+            // Re-read the ini at 1 Hz, not per overlay frame (BS2/Infinite
+            // shape - the per-frame file read was a BS1-only debt).
+            static game_ini::Viewport s_vp;
+            static uint64_t s_vpReadMs = 0;
+            uint64_t nowMs = GetTickCount64();
+            if (!s_vpReadMs || nowMs - s_vpReadMs > 1000) {
+                s_vp = game_ini::read_viewport();
+                s_vpReadMs = nowMs;
+            }
+            const game_ini::Viewport& v = s_vp;
             if (!s_read && v.valid) {
                 s_read = true;
                 s_w = static_cast<int>(v.windowedW);
@@ -1953,6 +2015,10 @@ void draw_debug_ui() {
             } else {
                 ImGui::Text("ini: %ux%u   live backbuffer: %ux%u", v.windowedW, v.windowedH,
                             liveW, liveH);
+                if (v.startupFullscreen)
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                       "StartupFullscreen=True: windowed is the tested lane - "
+                                       "set StartupFullscreen=False in Bioshock.ini");
                 if (liveW && liveH) {
                     // A headset eye is near square. A 16:9 buffer spends most of
                     // its width outside the lenses, which is the whole reason
@@ -2021,8 +2087,13 @@ void draw_debug_ui() {
                                                 static_cast<uint32_t>(s_h),
                                             std::memory_order_relaxed);
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("restart the game for it to take effect");
+                ImGui::TextWrapped(
+                    "Restart the game for it to take effect. The game rewrites "
+                    "Bioshock.ini from its own settings at exit, which can undo "
+                    "this write - if the new size does not survive a restart, "
+                    "edit Bioshock.ini by hand WHILE THE GAME IS CLOSED "
+                    "(WindowedViewportX/Y + FullscreenViewportX/Y under "
+                    "[WinDrv.WindowsClient]), then launch.");
             }
         }
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);

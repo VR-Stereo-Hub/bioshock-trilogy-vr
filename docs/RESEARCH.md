@@ -136,11 +136,22 @@ No native VR mod (stereo + motion controls) exists for any BioShock game. UEVR d
 ## BioVRDev/Bioshock-Remastered-VR analysis (2026-07-28)
 
 Source: https://github.com/BioVRDev/Bioshock-Remastered-VR (released
-~2026-07-13, analyzed at commit of 2026-07-28). **NO LICENSE file = all
-rights reserved: concepts and measurements only, never code** - same
-boundary as UEVR. Their README credits this repo for the reticle disable
-(console SET path), the arm-hide bone indices, and the HUD render-target
-capture.
+~2026-07-13, analyzed at commit of 2026-07-28). ~~NO LICENSE file = all
+rights reserved: concepts and measurements only, never code~~ **BOUNDARY
+LIFTED (2026-08-13, session 60): the author gave the user an explicit
+green light to copy anything from that repo - the two projects
+collaborate and share features both ways (their latest commit records
+that "VOID and the other project's developer are the same person").
+Code may now be adapted directly; keep an attribution comment in any
+file that carries their code.** Their README credits this repo for the
+reticle disable (console SET path), the arm-hide bone indices, and the
+HUD render-target capture. Notable copyable pieces: `OpenXRShim/` (their
+SteamVR fix - a ~2,100-line OpenXR-on-OpenVR loader DLL, 36 exports,
+needed because SteamVR has no 32-bit OpenXR runtime), the two-handed
+grip (M6-S2: grab anchor = the game's own animated off-hand, latched on
+engine-owned frames), Setup.bat's Bioshock.ini surgery
+(WritePrivateProfileString, windowed + resolution + FOV lock), and the
+per-axis stick deadzone inversion.
 
 **Architecture**: dxgi.dll proxy; hooks Present + eventPlayerCalcView (same
 seams as ours). Stereo = ALTERNATE EYE per game frame at full game rate

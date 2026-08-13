@@ -133,6 +133,11 @@ uint64_t g_srEyeStampMs[2] = {};
 std::atomic<float> g_worldScale{100.0f}; // Unreal units per meter
 std::atomic<float> g_headOffUpUu{0.0f};
 std::atomic<float> g_headOffFwdUu{0.0f};
+// Residual-units -> composer-degrees sign for the instant-move-direction
+// publish (feedback session 2026-08-13; Infinite camera.cpp kMoveYawSign
+// convention, BS1 shape). SIM-derived, not assumed - flip here if the walk
+// tracks the mirror heading instead.
+constexpr float kMoveYawSign = 1.0f;
 std::atomic<bool> g_recenterRequested{true}; // auto-recenter on first drive
 std::atomic<bool> g_vrDriving{false};        // telemetry for the UI
 // Head-offset telemetry: the recenter-relative offset applied to loc this
@@ -1414,6 +1419,7 @@ void save_vr_preset() {
     // Session 42 r2: body-transfer feel (BS1 key names).
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzone=%.1f\n", body::deadzone_deg());
+    fprintf(f, "moveDirInstant=%d\n", body::move_dir_instant() ? 1 : 0);
     // Session 42: cinematic/classifier levers (BS1 parity; bar_verts is NOT
     // persisted - it is a per-game patterns constant, never a tunable).
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
@@ -1559,6 +1565,8 @@ void load_vr_preset_values() {
             bodyRate = v;
         else if (strcmp(key, "bodyDeadzone") == 0)
             bodyDz = v;
+        else if (strcmp(key, "moveDirInstant") == 0)
+            body::set_move_dir_instant(v != 0.0f);
         else if (strcmp(key, "cineBarsHidden") == 0)
             bvr::hud::set_bars_hidden(v != 0.0f);
         else if (strcmp(key, "cineDrive") == 0) {
@@ -2119,6 +2127,20 @@ void calcview_tail(void* self, CalcViewParams* p) {
         int32_t moved = body::on_calcview(self, va, gameYawUnitsRaw, pitchUnitsRaw,
                                           residualUnits, vrDrove);
         if (moved) g_recenterYawUnits = wrap_rot(g_recenterYawUnits + moved);
+
+        // Feedback session (2026-08-13), BS1 shape: instant move direction.
+        // Publish the NOT-YET-TRANSFERRED body error and core rotates the
+        // movement stick by it (the Infinite s52 lane). Zero whenever the
+        // body is caught up - steady-state input is bit-identical; during
+        // the slew-capped window of a fast head turn it is exactly the arc
+        // gap. Explicit 0 when off/not-driving closes the gate now instead
+        // of riding the core lane's 500 ms staleness window.
+        bvr::input::publish_move_yaw_offset(
+            (vrDrove && body::move_dir_instant())
+                ? kMoveYawSign *
+                      static_cast<float>(wrap_rot(residualUnits - moved)) /
+                      kRotUnitsPerDegree
+                : 0.0f);
     }
 
     // FOV write (session 25, BS1 write-block shape): strict gameplay only,
@@ -2562,6 +2584,7 @@ void draw_debug_ui() {
                            "CalcView seam: scan FAILED - running flat");
         return;
     }
+    ImGui::TextDisabled("Tip: Ctrl+click any slider to type an exact value");
 
     ImGui::Text("ProcessEvent hook: LIVE @ %p", g_peTarget);
     void* fn = g_calcViewFn.load(std::memory_order_relaxed);

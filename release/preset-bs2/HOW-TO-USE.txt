@@ -24,3 +24,6 @@ Files:
 
 Note: BioShock 2 keeps its settings in the bs2\ subfolder - the two
 games never share files.
+
+More help: TROUBLESHOOTING.txt at the zip root covers "no OpenXR
+runtime / flat mode", SteamVR, broken API layers, and resolution setup.

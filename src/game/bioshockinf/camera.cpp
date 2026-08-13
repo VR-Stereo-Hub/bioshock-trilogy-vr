@@ -2365,6 +2365,7 @@ bool handle_command(const char* args) {
 }
 
 void draw_debug_ui() {
+    ImGui::TextDisabled("Tip: Ctrl+click any slider to type an exact value");
     // The I4 in-headset surface FIRST and default-open: anything judged by
     // eye gets a control here, never a typed command (alt-tabbing to type
     // destabilises the XR session). Sliders and buttons write atomics only;

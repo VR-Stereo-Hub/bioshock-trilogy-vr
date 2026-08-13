@@ -54,3 +54,6 @@ that get tested.
 Keep bioshockvr.log. If the problem survives a clean settings folder,
 that file is what makes it diagnosable - and crash dumps, if any, land
 in %LOCALAPPDATA%\BioshockVR\crash\.
+
+More help: TROUBLESHOOTING.txt at the zip root covers "no OpenXR
+runtime / flat mode", SteamVR, broken API layers, and resolution setup.

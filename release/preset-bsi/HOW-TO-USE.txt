@@ -24,3 +24,6 @@ fixes, crosshair hide) all default ON in the DLL.
 
 Note: BioShock Infinite keeps its settings in the bsi\ subfolder - the
 three games never share files.
+
+More help: TROUBLESHOOTING.txt at the zip root covers "no OpenXR
+runtime / flat mode", SteamVR, broken API layers, and resolution setup.
