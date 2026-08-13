@@ -1988,6 +1988,41 @@ hand pose parks the FP arm across the view - `hand l|r offset 0.25 ±0.2
 -0.5` clears the captures; (c) this save's spawn is the Town Center fair
 plaza (AD board / ice-cream cart / benches), NOT a corridor.
 
+### s58b: THE MISSING-HANDS CLASS CONFIRMED - the s53 cine-hold rig hide eats OWN-RIG scripted beats (user A/B, headset, same night)
+
+**The user's hypothesis confirmed in ONE headset leg (VDXR, 2026-08-13):
+with `bsihide auto off`, (a) the vigor-drink vignette showed the authored
+hands (hidden under the shipped default - the s59 regression), AND (b) the
+door cinematic showed DOUBLE hands (normal under the default). Both beat
+classes proven by one lever flip.**
+
+- **The drink vignette OPENS A SCRIPTED HOLD** (log: `SCRIPTED hold OPEN`
+  02:58:30.053 -> `closed` 02:58:38.555, ~8.5 s) - so the hiding leg is the
+  CINE-HOLD rig-wide hide (`bsihide` cineMode=force, the s53 owner
+  composite), NOT the empty-hand policy.
+- **The two scripted-hold classes**: SPAWNED-RIG holds (doors, most raffle
+  beats, the intro, executions) - the game brings its own cutscene hands;
+  our rig must hide or DOUBLES appear. OWN-RIG holds (vigor drink, the
+  tattoo-poster hand raise, the ball-77 raise - all "look at your own
+  hand" vignettes) - the game animates the PLAYER'S OWN FP rig; hiding it
+  leaves NO hands. The s53 policy hides rig-wide for EVERY hold - correct
+  for the first class, the regression for the second.
+- **Fix direction (s59)**: per-hold discrimination. Preferred: detect the
+  SPAWNED second rig (a second FP hand rig/skeletal component live during
+  the hold - the s53 `bsihide diff` machinery already walks fcomp-vs-ours)
+  and hide ours only then. Fallback: detect authored articulation flowing
+  through OUR rig during a hold (the s51 travel/spread instrument) and
+  release the hide for that hold. Note the drives already release during
+  holds (the s52 gates), so an unhidden own-rig beat plays correctly - the
+  user just watched it do so.
+- **Trap: the cheated grant CANNOT trigger the drink vignette.** `bsigive
+  Plasmid_X` acquires+equips silently (no ceremony; re-give re-equips, a
+  Q-swap to the never-used vigor plays nothing). First-drink is bound to
+  the real world pickup - triggering it is a USER leg (any undrunk vigor
+  bottle near the fair save).
+
+### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
+
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle
 settle inside the FP Morpheme graph. The game drives a control param
 **'Lowered' (GNames 35027, network param id 2)** into the FP network at 90 Hz;

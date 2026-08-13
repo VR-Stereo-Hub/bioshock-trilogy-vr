@@ -85,19 +85,24 @@ hands never show. The user's observed split (2026-08-13):
   look at the AD mark, in VR no hand appears at all so it reads as plain
   talk; (3) raising the winning ball #77 after the raffle draw - the ONLY
   hidden-hand moment inside the otherwise-correct raffle chain.
-The suggestive pattern: all three are "look at your own hand" beats -
-brief authored FP-hand vignettes - while the working beats are full
-scripted holds. Suspects, evidence-first: do these beats open a `cine`
-hold at all (if NOT, the s53 hide gate / bones substitution never gets a
-release edge); what does the loadout/profiles keying read during them
-(a ForceUnequip into empty-hands would hide via the empty-hand policy);
-does the bones drive keep substituting through them (the s51 fire-swing
-mechanism eating the authored raise). Instruments ready: `bsihide` levers,
-`bsibones` travel/spread, the cine hold log, profiles keying log,
-`bsifidget act` (though reload proved act-by-name can be blind), and the
-vigor-drink is triggerable on demand (equip a new vigor). Secondary
-backlog unchanged (TESTING "S52" leftovers; reload glitch parked
-post-release).
+**MECHANISM CONFIRMED same night (user A/B, headset - ENGINE_NOTES
+"s58b")**: with `bsihide auto off` the vigor-drink vignette SHOWED the
+authored hands AND the door cinematic showed DOUBLE hands - one lever flip
+proved both classes. The drink opens a SCRIPTED hold (8.5 s in the log),
+so the hiding leg is the s53 CINE-HOLD rig-wide hide (cineMode=force),
+not the empty-hand policy. The two hold classes: SPAWNED-RIG (doors,
+raffle, intro, executions - the game brings its own hands; ours must
+hide) vs OWN-RIG (vigor drink, tattoo-poster raise, ball-77 - the game
+animates the player's own rig; hiding it = no hands). s59 = per-hold
+DISCRIMINATION: preferred - detect the spawned second rig live (the s53
+`bsihide diff` fcomp-vs-ours machinery is the starting point) and hide
+ours only then; fallback - detect authored articulation through OUR rig
+during a hold (s51 travel/spread) and release the hide for that hold.
+The drives already release during holds (s52), so an unhidden own-rig
+beat plays correctly - user-watched. Trap: `bsigive` CANNOT trigger the
+drink vignette (silent acquire/equip, no ceremony) - first-drink needs a
+real bottle pickup, a user leg. Secondary backlog unchanged (TESTING
+"S52" leftovers; reload glitch parked post-release).
 
 ### Infinite: state after session 57 (superseded by s58 above) (THE MODEL LANE LANDED FLAT - sprint glue, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`, NOT merged, awaiting the headset checklist)
 
