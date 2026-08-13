@@ -741,6 +741,9 @@ void on_calcview(const FrameContext& ctx) {
         // culling, correct engine-side FX anchoring) and the hand CLUSTER
         // moves to the controller instead.
         gp.loc = {loc[0], loc[1], loc[2]};
+        // The weapon-scale lane rides the same per-frame slot (session 61);
+        // it no-ops at wscale 1.0 and drops itself on weapon switches.
+        bones::wskel_drive();
         if (!bones::drive(ctx, target, gp, hand)) return;
     } else {
         uint8_t* p = static_cast<uint8_t*>(target);
@@ -816,6 +819,17 @@ void handle_command(const char* args) {
             BVR_LOG("[hands] usage: vrhands scale [l|r|both] <f> (current L=%.3f R=%.3f; "
                     "probe mode via vrbones scalemode)",
                     bones::scale(0), bones::scale(1));
+        }
+    } else if (strcmp(verb, "wscale") == 0) {
+        float f = 0.0f;
+        if (sscanf_s(rest, "%f", &f) == 1 && f > 0.0f) {
+            bones::set_weapon_scale(f);
+            BVR_LOG("[hands] weapon scale = %.3f (1.0 = authored, lane drops itself)",
+                    bones::weapon_scale());
+        } else {
+            BVR_LOG("[hands] usage: vrhands wscale <f> (current %.3f; uniform about the "
+                    "grip, per-frame drive of the holdable's own skeleton)",
+                    bones::weapon_scale());
         }
     } else if (strcmp(verb, "probe") == 0) {
         int n = 1;

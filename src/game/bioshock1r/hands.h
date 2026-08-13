@@ -47,6 +47,10 @@ void on_calcview(const FrameContext& ctx);
 //                           (session 61; 1.0 = authored, no side = both;
 //                           probe modes via `vrbones scalemode` - see
 //                           bones.h set_scale for the s16-dead-end story)
+//   wscale <f>              uniform weapon scale (session 61; 1.0 = authored,
+//                           lane drops itself) - drives the holdable's OWN
+//                           skeleton, animations keep playing (bones.h
+//                           set_weapon_scale)
 //   probe [n]               log every AHands + player-weapon instance, choose none
 //   hand l|r|auto           which controller drives the model (auto = the hand
 //                           whose trigger was last pulled; default)

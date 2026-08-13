@@ -86,6 +86,19 @@ bool hide_inactive();
 void set_scale(int hand, float s);
 float scale(int hand);
 
+// Session 61: uniform weapon scale (`vrhands wscale <f>`; 1.0 = authored) -
+// drives the equipped holdable's OWN SkeletonInstance: translations
+// uniformly about the component origin (the grip), quats adopted per frame
+// (weapon animations keep playing while scaled), scale channel pinned to the
+// captured reference. At 1.0 the lane drops the skeleton entirely and
+// restores the captured pose. Runs from hands::on_calcview via
+// wskel_drive(); wskel_release() is the explicit hand-back (weapon switch
+// and world change are handled internally).
+void set_weapon_scale(float ws);
+float weapon_scale();
+void wskel_drive();
+void wskel_release(const char* why);
+
 // Session 20: freeze the drive's reference against the idle animation's
 // breathing (default ON; `vrhands swaykill on|off`). Real animations pass an
 // anchor-delta threshold and re-freeze when they settle. Measured baseline:
