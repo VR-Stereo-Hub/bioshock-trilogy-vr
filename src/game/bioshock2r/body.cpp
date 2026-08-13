@@ -25,6 +25,13 @@ std::atomic<bool> g_armed{true};
 std::atomic<float> g_ratePerSec{0.0f};   // 0 = instant 1:1
 std::atomic<float> g_deadzoneDeg{0.0f};
 std::atomic<float> g_maxDegPerSec{180.0f}; // safety slew cap, not feel
+// Feedback session (2026-08-13), BS1 shape: while the slew cap is absorbing a
+// fast head turn, stick-forward walks the INTERPOLATING body yaw - the
+// reported "arc" on a quick 180. When on, camera.cpp publishes the
+// not-yet-transferred error each CalcView and core rotates the movement stick
+// by it (the Infinite s52 lane), so the walk direction is instant while the
+// body catches up. Zero whenever the body is caught up.
+std::atomic<bool> g_moveDirInstant{true};
 std::atomic<int> g_field{0};               // 0 pc, 1 pawn, 2 both
 std::atomic<bool> g_probeLog{false};
 std::atomic<int32_t> g_pokeUnits{0}; // one-shot raw write test
@@ -455,6 +462,9 @@ bool enabled() { return g_armed.load(std::memory_order_relaxed); }
 float rate_per_sec() { return g_ratePerSec.load(std::memory_order_relaxed); }
 float deadzone_deg() { return g_deadzoneDeg.load(std::memory_order_relaxed); }
 
+bool move_dir_instant() { return g_moveDirInstant.load(std::memory_order_relaxed); }
+void set_move_dir_instant(bool on) { g_moveDirInstant.store(on, std::memory_order_relaxed); }
+
 void set_tuning(float ratePerSec, float deadzoneDeg) {
     g_ratePerSec.store(ratePerSec < 0.0f ? 0.0f : ratePerSec, std::memory_order_relaxed);
     g_deadzoneDeg.store(deadzoneDeg < 0.0f ? 0.0f : deadzoneDeg,
@@ -515,6 +525,10 @@ void handle_command(const char* args) {
             BVR_LOG("[vrbody] write field = %s",
                     f == 0 ? "pc" : (f == 1 ? "pawn" : "both"));
         }
+    } else if (strncmp(args, "movedir", 7) == 0) {
+        bool on = strstr(args, "off") == nullptr;
+        g_moveDirInstant.store(on, std::memory_order_relaxed);
+        BVR_LOG("[vrbody] instant move direction %s", on ? "ON" : "off");
     } else if (strncmp(args, "poke", 4) == 0) {
         if (sscanf_s(args + 4, "%f", &v) == 1) {
             BVR_LOG("[vrbody] poke %+.1f deg queued (camera WILL swing - raw write "
@@ -546,6 +560,11 @@ void draw_debug_ui() {
     float dz = g_deadzoneDeg.load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("Deadzone (deg)", &dz, 0.0f, 60.0f, "%.1f"))
         g_deadzoneDeg.store(dz, std::memory_order_relaxed);
+
+    bool mdi = g_moveDirInstant.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Instant move direction (walk tracks the head during fast turns)",
+                        &mdi))
+        g_moveDirInstant.store(mdi, std::memory_order_relaxed);
 
     ImGui::Text("state %s   offset %+d   residual %.1f deg   %d units/s",
                 state_name(static_cast<State>(g_stateTlm.load(std::memory_order_relaxed))),

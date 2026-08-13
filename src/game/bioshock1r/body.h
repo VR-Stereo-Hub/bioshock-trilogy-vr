@@ -62,7 +62,8 @@ int32_t on_calcview(void* pc, void* viewActor, int32_t gameYawUnits,
 void on_reset(const char* why);
 
 // Seam commands: on | off | status | rate <perSec> | deadzone <deg> |
-// max <degPerSec> | field pc|pawn|both | probe on|off | poke <deg>
+// max <degPerSec> | field pc|pawn|both | probe on|off | poke <deg> |
+// movedir on|off
 void handle_command(const char* args);
 
 // Overlay section (render thread only).
@@ -81,5 +82,13 @@ bool is_gameplay_view(void* viewActor);
 float rate_per_sec();
 float deadzone_deg();
 void set_tuning(float ratePerSec, float deadzoneDeg);
+
+// Instant move direction (feedback session 2026-08-13): while on, camera.cpp
+// publishes the not-yet-transferred body error to the input bridge each
+// CalcView, and core rotates the movement stick by it - the walk direction
+// tracks the head instantly while the slew-capped body transfer catches up.
+// Persisted as vrpreset key `moveDirInstant` (append-only).
+bool move_dir_instant();
+void set_move_dir_instant(bool on);
 
 } // namespace bvr::b1r::body

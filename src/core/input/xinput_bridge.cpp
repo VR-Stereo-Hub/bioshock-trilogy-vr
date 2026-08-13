@@ -389,8 +389,10 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     // head-vs-body yaw residual so stick-forward tracks the head's facing.
     // Gated on the publisher's own freshness rather than turnGate: the bumper
     // lift must not snap the walk direction mid-stride, and the publisher only
-    // publishes while its drive owns a gameplay view (Infinite; BS1/BS2 never
-    // publish, so the stamp stays 0 and this block never runs there).
+    // publishes while its drive owns a gameplay view. Publishers: Infinite
+    // (raw residual - no body module there) and, since the 2026-08-13
+    // feedback session, BS1/BS2 (the not-yet-transferred body error, so the
+    // slew-capped body transfer and this rotation can never double-count).
     {
         uint64_t stamp = g_moveYawOffMs.load(std::memory_order_relaxed);
         if (stamp && now - stamp <= kVrGameplayStaleMs && (out.lx || out.ly)) {

@@ -106,6 +106,14 @@ uint64_t g_crosshairAssertMs = 0;            // game thread only
 std::atomic<bool> g_lockOnDisabled{true};
 int g_lockOnApplied = -1;
 uint64_t g_lockOnAssertMs = 0;
+// Residual-units -> composer-degrees sign for the instant-move-direction
+// publish (feedback session 2026-08-13; Infinite camera.cpp kMoveYawSign
+// convention). The composer rotates the stick clockwise-from-above per +deg
+// (forward deflects toward +x); whether this build's +yaw residual means
+// "head turned right" is a SIM derivation (walk under a yawed head must track
+// the head), not an assumption - flip here if the walk tracks the mirror
+// heading instead.
+constexpr float kMoveYawSign = 1.0f;
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
@@ -767,6 +775,7 @@ void save_vr_preset() {
     fprintf(f, "aimPosRUp=%.1f\n", aim::pos_up_cm(1));
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
+    fprintf(f, "moveDirInstant=%d\n", body::move_dir_instant() ? 1 : 0);
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
@@ -844,6 +853,7 @@ void load_vr_preset_values() {
         else if (strcmp(key, "aimPosRUp") == 0) pru = v;
         else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
+        else if (strcmp(key, "moveDirInstant") == 0) body::set_move_dir_instant(v != 0.0f);
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
@@ -1738,6 +1748,24 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // These two are the same integer, which is what makes the invariant a
         // theorem instead of a tolerance.
         if (moved) g_recenterYawUnits = wrap_rot(g_recenterYawUnits + moved);
+
+        // Feedback session (2026-08-13): instant move direction. Publish the
+        // NOT-YET-TRANSFERRED body error (residual minus what the transfer
+        // just took) and core rotates the movement stick by it (the Infinite
+        // s52 lane, dormant for BS1 until now). Zero whenever the body is
+        // caught up - steady-state input is bit-identical; during the
+        // slew-capped window of a fast head turn it is exactly the arc gap.
+        // If the body probe self-disabled (write never sticks), moved is
+        // always 0 and the full residual is published - degrading to
+        // Infinite's model, so the walk still tracks the head. Publishing an
+        // explicit 0 when off/not-driving closes the gate now instead of
+        // riding the core lane's 500 ms staleness window.
+        bvr::input::publish_move_yaw_offset(
+            (vrDrove && body::move_dir_instant())
+                ? kMoveYawSign *
+                      static_cast<float>(wrap_rot(residualUnits - moved)) /
+                      kRotUnitsPerDegree
+                : 0.0f);
     }
 
     // Session 22 snap turn: shift the recenter composite by one step per
