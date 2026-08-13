@@ -88,8 +88,9 @@ there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
 
 1. Launch the game - **VR arms itself automatically** (your saved settings load and the
    full stack - pacing, 6DOF camera, motion controllers, aim + laser, viewmodel drive,
-   body-follows-head, stereo - comes up with no F10 trip). To opt out, untick
-   "Auto-start VR at launch" in the F10 preset block and save.
+   body-follows-head, stereo - comes up with no F10 trip). To opt out: untick
+   "Auto-start VR at launch" in the F10 preset block and save, or set `autoVr=0`
+   in `vrpreset.ini` with the game closed.
 2. The **F10** overlay is still there for tuning, and **VR PRESET 1** (BS1) / **APPLY
    PRESET** (BS2) re-arms everything on demand. No restart is ever needed - the mod
    answers the game's one-shot startup gamepad check itself, so the motion controllers

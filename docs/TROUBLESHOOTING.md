@@ -119,6 +119,19 @@ known source of "the resolution never changes".
 - **BioShock Infinite:** the F10 picker applies **live** through the engine's own
   `setres`, fullscreen or windowed, and persists via the config keys.
 
+## Turning off auto-start VR
+
+The mod arms VR by itself on the first frame, so the game starts in VR with no F10 trip.
+If that ever misbehaves on your setup, there are two switches - they are the same setting:
+
+- **In game:** F10 > the preset block at the top > untick **"Auto-start VR at launch"**,
+  then press **Save preset values** / **SAVE all settings**.
+- **With the game closed** (use this if a launch is unusable): open `vrpreset.ini` in the
+  game's data folder (table at the top) and set `autoVr=0`. Add the line if it is missing.
+
+With it off, the game starts flat and **VR PRESET 1** / **APPLY PRESET** in the F10
+overlay arms everything exactly as before.
+
 ## Still flat? Clear the mod's settings
 
 Close the game, then in the game's data folder (table at the top) delete or move
