@@ -78,10 +78,32 @@ Keep an attribution comment in any file carrying their code.
   weapon-change (arsenal knows) vs the ~0.5 s sweep hitch - design + headset time,
   deferred to the HUD-hiding session.
 
+**Session 61 (2026-08-14) shipped ladder rung 1 - BS1 hand & weapon scaling, SOLVED
+(sim-verified, awaiting headset calibration):**
+
+- The s16 "any chain scale is fatal" verdict was CONFOUNDED: that test still wrote
+  bone 43's `.s` at authored value. Scaling the cluster's anchor-relative
+  translations for ALL bones while writing the `.s` channel only for 27-42/6-21
+  (never 43/44) scales the hand cleanly about the grip - attached weapon
+  undisturbed, anchor write-loc pinned to 0.00 UU, A-B-A exact (0.21% vs 0.75%
+  ambient). BS1's engine never restamps scale (counter: 0) - reference rows pinned,
+  authored `.s` handed back on every off edge.
+- Weapon size is a separate lane (BS2 s41's design): drive the holdable's OWN
+  SkeletonInstance (same +0x3FC as the rig; pistol = 8 bones, R_Grip at origin) -
+  translations *= ws about the grip, quats adopted (animations keep playing),
+  scale pinned, total drop at ws=1.0 / switch / world change / cine release.
+  THE WRENCH HAS NO SKELETON (rigid mesh, +0x3FC null) - negative-cached, renders
+  authored; its hand still scales.
+- Surfaces: `vrhands scale [l|r|both] <f>` / `vrhands wscale <f>`, F10 sliders in
+  the hands section (0.2-4.0 per hand, weapon 0.3-2.5), preset keys
+  `handScaleL`/`handScaleR`/`wScale` (cold-boot round-trip verified, 47 values).
+  Defaults 1.0 - **the user calibrates in-headset; checklist in TESTING S61.**
+- Full derivations + falsification reconciliation: ENGINE_NOTES "Session 61".
+
 **THE SESSION LADDER (user-ordered, s60):**
 
-1. **BS1 hand & weapon scaling** - engine research (ROADMAP.md:665-678 routes; BioVR
-   has no scaling either - no prior art).
+1. ~~**BS1 hand & weapon scaling**~~ **DONE s61** (see above; headset calibration
+   pass rides the next headset checklist).
 2. **Roomscale body-follow + snap-turn pivot** (likely 2 sessions) - pawn follows
    physical displacement WITH collision; BS1/BS2 probe `AActor::Move`/`MoveSmooth` exec
    natives (BioVR's research doc ranks them - vr-features-research.md in their repo);
@@ -7460,6 +7482,48 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 61 - 2026-08-14 - BS1 HAND & WEAPON SCALING SOLVED (ladder rung 1)
+
+On a session branch off `mod-followups` @ ac61e70, merged back into `mod-followups`.
+All flat, in the simulator (vrstereo on, drive on, A-B-A proofs); no headset needed
+until the calibration pass.
+
+- **The decisive experiment (E1)**: the s16 dead-end #2 had an untested cell - that
+  test scaled bones 27-42 AND still wrote bone 43's `.s` at authored value (BS2's
+  later bisection localised its identical blowup to the pivot's own scale channel).
+  Scaling with bones 43/44's `.s` left engine-owned entirely: hand halves, ATTACHED
+  PISTOL UNCHANGED. The BS2 cluster recipe transfers; E2/E3 bisections never needed.
+- **Cluster lane (bones.cpp drive)**: anchor-relative translations *= s for every
+  cluster bone (right anchor IS attach bone 43, so the hand scales about the grip);
+  `.s` = pinned reference * s for mode-selected bones; scale rows pinned at ref
+  recapture (engine scale-restamps measured 0 - adopting our own write would
+  compound s^n); authored `.s` written back on off edges (the sleeve lesson);
+  reapply() replays scale on the stereo second pass. Probe modes stay behind
+  `vrbones scalemode 0..3`.
+- **Weapon lane (wskel, BS2 s41 port)**: holdable via class-agnostic +0x45C read
+  (the vtable-gated path was re-confirmed live to pin a stale weapon), skeleton at
+  the same +0x3FC, pistol 8 bones. Uniform about the grip, quats adopted per frame
+  (~1.7 adopts/drive - drum/recoil keep playing), numeric A-B-A to the last digit,
+  1390 drives at 0.5 with zero compounding. Wrench: NO skeleton (rigid mesh) -
+  negative-cache + one log line, hand still scales. Switch cycle
+  pistol->wrench->pistol proven live via game-key scancodes.
+- **Shipped surfaces**: `vrhands scale [l|r|both] <f>`, `vrhands wscale <f>`, F10
+  sliders (hand 0.2-4.0 per tuning hand + both-hands button, weapon 0.3-2.5),
+  preset keys `handScaleL`/`handScaleR`/`wScale` - cold-boot round-trip verified
+  (47 values, wskel auto-binds at the loaded value under auto-VR). Defaults 1.0.
+- **Not needed**: route B (DrawScale re-test) and route A (fovA consumer hunt) -
+  the cluster lever passed first; both stay recorded in ENGINE_NOTES s61.
+- **Traps for the next session**: BS1's harness commands are ONE PER LINE
+  (`game-cmd "a" "b"`, never "a; b" - the hands parser eats the semicolon);
+  game-key needs `-Game bs1 -Key <k>`; xrsim-shot needs the fg-shot foreground
+  wrapper pattern (ALT-tap + SetForegroundWindow + verify in the same invocation);
+  `vrpreset save` during tests CLOBBERS the user's tuned ini - back it up first,
+  restore after (done this session, laserOn included).
+
+**Next**: headset calibration checklist (TESTING S61) rides the next headset
+session; ladder rung 2 (roomscale body-follow + snap-turn pivot) is the next
+work session.
 
 ### Session 60b (same day) - HEADSET VERDICTS IN + round 2: auto-VR at boot, both-sticks recenter chord
 

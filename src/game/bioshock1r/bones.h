@@ -74,6 +74,31 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
 void set_hide_inactive(bool on);
 bool hide_inactive();
 
+// Session 61: per-cluster viewmodel scale (1.0 = authored; `vrhands scale`).
+// The cluster's anchor-relative translations shrink by s (scale about the
+// anchor - the anchor write-loc is unchanged, which is the proof metric) and
+// the hkQsTransform .s channel is written for the probe-mode-selected bones
+// only, NEVER for the weapon-attach (43) or muzzle (44) bones - the s16
+// "cluster scale blows the weapon up" test always wrote 43's .s; leaving the
+// channel engine-owned entirely is the cell it never tested (BS2's bisection
+// localised its identical blowup to the pivot's own scale channel). hand -1 =
+// both. Probe modes: `vrbones scalemode <0..3>`.
+void set_scale(int hand, float s);
+float scale(int hand);
+
+// Session 61: uniform weapon scale (`vrhands wscale <f>`; 1.0 = authored) -
+// drives the equipped holdable's OWN SkeletonInstance: translations
+// uniformly about the component origin (the grip), quats adopted per frame
+// (weapon animations keep playing while scaled), scale channel pinned to the
+// captured reference. At 1.0 the lane drops the skeleton entirely and
+// restores the captured pose. Runs from hands::on_calcview via
+// wskel_drive(); wskel_release() is the explicit hand-back (weapon switch
+// and world change are handled internally).
+void set_weapon_scale(float ws);
+float weapon_scale();
+void wskel_drive();
+void wskel_release(const char* why);
+
 // Session 20: freeze the drive's reference against the idle animation's
 // breathing (default ON; `vrhands swaykill on|off`). Real animations pass an
 // anchor-delta threshold and re-freeze when they settle. Measured baseline:

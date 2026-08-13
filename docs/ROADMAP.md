@@ -662,20 +662,17 @@ kill. Both prerequisites below are now MET.):**
       **In-headset calibration pending.**
 - [ ] Better overlay/config UI (user's call 2026-07-27: current UI is good - this is polish
       only: grouping, naming, hiding the debug-only controls behind an advanced toggle)
-- [ ] **World/viewmodel scale SPLIT (parked here 2026-07-27, session 16 part 3, user's
-      call):** worldScale now defaults 100 (the user's in-headset calibration - viewmodel
-      size AND distance finally read right; the world reads ~half size in trade, judged
-      acceptable). If the world scale ever needs to move independently, the viewmodel needs
-      its OWN stereo basis: per-eye bone offsets giving the hand cluster its own IPD so the
-      gun keeps its size while reading at the true hand distance (the naive two-slider split
-      puts the gun at double the hand's perceived distance and doubles hand motion - the
-      session-11 percepts). Design sketch in the session-16 part-3 conversation; the per-eye
-      write path (bones reapply) already exists.
-      *RE-CONFIRMED POLISH 2026-07-28 (session 21 part 3, user's call: "not that important
-      for the gameplay"): the ask is now two independent sliders (world + hand/model scale).
-      New candidate routes since the fg-scene decode - the fovA per-rig zoom (once its
-      world-coupling is explained and masked) or DrawScale on a fova-matched rig - see
-      STATUS "POLISH / POST-POLISH" for the probe order.*
+- [x] **World/viewmodel scale SPLIT - SOLVED 2026-08-14 (session 61, feedback ladder
+      rung 1):** the hand/model scale slider exists and is independent of worldScale.
+      The s16 "cluster scale blows up the attached weapon" verdict was confounded (that
+      test still wrote the attach bone's `.s`); scaling translations for the whole
+      cluster while leaving bones 43/44's scale channel engine-owned works outright,
+      and weapon size is a second independent slider driving the holdable's own
+      skeleton (BS2 s41's design; the wrench is a rigid mesh and keeps authored size).
+      `vrhands scale`/`wscale`, F10 sliders, preset keys `handScaleL/R`+`wScale`.
+      ENGINE_NOTES "Session 61" has the derivations; the old fovA / DrawScale /
+      per-eye-basis candidate routes were never needed and stay recorded there.
+      **In-headset calibration pending (TESTING S61).**
 - [ ] IPD slider verification + calibration (parked here 2026-07-24 from M4 rung 1 by user
       choice - user could not tell if it does anything; test with an exaggerated offset,
       calibrate world scale first since perceived depth scale is the worldScale/IPD ratio)
