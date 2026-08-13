@@ -7,7 +7,7 @@
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 57" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 59" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
@@ -17,7 +17,60 @@ for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 The Infinite "Current state" lives here and in its session-log entry rather than displacing the
 section below, so the two projects' handoffs do not fight over the same lines while both are active.
 
-### Infinite: current state after session 58 (HEAD-DIRECTED USE ACCEPTED IN THE HEADSET AND MERGED - 0x1E13DC cornered as THE USE consumer, policy default-on; merged to `bioshock-infinite`)
+### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - per-hold rig hide flat-shipped on the rotation channel; branch `claude/bioshock-own-rig-discrimination-890e1e`, awaiting the headset checklist)
+
+**Session 59 (2026-08-13) closed the s58b missing-hands regression at the
+mechanism level, flat. The s53 cine-hold rig hide is now PER-HOLD (cine
+mode `auto`, the new default): hide-first at every hold-open (the doubles
+protection stands), release for the rest of the hold when the game
+demonstrably animates OUR rig. Evidence-first - the discriminator was
+MEASURED before it was built (ENGINE_NOTES "s59"):**
+
+1. **The instrument**: `bsihide probe on` - per-hold snapshots (bit edges
+   per tick, who-identity at 750 ms cadence, articulation via new
+   `bones::anchor_atoms`, open/close summaries). Two user flat legs (door,
+   then the one banked Devil's Kiss first-drink) gave the paired trace.
+2. **The falsifications**: bHidden reads 0 through BOTH classes (the s53
+   rowboat tracking is scene-specific; only the death/respawn class stamps
+   1); who-identity NEVER reads DIFFERENT (the spawned door rig is not
+   reachable via GetFirstPersonAttachment; GObjObjects NOT FOUND on this
+   build, find_instances is a multi-second sweep - no shippable second-rig
+   detector exists); grip TRANSLATION is self-contaminated by our own
+   grip-scale hide (~99-118 UU artifact, ~6 deg rotation).
+3. **The discriminator**: the ROTATION channel. Door = 51-67 deg peak (its
+   only own-rig motion is ForceUnequip); drink = 178-180 deg both hands
+   from +15 ms. The gate shows the rig when either grip rotates >= 100 deg
+   (config `cineShowDeg`, F10 slider) from its hold-open pose while
+   bHidden==0; bHidden==1 (game parks the rig) hides immediately and
+   clears the latch; any signal failure degrades to force = the shipped
+   s53-s58 behavior. Auto can only regress into "always hide", never into
+   doubles. The s57 melee-execution release keeps precedence.
+4. **Ship shape**: `bsihide cine auto|always|game|off` + `cine deg <n>`,
+   F10 "cutscene rig" radio (auto first) + threshold slider, config keys
+   `cineRigMode`/`cineShowDeg`, enum APPEND-only (persisted values safe).
+5. **Flat fence all green**: fake-hold hide branch; show branch (threshold
+   20 crossing at 40 deg, latched, logged); per-hold re-arm; actor-lever
+   degrade (it WRITES the discriminator bit - mutually exclusive with
+   auto); force bit-identical; eye-check PASS all legs; vdeny seed 10 +
+   head-use un-deny intact at boot.
+
+**Caveats for the headset (TESTING "S59")**: ambient articulation drifts
+(~40 deg / 25 s still) - a very long spawned-rig hold could creep past the
+threshold and false-show (the raffle chain is the judge); the show latch
+holds until hold-close; tattoo-poster and ball-77 are unmeasured beats (if
+hidden, tune the slider down live). The headset checklist is TESTING "S59":
+vigor drink shows hands, doors stay single-handed, one execution, the
+raffle-save sweep, the always-hide radio reachable.
+
+**Traps burned (s59)**: the first who_probe call pool-scans inside the
+hold-open edge (~580 ms hitch, then cached); two game-cmd writes 1 s apart
+clobber (the pump reads on its own cadence - one command per write, gap
+them); death+respawn embeds its own door cinematic (a first-run trace
+blended the classes - the clean replay separated them); the checkpoint
+reload RESTORES an undrunk vigor bottle if no checkpoint fired post-drink
+(the "one-shot" drink was re-runnable).
+
+### Infinite: state after session 58 (superseded by s59 above) (HEAD-DIRECTED USE ACCEPTED IN THE HEADSET AND MERGED - 0x1E13DC cornered as THE USE consumer, policy default-on; merged to `bioshock-infinite`)
 
 **HEADSET VERDICT (user, 2026-08-13): "everything worked as expected" -
 the full TESTING "S58" checklist passed: head-directed targeting feel, the

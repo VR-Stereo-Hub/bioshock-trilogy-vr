@@ -813,6 +813,44 @@ whenever it appears. Everything else below is live.
    is stripped); needs one more derivation session. The dot stays fixed-
    distance; the slider still works.
 
+## S59 checklist (THE OWN-RIG HOLD DISCRIMINATION; branch `claude/bioshock-own-rig-discrimination-890e1e`)
+
+One mechanism this build: during scripted holds the rig hide is now PER-HOLD
+(cine mode "auto", the new default) - the rig hides at every hold-open (the
+doubles protection) and RELEASES for the rest of the hold when the game
+demonstrably animates our rig (either grip rotating >= 100 deg from its
+hold-open pose, bHidden staying 0). The A/B surface is F10 -> HANDS ->
+"cutscene rig:" radio - auto (s59) / always hide (= the old s53-s58
+behavior) / game-managed / cine off - plus the "own-rig show threshold"
+slider under auto. Flat fence is green (door 67 deg stays hidden, drink 180
+deg shows, eye-check PASS); these are the LOOK verdicts:
+
+1. **Vigor drink (the s58b regression, the headline)**: drink any undrunk
+   vigor. The authored hands must APPEAR (about half a second after the
+   vignette starts is expected - the hide releases when the motion crosses
+   the threshold). Under "always hide" the same beat would show NO hands -
+   that radio flip is the A/B if it reads wrong.
+2. **Door cinematic (the s53 acceptance at stake)**: open a door - ONE pair
+   of hands (the game's), no doubles, and no double-flash at the hold edges.
+   If a door ever doubles: note whether it was brief (the show latch fired -
+   report, we tune the threshold up) and flip to "always hide" as the
+   session fallback.
+3. **Melee execution (s57 acceptance)**: one execution on a staggered enemy -
+   the authored execution hand still shows (this path is the s57 release,
+   untouched, and takes precedence over auto).
+4. **The raffle chain (long-hold drift caveat)**: if reachable (load the
+   raffle save), play the chain end to end. Watch the long announcer holds:
+   our rig must STAY hidden through them (the caveat: ambient articulation
+   drifts ~40 deg per 25 s - a very long hold creeping past 100 deg would
+   false-show; report the beat if you see hands appear where they should
+   not). Ball-77 raise: hands SHOWING is the fix working; hidden = the
+   beat's motion sits under the threshold - report, we lower the slider.
+5. **Tattoo-poster beat (if convenient)**: the right hand raise should show.
+   Hidden = threshold too high for this beat - try the slider at 60-80 live.
+6. **Regression micro-sweep**: free-play empty-hands hide still works
+   (holster everything), sprint + one reload feel unchanged, one head-use
+   look-arm on a vending machine, image stays sharp on head motion.
+
 ## S58 checklist (HEAD-DIRECTED USE; branch `claude/bioshock-head-interaction-bebe6d`) - ACCEPTED 2026-08-13, all five steps ("everything worked as expected"); merged to bioshock-infinite
 
 One mechanism this build: USE-target selection now follows your HEAD (the

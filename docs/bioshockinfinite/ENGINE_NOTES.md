@@ -2021,6 +2021,82 @@ classes proven by one lever flip.**
   the real world pickup - triggering it is a USER leg (any undrunk vigor
   bottle near the fair save).
 
+### s59: THE OWN-RIG HOLD DISCRIMINATION - rotation is the only signal that separates the classes
+
+**The question (from s58b): during a scripted hold, is the game parking OUR
+rig (spawned cutscene hands - hide is correct) or animating it (own-rig
+vignette - hiding it eats the authored hands)? Answered flat with a paired
+door/drink trace, and the answer falsified both "cheap" candidates before
+landing on the rotation channel.**
+
+**The instrument (`bsihide probe on`, hide.cpp probe sampler):** per-hold
+snapshots at hold-open / bit-edges per tick / who-identity at 750 ms /
+hold-close summary. Signals: our attachment `bHidden` + comp
+HiddenGame/bOwnerNoSee/bOnlyOwnerSee (free gated reads, edge-logged), the
+`cmd_who` identity refactored to a cached-index `who_probe` (one ProcessEvent
+per 750 ms), hold class + melee state, and (round 2) grip-anchor articulation
+via new `bones::anchor_atoms(hand, q, t)` - a guarded raw bank read of the
+grip atoms. TRAP: the FIRST `who_probe` call pool-scans for
+GetFirstPersonAttachment (~580 ms hitch inside the hold-open edge) - cached
+after; pre-resolve if the who lane ever ships in a gate.
+
+**The paired trace (user replay, clean run - no death, still through both
+beats; Town Center plaza door then the Devil's Kiss first-drink):**
+
+| beat | dur | bHidden | who | grip rotation peak | verdict |
+|---|---|---|---|---|---|
+| door open (spawned-rig, the doubles class) | 9.1 s | 0 throughout | SAME | L 67.5 / R 50.8 deg | must hide |
+| vigor drink (own-rig, the missing-hands class) | 20 s | 0 throughout | SAME | L 179.9 / R 177.7 deg, moving from +15 ms | must show |
+| death + respawn-door (mixed, first run) | 4 s | **1** at open, 3 flips | SAME | - | game parks the rig |
+| fake hold (`bsicine force on`, still) | 14 s | 0 | SAME | ~0 (idle drift ~40 deg over 25 s) | reference |
+
+**The falsifications (recorded so they are not re-hunted):**
+- **bHidden does NOT discriminate**: 0 through BOTH the door and the drink.
+  The s53 rowboat tracking (1 through no-hands phases) is scene-specific -
+  only the death/respawn class stamped 1 here. Kept in the gate as a hide
+  override (bHidden=1 = the game parked our rig - always hide), not as the
+  discriminator.
+- **who-identity NEVER reads DIFFERENT**: the spawned door rig is not
+  reachable through `GetFirstPersonAttachment` - the game does not repoint
+  the attachment for spawned-hand beats. A second-rig detector would need
+  object enumeration; `GObjObjects` is NOT FOUND on this build (s34 record)
+  and `gfx::find_instances` is a multi-second sweep - both non-shippable in
+  a hold.
+- **Translation is self-contaminated**: our own owner-composite hide
+  bone-hides the grips (scale collapse), which reads as ~99-118 UU of grip
+  translation with only ~6 deg rotation on the very tick the hide applies.
+  The rotation channel passes through the artifact; the gate uses rotation
+  ONLY.
+
+**THE GATE (kCineAuto, the new default - hide.cpp `auto_wants_hide`):**
+hide-first at hold-open (the accepted door behavior); SHOW for the rest of
+the hold once either grip rotates >= `cineShowDeg` (default 100 deg, between
+the door's 67 and the drink's 180) from its hold-open pose while bHidden==0;
+bHidden==1 hides immediately and clears the show latch (a later phase must
+re-earn the release). Degrade-to-force preconditions (one log per hold):
+bHidden not derived, actor lever active (it WRITES the discriminator bit -
+mutually exclusive with auto), or the bit read failing. Failure mode == the
+shipped force behavior: auto can only regress into "always hide", never into
+doubles. The melee execution release (s57) keeps precedence in every mode.
+Modes: `bsihide cine auto|always|game|off` (always = force alias), threshold
+`bsihide cine deg <10..180>` + F10 slider, config keys `cineRigMode` (0
+game / 1 always / 2 off / 3 auto) and `cineShowDeg`.
+
+**Flat fence (all green, this build):** fake-hold hide branch; show branch
+(threshold 20 + accumulated idle articulation crossed at 40 deg, latched,
+logged); per-hold re-arm; actor-lever degrade; force mode bit-identical;
+eye-check PASS all legs (sep 0.0630); vdeny seed 10 + head-use un-deny
+intact at boot.
+
+**Known caveats (headset judges):** (a) ambient idle articulation DRIFTS
+(~40 deg per 25 s on a still fake hold) - a very long spawned-rig hold could
+creep past 100 deg and false-show; the raffle chain is the test; the slider
+and `always` are the fallbacks. (b) The show latch holds until hold-close
+(except bHidden=1) - a false show never self-heals within its hold. (c) The
+tattoo-poster and ball-77 beats are unmeasured - if either raises the hand
+slower/shallower than 100 deg it will stay hidden; tune the slider down or
+bank a probe trace when the beat is reachable.
+
 ### s49b: THE STANCE KILLED AT THE ROOT - the 'Lowered' clamp, A-B-A proven
 
 **The mechanism, named end to end.** The 101-deg stance is the lowered-idle

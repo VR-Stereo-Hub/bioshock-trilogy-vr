@@ -732,6 +732,14 @@ Cinematics half:
       (0x26B499 + 0x1E1367 keep the VR pose - the latter is render-side, headset-proven).
       **Raffle chain headset-accepted end to end with no stalls.** Every raffle-class
       beat inherits by construction; re-verify others opportunistically (TESTING "S56")
+- [x] **The own-rig hold discrimination (s59, the missing-hands class)**: the s53
+      cine-hold rig hide made PER-HOLD - `bsihide cine auto` (default): hide-first at
+      hold-open, release when either grip rotates past `cineShowDeg` (100) with
+      bHidden==0 (paired door/drink trace: 67 vs 180 deg - ENGINE_NOTES s59; bHidden
+      and who-identity both falsified as discriminators). Degrades to always-hide on
+      any signal failure; F10 radio + slider. Flat fence + eye-check green;
+      **headset checklist pending (TESTING "S59": drink, doors, execution, raffle
+      sweep)**
 - [x] **Head-directed USE (s58, the finer split)**: flat-shipped - 0x1E13DC (the
       eyes-viewpoint VIRTUAL flavor) cornered as THE USE-target consumer by a 10-caller
       A/B/A sweep against the PC `ButtonUseTarget` oracle (+0x176C, name-derived);
