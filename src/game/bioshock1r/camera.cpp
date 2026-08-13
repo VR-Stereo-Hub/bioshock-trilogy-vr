@@ -886,6 +886,26 @@ void load_startup_prefs() {
                 g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? 1 : 0,
                 g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? 1 : 0,
                 static_cast<int>(bvr::input::recenter_bind()));
+
+    // Arm the synthetic pad NOW, not with the preset.
+    //
+    // The pad's A button already works the title screen and the load - that is
+    // how the harness boots this game (`vrinput test press A` in boot.ps1). But
+    // synthetic input is OFF until the preset arms it, and the preset cannot arm
+    // until a gameplay view exists, which needs the menu you cannot press. That
+    // circle is the entire reason the main menu still needed a keyboard.
+    //
+    // It does NOT skip the startup Bink movies (measured) - those play out and
+    // then A activates Continue.
+    //
+    // Only under autopreset, so a player who has not opted into a hands-off
+    // launch sees no change at all.
+    if (g_autoPresetOnGameplay.load(std::memory_order_relaxed)) {
+        bvr::input::set_enabled(true);
+        BVR_LOG("[b1r] autopreset: synthetic pad armed at startup - the Touch A "
+                "button now drives the main menu and the save load, so no part of "
+                "the launch needs a keyboard");
+    }
 }
 
 void load_vr_preset_values() {
