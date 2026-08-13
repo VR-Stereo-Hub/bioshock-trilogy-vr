@@ -8,8 +8,9 @@ registry picks by host exe name (`BioshockHD.exe` -> bioshock1r, `Bioshock2HD.ex
 `BioShockInfinite.exe` -> bioshockinf).
 
 The two remasters are Vengeance (UE2.5). **BioShock Infinite is Unreal Engine 3 build 6829** - a
-different engine, so no number transfers, and even shapes are suspect. Infinite work lives on the
-`bioshock-infinite` branch until it is stable enough to merge to `main`.
+different engine, so no number transfers, and even shapes are suspect. Infinite MERGED to `main`
+at v0.8.0 (2026-08-13, session 59) - all three games now ship from one line; `bioshock-infinite`
+stays as the Infinite integration branch, but `main` is current and carries every game.
 
 ## Hard rules
 
