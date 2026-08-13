@@ -123,6 +123,30 @@ std::atomic<bool>  g_autoPresetOnGameplay{false};
 // Seated play (default OFF): ignore the vertical component of the head offset,
 // pinning eye height to the game's own camera. See the note at its use site.
 std::atomic<bool>  g_heightLock{false};
+
+// World-scale measurement capture (`vrscale [seconds]`, default off).
+//
+// worldScale is UU per real metre, and almost every way of checking it is
+// circular: ask the mod how far your hand moved and it answers
+// metres * worldScale by construction. Gravity is not circular - it is the
+// ENGINE's own physics. Capture the engine's camera height at CalcView rate
+// through a jump or a fall, fit the acceleration in UU/s^2, and
+// UU-per-metre = accel / 9.81. (Unreal's default zone gravity of -950 UU/s^2
+// implies ~97 UU/m, which is the same ballpark as the ~100 upstream measured
+// by a different method - see docs/bioshock2/ENGINE_NOTES.md.)
+//
+// The timestamp has to be QPC: this samples at frame rate, and
+// GetTickCount64's ~15 ms granularity would swamp a 14 ms frame.
+std::atomic<uint64_t> g_scaleCaptureUntilMs{0};
+std::atomic<uint32_t> g_scaleSamples{0};
+
+double qpc_seconds() {
+    static LARGE_INTEGER freq{};
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return static_cast<double>(now.QuadPart) / static_cast<double>(freq.QuadPart);
+}
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
                                                // UShockUserSettings HorizontalFOV int that the
@@ -397,6 +421,18 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b1r] command: recenter");
     } else if (strcmp(cmd, "vrpopup") == 0) {
         startup_dialog::handle_command(args); // logs its own echo
+    } else if (strcmp(cmd, "vrscale") == 0) {
+        unsigned secs = 0;
+        if (sscanf_s(args, "%u", &secs) != 1 || secs == 0) secs = 20;
+        if (secs > 120) secs = 120; // the capture is one line per CalcView
+        g_scaleSamples.store(0, std::memory_order_relaxed);
+        g_scaleCaptureUntilMs.store(GetTickCount64() + secs * 1000ull,
+                                    std::memory_order_relaxed);
+        BVR_LOG("[vrscale] capture ARMED for %u s - JUMP a few times, or drop off a "
+                "ledge. Logging the ENGINE's camera height per CalcView; gravity in "
+                "UU/s^2 divided by 9.81 gives UU per metre, which is what worldScale "
+                "(now %.0f) should be. Nothing is changed by this.",
+                secs, g_worldScale.load(std::memory_order_relaxed));
     } else if (strcmp(cmd, "headoff") == 0) {
         // The head-anchor offsets were overlay-only sliders, which means they
         // needed F10 and a keyboard - useless to a player already in the
@@ -1281,6 +1317,26 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_lastLocX.store(loc->x, std::memory_order_relaxed);
         g_lastLocY.store(loc->y, std::memory_order_relaxed);
         g_lastLocZ.store(loc->z, std::memory_order_relaxed);
+
+        // World-scale capture. Deliberately HERE, on the incoming camera, before
+        // any VR head offset is added below - the head offset is computed FROM
+        // worldScale, so including it would feed the answer back into the
+        // measurement and guarantee agreement.
+        const uint64_t until = g_scaleCaptureUntilMs.load(std::memory_order_relaxed);
+        if (until) {
+            if (GetTickCount64() <= until) {
+                BVR_LOG("[vrscale] t=%.6f z=%.3f x=%.1f y=%.1f", qpc_seconds(), loc->z,
+                        loc->x, loc->y);
+                g_scaleSamples.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                g_scaleCaptureUntilMs.store(0, std::memory_order_relaxed);
+                BVR_LOG("[vrscale] capture done - %u samples. Fit the free-fall "
+                        "segments: accel in UU/s^2 / 9.81 = UU per metre (worldScale "
+                        "is %.0f).",
+                        g_scaleSamples.load(std::memory_order_relaxed),
+                        g_worldScale.load(std::memory_order_relaxed));
+            }
+        }
     }
     if (rot) {
         g_lastPitch.store(rot->pitch, std::memory_order_relaxed);
