@@ -120,6 +120,9 @@ std::atomic<bool>  g_autoRecenterOnGameplay{false};
 // launch, which is the one thing a player in a headset cannot reach. Firing it
 // on the first gameplay transition is exactly when a human presses it.
 std::atomic<bool>  g_autoPresetOnGameplay{false};
+// Seated play (default OFF): ignore the vertical component of the head offset,
+// pinning eye height to the game's own camera. See the note at its use site.
+std::atomic<bool>  g_heightLock{false};
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
                                                // UShockUserSettings HorizontalFOV int that the
@@ -394,6 +397,17 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b1r] command: recenter");
     } else if (strcmp(cmd, "vrpopup") == 0) {
         startup_dialog::handle_command(args); // logs its own echo
+    } else if (strcmp(cmd, "heightlock") == 0) {
+        if (strncmp(args, "on", 2) == 0)
+            g_heightLock.store(true, std::memory_order_relaxed);
+        else if (strncmp(args, "off", 3) == 0)
+            g_heightLock.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b1r] height lock: %s (heightlock on|off) - %s",
+                g_heightLock.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_heightLock.load(std::memory_order_relaxed)
+                    ? "eye height is pinned to the game camera; sitting or standing "
+                      "no longer changes it (lean still works)"
+                    : "eye height follows your real head, relative to the last recenter");
     } else if (strcmp(cmd, "autopreset") == 0) {
         if (strncmp(args, "on", 2) == 0)
             g_autoPresetOnGameplay.store(true, std::memory_order_relaxed);
@@ -810,6 +824,7 @@ void save_vr_preset() {
             g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "autoPresetOnGameplay=%d\n",
             g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "heightLock=%d\n", g_heightLock.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "swingOn=%d\n", bvr::input::swing::enabled() ? 1 : 0);
     fprintf(f, "swingThreshold=%.2f\n", bvr::input::swing::threshold_ms());
     fprintf(f, "swingRearm=%.2f\n", bvr::input::swing::rearm_ms());
@@ -952,6 +967,8 @@ void load_vr_preset_values() {
             g_autoRecenterOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "autoPresetOnGameplay") == 0)
             g_autoPresetOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "heightLock") == 0)
+            g_heightLock.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "recenterBind") == 0) {
             const int rb = static_cast<int>(v);
             if (rb >= 0 && rb <= 2)
@@ -1453,7 +1470,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         float cg = cosf(gameYawRad), sg = sinf(gameYawRad);
         float ox = (lx * cg - ly * sg) * scale;
         float oy = (lx * sg + ly * cg) * scale;
-        float oz = d[2] * scale;
+        // Height lock: drop the VERTICAL head offset entirely, so the eye sits
+        // at the game's OWN camera height no matter how high the player's real
+        // head is. Lean (x/y) is untouched - peeking round a corner still works.
+        //
+        // Without it, eye height is real-head-height relative to whatever pose
+        // the last recenter captured, and at the default worldScale of 100 UU/m
+        // that is brutal: sitting down after a standing recenter drops the head
+        // ~0.4 m = ~40 UU, against an in-game eye height of only ~60-70 UU. The
+        // player ends up at waist level. Recentering again fixes it, but only
+        // until the next posture change; this removes the coupling instead.
+        float oz = g_heightLock.load(std::memory_order_relaxed) ? 0.0f
+                                                                : d[2] * scale;
         loc->x += ox;
         loc->y += oy;
         loc->z += oz;
@@ -2240,6 +2268,14 @@ void draw_debug_ui() {
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
+        bool hLock = g_heightLock.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Lock eye height to the game camera (seated play)", &hLock))
+            g_heightLock.store(hLock, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Ignores how high your real head is, so sitting down does\n"
+                              "not sink you toward the floor and standing does not raise you.\n"
+                              "Leaning still works. At worldScale 100, sitting after a\n"
+                              "standing recenter costs ~40 UU against a ~65 UU eye height.");
         bool autoPre = g_autoPresetOnGameplay.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Auto-arm VR PRESET 1 on entering gameplay", &autoPre))
             g_autoPresetOnGameplay.store(autoPre, std::memory_order_relaxed);
