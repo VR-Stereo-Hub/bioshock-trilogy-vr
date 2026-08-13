@@ -3,6 +3,75 @@
 Newest first. The version is read from `CMakeLists.txt` by `tools/package.ps1`, so the zip
 name, the DLL banner and the tag cannot disagree.
 
+## v0.8.0 - BioShock Infinite joins, early access: all three games in one zip
+
+**BioShock Infinite is now playable in VR.** Same two DLLs, third game: drop them into
+`...\steamapps\common\BioShock Infinite\Binaries\Win32\` (note: NOT `Build\Final` - Infinite
+is Unreal Engine 3 and keeps its binaries elsewhere) and launch through Steam with your
+headset connected, exactly like the other two games. BioShock 1 and 2 are unchanged in this
+release and were regression-checked.
+
+Infinite is a different engine from the remasters, so this is a from-scratch VR bringup, and
+it ships as **early access**: the game is playable and comfortable from the start of the game
+through the early city, which is what has been tested. Later chapters, the Skyline and the
+DLCs have not had a VR pass yet. Expect rough edges - the honest list is below.
+
+What works today in Infinite:
+
+- Full-rate stereoscopic rendering and 6DOF head tracking (Quest 3 via Virtual Desktop/VDXR
+  is the tested path; any OpenXR runtime with a 32-bit loader should work)
+- Motion controllers: gun in the right hand, vigor in the left, with an aim laser and dot
+- **Interactions follow your head**: USE prompts (doors, vending machines, kinetoscopes,
+  pickups) arm where you LOOK, not where your body points
+- Scripted sequences and cutscenes play correctly in VR, including the first-person
+  vignettes (drinking a vigor shows the authored hands; door cinematics no longer show
+  doubled hands) - this per-scene handling is new in this release and has an F10 fallback
+  radio if a specific scene misbehaves
+- Melee swings and executions, with the sprint arm-pump suppressed (your hands stay on the
+  controllers instead of pumping with the run animation)
+- The game HUD on a readable floating panel; the flat-screen crosshair is hidden in favor
+  of the VR laser
+- Body-follows-head movement, stick pitch disabled, snap turn available
+- In-headset F10 tuning overlay; settings persist per game in
+  `%LOCALAPPDATA%\BioshockVR\bsi\`
+
+**Performance, read this first**: Infinite in VR is heavier than the remasters. If you see
+judder, jitter or smearing, lower the load - reduce the game resolution first (the mod's
+`resW`/`resH` in the F10 overlay; keep it roughly square), then Virtual Desktop's streaming
+quality preset. A clean 90 Hz at a modest resolution feels far better than a sharp image
+that stutters. If the image freezes when you take the headset off and on, toggle "VR
+enabled" off and on in the F10 overlay - the session recovers instantly.
+
+### Known issues in Infinite (early access, in the open)
+
+- **Loading-area visual artifacts**: brief visual weirdness in a few spots where the game
+  streams the world in - the bell tower at the very start is the clearest example. It
+  passes once the area finishes loading.
+- **Hand/arm model jank**: the visible first-person model is rough in places; it can pose
+  oddly during some transitions. Related: with a vigor equipped and NO gun, the hand model
+  sits differently than it does with a gun - the per-loadout tuning is not finished.
+- **Aim is not fully fine-tuned**: the laser is usable but per-weapon aim and model
+  calibration (the per-weapon polish BS1 and BS2 shipped with) is still in progress.
+- **Some specific cinematic beats**: one known beat (examining the tattoo on your right
+  hand near the poster - the game lets you keep walking during it) still hides the hand;
+  a couple of scripted holds may show hands a beat late. The F10 "cutscene rig" radio
+  ("always hide") is the session fallback if a scene shows doubled hands.
+- **Reload animation glitch**: the reload can look wrong on some weapons; queued for the
+  next round.
+- **Near-edge hand drift**: with the hand near the edge of your view, the model can pull
+  slightly toward the camera; under investigation.
+- **Muzzle flash / vigor effects**: some hand effects (muzzle flash, tracers, the vigor
+  charge plume) can appear at the game's original hand position instead of your
+  controller. The hand-attached effects are correct.
+- And a few more small ones - if something looks off, grab
+  `%LOCALAPPDATA%\BioshockVR\bsi\bioshockvr.log` and report it.
+
+### Upgrading from v0.7.0
+
+Copy both DLLs over the old ones in each game folder you use - install steps unchanged for
+BS1/BS2. Your own tuning in `%LOCALAPPDATA%\BioshockVR\` still wins key by key; everything
+new arrives as new keys with working defaults.
+
 ## v0.6.0 - swing the wrench to swing the wrench
 
 **Melee is a motion now.** Swing your right hand and Jack swings the wrench. The trigger still
