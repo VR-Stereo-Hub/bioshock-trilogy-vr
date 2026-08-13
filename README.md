@@ -86,13 +86,17 @@ there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
 
 ## Playing in VR
 
-1. Load into the game flat first (menus are still flat-screen for now).
-2. Press **F10** to open the mod overlay and click **VR PRESET 1** - one press arms
-   everything in the right order: VR pacing, 6DOF camera, motion controllers, controller aim +
-   laser, the viewmodel drive, body-follows-head, and stereo last. No restart is ever
-   needed - the mod answers the game's one-shot startup gamepad check itself, so the
-   motion controllers engage the moment the preset is pressed, first launch included.
-3. Quest 3 Touch controls:
+1. Launch the game - **VR arms itself automatically** (your saved settings load and the
+   full stack - pacing, 6DOF camera, motion controllers, aim + laser, viewmodel drive,
+   body-follows-head, stereo - comes up with no F10 trip). To opt out, untick
+   "Auto-start VR at launch" in the F10 preset block and save.
+2. The **F10** overlay is still there for tuning, and **VR PRESET 1** (BS1) / **APPLY
+   PRESET** (BS2) re-arms everything on demand. No restart is ever needed - the mod
+   answers the game's one-shot startup gamepad check itself, so the motion controllers
+   engage immediately, first launch included.
+3. **Click both thumbsticks together to reset the view** (same as the F10 recenter
+   button) - do it standing in your neutral pose, facing forward.
+4. Quest 3 Touch controls:
 
 | Input | Action |
 |---|---|

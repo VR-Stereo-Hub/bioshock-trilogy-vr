@@ -1399,3 +1399,10 @@ Sea adds weapons and a Vigor the base game does not have, so per-weapon aim prof
 them.
 
 `DLC\DLCA` (5.8 GB), `DLC\DLCB` (7.5 GB), `DLC\DLCC` (11.8 GB) - map these to titles in I0.
+
+## S60b (2026-08-13): both-sticks recenter
+
+Click both thumbsticks together - the view recenters (same as the F10 button;
+sim-verified end to end). Note LS-click is sprint and RS-click is zoom on this
+game: both are suppressed while the chord is held, and a lone click still
+works normally.
