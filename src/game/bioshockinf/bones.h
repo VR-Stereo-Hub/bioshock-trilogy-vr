@@ -104,6 +104,11 @@ void on_world_change(const char* why);
 // one relaxed compare when no window is armed.
 void travel_tick();
 
+// s59: guarded read of one hand's grip-anchor atoms (quat+translation) from
+// the live bank - the hold probe's articulation sample. False = no sample
+// this tick (wrong thread, rig not intact, torn atom).
+bool anchor_atoms(int hand, float outQ[4], float outT[3]);
+
 // s46: the fire seam calls this on every PLAYER shot (game thread). Schedules
 // a ready-pose capture 1.2 s out for both hands - the engine resets the
 // SubtleFidget stance on fire, so the post-fire pose IS the ready reference

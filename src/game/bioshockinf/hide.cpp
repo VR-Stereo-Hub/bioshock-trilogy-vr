@@ -1,6 +1,7 @@
 #include "game/bioshockinf/hide.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -61,9 +62,29 @@ int32_t g_idxIsBoneHidden = -1, g_idxMatchRefBone = -1;
 //    against the game's unhide (risk: authored hand moments - the box
 //    handoff - lose their hands too);
 //  - off:   cine scope disabled entirely (bisect lever).
-enum CineMode : int { kCineGame = 0, kCineForce = 1, kCineOff = 2 };
+// s59 added kCineAuto (APPEND ONLY - the values persist in vr.ini): per-hold
+// own-rig discrimination. The s59 paired trace (door vs vigor drink, both
+// flat-measured with the hold probe): every cheap binary signal reads
+// IDENTICAL across the two classes (bHidden=0, who=SAME on both - the
+// spawned door rig is never reachable through GetFirstPersonAttachment), but
+// the ROTATION channel separates them: the door only plays ForceUnequip
+// through our rig (51-67 deg peak), the drink vignette articulates it ~180
+// deg both hands. Rotation is also immune to our own hide's grip-scale
+// artifact (~99 UU translation, ~6 deg rotation). So auto = hide-first, then
+// SHOW for the rest of the hold once either grip rotates past the threshold
+// from its hold-open pose while bHidden stays 0; bHidden=1 (the game parking
+// the rig - the death/respawn class) hides immediately and clears the latch.
+// Signal failure degrades to force behavior - auto can regress into "always
+// hide", never into doubles.
+enum CineMode : int { kCineGame = 0, kCineForce = 1, kCineOff = 2, kCineAuto = 3 };
 const char* cine_mode_name(int m) {
-    return m == kCineGame ? "game" : (m == kCineForce ? "force" : "off");
+    switch (m) {
+        case kCineGame: return "game";
+        case kCineForce: return "force";
+        case kCineOff: return "off";
+        case kCineAuto: return "auto";
+    }
+    return "?";
 }
 
 // ---- the auto gate ----------------------------------------------------------
@@ -77,7 +98,7 @@ std::atomic<bool> g_auto{true}; // the s53 feature ships armed; F10 + bsihide au
 // gate is EXONERATED for the scene wedge and the default returns to the
 // user-directed force. The stall predates the hide gate entirely (user
 // report: camera + stereo era) - the open investigation lives in STATUS.
-std::atomic<int> g_cineMode{kCineForce}; // user directive: cine hold hides; A/B radio
+std::atomic<int> g_cineMode{kCineAuto}; // s59 default: per-hold discrimination
 // s53 lever verdicts, sim + HEADSET: actor bHidden is INEFFECTIVE (bit set,
 // hands+pistol keep rendering; headset-confirmed "the old behavior"); bone
 // grip+arm hides left the bare HANDS floating in the headset (the rig is
@@ -329,29 +350,43 @@ void* live_pawn() {
     return pawn;
 }
 
+// Silent core of the who probe: the game's own GetFirstPersonAttachment and
+// its mesh comp, by cached index (the s59 probe samples this on a cadence).
+// Returns false when the pawn or the dispatch is unavailable.
+bool who_probe(void** outFpa, void** outFcomp) {
+    *outFpa = nullptr;
+    *outFcomp = nullptr;
+    void* pawn = live_pawn();
+    if (!pawn) return false;
+    static int32_t s_idxGetFpa = -2; // -2 unresolved, -1 refused (pool miss)
+    if (s_idxGetFpa == -2)
+        s_idxGetFpa = reflect::find_function_index("GetFirstPersonAttachment");
+    if (s_idxGetFpa < 0) return false;
+    alignas(16) uint8_t parms[64] = {};
+    if (!reflect::call_on_object_by_index(pawn, s_idxGetFpa, parms)) return false;
+    void* fpa = nullptr;
+    memcpy(&fpa, parms, sizeof fpa);
+    if (fpa && is_memory_valid(static_cast<uint8_t*>(fpa) +
+                                   patterns::kFpAttachMeshCompOffset,
+                               4))
+        *outFcomp = *reinterpret_cast<void**>(static_cast<uint8_t*>(fpa) +
+                                              patterns::kFpAttachMeshCompOffset);
+    *outFpa = fpa;
+    return true;
+}
+
 // The doubles-identity probe: does the game's OWN GetFirstPersonAttachment
 // still return the rig we drive, or did a scripted scene swap it? A swap
 // means the visible doubles are our STALE rig and the fix pivots (STATUS s52
 // round 4 risk list).
 void cmd_who() {
-    void* pawn = live_pawn();
-    if (!pawn) {
-        BVR_LOG("[bsi] hide: who REFUSED - no pawn (load a save first)");
-        return;
-    }
-    alignas(16) uint8_t parms[64] = {};
-    if (!reflect::call_on_object(pawn, "GetFirstPersonAttachment", parms)) {
-        BVR_LOG("[bsi] hide: who - GetFirstPersonAttachment dispatch failed");
-        return;
-    }
     void* fpa = nullptr;
-    memcpy(&fpa, parms, sizeof fpa);
     void* fcomp = nullptr;
-    if (fpa && is_memory_valid(static_cast<uint8_t*>(fpa) +
-                                   patterns::kFpAttachMeshCompOffset,
-                               4))
-        fcomp = *reinterpret_cast<void**>(static_cast<uint8_t*>(fpa) +
-                                          patterns::kFpAttachMeshCompOffset);
+    if (!who_probe(&fpa, &fcomp)) {
+        BVR_LOG("[bsi] hide: who REFUSED - no pawn or GetFirstPersonAttachment "
+                "dispatch failed (load a save first)");
+        return;
+    }
     char cls[64] = {};
     reflect::class_name_of(fpa, cls, sizeof cls);
     void* ourA = bones::attachment();
@@ -440,11 +475,258 @@ void cmd_diff(const char* which) {
             which, off & ~3u, which);
 }
 
+// ---- the s59 hold probe -----------------------------------------------------
+// Per-hold discriminator instrumentation (spawned-rig vs own-rig scripted
+// beats, ENGINE_NOTES s58b): during a cine hold, is the game parking OUR rig
+// (spawned cutscene hands - the hide is correct) or animating it (own-rig
+// beat - the hide eats the authored hands)? Candidate signals sampled here:
+//  1. our attachment's stock bHidden bit - the game's own scene-state
+//     correlate (s53: 1 through no-hands phases, 1->0 at the authored hand
+//     moment, 0 in gameplay). Free per-tick read; edge-logged.
+//  2. who-identity by cached index every 750 ms - DIFFERENT means the game
+//     repointed GetFirstPersonAttachment at a distinct cutscene rig.
+//  3. hold class (camera vs scripted) + melee release state, for the per-beat
+//     table. Read-only; never gates anything. Armed by `bsihide probe on`.
+bool g_probe = false;
+bool g_probeTravel = false; // auto-arm `bsibones travel all` at hold-open
+bool s_probePrevHold = false;
+uint64_t s_probeOpenMs = 0;
+uint64_t s_probeLastWhoMs = 0;
+int s_probePrevBits[4] = {-2, -2, -2, -2}; // bHidden HiddenGame bOwnerNoSee bOnlyOwnerSee
+int s_probePrevWhoSame = -2;               // -2 unknown, 0 DIFFERENT, 1 SAME
+uint64_t s_probeBhFirst1 = UINT64_MAX, s_probeBhFirst0 = UINT64_MAX;
+uint32_t s_probeBhFlips = 0;
+bool s_probeWhoDiffSeen = false;
+uint32_t s_probeReassertsAtOpen = 0;
+// Articulation sample (s59 round 2): grip-anchor peak motion vs the hold-open
+// snapshot. During a hold the drives are released (s52), so any motion is the
+// game's authored anim through OUR rig = the own-rig discriminator. The door
+// leg parks the rig (expected ~0); the drink animates it (expected tens of
+// deg/UU). Detect-edge thresholds are log-only markers, not policy.
+constexpr float kArtDetectDeg = 15.0f;
+constexpr float kArtDetectUu = 8.0f;
+bool s_artStartValid[2] = {};
+float s_artStartQ[2][4], s_artStartT[2][3];
+float s_artPeakDeg[2] = {}, s_artPeakUu[2] = {};
+uint64_t s_artFirstMoveMs = UINT64_MAX;
+
+float quat_angle_deg(const float a[4], const float b[4]) {
+    float d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    if (d < 0.0f) d = -d;
+    if (d > 1.0f) d = 1.0f;
+    return 2.0f * acosf(d) * 57.29578f;
+}
+
+void probe_sample_articulation(uint64_t sinceMs) {
+    for (int h = 0; h < 2; ++h) {
+        float q[4], t[3];
+        if (!bones::anchor_atoms(h, q, t)) continue;
+        if (!s_artStartValid[h]) {
+            memcpy(s_artStartQ[h], q, sizeof q);
+            memcpy(s_artStartT[h], t, sizeof t);
+            s_artStartValid[h] = true;
+            continue;
+        }
+        const float dx = t[0] - s_artStartT[h][0];
+        const float dy = t[1] - s_artStartT[h][1];
+        const float dz = t[2] - s_artStartT[h][2];
+        const float uu = sqrtf(dx * dx + dy * dy + dz * dz);
+        const float deg = quat_angle_deg(q, s_artStartQ[h]);
+        if (uu > s_artPeakUu[h]) s_artPeakUu[h] = uu;
+        if (deg > s_artPeakDeg[h]) s_artPeakDeg[h] = deg;
+        if (s_artFirstMoveMs == UINT64_MAX &&
+            (deg >= kArtDetectDeg || uu >= kArtDetectUu)) {
+            s_artFirstMoveMs = sinceMs;
+            BVR_LOG("[bsi] hide: PROBE +%llums ARTICULATION detected hand=%c "
+                    "(%.1f deg, %.1f UU)",
+                    static_cast<unsigned long long>(sinceMs), h ? 'R' : 'L', deg,
+                    uu);
+        }
+    }
+}
+
+void probe_sample_bits(uint64_t sinceMs) {
+    void* attach = bones::attachment();
+    void* comp = bones::component();
+    if (!attach || !comp) return;
+    const int bits[4] = {
+        read_bit(attach, g_actorHiddenOff, g_actorHiddenMask),
+        read_bit(comp, g_hiddenGameOff, g_hiddenGameMask),
+        read_bit(comp, g_ownerNoSeeOff, g_ownerNoSeeMask),
+        read_bit(comp, g_onlyOwnerOff, g_onlyOwnerMask)};
+    static const char* kNames[4] = {"bHidden", "HiddenGame", "bOwnerNoSee",
+                                    "bOnlyOwnerSee"};
+    for (int i = 0; i < 4; ++i) {
+        if (bits[i] == s_probePrevBits[i]) continue;
+        BVR_LOG("[bsi] hide: PROBE +%llums %s %d -> %d",
+                static_cast<unsigned long long>(sinceMs), kNames[i],
+                s_probePrevBits[i], bits[i]);
+        if (i == 0 && s_probePrevBits[0] != -2) ++s_probeBhFlips;
+        s_probePrevBits[i] = bits[i];
+    }
+    if (bits[0] == 1 && s_probeBhFirst1 == UINT64_MAX) s_probeBhFirst1 = sinceMs;
+    if (bits[0] == 0 && s_probeBhFirst0 == UINT64_MAX) s_probeBhFirst0 = sinceMs;
+}
+
+void probe_sample_who(uint64_t sinceMs) {
+    void* fpa = nullptr;
+    void* fcomp = nullptr;
+    if (!who_probe(&fpa, &fcomp)) {
+        BVR_LOG("[bsi] hide: PROBE +%llums who FAILED (no pawn/dispatch)",
+                static_cast<unsigned long long>(sinceMs));
+        return;
+    }
+    const int same = (fpa == bones::attachment() && fcomp == bones::component())
+                         ? 1
+                         : 0;
+    if (!same) s_probeWhoDiffSeen = true;
+    if (same != s_probePrevWhoSame) {
+        char cls[64] = {};
+        reflect::class_name_of(fpa, cls, sizeof cls);
+        BVR_LOG("[bsi] hide: PROBE +%llums who=%s game fpa %p (%s) comp %p | "
+                "gameBits bH=%d HG=%d ONS=%d",
+                static_cast<unsigned long long>(sinceMs),
+                same ? "SAME" : "DIFFERENT", fpa, cls[0] ? cls : "?", fcomp,
+                read_bit(fpa, g_actorHiddenOff, g_actorHiddenMask),
+                read_bit(fcomp, g_hiddenGameOff, g_hiddenGameMask),
+                read_bit(fcomp, g_ownerNoSeeOff, g_ownerNoSeeMask));
+        s_probePrevWhoSame = same;
+    }
+}
+
+// Called first from tick(), unconditionally (probe runs even with auto off or
+// the lane fault-latched - it is read-only instrumentation).
+void probe_tick(uint64_t nowMs) {
+    if (!g_probe) return;
+    const bool hold = cine::hold();
+    if (hold && !s_probePrevHold) {
+        s_probeOpenMs = nowMs;
+        s_probeLastWhoMs = 0;
+        for (int i = 0; i < 4; ++i) s_probePrevBits[i] = -2;
+        s_probePrevWhoSame = -2;
+        s_probeBhFirst1 = s_probeBhFirst0 = UINT64_MAX;
+        s_probeBhFlips = 0;
+        s_probeWhoDiffSeen = false;
+        s_probeReassertsAtOpen = g_reasserts;
+        s_artStartValid[0] = s_artStartValid[1] = false;
+        s_artPeakDeg[0] = s_artPeakDeg[1] = 0.0f;
+        s_artPeakUu[0] = s_artPeakUu[1] = 0.0f;
+        s_artFirstMoveMs = UINT64_MAX;
+        derive(false); // one-shot latch; bits read -1 if it refuses
+        BVR_LOG("[bsi] hide: PROBE hold OPEN class=%s meleeRelease=%d rigHidden=%d "
+                "(derived=%d)",
+                cine::camera_hold() ? "camera" : "scripted",
+                melee::hide_release() ? 1 : 0, g_rigHidden ? 1 : 0,
+                g_derived ? 1 : 0);
+        probe_sample_bits(0);
+        probe_sample_who(0);
+        s_probeLastWhoMs = nowMs;
+        if (g_probeTravel) bones::handle_command("bsibones", "travel all 12");
+    } else if (hold) {
+        const uint64_t since = nowMs - s_probeOpenMs;
+        probe_sample_bits(since); // free reads, edge-logged only
+        probe_sample_articulation(since);
+        if (nowMs - s_probeLastWhoMs >= 750) {
+            s_probeLastWhoMs = nowMs;
+            probe_sample_who(since);
+        }
+    } else if (s_probePrevHold) {
+        const uint64_t dur = nowMs - s_probeOpenMs;
+        char f1[24] = "never", f0[24] = "never";
+        if (s_probeBhFirst1 != UINT64_MAX)
+            snprintf(f1, sizeof f1, "+%llums",
+                     static_cast<unsigned long long>(s_probeBhFirst1));
+        if (s_probeBhFirst0 != UINT64_MAX)
+            snprintf(f0, sizeof f0, "+%llums",
+                     static_cast<unsigned long long>(s_probeBhFirst0));
+        char fm[24] = "never";
+        if (s_artFirstMoveMs != UINT64_MAX)
+            snprintf(fm, sizeof fm, "+%llums",
+                     static_cast<unsigned long long>(s_artFirstMoveMs));
+        BVR_LOG("[bsi] hide: PROBE hold CLOSED dur=%llums | bHidden first1=%s "
+                "first0=%s flips=%u last=%d | whoDIFFERENTseen=%d | "
+                "reassertsDelta=%u | art L %.1fdeg/%.1fUU R %.1fdeg/%.1fUU "
+                "firstMove=%s",
+                static_cast<unsigned long long>(dur), f1, f0, s_probeBhFlips,
+                s_probePrevBits[0], s_probeWhoDiffSeen ? 1 : 0,
+                g_reasserts - s_probeReassertsAtOpen, s_artPeakDeg[0],
+                s_artPeakUu[0], s_artPeakDeg[1], s_artPeakUu[1], fm);
+    }
+    s_probePrevHold = hold;
+}
+
+// ---- the s59 auto gate ------------------------------------------------------
+// Game-thread statics; only the threshold crosses threads (F10 slider).
+std::atomic<float> g_autoShowDeg{100.0f}; // rotation threshold, deg
+bool s_autoPrevHold = false;
+bool s_autoShowLatch = false;       // crossed the threshold this hold
+bool s_autoSnapValid[2] = {};
+float s_autoSnapQ[2][4];
+bool s_autoDegradeLogged = false;   // one line per hold, not per tick
+bool s_autoShowLogged = false;
+
+// The per-hold verdict for kCineAuto. Hide-first by construction: the latch
+// starts false every hold, so the rig hides at hold-open (today's accepted
+// door behavior) and only releases when the game demonstrably animates OUR
+// rig. Any signal failure returns true (= force behavior).
+bool auto_wants_hide(bool holdEdge) {
+    if (holdEdge) {
+        s_autoShowLatch = false;
+        s_autoSnapValid[0] = s_autoSnapValid[1] = false;
+        s_autoDegradeLogged = false;
+        s_autoShowLogged = false;
+    }
+    // Degrade to force: the bHidden read must exist and must be the game's
+    // own (the actor lever WRITES that bit - mutually exclusive with auto).
+    const int lever = g_lever.load(std::memory_order_relaxed);
+    if (!g_actorHiddenMask || lever == kLeverActor) {
+        if (!s_autoDegradeLogged) {
+            s_autoDegradeLogged = true;
+            BVR_LOG("[bsi] hide: auto-cine DEGRADED to force this hold (%s)",
+                    !g_actorHiddenMask ? "bHidden not derived"
+                                       : "actor lever owns the bit");
+        }
+        return true;
+    }
+    const int bh = read_bit(bones::attachment(), g_actorHiddenOff, g_actorHiddenMask);
+    if (bh < 0) return true; // rig memory invalid this tick - stay hidden
+    if (bh == 1) {
+        // The game parked our rig (death/respawn class) - hide wins and the
+        // show latch resets so a later phase must re-earn the release.
+        s_autoShowLatch = false;
+        return true;
+    }
+    // Rotation-only articulation vs the hold-open pose (translation is
+    // contaminated by our own grip-scale hide; rotation reads ~6 deg through
+    // it - s59 measured).
+    for (int h = 0; h < 2 && !s_autoShowLatch; ++h) {
+        float q[4], t[3];
+        if (!bones::anchor_atoms(h, q, t)) continue;
+        if (!s_autoSnapValid[h]) {
+            memcpy(s_autoSnapQ[h], q, sizeof q);
+            s_autoSnapValid[h] = true;
+            continue;
+        }
+        const float deg = quat_angle_deg(q, s_autoSnapQ[h]);
+        if (deg >= g_autoShowDeg.load(std::memory_order_relaxed)) {
+            s_autoShowLatch = true;
+            if (!s_autoShowLogged) {
+                s_autoShowLogged = true;
+                BVR_LOG("[bsi] hide: auto-cine OWN-RIG beat (hand %c rotated "
+                        "%.1f deg) - rig shown for the rest of the hold",
+                        h ? 'R' : 'L', deg);
+            }
+        }
+    }
+    return !s_autoShowLatch;
+}
+
 } // namespace
 
 // ---- the production gate ----------------------------------------------------
 
 void tick(uint64_t nowMs) {
+    probe_tick(nowMs); // read-only; runs even with auto off / fault-latched
     if (g_faultLatched) return;
     if (!g_auto.load(std::memory_order_relaxed)) {
         unhide_all("auto off");
@@ -485,7 +767,16 @@ void tick(uint64_t nowMs) {
     // that side's bone composite, best-effort.
     const bool hold = cine::hold();
     const int cineMode = g_cineMode.load(std::memory_order_relaxed);
-    bool wantRig = hold && cineMode == kCineForce;
+    const bool holdEdge = hold && !s_autoPrevHold;
+    s_autoPrevHold = hold;
+    bool wantRig = false;
+    if (hold) {
+        switch (cineMode) {
+            case kCineForce: wantRig = true; break;
+            case kCineAuto: wantRig = auto_wants_hide(holdEdge); break;
+            default: break; // kCineGame, kCineOff: touch nothing during holds
+        }
+    }
     bool wantHand[2] = {false, false};
     const bool perHandCapable = g_idxHideBone >= 0 && g_idxUnHideBone >= 0;
     if (!hold && profiles::hide_empty_hands()) {
@@ -619,16 +910,32 @@ bool handle_command(const char* cmd, const char* args) {
         if (n < 1)
             BVR_LOG("[bsi] hide: verbs - status derive who diff actor|comp | "
                     "actor|comp|owner|pawn 0|1 | bone <Name> 0|1 | hand l|r 0|1 | "
-                    "lever owner|comp|actor|bone | cine game|force|off | auto on|off");
+                    "lever owner|comp|actor|bone | cine auto|always|game|off | "
+                    "cine deg <n> | auto on|off | probe on|off|travel");
         return true;
     }
     if (strcmp(sub, "cine") == 0) {
         int want = -1;
-        if (strcmp(a1, "game") == 0) want = kCineGame;
-        else if (strcmp(a1, "force") == 0) want = kCineForce;
+        if (strcmp(a1, "auto") == 0) want = kCineAuto;
+        else if (strcmp(a1, "game") == 0) want = kCineGame;
+        else if (strcmp(a1, "force") == 0 || strcmp(a1, "always") == 0)
+            want = kCineForce;
         else if (strcmp(a1, "off") == 0) want = kCineOff;
+        else if (strcmp(a1, "deg") == 0) {
+            float v = 0.0f;
+            if (sscanf_s(a2, "%f", &v) == 1 && v >= 10.0f && v <= 180.0f) {
+                g_autoShowDeg.store(v, std::memory_order_relaxed);
+                BVR_LOG("[bsi] hide: auto-cine show threshold -> %.0f deg", v);
+            } else {
+                BVR_LOG("[bsi] hide: cine deg %.0f | usage: bsihide cine deg "
+                        "<10..180>",
+                        g_autoShowDeg.load(std::memory_order_relaxed));
+            }
+            return true;
+        }
         if (want < 0) {
-            BVR_LOG("[bsi] hide: cine %s | usage: bsihide cine game|force|off",
+            BVR_LOG("[bsi] hide: cine %s | usage: bsihide cine "
+                    "auto|always|game|off | cine deg <10..180>",
                     cine_mode_name(g_cineMode.load(std::memory_order_relaxed)));
             return true;
         }
@@ -639,6 +946,26 @@ bool handle_command(const char* cmd, const char* args) {
     }
     if (strcmp(sub, "derive") == 0) {
         derive(true);
+        return true;
+    }
+    if (strcmp(sub, "probe") == 0) {
+        if (strcmp(a1, "on") == 0) {
+            g_probe = true;
+            s_probePrevHold = false;
+            BVR_LOG("[bsi] hide: PROBE armed%s - per-hold discriminator sampling "
+                    "(bit edges + who at 750 ms)",
+                    g_probeTravel ? " (travel auto-arm ON)" : "");
+        } else if (strcmp(a1, "off") == 0) {
+            g_probe = false;
+            BVR_LOG("[bsi] hide: PROBE off");
+        } else if (strcmp(a1, "travel") == 0) {
+            g_probeTravel = !g_probeTravel;
+            BVR_LOG("[bsi] hide: PROBE travel auto-arm %s",
+                    g_probeTravel ? "ON" : "off");
+        } else {
+            BVR_LOG("[bsi] hide: probe %s | usage: bsihide probe on|off|travel",
+                    g_probe ? "ON" : "off");
+        }
         return true;
     }
     if (strcmp(sub, "who") == 0) {
@@ -746,6 +1073,18 @@ bool handle_command(const char* cmd, const char* args) {
     return true;
 }
 
+// s59 config surface (cineRigMode / cineShowDeg - the camera.cpp key table).
+int cine_mode() { return g_cineMode.load(std::memory_order_relaxed); }
+void set_cine_mode(int m) {
+    if (m < kCineGame || m > kCineAuto) return;
+    g_cineMode.store(m, std::memory_order_relaxed);
+}
+float cine_show_deg() { return g_autoShowDeg.load(std::memory_order_relaxed); }
+void set_cine_show_deg(float d) {
+    if (d >= 10.0f && d <= 180.0f)
+        g_autoShowDeg.store(d, std::memory_order_relaxed);
+}
+
 void draw_debug_ui() {
     // Nested inside the HANDS + MODEL section (anything judged by eye gets an
     // F10 control, never a console verb - the alt-tab rule).
@@ -758,12 +1097,21 @@ void draw_debug_ui() {
     int cineMode = g_cineMode.load(std::memory_order_relaxed);
     ImGui::Text("cutscene rig:");
     ImGui::SameLine();
-    bool cchanged = ImGui::RadioButton("force-hide", &cineMode, kCineForce);
+    bool cchanged = ImGui::RadioButton("auto (s59)", &cineMode, kCineAuto);
+    ImGui::SameLine();
+    cchanged |= ImGui::RadioButton("always hide", &cineMode, kCineForce);
     ImGui::SameLine();
     cchanged |= ImGui::RadioButton("game-managed", &cineMode, kCineGame);
     ImGui::SameLine();
     cchanged |= ImGui::RadioButton("cine off", &cineMode, kCineOff);
     if (cchanged) g_cineMode.store(cineMode, std::memory_order_relaxed);
+    if (cineMode == kCineAuto) {
+        float deg = g_autoShowDeg.load(std::memory_order_relaxed);
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat("own-rig show threshold (deg)", &deg, 10.0f,
+                               180.0f, "%.0f"))
+            g_autoShowDeg.store(deg, std::memory_order_relaxed);
+    }
     int lever = g_lever.load(std::memory_order_relaxed);
     ImGui::Text("hide lever:");
     ImGui::SameLine();

@@ -1030,6 +1030,11 @@ float cfg_get_xhairhide() { return xhair::enabled() ? 1.0f : 0.0f; }
 void cfg_set_xhairhide(float v) { xhair::set_enabled(v != 0.0f); }
 float cfg_get_headuse() { return head_use_enabled() ? 1.0f : 0.0f; }
 void cfg_set_headuse(float v) { set_head_use(v != 0.0f); }
+// ---- s59 cine-hold rig policy ----
+float cfg_get_cinerig() { return static_cast<float>(hide::cine_mode()); }
+void cfg_set_cinerig(float v) { hide::set_cine_mode(static_cast<int>(v + 0.5f)); }
+float cfg_get_cinedeg() { return hide::cine_show_deg(); }
+void cfg_set_cinedeg(float v) { hide::set_cine_show_deg(v); }
 // s52 round 2: the HUD quad's placement as preset keys (headset verdict:
 // icons too small, position/size need live tuning + persistence). The quad
 // state lives in core (set_hud_quad); these read-modify-write one component.
@@ -1101,6 +1106,9 @@ constexpr config::KeyDesc kConfigKeys[] = {
     {"meleeHideGun", cfg_get_meleehidegun, cfg_set_meleehidegun, 0.0f, 1.0f},
     {"hudCrosshairHide", cfg_get_xhairhide, cfg_set_xhairhide, 0.0f, 1.0f},
     {"interactHeadUse", cfg_get_headuse, cfg_set_headuse, 0.0f, 1.0f},
+    // ---- s59 cine-hold rig policy (0 game / 1 always / 2 off / 3 auto) ----
+    {"cineRigMode", cfg_get_cinerig, cfg_set_cinerig, 0.0f, 3.0f},
+    {"cineShowDeg", cfg_get_cinedeg, cfg_set_cinedeg, 10.0f, 180.0f},
 };
 
 // ---------------------------------------------------------------------------

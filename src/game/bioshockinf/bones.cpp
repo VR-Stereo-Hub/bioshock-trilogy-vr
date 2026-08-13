@@ -657,6 +657,28 @@ bool cmd_travel(const char* rest) {
 
 } // namespace
 
+// s59: guarded raw read of one hand's grip-anchor atoms from the live bank
+// (quat + translation). Refuses off the game thread, rig not intact, or a
+// torn atom. Read-only - the hold probe's articulation sample: during a
+// scripted hold the drives are released, so the bank is engine truth and any
+// motion here is the game's own authored animation flowing through OUR rig.
+bool anchor_atoms(int hand, float outQ[4], float outT[3]) {
+    if (hand < 0 || hand > 1) return false;
+    const uint32_t camTid = camera::camera_tid();
+    if (camTid == 0 || GetCurrentThreadId() != camTid) return false;
+    if (!g_comp || !rig_intact()) return false;
+    const int i = g_grip[hand];
+    if (i < 0 || i >= g_boneCount) return false;
+    const float* atom =
+        reinterpret_cast<const float*>(g_bank + static_cast<size_t>(i) * kAtom);
+    const float n2 = atom[0] * atom[0] + atom[1] * atom[1] + atom[2] * atom[2] +
+                     atom[3] * atom[3];
+    if (!(n2 > 0.5f && n2 < 2.0f)) return false; // torn - refuse the sample
+    memcpy(outQ, atom, 16);
+    memcpy(outT, atom + 4, 12);
+    return true;
+}
+
 void travel_tick() {
     if (g_travelUntilMs == 0) return;
     const uint64_t now = GetTickCount64();

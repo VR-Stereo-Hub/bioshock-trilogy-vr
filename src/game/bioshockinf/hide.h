@@ -34,7 +34,15 @@ namespace bvr::bsi::hide {
 // dispatch acts on is fresh). Cheap when idle: a few relaxed loads.
 void tick(uint64_t nowMs);
 
-bool handle_command(const char* cmd, const char* args); // bsihide
+bool handle_command(const char* cmd, const char* args);
+
+// s59: the cine-hold policy radio (0 game / 1 force / 2 off / 3 auto - the
+// per-hold own-rig discriminator, default) and auto's rotation threshold.
+// Config keys cineRigMode / cineShowDeg in camera.cpp's table.
+int cine_mode();
+void set_cine_mode(int m);
+float cine_show_deg();
+void set_cine_show_deg(float d); // bsihide
 void draw_debug_ui(); // nested in the HANDS + MODEL F10 section
 
 } // namespace bvr::bsi::hide
