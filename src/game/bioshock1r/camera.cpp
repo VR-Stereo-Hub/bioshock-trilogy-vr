@@ -114,6 +114,12 @@ std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 // player for an input. Off by default because it overrides a deliberate
 // mid-session recenter every time a cutscene ends.
 std::atomic<bool>  g_autoRecenterOnGameplay{false};
+// Opt-in (default OFF): arm VR PRESET 1 by itself, ONCE, the first time a
+// gameplay view appears. vrpreset.ini persists the tuned VALUES but nothing
+// persists the toggles - the preset has to be pressed in the F10 overlay every
+// launch, which is the one thing a player in a headset cannot reach. Firing it
+// on the first gameplay transition is exactly when a human presses it.
+std::atomic<bool>  g_autoPresetOnGameplay{false};
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
                                                // UShockUserSettings HorizontalFOV int that the
@@ -388,6 +394,15 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b1r] command: recenter");
     } else if (strcmp(cmd, "vrpopup") == 0) {
         startup_dialog::handle_command(args); // logs its own echo
+    } else if (strcmp(cmd, "autopreset") == 0) {
+        if (strncmp(args, "on", 2) == 0)
+            g_autoPresetOnGameplay.store(true, std::memory_order_relaxed);
+        else if (strncmp(args, "off", 3) == 0)
+            g_autoPresetOnGameplay.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b1r] auto-preset on entering gameplay: %s (autopreset on|off) - "
+                "arms VR PRESET 1 once per session so the headset needs no "
+                "keyboard to get into VR",
+                g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? "ON" : "off");
     } else if (strcmp(cmd, "autorecenter") == 0) {
         if (strncmp(args, "on", 2) == 0)
             g_autoRecenterOnGameplay.store(true, std::memory_order_relaxed);
@@ -793,6 +808,8 @@ void save_vr_preset() {
     fprintf(f, "recenterBind=%d\n", static_cast<int>(bvr::input::recenter_bind()));
     fprintf(f, "autoRecenterOnGameplay=%d\n",
             g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "autoPresetOnGameplay=%d\n",
+            g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "swingOn=%d\n", bvr::input::swing::enabled() ? 1 : 0);
     fprintf(f, "swingThreshold=%.2f\n", bvr::input::swing::threshold_ms());
     fprintf(f, "swingRearm=%.2f\n", bvr::input::swing::rearm_ms());
@@ -872,6 +889,8 @@ void load_vr_preset_values() {
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
         else if (strcmp(key, "autoRecenterOnGameplay") == 0)
             g_autoRecenterOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "autoPresetOnGameplay") == 0)
+            g_autoPresetOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "recenterBind") == 0) {
             const int rb = static_cast<int>(v);
             if (rb >= 0 && rb <= 2)
@@ -1560,6 +1579,25 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             // event that plausibly created what they were looking for, so it is
             // the one place allowed to wake them.
             if (strictGameplay) {
+                // ONCE per session: re-applying the preset would re-run the
+                // whole vrstereo sequence on every cutscene exit.
+                static bool s_autoPresetDone = false;
+                if (!s_autoPresetDone &&
+                    g_autoPresetOnGameplay.load(std::memory_order_relaxed)) {
+                    s_autoPresetDone = true;
+                    g_vrPresetPending.store(true, std::memory_order_relaxed);
+                    // ...and take the seated reference HERE. The recenter
+                    // captures the full head pose, position included, so
+                    // whatever height the player is at this instant becomes the
+                    // game's own standing eye height - which is what makes one
+                    // keyboard-free launch work whether they sat down or stayed
+                    // standing. Without it the session inherits whatever
+                    // reference the runtime happened to hand out.
+                    g_recenterRequested.store(true, std::memory_order_relaxed);
+                    BVR_LOG("[b1r] auto-preset: arming VR PRESET 1 on the first "
+                            "gameplay view, and recentering onto your current "
+                            "seated/standing pose ('autopreset off' to disable)");
+                }
                 if (g_autoRecenterOnGameplay.load(std::memory_order_relaxed)) {
                     g_recenterRequested.store(true, std::memory_order_relaxed);
                     BVR_LOG("[b1r] auto-recenter: entered gameplay view "
@@ -2140,6 +2178,13 @@ void draw_debug_ui() {
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
+        bool autoPre = g_autoPresetOnGameplay.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Auto-arm VR PRESET 1 on entering gameplay", &autoPre))
+            g_autoPresetOnGameplay.store(autoPre, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Presses this preset for you, once per session, the first\n"
+                              "time a gameplay view appears - so getting into VR needs\n"
+                              "no keyboard. Tuned values already persist; the toggles did not.");
         bool autoRc = g_autoRecenterOnGameplay.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Auto-recenter on entering gameplay", &autoRc))
             g_autoRecenterOnGameplay.store(autoRc, std::memory_order_relaxed);
