@@ -770,6 +770,7 @@ void save_vr_preset() {
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
+    fprintf(f, "recenterBind=%d\n", static_cast<int>(bvr::input::recenter_bind()));
     fprintf(f, "swingOn=%d\n", bvr::input::swing::enabled() ? 1 : 0);
     fprintf(f, "swingThreshold=%.2f\n", bvr::input::swing::threshold_ms());
     fprintf(f, "swingRearm=%.2f\n", bvr::input::swing::rearm_ms());
@@ -847,6 +848,11 @@ void load_vr_preset_values() {
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
+        else if (strcmp(key, "recenterBind") == 0) {
+            const int rb = static_cast<int>(v);
+            if (rb >= 0 && rb <= 2)
+                bvr::input::set_recenter_bind(static_cast<bvr::input::RecenterBind>(rb));
+        }
         else if (strcmp(key, "swingOn") == 0) bvr::input::swing::set_enabled(v != 0.0f);
         else if (strcmp(key, "swingThreshold") == 0) bvr::input::swing::set_threshold_ms(v);
         else if (strcmp(key, "swingRearm") == 0) bvr::input::swing::set_rearm_ms(v);
@@ -1149,6 +1155,17 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
     bvr::vr::publish_gameplay_view(strictGameplay);
 
+    // Controller-bound recenter: the XR action layer raises a latch on the
+    // render thread when the bound gesture fires (core/input/xinput_bridge.h);
+    // draining it HERE turns it into exactly the same request the overlay
+    // button and the `recenter` command make, on the game thread, one frame
+    // before the drive lane below consumes it. The gameplay gate lives at the
+    // detector; this is only the seam between threads.
+    if (bvr::input::take_recenter_request()) {
+        g_recenterRequested.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b1r] recenter requested by controller bind");
+    }
+
     // Session 29: the cinematic drive policy (vrcine drive off|authored|
     // authored+look). `cineHold` is the draw-based signal ORed with the pixel
     // watch - it must NOT be plain letterbox(), because with the bars
@@ -1444,6 +1461,14 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // XR session anyway, and leaving it out is what lets `vrinput swing sim`
         // exercise the whole decision path flat.
         bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench"));
+
+        // The recenter bind's "can I borrow the stick click?" signal. Derived
+        // independently of the swing gate above even though it reads the same
+        // today: they answer different questions ("may I swing" vs "does the
+        // ammo modifier have anything to select"), and one of them changing
+        // must not silently move the other.
+        bvr::input::publish_ammoless_weapon(strictGameplay &&
+                                            aim::weapon_key_is("Wrench"));
 
         static int s_lastViewState = -1;
         int viewState = strictGameplay ? 1 : 0;
