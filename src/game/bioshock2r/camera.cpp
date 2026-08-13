@@ -2562,6 +2562,7 @@ void draw_debug_ui() {
                            "CalcView seam: scan FAILED - running flat");
         return;
     }
+    ImGui::TextDisabled("Tip: Ctrl+click any slider to type an exact value");
 
     ImGui::Text("ProcessEvent hook: LIVE @ %p", g_peTarget);
     void* fn = g_calcViewFn.load(std::memory_order_relaxed);

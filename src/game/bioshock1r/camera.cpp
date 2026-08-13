@@ -1888,6 +1888,7 @@ void draw_debug_ui() {
     }
 
     ImGui::Text("CalcView hook: LIVE @ %p", g_target);
+    ImGui::TextDisabled("Tip: Ctrl+click any slider to type an exact value");
 
     // Calls/sec sampled on the UI thread once per second.
     static uint64_t lastSample = 0;
@@ -1925,6 +1926,21 @@ void draw_debug_ui() {
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
                            "option hfov: settings object not resolved");
 
+    // ---- PRESET: always visible, at the TOP (feedback session 2026-08-13,
+    // BS2 camera.cpp:2604-2618 parity - buried inside a section these read
+    // as sub-options and new users never find them). The buttons MOVED here
+    // from the "VR camera (M3/M4)" header - not copied, duplicate labels
+    // would collide as ImGui IDs.
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.0f),
+                       "PRESET - applies / saves ALL settings and values");
+    if (ImGui::Button("VR PRESET 1 - everything on"))
+        g_vrPresetPending.store(true, std::memory_order_relaxed);
+    ImGui::SameLine();
+    if (ImGui::Button("Save preset values"))
+        g_vrPresetSavePending.store(true, std::memory_order_relaxed);
+    ImGui::Separator();
+
     if (ImGui::CollapsingHeader("VR camera (M3/M4)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text(g_vrDriving.load(std::memory_order_relaxed)
                         ? "camera: driven by HMD pose"
@@ -1933,11 +1949,6 @@ void draw_debug_ui() {
                     g_headOffX.load(std::memory_order_relaxed),
                     g_headOffY.load(std::memory_order_relaxed),
                     g_headOffZ.load(std::memory_order_relaxed));
-        if (ImGui::Button("VR PRESET 1 - everything on"))
-            g_vrPresetPending.store(true, std::memory_order_relaxed);
-        ImGui::SameLine();
-        if (ImGui::Button("Save preset values"))
-            g_vrPresetSavePending.store(true, std::memory_order_relaxed);
         bool xhair = g_crosshairVisible.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Flat-screen crosshair (default off in VR)", &xhair))
             g_crosshairVisible.store(xhair, std::memory_order_relaxed);
@@ -1955,7 +1966,16 @@ void draw_debug_ui() {
             static int s_w = 0, s_h = 0;
             unsigned liveW = 0, liveH = 0;
             bvr::vr::fov_audit(nullptr, nullptr, nullptr, &liveW, &liveH);
-            game_ini::Viewport v = game_ini::read_viewport();
+            // Re-read the ini at 1 Hz, not per overlay frame (BS2/Infinite
+            // shape - the per-frame file read was a BS1-only debt).
+            static game_ini::Viewport s_vp;
+            static uint64_t s_vpReadMs = 0;
+            uint64_t nowMs = GetTickCount64();
+            if (!s_vpReadMs || nowMs - s_vpReadMs > 1000) {
+                s_vp = game_ini::read_viewport();
+                s_vpReadMs = nowMs;
+            }
+            const game_ini::Viewport& v = s_vp;
             if (!s_read && v.valid) {
                 s_read = true;
                 s_w = static_cast<int>(v.windowedW);
@@ -1967,6 +1987,10 @@ void draw_debug_ui() {
             } else {
                 ImGui::Text("ini: %ux%u   live backbuffer: %ux%u", v.windowedW, v.windowedH,
                             liveW, liveH);
+                if (v.startupFullscreen)
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                                       "StartupFullscreen=True: windowed is the tested lane - "
+                                       "set StartupFullscreen=False in Bioshock.ini");
                 if (liveW && liveH) {
                     // A headset eye is near square. A 16:9 buffer spends most of
                     // its width outside the lenses, which is the whole reason
@@ -2035,8 +2059,13 @@ void draw_debug_ui() {
                                                 static_cast<uint32_t>(s_h),
                                             std::memory_order_relaxed);
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("restart the game for it to take effect");
+                ImGui::TextWrapped(
+                    "Restart the game for it to take effect. The game rewrites "
+                    "Bioshock.ini from its own settings at exit, which can undo "
+                    "this write - if the new size does not survive a restart, "
+                    "edit Bioshock.ini by hand WHILE THE GAME IS CLOSED "
+                    "(WindowedViewportX/Y + FullscreenViewportX/Y under "
+                    "[WinDrv.WindowsClient]), then launch.");
             }
         }
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
