@@ -1783,6 +1783,20 @@ bool install(void* eventPlayerCalcView) {
         return false;
     }
 
+    // Feedback session (2026-08-13), BS2 camera.cpp:2512-2520 parity: load the
+    // tuned slider VALUES at boot so users get their saved setup without
+    // hunting for the preset button. Values only - load_vr_preset_values()
+    // never arms anything (no vr::set_enabled, no camera mode, no vrstereo,
+    // no console_exec); "VR PRESET 1" stays the only arming path. The loaded
+    // values become the per-weapon BASELINE (seeding rule: no profile may
+    // exist before a value source does); aim::init later loads weapons.ini
+    // OVER this ordering-safely, and reapply is a no-op at boot (key empty).
+    // BS2's input auto-arm ("on") is deliberately NOT ported - that was a
+    // BS2-local session-41 decision and would change BS1's boot behaviour.
+    load_vr_preset_values();
+    aim::note_preset_baseline();
+    aim::reapply_weapon_profile();
+
     g_target = eventPlayerCalcView;
     g_hookLive.store(true, std::memory_order_relaxed);
     BVR_LOG("[b1r] calcview hook installed (target %p)", eventPlayerCalcView);
