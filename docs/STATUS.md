@@ -2,26 +2,28 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
-## Active projects (two, running in parallel)
+## The three games (one branch, one release line)
 
-**ALL THREE GAMES ARE ON `main` as of v0.8.0 (2026-08-13, session 59, merge
-`5e98027`).** Infinite's bringup branch has landed - `main` is current for every
-game and carries the shipped release. `bioshock-infinite` remains as the Infinite
-integration branch (branch new Infinite work off `main` or off it; they are the
-same commit today).
+**ALL THREE MODS ARE ON `main` AND ALL THREE WORK, as of v0.8.0 (2026-08-13,
+session 59, merge `5e98027`).** `main` is the branch: BS1, BS2 and Infinite ship
+from one line. **Branch every new session off `main` and merge back into it.** The
+old per-game branches (`bioshock-2`, `bioshock-infinite`) are historical, fully
+contained in `main`, and must not be used as a starting point.
 
-| Project | Branch | Handoff |
+| Game | State on `main` | Ladder / handoff |
 |---|---|---|
-| **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `main` (was `bioshock-infinite`, merged at v0.8.0) | "Infinite: current state after session 59" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Remastered** (Vengeance/UE2.5) | playable, tuned, headset-accepted | [ROADMAP.md](ROADMAP.md) (M0-M10), "Current state" below |
+| **BioShock 2 Remastered** (Vengeance/UE2.5) | playable, tuned, headset-accepted | [ROADMAP.md](ROADMAP.md) (M0-M10), "Current state" below |
+| **BioShock Infinite** (UE3 6829) | playable, EARLY ACCESS (start -> early city tested) | [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11), "Infinite: current state after session 59" below |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
 packaging and tailing logs do not contend and must keep working while either game runs. Enforced
 for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
 
-The Infinite "Current state" lives here and in its session-log entry rather than displacing the
-section below, so the two projects' handoffs do not fight over the same lines while both are active.
+The Infinite "Current state" section sits above the BS1/BS2 one rather than displacing it, so the
+two ladders' handoffs do not fight over the same lines. Both are current; read the one for the
+game you are working on.
 
 ### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; **v0.8.0 RELEASED same night** - Infinite's first public build; the tattoo-poster NON-HOLD beat deferred to the roadmap)
 
