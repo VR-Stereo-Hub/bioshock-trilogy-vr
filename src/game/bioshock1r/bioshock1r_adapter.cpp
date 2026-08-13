@@ -9,6 +9,7 @@
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
+#include "game/bioshock1r/startup_dialog.h"
 
 namespace bvr::b1r {
 
@@ -20,6 +21,12 @@ uint32_t Bioshock1RAdapter::capabilities() const {
 }
 
 bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
+    // First, and deliberately above the early returns below: the revert-Options
+    // modal appears whether or not the pattern scan succeeds, and it is exactly
+    // the launch after a crash - the one where the scan is most likely to be the
+    // thing that failed - that the player least wants to answer by hand.
+    startup_dialog::init();
+
     patterns::Symbols symbols{};
     if (!patterns::resolve(image, symbols)) return false; // resolve() logged why
     if (!camera::install(symbols.eventPlayerCalcView)) return false;

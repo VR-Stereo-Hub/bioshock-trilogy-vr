@@ -22,6 +22,7 @@
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
+#include "game/bioshock1r/startup_dialog.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
@@ -385,6 +386,8 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
         BVR_LOG("[b1r] command: recenter");
+    } else if (strcmp(cmd, "vrpopup") == 0) {
+        startup_dialog::handle_command(args); // logs its own echo
     } else if (strcmp(cmd, "autorecenter") == 0) {
         if (strncmp(args, "on", 2) == 0)
             g_autoRecenterOnGameplay.store(true, std::memory_order_relaxed);
