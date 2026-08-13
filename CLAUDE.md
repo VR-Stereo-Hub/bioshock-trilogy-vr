@@ -8,9 +8,12 @@ registry picks by host exe name (`BioshockHD.exe` -> bioshock1r, `Bioshock2HD.ex
 `BioShockInfinite.exe` -> bioshockinf).
 
 The two remasters are Vengeance (UE2.5). **BioShock Infinite is Unreal Engine 3 build 6829** - a
-different engine, so no number transfers, and even shapes are suspect. Infinite MERGED to `main`
-at v0.8.0 (2026-08-13, session 59) - all three games now ship from one line; `bioshock-infinite`
-stays as the Infinite integration branch, but `main` is current and carries every game.
+different engine, so no number transfers, and even shapes are suspect.
+
+**`main` is THE branch: all three mods live there, all three work, all three shipped in v0.8.0
+(2026-08-13, session 59).** Branch every new session off `main` and merge back to it - the old
+per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and fully contained in
+`main`; do not start work on them.
 
 ## Hard rules
 
@@ -53,8 +56,10 @@ stays as the Infinite integration branch, but `main` is current and carries ever
 ## Session protocol
 
 - **START**: read `docs/STATUS.md`, then the current milestone in `docs/ROADMAP.md`, then
-  `git log --oneline -10`. **Working on Infinite?** You want branch `bioshock-infinite` and
-  `docs/bioshockinfinite/ROADMAP.md` (milestones I0-I11 after the 2026-08-05 BS2-shaped restructure), which is a separate ladder from M0-M10.
+  `git log --oneline -10`. **ALWAYS BRANCH FROM `main`** - every game ships from it since
+  v0.8.0; there is no per-game branch to hunt for. **Working on Infinite?** Same `main`, but
+  the ladder is `docs/bioshockinfinite/ROADMAP.md` (milestones I0-I11 after the 2026-08-05
+  BS2-shaped restructure), which is separate from M0-M10.
 - Touching engine internals? Read the game's `docs/<game>/ENGINE_NOTES.md` first
   (`docs/bioshock1/`, `docs/bioshock2/` or `docs/bioshockinfinite/`). New findings go there, in
   the same commit as the code that uses them.
