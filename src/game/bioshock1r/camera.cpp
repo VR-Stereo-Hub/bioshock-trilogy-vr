@@ -780,6 +780,9 @@ void save_vr_preset() {
     fprintf(f, "aimPosRFwd=%.1f\n", aim::pos_fwd_cm(1));
     fprintf(f, "aimPosRRight=%.1f\n", aim::pos_right_cm(1));
     fprintf(f, "aimPosRUp=%.1f\n", aim::pos_up_cm(1));
+    fprintf(f, "handScaleL=%.3f\n", bones::scale(0));
+    fprintf(f, "handScaleR=%.3f\n", bones::scale(1));
+    fprintf(f, "wScale=%.3f\n", bones::weapon_scale());
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fprintf(f, "moveDirInstant=%d\n", body::move_dir_instant() ? 1 : 0);
@@ -859,6 +862,9 @@ void load_vr_preset_values() {
         else if (strcmp(key, "aimPosRFwd") == 0) prf = v;
         else if (strcmp(key, "aimPosRRight") == 0) prr = v;
         else if (strcmp(key, "aimPosRUp") == 0) pru = v;
+        else if (strcmp(key, "handScaleL") == 0) bones::set_scale(0, v);
+        else if (strcmp(key, "handScaleR") == 0) bones::set_scale(1, v);
+        else if (strcmp(key, "wScale") == 0) bones::set_weapon_scale(v);
         else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
         else if (strcmp(key, "moveDirInstant") == 0) body::set_move_dir_instant(v != 0.0f);

@@ -1035,6 +1035,19 @@ void draw_debug_ui() {
     if (ImGui::SliderFloat("trim roll (deg)", &rr, -180.0f, 180.0f))
         g_rotRollDeg[tuneHand].store(rr, std::memory_order_relaxed);
 
+    // Session 61: hand + weapon scale (deliberately independent of world
+    // scale - the rig can be the wrong size while the world is right).
+    // The hand slider edits the tuning hand's cluster; the weapon slider is
+    // uniform about the grip and only binds skeletal holdables (the wrench
+    // is a rigid mesh and stays authored).
+    float hs = bones::scale(tuneHand);
+    if (ImGui::SliderFloat("model scale (x, independent of worldscale)", &hs, 0.2f, 4.0f))
+        bones::set_scale(tuneHand, hs);
+    if (ImGui::Button("scale both hands to this")) bones::set_scale(-1, hs);
+    float ws = bones::weapon_scale();
+    if (ImGui::SliderFloat("WEAPON scale (uniform, about the grip)", &ws, 0.3f, 2.5f))
+        bones::set_weapon_scale(ws);
+
     if (ImGui::Button("Save offsets")) save_config();
     ImGui::SameLine();
     if (ImGui::Button("Reload")) load_config();
