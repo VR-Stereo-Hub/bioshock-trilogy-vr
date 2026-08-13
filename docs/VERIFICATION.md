@@ -359,6 +359,15 @@ switch) for any seam-counter oracle.
 
 ### 2.9 Measured baselines (BS1, 2026-08-01, in gameplay)
 
+> **SESSION-38 SCALE BREAK for pixel statistics.** The sim's capture composite
+> used to store sRGB-decoded LINEAR values, crushing everything dark ~13x; it is
+> sRGB-correct since 2026-08-05. Geometric numbers (claimRatioH, eyeSeparationM,
+> layer counts, poses) are unaffected - BS1 re-measured claimRatioH 1.018 on the
+> fixed sim, identical to its session-37 value. Pixel stats in the table below
+> are PRE-FIX scale; the post-fix BS1 stereo left-vs-right mean-abs-diff
+> re-baseline is **11.53** (was 3.16), smoke-quad meanLuma 11.7 / nonBlack
+> 49.6 %. Do not compare captures across the fix.
+
 Numbers from a real acceptance run, so a future regression has something to
 compare against rather than a guess:
 
@@ -490,6 +499,58 @@ $a.NonBlackPctL      -gt 50     # something was rendered
     has no DRM. If the process exits within 5 s, that is the first suspect.
 12. **Captures are game-derived content.** They live under `%LOCALAPPDATA%` and
     are never committed - same rule as frame dumps and crash dumps.
+13. **The sim's initial LOCAL origin is at the FLOOR, not the initial eye pose**
+    (OpenXR and VDXR put LOCAL at the initial VIEW pose). A world-locked
+    eye-level quad - the mono cinema screen - therefore renders 1.6 m low at a
+    grazing angle until you send **`recenter`**. Send `recenter` before any
+    quad-pose capture. (Session 38, first mono-quad consumer; sim left as-is
+    for baseline stability, candidate for the healing lane.)
+14. **`idle on <ms>` is persistent** - every xrWaitFrame blocks `<ms>` until
+    `idle off`. It is not a one-shot window; a forgotten `idle off` reads as a
+    ~0.3 fps XR lane with a healthy 90 fps window.
+15. **After `step N` exhausts, a pending `pace free`/`step off` cannot commit
+    until the 30 s starve grant** - sim commands apply at wait boundaries, and
+    with zero credits no wait completes. Send `pace free` while credits remain,
+    or expect the stall.
+16. **`xrsim-launch`, `launch-game` and `xrsim-run` take `-Game bsi`**
+    (session 38). Infinite auto-pauses on window-focus loss and auto-resumes on
+    focus regain: foreground the game before any capture that must show
+    gameplay pixels, and NEVER leave its menu unattended (attract-hang,
+    TESTING.md).
+17. **A sim `recenter` sent while the head is YAWED breaks the quad capture**
+    (session 39): with the head at yaw 110 the next `xrsim-shot` read the quad
+    at ~1 covered pixel / meanLuma 0.00 while the game window was full of
+    bright pixels; re-origining with the head at yaw 0 brought the pixels
+    back (falsified both ways). Even then the captured quad sits off-centre
+    at an oblique angle - the capture's layer-vs-view transform after a
+    mid-session `XrEventDataReferenceSpaceChangePending` is suspect (healing
+    lane). Until fixed: recenter the sim only with the head at yaw 0, and use
+    the game WINDOW (`game-shot` + `img-diff`) as the pixel instrument for
+    camera-drive questions - gotcha 9's "the window is the projection source"
+    cuts both ways.
+18. **PowerShell 5.1 turns cmake's stderr deprecation warning into a failure** when
+    `build.ps1` re-runs the configure step (any CMakeLists edit): the tool reports
+    NativeCommandError / exit 1 while the build actually succeeded (tail says
+    "Installed"). Run the build via `powershell -NoProfile -Command ... 2>&1` from
+    bash, or read the tail before believing the exit code. (Session 40.)
+19. **`game-shot -Out` uses the name verbatim** - no `.png` is appended (unlike
+    `xrsim-shot`, which writes `<name>_left.png` etc.). Pass the extensionless file
+    to `img-diff` or include the extension yourself; `img-diff` against
+    `<name>.png` fails with a Resolve-Path error. (Session 40.)
+20. **At attract movie transitions the game-thread pump can lag 30+ seconds**,
+    and one-command-per-write means a faster sender OVERWRITES undispatched
+    commands (each write replaces command.txt). A fixed sleep between writes is
+    not enough: send one command, then CONFIRM its `[cmd] command.txt changed`
+    dispatch line in the log before writing the next. The same stall window is
+    where the pre-existing unattended-attract FREEZE lives (ENGINE_NOTES s37,
+    hit twice more in s41 - it hits unmodified builds too): if `Responding` goes
+    False and the log stays silent for minutes, force-kill and relaunch; the mod
+    logs zero faults across it. (Session 41.)
+21. **A bare `xrsim-shot -Out <name>` also copies the capture files into the
+    CURRENT DIRECTORY.** Run from the repo root that means game-derived PNGs and
+    JSON sitting in the worktree - never committable (hard rule). Pass an
+    absolute `-Out` outside the repo, or delete the copies before `git add`.
+    (Session 41 - they showed up in `git status` next to a real commit.)
 
 ---
 

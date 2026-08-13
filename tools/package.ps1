@@ -39,6 +39,7 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 # optional-by-design, its values are also baked into the DLL).
 New-Item -ItemType Directory -Path "$stage\preset-bs1" -Force | Out-Null
 New-Item -ItemType Directory -Path "$stage\preset-bs2" -Force | Out-Null
+New-Item -ItemType Directory -Path "$stage\preset-bsi" -Force | Out-Null
 
 Copy-Item "$bin\bioshockvr.dll" $stage
 Copy-Item "$bin\xinput1_3.dll"  $stage
@@ -48,6 +49,11 @@ foreach ($n in @("vrpreset.ini", "hands.ini", "weapons.ini", "HOW-TO-USE.txt")) 
 }
 foreach ($n in @("vrpreset.ini", "weapons.ini", "HOW-TO-USE.txt")) {
     Copy-Item "$repo\release\preset-bs2\$n" "$stage\preset-bs2\$n"
+}
+# v0.8.0: BioShock Infinite joins the zip (early access) - preset optional-by-
+# design like BS2, defaults are baked into the DLL.
+foreach ($n in @("vrpreset.ini", "HOW-TO-USE.txt")) {
+    Copy-Item "$repo\release\preset-bsi\$n" "$stage\preset-bsi\$n"
 }
 
 $zip = "$OutDir\bioshock-vr-v$version.zip"

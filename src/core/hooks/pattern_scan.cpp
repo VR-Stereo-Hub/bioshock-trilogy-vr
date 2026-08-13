@@ -244,4 +244,176 @@ bool find_native_function(const ProcessImage& img, const char* className,
     return false;
 }
 
+// ---- generalised native-table lookup (session 36) --------------------------
+
+namespace {
+
+// True when p starts a NUL-terminated run of printable ASCII whose length is in
+// [minLen, maxLen). Used only to judge whether a pointer LOOKS like a native
+// registration name, never to decide anything the game depends on.
+bool looks_like_ascii_name(const uint8_t* p, size_t minLen = 4, size_t maxLen = 192) {
+    for (size_t i = 0; i < maxLen; ++i) {
+        if (!is_memory_valid(p + i, 1)) return false;
+        const uint8_t c = p[i];
+        if (c == 0) return i >= minLen;
+        if (c < 0x20 || c > 0x7E) return false;
+    }
+    return false;
+}
+
+// One entry of `shape` at `entry` is well formed: its name pointer resolves to
+// a plausible name inside the image, and its impl pointer lands inside the
+// image. Deliberately cheap - this is a neighbour sanity test, not a decision.
+bool native_entry_well_formed(const ProcessImage& img, const NativeTableShape& shape,
+                              const uint8_t* entry) {
+    if (!is_memory_valid(entry, shape.entryStride)) return false;
+    uint32_t nameAddr = 0;
+    uint32_t implAddr = 0;
+    memcpy(&nameAddr, entry, sizeof nameAddr);
+    memcpy(&implAddr, entry + shape.implOffset, sizeof implAddr);
+    const uint8_t* name = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(nameAddr));
+    const uint8_t* impl = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(implAddr));
+    if (name < img.base || name >= img.base + img.size) return false;
+    if (impl < img.base || impl >= img.base + img.size) return false;
+    if (shape.wideNames) return is_memory_valid(name, 2);
+    return looks_like_ascii_name(name);
+}
+
+} // namespace
+
+bool find_native_function_ex(const ProcessImage& img, const NativeTableShape& shape,
+                             const char* className, const char* funcName,
+                             NativeScanResult& out, bool verifyNeighbours) {
+    out = {};
+    if (shape.entryStride < 8 || shape.implOffset + 4 > shape.entryStride) return false;
+    if (!className || !funcName || !shape.nameFormat) return false;
+
+    char name[192];
+    if (_snprintf_s(name, sizeof name, _TRUNCATE, shape.nameFormat, className, funcName) < 0)
+        return false;
+    const size_t len = strlen(name);
+    if (len < 6) return false; // a short needle floods the match list; refuse it
+
+    std::vector<const uint8_t*> strings =
+        shape.wideNames ? find_wide_string(img, name) : find_ascii_string(img, name);
+    out.stringMatches = strings.size();
+
+    const size_t charBytes = shape.wideNames ? 2u : 1u;
+    for (const uint8_t* s : strings) {
+        // THE LINKER POOLS STRING LITERALS BY SUFFIX, so a substring match
+        // proves nothing. Two distinct failures need two distinct guards:
+        //
+        //   PREFIX position - searching "AActorexecTrace" also matches inside
+        //     "AActorexecTraceActors", whose table entry points at the SAME
+        //     address. Only requiring OUR terminator at OUR end rejects that.
+        //   SUFFIX position - "PlayerControllerexecCalcFOV" is stored inside
+        //     "AXPlayerControllerexecCalcFOV" and SHARES its terminator, so the
+        //     check above cannot save us. The reference step kills it instead:
+        //     a pooled suffix has its own address, and only its own entry (if
+        //     any) points there.
+        const uint8_t* term = s + charBytes * len;
+        if (!is_memory_valid(term, charBytes) || term[0] != 0 ||
+            (shape.wideNames && term[1] != 0)) {
+            ++out.terminatorRejects;
+            continue;
+        }
+
+        std::vector<const uint8_t*> refs = find_references(img, s);
+        out.tableRefs += refs.size();
+
+        for (const uint8_t* entry : refs) {
+            if (!is_memory_valid(entry, shape.entryStride)) continue;
+            if (verifyNeighbours) {
+                // ONE well-formed side is enough. Requiring both would silently
+                // drop the table's first and last entries, which is a hole
+                // rather than a safety property.
+                const uint8_t* prev = entry - shape.entryStride;
+                const bool prevOk =
+                    prev >= img.base && native_entry_well_formed(img, shape, prev);
+                const bool nextOk =
+                    native_entry_well_formed(img, shape, entry + shape.entryStride);
+                if (!prevOk && !nextOk) {
+                    ++out.neighbourRejects;
+                    continue;
+                }
+            }
+            uint32_t implAddr = 0;
+            memcpy(&implAddr, entry + shape.implOffset, sizeof implAddr);
+            const uint8_t* fn =
+                reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(implAddr));
+            if (fn < img.base || fn >= img.base + img.size || !is_memory_valid(fn, 16)) {
+                ++out.implRejects;
+                continue;
+            }
+            out.tableEntry = entry;
+            out.function = const_cast<uint8_t*>(fn);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool native_table_bounds(const ProcessImage& img, const NativeTableShape& shape,
+                         const uint8_t* seedEntry, NativeTableBounds& out) {
+    out = {};
+    if (!seedEntry || !native_entry_well_formed(img, shape, seedEntry)) return false;
+    constexpr size_t kSanityCap = 65536; // no engine registers a million natives
+
+    const uint8_t* lo = seedEntry;
+    size_t back = 0;
+    while (back < kSanityCap) {
+        const uint8_t* p = lo - shape.entryStride;
+        if (p < img.base || !native_entry_well_formed(img, shape, p)) break;
+        lo = p;
+        ++back;
+    }
+    const uint8_t* hi = seedEntry;
+    size_t fwd = 0;
+    while (fwd < kSanityCap) {
+        const uint8_t* p = hi + shape.entryStride;
+        if (!native_entry_well_formed(img, shape, p)) break;
+        hi = p;
+        ++fwd;
+    }
+    out.base = lo;
+    out.count = back + fwd + 1;
+    out.seedIndex = back;
+    return out.count > 1;
+}
+
+bool find_native_in_table(const ProcessImage& img, const NativeTableShape& shape,
+                          const NativeTableBounds& table, const char* className,
+                          const char* funcName, NativeScanResult& out) {
+    out = {};
+    if (!table.base || table.count == 0 || shape.wideNames) return false; // ASCII path only
+    if (!className || !funcName || !shape.nameFormat) return false;
+
+    char name[192];
+    if (_snprintf_s(name, sizeof name, _TRUNCATE, shape.nameFormat, className, funcName) < 0)
+        return false;
+
+    for (size_t i = 0; i < table.count; ++i) {
+        const uint8_t* entry = table.base + i * shape.entryStride;
+        if (!is_memory_valid(entry, shape.entryStride)) continue;
+        uint32_t nameAddr = 0;
+        memcpy(&nameAddr, entry, sizeof nameAddr);
+        const uint8_t* n = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(nameAddr));
+        if (!looks_like_ascii_name(n)) continue;
+        if (strcmp(reinterpret_cast<const char*>(n), name) != 0) continue;
+        ++out.stringMatches;
+        uint32_t implAddr = 0;
+        memcpy(&implAddr, entry + shape.implOffset, sizeof implAddr);
+        const uint8_t* fn =
+            reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(implAddr));
+        if (fn < img.base || fn >= img.base + img.size || !is_memory_valid(fn, 16)) {
+            ++out.implRejects;
+            continue;
+        }
+        out.tableEntry = entry;
+        out.function = const_cast<uint8_t*>(fn);
+        return true;
+    }
+    return false;
+}
+
 } // namespace bvr::pattern_scan

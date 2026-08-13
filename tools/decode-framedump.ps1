@@ -65,6 +65,29 @@ param(
     [switch]$ScanLayout,
     [string]$Diff = "",
     [double[]]$DiffFovs = @(),
+    # Two "WxH" backbuffer sizes. An INDEPENDENT diff axis from -DiffFovs, and a
+    # strictly more informative one: under a true-horizontal option law tanH is
+    # PINNED and tanV moves by (h1/w1)/(h2/w2); under a 16:9-referenced law the
+    # reverse. One axis being pinned is itself the discriminator, and the
+    # identification is the CROSS-PRODUCT of the two diffs - an index that moves
+    # under FOV and is pinned under aspect is a horizontal projection term.
+    [string]$DiffAspects = "",
+    # Restrict the diff/scan to constant buffers of these byte sizes. On an
+    # engine whose b0 is PER-OBJECT (BioShock Infinite rewrites one buffer per
+    # draw) the modal value at most float indices is object noise; within a
+    # single size tier the layout is fixed and a view slot really is constant.
+    [int[]]$BlockBytes = @(),
+    # Ignore indices whose modal value is held by less than this share of blocks.
+    # A slot at 240/249 is a view constant; one at 3/249 is noise.
+    [double]$MinModeShare = 0.0,
+    # Recover tanH/tanV from a 4x4 transform instead of BS1's 7-float ray block.
+    # UE3 almost certainly ships a matrix, so run this FIRST - it needs one dump,
+    # no relaunch and no FOV change.
+    [switch]$ScanMatrix,
+    # Prove the scanners can find a known answer before any negative from them
+    # is believed. An instrument that cannot fail its own hypothesis is not
+    # evidence.
+    [switch]$SelfTest,
     # Session 34: per-CLUSTER cb0 dump, "lo-hi" float indices (e.g. "0-31").
     # -Diff compares whole FILES, which cannot answer a per-pass question; this
     # restricts the modal-value table to one cluster's own blocks, so two dumps
@@ -110,27 +133,51 @@ $drawKinds = @('DrawIndexed', 'Draw', 'DrawIdxInst', 'DrawInst', 'DrawIndexedIns
 # Parse one dump into events + captured cb0 blocks, with each event attributed
 # to its governing block (a block is written whenever the VS b0 buffer OBJECT
 # changes, so "most recent block at or before the draw" is exact).
+$uploadRe = [regex]'^U(\d{5}) ev=(-?\d+) dst=T(-?\d+)\s+bytes=(\d+) off=(\d+) n=(\d+)'
+
 function Parse-Dump($file) {
     $events = New-Object System.Collections.Generic.List[object]
-    $blocks = New-Object System.Collections.Generic.List[object]  # each: @{ev=<event idx in list>; f=double[]}
+    $blocks = New-Object System.Collections.Generic.List[object]  # each: @{ev=<event idx>; f=double[]; bytes=<int>}
     $curBlock = $null
+    $mode = 'lite'
     $reader = New-Object System.IO.StreamReader($file.FullName)
     try {
         while ($null -ne ($line = $reader.ReadLine())) {
+            if ($line -match '^frame dump:.*mode=(\w+)') { $mode = $Matches[1] }
             if ($null -ne $curBlock) {
                 if ($line -match '^\s{6,}(-?\d|nan|-nan|1\.#)' -or $line -match '^\s{6}cb0:') {
                     $nums = $line -replace '^\s*cb0:', '' -split '\s+' | Where-Object { $_ -ne '' }
                     foreach ($n in $nums) { [void]$curBlock.f.Add((Parse-F $n)) }
-                    if ($curBlock.f.Count -ge 336) { $blocks.Add($curBlock); $curBlock = $null }
+                    # NO COUNT TERMINATOR. The old `-ge 336` cap closed the block
+                    # early on any buffer larger than 1344 bytes and then SILENTLY
+                    # DROPPED the remaining continuation lines, because they match
+                    # neither the event regex nor a block opener - producing a
+                    # plausible-looking wrong block. The else branch below already
+                    # closes a block correctly on the first non-continuation line,
+                    # which is always an event line or a section header.
                     continue
                 } else {
-                    $blocks.Add($curBlock); $curBlock = $null  # short block (buffer < 1344 B)
+                    $blocks.Add($curBlock); $curBlock = $null
                 }
             }
             if ($line -match '^\s{6}cb0:') {
-                $curBlock = @{ ev = $events.Count - 1; f = New-Object System.Collections.Generic.List[double] }
+                $b = if ($events.Count -gt 0) { $events[$events.Count - 1].cb0b } else { 0 }
+                $curBlock = @{ ev = $events.Count - 1; bytes = $b; f = New-Object System.Collections.Generic.List[double] }
                 $nums = $line -replace '^\s*cb0:', '' -split '\s+' | Where-Object { $_ -ne '' }
                 foreach ($n in $nums) { [void]$curBlock.f.Add((Parse-F $n)) }
+                continue
+            }
+            # Mode 3 `== cb uploads ==` records. Same block shape, so every
+            # instrument below works on them unchanged - and these are the ones
+            # that matter on an engine that uploads with UpdateSubresource,
+            # because they carry the real payload at its real size.
+            $u = $uploadRe.Match($line)
+            if ($u.Success) {
+                $curBlock = @{
+                    ev    = [int]$u.Groups[2].Value
+                    bytes = [int]$u.Groups[4].Value
+                    f     = New-Object System.Collections.Generic.List[double]
+                }
                 continue
             }
             $m = $eventRe.Match($line)
@@ -159,7 +206,33 @@ function Parse-Dump($file) {
         while ($bi + 1 -lt $blocks.Count -and $blocks[$bi + 1].ev -le $ei) { $bi++ }
         if ($blocks.Count -gt 0 -and $blocks[$bi].ev -le $ei) { $events[$ei].blk = $bi }
     }
-    return @{ events = $events; blocks = $blocks }
+    $maxF = 0
+    $sizes = @{}
+    foreach ($b in $blocks) {
+        if ($b.f.Count -gt $maxF) { $maxF = $b.f.Count }
+        $k = [int]$b.bytes
+        if (-not $sizes.ContainsKey($k)) { $sizes[$k] = 0 }
+        $sizes[$k]++
+    }
+    return @{ events = $events; blocks = $blocks; maxFloats = $maxF; mode = $mode; sizes = $sizes }
+}
+
+# Blocks restricted to the -BlockBytes tiers, if any were given.
+function Select-Blocks($parsed) {
+    if ($BlockBytes.Count -eq 0) { return $parsed.blocks }
+    $keep = New-Object System.Collections.Generic.List[object]
+    foreach ($b in $parsed.blocks) { if ($BlockBytes -contains [int]$b.bytes) { $keep.Add($b) } }
+    return $keep
+}
+
+# One line so a truncation or tier-filter regression is VISIBLE rather than
+# silent - the failure mode the old 336 cap had.
+function Report-Blocks($tag, $parsed, $sel) {
+    $s = ($parsed.sizes.Keys | Sort-Object | ForEach-Object { "$_ B x$($parsed.sizes[$_])" }) -join ', '
+    Write-Output ("{0}: mode={1} blocks={2}{3} maxFloats={4} | tiers: {5}" -f `
+        $tag, $parsed.mode, $parsed.blocks.Count,
+        $(if ($BlockBytes.Count -gt 0) { " (selected $($sel.Count))" } else { "" }),
+        $parsed.maxFloats, $(if ($s) { $s } else { "none" }))
 }
 
 # The screen-ray helper at floats o..o+6: (2tanH, 0, -tanH, 0, 0, -2tanV, tanV).
@@ -189,6 +262,45 @@ function Decode-RayBlock($f, [int]$o) {
     return @([math]::Round($tanH1, 4), [math]::Round($tanV, 4), [math]::Round($lb, 4))
 }
 
+# ---- the 4x4 route --------------------------------------------------------
+#
+# UE3 hands the shader a transform, not BS1's 7-float screen-ray helper. For a
+# row-vector engine with M = World * View * Projection, writing c0/c1/c3 for the
+# COLUMNS (M[0][k], M[1][k], M[2][k]) and s for the object scale:
+#     c3 = forward * s        |c0| = s / tanH        |c1| = s / tanV
+# so tanH = |c3|/|c0| and tanV = |c3|/|c1|, AND THE OBJECT SCALE CANCELS - which
+# is what makes this work on a per-object constant buffer where nothing else is
+# constant. Gate on the three orthogonality tests plus a sane tangent range.
+# Returns @(tanH, tanV) or $null.
+function Decode-Matrix($f, [int]$o, [bool]$transposed) {
+    if ($f.Count -lt ($o + 16)) { return $null }
+    $m = @()
+    for ($r = 0; $r -lt 4; $r++) {
+        $row = @()
+        for ($c = 0; $c -lt 4; $c++) {
+            $v = if ($transposed) { $f[$o + $c * 4 + $r] } else { $f[$o + $r * 4 + $c] }
+            if ([double]::IsNaN($v) -or [double]::IsInfinity($v)) { return $null }
+            $row += $v
+        }
+        $m += , $row
+    }
+    $c0 = @($m[0][0], $m[1][0], $m[2][0])
+    $c1 = @($m[0][1], $m[1][1], $m[2][1])
+    $c3 = @($m[0][3], $m[1][3], $m[2][3])
+    $n0 = [math]::Sqrt($c0[0]*$c0[0] + $c0[1]*$c0[1] + $c0[2]*$c0[2])
+    $n1 = [math]::Sqrt($c1[0]*$c1[0] + $c1[1]*$c1[1] + $c1[2]*$c1[2])
+    $n3 = [math]::Sqrt($c3[0]*$c3[0] + $c3[1]*$c3[1] + $c3[2]*$c3[2])
+    if ($n0 -lt 1e-6 -or $n1 -lt 1e-6 -or $n3 -lt 1e-6) { return $null }
+    $d03 = ($c0[0]*$c3[0] + $c0[1]*$c3[1] + $c0[2]*$c3[2]) / ($n0 * $n3)
+    $d13 = ($c1[0]*$c3[0] + $c1[1]*$c3[1] + $c1[2]*$c3[2]) / ($n1 * $n3)
+    $d01 = ($c0[0]*$c1[0] + $c0[1]*$c1[1] + $c0[2]*$c1[2]) / ($n0 * $n1)
+    if ([math]::Abs($d03) -gt 1e-3 -or [math]::Abs($d13) -gt 1e-3 -or [math]::Abs($d01) -gt 1e-3) { return $null }
+    $tanH = $n3 / $n0
+    $tanV = $n3 / $n1
+    if ($tanH -le 0.05 -or $tanH -ge 4.0 -or $tanV -le 0.05 -or $tanV -ge 4.0) { return $null }
+    return @([math]::Round($tanH, 4), [math]::Round($tanV, 4))
+}
+
 # Modal (most common) value at each float index across all captured blocks -
 # the per-file summary the -Diff instrument compares. Values are already printed
 # at %.4f in the dump, so exact string equality is the right bucketing.
@@ -211,6 +323,100 @@ function Block-Modes($blocks, [int]$n) {
     return $modes
 }
 
+# ---- -SelfTest: prove the scanners can find a KNOWN answer -----------------
+# Synthesise a block from known tangents and a known rotation and confirm both
+# decoders recover them. If this fails, a negative from either scanner says the
+# INSTRUMENT is broken, not that the game lacks the data.
+if ($SelfTest) {
+    Write-Output ""
+    Write-Output "== self test =="
+    $tH = 0.8391; $tV = 0.4720   # 80 deg horizontal at 16:9
+    $s = 3.7                     # arbitrary object scale: it must cancel
+    # A yawed camera basis, so the test is not accidentally axis-aligned.
+    $a = 0.6
+    $fwd = @([math]::Cos($a), [math]::Sin($a), 0.0)
+    $rgt = @(-[math]::Sin($a), [math]::Cos($a), 0.0)
+    $up = @(0.0, 0.0, 1.0)
+    $f = New-Object System.Collections.Generic.List[double]
+    for ($i = 0; $i -lt 5; $i++) { [void]$f.Add(0.123) }   # padding before the matrix
+    for ($r = 0; $r -lt 3; $r++) {
+        [void]$f.Add($rgt[$r] * $s / $tH)
+        [void]$f.Add($up[$r] * $s / $tV)
+        [void]$f.Add(0.0)
+        [void]$f.Add($fwd[$r] * $s)
+    }
+    for ($c = 0; $c -lt 4; $c++) { [void]$f.Add(0.0) }     # translation row
+    $hit = $null; $at = -1
+    for ($o = 0; $o + 16 -le $f.Count; $o++) {
+        $d = Decode-Matrix $f $o $false
+        if ($null -ne $d) { $hit = $d; $at = $o; break }
+    }
+    if ($null -ne $hit) {
+        $okH = [math]::Abs($hit[0] - $tH) -lt 0.002
+        $okV = [math]::Abs($hit[1] - $tV) -lt 0.002
+        Write-Output ("  ScanMatrix: {0} at offset {1} - recovered tanH={2} tanV={3} (planted {4}/{5}, scale {6} cancelled)" -f `
+            $(if ($okH -and $okV) { "PASS" } else { "FAIL" }), $at, $hit[0], $hit[1], $tH, $tV, $s)
+    } else {
+        Write-Output "  ScanMatrix: FAIL - did not find the planted matrix at any offset"
+    }
+    # The ray-block decoder, same treatment.
+    $g = New-Object System.Collections.Generic.List[double]
+    for ($i = 0; $i -lt 7; $i++) { [void]$g.Add(0.777) }
+    [void]$g.Add(2 * $tH); [void]$g.Add(0.0); [void]$g.Add(-$tH); [void]$g.Add(0.0)
+    [void]$g.Add(0.0); [void]$g.Add(-2 * $tV); [void]$g.Add($tV)
+    $hit2 = $null; $at2 = -1
+    for ($o = 0; $o + 7 -le $g.Count; $o++) {
+        $d = Decode-RayBlock $g $o
+        if ($null -ne $d) { $hit2 = $d; $at2 = $o; break }
+    }
+    if ($null -ne $hit2) {
+        Write-Output ("  ScanLayout: PASS at offset {0} - recovered tanH={1} tanV={2}" -f $at2, $hit2[0], $hit2[1])
+    } else {
+        Write-Output "  ScanLayout: FAIL - did not find the planted ray block"
+    }
+    Write-Output ""
+    if ($Path.Count -eq 0) { return }
+}
+
+# ---- -ScanMatrix: brute-force a 4x4 across every block ---------------------
+if ($ScanMatrix) {
+    foreach ($file in $files) {
+        $parsed = Parse-Dump $file
+        $sel = Select-Blocks $parsed
+        Write-Output ""
+        Report-Blocks $file.Name $parsed $sel
+        $hits = @{}
+        foreach ($b in $sel) {
+            $maxOff = $b.f.Count - 16
+            for ($o = 0; $o -le $maxOff; $o++) {
+                foreach ($tr in @($false, $true)) {
+                    $t = Decode-Matrix $b.f $o $tr
+                    if ($null -eq $t) { continue }
+                    $k = '{0}|{1}|{2:F4}|{3:F4}' -f $o, $(if ($tr) { 'T' } else { 'R' }), $t[0], $t[1]
+                    if (-not $hits.ContainsKey($k)) { $hits[$k] = 0 }
+                    $hits[$k]++
+                }
+            }
+        }
+        if ($hits.Count -eq 0) {
+            Write-Output ("  SCANMATRIX: no offset in any of the {0} block(s) carries a 4x4 whose" -f $sel.Count)
+            Write-Output "  three columns are mutually orthogonal with a sane tangent pair. That is a"
+            Write-Output "  SCOPED NEGATIVE, not a silent one - run -SelfTest to confirm the scanner"
+            Write-Output "  itself still finds a planted matrix before believing it."
+        } else {
+            Write-Output "  offset|layout|tanH|tanV  x blocks   (R = row-major, T = transposed)"
+            $hits.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 12 | ForEach-Object {
+                $p = $_.Key -split '\|'
+                $ar = if ($aspectH -gt 0) { " aspect {0:F4} (backbuffer {1:F4})" -f ([double]$p[2] / [double]$p[3]), ($aspectW / $aspectH) } else { "" }
+                Write-Output ("    f{0,-4} {1}  tanH={2} tanV={3}  x{4}{5}" -f $p[0], $p[1], $p[2], $p[3], $_.Value, $ar)
+            }
+            Write-Output "  Believe a row only if it is at ONE offset with a plurality of blocks AND"
+            Write-Output "  tanH/tanV matches the backbuffer aspect. Pass -Aspect WxH to check that here."
+        }
+    }
+    return
+}
+
 # ---- -Diff: derive the layout with no layout assumption at all -------------
 if ($Diff) {
     $fileA = @(Get-Item -Path $Path[0])[0]
@@ -219,34 +425,74 @@ if ($Diff) {
     Write-Output "== DIFF: $($fileA.Name)  vs  $($fileB.Name) =="
     $a = Parse-Dump $fileA
     $b = Parse-Dump $fileB
-    Write-Output ("A: {0} blocks, B: {1} blocks" -f $a.blocks.Count, $b.blocks.Count)
-    $ma = Block-Modes $a.blocks 336
-    $mb = Block-Modes $b.blocks 336
+    $selA = Select-Blocks $a
+    $selB = Select-Blocks $b
+    Report-Blocks "A $($fileA.Name)" $a $selA
+    Report-Blocks "B $($fileB.Name)" $b $selB
+    # Count-agnostic: the old hardcoded 336 both truncated large buffers and
+    # ignored anything past float 335 that a mode-3 upload does carry.
+    $nIdx = [math]::Max($a.maxFloats, $b.maxFloats)
+    $ma = Block-Modes $selA $nIdx
+    $mb = Block-Modes $selB $nIdx
     $expect = @()
     if ($DiffFovs.Count -eq 2) {
         $r = [math]::Tan($DiffFovs[0] * [math]::PI / 360.0) / [math]::Tan($DiffFovs[1] * [math]::PI / 360.0)
+        # A projection MATRIX term is 1/tan, whose ratio is the reciprocal, and
+        # sign-flipped slots are common (BS1's own block carries -tanH and
+        # -2tanV), so all six forms are tagged rather than just three.
         $expect = @(@{ name = 'tan ratio'; v = $r }, @{ name = '1/tan ratio'; v = 1.0 / $r },
-                    @{ name = '2x tan ratio'; v = 2.0 * $r })
+                    @{ name = '2x tan ratio'; v = 2.0 * $r }, @{ name = 'half tan ratio'; v = 0.5 * $r },
+                    @{ name = '-tan ratio'; v = - $r }, @{ name = '-1/tan ratio'; v = -1.0 / $r })
         Write-Output ("FOV {0} vs {1}: tan(a/2)/tan(b/2) = {2:F6} (reciprocal {3:F6})" -f `
             $DiffFovs[0], $DiffFovs[1], $r, (1.0 / $r))
     }
+    if ($DiffAspects -match '^(\d+)[xX](\d+)\s*,\s*(\d+)[xX](\d+)$') {
+        $w1 = [double]$Matches[1]; $h1 = [double]$Matches[2]
+        $w2 = [double]$Matches[3]; $h2 = [double]$Matches[4]
+        $rv = ($h1 / $w1) / ($h2 / $w2)
+        $expect += @(@{ name = 'aspect ratio (tanV moves, law A)'; v = $rv },
+                     @{ name = '1/aspect ratio'; v = 1.0 / $rv },
+                     @{ name = '2x aspect ratio'; v = 2.0 * $rv },
+                     @{ name = 'PINNED (law A tanH / law B tanV)'; v = 1.0 })
+        Write-Output ("ASPECT {0}x{1} vs {2}x{3}: (h1/w1)/(h2/w2) = {4:F6}" -f $w1, $h1, $w2, $h2, $rv)
+        Write-Output ("  Under law A (option is a true horizontal) tanH is PINNED at ratio 1.0 and")
+        Write-Output ("  tanV moves by {0:F4}; under law B the reverse. THE IDENTIFICATION IS THE" -f $rv)
+        Write-Output ("  CROSS-PRODUCT with a -DiffFovs run: an index that MOVES under FOV and is")
+        Write-Output ("  PINNED here is a horizontal projection term. Neither diff alone says that.")
+    }
+    Write-Output ""
     Write-Output "float indices whose modal value MOVED between the two dumps:"
-    $moved = 0
-    for ($i = 0; $i -lt 336; $i++) {
+    Write-Output "  (share = how many blocks hold the modal value; a low share means the mode is"
+    Write-Output "   per-object noise rather than a view constant, which is the normal case on an"
+    Write-Output "   engine with a per-object b0 - use -BlockBytes to pin one tier.)"
+    $moved = 0; $pinned = 0; $skipped = 0
+    for ($i = 0; $i -lt $nIdx; $i++) {
         if (-not $ma.ContainsKey($i) -or -not $mb.ContainsKey($i)) { continue }
+        $shA = $ma[$i].n / [double]$selA.Count
+        $shB = $mb[$i].n / [double]$selB.Count
+        if ($MinModeShare -gt 0 -and ([math]::Min($shA, $shB) -lt $MinModeShare)) { $skipped++; continue }
         $va = $ma[$i].v; $vb = $mb[$i].v
-        if ([math]::Abs($va - $vb) -le 0.0005) { continue }
+        if ([math]::Abs($va - $vb) -le 0.0005) { $pinned++; continue }
         $moved++
         $ratio = if ([math]::Abs($vb) -gt 1e-9) { $va / $vb } else { [double]::NaN }
         $tag = ''
         foreach ($e in $expect) {
+            if ($e.v -eq 1.0) { continue }  # PINNED is reported by the pinned pass, not here
             if (-not [double]::IsNaN($ratio) -and [math]::Abs($ratio - $e.v) -lt 0.002) {
                 $tag = "  <== $($e.name) - PROJECTION TERM"
             }
         }
-        Write-Output ("  f[{0,3}]  A={1,12:F4}  B={2,12:F4}  A/B={3,10:F4}{4}" -f $i, $va, $vb, $ratio, $tag)
+        Write-Output ("  f[{0,3}]  A={1,12:F4}  B={2,12:F4}  A/B={3,10:F4}  share {4,3:P0}/{5,3:P0}{6}" -f `
+            $i, $va, $vb, $ratio, $shA, $shB, $tag)
     }
-    Write-Output "$moved indices moved. A contiguous run of flagged indices IS the ray block; its first index is -RayOffset."
+    Write-Output ""
+    Write-Output ("{0} indices moved, {1} pinned, {2} skipped below -MinModeShare {3}." -f `
+        $moved, $pinned, $skipped, $MinModeShare)
+    Write-Output "A contiguous run of flagged indices IS the ray block; its first index is -RayOffset."
+    if ($DiffAspects) {
+        Write-Output "For the aspect axis, the PINNED indices are as informative as the moved ones -"
+        Write-Output "intersect them with a -DiffFovs run before concluding anything."
+    }
     return
 }
 
@@ -260,6 +506,8 @@ foreach ($file in $files) {
 
     # ---- -ScanLayout: which offsets carry a valid ray block? ---------------
     if ($ScanLayout) {
+        $blocks = Select-Blocks $parsed
+        Report-Blocks $file.Name $parsed $blocks
         $hits = @{}
         foreach ($b in $blocks) {
             $maxOff = $b.f.Count - 7

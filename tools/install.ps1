@@ -1,9 +1,11 @@
 # Copies the built mod DLLs into the game folder. Backs up any pre-existing
 # xinput1_3.dll (e.g. the headtracking mod) as xinput1_3.dll.bvr-backup once.
 # NOTE: keep this file pure ASCII (PowerShell 5.1 misreads BOM-less UTF-8).
+# Deliberately NOT guarded against a conflicting game: copying files touches the
+# disk, never the headset, so installing works while any game is running.
 param(
     [switch]$Release,
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1",
     [string]$GamePath = ""
 )
 
@@ -15,6 +17,9 @@ $outDir = Join-Path $repo "build\src\$config"
 if ($Game -eq "bs2") {
     $exeName = "Bioshock2HD.exe"
     if (-not $GamePath) { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final" }
+} elseif ($Game -eq "bsi") {
+    $exeName = "BioShockInfinite.exe"
+    if (-not $GamePath) { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock Infinite\Binaries\Win32" }
 } else {
     $exeName = "BioshockHD.exe"
     if (-not $GamePath) { $GamePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final" }
@@ -44,8 +49,8 @@ if ((Test-Path $existing) -and -not (Test-Path $backup)) {
 Copy-Item $proxy (Join-Path $GamePath "xinput1_3.dll") -Force
 Copy-Item $mod (Join-Path $GamePath "bioshockvr.dll") -Force
 Write-Host "Installed $config build to $GamePath"
-if ($Game -eq "bs2") {
-    Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.log"
-} else {
-    Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bioshockvr.log"
+switch ($Game) {
+    "bs2" { Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.log" }
+    "bsi" { Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bsi\bioshockvr.log" }
+    default { Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bioshockvr.log" }
 }

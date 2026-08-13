@@ -1,8 +1,18 @@
 # bioshock-vr
 
-A native VR mod for **BioShock Remastered** (PC, Steam): stereoscopic rendering, 6DOF head
-tracking, and motion controllers - weapons in one hand, plasmids in the other - targeting
-Quest 3 via Virtual Desktop (VDXR/OpenXR) or Steam Link (SteamVR), and any other OpenXR headset.
+A native VR mod for **BioShock Remastered**, **BioShock 2 Remastered** and **BioShock
+Infinite** (PC, Steam): stereoscopic rendering, 6DOF head tracking, and motion controllers -
+weapons in one hand, plasmids/vigors in the other - targeting Quest 3 via Virtual Desktop
+(VDXR/OpenXR) or Steam Link (SteamVR), and any other OpenXR headset.
+
+One zip serves all three games - the same two DLLs adapt to whichever game they are dropped
+into:
+
+| game | install folder (under `steamapps\common\`) | status |
+|---|---|---|
+| BioShock Remastered | `BioShock Remastered\Build\Final\` | playable, tuned |
+| BioShock 2 Remastered | `BioShock 2 Remastered\Build\Final\` | playable, tuned |
+| BioShock Infinite | `BioShock Infinite\Binaries\Win32\` | **early access** - playable start to current test point; see the release notes for known issues |
 
 The mod is a DLL injected into the game's process. It hooks the game's DirectX 11 renderer and
 the Vengeance engine (Unreal Engine 2.5 lineage) camera path, and drives them from an OpenXR

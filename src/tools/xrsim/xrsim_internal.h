@@ -106,6 +106,13 @@ struct Globals {
     Pacing pacing{PaceMode::Free, 90.0, 0, kStepStarveMsDefault, true, 0, kIdleMaxMsDefault};
     FocusPolicy focusPolicy = FocusPolicy::Vdxr;
     uint32_t focusFrames = 3;
+    // Session 54, the VDXR park model. norender: while the session is not
+    // FOCUSED, xrWaitFrame reports shouldRender=FALSE (measured: VDXR holds it
+    // 0 for the whole VISIBLE episode). throttle: while not FOCUSED, xrEndFrame
+    // blocks this many ms (measured: ~87 ms per call once VD's compositor is
+    // busy elsewhere - the mechanism that paced the game to ~10 presents/s).
+    bool focusNoRender = false;
+    uint32_t focusThrottleMs = 0;
 
     std::atomic<uint32_t> hapticPulses{0};
     std::atomic<uint32_t> stateWriteHz{20};
@@ -147,6 +154,8 @@ SimAction* action_get_by_index(uint32_t index);
 bool session_valid(XrSession h);
 XrSession current_session_handle();
 void session_focus_lose(uint32_t holdMs);
+bool session_should_render();       // false while norender is armed and not FOCUSED
+uint64_t session_layered_frames();  // layer-carrying submissions (VdxrLayers policy)
 
 // Swapchain census + image access, used by the compositor and state.json.
 void swapchains_begin_frame_census();
@@ -186,7 +195,7 @@ void actions_reset_session();
 bool actions_attached();
 
 // Session/pacing interplay (xrsim_session.cpp).
-void session_note_submitted_frame();
+void session_note_submitted_frame(bool layered);
 void session_force_state(XrSessionState state);
 void session_pump_state();
 

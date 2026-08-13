@@ -2,6 +2,2097 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Active projects (two, running in parallel)
+
+| Project | Branch | Handoff |
+|---|---|---|
+| **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
+| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 59" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+
+**Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
+running, and vice versa. Only one game can own the headset at a time. Building, installing,
+packaging and tailing logs do not contend and must keep working while either game runs. Enforced
+for `-Game bsi` by `tools/lib/assert-no-conflict.ps1`.
+
+The Infinite "Current state" lives here and in its session-log entry rather than displacing the
+section below, so the two projects' handoffs do not fight over the same lines while both are active.
+
+### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; **v0.8.0 RELEASED same night** - Infinite's first public build; the tattoo-poster NON-HOLD beat deferred to the roadmap)
+
+**v0.8.0 SHIPPED (2026-08-13, from `bioshock-infinite` @ e6e568f):**
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.8.0 - one zip,
+three games (new `preset-bsi` folder; README gained the three-games table;
+package.ps1 extended). BS1 + BS2 sanity-checked in the sim on the release
+branch before tagging (BS1: alternate-eye stereo live, HUD quad, camera hook
+healthy; BS2: stereo live, 3 quads, aim dots 2/2 - both branches contained:
+origin/main and origin/bioshock-2 are ancestors of the release commit).
+Release notes in docs/RELEASE_NOTES.md; Discord announcement text in
+dist/discord-v0.8.0.md (untracked - regenerate from RELEASE_NOTES if lost).
+Infinite is labeled EARLY ACCESS: tested range = game start through the early
+city; Skyline/late chapters/DLC unswept. Known-issues list (user-supplied +
+backlog) is in the notes: loading-area artifacts (the tower bells), model
+jank, vigor-only hand position, aim/model calibration unfinished, the
+tattoo-poster beat, reload glitch, FOV-edge drift, FX-origin family.
+
+**HEADSET VERDICT (user, same night): "most of the things are perfect" -
+vigor drink shows the authored hands (release ~166 ms after hold-open),
+doors single-handed, executions intact, the long multi-phase hold played
+all three gate branches live (hide -> show at the hand moment -> re-hide on
+the game's bHidden park), the intro chain clean. ONE exception: the
+tattoo-poster beat still hides the hand - the player CAN WALK during it, so
+it is a NON-HOLD beat the gate never sees (deferred with full mechanism
+notes to ROADMAP I9; likely the empty-hand hide eating the authored raise
+after the beat's ForceUnequip). s59 is CLOSED and merged.**
+
+**Session 59 (2026-08-13) closed the s58b missing-hands regression at the
+mechanism level, flat. The s53 cine-hold rig hide is now PER-HOLD (cine
+mode `auto`, the new default): hide-first at every hold-open (the doubles
+protection stands), release for the rest of the hold when the game
+demonstrably animates OUR rig. Evidence-first - the discriminator was
+MEASURED before it was built (ENGINE_NOTES "s59"):**
+
+1. **The instrument**: `bsihide probe on` - per-hold snapshots (bit edges
+   per tick, who-identity at 750 ms cadence, articulation via new
+   `bones::anchor_atoms`, open/close summaries). Two user flat legs (door,
+   then the one banked Devil's Kiss first-drink) gave the paired trace.
+2. **The falsifications**: bHidden reads 0 through BOTH classes (the s53
+   rowboat tracking is scene-specific; only the death/respawn class stamps
+   1); who-identity NEVER reads DIFFERENT (the spawned door rig is not
+   reachable via GetFirstPersonAttachment; GObjObjects NOT FOUND on this
+   build, find_instances is a multi-second sweep - no shippable second-rig
+   detector exists); grip TRANSLATION is self-contaminated by our own
+   grip-scale hide (~99-118 UU artifact, ~6 deg rotation).
+3. **The discriminator**: the ROTATION channel. Door = 51-67 deg peak (its
+   only own-rig motion is ForceUnequip); drink = 178-180 deg both hands
+   from +15 ms. The gate shows the rig when either grip rotates >= 100 deg
+   (config `cineShowDeg`, F10 slider) from its hold-open pose while
+   bHidden==0; bHidden==1 (game parks the rig) hides immediately and
+   clears the latch; any signal failure degrades to force = the shipped
+   s53-s58 behavior. Auto can only regress into "always hide", never into
+   doubles. The s57 melee-execution release keeps precedence.
+4. **Ship shape**: `bsihide cine auto|always|game|off` + `cine deg <n>`,
+   F10 "cutscene rig" radio (auto first) + threshold slider, config keys
+   `cineRigMode`/`cineShowDeg`, enum APPEND-only (persisted values safe).
+5. **Flat fence all green**: fake-hold hide branch; show branch (threshold
+   20 crossing at 40 deg, latched, logged); per-hold re-arm; actor-lever
+   degrade (it WRITES the discriminator bit - mutually exclusive with
+   auto); force bit-identical; eye-check PASS all legs; vdeny seed 10 +
+   head-use un-deny intact at boot.
+
+**Caveats for the headset (TESTING "S59")**: ambient articulation drifts
+(~40 deg / 25 s still) - a very long spawned-rig hold could creep past the
+threshold and false-show (the raffle chain is the judge); the show latch
+holds until hold-close; tattoo-poster and ball-77 are unmeasured beats (if
+hidden, tune the slider down live). The headset checklist is TESTING "S59":
+vigor drink shows hands, doors stay single-handed, one execution, the
+raffle-save sweep, the always-hide radio reachable.
+
+**Traps burned (s59)**: the first who_probe call pool-scans inside the
+hold-open edge (~580 ms hitch, then cached); two game-cmd writes 1 s apart
+clobber (the pump reads on its own cadence - one command per write, gap
+them); death+respawn embeds its own door cinematic (a first-run trace
+blended the classes - the clean replay separated them); the checkpoint
+reload RESTORES an undrunk vigor bottle if no checkpoint fired post-drink
+(the "one-shot" drink was re-runnable).
+
+### Infinite: state after session 58 (superseded by s59 above) (HEAD-DIRECTED USE ACCEPTED IN THE HEADSET AND MERGED - 0x1E13DC cornered as THE USE consumer, policy default-on; merged to `bioshock-infinite`)
+
+**HEADSET VERDICT (user, 2026-08-13): "everything worked as expected" -
+the full TESTING "S58" checklist passed: head-directed targeting feel, the
+F10 A/B both ways, the COMPLETE raffle chain with no stalls, doors and
+kinetoscopes, and the sharpness sweep. s58 is CLOSED and merged.**
+
+**Session 58 (2026-08-13) closed the deal-breaker at the mechanism level:
+USE-target selection follows the HEAD. The s56 10-caller deny set stays
+intact except that the head-use policy un-denies exactly 0x1E13DC (the
+eyes-viewpoint VIRTUAL flavor - ENGINE_NOTES s56's prime suspect,
+confirmed). Evidence-first, per the s58 ladder:**
+
+1. **The oracle**: the GFx ButtonHint widget lane was a dead end (no
+   IsShown on the CLIK hint classes; the container's entries TArray is
+   sticky bookkeeping - it survives hide/walk-away; show/hide is pure
+   ActionScript). The REAL oracle: **`XPlayerController.ButtonUseTarget`
+   (InterfaceProperty, +0x176C this build, derived by name)** - the
+   interaction system's live selected USE target. `bsihint` prints it;
+   `bsihint watch on` edge-logs target changes. Whole vocabulary banked in
+   ENGINE_NOTES s58 (PossibleUseObjects, LastUsedTime +0x424, ...).
+2. **The sweep (user-parked at a vending machine, full VR sim)**: control =
+   body-locked (armed with head 60 off; null with body 90 off + head
+   compensating). Un-denying **0x1E13DC alone** INVERTS both legs (head
+   rules); the other NINE candidates read identical to control - clean
+   negatives, full table in ENGINE_NOTES. Cone half-angle 45-60 deg,
+   applies to whichever view the consumer reads. Two mechanism findings:
+   loot containers (XLootContainerStaticMeshActor) arm by PROXIMITY alone
+   (facing irrelevant - they never discriminate); the sim `head rot +X`
+   maps to MINUS X on the written view yaw (the compensated leg is
+   body+X/head+X, not head-X - the wrong sign cost three legs).
+3. **The fence (flat, all green)**: eye-check PASS all legs incl. pairing
+   90/90 with the un-deny live in gameplay; 4-min soak - aim seam
+   calls==substituted throughout (no s55-class freeze), replays healthy;
+   fresh boot on the shipped build seeds 10 then logs `headuse: ON`,
+   save loads to free play normally. The raffle-class chain is the
+   HEADSET's leg (TESTING "S58" step 3) - judged low-risk because the s54
+   stall was the FULL substitution under a sim head that never looks at
+   targets, in the headset the head IS the pointer, and scripted holds
+   suspend the drive (authored gates keep the authored view).
+4. **Ship shape**: patterns.h `kInteractionUseViewCallerRva = 0x1E13DC`;
+   `camera::set_head_use()` enforces the invariant (seed-then-del); config
+   key `interactHeadUse` default ON; F10 -> HUD -> "HEAD-DIRECTED USE
+   (s58)"; `bsicam vdeny del <hexRva>` added (16-slot set, runtime A/B, no
+   reinstall). New read-only instrument module `hint.cpp` (`bsihint`).
+
+**Traps burned (s58)**: the game PAUSES on focus loss and the pause MENU
+does not close on refocus (fidget-silence + quads=1 = the tell; `game-key
+Esc` resumes - NEVER Enter, RESTART CHECKPOINT is two slots down); the sim
+idle hand pose parks the FP arm across the whole view (`hand l|r offset`
+clears captures); this save's spawn is the Town Center fair plaza and its
+load cycle closes in ~90 s with NO scripted-hold markers (the "~3 min
+beat" was save-specific); Infinite has NO manual saves - user positioning
+is per-boot standing state, not savable.
+
+**NEXT SESSION (s59): THE MISSING-HANDS SCRIPTED-BEAT CLASS.** A
+pre-existing regression (user: present BEFORE the s58 changes; likely from
+the cine/model/hide rounds s52-s57, NOT the melee-execution fix which s57
+already closed): in a SUBSET of scripted first-person beats the authored
+hands never show. The user's observed split (2026-08-13):
+- **Hands VISIBLE (correct)**: raffle beats generally (taking the ball
+  from the basket shows the hand fully), the intro cutscene, door opens,
+  melee executions (the s57 fix holds).
+- **Hands HIDDEN (the regression class)**: (1) DRINKING A VIGOR;
+  (2) the tattoo-poster beat in the city - flat raises the right hand to
+  look at the AD mark, in VR no hand appears at all so it reads as plain
+  talk; (3) raising the winning ball #77 after the raffle draw - the ONLY
+  hidden-hand moment inside the otherwise-correct raffle chain.
+**MECHANISM CONFIRMED same night (user A/B, headset - ENGINE_NOTES
+"s58b")**: with `bsihide auto off` the vigor-drink vignette SHOWED the
+authored hands AND the door cinematic showed DOUBLE hands - one lever flip
+proved both classes. The drink opens a SCRIPTED hold (8.5 s in the log),
+so the hiding leg is the s53 CINE-HOLD rig-wide hide (cineMode=force),
+not the empty-hand policy. The two hold classes: SPAWNED-RIG (doors,
+raffle, intro, executions - the game brings its own hands; ours must
+hide) vs OWN-RIG (vigor drink, tattoo-poster raise, ball-77 - the game
+animates the player's own rig; hiding it = no hands). s59 = per-hold
+DISCRIMINATION: preferred - detect the spawned second rig live (the s53
+`bsihide diff` fcomp-vs-ours machinery is the starting point) and hide
+ours only then; fallback - detect authored articulation through OUR rig
+during a hold (s51 travel/spread) and release the hide for that hold.
+The drives already release during holds (s52), so an unhidden own-rig
+beat plays correctly - user-watched. Trap: `bsigive` CANNOT trigger the
+drink vignette (silent acquire/equip, no ceremony) - first-drink needs a
+real bottle pickup, a user leg. Secondary backlog unchanged (TESTING
+"S52" leftovers; reload glitch parked post-release).
+
+### Infinite: state after session 57 (superseded by s58 above) (THE MODEL LANE LANDED FLAT - sprint glue, melee window, loadout buckets, crosshair hide, stump cuff; branch `claude/bioshock-model-lane-sprint-melee-7e33e4`, NOT merged, awaiting the headset checklist)
+
+**Session 57 (2026-08-12) worked the five user-prioritized items; all five are
+implemented, flat-proven at the mechanism level, and installed. Eye-check
+PASS (all legs incl. leg 0 pairing 90/90) on the final build. Derivations in
+ENGINE_NOTES "s57"; the numbered headset checklist is TESTING "S57" - the
+LOOK verdicts (sprint feel, melee swing, execution hand, vigor-only tuning,
+crosshair in combat, cuff) are the open items.**
+
+1. **SPRINT KILL (bones.cpp sprint glue).** The s49b clamp shape was
+   FALSIFIED first: a proven sprint posts NOTHING at the Morpheme message
+   funnel and no by-name anim action - the state machine is driven inside
+   the runtime. What sprint actually does: authored arm-pump articulation
+   passes the compose exactly like the s51 fire swing (L cluster 103-124
+   deg / 70.8 cm vs 0.00 walking). The kill reuses the proven machinery:
+   the full-hand ready substitution held while the composed pad says sprint
+   (LS edge + stick >= 0.5, exit < 0.35; capture-at-engage when the bank is
+   missing; NOT ended on fire - over-hold is safe). Flat A-B-A: worst
+   driven bone 124.38 -> 0.10 -> 124.38 deg. `bsibones sprintglue
+   on|off|force on|off`, F10 "SPRINT KILL", key `sprintKill`, default ON.
+2. **MELEE (melee.cpp).** Root cause measured: melee dispatches through the
+   fire seam with weapon=NULL like gunshots - fireglue froze every swing
+   and the +1.2 s capture banked MID-SWING poses (watched live), poisoning
+   later shots; the execution's scripted hold force-hid the rig the game
+   was animating (the s53 warning, verbatim). The fix: the Y-press edge
+   (composed pad) classifies a dispatch as melee UNLESS a hold is already
+   open (the raffle-QTE rule, byte-identical, proven by 7000+ holdSkips);
+   a melee dispatch skips/cancels fireglue + captures and opens a 1500 ms
+   window that releases the empty-hand hides; a hold opening INSIDE the
+   window (the execution) releases the hide gate until it closes + 300 ms.
+   Flat: capture counters held under a classified swing, incremented
+   without. Modes off|glueskip(default)|release; `bsimelee`, F10 radio,
+   key `meleeFixMode`. The execution needs a staggered enemy = user leg.
+3. **LOADOUT BUCKETS (profiles.cpp).** Verified: keying was per-hand only -
+   vigor-only SHARED the vigor archetype entry with vigor+gun (the leak the
+   user felt) and "NoWeapon" with empty+empty. Now the loadout class forms
+   the effective keys: gun present = raw names (existing entries
+   untouched), vigor-only = `<Vigor>#solo` + `NoWeapon#solo`, empty+empty =
+   the bare synthetic names. key_is_empty is prefix-matched so the hide
+   gate still sees suffixed empties. Existing sliders/auto-capture work
+   unchanged on the corrected keys.
+4. **CROSSHAIR HIDE (xhair.cpp) - the hunt LANDED.** The s53 wall fell: the
+   widget's Outer is the HUD screen instance XSinglePlayerGFxHUD; the
+   widget's IsShown/IsCenterpointVisible bools live at +0x118 (masks
+   0x1/0x2, live-verified). Policy default ON (`hudCrosshairHide`): sweep
+   (the s54 enumerator as a callable) for live instances per level, clear
+   both bits, 1 s watchdog - the game re-asserted 7x in one boot and lost
+   every time. `bsixhair on|off|derive`, F10 in HUD (I9). Headset judges
+   the visual (flat can't arbitrate the out-of-combat dot).
+5. **STUMP CUFF (option A).** The armsMode-2 collapse writes epsilon scale
+   (default 0.10, slider 0-0.30 next to cap depth) instead of zero - the
+   capped-stub ring is visible in the flat captures where the pinch was.
+   `bsibones stumpscale`; unpersisted pending the headset verdict.
+
+**Traps burned:** the sim pad outage recurred (keyboard drive lane is the
+fallback: W/S/A/D + LeftShift sprint + V melee; `force`/`swing` levers make
+the glue/window testable pad-free); the save's load beat cycles
+ForceUnequip for ~3 min and must NOT be keyed into (one Space mid-beat left
+a boot disarmed inside a second vignette); the trailing-newline token trap
+bit a THIRD time (`bsixhair on`); the spawn is nose-to-a-wall (W reads like
+idle on img-diff - back up + strafe first, ~1900 UU corridor).
+
+**HEADSET VERDICTS IN (same evening) + THE s57b ROUND SHIPPED:**
+- **ACCEPTED**: melee swing + execution ("working perfectly"), stump cuff +
+  depth ("decent for now"), sprint kill core.
+- **FIXED same evening (s57b, re-judge)**: post-sprint SNAP (the glue now
+  holds a 700 ms release tail through the sprint-exit anim blend;
+  `sprintglue tail <ms>`); the reload-then-shoot GLITCH LOOP (the ready
+  capture is quiet-gated - moving poses are refused per drive, ~2700
+  refusals measured across one fire+reload, banks land clean after
+  settling); the melee GUN-HAND lurch (right limb bone-hides for the first
+  0.9 s of the swing, never the execution; `bsimelee hidegun`, F10, key
+  `meleeHideGun`).
+- **s57d/e REVERTED (2026-08-13, user verdict)**: the reload-then-shoot
+  deep fixes (release fade + reload hold) were headset-falsified - the
+  glitch stayed and sprint + melee-execution regressed; src is back to
+  byte-identical s57c (the accepted build). The melee fixes and everything
+  else stay. **USER RE-VERDICT after the revert: everything back to
+  normal.** The reload glitch is MOVED TO THE POST-RELEASE BACKLOG
+  (bioshockinfinite/ROADMAP.md; do-not-reuse record in ENGINE_NOTES
+  "s57d/s57e REVERTED"). s57 is CLOSED and merged to `bioshock-infinite`.
+- **DEFERRED - s58 PRIORITY 1: head-directed interaction.** Interactions
+  aim with the BODY (right stick), not the head - the s56 partition as
+  built (interaction consumers deliberately read the engine view; the VR
+  view stalled the raffle). s58 plan: flat caller census near an
+  interactable, find WHICH denied caller answers USE-target selection,
+  un-deny only it, and fence with the raffle-class beats + eye-check (the
+  s56 acceptance must survive). ENGINE_NOTES "s57b" carries the notes.
+
+**NEXT SESSION (s58): THE HEAD-DIRECTED INTERACTION SPLIT - the user's
+DEAL-BREAKER, the session's single focus.** Interactions must target where
+the HEAD looks while every interactive cinematic / scripted view-cone gate
+(the raffle class) keeps working. Evidence-first ladder: (1) build the flat
+PROMPT ORACLE - the interaction prompt is a GFx widget (XClikButtonHint
+instances were live in the s57 crosshair walk); its IsShown bits at a
+derived offset are a log-readable "prompt visible" signal, which makes the
+whole caller sweep automatable; (2) with the oracle live and the head yawed
+off the body axis (sim `head rot`), sweep the 10-caller deny set - un-deny
+ONE candidate at a time (`bsicam vdeny` is runtime-togglable, 16 slots) and
+read which caller makes the prompt follow the HEAD; prime suspect first:
+0x1E13DC (the eyes-viewpoint VIRTUAL flavor - ENGINE_NOTES s56 named it
+the interaction path), NEVER touch 0x1E1367 (render smear) or 0x26B499;
+(3) regression fence per candidate: the load-time scripted beat must still
+complete + re-equip (the free flat canary every boot), `bsicam callers`
+mid-any-stall, eye-check leg 0 per build; (4) if ONE caller serves both
+USE-targeting and the beat gates (no view split can work), the fallback is
+the TRACE-SEAM substitution - find the USE/interaction trace native (the
+fire.cpp XGetWeaponStartTraceLocation shape) and substitute the head (or
+hand-laser) ray directly, leaving the s56 partition untouched; (5) headset:
+user positions at interactables + saves, judges head-vs-body targeting,
+then re-runs the raffle-class chain (TESTING "S56"). Secondary if time:
+TESTING "S52" leftovers (arsenal tuning + calibration save, HUD sliders,
+subtitles).
+
+### Infinite: state after session 56 (superseded by s57 above) (THE INTERACTION-VIEW FIX SHIPPED AND HEADSET-ACCEPTED - the raffle chain plays end to end under full VR, automatic at install; branch `claude/bioshock-interaction-view-fix-c1be42`, NOT merged)
+
+**Session 56 (2026-08-12) finished the render/gameplay view partition and
+shipped it: the deny set {0x1E13DC, 0x22587F, 0x5EA483, 0x5B2C8C, 0x59C87D,
+0x244CF4, 0x52F301, 0x5344E8, 0x61C289, 0x5F9A94} is seeded automatically
+at install behind the build gate (patterns.h `kViewConsumerDenyRvas`), zero
+user levers, full 3D preserved. USER-ACCEPTED IN THE HEADSET: sharp on head
+motion in every direction, and the whole raffle chain - activate, take-ball,
+announcer within seconds, reveal, apprehension, skyhook QTE, control back -
+played with no stalls.** Full derivation in ENGINE_NOTES "s56"; checklist in
+TESTING "S56"; the s54 state below carries forward otherwise.
+
+1. **The third gate**: mid-stall caller census (flat) found 0x5EA483 - a
+   per-local-player "is the player looking at the target" view-cone helper
+   in the scripted-sequence native cluster, absent from the s55 map;
+   denying it unstuck the stalled reveal beat in the same log second.
+2. **The 0x1E1367 correction (headset bisect, 4 live flips)**: the
+   eyes-viewpoint wrapper's DIRECT flavor is a RENDER consumer - denying it
+   causes an offset-dependent post-process smear (sharp only when the head
+   aligns with the authored view) that NO flat instrument can see. It is
+   never denied; the interaction path reads through the VIRTUAL flavor
+   0x1E13DC. This corrects s55's attribution and closes its framing-shift
+   observation.
+3. **The eye check made honest (tools/eye-check.ps1)**: a negative control
+   proved the s55 image legs are blind to the pairing break (mono reads
+   in-band - the compositor presents identical eyes at two poses); leg 0
+   (camReplays/s >= 80% of draws/s from a FRESH beat line) is now the
+   pairing/mono gate, validated in both directions; interocular floor
+   40 -> 30. vdeny widened to 16 slots + an allow-only DERIVATION mode.
+4. **A-B-A**: `vdeny off` = sharp + interaction break returns (user-judged
+   live); `on` = fixed. The lever needs no reinstall; restart re-seeds.
+
+**HEADSET VERDICTS IN (user, post-s56 play session, 2026-08-12):**
+- **CLOSED - scripted scenes clean**: the boat scene, door opens and the
+  other cinematics all played correctly, NO double hands - the s53b hide
+  defaults (owner+grips composite) and the s56 deny set are accepted
+  together; the s53 rowboat re-check and the scripted-beat inheritance
+  check are done.
+- **FAIL - sprint stance**: sprinting changes the model position; very bad
+  in VR. Wanted: sprint must not affect the model AT ALL (kill the trigger
+  at the root - the s49b 'Lowered'-clamp shape is the template: probe the
+  FP-network request while sprinting with `bsifidget req probe`, then clamp).
+- **REGRESSION - melee**: melee attack animation is now weird, and the
+  melee-execution mini-cutscene shows NO hand at all (tested vigor-only and
+  vigor+weapon). Suspects: the s53 hide gate not releasing for the
+  execution scene class (it may not register as a cine hold), and/or the
+  bone drive fighting the attack anim (the s50/s51 fire-swing shape).
+  Melee worked well before the cine/model rounds - corner by A/B at a melee
+  with `bsihide`/`bsibones` levers.
+
+**NEXT SESSION (s57), user-prioritized - the model lane:**
+1. **Sprint stance kill**: derive the sprint request/anim on the FP network
+   (fidget probe while sprinting), clamp at the root, default-on. VR sprint
+   must leave the viewmodel untouched.
+2. **Melee fix**: (a) attack anim - likely needs a melee window where the
+   hand drive releases to the authored swing (fire-swing template);
+   (b) execution mini-cutscene - the authored hand must SHOW (hide gate
+   release for that scene class). A-B-A with levers, then headset.
+3. **Per-loadout hand offsets**: hand pose offsets keyed by LOADOUT CLASS -
+   vigor-only (currently rotated/positioned wrong), empty+empty, and the
+   existing weapon(+vigor) profiles untouched. Saving must be bucket-local:
+   a vigor-only tweak must not leak into the two-hand preset, and
+   empty-hands tweaks stay in the empty bucket (verify the existing
+   profiles.cpp keying - the equipped-identity poll may currently lump
+   vigor-only with empty).
+4. **The crosshair hunt**: `bsigfx scan XClikHUDCrosshair` / `scan HUDMovie`
+   in the gameplay save, chase with bsiprop/bsifields, then the setb/cmd
+   levers - disable the flat-screen crosshair.
+5. **LAST PRIORITY - the wrist stump look (option A only).** The plain
+   zero-scale hide EXISTS and is REJECTED by the user (the pinch lands
+   inside the hand). Why: zero-scaled verts collapse toward the bone's
+   CURRENT (authored) position, arbitrary relative to the driven hand. The
+   fix to try: DRIVE THE COLLAPSE POINT - write a forearm atom that parks
+   the bone just behind the driven wrist along the hand's arm axis with a
+   small epsilon scale (5-15%) instead of zero, so the mixed-weight ring
+   forms a symmetric capped stub/cuff aligned with the hand (the sleeve
+   verts form the cap). Two F10 sliders (scale, back-offset), tuned in the
+   headset. Same atom machinery as bones.cpp. The ceiling version (two-bone
+   arm IK, option B) is MOVED TO THE POST-RELEASE BACKLOG
+   (bioshockinfinite/ROADMAP.md, after I11) by user call 2026-08-12.
+
+### Infinite: state after session 54 (superseded by s55 above) (THE RAFFLE WEDGE ROOT-CAUSED AND FIXED - the pace feed; branch `claude/bioshock-session-deadlock-root-28d444`, NOT merged)
+
+**Session 54 (2026-08-11) root-caused the session-state deadlock from LAST
+NIGHT'S OWN LOGS - no new instrumentation was needed - and shipped the fix,
+flat-proven against a sim model built from the measured numbers.** Full
+mechanism + derivation in ENGINE_NOTES "s54"; headset checklist in TESTING
+"S54"; the s53 state below still describes the hide gate / GFx / verdict work,
+all of which carries forward untouched.
+
+1. **THE MECHANISM (measured, pacetrace.log + bioshockvr.log, boot
+   02:32-03:52):** VDXR demotes FOCUSED -> VISIBLE holding `shouldRender=0`
+   (trigger external, unconfirmed); our inline frame loop then submits
+   ZERO-LAYER frames (every layer is gated on shouldRender), which VDXR (a)
+   refuses to re-promote on - parked VISIBLE for minutes at 72 empty
+   frames/s - and (b) throttles to **~87 ms per xrEndFrame, inline on the
+   present thread**, pacing the game to ~10 presents/s (~5 fps): the
+   announcer stalls, scripted timelines crawl - and this half needs no input
+   lane, which is why the wedge predates it. Input-death is the other half
+   (actions live only while FOCUSED). Both s53 recoveries happened WITHOUT
+   teardown (external, VD-side); the VR toggle "works" because teardown
+   removes the throttled calls instantly and bring-up paces freely with real
+   frames. The old skip-guard suspect is EXONERATED (neutered by default;
+   paceSkips 0 throughout; detach was off everywhere).
+2. **THE FIX (core, opt-in per game - BSI arms it, BS1/BS2 take no new
+   branch):** `set_pace_feed` = detach + keepalives that CARRY LAYERS. While
+   not-FOCUSED-after-focus the present thread detaches (game free-runs) and
+   the pace thread re-runs the frame cycle, re-submitting the last healthy
+   projection/screen layer (no re-acquire needed - the compositor uses the
+   most-recently-released image). Levers: `vrpace feed on|off`, F10 checkbox.
+3. **FLAT-PROVEN (`tools/xrsim/vdxr-park.xrs`):** the sim grew the
+   measured-VDXR model (`focus norender on`, `focus policy vdxr-layers`,
+   `focus throttle 87`). Feed OFF = the park reproduced (10 s eligible, ~90
+   empty frames, still VISIBLE); feed ON = self-healed (FOCUSED 2.2 s after
+   the loss; ATTACHED reported 444 presents ran unpaced - the game free-ran
+   the whole episode). Regressions green: unfocused-pacing 12/12, smoke 5/5.
+4. **Open on the headset (TESTING "S54"):** VD's real re-promotion latency
+   with layers flowing (dashboard open/close A-B-A), the doff/re-don case,
+   and the raffle itself. Until those pass, the old wedge protocol (F10 ->
+   VR enabled off/on) stays the fallback.
+
+5. **BONUS - THE OBJECT-INSTANCE ENUMERATOR shipped and proven live
+   (crosshair-hunt item 3, first lane; ENGINE_NOTES "s54 part 2").**
+   `bsigfx scan <Name>` (FName-index sweep; one index finds class + package
+   + instances - UE3 reuses the base index with a number) and `bsigfx scanc
+   <hexClass>` (class-pointer sweep, name-gated after 82 fixpoint-passing
+   fakes taught the lesson). Live validation: `scan HUD` found the UClass,
+   the Package and the LIVE myHUD instance (pointer-identical to `bsigfx
+   hud`); `scanc` found those plus **Default__HUD - the CDO the s53 "loads
+   null 4 ways" wall could never reach**. ~780 MB in ~400 ms, one-shot
+   game-thread hitch (never on a cadence). On this boot's save level
+   `XClikHUDCrosshair` has NO instances (UClass only) - the hunt's next
+   step is the same two commands in the user's gameplay-proper save.
+
+**NEXT SESSION (s55): (1) the S54 headset A-B-A (dashboard, doff, THE
+RAFFLE - the root fix's real-hardware verdict); (2) the remaining s53/s52
+verdicts, unchanged from the s53 handoff below (rowboat re-check under the
+s53b owner+grips defaults, cine-radio default decision, single-empty-hand,
+then TESTING "S52": arsenal tuning + calibration save, HUD sliders, Matinee
+gun-track, sprint arms, subtitles; preset keys land after verdicts); (3) the
+crosshair hunt CONTINUES with the new enumerator in the gameplay save:
+`bsigfx scan XClikHUDCrosshair` + `bsigfx scan HUDMovie`, chase hits with
+bsiprop/bsifields to the owning screen, then the setb/cmd levers.**
+
+### Infinite: state after session 53 (superseded by s54 above) (THE FP-RIG HIDE armed on the game's own bone lever; the s52 hide falsifications explained by measurement; the GFx screen model mapped; branch `claude/bioshock-fp-rig-hide-fa6342`, NOT merged)
+
+**Session 53 (2026-08-11) attacked the round-4 revert head-on: derive the
+game's OWN visibility levers, A/B them on the live view, and ship the hide as
+policy on the winning lever.** Commits `6b83cfb` (probe surfaces) +
+`308dc31` (gate armed). Derivations in ENGINE_NOTES "s53"; headset checklist
+in TESTING "S53"; everything below is sim/flat-proven, awaiting the headset.
+
+1. **THE LEVER VERDICTS (the session's spine).** All four candidate levers
+   derived one-shot on the live rig (`bsihide derive`: bHidden actor+0x5C
+   mask 4; HiddenGame/bOwnerNoSee/bOnlyOwnerSee all in comp+0xD4; SetHidden/
+   SetOwnerNoSee/HideBoneByName/UnHideBoneByName/IsBoneHidden/MatchRefBone
+   indices cached) and A/B'd on the live view in an armed chapter
+   (LOAD CHAPTER -> Comstock Rooftops, pistol + Enrage): **actor bHidden is
+   INEFFECTIVE** (bit written+read 1, hands and pistol keep rendering - the
+   FP path ignores it; it merely TRACKS scene state, 1 in the rowboat's
+   no-hands phases, 0 at authored moments/gameplay); **comp SetHidden hides
+   the arms mesh but the weapon model keeps floating** (separate attached
+   component); **bone HideBoneByName removes limb AND holdable together**
+   (s45b re-proven) - the production default.
+2. **THE GATE (hide.cpp, armed by default).** Policy consumes the untouched
+   round-3 conditions: `cine::hold()` -> rig-wide hide (cine radio: force /
+   game-managed / off, default FORCE per the user directive - the box-handoff
+   risk is the first headset A/B); `hand_empty(h)` outside holds -> per-hand
+   whole-limb bone hide (user call: no floating forearms). Edge-driven with a
+   500 ms re-assert watchdog, per-boot derive with refused latch, instance-
+   only writes, rig-drop/re-resolve safe (fresh rigs spawn visible), fault
+   latch after 8 failed applies, F10 controls in HANDS + MODEL. Flat-proven
+   live: empty-hand possession bone-hid both limbs, the arriving chapter
+   loadout unhid them on the next profiles poll, zero reasserts, zero fights.
+3. **THE DOUBLES' IDENTITY, narrowed.** `bsihide who` proved scripted scenes
+   NEVER swap the attachment (stale-rig hypothesis dead), and the bHidden
+   ineffectiveness explains round 4's "zero-scale hides nothing the user can
+   see" the same way. Remaining suspect for headset doubles: the PAWN's own
+   third-person body, visible only from the offset VR camera ("hands to the
+   right and left of the character") - `bsihide pawn 0|1` (SetOwnerNoSee on
+   pawn Mesh, derived per boot) is the one-command headset A/B.
+4. **THE GFx LANE (bsigfx, crosshair kill rung 3 partial).** All machinery
+   names live in the pool (HideableHUDWidgetNames 4835,
+   NumReasonsToShowElement 36595, XSeqAct_HideHUDElement 10586, HUDMovie,
+   FlashCommand, XClikHUDCrosshair 8654; SetVariableBool does NOT exist).
+   `myHUD` (derived at PC+0x2B4) is a BARE `HUD`-class object even in
+   gameplay - none of the machinery is on it. The screen MODEL mapped by
+   walks: UI screens are GFxMoviePlayer-family UObjects (SwfMovie asset
+   +0x34, PC +0x5C) owning CLIK widget UObjects; reachable so far:
+   XGameViewportClient +0xF0 -> GFxInteraction; the HUD screen INSTANCE (the
+   crosshair widget's owner) is the open hunt - needs an object-enumeration
+   or GFx-advance-hook lane next session. `bsigfx` ships: hud/prop/cmd
+   (FlashCommand)/element list/element +-N/setb/getb.
+5. **Traps burned this session:** the s37 attract-movie freeze hit once
+   (force-kill + relaunch protocol worked); game-shot captures RACE command
+   dispatch (the game pauses unfocused - a "hidden" capture can show the
+   pre-dispatch frame; read the log bits, not the pixels, for state);
+   `xrsim head rot` arg order is (yaw?, pitch, roll) - the second arg pitches;
+   an additive `head pos` during a scripted scene can put the camera inside
+   geometry - reset pose + `bsicam drive off` restores the authored view.
+
+**NEXT SESSION (s54), in the user's priority order: (1) ROOT-CAUSE THE
+SESSION-STATE DEADLOCK (the raffle wedge - see the s53 addendum below; the
+user explicitly rejected a watchdog band-aid: find the mechanism, fix the
+root). Prime suspect from the code's own comments: the unfocused-pacing
+skip-guard starves the compositor of frames while the session is VISIBLE,
+and VDXR may need submitted frames to re-grant FOCUSED - bring-up paces
+freely for exactly that reason (openxr_runtime.cpp ~2122 "the next bring-up
+must pace freely again (bring-up needs frames)", the skip decisions at ~909/
+~2293/~2388, and g_paceSkips). The user's proven manual release (VR enabled
+off/on) resets g_everFocused, which is precisely the free-pacing path -
+consistent. Reproduce by dropping focus (VD dashboard) mid-game, watch
+paceSkips while VISIBLE, A/B the skip-guard, A-B-A the fix. (2) The remaining
+headset verdicts (rowboat re-check under the s53b owner+grips defaults: intro
+text, doubles, box-handoff hand, cine-radio default decision - currently
+game-managed after the live flip; single-empty-hand case; then TESTING
+"S52": arsenal tuning + calibration save, HUD sliders, Matinee gun-track,
+sprint arms, subtitles). (3) The crosshair: the HUD-screen instance hunt
+(ENGINE_NOTES s53 GFx screen model; myHUD is bare, CDO loads null - needs an
+object-enumeration or GFx-advance-hook lane).**
+
+### Infinite: state after session 52 (superseded by s53 above) (the I7 INPUT LANE landed - stick pitch killed + body follows head; THE CHEATED ARSENAL + per-weapon presets; the HUD ON A QUAD; the CINEMATIC GATE + head radio; branch `si52-inf-input-arsenal-hud-cine`, NOT merged)
+
+**Session 52 (2026-08-10, evening) worked the four handoff items in strict
+order; all four landed flat-proven and committed (882a420, 0e4a41c, a2aea90,
+e8dc538). Checklist in TESTING "S52". Full derivations in ENGINE_NOTES "s52
+part 1-4".**
+
+**1. THE TWO INPUT FIXES (commit 882a420).** The I7 lane arrived: drive_view
+now publishes `publish_vr_gameplay` + `publish_pitch_error` + the new
+`publish_move_yaw_offset` every dispatch (all self-expiring; the I4
+abstention comment retired). RIGHT-STICK Y IS DEAD: the camera-side engine
+pitch is the stick-driven basis (clamps +/-89; the aim seam's engine value
+FLATTENS pitch - wrong instrument), and with the kill on, a held full-up
+stick composes as the servo value; the servo converges the manufactured +89
+error back toward the head (sign correct un-inverted). Infinite opts out of
+the BS1 bumper lift (`set_pitch_kill_lift_on_bumpers(false)`, new core seam)
+- no ry leak with a grip held, measured. BODY FOLLOWS HEAD: the composer
+rotates the movement stick by the published head residual - walk heading
+matched the CAMERA facing to 0.5 deg under `head rot 90` while engine yaw
+sat still; `bsibody off` control reverted to game yaw. SNAP TURN wired
+(BS2's drain order); the drain sign is `+units` - the OPPOSITE of BS1
+(stick-right DECREASES yaw units on this build; flick right measured +45
+the wrong way on the copied sign, flipped, both directions re-proven).
+Levers: `bsibody on|off|status`, F10 BODY FOLLOWS HEAD checkbox, core
+pitchkill/snap controls now live via the gate; keys inputPitchKill/
+inputBodyFollow/inputSnapTurn/inputSnapAngleDeg. Known limits (documented):
+the pawn itself does not turn (no body.cpp counterpart - past ~90 deg
+residual the rig/laser may desync); the pause menu keeps the camera seam
+dispatching, so stick MENU nav is rotated while the head is off-center.
+
+**2. THE CHEATED ARSENAL + PER-WEAPON PRESETS (commit 0e4a41c).** The
+identity fact that re-pointed the s47 scaffold: every carried weapon and
+vigor is literal `class XWeapon` - the durable key is the ARCHETYPE name
+(UObject+0x24). `GetEquippedWeapon(int)` via ProcessEvent answers BOTH hands
+(0 = gun, 1 = vigor; return at parms+4). THE GRANT RECIPE (every rung
+measured; corrects s43 - AcquireWeapon wants the ARCHETYPE, not the CDO):
+`DynamicLoadObject("PreCoalescedItemAssets.<Archetype>")` -> pawn
+`AcquireWeapon(archetype)` (the carried list GREW 4->10) -> manager
+`EquipWeapon(instance)` (pawn-side EquipWeapon is a no-op) -> instance
+`AddAmmo(i:n)`. `bsigive <Archetype> [ammo]` automates it; `bsigive list`
+names the carried slots; the whole base roster granted in one sim pass
+(Sniper/RPG/Carbine/HandCannon/Shotgun + MurderOfCrows). bsigive on a gun
+DROPS the replaced carried gun (the game's carry-2 rule) - by design.
+PRESETS: profiles.cpp rework - per-archetype entries holding one hand's full
+lever set (aim trim P/Y, ray origin F/R/U, model trim/offset/scale), ~1 Hz
+identity poll, AUTO-CAPTURE on switch-away (hold weapon, tune sliders,
+switch = saved), apply-on-equip, persisted to `bsi\weapons.ini`
+(`<Archetype>.<lever>=v`), empty-entry path leaves levers untouched
+(byte-identical default, proven in the logs). Round trip proven: tuned
+sniper trim survived capture -> file -> re-equip OVERRIDE APPLIED. Verbs:
+`bsiprofiles list|save|clear`, F10 WEAPON PROFILES section.
+
+**3. THE HUD ON A QUAD (commit a2aea90; ENGINE_NOTES s52 part 3).** The DR-I7
+positional rule implemented as core `gfx_hud.cpp` + adapter `hud.cpp`: the
+eye blit = the ONLY full-screen depth-free `DrawIndexed a=6` into the
+backbuffer (srv0 = full-res fmt-26 RT; the UI run SHARES its retRva, so
+position is the only separator); every later backbuffer draw redirects into
+a transparent capture RT that feeds the session-19 HUD quad via the new
+`vr::set_hud_texture_provider` seam. The present-time eye capture is then
+HUD-free with NO eye-source rerouting. Live: boundaries on 94% of frames,
+1M+ draws redirected flap-free; per-eye captures show the eye image clean +
+the panel carrying health/ammo/widgets in both eyes; the PAUSE MENU lands on
+the quad readable; award dialogs too (the dark pane IS the dialog's dim
+layer). FULL-SCREEN EFFECTS: the RPG explosion is SCENE-SPACE (fills the eye
+image, nothing to route); the GFx hurt-flash class (tiny-count full-screen
+draws, ~0.3/frame rest vs ~3.6/frame during a self-hit) PASSES THROUGH to
+the eye image (default ON; census proof redirected == hudDraws -
+bigPostDraws exactly). Movie/loading frames have no boundary -> classify
+NOTHING (cinematics-safe by construction). The redirect engages only with a
+live XR session - flat boots keep the window HUD. Verbs: `bsihud
+on|off|status|redirect|fx`; F10 "HUD (I9)".
+
+**4. THE CINEMATIC GATE (commit e8dc538; ENGINE_NOTES s52 part 4).** Bink
+needs NO detector (camera-silence architecture: drives stop writing, the
+stale-publish quad shows the movie - the pre-drive behaviour the user judged
+perfect). The MATINEE detector: ~2 Hz `GetViewTarget` poll (GNames 17299),
+class-name verdict (Matinee/CameraActor/Cinematic substring), hysteresis 2;
+possession chain visible in the edge log. On a forced hold: EXACTLY one
+bones::release per hand (via the hands tick's own edge - the s29 lesson),
+re-arm clean, the flourish chord SUSPENDED (A passes to interactive prompts
+- the raffle lesson; new core seam `set_flourish_chord_suspended`); HEAD
+RADIO both modes proven under `head rot 30` (fixed = authored rot untouched,
+look = additive compose; default look, key `cineHeadLook`, F10 radio).
+aim/laser/fire substitutions carry the same one-line hold gates (hands-gate
+shape); their runtime A/B rides the headset cinematic run. `bsicine
+status|force|head look|fixed`.
+
+**Traps and notes:** the SIM PAD OUTAGE (harness, not the mod): three
+consecutive boots stopped calling XInputGetState entirely (bridge test-press
+composes nothing because compose_over never runs); same binaries polled fine
+in earlier boots; XUserOptions byte-identical. Cost this session: the chord
+consumption A/B and the aim-subs-freeze check moved to the headset
+checklist. Boot menu state still VARIES (two boots straight into the save,
+two via MAIN GAME -> CONTINUE). The dumpframe-vs-flash timing chase (1 Hz
+command poll) never caught a hurt-flash frame - the gfx_hud census is the
+instrument that answered it instead.
+
+**NEXT SESSION:** the user's headset verdicts on all four items (checklist
+in TESTING "S52"); the calibration save (cycle the cheated arsenal, tune
+each weapon, save in-game); then the remaining I9 surface per verdicts
+(subtitles in stereo, upgrade/vending menus, the attract Bink visual
+confirm, the raffle interactive prompt) and the parked polish items
+(FOV-edge, FX-origin) per user priority.
+
+### Infinite: state after session 51 (kept for the record; superseded by s52 above) (the SHOULDERS killed, the FOV-edge discriminators + edge telemetry shipped, the FX record lane exonerated; branch `si51-inf-shoulders-edge-fx`, merged into the s52 line)
+
+**Session 51 (2026-08-10, overnight) worked the three s50-handoff items in
+strict order; all three landed flat-proven and committed. Checklist in
+TESTING "S51". A power loss mid-session cost nothing (all state on disk).**
+
+**1. THE FIRE-SWING, ROUND 2 - fixed (commit cfa2964).** The new all-bones
+instrument (`bsibones travel all [secs]` - per-bone peak table over the whole
+bank, sorted worst-first) named the real mechanism in ONE shot: with the s50
+anchor glue ON, the LEFT ANCHOR reads 0.10 deg but the rest of the left chain
+swings 74-133 deg / up to 87.7 cm (Larm21 133.54) - the corr cancels only the
+anchor's ABSOLUTE motion, and the fire anim's ANCHOR-RELATIVE arm articulation
+passes through by design. The chest (the only undriven bone) measured 0.00 -
+the s50 "engine-owned bones" theory is FALSIFIED. Fix: the +1.2 s ready
+capture now banks the WHOLE hand's atoms; during the 1500 ms fire window the
+compose substitutes them for the live source (corr collapses to identity) -
+the hand renders its ready articulation rigidly on the controller. A-B-A:
+FULL = left 0.00-0.16 deg / `anchor` mode = the exact 133.53/95.58 signature
+back / FULL again clean; flourish still 8.43 img-diff; stance 4.5 min idle =
+0 L-cluster movers. Levers: `bsibones fireglue on|off|full|anchor` + two F10
+checkboxes. Known feel change to judge: the right hand's residual recoil
+articulation is frozen too during the window.
+
+**2. THE FOV-EDGE DISCRIMINATORS (commit a90322b; ENGINE_NOTES s51 part 2).**
+Three instruments, none claiming the fix, all flat-verified on the sim:
+- **Hand ref quad** (`bsicam handquad on|off|l|r`, F10): core parks a 1.5-deg
+  compositor quad AT the located grip per present. Sim: quad == grip to 1e-4
+  across three stations. In-headset one-look: quad-vs-hand SEPARATE = the
+  projection/submission lane is guilty; TOGETHER = the composed hand position
+  itself bends.
+- **VDXR view logger** (`bsicam viewlog [n]`): bounded burst of located
+  per-eye pose/fov + derived eyeSep/CANT/fov-asymmetry. Sim null: 0.0630 m
+  lateral, cant 0.0000.
+- **THE EDGE TELEMETRY LANE** (`bsicam edgelog on|off`, new edgelog.cpp):
+  ~30 Hz in-memory ring -> 110-column TSV on `off` (located views, submitted
+  tags + claim, consumed head pose, written camera + per-eye cameras, grip
+  pose, composed model targets, component L2W, frame ids). Sim sweep null
+  baseline banked: lateral chain EXACTLY linear at worldScale (rms 0.000),
+  tags identity, eye pair exact. The headset run instructions are in the
+  checklist - after the run the TSV alone lets the next session find which
+  stage's numbers bend where the perceived depth bends.
+
+**3. THE FX-ORIGIN FORKS - all three falsified (commit f7a232a; ENGINE_NOTES
+s51 part 3).** The s50-decoded record lane is EXONERATED at runtime: the
+effect playback tick 0x436490 NEVER RUNS (hooked probe-only, calls=0 through
+a held charge), and the per-record update's entire live population is six
+SkeletalMeshActor scene records with NULL location buffers (5 live callers of
+194 static; 0x5EC393 dominant). No plume record exists in the lane, so the
+planned one-poke experiment had no target - the honest outcome. SIX lanes now
+falsified for the frozen family's writer. Banked instruments: `bsifx u dump`
+(all-records), `bsifx u callers` (runtime census), `bsifx t probe|dump|status`
+(tick + table walker). Defaults unchanged: bsifx ON, u/t OFF.
+
+**Traps hit and documented:** the command.txt trailing-newline token trap
+(recorder.h) bit TWICE (edgelog `on`, bsifx `u`/`t` lane detection) - fixed
+and noted in ENGINE_NOTES; the travel sampler cadence is ~1350/s (camera
+detour fires many times per frame), fine for peak detection but not a frame
+counter.
+
+**HEADSET VERDICTS on the s51 build (user, 2026-08-10, same night):**
+1. **SHOULDERS: PERFECT** - no jump on shots OR plasmid throws. The
+   full-hand substitution ships as the default; no tuning requested.
+2. **FOV-EDGE DRIFT: DEFERRED by the user to a polish milestone** -
+   "playable for now". The discriminator instruments (hand quad, viewlog,
+   edgelog) stay shipped and OFF; run them when the item is picked back up.
+3. **FLOURISH: ACCEPTED at lead 200 / tail 4500** - defaults stand.
+4. FX-origin: user asked for a plain-terms explanation + a decision on
+   whether to keep hunting (see the s51 close-out discussion).
+
+**NEXT SESSION:** per the user's calls - FOV-edge and FX-origin both sit
+behind the user's prioritization; the live FX leads remain (the 0x5EC393
+caller loop, a render-side particle transform hunt) with all instruments
+banked.
+
+### Infinite: state after session 50 (kept for the record; superseded by s51 above) (three fixes shipped - eye tags, THE FLOURISH BUTTON, the fire-swing kill; FX-origin re-scoped by the user; branch `si50-inf-fx-edge-flourish`, NOT merged)
+
+**Session 50 (2026-08-10, overnight) worked the s49b items in strict order.
+Item 1 (FX-origin) hit the ask-when-blocked rule mid-session; the user
+answered "re-scope, move on" - items 2, 3 and the mid-session item 4 then
+ALL landed with flat proof. Everything below awaits the headset verdict
+(checklist in TESTING "S50").**
+
+**SHIPPED THIS SESSION (all default ON, each with its own A/B lever):**
+1. **Rendered-pose eye tags** (item 2, the FOV-edge drift lever) - the
+   projection layer now describes the parallel camera the game actually
+   renders (located-pair midpoint +- ipd-slider/2) instead of the runtime's
+   raw located per-eye poses. The compose chain itself was exonerated for
+   the sign-flipping depth symptom; the pose-tag claim-vs-render violation
+   is the one mechanism found that produces it (cant/IPD delta -> off-center
+   disparity error, near-field visible). Identity on the sim (flat-proven);
+   core change additive + opt-in, BS1/BS2 untouched. A/B: `bsicam eyetag
+   on|off`.
+2. **THE FLOURISH BUTTON** (item 3) - **left thumbrest (touched) + A**, or
+   `bsiflourish`. Why it was lost: under the clamp a SubtleFidget play is a
+   visual NO-OP (the response lives in the lowered subgraph). The shipped
+   recipe holds 'Lowered' at 1.0 for a 6.3 s window (clamp-value override),
+   fires the engine impl after a 1.8 s blend-in, then the kill resumes.
+   Flat A-B-A: baseline -> 8.15 (full gesture) -> 0.5 (ready, no stick).
+   A is consumed while the rest is touched (no jump under the chord); the
+   SetTimer re-arm is measured benign. BS1/BS2 pads untouched.
+3. **The fire-swing kill** (item 4, user mid-session: "shooting shouldn't
+   affect the left hand") - flat-measured 95.58 deg of left-anchor rotation
+   through one right-hand shot (idle 0.00); the engine's fire anim moves the
+   authored left grip and the compose passed it through. Fix: the s46 glue
+   correction, FIRE-SCOPED (1500 ms around each player shot) so the
+   flourish/cast anims stay untouched. A-B-A: ON 0.00 / OFF 95.58 / ON +
+   flourish still full-amplitude. A/B: `bsibones fireglue on|off`.
+
+**ITEM 1 (FX-origin) - re-scoped by the user, banked for a later session:**
+
+**What is PROVEN and banked (flat, this session):**
+- The held vigor charge is the on-demand repro exactly as predicted. The FX
+  split cleanly in two: **riders** (fingertip flames, weapon embers - socket
+  FX on the child model components; they follow the driven hand ALREADY) and
+  the **frozen family** (the charge plume, the vigor-ready sparkle, and per
+  the headset the muzzle flash + tracer) which tracks the CAMERA anchor at
+  the authored offset - with the drive released, the authored arm lands
+  exactly inside the flame.
+- **Every strong theory for the frozen family's position source was
+  falsified by measurement** (ENGINE_NOTES "s50"): tick-time SpaceBases reads
+  (the engine's eval almost never restamps SpaceBases while the drive runs -
+  cleanTicks 12181/12183 on the new instrument), GetPlayerViewPoint consumers
+  (caller census identical with/without charge), every reachable Attachments
+  array (FP comp -> only the 3 child models; children/pawn comps/actor
+  Components -> empty/no PSCs), the script-side XEmitterPool (empty). The
+  effect playback tick was decoded to its per-record update (rva 0x3EC4C0,
+  hooked probe-only as `bsifx u`) - and ALSO exonerated: ~2 calls/s, none
+  first-person, while the plume updates at 90 Hz.
+- **New engine knowledge:** the attachment walker (rva 0x2A1B20, vtable slot
+  43) + FAttachment layout; the FP rig's child-model architecture (vigor hand
+  at L_Grip, prop at PlayerHandsLarm22, weapon at R_Grip - why holdables ride
+  for free); ParentAnimComponent redirect (+0x2F4/+0x2F8/+0x2FC); the vigor
+  IS an XWeapon (slot 0 = Plasmid_EnrageFounder - the save's "devil face"
+  vigor is ENRAGE; slot 1 = PistolFounder); the effect manager + tick-helper
+  + record-table layout. All with derivations in ENGINE_NOTES.
+- **Shipped code (all bioshockinf-local):** `bsifx` - the attach-walker hook
+  (default ON: the dirty-count instrument + eval-restamp edge cover, honestly
+  documented as NOT the family fix) and `bsifx u` - the effect-update probe
+  (default OFF, next session's instrument). Both behind prologue + arity
+  gates, plus a NEW vtable-slot identity gate on the walker.
+
+**Session harness notes:** award dialogs REPLAY on every checkpoint load
+(~4 modal `btn a press` dismissals before any input lands); Enrage HOLD =
+charge, RELEASE = throw (a stray release burned the Blue Ribbon carpet and
+drained the salts - `Restart Checkpoint` refills them); the game eats
+trigger edges while unfocused-paused, so sim input needs the
+foreground-then-edge pattern (focused-input.ps1 in the session scratchpad).
+
+**The user's mid-session call: re-scope (option c).** The hunt resumes in a
+later session from the banked forks: probe ALL records through the
+effect-update seam (rva 0x3EC4C0, `bsifx u` - installed, probe default off)
+and its other callers, instrument the decoded tick table (helper vtable
+slot 36 -> rva 0x436490, stride-0x74 records), and the record stamp-pair
+globals (0x135DC68/6C). The riders half of the family (weapon + vigor-hand
+models and their socket FX) follows the driven hand ALREADY.
+
+**HEADSET VERDICTS on the s50 build (user, 2026-08-10, same night):**
+1. **FLOURISH: WORKS** - the chord fires the gesture. The ~2 s lead was
+   rejected ("bad"); s50b response: the lead/tail are now LIVE-TUNABLE
+   (`bsiflourish lead <ms>` / `tail <ms>`) and the default is **200 ms**
+   (flat-proven full amplitude at 200; the s50 1800 was over-cautious).
+   Re-judge; tune live if the start reads clipped.
+2. **FIRE-SWING: STILL PRESENT** - "firing makes the arm/SHOULDERS jump and
+   come back". The fire-glue provably zeros the DRIVEN ANCHORS' swing (the
+   A-B-A stands), so what the user sees must live elsewhere: the prime
+   suspect is the UNDRIVEN bones (chest/clavicle - "shoulders" - which the
+   engine owns by design and the fire anim moves), and/or engine restamps
+   beating the rewrite cadence render-side. NEXT: an all-bones peak
+   instrument (travel currently samples only the two anchors), then decide
+   whether to drive/correct the chest bones fire-scoped too.
+3. **FOV-EDGE DRIFT: UNCHANGED** - worst on the LEFT (weapon pulls toward
+   the camera "by a lot"). The rendered-pose eye tags did not move the
+   symptom - consistent with VDXR already reporting parallel same-IPD views
+   (the fix is identity there, exactly as on the sim). The pose-tag
+   mechanism is now EXONERATED alongside the compose chain and the lens
+   split. NEXT instruments: (a) log the actual VDXR located view poses/fovs
+   in a headset session (one command + the log tells whether any per-eye
+   cant/IPD delta even exists); (b) a HAND-ANCHORED reference quad (the aim
+   dot machinery, parked at the grip pose) - in-headset, if the quad and the
+   hand model separate laterally the error is in the projection/submission
+   lane, if they move together the hand's world position itself moves: one
+   look, two hypothesis families discriminated.
+
+Also flat-found while probing: the muzzle SMOKE trail is another
+camera-anchored frozen-family member (visible in a slow-pace capture).
+
+**NEXT SESSION:** (1) the fire-swing's undriven-bones instrument + fix,
+(2) the FOV-edge discriminator instruments above, (3) flourish lead verdict
+(tuner shipped), then the FX-origin banked forks per the user's call.
+
+### Infinite: state after session 49b (kept for the record; superseded by s50 above) (THE STANCE IS KILLED - the 'Lowered' clamp, A-B-A proven, ships default ON; branch `si49-inf-stance-lens-tracer`)
+
+**Session 49b (2026-08-10, continuing s49 on the user's priority-1-only
+directive) KILLED THE STANCE AT THE ROOT.** The mechanism, named end to end:
+the 101-deg stance is the **lowered-idle settle inside the FP Morpheme
+graph** - the game drives the control param **'Lowered' (id 2)** into the FP
+network at 90 Hz; a fire posts 0.0 (raised) and it ramps back to 1.0 in ~7 s;
+the graph then settles into the stance 150-240 s later with NO message
+entering the network at the onset. **The kill: the funnel hook rewrites every
+FP-network 'Lowered' post to 0.0** - the graph stays in the raised subgraph
+(the ready pose) where no settle exists. A-B-A on the live save: clamp ON =
+435 s idle, 0/43 bones (every unclamped leg entered within 150-240 s);
+clamp OFF = the stance returned on schedule with the exact L_Grip 101.11
+signature; the shipping auto-derive (descriptor at attachment+0x2CC,
+name-verified, refuse-on-drift) armed itself 36 ms after the rig resolve and
+held a 407 s green leg with the fire/aim battery clean. **Ships DEFAULT ON**;
+`bsifidget req clamp off` is the in-headset bisect (F10: "STANCE KILL"
+checkbox). The boot pose still needs the established fire-once ritual (the
+clamp prevents re-entry, not exit from the pre-settled load state).
+
+Also this session: the Morpheme message-lane fully mapped (the inner post
+funnel 0x5CED00, typed control-param messages, the wrappers, the engine's
+descriptor cache on the attachment), falsifications 7 (funnel silent at
+onset) and 8 (TwoHandFallback_Weight - which A-B-A-proved to own the s48
+"40-deg alert-relax" pose pair, on demand via the new `bsifidget post`),
+and the manual param-poster experiment platform. Eight falsified levers now
+documented in ENGINE_NOTES; the ladder ended at the real root.
+
+**HEADSET VERDICTS on the s49b build (user, 2026-08-10):**
+
+1. **THE STANCE KILL IS CONFIRMED - "everything looks awesome, the fix
+   worked as I expected."** No regressions observed; both hands unaffected;
+   the idle stance never enters; normal idle animation remains and reads
+   right. The 40-deg alert-relax lane is also gone (the user confirms both
+   hand drifts vanished together - consistent with both riding the lowered
+   subgraph). Merged to `bioshock-infinite` per the user's call.
+2. **FOV-edge drift, refined observation (the next lens-session's input):
+   it is ASYMMETRIC by direction.** Moving the RIGHT hand LEFT of center:
+   the hand model comes CLOSER to the face (very visible, feels less
+   controlled); moving it RIGHT: the model reads pushed slightly AWAY.
+   Near/far error that flips sign with horizontal off-axis direction - a
+   translation-space or basis asymmetry, not a symmetric scale effect;
+   projection split already eliminated (s49 one-lens verdict).
+
+**Post-verdict additions (user, 2026-08-10, same night):** vigor CAST anims
+confirmed normal under the clamp. Two new items from the headset: (a) the
+occasional VIGOR FLOURISH (the 'SubtleFidget' show-off action) is lost with
+the idle lane killed - user asks for it on a BUTTON (thumbrest + key; the
+trigger function is known and callable - reflect::call_on_object(attachment,
+"StartSubtleFidget") reproduced it all session; needs a raised-subgraph
+visual test + must not re-arm anything behind the clamp); (b) **the vigor
+CHARGE/READY effect freezes in place** while holding the vigor key instead
+of following the hand (tested with the fire vigor) - same FX-origin family
+as the tracer: engine-side FX positions are still camera/authored-anchored
+while the model rides the driven bones. The hold-to-charge FX is a BETTER
+flat test subject than the short-lived tracer streak (persistent,
+reproducible on demand).
+
+**NEXT SESSION**: (1) THE FX-ORIGIN SEAM - one origin for model, laser,
+bullet, tracer, muzzle flash AND the vigor charge FX (recon banked in s49:
+walk XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot;
+use the held fire-vigor charge as the persistent flat repro); (2) the
+FOV-edge drift with the asymmetry observation above as the entry point
+(check the hand-model compose chain for a view-dependent term - the sign
+flip suggests an eye/head-relative offset entering the model transform, not
+the lens); (3) the flourish-on-a-button feature (small, needs its visual
+test). Later: wrist refinement, SingleLineCheck.
+
+### Infinite: state after session 49 (kept for the record; superseded by s49b above) (StartSubtleFidget DECODED and falsified as the root, the Morpheme residual named, the gameplay lens verdict: ONE frustum; branch `si49-inf-stance-lens-tracer`)
+
+**Session 49 (2026-08-09, late) worked the three s48 verdicts in priority
+order. Zero core changes, all bioshockinf-local, nothing merged.**
+
+1. **STANCE (priority 1): two more root levers built, both FALSIFIED live -
+   six falsifications total - and the real mechanism cornered.** Offline
+   derivation (exec census re-run, zero boots): StartSubtleFidget is a NATIVE
+   function; its impl (0x51BA00, fully decoded in ENGINE_NOTES) IS the
+   scheduler - plays anim action 'SubtleFidget' (41347) by name on the runtime
+   XMorphemeNetwork (component+0x228) and re-arms its own SetTimer from
+   SubtleFidgetTimeRange. Two MinHook choke points built with positive
+   controls green end-to-end (`bsifidget impl ...` at the impl, `bsifidget
+   act ...` at the network's play-by-name entry 0x5D1520 with caller-RVA
+   attribution): **blocking the impl - stance re-entered with ZERO impl calls
+   (falsification 5); blocking the action by name - two natural plays refused
+   and the stance re-entered anyway (falsification 6).** The pose mover is a
+   MORPHEME-INTERNAL transition (the network's own state machine; the FP
+   request vocabulary has rqHandFidget staked). Next rungs: the Morpheme
+   request/transition layer off the runtime network, or the "rqHandFidget"
+   string-xref hunt. Both hooks ship as default-probe instruments.
+2. **FOV-EDGE DRIFT (the lens question): the missing s41 check finally RAN,
+   in gameplay, and the projection-split hypothesis is DEAD** - bsilens with
+   the viewmodel rendering: 301 rounds, lens1 support 100% (tanH 1.1810 /
+   tanV 1.2634, vertical-referenced law holds), **lens2 0%. No foreground
+   frustum exists on this build**; BS1-style counter-modeling is
+   measured-unnecessary. The pixel-level model-vs-dot station protocol was
+   attempted (6 stations x 3 isolation captures) but the live scene's ambient
+   motion (NPCs/flags/viewmodel sway) drowns window-grab isolation diffs -
+   the symptom stays open as a headset-side/compositor question with the
+   game-side mechanism eliminated.
+3. **TRACER (recon): vocabulary confirmed live; the dispatch is pure C++ (no
+   script natives); weapons reachable via pawn+0x314 -> XInventoryManager
+   (+0x1FC melee, +0x200..+0x20C four XWeapon slots - corrects the s45b
+   pawn+0xD8 note); TracerFX/TracerSocketNames/MuzzleSocketName are NOT on
+   XWeapon's 950-field chain** - they live on the FP weapon model or an FX
+   definition object. Next: identify the equipped slot, walk
+   XWeaponModelFirstPerson, bsidiff RecentTracerParticles across a shot.
+4. Tooling landed: `bsichase` pointer-chain walker, `bones::component()`,
+   both fidget hooks; boot recipe hardened (click-driven menu navigation -
+   the Enter-spam wedge is beaten by game-shot + game-click MAIN GAME ->
+   CONTINUE). Traps recorded: `bsiaim dotdist` is eaten by the `dot` prefix
+   branch (turns BOTH dots off); the PE vtable filter breaks bsicallat's
+   occupant gate (`bsifidget off` first); a game-cmd write during load-time
+   pump lag is eaten silently (re-send after resolve).
+
+**NEXT SESSION, in priority order**: (1) the Morpheme-internal stance
+transition - hunt the request/transition machinery off the runtime network
+(raw bsichase descent) and/or the rqHandFidget poster via string xref; the
+apply plumbing and both choke hooks are ready for whatever it names.
+(2) The tracer feed: equipped-slot identification, the FP weapon model walk,
+RecentTracerParticles bsidiff across a shot, then the seam choice.
+(3) The FOV-edge symptom as a headset/compositor question (the game
+projection is exonerated). Later: wrist refinement, SingleLineCheck.
+
+### Infinite: state after session 48 (kept for the falsification record; superseded by s49 above) (VERDICT FIXES: locomotion pinned, wrist bend reworked, one hide mode - and the stance root hunt narrowed to the UBOOL; branch `si48-inf-verdict-fixes`)
+
+**Session 48 (2026-08-09, same night) worked the six S46+S47 headset verdicts
+(recorded verbatim in the s47 section below). Zero core changes, all
+bioshockinf-local, nothing merged.** Landed and flat-proven:
+
+1. **Locomotion swim FIXED (verdict 2)**: measured 9.26 UU of rigid model wobble
+   at walk speed, mechanism named (one-frame phase skew between fc.engineLoc and
+   the attachment L2W - the lag probe read the skew directly, 11.2 UU walking,
+   0.00 stationary), fixed by composing the hand relative to the WRITTEN camera
+   (camPin, default ON, `bsibones campin off` bisects). 9.26 -> 1.72 UU.
+2. **Wrist sliders now bend the WRIST (verdict 3)**: the extra quat moved from
+   the arm chain to the hand cluster - hand tilts about the grip, forearm
+   stays. Flat diff: cluster-only rotation, zero arm entries.
+3. **One arms-hide mode (verdict 5)**: style radio deleted; pinch-behind-wrist
+   with an F10 depth slider (`bsihands capdepth`, default 10 cm, 0 = old mode).
+4. **Fire origin (verdict 4)**: flat-proven the TRACE follows the controller
+   (engine origin frozen, substituted origin moved 43.8 UU with a 30 cm hand
+   move). The headset symptom is the visible TRACER FX spawn - vocabulary
+   staked out in ENGINE_NOTES, the seam hunt is next session's item.
+5. **Dynamic dot (verdict 6): infeasible via script on this build** - `Trace`
+   is stripped from the name pool (verified). Machinery built and parked; it
+   arms when a UWorld::SingleLineCheck C++ derivation lands.
+6. **THE STANCE (verdict 1) - root found to be NATIVE, kill one step away.**
+   The glue is retired (default off, user verdict). The ProcessEvent vtable
+   filter was built, proven to block the StartSubtleFidget dispatch when it
+   fires - and then the clean-boot A/B FALSIFIED it as the root: the stance
+   re-entered in 8 min with ZERO dispatches (events=1, startSeen=0). The anim
+   starts natively; the surviving root is the engine's own
+   `bDisableSubtleFidget` UBOOL. The property-chain walker (bsiprop) and the
+   bit lever (bsipropbit) are built and verified up to the super-chain walk;
+   **finishing needs one booted save** - the last two flat boots wedged in
+   menu states (see the trap note in ENGINE_NOTES; the save/menu state may
+   have drifted - verify the save on next boot). ALSO found: a second idle
+   lane - a uniform 40.00 deg post-fire alert-relax of the whole left arm
+   within ~90 s, distinct from the 101.11 stance; recorded as the next
+   suspect if a drift survives the UBOOL.
+
+**s48b (same night, user granted the machine): the property-side hunt ran to
+completion and narrowed further.** The UProperty layout was fully derived (the
+first walk's links were falsified by name semantics and re-anchored - table in
+ENGINE_NOTES) and the walker now covers full super chains (635 fields on the
+attachment class, 2053 on XHuman). Measured on the live save, in order:
+`bDisableSubtleFidget` (attachment+0x214, mask 0x1) SET -> stance returned;
+`SubtleFidgetTimeRange` (attachment+0x26C) read **{120, 240} s - exactly the
+measured 2-4 min re-onset window, the mechanism confirmed end to end** -
+starved to {1e9, 1e9}, write verified held -> stance returned anyway (the live
+scheduler reads neither instance property); the ObjectArchetype (the spawn
+template, authored {120, 240}) starved too, bools set on both -> **stance
+returned again (+5:20). Four property-side hypotheses falsified with held
+writes** - the consumer keeps its own timing copy (the anim-tree node).
+fidget.cpp's tick_apply (instance + archetype starve, self-derived offsets)
+ships DEFAULT OFF as the ready plumbing for whichever object the anim-tree
+hunt names; `bsifidget root off` restores authored values.
+
+**HEADSET VERDICTS on the s48 build (user, 2026-08-09, late):**
+
+1. **Locomotion fix CONFIRMED** - "great". camPin is headset-verified.
+2. **Wrist sliders better** - refinement wanted later, not now.
+3. **STANCE stays PRIORITY 1** - it makes testing everything else harder; the
+   directive is unchanged: stop the TRIGGER, at the root.
+4. **NEW: model/aim drift near the FOV EDGE** - the hand/gun model does not
+   move uniformly with the controller; approaching the edge of the view it
+   pulls closer to the headset and drifts off the aim. The user flags it as
+   the BS1-shaped problem. NOTE: the "no fg lens on Infinite" conclusion
+   (s41/s44) predates the current stereo lens levers - and the standing rule
+   says a lens question is never settled by a mono check. Re-open as a LENS/
+   PROJECTION question: measure IN STEREO with the hand commanded to edge
+   stations, model-vs-dot screen positions compared (the sim's per-eye
+   captures + img metrics), before any counter-modeling is even considered.
+5. **The VISIBLE bullet origin still reads fixed in space** - it does not ride
+   the controller. The TRACE is flat-proven to follow the hand (43.8 UU for a
+   30 cm move, this build), so this is the tracer/muzzle-FX spawn seam -
+   confirm with the staked GNames vocabulary and substitute or re-parent it.
+
+**NEXT SESSION, in the user's priority order**: (1) the stance trigger kill -
+the XFidgetAnimationSelection anim-tree node (it holds its own copy of the
+{120, 240} timing, sampled at creation; find it off the component's anim tree,
+starve/neutralize THERE - the walker toolchain and apply plumbing are ready);
+(2) the FOV-edge model/aim drift - stereo edge-station measurement first;
+(3) the tracer-FX spawn seam. Later: wrist slider refinement, SingleLineCheck
+for the dynamic dot.
+
+### Infinite: state after session 47 (I8 part 3 - kept for the verdict record; superseded by s48 above)
+
+**Session 47 (2026-08-09) worked the I8 remainder that does NOT ride the pending
+s46 headset verdicts. Nothing verdict-riding was touched (glue algebra, fire
+substitution, wrist-cap styles, wrist sliders byte-identical), ZERO core changes,
+nothing merged. Evidence first on every item; full numbers in the s47 session-log
+entry and ENGINE_NOTES ("s47" sections).**
+
+1. **Boot-time glue arming: CLOSED as impossible, by measurement.** The
+   boot/checkpoint-load pose IS the 101.11 deg stance (measured at 23 s
+   post-resolve, stable, and at 2 min never-fired) - a resolve-time qRef capture
+   would pin the stance and invert the glue. First-shot arming stays; the
+   pre-first-shot stance is now a certainty, not a maybe (TESTING note upgraded).
+2. **The reapply-burst gate (carried s45b): CLOSED measured-no-defect.** New
+   staleness counters in `bsibones` status: 33,255 replays across every reachable
+   gap class, skippedStale=0, maxAge=63 ms. The edge-triggered release is the
+   real protection; the 100 ms gate is untouched backstop.
+3. **ANIMTRANS built from evidence, ships OFF and unpersisted.** New `bsibones
+   travel` peak tracker measured the discarded authored anchor travel: reload
+   R 14 cm / L 48 cm, fire R 3-5 cm. The lever passes it through (dp base = the
+   ready anchor translation banked with qRef; anim mode + capture + 120 UU
+   fallback). Driven A/B flat: off = pinned, on = authored travel to 1 UU with
+   rotation still glued. `bsihands animtrans on|off` + F10 checkbox; no preset
+   key (the precedent stands).
+4. **World-scale groundwork (I8 open box)**: 1 m -> exactly 150.0 UU re-verified;
+   the cm->UU audit table (ENGINE_NOTES) shows every adapter conversion on the
+   live fc.worldScale; stale aim.cpp comments corrected. Calibration itself =
+   headset, box stays open.
+5. **Per-weapon profile SCAFFOLD** (I9 prep): class-name-keyed empty table +
+   `reflect::class_name_of` + fire-seam latch + `bsiprofiles`. Measured: the
+   seam's Weapon param is NULL on ordinary shots -> pawn-side source is I9 work.
+6. **Battery green** on the final build (substituted first shot, both captures,
+   0.0000 deg per-hand deviations, no new dumps, inis byte-identical).
+
+**HEADSET VERDICTS IN (user, 2026-08-09, S46+S47 tested together) - six findings,
+worked from s48 on branch `si48-inf-verdict-fixes`:**
+
+1. **The stance glue is REJECTED as the approach.** It holds the wrist/grip but
+   the SubtleFidget anim still plays on the rest of the model (arm rises, left
+   wrist reads wrong). User directive: kill the stance at the ROOT - stop the
+   code from ever triggering the anim (it fires on an idle timer) - instead of
+   compose-side glue that "will break with different weapons and is currently
+   breaking since it affects the whole model."
+2. **Locomotion moves the model**: walking with the left stick shifts the
+   hands/weapon - unacceptable in VR (affects aim). Stick motion must not
+   disturb the model.
+3. **The wrist sliders move the ARM, not the wrist** - they read as sweeping the
+   whole arm rather than bending the wrist; rework.
+4. **Fire origin: correct on a static screen, but NOT following the controller/
+   model** - the visible bullet still leaves a fixed screen point instead of
+   riding the weapon.
+5. **Arms hide: remove the style choice.** Style 0 (collapse-at-grip) still bad
+   (skin dives into the wrist); pinch-behind-wrist is decent but shows a
+   stretch as if still connected - keep it as the only mode and fix the stretch
+   if possible.
+6. **Aim itself is FIXED - hole lands on the dot.** New request: a DYNAMIC dot
+   (project to the actual hit point) because a fixed-distance dot is hard to
+   read against far walls; assess feasibility honestly.
+
+**NEXT after the headset verdicts**: per-weapon profile VALUES + the arsenal save
+(I9 - the user produces the save), world-scale calibration in the headset, the
+test-from-game-start pass, and whatever the verdicts re-scope.
+
+### Infinite: current state after session 46 (I8 part 2: STANCE KILLED, BULLETS FROM THE GUN, wrist levers built - all flat-green; branch `si46b-inf-stance-origin`, headset verdict pending)
+
+**Session 46 (2026-08-09) worked exactly the four open s45b headset findings.
+Everything bioshockinf-local, ZERO core changes, all levers behind toggles, no merge.**
+
+1. **FINDING 1 CLOSED FLAT - the persistent stance is the SubtleFidget lane, and the
+   READY-POSE GLUE kills it.** Measured with the new `bsibones snap/diff` (drive off,
+   raw bank): the stance is a discrete second pose of the LEFT hand - grip+palm rotate
+   RIGIDLY 101.11 deg with finger curl on top, re-entering ~2.5 min after a shot and
+   HOLDING; `bsicallat <attach> StartSubtleFidget` reproduces it on demand. Console
+   `set`-by-name is DEAD on this retail build (even the `bHidden` positive control
+   nulled under `bsidiff`), so the lever is compose-side: fold
+   `corr = qRef x conj(src[anchor])` into the bones compose per hand - the anchor pins
+   to controller x captured-ready, ALL relative articulation (fingers, reload, the
+   vigor flourish's articulation) passes through by construction. qRef AUTO-CAPTURES
+   1.2 s after every player shot (the fire seam signals it; the engine itself resets
+   the stance on fire). **A-B-A flat: 0.33 deg drift through a stance onset with the
+   glue ON -> uniform 101.11 deg the instant it goes OFF -> 0.06 deg back ON. Default
+   ON.** `bsibones glue on|off|capture` + F10 checkbox + capture button.
+2. **FINDINGS 2+3 CLOSED FLAT - the fire-ORIGIN seam.** Derivation (offline dump
+   re-run + thunk disasm, full trail in ENGINE_NOTES): `AXPawn::
+   XGetWeaponStartTraceLocation` impl 0x5344A0 - its body calls the camera's OWN
+   GetPlayerViewPoint (the hooked kGetPlayerViewPointRva!), so the trace origin IS
+   the camera eye - the diagnosed parallax root, read from the disassembly. The
+   Floating variant (13 C++ callers) routes through the same impl = one choke point;
+   the camera never calls it, so no feedback hazard. Probe measured live: ONE call
+   per player shot, engine origin 77.4 UU (51.6 cm) from the hand - the exact
+   headset hole-vs-dot magnitude. `bsifire on` substitutes xyz with the SAME
+   ray_pose_from_xr origin the dot uses (latched hand shared via
+   aim::last_aiming_hand, origin sliders cm->UU, 200 UU cap for melee/Sky-Hook
+   short traces, player-pawn gate - NPCs call the same native). Both hands verified
+   (vigor cast routes through the seam too, left origin mirrors right). **SHIPS
+   ARMED**; `bsifire off` is the bisect lever. New fire.cpp/.h.
+3. **FINDING 4 (wrist cap): three hide styles behind `bsihands hidestyle 0|1|2`** +
+   F10 radio (arms=hide only). Flat captures: style 0 (current collapse-at-grip) is
+   a clean taper; **style 1 (keep forearm twist) is BROKEN - a giant skin hood**
+   (kept twist bones stretch skin against the collapsed upper arm; capture in the
+   scratchpad); style 2 (collapse ~10 cm behind the wrist) gives a slightly longer
+   clean stub. Headset A/B is styles 0 vs 2; style 1 stays for completeness only.
+4. **FINDING 5 (left wrist): the per-hand ARM-RELATIVE wrist quat is BUILT and
+   inert** - `bsihands wrist l|r <p y r>` + F10 sliders, an extra quat in the ARM
+   chain compose only, about the grip (qtcArm = qtc x W in quat AND dp term).
+   Smoke: 20 deg commanded -> EXACTLY the 4 left arm bones at 20.00 deg, cluster
+   and right hand untouched. NOT persisted (defaults 0; a preset key waits until
+   the headset says it earns its keep). Expectation: finding 1's glue fixes the
+   wrist angle outright - the sliders are the fallback tuner.
+5. **New instruments** (all game-thread gated): `bsibones snap <0-3> [written]` /
+   `bsibones diff <a> <b>` (raw-bank or written-bank atom snapshots, sign-safe
+   geodesic angles, rig-generation interlock), `bsidiff <hexaddr> <dwords>`
+   (snapshot-compare, prints only CHANGED dwords - the UBOOL hunt instrument; the
+   attachment's noise baseline is 2 dwords in 2 KB).
+6. **Non-regression flat battery, all green on the shipping build**: three stations
+   including full rolls - `aimRayMaxDevDegL/R = 0.0000 both hands` (per-hand fields;
+   the legacy single field reads 86 deg with two dots, the documented artifact);
+   scale 0.5 uniform on every right-hand bone; arms follow/hide/game transitions;
+   per-hand release + re-enable; SR gates 90/90/180/90; single rig resolve, zero
+   fails; first shot on the shipping build SUBSTITUTED with both ready poses
+   captured; game alive, no new crash dumps (the three in CrashDumps predate the
+   session: 00:15-00:46).
+7. **Traps this session**: an EMPTY command.txt (zero bytes) crashes launch-game.ps1
+   (`.Trim()` on null) - DELETE the file, never truncate it; the offline native-dump
+   regex misses pooled-suffix exec names (2079 vs the s34 census 2647 - e.g. the
+   Floating variant), so use the dump to FIND and `bsinative` to VERIFY; game-shot
+   saves extensionless files (img-diff takes them as-is).
+
+**HEADSET PENDING (next session opens with it): the S46 checklist in
+docs/bioshockinfinite/TESTING.md.** Judgments owed: stance gone with transients
+alive (fire/reload/VIGOR FLOURISH - flagged risk: if the flourish died, the glue ate
+its rigid component; report and we re-scope), bullets from the gun, hole ON dot at a
+near and a far wall, wrist-cap 0-vs-2, left-wrist feel, the standing non-regression
+sweep. **vrpreset.ini and XUserOptions.ini verified byte-identical at session end;
+nothing else touched.**
+
+**NEXT after the headset verdict**: per-weapon aim/model profiles + the arsenal save,
+animtrans, the reapply-burst gate refinement, world-scale calibration, and the
+test-from-game-start pass (ROADMAP I8's two open boxes).
+
+### Infinite: current state after session 45b (I8 FLAT HALF DONE - hands and weapon OFF the headset, calibration surface live; branch `si45b-inf-hands`, headset verdict pending)
+
+**Session 45b (2026-08-08/09) is the REDO of I8's opening block** (the user discarded
+the original s45/s46 results; branch `si45b-inf-hands` off the s44b tip - the old
+`si45-inf-hands`/`si46-*` branches were left untouched and unread). Everything below
+was derived fresh this session. **ZERO core/tools changes - the whole session is
+bioshockinf-local**, so no BS1/BS2 inertness proof is owed and none could be needed.
+
+1. **THE RIG, DERIVED BY INTERVENTION**: pawn `GetFirstPersonAttachment()` (native,
+   by-name) -> XFirstPersonAttachment actor -> XSkeletalMeshComponent at +0x218 = THE
+   viewmodel renderer: ONE 43-bone skeleton (PlayerHands*, L_Grip 1, R_Grip 22)
+   carrying BOTH hands AND the weapon (HideBoneByName(PlayerHandsChest) removed
+   everything; R_Grip alone removed hand+pistol, forearm stayed). SpaceBases +0x290
+   (32-byte FBoneAtoms; the GetBoneLocation cross-check picked it over LocalAtoms to
+   0.1 UU), LocalToWorld +0x60, RefSkeleton mesh+0x74 (NAME-FLAT - parents all 0,
+   names carry the structure). All in patterns.h with derivations in ENGINE_NOTES.
+2. **THE ORACLES THAT SHAPED THE DESIGN**: Morpheme restamps BOTH banks - trans, quat
+   AND SCALE - at tick cadence even while auto-paused. So BS2's never-adopt-scale rule
+   does not transfer (adoption takes whole atoms), release = stop writing (engine
+   self-heals; BS1's freed-skeleton release hazard is deleted by design), and the
+   drive writes per pass-1 camera dispatch with pass-2 verbatim reapply.
+3. **THE DRIVE** (bones/hands/frame_context.cpp|.h, BS2's shape, zero numbers):
+   FrameContext published once per dispatch by drive_view; the aim ray AND the model
+   consume the same pure chains (trim as a quat in the controller's LOCAL frame, the
+   laser's own algebra). Per-hand everything; cluster = grip+palm+digits by name; arms
+   game/follow/hide (default follow, hide = collapse+zero-scale); adopt-then-compose
+   with qtc = conj(qa) x qt; per-hand edge-triggered release.
+4. **FLAT ACCEPTANCE, ALL EXACT**: ground truth 1.000 m -> 150.0 UU (worldScale 150),
+   zero cross-axis; five stations INCLUDING 60/-90 deg ROLL -> written rotator matches
+   commanded to THE UNIT, aimRayMaxDevDegL/R = 0.0000 at every station both hands;
+   arms-hide leaves hand+gun with no skin web; scale 0.5 shrinks hand AND pistol
+   uniformly about the grip (anchor loc unchanged to the digit - **the BS2
+   inverse-scale drum trap did NOT reproduce; no separate weapon lane needed**);
+   SR gates 90/90/180/90; zero faults.
+5. **STICK-Y: MEASURED, NO DEFECT.** Full stick-up for 3 s - written model pose
+   bit-identical, picture at noise floor. publish_vr_gameplay stays UNCALLED; the
+   take_snap_steps landmine never arises.
+6. **CALIBRATION SURFACE**: F10 "HANDS + MODEL (I8)" (L/R radio + one slider set:
+   trim P/Y/R, offset F/R/U, scale; arms radio; anim checkbox) + AIM block gains
+   per-hand trim P/Y and ray-origin F/R/U (trim rides ray+laser+dot together).
+   **vrpreset registry 9 -> 36 keys** (user-approved batch; animTrans deliberately
+   not persisted - not implemented). Seam verbs: bsihands, bsibones, bsiaim trim/origin.
+7. **New instruments**: bsiarray (TArray walker), bsidump (typed triage), bsicallat
+   parm ECHO (readable returns - it resolved the whole rig in one step), i:/n: arg
+   shapes, and the UClass-fixpoint hardening of object_class_name (a raw cache struct
+   at pawn+0x0D8 walked as a fake weapon-model object under the old gate).
+8. **Traps recorded** (ENGINE_NOTES): fname_text's 64-byte buffer contract (silent
+   empty strings cost a boot); the sim's `hand X aim pose` DEAD SLOT (aimWorld is
+   always grip+aimtrim - drive stations via `grip pose` + `aimtrim 0 0`); modal
+   dialogs freeze the world while the render keeps presenting (positive control
+   before judging any intervention picture).
+
+**HEADSET VERDICTS IN (user, 2026-08-09).** What works, verbatim scope: hand and gun
+models move correctly with the controllers; models and lasers in sync, NO drift; the
+sliders work for model and aim; hand scale is very good and scales the weapon
+correctly; aiming with both hands works, hands independent. **The I8 core is
+headset-confirmed.**
+
+**The six findings, with their readings:**
+
+1. **THE PERSISTENT STANCE ANIMATION (the headline next item)**: the weapon's idle
+   stance HOLDS a non-forward pose until firing resets it. The user wants exactly the
+   PERSISTENT stance suppressed while keeping every transient (reload, the occasional
+   left-hand vigor flourish they explicitly like). Since the drive pins the grip
+   POSITION, the stance can only enter through the ADOPTED anchor/cluster quats -
+   candidate levers, in evidence order: (a) measure which bones the stance writes
+   (bsibones vs a post-fire sample), (b) `bDisableFirstPersonAttachmentSubtleFidget`
+   exists in the FName pool - a possible source-side kill, (c) pin the ANCHOR quat to
+   a captured ready-pose reference while adopting everything else, (d) a time-domain
+   high-pass (persistent deviation servoed out, transients pass). Do NOT re-tune the
+   left wrist before this lands (user's own sequencing).
+2. **Hole lands slightly ABOVE the dot** and 3. **bullets visibly leave the screen
+   center, not the gun** - read as ONE root cause: the engine's trace ORIGIN is still
+   the camera/eye while our dot ray starts at the hand; two parallel rays from
+   different origins never agree on a finite wall. The fix is the fire-ORIGIN seam
+   (BS1's origin-substitution shape, this engine's derivation - the s44 "instrument
+   the trace result" rung is the front door; AXWeapon's native list is already dumped).
+   Expect 2 to collapse when 3 lands; only then bake any residual as aim trim.
+4. **Arms-hide wrist cap looks strange** - the wrist-boundary vertices pinch to the
+   collapsed grip point. Cosmetic; candidates: keep the forearm twist bones (arm22/21)
+   driven and hide only upper arm/parent, or collapse to a wrist-offset point.
+5. **Left wrist angle reads unnatural** - BLOCKED behind finding 1 by design, and
+   the user's correction (2026-08-09) is load-bearing: **a model trim CANNOT fix
+   this.** In follow mode the arm rides the hand with the same composed rotation, so
+   a trim rotates hand+arm as one rigid piece - the hand-vs-forearm RELATIVE angle is
+   the ADOPTED ENGINE POSE (the held vigor stance), i.e. finding 1's mechanism. If a
+   bad angle survives the stance fix, the lever is a new ARM-RELATIVE wrist
+   adjustment: an extra quat in the ARM chain's compose only (about the grip), hand/
+   aim/laser untouched - the cluster/arm split in bones.cpp already supports it.
+6. **Anim toggle OFF misaligns the models** - recorded, NOT to be fixed (user keeps
+   animations on; rigid mode uses the boot-time snapshot which embeds whatever stance
+   was live at resolve).
+
+**NEXT SESSION**: finding 1 (measure -> choose lever -> ship with a toggle), findings
+2+3 (the origin seam, hole==dot as acceptance), finding 4 if cheap. Then per-weapon
+profiles + the arsenal save, animtrans, the reapply-burst gate refinement.
+
+### Infinite: HEADSET VERDICTS IN (s44b, same night) - I7 CONTROLS AND AIM ARE DONE
+
+**The user tested the s44 build in the headset and returned three verdicts, two of which
+overturn what flat testing had concluded:**
+
+1. **Every button works as expected.** (Thumbrest+flick untested - nothing to select
+   with yet in that save.)
+2. **The pause menu works from the controller**, opening AND exiting. The flat lane's
+   "blocker" was a HARNESS artifact: the menu parks the game thread and `xrsim-cmd`
+   deliberately does not foreground, so the presses landed on an auto-paused window.
+   Nothing to port from BS2. **Harness rule recorded**: never judge a MENU-context
+   input question from the flat lane without asserting focus at the press AND after
+   the menu opens - opening a menu is itself a focus event.
+3. **AIM WORKS AND IS DECOUPLED FROM THE HEAD** - "I tried to look in different ways
+   and aim in the same place and the bullet kept going in the same direction as my
+   controller". So `APawn::GetBaseAimRotation` IS the fire path, and s44's flat null
+   was a FALSE NEGATIVE of the instrument. Refusing to claim the effect on that
+   evidence was right; the picture diff simply could not show it (the only thing that
+   responds visibly to firing in that walled-in checkpoint is the viewmodel, which sits
+   in the same screen region whatever the aim).
+
+**Shipped in response (s44b):**
+
+- **The aim write is ARMED at boot.**
+- **Both hands, decoupled.** The seam is pawn-level and carries ONE rotation, so the
+  hand is chosen by TRIGGER attribution, latched (right = weapon, left = vigor) - a
+  trace can run a frame or two after the trigger releases, and flipping mid-shot would
+  throw it. `aiming hand` is live in the F10 panel.
+- **Aim dot and laser per hand, individually toggleable. Dots ON by default** (user's
+  call), lasers off. Core's EXISTING two-slot API (added for BS2's dual wield) - **no
+  core change was needed.**
+- **The dot round-trips the ray deliberately**: it takes the FRotator the seam actually
+  wrote, undoes the game-yaw basis and converts back to XR, so a basis error shows as a
+  dot off the controller's forward rather than being hidden.
+
+**Flat verification of s44b**: hands swung to OPPOSITE angles (left -45/+10, right
++45/-10) and **both `aimRayMaxDevDegL/R` read 0.0000** - each dot sits exactly on its
+OWN hand's ray, proving the round-trip math and the per-hand attribution in one
+measurement. Hand attribution flips L/R with the triggers. With both lasers on, 10 quad
+layers submit, deviations 0.0000/0.0198. Zero faults. (Use the PER-HAND fields - the
+legacy single-beam `aimRayMaxDevDeg` reads 7.59 with two beams, the documented
+artifact.)
+
+**NEXT (session 45)**: I8 - the weapon model and hands still ride the headset. That is
+the next milestone and the user has been expecting it. `controller_ray` is already
+built on the view's own basis, so the model drive should consume the SAME ray the aim
+seam does rather than deriving a second one that drifts. Aim calibration (does the hole
+land on the dot?) rides the next headset session.
+
+### Infinite: current state after session 44 (I7 CONTROLS: the pad map lands and is proven both ways; aim seam DERIVED, its write UNPROVEN and off; branch `si44-inf-controls`)
+
+**Session 44 (2026-08-06) ran the I7 controls block: the per-game pad map, the full
+Touch layout, and the aim derivation. Five commits. Nothing merged.**
+
+1. **THE INSTRUMENT FIRST (core, log-only)**: `vrinput padlog on` emits one line per
+   composed BUTTON or trigger EDGE with the bits NAMED. Until now nothing could read
+   the button word the game actually saw, so every claim about an XR-to-pad mapping
+   had to be inferred from a game effect - save-dependent, timing-dependent, and for
+   a melee swing or a weapon cycle on a one-weapon save not observable at all. Plus
+   an adapter-local `loc.z` min/max/last WINDOW on the Infinite heartbeat: the 1 Hz
+   beat is a point sample and a jump's whole arc fits between two of them.
+2. **THE SEAM (core, additive, opt-in)**: `PadProfile` + two `constexpr PadMap`
+   tables. One atomic, default `Bioshock1`, one relaxed load per compose - a single
+   scalar rather than a struct of atomics so a live A/B can never compose a
+   half-switched pad. Table-driven: faces, grips, both stick clicks (0 = "not
+   forwarded", which is how BS1 keeps eating RS-click), whether the flick lane
+   honours the ammomod preference, and the four flick directions (0 = "never
+   emitted", which is how BS1 keeps its three-way select). Choice of seam and the
+   REJECTED bsi-local duplicate: ARCHITECTURE decision log.
+3. **BS1 INERTNESS, MEASURED PER CONTROL** (the banked `claimRatioH` is stereo
+   geometry and cannot see an input regression, so it is the "nothing else moved"
+   control, not the proof): faces still A/Y/X/B, RS-click still produces NOTHING,
+   grips at 0.60/0.75/0.60/0.50 reproduce the 0.70-press / 0.55-release hysteresis
+   exactly, menu tap/hold still START/BACK, flick still DU/DD/DL with **no DR ever**,
+   turn suppression by an A-B pair (rx 32767 -> 0). claimRatioH 1.01769 == 1.018,
+   zero faults, and **zero `pad profile` lines in BS1's log** - it never called the
+   setter.
+4. **INFINITE'S MAP, MEASURED THE SAME WAY**: faces straight through, **RS-click
+   FORWARDED** (0x0080, for XToggleZoom - the headline inversion from BS1), grips ->
+   LB/RB, triggers analog, menu tap/hold, thumbrest+flick -> DU/DD/DL and the **new
+   DR**, stick polarity. Two A-B pairs rather than assumptions. Layer 2 in the save:
+   **CROUCH and JUMP PROVEN by quantity** (crouch is a persistent ~110 UU toggle;
+   jump is a 98.6 UU arc inside one beat). LB/RT/LT each produce a large reverting
+   render change but the whole-frame diff **cannot say which binding fired**;
+   NextWeapon and sprint are bit-level only WITH the reason (one gun; the checkpoint
+   is walled in, proven by a no-click control).
+5. **CONTROLS NOW ARM AT BOOT** - `inputOn`, a 9th preset key, default on. Without it
+   a headset boot had no controller and no way to fix that, since every in-headset
+   judgment must be an F10 control and reaching F10 needs a controller.
+6. **THE AIM SEAM IS DERIVED**: `APawn::GetBaseAimRotation`, a VIRTUAL at pawn vtable
+   **+0x2E8**, `FRotator* __thiscall (FRotator*)`, **`ret 4`**. From the exec thunk
+   the s34 census had already recorded with zero E8 callers; because it is virtual
+   the implementation is read off a LIVE pawn (rva 0x244CC0) and no impl RVA is
+   recorded. Its body identifies it beyond doubt (delegates to the CONTROLLER's
+   +0x2F4; otherwise Rotation at +0x50 with the stock UE3 `[pawn+0x235]<<8`
+   RemoteViewPitch fixup). 32k calls, zero faults.
+7. **AND THE SESSION'S OPENING ASSUMPTION IS FALSIFIED.** "The shot stays where the
+   BODY faces" is **not true here**: with the hand parked and only the head moving,
+   the engine's aim tracks the head degree for degree (+40 -> -130, -40 -> -50, back
+   to 0 -> -90) while the ray holds still. The aim chain is downstream of the camera
+   drive, so **shots already land where you LOOK**. The open half is aim following the
+   CONTROLLER. This is exactly what the evidence-first gate exists for - a fix was
+   about to be built for a defect that does not exist.
+8. **THE WRITE EXECUTES BUT IS UNPROVEN, SO IT SHIPS OFF.** View fixed, two shots 70
+   deg apart in commanded aim: post-shot frames **pixel-identical** (0.08%, zero
+   covered cells) while pre-shot frames differ 2.6% from the viewmodel alone. The
+   positive control could not be built - seeing an impact move needs the same view
+   with different aim, and the only thing producing that is the substitution under
+   test; turning the head instead moves the camera and swamps it at 60.9%. So the
+   negative is real but **UNATTRIBUTED**.
+
+**NEW BLOCKER (s44): the pause menu does not consume the synthetic pad.** START opens
+it (55.8% of pixels) and no controller button closes it - keyboard Escape does. NOT
+the bridge: the game keeps polling XInput through our wrapper at ~92/s the whole time
+it is up (iat 153614 -> 154534 -> 155177), so the state arrives and the UI ignores it.
+Leading candidate is BS2's shape (a synthetic pad never announces itself as the active
+input device). BS2's scancode shim is the obvious port, after its own evidence rung.
+
+**NEXT (session 45), in order**:
+1. **Instrument the trace RESULT, not the picture** - a hit location readout. Every
+   aim conclusion is blocked on it; do not touch a lever until it exists.
+2. **Then probe the CONTROLLER's vtable +0x2F4**, which GetBaseAimRotation delegates
+   to and which a weapon asking the controller directly would use instead - exactly
+   the shape that produces the measured null. Hazard: the camera may read the same
+   path, so check with the drive off before arming anything.
+3. The pause-menu lane (its own evidence rung, then possibly BS2's scancode shim).
+4. Then I8 - the weapon model still rides the headset. The user expected that in this
+   block; it is the next milestone, and I7 left `controller_ray` built on the view's
+   own basis so the model drive can consume the same ray rather than deriving a
+   second one.
+
+**Headset checklist for the user: TESTING.md "S44 controls checklist".** Non-regression
+first (smoothness must be unchanged), then every Touch control, then the aim PROBE
+(read `divergence`; the write stays off unless they choose to try it).
+
+### Infinite: current state after session 43 (THE STUTTER HUNT: cause NAMED - the 30 s GC tick - fix candidate live, headset verdict pending; branch `si43-inf-stutter`)
+
+**Session 43 (2026-08-06) ran the hunt the user ordered: research first, instrument
+second, cause named by intervention third - no resolution/quality trade anywhere.**
+
+1. **RESEARCH (rung 1a, committed before any change)**: `docs/RESEARCH.md` "Session 43"
+   - three sourced sweeps (vanilla Infinite stutter fixes, VR-mod prior art with
+   license flags, UE3 GC/streaming internals) ending in a 7-entry ranked experiment
+   list. Load-bearing facts: PC texture pool is auto-calculated at boot (ini PoolSize
+   only honored with `-ReadTexturePoolFromIni`; pool auto-calc is blind to our XR
+   swapchains), this build ships GC every 30 s
+   (`TimeBetweenPurgingPendingKillObjects=30`) and its own AddToWorld amortizer
+   DISABLED, and no VR mod masks 40-120 ms stalls better than the compositor already
+   does - the ecosystem consensus is fix-the-cause.
+2. **THE SPIKE INSTRUMENT (core, opt-in, BS1-proofed)**: pair intervals > 2x period
+   snapshot per-phase last/max tables + stage markers + the unattributed remainder to
+   pacetrace.log (`TRACE spike`), `spikes=N` rides the 1 Hz TRACE pairs line, and a
+   4 ms sampler stack-captures the stalled draw thread mid-stall (`SPIKE-SAMPLE`,
+   watchdog machinery reused). Armed with Infinite stereo; `vrpace spike` is the seam.
+3. **THE FLAT REPRO**: the pad lane WALKS in the TWN2 save (s42 scene-lock was that
+   save's scripted state) - a 100 s turn-and-walk wander at native 2064x2208
+   reproduced the headset signature (4-7 spikes, 29-350 ms, bursts, sd exploding) and
+   EVERY spike carried 27-340 ms outside our code vs <= 12 ms inside - the SR
+   lane/pacing/capture are exonerated.
+4. **THE CAUSE, NAMED BY A-B-A** (`docs/bioshockinfinite/ENGINE_NOTES.md` s43 LIVE
+   RESULTS): the 30-second spike grid is the engine's timed GC (game thread parked on
+   an FEvent::Wait(100 ms) flush barrier, everyone else idle - Signature A; the
+   traversal serialize-walk is Signature B). Intervention 30 -> 300 in the game
+   folder's DefaultEngine.ini (the PROVEN propagation source of boot-derived
+   XEngine.ini): idle grid GONE, matched wander 4-7 -> 0 spikes; reversal leg brought
+   the periodic stalls back (cost varies with garbage - some idle ticks stay
+   sub-threshold). **The candidate fix is LIVE: interval=300, backup
+   `DefaultEngine.ini.bvr-bak-s43` beside it.**
+5. **Rung 0 (grant demo): the combination is FALSIFIED, honestly recorded** -
+   `bsiload` resolves class AND `Default__` CDO, CreateInventory(class) and
+   AcquireWeapon(CDO) both dispatch and return, but neither registers in the
+   NextPlasmid/NextWeapon cycles: the missing seam is the loadout/inventory-manager
+   list registration (needs bsifields explicit-object generalization - next time the
+   lane opens). LoadCheckpoint facts extended: loads can take 60-100 s (poll the pawn,
+   do not conclude no-op), and the s43 boot-1 attract freeze hit once more
+   (force-kill protocol worked).
+
+**S43 same-night addendum (the headset verdict came in)**: the stutter is CLOSED by
+the user's decision - the GC lever + the user's own quality-settings pass + headset
+at 72 Hz ("we're golden"). The user's 10-min VDXR run was measured before that:
+avg 67 pairs/s vs the 80 Hz display (sustained GPU over-budget at native x2 eyes +
+encoder - the continuous-judder component the settings pass addressed) plus burst
+stalls whose stacks matched the flat signatures. PCGamingWiki + the GameFAQs thread
+were mined on request (notes in the session log; skip-intro-movies tweak and the
+BaseEngine.ini third config layer banked for the harness).
+
+**S43b - THE NEW FOCUS: the "jumpy camera"** (user: head-coupled motion is
+bouncy/not-life-like, unlike BS1/BS2). Hypothesis, instrument and A/B are LIVE
+(ENGINE_NOTES s43b): core's one-generation-back pose attribution
+(`g_viewsContent`) assumes BS1's lockstep renderer; Infinite is threaded with
+OneFrameThreadLag, so the content may be TWO generations back - a one-period pose
+error scaling with head speed = reprojection wobble. `set_pose_lag(0|1|2)` (core,
+default 1 = historical, BS1/BS2 untouched), `bsipose` seam, F10 radios + a
+deg/pair error readout. **The user picks the smoothest of three radios in the
+headset (S43b checklist in TESTING.md); that answer names the pipeline depth and
+becomes Infinite's shipped default.** If all three wobble alike, the hypothesis is
+falsified and the next instrument is drive-side (pose age at consume, engine
+camera smoothing) - not more settings.
+
+**S43b VERDICT IN (user, same night): pose lag 2 is "perfect - everything is
+extremely smooth."** The jumpy camera is SOLVED and named: Infinite's threaded
+one-frame-lag renderer presents content two locate generations old; the adapter now
+ships `set_pose_lag(2)` at init (headset-verified; F10 radios + `bsipose` stay for
+re-derivation). The user then authorized the merge: `si43-inf-stutter` ->
+`bioshock-infinite`.
+
+**NEXT (session 44) - CONTROLS + MOTION CONTROLS (the I7 block, BS2's proven shape)**:
+the per-game pad map on the ENGINE_NOTES audit spec (additive opt-in seam or
+bsi-local duplicate; sim per-control sweep as flat acceptance), then full
+Touch-controller bindings through the live IAT lane, then the decoupled-aim
+derivation (instrument first - the aim seam on this engine is underived; the
+viewmodel shares the world lens, so no fg-FOV machinery exists or is needed).
+Model-sync/sliders ride after aim. Only if the user reopens performance: the
+texture-pool lane (researched, ranked, ready) with an outdoor save for flat
+wandering.
+
+### Infinite: current state after session 42 (superseded by session 43 above - kept for the derivation trail; I6 judder flat half DONE + sync armable; I7 OPEN - pad lane LIVE flat, exec surface truth mapped - branch `si42-inf-judder-bindings`)
+
+**Session 42 (2026-08-05) closed I6's last flat item, opened I7's controls half, and
+corrected the cheat-lane's foundational assumption.** Three commits.
+
+1. **THE JUDDER, measured flat (I6)**: new core pair-cadence instrument (TRACE pairs line
+   in pacetrace.log, 1 Hz: interval mean/sd/min/max + waitGate = present-thread ms/s
+   blocked in the wait handoff; predictedDisplayPeriod published for the first time). The
+   SIM's xrWaitFrame GATES strictly: pairs lock to refresh at both 72 and 90 Hz (waitGate
+   540-620 ms/s, timeouts 0) - the s41 free-run-beat suspect is a PIPELINING-runtime
+   behaviour the sim cannot reproduce; whether VDXR pipelines is answered by reading the
+   TRACE pairs lines after the next headset run. The armable fix either way:
+   **`vrpace sync` / F10 "Sync pair rate to headset refresh"** - delays only the
+   pair-OPENING present to a one-period schedule, never the closing RIGHT present;
+   self-collapses when the game is slower. Default OFF in core (set_pace_detach pattern),
+   Infinite arms it with stereo (so the preset boots it ON). Measured sync-on at 72:
+   pairs 72/s, sd 1.2 -> 1.0 ms, waitGate 615 -> 21 ms/s, SR beat exact 72/72/144/72.
+   **BS1 inertness proof run on the build**: full sim lane, claimRatioH 1.01769 == the
+   banked 1.018, no sync line in BS1's log, zero faults. **HEADSET VERDICT IN (2026-08-06,
+   VD ran at 80 Hz)**: steady-state pacing LOCKED (pairs == refresh, sd 0.3-1 ms) - the
+   beat hypothesis is falsified on VDXR too. The judder is recurring HITCH SPIKES
+   (39-113 ms pair intervals in bursts every few seconds; sd explodes to 3.6-10.7 ms in
+   exactly the bad seconds), worse outdoors at 2064x2208, better at the eye preset - a
+   render-load/streaming matter, not pacing. Carried forward as its own hunt (streaming
+   vs GC vs shaders vs encoder; hitches-on-head-turns points first at texture-mip
+   streaming), plus the user's new "camera slightly jumpy" observation (instrument
+   before theorizing). The 30-min soak stays DEFERRED by user decision. **NEXT SESSION
+   (user decision, 2026-08-06): the judder/stutter hunt comes BEFORE the aim/motion
+   work - performance first. SCOPE DIRECTIVE (user, same night): lowering render
+   resolution in heavy areas is NOT an acceptable fix - the eye-preset observation was
+   diagnostic evidence only; the hitches must be fixed at the user's chosen native
+   resolution (streaming/GC/shader/scheduling class of fix, not a quality trade).** Also: the user banked a save WITH the pistol + two
+   vigors, and the cheat-lane verification ran on it same-night (autonomous via
+   LoadCheckpoint): `bsicall NextPlasmid` PROVEN BY EFFECT (vigor icon swap + cast hand
+   raised + crosshair, 8.5% pixel diff), NextWeapon cycles the single gun (idle-sway
+   diff only - a second weapon shows a real swap), AddInvulnerableFlag re-dispatched on
+   the pawn (damage verification pends combat), and the s41 VIEWMODEL GUARD CLOSED FOR
+   REAL: weapon + hands DRAWN, lens1 == lever exactly (tanV 1.2634, 100% of 211 valid
+   samples, delta 0.0%), NO second lens - Infinite's viewmodel shares the world
+   projection, no fg-FOV counter-modeling needed (ROADMAP I6 note carries the
+   runner-up-threshold caveat).
+2. **THE EXEC-SURFACE TRUTH (I7 cheat lane)**: script execs through ConsoleCommand are
+   DEAD in retail (god/AllWeapons/behindview/viewmode - zero effect by pixel-identical
+   screenshots in a gameplay save; C++ handlers setres/shot stay proven); the give-family
+   names DO NOT EXIST (full 69.7k GNames dump); **XCheatManager is never instantiated**
+   (PC+0x344 carries only CheatClass; EnableCheats not on the PC chain) - the whole
+   CheatManager vocabulary is structurally absent, not gated. What WORKS, all proven live:
+   `bsiexec LoadCheckpoint` **loads the newest save from the menu** (the autonomous
+   save-entry lane; GNames 62,160 -> 69,719 + relocation + gameplay HUD, twice);
+   `bsinames dump` (full pool -> gnames.txt, per-boot indices, text stable); `bsifields`
+   (PC field map by class name: pawn XHuman +0x1FC, XCamera +0x240 confirming the s37
+   inference, XPlayerInput +0x340; UObject::Name derived at +0x18); `bsicallat` (dispatch
+   on any walked object - AddInvulnerableFlag / AddDefaultInventory / SetWeapon /
+   CreateInventory dispatch on the pawn; **AcquireWeapon exists and wants a weapon object
+   - the s43 grant seam**). The WEAPON-IN-HAND acceptance did not land: both user saves
+   predate the first story weapon (grants are story-Kismet, defaults empty), so effects
+   are state-confounded. **Session 43 needs one of**: the user plays to the raffle once
+   and saves (recommended - makes grants unnecessary for aim work), or the archetype
+   lookup + object-arg dispatch rung (scoped in ENGINE_NOTES).
+3. **THE PAD LANE (I7 controls), LIVE FLAT**: `bsiinput on` verifies the s34 IAT slot
+   (0xCD4814 - target read in XINPUT1_3.dll) and re-points it at core's composing wrapper.
+   The game polls through it (iat 5642); **sim right-stick TURNED the camera** (yaw 65 ->
+   145 -> -133 deg; screenshot diff 52% of pixels), sim A pressed (camera kick). NO
+   UpdateInput pump / SetUseController - Infinite polls XInput itself; BS2's activation
+   machinery correctly does not port. Movement was scene-locked in the probe save (loc
+   frozen) - re-test walking in free roam before reading it as a defect. **The bindings
+   audit is complete** (ENGINE_NOTES "audited retail pad map"): Infinite needs
+   straight-through face buttons, RS-click passthrough (XToggleZoom), and NO synthesized
+   dpad - core's BS1-semantics `input_sync` is wrong on exactly those counts; the
+   per-game map seam (additive opt-in, absent = byte-identical) is session 43's first
+   controls task, spec'd in the ROADMAP annotation.
+
+**Hazards**: the pre-existing freeze hit once more (LoadCheckpoint dispatched into the
+attract-movie window; force-kill, relaunch, then two clean loads with the
+confirm-pump-first discipline). The bsi camera heartbeat rate-limits to ~10 lines per
+`bsicam heartbeat on` - re-arm per read window (cost a probe round this session). FName
+indices are PER-BOOT - re-dump gnames.txt each boot, only the text is stable.
+
+**NEXT (session 43, the user's plan)**: decoupled aim + motion controls + model
+sync/sliders. From this session: the judder verdict closes I6 (checklist ready); the
+per-game pad map lands on the audit spec; the loadout lane picks its grant route (user
+save vs archetype-lookup rung); the viewmodel-lens guard re-check needs a weapon in hand
+(s42 gameplay check: lens1 tracks the lever at delta 0.0%, lens2 absent - but nothing
+drew a viewmodel in the pre-weapon save).
+
+### Infinite: current state after session 41 (superseded by session 42 above - kept for the derivation trail; I6 flat half CLOSED - lever, decoder, resolution, presets all measured - branch `si41-inf-lens-config`)
+
+**The eye can now be filled, and every number that claims so was measured twice.** Session 41
+landed the whole I6 flat stack in six commits:
+
+1. **THE FOV LEVER** (`bsifov set <deg>`, F10 slider, preset-persisted). The named-property
+   lane was tried first per the roadmap and is a recorded negative WITH the mechanism:
+   `set XUserOptionsManager FieldOfView` dispatches but writes nothing (zero stable holders
+   after a scan for the written value), and every FOV cache in the process (six 82.5f
+   holders incl. `[cam+0x214]` DefaultFOV and `[cam+0x3D0]` POV fov) snaps back within a
+   tick - the engine recomputes the chain from the option every tick. The lever therefore
+   ENFORCES both camera fields per GetPlayerViewPoint dispatch; disarm self-restores via the
+   engine's own recompute. Measured: 110 deg -> decode tanH 1.4281 (tan 55 exact) tanV
+   0.8033; 130 -> 2.1443/1.2063; monotone, aspect held, 0 faults; tanV to 1.2+ proven =
+   nearly 2.5x the native slider cap (0.4933).
+2. **THE LAW'S ANCHOR, corrected by its own audit**: the camera degrees value is horizontal
+   at a FIXED 16:9 REFERENCE - tanV = tan(deg/2)/(16/9) pinned, tanH = tanV x actual aspect.
+   At 1440x1440 with the lever at 100 both decoders read 0.6704 = tan(50)/1.7778 EXACT while
+   the first-cut claim (current-aspect) sat 43.7% off - the lens decoder flagged it on its
+   first non-16:9 round. patterns.h `kFovRefAspect` carries the measurement. **The ROADMAP
+   done-when "claimed projection matches the rendered frustum at a non-16:9 aspect, measured"
+   is BANKED**: claim delta 0.0%, claimRatioH captured 0.48705 vs 0.4871 predicted.
+3. **THE LIVE LENS DECODER** (`bsilens on|track|status`, F10 section): core grew an opt-in
+   UpdateSubresource cb tap (raw 80-byte ring, disarmed cost one relaxed load, BS1/BS2
+   byte-identical - proofs in the commit); the adapter decodes by the UE3 matrix law,
+   aspect-gates structurally (the load-bearing filter), clusters by tanV, publishes only a
+   >=60%-of->=16 majority, names the runner-up as a second lens, refuses rounds otherwise.
+   It caught the stale slider-min claim (14.3% loud) AND the wrong claim law (43.7%) in its
+   first hour - the audit instrument works. Track mode writes the claim on majority rounds;
+   an armed lever always wins.
+4. **RESOLUTION, both lanes end-to-end**: `bsires <mode|WxH>` / the RENDER RESOLUTION F10
+   picker (flat/squareperf/eye/native/sharp + custom, ini-vs-live compare, aspect warning,
+   headset-recommends annotation) applies live setres (backbuffer resized in 20 ms, XR
+   rebuild survives) AND writes XUserOptions.ini `[XCore.XUserOptionsManager]` ResolutionX/Y
+   (BS2's safety chain, adapter-local; XEngine.ini never touched). **The boot acceptance
+   landed: `first Present: backbuffer 1440x1440` after the mod's own ini write.** The square
+   render alone narrows tanH (claimRatioH 0.487 at 1:1/lever-100) - the modes pay only
+   combined with the lever, now with numbers.
+5. **`xrEnumerateViewConfigurationViews` at bring-up** (core, additive): recommendedImageRect
+   stored + `recommended_eye_size()` getter; sim serves 2064x2208. Inertness proven by a
+   FULL BS1 sim lane on the new build (boot -> gameplay -> vrstereo -> claimRatioH 1.01769 =
+   the banked 1.018 baseline, zero faults) - named in the commit.
+6. **CONFIG REGISTRY + NAMED PRESETS** (adapter-local BY DECISION - ARCHITECTURE log
+   2026-08-05; core extraction deferred to the healing session): one KeyDesc table
+   (worldScale, claimTanV, ipdMm, fovLeverDeg, resW, resH) serves vrpreset.ini
+   (legacy-compatible, measured), `bsi\presets\<name>.ini`, `vrpreset
+   save|saveas|load|list` and F10 slot buttons. **Preset round-trip across a full restart:
+   6/6 keys both directions.** A loaded preset's resolution is LATCHED into the picker,
+   never auto-applied (mid-headset resize hazard). A recommended **`eye` preset is banked**:
+   lever 137 deg (tanV 1.428 ~ the 110-deg eye vertical) + 1600x1712.
+
+**Session hazards, recorded**: the pre-existing unattended-attract freeze hit twice (zero mod
+faults, force-kill + relaunch; same signature as s37's unmodified-build hit), and the
+game-thread pump lags 30+ s at attract movie transitions - seam commands now go
+one-at-a-time with dispatch confirmation (VERIFICATION gotchas 20-21, the second being
+xrsim-shot littering the CWD with game-derived captures).
+
+**HEADSET FEEDBACK (user, VDXR, 2026-08-05, same day): THE EYE IS FILLED.** Verbatim
+verdicts and the fixes they drove:
+
+- **"Everything through a box" until the lever hit 132 deg - then "pretty good with the
+  stereo and no space warp, which is perfect."** The filled-eye verdict is GREEN at
+  fovLeverDeg=132 (tanV 1.2634, hfov 99.5 at the 2064x2208 aspect), and no-warp confirms
+  claim==render in the instrument that matters. VR stereo + VR camera "working very well";
+  the resolution picker "also working very well" (the user runs Quest 3 native 2064x2208).
+- **World scale tuned to ~150 UU/m** (not the UE3-canonical 50 the code guessed - the
+  same 3x surprise BS1/BS2 produced; their calibrated value was 100).
+- **The `eye`-preset Load button did nothing** - real bug: the F10 list's Load only
+  handled slotN names and LOGGED for everything else. Fixed by the user's own redesign
+  request: **ONE preset, Save + Load, like the other mods** - the slot/named UI is gone
+  (named files stay as a desktop verb lane), and the preset now carries the WHOLE session
+  shape: vrstereoOn + driveHmd joined the registry (8 keys), and a loaded preset's
+  resolution now APPLIES instead of latching (user's call, overriding the s41 flat-half
+  hazard design). Verified: one boot with zero commands auto-restores everything - 8/8
+  keys, first Present 2064x2208, stereo auto-armed, SR beat exact 77/77/154/77, lever
+  enforcing (217k writes 0 faults), claim tanV 1.2634.
+- **JUDDER ON HEAD TURNS PERSISTS "even though the frames are good" - the remaining open
+  item.** First suspect for next session: the pacing beat - 77-80 eye pairs/s against a
+  72 Hz VD refresh is a ~5 Hz interference pattern; pairs synced/capped to the headset
+  refresh is the experiment to run. The 30-minute soak + level transition also remains
+  unreported.
+- **Standing guard for I8 (user, this session): the FOV lever must not break the
+  viewmodels (hands/guns)** - BS1/BS2 both bled sessions on fg-FOV counter-modeling. The
+  lever writes ONLY the world camera's two FOV fields; the decoder's named second lens is
+  the early-warning instrument (watch `bsilens` lens2 in gameplay saves); I8 tests
+  whether Infinite's viewmodel lens is even coupled before porting ANY compensation.
+
+**NEXT**: the judder investigation (pacing-beat hypothesis first) + the 30-minute soak
+close I6; then I7 (controllers + decoupled aim) opens, with the I8 viewmodel-FOV guard on
+record.
+
+### Infinite: current state after session 40 (superseded by session 41 above - kept for the derivation trail; I5 CLOSED as re-scoped - stereo headset-verified on VDXR; world-scale tune, judder verdict and the long soak carried to I6 - branch `si40-inf-stereo`)
+
+**HEADSET VERDICT (user, VDXR, 2026-08-05): "there's stereo 3d rendering and it's working
+well" - I5 is CLOSED as re-scoped.** True geometric parallax confirmed in the headset;
+nothing broke in their testing (short session by design); the log measured **77-80 eye
+pairs/s (155-160 presents/s) at default render scale with every SR gate exact** - above
+the 72 fps target. Three footnotes, all carried EXPLICITLY to I6's headset session:
+(1) **the "looking through a window" percept is expected and correct** - the honest claim
+renders the game's 75 x 47 deg frustum at true angular size inside a ~108 x 110 deg eye;
+filling the eye is I6's whole purpose (a real FOV lever pushing tanV past the native
+slider + a near-square render; resolution ALONE cannot help - the law is
+vertical-referenced, so a square render just narrows the horizontal); (2) the world-scale
+slider works live but the FEEL stays unjudgeable through the window - tune at I6; (3) a
+slight judder on head motion - consistent with ~80 pairs/s under a 90 Hz headset refresh
+(suggest Virtual Desktop at 72 Hz next session; I6's resolution work also lowers the
+per-eye cost). The section below records the session-40 flat state that earned the
+verdict.
+
+### Infinite: session-40 flat state (the battery that preceded the verdict above)
+
+**All three stereo rungs are live and flat-verified: mono projection, AlternateEye, and
+SequentialReentry with per-eye presents and pair pacing.** The adapter now feeds core an
+honest FOV claim from the I2 law (`hfov = 2*atan(tanV x aspect)`, tanV default = slider-min
+0.4317, `bsifov tanv` lever, vrpreset-persisted) plus `publish_gameplay_view` per detour
+call, so core's camera-mode toggle finally flips the quad to a projection layer on this
+game. `vrstereo on` is the full one-toggle ladder (enable -> camera mode -> pair pacing ->
+SR; `vrstereo mono` stops at mono projection, `vraer` is the AER backend); everything is in
+the F10 "VR stereo (I5)" section for the headset. NO 1t machinery exists or is needed -
+DR-I5's threaded/ring-buffered verdict held under real doubling.
+
+**The session's derivation: the render-root chain, live** (ENGINE_NOTES s40). The SR
+doubling root is the VIEWPORT draw `0x1FDE30` (FViewport::Draw analog: canvas -> client
+draw -> present kick, thiscall + 1 arg, ret 4; gameplay caller ret `0x206309` of 4 static
+callers). Derived by a caller census at the camera detour (ret `0x26B499` = exactly once
+per present), a one-shot backtrace + raw stack scrape, and one-shot live vtable probes
+(`bsicam scenedraw`/`vtprobe`: client `[viewport+0x1C]` -> vtable `0xDE6FC8` slot +0x8 ->
+stub `0x6F1360` -> client draw `0x26A3E0`). **Recorded negative:** doubling the client draw
+(the function that actually samples the camera) yields NO second present - the tag ring
+skews +1/tick. The root must contain camera + scene + present; the viewport draw does.
+
+**The flat battery (sim at the attract, all measured):** claim audit `src=readback`,
+`tanH=0.767467` exact, **claimRatioH baseline 0.5576 derived fresh** (never BS1's 1.018);
+projectionViews=2; mono pair byte-identical (the control) vs SR pair really differing
+(mean 0.42 / 1.09 % channels = geometric parallax); AER + SR inter-eye |d| = ipd x scale
+exact (3.150 UU at 63 mm/scale 50, doubles at 100); `draws/s=90 2nd/s=90 presents/s=180
+camReplays/s=90` at the sim's ceiling with call2 80-215 us; deny gate observed refusing a
+foreign caller (f=2, no double); 15-min armed soak - zero faults, zero watchdog, zero
+poison, skips frozen, occasional self-healing tag-ring resyncs only at attract
+scene/movie transitions; `vrstereo off` returns to the mono quad; clean exits. Runbook:
+TESTING.md "I5 battery".
+
+**NEXT SESSION = I6 (lens audit, FOV, resolution, config menu)** - now judged IN STEREO,
+which is the entire point of the restructured ladder. The headset gave I6 its worklist:
+fill the eye (FOV lever via the named property chain first - the native slider tops out at
+52.6 deg vFOV, the eye wants ~110; then the near-square render, which only pays combined
+with the lever because the law is vertical-referenced), re-judge world scale and judder
+through the filled view (suggest VD at 72 Hz), run the 30-minute soak, and land
+`xrEnumerateViewConfigurationViews` + the resolution picker + the config/preset menu per
+the ROADMAP boxes. The claim machinery to extend is `bsifov`/`kTanVSliderMin` in
+camera.cpp; `reentry status` after any load-heavy session must keep showing poisoned=no.
+
+### Infinite: current state after session 39 (superseded by session 40 above - kept for the derivation trail; I4 CLOSED - flat battery green AND headset-verified on VDXR - branch `si39-inf-head-camera`)
+
+**The 6DoF head camera drive is live and the entire flat harness proved it with numbers, no
+headset involved.** The GetPlayerViewPoint detour tail gained `drive_view`: out-param
+substitution ONLY (engine memory never written - drive-off is a byte-identical passthrough,
+and the engine's own view kept moving under the drive on every heartbeat, which is the BS1
+pitch-freeze bug made impossible by construction). Yaw additive, pitch/roll absolute,
+position recenter-relative x worldScale (default 50 = UE3 canonical, NOT BS2's 100). Lane
+order replay -> simhead -> live; the live lane gates adapter-locally and **never sets camera
+mode** - core flips quad->projection on camera mode, and that rung is I5's (ARCHITECTURE
+decision log 2026-08-05). All new code is Infinite-local (`inf_math.h`, `recorder.cpp/.h`,
+camera/adapter edits + the source listing); zero core, zero shared, zero BS1/BS2 files.
+
+**The flat battery, all measured at the attract (which runs real gameplay scenes):**
+passthrough control (lane=off, final==engineRot, d=0); simhead yaw +30 -> final-minus-engine
+= exactly 5461 units on three consecutive beats against a MOVING attract camera; pitch 20 ->
+3640, roll 10 -> 1820; position triples on all three XR axes -> headOff exact (0.5 m = 25 UU
+at scale 50, rotated by game yaw, world-up unrotated); worldscale 100 doubles it; the REAL
+OpenXR path end-to-end (`head rot`/`head pos`/`head orbit` -> xrLocateSpace ->
+get_head_pose) exact to the unit; vrrec round trip (1077 frames, PLAY marks
+number-for-number identical to REC incl. the driven camera, lane=replay with xr=none,
+recenter+worldScale restored from the header); rendered-pixels acceptance via WINDOW
+img-diff (floor 0.58/1.12 % vs simhead-60 6.12/23.4 % - 10x, heading visibly rotated);
+90.0 fps sustained with the drive on; vrpreset round trip; clean WM_CLOSE exit. Full runbook:
+TESTING.md "I4 battery".
+
+**One new sim trap found and recorded (VERIFICATION gotcha 17):** a sim `recenter` sent while
+the head is yawed makes the next quad capture ~black (1 covered pixel), and even a yaw-0
+recenter leaves the captured quad oddly off-centre - the capture's layer transform after a
+reference-space change is suspect (healing lane). Use the game window for camera-drive pixel
+checks.
+
+**HEADSET VERDICT (user, VDXR, 2026-08-05): I4 is CLOSED.** The corner-lean tracked with
+NO drift, head roll tilted the horizon correctly, and the head-driven camera showed on the
+I3 big screen exactly as the MonoTracked rung intends. Two verdict footnotes: (1) the
+world-scale FEEL could not be judged on the mono screen - the tune is DEFERRED to I5 where
+stereo makes it a real judgment (the lever, F10 slider and vrpreset persistence are all in
+place at default 50); (2) the user pressed core's VR-section camera toggle and saw nothing -
+correct and by design: that toggle is the quad->projection flip, gated on a lens claim the
+adapter does not feed core until I5/I6, and only the "VR camera (I4)" section is live this
+milestone.
+
+**NEXT SESSION = I5 (stereo)**: MonoTracked (done) -> AlternateEye (core supports it) ->
+SequentialReentry; entry gate is the I2 FOV law (tanV 0.4317..0.4933, tanH = tanV x aspect);
+DR-I5 says test threaded first, port no 1t machinery until a measured stall demands it.
+Carry the world-scale tune into I5's headset checklist.
+
+### Infinite: current state after session 38 (superseded by session 39 above - kept for the derivation trail; I3 DONE as re-scoped: VDXR headset-verified, three sim bugs fixed - branch `si38-inf-headset-bringup`)
+
+**The whole I3 mono-big-screen stack runs on Infinite with ZERO core and ZERO adapter changes** -
+the merged BS2 OpenXR runtime brought the session up on the game's own device first try
+(backbuffer fmt 28 -> swapchain pair fmt 29, zero-copy; FOCUSED in ~600 ms), sustains 90.0 fps,
+survives focus loss (keeps submitting, FOCUSED re-earned), tears down and re-brings-up cleanly
+three independent ways (`bsivr off/on` ~250 ms, `hazard waitfail`, and live `bsiexec setres`
+resizes BOTH directions with the queued swapchain rebuild + aspect-following quad). Captures
+show the world-locked 2.4 m quad with correct stereo parallax and readable game pixels. Details
+with numbers: ENGINE_NOTES "LIVE RESULTS (session 38)".
+
+**The battery's real yield was three SIM bugs** (I3 is the first mono-quad capture consumer):
+the `now_xr_time` int64 overflow (a ~30.7-min machine-uptime sawtooth that parked the pace
+thread's `xrWaitFrame` forever ~25 min into gameplay - diagnosed from a minidump stack, fixed
+with split arithmetic + a >1 s wait clamp so no clock anomaly can ever hang the host again),
+sRGB-decoded captures (dark scenes crushed ~13x - composite target now `_SRGB`; **pixel-stat
+baselines before s38 are not comparable**, BS1 re-baselined: stereo L/R diff 11.53, claimRatioH
+1.018 unchanged), and sticky timed `focus lose`. Plus harness: `xrsim-launch`/`launch-game`/
+`xrsim-run` take `-Game bsi`; new `bsivr on|off|status` adapter command; new sim traps
+catalogued (VERIFICATION gotchas 13-16: floor LOCAL origin -> send `recenter` before quad
+captures; persistent `idle on`; step-starve command latch; Infinite's auto-pause on focus loss).
+
+**Shared-tool proofs run**: bs1/bs2 preflights green after the launcher edits; selftest green
+after each sim fix; full BS1 lane on the fixed sim (boot -> smoke -> stereo) green with the
+geometric baseline identical (1.018).
+
+**HEADSET VERDICT (user, VDXR / Virtual Desktop, `VirtualDesktopXR` 1.0.10): "looks pretty
+good, no crashes or freezes/hangs"** - head-tracked big screen live, F10 VR A/B confirmed in
+the log (teardown -> re-bring-up on VDXR), alt-tab survived, two boots, clean exits. **I3 is
+DONE as re-scoped by the user**: the SteamVR lane is deferred ("no Steam Link; test SteamVR
+later, not needed for the first version") and the debt is carried explicitly on the I11 (release)
+release checklist.
+
+**Exit breadcrumb resolved to a benign property**: `DLL_PROCESS_DETACH` never logs when an XR
+session is LIVE at exit - sim AND real VDXR, both games; sessionless exits log it. Prompt,
+fault-free, dump-free closes either way; attribute the mechanism during the release (I11) soak only if
+it ever hides a real teardown bug.
+
+**NEXT SESSION = I4** (6DoF head camera + the flat harness: `simhead`, `vrrec`, servo-vs-write
+discipline). The injection point is already settled - GetPlayerViewPoint returns a raw copy of
+the camera POV (path 2, 100 % census), so I4 injects at the POV/out-params. Build `simhead`
+FIRST; the sim's floor-LOCAL-origin trap (VERIFICATION gotcha 13) applies to every quad-pose
+capture until the healing lane fixes the sim default.
+
+### Infinite: current state after session 37 (superseded by session 38 above - kept for the derivation trail; branch `si37-inf-merge-and-derisk2`)
+
+**I2 IS CLOSED - all eight de-risks recorded - and `main` (BS2 v0.7.0, 124 commits) is merged
+into the Infinite line.** Details per DR in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md)
+and the "LIVE RESULTS (session 37)" section of
+[bioshockinfinite/ENGINE_NOTES.md](bioshockinfinite/ENGINE_NOTES.md). The branch is pushed;
+fast-forwarding `bioshock-infinite` awaits the user's confirmation.
+
+**The merge (step 0, before any testing):** 6 conflicted files, all resolved per the session-36
+policy (BS2 wins behavioural, keep-both on additive). The 336-float-cap removals in
+`decode-framedump.ps1` survived; `frame_inspector` mode 3 survived; `game-cmd`/`game-shot`
+compose Infinite's bsi support with main's live-instance filter. **All four BS1/BS2 inertness
+proofs re-run on the merged tree** (no `framework/command` include in either remaster adapter;
+only bioshockinf arms the Present pump; both arm dumps as `full ? 2 : 1`; `git diff main` over
+both adapter dirs empty) - cited in the merge commit. Acceptance ran clean: Release build,
+decoder `-SelfTest` both scanners + `-ScanLayout` offset-12 regression on a banked BS1 dump,
+**BS1 smoked on the simulator** (boot -> gameplay -> `vrstereo on` -> projectionViews=2,
+eyeSep 0.063, claimRatio 1.018 - note stereo takes ~40 s to engage under the sim, longer than
+stereo.xrs's 60-frame assert), **BS2 smoked on the simulator** (all scans resolve, XR session
+FOCUSED, quad submits, `recenter` dispatched by the game-thread poller), Infinite full battery
+below. The merge brings BS2's OpenXR runtime (+1271 lines), the xrsim simulated-Quest-3
+toolchain, `docs/VERIFICATION.md`, hud_capture/crash/diag upgrades - **most of I3
+pre-debugged**, untouched until I3 per the session brief.
+
+**The battery, all measured live on the merged build:**
+
+- **The TRANSFORM question is CLOSED**: the path-aware heartbeat in gameplay says path 2
+  (100 % census), source `[cam+0x3B8]`, `returned-minus-source = (0,0,0)` every beat - a RAW
+  COPY. **I4 injects at the camera POV / out-params; there is no downstream transform.**
+- **DR-I4 CLOSED (negative)**: no engine stereo names in the live pool; `AllowNvidiaStereo3d`
+  at index 4154 is the positive control and the only (driver-side) stereo surface.
+- **DR-I5 recorded**: threads separate under BOTH `OneFrameThreadLag` positions; the lever is
+  accepted, game healthy; substrate evidence says ring-buffered submission (90 M lifetime
+  UpdateSubresource, no stalls at 9681 calls/s). The latency half needs I6's instrument, by design.
+- **DR-I6 CLOSED**: `bsicall`/`bsiexec` (new, `src/game/bioshockinf/reflect.cpp`) dispatch by
+  name via FindFunction(+0x54)+ProcessEvent(+0x7C) with full gates (build, thread identity,
+  GNames, vtable-RVA interlock incl. new `kFindFunctionRva 0xD1030`), SEH-isolated.
+  **`bsiexec setres` RESIZED THE BACKBUFFER live** - the strongest possible by-effect proof.
+  `set FOVAngle` moved nothing, but FOVAngle is known-disconnected; recorded honestly.
+- **DR-I7 CLOSED**: HUD fingerprint confirmed in a second scene/resolution - backbuffer-composite
+  from 2 call sites, BC3 atlases. The tonemap target index VARIES (T9 then T8), so the eye-image
+  rule is positional (srv0 of the last full-screen a=6 into the backbuffer) and needs no
+  classifier - that texture is HUD-free by construction.
+- **DR-I8 CLOSED (both levers)**: `XEngine.ini ResX/ResY` is a boot-derived copy - the real
+  store is **`XUserOptions.ini ResolutionX/ResolutionY`** (honoured: `first Present: backbuffer
+  1600x1200`); `setres` also works live. BS1's fault does not exist here.
+- **The FOV law is VERTICAL-referenced** (aspect cross-check at 16:9 vs 4:3, slider max: tanV
+  pinned at 0.4933, tanH = tanV x aspect to 5 digits). Slider = vFOV 46.67..52.63 deg. I5 derives
+  everything from tanV; ini FOVAngle is decorative.
+
+**Incidental but load-bearing:** an UNATTENDED menu/attract hangs the game (pre-existing - the
+unmodified session-36 build hung identically, which exonerated the merge; watchdog stack
+photographs banked in `%LOCALAPPDATA%\BioshockVR\bsi\s37-*-hang*.log`). Keep a driver at the
+menu. Infinite exits CLEANLY via WM_CLOSE (orderly DLL_PROCESS_DETACH, twice) - better than
+both remasters. Camera hook: 1.49 M calls this session, 0 foreign-tid dispatches ever.
+
+**Still owed / known gaps:**
+
+1. `frame_inspector` records `rtv0` only (4-RTV frames discarded) - worth fixing before I6;
+   unchanged from session 36.
+2. The FNameEntry UTF-16 branch remains UNTESTED (0 wide entries in the pool's first 4096).
+3. `bsiexec`'s ReturnValue capture is unverified (possible signature drift on bWriteToLog);
+   never rely on the returned string - verify by effect, which is the rule anyway.
+4. BS1/BS2 flat sim smokes passed, but no headset regression ran this session - the core deltas
+   are grep-proven inert and their game code is byte-identical to shipped v0.7.0.
+
+**NEXT SESSION = I3, headset bring-up (mono big screen)** - and the merged BS2 OpenXR runtime
+plus the xrsim toolchain make it a very different, much shorter job than BS2's was. Read
+`docs/VERIFICATION.md` first.
+
+### Infinite: current state after session 36 (superseded by session 37 above - kept for the derivation trail; branch `si36-inf-derisk`)
+
+**DR-I1, DR-I2 and DR-I3 all PASS. Three of the eight de-risks are closed, and I2 is half done in
+one session.** BioShock 2 held the machine for the first half, so the offline derivation came
+first; the machine freed up and the whole live battery ran.
+
+**THE HEADLINES, all measured live:**
+
+- **The camera hook fires.** 9681 calls/s peak, ~3600/s idle gameplay, 4.07 M lifetime calls,
+  **0 foreign-thread dispatches**. `vrcmd` reports `pump=game`, so the handover works.
+- **Game and render threads are SEPARATE** (tid 13120 vs 1992). Free DR-I5 evidence.
+- **The motion test passes**: one 360-degree turn swept yaw **-32392..+32640 = 99.2 % of a full
+  16-bit range**, falsifying the field ordering and the 65536-units-per-turn assumption in one
+  motion. **FRotator is SIGNED** - a naive unsigned read would be wrong for half the circle.
+- **DR-I1 confirmed on a live object**: vtable slot `+0x7C` holds `AActor::ProcessEvent`
+  (`0x19A150`), not the `UObject` base - the prediction only the base/override split made possible.
+  GNames works (`Num=69718`, `[0]=="None"`), the UClass fixpoint passes.
+- **THE LENS IS FOUND AND CONFIRMED.** Float 0 of the 80-byte constant buffer, row-major 4x4.
+  Of 139 candidate 4x4s only one matched the backbuffer aspect. Promoted from candidate to fact by
+  a falsifiable prediction: the FOV slider min-to-max moved **both axes by the same ratio**
+  (1.14282 / 1.14269) with the aspect held to 0.002 %, 75.01 -> 82.50 degrees horizontal.
+
+**AND THE INI LIED, which nearly poisoned I5.** Session 34 read `FOVAngle=70` +
+`MaxUserFOVOffsetPercent=15` as "the slider spans 70 to 80.5 degrees". The rendered frustum spans
+**75.01 to 82.50**, and the measured tangent ratio is **1.1428** against the **1.2094** that
+70-to-80.5 predicts. Neither endpoint nor the ratio matches. **I5 must derive the FOV law from the
+frustum, not the config** - third instance of "a verified value is not an honoured one".
+
+**What landed:**
+
+- **DR-I1, PASS.** `UObject::ProcessEvent` **`0xCFE70`** (vtable slot **`+0x7C`**, thiscall,
+  3 stack args, `ret 0xC`), `AActor::ProcessEvent` **`0x19A150`**, `UObject::FindFunctionChecked`
+  **`0xD1090`** (426 callers), `UObject::FindFunction` at vtable slot **`+0x54`**. Derived by
+  three routes that agree, and **every census prediction written down before the run held**:
+  FindFunctionChecked 426 E8 callers / 0 abs refs, ProcessEvent 1 / 2144. The base/override split
+  is settled by structure rather than vote count - the runner-up tail-calls the mode.
+- **`tools/pe-xref.ps1`**, the static caller census, is committed. Sessions 34 and earlier ran it
+  from throwaway scripts, which is exactly why their numbers could not be reproduced.
+- **A correction:** `ConsoleCommand 0x136070`, `AXPawn::SetWeapon 0x4F9ED0` and
+  `AXWeapon::AddAmmo 0x5017D0` were recorded as "impl RVA". All three have **0 E8 callers** - they
+  are exec thunks. The test loadout should go by name through `ProcessEvent` instead, which now
+  exists and needs no further addresses.
+- **DR-I2's camera hook is written**: read-only by construction, gated on the live 12-byte prologue
+  AND on finding `ret 8` in the body before the detour is created, fail-soft on every refusal. It
+  takes over the command poll on first fire.
+- **DR-I3's frame map is done offline** from the banked lite dump: the full deferred pass order,
+  the scene RTs, the tonemap target, and a free Scaleform half-answer for DR-I7.
+
+**Two findings that changed the plan, both verified rather than assumed:**
+
+1. **`GNames` is empty at adapter-init time.** Our DLL loads from the proxy's `DllMain` during the
+   exe's import resolution, before the exe's CRT static initializers. Every GNames reader is
+   therefore command-driven and fails soft with "not populated yet" rather than "not found".
+2. **DR-I3's experiment had already been run and failed, with a statable scope.** Core's live FOV
+   watch *was* sampling on Infinite - the banked dump shows 8 staging copies per frame from 3
+   distinct buffers - and across **19,602 presents** it never adopted an offset. The negative is
+   real and precisely bounded, and it has exactly three holes, all in our own code: the `>= 320`
+   byte tier gate (and Infinite's deferred lighting pass uses the **160-byte** tier), the 1344-byte
+   truncation, and VS-only. A plain `dumpframe full` would not have closed them either, because it
+   gates on the buffer OBJECT changing while Infinite rewrites one object via `UpdateSubresource`
+   (15.3 M lifetime calls). So the instrument was rebuilt before spending a live session on it.
+
+**New instruments, all controls passing:**
+
+- `dumpframe cb` (frame_inspector mode 3): captures every `UpdateSubresource` into a constant
+  buffer at its real size, plus per-draw VS/PS constant-buffer identities.
+- `decode-framedump.ps1 -ScanMatrix`: recovers `tanH = |c3|/|c0|` from a 4x4, **with the object
+  scale cancelling**, which is what makes it work on a per-object constant buffer. Plus
+  `-BlockBytes`, `-MinModeShare`, `-DiffAspects`, `-SelfTest`, and the removal of three hardcoded
+  336-float limits (one of which silently truncated large buffers and dropped the rest).
+- Controls: `-SelfTest` passes; `-ScanLayout` still reproduces BS1's known offset 12; `-ScanMatrix`
+  independently finds the same BS1 lens (1.1917/1.2350 vs the ray block's 1.1918/1.2351) by a
+  different decode; and **it recovers BS2's lens from a dump where `-ScanLayout` finds nothing** -
+  the 2048x2048 square-aspect case that cost BS2 a session.
+- Recorded honestly: `-ScanMatrix` produces false positives on degenerate matrices. On the BS1
+  control a 0.5/1.0 pair scored 156 blocks and **outvoted the true answer's 83**, so plurality alone
+  is not sufficient and the aspect cross-check is load-bearing.
+
+**BS1 and BS2 are provably unaffected** (user directive). Their sources are byte-untouched;
+`git diff` over `src/game/bioshock1r` and `bioshock2r` is empty. The three shared changes are inert
+for them by construction, and it was checked rather than assumed: neither adapter includes
+`core/framework/command.h` (so the pump lease cannot reach them); both compute `full ? 2 : 1` when
+arming a frame dump (so mode 3 is unreachable); `pattern_scan`'s UE2 entry point keeps its exact
+body. **The additive dump format was tested, not asserted**: the OLD decoder run against a
+synthetic mode-3 dump gives a byte-identical answer to the original, while the new one additionally
+reads a 640-float upload block the old 336 cap would have truncated.
+
+**NEXT SESSION = I2 part 2**, the remaining de-risks: **DR-I5** (render substrate - and the
+thread-split measurement above is already half of it), **DR-I6** (the `set` Exec seam), **DR-I7**
+(Scaleform - and the frame map already hands over a large free head start), **DR-I8** (resolution,
+which the aspect cross-check below settles as a side effect), and **DR-I4** (native stereo,
+timeboxed, evidence already says no).
+
+**Still owed / known gaps, in priority order:**
+
+1. **The TRANSFORM question is still OPEN, but the instrument is FIXED and installed.** The
+   heartbeat used to compare against `[this+0x24C]` (path 1's source) while every observed sample
+   took path 2 reading `[cam+0x3B8]` - it compared the wrong field, so its "raw copy" verdict was
+   worthless. It is now path-aware: `returned-minus-source` binds the comparison to whichever path
+   actually ran, names the field it used, and **refuses to make a claim at all** on paths 3 and 4
+   (whose source we decline to resolve from inside a detour). **This needs only a launch and one
+   heartbeat to read.** It decides where an I4 HMD pose has to be injected, so do it first.
+2. **The aspect cross-check** at a second backbuffer size (1600x1200), which also answers DR-I8 for
+   free via `first Present: backbuffer WxH`. One relaunch.
+3. **The FNameEntry UTF-16 branch is UNTESTED**, reported as such rather than as a pass - the pool
+   has no wide entries in its first 4096.
+4. `frame_inspector` records **`rtv0` only**, and every world `SetRT` on this game binds 4 RTVs, so
+   three quarters of the deferred frame map is discarded. Worth fixing before I6.
+5. A **4x4-shaped live lens decoder** behind `hud::fov_watch`. Core's `decode_ray_block` is
+   Vengeance-shaped and cannot consume this game's lens, which is why the adapter publishes no
+   `set_ray_block_offset` even though the offset is now known. I5 work.
+
+### Infinite: current state after session 35 (superseded - kept for the derivation trail)
+
+**I1 IS CLOSED - our code runs inside `BioShockInfinite.exe`.** Branch `bioshock-infinite`. The
+adapter exists (`src/game/bioshockinf/`), the mod loads, logs, draws its overlay and takes commands,
+and **not one engine hook is installed**. I0 stays closed; its recon is in `ENGINE_NOTES.md`.
+
+What is now confirmed **live, from inside the process** (the whole session-34 table was outside-in
+until today):
+
+- **The `xinput1_3.dll` proxy works verbatim** - no proxy change was needed, and the Steam overlay
+  does not interfere with injection (the proxy loads the mod from its own `DllMain`, long before
+  anything calls `XInputGetState`; whether the overlay eats the *input* thunk is still an I7
+  question).
+- **The build fingerprint matches on all four fields** and **ImageBase really is `0x00400000`**.
+- **D3D11, from the inside:** backbuffer **2560x1440 `R8G8B8A8_UNORM`, windowed**, feature level
+  **11_0**, RTX 4060; frame inspector attached to the game's own context on **15/15** slots and
+  wrote a real dump (482 events / 68 resources).
+- **d3d11/dxgi being absent from Infinite's import table changes nothing**, and the reason is
+  structural rather than lucky: `bioshockvr.dll` links `d3d11` itself, so our import table loads it
+  before any of our code runs. Hooks in at T+0.4 s, first Present at T+8.5 s.
+- **A free half-answer for DR-I8:** the live `XEngine.ini` says 2560x1440 and the backbuffer at
+  first Present *is* 2560x1440, so the config resolution is honoured by the renderer - which is more
+  than BS2 could say. It does **not** yet prove a *write* lands; that still needs a write, a
+  relaunch, and the backbuffer as acceptance.
+- **`CSERHelper.dll` displaces our exception filter here too**, exactly as on the remasters. Core's
+  periodic re-arm caught it at the first Present, so it is load-bearing on this game as well.
+- The camera seam was **probed read-only, never hooked**: `0x1E10C0` holds an aligned-stack MSVC
+  prologue (consistent with the 4x4 SSE transform derived offline) and the exec thunk at `0x129280`
+  is **frameless**, which independently confirms why the `CC CC CC 55 8B EC` prologue heuristic
+  cannot find it. Hooking is I2.
+
+**The command seam is core now, and Present-driven.** `core/framework/command` owns the poller and
+the shared vocabulary (`mem*`, `fsweep`, `dumpframe`, `vrinput`, `vrpace`, `vrmirror`, `vrcine`,
+`vroverlay`, `vrhud`, plus a new `vrcmd` status). Adapters get first refusal via
+`IGameAdapter::handleCommand`. Three things worth carrying forward:
+
+- **BS1 and BS2 are byte-untouched** (user directive, this session): the Present pump is opt-in, so
+  they keep their own pollers and their own copies of the vocabulary. **Folding them in is a
+  deferred consolidation task** - see "Deferred" below.
+- While the Present pump owns the poller, **commands run on the render thread**. A long `memscan`
+  stalls presents, not the game thread. I2's camera hook takes over the poll one-way and
+  permanently.
+- **A pre-existing `command.txt` is skipped at startup** rather than executed - the trap that bit
+  BS1 three times. Found and fixed a subtlety live: prime on the first POLL, not the first sighting
+  of a file, or a game that starts with no command file swallows the first real command (the first
+  build did exactly that).
+
+The session-34 recon that all of this rests on, unchanged:
+
+Closed at the end of the session once BS2 freed the machine: **the renderer is D3D11, confirmed
+live** (`nvwgf2um.dll`, the DX10/11 UMD, is loaded and the DX9 UMD is not - `d3d9.dll` alone proves
+nothing). Two further live facts that change I1/I7: **`XINPUT1_3.dll` is loaded**, so the injection
+vector is real at runtime, and **`GameOverlayRenderer.dll` is loaded**, so expect BS1's
+Steam-overlay thunk problem and plan for the IAT-hijack lane (slot RVA `0xCD4814`) rather than
+trusting the proxy seam alone. Reading a 32-bit process's modules needs **32-bit** PowerShell; a
+64-bit host sees only the WOW64 shim and reports 6 modules instead of 123.
+
+The harness was also verified against the live process: `game-shot -Game bsi` captures **real D3D
+content** (not a black frame, which was not guaranteed), `game-cmd -Game bsi` writes a BOM-free
+`command.txt`, and the conflict guard was exercised in **both** directions - refused with BS2 up,
+allowed with it down.
+
+Everything else derived so far is still offline and **unconfirmed live**. Confidence is stated per
+row in `ENGINE_NOTES.md`; treat every RVA as a hypothesis until a hook fires on it.
+
+**Next session (36) = I2, the de-risk battery** (DR-I1 through DR-I8 in the roadmap). The order that
+buys the most:
+
+1. **DR-I2, the camera seam.** Hook `GetPlayerViewPoint`'s IMPLEMENTATION (RVA `0x1E10C0`), never
+   the thunk - 2 stack args, `ret 8`, and the arg count must equal `ret imm / 4` or the RTC dialog
+   that writes no dump is the result. Confirm it fires in gameplay *and* at the menu, and measure
+   the dispatch rate. **The moment it is live, call `bvr::command::poll_from_game_thread` from it**
+   - that is the one-way handover that moves commands off the render thread.
+2. **DR-I1, UE3 reflection.** `GNames` / `ProcessEvent` / `FindFunctionChecked`, plus an
+   ASCII/8-byte-stride variant of `pattern_scan::find_native_function` for this game's 2647-entry
+   native table. Run the static caller census BEFORE hooking anything.
+3. **DR-I3, the frame map.** Infinite is deferred-rendered, so the BS1/BS2 forward fingerprints do
+   not apply and the cb0 ray-block offset must be re-derived. `dumpframe` already works and one
+   dump is banked in the `bsi` data dir.
+
+**Blocked on the user / the headset:**
+
+- **`Bioshock2HD.exe` must not be running.** Enforced for `-Game bsi` by
+  `tools/lib/assert-no-conflict.ps1`; building and installing are deliberately unguarded. BS2 was
+  running for the whole of session 34, which is why nothing live was attempted beyond the six-key
+  check the user ran themselves. In session 35 the machine was free and the check was run before
+  every launch.
+- The user's save (`TWN`, Columbia town) has **no weapons or combat** yet, and that is
+  **deliberate** (user directive, 2026-07-31). They will produce the combat/weapons save at **I9**,
+  not earlier, because they want the viewmodel and scale work verified **from the start of the game
+  as well as from a loaded-out save**. The opening hours have no weapon, then the Sky-Hook alone,
+  then one gun - calibration that only holds with a full arsenal is not calibration. Do not treat
+  the missing loadout as a blocker to be worked around; it is a test condition.
+
+**Deferred, deliberately:** UELib/UE Explorer decompile workspace. It is most useful aimed at a
+specific script question (the fire path for I8), not swept speculatively. `GObjObjects`, for the
+reasons in the session log.
+
+**Deferred consolidation task (session 35, user directive): fold BS1 and BS2 into the core command
+seam.** Both adapters still carry their own `poll_command_file` and their own copy of the ~70 lines
+of core-owned vocabulary that now live in `core/framework/command`. The migration is mechanical -
+delete those branches, override `handleCommand`, and call `bvr::command::poll_from_game_thread`
+where `poll_command_file` was called - but it was **deliberately not done this session** because a
+parallel BS2 session was live in `bioshock2r/camera.cpp` and neither shipped game could be
+smoke-tested from this branch. Do it in a healing/refactor pass with both games launchable. Two
+details to carry: core's `vroverlay` uses BS2's argument reading (an explicit `off` is off, anything
+else is on - BS1's bare `vroverlay` currently means off), and core primes the command file at
+startup where BS1/BS2 still execute a stale one.
+
+**Two things to carry into I1 that were bought expensively elsewhere:** hook implementations and
+never thunks (offline census proves the thunks are dead here), and read the `FNameEntry` encoding
+flag rather than assuming UTF-16 like BS1.
+
 ## Current state (2026-08-05, session 42 - THE PRESENTATION LANE, all reachable rungs flat-green - branch `claude/bioshock2-presentation-vr-2a7b3a`, merged to `bioshock-2`)
 
 ### The headline: the HUD rides a readable head-locked panel, and it took a core discovery
@@ -5277,6 +7368,1204 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 58 (close-out, same day) - HEADSET ACCEPTED, merged to bioshock-infinite; s59 = the missing-hands scripted-beat class
+
+User verdict on the full TESTING "S58" checklist: "everything worked as
+expected" - head-directed targeting, the F10 A/B, the complete raffle
+chain (no stalls), doors/kinetoscopes, sharpness sweep. Fast-forward
+merged to `bioshock-infinite`. Next session's target banked with the
+user's observations (see the current-state section): the missing-hands
+scripted-beat class - vigor drink, the tattoo-poster hand raise, the
+ball-77 raise; all "look at your own hand" vignettes, while full scripted
+holds show hands correctly.
+
+### Session 58 - 2026-08-13 - HEAD-DIRECTED USE: 0x1E13DC cornered by the ButtonUseTarget oracle, policy shipped flat
+
+On branch `claude/bioshock-head-interaction-bebe6d` (off origin/bioshock-infinite
+@ bb0df6a). The deal-breaker session, evidence-first per the s58 ladder; full
+derivation in ENGINE_NOTES "s58", headset checklist TESTING "S58".
+
+- **The oracle hunt**: the planned GFx ButtonHint widget lane FALSIFIED as a
+  live signal (no IsShown on the hint classes; the container entries TArray
+  is sticky through hide/walk-away - show/hide is ActionScript-only). The
+  validated oracle: `XPlayerController.ButtonUseTarget` (InterfaceProperty
+  +0x176C, by-name), the live facing-gated USE target. `bsihint` (new
+  hint.cpp instrument) prints it + edge-logs changes in watch mode.
+- **The sweep**: at a user-parked vending machine, body yaw via relative
+  mouse + head yaw via xrsim, A/B/A per candidate with restore verified:
+  un-denying **0x1E13DC alone** flips USE arming to the composed head view
+  in BOTH directions; all nine other deny-set callers = control. Cone
+  half-angle 45-60 deg. Findings: loot containers arm by proximity only;
+  `head rot +X` = MINUS X on the written view yaw (sign trap, cost 3 legs).
+- **The fence**: eye-check PASS (pairing 90/90) with the un-deny live;
+  4-min soak clean (aim calls==substituted, no s55 freeze); shipped-build
+  fresh boot seeds 10 -> `headuse: ON`, save to free play normal. The
+  raffle chain re-verify is the headset's leg (judged low-risk: scripted
+  holds suspend the drive; in the headset the head IS the pointer).
+- **Ship**: `kInteractionUseViewCallerRva`, `camera::set_head_use()`
+  (seed-then-del invariant), config `interactHeadUse` default ON, F10
+  "HEAD-DIRECTED USE (s58)", `bsicam vdeny del` (new verb), hint.cpp.
+- **Traps**: pause-on-focus-loss leaves a MENU refocus cannot close
+  (Esc, never Enter - RESTART CHECKPOINT is two slots down); sim idle
+  hands block the captures (`hand l|r offset`); this save = fair-plaza
+  spawn, ~90 s load cycle, NO scripted-hold markers; no manual saves.
+
+### Session 57b - 2026-08-12 (same evening) - headset verdicts in; three fixes shipped, interaction split deferred to s58
+
+Melee swing + execution, stump cuff, sprint-kill core: ACCEPTED. Fixed off
+the verdicts (all flat-verified + eye-check PASS): (1) the post-sprint SNAP
+- a 700 ms glue release tail rides out the sprint-exit anim blend
+(`sprintglue tail <ms>`); (2) the reload-then-shoot glitch loop - the ready
+capture is QUIET-GATED (motion < 3 deg / 3 UU per 100 ms sample, retries
+per drive; ~2700 refusals measured across one fire+reload, banks land only
+on settled poses); (3) the melee gun-hand lurch - the right limb bone-hides
+for the swing's first 0.9 s (never the execution; mid-swing capture shows
+gun+hand gone, unhide edge clean). DEFERRED s58 priority 1: head-directed
+interaction (the s56 partition needs a finer split - USE-targeting to the
+VR view, scripted view-cone gates keep the engine view; caller census +
+raffle-fence next session).
+
+### Session 57 - 2026-08-12 (late night) - THE MODEL LANE: sprint falsified-then-glued, melee window, loadout buckets, the crosshair hunt LANDED, stump cuff
+
+On branch `claude/bioshock-model-lane-sprint-melee-7e33e4` (off
+`bioshock-infinite` @ c1db3d4). Full derivations in ENGINE_NOTES "s57";
+headset checklist in TESTING "S57". All five user-prioritized items landed
+flat-proven; eye-check PASS (leg 0 pairing 90/90) on the final build.
+
+- **Sprint**: the s49b clamp shape falsified (nothing at the message funnel,
+  no by-name action - the runtime drives the state internally); the sprint
+  arm-pump measured as compose pass-through (L 103-124 deg / 70.8 cm vs 0.00
+  walking) and killed with the fireglue-full substitution held on the
+  input-derived sprint state. A-B-A 124.38 -> 0.10 -> 124.38 deg.
+- **Melee**: weapon=NULL at the seam for melee too (param discriminator
+  dead); the Y-edge classifies instead, holds-open dispatches exempt (the
+  QTE rule); melee skips/cancels fireglue + the poison capture (watched
+  banking a mid-swing pose live) and the execution hold releases the hide
+  gate. Counter-proven A/B; the execution look needs the user at a
+  staggered enemy.
+- **Profiles**: per-hand keying confirmed as the vigor-only leak; loadout-
+  class suffix `#solo` added (gun-present keys byte-identical; empty
+  prefix-match keeps the hide gate honest).
+- **Crosshair**: the owning screen reached (widget Outer =
+  XSinglePlayerGFxHUD); IsShown/centerpoint bits at +0x118 cleared by a
+  default-on policy with per-level re-derive + watchdog (game re-asserted
+  7x, lost each time). `bsixhair` A/B lever.
+- **Stump**: collapse epsilon 0.10 (slider) replaces zero scale - capped
+  stub visible flat; tuning is the user's.
+- Traps: pad outage again (keyboard lane + force/swing test levers), the
+  load beat must play untouched (~3 min), token-newline trap third bite,
+  nose-to-wall spawn.
+
+### Session 56 - 2026-08-12 (night) - THE INTERACTION-VIEW FIX SHIPPED: third gate found flat, the smear pinned in the headset, deny set seeded at install, raffle chain accepted end to end
+
+On branch `claude/bioshock-interaction-view-fix-c1be42` (tip-identical to the
+s55 branch). Full record in ENGINE_NOTES "s56"; checklist in TESTING "S56":
+
+- **Instrument audit first**: a negative control (drive fully off) passed
+  every s55 eye-check leg while `camReplays/s` collapsed 90 -> 0 - the image
+  legs are blind to the pairing break (mono reads in-band). Leg 0 (fresh-beat
+  camReplays/s >= 80% of draws/s) added and validated in both directions;
+  interocular floor 40 -> 30. vdeny widened (16 slots, allow-only derivation
+  mode); allow-only{0x26B499} proved the pairing is fed by the scene caller
+  alone.
+- **First flat raffle playthrough**: the 11-deny trial advanced past s55's
+  wall (take-ball accepted, reveal played) then stalled pre-throw; live
+  census named a caller absent from the s55 map - 0x5EA483, the scripted-
+  sequence "is the player looking at the target" cone gate; denying it
+  unstuck the beat in the same log second. Chain then ran to the skyhook
+  QTE (fire press accepted) and free play.
+- **The headset bisect (user, VDXR, 4 live flips)**: the seeded 11-set
+  produced an offset-dependent post-process smear no flat leg can see;
+  bisect pinned it to 0x1E1367 alone - the eyes-viewpoint wrapper's DIRECT
+  flavor is a RENDER consumer, never to be denied; 0x1E13DC (virtual
+  flavor) carries the interaction path. s55's attribution corrected, its
+  framing-shift observation explained.
+- **Shipped**: patterns.h `kViewConsumerDenyRvas` (10 callers) +
+  `kEyesViewDirectCallerRva` (never-deny marker), seeded in camera
+  `install()` behind the build gate - automatic, zero levers. **Headset
+  acceptance: sharp in all directions + the full raffle chain with no
+  stalls, user-played.** Final sim eye-check green on the shipped build;
+  A-B-A via `vdeny off/on` live.
+- New traps recorded: menu-contaminated eye-check trials (quads=1 tell),
+  xrsim-launch's stale-runtime misread after a VDXR boot.
+
+### Session 55 - 2026-08-12 (night) - eye-check tooled, DENYLIST landed, the interaction consumer cornered live at the raffle lady
+
+Executed the s54f plan on branch `claude/bioshock-interaction-view-denylist-5f89c7`
+(worktree off 12140e0). Full technical record in ENGINE_NOTES "s55"; summary:
+
+- **tools/eye-check.ps1** wraps the 5-leg stereo check; calibrated on the
+  known-good build (interocular 46.8/73.3% at the fairground - the s54f
+  53-56/77% numbers are scene-dependent, band [40,70] holds); both s55 runs
+  PASS, including on the vdeny build with the set empty.
+- **vdeny (camera.cpp)**: deny set gates only drive_view; empty = historical
+  substitute-for-all; `bsicam vdeny` lever + F10 counters. Un-seeded by
+  design until the acceptance ladder passes.
+- **Derivation**: near/far census killed the proximity hypothesis (all nine
+  in-scene callers fire per-draw everywhere); offline capstone named the
+  mid-stall candidates - 0x1E1367 (eyes-viewpoint wrapper, direct flavor),
+  0x22587F (view -> GLOBAL 0x13AB894 publisher), 0x203E73 (out-params
+  DISCARDED - exonerated, and it resolves s54f's render-suspect question).
+- **The live A/B (fresh boot, user walked to the lady, full VR)**:
+  deny{1E1367} -> she raises the basket + interaction marker; deny{both} +
+  pad X -> `ForceUnequip` + `cine: SCRIPTED hold OPEN` = the take-ball
+  interaction ACCEPTED under full VR (a first across every era of the mod).
+- **Aborted at the user's shutdown**: the announcer/reveal after take-ball
+  did not fire within ~8 min (one confounding pre-reveal pad-A press was
+  sent); run abandoned, not proven stuck. Boot-1 oddities to watch: the aim
+  seam's `substituted` counter froze during deny churn (reload cleared it);
+  deny{1E1367} visibly shifted the rendered framing.
+- The first-boot "heavy stutter every 5-10 s" the user reported matched
+  beat-log dips to 57-77 draws/s; it vanished on the second boot with the
+  harness quiet - prime suspect is harness focus-steals during censusing,
+  unresolved.
+
+### Session 54f addendum - 2026-08-12 - the s54e view-consumer filter FALSIFIED IN THE HEADSET (stereo broken) and REVERTED; the s55 derivation plan
+
+**s54e (commit af23824: VR pose to caller 0x26B499 only, everything else
+authored) passed its flat raffle acceptance and then BROKE VR RENDERING in
+the headset**: each eye a COMPLETELY different image, smearing on head
+motion, no 3D. REVERTED (2b1b169), rebuilt, installed, and sim-validated
+(eye-check numbers below). The s54d MECHANISM stands un-falsified - the
+interaction system reads the substituted view, and giving it the authored
+view mid-stall made the very next press register, twice. What failed is the
+FIX SHAPE: "0x26B499 is THE render caller" was wrong or incomplete.
+
+- **Why it broke (s55 must verify)**: the renderer does not consume the view
+  (only) through 0x26B499. With only that site substituted, one stereo pass
+  rendered from an UNSUBSTITUTED consumer (authored view) while the reentry
+  pass replayed the VR-substituted SR base cached by 0x26B499's dispatch -
+  a different world per eye, plus reprojection smear from layer tags that no
+  longer described the rendered content. Prime suspects for the real render
+  consumer(s): the present-rate caller 0x203E73 (parent 0x21E03E) and the
+  cached-POV / view-transform paths (PC+0x24C/0x258/0x430) that other sites
+  may refresh. The flat acceptance NEVER CHECKED THE PER-EYE IMAGES after
+  the change - the raffle-throw oracle covered the interaction half only.
+  The stereo-only-testing rule exists for exactly this and was violated.
+- **The s55 approach - INVERT to a measured DENYLIST**: keep
+  substitute-for-all as the baseline (stereo known-good, raffle known-bad)
+  and derive the INTERACTION consumer's call site(s): caller-census DIFFS
+  near/far from an interactable and during the raffle wait (the site that
+  fires while a prompt is evaluated), `bsicam stack` backtraces to confirm,
+  then give ONLY that site the authored view. After EVERY trial run the
+  eye check below, THEN the raffle acceptance (prompt arms + pad press
+  throws), then A-B-A. The end state must be AUTOMATIC (armed at install
+  behind the build gate, zero user levers) and preserve full 3D - user
+  directive; a targeted mechanism is fine only if it self-applies to every
+  raffle-class prompt.
+- **THE PER-TRIAL EYE CHECK (mandatory after ANY view-path change; sim, no
+  headset needed)**: boot the save, `vrstereo on`, then:
+  1. `xrsim-shot A` - projection layer present, EyeSeparationM ~0.063;
+  2. `img-diff A_left A_right` - healthy baseline (this save, reverted
+     build, 2026-08-12): mean ~53-56, pct-changed ~77% (composite includes
+     the HUD/laser quads - not pure parallax); a per-eye-different WORLD
+     reads far outside this band;
+  3. `xrsim-cmd "head rot 25 0 0"`, settle ~3 s, `xrsim-shot B`;
+  4. `img-diff A_left B_left` AND `A_right B_right` - BOTH large (healthy
+     ~21-31 mean): the view moved in BOTH eyes;
+  5. `img-diff B_left B_right` - back near the baseline band.
+  Any leg out of band = the trial broke stereo: revert the trial first.
+  (Wrap as tools/eye-check.ps1 first thing next session.)
+
+### Session 54d addendum - 2026-08-11 (night) - THE RAFFLE WEDGE MECHANISM CORNERED FLAT: the VR VIEW breaks the interaction system
+
+**The scene-stall reproduced FLAT against the sim on the user's save, and five
+controlled runs cornered it.** The raffle sequence NEVER stalls - it waits at
+the throw INTERACTION, whose prompt never arms and whose presses never
+register while the VR view is active. Verbatim run matrix (config AT the
+reveal / at press time -> result):
+
+| run | pad | camera | stereo | result |
+|---|---|---|---|---|
+| 1 (flat) | on | on | on | broken; released by keys AFTER stripping cam+stereo+pad |
+| 2 (user, flat) | off | off | off | **works immediately, prompt visible** |
+| 3 (flat) | on | on | on | broken; pad A/B/X/Y/triggers/grip/click ALL dead; released with keys after `bsivr off` |
+| 4 (flat) | on | on | OFF | broken (prompt absent on the flat screen too) - **stereo alone exonerated as necessary** |
+| 5 (flat) | OFF | on | on | broken - **the pad exonerated as the sole cause**; then cam+stereo stripped MID-STALL -> E/F/Space released it WITHIN SECONDS (18:34:19) |
+
+- **The mechanism**: the interaction/button-hint system (GNames vocabulary:
+  `XClikButtonHint`/`XClikButtonHintsContainer`/`UsePromptButtonHints`/
+  `ForceInvalidateButtonHints`; live instances confirmed mid-stall by `bsigfx
+  scan`) evaluates off the ENGINE VIEW - the same view the camera drive
+  substitutes with the VR pose. With the VR view active the throw
+  interaction's aim/reach gate never passes: no prompt, no accepted press,
+  on pad AND keyboard alike. Restore the authored view (`bsicam drive off` +
+  `vrstereo off`) and the very next press completes the throw. Camera ALONE
+  breaks it (run 4). A ~9-minute "re-arm" pattern seen in runs 1/3 was a
+  COINCIDENCE of when the strips happened - run 5 falsified the timer.
+- **Why "VR off fixes it" was always observed**: the master toggle strips the
+  view substitution (and everything else) - the presses the user then made
+  registered. vrstereo-off alone not releasing (headset, s53) fits too: the
+  BSI one-toggle leaves the camera drive on - see run 4's mirror.
+- **Why it "predates everything"**: the camera substitution is the oldest
+  feature in the mod. Every era had it; every era wedged at the raffle.
+- **THE FIX (s55, the real work): call-site discrimination on the camera
+  seam** - gameplay/interaction consumers of GetPlayerViewPoint (the Use
+  trace, the hint arming) must read the AUTHORED view; only the render path
+  gets the VR pose. Same class of seam BS1/BS2 grew (their aim/fire seams);
+  Infinite's camera hook already logs caller context - derive the
+  interaction call site's RVA and filter. `ForceInvalidateButtonHints` +
+  the ButtonHint instances are the probe surface for proving the arming
+  live; the raffle save is the acceptance test (prompt appears + pad press
+  throws, full VR on).
+- **WORKAROUND until then (headset protocol)**: at any scripted interactive
+  beat that won't offer its prompt: F10 -> camera OFF + stereo OFF, press
+  the interact, then both back ON. (The old VR-toggle protocol also works -
+  it is the same strip with extra teardown.)
+- The doff/alt-tab crash of s54b remains SEPARATE and open (the s54c revert
+  removed the feed that surfaced it; the park protocol stands).
+
+### Session 54c addendum - 2026-08-11 (evening) - BOTH s54b SUSPECTS FALSIFIED; REVERTED BY USER DIRECTIVE; the suspect set narrows to the CAMERA+STEREO era
+
+Second raffle replay on the s54b build (cine hide game-managed, feed armed
+with the demote-edge close moved off-thread):
+
+- **The raffle stalled IDENTICALLY with game-managed** - the hide gate is
+  EXONERATED for the scene wedge. Default reverted to force (the user
+  directive stands; it was never the blocker).
+- **Alt-tab still broke the game with the feed armed** - the CloseOpen
+  hardening was not sufficient (or not the mechanism). BY USER DIRECTIVE the
+  feed is DISARMED (adapter no longer calls set_pace_feed); Infinite returns
+  to the pre-s54 session handling: a VISIBLE episode throttles the game
+  (~10 Hz) and may park until an external VD action or the F10 VR toggle.
+  THE WEDGE PROTOCOL IS BACK: F10 -> VR enabled off, beat, on. The feed
+  machinery stays in core, default off; `vrpace feed on` is a controlled-
+  experiment lever only. The sim model + vdxr-park.xrs remain (they encode
+  measured VDXR behaviour and the park regression).
+- **The user's directive on the scene wedge (verbatim intent): it predates
+  the input lane, arsenal, hide, aim - EVERYTHING except "normal VR + stereo
+  rendering and related headset features". Do not touch model/controls
+  machinery for it.** The s55 suspect set is therefore: the camera
+  substitution (GetPlayerViewPoint detour + drive), the stereo reentry
+  (second scene draw + camera replay per frame), XR frame pacing (the game
+  ticking at headset cadence), and the xinput proxy shim itself (present
+  since day zero). The cleanest first bisect at the raffle: `vrstereo off`
+  BEFORE the scene, replay - if the sequence completes, split camera-only
+  vs stereo-only next; if it still stalls, the shim/pacing lanes take over.
+  A flat repro would be gold: the save sits right before the raffle; the
+  walk to the trigger is short (~50 s) - candidate for a game-cmd/key
+  scripted approach next session (or the user drives to the trigger flat).
+
+### Session 54b addendum - 2026-08-11 (afternoon) - THE HEADSET VERDICT REFRAMES THE WEDGE: two bugs, not one
+
+The user replayed the raffle with the pace feed armed. **The scene stalled
+again - and this time the log proves it is NOT the session park**: the whole
+wedge ran FOCUSED at 144 presents/s, input live (the user could open the
+menu), sounds playing, head tracking fine. The game's own scripted
+input-lock opened at 16:00:28 ("cine: SCRIPTED hold OPEN"), our gate
+FORCE-HID the rig at the same edge, and the sequence stalled inside the
+lock - announcer silent, the throw prompt never appeared. The park
+root-caused this morning is real and stays fixed, but it was the AMPLIFIER
+of the old hits (any VD demote turned into 5 fps + dead input), not the
+raffle's own stall. The s53 "released by the VR toggle" reading also
+weakens: the user now believes the FOCUSED flips in that log were their own
+alt-tabs.
+
+- **Scene-stall prime suspect: the s53 force-hide through the raffle hold**
+  (s53 measured the game fighting it 15 reasserts in this exact scene; a
+  raffle-class sequence appears to gate on its authored hand/ball moment).
+  s54b flips the cine radio DEFAULT to game-managed (force stays as the
+  A/B); the retry protocol is simply "replay the raffle on the new build".
+  If it still stalls: bisect ladder = `bsifidget req clamp off` (the
+  Lowered clamp posts into the FP network all through the scene), then
+  `bsiaim drive off`, then `vrstereo off` - one lever per attempt.
+- **The doff CRASH (new)**: removing the headset mid-wedge froze the game
+  instantly - draw thread wedged in a win32u syscall, presents 0, Windows
+  ghosted it (the user's "warning/error"), close -> WM_DESTROY -> the
+  KNOWN exit-path fault. The one blocking XR call the present thread could
+  make at that edge (the inline idle-close of a pair-open frame) moved to
+  the pace thread (CloseOpen request kind). Whether that was the freeze's
+  cause is UNPROVEN - the next doff is the A/B; if it still freezes, the
+  suspect moves to VD/VDXR's own display handling and `vrpace feed off`
+  is the isolation lever.
+- vdxr-park.xrs 21/21 green on the s54b build; installed to the game.
+
+### Session 54 (Infinite) - 2026-08-11 - THE RAFFLE WEDGE ROOT-CAUSED (log archaeology) AND FIXED (the pace feed)
+
+Branch `claude/bioshock-session-deadlock-root-28d444` from d49dcff. The
+user's directive was ROOT, not band-aid - and the root was already ON DISK:
+last night's pacetrace.log + bioshockvr.log recorded both wedge episodes at
+1 Hz. Full derivation in ENGINE_NOTES "s54"; checklist in TESTING "S54".
+
+- **The mechanism, measured end to end**: VDXR demotes to VISIBLE holding
+  shouldRender=0 -> our inline loop submits zero-layer frames (layers gated
+  on shouldRender) -> VDXR refuses to re-promote on empty frames (parked
+  VISIBLE for minutes at 72 empty frames/s) AND throttles their xrEndFrame
+  to ~87 ms inline on the present thread -> the game runs at ~10 presents/s:
+  announcer stalls, input effectively dead (plus actions are spec-dead while
+  not FOCUSED). Predates the input lane because the throttle half needs no
+  input lane. Both s53 recoveries were external (no teardown involved); the
+  VR toggle works by removing the throttled calls + free-pacing bring-up.
+  Skip-guard suspect exonerated (neutered by default, paceSkips 0).
+- **The trap that nearly misled the read**: pacetrace.log appends across
+  DAYS - two nights both have a "03:02:24". Segment by file offset, not
+  timestamp (recorded in ENGINE_NOTES s54).
+- **The fix**: core `set_pace_feed` (opt-in; BSI arms, BS1/BS2 no new
+  branch, snapshot banking gated on the flag): while not-FOCUSED-after-focus
+  the present thread detaches and the pace thread re-submits the last
+  healthy layer set with fresh displayTime (request protocol grew
+  wait/feed-cycle/feed-finish kinds; snapshot invalidated before swapchains
+  die; 1 s backoff on a failed cycle). `vrpace feed on|off` + F10 checkbox.
+- **The sim grew the measured-VDXR model** (focus norender / policy
+  vdxr-layers / throttle <ms>, all reset-safe, defaults untouched) and
+  `tools/xrsim/vdxr-park.xrs`: feed OFF = the park reproduced on a desk;
+  feed ON = self-healed (FOCUSED 2.2 s after the loss, 444 presents ran
+  unpaced through the episode). unfocused-pacing 12/12 and smoke 5/5 stay
+  green; xrsim-selftest PASS (empty frames still promote under the default
+  policy).
+- **Item 3's first lane LANDED same-session**: the object-instance
+  enumerator (`bsigfx scan` by FName index / `bsigfx scanc` by class
+  pointer, name-gated after 82 fixpoint-passing fakes) proven live on a sim
+  boot - found the HUD UClass + Package + the live myHUD instance +
+  **Default__HUD, the CDO the s53 null-load wall never reached**. The save
+  level this boot reaches has NO XClikHUDCrosshair instances (UClass only) -
+  the hunt resumes with the same commands in the gameplay-proper save.
+- Item 2 (s53/s52 headset verdicts) untouched - user-in-headset only;
+  carried to s55 with the S54 A-B-A first.
+
+### Session 53 (Infinite) - 2026-08-11 - THE FP-RIG HIDE done right: the lever A/B, the bone-lever gate, the GFx screen model
+
+- **The mandate**: round 4's revert record (zero-scale falsified in-headset,
+  release freezes hands) -> find the game's OWN hide lever, flip it live,
+  wire it to the round-3 conditions. Branch `claude/bioshock-fp-rig-hide-fa6342`
+  off `si52` tip 9e38f7a; commits `6b83cfb` (bsihide + bsigfx probe surfaces)
+  and `308dc31` (gate armed, bone default).
+- **DERIVED (one-shot, cached per boot)**: bHidden actor+0x5C mask 0x4;
+  HiddenGame comp+0xD4 mask 0x20; bOwnerNoSee mask 0x40; bOnlyOwnerSee mask
+  0x80 (and the FP component carries bOnlyOwnerSee=1 in gameplay - the rig is
+  owner-only by construction); indices for SetHidden/SetOwnerNoSee/
+  HideBoneByName/UnHideBoneByName/IsBoneHidden/MatchRefBone. SetHiddenGame
+  does not exist; console `set` stays dead; all writes are instance bits or
+  native dispatch.
+- **MEASURED, and it reshaped the design** (rowboat save + Comstock Rooftops
+  chapter, window A/B with a pistol equipped): (a) scripted scenes NEVER swap
+  the attachment (`bsihide who` = SAME throughout - the stale-rig pivot is
+  dead); (b) the game TRACKS scenes on bHidden (1 through no-hands phases,
+  0 at the authored moment - timestamped flip caught live) **but bHidden does
+  NOT hide the FP rig** - bit set+verified 1 with hands and pistol still
+  rendering. The FP path ignores actor visibility - which also explains why
+  round 4's rig-side manipulations changed nothing the user could see;
+  (c) comp SetHidden hides the arms mesh but the WEAPON MODEL floats on
+  (separate component); (d) bone HideBoneByName removes limb + holdable
+  together - the only complete hide, now the production default.
+- **SHIPPED (hide.cpp, armed)**: cine hold -> rig-wide bone hide behind a
+  POLICY radio (force / game-managed / off; force default per the user
+  directive - the authored box-handoff hand is the known risk, first headset
+  A/B); empty hand outside holds -> per-hand whole-limb bone hide (user
+  call). Edge-driven + 500 ms watchdog, refused-latch derive, rig-drop-safe,
+  fault latch, F10 controls in HANDS + MODEL, `bsihide` command surface
+  (status/derive/who/diff/actor/comp/owner/bone/hand/pawn/lever/cine/auto).
+  Flat-proven live: possession with empty hands bone-hid both limbs, the
+  chapter loadout's arrival unhid them, 0 reasserts / 0 failures.
+- **The pawn-body suspect**: with the rig exonerated twice, the headset
+  doubles ("hands to the right and left of the character") are likely the
+  pawn's OWN third-person mesh, visible only from the offset VR camera.
+  `bsihide pawn 0|1` (SetOwnerNoSee on pawn Mesh, derived at pawn+0x2E4 via
+  the Mesh property) is the one-command headset A/B.
+- **The GFx lane (crosshair kill, rung 3 PARTIAL)**: every machinery name
+  lives (HideableHUDWidgetNames 4835, NumReasonsToShowElement 36595,
+  XSeqAct_HideHUDElement 10586, XClikHUDCrosshair 8654, FlashCommand,
+  HUDMovie; SetVariableBool/GetVariableBool do NOT exist on this build) but
+  `myHUD` (PC+0x2B4) is a bare `HUD` object in EVERY level probed - none of
+  the machinery is on it, and no HUDMovie property either. Walks mapped the
+  screen model: XGameViewportClient(+0xF0)->GFxInteraction; UI screens are
+  GFxMoviePlayer-family UObjects (SwfMovie +0x34, PC +0x5C) owning CLIK
+  widget UObjects (XClikLabel's Outer = XModalTrainingTextScreen). The HUD
+  screen INSTANCE is the open hunt - needs an object-enumeration or
+  GFx-advance-hook lane. `bsigfx` shipped (hud/prop/cmd/element/setb/getb);
+  the CDO-load shortcut failed (four path shapes, all null).
+- **Traps**: the s37 attract freeze recurred once (force-kill + relaunch,
+  protocol unchanged); game-shot captures RACE command dispatch (game pauses
+  unfocused - trust the log's bit readbacks over pixels for state); xrsim
+  `head rot` pitches on the SECOND arg; `head pos` offsets during scripted
+  scenes can bury the camera in geometry (`bsicam drive off` restores the
+  authored view for observation).
+- **NEXT**: headset block (TESTING "S53" minute one = intro text + doubles;
+  the cine-radio and pawn A/Bs), then the s52 verdict list, then the HUD
+  screen-instance hunt for the crosshair + preset keys post-verdict.
+
+### Session 53 addendum - THE RAFFLE DEADLOCK: an OLD session-state bug, released by a VR-enabled toggle
+
+- **User report (live, mid-headset-block)**: at the raffle the game deadlocks -
+  the announcer stops, no input begins the confrontation. **The user has seen
+  this since the EARLY builds (camera + stereo only - it predates motion
+  controls, the input lane and the s53 hide gate entirely).** This time
+  `vrstereo off` did NOT release it (their remembered lever from the earlier
+  hit); toggling **"VR enabled" off -> on (F10; full session teardown +
+  re-bring-up) released it INSTANTLY** - announcer resumed, prompt appeared,
+  and it stayed fixed after re-enabling.
+- **The log during the stuck state**: continuous `xr: present phases (state
+  VISIBLE shouldRender=0)` - the session was parked in VISIBLE, not FOCUSED.
+  Per the OpenXR spec, action state (our entire controller bridge) is only
+  live while FOCUSED - a session stuck VISIBLE means the game receives no
+  synthesized input at all, and the game's own pause/focus handling can stall
+  scripted timelines with it. Teardown + re-create re-earns FOCUSED, which is
+  exactly why the user's toggle works.
+- **Work item (core, next session)**: a session-state watchdog - if the
+  session sits VISIBLE while the game window is foreground for more than a
+  few seconds, log loudly (and consider an automatic re-bring-up, which the
+  user has now proven safe mid-game). Until then the PROTOCOL on any
+  "announcer stopped / nothing accepts input" wedge: F10 -> VR enabled off,
+  wait a beat, back on.
+- Note: the hide gate was initially suspected (its raffle-hold force-hide had
+  15 watchdog reasserts - the game visibly fighting to show the authored
+  ball hand) and was flipped to game-managed live as a first attempt; it was
+  NOT the deadlock cause, but the 15-reassert fight stands as evidence that
+  raffle-class scenes want the rig visible - the box-handoff A/B question.
+
+### Session 52 (Infinite) - 2026-08-10 (evening) - the I7 input lane, THE CHEATED ARSENAL + presets, the HUD on a quad, the cinematic gate
+
+Branch `si52-inf-input-arsenal-hud-cine` from `bioshock-infinite` f1b78a8; four
+items in strict order, all flat-proven and committed; NOT merged (headset
+verdict pending). Commits: 882a420 (input), 0e4a41c (arsenal+presets),
+a2aea90 (HUD quad), e8dc538 (cinematics). ENGINE_NOTES s52 parts 1-4 carry
+the derivations; TESTING "S52" carries the headset checklist.
+
+- **Input**: publish_vr_gameplay/pitch_error/move_yaw_offset from drive_view;
+  right-stick Y provably dead (camera-pitch instrument, +/-89 clamp,
+  A/B/servo-convergence proven); bumper-lift opt-out (no ry leak); body
+  follows head (walk heading == camera facing to 0.5 deg; off-control
+  reverts); snap turn wired, drain sign FLIPPED vs BS1 (sim-derived).
+- **Arsenal**: weapon identity = ARCHETYPE name (all weapons class XWeapon);
+  GetEquippedWeapon(0/1) = both hands' getter; grant recipe load-archetype ->
+  AcquireWeapon(archetype) -> manager EquipWeapon -> AddAmmo (s43 corrected:
+  the CDO was the wrong shape, the archetype grants); `bsigive` + auto-
+  capture per-weapon presets (weapons.ini), round trip proven.
+- **HUD**: gfx_hud positional classifier (DR-I7 verbatim: the a=6 depth-free
+  eye blit, then the UI run); redirect -> capture RT -> the session-19 quad
+  via a new provider seam; eye image HUD-free, pause menu readable on the
+  panel; scene-space effects untouched, GFx flash-class passes through
+  (census-proven); movie frames classify nothing.
+- **Cinematics**: Bink covered by the silence architecture (no code); Matinee
+  detector = GetViewTarget poll; one release per hand on hold edges, chord
+  suspension (A reaches interactive prompts), head radio look/fixed proven.
+- **Harness**: the SIM PAD OUTAGE recorded (game stops polling XInput on
+  some boots; not the mod; two flat checks moved to the headset list). inis
+  restored byte-identical (never modified); weapons.ini test file removed;
+  the granted arsenal was never saved in-game (sim-only state).
+- **ROUND 4 (2026-08-11) - ATTEMPTED AND REVERTED (77e1eb5 -> revert
+  256a244; user call: "revert, fix next session")**: releasing is NOT
+  hiding - in the states that need hiding the game never animates the
+  normal FP rig, so released bones FREEZE visibly at their last pose
+  (headset-measured: "frozen in place, can't control them"). The attempt
+  drove every cluster + arm bone to the kind-2 collapse (ZERO SCALE) per
+  frame (`bones::drive_hidden` / `g_hideWhole`, reusing the s48 armsMode-2
+  collapse widened to the whole hand). The SIM looked clean through the
+  entire rowboat intro (no frozen rig, authored scene intact to the dock) -
+  but the HEADSET verdict was: (a) the intro cutscene TEXT broke, and (b)
+  the double hands were STILL there. LESSON: the flat lane is NOT a
+  sufficient oracle for this feature - the sim never reproduced either
+  symptom. NEXT-SESSION mechanism candidates, in order: find the game's
+  OWN hide lever for the FP attachment (vanilla must hide it in scenes -
+  hunt bHidden/HiddenGame/SetHiddenGame on XFirstPersonAttachment or its
+  component, or the show/hide call sites around scripted-scene starts);
+  component-level hide beats bone-level collapse. What ships on the branch
+  is the ROUND 3 state below (release-based; frozen-hands-in-view is the
+  KNOWN OPEN issue).
+- **ROUND 3 (same night, second headset verdicts)**: snap turn + cine-start
+  recenter CONFIRMED by the user; the DOUBLE HANDS persisted in every
+  scripted FP hand scene (box handoff, doors - the view target stays the
+  pawn and bCinematicMode does not cover them all). Fixes: (1) the cinema
+  gate SPLIT into camera_hold (Matinee/cinematic-bit: recenter + head
+  radio) vs SCRIPTED hold (hand/aim/fire release only, head keeps driving,
+  NO recenter - a door grab must not snap the world). The scripted signal
+  is the engine's own IsMoveInputIgnored/IsLookInputIgnored QUERY functions
+  polled by cached index at 500 ms - after TWO falsified variants
+  ("IgnoreMoveInput" resolves to a FUNCTION and a null-class property find
+  matched it, reading garbage = permanent hold; the bIgnore* bool mirrors
+  do not exist on this build). VERIFIED in the exact reported scene: the
+  rowboat box handoff shows ONLY the authored hand, movement provably
+  locked, head look free. (2) EMPTY-HAND RELEASE (default ON,
+  `handsHideEmpty` key, F10 checkbox in WEAPON PROFILES): a hand holding
+  nothing releases its drive - authored arms play (kills the bare-hand
+  misrotation, the intro double hands, and the sprint-arms weirdness for
+  the bare case in one stroke; per-key scale-to-floor remains the literal
+  hide option). (3) CROSSHAIR hide DEFERRED with the reason measured: the
+  crosshair is a Scaleform CLIK widget (XClikHUDCrosshair) - the HUD
+  object's property chain carries NO crosshair state (full walk, zero
+  rows), so hiding it needs a GFx-invoke lane (a future derivation; also
+  the subtitle/HUD-tweak power tool). The sim pad outage persisted all
+  night (harness); the profiles identity poll now proves the empty keys
+  live (gun[R]='NoWeapon' vigor[L]='NoVigor' on the rowboat save).
+- **ROUND 2 (same night, first headset verdicts)**: stutter fix CONFIRMED by
+  the user; five fixes landed off the headset list: (1) SNAP TURN sign
+  flipped back to BS1's drain - the sim smooth-turn derivation was ALIASED
+  (1 Hz reads of a fast yaw wrap); the headset read "flick right snaps
+  left"; the eye beats the sampler. (2) Cinematics RECENTER on the
+  hold-open edge - a cutscene starts centered on the current head
+  direction (camera::request_recenter, fired from cine's apply_hold).
+  (3) The double-hands cutscenes are the scripted FIRST-PERSON ones (view
+  target stays XHuman - the Matinee leg cannot see them); the detector
+  grew the APlayerController.bCinematicMode leg (s48b property-bit walker,
+  one-shot derive + per-poll bit read). (4) EMPTY HANDS became their own
+  profile keys ("NoWeapon"/"NoVigor" via the tri-state identity poll) -
+  tunable with the same sliders; scale-to-floor IS the hide-arms fallback.
+  (5) HUD quad sliders in F10 HUD (I9) (distance/width/up; width scales
+  the icons) + hudDistM/hudWidthM/hudUpM preset keys. PLUS the F10
+  ARSENAL (I9 cheat) section: GIVE ALL + per-weapon buttons (render
+  thread posts, arsenal::tick drains on the game thread; all grant
+  function indices cached - the fname_find rule). `bsigive all` is the
+  verb twin. KNOWN LIMIT (measured): grants need a level with item assets
+  resident - the pre-raffle intro's PreCoalescedItemAssets is empty and
+  the cooked CoalescedItems package refuses demand-load (bare + dotted
+  probed); from the fair onward everything resolves. Flat smoke: hold
+  recenter + cine fields + edges verified; the give-all code path is the
+  same that granted 10 slots in the town save.
+- **HOTFIX 2 (same night, user report "clear stuttering, unplayable")**: the
+  s52 cadenced pollers (cine 2 Hz GetViewTarget, profiles 1 Hz
+  GetEquippedWeapon x2) each ran `fname_find` - the deliberate WHOLE-POOL
+  linear scan (~70k names) - per poll, freezing the game ~300 ms in a
+  perfect 500 ms rhythm (edgelog dt series: 300/47/47/47/47/300...). The
+  recorded "fname_find never on a cadence" rule, violated by its own
+  author. Fix: `reflect::call_on_object_by_index` +
+  `find_function_index` - resolve once per boot, dispatch by cached index
+  (cine, profiles, and the dyndot Trace all converted). Verified: the same
+  edgelog run reads a flat 46-47 ms, max 47, zero teeth.
+- **HOTFIX (same night, user report)**: a FLAT launch (no headset) with the
+  preset's sticky `vrstereoOn=1` ran the SR doubling + per-eye offsets with
+  NO session - alternating two-view window at half rate ("completely
+  broken... alternating between 2 screens"). NOT an s52 feature regression:
+  the arm path never had a session gate; the user's preset arrived stereo-
+  armed from the s51 headset night. Fix: `scenedraw::stereo_active()` now
+  requires `bvr::vr::session_live()` (arm flag stays sticky; doubling, eye
+  offsets and the sr eye tags all key off it; `reentry pulse` stays
+  sessionless as the flat A/B instrument). Verified both ways: flat =
+  single view, draws==presents, no inter-eye, no ring-skew spam; sim
+  session = doubling + inter-eye 9.448 back exactly.
+
+### Session 51 (Infinite) - 2026-08-10 (overnight) - the SHOULDERS killed (full-hand substitution), the FOV-edge discriminators + THE EDGE TELEMETRY, the FX record lane exonerated
+
+Three items in strict order, all flat-proven and committed on
+`si51-inf-shoulders-edge-fx` (from s50 tip 0a17918; a mains power loss
+mid-session cost nothing). (1) FIRE-SWING ROUND 2: the new
+`bsibones travel all` per-bone peak table named the mechanism in one shot -
+the s50 corr pins the anchor (0.10 deg) while the fire anim's anchor-RELATIVE
+articulation swings the rest of the left chain 74-133 deg / 87.7 cm; the
+chest (the only undriven bone) read 0.00, falsifying the engine-owned-bones
+theory outright. Fix: the ready capture banks the whole hand; the fire window
+substitutes the banked atoms for the live source (corr collapses to
+identity). A-B-A exact (full ~0 / anchor 133.53-95.58 / full ~0), flourish
+8.43, stance 4.5-min idle clean. `bsibones fireglue on|off|full|anchor` +
+F10. (2) FOV-EDGE: three discriminators - the hand-anchored compositor quad
+(core builds it AT the located grip per present; sim: quad==grip to 1e-4),
+the VDXR view logger (located per-eye pose/fov + eyeSep/cant/fov-asym,
+bounded burst), and THE EDGE-TELEMETRY LANE (`bsicam edgelog`, ~30 Hz ring,
+110-column TSV of the whole chain per sample; sim sweep null baseline banked:
+lateral chain exactly linear at worldScale, rms 0.000). (3) FX-ORIGIN FORKS:
+all three falsified live - the decoded tick 0x436490 NEVER RUNS (probe
+calls=0 through a held charge), the update seam's whole population is six
+SkeletalMeshActor scene records with NULL loc buffers (5 live callers of 194
+static, 0x5EC393 dominant), the stamp-pair gate is inside the cold tick, and
+the one-poke experiment therefore had no target. Six lanes down for the
+frozen family. Command-seam trailing-newline trap hit twice, fixed, and
+documented. Headset checklist: TESTING "S51" (the shoulders A/B, the
+hand-quad one-look, viewlog, THE EDGE-TELEMETRY RUN, flourish lead-200).
+
+### Session 50 (Infinite) - 2026-08-10 (overnight) - FX-origin hunt re-scoped; eye tags, THE FLOURISH BUTTON, and the fire-swing kill shipped
+
+Second half (after the user's mid-session "re-scope" call on item 1): three
+levers landed, each flat-proven with its own A/B. (2) RENDERED-POSE EYE TAGS
+- the FOV-edge drift's one surviving mechanism: the projection layer tagged
+the runtime's located per-eye poses over images rendered from OUR parallel
+camera (base +- ipd-slider/2); the claim now matches the render (located
+midpoint + nlerp orientation +- ipd/2). Identity on the sim (EyeSeparationM
+0.063 both modes, per-eye diffs under the ambient floor); the compose chain
+itself exonerated by inspection + the s48 lag probe; core change additive,
+BSI-armed only; `bsicam eyetag on|off`. (3) THE FLOURISH BUTTON - measured
+twice that a SubtleFidget play under the clamp is a visual no-op (the
+response lives in the lowered subgraph; the natural timer chain fires all
+session as no-ops - the flourish was un-answered, not un-scheduled). The
+shipped recipe: a 6.3 s 'Lowered'=1.0 window (clamp-value override inside
+the funnel rewrite), the engine impl called at +1.8 s via the trampoline
+(SEH-isolated), the kill resumes on lapse. A-B-A img-diff 0.5 -> 8.15 ->
+0.5. Chord: left thumbrest + A (core XR-composer addition, BSI-armed only,
+A consumed under the chord), plus `bsiflourish`. (4) the mid-session user
+report "shooting shouldn't affect the left hand": the travel instrument
+measured a 95.58 deg left-anchor rotation through one right-hand shot
+(idle 0.00) - the fire anim moves the authored left grip and the compose
+passes whole-hand authored swings through. Fix: the retired s46 glue
+correction, FIRE-SCOPED to 1500 ms around each player shot. A-B-A: 0.00 /
+95.58 / 0.00 with the flourish still full-amplitude. First half: the
+FX-origin hunt (part 1 of this log entry, below) - the frozen family
+mapped, four position-source theories falsified by measurement, the
+attach-walker + effect-update seams derived and probe-hooked, re-scoped by
+the user. All levers to the headset checklist (TESTING "S50"); inis
+restored byte-identical; nothing merged.
+
+### Session 50 part 1 (Infinite) - 2026-08-10 (overnight) - the FX-origin hunt: frozen family mapped, position feed unfound, paused on a question
+
+Branch `si50-inf-fx-edge-flourish` off a7ba268. Item 1 of the s49b handoff
+only (strict order held; items 2/3 untouched; a 4th user item - firing
+perturbs the left hand - queued mid-session). The held Enrage charge proved
+out as the on-demand flat repro and split the FX in two: socket FX on the
+child model components RIDE the driven hand already (the vigor hand model
+attaches at L_Grip, the weapon at R_Grip - the attachment walker positions
+them from SpaceBases, which the render-side drive keeps composed), while the
+charge plume + ready sparkle (and per the headset, muzzle flash + tracer)
+stay CAMERA-ANCHORED at the authored offset. Four falsification lanes ran
+against the frozen family's position source: tick-time SpaceBases (the new
+dirty-count instrument: the eval restamps SpaceBases only 2 ticks in 12183 -
+our atoms stand, and the FX freeze anyway), GetPlayerViewPoint consumers
+(caller census identical with/without charge), all reachable attach lanes
+(child comps, pawn comps, actor Components, script XEmitterPool - empty),
+and the decoded effect-playback tick's per-record update (rva 0x3EC4C0,
+probe-hooked: ~2 calls/s, zero first-person - not the 90 Hz feed). Landed:
+the attach-walker hook (rva 0x2A1B20, vtable slot 43 + a new vtable-slot
+identity install gate) as instrument + eval-restamp edge cover, the
+`bsifx u` effect-update probe (default off), and a page of new layouts in
+ENGINE_NOTES (FAttachment, ParentAnimComponent redirect, the vigor-is-an-
+XWeapon slot map, the effect manager + tick-helper + record table). Session
+paused on the ask-when-blocked rule with three options for the user
+(continue the banked forks / redirect / re-scope). Harness: award dialogs
+replay on every checkpoint load; Enrage release = throw (burned the carpet,
+drained salts; Restart Checkpoint refills); trigger edges need the
+foreground-then-edge pattern. Inis restored byte-identical; nothing merged.
+
+### Session 49b (Infinite) - 2026-08-10 - THE STANCE KILL: the 'Lowered' clamp, A-B-A proven, default ON
+
+Same branch, continuing s49 under the user's "priority 1 only until fixed"
+directive. Six more boots. The ladder ran: the request-post funnel derived
+(wrappers -> inner post 0x5CED00, typed control-param messages, param FName
+in the descriptor) and hooked with values logged - falsification 7 (nothing
+enters the network at the onset). The engine's own reset-to-ready decoded -
+its descriptor cache on the attachment (+0x294..+0x2F8) named five params;
+Plan B (call the reset as a pin) falsified by DATA (it posts
+ZipLine_IsBollard, not a pose). The manual poster (`bsifidget post`) built;
+TwoHandFallback_Weight A-B-A'd as the 40-deg alert-relax pose pair
+(falsification 8: the stance enters with the weight held). Then the live
+value log caught the FIRE flipping 'Lowered' 1->0 and the ramp back - the
+mechanism: the stance is the Morpheme lowered-idle settle. THE KILL: clamp
+every FP-network 'Lowered' post to 0.0 (the game's own 90 Hz driver is the
+carrier). A-B-A: ON = 435 s idle, 0/43 bones; OFF = stance back on schedule
+(L_Grip 101.11); shipping auto-derive (name-verified descriptor, refuse on
+drift) self-armed at +36 ms and held 407 s green with the battery clean.
+Ships DEFAULT ON; `bsifidget req clamp off` bisects; boot pose still needs
+the fire-once ritual. Traps: bsibones snap has slots 0-3 only; the eaten-
+write pump trap recurs. Inis restored byte-identical; nothing merged.
+
+### Session 49 (Infinite) - 2026-08-09 - StartSubtleFidget decoded and falsified, the Morpheme residual, one-lens verdict
+
+Branch `si49-inf-stance-lens-tracer` off 4d46a73. Three boots (one menu wedge,
+beaten with the new click-driven recipe). The stance hunt: the offline exec
+census re-derivation revealed StartSubtleFidget is NATIVE; its impl (0x51BA00)
+decoded end-to-end (the self-re-arming SetTimer scheduler, the by-name
+'SubtleFidget' action play into the runtime Morpheme network at comp+0x228, the
+cached FName globals). Two MinHook choke points landed with green positive
+controls (impl hook; network play-by-name hook with caller-RVA attribution) -
+and BOTH falsified as the root with live A/Bs: the stance re-entered with zero
+impl calls (falsification 5) and with the action blocked by name
+(falsification 6). Residual named: a Morpheme-internal transition
+(rqHandFidget vocabulary staked). The lens: bsilens finally ran IN GAMEPLAY -
+lens1 100%, lens2 0% over 281 rounds; no viewmodel frustum exists; the
+edge-drift symptom is not a projection split (pixel station protocol attempted,
+drowned by ambient scene motion - captures banked). Tracer recon: weapons
+reachable via pawn+0x314 inventory manager; Tracer*/Muzzle* NOT on XWeapon's
+950 fields - the FP-model walk is next. Tooling: bsichase, bones::component(),
+bsifidget impl/act surfaces. Traps recorded: bsiaim dotdist eaten by the dot
+prefix; the PE filter breaks bsicallat's gate; load-time pump lag eats
+game-cmd writes. Inis restored byte-identical; nothing merged.
+
+### Session 48 (Infinite) - 2026-08-09 - the verdict fixes: locomotion pinned, wrist/hide reworked, the stance proven native
+
+Branch `si48-inf-verdict-fixes` off the s47 tip (ca1d438), same night as the
+S46+S47 headset verdicts (all six recorded in STATUS). Zero core changes, no
+merge. The evidence trail, in order:
+
+**The stance (verdict 1)**: glue retired on the user's directive. Built the
+ProcessEvent vtable-slot filter on the attachment (slot +0x7C occupant verified
+= AActor::ProcessEvent; int-compare against GNames 2172; self-gated block) as
+the root kill - probe observed the dispatch passing, filter observed it
+blocked. Then the CLEAN boot falsified the premise: stance fully re-entered in
+8 min with events=1/startSeen=0/blocked=0 - **the anim starts natively**; the
+dispatch is a notification. Filter demoted to observer (default probe). Built
+bsiprop (UProperty chain walker - Children/Next/Super link offsets DERIVED
+live: +0x38/+0xC on this build's UClass; leaf class carries only 4 fields, so
+supers matter) and bsipropbit (masked-bit read/write) to reach the surviving
+root, bDisableSubtleFidget; the finishing walk needs a booted save - the last
+two boots wedged in drifted menu states (trap recorded). Bonus finding: a
+SECOND idle lane, a rigid uniform 40.00 deg alert-relax of the whole left arm
+~90 s post-fire - every prior "ready" reference was actually the alert pose.
+
+**Locomotion (verdict 2)**: reproduced flat (travel window: 9.26 UU rigid
+wobble both anchors at walk speed vs 0.81 stationary), mechanism measured with
+the new lag probe (c0 = R^-1(writtenCam - L2Wt): 0.00 exact stationary - the
+attachment origin IS the written camera - spanning 11.2 UU walking), fixed by
+camPin (dp base = fc.writtenLoc, the camera written THIS dispatch, so
+engineLoc cancels; new FrameContext field). 9.26 -> 1.72 UU, default ON.
+
+**Wrist (verdict 3)**: the bend quat moved from the arm chain to the hand
+cluster; flat diff shows cluster-only rigid rotation, zero arm rows.
+
+**Fire origin (verdict 4)**: trace origin follows the controller (engine
+frozen, ours moved 43.8 UU for a 30 cm hand move) - the symptom is the tracer
+FX spawn; GNames vocabulary staked for the hunt.
+
+**Hide (verdict 5)**: one mode + capdepth slider (default 10 cm).
+
+**Dyndot (verdict 6)**: `Trace`/FastTrace/SingleLineCheck stripped from the
+name pool (exact-match verified) - script dispatch cannot trace; machinery
+parked behind the future SingleLineCheck derivation. Fixed en route: a
+per-cadence fname_find and a spinning test counter.
+
+Inis byte-identical, command.txt deleted, games closed. The stance remains
+visible in this build until the UBOOL lands - stated plainly in the S48
+checklist.
+
+### Session 47 (Infinite) - 2026-08-09 - I8 part 3, the remainder: boot pose measured, gate cleared, animtrans, scale audit, profile scaffold
+
+Branch `si47-inf-i8-remainder` off the s46 tip (7245fa6). The S46 headset verdicts
+were NOT in - nothing riding them was touched (glue algebra, fire substitution,
+wrist-cap styles, wrist sliders all byte-identical), nothing merged, ZERO core
+changes, all bioshockinf-local. Three sim boots, evidence before every lever.
+
+**Boot-time glue arming: measured IMPOSSIBLE, closed.** Two boots (drive off, raw
+bank): the never-fired idle pose (run A, 2 min) AND the resolve-time pose (run B,
+23 s after `rig RESOLVED`, stable over a 10 s window) are both the full 101.11 deg
+stance vs post-fire ready. The boot/checkpoint pose IS the stance - capturing qRef
+at resolve would pin the stance and invert the glue. First-shot arming stays, now
+as a measured certainty (TESTING note upgraded).
+
+**The reapply-burst gate (carried s45b): measured-no-defect, closed.** Counters in
+reapply() (maxAge / afterGap50 / skippedStale, in `bsibones` status). One boot,
+every reachable gap class (drive toggle, tracking loss, pause): 33,255 replays,
+skippedStale=0, maxAge=63 ms, afterGap50=6 (0.018%, same generation). The
+edge-triggered release clears masks before staleness can accumulate; level
+transitions stay covered by the rig-generation gate.
+
+**ANIMTRANS: measured, then built.** New `bsibones travel <secs>` peak tracker
+(~90 Hz per-dispatch anchor sampling). Engine truth, two runs each, repeatable:
+reload moves R 21 UU (14 cm) and L 72 UU (48 cm, the cross-over rack); fire moves
+R 5-7 UU; idle noise 0-2.7 UU. That earned the lever: dp base switches to the
+ready anchor TRANSLATION banked alongside qRef (anim mode + valid capture +
+120 UU broken-basis fallback). `bsihands animtrans on|off` + F10 checkbox,
+default OFF, NOT persisted. Driven A/B: off = pinned (0.81 UU noise); on = the
+authored travel to 1 UU (71.72/20.98) with rotation still glued (0.77 deg both).
+
+**World-scale prep (I8 open box)**: 1.000 m -> exactly +150.0 UU, single-axis,
+zero cross-axis; the full cm->UU audit table is in ENGINE_NOTES (every adapter
+conversion rides the live fc.worldScale; the dot's cm->XR-meters is correctly
+scale-free; two stale "fire seam is rotation-only" comments in aim.cpp fixed).
+
+**Per-weapon profile SCAFFOLD** (I9 prep): profiles.cpp keyed by weapon class
+name via the new `reflect::class_name_of` (UClass-fixpoint, best-effort derive);
+zero entries, nothing consumed, nothing persisted; `bsiprofiles` status verb.
+Measured: the fire seam's optional Weapon param is NULL on ordinary shots - the
+pawn-side current-weapon source is I9 derivation work with the arsenal save.
+
+**Battery green on the final build**: first shot SUBSTITUTED (77.4 UU), both
+ready poses captured, aimRayMaxDevDegL/R = 0.0000 at opposite-angle stations
+(legacy field 86 deg = the documented dual-beam artifact), 2 dots + projection
+layers present, game alive, no new crash dumps, vrpreset.ini and XUserOptions.ini
+verified byte-identical (fc /b), command.txt deleted.
+
+### Session 46 (Infinite) - 2026-08-09 - I8 part 2: the stance killed, bullets from the gun, the wrist levers built
+
+Branch `si46b-inf-stance-origin` off the s45b tip (f260f22). Six commits, nothing
+merged, ZERO core/tools changes. The four open s45b headset findings, in order.
+
+**Measure first, everywhere.** New instruments: `bsibones snap/diff` (bank/written
+atom snapshots, sign-safe geodesic angles, rig-generation interlock) and `bsidiff`
+(changed-dwords-only snapshot compare). The stance measured as a discrete LEFT-hand
+pose (grip+palm rigid 101.11 deg + finger curl, re-onset ~2.5 min, holds), REPRODUCED
+on demand by `bsicallat <attach> StartSubtleFidget` - the SubtleFidget lane named as
+the mechanism by intervention. Console `set`-by-name proven dead (bHidden positive
+control nulled) - one boot, pre-committed pivot to the compose-side lever.
+
+**The ready-pose glue** (the (c) lever, generalized correctly for a name-flat
+component-space bank): corr = qRef x conj(src[anchor]) folded per hand into the
+compose; anchor pins to controller x captured-ready, relative articulation passes.
+qRef auto-captures 1.2 s after every player shot via the new fire seam. A-B-A:
+0.33 deg through a stance onset ON, uniform 101.11 deg the instant OFF, 0.06 back ON.
+
+**The fire-origin seam**: offline dump re-run + thunk disasm named
+AXPawn::XGetWeaponStartTraceLocation impl 0x5344A0, whose body calls the EXACT
+GetPlayerViewPoint impl the camera drive hooks - trace origin = camera eye, the
+parallax root read from the disassembly. One choke point (the Floating wrapper's 13
+C++ callers route through it), no camera feedback (one-way dependency). Probe: one
+call per player shot, 77.4 UU / 51.6 cm engine-vs-hand - the headset's hole-vs-dot
+magnitude. Substitution ships ARMED (xyz only, player-pawn gate, 200 UU cap, latched
+hand shared with the aim seam, origin sliders cm->UU). Both hands verified; vigor
+casts route through the same seam.
+
+**Wrist-cap styles** 0/1/2: style 1 (keep forearm twist) REJECTED flat - giant skin
+hood; 0 vs 2 (pinch behind wrist) go to the headset. **Arm-relative wrist quat**
+built inert and exact (20 deg commanded = 20.00 on exactly the 4 arm bones).
+
+**Battery green on the shipping build**: 3 stations incl. rolls at 0.0000 both
+hands, scale 0.5 uniform, arms transitions, release cycle, SR 90/90/180/90, single
+resolve/zero fails, first-shot substitution + auto-captures, no new crash dumps.
+vrpreset.ini and XUserOptions.ini byte-identical at close.
+
+Traps recorded: zero-byte command.txt crashes launch-game.ps1 (delete, never
+truncate); the offline dump regex misses pooled-suffix exec names (verify with
+bsinative); game-shot saves extensionless files.
+
+### Session 45b (Infinite) - 2026-08-08/09 - I8 flat half: the rig derived by intervention, the drive lands, every acceptance number exact
+
+Branch `si45b-inf-hands` off the s44b tip (536649d) - the REDO: the user discarded the
+original s45/s46 branches unread ("terrible results"); nothing from them was consulted.
+Six commits, nothing merged, ZERO core/tools files touched.
+
+**Derivation before code, all in one boot on the TWN2 save.** The s45b instruments
+(bsiarray, bsidump, bsicallat parm echo + i:/n: args) turned the pawn's own
+`GetFirstPersonAttachment` native into the front door; the viewmodel renderer fell out
+as ONE XSkeletalMeshComponent (43 bones, hands AND pistol) on an attachment ACTOR whose
+LocalToWorld rides the camera - the head-coupling is structural, and composing
+SpaceBases writes through the live L2W inverse is what cancels it. Identification was
+by intervention (HideBoneByName removed the viewmodel; R_Grip alone took hand+pistol
+and left the forearm), bank identity by the engine's own GetBoneLocation (0.1 UU),
+and the design rested on poke oracles: Morpheme restamps trans+quat+SCALE at tick
+cadence even auto-paused, so BS2's scale-row pinning does not transfer, adoption takes
+whole atoms, and release is stop-writing.
+
+**The drive is BS2's shape with this game's facts**: one FrameContext feeding both the
+ray and the model (agreement by construction), per-hand parallel arrays, name-derived
+clusters (grip+palm+digits vs the 4-bone arm chain - the rig is NAME-FLAT, parents all
+zero), arms game/follow/hide with the collapse rule, adopt-then-compose, pass-2
+verbatim reapply on the camera fork. Acceptance: 1.000 m = 150.0 UU exact; five
+stations incl. 60/-90 roll wrote the commanded rotator TO THE UNIT with
+aimRayMaxDevDegL/R 0.0000 throughout; hide leaves hand+gun clean; scale 0.5 shrinks
+hand+pistol uniformly about an unmoved anchor - the BS2 inverse-scale trap did not
+reproduce, so no separate weapon lane; stick-Y moved NOTHING (bit-identical pose), so
+publish_vr_gameplay stays uncalled and the snap landmine never arises.
+
+**Calibration surface**: F10 HANDS+MODEL section (L/R radio convention) + aim trim/
+origin on ray+laser+dot together; vrpreset 9 -> 36 keys (the user-approved batch).
+Four traps recorded in ENGINE_NOTES, two of which cost a boot each: fname_text's
+64-byte buffer contract, and the sim's dead `hand X aim pose` slot (aimWorld is always
+grip+aimtrim). The other two: the UClass-fixpoint gate (a raw loadout-cache struct
+walked as a fake UObject), and modal freezes vs the positive-control rule.
+
+**Test-state discipline**: user's vrpreset.ini byte-identical at session end (backed
+up first), XUserOptions untouched, no strays in the repo, all games closed. Headset
+verdict rides TESTING.md "S45b hands checklist".
+
+### Session 44 (Infinite) - 2026-08-06 - I7 CONTROLS: the per-game pad map, the Touch layout, and the aim seam derived
+
+Branch `si44-inf-controls` off `bioshock-infinite` at 7c06d09. Five commits, nothing
+merged. Scope held: pad map, bindings, aim - no performance work, no lens work, no
+refactors.
+
+**What landed.** (1) The instrument that was missing: `vrinput padlog on`, one line
+per composed button/trigger EDGE with the bits named, plus a `loc.z` window on the
+Infinite heartbeat. Every previous claim about an XR-to-pad mapping had to be inferred
+from a game effect; now the bit is read directly. (2) `PadProfile` + two `constexpr
+PadMap` tables in core - additive, opt-in, default BioShock 1, one relaxed load per
+compose. (3) The Infinite profile armed at adapter init, `bsiinput padmap` + F10
+radios, and `inputOn` as a 9th preset key so a headset boot comes up with a working
+controller. (4) The aim seam derived and probed. `tools/padsweep.ps1` is committed so
+the sweep is re-run rather than re-derived.
+
+**The BS1 proof was run BEFORE any Infinite work**, deliberately, so a redesign would
+have been cheap. Per control: faces still A/Y/X/B, RS-click still produces nothing,
+grips at 0.60/0.75/0.60/0.50 reproduce the 0.70/0.55 hysteresis exactly, flick still
+DU/DD/DL with no DR ever, turn suppression shown by an A-B pair rather than assumed.
+claimRatioH 1.01769 == the banked 1.018 as the "nothing else moved" control, zero
+faults, and zero `pad profile` lines in BS1's log.
+
+**Two things the flat lane proved outright, and several it honestly could not.**
+Crouch (a persistent ~110 UU toggle) and jump (a 98.6 UU arc inside one beat) are
+quantitative proofs. LB/RT/LT each move 4-21% of the frame but the whole-frame diff
+cannot say WHICH binding fired - RT and LT are near-identical region maps - so they
+are recorded as "reaches the game", not as individually proven. NextWeapon and sprint
+are bit-level only with the reason stated; sprint's confound was PROVEN by a control
+run with no LS press at all, which stopped at the same wall.
+
+**The session's biggest result is a falsification.** The plan opened with "the drive
+adds head yaw to the view out-param only, so the shot stays where the body faces -
+turn your head 90 deg and the shot goes 90 deg off", and authorised a fix for it. The
+probe killed it in one A/B: with the hand parked and only the head moving, the
+engine's aim tracks the head degree for degree. Aim is already head-coupled because
+the aim chain sits downstream of the camera drive. The evidence-first gate stopped a
+fix being built for a defect that does not exist.
+
+**The aim write is implemented, executes at the call rate, and ships OFF** because its
+downstream effect could not be established: two shots 70 deg apart in commanded aim
+produced pixel-identical frames, and the positive control could not be built (seeing
+an impact move needs the same view with different aim, which only the substitution
+under test produces). Named negative, mechanism mapped, next instrument specified -
+read the trace RESULT, then probe the controller's +0x2F4 that this function delegates
+to.
+
+**New blocker found:** the pause menu does not consume the synthetic pad (keyboard
+Escape closes it; the game keeps polling XInput at ~92/s the whole time, so the state
+arrives and the UI ignores it). Recorded with its leading candidate, not fixed - it
+needs its own evidence rung.
+
+**Test-state discipline:** the user's `vrpreset.ini` was backed up before the first
+Infinite run and finished byte-identical (8 keys, 2064x2208, GC interval 300 and pose
+lag 2 all untouched). All three games closed at the end.
+
+### Session 43 (Infinite) - 2026-08-06 - THE STUTTER HUNT: the 30 s GC tick named by A-B-A, fix candidate live at native res
+
+Branch `si43-inf-stutter` off `si42-inf-judder-bindings` (9dfcc44). Research rung first
+(RESEARCH.md s43: vanilla fixes, VR prior art with license flags, UE3 internals -> a
+7-entry ranked experiment list, committed before any change). Instrument rung second:
+spike-triggered evidence capture in core (pair-close snapshot: per-phase last/max +
+stage markers + the unattributed remainder; `spikes=N` on the TRACE pairs line; a 4 ms
+mid-stall sampler reusing the s34 watchdog stack capture) - opt-in via `vrpace spike`,
+armed with Infinite stereo, BS1 sim-lane proof named in the commit. Flat repro third:
+the pad lane WALKS in the TWN2 save, and a turn-and-walk wander at native 2064x2208
+reproduced the headset burst signature with EVERY spike outside our code (<= 12 ms in
+our phases vs 27-340 ms unattributed) - SR/pacing exonerated. The cause fell to an
+A-B-A intervention: the EXACT 30 s spike grid (game thread on an FEvent::Wait(100)
+flush barrier, all threads idle) is the engine's timed GC
+(TimeBetweenPurgingPendingKillObjects=30); setting 300 via the game folder's
+DefaultEngine.ini (the propagation lane to boot-derived XEngine.ini, proven this
+session) removed the idle grid AND took the matched wander from 4-7 spikes to 0; the
+reversal leg brought the periodic stalls back. Candidate fix left LIVE (backup
+`.bvr-bak-s43` beside it); headset verdict + an outdoor save are the session-44 asks;
+the texture-pool lane is ranked next for any traversal residual. Rung 0's grant
+combination was executed and FALSIFIED honestly (CreateInventory/AcquireWeapon
+dispatch+return but never register in the plasmid/weapon cycles - the loadout-manager
+registration is the missing seam); LoadCheckpoint's slow-load behaviour (60-100 s)
+and one more attract freeze recorded. game-key.ps1 grew `-Game bsi`. The user's
+mid-session directive - no fixes until the cause is guaranteed by evidence - is
+recorded in the plan and honored by the A-B-A.
+
+### Session 42 (Infinite) - 2026-08-05 - I6 judder flat half + I7 opens: pad lane live, the exec surface mapped honest
+
+Branch `si42-inf-judder-bindings` off `si41-inf-lens-config` (a7a34be), three commits.
+Rung 1: pair-cadence jitter instrument (TRACE pairs: interval mean/sd/min/max + waitGate)
+plus the first-ever consumption of predictedDisplayPeriod; the sim GATES (pairs lock to
+refresh at 72 AND 90, waitGate ~0.6 s/s) so the free-run beat needs a pipelining runtime -
+VDXR answers via pacetrace on the next headset run; `vrpace sync` pair-open-only rate cap
+lands default-off-in-core / on-with-Infinite-stereo (F10 A/B), measured near-inert against
+a gating runtime and proven inert for BS1 (full sim lane, claimRatioH 1.01769, named in
+the commit). Rung 2 falsified its own premise with instruments: script execs dead through
+ConsoleCommand (pixel-identical screenshots), give-family names absent from a full GNames
+dump, XCheatManager never spawned - so the lane pivoted to ProcessEvent-on-the-owning-
+object: bsinames dump / bsifields (UObject::Name derived live at +0x18; PC field map incl.
+pawn +0x1FC, XCamera +0x240 confirmed) / bsicallat; LoadCheckpoint proved as the
+autonomous menu-to-save lane; AcquireWeapon identified as the s43 grant seam (wants a
+weapon object); the weapon-in-hand acceptance blocked by BOTH user saves predating the
+first story weapon - s43 wants a post-raffle save (or the archetype-lookup rung). The
+bsilens viewmodel guard ran in-save: lens1 == lever exactly (delta 0.0%), lens2 absent,
+caveated on the no-weapon state. Rung 3: bindings audit complete (retail pad map + chain
+semantics -> ENGINE_NOTES; core's BS1 pad semantics wrong for Infinite on three named
+counts); kXInputGetStateIatRva verified live and hijacked; the sim's right stick TURNED
+the camera and A pressed - the synthetic-pad lane is live flat, per-game map to s43. One
+pre-existing attract freeze (force-kill; two clean loads after with confirm-pump-first).
+User's vrpreset.ini and 2064x2208 restored and verified untouched.
+
+### Session 41 (Infinite) - 2026-08-05 - I6 flat half CLOSED: FOV lever + lens decoder + resolution + presets, every done-when number measured
+
+Branch `si41-inf-lens-config` off `bioshock-infinite` (8feae7f), six feat commits + docs.
+The session opened with a planning finding: the live XUserOptions.ini had FieldOfView=1.0
+(slider at MAX) so the shipped claim default (slider-min 0.4317) was stale on this very
+machine - the milestone's honesty problem demonstrated before any code.
+
+The lever: set-by-name tried FIRST and measurably dead (`set XUserOptionsManager
+FieldOfView` writes nothing - zero stable holders for the written value; FOV/SetFOV execs
+inert), the live chain mapped by poke/rescan (camera holds 82.50f at [cam+0x214] and the
+POV fov at [cam+0x3D0], tan(82.5/2)=0.8770=the decoded tanH exactly, every holder
+recomputed per tick), so the lever ENFORCES both fields per camera dispatch - measured
+exact and monotone at 110/130 deg, 0 faults, self-restoring disarm.
+
+The law's anchor: at 1440x1440 the first-cut claim (current-aspect) sat 43.7% off and the
+new lens decoder flagged it - the degrees value is horizontal at a FIXED 16:9 reference
+(tanV = tan(deg/2)/1.7778 pinned; both decoders 0.6704 exact after the fix, claim delta
+0.0%, claimRatioH 0.48705 vs 0.4871 predicted). The decoder (opt-in core UpdateSubresource
+tap + adapter matrix-law vote: aspect-gated, 60%-of-16 majority, named runner-up, refusal
+over confident-wrong) also caught the stale boot claim at 14.3% on its first round - the
+audit instrument earned its keep twice in one session.
+
+Resolution: bsires/picker applies live setres AND the section-scoped XUserOptions.ini
+write; the next boot's `first Present: backbuffer 1440x1440` banked the DR-I8 acceptance
+on the mod's own write path. xrEnumerateViewConfigurationViews landed additively in core
+(recommended_eye_size; sim serves 2064x2208) with a full BS1 sim lane re-run as the named
+inertness proof (claimRatioH 1.01769 = the banked 1.018). Config registry + named presets
+landed adapter-local by decision (ARCHITECTURE log; core extraction deferred to healing):
+preset round-trip 6/6 across a full restart, legacy vrpreset files still load, resolution
+LATCHED on load (never auto-applied), and an `eye` preset banked (lever 137 = tanV 1.428 ~
+the eye's vertical, 1600x1712).
+
+Hazards: the pre-existing unattended-attract freeze hit twice (zero mod faults;
+force-kill + relaunch) and the pump lags 30+ s at attract movie transitions -
+send-one-confirm-one is now gotcha 20 (21 = xrsim-shot littering the CWD with
+game-derived captures; deleted before commit). The headset half is a ready checklist
+(TESTING.md "I6 in-headset checklist"): the filled-eye verdict + the three carried I5
+items (world scale, judder at VD 72 Hz, 30-min soak + level transition).
+
+### Session 40 (Infinite) - 2026-08-05 - I5 CLOSED as re-scoped: stereo flat-green AND headset-verified on VDXR
+
+**The verdict (user, VDXR, same day):** "there's stereo 3d rendering and it's working
+well"; nothing broke; slight judder on head motion. Log from their run: 77-80 eye pairs/s
+(155-160 presents/s) at default scale, all SR gates exact, zero foreign skips, no faults -
+above the 72 fps target; the judder fits ~80 pairs under a 90 Hz refresh (VD 72 Hz
+suggested next time). The "looking through a window" percept was confirmed EXPECTED: the
+honest claim renders 75 x 47 deg inside a ~108 x 110 deg eye - I6 exists to fill it.
+Carried to I6's headset session: the world-scale tune (slider live, feel unjudgeable
+through the window), the judder verdict, the 30-minute soak. I5's five flat boxes plus the
+re-scoped Done-when are ticked in the ROADMAP.
+
+Branch `si40-inf-stereo` off `bioshock-infinite` (d3007ba). The ladder ran exactly as
+planned - mono projection, AlternateEye, SequentialReentry - each rung flat-validated
+before the next, everything Infinite-local (+ an additive CMake file-list entry).
+
+**Rung 1, the projection flip.** The adapter publishes the FOV claim per detour call from
+the I2 law (`2*atan(tanV x aspect)`, tanV default = slider-min `kTanVSliderMin` 0.4317 -
+now a named constant - with `bsifov tanv` as the lever and vrpreset persistence) plus
+`publish_gameplay_view(true)` (core's cine fallback defaults ON; a stale publish parks the
+quad - and its fovMismatch/screenOnly legs fail safe on UE3, verified in core source).
+`vrstereo` one-toggle + F10 "VR stereo (I5)" section (posts to the game thread). Flat:
+core's first projection-layer frame on toggle, audit `src=readback tanH=0.767467` (the law
+exactly), projectionViews=2, **claimRatioH baseline 0.5576 derived fresh** vs the
+symmetric 54-deg sim eye, window img-diff 13x floor under simhead yaw, quad fallback on
+off. The claim's honest caveat is documented everywhere: no live option reader until I6,
+so the in-game FOV slider must sit at minimum.
+
+**Rung 2, AlternateEye.** `ue_rot_basis` added to inf_math.h (the Vengeance formula in
+shape; the frame is the s39-measured one), `apply_eye_offset` = sign x ipd/2000 x
+worldScale along the full-rotation right axis, `g_ipdMm` 63 default with F10 slider +
+vrpreset. Flat: inter-eye |d| exact (3.150 UU at scale 50, 6.300 at 100), both signs
+observed, L/R capture stats differ under AER.
+
+**Rung 3, SequentialReentry - the session's real work.** The static walk to the scene
+root dead-ended twice (basic-block boundaries, UTF-16 pointer noise), so the derivation
+went LIVE: a caller census at the camera detour (ret `0x26B499` exactly once per present),
+one-shot backtrace + raw stack scrape (`bsicam stack`), and one-shot vtable probes
+(`bsicam scenedraw`/`vtprobe`). Chain: viewport draw `0x1FDE30` (thiscall+1 arg, ret 4;
+canvas ctor `0x331110` -> client-draw dispatch ret `0x1FE05F` -> canvas dtor -> present
+kick `0x1E50B0(1)`) -> client draw `0x26A3E0` (vtable `0xDE6FC8` slot +0x8 via jmp stub
+`0x6F1360`; holds the IsA-gated controller camera loop) -> GetPlayerViewPoint. **Recorded
+negative that chose the root:** doubling the CLIENT draw doubles camera+scene but NOT the
+present (tag ring skews +1/tick) - the SR root must contain camera + scene + present
+(ARCHITECTURE decision log). scenedraw.cpp doubles the viewport draw: deny-by-default on
+gameplay caller ret `0x206309` (4 static callers), camera-silent/present-stall/teardown/
+poison gates, SEH-guarded second call, draw-stage markers, pulse instrument. camera.cpp
+pass-2 fork replays pass 1's CACHED base absolutely (+1 eye, 100 ms staleness, burst
+counter on the pass seq). Pair pacing armed in the vrstereo ladder; NO 1t machinery -
+threaded doubling ran clean, exactly as DR-I5 predicted.
+
+**Flat acceptance:** `draws/s=90 2nd/s=90 presents/s=180 camReplays/s=90` at the sim's
+90 Hz ceiling, call2 80-215 us, inter-eye exact, SR capture pair genuinely differing
+(mean 0.42 / 1.09 % channels) against a byte-identical mono control pair, deny gate
+observed refusing a foreign caller live, 15-minute armed soak with zero faults / zero
+watchdog / zero poison and only self-healing tag-ring resyncs at attract transitions.
+Full runbook: TESTING.md "I5 battery"; headset checklist "I5 in-headset checklist" (true
+parallax, the CARRIED world-scale tune, 72 fps, 30 min, transition + quit-to-menu).
+
+New derivation instruments kept on the seam: `bsicam callers` (ret-RVA census with
+present-delta), `bsicam stack` (backtrace + call-preceded stack scrape), `bsicam
+scenedraw` / `bsicam vtprobe` (live virtual-dispatch resolution). Two harness traps
+recorded in ENGINE_NOTES s40 (PS 5.1 vs cmake stderr on reconfigure; game-shot -Out is
+extensionless).
+
+### Session 39 (Infinite) - 2026-08-05 - I4 6DoF head drive + simhead + vrrec, flat battery green; headset corner-lean pending
+
+Branch `si39-inf-head-camera` off `bioshock-infinite` (2923d25). Order of work per the
+BS1-learned rule: the flat instruments landed WITH the drive in one commit and were exercised
+before any headset ask. `drive_view` in the GetPlayerViewPoint detour tail substitutes the
+OUT-PARAMS only (never `[cam+0x3B8]`/engine memory): yaw additive on the game's own yaw,
+pitch/roll absolute, position = recenter-relative XR delta -> UE axes -> x worldScale (default
+50, UE3-canonical, NOT BS2's 100). Lane order replay -> simhead -> live; the live lane never
+calls `set_camera_mode` - core flips quad->projection there, which is I5's rung (ARCHITECTURE
+decision log). simhead is BS2's shape with the position triple; vrrec is BS1's BVRR v1
+adapted to a present-count-edge cadence (this seam fires many times per frame); heartbeat
+gained the `[bsi] drive:` FINAL-camera line with engineRot + pitchErr as the read-back
+discipline (pitchErr logged, never published - the core servo would seize right-stick Y;
+I7's lane). New files `inf_math.h` (adapter-local UE3 math, each convention a falsifiable
+claim) and `recorder.cpp/.h`; zero core/shared/BS1/BS2 edits by construction.
+
+The whole flat battery ran at the attended attract (which plays real gameplay scenes) and
+passed with exact numbers: passthrough d=0; yaw residual exactly 5461 units (30 deg) on
+three beats against a MOVING engine camera; pitch 3640 / roll 1820; all three position axes
+exact in UU incl. the game-yaw rotation and world-up Z; worldscale doubling; the real
+OpenXR path (`head rot/pos/orbit` -> xrLocateSpace -> get_head_pose) exact; vrrec 1077-frame
+round trip with PLAY marks number-for-number identical to REC and lane=replay at xr=none;
+window img-diff 6.12 mean / 23.4 % changed vs a 0.58 / 1.12 % floor (10x) with the heading
+visibly rotated; 90.0 fps sustained; vrpreset round trip; clean WM_CLOSE exit. Runbook now in
+TESTING.md "I4 battery" + the in-headset checklist for the Done-when corner-lean.
+
+Found and recorded: VERIFICATION gotcha 17 - a sim `recenter` with the head yawed blanks the
+quad capture (falsified both ways: yaw-110 -> 1 covered pixel with a bright window; yaw-0 ->
+pixels back), and even then the captured quad sits off-centre - the capture's layer transform
+after a reference-space change is a healing-lane candidate. The window is the pixel
+instrument for camera-drive questions.
+
+**Headset session (same day, VDXR): I4 CLOSED.** User verdicts: corner-lean tracked with no
+drift; roll correct; the head-driven camera on the static big screen confirmed as the
+intended MonoTracked rung. World-scale feel not judgeable on the mono screen - tune deferred
+to I5's checklist. Core's VR-section camera toggle observed inert - by design (the
+projection flip waits on the FOV law, I5/I6); noted in the checklist as expected noise. All
+six I4 ROADMAP boxes ticked.
+
+### Session 38 (Infinite) - 2026-08-05 - I3 sim battery green; the sim's clock bug, dark captures and sticky focus-lose found and fixed
+
+Branch `si38-inf-headset-bringup` off `bioshock-infinite` (c595e27). Order of work: harness
+first (`xrsim-launch`/`launch-game`/`xrsim-run` gained `-Game bsi`; bs1/bs2 preflights re-run
+green as the inertness proof), then `bsivr on|off|status` (adapter-local over the public
+`vr::set_enabled`; status reports `session_live()` because the F10 checkbox is a second
+writer), then the attended sim battery (user drove boot -> save both boots).
+
+**Everything in core just worked on Infinite** - no bring-up code was written. The battery
+instead caught three SIM bugs, each with a derivation: (1) `now_xr_time` overflow -> pace
+thread parked in `impl_WaitFrame`'s free-mode wait ~25 min in (WinDbg stack from a live
+minidump; sawtooth `displayTimeNs` in capture JSONs; mod-side state `waitFrames=beginFrames+1`
+with every present timing out its 200 ms handoff deadline - the mod's own 1:1 discipline held
+correctly); (2) capture composite stored sRGB-decoded linear (Infinite quad capture meanLuma
+0.05 vs ~10 in the window; PNG histogram cross-check matched the sim's stats, so the stats
+were honest about wrong pixels); (3) timed `focus lose` clobbered to sticky by the
+FOCUSED->VISIBLE edge (BS1's sequence uses explicit `focus regain`, so it never saw it).
+All three fixed in `src/tools/xrsim/`, selftest green after each, and the full BS1 lane
+re-run on the fixed sim (`-AllowStale` keeps BS1's shipped v0.7.0 mod): smoke green, stereo
+projViews=2 / eyeSep 0.063 / claimRatioH 1.018 IDENTICAL to s37's geometric baseline, new
+pixel-scale baseline L/R diff 11.53 (was 3.16 on the dark scale).
+
+Measured on Infinite: FOCUSED ~600 ms from first Present; 90.0 fps; `step 5` exact; focus-loss
+frame rate holds and submission continues through VISIBLE; `bsivr off/on` teardown /
+re-bring-up ~250 ms; `hazard waitfail 1` -> teardown -> fresh session post-cooldown; live
+`setres 1600x1200` -> queued XR rebuild -> pair 1600x1200 + quad 2.4x1.8 m + hfov 124.6 deg,
+and back. Two boots, two orderly WM_CLOSE exits (4-6 s, no fault, no dump) - but with a live
+sim session the `DLL_PROCESS_DETACH` breadcrumb is absent on BOTH games (sessionless s37 exits
+logged it): sim-lane watch item, check the breadcrumb on a VDXR exit.
+
+Traps catalogued for future sim sessions (VERIFICATION gotchas 13-16): the sim's LOCAL origin
+starts at the FLOOR (send `recenter` before quad-pose captures - the eye-level quad otherwise
+renders 1.6 m low at a grazing angle); `idle on <ms>` is persistent until `idle off`; a
+`pace free` after step-credit exhaustion latches until the 30 s starve grant; Infinite
+auto-pauses unfocused (foreground before gameplay captures; menu never unattended).
+
+Headset run (user, same build): VDXR lane PASSED - "looks pretty good, no crashes or
+freezes/hangs"; the log shows `VirtualDesktopXR` 1.0.10, the F10 VR A/B as a live VDXR
+teardown/re-bring-up, and two boots. The VDXR exit also lacks the `DLL_PROCESS_DETACH`
+breadcrumb, which RECLASSIFIES the watch item: live-session exits are TerminateProcess-class
+on any runtime (benign - prompt, fault-free, dump-free); sessionless exits log the breadcrumb.
+SteamVR lane deferred by the user (no Steam Link hardware, "not needed for the first
+version") - debt carried on the release milestone. **I3 closed as re-scoped**: Done-when ticked with the
+re-scope recorded; the cross-check box stays open pointing at the release milestone.
+
+### Session 37 (Infinite) - 2026-08-05 - main merged into the Infinite line, and I2 CLOSED
+
+Branch `si37-inf-merge-and-derisk2` off `bioshock-infinite`. Step 0 was the merge of `main`
+(BS2 v0.7.0, 124 commits, base 76052f1): 6 conflicts, resolved per the standing policy
+(keep-both on additive, BS2 wins behavioural - none were genuinely behavioural); the
+decode-framedump param-block union kept both sides' instruments and the 336-cap removals; the
+BS1/BS2 inertness proofs were RE-RUN on the merged tree and cited in the merge commit.
+Acceptance: clean Release build, decoder self-tests + the offset-12 BS1 regression, BS1 AND BS2
+smoked green on the xrsim simulator (BS1 to full stereo: projectionViews=2, eyeSep 0.063 m,
+claimRatio 1.018; BS2 to XR-session FOCUSED + seam dispatch), Infinite to `camera: READ-ONLY
+hook installed` / `pump=game` / `bsireflect selftest` 15/15.
+
+Then the battery closed I2 - every remaining DR measured by effect on the merged build:
+the TRANSFORM question (raw copy on path 2 -> I4 injects at the POV), DR-I4 (stereo negative,
+live pool, with `AllowNvidiaStereo3d`@4154 as the positive control), DR-I5 (threads separate
+under both `OneFrameThreadLag` positions; ring-shaped substrate; latency half deferred into I6),
+DR-I6 (new `bsicall`/`bsiexec` by-name dispatch; **`setres` resized the backbuffer live**;
+`set FOVAngle` no effect - property known dead), DR-I7 (HUD fingerprint confirmed at a second
+scene+resolution; the eye-image rule is positional and classifier-free), DR-I8 (the real
+config store is `XUserOptions.ini ResolutionX/Y` - `XEngine.ini` is a boot copy that silently
+discards writes; `first Present: backbuffer 1600x1200` accepted; setres live too), and the FOV
+law (VERTICAL-referenced: tanV pinned across aspects, tanH = tanV x aspect).
+
+Also found: unattended attract/menu hangs the game - reproduced on the UNMODIFIED session-36
+build, exonerating the merge; watchdog stack photos banked. Infinite exits cleanly via WM_CLOSE.
+An electricity outage cost one mid-session reboot; nothing was lost. Instruments added:
+`bsicall <Func> [float]`, `bsiexec <console cmd>`, `camera_tid()` and the `kFindFunctionRva`
+interlock. NOT started, per the brief: anything I3+, the OpenXR runtime on Infinite, the repo
+restructure.
+
 ### Session 42 - 2026-08-04/05 - the presentation lane: HUD panel, screens, cinematics, menukey, crosshair, flicker instrument
 
 Branch `claude/bioshock2-presentation-vr-2a7b3a` off `bioshock-2`, merged back.
@@ -5714,6 +9003,314 @@ are written into the sampling site so they are not rediscovered.
 **Tooling:** `disasm-rva.py`, `game-batch.ps1`, `launch-game.ps1`, `vrpreset` on BS2, `vrpace` /
 `vrmirror` / `vrhud` dispatched for the first time, and an **F10 overlay section for the lens
 test** - because typing a command in a headset means alt-tabbing, and alt-tab is the pacing bug.
+
+### Session 36 - 2026-07-31 - I2 part 1: DR-I1 CLOSED offline; DR-I2 and DR-I3 built and waiting on the headset
+
+Branch `si36-inf-derisk`. **BioShock 2 owned the machine for the entire session**, so nothing was
+run live. That turned out to matter less than expected: DR-I1 needed no game at all, and the DR-I3
+work that did need one was reshaped by evidence that made a live run premature anyway.
+
+**DR-I1 is a PASS.** `UObject::ProcessEvent` `0xCFE70` (vtable slot `+0x7C`, thiscall, 3 stack args,
+`ret 0xC`), `AActor::ProcessEvent` `0x19A150`, `UObject::FindFunctionChecked` `0xD1090`,
+`UObject::FindFunction` at slot `+0x54`. Route: the UTF-16 `Failed to find function` literal gives
+an address inside FindFunctionChecked; its 426 callers are the generated event stubs; the call that
+follows each one is ProcessEvent, and 407 of 420 agree on slot `+0x7C`; reading that slot from 1582
+candidate vtables gives 1038 votes for `0xCFE70` and 175 for `0x19A150`.
+
+**Two methods paid for here that generalise.** First, the set of every `E8` call target in `.text`
+(38,638 of them) *is* the list of function entry points, so "the function containing X" is a binary
+search - no prologue heuristic, which matters because `find_function_start`'s backward walk returns
+the **previous** function on this exe rather than failing. Second, and it cost a wrong answer before
+it was caught: MSVC hoists the vtable pointer, so a UE3 event stub is `mov edi,[esi]` ... `call
+FindFunctionChecked` ... `mov edx,[edi+0x7C]` / `call edx`. Searching for `call [reg+disp]` finds
+**0 of 426**. The first histogram happily reported a nonsense negative disp8; disassembling an
+actual caller is what exposed it.
+
+**The census is now a committed tool** (`tools/pe-xref.ps1`) rather than a throwaway script, with
+its predictions written down before the run. All of them held, and two unpredicted corroborations
+came free: ProcessEvent's single `E8` caller is exactly the tail-call inside `AActor::ProcessEvent`,
+and `GetPlayerViewPoint` has **0** absolute refs, so it is in no vtable - closing off a
+"hook it through a vtable instead" alternative before anyone spent a session on it.
+
+**A correction that matters for I2's test loadout:** `ConsoleCommand 0x136070`,
+`AXPawn::SetWeapon 0x4F9ED0` and `AXWeapon::AddAmmo 0x5017D0` were recorded as implementation RVAs.
+All three have 0 `E8` callers - they are exec thunks. Going by name through `ProcessEvent` is both
+correct and cheaper, and needs no addresses beyond what DR-I1 just landed.
+
+**DR-I2's hook is written but has never dispatched**, and the milestone box stays open because of
+it. It is read-only by construction (out-params copied into `const` locals; no assignment through
+them exists in the translation unit), and it refuses to install unless the live 12-byte prologue
+matches *and* a `C2 08 00` is found in the body - an independent confirmation of the 2-stack-arg
+count before the detour exists, because getting that wrong pops the RTC dialog that writes no dump.
+
+**The command-pump handover became a lease.** Session 35 made it permanent, reasoning that resuming
+on a stall would dispatch on the render thread during a load. The hazard is real but was stated too
+broadly: what must not happen then is an *engine-touching* dispatch. As written, a camera hook that
+went quiet left the mod with no command surface and no line saying so. Now the Present pump resumes
+after 3 s in degraded mode, refusing only `mempoke*`/`pokeaddr*`/`memrestore`. It is also testable
+on demand, which the original was not - `bsicam off`, wait, `vrcmd`.
+
+**DR-I3 was reshaped by a banked negative nobody had noticed.** Core's live FOV watch *was* sampling
+on Infinite (the session-35 dump shows 8 staging copies per frame from 3 distinct buffers) and
+across **19,602 presents** it adopted nothing. That negative is real and bounded, and its three
+holes are all in our own code: the `>= 320` byte tier gate - and Infinite's deferred lighting pass
+uses the **160-byte** tier - plus the 1344-byte truncation and VS-only capture. Worse, a plain
+`dumpframe full` would not have closed them: it gates on the buffer *object* changing, while
+Infinite rewrites one object via `UpdateSubresource` 251 times a frame, so it both under-samples and
+misattributes what it does capture. Spending the scarce live session on that instrument would have
+produced a plausible wrong answer.
+
+So the instrument was rebuilt first: `dumpframe cb` (mode 3) captures every `UpdateSubresource` into
+a constant buffer at full size from the call parameter, and `-ScanMatrix` recovers `tanH = |c3|/|c0|`
+from a 4x4 **with the object scale cancelling**, which is what makes it viable on a per-object
+buffer. Every control passes, including two that are genuinely informative: `-ScanMatrix`
+independently reproduces BS1's known lens by a different decode than the ray block, and it recovers
+BS2's lens from the 2048x2048 dump where `-ScanLayout` finds nothing at all - the square-aspect case
+that cost BS2 a session. Recorded honestly against it: on the BS1 control a degenerate 0.5/1.0 pair
+scored 156 blocks and outvoted the true answer's 83, so plurality is not sufficient and the aspect
+cross-check is load-bearing.
+
+**The frame map itself is done offline** from the banked dump - the full deferred pass order, the
+scene RTs, the shadow atlas, and the tonemap target. One trap recorded: **T9 is reused** as both the
+G-buffer albedo and the tonemap output, so no descriptor-based rule can pick it and the Infinite
+rule must be positional. A free DR-I7 half-answer fell out too: the Scaleform HUD is a contiguous
+9-draw run on the backbuffer *after* the tonemap blit, which means T9 is HUD-free by construction
+and the eye image needs no classifier at all.
+
+**BS1 and BS2 verified unaffected rather than assumed so** (user directive): their sources are
+byte-untouched, neither includes the core command header, both compute `full ? 2 : 1` when arming a
+dump so mode 3 is unreachable, and the dump format's additivity was *tested* - the old decoder run
+against a synthetic mode-3 dump returns a byte-identical answer.
+
+**The machine freed up and the live battery ran in the same session.** All three de-risks pass.
+
+The hook fires and the numbers are not BS2's: **9681 calls/s** peak against BS2's ~850, 4.07 M
+lifetime calls, zero foreign-thread dispatches, and **separate game and render threads** (13120 vs
+1992) - which is half of DR-I5 for free. The path census came back 100 % path 2, promoting
+`[this+0x240]` from inferred to observed. The pump lease passed its positive control in both
+directions on demand, and it earned its place: `bsicam status` **dispatched while degraded**, which
+without the lease would have been impossible for the life of the process.
+
+**The motion test is the cleanest single result of the session.** One slow 360-degree turn swept
+yaw from -32392 to +32640 - **65032 of 65536 units, 99.2 % of a full 16-bit range** - which
+falsifies the field ordering and the units-per-turn assumption in one motion rather than two
+experiments. It also showed FRotator is **signed**, wrapping into `[-32768, +32767]`; a naive
+unsigned read would have been wrong for half the circle, and that is exactly the class of bug the
+read-only phase exists to catch.
+
+**DR-I1's offline derivation survived contact with a live object.** Vtable slot `+0x7C` holds
+`AActor::ProcessEvent`, not the `UObject` base - which is the prediction that only the
+base/override split made available, and the one thing a vote count alone could never have produced.
+
+**DR-I3's lens went from unknown to confirmed in one session.** `dumpframe cb` captured 1891
+uploads including the 160-byte tier the old watch's gate had always excluded; sweeping every offset
+gave 139 candidate 4x4s and the aspect filter left exactly one. Then the falsifiable prediction
+closed it: the FOV slider min-to-max moved both axes by the same ratio to five significant figures
+with the aspect preserved to 0.002 %. Worth stressing how close this came to going wrong - the top
+four candidates by block count were all degenerate `tanH==tanV` pairs, and the best of them had
+**more** support than the truth. Plurality would have picked the wrong one.
+
+**A third instance of "a config value is a claim".** The ini predicted a 70-to-80.5 degree slider
+and a 1.2094 tangent ratio. The frustum measures 75.01 to 82.50 and 1.1428. Nothing matched, and
+had I5 started from the ini it would have modelled a lens the game does not render.
+
+**Two things recorded against ourselves rather than glossed:** the heartbeat's
+`returned-minus-cached` verdict compares path 1's source field while every sample took path 2, so
+the transform question is still open and the line is misleading as written; and the selftest's
+three "failures" were a wrong assertion of mine, not a broken instrument - the native registry is
+per-class blocks separated by `{0,0}` sentinels, and the 46 it found is exactly
+`APlayerController`'s census count.
+
+### Session 35 - 2026-07-31 - I1 CLOSED: our code runs inside BioShock Infinite, and the command seam works with nothing hooked
+
+Branch `bioshock-infinite`. The first session in which anything of ours executed inside
+`BioShockInfinite.exe`. **Everything below was measured live**, not derived - which matters, because
+every Infinite fact before today came from the disk image or from outside the process.
+
+**What shipped.** `src/game/bioshockinf/` (adapter + patterns), `HostGame::Infinite`, data subdir
+`bsi`, the build-fingerprint gate wired to the session-34 PE values, and a new core module
+`core/framework/command` that owns the command-file poller and the shared vocabulary. The adapter
+advertises **capabilities 0x0** and that is deliberate: a capability bit is earned by a hook observed
+firing, never by an address being derived.
+
+**The design change, and why it was worth doing first.** On BS1 and BS2 the `command.txt` poller
+lives in the adapter and ticks off the camera hook, so a skeleton adapter has no way to talk to the
+mod until the very thing being debugged works. Core now polls from the **Present** detour instead,
+and Infinite was drivable from frame one with nothing hooked. The pump is **opt-in**
+(`command::enable_present_pump()`), which is what let BS1 and BS2 stay **byte-untouched** - a
+parallel BS2 session was live in `bioshock2r/camera.cpp` and neither shipped game could be
+smoke-tested from this branch (user directive: consolidate later, in a healing pass). Handover to a
+game-thread pump is **one-way**: engine-touching commands belong on the game thread, and a
+"resume when the game thread goes quiet" rule would hand the render thread a dispatch during a load.
+
+**A trap fixed, and the fix's own trap found by running it.** A pre-existing `command.txt` is now
+skipped at startup rather than executed - the thing TESTING.md records as having bitten BS1 three
+times, once producing a false result that was then chased as real. The first build primed on the
+first *sighting* of the file, so on a game that starts with no command file (the documented hygiene)
+the first real command was swallowed. Observed live, fixed, and both directions re-verified: a stale
+file is skipped and named in the log; a fresh write dispatches.
+
+**Live confirmations, all first-time:**
+
+- **The `xinput1_3.dll` proxy works verbatim** and the Steam overlay does not interfere with
+  injection - the proxy loads the mod from its own `DllMain`, long before anything calls
+  `XInputGetState`. Whether the overlay eats the *input* thunk is still an I7 question.
+- **The build fingerprint matches on all four fields**, and Infinite's exe carries a real PE
+  checksum (`0x011590C3`) unlike BS1's. **ImageBase really is `0x00400000`.**
+- **D3D11 from the inside**: backbuffer 2560x1440 `R8G8B8A8_UNORM` windowed, feature level 11_0,
+  RTX 4060, frame inspector on 15/15 context slots, one real dump (482 events / 68 resources).
+- **d3d11/dxgi being absent from the import table is a non-issue**, and structurally so:
+  `bioshockvr.dll` links `d3d11` itself, so our own import table loads it before any of our code
+  runs. Hooks at T+0.4 s, first Present at T+8.5 s, no retry path needed.
+- **`CSERHelper.dll` displaces our unhandled-exception filter here too**, exactly as on the
+  remasters - core's periodic re-arm is load-bearing on this game as well.
+- **DR-I8 gets a free half-answer**: `XEngine.ini` says 2560x1440 and the backbuffer *is*
+  2560x1440, so the config resolution is honoured by the renderer. That is more than BS2 could say -
+  but it does not prove a *write* lands, which still needs a write, a relaunch, and the backbuffer
+  as acceptance.
+- The camera seam was **probed read-only and never hooked**: `0x1E10C0` holds an aligned-stack MSVC
+  prologue (`push ebp; mov ebp,esp; and esp,-0x10; sub esp,0xA4`), consistent with the 4x4 SSE
+  transform derived offline, and the exec thunk at `0x129280` is **frameless** - which independently
+  explains why the `CC CC CC 55 8B EC` prologue heuristic could never find it.
+
+**Acceptance was measured, never asserted.** F10 moved 5.7 % of channels against a 0.54 % ambient
+floor (two shots with nothing between them); `vroverlay on|off` through the seam moved 4.6 %. The
+screenshot is the acceptance, not the log echo. `dumpframe` wrote a real dump; an unknown command
+logged one line; a menu quit logged `DLL_PROCESS_DETACH`.
+
+**Recorded for later, not acted on:** core's letterbox detector (BS1-tuned) fires on Infinite's
+cinematic bars and produces incoherent readings (`top 1440 px of 1440`); it needs re-deriving at
+I10, and nothing consumes it yet.
+
+### Session 34 part 2 - 2026-07-31 - I0 offline recon complete; the console is dead, the reflection lane is wide open
+
+Branch `bioshock-infinite`. Still no adapter code. All findings are in
+`docs/bioshockinfinite/ENGINE_NOTES.md` with per-row confidence; **nothing has been observed
+executing** - every value is a structural fact from the disk image or, where marked, an inference
+from shape.
+
+**The one live test of the session, and it was a negative.** All six shipped debug binds are inert:
+console on both `~` and `Tab`, `PageUp` ghost, `F1` wireframe, `F9` shot, `F7`/`F8` post-process,
+`Delete` god. This **retracts part 1's optimistic reading**, which was drawn from config and
+explicitly flagged unconfirmed. Corroborated rather than trusted: `F9`=`shot` produced no
+screenshot anywhere, and `My Games\...\Binaries\Win32` exists and is empty - the instrument was
+seen not to fire.
+
+**But the diagnosis is narrower than "cheats are gone", and that decides the plan.** `SHOT`,
+`SETRES` and `FULLSCREEN` are all still present as UTF-16 `Exec` literals, so the C++ handlers are
+compiled in and F9 simply never reached one. `GOD`/`GHOST`/`WALK` being absent is *expected* - in
+UE3 those are UnrealScript functions on `CheatManager`, so they live in the `.u` package. And
+`UXCheatManager` is in the shipped build. The broken link is Infinite's custom `XCore.XPlayerInput`
+binding parser, which does not forward console strings. **Recorded as a dead end so no future
+session burns time on binds, launch flags or ini edits.**
+
+The way in is reflection, and it is better than a console: `APlayerController::ConsoleCommand`
+(native, impl RVA `0x136070`), or straight past it to `AXPawn::SetWeapon` (`0x4F9ED0`),
+`AXWeapon::AddAmmo` (`0x5017D0`) and `AXPawn::AddInvulnerableFlag`. A test loadout therefore needs
+no console at all - but it does need the adapter, so it moves to **I2**.
+
+**The four offline questions, answered:**
+
+1. **The native function table EXISTS** - the open risk, since UE3 favours indexed natives and
+   BS1's fastest instrument looked lost. 2647 entries, 8-byte `{ const ANSICHAR* name; Native
+   impl; }`, names `<Class>exec<Func>` in ASCII (BS1's were 12-byte and UTF-16). Same resolver
+   recipe, zero hardcoded addresses.
+2. **RTTI is present but useless** - all 270 type descriptors belong to third-party libraries
+   (Wwise, Bullet, FaceFX, Beast, std); not one UE3 or XGame class. UE3 is built `/GR-`. The
+   RTTI-walk lane both remaster adapters lean on is dead here, which is exactly why (1) matters.
+3. **The camera seam is located**: `APlayerController::GetPlayerViewPoint`, **impl RVA
+   `0x1E10C0`**, thiscall, 2 stack args, `ret 8` (so a probe hook takes 2 args - the RTC rule).
+   Four internal paths converging on a 4x4 SSE transform, so the returned view is *transformed*,
+   not a raw field read. `AActor::Location +0x44` / `Rotation +0x50` fall out of it.
+   **Exec thunks are not the seam, reproduced offline**: every thunk checked has **0** `E8`
+   callers, the implementation has 14. BS1 learned this by hooking four thunks and catching nothing
+   across a live session of shooting; here it cost one scan.
+4. **`GNames` at RVA `0xF9DFEC`** (Data/Num/Max), name hash at `0xF58BF8` (4096 buckets),
+   `GNatives` at `0xF6DCB0`, `GMalloc` at `0xF71CC8`, `FFrame` `+0x14` Object / `+0x18` Code,
+   `UObject::Class` `+0x20`, and a constant-time `IsA` via 16-bit interval fields at
+   `UClass+0xC0/+0xC2`. **`FNameEntry` text is ASCII by default here, not UTF-16 as on BS1** - a
+   `fname_text()` ported without reading the flag at `+0x8` bit 0 returns garbage.
+
+**`GObjObjects` NOT found, and deprioritised on purpose.** `StaticFindObject` goes through the
+object hash, not a linear walk. BS2's design takes live objects from hook parameters instead of
+scanning, which is cheaper and avoids the class of stall and crash BS1's object scanner caused.
+Three globals seen on that path are recorded as unidentified rather than guessed at.
+
+Also identified: DLCA = Clash in the Clouds, DLCB = Burial at Sea Ep. 1, DLCC = Ep. 2. Saves live
+in Steam cloud userdata (`userdata\<id>\8870\remote\SaveData\`), not under My Games, and Steam
+Cloud will resurrect a deleted one.
+
+### Session 34 - 2026-07-31 - BioShock Infinite project bootstrapped (planning only, no adapter code)
+
+Branch `bioshock-infinite`, off `main`. A **planning session**: the deliverable is the project
+scaffolding and the recon that de-risks it, not code. `src/` is untouched; the adapter skeleton is
+milestone I1.
+
+**Recon, all read-only, all verified against the shipped game files:**
+
+- **32-bit x86**, fixed `ImageBase 0x00400000` with **ASLR OFF** (both remasters are rebased), LAA
+  yes, `SizeOfImage 0x124F000`, TimeDateStamp 2022-05-11 18:29:09 UTC. Full fingerprint table in
+  `docs/bioshockinfinite/ENGINE_NOTES.md`.
+- **The injection vector is closed before a line of code**: the exe imports `XINPUT1_3.dll` by
+  **ordinal 2 and 3**, identical to BS1 and BS2, so `src/proxy/` works verbatim. The game IAT slot
+  for ordinal 2 is at RVA `0xCD4814`, so BS1's IAT-hijack lane (the Steam-overlay workaround)
+  transfers directly too. `d3d11`/`dxgi` are NOT imported - they load dynamically, which
+  `framework::init()` ordering must not assume away.
+- **Full UE3 reflection is intact** (FName pool carries `PlayerController`, `GetPlayerViewPoint`,
+  `UpdateRotation`, `PlayerCamera`, `CheatManager`, `MatineeCamera`, `Scaleform`, `GFxMovie`,
+  `XHud`). So **BS2's ProcessEvent-by-name design is the seam to build**, not BS1's. No `CalcView`
+  name exists - that is the Vengeance spelling.
+- **A working cheat path exists, unlike either remaster.** The shipped `DefaultInput.ini` has a
+  live `; --- Debug binds` block: `Delete`=`god`, `PageUp`=`ghost`, `End`=`preventdeath`,
+  `PageDown`=`walk`, `F9`=`shot`, `F1/F2/F3`=`viewmode ...`, and `F7/F8`=
+  `set D3DRenderDevice bUsePostProcessEffects False/True` - which is direct evidence that UE3's
+  `set <class> <prop> <value>` works here. A second surface (base64 `DefaultDesignerControlPresets.ini`)
+  lists God Mode, Ghost, GiveAmmo, Slomo, QuickSave/QuickLoad. **Public guides claim Infinite has
+  no console; the game's own files disagree.** None of it confirmed live yet - that is I0, and the
+  standing rule applies: verify by effect, never by return value.
+- `OneFrameThreadLag=True` in `BaseEngine.ini` is a **config-level analogue of BS1's `reentry 1t`**,
+  potentially buying single-threaded render without a flush-point hook. `bSmoothFrameRate=TRUE`
+  must go for VR.
+- Native FOV slider exists but caps at **+15%** (~70 to ~80.5 deg), so a lever is still needed -
+  but the property chain is named, so `set`-by-name comes before any memory scan.
+- `[Stereoscopic3D]` exists in the ini, but **no `bStereo`/`EyeSeparation`/`StereoDevice` names are
+  in the exe**, which points at driver-side 3D Vision rather than an engine per-eye path. Planning
+  for SequentialReentry; the native check is timeboxed to one slice in I2 so it cannot become a
+  rabbit hole.
+- UI is **Scaleform GFx**, not gameswf, so `core/gfx/hud_capture` is a worked example here, not a
+  library. Cinematics split into two classes BS1 never had: Bink FMV (`binkw32.dll`, 100+ `.bik`)
+  and engine-rendered Matinee.
+- All three DLC installed (~25 GB). **In scope for tuning** by user directive: bring-up on the base
+  campaign, but aim/scale/HUD/viewmodel calibration must hold in Burial at Sea 1 and 2 and Clash in
+  the Clouds.
+
+**Decisions taken with the user:** DLC in scope for tuning; milestones resequenced by engineering
+dependency rather than by the stated priority order (the priorities became acceptance criteria);
+the user does the first flat launch to create the UE3 user-config dir and a baseline; and the
+BS2-conflict guard blocks only what actually contends for the headset.
+
+**Shipped this session:** the `bioshock-infinite` branch; `docs/bioshockinfinite/{ROADMAP,
+ENGINE_NOTES,TESTING}.md`; `tools/lib/assert-no-conflict.ps1`; `-Game bsi` wired through
+`build`/`install`/`uninstall`/`tail-log`/`game-cmd`/`game-shot`/`game-click`; and root-doc updates
+(CLAUDE.md, RESEARCH.md, ROADMAP.md).
+
+**The BS2-conflict rule, now enforced.** BS2 development runs in parallel and only one game can own
+the headset. `game-cmd`/`game-shot`/`game-click` with `-Game bsi` abort naming the offending
+process and pid. `build`/`install`/`uninstall`/`package`/`tail-log` are deliberately NOT guarded -
+they touch the disk, never the headset, and must keep working while BS2 runs. **Verified against a
+real conflict**: BS2 was live (pid 24588) during this session, and the guard refused.
+
+**The three things the BS1/BS2 history says to front-load, now written into the ladder:**
+
+1. **The lens/projection-claim question is the highest-leverage thing in the project** - it caused
+   BS1's M3 swim, blocked M4, produced the cinematic fisheye and the release-blocking warp, and is
+   still BS2's open blocker at session 33. I5 builds a stride-sampled, majority-voted,
+   structurally-validated **multi-lens** decoder before anything is tuned, and derives the law from
+   two aspects because the conventions coincide exactly at 16:9.
+2. **The flat harness is what made the remasters tractable**, and its two highest-payoff tools
+   (`simhead`, `vrrec`) arrived at sessions 12 and 20 - far too late. Both are scheduled into I4.
+3. **The policy gate** - check native, test whether the defect exists, only then port the cure -
+   paid out three times on BS2 and is the preamble of the new ENGINE_NOTES.
 
 
 ### Session 32 - 2026-07-31 - BS2 resolution lane + the lens verdict; three BS1 assumptions died

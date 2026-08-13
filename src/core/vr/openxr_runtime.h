@@ -11,6 +11,8 @@
 #include <cstdint>
 
 struct IDXGISwapChain;
+struct ID3D11DeviceContext;
+struct ID3D11Texture2D;
 
 namespace bvr::vr {
 
@@ -81,6 +83,11 @@ bool session_live();
 // as per-frame metadata.
 int64_t last_predicted_time();
 
+// Session 42: the last xrWaitFrame's predictedDisplayPeriod in ns (0 with no
+// session, or on a runtime that leaves it unfilled). The runtime's own refresh
+// interval - the input a pair-rate sync targets. Purely informational.
+int64_t display_period_ns();
+
 // True when the user enabled VR camera mode AND a session is running; the
 // adapter drives the game camera from the HMD only while this holds. Frame
 // submission switches from the quad to a projection layer at the same time.
@@ -103,6 +110,63 @@ void set_sr_pair_pacing(bool on);
 // the measured cause of the hard freeze (session 34).
 void set_alternate_eye(bool on);
 
+// --- s50 (Infinite): rendered-pose eye tags ----------------------------------
+// The projection layer historically tags each eye's image with the RUNTIME'S
+// located view pose. The game, however, renders each eye from the ADAPTER'S
+// camera: the written base offset half-IPD (the adapter's ipd slider) along
+// the head's right axis, both eyes PARALLEL. Wherever the runtime's located
+// views differ from that - per-eye cant, a different IPD - the layer's claim
+// misdescribes the render and the compositor's per-eye reprojection injects
+// an off-center-growing disparity error (invisible on the far world, a
+// near-field depth drift on the hands: the Infinite "FOV-edge" symptom).
+// With this ON the tag is rebuilt as the parallel pair the game actually
+// rendered: midpoint of the located pair, nlerp'd shared orientation,
+// +-ipdMm/2000 along that orientation's right axis. On a runtime whose views
+// are already parallel at the same IPD (the sim) this is bit-for-bit
+// identity. Default OFF - BS1/BS2 behavior is untouched unless an adapter
+// arms it (keep-the-mods-decoupled: additive, opt-in).
+void set_eye_tag_rendered(bool on);
+bool eye_tag_rendered();
+void set_eye_tag_ipd_mm(float mm);
+
+// --- s51 (Infinite): hand-anchored reference quad -----------------------------
+// A small compositor quad parked AT the located grip pose, built per present
+// on the render thread from the same locate generation as the projection
+// layer - compositor-correct by construction. The in-headset discriminator:
+// sweep the hand off-center; quad and rendered hand model SEPARATING means
+// the game-render/projection/submission lane is wrong, moving TOGETHER means
+// the composed hand world position itself is wrong. Default OFF - additive,
+// armed by the Infinite adapter only.
+void set_hand_ref_quad(bool on, int hand, float sizeDeg);
+bool hand_ref_quad_on();
+
+// --- s51 (Infinite): VDXR view logger ----------------------------------------
+// Log the runtime's LOCATED view poses/fovs per eye for the next n frames
+// (bounded burst, self-expiring): per frame both eyes' position + orientation
+// + fov angles, plus derived inter-eye position delta, orientation delta
+// (cant) and per-eye fov asymmetry. Answers in the log whether ANY per-eye
+// cant/IPD delta exists under a runtime (VDXR) without a picture verdict.
+void arm_view_log(int frames);
+
+// --- s51 (Infinite): edge-telemetry snapshot ---------------------------------
+// The render-thread half of the FOV-edge telemetry lane: when armed, each
+// present banks the located views, the submitted per-eye pose tags and the
+// claimed fov tangents under a small mutex; the game-thread sampler copies
+// them out. OFF by default - zero work on BS1/BS2 unless an adapter arms it.
+struct EdgeViewSnapshot {
+    bool valid = false;
+    uint64_t stampMs = 0;       // GetTickCount64 at fill
+    float locPos[2][3];         // located view positions, m (XR space)
+    float locQuat[2][4];        // located view orientations, xyzw
+    float locFov[2][4];         // located fov angles L/R/U/D, radians
+    float tagPos[2][3];         // submitted (claimed) per-eye pose tags
+    float tagQuat[2][4];
+    float claimTanH = 0.0f;     // claimed symmetric half-fov tangents
+    float claimTanV = 0.0f;
+};
+void set_edge_snapshot(bool on);
+bool get_edge_snapshot(EdgeViewSnapshot& out);
+
 // --- M8: headset-disconnect stall guard --------------------------------------
 // "vrpace ..." seam (game thread). When the session leaves FOCUSED after
 // having held it, presents skip the blocking xrWaitFrame so the flat window
@@ -117,6 +181,8 @@ void set_alternate_eye(bool on);
 //                     keep being submitted, so FOCUSED can still be re-granted -
 //                     session 28's requirement is preserved, not undone.
 //                     Live A/B: with it off the 10 Hz comes straight back.
+//   spike on|off      SESSION 43: the spike-triggered evidence capture (see
+//                     set_spike_trace below); bare `vrpace spike` = telemetry
 //   simidle on|off    flat stand-in for a headset idle: the same guard
 //                     decision runs with the state forced VISIBLE and a 1 s
 //                     sleep in place of the runtime's blocked wait (flat has
@@ -152,6 +218,54 @@ uint32_t watchdog_fires();
 // later on its own in-headset test.
 void set_pace_detach(bool on);
 
+// Session 54: THE PACE FEED - keepalives that CARRY LAYERS (the raffle-wedge
+// root fix; mechanism in ENGINE_NOTES bioshockinfinite s54). While the session
+// is not FOCUSED after having held it, the present thread detaches (feed
+// implies detach) and the pace thread runs the frame cycle itself,
+// re-submitting the last healthy projection/screen layer with a fresh
+// displayTime - so the game is never paced by a parked session AND the runtime
+// keeps seeing a rendering app, which is what VDXR re-promotes. DEFAULT OFF IN
+// CORE, on per game (the set_pace_detach pattern): BS1/BS2 never call this and
+// take no new branch - even the snapshot banking is gated on the flag. The
+// Infinite adapter arms it; `vrpace feed on|off` is the live A/B.
+void set_pace_feed(bool on);
+
+// Session 42: opt-in pair-rate sync - before OPENING a stereo pair the present
+// thread waits for the next tick of a one-period-per-pair schedule (period =
+// the runtime's predictedDisplayPeriod, or a `vrpace sync <hz>` override).
+// Exists for runtimes whose xrWaitFrame pipelines instead of gating: there the
+// pair rate free-runs at the game's present speed and beats against the
+// display refresh (the Infinite judder suspect). DEFAULT OFF IN CORE, on per
+// game - BS1/BS2 never call this and take no new branch. `vrpace sync` is the
+// live A/B; the overlay checkbox rides under SR pair pacing.
+void set_pace_sync(bool on);
+
+// Session 43b (the Infinite "jumpy camera"): which locate generation the
+// SequentialReentry capture attributes its eyes to. 0 = the fresh locate,
+// 1 = one generation back (the historical default - calibrated on BS1's
+// single-threaded renderer, where "locate N feeds the tick presenting at
+// N+1" holds exactly), 2 = two back (candidate for a threaded ring-buffered
+// renderer with OneFrameThreadLag, i.e. Infinite). Mis-attribution by one
+// generation = a constant one-period pose error that scales with head speed
+// (reprojection wobble). DEFAULT 1 IN CORE - BS1/BS2 never call this and
+// behave byte-identically; the Infinite adapter exposes the in-headset A/B.
+void set_pose_lag(int lag);
+int get_pose_lag();
+// Rotation delta between consecutive locate generations (deg) - the error
+// magnitude one generation of mis-attribution costs at the current head
+// speed. For the adapter's F10 telemetry next to the A/B.
+float get_pose_gen_delta_deg();
+
+// Session 43: opt-in spike-triggered evidence capture. When armed, a pair
+// interval above 2x the runtime's display period writes one snapshot line to
+// pacetrace.log at the pair close: per-phase last + max-since-previous-spike
+// tables, the live stage markers, and the unattributed remainder (interval
+// minus our detour halves - large remainder = the stall is the game/GPU, not
+// this module). The 1 Hz TRACE pairs line carries spikes=<count>/window as the
+// lever-A/B metric. DEFAULT OFF IN CORE, on per game (the set_pace_detach
+// pattern); `vrpace spike on|off` is the live seam.
+void set_spike_trace(bool on);
+
 // --- M8: desktop mirror ------------------------------------------------------
 // "vrmirror ..." seam (game thread). Under SequentialReentry stereo the flat
 // window alternates L/R eyes per present; the mirror pins it to the LEFT eye
@@ -171,6 +285,13 @@ float suggested_hfov_deg();
 // leaves the vertical short, and that shortfall IS the black bands the user
 // sees, not any kind of letterbox.
 bool headset_half_fov_deg(float* halfHDeg, float* halfVDeg);
+
+// Session 41: the runtime's recommended per-eye render size, from
+// xrEnumerateViewConfigurationViews at bring-up. False (and 0/0) until a
+// session has been brought up. Purely informational: core's eye swapchains
+// stay backbuffer-sized; adapters use this to annotate resolution pickers
+// (the correct-FOV-policy input the docs flagged as missing on BS1/BS2).
+bool recommended_eye_size(uint32_t* w, uint32_t* h);
 
 // The adapter reports the horizontal FOV the game is actually rendering with
 // (read back from the engine every frame). Projection-layer submission claims
@@ -337,6 +458,13 @@ void set_aim_dot_slot(int slot, const AimDotConfig& cfg);
 // the VR preset; sliders in the VR overlay section.
 void set_hud_quad(float distM, float widthM, float upM);
 void get_hud_quad(float* distM, float* widthM, float* upM);
+
+// s52 (Infinite I9): the HUD quad's texture source, as a provider seam. When
+// set, the quad consumer prefers the provider's texture; null (the default,
+// and a null provider RESULT) falls through to bvr::hud::texture() - BS1's
+// path, byte-identical for games that never call this.
+using HudTextureProviderFn = ID3D11Texture2D* (*)(ID3D11DeviceContext* ctx);
+void set_hud_texture_provider(HudTextureProviderFn fn);
 
 // Session 33: the session's state as a short string ("FOCUSED", "SYNCHRONIZED",
 // "none"...) and whether it has EVER been FOCUSED. Cheap, for a heartbeat.

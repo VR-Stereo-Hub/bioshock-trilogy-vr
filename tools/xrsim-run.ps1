@@ -24,7 +24,7 @@
 param(
     [string]$Path = "",
     [string[]]$Steps = @(),
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1",
     [string]$Dir = "$env:LOCALAPPDATA\BioshockVR\xrsim",
     [string]$OutDir = "",
     [double]$Delay = 0,

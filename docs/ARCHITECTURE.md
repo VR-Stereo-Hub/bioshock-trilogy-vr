@@ -44,6 +44,7 @@ struct IGameAdapter {
     virtual void setHandsPose(Hand h, const Pose&) = 0;
     virtual bool renderSceneReentrant(const EyeRenderParams&) = 0;
     virtual GameState queryState() = 0;    // in-menu? paused? weapon/plasmid inventory
+    virtual bool handleCommand(const char*, const char*) { return false; } // command seam (s35)
 };
 ```
 
@@ -228,6 +229,135 @@ poses via shared memory - only built if 32-bit OpenXR clients turn out unsupport
 runtime.
 
 ## Decision log
+
+- **2026-08-06 (session 43) · Infinite stutter hunt: the spike instrument attributes at the
+  PAIR CLOSE, samples MID-STALL, and the fix gate is evidence-first (user directive).** The
+  1 Hz aggregates could say a second was bad, never which phase carried it; the s43 design
+  answers in two layers that both ship opt-in (default off in core, armed with Infinite
+  stereo, `vrpace spike` seam): (1) at the pair close - the one per-pair single-thread
+  moment - an over-threshold interval snapshots the per-phase last/max tables (maxima reset
+  per spike, so bursts self-scope) plus the UNATTRIBUTED remainder, which is the
+  ours-vs-game discriminator; (2) a 4 ms sampler catches the still-stalled draw thread and
+  stack-captures it through the s34 watchdog, because a stall our phases do not contain can
+  only be named by its own call stack. The user's standing gate, recorded mid-session: no
+  fix attempts until the cause is GUARANTEED by evidence - honored by naming the 30 s GC
+  tick through an A-B-A ini intervention (the DefaultEngine.ini propagation lane was proven
+  as part of the same probe) before the interval change was left in place as the headset
+  candidate. The alternative - trying the community's ranked levers directly - was
+  declined; a lever that moves the spike rate without a named mechanism would have been
+  indistinguishable from path variance.
+- **2026-08-05 (session 42) · Infinite I6/I7: the pair-rate sync gates at PAIR-OPEN only, and
+  it ships default-off in core, default-on with Infinite stereo.** The judder investigation
+  measured that a strictly-gating xrWaitFrame (the sim's) locks the pair rate to refresh with
+  the present thread parked in the wait handoff - so the s41 "free-run beat" suspect is a
+  property of a PIPELINING runtime, decidable only by the new TRACE pairs telemetry under
+  VDXR. The sync (`set_pace_sync` / `vrpace sync`) therefore exists as an armable A/B rather
+  than an unconditional fix: it delays only the present that OPENS a pair (delaying the
+  closing RIGHT present would stretch the 1-4 ms intra-pair gap pair pacing exists to bound),
+  targets the runtime's own predictedDisplayPeriod (published for the first time; commanded
+  Hz as the fallback), and self-collapses to no-delay when the game is slower than the
+  schedule - measured near-inert against a gating runtime (sd tightened 1.2 -> 1.0 ms, gate
+  moved from the wait to our side). Default OFF in core with zero new branches taken for
+  BS1/BS2 (the set_pace_detach pattern; BS1 full-sim-lane proof in the commit); the Infinite
+  adapter arms it inside `apply_vrstereo(true)` and disarms on the symmetric off - so the
+  headset A/B is one F10 checkbox.
+- **2026-08-05 (session 42) · Infinite I7: the loadout/cheat lane dispatches ProcessEvent on
+  the OWNING OBJECT; the console script-exec bridge is a recorded structural negative.**
+  Measured in a gameplay save: every script-side exec through ConsoleCommand is inert (god,
+  AllWeapons, behindview, viewmode - pixel-identical screenshots) while C++ handlers stay
+  proven; the give-family names do not exist in a full GNames dump; XCheatManager is never
+  instantiated (the PC carries only CheatClass at +0x344), so the entire CheatManager
+  vocabulary is structurally unreachable - not gated, absent. The design consequence: the
+  reflect lane grew `bsifields` (walk the latched PC's pointer fields, identify UObjects by
+  class name via the live-derived UObject::Name +0x18, hook-parameter objects only - never a
+  scan) and `bsicallat` (the bsicall gate stack against an explicit object), and grants go by
+  ProcessEvent on the pawn (AcquireWeapon wants a weapon object - the s43 seam). The
+  alternative - resurrecting the console bridge or constructing a CheatManager - was
+  declined: both mean building engine machinery the shipped game deliberately does not run.
+- **2026-08-05 (session 41) · Infinite I6: the FOV lever ENFORCES per dispatch, and the claim
+  derives from the lever through the 16:9-referenced law.** The named-property lane was tried
+  first per the roadmap and is measurably dead (`set XUserOptionsManager FieldOfView` writes
+  nothing - zero stable holders after a scan for the written value), and every FOV cache in the
+  process (six 82.5f holders) snaps back within a tick of a poke: the engine recomputes the
+  chain from the option each tick, so no single write can be the lever. The lever therefore
+  writes the camera object's two FOV fields (`[cam+0x214]`, `[cam+0x3D0]`) on every
+  GetPlayerViewPoint dispatch - the same seam BS2's option-write lever uses, with the engine's
+  own recompute as the disarm restore. The claim wiring was then CORRECTED BY ITS OWN AUDIT:
+  the degrees value is horizontal at a FIXED 16:9 reference (tanV = tan(deg/2)/(16/9), pinned;
+  tanH = tanV x actual aspect), not at the current aspect - the lens decoder flagged the
+  current-aspect claim 43.7% wrong on its first 1:1 round, both decoders agreed on
+  tan(50)/1.7778 = 0.6704 exactly, and patterns.h now carries `kFovRefAspect` with the
+  measurement. The rejected alternative - publishing the decoder's output as the claim
+  unconditionally - was declined: the commanded-value-through-the-law claim is exact by
+  construction while the lever is armed, and the decoder stays the independent AUDIT (with
+  `bsilens track on` as the opt-in coupling for lever-off states).
+- **2026-08-05 (session 41) · Infinite I6: the config registry stays ADAPTER-LOCAL; the
+  ROADMAP's "extract bvr::config into core" is deferred to the healing session.** Infinite is
+  the third consumer of preset persistence, which is the extraction trigger the roadmap named -
+  but the decoupling directive outranks it: BS1/BS2 are headset-accepted, their hand-rolled
+  vrpreset writers round-trip core-owned state through adapter files in ways a shared registry
+  would have to reproduce exactly, and a core module whose only consumer is Infinite buys
+  nothing this session that a 300-line adapter file does not. `bioshockinf/config.cpp` owns the
+  KeyDesc table, vrpreset.ini and named presets; the ROADMAP line is annotated rather than
+  silently dropped. A second decision rides along: a loaded preset's RESOLUTION is latched into
+  the picker and never auto-applied - a surprise live resize mid-headset (backbuffer +
+  XR-swapchain rebuild) is a session hazard, so the one overlay-clickable Apply stays the only
+  resize path.
+- **2026-08-05 (session 40) · Infinite I5: the SR root must INCLUDE the present kick, and the
+  FOV claim is a constant-tanV law until I6.** Two decisions. (1) The doubling root is the
+  viewport draw (`0x1FDE30`, canvas -> client draw -> present kick), not the client draw
+  (`0x26A3E0`) whose body actually holds the camera loop - doubling the client draw was tried
+  first and produced camera+scene doubling with NO second present (the present is kicked by the
+  caller's tail), which starves core's one-eye-per-present model and skews the SR tag ring +1
+  per tick. The general rule, now measured on a second engine family: the SR root is the
+  smallest function whose call tree contains camera sample, scene build AND present. (2) The
+  projection claim is computed from the I2 law with a CONSTANT tanV (slider-min 0.4317,
+  `bsifov tanv` lever, vrpreset-persisted) rather than a live option read - Infinite's option
+  pointer is not derived yet and I6 owns that lever. The cost is honest and documented: a user
+  who moves the in-game FOV slider makes the claim stale until corrected. The alternative -
+  pulling I6's decoder forward - was declined per the restructured ladder (only a lens question
+  the law cannot answer justifies that).
+- **2026-08-05 (session 39) · Infinite I4: MonoTracked runs on the QUAD, and the drive writes
+  out-params only.** Core couples `set_camera_mode(true)` to flipping submission from the quad
+  to a projection layer ("never let a head-driven camera show on the quad" - a BS1/BS2
+  convention). Infinite's ladder deliberately breaks that for one rung: the I4 drive gates
+  adapter-locally (`bsicam drive` + `get_head_pose`) and never touches camera mode, so the
+  head-driven camera shows on the mono quad until I5 earns the projection flip with the FOV
+  law. No core change was needed - the coupling stays intact for BS1/BS2. Second half of the
+  decision: the drive substitutes the GetPlayerViewPoint OUT-PARAMS and never writes
+  `[cam+0x3B8]`/engine memory - drive-off is a byte-identical passthrough, the engine's view
+  stays engine-owned (heartbeat prints engineRot + pitchErr as the read-back), and the BS1
+  pitch-freeze class of bug is impossible by construction. The pitch servo
+  (publish_pitch_error/publish_vr_gameplay) is deliberately NOT armed: with the bridge live it
+  seizes right-stick Y, which is I7's lane to own.
+- **2026-07-31 (session 36) · The game-thread command pump holds a LEASE, not an eviction.**
+  Session 35 made `poll_from_game_thread` silence the Present pump permanently, on the reasoning
+  that a resume-on-stall rule would hand the render thread a dispatch exactly during a load, "the
+  worst moment available". That hazard is real, but it was stated too broadly: what must not happen
+  during a load is an *engine-touching* dispatch, not any dispatch at all. As written, an adapter
+  whose hook went quiet (level load, Scaleform menu, scripted camera) lost its command surface
+  entirely, with no log line saying so and no way back. The pump now resumes after a 3 s lease in a
+  **degraded** mode that refuses `mempoke*`/`pokeaddr*`/`memrestore` and dispatches everything else,
+  and the game thread reclaims it on its next call. This also made the handover testable on demand,
+  which the original was not. Inert for BS1/BS2 by construction: neither includes
+  `core/framework/command.h`.
+- **2026-07-31 (session 36) · `frame_inspector` gains a third arm mode rather than widening mode 2.**
+  Mode 2 reads back the bound VS b0 once per distinct *buffer object*, which is correct for a
+  Map/WRITE_DISCARD engine that renames its constant buffer on every upload. UE3 titles need not
+  behave that way - BioShock Infinite reuses a handful of objects and rewrites them with
+  `UpdateSubresource` - so mode 2 both under-samples and misattributes there. Mode 3 (`dumpframe
+  cb`) captures the payload from the `UpdateSubresource` call parameter instead: no staging buffer,
+  no `Map` stall, no readback race, every stage and slot, at the buffer's real size. Kept strictly
+  additive (new mode word, appended dump sections, event-line tail after `stk=`) because BS2 is
+  developed in these files in parallel; the additivity is *tested* by running the previous decoder
+  against a mode-3 dump, not asserted.
+- **2026-07-31 (session 36) · Core's `decode_ray_block` shape does not generalise past Vengeance,
+  and the replacement is offline-first.** The `(2tanH, 0, -tanH, 0, 0, -2tanV, tanV)` helper is a
+  BioShock 1 and 2 fact. UE3 hands the shader a 4x4, so `decode-framedump.ps1 -ScanMatrix` recovers
+  the tangents from column norms (`tanH = |c3|/|c0|`), where the object scale cancels and a
+  per-object constant buffer is therefore usable. A live equivalent inside `hud_capture` is
+  deliberately NOT built yet: it would be core machinery with no consumer until the Infinite offset
+  is actually known. Revisit at I5.
 
 - **2026-07-23 · C++20 / MSVC / Win32-x86.** REFramework (MIT) is the biggest reusable code
   body and it's C++; the whole toolkit (MinHook, imgui, OpenXR loader) is C/C++. itsloopyo's
@@ -906,6 +1036,39 @@ runtime.
   NOT yet proven and must be settled by making it move (holster/switch the weapon and re-dump),
   never by draw counts - BS1's rule, which is in the notes because inferring it from counts is what
   went wrong there.
+- **2026-07-31 - session 35 - the command-file poller belongs to CORE and ticks from Present, not
+  from an engine hook.** On BS1 and BS2 the poller lives in the adapter and ticks off the camera
+  hook, so a skeleton adapter has no command surface at all until its first engine hook fires: the
+  only way to talk to the mod is the thing that is not working yet. Both games paid for that in
+  their early sessions. `core/framework/command` now owns the poller and `d3d11_hook`'s Present
+  detour ticks it, which is why the Infinite adapter could be driven from frame one with
+  `capabilities() == 0` and nothing hooked. The Present pump is **opt-in**
+  (`command::enable_present_pump()`, called by the adapter) precisely so an adapter that polls for
+  itself can never end up with two pollers racing over one file - BS1 and BS2 are byte-untouched
+  and see one atomic load per present. Handover is **one-way**: the first
+  `poll_from_game_thread()` silences the Present pump for the life of the process, because
+  engine-touching commands belong on the game thread and a "resume when the game thread goes quiet"
+  rule would hand the render thread a dispatch during a load, which is the worst possible moment.
+  The trade, stated plainly: while the Present pump owns the poller, every command runs on the
+  render thread, so a long `memscan` stalls presents instead of the game thread.
+- **2026-07-31 - session 35 - `IGameAdapter::handleCommand` is a control-plane call, and that is
+  not a violation of publish-don't-query.** The rule above ("core cannot call into the adapter
+  mid-frame") is about per-frame STATE: wrong thread, wrong lifetime, inverted dependency. A
+  command dispatch is once a second, on whichever thread owns the poller, and carries no engine
+  state either way - the same shape as the overlay calling `drawDebugUi()` on the render thread.
+  Dispatch order is adapter first, then the shared core vocabulary, so a game can deliberately
+  shadow a core command; the virtual is defaulted to `return false` so adapters that own their own
+  dispatcher need no change. The ~70 lines of core-owned vocabulary that BS1 and BS2 each forward
+  by hand now exist in core as the canonical copy; **folding the two adapters into it is deliberately
+  deferred** to a consolidation pass, because a parallel BS2 session was live in the same file and
+  neither shipped game could be smoke-tested from the Infinite branch.
+- **2026-07-31 - session 35 - a pre-existing `command.txt` is skipped at startup, not executed.**
+  The poller's first poll adopts the file's write time and logs what it ignored. A command file
+  left over from a previous run is stale by definition, and applying it at boot is a trap the
+  testing notes record as having bitten BS1 three times, once producing a false result that was
+  then chased as a real one. The subtlety, found by running it: prime on the FIRST POLL, not on the
+  first sighting of a file - a game that starts with no `command.txt` (the documented hygiene) would
+  otherwise swallow the first real command, which is exactly what the first build did.
 
 ### 2026-07-31 (session 33) - BS2 viewmodel lens, and what an instrument may be trusted to say
 
@@ -1250,3 +1413,22 @@ runtime.
   isolated, effect-verified): the crosshair lane (ShockPlayer.DisableReticle /
   EnableReticle, default hidden per user ask) is the precedent. BS1's Exec SET
   seam stays BS1-only.
+- **The XR-to-pad map is a per-game TABLE selected by an opt-in core enum**
+  (2026-08-06, session 44, Infinite I7). A synthetic pad's only job is to land on
+  the bindings the game already ships, so the table is a property of the GAME, not
+  of the composer - but the composer lives in `core/vr/openxr_input.cpp`, which is
+  compiled only under `BVR_WITH_OPENXR`, has no flat stub, and receives its XR
+  handles from `openxr_runtime.cpp` at five narrow lifecycle points. **A bsi-local
+  duplicate of the composing path was considered and rejected**: an adapter cannot
+  see the action handles, so duplicating it locally would first require publishing
+  raw XR control state OUT of core - strictly more invasive than the alternative,
+  and it would put a second consumer on every action. So: `PadProfile` +
+  `set_pad_profile`/`pad_profile` as one `std::atomic<int>` in
+  `core/input/xinput_bridge` (default `Bioshock1`), and two `constexpr PadMap`
+  tables beside the composer, one relaxed load per compose. This follows the
+  established policy-atom precedent in that same file (`stick_deadzone()`,
+  `ammo_mod()`) and the `set_pose_lag` opt-in contract. A single scalar rather than
+  a struct of per-field atomics deliberately: a live A/B must never compose a
+  half-switched pad, and a partially-populated POD would silently unbind controls
+  to bit 0. The BioShock 1 table reproduces the previous literals exactly - that,
+  not an assertion, is the inertness argument, and it was measured (see below).

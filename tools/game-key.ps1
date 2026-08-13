@@ -24,7 +24,7 @@
 #   .\tools\game-key.ps1 -Game bs2 -Scan 0x39            # raw scancode escape hatch
 [CmdletBinding()]
 param(
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1",
     [string]$Key = "",
     [int]$Scan = 0,
     [int]$Repeat = 1,
@@ -64,7 +64,7 @@ public static class BvrKey {
 }
 '@
 
-$proc = if ($Game -eq "bs2") { "Bioshock2HD" } else { "BioshockHD" }
+$proc = switch ($Game) { "bs2" { "Bioshock2HD" } "bsi" { "BioShockInfinite" } default { "BioshockHD" } }
 # Pick the LIVE instance. Get-Process can return several entries: an exited
 # process lingers as long as anything holds a handle to it (session 38 - a
 # killed BS2 stayed listed for minutes and every -Key call died on

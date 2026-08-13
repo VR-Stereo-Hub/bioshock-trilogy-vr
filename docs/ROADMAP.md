@@ -954,5 +954,9 @@ kill. Both prerequisites below are now MET.):**
   (c) **height offset preset only** - one recenter plus a saved height boost that seated
       uses and standing sets to zero. Purely additive, but manual.
   Whichever wins persists in `vrpreset.ini` and gets an overlay control next to Recenter.
-- BioShock Infinite (UE3 build 6829) adapter feasibility study
+- ~~BioShock Infinite (UE3 build 6829) adapter feasibility study~~ **PROMOTED 2026-07-31
+  (session 34)** to an active project with its own ladder: see
+  [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (milestones I0-I11), on branch
+  `bioshock-infinite`. The feasibility question is answered - 32-bit, same xinput ordinal-2/3
+  injection vector, UE3 reflection intact - so the study became the project.
 - OpenVR backend (if some runtime needs it)

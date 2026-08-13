@@ -1,0 +1,26 @@
+The bundled BioShock Infinite calibration (v0.8.0)
+==================================================
+
+You do NOT need this file for a fresh install: BioShock Infinite's
+calibration (camera, cutscene handling, HUD panel, input defaults) is
+built into the mod DLL itself. Install the two DLLs into
+  ...\steamapps\common\BioShock Infinite\Binaries\Win32\
+and play.
+
+This file is the author's tuned baseline, for two cases only:
+
+1. You changed settings in-game, pressed SAVE, and want to get back to
+   the shipped tuning: copy vrpreset.ini into
+     %LOCALAPPDATA%\BioshockVR\bsi\
+   (create the folder if it does not exist) and restart the game.
+
+2. You want a file baseline to hand-edit (each line is one setting;
+   the F10 menu edits the same values live and SAVE rewrites the file).
+
+Only the author-tuned keys are listed - every key that is absent falls
+back to the built-in default, so a short file is normal. Settings added
+by newer versions (cutscene rig mode, head-directed USE, sprint/melee
+fixes, crosshair hide) all default ON in the DLL.
+
+Note: BioShock Infinite keeps its settings in the bsi\ subfolder - the
+three games never share files.

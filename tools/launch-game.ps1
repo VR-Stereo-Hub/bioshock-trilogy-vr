@@ -1,5 +1,5 @@
-# launch-game.ps1 - launch BS1/BS2 through Steam, with the checks that keep a
-# test run honest. USE THIS instead of a bare Start-Process steam://.
+# launch-game.ps1 - launch BS1/BS2/Infinite through Steam, with the checks that
+# keep a test run honest. USE THIS instead of a bare Start-Process steam://.
 #
 # It exists because a check that only PRINTS is not a check (session 33): the
 # pre-launch "is BioShock Infinite running" warning was a Write-Output next to
@@ -18,7 +18,7 @@
 #   .\tools\launch-game.ps1 -Game bs1 -Force      # I know, launch anyway
 [CmdletBinding()]
 param(
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1",
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1",
     [switch]$Force,
     # Run the guards and return WITHOUT launching. tools\xrsim-launch.ps1 calls
     # this rather than reimplementing them, so the two launchers cannot drift
@@ -29,10 +29,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$appId = if ($Game -eq "bs2") { "409720" } else { "409710" }
-$proc  = if ($Game -eq "bs2") { "Bioshock2HD" } else { "BioshockHD" }
-$dir   = if ($Game -eq "bs2") { "$env:LOCALAPPDATA\BioshockVR\bs2" }
-         else { "$env:LOCALAPPDATA\BioshockVR" }
+$appId = switch ($Game) { "bs2" { "409720" } "bsi" { "8870" } default { "409710" } }
+$proc  = switch ($Game) { "bs2" { "Bioshock2HD" } "bsi" { "BioShockInfinite" } default { "BioshockHD" } }
+$dir   = switch ($Game) { "bs2" { "$env:LOCALAPPDATA\BioshockVR\bs2" }
+                          "bsi" { "$env:LOCALAPPDATA\BioshockVR\bsi" }
+                          default { "$env:LOCALAPPDATA\BioshockVR" } }
 
 # --- guard 1: another BioShock already running -------------------------------
 $others = Get-Process -ErrorAction SilentlyContinue |
@@ -72,6 +73,10 @@ if ($PreflightOnly) {
 }
 
 Write-Output "launching $Game (appid $appId)..."
+if ($Game -eq "bsi") {
+    Write-Warning ("do not leave Infinite UNATTENDED at the menu/attract - the game's own " +
+                   "attract-mode hang (session 37) wedges the process beyond WM_CLOSE.")
+}
 Start-Process "steam://rungameid/$appId"
 
 for ($i = 0; $i -lt $WaitSeconds; $i++) {

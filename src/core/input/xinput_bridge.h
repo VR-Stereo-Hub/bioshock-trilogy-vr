@@ -63,6 +63,27 @@ void publish_pitch_error(float headMinusEngineDeg);
 void set_pitch_kill(bool on);
 bool pitch_kill();
 
+// s52 (Infinite I9): per-game policy for the bumper LIFT on the pitch kill.
+// BS1/BS2 lift the kill while a grip/bumper is held because their radial
+// wheels read stick Y for selection (session 19 part 2). Infinite has no
+// radial states - its bumpers are momentary weapon/plasmid cycle taps - so
+// the adapter opts out and the kill holds through a bumper press. Default
+// true = the historical semantics; BS1 and BS2 never call the setter, so
+// their composed pad is byte-identical.
+void set_pitch_kill_lift_on_bumpers(bool lift);
+
+// s52 (Infinite I9): head-relative locomotion. The game adapter publishes the
+// head-vs-body yaw residual (degrees) once per view dispatch; while fresh and
+// nonzero the composer rotates the MOVEMENT stick vector clockwise-from-above
+// (+x right, +y forward) by this angle before the game sees it, so stick-
+// forward walks along the head's facing rather than the game yaw's. The sign
+// contract is the composer's rotation direction - the publisher owns mapping
+// its residual sign onto it. Deliberately independent of the turn gate's
+// bumper lift (a grip tap must not snap the walk direction mid-stride).
+// Self-expires like the other publishes: a stopped publisher (menu, drive
+// off, BS1/BS2 which never call it) composes byte-identical sticks.
+void publish_move_yaw_offset(float deg);
+
 // Radial stick deadzone (fraction 0..0.5) applied by the XR composer.
 float stick_deadzone();
 
@@ -80,6 +101,19 @@ void last_composed_bumpers(bool* lb, bool* rb);
 // The full wButtons word the game last saw (composed or real pad). Additive,
 // read-only; session 42 consumer is BS2's menukey lane (pad-A -> Enter).
 void last_composed_buttons(uint16_t* buttons);
+
+// s50 (Infinite): the FLOURISH CHORD - left thumbrest touched + A pressed.
+// arm_flourish_chord(true) makes the XR composer consume A while the left
+// thumbrest is touched and count rising A edges; flourish_chord_edges() is
+// the monotonic counter the adapter polls on its game-thread tick. Default
+// off - no other game's composed pad changes by a single bit.
+void arm_flourish_chord(bool on);
+uint32_t flourish_chord_edges();
+// s52: cinematic-scoped chord suspension - while true the chord neither
+// consumes A nor counts edges, so an interactive cinematic's confirm press
+// reaches the game. Set/cleared by the game adapter's cinematic gate; BS1/
+// BS2 never call it (their chord is never armed anyway).
+void set_flourish_chord_suspended(bool on);
 
 // Session 22: the FINAL composed sticks the game consumed (post merge/
 // pitchkill/turn controls) - the movement-wonkiness instrument reads them.
@@ -109,6 +143,25 @@ AmmoMod ammo_mod();
 void set_ammo_mod(AmmoMod m);
 int take_snap_steps(); // +right/-left steps queued since the last drain
 
+// Session 44 (Infinite I7): WHICH pad map the XR composer builds.
+//
+// The composer's face-button re-route, its consumed RS-click and its
+// synthesized dpad are BioShock 1 semantics, audited against that game's own
+// XENON_* bindings. Infinite's audited retail map disagrees on four counts (it
+// wants straight-through faces, RS-click forwarded for XToggleZoom, and a
+// fourth dpad direction), and a synthetic pad's only job is to land on the
+// bindings the game already ships - so the map has to be per game.
+//
+// DEFAULT Bioshock1 IN CORE, exactly the set_pose_lag contract: BS1 and BS2
+// never call the setter and their composed pad is byte-identical. The Infinite
+// adapter arms its profile once in init(). One atomic and one relaxed load per
+// XR frame - a single scalar rather than a struct of fields so a live A/B can
+// never compose a half-switched pad. The tables themselves live next to the
+// composer in core/vr/openxr_input.cpp.
+enum class PadProfile { Bioshock1 = 0, Infinite = 1 };
+PadProfile pad_profile();
+void set_pad_profile(PadProfile p);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping
@@ -121,6 +174,7 @@ bool hijack_import_slot(void** slot);
 //   on | off | status
 //   pitchkill on|off|status
 //   turnscale <0.1..4> | snap on|off | snapangle <deg> | sticklog on|off
+//   padlog on|off                     composed BUTTON word, edge-triggered
 //   swing ...                         wrench swing-to-attack (core/input/swing.h)
 //   test stick l|r <x> <y> [holdMs]   raw -32768..32767
 //   test trig  l|r <0..255> [holdMs]

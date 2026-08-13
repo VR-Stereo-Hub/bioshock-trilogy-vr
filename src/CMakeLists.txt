@@ -10,8 +10,10 @@ set_target_properties(xinput_proxy PROPERTIES
     PREFIX ""
 )
 
-# --- bioshockvr.dll — the mod -------------------------------------------------
+# --- bioshockvr.dll - the mod -------------------------------------------------
 add_library(bioshockvr SHARED
+    core/framework/command.cpp
+    core/framework/command.h
     core/framework/dllmain.cpp
     core/framework/framework.cpp
     core/framework/framework.h
@@ -21,6 +23,8 @@ add_library(bioshockvr SHARED
     core/gfx/blit.h
     core/gfx/frame_inspector.cpp
     core/gfx/frame_inspector.h
+    core/gfx/gfx_hud.cpp
+    core/gfx/gfx_hud.h
     core/gfx/hud_capture.cpp
     core/gfx/hud_capture.h
     core/hooks/d3d11_hook.cpp
@@ -94,6 +98,60 @@ add_library(bioshockvr SHARED
     game/bioshock2r/patterns.h
     game/bioshock2r/scenedraw.cpp
     game/bioshock2r/scenedraw.h
+    game/bioshockinf/aim.cpp
+    game/bioshockinf/aim.h
+    game/bioshockinf/arsenal.cpp
+    game/bioshockinf/arsenal.h
+    game/bioshockinf/bioshockinf_adapter.cpp
+    game/bioshockinf/bioshockinf_adapter.h
+    game/bioshockinf/bones.cpp
+    game/bioshockinf/bones.h
+    game/bioshockinf/camera.cpp
+    game/bioshockinf/camera.h
+    game/bioshockinf/cine.cpp
+    game/bioshockinf/cine.h
+    game/bioshockinf/edgelog.cpp
+    game/bioshockinf/edgelog.h
+    game/bioshockinf/fidget.cpp
+    game/bioshockinf/fidget.h
+    game/bioshockinf/fire.cpp
+    game/bioshockinf/fire.h
+    game/bioshockinf/frame_context.h
+    game/bioshockinf/fxorigin.cpp
+    game/bioshockinf/fxorigin.h
+    game/bioshockinf/gfx.cpp
+    game/bioshockinf/gfx.h
+    game/bioshockinf/hands.cpp
+    game/bioshockinf/hands.h
+    game/bioshockinf/hide.cpp
+    game/bioshockinf/hide.h
+    game/bioshockinf/hint.cpp
+    game/bioshockinf/hint.h
+    game/bioshockinf/hud.cpp
+    game/bioshockinf/hud.h
+    game/bioshockinf/config.cpp
+    game/bioshockinf/config.h
+    game/bioshockinf/game_ini.cpp
+    game/bioshockinf/game_ini.h
+    game/bioshockinf/inf_math.h
+    game/bioshockinf/input_drive.cpp
+    game/bioshockinf/input_drive.h
+    game/bioshockinf/lens.cpp
+    game/bioshockinf/lens.h
+    game/bioshockinf/melee.cpp
+    game/bioshockinf/melee.h
+    game/bioshockinf/patterns.cpp
+    game/bioshockinf/patterns.h
+    game/bioshockinf/profiles.cpp
+    game/bioshockinf/profiles.h
+    game/bioshockinf/recorder.cpp
+    game/bioshockinf/recorder.h
+    game/bioshockinf/reflect.cpp
+    game/bioshockinf/reflect.h
+    game/bioshockinf/scenedraw.cpp
+    game/bioshockinf/scenedraw.h
+    game/bioshockinf/xhair.cpp
+    game/bioshockinf/xhair.h
     game/shared/ue_math.h
 )
 set_target_properties(bioshockvr PROPERTIES PREFIX "")

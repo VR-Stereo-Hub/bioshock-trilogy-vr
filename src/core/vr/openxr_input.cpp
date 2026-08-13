@@ -37,6 +37,87 @@ constexpr float kFlickRearm = 0.30f;
 constexpr uint64_t kFlickPulseMs = 150;
 constexpr uint64_t kFlickCooldownMs = 300;
 
+// ---------------------------------------------------------------------------
+// The per-game pad map (session 44, Infinite I7).
+//
+// A synthetic pad's only job is to land on the bindings the game already
+// ships, so the XR-to-XInput table is a property of the GAME, not of the
+// composer. Everything below was hardcoded BioShock 1 semantics; the tables
+// make the game-specific decisions data, and the BioShock1 table reproduces
+// the previous literals exactly - that is the whole inertness argument. The
+// selector is one atomic in the bridge (bvr::input::pad_profile()), default
+// Bioshock1, armed once by the game adapter.
+//
+// What is NOT in the table because it is game-neutral: stick deadzone and
+// scaling, trigger scaling, the grip hysteresis thresholds, and the menu
+// tap/hold split (short -> START, long -> BACK fits pause/back on both games).
+// ---------------------------------------------------------------------------
+struct PadMap {
+    const char* name;
+    // XInput bit each Touch face produces. 0 would mean "swallow it".
+    uint16_t faceA, faceB, faceX, faceY;
+    uint16_t gripL, gripR;             // squeeze past the hysteresis -> bumper
+    uint16_t stickClickL, stickClickR; // 0 = deliberately NOT forwarded
+    // The modifier + right-stick flick lane. Directions with a 0 bit are not
+    // emitted at all, which is how BS1 keeps its three-way ammo select while
+    // Infinite gets the fourth direction its dpad nav needs.
+    bool flick;
+    bool flickAmmoModPref; // honour `vrinput ammomod`; else thumbrest-only
+    uint16_t flickUp, flickDown, flickLeft, flickRight;
+};
+
+// BioShock 1 and 2. Session 19's headset-revised audit, verbatim: the game's
+// own pad layout (User.ini XENON_*) is A=Use, B=MedHypo, X=Reload/Hack/EVE,
+// Y=Jump, and the user's verdict was that Touch A must STAY use/loot (it is
+// also the menu confirm button) with jump on Touch B. RS-click is deliberately
+// consumed: zoom was removed (a FOV zoom inside an HMD is a comfort hazard),
+// so the click is purely the ammo modifier and never reaches the game. The
+// three ammo types sit on dpad UP/DOWN/LEFT; there is no fourth.
+constexpr PadMap kPadMapBioshock1 = {
+    "bioshock1",
+    XINPUT_GAMEPAD_A,            // Touch A -> use / interact / menu confirm
+    XINPUT_GAMEPAD_Y,            // Touch B -> jump
+    XINPUT_GAMEPAD_X,            // Touch X -> reload / hack / EVE inject
+    XINPUT_GAMEPAD_B,            // Touch Y -> first aid (med hypo)
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+    XINPUT_GAMEPAD_LEFT_THUMB, 0, // RS-click eaten: it IS the ammo modifier
+    true, true,
+    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
+};
+
+// BioShock Infinite (UE3). From the audited retail XboxTypeS_* binding set
+// (ENGINE_NOTES "The audited retail pad map"): A = TBar transfer + Jump,
+// B = TBar dodge/reverse + ToggleCrouch, X = ReloadOrHoldToHackOrUse,
+// Y = TBar melee transfer + melee, LB = NextPlasmid, RB = NextWeapon,
+// LS click = StartSprint, RS click = XToggleZoom. So the faces pass STRAIGHT
+// THROUGH and RS-click must be FORWARDED - the opposite of BS1 on both counts.
+//
+// The dpad here carries nav and hack (XNavShowPulse/BuyoutHack,
+// XMakeUnstableSelection/AutoHack, XNavQuickToggleCycleLeft/Right), and Touch
+// has no dpad. Per the user's call (session 44) the flick lane is kept as the
+// analogue - left thumbrest held, right stick flicked - and gains the fourth
+// direction the cycle pair needs. RS-click can no longer double as the
+// modifier, because here it is a real binding.
+constexpr PadMap kPadMapInfinite = {
+    "infinite",
+    XINPUT_GAMEPAD_A,             // Touch A -> jump (+ TBar transfer)
+    XINPUT_GAMEPAD_B,             // Touch B -> crouch (+ TBar dodge)
+    XINPUT_GAMEPAD_X,             // Touch X -> reload / hold-to-hack / use
+    XINPUT_GAMEPAD_Y,             // Touch Y -> melee (+ TBar melee transfer)
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+    XINPUT_GAMEPAD_LEFT_THUMB,    // sprint
+    XINPUT_GAMEPAD_RIGHT_THUMB,   // XToggleZoom - forwarded, unlike BS1
+    true, false,                  // thumbrest-only modifier
+    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
+    XINPUT_GAMEPAD_DPAD_RIGHT,
+};
+
+const PadMap& active_pad_map() {
+    return bvr::input::pad_profile() == bvr::input::PadProfile::Infinite
+               ? kPadMapInfinite
+               : kPadMapBioshock1;
+}
+
 XrActionSet g_actionSet = XR_NULL_HANDLE;
 
 XrAction g_move = XR_NULL_HANDLE;      // VECTOR2F left thumbstick
@@ -60,6 +141,20 @@ XrAction g_menu = XR_NULL_HANDLE;
 XrAction g_thumbrestL = XR_NULL_HANDLE;
 XrAction g_thumbrestR = XR_NULL_HANDLE;
 bool g_thumbrestSeen[2] = {false, false};
+
+// s50 (Infinite): the FLOURISH CHORD - left thumbrest touched + A pressed.
+// Armed by the adapter only (default off - BS1/BS2 composers byte-identical).
+// While the rest is touched, A is consumed (jump never fires under the
+// chord) and each rising A edge bumps the counter the adapter polls on the
+// game thread. Left thumbrest for the same reason the flick modifier uses
+// it: the chord is necessarily cross-hand (A sits under the right thumb).
+std::atomic<bool> g_flourishChordArmed{false};
+// s52: cinematic-scoped suspension - while set, the chord neither consumes A
+// nor counts edges, so an interactive prompt's confirm press reaches the
+// game (the raffle lesson). Set/cleared by the adapter's cinematic gate.
+std::atomic<bool> g_flourishChordSuspended{false};
+std::atomic<uint32_t> g_flourishChordEdges{0};
+bool g_chordAWasDown = false;
 XrAction g_poseL = XR_NULL_HANDLE;     // grip poses - hand position (M7 hands)
 XrAction g_poseR = XR_NULL_HANDLE;
 XrAction g_aimL = XR_NULL_HANDLE;      // AIM poses - where the controller POINTS.
@@ -437,22 +532,25 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     float gr = read_float(session, g_gripR);
     g_gripLatchedL = g_gripLatchedL ? (gl >= kGripRelease) : (gl >= kGripPress);
     g_gripLatchedR = g_gripLatchedR ? (gr >= kGripRelease) : (gr >= kGripPress);
-    if (g_gripLatchedL) pad.buttons |= XINPUT_GAMEPAD_LEFT_SHOULDER;
-    if (g_gripLatchedR) pad.buttons |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
 
-    // Session 19 controls audit (revised by the headset run): the game's own
-    // pad layout (User.ini XENON_*) is A=Use, B=MedHypo heal, X=Reload/Hack/
-    // EVE, Y=Jump. The user's verdict: A must STAY use/loot (it is also the
-    // menu confirm button), jump goes to B:
-    //   Touch A (right lower) -> XInput A  = use / interact / menu confirm
-    //   Touch B (right upper) -> XInput Y  = jump
-    //   Touch X (left  lower) -> XInput X  = reload / hack / EVE inject
-    //   Touch Y (left  upper) -> XInput B  = first-aid (med hypo)
-    if (read_bool(session, g_btnA)) pad.buttons |= XINPUT_GAMEPAD_A;
-    if (read_bool(session, g_btnB)) pad.buttons |= XINPUT_GAMEPAD_Y;
-    if (read_bool(session, g_btnX)) pad.buttons |= XINPUT_GAMEPAD_X;
-    if (read_bool(session, g_btnY)) pad.buttons |= XINPUT_GAMEPAD_B;
-    if (read_bool(session, g_stickClickL)) pad.buttons |= XINPUT_GAMEPAD_LEFT_THUMB;
+    // ONE map read per compose. A single relaxed load behind it, so a live A/B
+    // can never build a half-switched pad.
+    const PadMap& map = active_pad_map();
+
+    if (g_gripLatchedL) pad.buttons |= map.gripL;
+    if (g_gripLatchedR) pad.buttons |= map.gripR;
+
+    // The face buttons, from the table. What each bit MEANS in the game is in
+    // the table's own comment; the composer only lands the bit.
+    if (read_bool(session, g_btnA)) pad.buttons |= map.faceA;
+    if (read_bool(session, g_btnB)) pad.buttons |= map.faceB;
+    if (read_bool(session, g_btnX)) pad.buttons |= map.faceX;
+    if (read_bool(session, g_btnY)) pad.buttons |= map.faceY;
+    if (read_bool(session, g_stickClickL)) pad.buttons |= map.stickClickL;
+    // Forwarded only where the map says so: on BioShock 1 this bit is 0 and
+    // the click is consumed below as the ammo modifier instead.
+    if (map.stickClickR && read_bool(session, g_stickClickR))
+        pad.buttons |= map.stickClickR;
 
     uint64_t now = GetTickCount64();
 
@@ -466,7 +564,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // reaches the game. Direction reads the PRE-deadzone stick; the re-arm
     // band allows several selects in one hold; grips suppress it (the
     // radials read the stick).
-    {
+    if (map.flick) {
         float rawX = 0.0f, rawY = 0.0f;
         read_vec2(session, g_look, &rawX, &rawY);
         bool gripHeld = g_gripLatchedL || g_gripLatchedR;
@@ -483,20 +581,30 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             if ((i == 0 ? restL : restR) && !g_thumbrestSeen[i]) {
                 g_thumbrestSeen[i] = true;
                 BVR_LOG("xr-input: %s thumbrest touch reported by the runtime - "
-                        "usable as the ammo modifier ('vrinput ammomod thumbrest')",
-                        i == 0 ? "LEFT" : "RIGHT");
+                        "usable as the slot-select modifier%s",
+                        i == 0 ? "LEFT" : "RIGHT",
+                        map.flickAmmoModPref ? " ('vrinput ammomod thumbrest')"
+                                             : " (it is the only modifier on this game - "
+                                               "RS-click is a real binding here)");
             }
         }
-        const bvr::input::AmmoMod mode = bvr::input::ammo_mod();
-        // Thumbrest is the default, but not every controller has one (Pico has
-        // no thumbrest; some SteamVR setups do not report it) and losing ammo
-        // select entirely would be a nasty surprise. So in Thumbrest mode the
-        // stick click keeps working UNTIL a real thumbrest touch is observed -
-        // after that the mapping is exactly what was chosen.
-        const bool noThumbrestYet = !g_thumbrestSeen[0];
-        const bool clickMod =
-            (mode != bvr::input::AmmoMod::Thumbrest || noThumbrestYet) && rsClick;
-        const bool restMod = mode != bvr::input::AmmoMod::Click && restL;
+        // Where RS-click is a real game binding it can never double as the
+        // modifier, and the ammo-modifier preference (a BioShock 1 comfort
+        // setting) does not apply. Thumbrest-only, unconditionally.
+        bool clickMod = false;
+        bool restMod = restL;
+        if (map.flickAmmoModPref) {
+            const bvr::input::AmmoMod mode = bvr::input::ammo_mod();
+            // Thumbrest is the default, but not every controller has one (Pico
+            // has no thumbrest; some SteamVR setups do not report it) and
+            // losing ammo select entirely would be a nasty surprise. So in
+            // Thumbrest mode the stick click keeps working UNTIL a real
+            // thumbrest touch is observed - after that the mapping is exactly
+            // what was chosen.
+            const bool noThumbrestYet = !g_thumbrestSeen[0];
+            clickMod = (mode != bvr::input::AmmoMod::Thumbrest || noThumbrestYet) && rsClick;
+            restMod = mode != bvr::input::AmmoMod::Click && restL;
+        }
         const bool modHeld = clickMod || restMod;
 
         if (modHeld && !g_rsClickWasDown) g_flickArmed = true;
@@ -515,10 +623,14 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                 pad.ry = 0;
             }
             if (g_flickArmed && now >= g_flickCooldownMs) {
+                // Directions the map leaves at 0 are simply never emitted -
+                // that is how BioShock 1 keeps its three-way ammo select while
+                // Infinite gets the fourth direction its nav cycle needs.
                 uint16_t bit = 0;
-                if (rawY >= kFlickPress) bit = XINPUT_GAMEPAD_DPAD_UP;
-                else if (rawY <= -kFlickPress) bit = XINPUT_GAMEPAD_DPAD_DOWN;
-                else if (rawX <= -kFlickPress) bit = XINPUT_GAMEPAD_DPAD_LEFT;
+                if (rawY >= kFlickPress) bit = map.flickUp;
+                else if (rawY <= -kFlickPress) bit = map.flickDown;
+                else if (rawX <= -kFlickPress) bit = map.flickLeft;
+                else if (rawX >= kFlickPress) bit = map.flickRight;
                 if (bit) {
                     g_flickPulseBit = bit;
                     g_flickPulseUntilMs = now + kFlickPulseMs;
@@ -531,6 +643,20 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                 g_flickArmed = true;
         }
         if (now < g_flickPulseUntilMs) pad.buttons |= g_flickPulseBit;
+
+        // s50 (Infinite): the flourish chord - see the state block. The edge
+        // requires the rest ALREADY touched at the press, so a plain jump
+        // with a thumb that later brushes the rest never fires it.
+        if (g_flourishChordArmed.load(std::memory_order_relaxed) &&
+            !g_flourishChordSuspended.load(std::memory_order_relaxed)) {
+            const bool aDown = read_bool(session, g_btnA);
+            if (restL) {
+                pad.buttons &= ~map.faceA; // consume A while chorded
+                if (aDown && !g_chordAWasDown)
+                    g_flourishChordEdges.fetch_add(1, std::memory_order_relaxed);
+            }
+            g_chordAWasDown = aDown;
+        }
     }
 
     // Left menu: short press pulses START on release, holding it past the
@@ -596,5 +722,30 @@ void input_draw_debug_ui() {
 }
 
 } // namespace bvr::vr
+
+// s50: the flourish-chord accessors live in bvr::input beside the other
+// composed-state readers; the state itself is the XR composer's (same TU).
+namespace bvr::input {
+
+void arm_flourish_chord(bool on) {
+    const bool was = bvr::vr::g_flourishChordArmed.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr-input: flourish chord %s (left thumbrest + A; A is consumed "
+                "while the rest is touched)",
+                on ? "ARMED" : "off");
+}
+
+uint32_t flourish_chord_edges() {
+    return bvr::vr::g_flourishChordEdges.load(std::memory_order_relaxed);
+}
+
+void set_flourish_chord_suspended(bool on) {
+    const bool was =
+        bvr::vr::g_flourishChordSuspended.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr-input: flourish chord %s", on ? "SUSPENDED (A passes through)" : "resumed");
+}
+
+} // namespace bvr::input
 
 #endif // BVR_WITH_OPENXR

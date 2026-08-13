@@ -9,6 +9,7 @@ namespace bvr::game {
 enum class HostGame {
     Bioshock1, // BioshockHD.exe
     Bioshock2, // Bioshock2HD.exe
+    Infinite,  // BioShockInfinite.exe (UE3 - a different engine entirely)
     Unknown,
 };
 
@@ -17,8 +18,8 @@ HostGame detect_host_game();
 
 // Data-dir subfolder under %LOCALAPPDATA%\BioshockVR for this host. Empty for
 // BioShock 1 (released flat layout - those paths must stay byte-identical) and
-// for unknown hosts; L"bs2" for BioShock 2. The exe-name knowledge lives only
-// in this module - core stays game-agnostic.
+// for unknown hosts; L"bs2" for BioShock 2, L"bsi" for Infinite. The exe-name
+// knowledge lives only in this module - core stays game-agnostic.
 const wchar_t* host_data_subdir();
 
 } // namespace bvr::game

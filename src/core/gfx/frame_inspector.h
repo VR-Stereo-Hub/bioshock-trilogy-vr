@@ -18,11 +18,19 @@ namespace bvr::frame_inspector {
 bool install(void** ctxVtable);
 
 // Arm a one-shot dump of the NEXT full Present-to-Present frame.
-// mode 1 = lite (no constant-buffer readback), 2 = full.
-// Arm a frame dump: mode 1 = lite, 2 = full (cb bytes). count > 1 records
-// that many CONSECUTIVE present windows (files suffixed _qN) - required to see
-// both halves of a stereo pair, since a game-thread arm always opens on the
-// same pair phase.
+//   mode 1 = lite  - events and resources only, no constant-buffer readback
+//   mode 2 = full  - plus a staging readback of the bound VS b0, ONCE PER
+//                    DISTINCT BUFFER OBJECT. Correct for an engine that renames
+//                    its constant buffer on every upload (Map/WRITE_DISCARD).
+//   mode 3 = cb    - full, plus every UpdateSubresource into a constant buffer
+//                    captured at its real size, plus the per-draw VS/PS
+//                    constant-buffer identities. For engines that REUSE one
+//                    buffer object and rewrite it, where mode 2 both
+//                    under-samples and misattributes what it does capture.
+//                    Added session 36 for BioShock Infinite (UE3, deferred).
+// count > 1 records that many CONSECUTIVE present windows (files suffixed _qN)
+// - required to see both halves of a stereo pair, since a game-thread arm
+// always opens on the same pair phase.
 void arm(int mode, int count = 1);
 
 // Frame boundary, called at the head of the Present detour: finalizes and
@@ -77,6 +85,30 @@ uint32_t cb_watch_hits();
 // Log the Unmap-time callstack (game-exe RVAs) for the next n fingerprint
 // matches - the discovery instrument for whoever BUILDS the watched values.
 void cb_watch_log_stacks(int n);
+
+// ---- Opt-in UpdateSubresource constant-buffer tap (session 41, BSI I6) ------
+// The always-on cb watch above taps Map/Unmap - right for the Vengeance
+// remasters, which stage per-draw constants through WRITE_DISCARD maps.
+// BioShock Infinite (UE3 6829) uploads constant buffers through
+// UpdateSubresource instead (the whole reason dumpframe mode 3 exists), so a
+// LIVE lens decoder there needs this tap: when armed, every strideN-th
+// UpdateSubresource has its destination checked (constant buffer of exactly
+// requiredBytes, whole-buffer or offset-0 update) and the first kCbTapFloats
+// floats of the payload go into a small seqlock-stamped ring the game thread
+// drains. The tap captures RAW floats only - no decode, no policy, no game
+// knowledge; all of that lives in the consuming adapter.
+// DISARMED COST IS ONE RELAXED ATOMIC LOAD per UpdateSubresource. No game
+// arms it by default and only the bioshockinf adapter calls the setter, so
+// BS1/BS2 behaviour is untouched (observable: cb_upload_tap_count() stays 0
+// for the whole life of an unarmed session).
+inline constexpr uint32_t kCbTapFloats = 20; // 80 B: a row-major 4x4 + spare
+inline constexpr uint32_t kCbTapSlots = 64;
+void set_cb_upload_tap(uint32_t requiredBytes, uint32_t strideN); // bytes 0 = disarm
+// Drain samples newer than *cursor (opaque, start at 0) into `out`
+// (maxSamples x kCbTapFloats floats). Returns samples written; advances
+// *cursor. Overwritten ring slots are skipped, not invented.
+uint32_t drain_cb_upload_samples(float* out, uint32_t maxSamples, uint32_t* cursor);
+uint32_t cb_upload_tap_count(); // lifetime accepted samples (diagnostic)
 
 // Overlay section: dump buttons + last-dump status.
 void draw_debug_ui();

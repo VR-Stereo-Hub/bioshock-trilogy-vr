@@ -1,10 +1,12 @@
 # Builds the mod (32-bit). CMake is not on PATH on this machine - we use the one
 # bundled with VS 2022 Build Tools, located via vswhere.
 # NOTE: keep this file pure ASCII (PowerShell 5.1 misreads BOM-less UTF-8).
+# Deliberately NOT guarded against a conflicting game: building touches the disk,
+# never the headset, so it works while BioShock 2 (or any game) is running.
 param(
     [switch]$Release,
     [switch]$Install,
-    [ValidateSet("bs1", "bs2")][string]$Game = "bs1"
+    [ValidateSet("bs1", "bs2", "bsi")][string]$Game = "bs1"
 )
 
 $ErrorActionPreference = "Stop"

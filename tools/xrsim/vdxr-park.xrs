@@ -1,0 +1,53 @@
+# vdxr-park.xrs - the raffle-wedge park, on a desk (session 54).
+#
+# Models VDXR as MEASURED at the s53 raffle wedge (ENGINE_NOTES bioshockinfinite
+# s54): while a session is not FOCUSED the runtime holds shouldRender=0, counts
+# only LAYER-CARRYING frames toward re-promotion, and throttles the empty frame
+# loop's xrEndFrame to ~87 ms per call - which paced the game to ~10 presents/s
+# (the announcer-stops half) while the park (the input-dead half) never released.
+#
+# Leg A (feed OFF) must PARK: the inline loop submits zero-layer frames under
+# shouldRender=0, so the session never earns FOCUSED back - the wedge.
+# Leg B (feed ON, the s54 fix) must SELF-HEAL: the pace thread re-submits the
+# last healthy layer set, the layered frames earn re-promotion within
+# focusFrames of the hold expiring, no manual rescue.
+#
+# SCOPE: this proves the MOD's behaviour against the sim's model of VDXR. The
+# model's three behaviours are each measured facts from 2026-08-11 logs, but VD's
+# actual re-promotion trigger (layers vs its own external state) stays a headset
+# question - TESTING "S54" carries that A-B-A.
+reset
+@frames 30
+@assert sessionState eq FOCUSED
+
+# The measured VDXR model.
+focus policy vdxr-layers
+focus norender on
+focus throttle 87
+
+# --- Leg A: feed OFF = the measured wedge --------------------------------------
+@mod vrpace feed off
+focus lose 2000
+# Hold expires at 2 s; empty frames must NOT earn FOCUSED. 10 s is ~90 empty
+# frames of eligibility at the throttled cadence - if the state machine were
+# counting them, it would have promoted ~30 times over.
+@wait 10000
+@assert sessionState eq VISIBLE
+# The manual rescue (models the user's VD dashboard close / re-don).
+focus regain
+@wait 1000
+@assert sessionState eq FOCUSED
+
+# --- Leg B: feed ON = the s54 fix ----------------------------------------------
+@mod vrpace feed on
+focus lose 2000
+# Hold expires at 2 s; the feed's layered frames earn FOCUSED within 3 cycles
+# (~300 ms at the throttled ~11 Hz cadence). No rescue on this leg.
+@wait 10000
+@assert sessionState eq FOCUSED
+
+# --- cleanup + healthy-exit gate -----------------------------------------------
+focus norender off
+focus throttle 0
+focus policy vdxr
+@fps 30

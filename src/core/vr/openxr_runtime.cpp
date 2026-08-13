@@ -117,6 +117,23 @@ std::atomic<float> g_dot2X{0.0f}, g_dot2Y{0.0f}, g_dot2Z{0.0f};
 std::atomic<float> g_dot2SizeDeg{0.5f};
 std::atomic<uint64_t> g_dot2StampMs{0};
 constexpr uint64_t kDotStaleMs = 250; // matches aim.cpp's ray_for() freshness gate
+// s51 (Infinite FOV-edge discriminator): a reference quad parked AT the
+// located grip pose, compositor-correct by construction - core positions it
+// per present from the SAME locate the projection layer uses, no game-thread
+// hop. In the headset: if this quad and the rendered hand model separate
+// while the hand sweeps off-center, the error is in the game-render/
+// projection/submission lane; if they move together, the hand's composed
+// world position itself is wrong. Default OFF; armed by the adapter.
+std::atomic<bool> g_handQuadOn{false};
+std::atomic<int> g_handQuadHand{1}; // 0 = left, 1 = right
+std::atomic<float> g_handQuadSizeDeg{1.5f};
+std::atomic<bool> g_loggedFirstHandQuad{false};
+// s51: the VDXR view logger's remaining-frames counter (bounded burst).
+std::atomic<int> g_viewLogLeft{0};
+// s51: the edge-telemetry snapshot (armed only; game thread copies out).
+std::atomic<bool> g_edgeSnapOn{false};
+std::mutex g_edgeSnapMutex;
+EdgeViewSnapshot g_edgeSnap;
 
 // Controls (overlay writes, render thread reads).
 std::atomic<bool> g_enabled{true};        // kill switch: tears the session down
@@ -136,6 +153,9 @@ std::atomic<float> g_hudWidthM{1.25f};
 std::atomic<float> g_hudUpM{-0.10f};
 std::atomic<uint32_t> g_hudFramesSubmitted{0};
 std::atomic<bool> g_loggedFirstHudQuad{false};
+// s52: the HUD quad's texture provider (Infinite's GFx lane). Null = BS1's
+// bvr::hud::texture() path, byte-identical for games that never set it.
+std::atomic<HudTextureProviderFn> g_hudTexProvider{nullptr};
 
 // Cached backbuffer RTV for the post-capture window HUD composite.
 ID3D11RenderTargetView* g_backbufferRtv = nullptr;
@@ -157,11 +177,34 @@ XrView g_views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 XrView g_viewsContent[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 bool g_viewsContentValid = false;
 bool g_viewsValid = false;
+// Session 43b (the Infinite "jumpy camera"): the lockstep assumption behind
+// g_viewsContent - "locate N feeds the tick that presents at N+1" - was
+// calibrated on BS1's 1T (single-threaded) renderer. Infinite's substrate is
+// threaded and ring-buffered with OneFrameThreadLag, so its content may lag
+// the locate by TWO generations; attributing it one-back leaves a constant
+// one-period pose error that scales with head speed (reprojection wobble -
+// the reported percept). The selector below picks which generation the SR
+// capture attributes: 0 = fresh (g_views), 1 = one back (g_viewsContent,
+// THE DEFAULT = today's behavior, BS1/BS2 never change it), 2 = two back
+// (g_viewsPrev2). The in-headset A/B is the discriminator: whichever lag
+// kills the wobble names the pipeline's true depth by intervention.
+XrView g_viewsPrev2[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+bool g_viewsPrev2Valid = false;
+std::atomic<int> g_poseLag{1};
+// Telemetry: yaw delta between consecutive locate generations (deg) - the
+// size of the attribution error one generation of lag would cause at the
+// current head speed. Read by the adapter's F10 section.
+std::atomic<float> g_poseGenDeltaDeg{0.0f};
 std::atomic<float> g_hfovDeg{0.0f};      // circumscribed symmetric hfov, read cross-thread
 // Session 34: the headset eye's own half-angles in degrees (0 until the first
 // locate). Exposed so an adapter can say, on screen, how much of the eye its
 // render is actually filling - which is the whole diagnosis of "black bars".
 std::atomic<float> g_headsetHalfH{0.0f}, g_headsetHalfV{0.0f};
+// Session 41: the runtime's recommended per-eye render size, from
+// xrEnumerateViewConfigurationViews at bring-up (0 until then). Purely
+// informational - nothing in core reads these; swapchain sizing stays
+// backbuffer-derived. Exposed for adapters' resolution pickers.
+std::atomic<uint32_t> g_recommendedEyeW{0}, g_recommendedEyeH{0};
 std::atomic<float> g_renderedHfov{0.0f}; // fov the game actually rendered (adapter readback)
 // Distortion calibration: the readback reads the same engine address we write,
 // so under forcing it echoes our own value and cannot see how the RENDERER
@@ -232,6 +275,53 @@ int g_currentEye = 0;                    // eye slot the next captured frame bel
 XrPosef g_eyePose[2] = {};               // pose claimed for each eye's held image
 bool g_eyeValid[2] = {false, false};     // eye slot holds a released image + pose
 
+// s50 (Infinite): rendered-pose eye tags - see the header comment. Default
+// OFF; only an adapter arms it (additive, BS1/BS2 untouched). The ipd mirror
+// tracks the arming adapter's slider so the tag reconstructs the SAME offset
+// apply_eye_offset baked into the render.
+std::atomic<bool> g_eyeTagRendered{false};
+std::atomic<float> g_eyeTagIpdMm{63.0f};
+
+// Rebuild one eye's layer tag as the PARALLEL camera the game rendered:
+// midpoint of the located pair, nlerp'd shared orientation, +-ipd/2 along
+// that orientation's right axis (eye 0 = left = -x, matching the adapter's
+// apply_eye_offset signs). Identity when the located pair is already
+// parallel at the same IPD.
+XrPosef parallel_eye_tag(const XrPosef& l, const XrPosef& r, int eye, float ipdMm) {
+    float q[4] = {l.orientation.x + r.orientation.x, l.orientation.y + r.orientation.y,
+                  l.orientation.z + r.orientation.z, l.orientation.w + r.orientation.w};
+    // nlerp at t=0.5 with hemisphere guard: located pairs are near-identical,
+    // but a sign-flipped quat pair would cancel - fall back to the left eye.
+    const float dot = l.orientation.x * r.orientation.x + l.orientation.y * r.orientation.y +
+                      l.orientation.z * r.orientation.z + l.orientation.w * r.orientation.w;
+    if (dot < 0.0f) {
+        q[0] = l.orientation.x;
+        q[1] = l.orientation.y;
+        q[2] = l.orientation.z;
+        q[3] = l.orientation.w;
+    }
+    const float n = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (n > 1e-6f) {
+        q[0] /= n;
+        q[1] /= n;
+        q[2] /= n;
+        q[3] /= n;
+    } else {
+        q[0] = q[1] = q[2] = 0.0f;
+        q[3] = 1.0f;
+    }
+    const float half = (eye == 0 ? -0.5f : 0.5f) * ipdMm / 1000.0f;
+    const float axis[3] = {half, 0.0f, 0.0f}; // XR +X = right in view space
+    float off[3];
+    bvr::xrmath::quat_rotate(q[0], q[1], q[2], q[3], axis, off);
+    XrPosef out{};
+    out.orientation = {q[0], q[1], q[2], q[3]};
+    out.position = {(l.position.x + r.position.x) * 0.5f + off[0],
+                    (l.position.y + r.position.y) * 0.5f + off[1],
+                    (l.position.z + r.position.z) * 0.5f + off[2]};
+    return out;
+}
+
 // M4 rung 2 (SequentialReentry): SPSC eye-tag ring, game thread pushes at
 // engine submit, render thread pops at Present-tail (see header). Normal
 // depth is <= 2 (one L/R pair in flight); deeper means a skew - the consumer
@@ -270,6 +360,57 @@ uint64_t g_lastIdleLogMs = 0; // rate limit for the SUBMISSION IDLE heartbeat
 constexpr uint32_t kPairHoldMaxMs = 500;
 std::atomic<uint32_t> g_srPairs{0}, g_srPairAborts{0};
 std::atomic<bool> g_loggedFirstPair{false};
+
+// Session 42 (Infinite I6 judder): pair-CADENCE statistics. The judder question
+// is not "how many pairs per second" but "how EVENLY are they spaced" - a mean
+// of 13.9 ms with 5 ms of swing reprojects differently every frame while both
+// numbers round to 72/s. Present thread writes at each pair CLOSE; the 1 Hz
+// trace thread reads, derives mean/stddev and window-resets min/max (the reset
+// races lose at most one sample - diagnostics, not accounting). Samples above
+// 1 s are discarded: a load screen or alt-tab would otherwise poison sumsq
+// for the whole window.
+std::atomic<int64_t> g_pairLastCloseQpc{0};
+std::atomic<uint32_t> g_pairIntCount{0};
+std::atomic<uint64_t> g_pairIntSumUs{0};
+std::atomic<uint64_t> g_pairIntSumSqUs{0};
+std::atomic<uint32_t> g_pairIntMinUs{0xFFFFFFFFu};
+std::atomic<uint32_t> g_pairIntMaxUs{0};
+// How long the present thread actually spent BLOCKED in the wait handoff, per
+// trace window. This is the gating discriminator the pairs/s number cannot
+// give: free-running pairs spend ~0 ms/s here; pairs gated by xrWaitFrame
+// spend the whole non-render remainder of each second here.
+std::atomic<uint64_t> g_pairWaitSumUs{0};
+// The runtime's own frame period from xrWaitFrame - never consumed anywhere
+// in this codebase until now (only the sim ever WROTE it). It is the refresh
+// input a pace sync needs, published so the fix can target measured reality.
+std::atomic<int64_t> g_displayPeriodNs{0};
+
+// Session 43 (Infinite stutter hunt): SPIKE-TRIGGERED EVIDENCE CAPTURE.
+// The s42 headset run named the judder as 39-113 ms pair intervals in bursts;
+// the 1 Hz aggregates can say THAT a second was bad, never WHICH phase carried
+// the stall. When armed, a pair interval above 2x the display period writes a
+// one-line snapshot to pacetrace.log at the moment of the pair close: the
+// per-phase last table, the per-phase maxima SINCE THE PREVIOUS SPIKE (reset
+// after each snapshot - that is what scopes the attribution to this burst),
+// the live stage markers, and the unattributed remainder (interval minus our
+// two detour halves - large remainder = the stall is the game/GPU, not us).
+// DEFAULT OFF IN CORE (the set_pace_detach pattern): BS1/BS2 never arm it and
+// the disarmed check is one relaxed load on a path that already samples QPC.
+// The Infinite adapter arms it with stereo; `vrpace spike on|off` is the seam.
+std::atomic<bool> g_spikeTrace{false};
+std::atomic<uint32_t> g_spikeCount{0};   // lifetime; TRACE pairs prints the window delta
+std::atomic<uint32_t> g_spikeSeq{0};     // snapshot sequence number in the log
+// The IN-PROGRESS sampler (s43 escalation): the pair-close snapshot proved the
+// stall lives OUTSIDE our phases (unattributed 27-340 ms of every wander
+// spike), so the next question is WHICH ENGINE FUNCTION - answerable only by
+// catching the stalled thread mid-stall. A 4 ms poller watches the age of the
+// last pair close; once it exceeds the sample threshold (2.5x period) with no
+// new close, it stack-captures the draw thread (and the rest, via the s34
+// watchdog machinery) ONCE per episode, rate-limited. RVAs go to
+// pacetrace.log; tools/disasm-rva.py turns them into engine names.
+std::atomic<uint32_t> g_spikeStacks{0};        // captures taken (telemetry + cap)
+constexpr uint32_t kSpikeStackMax = 40;        // per-session log bound
+HANDLE g_spikeSamplerThread = nullptr;
 
 // M8 release blocker (a): the headset-disconnect stall guard. When the
 // headset idles, the runtime drops the session out of FOCUSED and xrWaitFrame
@@ -343,6 +484,26 @@ bool g_paceOutstanding = false; // present thread only
 XrFrameState g_paceFrameState{XR_TYPE_FRAME_STATE}; // handed over via g_paceDone
 std::atomic<int> g_paceResult{0};
 std::atomic<uint32_t> g_paceTimeouts{0}, g_paceHandoffs{0};
+// Session 54: the pace-thread request now has a KIND, written by the present
+// thread before SetEvent(g_paceReq) and echoed back in g_paceResKind with the
+// result. Wait = the classic single xrWaitFrame. FeedCycle = a whole
+// wait+begin+end cycle submitting the feed snapshot (see THE PACE FEED below).
+// FeedFinish = begin+end from the ALREADY-banked wait result - needed because
+// a wait that completed just before an episode began must still be matched by
+// a begin (per spec the next xrWaitFrame blocks until the previous frame is
+// begun), and the present thread is detached and must not do it inline.
+constexpr int kPaceReqWait = 0;
+constexpr int kPaceReqFeedCycle = 1;
+constexpr int kPaceReqFeedFinish = 2;
+// s54b: close an already-begun frame (the pair-hold spanning a demote) with an
+// empty xrEndFrame ON THE PACE THREAD. The 2026-08-11 doff freeze taught the
+// lesson: at the demote edge the present thread must make NO blocking XR call
+// at all - the inline idle-close was the one such call left on the detach
+// path, and a doff-teardown VDXR can sit inside xrEndFrame indefinitely.
+constexpr int kPaceReqCloseOpen = 3;
+std::atomic<int> g_paceReqKind{kPaceReqWait};
+std::atomic<int> g_paceResKind{kPaceReqWait};
+std::atomic<int64_t> g_feedCloseTimeNs{0}; // displayTime for a CloseOpen request
 // Teardown deferral: destroying a session while the pace thread is parked inside
 // xrWaitFrame on it is a use-after-free inside the runtime. If a wait will not
 // come back, we keep the session alive (which is exactly today's behaviour) and
@@ -441,6 +602,72 @@ uint64_t g_lastKeepaliveMs = 0; // present thread only
 bool g_detachedNow = false;     // present thread only
 std::atomic<uint32_t> g_detachSkips{0}, g_detachKeepalives{0}, g_detachEpisodes{0};
 
+// ---- Session 54: THE PACE FEED - keepalives that CARRY LAYERS ---------------
+// The raffle-wedge root cause, measured from the s53 logs (ENGINE_NOTES s54):
+// when VDXR demotes to VISIBLE it holds shouldRender=0, so the inline frame
+// loop submits zero-layer frames; VDXR then (a) refuses to re-promote an app
+// that submits no layers (the BS2 session-36 finding, re-measured: parked
+// VISIBLE for minutes at 72 empty frames/s) and (b) throttles the empty loop's
+// xrEndFrame to ~87 ms per call, pacing the game thread to ~10 presents/s -
+// the announcer-stops half of the wedge.
+//
+// The feed fixes both halves at once: while the session is not FOCUSED (after
+// having held it), the present thread DETACHES (the existing session-34 lever,
+// implied by feed) so the game free-runs, and the pace thread runs the frame
+// cycle itself, re-submitting the last healthy layer set with a fresh
+// predictedDisplayTime. No re-acquire and no D3D11 work is needed: the
+// compositor composites a swapchain's most-recently-RELEASED image, so a
+// cached layer struct is a complete keepalive. Stale poses are fine - the
+// compositor reprojects, and a frozen-but-present app is exactly what VD
+// re-promotes.
+//
+// DEFAULT OFF IN CORE, ON PER GAME (the set_pace_detach pattern): BS1/BS2
+// never arm it and take no new branch - even the snapshot banking is gated on
+// the flag. The Infinite adapter arms it; `vrpace feed on|off` is the live A/B.
+std::atomic<bool> g_paceFeed{false};
+std::atomic<uint32_t> g_feedCycles{0};  // frame cycles run by the pace thread
+std::atomic<uint32_t> g_feedLayered{0}; // of those, cycles that carried a layer
+uint64_t g_feedErrorHoldMs = 0;         // present thread only: backoff after a failed cycle
+std::mutex g_feedSnapMutex;
+struct FeedSnap {
+    bool valid = false;
+    bool isProj = false;
+    XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    XrCompositionLayerProjectionView views[2] = {
+        {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+        {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+    XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+};
+FeedSnap g_feedSnap; // guarded by g_feedSnapMutex; proj.views is fixed up at use
+
+// ---- Session 42: OPT-IN PAIR-RATE SYNC to the display refresh ---------------
+// The Infinite judder investigation. The measured facts (sim, refresh 72,
+// TRACE pairs): when the runtime's xrWaitFrame strictly gates - the sim's free
+// mode does - the wait handoff locks pairs to the refresh (72/s, waitGate
+// ~615 ms/s) and this lever adds nothing. But nothing REQUIRES a runtime to
+// gate: one that pipelines (returns waits early while frames are in flight)
+// lets the pair rate free-run at the game's own present speed - 77-80 pairs/s
+// against a 72 Hz display is a ~5 Hz interference beat, the first suspect for
+// judder-with-good-frames. This lever puts the gate on OUR side of the API:
+// before OPENING a pair (and only then - delaying the closing RIGHT present
+// would stretch the intra-pair gap that pair pacing exists to keep at 1-4 ms),
+// the present thread waits until the next tick of a monotonic
+// one-period-per-pair schedule. Period source: the runtime's own
+// predictedDisplayPeriod, else a commanded Hz (`vrpace sync <hz>`).
+//
+// DEFAULT OFF IN CORE, ON PER GAME (the set_pace_detach pattern): BS1/BS2
+// never call set_pace_sync and never take a single new branch with the flag
+// false. The Infinite adapter arms it with stereo; `vrpace sync on|off` and
+// the overlay checkbox are the live A/B a headset session can drive.
+std::atomic<bool> g_paceSync{false};
+std::atomic<uint32_t> g_paceSyncHz{0}; // 0 = use the runtime's period
+int64_t g_paceSyncNextQpc = 0;         // present thread only; 0 = resync
+std::atomic<uint32_t> g_paceSyncDelays{0};   // pairs actually delayed
+std::atomic<uint64_t> g_paceSyncDelayUs{0};  // total delay imposed
+std::atomic<uint32_t> g_paceSyncResyncs{0};  // schedule re-anchors (late arrivals)
+// pace_sync_gate() itself is defined below phase_record - it needs the QPC
+// plumbing that section owns.
+
 // ---- Session 34: present-path PHASE TIMING ---------------------------------
 // Session 33 concluded that the frame HANDOFF paces the game thread. Its own
 // telemetry refuses that: `lastWait 0 ms` says xrWaitFrame returned instantly,
@@ -496,6 +723,50 @@ void phase_record(int ph, int64_t t0) {
     g_phaseLastUs[ph].store(us, std::memory_order_relaxed);
     if (us > g_phaseMaxUs[ph].load(std::memory_order_relaxed))
         g_phaseMaxUs[ph].store(us, std::memory_order_relaxed);
+}
+
+// Session 42 pair-rate sync (state + rationale at the g_paceSync block above).
+// Delay the opening of the next pair until the schedule's next tick. Coarse
+// Sleep down to the last ~2 ms, then yield-spin on QPC - a raw Sleep quantum
+// would add its own +-1.5 ms of jitter, which is the quantity under repair.
+void pace_sync_gate() {
+    if (!g_paceSync.load(std::memory_order_relaxed) ||
+        !g_srPairPacing.load(std::memory_order_relaxed))
+        return;
+    int64_t periodNs = 0;
+    uint32_t hz = g_paceSyncHz.load(std::memory_order_relaxed);
+    if (hz > 0)
+        periodNs = 1000000000LL / hz;
+    else
+        periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+    if (periodNs <= 0 || g_qpcFreq == 0) return; // nothing to sync to (yet)
+    const int64_t periodQpc = static_cast<int64_t>(
+        static_cast<double>(periodNs) * static_cast<double>(g_qpcFreq) / 1.0e9);
+    if (periodQpc <= 0) return;
+    int64_t now = phase_now();
+    // (Re)anchor: first pair, or the game fell more than two periods behind
+    // (load screen, alt-tab) - chasing a stale schedule would burst-open pairs.
+    if (g_paceSyncNextQpc == 0 || now - g_paceSyncNextQpc > 2 * periodQpc) {
+        if (g_paceSyncNextQpc != 0)
+            g_paceSyncResyncs.fetch_add(1, std::memory_order_relaxed);
+        g_paceSyncNextQpc = now;
+    }
+    if (now < g_paceSyncNextQpc) {
+        g_paceSyncDelays.fetch_add(1, std::memory_order_relaxed);
+        g_paceSyncDelayUs.fetch_add(
+            static_cast<uint64_t>((g_paceSyncNextQpc - now) * 1000000 / g_qpcFreq),
+            std::memory_order_relaxed);
+        for (;;) {
+            int64_t rem = g_paceSyncNextQpc - phase_now();
+            if (rem <= 0) break;
+            int64_t remMs = rem * 1000 / g_qpcFreq;
+            if (remMs > 2)
+                Sleep(static_cast<DWORD>(remMs - 1));
+            else
+                Sleep(0); // yield-spin the tail
+        }
+    }
+    g_paceSyncNextQpc += periodQpc;
 }
 
 // ---- WHAT IS THE PRESENT THREAD INSIDE, RIGHT NOW? -------------------------
@@ -645,17 +916,88 @@ const char* state_str(XrSessionState s) {
 // The pace thread body: park, wait a frame, publish, signal. The ONLY place
 // xrWaitFrame is called once g_paceOffThread is on. It may block forever without
 // consequence - nothing else runs on this thread.
+
+// Session 54: one feed frame - begin, then end carrying the snapshot layer.
+// Pace thread only, and only while the present thread is detached (so no other
+// thread is inside the frame loop). The snapshot is copied out under its lock
+// and submitted outside it: xrEndFrame may block ~87 ms under VD's
+// unfocused-app throttle and must never hold the lock across that.
+XrResult feed_submit_cycle(XrSession s, const XrFrameState& fs) {
+    XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
+    XrResult r = xrBeginFrame(s, &fbi);
+    if (XR_FAILED(r)) return r;
+
+    FeedSnap snap;
+    {
+        std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+        snap = g_feedSnap;
+    }
+    XrCompositionLayerProjection proj{};
+    XrCompositionLayerQuad quad{};
+    const XrCompositionLayerBaseHeader* layer = nullptr;
+    if (snap.valid) {
+        if (snap.isProj) {
+            proj = snap.proj;
+            proj.views = snap.views; // the banked copy, never the dead stack pointer
+            layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
+        } else {
+            quad = snap.quad;
+            layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+        }
+    }
+
+    XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
+    fei.displayTime = fs.predictedDisplayTime;
+    fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    fei.layerCount = layer ? 1 : 0;
+    fei.layers = layer ? &layer : nullptr;
+    r = xrEndFrame(s, &fei);
+    if (XR_SUCCEEDED(r)) {
+        if (g_feedCycles.fetch_add(1, std::memory_order_relaxed) == 0)
+            BVR_LOG("xr: pace feed live - re-submitting the last %s layer while the "
+                    "session is not FOCUSED (the game thread is detached and free)",
+                    layer ? (snap.isProj ? "projection" : "screen-quad") : "EMPTY (no snapshot yet)");
+        if (layer) {
+            g_feedLayered.fetch_add(1, std::memory_order_relaxed);
+            // Feed frames count as submitted so the TRACE submitted/s column -
+            // the instrument that diagnosed the wedge - shows them. Never
+            // concurrent with the inline increment: feed runs only detached.
+            ++g_framesSubmitted;
+        }
+    }
+    return r;
+}
+
 DWORD WINAPI pace_thread_proc(void*) {
     while (g_paceRun.load(std::memory_order_relaxed)) {
         if (WaitForSingleObject(g_paceReq, INFINITE) != WAIT_OBJECT_0) break;
         if (!g_paceRun.load(std::memory_order_relaxed)) break;
+        const int kind = g_paceReqKind.load(std::memory_order_relaxed);
         XrSession s = g_session; // a request is only posted with a live session
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         XrResult r = XR_ERROR_SESSION_LOST;
         uint64_t t0 = GetTickCount64();
         if (s != XR_NULL_HANDLE) {
-            XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
-            r = xrWaitFrame(s, &fwi, &fs);
+            if (kind == kPaceReqCloseOpen) {
+                // s54b: the frame is already BEGUN on the present thread (a
+                // pair-hold spanned the demote); it only owes its end, and
+                // that end must not be able to block the game.
+                XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+                idle.displayTime = g_feedCloseTimeNs.load(std::memory_order_relaxed);
+                idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+                r = xrEndFrame(s, &idle);
+            } else if (kind == kPaceReqFeedFinish) {
+                // The wait already completed (banked in g_paceFrameState by the
+                // previous request); this request only owes its begin+end.
+                fs = g_paceFrameState;
+                r = XR_SUCCESS;
+            } else {
+                XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
+                r = xrWaitFrame(s, &fwi, &fs);
+            }
+            if ((kind == kPaceReqFeedCycle || kind == kPaceReqFeedFinish) &&
+                XR_SUCCEEDED(r))
+                r = feed_submit_cycle(s, fs);
         }
         uint32_t ms = static_cast<uint32_t>(GetTickCount64() - t0);
         g_lastWaitMs.store(ms, std::memory_order_relaxed);
@@ -663,12 +1005,16 @@ DWORD WINAPI pace_thread_proc(void*) {
             static uint64_t lastStallLogMs = 0;
             if (t0 - lastStallLogMs > 5000) {
                 lastStallLogMs = t0;
-                BVR_LOG("xr: xrWaitFrame blocked %u ms on the pace thread (state "
+                BVR_LOG("xr: %s blocked %u ms on the pace thread (state "
                         "%s) - the present thread was NOT held by it",
+                        kind == kPaceReqWait ? "xrWaitFrame" : "a feed cycle",
                         ms, state_str(g_state));
             }
         }
-        g_paceFrameState = fs; // handed over by the SetEvent below
+        // A CloseOpen result carries no frame state - never clobber a banked
+        // wait with zeros (FeedFinish reads it).
+        if (kind != kPaceReqCloseOpen) g_paceFrameState = fs;
+        g_paceResKind.store(kind, std::memory_order_relaxed);
         g_paceResult.store(static_cast<int>(r), std::memory_order_relaxed);
         SetEvent(g_paceDone);
     }
@@ -778,6 +1124,43 @@ void trace_write(const char* line) {
     fprintf(g_traceFile, "[%02u:%02u:%02u.%03u] %s\n", st.wHour, st.wMinute, st.wSecond,
             st.wMilliseconds, line);
     fflush(g_traceFile); // the process may be killed at any moment
+}
+
+// Session 43: one spike, one line, at the pair close that measured it (present
+// thread - trace_write's FILE* is CRT-locked per call, so the 1 Hz thread and
+// this writer interleave lines, never bytes). Prints the per-phase maxima
+// accumulated since the previous spike, then resets them - consecutive spikes
+// in a burst therefore each carry their OWN attribution window. The
+// unattributed remainder is interval minus both detour-half maxima: when it
+// carries nearly the whole interval, the stall lives outside this file
+// (game sim/draw/GPU/driver), which is exactly the discriminator the hunt
+// needs first.
+void spike_capture(uint32_t intervalUs, int64_t periodNs) {
+    uint32_t seq = g_spikeSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint32_t lastUs[kPhCount], maxUs[kPhCount];
+    for (int i = 0; i < kPhCount; ++i) {
+        lastUs[i] = g_phaseLastUs[i].load(std::memory_order_relaxed);
+        maxUs[i] = g_phaseMaxUs[i].exchange(0, std::memory_order_relaxed);
+    }
+    uint32_t oursUs = maxUs[kPhPresentBegin] + maxUs[kPhPresentEnd];
+    uint32_t unattrUs = intervalUs > oursUs ? intervalUs - oursUs : 0;
+    const char* pstage = g_presentStage.load(std::memory_order_relaxed);
+    const char* dstage = g_drawStage.load(std::memory_order_relaxed);
+    char buf[640];
+    int n = sprintf_s(buf,
+                      "TRACE spike #%u interval %.1f ms (%.1fx period) | unattributed "
+                      "%.1f ms (ours max %.1f) | lastWait %u ms | stage %s draw %s | "
+                      "syncDelays %u | max-since-prev/last us:",
+                      seq, intervalUs / 1000.0,
+                      periodNs > 0 ? intervalUs * 1000.0 / periodNs : 0.0,
+                      unattrUs / 1000.0, oursUs / 1000.0,
+                      g_lastWaitMs.load(std::memory_order_relaxed),
+                      pstage ? pstage : "-", dstage ? dstage : "-",
+                      g_paceSyncDelays.load(std::memory_order_relaxed));
+    for (int i = 0; i < kPhCount && n > 0 && n < static_cast<int>(sizeof(buf)) - 48; ++i)
+        n += sprintf_s(buf + n, sizeof(buf) - n, " %s=%u/%u", kPhaseNames[i], maxUs[i],
+                       lastUs[i]);
+    trace_write(buf);
 }
 
 // ---- Session 34: THE STALL WATCHDOG ----------------------------------------
@@ -1013,11 +1396,60 @@ void watchdog_capture(uint32_t tid, const char* what, int64_t stuckMs) {
     watchdog_all_threads();
 }
 
+// Session 43: the spike-in-progress sampler (rationale at g_spikeStacks).
+// 4 ms poll while armed, 50 ms idle poll while not. One capture per episode:
+// an episode is "the pair that has not closed yet", identified by the QPC of
+// the PREVIOUS close - once a new close lands, the episode key changes and the
+// sampler re-arms. The 900 ms ceiling matches the pair-stat exclusion: a load
+// screen or alt-tab is not judder, and suspending threads through one helps
+// nobody. 2 s between captures bounds burst cost; kSpikeStackMax bounds the
+// session log.
+DWORD WINAPI spike_sampler_proc(void*) {
+    int64_t sampledEpisode = 0;
+    uint64_t lastCaptureMs = 0;
+    while (g_traceRun.load(std::memory_order_relaxed)) {
+        if (!g_spikeTrace.load(std::memory_order_relaxed) ||
+            g_spikeStacks.load(std::memory_order_relaxed) >= kSpikeStackMax) {
+            Sleep(50);
+            continue;
+        }
+        Sleep(4);
+        int64_t lastClose = g_pairLastCloseQpc.load(std::memory_order_relaxed);
+        if (lastClose == 0 || lastClose == sampledEpisode || g_qpcFreq == 0) continue;
+        int64_t ageUs = (phase_now() - lastClose) * 1000000 / g_qpcFreq;
+        int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+        int64_t thresholdUs = periodNs > 0 ? periodNs / 400 : 31250; // 2.5x period
+        if (thresholdUs < 20000) thresholdUs = 20000;
+        if (ageUs < thresholdUs || ageUs > 900000) continue;
+        uint64_t nowMs = GetTickCount64();
+        if (nowMs - lastCaptureMs < 2000) continue;
+        sampledEpisode = lastClose;
+        lastCaptureMs = nowMs;
+        g_spikeStacks.fetch_add(1, std::memory_order_relaxed);
+        char hdr[160];
+        sprintf_s(hdr, "SPIKE-SAMPLE #%u mid-stall age %lld ms (draw tid %u, then all threads):",
+                  g_spikeStacks.load(std::memory_order_relaxed),
+                  static_cast<long long>(ageUs / 1000),
+                  g_lastDrawTidSticky.load(std::memory_order_relaxed));
+        trace_write(hdr);
+        watchdog_capture(g_lastDrawTidSticky.load(std::memory_order_relaxed),
+                         "spike-draw", ageUs / 1000);
+    }
+    return 0;
+}
+
 DWORD WINAPI trace_thread_proc(void*) {
     uint32_t lastPresents = 0;
     uint32_t lastSubmitted = 0;
     uint32_t lastKeepalives = 0;
     uint32_t lastSkips = 0;
+    // Session 42 pair-cadence baselines (deltas per 1 s tick, like presents).
+    uint32_t lastPairs = 0;
+    uint32_t lastPairCount = 0;
+    uint64_t lastPairSumUs = 0;
+    uint64_t lastPairSumSqUs = 0;
+    uint64_t lastPairWaitUs = 0;
+    uint32_t lastSpikes = 0; // session 43: spike count baseline for the window delta
     while (g_traceRun.load(std::memory_order_relaxed)) {
         Sleep(1000);
         if (!g_traceRun.load(std::memory_order_relaxed)) break;
@@ -1153,6 +1585,56 @@ DWORD WINAPI trace_thread_proc(void*) {
                   draw);
         trace_write(line);
 
+        // Session 42: pair CADENCE, one line per tick while pairs flow. This is
+        // the judder instrument - pairs/s alone cannot distinguish "72 evenly
+        // spaced" from "77 free-running with a 5 Hz beat"; the interval spread
+        // and the wait-gate share can. min/max are window-reset by exchange
+        // (the race with a concurrent sample loses at most that sample).
+        {
+            uint32_t pairs = g_srPairs.load(std::memory_order_relaxed);
+            uint32_t cnt = g_pairIntCount.load(std::memory_order_relaxed);
+            uint64_t sum = g_pairIntSumUs.load(std::memory_order_relaxed);
+            uint64_t sumSq = g_pairIntSumSqUs.load(std::memory_order_relaxed);
+            uint64_t waitUs = g_pairWaitSumUs.load(std::memory_order_relaxed);
+            uint32_t spikes = g_spikeCount.load(std::memory_order_relaxed);
+            uint32_t dPairs = pairs - lastPairs;
+            uint32_t dCnt = cnt - lastPairCount;
+            uint64_t dSum = sum - lastPairSumUs;
+            uint64_t dSumSq = sumSq - lastPairSumSqUs;
+            uint64_t dWaitUs = waitUs - lastPairWaitUs;
+            uint32_t dSpikes = spikes - lastSpikes;
+            lastPairs = pairs;
+            lastPairCount = cnt;
+            lastPairSumUs = sum;
+            lastPairSumSqUs = sumSq;
+            lastPairWaitUs = waitUs;
+            lastSpikes = spikes;
+            if (dPairs > 0) {
+                uint32_t minUs = g_pairIntMinUs.exchange(0xFFFFFFFFu, std::memory_order_relaxed);
+                uint32_t maxUs = g_pairIntMaxUs.exchange(0, std::memory_order_relaxed);
+                if (minUs == 0xFFFFFFFFu) minUs = 0;
+                uint32_t meanUs = 0, sdUs = 0;
+                if (dCnt > 0) {
+                    meanUs = static_cast<uint32_t>(dSum / dCnt);
+                    uint64_t meanSq = dSum / dCnt * (dSum / dCnt);
+                    uint64_t var = dSumSq / dCnt > meanSq ? dSumSq / dCnt - meanSq : 0;
+                    sdUs = static_cast<uint32_t>(sqrt(static_cast<double>(var)));
+                }
+                int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+                char pl[320];
+                sprintf_s(pl,
+                          "TRACE pairs %u/s | interval us mean=%u sd=%u min=%u max=%u | "
+                          "spikes=%u | waitGate %llu ms/s timeouts=%u | period %.2f ms "
+                          "(%.1f Hz)",
+                          dPairs, meanUs, sdUs, minUs, maxUs, dSpikes,
+                          static_cast<unsigned long long>(dWaitUs / 1000),
+                          g_paceTimeouts.load(std::memory_order_relaxed),
+                          periodNs > 0 ? periodNs / 1.0e6 : 0.0,
+                          periodNs > 0 ? 1.0e9 / periodNs : 0.0);
+                trace_write(pl);
+            }
+        }
+
     }
     return 0;
 }
@@ -1164,6 +1646,11 @@ void trace_thread_start() {
     if (g_traceThread)
         BVR_LOG("xr: pace trace started - 1 Hz from its OWN thread, so it keeps "
                 "reporting while the present thread is blocked");
+    // Session 43: the spike-in-progress sampler rides the same run flag. While
+    // the spike trace is disarmed (BS1/BS2 always; Infinite without stereo) it
+    // is a 20 Hz relaxed-load poll that takes no action.
+    if (!g_spikeSamplerThread)
+        g_spikeSamplerThread = CreateThread(nullptr, 0, &spike_sampler_proc, nullptr, 0, nullptr);
 }
 
 // The DETACHED-PACING decision for one present, factored out so the flat
@@ -1174,7 +1661,11 @@ void trace_thread_start() {
 // session without a headset, so the real path is unreachable on a desk, and
 // three builds went to the user unverified because of it.
 bool detach_skip_decision(uint64_t now, bool focused) {
-    if (!g_paceDetach.load(std::memory_order_relaxed)) {
+    // Session 54: the pace feed IMPLIES detach - feeding only makes sense with
+    // the present thread out of the frame loop. `vrpace detach` stays the
+    // independent legacy lever (BS2's session-34/36 A/B).
+    if (!g_paceDetach.load(std::memory_order_relaxed) &&
+        !g_paceFeed.load(std::memory_order_relaxed)) {
         g_detachedNow = false; // never leave the flag set behind a disabled lever
         return false;
     }
@@ -1333,6 +1824,14 @@ void destroy_hud_swapchain() {
 }
 
 void destroy_swapchains() {
+    // Session 54: the feed snapshot references these swapchains - drop it
+    // BEFORE they die so a feed cycle can never submit a dead handle. (Feed
+    // cycles cannot be in flight here: teardown drains the outstanding pace
+    // request first, and the resize rebuild runs only on the attached path.)
+    {
+        std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+        g_feedSnap.valid = false;
+    }
     for (int i = 0; i < 2; ++i) {
         if (g_swapchains[i] != XR_NULL_HANDLE) {
             xrDestroySwapchain(g_swapchains[i]);
@@ -1470,6 +1969,11 @@ void teardown_session(const char* why) {
     g_everFocused = false;
     g_unfocusedSinceMs = 0;
     g_framesSubmitted = 0;
+    g_feedErrorHoldMs = 0; // a fresh session gets a fresh feed
+    // The req/res kinds reset with the request protocol so a stale FEED result
+    // can never be misread by the next session's first inline consume.
+    g_paceReqKind.store(kPaceReqWait, std::memory_order_relaxed);
+    g_paceResKind.store(kPaceReqWait, std::memory_order_relaxed);
     g_nextRetryMs = GetTickCount64() + 5000; // cooldown before the next attempt
 }
 
@@ -1632,6 +2136,33 @@ void try_bring_up(IDXGISwapChain* swapchain) {
     xrGetSystemProperties(g_instance, g_system, &sp);
     BVR_LOG("xr: system '%s' (max layers %u)", sp.systemName,
             sp.graphicsProperties.maxLayerCount);
+
+    // Session 41 (BSI I6): ask the runtime what per-eye render size it
+    // recommends. Purely informational - a failure logs once and changes no
+    // control flow, and nothing downstream conditions on the result (the eye
+    // swapchains stay backbuffer-sized). Adapters read it via
+    // recommended_eye_size() to annotate their resolution pickers.
+    {
+        XrViewConfigurationView vcv[2];
+        vcv[0] = {XR_TYPE_VIEW_CONFIGURATION_VIEW};
+        vcv[1] = {XR_TYPE_VIEW_CONFIGURATION_VIEW};
+        uint32_t nViews = 0;
+        const XrResult vr = xrEnumerateViewConfigurationViews(
+            g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &nViews,
+            vcv);
+        if (XR_SUCCEEDED(vr) && nViews >= 1) {
+            g_recommendedEyeW.store(vcv[0].recommendedImageRectWidth,
+                                    std::memory_order_relaxed);
+            g_recommendedEyeH.store(vcv[0].recommendedImageRectHeight,
+                                    std::memory_order_relaxed);
+            BVR_LOG("xr: view config recommends %ux%u per eye (max %ux%u, %u views)",
+                    vcv[0].recommendedImageRectWidth, vcv[0].recommendedImageRectHeight,
+                    vcv[0].maxImageRectWidth, vcv[0].maxImageRectHeight, nViews);
+        } else {
+            BVR_LOG("xr: xrEnumerateViewConfigurationViews failed: %s (informational only)",
+                    res_str(vr));
+        }
+    }
 
     // Spec requires querying graphics requirements before xrCreateSession.
     PFN_xrGetD3D11GraphicsRequirementsKHR getReqs = nullptr;
@@ -1910,16 +2441,74 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // pump_events above stays here and is non-blocking, which is what lets the
     // return to FOCUSED be seen at all.
     if (detach_skip_decision(GetTickCount64(), g_state == XR_SESSION_STATE_FOCUSED)) {
-        // No OpenXR call at all this present. A frame must never be left open
-        // across this return.
+        // No BLOCKING OpenXR call on this thread this present. A frame must
+        // never be left open across this return.
+        const bool feedArmed = g_paceFeed.load(std::memory_order_relaxed);
         if (g_frameOpen) {
-            XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
-            idle.displayTime = g_frameState.predictedDisplayTime;
-            idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-            xrEndFrame(g_session, &idle);
-            g_frameOpen = false;
+            if (feedArmed && pace_thread_start()) {
+                // s54b (the doff freeze): the close goes to the PACE thread.
+                // A doff-teardown VDXR can sit inside xrEndFrame indefinitely,
+                // and this thread pumping is what everything else (DXGI
+                // included) deadlocks behind. One request at a time: if one
+                // is outstanding, retry the close next present.
+                if (!g_paceOutstanding) {
+                    g_feedCloseTimeNs.store(g_frameState.predictedDisplayTime,
+                                            std::memory_order_relaxed);
+                    g_paceReqKind.store(kPaceReqCloseOpen, std::memory_order_relaxed);
+                    g_paceOutstanding = true;
+                    SetEvent(g_paceReq);
+                    g_frameOpen = false;
+                }
+            } else {
+                // The legacy detach lever (BS2's session-34 A/B) keeps its
+                // historical inline close - behaviour unchanged without feed.
+                XrFrameEndInfo idle{XR_TYPE_FRAME_END_INFO};
+                idle.displayTime = g_frameState.predictedDisplayTime;
+                idle.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+                xrEndFrame(g_session, &idle);
+                g_frameOpen = false;
+            }
         }
         g_srPairOpen = false;
+        // Session 54: THE FEED. Keep the compositor fed with layer-carrying
+        // frames from the PACE thread so the runtime can re-promote (the
+        // detached-with-nothing-submitted state is exactly the measured park).
+        // Request-driven: at most one cycle in flight, posted per present, so
+        // the single-caller frame-loop discipline is preserved and the feed
+        // cadence is min(present rate, runtime cadence).
+        if (g_paceFeed.load(std::memory_order_relaxed) && g_sessionBegun &&
+            pace_thread_start()) {
+            uint64_t now = GetTickCount64();
+            if (g_paceOutstanding &&
+                WaitForSingleObject(g_paceDone, 0) == WAIT_OBJECT_0) {
+                const int kind = g_paceResKind.load(std::memory_order_relaxed);
+                const XrResult r =
+                    static_cast<XrResult>(g_paceResult.load(std::memory_order_relaxed));
+                g_paceOutstanding = false;
+                if (kind == kPaceReqWait && XR_SUCCEEDED(r)) {
+                    // A wait completed unbegun (posted before the episode).
+                    // Per spec the next xrWaitFrame blocks until this frame is
+                    // begun - hand it to the pace thread to finish as a feed
+                    // frame instead of beginning it inline.
+                    g_paceReqKind.store(kPaceReqFeedFinish, std::memory_order_relaxed);
+                    g_paceOutstanding = true;
+                    SetEvent(g_paceReq);
+                } else if (XR_FAILED(r)) {
+                    // Do not spin on a broken session at present rate; events
+                    // (pumped above) drive teardown/recovery.
+                    g_feedErrorHoldMs = now + 1000;
+                    static std::atomic<bool> loggedFeedFail{false};
+                    if (!loggedFeedFail.exchange(true))
+                        BVR_LOG("xr: feed cycle failed: %s (backing off 1 s between "
+                                "attempts; logged once)", res_str(r));
+                }
+            }
+            if (!g_paceOutstanding && now >= g_feedErrorHoldMs) {
+                g_paceReqKind.store(kPaceReqFeedCycle, std::memory_order_relaxed);
+                g_paceOutstanding = true;
+                SetEvent(g_paceReq);
+            }
+        }
         return;
     }
 
@@ -1990,11 +2579,18 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         BVR_LOG("xr: closed a leaked open frame before waiting (pair aborted?)");
     }
 
+    // Session 42: the opt-in pair-rate sync. This point is reached only by a
+    // pair-OPENING present (the RIGHT present returned at the pair-hold above),
+    // which is the one place a delay respects the intra-pair gap. No-op unless
+    // a game armed it (BS1/BS2 never do).
+    pace_sync_gate();
+
     XrResult r;
     int64_t tPhase = phase_now();
     if (g_paceOffThread.load(std::memory_order_relaxed) && pace_thread_start()) {
         // One request outstanding at a time keeps wait:begin at 1:1.
         if (!g_paceOutstanding) {
+            g_paceReqKind.store(kPaceReqWait, std::memory_order_relaxed);
             g_paceOutstanding = true;
             SetEvent(g_paceReq);
         }
@@ -2007,6 +2603,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             signalled = WaitForSingleObject(g_paceDone, deadline) == WAIT_OBJECT_0;
         }
         phase_record(kPhWait, tPhase);
+        // Session 42: accumulate the block for the cadence trace (timeout path
+        // included - the time was spent either way). phase_record just stored
+        // this span's us; reusing it avoids a second QPC conversion.
+        g_pairWaitSumUs.fetch_add(g_phaseLastUs[kPhWait].load(std::memory_order_relaxed),
+                                  std::memory_order_relaxed);
         if (!signalled) {
             // The runtime has not come back yet. Give up on THIS present only -
             // the request stays outstanding and a later present consumes it. The
@@ -2015,6 +2616,11 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             return;
         }
         g_paceOutstanding = false;
+        // Session 54: the completed request may be a FEED cycle from the
+        // just-ended detached episode. Its frame was fully begun+ended on the
+        // pace thread - there is nothing to consume inline. Take one dropped
+        // present; the next one posts a fresh WAIT and paces normally.
+        if (g_paceResKind.load(std::memory_order_relaxed) != kPaceReqWait) return;
         g_paceHandoffs.fetch_add(1, std::memory_order_relaxed);
         g_frameState = g_paceFrameState;
         r = static_cast<XrResult>(g_paceResult.load(std::memory_order_relaxed));
@@ -2038,8 +2644,14 @@ void on_present_begin(IDXGISwapChain* swapchain) {
             }
         }
         phase_record(kPhWait, tPhase);
+        g_pairWaitSumUs.fetch_add(g_phaseLastUs[kPhWait].load(std::memory_order_relaxed),
+                                  std::memory_order_relaxed);
     }
     g_lastShouldRender.store(g_frameState.shouldRender != XR_FALSE, std::memory_order_relaxed);
+    // Session 42: the runtime's own frame period, previously discarded. 0 stays
+    // 0 on runtimes that do not fill it; consumers must treat that as unknown.
+    g_displayPeriodNs.store(static_cast<int64_t>(g_frameState.predictedDisplayPeriod),
+                            std::memory_order_relaxed);
     if (XR_FAILED(r)) {
         BVR_LOG("xr: xrWaitFrame failed: %s", res_str(r));
         teardown_session("waitframe failed");
@@ -2082,6 +2694,9 @@ void on_present_begin(IDXGISwapChain* swapchain) {
     // layer slides against head motion by one cycle of rotation (the M4-era
     // "head bobbing", glaring once a hand-anchored gun sat next to the
     // zero-latency laser).
+    g_viewsPrev2[0] = g_viewsContent[0]; // s43b: keep one more generation for
+    g_viewsPrev2[1] = g_viewsContent[1]; // the lag-2 attribution candidate
+    g_viewsPrev2Valid = g_viewsContentValid;
     g_viewsContent[0] = g_views[0];
     g_viewsContent[1] = g_views[1];
     g_viewsContentValid = g_viewsValid;
@@ -2098,12 +2713,59 @@ void on_present_begin(IDXGISwapChain* swapchain) {
         XR_SUCCEEDED(xrLocateViews(g_session, &vli, &vs, 2, &viewCount, g_views)) &&
         viewCount == 2 && (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
     phase_record(kPhLocate, tPhase);
+    // s51: the VDXR view logger - a bounded, self-expiring burst (the fov-watch
+    // lesson: nothing unthrottled lives on the present path). Answers whether
+    // the runtime reports ANY per-eye cant/IPD delta.
+    if (g_viewsValid && g_viewLogLeft.load(std::memory_order_relaxed) > 0) {
+        g_viewLogLeft.fetch_sub(1, std::memory_order_relaxed);
+        const XrView& L = g_views[0];
+        const XrView& R = g_views[1];
+        const float dx = R.pose.position.x - L.pose.position.x;
+        const float dy = R.pose.position.y - L.pose.position.y;
+        const float dz = R.pose.position.z - L.pose.position.z;
+        // Inter-eye orientation delta (the cant question): angle of qL^-1*qR.
+        const float dot = L.pose.orientation.x * R.pose.orientation.x +
+                          L.pose.orientation.y * R.pose.orientation.y +
+                          L.pose.orientation.z * R.pose.orientation.z +
+                          L.pose.orientation.w * R.pose.orientation.w;
+        const float cl = fminf(1.0f, fabsf(dot));
+        const float cantDeg = 2.0f * acosf(cl) * 57.29578f;
+        BVR_LOG("xr: viewlog L pos %.4f %.4f %.4f quat %.4f %.4f %.4f %.4f fov "
+                "%.2f/%.2f/%.2f/%.2f",
+                L.pose.position.x, L.pose.position.y, L.pose.position.z,
+                L.pose.orientation.x, L.pose.orientation.y, L.pose.orientation.z,
+                L.pose.orientation.w, L.fov.angleLeft * 57.29578f,
+                L.fov.angleRight * 57.29578f, L.fov.angleUp * 57.29578f,
+                L.fov.angleDown * 57.29578f);
+        BVR_LOG("xr: viewlog R pos %.4f %.4f %.4f quat %.4f %.4f %.4f %.4f fov "
+                "%.2f/%.2f/%.2f/%.2f",
+                R.pose.position.x, R.pose.position.y, R.pose.position.z,
+                R.pose.orientation.x, R.pose.orientation.y, R.pose.orientation.z,
+                R.pose.orientation.w, R.fov.angleLeft * 57.29578f,
+                R.fov.angleRight * 57.29578f, R.fov.angleUp * 57.29578f,
+                R.fov.angleDown * 57.29578f);
+        BVR_LOG("xr: viewlog derived: eyeSep %.4f m (d %.4f %.4f %.4f) | cant %.4f deg "
+                "| fovAsym L %.2f R %.2f deg",
+                sqrtf(dx * dx + dy * dy + dz * dz), dx, dy, dz, cantDeg,
+                (fabsf(L.fov.angleLeft) - fabsf(L.fov.angleRight)) * 57.29578f,
+                (fabsf(R.fov.angleLeft) - fabsf(R.fov.angleRight)) * 57.29578f);
+    }
     if (!g_viewsContentValid && g_viewsValid) {
         // Session start: no previous generation yet - better a one-frame
         // fresh-pose attribution than none.
         g_viewsContent[0] = g_views[0];
         g_viewsContent[1] = g_views[1];
         g_viewsContentValid = true;
+    }
+    // s43b telemetry: inter-generation rotation delta = the pose error ONE
+    // generation of mis-attribution costs at the current head speed.
+    if (g_viewsValid && g_viewsContentValid) {
+        const XrQuaternionf& a = g_views[0].pose.orientation;
+        const XrQuaternionf& b = g_viewsContent[0].pose.orientation;
+        float dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+        if (dot < 0.0f) dot = -dot;
+        if (dot > 1.0f) dot = 1.0f;
+        g_poseGenDeltaDeg.store(2.0f * acosf(dot) * 57.29578f, std::memory_order_relaxed);
     }
 
     // Circumscribed symmetric FOV for the game render, computed once per
@@ -2444,6 +3106,48 @@ uint32_t build_aim_dot_layer(XrCompositionLayerQuad* quad) {
     return build_aim_dot_slot(quad, 0);
 }
 
+// s51: the hand-anchored reference quad (see the state block comment). Same
+// no-second-algebra rule as the aim dot: the position IS the located grip
+// point in g_space, no offset, no ray math - only billboarding and sizing.
+uint32_t build_hand_ref_quad(XrCompositionLayerQuad* quad) {
+    if (!g_handQuadOn.load(std::memory_order_relaxed)) return 0;
+    if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
+    float p[3], hq[4];
+    if (!input_get_hand_pose(g_handQuadHand.load(std::memory_order_relaxed),
+                             /*aimPose=*/false, p, hq))
+        return 0; // untracked hand: no quad rather than a stale one
+    float head[3] = {(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
+                     (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
+                     (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
+    float toHead[3] = {head[0] - p[0], head[1] - p[1], head[2] - p[2]};
+    float len = sqrtf(toHead[0] * toHead[0] + toHead[1] * toHead[1] + toHead[2] * toHead[2]);
+    if (len < 0.02f) return 0; // inside the head
+    toHead[0] /= len; toHead[1] /= len; toHead[2] /= len;
+
+    constexpr float kDegToRad = 3.14159265f / 180.0f;
+    const float sizeRad = g_handQuadSizeDeg.load(std::memory_order_relaxed) * kDegToRad;
+
+    XrCompositionLayerQuad& q = *quad;
+    q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    q.space = g_space;
+    q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    q.subImage.swapchain = g_laserSwapchain;
+    q.subImage.imageRect = {
+        {0, 0}, {static_cast<int32_t>(kLaserTexSize), static_cast<int32_t>(kLaserTexSize)}};
+    q.pose.position = {p[0], p[1], p[2]};
+    q.pose.orientation = quat_facing(toHead);
+    const float side = 2.0f * len * tanf(sizeRad * 0.5f);
+    q.size = {side, side};
+
+    if (!g_loggedFirstHandQuad.exchange(true))
+        BVR_LOG("xr: hand ref quad live (grip %c at xr %.3f %.3f %.3f, %.2f m from the "
+                "head) - compositor-correct by construction",
+                g_handQuadHand.load(std::memory_order_relaxed) ? 'R' : 'L', p[0], p[1],
+                p[2], len);
+    return 1;
+}
+
 // Yaw of an XR-space orientation (forward = -Z, right = +X), for the pose
 // audit. Absolute convention is arbitrary; only deltas are read.
 float xr_quat_yaw_deg(float qx, float qy, float qz, float qw) {
@@ -2525,11 +3229,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
     XrCompositionLayerQuad laserQuads[kMaxLaserDots] = {};
     XrCompositionLayerQuad dotQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerQuad dot2Quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerQuad handQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     // The game frame is layer 0; the aim laser(s) add one quad per dot on top -
-    // BOTH slots share the kMaxLaserDots budget - then up to two aim dots and
-    // the HUD quad (worst case 12 of the 16 runtimes must accept).
-    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 3] = {};
+    // BOTH slots share the kMaxLaserDots budget - then up to two aim dots, the
+    // s51 hand ref quad and the HUD quad (worst case 13 of the 16 runtimes
+    // must accept).
+    const XrCompositionLayerBaseHeader* layers[1 + kMaxLaserDots + 4] = {};
     uint32_t layerCount = 0;
 
     // Claim the fov the game actually rendered with (adapter readback);
@@ -2648,10 +3354,50 @@ void on_present_end(IDXGISwapChain* swapchain) {
     // completing present (mode boundary, stereo toggled mid-pair) falls
     // through to the normal single-present submission and resyncs.
     if (pairSecond) {
-        if (srSign == +1)
+        if (srSign == +1) {
             g_srPairs.fetch_add(1, std::memory_order_relaxed);
-        else
+            // Pair-cadence sample (session 42): stamp the CLOSE of the pair -
+            // the one moment per pair that exists exactly once on exactly one
+            // thread. g_qpcFreq is initialized by the PhaseScope wrapping this
+            // very function, so it is live by the first pair.
+            int64_t nowQpc = phase_now();
+            int64_t prevQpc = g_pairLastCloseQpc.exchange(nowQpc, std::memory_order_relaxed);
+            if (prevQpc != 0 && g_qpcFreq != 0) {
+                uint64_t us64 = static_cast<uint64_t>(nowQpc - prevQpc) * 1000000u /
+                                static_cast<uint64_t>(g_qpcFreq);
+                if (us64 < 1000000u) {
+                    uint32_t us = static_cast<uint32_t>(us64);
+                    g_pairIntCount.fetch_add(1, std::memory_order_relaxed);
+                    g_pairIntSumUs.fetch_add(us, std::memory_order_relaxed);
+                    g_pairIntSumSqUs.fetch_add(static_cast<uint64_t>(us) * us,
+                                               std::memory_order_relaxed);
+                    uint32_t m = g_pairIntMinUs.load(std::memory_order_relaxed);
+                    while (us < m &&
+                           !g_pairIntMinUs.compare_exchange_weak(m, us, std::memory_order_relaxed)) {}
+                    m = g_pairIntMaxUs.load(std::memory_order_relaxed);
+                    while (us > m &&
+                           !g_pairIntMaxUs.compare_exchange_weak(m, us, std::memory_order_relaxed)) {}
+                    // Session 43: spike-triggered evidence capture. Threshold =
+                    // 2x the display period (fallback 25 ms when the runtime
+                    // has not published one - the worst legitimate pair at any
+                    // supported refresh is well under that). The >= 1 s case
+                    // above stays excluded on purpose: load screens and
+                    // alt-tabs are not judder.
+                    if (g_spikeTrace.load(std::memory_order_relaxed)) {
+                        int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+                        uint32_t thresholdUs = periodNs > 0
+                            ? static_cast<uint32_t>(periodNs / 500) // 2x, ns -> us
+                            : 25000u;
+                        if (us > thresholdUs) {
+                            g_spikeCount.fetch_add(1, std::memory_order_relaxed);
+                            spike_capture(us, periodNs);
+                        }
+                    }
+                }
+            }
+        } else {
             g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     bool pairHold = srFrame && srSign < 0 && !pairSecond &&
                     g_srPairPacing.load(std::memory_order_relaxed) &&
@@ -2704,15 +3450,39 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 // Captured content is attributed to the locate generation it
                 // was RENDERED from (g_viewsContent), never the fresh one -
                 // the compositor reprojects from there to display time.
+                // s43b: the generation is selectable (g_poseLag doc at the
+                // state block). Default 1 == the historical g_viewsContent
+                // behavior; only the Infinite adapter ever changes it.
                 if (srFrame) {
-                    g_eyePose[srEye] = g_viewsContent[srEye].pose;
+                    int lag = g_poseLag.load(std::memory_order_relaxed);
+                    // Pick the pose GENERATION as a pair - the s50 rendered
+                    // tag needs both eyes of the same locate to reconstruct
+                    // the parallel render camera.
+                    const XrView* gen;
+                    if (lag == 0 && g_viewsValid)
+                        gen = g_views;
+                    else if (lag == 2 && g_viewsPrev2Valid)
+                        gen = g_viewsPrev2;
+                    else
+                        gen = g_viewsContent;
+                    if (g_eyeTagRendered.load(std::memory_order_relaxed))
+                        g_eyePose[srEye] =
+                            parallel_eye_tag(gen[0].pose, gen[1].pose, srEye,
+                                             g_eyeTagIpdMm.load(std::memory_order_relaxed));
+                    else
+                        g_eyePose[srEye] = gen[srEye].pose;
                     g_eyeValid[srEye] = true;
                     if (!g_loggedFirstSr.exchange(true))
                         BVR_LOG("xr: first SequentialReentry eye frame captured "
                                 "(eye %c)", srEye == 0 ? 'L' : 'R');
                 } else if (aerActive && target == g_currentEye &&
                            imageSign == currentEyeSign) {
-                    g_eyePose[g_currentEye] = g_viewsContent[g_currentEye].pose;
+                    if (g_eyeTagRendered.load(std::memory_order_relaxed))
+                        g_eyePose[g_currentEye] = parallel_eye_tag(
+                            g_viewsContent[0].pose, g_viewsContent[1].pose, g_currentEye,
+                            g_eyeTagIpdMm.load(std::memory_order_relaxed));
+                    else
+                        g_eyePose[g_currentEye] = g_viewsContent[g_currentEye].pose;
                     g_eyeValid[g_currentEye] = true;
                     eyeCaptured = true;
                 }
@@ -2776,6 +3546,35 @@ void on_present_end(IDXGISwapChain* swapchain) {
                             projViews[eye].subImage = sub;
                         }
                         projViews[eye].fov = {-halfH, halfH, halfV, -halfV};
+                    }
+                    // s51: bank the edge-telemetry snapshot (armed only; the
+                    // game-thread sampler copies it out - see the header).
+                    if (g_edgeSnapOn.load(std::memory_order_relaxed)) {
+                        std::lock_guard<std::mutex> lk(g_edgeSnapMutex);
+                        g_edgeSnap.valid = g_viewsValid;
+                        g_edgeSnap.stampMs = GetTickCount64();
+                        for (int e = 0; e < 2; ++e) {
+                            g_edgeSnap.locPos[e][0] = g_views[e].pose.position.x;
+                            g_edgeSnap.locPos[e][1] = g_views[e].pose.position.y;
+                            g_edgeSnap.locPos[e][2] = g_views[e].pose.position.z;
+                            g_edgeSnap.locQuat[e][0] = g_views[e].pose.orientation.x;
+                            g_edgeSnap.locQuat[e][1] = g_views[e].pose.orientation.y;
+                            g_edgeSnap.locQuat[e][2] = g_views[e].pose.orientation.z;
+                            g_edgeSnap.locQuat[e][3] = g_views[e].pose.orientation.w;
+                            g_edgeSnap.locFov[e][0] = g_views[e].fov.angleLeft;
+                            g_edgeSnap.locFov[e][1] = g_views[e].fov.angleRight;
+                            g_edgeSnap.locFov[e][2] = g_views[e].fov.angleUp;
+                            g_edgeSnap.locFov[e][3] = g_views[e].fov.angleDown;
+                            g_edgeSnap.tagPos[e][0] = projViews[e].pose.position.x;
+                            g_edgeSnap.tagPos[e][1] = projViews[e].pose.position.y;
+                            g_edgeSnap.tagPos[e][2] = projViews[e].pose.position.z;
+                            g_edgeSnap.tagQuat[e][0] = projViews[e].pose.orientation.x;
+                            g_edgeSnap.tagQuat[e][1] = projViews[e].pose.orientation.y;
+                            g_edgeSnap.tagQuat[e][2] = projViews[e].pose.orientation.z;
+                            g_edgeSnap.tagQuat[e][3] = projViews[e].pose.orientation.w;
+                        }
+                        g_edgeSnap.claimTanH = tanf(halfH);
+                        g_edgeSnap.claimTanV = tanf(halfV);
                     }
                     // Pose-tag audit (session 21, armed by `fovaudit pose on`):
                     // tagged-vs-consumed yaw, rate-limited. In-headset only.
@@ -2859,13 +3658,15 @@ void on_present_end(IDXGISwapChain* swapchain) {
                                           kMaxLaserDots - static_cast<int>(dots));
         uint32_t aimDot = build_aim_dot_slot(&dotQuad, 0);
         uint32_t aimDot2 = build_aim_dot_slot(&dot2Quad, 1);
+        uint32_t handRef = build_hand_ref_quad(&handQuad);
         // ONE acquire feeds every quad that referenced this swapchain, lasers
         // and aim dots alike - two acquires in a frame would be invalid.
-        if ((dots || dots2 || aimDot || aimDot2) && !publish_laser_image()) {
+        if ((dots || dots2 || aimDot || aimDot2 || handRef) && !publish_laser_image()) {
             dots = 0;
             dots2 = 0;
             aimDot = 0;
             aimDot2 = 0;
+            handRef = 0;
         }
         for (uint32_t i = 0; i < dots + dots2; ++i)
             layers[layerCount++] =
@@ -2876,6 +3677,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
         if (aimDot2)
             layers[layerCount++] =
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dot2Quad);
+        if (handRef)
+            layers[layerCount++] =
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&handQuad);
         g_laserLayersSubmitted.store(dots + dots2, std::memory_order_relaxed);
         g_dotLayersSubmitted.store(aimDot + aimDot2, std::memory_order_relaxed);
     } else {
@@ -2884,10 +3688,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
     }
 
     // HUD floating quad (session 19): head-locked, fed from the gameswf
-    // capture. Submitted only in projection mode with fresh HUD content and
+    // capture - or, s52, from a game-registered provider (Infinite's GFx
+    // lane). Submitted only in projection mode with fresh HUD content and
     // a live view space.
     if (layerCount && projectionMode && g_viewSpace != XR_NULL_HANDLE) {
-        ID3D11Texture2D* hudTex = bvr::hud::texture(g_context); // alpha-repaired
+        HudTextureProviderFn prov = g_hudTexProvider.load(std::memory_order_relaxed);
+        ID3D11Texture2D* hudTex =
+            prov ? prov(g_context) : bvr::hud::texture(g_context); // alpha-repaired
         if (hudTex) {
             D3D11_TEXTURE2D_DESC hd{};
             hudTex->GetDesc(&hd);
@@ -2951,6 +3758,24 @@ void on_present_end(IDXGISwapChain* swapchain) {
     }
     if (layerCount && ++g_framesSubmitted == 1)
         BVR_LOG("xr: first frame submitted to the headset (%ux%u quad)", g_swapW, g_swapH);
+
+    // Session 54: bank the feed snapshot - the layer set the pace thread will
+    // re-submit while the session is parked not-FOCUSED. Projection (g_lastLayer
+    // 2) or the screen quad (1); the HUD/laser quads are skipped, a keepalive
+    // does not need them. Gated on the feed lever so BS1/BS2 do no new work.
+    if (g_paceFeed.load(std::memory_order_relaxed) && layerCount &&
+        (g_lastLayer == 2 || g_lastLayer == 1)) {
+        std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+        g_feedSnap.valid = true;
+        g_feedSnap.isProj = (g_lastLayer == 2);
+        if (g_feedSnap.isProj) {
+            g_feedSnap.proj = proj;
+            g_feedSnap.views[0] = projViews[0];
+            g_feedSnap.views[1] = projViews[1];
+        } else {
+            g_feedSnap.quad = quad;
+        }
+    }
 
     // AER sign publish, AFTER submit: eye flip only once an offset frame was
     // actually captured, so CalcView for the next game frame simulates exactly
@@ -3072,6 +3897,19 @@ void draw_debug_ui() {
             "single ~100 ms hitch; between them the game runs free. Too rare and "
             "the headset may be slower to hand focus back.");
 
+        // Session 54: the raffle-wedge root fix.
+        bool feed = g_paceFeed.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Feed the compositor while parked (raffle-wedge fix)", &feed))
+            set_pace_feed(feed);
+        ImGui::TextWrapped(
+            "ON = while the session is not FOCUSED the pace thread re-submits the "
+            "last real image (layers included), so the runtime keeps seeing a "
+            "rendering app and hands FOCUSED back on its own - the raffle-class "
+            "wedge cannot park. OFF = empty frames only, the measured park.");
+        ImGui::Text("feed cycles %u (%u layered)",
+                    g_feedCycles.load(std::memory_order_relaxed),
+                    g_feedLayered.load(std::memory_order_relaxed));
+
         // The phase table. This is the instrument that named the blocking call;
         // it stays visible because "which call owns the frame time" is the only
         // question that distinguishes a fix from a coincidence.
@@ -3103,6 +3941,13 @@ void draw_debug_ui() {
         bool pair = g_srPairPacing.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("SR pair pacing (one waitFrame per eye pair)", &pair))
             g_srPairPacing.store(pair, std::memory_order_relaxed);
+        if (pair) {
+            // Session 42 judder A/B: evenly spaced pair opens vs the game's own
+            // present speed. Headset-judgeable, so it must live on a checkbox.
+            bool sync = g_paceSync.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Sync pair rate to headset refresh (judder A/B)", &sync))
+                g_paceSync.store(sync, std::memory_order_relaxed);
+        }
         bool cine = g_cineEnabled.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Cinematic auto-detect (cutscenes/screens)", &cine))
             g_cineEnabled.store(cine, std::memory_order_relaxed);
@@ -3317,6 +4162,10 @@ int64_t last_predicted_time() {
     return static_cast<int64_t>(g_frameState.predictedDisplayTime);
 }
 
+int64_t display_period_ns() {
+    return g_displayPeriodNs.load(std::memory_order_relaxed);
+}
+
 bool vr_camera_mode() {
     return g_cameraMode.load(std::memory_order_relaxed) &&
            g_sessionBegun.load(std::memory_order_relaxed) &&
@@ -3348,8 +4197,100 @@ void set_alternate_eye(bool on) {
             on ? "ON" : "off");
 }
 
+void set_eye_tag_rendered(bool on) {
+    const bool was = g_eyeTagRendered.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: eye tags = %s (rendered = the parallel pair the game drew: "
+                "located midpoint +-ipd/2 along its right axis; located = the "
+                "runtime's raw per-eye poses, the historical behavior)",
+                on ? "RENDERED-POSE" : "located");
+}
+
+bool eye_tag_rendered() { return g_eyeTagRendered.load(std::memory_order_relaxed); }
+
+void set_eye_tag_ipd_mm(float mm) {
+    if (mm > 30.0f && mm < 90.0f) g_eyeTagIpdMm.store(mm, std::memory_order_relaxed);
+}
+
+void set_hand_ref_quad(bool on, int hand, float sizeDeg) {
+    const bool was = g_handQuadOn.exchange(on, std::memory_order_relaxed);
+    if (hand == 0 || hand == 1) g_handQuadHand.store(hand, std::memory_order_relaxed);
+    if (sizeDeg > 0.1f && sizeDeg < 20.0f)
+        g_handQuadSizeDeg.store(sizeDeg, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: hand ref quad = %s (hand %c, %.1f deg) - parked at the located "
+                "grip pose, the FOV-edge one-look discriminator",
+                on ? "ON" : "off", g_handQuadHand.load(std::memory_order_relaxed) ? 'R' : 'L',
+                g_handQuadSizeDeg.load(std::memory_order_relaxed));
+}
+
+bool hand_ref_quad_on() { return g_handQuadOn.load(std::memory_order_relaxed); }
+
+void set_edge_snapshot(bool on) {
+    const bool was = g_edgeSnapOn.exchange(on, std::memory_order_relaxed);
+    if (was != on) BVR_LOG("xr: edge-telemetry snapshot %s", on ? "ARMED" : "off");
+    if (!on) {
+        std::lock_guard<std::mutex> lk(g_edgeSnapMutex);
+        g_edgeSnap.valid = false;
+    }
+}
+
+bool get_edge_snapshot(EdgeViewSnapshot& out) {
+    std::lock_guard<std::mutex> lk(g_edgeSnapMutex);
+    out = g_edgeSnap;
+    return out.valid;
+}
+
+void arm_view_log(int frames) {
+    if (frames < 1) frames = 10;
+    if (frames > 60) frames = 60;
+    g_viewLogLeft.store(frames, std::memory_order_relaxed);
+    BVR_LOG("xr: view log ARMED for %d frames (located per-eye pose + fov, plus "
+            "inter-eye deltas)",
+            frames);
+}
+
 void set_sr_pair_pacing(bool on) {
     g_srPairPacing.store(on, std::memory_order_relaxed);
+}
+
+void set_pace_sync(bool on) {
+    bool was = g_paceSync.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr: pair-rate sync %s (adapter/preset; `vrpace sync` for the "
+                "live A/B and telemetry)",
+                on ? "ON" : "off");
+}
+
+void set_pose_lag(int lag) {
+    if (lag < 0) lag = 0;
+    if (lag > 2) lag = 2;
+    int was = g_poseLag.exchange(lag, std::memory_order_relaxed);
+    if (was != lag)
+        BVR_LOG("xr: pose attribution lag %d -> %d generation(s) (0=fresh, "
+                "1=the historical one-back, 2=two-back for a threaded "
+                "one-frame-lag renderer)",
+                was, lag);
+}
+
+int get_pose_lag() { return g_poseLag.load(std::memory_order_relaxed); }
+
+float get_pose_gen_delta_deg() {
+    return g_poseGenDeltaDeg.load(std::memory_order_relaxed);
+}
+
+void set_spike_trace(bool on) {
+    bool was = g_spikeTrace.exchange(on, std::memory_order_relaxed);
+    if (was != on) {
+        // Re-arming resets the STACK budget, not the spike counter: boot 4 of
+        // s43 spent all 40 stack captures on menu/load stalls and reached
+        // gameplay with a mute sampler. The spike counter itself keeps
+        // counting (the TRACE pairs deltas depend on it being monotonic).
+        if (on) g_spikeStacks.store(0, std::memory_order_relaxed);
+        BVR_LOG("xr: spike trace %s (pair interval > 2x period -> per-phase "
+                "snapshot in pacetrace.log; %u captured so far)",
+                on ? "ON" : "off", g_spikeCount.load(std::memory_order_relaxed));
+    }
 }
 
 void handle_pace_command(const char* args) {
@@ -3395,6 +4336,57 @@ void handle_pace_command(const char* args) {
                 on ? "runs the frame loop at most once per keepalive interval, so "
                      "the blocking xrEndFrame costs one hitch per interval"
                    : "runs the frame loop every present, at the runtime's cadence");
+    } else if (strcmp(verb, "feed") == 0) {
+        // Session 54: the raffle-wedge root fix A/B (see set_pace_feed).
+        bool on = strncmp(rest, "off", 3) != 0;
+        set_pace_feed(on);
+        BVR_LOG("xr: (feed %s via vrpace; cycles so far %u, %u layered)",
+                on ? "on" : "off", g_feedCycles.load(std::memory_order_relaxed),
+                g_feedLayered.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "sync") == 0) {
+        unsigned hz = 0;
+        if (strncmp(rest, "on", 2) == 0) {
+            g_paceSyncHz.store(0, std::memory_order_relaxed);
+            g_paceSync.store(true, std::memory_order_relaxed);
+            BVR_LOG("xr: pair-rate sync ON (target = the runtime's "
+                    "predictedDisplayPeriod, currently %.2f ms)",
+                    g_displayPeriodNs.load(std::memory_order_relaxed) / 1.0e6);
+        } else if (strncmp(rest, "off", 3) == 0) {
+            g_paceSync.store(false, std::memory_order_relaxed);
+            g_paceSyncNextQpc = 0; // present thread races this benignly: worst
+                                   // case one extra resync, counted
+            BVR_LOG("xr: pair-rate sync OFF (pairs open at the game's own present "
+                    "speed; the runtime's wait may or may not gate them)");
+        } else if (sscanf_s(rest, "%u", &hz) == 1 && hz >= 10 && hz <= 500) {
+            g_paceSyncHz.store(hz, std::memory_order_relaxed);
+            g_paceSync.store(true, std::memory_order_relaxed);
+            BVR_LOG("xr: pair-rate sync ON at a COMMANDED %u Hz (overrides the "
+                    "runtime period; `vrpace sync on` returns to the period)",
+                    hz);
+        } else {
+            BVR_LOG("xr: pair-rate sync %s (hz override %u) | delayed %u pairs, "
+                    "%llu ms total | resyncs %u | usage: vrpace sync on|off|<10..500>",
+                    g_paceSync.load(std::memory_order_relaxed) ? "ON" : "off",
+                    g_paceSyncHz.load(std::memory_order_relaxed),
+                    g_paceSyncDelays.load(std::memory_order_relaxed),
+                    static_cast<unsigned long long>(
+                        g_paceSyncDelayUs.load(std::memory_order_relaxed) / 1000),
+                    g_paceSyncResyncs.load(std::memory_order_relaxed));
+        }
+    } else if (strcmp(verb, "spike") == 0) {
+        // Session 43: the spike-triggered evidence capture (state + rationale
+        // at the g_spikeTrace block). Bare `vrpace spike` prints telemetry.
+        if (strncmp(rest, "on", 2) == 0) {
+            set_spike_trace(true);
+        } else if (strncmp(rest, "off", 3) == 0) {
+            set_spike_trace(false);
+        } else {
+            BVR_LOG("xr: spike trace %s | %u spikes captured (threshold 2x period, "
+                    "snapshots in pacetrace.log; spikes/s on the TRACE pairs line) | "
+                    "usage: vrpace spike on|off",
+                    g_spikeTrace.load(std::memory_order_relaxed) ? "ON" : "off",
+                    g_spikeCount.load(std::memory_order_relaxed));
+        }
     } else if (strcmp(verb, "simidle") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_simIdle.store(on, std::memory_order_relaxed);
@@ -3405,7 +4397,7 @@ void handle_pace_command(const char* args) {
     } else {
         BVR_LOG("xr: pace guard %s | wait %s | session %s everFocused=%d | skips %u "
                 "lastWait %u ms | handoffs %u timeouts %u | simidle %s "
-                "(vrpace on|off|thread on|off|detach on|off|simidle on|off|status)",
+                "(vrpace on|off|thread on|off|detach on|off|sync|spike|simidle on|off|status)",
                 g_paceGuard.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_paceOffThread.load(std::memory_order_relaxed) ? "off-thread" : "inline",
                 state_str(g_state), g_everFocused.load(std::memory_order_relaxed) ? 1 : 0,
@@ -3414,6 +4406,21 @@ void handle_pace_command(const char* args) {
                 g_paceHandoffs.load(std::memory_order_relaxed),
                 g_paceTimeouts.load(std::memory_order_relaxed),
                 g_simIdle.load(std::memory_order_relaxed) ? "ON" : "off");
+        // Session 42: lifetime pair cadence (the per-second numbers live on the
+        // TRACE pairs line in pacetrace.log; this is the cheap always-there view).
+        {
+            uint32_t cnt = g_pairIntCount.load(std::memory_order_relaxed);
+            uint64_t sum = g_pairIntSumUs.load(std::memory_order_relaxed);
+            int64_t periodNs = g_displayPeriodNs.load(std::memory_order_relaxed);
+            BVR_LOG("xr: pair cadence: pairs %u aborts %u | lifetime mean interval %u us "
+                    "over %u samples | runtime period %.2f ms (%.1f Hz) | per-second "
+                    "jitter on the TRACE pairs line (pacetrace.log)",
+                    g_srPairs.load(std::memory_order_relaxed),
+                    g_srPairAborts.load(std::memory_order_relaxed),
+                    cnt ? static_cast<uint32_t>(sum / cnt) : 0, cnt,
+                    periodNs > 0 ? periodNs / 1.0e6 : 0.0,
+                    periodNs > 0 ? 1.0e9 / periodNs : 0.0);
+        }
         BVR_LOG("xr: detach %s (keepalive every %u ms) | detachedNow=%d | episodes %u "
                 "| unpaced presents %u, keepalive frames %u",
                 g_paceDetach.load(std::memory_order_relaxed) ? "ON" : "off",
@@ -3421,6 +4428,16 @@ void handle_pace_command(const char* args) {
                 g_detachEpisodes.load(std::memory_order_relaxed),
                 g_detachSkips.load(std::memory_order_relaxed),
                 g_detachKeepalives.load(std::memory_order_relaxed));
+        BVR_LOG("xr: feed %s | cycles %u (%u layered) | snapshot %s "
+                "(vrpace feed on|off - keepalives that carry layers, s54)",
+                g_paceFeed.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_feedCycles.load(std::memory_order_relaxed),
+                g_feedLayered.load(std::memory_order_relaxed),
+                [] {
+                    std::lock_guard<std::mutex> lk(g_feedSnapMutex);
+                    return g_feedSnap.valid ? (g_feedSnap.isProj ? "projection" : "screen-quad")
+                                            : "none";
+                }());
         // The phase table is the whole point of the instrument: it says WHICH
         // call owns the frame time, which is the question session 33 answered
         // by inference and got wrong.
@@ -3463,6 +4480,14 @@ bool headset_half_fov_deg(float* halfH, float* halfV) {
     return h > 0.0f && v > 0.0f;
 }
 
+bool recommended_eye_size(uint32_t* w, uint32_t* h) {
+    const uint32_t rw = g_recommendedEyeW.load(std::memory_order_relaxed);
+    const uint32_t rh = g_recommendedEyeH.load(std::memory_order_relaxed);
+    if (w) *w = rw;
+    if (h) *h = rh;
+    return rw > 0 && rh > 0;
+}
+
 void set_rendered_hfov(float hfovDeg) {
     g_renderedHfov.store(hfovDeg, std::memory_order_relaxed);
 }
@@ -3488,6 +4513,14 @@ void set_pace_detach(bool on) {
     BVR_LOG("xr: detached pacing %s by the game adapter (an unfocused session "
             "will %space the game thread)",
             on ? "ENABLED" : "disabled", on ? "no longer " : "");
+}
+
+void set_pace_feed(bool on) {
+    if (g_paceFeed.exchange(on, std::memory_order_relaxed) == on) return;
+    BVR_LOG("xr: pace feed %s by the game adapter - while the session is not "
+            "FOCUSED the present thread detaches and the pace thread re-submits "
+            "the last healthy layer set (keepalives that carry layers, s54)",
+            on ? "ENABLED" : "disabled");
 }
 
 void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* swapH) {
@@ -3775,6 +4808,10 @@ void get_hud_quad(float* distM, float* widthM, float* upM) {
     if (upM) *upM = g_hudUpM.load(std::memory_order_relaxed);
 }
 
+void set_hud_texture_provider(HudTextureProviderFn fn) {
+    g_hudTexProvider.store(fn, std::memory_order_relaxed);
+}
+
 void sr_push_eye(int eyeSign) {
     uint32_t head = g_srHead.load(std::memory_order_relaxed);
     uint32_t tail = g_srTail.load(std::memory_order_acquire);
@@ -3809,13 +4846,27 @@ void set_sim_hand_pose(int, bool, bool, const float[3], const float[4]) {}
 void clear_sim_hand_poses() {}
 bool session_live() { return false; }
 int64_t last_predicted_time() { return 0; }
+int64_t display_period_ns() { return 0; }
 bool vr_camera_mode() { return false; }
 void set_camera_mode(bool) {}
 void set_alternate_eye(bool) {}
+void set_eye_tag_rendered(bool) {}
+bool eye_tag_rendered() { return false; }
+void set_eye_tag_ipd_mm(float) {}
+void set_hand_ref_quad(bool, int, float) {}
+bool hand_ref_quad_on() { return false; }
+void arm_view_log(int) {}
+void set_edge_snapshot(bool) {}
+bool get_edge_snapshot(EdgeViewSnapshot&) { return false; }
 void set_enabled(bool) {}
 void set_sr_pair_pacing(bool) {}
 void handle_pace_command(const char*) {}
 void set_pace_detach(bool) {}
+void set_pace_sync(bool) {}
+void set_spike_trace(bool) {}
+void set_pose_lag(int) {}
+int get_pose_lag() { return 1; }
+float get_pose_gen_delta_deg() { return 0.0f; }
 void set_present_stage(const char*) {}
 void set_draw_stage(const char*) {}
 uint32_t watchdog_fires() { return 0; }
@@ -3824,6 +4875,11 @@ float suggested_hfov_deg() { return 0.0f; }
 bool headset_half_fov_deg(float* halfH, float* halfV) {
     if (halfH) *halfH = 0.0f;
     if (halfV) *halfV = 0.0f;
+    return false;
+}
+bool recommended_eye_size(uint32_t* w, uint32_t* h) {
+    if (w) *w = 0;
+    if (h) *h = 0;
     return false;
 }
 void set_rendered_hfov(float) {}
@@ -3852,6 +4908,7 @@ void get_hud_quad(float* d, float* w, float* u) {
     if (w) *w = 0;
     if (u) *u = 0;
 }
+void set_hud_texture_provider(HudTextureProviderFn) {}
 
 } // namespace bvr::vr
 
