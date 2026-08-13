@@ -397,6 +397,27 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b1r] command: recenter");
     } else if (strcmp(cmd, "vrpopup") == 0) {
         startup_dialog::handle_command(args); // logs its own echo
+    } else if (strcmp(cmd, "headoff") == 0) {
+        // The head-anchor offsets were overlay-only sliders, which means they
+        // needed F10 and a keyboard - useless to a player already in the
+        // headset, and this is the control you reach for when the VR eye sits
+        // lower than the game's own camera implies. Same values, same
+        // vrpreset.ini keys, now reachable from the seam.
+        char which[8] = {};
+        float v = 0.0f;
+        if (sscanf_s(args, "%7s %f", which, static_cast<unsigned>(sizeof which), &v) == 2) {
+            if (strcmp(which, "up") == 0)
+                g_headOffUpUu.store(v, std::memory_order_relaxed);
+            else if (strcmp(which, "fwd") == 0)
+                g_headOffFwdUu.store(v, std::memory_order_relaxed);
+        }
+        BVR_LOG("[b1r] head anchor: up=%.1f fwd=%.1f UU (headoff up <uu> | headoff fwd "
+                "<uu>; worldScale %.0f UU/m, so 1 UU is %.1f mm of real height) - "
+                "'vrpreset save' to keep",
+                g_headOffUpUu.load(std::memory_order_relaxed),
+                g_headOffFwdUu.load(std::memory_order_relaxed),
+                g_worldScale.load(std::memory_order_relaxed),
+                1000.0f / g_worldScale.load(std::memory_order_relaxed));
     } else if (strcmp(cmd, "heightlock") == 0) {
         if (strncmp(args, "on", 2) == 0)
             g_heightLock.store(true, std::memory_order_relaxed);
