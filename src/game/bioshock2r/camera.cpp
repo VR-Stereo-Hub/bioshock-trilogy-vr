@@ -100,6 +100,11 @@ std::atomic<uint64_t> g_resWritePending{0};
 // on the poller lane - game thread, outside hooked calls - never on the
 // render thread the overlay draws from.
 std::atomic<int> g_vrPresetPending{0};
+// Feedback session 2 (2026-08-13, user ask, BS1 shape): the game should START
+// in VR - no F10 trip. When on (default), install() posts the same pending
+// the "APPLY PRESET" button posts; the game-thread lane arms the full stack.
+// Preset key `autoVr` (append-only); checkbox in the pinned preset block.
+std::atomic<bool> g_autoVr{true};
 
 // M4 rung 1 (AlternateEye) + the SR passes share this half-IPD shift. The
 // AER eye sign comes from core (vr::current_eye_sign(), 0 while the AER
@@ -1420,6 +1425,7 @@ void save_vr_preset() {
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzone=%.1f\n", body::deadzone_deg());
     fprintf(f, "moveDirInstant=%d\n", body::move_dir_instant() ? 1 : 0);
+    fprintf(f, "autoVr=%d\n", g_autoVr.load(std::memory_order_relaxed) ? 1 : 0);
     // Session 42: cinematic/classifier levers (BS1 parity; bar_verts is NOT
     // persisted - it is a per-game patterns constant, never a tunable).
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
@@ -1567,6 +1573,8 @@ void load_vr_preset_values() {
             bodyDz = v;
         else if (strcmp(key, "moveDirInstant") == 0)
             body::set_move_dir_instant(v != 0.0f);
+        else if (strcmp(key, "autoVr") == 0)
+            g_autoVr.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "cineBarsHidden") == 0)
             bvr::hud::set_bars_hidden(v != 0.0f);
         else if (strcmp(key, "cineDrive") == 0) {
@@ -2406,6 +2414,12 @@ void __fastcall ProcessEventDetour(void* self, void* edx, void* fn, void* parms,
                 // game thread outside hooked calls, same lane as vrstereo.
                 if (g_vrPresetPending.exchange(0, std::memory_order_relaxed))
                     apply_vr_preset();
+                // Feedback session 2: both-sticks-click chord -> the same
+                // recenter the F10 button posts.
+                if (bvr::input::take_recenter_chord()) {
+                    g_recenterRequested.store(true, std::memory_order_relaxed);
+                    BVR_LOG("[b2r] recenter requested (stick chord)");
+                }
                 if (g_windowRestorePending.exchange(false, std::memory_order_relaxed))
                     restore_game_window();
                 // Deferred ini re-verify: the engine persists its live size
@@ -2545,6 +2559,14 @@ bool install(const patterns::Symbols& symbols) {
     // default so no BS1 path changes; `vrinput off` still disarms, and the
     // drive itself arms lazily on the pump lane once a viewport exists.
     bvr::input::handle_command("on");
+    // Feedback session 2 (user ask, BS1 shape): start the game IN VR - post
+    // the same pending the APPLY PRESET button posts; the game-thread lane
+    // arms the stack. AFTER load_vr_preset_values so a saved autoVr=0 holds.
+    if (g_autoVr.load(std::memory_order_relaxed)) {
+        g_vrPresetPending.store(1, std::memory_order_relaxed);
+        BVR_LOG("[b2r] auto-VR: preset apply queued for the first frame (autoVr=0 or "
+                "the preset checkbox disables this)");
+    }
     g_peTarget = symbols.processEvent;
     g_hookLive.store(true, std::memory_order_relaxed);
     BVR_LOG("[b2r] calcview seam installed (ProcessEvent %p + FindFunctionChecked %p)",
@@ -2638,6 +2660,9 @@ void draw_debug_ui() {
     ImGui::SameLine();
     if (ImGui::Button("SAVE all settings (survives a relaunch)"))
         save_vr_preset();
+    bool autoVr = g_autoVr.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Auto-start VR at launch (no F10 needed)", &autoVr))
+        g_autoVr.store(autoVr, std::memory_order_relaxed);
     ImGui::Separator();
 
     // ---- VIEWMODEL LENS: the thing currently under test -------------------

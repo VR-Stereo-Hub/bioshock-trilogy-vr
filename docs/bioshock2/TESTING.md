@@ -418,3 +418,11 @@ walk forward, snap the head ~180 - the walk should flip instantly, no arc. A/B v
 F10 > Body / locomotion (M7.5) > "Instant move direction". BS2's sign was NOT
 sim-verified (BS1's was; BS2 is the same duplicated shape) - if the walk mirrors
 with the box ON, toggle OFF and report; that is the one open question.
+
+### S60b additions (same day)
+
+- **Auto-start VR**: launch, touch nothing - VR arms itself (BS1 shape; the
+  boot lane was sim-verified on BS1, BS2 shares the mechanism but its live boot
+  was NOT sim-run - confirm the game arrives in stereo).
+- **Both-sticks recenter**: click both thumbsticks together - view recenters.
+  Chord verified on BS1/BSI; BS2's drain is the same duplicated shape.

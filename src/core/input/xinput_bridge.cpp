@@ -838,6 +838,16 @@ void set_snap_angle_deg(float d) {
 
 int take_snap_steps() { return g_snapPending.exchange(0, std::memory_order_relaxed); }
 
+// Both-sticks-click recenter chord (feedback session 2). Queued by the XR
+// composer on the chord edge, drained by the game adapter into its own
+// recenter request on its game thread.
+std::atomic<bool> g_recenterChord{false};
+void queue_recenter_chord() {
+    g_recenterChord.store(true, std::memory_order_relaxed);
+    BVR_LOG("[input] recenter chord (both stick clicks) queued");
+}
+bool take_recenter_chord() { return g_recenterChord.exchange(false, std::memory_order_relaxed); }
+
 void handle_command(const char* args) {
     install_dll_hooks(); // lazy retry in case xinput1_4 loaded after init
 

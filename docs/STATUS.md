@@ -7455,6 +7455,31 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 60b (same day) - HEADSET VERDICTS IN + round 2: auto-VR at boot, both-sticks recenter chord
+
+**Headset verdicts (user): the s60 turn fix "working perfectly for both games";
+the F10 Ctrl+click tip "perfect".** Round-2 asks landed the same day:
+
+- **Auto-VR at boot (BS1 + BS2, default ON)**: install() posts the same pending
+  the preset button posts after the boot value-load; the game-thread lane arms
+  the full stack on the first frame. New append-only preset key `autoVr` + an
+  "Auto-start VR at launch" checkbox in the pinned preset block. (BS2 did NOT
+  actually auto-arm before - only Infinite did; now all three start in VR.)
+  Sim-verified on BS1: boot -> armed -> stereo live with zero interaction.
+- **Both-sticks-click recenter chord (all three games)**: detected in the XR
+  composer on the RAW clicks (load-bearing: BS1/BS2 EAT the right click as the
+  ammo modifier, so the composed pad never shows the chord), one edge per
+  chord, re-arms only after both release, both click bits + the ammo-modifier
+  read suppressed while held. Core queue + per-adapter drain into the existing
+  recenter request (`take_recenter_chord`, snap-turn shape). Sim-verified end
+  to end on BS1 and BSI (queued -> drained -> "vr camera recentered" same
+  frame, twice, both press orders); BS2 is the same duplicated shape,
+  headset-checked via TESTING S60b.
+- **Deferred per the user's own rule**: STANDING-pose recenter (LOCAL_FLOOR /
+  seated-standing modes) is the parked ROADMAP item and stays in its session;
+  controller-driven F10 (open/use/close from the controllers) is ladder rung 6
+  (the F10 overhaul).
+
 ### Session 60 - 2026-08-13 - FEEDBACK QUICK WINS (all three games) + the post-v0.8.0 session ladder
 
 On branch `claude/mod-feedback-fixes-c6bbe7` (off `main` @ 747efc5), merged into the new

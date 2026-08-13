@@ -143,6 +143,13 @@ AmmoMod ammo_mod();
 void set_ammo_mod(AmmoMod m);
 int take_snap_steps(); // +right/-left steps queued since the last drain
 
+// Feedback session 2 (2026-08-13): BOTH-STICKS-CLICK = recenter chord. The XR
+// composer queues one edge per chord (both thumbstick clicks held; re-arms
+// only after both release) and each game adapter drains it into its own
+// recenter request. Additive: nothing fires unless an adapter drains it.
+void queue_recenter_chord();
+bool take_recenter_chord();
+
 // Session 44 (Infinite I7): WHICH pad map the XR composer builds.
 //
 // The composer's face-button re-route, its consumed RS-click and its

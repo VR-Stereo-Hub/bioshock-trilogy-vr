@@ -78,6 +78,13 @@ std::atomic<float> g_headOffFwdUu{0.0f};
 // run on the game thread next frame.
 std::atomic<bool> g_vrPresetPending{false};
 std::atomic<bool> g_vrPresetSavePending{false};
+// Feedback session 2 (2026-08-13, user ask): the game should START in VR -
+// no F10 trip. When on (default), install() posts the same pending flag the
+// "VR PRESET 1" button posts, and the game-thread poller arms the full stack
+// on the first CalcView. Preset key `autoVr` (append-only); the checkbox
+// lives in the pinned preset block. Stereo-at-menu is an already-exercised
+// state (vrstereo is sticky across loads, so every load screen runs it).
+std::atomic<bool> g_autoVr{true};
 // Render-resolution request from the overlay. The overlay runs on the RENDER
 // thread and this does file I/O plus a read-back, so it goes through the
 // established pending-atomic seam and is performed on the game thread, next to
@@ -776,6 +783,7 @@ void save_vr_preset() {
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fprintf(f, "moveDirInstant=%d\n", body::move_dir_instant() ? 1 : 0);
+    fprintf(f, "autoVr=%d\n", g_autoVr.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
@@ -854,6 +862,7 @@ void load_vr_preset_values() {
         else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
         else if (strcmp(key, "moveDirInstant") == 0) body::set_move_dir_instant(v != 0.0f);
+        else if (strcmp(key, "autoVr") == 0) g_autoVr.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
@@ -1110,6 +1119,12 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // Overlay preset buttons land here (game thread; the overlay draws on
     // the render thread and only sets the pending flags).
     if (g_vrPresetPending.exchange(false, std::memory_order_relaxed)) apply_vr_preset();
+    // Feedback session 2: both-sticks-click chord -> the same recenter the
+    // F10 button posts (seated pose + view yaw).
+    if (bvr::input::take_recenter_chord()) {
+        g_recenterRequested.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b1r] recenter requested (stick chord)");
+    }
     if (g_vrPresetSavePending.exchange(false, std::memory_order_relaxed)) save_vr_preset();
     if (uint64_t req = g_resWritePending.exchange(0, std::memory_order_relaxed)) {
         game_ini::write_viewport(static_cast<uint32_t>(req >> 32),
@@ -1824,6 +1839,16 @@ bool install(void* eventPlayerCalcView) {
     load_vr_preset_values();
     aim::note_preset_baseline();
     aim::reapply_weapon_profile();
+    // Feedback session 2 (user ask): start the game IN VR. Post the same
+    // pending flag the "VR PRESET 1" button posts; the game-thread poller
+    // arms the full stack on the first CalcView. `autoVr=0` (or the pinned
+    // checkbox) opts out. Must run AFTER load_vr_preset_values so a saved
+    // autoVr=0 is honoured.
+    if (g_autoVr.load(std::memory_order_relaxed)) {
+        g_vrPresetPending.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b1r] auto-VR: preset apply queued for the first frame (autoVr=0 or "
+                "the preset checkbox disables this)");
+    }
 
     g_target = eventPlayerCalcView;
     g_hookLive.store(true, std::memory_order_relaxed);
@@ -1967,6 +1992,9 @@ void draw_debug_ui() {
     ImGui::SameLine();
     if (ImGui::Button("Save preset values"))
         g_vrPresetSavePending.store(true, std::memory_order_relaxed);
+    bool autoVr = g_autoVr.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Auto-start VR at launch (no F10 needed)", &autoVr))
+        g_autoVr.store(autoVr, std::memory_order_relaxed);
     ImGui::Separator();
 
     if (ImGui::CollapsingHeader("VR camera (M3/M4)", ImGuiTreeNodeFlags_DefaultOpen)) {

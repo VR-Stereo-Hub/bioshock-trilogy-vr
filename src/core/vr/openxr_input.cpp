@@ -546,11 +546,31 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     if (read_bool(session, g_btnB)) pad.buttons |= map.faceB;
     if (read_bool(session, g_btnX)) pad.buttons |= map.faceX;
     if (read_bool(session, g_btnY)) pad.buttons |= map.faceY;
-    if (read_bool(session, g_stickClickL)) pad.buttons |= map.stickClickL;
-    // Forwarded only where the map says so: on BioShock 1 this bit is 0 and
-    // the click is consumed below as the ammo modifier instead.
-    if (map.stickClickR && read_bool(session, g_stickClickR))
-        pad.buttons |= map.stickClickR;
+    // Feedback session 2 (2026-08-13): BOTH-STICKS-CLICK = recenter chord.
+    // Detected here on the RAW clicks - on BS1/BS2 the right click is eaten
+    // as the ammo modifier and never reaches the composed pad, so the bridge
+    // cannot see the chord. One edge per chord; re-arms only after BOTH
+    // release. While the chord is held neither click bit reaches the game
+    // (and the ammo-modifier read below is suppressed), so the recenter
+    // cannot also sprint/zoom/select ammo. The single-frame leak of the
+    // first-pressed click before the second joins is accepted - same class
+    // as the documented radial-grip leak.
+    const bool clickL = read_bool(session, g_stickClickL);
+    const bool clickRraw = read_bool(session, g_stickClickR);
+    const bool chordHeld = clickL && clickRraw;
+    static bool s_chordArmed = true;
+    if (chordHeld && s_chordArmed) {
+        s_chordArmed = false;
+        bvr::input::queue_recenter_chord();
+    } else if (!clickL && !clickRraw) {
+        s_chordArmed = true;
+    }
+    if (!chordHeld) {
+        if (clickL) pad.buttons |= map.stickClickL;
+        // Forwarded only where the map says so: on BioShock 1 this bit is 0
+        // and the click is consumed below as the ammo modifier instead.
+        if (map.stickClickR && clickRraw) pad.buttons |= map.stickClickR;
+    }
 
     uint64_t now = GetTickCount64();
 
@@ -574,7 +594,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // push the right stick at the same time, so a thumbrest modifier is
         // necessarily cross-hand. Slot directions stay on the right stick, so
         // nobody's muscle memory changes.
-        const bool rsClick = read_bool(session, g_stickClickR);
+        const bool rsClick = clickRraw && !chordHeld;
         const bool restL = read_bool(session, g_thumbrestL);
         const bool restR = read_bool(session, g_thumbrestR);
         for (int i = 0; i < 2; ++i) {

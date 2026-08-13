@@ -437,3 +437,12 @@ Both items are F10-toggleable live - no relaunch needed for the A/B.
 2. **Boot preset auto-load.** After a fresh launch (before pressing VR PRESET 1),
    open F10 and check your tuned slider values (world scale, aim trims, HUD size)
    already show YOUR numbers, not defaults. VR PRESET 1 still arms VR as before.
+
+### S60b additions (same day)
+
+3. **Auto-start VR.** Launch the game, touch nothing: it should arrive in VR
+   (stereo + controllers) with no F10 trip. The pinned preset block's
+   "Auto-start VR at launch" checkbox + Save preset values opts out.
+4. **Both-sticks recenter.** Click both thumbsticks together: the view recenters
+   (same as the F10 button). It fires once per press-pair and re-arms after
+   both are released. Sim-verified end to end on BS1; feel-check in the headset.
