@@ -44,6 +44,7 @@ New-Item -ItemType Directory -Path "$stage\preset-bsi" -Force | Out-Null
 Copy-Item "$bin\bioshockvr.dll" $stage
 Copy-Item "$bin\xinput1_3.dll"  $stage
 Copy-Item "$repo\README.md" "$stage\README.txt"
+Copy-Item "$repo\docs\TROUBLESHOOTING.md" "$stage\TROUBLESHOOTING.txt"
 foreach ($n in @("vrpreset.ini", "hands.ini", "weapons.ini", "HOW-TO-USE.txt")) {
     Copy-Item "$repo\release\preset-bs1\$n" "$stage\preset-bs1\$n"
 }

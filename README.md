@@ -3,7 +3,9 @@
 A native VR mod for **BioShock Remastered**, **BioShock 2 Remastered** and **BioShock
 Infinite** (PC, Steam): stereoscopic rendering, 6DOF head tracking, and motion controllers -
 weapons in one hand, plasmids/vigors in the other - targeting Quest 3 via Virtual Desktop
-(VDXR/OpenXR) or Steam Link (SteamVR), and any other OpenXR headset.
+(VDXR/OpenXR), and any other OpenXR runtime with a **32-bit** loader path. **SteamVR /
+Steam Link is not currently supported** - SteamVR's release channel has no 32-bit OpenXR
+runtime; see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 One zip serves all three games - the same two DLLs adapt to whichever game they are dropped
 into:
@@ -32,8 +34,11 @@ session. No game files are modified and no game assets are distributed.
 ## Requirements
 
 - BioShock Remastered on Steam (`steamapps\common\BioShock Remastered`)
-- A PCVR-capable headset. Primary target: Meta Quest 3 with Virtual Desktop (VDXR) or Steam
-  Link (SteamVR); any OpenXR runtime with a 32-bit loader should work
+- A PCVR-capable headset. Primary target: Meta Quest 3 with Virtual Desktop (VDXR); Meta
+  Link/Air Link (Oculus runtime) also ships a 32-bit runtime. Any OpenXR runtime with a
+  **32-bit** loader path can work - **SteamVR / Steam Link currently cannot** (no 32-bit
+  runtime in SteamVR's release channel; the beta is untested -
+  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) has the details)
 
 ## Install (release zip)
 
@@ -44,7 +49,8 @@ session. No game files are modified and no game assets are distributed.
    the two mods use the same injection vector and cannot coexist.
 3. Headset side (Quest 3 + Virtual Desktop): in Virtual Desktop's Streaming tab set the OpenXR
    runtime to **VDXR**, connect, then launch the game from Steam inside Virtual Desktop.
-   (Steam Link / SteamVR works too - the mod talks to whatever OpenXR runtime is active.)
+   (Steam Link / SteamVR is not currently supported - see
+   [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) if the mod reports "no OpenXR runtime".)
    **Set the game's resolution to roughly SQUARE, not 16:9** - something like 2700x2700.
    The mod sizes the eye render target from the game's backbuffer, and headset panels are
    near square, so a 16:9 backbuffer renders a wide strip that the headset then throws
@@ -55,6 +61,14 @@ session. No game files are modified and no game assets are distributed.
 4. Launch the game through Steam. The mod logs to `%LOCALAPPDATA%\BioshockVR\bioshockvr.log`.
 
 To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
+
+### Troubleshooting
+
+**[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** covers every "no VR / flat mode"
+report received so far: the 32-bit OpenXR registry key (and how to fix it per runtime),
+broken 32-bit API layers (ReShade and friends), the SteamVR situation, the
+`XR_RUNTIME_JSON` override, and per-game resolution/windowed-mode guidance. The release
+zip ships the same text as `TROUBLESHOOTING.txt`.
 
 ### If it crashes or misbehaves: clear your settings first
 
