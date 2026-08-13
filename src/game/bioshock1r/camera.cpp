@@ -107,6 +107,12 @@ std::atomic<bool> g_lockOnDisabled{true};
 int g_lockOnApplied = -1;
 uint64_t g_lockOnAssertMs = 0;
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
+// Opt-in (default OFF): recenter again on every menu/cutscene -> GAMEPLAY
+// transition. The preset already recenters once when it arms; doing it on the
+// transition too is what fixes heading drift after a load without asking the
+// player for an input. Off by default because it overrides a deliberate
+// mid-session recenter every time a cutscene ends.
+std::atomic<bool>  g_autoRecenterOnGameplay{false};
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
                                                // UShockUserSettings HorizontalFOV int that the
@@ -379,6 +385,17 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
         BVR_LOG("[b1r] command: recenter");
+    } else if (strcmp(cmd, "autorecenter") == 0) {
+        if (strncmp(args, "on", 2) == 0)
+            g_autoRecenterOnGameplay.store(true, std::memory_order_relaxed);
+        else if (strncmp(args, "off", 3) == 0)
+            g_autoRecenterOnGameplay.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b1r] auto-recenter on entering gameplay: %s "
+                "(autorecenter on|off) - recenters on every menu/cutscene -> "
+                "GAMEPLAY transition, which is where heading drift after a load "
+                "shows up",
+                g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? "ON"
+                                                                        : "off");
     } else if (strcmp(cmd, "offset") == 0) {
         if (sscanf_s(args, "%f %f %f", &x, &y, &z) == 3) {
             g_offsetX.store(x, std::memory_order_relaxed);
@@ -771,6 +788,8 @@ void save_vr_preset() {
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
     fprintf(f, "recenterBind=%d\n", static_cast<int>(bvr::input::recenter_bind()));
+    fprintf(f, "autoRecenterOnGameplay=%d\n",
+            g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "swingOn=%d\n", bvr::input::swing::enabled() ? 1 : 0);
     fprintf(f, "swingThreshold=%.2f\n", bvr::input::swing::threshold_ms());
     fprintf(f, "swingRearm=%.2f\n", bvr::input::swing::rearm_ms());
@@ -848,6 +867,8 @@ void load_vr_preset_values() {
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
+        else if (strcmp(key, "autoRecenterOnGameplay") == 0)
+            g_autoRecenterOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "recenterBind") == 0) {
             const int rb = static_cast<int>(v);
             if (rb >= 0 && rb <= 2)
@@ -1481,6 +1502,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             // event that plausibly created what they were looking for, so it is
             // the one place allowed to wake them.
             if (strictGameplay) {
+                if (g_autoRecenterOnGameplay.load(std::memory_order_relaxed)) {
+                    g_recenterRequested.store(true, std::memory_order_relaxed);
+                    BVR_LOG("[b1r] auto-recenter: entered gameplay view "
+                            "('autorecenter off' to disable)");
+                }
                 patterns::hfov_scan_rearm("entered gameplay view");
                 aim::weapon_scan_rearm("entered gameplay view");
                 // Same event drives the engine-property re-assert, which used to
@@ -2056,6 +2082,13 @@ void draw_debug_ui() {
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
+        bool autoRc = g_autoRecenterOnGameplay.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Auto-recenter on entering gameplay", &autoRc))
+            g_autoRecenterOnGameplay.store(autoRc, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Recenters on every menu/cutscene -> GAMEPLAY transition.\n"
+                              "Fixes heading drift after a load with no input from you;\n"
+                              "costs you any deliberate recenter made mid-session.");
         bool forceFov = g_forceHeadsetFov.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Force headset FOV (off = game FOV, narrower)", &forceFov))
             g_forceHeadsetFov.store(forceFov, std::memory_order_relaxed);
