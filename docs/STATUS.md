@@ -4,10 +4,16 @@
 
 ## Active projects (two, running in parallel)
 
+**ALL THREE GAMES ARE ON `main` as of v0.8.0 (2026-08-13, session 59, merge
+`5e98027`).** Infinite's bringup branch has landed - `main` is current for every
+game and carries the shipped release. `bioshock-infinite` remains as the Infinite
+integration branch (branch new Infinite work off `main` or off it; they are the
+same commit today).
+
 | Project | Branch | Handoff |
 |---|---|---|
 | **BS1 + BS2 (Vengeance/UE2.5)** | `main` and `sNN-...` | "Current state" below, ladder in [ROADMAP.md](ROADMAP.md) (M0-M10) |
-| **BioShock Infinite (UE3)** | `bioshock-infinite` | "Infinite: current state after session 59" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
+| **BioShock Infinite (UE3)** | `main` (was `bioshock-infinite`, merged at v0.8.0) | "Infinite: current state after session 59" below, ladder in [bioshockinfinite/ROADMAP.md](bioshockinfinite/ROADMAP.md) (I0-I11) |
 
 **Standing rule (2026-07-31, session 34):** never run BioShock Infinite while `Bioshock2HD.exe` is
 running, and vice versa. Only one game can own the headset at a time. Building, installing,
