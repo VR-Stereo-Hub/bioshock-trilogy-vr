@@ -424,15 +424,15 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "vrscale") == 0) {
         unsigned secs = 0;
         if (sscanf_s(args, "%u", &secs) != 1 || secs == 0) secs = 20;
-        if (secs > 120) secs = 120; // the capture is one line per CalcView
+        if (secs > 1800) secs = 1800; // sampling is gated on vertical motion
         g_scaleSamples.store(0, std::memory_order_relaxed);
         g_scaleCaptureUntilMs.store(GetTickCount64() + secs * 1000ull,
                                     std::memory_order_relaxed);
-        BVR_LOG("[vrscale] capture ARMED for %u s - JUMP a few times, or drop off a "
-                "ledge. Logging the ENGINE's camera height per CalcView; gravity in "
-                "UU/s^2 divided by 9.81 gives UU per metre, which is what worldScale "
-                "(now %.0f) should be. Nothing is changed by this.",
-                secs, g_worldScale.load(std::memory_order_relaxed));
+        BVR_LOG("[vrscale] capture ARMED for %u s (%u min) - RUN, JUMP, and drop off "
+                "ledges; a long fall is the best signal. Sampling only while the "
+                "camera moves vertically. Gravity in UU/s^2 / 9.81 = UU per metre, "
+                "which is what worldScale (now %.0f) should be. Changes nothing.",
+                secs, secs / 60, g_worldScale.load(std::memory_order_relaxed));
     } else if (strcmp(cmd, "headoff") == 0) {
         // The head-anchor offsets were overlay-only sliders, which means they
         // needed F10 and a keyboard - useless to a player already in the
@@ -1325,9 +1325,21 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         const uint64_t until = g_scaleCaptureUntilMs.load(std::memory_order_relaxed);
         if (until) {
             if (GetTickCount64() <= until) {
-                BVR_LOG("[vrscale] t=%.6f z=%.3f x=%.1f y=%.1f", qpc_seconds(), loc->z,
-                        loc->x, loc->y);
-                g_scaleSamples.fetch_add(1, std::memory_order_relaxed);
+                // Only log while the camera is actually moving vertically, plus a
+                // short tail. A capture long enough to go and FIND a ledge would
+                // otherwise be mostly the player standing still - 11 of the first
+                // 18 test seconds were a z pinned to one value - and the arcs are
+                // the only part that carries any signal.
+                static float s_lastZ = 0.0f;
+                static double s_activeUntil = 0.0;
+                const double tnow = qpc_seconds();
+                if (fabsf(loc->z - s_lastZ) > 0.02f) s_activeUntil = tnow + 0.5;
+                s_lastZ = loc->z;
+                if (tnow <= s_activeUntil) {
+                    BVR_LOG("[vrscale] t=%.6f z=%.3f x=%.1f y=%.1f", tnow, loc->z,
+                            loc->x, loc->y);
+                    g_scaleSamples.fetch_add(1, std::memory_order_relaxed);
+                }
             } else {
                 g_scaleCaptureUntilMs.store(0, std::memory_order_relaxed);
                 BVR_LOG("[vrscale] capture done - %u samples. Fit the free-fall "
