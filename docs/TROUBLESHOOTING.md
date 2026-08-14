@@ -72,16 +72,49 @@ reg add "HKLM\SOFTWARE\WOW6432Node\Khronos\OpenXR\1\ApiLayers\Implicit" /v "C:\P
 
 (Adjust the path to match the value name you actually see in the key.)
 
-## SteamVR / Steam Link: not currently supported
+## SteamVR / Steam Link: supported through the bundled shim
 
-SteamVR's release channel does not ship a 32-bit OpenXR runtime at all, so the mod
-cannot reach it. The SteamVR **beta** contains 32-bit runtime files and has worked for
-some users (Settings > OpenXR > set SteamVR as the runtime), but it is untested here and
-several users still get `-51` on it - if that is you, nothing is wrong with your install.
+SteamVR's release channel does not ship a 32-bit OpenXR runtime, so the mod cannot talk
+to it directly. Since v0.8.x the zip bundles a compatibility shim that fixes this:
+**`bvr_steamvr32.dll` + `openvr_api.dll`**, installed next to the game exe like the other
+two DLLs. Nothing to configure - when no native 32-bit OpenXR runtime works, the mod
+automatically falls back to the shim, which talks to SteamVR over its OpenVR interface
+(fully 32-bit capable). This covers Index, Vive, WMR and Steam Link setups.
 
-**If your headset can use Virtual Desktop or Meta Link, use those.** Native
-SteamVR-tracked headsets (Index, Vive, PSVR2 via the PC adapter) currently have no
-supported path; a bundled SteamVR compatibility shim is planned for a future release.
+The log tells the story:
+
+- `xr: native runtime unavailable - falling back to the SteamVR shim` then
+  `xr: instance created on runtime 'BioshockVR SteamVR shim (OpenVR)'` - the shim is
+  live. It writes its own log to `%LOCALAPPDATA%\BioshockVR\ovrshim.log`.
+- `xr: SteamVR shim also failed ... (is SteamVR installed?)` - the shim could not reach
+  SteamVR; make sure SteamVR is installed and the headset is connected.
+- `xr: WARNING - game is running elevated` - Windows hides the shim from admin
+  processes. Launch the game (and Steam) non-elevated.
+- `!!! eye N INVALID projection` in `ovrshim.log` - your headset reports a projection
+  outside the documented OpenVR convention; please open an issue with both logs.
+- Black headset right after changing resolution - check `ovrshim.log` for a
+  `render: eye targets ... (app swapchain changed)` line; if it is missing, open an
+  issue with both logs.
+
+Two behaviors to know about: while the **SteamVR dashboard is open, controller input is
+paused** (the game sees an unfocused session - close the dashboard to resume), and
+quitting SteamVR mid-game drops the game back to flat rendering (it keeps running;
+restart the game to re-enter VR after SteamVR is back).
+
+To force a path, create `%LOCALAPPDATA%\BioshockVR\xr.ini` containing:
+
+```
+[runtime]
+mode=steamvr
+```
+
+`mode=auto` (default) tries the native runtime first; `mode=native` never uses the shim;
+`mode=steamvr` skips the native runtime entirely.
+
+Controller coverage under SteamVR: Quest/Touch and Index have full bindings; Vive wands
+and WMR have partial defaults (no face buttons exist - jump/heal/reload are unbound out
+of the box). Any of it can be rebound in SteamVR's own controller binding UI, which
+always wins over the shipped defaults. WMR bindings have not been verified on hardware.
 
 ## Advanced: pointing the loader at a runtime with `XR_RUNTIME_JSON`
 

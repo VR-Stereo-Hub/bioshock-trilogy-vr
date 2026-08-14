@@ -362,6 +362,24 @@ constexpr uint32_t kPairHoldMaxMs = 500;
 std::atomic<uint32_t> g_srPairs{0}, g_srPairAborts{0};
 std::atomic<bool> g_loggedFirstPair{false};
 
+// Session 62: the [pair] probe (issue #31 - BS2 left-eye double image on
+// SteamVR). The shipped [flick] instrument measures bone restamps and came
+// back CLEAN from the reporter, so the untested layer is per-eye present
+// pairing: the RIGHT present submits both eyes' most-recently-released
+// images, and any pair break leaves the LEFT eye stale while the right stays
+// fresh - exactly a left-eye-only double image under head motion. These
+// cumulative counters cover every break mechanism the code audit named;
+// drained per-minute by the BS2 adapter next to [flick] (pair_probe()).
+std::atomic<uint32_t> g_pmAbortExpired{0}, g_pmAbortLeft{0}, g_pmAbortUntag{0};
+std::atomic<uint32_t> g_pmCap[2] = {};       // SR captures per eye
+std::atomic<uint32_t> g_pmAcqFail{0}, g_pmWaitFail{0};
+std::atomic<uint32_t> g_pmUntaggedProj{0};   // untagged present captured in projection mode
+std::atomic<uint32_t> g_pmRebuilds{0};
+std::atomic<uint32_t> g_pmStereoSubmits{0}, g_pmStaleL{0}, g_pmStaleR{0};
+std::atomic<uint32_t> g_pmAgeMax[2] = {};    // worst capture age at submit, ms
+std::atomic<uint64_t> g_pmLastCapMs[2] = {}; // tick of last SR capture per eye
+constexpr uint32_t kPmStaleAgeMs = 50; // > any healthy cadence (SR ~14ms, AER ~28ms)
+
 // Session 42 (Infinite I6 judder): pair-CADENCE statistics. The judder question
 // is not "how many pairs per second" but "how EVENLY are they spaced" - a mean
 // of 13.9 ms with 5 ms of swing reprojects differently every frame while both
@@ -1847,6 +1865,9 @@ void destroy_swapchains() {
     // Whatever a queued rebuild was for, it has just happened.
     g_resizePending.store(false, std::memory_order_relaxed);
     reset_aer(); // the held eye images died with the swapchains
+    g_pmRebuilds.fetch_add(1, std::memory_order_relaxed); // [pair] probe
+    g_pmLastCapMs[0].store(0, std::memory_order_relaxed);
+    g_pmLastCapMs[1].store(0, std::memory_order_relaxed);
 }
 
 // Lazy: sized to the HUD capture RT, format = the eye swapchains' pick
@@ -2730,6 +2751,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
                 kPairHoldMaxMs);
         g_srPairOpen = false;
         g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+        g_pmAbortExpired.fetch_add(1, std::memory_order_relaxed);
     }
 
     // M8 (a): headset idle (session left FOCUSED after having held it) - skip
@@ -3603,6 +3625,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
             }
         } else {
             g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+            // [pair] probe: name the break. A second LEFT means the previous
+            // left's sibling never presented (the lone-tag mechanism);
+            // untagged means the pair closed on a non-stereo present.
+            if (srSign < 0)
+                g_pmAbortLeft.fetch_add(1, std::memory_order_relaxed);
+            else
+                g_pmAbortUntag.fetch_add(1, std::memory_order_relaxed);
         }
     }
     bool pairHold = srFrame && srSign < 0 && !pairSecond &&
@@ -3629,10 +3658,18 @@ void on_present_end(IDXGISwapChain* swapchain) {
             int target = srFrame ? srEye
                          : (aerActive && imageSign == currentEyeSign) ? g_currentEye
                                                                       : 0;
+            // [pair] probe: an untagged present in projection mode captures
+            // into the LEFT swapchain (index 0) - candidate mechanism for a
+            // wrong-content left eye.
+            if (projectionMode && !srFrame && !aerActive)
+                g_pmUntaggedProj.fetch_add(1, std::memory_order_relaxed);
             uint32_t index = 0;
             int64_t tAcq = phase_now();
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-            if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_swapchains[target], &ai, &index))) {
+            XrResult acqRes = xrAcquireSwapchainImage(g_swapchains[target], &ai, &index);
+            if (XR_FAILED(acqRes))
+                g_pmAcqFail.fetch_add(1, std::memory_order_relaxed);
+            if (XR_SUCCEEDED(acqRes)) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
                 bool imageReady;
@@ -3641,6 +3678,12 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     imageReady = XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi));
                 }
                 phase_record(kPhAcquire, tAcq);
+                if (!imageReady)
+                    // The release below still runs (spec requires it), which
+                    // makes an UNDEFINED-content image the eye's most recently
+                    // released one - counted, because that is one of the
+                    // stale-left candidate mechanisms.
+                    g_pmWaitFail.fetch_add(1, std::memory_order_relaxed);
                 if (imageReady) {
                     // Same size + same typeless family (guaranteed at creation),
                     // so a straight GPU copy carries the frame - overlay
@@ -3678,6 +3721,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     else
                         g_eyePose[srEye] = gen[srEye].pose;
                     g_eyeValid[srEye] = true;
+                    g_pmCap[srEye].fetch_add(1, std::memory_order_relaxed);
+                    g_pmLastCapMs[srEye].store(GetTickCount64(),
+                                               std::memory_order_relaxed);
                     if (!g_loggedFirstSr.exchange(true))
                         BVR_LOG("xr: first SequentialReentry eye frame captured "
                                 "(eye %c)", srEye == 0 ? 'L' : 'R');
@@ -3742,6 +3788,25 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     // with the per-eye located poses. Converges in 2 frames.
                     bool stereo = (aerActive || srFrame) && g_eyeValid[0] &&
                                   g_eyeValid[1];
+                    // [pair] probe: THE quantity for issue #31. A stereo
+                    // submit references each eye's most-recently-released
+                    // image; if the left one is old, the left eye shows a
+                    // stale frame with a stale pose - the double image.
+                    if (stereo) {
+                        g_pmStereoSubmits.fetch_add(1, std::memory_order_relaxed);
+                        const uint64_t nowMs = GetTickCount64();
+                        for (int e = 0; e < 2; ++e) {
+                            uint64_t last = g_pmLastCapMs[e].load(std::memory_order_relaxed);
+                            if (last == 0) continue; // AER fills these too; 0 = untracked
+                            uint32_t age = static_cast<uint32_t>(nowMs - last);
+                            if (age > kPmStaleAgeMs)
+                                (e == 0 ? g_pmStaleL : g_pmStaleR)
+                                    .fetch_add(1, std::memory_order_relaxed);
+                            uint32_t m = g_pmAgeMax[e].load(std::memory_order_relaxed);
+                            while (age > m && !g_pmAgeMax[e].compare_exchange_weak(
+                                                  m, age, std::memory_order_relaxed)) {}
+                        }
+                    }
                     for (int eye = 0; eye < 2; ++eye) {
                         if (stereo) {
                             projViews[eye].pose = g_eyePose[eye];
@@ -5032,6 +5097,34 @@ void sr_push_eye(int eyeSign) {
     g_srPushed.fetch_add(1, std::memory_order_relaxed);
 }
 
+void pair_probe(PairProbe* out) {
+    if (!out) return;
+    out->pairs = g_srPairs.load(std::memory_order_relaxed);
+    out->aborts = g_srPairAborts.load(std::memory_order_relaxed);
+    out->abortExpired = g_pmAbortExpired.load(std::memory_order_relaxed);
+    out->abortLeft = g_pmAbortLeft.load(std::memory_order_relaxed);
+    out->abortUntagged = g_pmAbortUntag.load(std::memory_order_relaxed);
+    out->cap[0] = g_pmCap[0].load(std::memory_order_relaxed);
+    out->cap[1] = g_pmCap[1].load(std::memory_order_relaxed);
+    out->acqFail = g_pmAcqFail.load(std::memory_order_relaxed);
+    out->waitFail = g_pmWaitFail.load(std::memory_order_relaxed);
+    out->untaggedProj = g_pmUntaggedProj.load(std::memory_order_relaxed);
+    out->rebuilds = g_pmRebuilds.load(std::memory_order_relaxed);
+    out->stereoSubmits = g_pmStereoSubmits.load(std::memory_order_relaxed);
+    out->staleL = g_pmStaleL.load(std::memory_order_relaxed);
+    out->staleR = g_pmStaleR.load(std::memory_order_relaxed);
+    // Drained on read (like the [flick] dmax window): the caller's cadence
+    // defines the window, so the printed worst age lines up with the minute
+    // the user reports seeing the defect.
+    out->ageMaxL = g_pmAgeMax[0].exchange(0, std::memory_order_relaxed);
+    out->ageMaxR = g_pmAgeMax[1].exchange(0, std::memory_order_relaxed);
+    out->ringPushed = g_srPushed.load(std::memory_order_relaxed);
+    out->ringPopped = g_srPopped.load(std::memory_order_relaxed);
+    out->ringDropped = g_srDropped.load(std::memory_order_relaxed);
+    out->ringCleared = g_srCleared.load(std::memory_order_relaxed);
+    out->mirrorOn = g_mirror.load(std::memory_order_relaxed);
+}
+
 } // namespace bvr::vr
 
 #else // !BVR_WITH_OPENXR
@@ -5044,6 +5137,7 @@ void init_instance() {
 void on_present_begin(IDXGISwapChain*) {}
 void on_present_end(IDXGISwapChain*) {}
 void on_resize(unsigned, unsigned, unsigned) {}
+void pair_probe(PairProbe*) {}
 void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
 bool peek_head_pose(HeadPose&) { return false; }

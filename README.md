@@ -3,9 +3,11 @@
 A native VR mod for **BioShock Remastered**, **BioShock 2 Remastered** and **BioShock
 Infinite** (PC, Steam): stereoscopic rendering, 6DOF head tracking, and motion controllers -
 weapons in one hand, plasmids/vigors in the other - targeting Quest 3 via Virtual Desktop
-(VDXR/OpenXR), and any other OpenXR runtime with a **32-bit** loader path. **SteamVR /
-Steam Link is not currently supported** - SteamVR's release channel has no 32-bit OpenXR
-runtime; see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+(VDXR/OpenXR), any other OpenXR runtime with a **32-bit** loader path, and **SteamVR /
+Steam Link through the bundled compatibility shim** (SteamVR has no 32-bit OpenXR runtime
+of its own; the zip ships `bvr_steamvr32.dll` + `openvr_api.dll` and the mod falls back to
+them automatically - covers Index, Vive, WMR and Steam Link; see
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).
 
 One zip serves all three games - the same two DLLs adapt to whichever game they are dropped
 into:
@@ -36,21 +38,23 @@ session. No game files are modified and no game assets are distributed.
 - BioShock Remastered on Steam (`steamapps\common\BioShock Remastered`)
 - A PCVR-capable headset. Primary target: Meta Quest 3 with Virtual Desktop (VDXR); Meta
   Link/Air Link (Oculus runtime) also ships a 32-bit runtime. Any OpenXR runtime with a
-  **32-bit** loader path can work - **SteamVR / Steam Link currently cannot** (no 32-bit
-  runtime in SteamVR's release channel; the beta is untested -
-  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) has the details)
+  **32-bit** loader path works natively; **SteamVR-only setups (Index, Vive, WMR, Steam
+  Link) work through the bundled shim** - install all four DLLs and it engages
+  automatically ([docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) has the details;
+  Quest+VDXR stays the most-tested lane, WMR bindings are unverified on hardware)
 
 ## Install (release zip)
 
-1. Download the release zip and copy **both DLLs** (`xinput1_3.dll`, `bioshockvr.dll`) into the
-   game's binary folder:
+1. Download the release zip and copy **the DLLs** (`xinput1_3.dll`, `bioshockvr.dll`, and -
+   for SteamVR setups - `bvr_steamvr32.dll` + `openvr_api.dll`) into the game's binary folder:
    `...\steamapps\common\BioShock Remastered\Build\Final\`
 2. If you use **itsloopyo's head-tracking mod**, remove or back up its `xinput1_3.dll` first -
    the two mods use the same injection vector and cannot coexist.
 3. Headset side (Quest 3 + Virtual Desktop): in Virtual Desktop's Streaming tab set the OpenXR
    runtime to **VDXR**, connect, then launch the game from Steam inside Virtual Desktop.
-   (Steam Link / SteamVR is not currently supported - see
-   [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) if the mod reports "no OpenXR runtime".)
+   (On Steam Link or a SteamVR-native headset just launch with SteamVR running - the mod
+   falls back to the bundled SteamVR shim by itself; see
+   [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) if anything reports "no OpenXR runtime".)
    **Set the game's resolution to roughly SQUARE, not 16:9** - something like 2700x2700.
    The mod sizes the eye render target from the game's backbuffer, and headset panels are
    near square, so a 16:9 backbuffer renders a wide strip that the headset then throws
@@ -66,7 +70,8 @@ To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
 
 **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** covers every "no VR / flat mode"
 report received so far: the 32-bit OpenXR registry key (and how to fix it per runtime),
-broken 32-bit API layers (ReShade and friends), the SteamVR situation, the
+broken 32-bit API layers (ReShade and friends), the bundled SteamVR shim (how the
+automatic fallback works, its log, the `xr.ini` override, controller coverage), the
 `XR_RUNTIME_JSON` override, and per-game resolution/windowed-mode guidance. The release
 zip ships the same text as `TROUBLESHOOTING.txt`.
 
