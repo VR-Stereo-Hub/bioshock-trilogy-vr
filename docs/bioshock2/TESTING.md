@@ -493,3 +493,18 @@ legs) - the prev.log rotation only keeps one generation.
 
 Remove `%LOCALAPPDATA%\BioshockVR\xr.ini` if created (restores auto mode) and
 set Virtual Desktop back to VDXR.
+
+### S62 addendum: Infinite is covered too (flat-proven)
+
+The shim, the auto-fallback and the new profiles are game-agnostic core - the
+same four DLLs in `Binaries\Win32` give Infinite the identical SteamVR path.
+Flat-proven on the null-driver rig (2026-08-14): BSI booted through the shim
+to FOCUSED with projection layers + SequentialReentry eye frames at its own
+2064x2208. An optional short in-headset BSI pass can ride leg 1 or 2 (launch,
+confirm stereo + hands); it is NOT gating - Infinite is EARLY ACCESS.
+
+Rig trap for future flat SteamVR tests: a fresh SteamVR start with no
+chaperone data AUTO-LAUNCHES Room Setup a few seconds in, and the wizard is a
+scene app - its transition HARD-KILLS the current game. Sequence that works:
+start SteamVR first, kill `steamvr_room_setup.exe` when it pops, THEN launch
+the game. (Real headsets have chaperone data; users never see this.)
