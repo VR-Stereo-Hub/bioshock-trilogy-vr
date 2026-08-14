@@ -24,6 +24,13 @@
 
 namespace bvr::bsi::gfx {
 
+// s62b: forward the game's legacy CreateDXGIFactory (DXGI 1.0) to
+// CreateDXGIFactory1. A device born of a 1.0 chain cannot create keyed-mutex
+// shared resources, which is what SteamVR's vrclient needs for its sync
+// texture - without this every OpenVR Submit fails 106. Install at adapter
+// init, BEFORE the game touches D3D. BSI-only (BS1/BS2 factories are healthy).
+void install_dxgi11_upgrade();
+
 bool handle_command(const char* cmd, const char* args); // bsigfx
 
 // s57: the enumerator as a callable - sweep for live INSTANCES whose class

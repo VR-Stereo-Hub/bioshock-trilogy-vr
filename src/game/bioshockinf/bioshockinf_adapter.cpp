@@ -75,6 +75,9 @@ bool BioshockInfAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // means no way to talk to the mod until the thing being debugged works.
     bvr::command::enable_present_pump();
 
+    // s62b: must land before the game creates its D3D device - see gfx.h.
+    gfx::install_dxgi11_upgrade();
+
     reflect::init(image);
 
     // DR-I2 seam + the I4 drive (drive ships OFF; out-param substitution

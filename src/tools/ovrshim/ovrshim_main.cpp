@@ -599,7 +599,13 @@ OVRSHIM_FN(shim_CreateSession)(
 
     Events_Push(XR_SESSION_STATE_IDLE);
     Events_Push(XR_SESSION_STATE_READY);
-    SLOG("xrCreateSession ok (device=%p)", g_st.dev);
+    // s62b: the game device's identity decides whether vrclient's sharing
+    // interop can work at all (BioShock Infinite's refuses keyed mutexes).
+    // Flags: 0x1 SINGLETHREADED, 0x20 BGRA_SUPPORT, 0x2 DEBUG, 0x800
+    // PREVENT_INTERNAL_THREADING.
+    SLOG("xrCreateSession ok (device=%p, featureLevel=0x%04X, creationFlags=0x%X)",
+         g_st.dev, (unsigned)g_st.dev->GetFeatureLevel(),
+         (unsigned)g_st.dev->GetCreationFlags());
     return XR_SUCCESS;
 }
 
