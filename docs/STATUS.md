@@ -134,20 +134,40 @@ order supersedes the s60 one):**
 1. ~~**BS1 hand & weapon scaling**~~ **DONE + ACCEPTED s61** - calibration baked
    as defaults and into the shipped preset (0.793/0.793 hands, 0.760 weapon).
    Rung CLOSED.
-2. **SteamVR support** *(NOW THE TOP PRIORITY)* - adapt BioVR's `OpenXRShim`
-   (OpenXR-on-OpenVR DLL; their docs/modules/shim.md documents the GetProjectionRaw
-   U/D trap that cost them weeks) + add Index/Vive/WMR interaction profiles to
-   `openxr_input.cpp` + a loader-choice install step. Their clone is at
-   C:/Users/user/AppData/Local/Temp/biovr (re-clone if gone - scratchpad paths are
-   too long for git). **NO LONGER HARDWARE-BLOCKED (user, 2026-08-14): testable via
-   Virtual Desktop's SteamVR option AND via Steam Link - test BOTH legs. Quest 3
-   controllers/support stay THE default and must not regress; other hardware
-   (Index/Vive/WMR/G2/PSVR2) does not need full verification for now.**
-3. **BS2 left-eye flicker** (issue #31) - **do it in the SAME session as rung 2 if
-   possible**: the one user log we have was captured on SteamVR/OpenXR 2.17.6 on
-   lighthouse hardware, so running our own SteamVR leg is the most likely repro
-   lane. Log received 2026-08-14 (see the s61 addendum below for what it does and
-   does not show). Restamp race vs pair-break.
+2. ~~**SteamVR support**~~ **DONE + HEADSET-ACCEPTED s62 for BS1/BS2** (user,
+   2026-08-14, via Steam Link: "worked flawlessly", shim runtime visible in
+   F10). `bvr_steamvr32.dll` (BioVR's OpenXRShim rebuilt as a real
+   manifest-discovered OpenXR runtime) + Index/Vive/WMR native profiles +
+   in-mod auto-fallback via XR_RUNTIME_JSON (xr.ini mode=auto|native|steamvr).
+   Survives SteamVR quit/crash (drops flat). Zip ships 4 DLLs. TWO FOLLOW-UPS
+   from the headset run:
+   - **BSI on SteamVR: broken** - shim active (F10 confirms), headset stuck in
+     the SteamVR void, game stayed flat on the monitor, and NO input worked
+     (controller OR keyboard - could not even navigate the main menu). Shape
+     matches BSI's pause-on-focus-loss trait (the game freezes unfocused, and
+     under Steam Link the desktop window likely never got focus): frames stop,
+     nothing submits, input eaten by the pause. Flat null-driver BSI E2E
+     PASSED (FOCUSED + SR eye frames), so it is an in-headset focus/present
+     interaction, not the shim path. Non-gating (BSI is early access) - own
+     follow-up session.
+   - **Virtual Desktop's SteamVR toggle does NOT take for these games** - the
+     32-bit lane stayed VDXR regardless (user report). Harmless for real users
+     (VDXR working is the good outcome); documented so nobody chases it as a
+     bug. SteamVR testing lane = Steam Link.
+3. **BS2 left-eye flicker** (issue #31) - *(s62: instrumented; NOT reproduced
+   in the user's Steam Link attempt - but a NEW ON-DEMAND LEAD found)*: **on
+   every SHOT the hand visibly snaps to its original (authored) pose and back
+   within a split second** (user, s62 headset run on SteamVR). That is a
+   restamp-shaped defect with a per-shot trigger - the first reproducible
+   flicker this rung has had, and plausibly the same root as the reporter's
+   symptom. NEXT SESSION: flat-first fire-snap hunt in the sim save (drive
+   fire via the pad seam, correlate per-shot with [flick]/vrbones catches and
+   the [pair] line; if the counters stay clean while the snap renders, the
+   revert is NOT on the driven banks - hunt the actual writer: recoil anim
+   event, actor-rotation lane, weapon socket). Open question for the user:
+   does the fire-snap also happen on VDXR, or only under the shim? The [pair]
+   instrument + capture recipe (TESTING S62 leg 1 step 5) remain the reporter
+   deliverable if their symptom differs.
 4. **"No OpenXR runtime" / does-not-enter-VR fix + user-facing help** (issues #29,
    #35, #37) - some users get no VR at all on non-VDXR runtimes and the documented
    fix steps have not worked for everyone. Wants a real fix where there is one, and
@@ -7523,6 +7543,97 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 62b (same day) - HEADSET VERDICTS: BS1/BS2 SteamVR ACCEPTED; BSI-SteamVR broken; fire-snap lead
+
+**MERGE PENDING:** `mod-followups` is checked out by the parallel
+input-fixes worktree, so this session's branch
+`claude/steamvr-support-flicker-4aa33c` is pushed but NOT yet merged.
+Merge it into `mod-followups` when that worktree releases the branch.
+
+User ran the S62 legs (Steam Link; VD's SteamVR toggle never moved the 32-bit
+lane off VDXR - documented, harmless):
+
+1. **BS1 + BS2 on SteamVR via Steam Link: "worked flawlessly"** - shim runtime
+   confirmed in F10. RUNG 2 CLOSED for the shipped games.
+2. **BSI on SteamVR: shim armed but unusable** - headset in the SteamVR void,
+   game flat on the monitor, ALL input dead (pad + keyboard, menu unreachable).
+   Matches the pause-on-focus-loss trait; flat E2E passed, so it is the
+   in-headset focus/present interaction. Follow-up session; non-gating.
+3. **Issue-#31 flicker: not reproduced** in the user's attempt, BUT a NEW
+   on-demand lead: **every shot makes the hand snap to its authored pose and
+   back for a split second**. Restamp-shaped, per-shot trigger, first
+   reproducible flicker on this rung - next session hunts it flat-first
+   (fire via the pad seam, correlate with [flick]/[pair]/vrbones per shot).
+   Open: does it also happen on VDXR?
+
+### Session 62 - 2026-08-14 - STEAMVR SUPPORT BUILT + FLAT-VERIFIED (rung 2) + [pair] instrument (rung 3 widening)
+
+**Rung 2 code-complete and flat-verified end-to-end; headset legs pending (user
+checklist: TESTING.md "S62"). Rung 3 instrumented; repro attempt rides the same
+headset session.** Branch `claude/steamvr-support-flicker-4aa33c` off
+`mod-followups`.
+
+1. **Native profiles (commit 1):** valve/index_controller + htc/vive_controller
+   + microsoft/motion_controller suggested bindings beside touch/simple;
+   boolean squeeze/click feeds the FLOAT grips via spec conversion; Vive/WMR
+   leave btn_b/x/y unbound (advisory logged). Sim accepts all five profiles
+   (19/6/17/14/15 bindings, typo-catcher preserved, touch stays authoritative).
+2. **The shim (commits 2-3): `bvr_steamvr32.dll`** - BioVR's OpenXRShim
+   (permission recorded in THIRD_PARTY_NOTICES.md) rebuilt from their
+   openxr_loader.dll filename hijack into a REAL OpenXR runtime: sole export
+   xrNegotiateLoaderRuntimeInterface, GIPA dispatch (xrsim shape) - a missing
+   function is a runtime error, never the donor's error-127 load failure.
+   Added the 4 entry points the mod calls that the donor lacked (enumerate-
+   extensions, GetSystemProperties, GetActionStatePose, ResultToString), quad
+   cap 8->16, dynamic eye-target rebuild (BS2 mid-session resolution change),
+   float-read digital fallback (closes the donor's open 'WMR radials' hazard),
+   binding manifests regenerated per launch for OUR 19-action 'gameplay' set.
+   KEPT VERBATIM: GetProjectionRaw U=b/D=t direct assignment, NO swap guard,
+   validate-and-shout (the donor's costliest bug - weeks; desktop mirror is
+   not a witness); WaitGetPoses pacing; Dq=50m; ColorSpace_Gamma; __cdecl
+   entry points vs __stdcall FnTable. OpenVR SDK 2.15.6 vendored
+   (third_party/openvr_headers, BSD-3, sha256 pins; openvr_api.dll committed
+   per user decision).
+3. **Runtime selection (commit 5):** xr.ini mode=auto|native|steamvr (NOT a
+   vrpreset key - the F10 save would eat it); auto = native first, then write
+   manifest + SetEnvironmentVariable(XR_RUNTIME_JSON) + retry IN-PROCESS
+   (loader re-runs discovery env-var-first while nothing is loaded - verified
+   in the vendored loader). No registry writes. Healthy native = byte-for-byte
+   today's flow (sim-regressed). Elevation warning; ActiveRuntime heuristic
+   logs but never decides. This likely closes most of rung 4 - the -51
+   explainer now names the bundled fix.
+4. **Quit resilience (found by E2E, fixed):** an OpenVR scene app that lingers
+   after VREvent_Quit is HARD-KILLED by vrserver ~5s later (no dump, no WER) -
+   that is what killed the first two E2E runs (Room Setup auto-launching as a
+   scene app triggered the transition). The shim now acknowledges and severs
+   the OpenVR connection at session destroy; the game drops to flat and lives.
+   Verified: hard vrserver kill mid-stereo -> BS1 kept running flat.
+5. **E2E flat proof (SteamVR 2.16.7, null driver, no headset):** xr_hello32
+   FULL PASS through the shim; BS1 booted via the shim to FOCUSED with FULL
+   alternate-eye stereo + HUD quad + aim laser live on real SteamVR.
+6. **[pair] instrument (rung 3 widening):** core pair_probe() counters (pairs,
+   aborts by kind incl. lone-left, per-eye captures, acquire/wait failures,
+   untagged-in-projection, rebuilds, and capture AGE at stereo submit - stale
+   left age IS the double image) + BS2 [pair] minute line beside [flick] with
+   pass-2 skip reasons split (every skip fires after the left tag = lone-left
+   candidate) and vrmirror state. Sim baseline at the save: pairs=1145
+   cap=1145/1146 ab=0 stale=0/0 skew=0. Healthy/defect shapes: VERIFICATION.md.
+7. **Traps burned:** SteamVR scene-app transitions kill the current scene app
+   (Room Setup, SteamVR Home - rig disables Home, ignores Room Setup);
+   force-killed vrserver leaves Steam's appid state stuck ('Running' - user
+   must click STOP); vrmonitor close does NOT stop vrserver while a client
+   is connected; the null driver refuses Room Setup's establish-tracking step
+   (wizard unnecessary - compositor accepts frames without chaperone data).
+8. **Open, needs the headset (user checklist TESTING.md S62):** VDXR sanity
+   (leg 0), VD-SteamVR leg 1 (watch for VDXR's 32-bit key wrongly winning
+   while SteamVR owns the headset - xr.ini mode=steamvr is the documented
+   override, and a miss here feeds rung 4), Steam Link leg 2, and the BS2
+   chapter-2 flicker hunt at 2888x3088 -> mid-session 5160x5520 with the
+   [pair] line watching. Release builds INSTALLED to BS1+BS2; tuned presets
+   backed up (*.s62-backup-*). If no repro after a real attempt: ship the
+   reporter a build + the leg-1-step-5 recipe verbatim (play protocol, clock
+   the minute, vrmirror A/B).
 
 ### Session 61 - 2026-08-14 - BS1 HAND & WEAPON SCALING SOLVED (ladder rung 1)
 

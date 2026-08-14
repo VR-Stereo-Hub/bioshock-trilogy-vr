@@ -85,6 +85,160 @@ const BindingEntry kSimple[] = {
     {"/user/hand/right/output/haptic", VC_NONE, 1},
 };
 
+// valve/index_controller: full component set (s62). Driven controls mirror the
+// mod's native Index table: A/B exist on BOTH hands (left a/b feed X/Y), menu
+// is a firm left-trackpad press (boolean action on the float force component),
+// no thumbrest exists so VC_REST never resolves on this profile.
+const BindingEntry kIndex[] = {
+    {"/user/hand/left/input/thumbstick", VC_STICK_L, 0},
+    {"/user/hand/right/input/thumbstick", VC_STICK_R, 1},
+    {"/user/hand/left/input/trigger/value", VC_TRIGGER_L, 0},
+    {"/user/hand/right/input/trigger/value", VC_TRIGGER_R, 1},
+    {"/user/hand/left/input/squeeze/value", VC_SQUEEZE_L, 0},
+    {"/user/hand/right/input/squeeze/value", VC_SQUEEZE_R, 1},
+    {"/user/hand/right/input/a/click", VC_BTN_A, 1},
+    {"/user/hand/right/input/b/click", VC_BTN_B, 1},
+    {"/user/hand/left/input/a/click", VC_BTN_X, 0},
+    {"/user/hand/left/input/b/click", VC_BTN_Y, 0},
+    {"/user/hand/left/input/thumbstick/click", VC_CLICK_L, 0},
+    {"/user/hand/right/input/thumbstick/click", VC_CLICK_R, 1},
+    {"/user/hand/left/input/trackpad/force", VC_MENU, 0},
+    {"/user/hand/left/input/grip/pose", VC_POSE_GRIP_L, 0},
+    {"/user/hand/right/input/grip/pose", VC_POSE_GRIP_R, 1},
+    {"/user/hand/left/input/aim/pose", VC_POSE_AIM_L, 0},
+    {"/user/hand/right/input/aim/pose", VC_POSE_AIM_R, 1},
+    // Accepted, not driven - what a real Index controller exposes.
+    {"/user/hand/left/input/system/click", VC_NONE, 0},
+    {"/user/hand/right/input/system/click", VC_NONE, 1},
+    {"/user/hand/left/input/system/touch", VC_NONE, 0},
+    {"/user/hand/right/input/system/touch", VC_NONE, 1},
+    {"/user/hand/left/input/a/touch", VC_NONE, 0},
+    {"/user/hand/right/input/a/touch", VC_NONE, 1},
+    {"/user/hand/left/input/b/touch", VC_NONE, 0},
+    {"/user/hand/right/input/b/touch", VC_NONE, 1},
+    {"/user/hand/left/input/squeeze/force", VC_NONE, 0},
+    {"/user/hand/right/input/squeeze/force", VC_NONE, 1},
+    {"/user/hand/left/input/trigger/click", VC_NONE, 0},
+    {"/user/hand/right/input/trigger/click", VC_NONE, 1},
+    {"/user/hand/left/input/trigger/touch", VC_NONE, 0},
+    {"/user/hand/right/input/trigger/touch", VC_NONE, 1},
+    {"/user/hand/left/input/thumbstick/x", VC_NONE, 0},
+    {"/user/hand/left/input/thumbstick/y", VC_NONE, 0},
+    {"/user/hand/right/input/thumbstick/x", VC_NONE, 1},
+    {"/user/hand/right/input/thumbstick/y", VC_NONE, 1},
+    {"/user/hand/left/input/thumbstick/touch", VC_NONE, 0},
+    {"/user/hand/right/input/thumbstick/touch", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad/x", VC_NONE, 0},
+    {"/user/hand/left/input/trackpad/y", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad/x", VC_NONE, 1},
+    {"/user/hand/right/input/trackpad/y", VC_NONE, 1},
+    {"/user/hand/right/input/trackpad/force", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad/touch", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad/touch", VC_NONE, 1},
+    {"/user/hand/left/output/haptic", VC_NONE, 0},
+    {"/user/hand/right/output/haptic", VC_NONE, 1},
+};
+
+// htc/vive_controller: wands. Trackpad parent path feeds the sticks; squeeze
+// is a CLICK (boolean) that the mod binds to its FLOAT grip actions - the sim
+// maps it onto the analog squeeze rig channel, mirroring the runtime's 0/1
+// conversion closely enough for the flat fence. Right menu/click feeds BTN_A
+// (the mod's use/interact) - table-local mapping, deliberately different from
+// kSimple's right menu.
+const BindingEntry kVive[] = {
+    {"/user/hand/left/input/trackpad", VC_STICK_L, 0},
+    {"/user/hand/right/input/trackpad", VC_STICK_R, 1},
+    {"/user/hand/left/input/trigger/value", VC_TRIGGER_L, 0},
+    {"/user/hand/right/input/trigger/value", VC_TRIGGER_R, 1},
+    {"/user/hand/left/input/squeeze/click", VC_SQUEEZE_L, 0},
+    {"/user/hand/right/input/squeeze/click", VC_SQUEEZE_R, 1},
+    {"/user/hand/right/input/menu/click", VC_BTN_A, 1},
+    {"/user/hand/left/input/menu/click", VC_MENU, 0},
+    {"/user/hand/left/input/trackpad/click", VC_CLICK_L, 0},
+    {"/user/hand/right/input/trackpad/click", VC_CLICK_R, 1},
+    {"/user/hand/left/input/grip/pose", VC_POSE_GRIP_L, 0},
+    {"/user/hand/right/input/grip/pose", VC_POSE_GRIP_R, 1},
+    {"/user/hand/left/input/aim/pose", VC_POSE_AIM_L, 0},
+    {"/user/hand/right/input/aim/pose", VC_POSE_AIM_R, 1},
+    // Accepted, not driven.
+    {"/user/hand/left/input/system/click", VC_NONE, 0},
+    {"/user/hand/right/input/system/click", VC_NONE, 1},
+    {"/user/hand/left/input/trigger/click", VC_NONE, 0},
+    {"/user/hand/right/input/trigger/click", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad/x", VC_NONE, 0},
+    {"/user/hand/left/input/trackpad/y", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad/x", VC_NONE, 1},
+    {"/user/hand/right/input/trackpad/y", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad/touch", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad/touch", VC_NONE, 1},
+    {"/user/hand/left/output/haptic", VC_NONE, 0},
+    {"/user/hand/right/output/haptic", VC_NONE, 1},
+};
+
+// microsoft/motion_controller: thumbstick + trackpad, digital squeeze (same
+// analog-channel mapping argument as Vive), no face buttons - trackpad clicks
+// feed BTN_A (right) and BTN_X (left).
+const BindingEntry kWmr[] = {
+    {"/user/hand/left/input/thumbstick", VC_STICK_L, 0},
+    {"/user/hand/right/input/thumbstick", VC_STICK_R, 1},
+    {"/user/hand/left/input/trigger/value", VC_TRIGGER_L, 0},
+    {"/user/hand/right/input/trigger/value", VC_TRIGGER_R, 1},
+    {"/user/hand/left/input/squeeze/click", VC_SQUEEZE_L, 0},
+    {"/user/hand/right/input/squeeze/click", VC_SQUEEZE_R, 1},
+    {"/user/hand/right/input/trackpad/click", VC_BTN_A, 1},
+    {"/user/hand/left/input/trackpad/click", VC_BTN_X, 0},
+    {"/user/hand/left/input/thumbstick/click", VC_CLICK_L, 0},
+    {"/user/hand/right/input/thumbstick/click", VC_CLICK_R, 1},
+    {"/user/hand/left/input/menu/click", VC_MENU, 0},
+    {"/user/hand/left/input/grip/pose", VC_POSE_GRIP_L, 0},
+    {"/user/hand/right/input/grip/pose", VC_POSE_GRIP_R, 1},
+    {"/user/hand/left/input/aim/pose", VC_POSE_AIM_L, 0},
+    {"/user/hand/right/input/aim/pose", VC_POSE_AIM_R, 1},
+    // Accepted, not driven.
+    {"/user/hand/right/input/menu/click", VC_NONE, 1},
+    {"/user/hand/left/input/thumbstick/x", VC_NONE, 0},
+    {"/user/hand/left/input/thumbstick/y", VC_NONE, 0},
+    {"/user/hand/right/input/thumbstick/x", VC_NONE, 1},
+    {"/user/hand/right/input/thumbstick/y", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad/x", VC_NONE, 0},
+    {"/user/hand/left/input/trackpad/y", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad/x", VC_NONE, 1},
+    {"/user/hand/right/input/trackpad/y", VC_NONE, 1},
+    {"/user/hand/left/input/trackpad/touch", VC_NONE, 0},
+    {"/user/hand/right/input/trackpad/touch", VC_NONE, 1},
+    {"/user/hand/left/output/haptic", VC_NONE, 0},
+    {"/user/hand/right/output/haptic", VC_NONE, 1},
+};
+
+// Profile registry. `authoritative` marks the ONE profile whose bindings may
+// overwrite an already-resolved control - the sim presents as a Quest 3, so
+// touch stays the profile the rig actually drives; every other table only
+// fills VC_NONE slots (first-writer), preserving the s62 typo-catcher without
+// letting a SteamVR-family suggestion steal a resolved touch control.
+struct ProfileEntry {
+    const char* profile;
+    const char* shortName;
+    const BindingEntry* table;
+    size_t n;
+    bool authoritative;
+};
+const ProfileEntry kProfiles[] = {
+    {"/interaction_profiles/oculus/touch_controller", "touch", kTouch,
+     sizeof(kTouch) / sizeof(kTouch[0]), true},
+    {"/interaction_profiles/khr/simple_controller", "simple", kSimple,
+     sizeof(kSimple) / sizeof(kSimple[0]), false},
+    {"/interaction_profiles/valve/index_controller", "index", kIndex,
+     sizeof(kIndex) / sizeof(kIndex[0]), false},
+    {"/interaction_profiles/htc/vive_controller", "vive", kVive,
+     sizeof(kVive) / sizeof(kVive[0]), false},
+    {"/interaction_profiles/microsoft/motion_controller", "wmr", kWmr,
+     sizeof(kWmr) / sizeof(kWmr[0]), false},
+};
+
 const BindingEntry* find_binding(const BindingEntry* table, size_t n, const char* path) {
     for (size_t i = 0; i < n; ++i)
         if (strcmp(table[i].path, path) == 0) return &table[i];
@@ -239,17 +393,18 @@ static XrResult impl_SuggestInteractionProfileBindings(
     if (!info) return XR_ERROR_VALIDATION_FAILURE;
 
     const char* profile = path_str(info->interactionProfile);
-    const bool isTouch = profile && strcmp(profile, "/interaction_profiles/oculus/touch_controller") == 0;
-    const bool isSimple = profile && strcmp(profile, "/interaction_profiles/khr/simple_controller") == 0;
-    if (!isTouch && !isSimple) {
+    const ProfileEntry* pe = nullptr;
+    for (const ProfileEntry& cand : kProfiles) {
+        if (profile && strcmp(profile, cand.profile) == 0) {
+            pe = &cand;
+            break;
+        }
+    }
+    if (!pe) {
         XRSIM_LOG("xrsim: interaction profile '%s' is not supported by this runtime",
                   profile ? profile : "(null)");
         return XR_ERROR_PATH_UNSUPPORTED;
     }
-
-    const BindingEntry* table = isTouch ? kTouch : kSimple;
-    const size_t n = isTouch ? (sizeof(kTouch) / sizeof(kTouch[0]))
-                             : (sizeof(kSimple) / sizeof(kSimple[0]));
 
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_attached) return XR_ERROR_ACTIONSETS_ALREADY_ATTACHED;
@@ -258,18 +413,18 @@ static XrResult impl_SuggestInteractionProfileBindings(
     for (uint32_t i = 0; i < info->countSuggestedBindings; ++i) {
         const XrActionSuggestedBinding& b = info->suggestedBindings[i];
         const char* p = path_str(b.binding);
-        const BindingEntry* e = find_binding(table, n, p ? p : "");
+        const BindingEntry* e = find_binding(pe->table, pe->n, p ? p : "");
         if (!e) {
             XRSIM_LOG("xrsim: binding path '%s' is not on the %s profile - REJECTED",
-                      p ? p : "(null)", isTouch ? "touch" : "simple");
+                      p ? p : "(null)", pe->shortName);
             return XR_ERROR_PATH_UNSUPPORTED;
         }
         SimAction* a = action_get(b.action);
         if (!a) return XR_ERROR_HANDLE_INVALID;
 
-        // The touch profile is the one the mod actually runs on; a simple-profile
-        // suggestion must not overwrite a resolved touch binding.
-        if (isTouch || a->control == VC_NONE) {
+        // The touch profile is the one the mod actually runs on; no other
+        // profile's suggestion may overwrite a resolved control.
+        if (pe->authoritative || a->control == VC_NONE) {
             a->control = e->control;
             a->hand = e->hand;
         }
@@ -277,7 +432,7 @@ static XrResult impl_SuggestInteractionProfileBindings(
     }
 
     XRSIM_LOG("xrsim: %u binding(s) suggested on the %s profile, %u driven",
-              info->countSuggestedBindings, isTouch ? "touch" : "simple", bound);
+              info->countSuggestedBindings, pe->shortName, bound);
     return XR_SUCCESS;
 }
 

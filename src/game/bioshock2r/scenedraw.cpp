@@ -97,6 +97,12 @@ std::atomic<int> g_pulseCount{0};
 std::atomic<float> g_secondYawDeg{30.0f}; // probe mode: yaw on pass 2
 std::atomic<bool> g_stereo{false};
 std::atomic<uint32_t> g_stereoSkips{0}; // pass 2 skipped (gate/stall)
+// s62 [pair] instrument: split the two skip REASONS out of g_stereoSkips
+// (which keeps its combined meaning for the heartbeat). Every skip here fires
+// AFTER DrawDetour already pushed the LEFT tag, so each one is a lone-left
+// pair break on the present side - the prime issue-#31 suspect on a slow rig.
+std::atomic<uint32_t> g_skipCalcSilent{0};   // calcview_silent gate
+std::atomic<uint32_t> g_skipPresentStall{0}; // presentDelta == 0 gate
 std::atomic<uint32_t> g_secondCalls{0};
 std::atomic<uint32_t> g_secondPassTid{0};
 std::atomic<uint32_t> g_secondPassHits{0};
@@ -793,6 +799,7 @@ void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void*
     // camera dispatch - a doubled frame would replay a stale base.
     if (camera::calcview_silent(400)) {
         g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        g_skipCalcSilent.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     // Present-stall guard: no present landed between the previous Draw and
@@ -801,6 +808,7 @@ void maybe_second_draw(void* ecx, void* edx, void* a1, void* a2, void* a3, void*
     // instrument stays usable for A/B while paused.
     if (presentDelta == 0 && !pulse) {
         g_stereoSkips.fetch_add(1, std::memory_order_relaxed);
+        g_skipPresentStall.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     // SESSION 34 - THE FREEZE IS IN HERE, AND FOCUS IS NOT THE GATE.
@@ -929,12 +937,18 @@ void heartbeat(uint64_t now) {
     static uint64_t s_flickStartMs = 0;
     static uint64_t s_flickWindowMs = 0;
     static bones::FlickerStats s_prev = {};
+    static bvr::vr::PairProbe s_prevPair = {};
+    static uint32_t s_prevSkipSilent = 0, s_prevSkipStall = 0, s_prevSkipForeign = 0;
     static uint32_t s_prevStreams = 0, s_prevWait2 = 0, s_prevSet2 = 0,
                     s_prevFlush = 0;
     if (s_flickWindowMs == 0) {
         s_flickStartMs = now;
         s_flickWindowMs = now;
         bones::flicker_snapshot(&s_prev);
+        bvr::vr::pair_probe(&s_prevPair);
+        s_prevSkipSilent = g_skipCalcSilent.load(std::memory_order_relaxed);
+        s_prevSkipStall = g_skipPresentStall.load(std::memory_order_relaxed);
+        s_prevSkipForeign = g_foreignCallerSkips.load(std::memory_order_relaxed);
         s_prevStreams = streams;
         s_prevWait2 = wait2;
         s_prevSet2 = set2;
@@ -964,6 +978,50 @@ void heartbeat(uint64_t now) {
                 wait2 - s_prevWait2, set2 - s_prevSet2, flush - s_prevFlush,
                 cur.worldChanges - s_prev.worldChanges,
                 cur.wRescans - s_prev.wRescans);
+    }
+    // ---- Session 62: the [pair] minute line (issue #31 widening) -----------
+    // The reporter's [flick] came back CLEAN, which the playbook reads as "the
+    // surviving defect is NOT on the driven bone banks" - so this line covers
+    // the layer [flick] cannot see: per-eye present pairing. All quantities
+    // are per-window deltas except age (current window max, ms). A healthy
+    // minute reads pairs~=capL~=capR, everything else 0, age < ~20 ms.
+    //   ab: total pair aborts = exp (hold expired) + lft (second left while a
+    //       pair was open = lone-left) + unt (untagged completed the pair)
+    //   stale: stereo submits whose eye capture was > 50 ms old - the direct
+    //       measure of "the left eye showed an old frame"
+    //   skip: pass-2 skips AFTER the left tag was pushed (silent/stall/foreign)
+    //   ring: pushed/popped/dropped/skew-cleared; reb: swapchain rebuilds
+    if (bones::flicker_log()) {
+        bvr::vr::PairProbe pp = {};
+        bvr::vr::pair_probe(&pp);
+        uint32_t skipSilent = g_skipCalcSilent.load(std::memory_order_relaxed);
+        uint32_t skipStall = g_skipPresentStall.load(std::memory_order_relaxed);
+        uint32_t skipForeign = g_foreignCallerSkips.load(std::memory_order_relaxed);
+        BVR_LOG("[pair] min=%llu pairs=%u ab=%u(exp=%u lft=%u unt=%u) "
+                "cap=%u/%u stale=%u/%u age<=%u/%u ms acqF=%u waitF=%u untag=%u "
+                "skip=%u/%u/%u ring=%u/%u/%u skew=%u reb=%u mirror=%d",
+                static_cast<unsigned long long>((now - s_flickStartMs) / 60000),
+                pp.pairs - s_prevPair.pairs, pp.aborts - s_prevPair.aborts,
+                pp.abortExpired - s_prevPair.abortExpired,
+                pp.abortLeft - s_prevPair.abortLeft,
+                pp.abortUntagged - s_prevPair.abortUntagged,
+                pp.cap[0] - s_prevPair.cap[0], pp.cap[1] - s_prevPair.cap[1],
+                pp.staleL - s_prevPair.staleL, pp.staleR - s_prevPair.staleR,
+                pp.ageMaxL, pp.ageMaxR,
+                pp.acqFail - s_prevPair.acqFail,
+                pp.waitFail - s_prevPair.waitFail,
+                pp.untaggedProj - s_prevPair.untaggedProj,
+                skipSilent - s_prevSkipSilent, skipStall - s_prevSkipStall,
+                skipForeign - s_prevSkipForeign,
+                pp.ringPushed - s_prevPair.ringPushed,
+                pp.ringPopped - s_prevPair.ringPopped,
+                pp.ringDropped - s_prevPair.ringDropped,
+                pp.ringCleared - s_prevPair.ringCleared,
+                pp.rebuilds - s_prevPair.rebuilds, pp.mirrorOn ? 1 : 0);
+        s_prevPair = pp;
+        s_prevSkipSilent = skipSilent;
+        s_prevSkipStall = skipStall;
+        s_prevSkipForeign = skipForeign;
     }
     s_prev = cur;
     s_prevStreams = streams;

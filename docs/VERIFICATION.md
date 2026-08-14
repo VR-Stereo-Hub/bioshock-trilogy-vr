@@ -397,6 +397,16 @@ compare against rather than a guess:
   write->catch latency maxima + cadence baseline. Ambient sim baseline at the
   save: pe1 ~1900/min hands + ~950/min wskel, everything else 0, dmax 16 ms.
   Read any 12+ min play log for the ~10-min flicker onset correlation.
+- **`[pair] min=N ...` once per minute** (BS2, s62 - issue #31 widening): the
+  present-pairing layer [flick] cannot see. Healthy minute: `pairs ~= cap L ~=
+  cap R` (one pair per game tick), `ab=0`, `stale=0/0`, `age<=` under ~20 ms,
+  `acqF/waitF/untag=0`, `skip` small, `ring` pushed==popped, `skew=0`, `reb=0`.
+  The defect signatures: `stale=N/0` with a large `age<=` left value = the LEFT
+  eye re-showed an old frame (the reporter's double image); `lft` counts
+  lone-left pair breaks (a pass-2 skip after the left tag - see `skip`
+  silent/stall/foreign for WHY); `reb>0` marks the mid-session resolution
+  change the reporter performed. `mirror` prints the vrmirror pin state so a
+  `vrmirror off` A/B is legible in the same log line.
 - **BS2 pause menu**: seam commands and the pad are BOTH dead while paused (the
   PE-tail service lane starves - ENGINE_NOTES s42 #4); an unfocused-paused game
   writes nothing and false-positives log-age wedge checks. `game-key Space` wakes
