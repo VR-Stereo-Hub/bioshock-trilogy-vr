@@ -191,14 +191,71 @@ uintptr_t sweep_region(uintptr_t begin, uintptr_t end, uintptr_t xorNeedle, uint
 // case a chance before falling back; still 64 compares per block.
 constexpr uint32_t kBlockProbeSpan = 256;
 
-// Guarded per-heap walk. The __except swallows and falls through to HeapUnlock,
+// SESSION 62f - THE HEAP HANDLE CAN DIE UNDER US, AND LOCK/UNLOCK FAULT TOO.
+//
+// A user crash (BioShock 1, loading a save, v0.8.1) landed at ntdll reading
+// [handle+0x08] - a destroyed heap's SegmentSignature - with the faulting
+// address in a MEM_FREE region. The engine destroys heaps during a level load,
+// and this scanner re-arms exactly then ("entered gameplay view"), so the
+// handle list captured by GetProcessHeaps can name a heap that no longer
+// exists by the time we lock it.
+//
+// The walk below was already guarded, but HeapLock and HeapUnlock sat OUTSIDE
+// the __try - so the guard covered the fault we imagined (mid-walk) and missed
+// the one that actually happens (at the lock). These two helpers exist so every
+// heap API call in this file is inside SEH; they take no C++ objects, which is
+// what __try requires (C2712).
+bool heap_lock_seh(HANDLE heap) {
+    __try {
+        return HeapLock(heap) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false; // stale handle: skip this heap, keep scanning the rest
+    }
+}
+
+void heap_unlock_seh(HANDLE heap) {
+    __try {
+        HeapUnlock(heap);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // Destroyed while we held it. Nothing to release - the lock died with
+        // the heap, so there is no wedge to worry about.
+    }
+}
+
+// Is this handle still a live process heap? Cheap (RtlProcessHeaps is a memcpy
+// of a small array) and it turns the common case from "take an access
+// violation and recover" into "never touch the dead handle". It does NOT close
+// the race on its own - the heap can still die between this check and the lock
+// - which is why heap_lock_seh above is the actual guarantee.
+bool heap_still_live(HANDLE heap) {
+    HANDLE live[96];
+    DWORD n = 0;
+    __try {
+        n = GetProcessHeaps(static_cast<DWORD>(std::size(live)), live);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    if (n > std::size(live)) n = static_cast<DWORD>(std::size(live));
+    for (DWORD i = 0; i < n; ++i)
+        if (live[i] == heap) return true;
+    return false;
+}
+
+// Guarded per-heap walk. The __except swallows and falls through to the unlock,
 // so the unlock runs on both paths: a fault that escaped with the lock held
 // would wedge that heap for the life of the process, blocking every thread that
 // allocates from it. HeapLock is re-entrant for the calling thread, so an accept
 // filter that allocated (none may) could not self-deadlock either.
 void walk_one_heap(HANDLE heap, uintptr_t xorNeedle, uint32_t needBytes, Accept accept, void* user,
                    Sweep* s) {
-    if (!HeapLock(heap)) return;
+    if (!heap_still_live(heap)) {
+        ++s->deadHeaps;
+        return;
+    }
+    if (!heap_lock_seh(heap)) {
+        ++s->deadHeaps;
+        return;
+    }
     __try {
         PROCESS_HEAP_ENTRY e{};
         while (HeapWalk(heap, &e)) {
@@ -228,9 +285,10 @@ void walk_one_heap(HANDLE heap, uintptr_t xorNeedle, uint32_t needBytes, Accept 
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // Fall through to __finally; the rest of this heap is abandoned.
+        // The rest of this heap is abandoned; the unlock below still runs.
+        ++s->faultedHeaps;
     }
-    HeapUnlock(heap);
+    heap_unlock_seh(heap);
 }
 
 } // namespace
@@ -300,6 +358,8 @@ void Sweep::reset() {
     recorded = 0;
     blocks = 0;
     heaps = 0;
+    deadHeaps = 0;
+    faultedHeaps = 0;
     snapshot_excludes(excludes, &excludeMissed);
     excludeSpans = excludes.count;
 }
@@ -367,7 +427,14 @@ bool heap_blocks(Sweep& s, const void* wantVtable, uint32_t needBytes, Accept ac
     const uintptr_t xorNeedle = reinterpret_cast<uintptr_t>(wantVtable) ^ kNeedleMask;
 
     HANDLE heaps[96];
-    DWORD n = GetProcessHeaps(static_cast<DWORD>(std::size(heaps)), heaps);
+    DWORD n = 0;
+    // s62f: even the enumeration is guarded - it reads the process heap list
+    // while other threads may be creating and destroying heaps.
+    __try {
+        n = GetProcessHeaps(static_cast<DWORD>(std::size(heaps)), heaps);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        n = 0;
+    }
     if (n > std::size(heaps)) n = static_cast<DWORD>(std::size(heaps));
     for (DWORD i = 0; i < n; ++i) {
         if (!heaps[i]) continue;

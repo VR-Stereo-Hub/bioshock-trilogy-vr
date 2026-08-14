@@ -102,6 +102,12 @@ struct Sweep {
 
     uint32_t blocks = 0; // busy heap blocks examined (heap_blocks only)
     uint32_t heaps = 0;  // heaps walked (heap_blocks only)
+    // s62f: heaps the scan declined to touch because the handle was already
+    // dead (destroyed by a level load between enumeration and lock), and heaps
+    // whose walk faulted and was abandoned. Both were CRASHES before v0.8.2 -
+    // non-zero here is the guard doing its job, not a defect.
+    uint32_t deadHeaps = 0;
+    uint32_t faultedHeaps = 0;
 
     void reset();
 };
