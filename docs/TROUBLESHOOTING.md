@@ -116,6 +116,13 @@ and WMR have partial defaults (no face buttons exist - jump/heal/reload are unbo
 of the box). Any of it can be rebound in SteamVR's own controller binding UI, which
 always wins over the shipped defaults. WMR bindings have not been verified on hardware.
 
+Quest-specific notes: switching Virtual Desktop's OpenXR runtime to "SteamVR" does
+**not** move these 32-bit games off VDXR - they keep using VDXR, which is the better
+outcome anyway (native, faster). To actually play through SteamVR on a Quest, use
+**Steam Link** (verified working on BioShock 1 and 2). BioShock Infinite currently does
+not render into the headset under SteamVR (known issue - the game pauses without window
+focus); use VDXR for Infinite.
+
 ## Advanced: pointing the loader at a runtime with `XR_RUNTIME_JSON`
 
 The OpenXR loader honours the `XR_RUNTIME_JSON` environment variable **before** the
