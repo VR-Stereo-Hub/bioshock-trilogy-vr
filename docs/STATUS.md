@@ -141,15 +141,11 @@ order supersedes the s60 one):**
    in-mod auto-fallback via XR_RUNTIME_JSON (xr.ini mode=auto|native|steamvr).
    Survives SteamVR quit/crash (drops flat). Zip ships 4 DLLs. TWO FOLLOW-UPS
    from the headset run:
-   - **BSI on SteamVR: broken** - shim active (F10 confirms), headset stuck in
-     the SteamVR void, game stayed flat on the monitor, and NO input worked
-     (controller OR keyboard - could not even navigate the main menu). Shape
-     matches BSI's pause-on-focus-loss trait (the game freezes unfocused, and
-     under Steam Link the desktop window likely never got focus): frames stop,
-     nothing submits, input eaten by the pause. Flat null-driver BSI E2E
-     PASSED (FOCUSED + SR eye frames), so it is an in-headset focus/present
-     interaction, not the shim path. Non-gating (BSI is early access) - own
-     follow-up session.
+   - **BSI on SteamVR: FIXED s62c (flat A-B-A; headset re-test pending)** -
+     root cause was Infinite's legacy DXGI 1.0 factory chain breaking
+     vrclient's texture sharing (every Submit failed 106 -> SteamVR void; no
+     display focus -> no input). BSI adapter now upgrades CreateDXGIFactory to
+     CreateDXGIFactory1 at init. See the s62c session-log entry.
    - **Virtual Desktop's SteamVR toggle does NOT take for these games** - the
      32-bit lane stayed VDXR regardless (user report). Harmless for real users
      (VDXR working is the good outcome); documented so nobody chases it as a
@@ -164,10 +160,11 @@ order supersedes the s60 one):**
    fire via the pad seam, correlate per-shot with [flick]/vrbones catches and
    the [pair] line; if the counters stay clean while the snap renders, the
    revert is NOT on the driven banks - hunt the actual writer: recoil anim
-   event, actor-rotation lane, weapon socket). Open question for the user:
-   does the fire-snap also happen on VDXR, or only under the shim? The [pair]
-   instrument + capture recipe (TESTING S62 leg 1 step 5) remain the reporter
-   deliverable if their symptom differs.
+   event, actor-rotation lane, weapon socket). ANSWERED (user, s62b): the
+   fire-snap ALSO happens on VDXR - engine-inherent, not shim timing, which
+   makes the flat sim hunt fully representative. The [pair] instrument +
+   capture recipe (TESTING S62 leg 1 step 5) remain the reporter deliverable
+   if their symptom differs.
 4. **"No OpenXR runtime" / does-not-enter-VR fix + user-facing help** (issues #29,
    #35, #37) - some users get no VR at all on non-VDXR runtimes and the documented
    fix steps have not worked for everyone. Wants a real fix where there is one, and
@@ -7543,6 +7540,35 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 62c (same day) - BSI-SteamVR ROOT-CAUSED AND FIXED FLAT (DXGI 1.0 factory)
+
+The s62b BSI symptom (SteamVR void + dead input, shim armed) is SOLVED at the
+root, flat A-B-A on the null rig; in-headset Steam Link re-test pending.
+
+- **Evidence chain:** ovrshim.log showed every Submit failing 106
+  SharedTexturesNotSupported; vrclient_BioShockInfinite.txt named it: "Failed
+  to create sync texture. Ensure application was built using DXGI 1.1 (i.e.
+  Call CreateDXGIFactory1)". Falsifications: MISC_SHARED on the eye targets
+  did NOT fix it; a fresh shim-owned FL11 submit device did NOT fix it (the
+  failure follows the process); TextureType_DXGISharedHandle moved the error
+  to 105. Discriminator: CreateTexture2D(MISC_SHARED_KEYEDMUTEX) returns
+  E_INVALIDARG on BSI's device but passes on BS1's - both FL11, creationFlags
+  0x0. Conclusion: Infinite enumerates its adapter via legacy DXGI 1.0
+  CreateDXGIFactory, and 1.0-chain devices cannot create the keyed-mutex
+  resources vrclient's sync texture needs.
+- **Fix (BSI adapter, decoupled):** gfx::install_dxgi11_upgrade() forwards
+  CreateDXGIFactory -> CreateDXGIFactory1 at adapter init (before the game
+  touches D3D) - literally the vrclient advice, applied for the game. Verified
+  hook + upgrade log lines, keyed-mutex probe now PASSES, and submits went
+  ok=0/fail=291 per 5s -> ok=300/fail=0 on the DIRECT path (BS1-identical).
+  Dead input was downstream of the same cause (SteamVR routes input only to
+  the app it displays); expected fixed - user confirms on Steam Link.
+- **Shim hardening kept from the hunt:** keyed-mutex probe with pre-engaged
+  DXGI-shared-handle submit fallback (for any OTHER app with a 1.0 chain),
+  5s submit outcome heartbeat (transition-only logging is what let dead
+  submits read as healthy for a whole session), named compositor errors,
+  device identity log (featureLevel/creationFlags) at session create.
 
 ### Session 62b (same day) - HEADSET VERDICTS: BS1/BS2 SteamVR ACCEPTED; BSI-SteamVR broken; fire-snap lead
 

@@ -494,7 +494,7 @@ legs) - the prev.log rotation only keeps one generation.
 Remove `%LOCALAPPDATA%\BioshockVR\xr.ini` if created (restores auto mode) and
 set Virtual Desktop back to VDXR.
 
-### S62 addendum: Infinite is covered too (flat-proven)
+### S62 addendum: Infinite is covered too (flat-proven; see the s62c correction)
 
 The shim, the auto-fallback and the new profiles are game-agnostic core - the
 same four DLLs in `Binaries\Win32` give Infinite the identical SteamVR path.
@@ -508,3 +508,17 @@ chaperone data AUTO-LAUNCHES Room Setup a few seconds in, and the wizard is a
 scene app - its transition HARD-KILLS the current game. Sequence that works:
 start SteamVR first, kill `steamvr_room_setup.exe` when it pops, THEN launch
 the game. (Real headsets have chaperone data; users never see this.)
+
+**s62c CORRECTION + FIX:** the "flat-proven" claim above was wrong at the
+submit level - every BSI Submit was failing 106 SharedTexturesNotSupported and
+only error TRANSITIONS were logged, so the log read healthy (the in-headset
+symptom: SteamVR void + dead input). Root cause: Infinite enumerates its
+adapter via the legacy DXGI 1.0 CreateDXGIFactory, and devices from a 1.0
+chain cannot create the keyed-mutex resources vrclient's sync texture needs
+(E_INVALIDARG measured; an identical-looking BS1 device passes). Fix: the BSI
+adapter now forwards CreateDXGIFactory to CreateDXGIFactory1 at init
+(gfx.cpp install_dxgi11_upgrade). Flat A-B-A on the null rig: ok=0/fail=291
+per 5 s before, ok=300/fail=0 direct-path after. The shim gained a keyed-mutex
+probe with a DXGI-shared-handle submit fallback, a 5 s submit heartbeat
+(transition-only logging is what hid this), named compositor errors, and a
+device identity log line. In-headset Steam Link re-test: pending.

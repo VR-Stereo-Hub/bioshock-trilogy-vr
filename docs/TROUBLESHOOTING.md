@@ -119,9 +119,10 @@ always wins over the shipped defaults. WMR bindings have not been verified on ha
 Quest-specific notes: switching Virtual Desktop's OpenXR runtime to "SteamVR" does
 **not** move these 32-bit games off VDXR - they keep using VDXR, which is the better
 outcome anyway (native, faster). To actually play through SteamVR on a Quest, use
-**Steam Link** (verified working on BioShock 1 and 2). BioShock Infinite currently does
-not render into the headset under SteamVR (known issue - the game pauses without window
-focus); use VDXR for Infinite.
+**Steam Link** (verified working). BioShock Infinite needs a v0.8.1+ build for SteamVR:
+older builds left the headset in the SteamVR void with dead input (the game's DXGI 1.0
+graphics setup broke SteamVR's texture sharing; the mod now upgrades it at launch - the
+log line is `[bsi] gfx: game's CreateDXGIFactory upgraded to CreateDXGIFactory1`).
 
 ## Advanced: pointing the loader at a runtime with `XR_RUNTIME_JSON`
 

@@ -57,6 +57,52 @@ static ID3D11Texture2D*         g_eyeTex[2][2] = {};   // [parity][eye]
 static ID3D11RenderTargetView*  g_eyeRtv[2][2] = {};
 static uint32_t                 g_eyeW = 0, g_eyeH = 0; // size the targets were built at
 
+// s62b (BioShock Infinite): SHARED-HANDLE SUBMIT fallback. Infinite's D3D11
+// stack makes vrclient's app-side sharing interop fail outright ("Failed to
+// create sync texture. Ensure application was built using DXGI 1.1",
+// vrclient_BioShockInfinite.txt) - every direct Submit returns 106, and the
+// failure follows the PROCESS, not the submitted texture's device (a fresh
+// shim-owned FL11 device was refused identically; keyed-mutex texture
+// creation fails with E_INVALIDARG on the game device). The fix sidesteps
+// vrclient's app-side machinery entirely: the eye targets are MISC_SHARED,
+// and the fallback submits their DXGI shared HANDLE with
+// TextureType_DXGISharedHandle - vrcompositor opens the handle SERVER-side,
+// so no sync texture is ever created in the app. Engaged by the render-init
+// probe (or on the first 106) so BS1/BS2 keep their proven direct path.
+// Sync: legacy shared handles carry no fence; the game context is Flush()ed
+// before the submits. If cross-process tearing ever shows in a headset, the
+// next rung is a copy into a keyed-mutex texture where supported.
+static HANDLE g_eyeSharedHandle[2][2] = {};   // [parity][eye], owned by the texture
+static bool   g_useSharedSubmit = false;
+static bool   g_sharedSetupFailed = false;
+
+// Resolve the DXGI shared handle of every eye texture. Failure is not fatal -
+// direct submit stays in place. Handles are invalidated by ReleaseEyeTargets
+// and re-resolved here after a rebuild.
+static bool EnsureSharedSubmit()
+{
+    if (g_sharedSetupFailed) return false;
+    for (int p = 0; p < 2; ++p)
+        for (int e = 0; e < 2; ++e)
+        {
+            if (g_eyeSharedHandle[p][e] || !g_eyeTex[p][e]) continue;
+            IDXGIResource* res = nullptr;
+            HANDLE h = nullptr;
+            if (FAILED(g_eyeTex[p][e]->QueryInterface(__uuidof(IDXGIResource), (void**)&res)) ||
+                FAILED(res->GetSharedHandle(&h)) || !h)
+            {
+                SLOG("!!! shared-submit: cannot get the shared handle of eye "
+                     "texture [%d][%d]", p, e);
+                if (res) res->Release();
+                g_sharedSetupFailed = true;
+                return false;
+            }
+            res->Release();
+            g_eyeSharedHandle[p][e] = h;
+        }
+    return true;
+}
+
 static bool CreateEyeTargets()
 {
     D3D11_TEXTURE2D_DESC td = {};
@@ -68,6 +114,15 @@ static bool CreateEyeTargets()
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    // SHARED (s62b, BioShock Infinite): Submit hands these textures to the
+    // compositor cross-process. When they are not shareable, vrclient falls
+    // back to an internal shared-copy path that needs the GAME's device to
+    // cooperate - and Infinite's UE3 device refuses, so every Submit failed
+    // with 106 SharedTexturesNotSupported (headset stuck in the void, SteamVR
+    // never granted the app scene focus, which also killed controller input).
+    // A pre-shared texture short-circuits that path entirely. BS1/BS2 devices
+    // never needed this but are unaffected by it.
+    td.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
     for (int p = 0; p < 2; ++p)
         for (int e = 0; e < 2; ++e)
         {
@@ -90,8 +145,11 @@ static void ReleaseEyeTargets()
         {
             if (g_eyeRtv[p][e]) { g_eyeRtv[p][e]->Release(); g_eyeRtv[p][e] = nullptr; }
             if (g_eyeTex[p][e]) { g_eyeTex[p][e]->Release(); g_eyeTex[p][e] = nullptr; }
+            g_eyeSharedHandle[p][e] = nullptr; // dies with its texture
         }
     g_eyeW = g_eyeH = 0;
+    // A rebuild invalidates the handles but not the engaged mode -
+    // EnsureSharedSubmit re-resolves them on the next shared Submit.
 }
 
 bool Render_Init()
@@ -183,8 +241,45 @@ bool Render_Init()
 
     if (!CreateEyeTargets()) return false;
 
+    // s62b: PRE-ENGAGE the shim-owned submit device when the game device
+    // cannot support vrclient's sync texture (a keyed-mutex shared texture -
+    // the exact thing vrclient creates at first Submit; BioShock Infinite's
+    // DXGI 1.0-era device fails it). Pre-engaging matters because vrclient
+    // latches the failure once the FIRST submit trips it - switching devices
+    // afterwards does not un-latch 106.
+    {
+        D3D11_TEXTURE2D_DESC pd = {};
+        pd.Width = 32;
+        pd.Height = 32;
+        pd.MipLevels = 1;
+        pd.ArraySize = 1;
+        pd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        pd.SampleDesc.Count = 1;
+        pd.Usage = D3D11_USAGE_DEFAULT;
+        pd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        pd.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+        ID3D11Texture2D* probe = nullptr;
+        HRESULT phr = g_st.dev->CreateTexture2D(&pd, nullptr, &probe);
+        if (SUCCEEDED(phr) && probe)
+        {
+            probe->Release();
+        }
+        else
+        {
+            SLOG("game device refuses keyed-mutex shared textures (0x%08X) - "
+                 "vrclient's sync texture would fail; pre-engaging DXGI "
+                 "shared-handle submits", (unsigned)phr);
+            if (EnsureSharedSubmit())
+                g_useSharedSubmit = true;
+            else
+                SLOG("!!! shared-submit setup failed too - submits will "
+                     "likely return 106");
+        }
+    }
+
     g_rInit = true;
-    SLOG("render: init ok, eye targets %ux%u", g_st.rtW, g_st.rtH);
+    SLOG("render: init ok, eye targets %ux%u%s", g_st.rtW, g_st.rtH,
+         g_useSharedSubmit ? " (shared-handle submit)" : "");
     return true;
 }
 
@@ -396,19 +491,83 @@ void Render_CompositeAndSubmit(const ProjDrawView* proj, const QuadDraw* quads, 
     ID3D11RenderTargetView* nullRtv = nullptr;
     c->OMSetRenderTargets(1, &nullRtv, nullptr);
 
+    // Shared-submit path needs the game context flushed so the compositing
+    // draws are visible to the other device before the compositor copies.
+    if (g_useSharedSubmit)
+    {
+        if (!EnsureSharedSubmit()) g_useSharedSubmit = false; // degrade to direct
+        else c->Flush();
+    }
+
     for (int e = 0; e < 2; ++e)
     {
         Texture_t tex;
-        tex.handle = g_eyeTex[parity][e];
-        tex.eType = ETextureType_TextureType_DirectX;
+        const bool sharedPath = g_useSharedSubmit && g_eyeSharedHandle[parity][e];
+        tex.handle = sharedPath ? (void*)g_eyeSharedHandle[parity][e]
+                                : (void*)g_eyeTex[parity][e];
+        tex.eType = sharedPath ? ETextureType_TextureType_DXGISharedHandle
+                               : ETextureType_TextureType_DirectX;
         tex.eColorSpace = EColorSpace_ColorSpace_Gamma;
-        const EVRCompositorError ce =
+        EVRCompositorError ce =
             g_vr.comp->Submit((EVREye)e, &tex, nullptr, EVRSubmitFlags_Submit_Default);
+
+        // s62b: 106 means vrclient cannot run its app-side sharing interop in
+        // this process (BioShock Infinite - see the block comment at
+        // EnsureSharedSubmit). Engage the shared-handle path from the NEXT
+        // submit on; no same-eye retry (the failing submit still counts as
+        // this frame's submission - a retry earns 108 AlreadySubmitted and a
+        // compositor warning).
+        if (ce == EVRCompositorError_VRCompositorError_SharedTexturesNotSupported &&
+            !g_useSharedSubmit && EnsureSharedSubmit())
+        {
+            g_useSharedSubmit = true;
+            SLOG("Submit rejected the app-side interop (106) - switching to "
+                 "DXGI shared-handle submits from the next frame");
+            c->Flush();
+        }
+
         static EVRCompositorError lastErr = EVRCompositorError_VRCompositorError_None;
+        if (ce == EVRCompositorError_VRCompositorError_None &&
+            lastErr != EVRCompositorError_VRCompositorError_None)
+        {
+            // Recovery must be as loud as failure - the s62b null-rig A-B-A
+            // read 'still broken' for a frame path that had already healed
+            // because only ERROR transitions were logged.
+            SLOG("Submit healthy again (eye %d, %s path)", e,
+                 g_useSharedSubmit ? "shared-handle" : "direct");
+            lastErr = EVRCompositorError_VRCompositorError_None;
+        }
         if (ce != EVRCompositorError_VRCompositorError_None && ce != lastErr)
         {
-            SLOG("!!! Submit eye %d -> compositor error %d", e, (int)ce);
+            // Name the error - "106" cost a headset session to decode (s62b).
+            const char* name =
+                ce == EVRCompositorError_VRCompositorError_DoNotHaveFocus ? "DoNotHaveFocus"
+                : ce == EVRCompositorError_VRCompositorError_InvalidTexture ? "InvalidTexture"
+                : ce == EVRCompositorError_VRCompositorError_IsNotSceneApplication ? "IsNotSceneApplication"
+                : ce == EVRCompositorError_VRCompositorError_TextureIsOnWrongDevice ? "TextureIsOnWrongDevice"
+                : ce == EVRCompositorError_VRCompositorError_TextureUsesUnsupportedFormat ? "TextureUsesUnsupportedFormat"
+                : ce == EVRCompositorError_VRCompositorError_SharedTexturesNotSupported ? "SharedTexturesNotSupported"
+                : ce == EVRCompositorError_VRCompositorError_IndexOutOfRange ? "IndexOutOfRange"
+                : ce == EVRCompositorError_VRCompositorError_AlreadySubmitted ? "AlreadySubmitted"
+                : "?";
+            SLOG("!!! Submit eye %d -> compositor error %d (%s)", e, (int)ce, name);
             lastErr = ce;
+        }
+
+        // 5s outcome heartbeat: transition-only logging hid a dead frame path
+        // for a whole headset session (s62b) - absolute counts cannot.
+        static uint32_t hbOk = 0, hbFail = 0;
+        static ULONGLONG hbT0 = 0;
+        (ce == EVRCompositorError_VRCompositorError_None ? hbOk : hbFail)++;
+        const ULONGLONG now = GetTickCount64();
+        if (hbT0 == 0) hbT0 = now;
+        if (now - hbT0 >= 5000)
+        {
+            SLOG("submit heartbeat: ok=%u fail=%u in %llums (%s path)",
+                 hbOk, hbFail, (unsigned long long)(now - hbT0),
+                 g_useSharedSubmit ? "shared-handle" : "direct");
+            hbOk = hbFail = 0;
+            hbT0 = now;
         }
     }
 

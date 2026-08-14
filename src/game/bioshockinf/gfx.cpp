@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <MinHook.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +15,71 @@
 #include "game/bioshockinf/reflect.h"
 
 namespace bvr::bsi::gfx {
+namespace {
+
+// ---- DXGI 1.1 factory upgrade (s62b) ---------------------------------------
+// This game enumerates its adapter through the LEGACY CreateDXGIFactory
+// (DXGI 1.0), and a D3D11 device born of a 1.0 chain cannot create keyed-mutex
+// shared resources (CreateTexture2D(MISC_SHARED_KEYEDMUTEX) = E_INVALIDARG,
+// measured s62b - an otherwise identical FL11/flags-0 BS1 device passes).
+// SteamVR's vrclient needs exactly that for its cross-process sync texture, so
+// every OpenVR Submit failed with 106 SharedTexturesNotSupported and its log
+// literally advised "Ensure application was built using DXGI 1.1 (i.e. Call
+// CreateDXGIFactory1)". This hook IS that advice, applied for the game:
+// forward CreateDXGIFactory to CreateDXGIFactory1 (identical signatures).
+// Installed at adapter init, which runs before the game touches D3D.
+// BS1/BS2 never call this - their factories are healthy (decoupling rule).
+
+typedef HRESULT(WINAPI* PFN_CreateDXGIFactoryShape)(REFIID, void**);
+PFN_CreateDXGIFactoryShape g_origCreateFactory = nullptr;
+PFN_CreateDXGIFactoryShape g_createFactory1 = nullptr;
+
+HRESULT WINAPI CreateDXGIFactoryDetour(REFIID riid, void** out) {
+    static bool told = false;
+    if (g_createFactory1) {
+        const HRESULT hr = g_createFactory1(riid, out);
+        if (SUCCEEDED(hr)) {
+            if (!told) {
+                told = true;
+                BVR_LOG("[bsi] gfx: game's CreateDXGIFactory upgraded to "
+                        "CreateDXGIFactory1 (DXGI 1.1 - keyed-mutex sharing "
+                        "now possible on its device)");
+            }
+            return hr;
+        }
+        BVR_LOG("[bsi] gfx: CreateDXGIFactory1 failed 0x%08X - falling back to "
+                "the original factory", (unsigned)hr);
+    }
+    return g_origCreateFactory(riid, out);
+}
+
+} // namespace
+
+void install_dxgi11_upgrade() {
+    HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+    if (!dxgi) {
+        BVR_LOG("[bsi] gfx: dxgi.dll not loadable - factory upgrade skipped");
+        return;
+    }
+    void* target = reinterpret_cast<void*>(GetProcAddress(dxgi, "CreateDXGIFactory"));
+    g_createFactory1 = reinterpret_cast<PFN_CreateDXGIFactoryShape>(
+        GetProcAddress(dxgi, "CreateDXGIFactory1"));
+    if (!target || !g_createFactory1) {
+        BVR_LOG("[bsi] gfx: CreateDXGIFactory exports missing - factory "
+                "upgrade skipped");
+        return;
+    }
+    const MH_STATUS cs = MH_CreateHook(target,
+                                       reinterpret_cast<void*>(&CreateDXGIFactoryDetour),
+                                       reinterpret_cast<void**>(&g_origCreateFactory));
+    if (cs != MH_OK || MH_EnableHook(target) != MH_OK) {
+        BVR_LOG("[bsi] gfx: factory upgrade hook failed (%s)", MH_StatusToString(cs));
+        return;
+    }
+    BVR_LOG("[bsi] gfx: DXGI 1.1 factory upgrade hook installed (SteamVR "
+            "sharing interop needs a 1.1 chain)");
+}
+
 namespace {
 
 using bvr::pattern_scan::is_memory_valid;
