@@ -79,7 +79,7 @@ Keep an attribution comment in any file carrying their code.
   deferred to the HUD-hiding session.
 
 **Session 61 (2026-08-14) shipped ladder rung 1 - BS1 hand & weapon scaling, SOLVED
-(sim-verified, awaiting headset calibration):**
+and HEADSET-ACCEPTED ("everything looks perfect", 2026-08-14):**
 
 - The s16 "any chain scale is fatal" verdict was CONFOUNDED: that test still wrote
   bone 43's `.s` at authored value. Scaling the cluster's anchor-relative
@@ -97,7 +97,13 @@ Keep an attribution comment in any file carrying their code.
 - Surfaces: `vrhands scale [l|r|both] <f>` / `vrhands wscale <f>`, F10 sliders in
   the hands section (0.2-4.0 per hand, weapon 0.3-2.5), preset keys
   `handScaleL`/`handScaleR`/`wScale` (cold-boot round-trip verified, 47 values).
-  Defaults 1.0 - **the user calibrates in-headset; checklist in TESTING S61.**
+- **SHIPPED CALIBRATION BAKE (headset-accepted 2026-08-14):** hands 0.793/0.793,
+  weapon 0.760 - baked as the code defaults (bones.cpp) AND into
+  `release/preset-bs1/vrpreset.ini`, which now matches the accepted live preset
+  key-for-key (47/47 verified). The same run re-baked the aim calibration:
+  L trim -11.0/+37.0, R trim +0.2/-4.5, R ray origin right -2.1 up +12.9 cm
+  (aim.cpp defaults + shipped preset). Standing rule, unchanged since v0.3.0:
+  the accepted preset becomes the shipped default.
 - Full derivations + falsification reconciliation: ENGINE_NOTES "Session 61".
 
 **THE SESSION LADDER (user-ordered, s60):**
@@ -7511,7 +7517,11 @@ until the calibration pass.
 - **Shipped surfaces**: `vrhands scale [l|r|both] <f>`, `vrhands wscale <f>`, F10
   sliders (hand 0.2-4.0 per tuning hand + both-hands button, weapon 0.3-2.5),
   preset keys `handScaleL`/`handScaleR`/`wScale` - cold-boot round-trip verified
-  (47 values, wskel auto-binds at the loaded value under auto-VR). Defaults 1.0.
+  (47 values, wskel auto-binds at the loaded value under auto-VR).
+- **HEADSET VERDICT (same day): "everything looks perfect."** Accepted calibration
+  baked as defaults + shipped preset: hands 0.793/0.793, weapon 0.760; aim re-bake
+  L -11.0/+37.0, R +0.2/-4.5, R ray origin right -2.1 up +12.9 cm. Shipped
+  `release/preset-bs1/vrpreset.ini` now matches the accepted live ini 47/47.
 - **Not needed**: route B (DrawScale re-test) and route A (fovA consumer hunt) -
   the cluster lever passed first; both stay recorded in ENGINE_NOTES s61.
 - **Traps for the next session**: BS1's harness commands are ONE PER LINE
@@ -7521,9 +7531,8 @@ until the calibration pass.
   `vrpreset save` during tests CLOBBERS the user's tuned ini - back it up first,
   restore after (done this session, laserOn included).
 
-**Next**: headset calibration checklist (TESTING S61) rides the next headset
-session; ladder rung 2 (roomscale body-follow + snap-turn pivot) is the next
-work session.
+**Next**: rung 1 is CLOSED (calibration accepted and baked). Ladder rung 2
+(roomscale body-follow + snap-turn pivot) is the next work session.
 
 ### Session 60b (same day) - HEADSET VERDICTS IN + round 2: auto-VR at boot, both-sticks recenter chord
 

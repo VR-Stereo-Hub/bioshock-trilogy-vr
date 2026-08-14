@@ -145,7 +145,10 @@ std::atomic<int> g_rAnchorOverride{-1};
 // render reliably - and the reference recapture PINS the scale rows of bones
 // we scale-wrote (see the adopt block) so g_ref can never re-adopt our own
 // write and compound refS * s^n.
-std::atomic<float> g_scale[2] = {1.0f, 1.0f}; // [0] left, [1] right
+// Defaults are the user's session-61 in-headset calibration (2026-08-14,
+// "everything looks perfect") - the same standing rule the aim trims follow:
+// the accepted preset becomes the shipped default. 1.0 = authored size.
+std::atomic<float> g_scale[2] = {0.793f, 0.793f}; // [0] left, [1] right
 // Probe modes (vrbones scalemode <n>): which cluster bones get the .s write.
 // 0 = all except attach/muzzle (intended ship mode), 1 = fingers only (wrist
 // keeps authored .s), 2 = wrist only, 3 = translation-only (no .s anywhere -
@@ -181,7 +184,7 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // channel = captured reference * ws, pinned exactly like the cluster scale.
 // At ws == 1.0 the lane drops the skeleton entirely and restores the
 // captured pose - zero interference at the default.
-std::atomic<float> g_wScale{1.0f};
+std::atomic<float> g_wScale{0.760f}; // s61 in-headset calibration (1.0 = authored)
 void* g_wHoldable = nullptr; // the actor the lane is bound to
 void* g_wSkelInst = nullptr;
 Qts* g_wBones = nullptr;

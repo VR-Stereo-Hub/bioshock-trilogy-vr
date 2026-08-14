@@ -80,11 +80,13 @@ std::atomic<bool> g_muzzleRay{false};
 // posture wants its own trim. 0 = left (plasmid), 1 = right (weapon).
 // Defaults = the user's in-headset calibration (their explicit ask: the
 // saved preset becomes the defaults). Left trim re-baked session 22
-// (2026-07-29 headset run: -7.5/+37.0, "better than before"). The
-// right-hand TRIM stays 0 - the per-weapon profiles own the right hand;
-// its POS offsets below carry the generic baseline.
-std::atomic<float> g_pitchOffsetDeg[2] = {-7.5f, 0.0f};
-std::atomic<float> g_yawOffsetDeg[2] = {37.0f, 0.0f};
+// (2026-07-29 headset run: -7.5/+37.0, "better than before"), and both
+// hands re-baked session 61 (2026-08-14) from the calibration run that
+// accepted hand/weapon scaling - the right hand now carries a small nonzero
+// trim of its own (the per-weapon profiles still override it per weapon;
+// this is the baseline they start from).
+std::atomic<float> g_pitchOffsetDeg[2] = {-11.0f, 0.2f};
+std::atomic<float> g_yawOffsetDeg[2] = {37.0f, -4.5f};
 // Per-hand aim-ray ORIGIN offsets in cm (session 18 part 2, user request):
 // the model offsets move the MESH about its pivot, so a tuned model can sit
 // right while the ray no longer runs along the barrel. These move the RAY
@@ -93,9 +95,9 @@ std::atomic<float> g_yawOffsetDeg[2] = {37.0f, 0.0f};
 // ray's zero-roll basis at ray build, so the laser and the bullet cannot
 // disagree; the model deliberately does not take them (it has its own
 // sliders, and the two are tuned against each other).
-std::atomic<float> g_posFwdCm[2] = {-2.8f, 0.0f};  // v0.3.0 user-calibration bake
-std::atomic<float> g_posRightCm[2] = {0.6f, -2.8f};
-std::atomic<float> g_posUpCm[2] = {0.5f, 7.5f};
+std::atomic<float> g_posFwdCm[2] = {-2.8f, 0.0f};  // v0.3.0 bake, s61 re-bake
+std::atomic<float> g_posRightCm[2] = {0.6f, -2.1f};
+std::atomic<float> g_posUpCm[2] = {0.5f, 12.9f};
 // ---- Session 21: per-weapon profiles ----------------------------------------
 // The RIGHT hand's trim + ray-origin offsets hot-swap per weapon, keyed by
 // the equipped weapon's canonical class name ('Shotgun', 'Pistol', ... via
