@@ -982,6 +982,12 @@ void load_startup_prefs() {
             if (rb >= 0 && rb <= 2)
                 bvr::input::set_recenter_bind(static_cast<bvr::input::RecenterBind>(rb));
         }
+        // Must be read HERE and not with the preset values: the prompt it
+        // answers appears seconds into the launch, long before any preset is
+        // armed. The watcher polls, so setting it a few ms after its thread
+        // starts is still inside the window.
+        else if (strcmp(key, "popupDismiss") == 0)
+            startup_dialog::set_enabled(v != 0.0f);
     }
     fclose(f);
     if (g_autoPresetOnGameplay.load(std::memory_order_relaxed) ||
@@ -2419,6 +2425,31 @@ void draw_debug_ui() {
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
+        bool anchorHands = g_headAnchorHands.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("  ^ head offset moves the hands too", &anchorHands))
+            g_headAnchorHands.store(anchorHands, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The offsets above move the CAMERA. The engine keeps placing the\n"
+                              "hands at its own eye height, so without this a lift decouples\n"
+                              "the two and the gun stops sitting on the controller's axis.\n"
+                              "No effect while both offsets are 0. Uncheck for the old behaviour.");
+        if (ImGui::Button("Measure world scale (20 s)"))
+            apply_command("vrscale", "20");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Logs the engine's camera height while you jump or fall, so\n"
+                              "gravity can be fitted: UU/s^2 / 9.81 = UU per metre, which is\n"
+                              "what World scale above should be. Non-circular - it measures\n"
+                              "the engine's physics, not the setting. tools/fit-worldscale.py\n"
+                              "does the fit. Changes nothing by itself.");
+        bool popup = startup_dialog::enabled();
+        if (ImGui::Checkbox("Auto-answer the post-crash 'revert Options?' prompt", &popup))
+            startup_dialog::set_enabled(popup);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("After an unclean exit the game asks whether to revert video\n"
+                              "options, and it blocks the first Present until answered -\n"
+                              "so in a headset you must find a mouse. This clicks No for you,\n"
+                              "only during a startup window, and only a button that says No.\n"
+                              "Set popupDismiss=1 in vrpreset.ini to have it armed at launch.");
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
         bool hLock = g_heightLock.load(std::memory_order_relaxed);

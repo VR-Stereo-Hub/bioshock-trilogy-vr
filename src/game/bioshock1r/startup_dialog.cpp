@@ -23,7 +23,11 @@ constexpr uint32_t kPollMs = 100;
 const char* kDialogClass = "#32770";
 const char* kDialogTitle = "Message";
 
-std::atomic<bool> g_enabled{true};
+// Default OFF. Answering a dialog on the player's behalf is a product
+// decision, not a bug fix - some people will want to see it. The watcher
+// thread still starts (so a pref loaded a few ms later can enable it
+// inside the startup window), it simply does nothing until asked.
+std::atomic<bool> g_enabled{false};
 std::atomic<bool> g_watching{false};
 std::atomic<uint32_t> g_dismissed{0};
 uint64_t g_initMs = 0;
@@ -79,10 +83,12 @@ void init() {
     }
     CloseHandle(t);
     g_watching.store(true, std::memory_order_relaxed);
-    BVR_LOG("[b1r] startup dialog watcher armed (%u s) - the post-crash "
-            "revert-Options prompt is answered No in-process, so it cannot sit "
-            "between you and the headset ('vrpopup off' to disable)",
-            static_cast<unsigned>(kStartupWindowMs / 1000));
+    BVR_LOG("[b1r] startup dialog watcher started (%u s window) - currently %s. "
+            "When on, the post-crash revert-Options prompt is answered No "
+            "in-process instead of blocking the first Present until someone "
+            "finds a mouse ('vrpopup on', or popupDismiss=1 in vrpreset.ini)",
+            static_cast<unsigned>(kStartupWindowMs / 1000),
+            g_enabled.load(std::memory_order_relaxed) ? "ON" : "off");
 }
 
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }

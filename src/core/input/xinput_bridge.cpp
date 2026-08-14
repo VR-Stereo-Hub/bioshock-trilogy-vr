@@ -66,7 +66,11 @@ std::atomic<uint64_t> g_moveYawOffMs{0};
 // Controller-bound recenter (see the header). The bind default is the
 // thumbrest chord; the request latch is raised on the render thread by the XR
 // action layer and drained on the game thread by the adapter.
-std::atomic<RecenterBind> g_recenterBind{RecenterBind::Thumbrest};
+// Default OFF: this arms a NEW controller binding, and whether the mod
+// should claim two more inputs out of the box is the author's call, not
+// this patch's. `vrinput recenterbind thumbrest` (or the overlay combo)
+// opts in, and recenterBind persists with the other preset values.
+std::atomic<RecenterBind> g_recenterBind{RecenterBind::Off};
 std::atomic<bool> g_recenterRequest{false};
 std::atomic<bool> g_recenterArmed{false};
 std::atomic<bool> g_ammolessWeapon{false};
