@@ -237,3 +237,34 @@ if(BIOSHOCKVR_WITH_OPENXR AND BIOSHOCKVR_WITH_XRSIM)
     # deliberately hold no unwindable objects.
     target_compile_options(bvr_xrsim32 PRIVATE /EHa)
 endif()
+
+# --- bvr_steamvr32 - the SteamVR (OpenXR-on-OpenVR) shim runtime --------------
+# SteamVR ships no 32-bit OpenXR runtime; this DLL is one, backed by OpenVR.
+# Same shape as bvr_xrsim32 (a real runtime the loader discovers via manifest,
+# sole export xrNegotiateLoaderRuntimeInterface, links NOTHING from bioshockvr
+# and not openxr_loader) - but unlike xrsim this one IS shipped: tools/
+# package.ps1 stages it into the release zip together with Valve's
+# openvr_api.dll (third_party/openvr_headers/bin/win32, BSD-3, see
+# PROVENANCE.txt). The mod selects it at runtime by writing a manifest and
+# setting XR_RUNTIME_JSON when no native 32-bit runtime works (openxr_runtime
+# .cpp init_instance). Adapted from BioVRDev's OpenXRShim with permission -
+# THIRD_PARTY_NOTICES.md.
+option(BIOSHOCKVR_WITH_OVRSHIM "Build the SteamVR OpenVR shim runtime (shipped)" ON)
+if(BIOSHOCKVR_WITH_OPENXR AND BIOSHOCKVR_WITH_OVRSHIM)
+    add_library(bvr_ovr_shim SHARED
+        tools/ovrshim/ovrshim.h
+        tools/ovrshim/ovrshim_negotiate.cpp
+        tools/ovrshim/ovrshim_main.cpp
+        tools/ovrshim/ovrshim_render.cpp
+        tools/ovrshim/ovrshim_input.cpp
+        tools/ovrshim/ovrshim.def
+    )
+    set_target_properties(bvr_ovr_shim PROPERTIES PREFIX "" OUTPUT_NAME "bvr_steamvr32")
+    target_include_directories(bvr_ovr_shim PRIVATE
+        tools/ovrshim
+        "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include"
+        "${PROJECT_SOURCE_DIR}/third_party/openvr_headers")
+    # openvr_api.dll and d3dcompiler are LoadLibrary'd at runtime - link only
+    # the D3D11 the compositing pipeline needs.
+    target_link_libraries(bvr_ovr_shim PRIVATE d3d11)
+endif()
