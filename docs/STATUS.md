@@ -27,10 +27,9 @@ game you are working on.
 
 ### POST-v0.8.0 FEEDBACK PROGRAM (session 60, 2026-08-13) - current state and the session ladder
 
-**Branch discipline for this program (user directive, s60): everything lands on the
-integration branch `mod-followups` (off `main` @ 747efc5), one session branch at a time
-merged INTO `mod-followups` - NOT into `main`. `mod-followups` merges to `main` only when
-the whole feedback list is done and the next version ships.**
+**Branch discipline (updated s62e): `mod-followups` merged to `main` for the
+v0.8.1 mini release (2026-08-14) - main is now AT v0.8.1. The remaining ladder
+keeps landing on `mod-followups` first, merged to `main` at the next release.**
 
 **Standing permission (user, s60): explicit green light from the BioVRDev author to COPY
 CODE from https://github.com/BioVRDev/Bioshock-Remastered-VR** (mutual collaboration; the
@@ -7540,6 +7539,21 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 62e (same day) - **v0.8.1 RELEASED**
+
+https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.8.1 - the
+post-0.8.0 feedback batch as a mini release (user call: good stopping point).
+`mod-followups` merged to `main` @ 916371a, tagged v0.8.1; zip carries FOUR
+DLLs (shim + openvr_api join), sha256 53B65DB9...D7A93. Contents: SteamVR/
+Steam Link support (s62/s62c incl. the BSI DXGI 1.1 fix), X+Y pause chord
+(s62d), BS1 hand & weapon scaling + baked calibration (s61), instant move
+direction default-ON, preset auto-load, F10 QoL, TROUBLESHOOTING.txt, the
+[pair] instrument (s62). Discord announcement in dist/discord-v0.8.1.md
+(untracked - regenerate from RELEASE_NOTES if lost). **Branch discipline
+resumes: further ladder work lands on `mod-followups` first; main now at
+v0.8.1.** Pending user verifications carry over: BSI Steam Link re-test,
+X+Y chord in-headset feel.
 
 ### Session 62d (same day) - X+Y menu chord (Steam Link overlay workaround)
 
