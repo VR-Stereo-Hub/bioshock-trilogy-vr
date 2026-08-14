@@ -3,9 +3,13 @@
 A native VR mod for **BioShock Remastered**, **BioShock 2 Remastered** and **BioShock
 Infinite** (PC, Steam): stereoscopic rendering, 6DOF head tracking, and motion controllers -
 weapons in one hand, plasmids/vigors in the other - targeting Quest 3 via Virtual Desktop
-(VDXR/OpenXR) or Steam Link (SteamVR), and any other OpenXR headset.
+(VDXR/OpenXR), any other OpenXR runtime with a **32-bit** loader path, and **SteamVR /
+Steam Link through the bundled compatibility shim** (SteamVR has no 32-bit OpenXR runtime
+of its own; the zip ships `bvr_steamvr32.dll` + `openvr_api.dll` and the mod falls back to
+them automatically - covers Index, Vive, WMR and Steam Link; see
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).
 
-One zip serves all three games - the same two DLLs adapt to whichever game they are dropped
+One zip serves all three games - the same DLL set adapts to whichever game it is dropped
 into:
 
 | game | install folder (under `steamapps\common\`) | status |
@@ -32,19 +36,25 @@ session. No game files are modified and no game assets are distributed.
 ## Requirements
 
 - BioShock Remastered on Steam (`steamapps\common\BioShock Remastered`)
-- A PCVR-capable headset. Primary target: Meta Quest 3 with Virtual Desktop (VDXR) or Steam
-  Link (SteamVR); any OpenXR runtime with a 32-bit loader should work
+- A PCVR-capable headset. Primary target: Meta Quest 3 with Virtual Desktop (VDXR); Meta
+  Link/Air Link (Oculus runtime) also ships a 32-bit runtime. Any OpenXR runtime with a
+  **32-bit** loader path works natively; **SteamVR-only setups (Index, Vive, WMR, Steam
+  Link) work through the bundled shim** - install all four DLLs and it engages
+  automatically ([docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) has the details;
+  Quest+VDXR stays the most-tested lane, WMR bindings are unverified on hardware)
 
 ## Install (release zip)
 
-1. Download the release zip and copy **both DLLs** (`xinput1_3.dll`, `bioshockvr.dll`) into the
-   game's binary folder:
+1. Download the release zip and copy **the DLLs** (`xinput1_3.dll`, `bioshockvr.dll`, and -
+   for SteamVR setups - `bvr_steamvr32.dll` + `openvr_api.dll`) into the game's binary folder:
    `...\steamapps\common\BioShock Remastered\Build\Final\`
 2. If you use **itsloopyo's head-tracking mod**, remove or back up its `xinput1_3.dll` first -
    the two mods use the same injection vector and cannot coexist.
 3. Headset side (Quest 3 + Virtual Desktop): in Virtual Desktop's Streaming tab set the OpenXR
    runtime to **VDXR**, connect, then launch the game from Steam inside Virtual Desktop.
-   (Steam Link / SteamVR works too - the mod talks to whatever OpenXR runtime is active.)
+   (On Steam Link or a SteamVR-native headset just launch with SteamVR running - the mod
+   falls back to the bundled SteamVR shim by itself; see
+   [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) if anything reports "no OpenXR runtime".)
    **Set the game's resolution to roughly SQUARE, not 16:9** - something like 2700x2700.
    The mod sizes the eye render target from the game's backbuffer, and headset panels are
    near square, so a 16:9 backbuffer renders a wide strip that the headset then throws
@@ -54,7 +64,16 @@ session. No game files are modified and no game assets are distributed.
    (aspect A)`; the closer `aspect` is to 1.0, the less you are wasting.
 4. Launch the game through Steam. The mod logs to `%LOCALAPPDATA%\BioshockVR\bioshockvr.log`.
 
-To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
+To uninstall, delete the mod's DLLs (restore itsloopyo's backup if you made one).
+
+### Troubleshooting
+
+**[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** covers every "no VR / flat mode"
+report received so far: the 32-bit OpenXR registry key (and how to fix it per runtime),
+broken 32-bit API layers (ReShade and friends), the bundled SteamVR shim (how the
+automatic fallback works, its log, the `xr.ini` override, controller coverage), the
+`XR_RUNTIME_JSON` override, and per-game resolution/windowed-mode guidance. The release
+zip ships the same text as `TROUBLESHOOTING.txt`.
 
 ### If it crashes or misbehaves: clear your settings first
 
@@ -72,13 +91,18 @@ there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
 
 ## Playing in VR
 
-1. Load into the game flat first (menus are still flat-screen for now).
-2. Press **F10** to open the mod overlay and click **VR PRESET 1** - one press arms
-   everything in the right order: VR pacing, 6DOF camera, motion controllers, controller aim +
-   laser, the viewmodel drive, body-follows-head, and stereo last. No restart is ever
-   needed - the mod answers the game's one-shot startup gamepad check itself, so the
-   motion controllers engage the moment the preset is pressed, first launch included.
-3. Quest 3 Touch controls:
+1. Launch the game - **VR arms itself automatically** (your saved settings load and the
+   full stack - pacing, 6DOF camera, motion controllers, aim + laser, viewmodel drive,
+   body-follows-head, stereo - comes up with no F10 trip). To opt out: untick
+   "Auto-start VR at launch" in the F10 preset block and save, or set `autoVr=0`
+   in `vrpreset.ini` with the game closed.
+2. The **F10** overlay is still there for tuning, and **VR PRESET 1** (BS1) / **APPLY
+   PRESET** (BS2) re-arms everything on demand. No restart is ever needed - the mod
+   answers the game's one-shot startup gamepad check itself, so the motion controllers
+   engage immediately, first launch included.
+3. **Click both thumbsticks together to reset the view** (same as the F10 recenter
+   button) - do it standing in your neutral pose, facing forward.
+4. Quest 3 Touch controls:
 
 | Input | Action |
 |---|---|
@@ -95,6 +119,7 @@ there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
 | X | reload / hack / inject EVE |
 | Y | first-aid kit |
 | Left menu button | pause (hold: map/objectives) |
+| **X + Y together** | same as the menu button (use it when Steam Link's overlay eats the real one) |
 
    Under VR the right stick no longer pitches the view (your head does); `vrinput pitchkill
    off` restores stick pitch if you want it back.

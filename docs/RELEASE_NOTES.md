@@ -3,6 +3,64 @@
 Newest first. The version is read from `CMakeLists.txt` by `tools/package.ps1`, so the zip
 name, the DLL banner and the tag cannot disagree.
 
+## v0.8.1 - SteamVR / Steam Link support, hand & weapon scaling, quality-of-life
+
+The first batch of post-0.8.0 community-feedback work. All three games, same drop-in
+install - the zip now carries **four** DLLs.
+
+**SteamVR and Steam Link are now supported** (the top request - Index, Vive, WMR and
+Steam Link setups previously got "no OpenXR runtime" and ran flat):
+
+- The zip bundles a SteamVR compatibility shim (`bvr_steamvr32.dll` + `openvr_api.dll`).
+  SteamVR has never shipped a 32-bit OpenXR runtime and these games are 32-bit; the shim
+  bridges the mod to SteamVR's fully-32-bit-capable OpenVR interface instead. Copy all
+  four DLLs next to the game exe - there is nothing to configure: the mod tries the
+  native OpenXR runtime first and falls back to the shim automatically. (Force a path
+  with `%LOCALAPPDATA%\BioshockVR\xr.ini`: `[runtime]` / `mode=auto|native|steamvr`.)
+- Controller bindings for Index, Vive wands and WMR ship both natively and through the
+  shim. Vive/WMR defaults are partial (the wands have no face buttons) and everything is
+  rebindable in SteamVR's own controller binding UI, which always wins. WMR is untested
+  on hardware. **Quest via Virtual Desktop/VDXR remains the primary, most-tested path.**
+- Verified on Quest 3 via **Steam Link** on BioShock 1 and 2. Note: Virtual Desktop's
+  "SteamVR" runtime toggle does not move these 32-bit games off VDXR (that lane is
+  native and faster anyway) - to actually play through SteamVR on a Quest, use Steam Link.
+- **BioShock Infinite needed one extra fix**: the game builds its graphics on DXGI 1.0,
+  which breaks SteamVR's texture sharing (headset stuck in the void, input dead). The
+  mod now upgrades the game's DXGI factory at launch, and Infinite submits to SteamVR
+  like the other two.
+- Quitting SteamVR mid-game (or SteamVR crashing) no longer kills the game - it drops
+  to flat rendering and keeps running.
+- While the SteamVR dashboard is open, controller input pauses by design; close the
+  dashboard to resume.
+
+**New: pause chord.** Steam Link sometimes swallows the menu button (the Steam overlay
+eats it). Press **X and Y together on the left controller** - it acts exactly like the
+menu button in all three games on every runtime: tap for the pause menu, hold for the
+back/select action.
+
+**BioShock 1: hand and weapon scaling** (second-most-requested): the hands and the
+held weapon can now be scaled independently - F10 > hands section (per-hand 0.2-4.0,
+weapon 0.3-2.5), `vrhands scale/wscale`, preset keys `handScaleL/handScaleR/wScale`.
+The shipped defaults ARE a headset-tuned calibration (hands 0.793, weapon 0.76), and
+the aim calibration was re-baked to match - lasers, trims and per-weapon profiles line
+up with the new proportions out of the box.
+
+**Movement feel:** "instant move direction" is now default ON for BioShock 1 and 2 -
+a fast 180 head-turn while walking no longer makes the walk direction arc to catch up.
+(F10 body section has the toggle if you prefer the old smoothing.)
+
+Quality of life and fixes:
+
+- Both-sticks-click recenters the view (works everywhere, no F10 trip needed)
+- BioShock 1 now auto-loads your saved preset values at boot (parity with BS2)
+- F10: preset save/load buttons pinned at the top (BS1); the resolution picker warns
+  about exclusive-fullscreen configs; Ctrl+click any slider to type an exact value
+- The zip ships `TROUBLESHOOTING.txt` - the 32-bit OpenXR registry key, broken 32-bit
+  API layers (ReShade and friends), the SteamVR shim story, resolution guidance
+- Extra diagnostics for the reported BS2 left-eye flicker (issue #31) - a per-minute
+  pairing instrument now watches the layer the previous instrument could not see; if
+  you can reproduce that flicker, an up-to-date log is now genuinely useful evidence
+
 ## v0.8.0 - BioShock Infinite joins, early access: all three games in one zip
 
 **BioShock Infinite is now playable in VR.** Same two DLLs, third game: drop them into

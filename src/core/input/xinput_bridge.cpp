@@ -389,8 +389,10 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
     // head-vs-body yaw residual so stick-forward tracks the head's facing.
     // Gated on the publisher's own freshness rather than turnGate: the bumper
     // lift must not snap the walk direction mid-stride, and the publisher only
-    // publishes while its drive owns a gameplay view (Infinite; BS1/BS2 never
-    // publish, so the stamp stays 0 and this block never runs there).
+    // publishes while its drive owns a gameplay view. Publishers: Infinite
+    // (raw residual - no body module there) and, since the 2026-08-13
+    // feedback session, BS1/BS2 (the not-yet-transferred body error, so the
+    // slew-capped body transfer and this rotation can never double-count).
     {
         uint64_t stamp = g_moveYawOffMs.load(std::memory_order_relaxed);
         if (stamp && now - stamp <= kVrGameplayStaleMs && (out.lx || out.ly)) {
@@ -835,6 +837,16 @@ void set_snap_angle_deg(float d) {
 }
 
 int take_snap_steps() { return g_snapPending.exchange(0, std::memory_order_relaxed); }
+
+// Both-sticks-click recenter chord (feedback session 2). Queued by the XR
+// composer on the chord edge, drained by the game adapter into its own
+// recenter request on its game thread.
+std::atomic<bool> g_recenterChord{false};
+void queue_recenter_chord() {
+    g_recenterChord.store(true, std::memory_order_relaxed);
+    BVR_LOG("[input] recenter chord (both stick clicks) queued");
+}
+bool take_recenter_chord() { return g_recenterChord.exchange(false, std::memory_order_relaxed); }
 
 void handle_command(const char* args) {
     install_dll_hooks(); // lazy retry in case xinput1_4 loaded after init

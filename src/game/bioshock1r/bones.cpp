@@ -66,6 +66,8 @@ struct CachedBone {
     int idx;
     float p[3];
     float q[4];
+    float s[3];
+    bool writeScale;
 };
 CachedBone g_cache[kMaxBones];
 int g_cacheCount = 0;
@@ -128,6 +130,71 @@ uint64_t g_cacheMs = 0;
 std::atomic<int> g_lFirst{patterns::kBoneLClusterFirst}, g_lLast{patterns::kBoneLClusterLast},
     g_lAnchor{patterns::kBoneLWrist};
 std::atomic<int> g_rAnchorOverride{-1};
+
+// Session 61: per-cluster viewmodel scale (1.0 = authored; the BS2-shaped
+// lever the s16 dead ends never actually tested). The cluster is still moved
+// rigidly, but the anchor-relative translations shrink by s for EVERY cluster
+// bone - the weapon-attach (43) and muzzle (44) bones MOVE with the scaled
+// hand - while the hkQsTransform .s channel is written only for the bones the
+// probe mode selects, and NEVER for 43/44: the s16 test wrote 43's .s at its
+// authored value, and BS2's later live bisection localised the identical
+// weapon blowup to the attach pivot's own scale CHANNEL being consumed
+// (inverse-decomposed) by the attachment math. Leaving the channel engine-
+// owned entirely is the untested cell this probe exists to measure.
+// Scale rides the per-frame drive - one-shot pokes were BS2-proven not to
+// render reliably - and the reference recapture PINS the scale rows of bones
+// we scale-wrote (see the adopt block) so g_ref can never re-adopt our own
+// write and compound refS * s^n.
+// Defaults are the user's session-61 in-headset calibration (2026-08-14,
+// "everything looks perfect") - the same standing rule the aim trims follow:
+// the accepted preset becomes the shipped default. 1.0 = authored size.
+std::atomic<float> g_scale[2] = {0.793f, 0.793f}; // [0] left, [1] right
+// Probe modes (vrbones scalemode <n>): which cluster bones get the .s write.
+// 0 = all except attach/muzzle (intended ship mode), 1 = fingers only (wrist
+// keeps authored .s), 2 = wrist only, 3 = translation-only (no .s anywhere -
+// pure skeleton compression).
+std::atomic<int> g_scaleMode{0};
+// Engine scale-restamp telemetry: BS2's engine never restamps the scale
+// channel (pin-to-ref correct), Infinite's does (adopt correct). Counted at
+// reference adoption: a scale-written bone whose bank value no longer matches
+// what we last wrote was restamped by the engine.
+std::atomic<uint32_t> g_scaleRestamps{0};
+float g_lastWrittenS[kMaxBones][3];
+bool g_scaleWrote[kMaxBones] = {};
+
+// Which bones get the .s channel write in a given probe mode. Right hand:
+// attach (43) and muzzle (44) are excluded in EVERY mode - their scale
+// channel stays engine-owned (see the g_scale block comment).
+bool scale_selects(int mode, int hand, int idx, int first) {
+    if (mode == 3) return false;
+    if (hand == 1 &&
+        (idx == patterns::kBoneWeaponAttach || idx == patterns::kBoneRClusterLast))
+        return false;
+    if (mode == 1) return idx != first; // fingers only (wrist = cluster first)
+    if (mode == 2) return idx == first; // wrist only
+    return true;
+}
+
+// Session 61: uniform weapon scale - drives the HOLDABLE's own
+// SkeletonInstance (BS2 session-41's shipped design, adapted; the weapon has
+// carried its own skeleton here since s20, it is how the muzzle bone was
+// found). Every bone: translation *= ws (uniform about the component origin,
+// which IS the grip - R_Grip sits at (0,0,0)), quat adopted from the engine
+// per frame (drum-spin/reload animations keep playing while scaled), scale
+// channel = captured reference * ws, pinned exactly like the cluster scale.
+// At ws == 1.0 the lane drops the skeleton entirely and restores the
+// captured pose - zero interference at the default.
+std::atomic<float> g_wScale{0.760f}; // s61 in-headset calibration (1.0 = authored)
+void* g_wHoldable = nullptr; // the actor the lane is bound to
+void* g_wSkelInst = nullptr;
+Qts* g_wBones = nullptr;
+int g_wBoneCount = 0;
+Qts g_wRef[kMaxBones]; // captured pose (restored on drop)
+Qts g_wAnim[kMaxBones]; // adopted engine p/q; scale rows pinned to g_wRef
+Qts g_wWritten[kMaxBones]; // what we last wrote (adoption + reapply source)
+bool g_wWrittenValid = false;
+uint32_t g_wAdopts = 0;
+uint32_t g_wDrives = 0;
 
 std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
 std::atomic<uint32_t> g_writes{0};
@@ -599,6 +666,7 @@ void restore_hidden(int hand) {
         write_n(g_bones[i].p, g_ref[i].p, 12);
         write_n(g_bones[i].q, g_ref[i].q, 16);
         write_n(g_bones[i].s, g_ref[i].s, 12);
+        g_scaleWrote[i] = false; // the bank holds the authored scale again
     }
     const int* sleeve = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
     const size_t sleeveCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
@@ -609,6 +677,130 @@ void restore_hidden(int hand) {
         write_n(g_bones[idx].p, g_ref[idx].p, 12);
         write_n(g_bones[idx].s, g_ref[idx].s, 12);
     }
+}
+
+// ---- weapon-skeleton scale lane (session 61) --------------------------------
+
+void wskel_set_dirty(uint8_t v) {
+    if (!g_wSkelInst) return;
+    write_n(static_cast<uint8_t*>(g_wSkelInst) + patterns::kSkelInstDirtyOffset, &v, 1);
+}
+
+// The bound skeleton, revalidated by value - never write through yesterday's
+// pointers (the same session-29 lesson release() carries for the rig).
+bool wskel_intact() {
+    if (!g_wHoldable || !g_wSkelInst || !g_wBones) return false;
+    Skel sk{};
+    if (!resolve_skel(g_wHoldable, sk)) return false;
+    return sk.inst == g_wSkelInst && sk.bones == g_wBones && sk.count == g_wBoneCount;
+}
+
+// Hand the weapon skeleton back: restore the captured pose over every bone
+// (the engine does not restamp the scale channel, so merely not driving
+// would leave the gun scaled for good - the sleeve-collapse lesson), then
+// set its dirty flag so the engine rebuilds from its own animation.
+void wskel_drop(const char* why) {
+    if (wskel_intact()) {
+        for (int i = 0; i < g_wBoneCount; ++i) {
+            write_n(g_wBones[i].p, g_wRef[i].p, 12);
+            write_n(g_wBones[i].q, g_wRef[i].q, 16);
+            write_n(g_wBones[i].s, g_wRef[i].s, 12);
+        }
+        wskel_set_dirty(1);
+        BVR_LOG("[bones] wskel: released to the engine (%s) - authored pose restored, "
+                "%u drives %u adopts",
+                why ? why : "?", g_wDrives, g_wAdopts);
+    }
+    g_wHoldable = nullptr;
+    g_wSkelInst = nullptr;
+    g_wBones = nullptr;
+    g_wBoneCount = 0;
+    g_wWrittenValid = false;
+    g_wAdopts = 0;
+    g_wDrives = 0;
+}
+
+// Bind (or re-bind) the lane to the current holdable. The holdable read is
+// deliberately CLASS-AGNOSTIC (hands::current_holdable) - the MachineGun and
+// GrenadeLauncher carry a different vtable and a gated read pins a stale
+// weapon (the session-21 part-3 defect; BS2 relearned it independently).
+bool wskel_resolve() {
+    // A holdable without a resolvable skeleton (the WRENCH: +0x3FC is null -
+    // rigid melee mesh, flat-proven 2026-08-14) would otherwise fail here
+    // every frame: negative-cache it per holdable with a 1 s retry, so a
+    // TRANSIENT mid-equip failure on a skeletal weapon still self-heals,
+    // and log the verdict once per holdable instead of forever.
+    static void* s_failedHold = nullptr;
+    static uint64_t s_nextRetryMs = 0;
+    void* hold = nullptr;
+    if (!hands::current_holdable(&hold) || !hold) {
+        if (g_wHoldable) wskel_drop("holdable gone");
+        return false;
+    }
+    if (hold == g_wHoldable && wskel_intact()) return true;
+    if (g_wHoldable) wskel_drop("holdable changed");
+    if (hold == s_failedHold && GetTickCount64() < s_nextRetryMs) return false;
+    Skel sk{};
+    if (!resolve_skel(hold, sk)) {
+        if (hold != s_failedHold)
+            BVR_LOG("[bones] wskel: holdable %p has no resolvable SkeletonInstance "
+                    "(+0x3FC) - no bones to scale (rigid mesh?), lane stays unbound",
+                    hold);
+        s_failedHold = hold;
+        s_nextRetryMs = GetTickCount64() + 1000;
+        return false;
+    }
+    s_failedHold = nullptr;
+    Qts bank[kMaxBones];
+    if (!read_n(sk.bones, bank, sizeof(Qts) * static_cast<size_t>(sk.count))) return false;
+    g_wHoldable = hold;
+    g_wSkelInst = sk.inst;
+    g_wBones = sk.bones;
+    g_wBoneCount = sk.count;
+    memcpy(g_wRef, bank, sizeof(Qts) * static_cast<size_t>(sk.count));
+    memcpy(g_wAnim, bank, sizeof(Qts) * static_cast<size_t>(sk.count));
+    g_wWrittenValid = false;
+    g_wAdopts = 0;
+    g_wDrives = 0;
+    BVR_LOG("[bones] wskel: bound holdable=%p inst=%p count=%d (reference captured)", hold,
+            sk.inst, sk.count);
+    return true;
+}
+
+// Per-frame compose: adopt the engine's p/q where it wrote since our last
+// write (animations keep playing), then write p*ws / q verbatim / s=ref*ws.
+// The scale rows are NEVER adopted - the engine does not restamp scale, so
+// adopting would feed our own write back as refS * ws^n (the same structural
+// rule as the cluster's pinned reference).
+bool wskel_compose(float ws) {
+    for (int i = 0; i < g_wBoneCount; ++i) {
+        Qts cur{};
+        if (!read_n(&g_wBones[i], &cur, sizeof cur)) {
+            g_wSkelInst = nullptr; // faulted: rebind next frame
+            return false;
+        }
+        bool engineWrote = !g_wWrittenValid || memcmp(cur.p, g_wWritten[i].p, 12) != 0 ||
+                           memcmp(cur.q, g_wWritten[i].q, 16) != 0;
+        if (engineWrote) {
+            memcpy(g_wAnim[i].p, cur.p, 12);
+            memcpy(g_wAnim[i].q, cur.q, 16);
+            ++g_wAdopts;
+        }
+        float p[3] = {g_wAnim[i].p[0] * ws, g_wAnim[i].p[1] * ws, g_wAnim[i].p[2] * ws};
+        float sv[3] = {g_wRef[i].s[0] * ws, g_wRef[i].s[1] * ws, g_wRef[i].s[2] * ws};
+        if (!write_n(g_wBones[i].p, p, 12) || !write_n(g_wBones[i].q, g_wAnim[i].q, 16) ||
+            !write_n(g_wBones[i].s, sv, 12)) {
+            g_wSkelInst = nullptr;
+            return false;
+        }
+        memcpy(g_wWritten[i].p, p, 12);
+        memcpy(g_wWritten[i].q, g_wAnim[i].q, 16);
+        memcpy(g_wWritten[i].s, sv, 12);
+    }
+    g_wWrittenValid = true;
+    ++g_wDrives;
+    wskel_set_dirty(0); // render-side evaluate-if-dirty must not rebuild over us
+    return true;
 }
 
 } // namespace
@@ -637,6 +829,11 @@ void on_world_change() {
     // sleeve bones back from a dead world's reference.
     g_wasCollapsed = false;
     g_collapsedHand = -1;
+    memset(g_scaleWrote, 0, sizeof g_scaleWrote); // scale writes died with it
+    // The weapon skeleton died with the world too - drop WITHOUT writing
+    // (wskel_intact re-resolves through the dead actor and fails, so
+    // wskel_drop degrades to a pointer clear, which is exactly right here).
+    wskel_drop("world change");
 }
 
 void release(const char* why) {
@@ -656,11 +853,15 @@ void release(const char* why) {
         g_cacheCount = g_cacheSleeveCount = g_cacheHiddenCount = 0;
         g_refValid = false;
         g_hasWritten[0] = g_hasWritten[1] = false;
+        memset(g_scaleWrote, 0, sizeof g_scaleWrote); // the bank died with the world
+        wskel_drop("rig released (no rig skeleton)"); // intact-gated, safe here
         return;
     }
 
     // Nothing driven means nothing to hand back. Cheap and idempotent, so the
-    // edge detector that calls this can fire freely.
+    // edge detector that calls this can fire freely. The weapon lane is
+    // dropped FIRST - it can be live while the rig cache is already clean.
+    wskel_drop("rig released");
     if (g_hiddenHand < 0 && !g_wasCollapsed && !g_cacheSkelInst && !g_refValid) return;
 
     // ORDER MATTERS: both restores read g_ref, so g_refValid must still be
@@ -668,6 +869,18 @@ void release(const char* why) {
     // no-op and leave the hand collapsed - the exact failure this fixes.
     int hidden = g_hiddenHand;
     if (hidden >= 0) restore_hidden(hidden);
+    // Scale writes persist in the bank across engine evaluations (the engine
+    // does not restamp the scale channel - the same fact the sleeve restore
+    // rests on), so a scaled cluster must be handed back explicitly too.
+    if (g_refValid) {
+        for (int i = 0; i < g_boneCount; ++i) {
+            if (!g_scaleWrote[i]) continue;
+            write_n(g_bones[i].s, g_ref[i].s, 12);
+            g_scaleWrote[i] = false;
+        }
+    } else {
+        memset(g_scaleWrote, 0, sizeof g_scaleWrote);
+    }
     if (g_wasCollapsed && g_collapsedHand >= 0 && g_bones && g_refValid) {
         const int* sleeve =
             g_collapsedHand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
@@ -726,6 +939,46 @@ void set_sway_kill(bool on) {
 
 bool sway_kill() {
     return g_swayKill.load(std::memory_order_relaxed);
+}
+
+void set_scale(int hand, float s) {
+    if (s < 0.05f) s = 0.05f;
+    if (s > 20.0f) s = 20.0f;
+    if (hand != 1) g_scale[0].store(s, std::memory_order_relaxed);
+    if (hand != 0) g_scale[1].store(s, std::memory_order_relaxed);
+    // No bank write here: the per-frame drive applies it (and hands the
+    // authored scale back on the 1.0 off edge) - commands may run when no
+    // skeleton is live.
+}
+
+float scale(int hand) {
+    return g_scale[hand == 1 ? 1 : 0].load(std::memory_order_relaxed);
+}
+
+void set_weapon_scale(float ws) {
+    if (ws < 0.05f) ws = 0.05f;
+    if (ws > 20.0f) ws = 20.0f;
+    g_wScale.store(ws, std::memory_order_relaxed);
+}
+
+float weapon_scale() {
+    return g_wScale.load(std::memory_order_relaxed);
+}
+
+void wskel_drive() {
+    float ws = g_wScale.load(std::memory_order_relaxed);
+    if (ws == 1.0f) {
+        // The default is a total drop - no adoption, no writes, no cached
+        // pointers. The lane only ever exists while the knob is off 1.0.
+        if (g_wHoldable) wskel_drop("scale back to 1.0");
+        return;
+    }
+    if (!wskel_resolve()) return;
+    wskel_compose(ws);
+}
+
+void wskel_release(const char* why) {
+    if (g_wHoldable) wskel_drop(why);
 }
 
 void set_hide_inactive(bool on) {
@@ -845,6 +1098,25 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             }
         }
         if (adopt || !g_refValid) {
+            // Session 61: pin the scale rows of bones OUR scale writes own.
+            // If the bank still holds exactly what we last wrote, the engine
+            // did not restamp scale (the BS2 behaviour) - adopting it into
+            // g_ref would compound refS * s^n on the next compose, so the
+            // previous reference row is kept. If the bank differs, the
+            // engine genuinely restamped scale (the Infinite behaviour) -
+            // adopt it and count it; the vrbones status readout decides
+            // pin-vs-adopt is the right architecture from that number.
+            if (g_refValid) {
+                for (int i = 0; i < g_boneCount; ++i) {
+                    if (!g_scaleWrote[i]) continue;
+                    if (memcmp(fresh[i].s, g_lastWrittenS[i], 12) == 0) {
+                        memcpy(fresh[i].s, g_ref[i].s, 12);
+                    } else {
+                        g_scaleRestamps.fetch_add(1, std::memory_order_relaxed);
+                        g_scaleWrote[i] = false; // the bank is the engine's again
+                    }
+                }
+            }
             memcpy(g_ref, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
             g_refValid = true;
         }
@@ -946,17 +1218,21 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     g_cacheCount = 0;
     g_cacheSleeveCount = 0;
     const float* pa = g_ref[anchor].p;
-    // NOTE viewmodel scale has NO working lever yet - three flat-proven dead
-    // ends on 2026-07-27 (ENGINE_NOTES session 16 part 2): cluster bone .s
-    // scales the skin but ANY scale in the wrist chain makes the engine's
-    // attach path blow the weapon up near-plane (inverse-scale decompose;
-    // excluding the attach helper's own .s changed nothing), and the rig
-    // actor's DrawScale is geometry-inert on the fg path (bone positions
-    // round-trip through it, skin and gun render unscaled). The factor needs
-    // the render-path work (attach-matrix / fg section bake disasm, or the
-    // vm_draw replay lane) - until then no scale is applied here.
+    // Viewmodel scale (session 61, see the g_scale block comment): the
+    // anchor-relative translations shrink by s for every cluster bone - the
+    // cluster scales ABOUT THE ANCHOR, so the anchor write-loc is unchanged
+    // by s (the proof metric) - and the .s channel is written only for
+    // mode-selected bones, from the PINNED reference, never adopted back.
+    // On the off edge (s back to 1.0, mode change) the authored scale is
+    // written back explicitly - the engine cannot be relied on to
+    // re-evaluate while the drive keeps clearing the dirty flag (the sleeve
+    // collapse learned the same lesson).
+    const float s = g_scale[hand].load(std::memory_order_relaxed);
+    const bool scaling = s != 1.0f;
+    const int sMode = g_scaleMode.load(std::memory_order_relaxed);
     for (int i = first; i <= last; ++i) {
-        float rel[3] = {g_ref[i].p[0] - pa[0], g_ref[i].p[1] - pa[1], g_ref[i].p[2] - pa[2]};
+        float rel[3] = {(g_ref[i].p[0] - pa[0]) * s, (g_ref[i].p[1] - pa[1]) * s,
+                        (g_ref[i].p[2] - pa[2]) * s};
         float rot[3];
         qts_rotate(qtc, rel, rot);
         float p[3] = {ptc[0] + rot[0], ptc[1] + rot[1], ptc[2] + rot[2]};
@@ -967,10 +1243,28 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             g_cacheMs = 0;
             return false;
         }
+        bool wantS = scaling && scale_selects(sMode, hand, i, first);
+        float sv[3];
+        if (wantS) {
+            sv[0] = g_ref[i].s[0] * s;
+            sv[1] = g_ref[i].s[1] * s;
+            sv[2] = g_ref[i].s[2] * s;
+            if (write_n(g_bones[i].s, sv, 12)) {
+                memcpy(g_lastWrittenS[i], sv, 12);
+                g_scaleWrote[i] = true;
+            } else {
+                wantS = false;
+            }
+        } else if (g_scaleWrote[i]) {
+            write_n(g_bones[i].s, g_ref[i].s, 12); // off edge: authored back
+            g_scaleWrote[i] = false;
+        }
         CachedBone& cb = g_cache[g_cacheCount++];
         cb.idx = i;
         memcpy(cb.p, p, 12);
         memcpy(cb.q, q, 16);
+        cb.writeScale = wantS;
+        if (wantS) memcpy(cb.s, sv, 12);
     }
 
     // Sleeve collapse: zero scale hides the geometry; pinning the position at
@@ -1031,6 +1325,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             const float* p = isAttach ? kFarBelow : ptc;
             write_n(g_bones[idx].p, p, 12);
             if (!isAttach) write_n(g_bones[idx].s, kZero, 12);
+            g_scaleWrote[idx] = false; // hide owns the .s channel now
             if (g_cacheHiddenCount < static_cast<int>(_countof(g_cacheHidden))) {
                 CachedHidden& ch = g_cacheHidden[g_cacheHiddenCount++];
                 ch.idx = idx;
@@ -1067,6 +1362,7 @@ void reapply() {
             g_skelInst = nullptr;
             return;
         }
+        if (cb.writeScale) write_n(g_bones[cb.idx].s, cb.s, 12);
     }
     for (int k = 0; k < g_cacheSleeveCount; ++k) {
         const CachedSleeve& cs = g_cacheSleeve[k];
@@ -1081,6 +1377,20 @@ void reapply() {
         if (ch.writeScale) write_n(g_bones[ch.idx].s, ch.s, 12);
     }
     set_dirty(0);
+    // The weapon's own skeleton gets the same second-pass replay - without it
+    // the engine's second CalcView re-evaluates the weapon pose over our
+    // write and the eyes render different gun sizes.
+    if (g_wHoldable && g_wWrittenValid && g_wBones) {
+        for (int i = 0; i < g_wBoneCount; ++i) {
+            if (!write_n(g_wBones[i].p, g_wWritten[i].p, 12) ||
+                !write_n(g_wBones[i].q, g_wWritten[i].q, 16) ||
+                !write_n(g_wBones[i].s, g_wWritten[i].s, 12)) {
+                g_wSkelInst = nullptr;
+                return;
+            }
+        }
+        wskel_set_dirty(0);
+    }
 }
 
 void handle_command(const char* args) {
@@ -1129,6 +1439,19 @@ void handle_command(const char* args) {
                 g_rAnchorOverride.load() >= 0 ? g_rAnchorOverride.load()
                                               : patterns::kBoneWeaponAttach,
                 g_lFirst.load(), g_lLast.load(), g_lAnchor.load());
+        int sw = 0;
+        for (int i = 0; i < g_boneCount; ++i)
+            if (g_scaleWrote[i]) ++sw;
+        BVR_LOG("[bones] scale: L=%.3f R=%.3f mode=%d (0 cluster-sans-43/44, 1 fingers, "
+                "2 wrist, 3 trans-only) scaleWrote=%d engine scale-restamps=%u",
+                g_scale[0].load(std::memory_order_relaxed),
+                g_scale[1].load(std::memory_order_relaxed),
+                g_scaleMode.load(std::memory_order_relaxed), sw,
+                g_scaleRestamps.load(std::memory_order_relaxed));
+        BVR_LOG("[bones] wskel: ws=%.3f %s holdable=%p count=%d drives=%u adopts=%u",
+                g_wScale.load(std::memory_order_relaxed),
+                g_wHoldable ? "BOUND" : "dropped", g_wHoldable, g_wBoneCount, g_wDrives,
+                g_wAdopts);
     } else if (strcmp(verb, "list") == 0) {
         if (!g_bones) {
             BVR_LOG("[bones] no skeleton located yet (enable the drive or poke once)");
@@ -1258,6 +1581,22 @@ void handle_command(const char* args) {
         g_telemetry.store(on, std::memory_order_relaxed);
         BVR_LOG("[bones] telemetry %s%s", on ? "ON" : "off",
                 on ? " - [tlm] lines at ~5 Hz (head/ctrl/cam/actor/target/bones)" : "");
+    } else if (strcmp(verb, "scalemode") == 0) {
+        int m = -1;
+        if (sscanf_s(rest, "%d", &m) == 1 && m >= 0 && m <= 3) {
+            g_scaleMode.store(m, std::memory_order_relaxed);
+            // Bones the outgoing mode scaled and the incoming one does not get
+            // their authored .s back on the next drive frame (the off-edge
+            // branch in the write loop) - no bank write needed here.
+            BVR_LOG("[bones] scale mode = %d (%s)", m,
+                    m == 0   ? "cluster minus attach/muzzle .s - intended ship mode"
+                    : m == 1 ? "fingers-only .s (wrist keeps authored)"
+                    : m == 2 ? "wrist-only .s"
+                             : "translation-only (no .s writes)");
+        } else {
+            BVR_LOG("[bones] usage: vrbones scalemode <0..3> (current %d)",
+                    g_scaleMode.load(std::memory_order_relaxed));
+        }
     } else if (strcmp(verb, "lcluster") == 0) {
         int lo = -1, hi = -1, an = -1;
         if (sscanf_s(rest, "%d %d %d", &lo, &hi, &an) == 3) {
@@ -1270,7 +1609,7 @@ void handle_command(const char* args) {
         }
     } else {
         BVR_LOG("[bones] unknown command '%s' (status|list|poke|freeze|collapse|ref|anchor|"
-                "lcluster|lock|lockgain|lockdgain|lockpull|log)",
+                "lcluster|scalemode|lock|lockgain|lockdgain|lockpull|log)",
                 verb);
     }
 }

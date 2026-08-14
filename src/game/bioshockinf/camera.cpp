@@ -1546,6 +1546,12 @@ void __fastcall GetViewPointDetour(void* self, void* edx, FVector* loc, FRotator
     apply_pending_vrstereo();
     apply_pending_input();
     apply_pending_resolution();
+    // Feedback session 2: both-sticks-click chord -> the same recenter the
+    // F10 button posts.
+    if (bvr::input::take_recenter_chord()) {
+        request_recenter();
+        BVR_LOG("[bsi] recenter requested (stick chord)");
+    }
     config::tick(); // F10-posted preset save/load ops (file IO on this thread)
     profiles::tick(); // s52: ~1 Hz equipped-weapon identity poll + capture/apply
     hud::tick();      // s52: HUD-redirect gate follows the XR session's liveness
@@ -2365,6 +2371,7 @@ bool handle_command(const char* args) {
 }
 
 void draw_debug_ui() {
+    ImGui::TextDisabled("Tip: Ctrl+click any slider to type an exact value");
     // The I4 in-headset surface FIRST and default-open: anything judged by
     // eye gets a control here, never a typed command (alt-tabbing to type
     // destabilises the XR session). Sliders and buttons write atomics only;

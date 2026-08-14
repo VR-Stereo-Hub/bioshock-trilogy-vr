@@ -408,9 +408,112 @@ void input_create(XrInstance instance) {
     sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(simple) / sizeof(simple[0]));
     xrSuggestInteractionProfileBindings(instance, &sb); // best-effort
 
+    // SteamVR-family profiles (s62). All best-effort like touch: a runtime that
+    // rejects a profile only loses that hardware, never the session. Boolean
+    // inputs (squeeze/click on Vive/WMR) bound to FLOAT actions are converted
+    // to 0.0/1.0 by the runtime per spec 11.4 - the grip hysteresis
+    // (0.70/0.55) latches at 1.0 and releases at 0.0, so no read path changes.
+    // Unbound actions simply read inactive (read_float/read_bool return 0).
+
+    // Valve Index. A/B on BOTH hands (left has no x/y paths), analog squeeze,
+    // no menu button (system/click is reserved - never bind), no thumbrest:
+    // the noThumbrestYet fallback keeps RS-click as the ammo modifier, and
+    // menu goes to a firm left-trackpad press (boolean action on the float
+    // force component - the runtime thresholds it).
+    XrActionSuggestedBinding index[] = {
+        {g_move, path(instance, "/user/hand/left/input/thumbstick")},
+        {g_look, path(instance, "/user/hand/right/input/thumbstick")},
+        {g_fire, path(instance, "/user/hand/right/input/trigger/value")},
+        {g_plasmid, path(instance, "/user/hand/left/input/trigger/value")},
+        {g_gripR, path(instance, "/user/hand/right/input/squeeze/value")},
+        {g_gripL, path(instance, "/user/hand/left/input/squeeze/value")},
+        {g_btnA, path(instance, "/user/hand/right/input/a/click")},
+        {g_btnB, path(instance, "/user/hand/right/input/b/click")},
+        {g_btnX, path(instance, "/user/hand/left/input/a/click")},
+        {g_btnY, path(instance, "/user/hand/left/input/b/click")},
+        {g_stickClickL, path(instance, "/user/hand/left/input/thumbstick/click")},
+        {g_stickClickR, path(instance, "/user/hand/right/input/thumbstick/click")},
+        {g_menu, path(instance, "/user/hand/left/input/trackpad/force")},
+        {g_poseL, path(instance, "/user/hand/left/input/grip/pose")},
+        {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
+        {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
+        {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+    };
+    sb.interactionProfile = path(instance, "/interaction_profiles/valve/index_controller");
+    sb.suggestedBindings = index;
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(index) / sizeof(index[0]));
+    r = xrSuggestInteractionProfileBindings(instance, &sb);
+    if (XR_FAILED(r))
+        BVR_LOG("xr-input: index_controller binding suggestion failed (%d)",
+                static_cast<int>(r));
+
+    // HTC Vive wands: trigger, squeeze CLICK only, menu on both hands, and a
+    // trackpad standing in for both sticks. No face buttons exist, so jump/
+    // heal/reload (btn_b/x/y) stay unbound natively - the SteamVR shim's
+    // binding JSONs plus SteamVR's own binding UI are the full-coverage path.
+    // stick_r = right trackpad click is eaten as the ammo modifier on BS1/BS2,
+    // which suits a trackpad: press the pad, touch direction picks the slot.
+    XrActionSuggestedBinding vive[] = {
+        {g_move, path(instance, "/user/hand/left/input/trackpad")},
+        {g_look, path(instance, "/user/hand/right/input/trackpad")},
+        {g_fire, path(instance, "/user/hand/right/input/trigger/value")},
+        {g_plasmid, path(instance, "/user/hand/left/input/trigger/value")},
+        {g_gripR, path(instance, "/user/hand/right/input/squeeze/click")},
+        {g_gripL, path(instance, "/user/hand/left/input/squeeze/click")},
+        {g_btnA, path(instance, "/user/hand/right/input/menu/click")},
+        {g_stickClickL, path(instance, "/user/hand/left/input/trackpad/click")},
+        {g_stickClickR, path(instance, "/user/hand/right/input/trackpad/click")},
+        {g_menu, path(instance, "/user/hand/left/input/menu/click")},
+        {g_poseL, path(instance, "/user/hand/left/input/grip/pose")},
+        {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
+        {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
+        {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+    };
+    sb.interactionProfile = path(instance, "/interaction_profiles/htc/vive_controller");
+    sb.suggestedBindings = vive;
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(vive) / sizeof(vive[0]));
+    r = xrSuggestInteractionProfileBindings(instance, &sb);
+    if (XR_FAILED(r))
+        BVR_LOG("xr-input: vive_controller binding suggestion failed (%d)",
+                static_cast<int>(r));
+    else
+        BVR_LOG("xr-input: vive wands have no face buttons - jump/heal/reload "
+                "unbound natively; use the SteamVR shim + binding UI for full "
+                "wand support");
+
+    // WMR motion controllers: thumbstick AND trackpad, squeeze click, menu on
+    // both hands, no face buttons. Trackpad clicks stand in for A (use) and X;
+    // B/Y stay unbound (same advisory as Vive). Never hardware-tested - the
+    // SteamVR binding UI is the correction mechanism.
+    XrActionSuggestedBinding wmr[] = {
+        {g_move, path(instance, "/user/hand/left/input/thumbstick")},
+        {g_look, path(instance, "/user/hand/right/input/thumbstick")},
+        {g_fire, path(instance, "/user/hand/right/input/trigger/value")},
+        {g_plasmid, path(instance, "/user/hand/left/input/trigger/value")},
+        {g_gripR, path(instance, "/user/hand/right/input/squeeze/click")},
+        {g_gripL, path(instance, "/user/hand/left/input/squeeze/click")},
+        {g_btnA, path(instance, "/user/hand/right/input/trackpad/click")},
+        {g_btnX, path(instance, "/user/hand/left/input/trackpad/click")},
+        {g_stickClickL, path(instance, "/user/hand/left/input/thumbstick/click")},
+        {g_stickClickR, path(instance, "/user/hand/right/input/thumbstick/click")},
+        {g_menu, path(instance, "/user/hand/left/input/menu/click")},
+        {g_poseL, path(instance, "/user/hand/left/input/grip/pose")},
+        {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
+        {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
+        {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+    };
+    sb.interactionProfile =
+        path(instance, "/interaction_profiles/microsoft/motion_controller");
+    sb.suggestedBindings = wmr;
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(wmr) / sizeof(wmr[0]));
+    r = xrSuggestInteractionProfileBindings(instance, &sb);
+    if (XR_FAILED(r))
+        BVR_LOG("xr-input: motion_controller binding suggestion failed (%d)",
+                static_cast<int>(r));
+
     g_created = true;
-    BVR_LOG("xr-input: action set ready (%d actions, touch_controller bindings "
-            "suggested)", made);
+    BVR_LOG("xr-input: action set ready (%d actions; touch + simple + index + "
+            "vive + wmr bindings suggested)", made);
 }
 
 void input_on_session_created(XrSession session, XrSpace baseSpace) {
@@ -544,13 +647,63 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // the table's own comment; the composer only lands the bit.
     if (read_bool(session, g_btnA)) pad.buttons |= map.faceA;
     if (read_bool(session, g_btnB)) pad.buttons |= map.faceB;
-    if (read_bool(session, g_btnX)) pad.buttons |= map.faceX;
-    if (read_bool(session, g_btnY)) pad.buttons |= map.faceY;
-    if (read_bool(session, g_stickClickL)) pad.buttons |= map.stickClickL;
-    // Forwarded only where the map says so: on BioShock 1 this bit is 0 and
-    // the click is consumed below as the ammo modifier instead.
-    if (map.stickClickR && read_bool(session, g_stickClickR))
-        pad.buttons |= map.stickClickR;
+    // s62c: LEFT X+Y PRESSED TOGETHER = the menu button. Under Steam Link the
+    // physical menu press is sometimes swallowed by the Steam overlay before
+    // it reaches the game (user report 2026-08-14; the donor project shipped
+    // the same chord for the same reason on its shim path). Detected on the
+    // raw booleans; the chord feeds the SAME tap/hold menu lane below (tap =
+    // START pulse on release, hold = BACK), so pause semantics stay identical
+    // to the real button. The suppression LATCHES until BOTH buttons release,
+    // so the button released second cannot fire its game action on the way
+    // out. The single-frame leak of the first-pressed button before the
+    // second joins is accepted - same class as the recenter chord's
+    // documented leak.
+    const bool btnXDown = read_bool(session, g_btnX);
+    const bool btnYDown = read_bool(session, g_btnY);
+    const bool menuChord = btnXDown && btnYDown;
+    static bool s_menuChordLatch = false;
+    if (menuChord) {
+        if (!s_menuChordLatch) {
+            static bool s_chordTold = false;
+            if (!s_chordTold) {
+                s_chordTold = true;
+                BVR_LOG("xr-input: left X+Y menu chord fired (pause without "
+                        "the menu button - Steam Link overlay workaround)");
+            }
+        }
+        s_menuChordLatch = true;
+    } else if (!btnXDown && !btnYDown) {
+        s_menuChordLatch = false;
+    }
+    if (!s_menuChordLatch) {
+        if (btnXDown) pad.buttons |= map.faceX;
+        if (btnYDown) pad.buttons |= map.faceY;
+    }
+    // Feedback session 2 (2026-08-13): BOTH-STICKS-CLICK = recenter chord.
+    // Detected here on the RAW clicks - on BS1/BS2 the right click is eaten
+    // as the ammo modifier and never reaches the composed pad, so the bridge
+    // cannot see the chord. One edge per chord; re-arms only after BOTH
+    // release. While the chord is held neither click bit reaches the game
+    // (and the ammo-modifier read below is suppressed), so the recenter
+    // cannot also sprint/zoom/select ammo. The single-frame leak of the
+    // first-pressed click before the second joins is accepted - same class
+    // as the documented radial-grip leak.
+    const bool clickL = read_bool(session, g_stickClickL);
+    const bool clickRraw = read_bool(session, g_stickClickR);
+    const bool chordHeld = clickL && clickRraw;
+    static bool s_chordArmed = true;
+    if (chordHeld && s_chordArmed) {
+        s_chordArmed = false;
+        bvr::input::queue_recenter_chord();
+    } else if (!clickL && !clickRraw) {
+        s_chordArmed = true;
+    }
+    if (!chordHeld) {
+        if (clickL) pad.buttons |= map.stickClickL;
+        // Forwarded only where the map says so: on BioShock 1 this bit is 0
+        // and the click is consumed below as the ammo modifier instead.
+        if (map.stickClickR && clickRraw) pad.buttons |= map.stickClickR;
+    }
 
     uint64_t now = GetTickCount64();
 
@@ -574,7 +727,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // push the right stick at the same time, so a thumbrest modifier is
         // necessarily cross-hand. Slot directions stay on the right stick, so
         // nobody's muscle memory changes.
-        const bool rsClick = read_bool(session, g_stickClickR);
+        const bool rsClick = clickRraw && !chordHeld;
         const bool restL = read_bool(session, g_thumbrestL);
         const bool restR = read_bool(session, g_thumbrestR);
         for (int i = 0; i < 2; ++i) {
@@ -660,8 +813,9 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     }
 
     // Left menu: short press pulses START on release, holding it past the
-    // threshold holds BACK until release.
-    bool menuDown = read_bool(session, g_menu);
+    // threshold holds BACK until release. The X+Y chord above joins here so
+    // both routes share one tap/hold state machine.
+    bool menuDown = read_bool(session, g_menu) || menuChord;
     if (menuDown) {
         if (g_menuDownMs == 0) g_menuDownMs = now;
         if (now - g_menuDownMs >= kMenuLongMs) pad.buttons |= XINPUT_GAMEPAD_BACK;

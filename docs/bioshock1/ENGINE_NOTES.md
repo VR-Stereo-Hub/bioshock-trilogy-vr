@@ -1131,7 +1131,12 @@ size, weapon ~ torso+head), and a laser-vs-weapon lateral flip at large
 right-aim angles (under investigation - see STATUS).
 
 **VIEWMODEL SCALE: three levers probed flat the same night, all DEAD - the
-factor needs render-path work.**
+factor needs render-path work.** *(SUPERSEDED IN PART, session 61 2026-08-14:
+dead end 2's conclusion was confounded - that test still WROTE bone 43's `.s`
+at its authored value. Excluding bones 43/44 from the scale-channel write
+entirely leaves the attach path undisturbed and the cluster scales cleanly.
+See "Session 61" below for the working lever; items 1 and 3 stand as
+recorded.)*
 
 1. **Cluster bone .s (hkQsTransform scale field)**: the SKINNED geometry
    scales correctly (fist halved at .s 0.5), but the ATTACHED WEAPON blows
@@ -3418,3 +3423,98 @@ the last line of `command.txt` re-ran on the next launch - at the menu, before t
 and overwrote the tuned ini with startup DEFAULTS. The persistence load path looked broken and
 was not. **Clear `command.txt` before closing the game, not only before launching it**, whenever
 the last command wrote a file.
+
+## Session 61 (2026-08-14) - viewmodel scale SOLVED: the untested cell + the weapon's own skeleton
+
+**BS1 now has working hand AND weapon scale sliders. Two lanes, both flat-proven
+in the simulator with A-B-A round trips; no new engine offsets were needed.**
+
+### 1. The s16 "chain scale is fatal" verdict was CONFOUNDED - the working cluster lever
+
+The s16 dead-end test (part 2 above) scaled bones 27-42 and still WROTE bone
+43's `.s` at its authored value. BS2's later live bisection (its ENGINE_NOTES
+"the inverse-scaled ammo canister") localised the identical blowup to the
+attach pivot's own scale CHANNEL being inverse-decomposed by the attachment
+math - and BS1 never tested "scale the chain, never touch the pivot's channel".
+That cell is the lever:
+
+- **Recipe (bones.cpp drive loop): anchor-relative translations scale by s for
+  EVERY cluster bone** (attach 43 + muzzle 44 MOVE with the shrunk hand; the
+  right anchor IS bone 43, so the hand scales about the grip), **and the
+  hkQsTransform `.s` channel is written only for bones 27-42 (right) / 6-21
+  (left), NEVER for 43/44** - their channel stays engine-owned in every mode.
+- **Flat proof (sim, vrstereo on, drive on, pistol equipped)**: at
+  `vrhands scale r 0.5` the hand halves and the ATTACHED PISTOL IS UNCHANGED
+  (img-diff strong cells localised to the hand region; weapon silhouette
+  intact, zoomed crop crisp). Monotonic the other way at 2.0 (giant hand,
+  authored pistol). Left cluster (plasmid hand) same result.
+- **Anchor pinned**: `vrhands status` last write loc identical to 0.00 UU
+  across 1.0/0.5/1.0 - scale is about the anchor, aim/laser untouched (the
+  muzzle ray normalises bones 43-44, whose relative direction survives
+  uniform position scaling).
+- **A-B-A exact**: round-trip diff 0.21% channels changed vs a 0.75% ambient
+  floor (animated light shafts), zero strong cells.
+- **The engine does NOT restamp the scale channel** (counter in
+  `vrbones status`: 0 across every run - BS2 behaviour, not Infinite's), so
+  the drive PINS the scale rows of scale-written bones at reference
+  recapture (never re-adopts its own write; adopting would compound
+  refS * s^n) and hands the authored `.s` back explicitly on the off edge
+  (scale->1.0, mode change, release, hide) - the sleeve-collapse lesson.
+- Probe-mode bisection machinery stays in the tree (`vrbones scalemode 0..3`:
+  cluster-sans-43/44 / fingers-only / wrist-only / translation-only) - mode 0
+  is the ship mode; 1-3 were never needed since mode 0 passed outright.
+
+### 2. Uniform weapon scale: drive the holdable's OWN SkeletonInstance (wskel lane)
+
+BS2 session-41's shipped design ports cleanly because BS1 weapons have carried
+their own skeleton all along (s20 - it is how the muzzle bone was found):
+
+- **Resolution**: `hands::current_holdable()` (raw class-agnostic +0x45C read;
+  vtable-gating pins a stale weapon across switches - the s21p3 class trap,
+  re-confirmed live this session when `weapon_actor()` kept reporting the
+  holstered pistol while the wrench was equipped) -> existing `resolve_skel()`
+  at the SAME `+0x3FC` slot as the rig (pistol: 8 bones - R_Grip at the
+  component origin, pistol_body, hammer, Trigger, Barrel, over, DrumParent,
+  drum). No vtable scan needed, unlike BS2's +0x430 hunt.
+- **Compose, per frame**: translations *= ws (uniform about the component
+  origin = the grip), quats ADOPTED from the engine (32-byte compare per bone;
+  drum/recoil animations keep playing while scaled - 1.7 adopts/drive
+  measured), `.s` = captured reference * ws (pinned, never adopted). Dirty
+  flag cleared after the write, replayed on the stereo second pass from
+  `reapply()`.
+- **At ws == 1.0 the lane drops entirely**: captured pose written back,
+  dirty flag handed back, zero interference at the default. Same explicit
+  restore on weapon switch, world change, and rig release (cinematics) -
+  the engine never restamps scale, so "just stop writing" would leave the
+  gun scaled forever.
+- **Flat proof**: `vrhands wscale 0.5` halves the pistol uniformly about the
+  grip - body, drum, hammer together, NO inverse-scaled part (BS2's ammo-
+  canister trap does not exist in this lane by construction). Numeric A-B-A:
+  the post-release bank re-dumps the pre-scale bone positions to the last
+  digit. 1390 drives at 0.5 rendered exactly half - no compounding.
+- **The WRENCH has no skeleton**: holdable +0x3FC is NULL (flat-proven by
+  hexdump; no SkeletonInstance vtable nearby) - it is a rigid melee mesh.
+  The lane negative-caches the failing holdable (1 s retry so a transient
+  mid-equip failure self-heals) and logs the verdict once per holdable.
+  Wrench renders authored size; its HAND still scales via lane 1. Expect the
+  same for any future rigid holdable.
+- **Weapon switching**: drop-and-rebind proven live (pistol -> wrench -> 
+  pistol via `game-key` scancode 1/2 - note s30's "weapon switching cannot be
+  driven flat" predates the s35 scancode key lane and no longer holds for
+  number-key selection).
+
+### 3. Surfaces
+
+`vrhands scale [l|r|both] <f>`, `vrhands wscale <f>`, F10 sliders in the
+hands section (model scale 0.2-4.0 per tuning hand + "scale both hands",
+weapon scale 0.3-2.5), preset keys `handScaleL`/`handScaleR`/`wScale`
+(save/load round-trip verified through a cold boot: 47 values, scales live
+and wskel auto-bound at the loaded value). Ship defaults are 1.0 - the
+calibration numbers are the user's to set in-headset (BS2's 0.771/0.760/0.770
+are BS2-rig numbers and were deliberately not copied).
+
+Routes NOT taken this session, for the record: DrawScale re-test on the new
+fg path (route B - unnecessary, the cluster lever passed first) and the fovA
+consumer hunt (route A - stays parked with its in-headset world-coupling
+negative). `kActorDrawScaleOffset`/dirty-protocol constants remain declared,
+still unreferenced.

@@ -25,6 +25,171 @@ The Infinite "Current state" section sits above the BS1/BS2 one rather than disp
 two ladders' handoffs do not fight over the same lines. Both are current; read the one for the
 game you are working on.
 
+### POST-v0.8.0 FEEDBACK PROGRAM (session 60, 2026-08-13) - current state and the session ladder
+
+**Branch discipline for this program (user directive, s60): everything lands on the
+integration branch `mod-followups` (off `main` @ 747efc5), one session branch at a time
+merged INTO `mod-followups` - NOT into `main`. `mod-followups` merges to `main` only when
+the whole feedback list is done and the next version ships.**
+
+**Standing permission (user, s60): explicit green light from the BioVRDev author to COPY
+CODE from https://github.com/BioVRDev/Bioshock-Remastered-VR** (mutual collaboration; the
+old concepts-only boundary is lifted - see RESEARCH.md "BioVRDev analysis", updated s60).
+Keep an attribution comment in any file carrying their code.
+
+**Session 60 shipped the quick wins (all sim-verified, flat):**
+
+1. **Instant move direction, BS1+BS2, default ON** - the reported "arc on a fast 180
+   head turn while walking" is the body transfer's 180 deg/s slew cap; the fix publishes
+   the not-yet-transferred body error to core's dormant s52 stick-rotation lane
+   (Infinite's own mechanism; the error - not the raw residual - so the body transfer
+   can never double-count). F10 checkbox in the body section, `vrbody movedir on|off`,
+   preset key `moveDirInstant` (append-only). Sim-verified on BS1: composed stick rotates
+   at the snap and decays over the absorb window; with the body parked, the walk tracks
+   the camera from the first sample (sign +1 confirmed). **BS2's in-headset A/B rides
+   the F10 toggle - add to the next headset checklist.**
+2. **BS1 preset values auto-load at boot** (BS2 parity, values only, nothing arms).
+3. **F10 usability**: BS1 preset/save buttons pinned at the top; BS1 picker ini read
+   throttled to 1 Hz; BS1 picker warns on StartupFullscreen=True and explains the
+   exit-clobber recovery; all three games show a "Ctrl+click any slider to type an exact
+   value" tip.
+4. **docs/TROUBLESHOOTING.md** (ships in the zip as TROUBLESHOOTING.txt): the 32-bit
+   ActiveRuntime key, broken 32-bit implicit API layers (ReShade -32), the SteamVR
+   32-bit gap, XR_RUNTIME_JSON, per-game resolution/windowed guidance. README's false
+   "Steam Link/SteamVR works" claims corrected (issues #21/#30).
+
+**Session 60 diagnostics (recorded, fixes deferred to the ladder):**
+
+- **HUD sliders (feedback item "check them"): PASS** - preset A/B in the sim moved the
+  HUD quad exactly (dist 1.30->2.60, width 1.25->2.00, up -0.10->+0.30 all reflected in
+  the compositor quad layer). Same `set_hud_quad` path the sliders call. BS2 shares the
+  core block.
+- **BS1 custom resolution (issues #32/#23): the mod's lane WORKS** - `vrres 2704x2704`
+  wrote both ini pairs, survived a clean quit UNCLOBBERED, and the game booted at
+  2704x2704. The failure mode is NOT the write: remaining suspects are the game's
+  boot-time "revert options?" dialog (answer No!), exclusive fullscreen, and non-Steam
+  layouts. TROUBLESHOOTING.md documents the recovery; a write-on-exit belt-and-braces
+  can ride a later session.
+- **BSI crosshair hide (feedback "it doesn't work"): mechanism healthy, ROOT CAUSE
+  candidate found** - on a fresh boot the sweep derived IsShown (+0x118), cached 4
+  instances and cleared them (reasserts 0). BUT `xhair.cpp` never re-sweeps while cached
+  instances stay alive: a per-weapon crosshair widget spawned AFTER the sweep (first
+  weapon draw) is never found - visible forever. Fix wants a re-sweep trigger on
+  weapon-change (arsenal knows) vs the ~0.5 s sweep hitch - design + headset time,
+  deferred to the HUD-hiding session.
+
+**Session 61 (2026-08-14) shipped ladder rung 1 - BS1 hand & weapon scaling, SOLVED
+and HEADSET-ACCEPTED ("everything looks perfect", 2026-08-14):**
+
+- The s16 "any chain scale is fatal" verdict was CONFOUNDED: that test still wrote
+  bone 43's `.s` at authored value. Scaling the cluster's anchor-relative
+  translations for ALL bones while writing the `.s` channel only for 27-42/6-21
+  (never 43/44) scales the hand cleanly about the grip - attached weapon
+  undisturbed, anchor write-loc pinned to 0.00 UU, A-B-A exact (0.21% vs 0.75%
+  ambient). BS1's engine never restamps scale (counter: 0) - reference rows pinned,
+  authored `.s` handed back on every off edge.
+- Weapon size is a separate lane (BS2 s41's design): drive the holdable's OWN
+  SkeletonInstance (same +0x3FC as the rig; pistol = 8 bones, R_Grip at origin) -
+  translations *= ws about the grip, quats adopted (animations keep playing),
+  scale pinned, total drop at ws=1.0 / switch / world change / cine release.
+  THE WRENCH HAS NO SKELETON (rigid mesh, +0x3FC null) - negative-cached, renders
+  authored; its hand still scales.
+- Surfaces: `vrhands scale [l|r|both] <f>` / `vrhands wscale <f>`, F10 sliders in
+  the hands section (0.2-4.0 per hand, weapon 0.3-2.5), preset keys
+  `handScaleL`/`handScaleR`/`wScale` (cold-boot round-trip verified, 47 values).
+- **SHIPPED CALIBRATION BAKE (headset-accepted 2026-08-14):** hands 0.793/0.793,
+  weapon 0.760 - baked as the code defaults (bones.cpp) AND into
+  `release/preset-bs1/vrpreset.ini`, which now matches the accepted live preset
+  key-for-key (47/47 verified). The same run re-baked the aim calibration:
+  L trim -11.0/+37.0, R trim +0.2/-4.5, R ray origin right -2.1 up +12.9 cm
+  (aim.cpp defaults + shipped preset). Standing rule, unchanged since v0.3.0:
+  the accepted preset becomes the shipped default.
+- Full derivations + falsification reconciliation: ENGINE_NOTES "Session 61".
+
+**FLICKER LOG RECEIVED 2026-08-14 (issue #31 reporter) - read this before
+starting rung 3.** File: the user's `bioshockvr(9).log` (BS2, mod 0.7.0). What it
+establishes and what it does NOT:
+
+- **Runtime: `SteamVR/OpenXR` 2.17.6, system `SteamVR/OpenXR : lighthouse`** -
+  base-station hardware, NOT a Quest. This is why rungs 2 and 3 belong in one
+  session: our own SteamVR leg is the most plausible repro lane.
+- Their swapchain pair was **5160x5520** (raised mid-session from 2888x3088) -
+  a very large target; worth replicating when chasing the defect.
+- **Only ~2 usable gameplay minutes.** Stereo armed 13:58:25; `[flick]` min=1 and
+  min=2 carry data, min=3 is all zeros (they had stopped). The ask was 12+ min.
+- **The instrument came back CLEAN: `fl1=0/0 fl2=0/0` in every minute**, dmax
+  16/0/0/0 ms (baseline), pe1 2674/1336 then 2280/1146 - same order as the
+  documented BS2 ambient baseline (~1900 hands + ~950 wskel per min), pe2 never
+  fired. **So either the defect did not occur during those two minutes, or the
+  fl counters do not detect it. Do not assume the counters will catch it** -
+  budget for widening the instrument (per-eye present pairing under SteamVR)
+  rather than just re-collecting.
+- Session ends on the known benign host exit-path fault (WM_CLOSE teardown).
+- `xr=VISIBLE/neverFocused` appears 300x but only pre-gameplay; it reaches
+  FOCUSED in play. Not an anomaly.
+
+**THE SESSION LADDER (user-REORDERED 2026-08-14, after rung 1 shipped - this
+order supersedes the s60 one):**
+
+1. ~~**BS1 hand & weapon scaling**~~ **DONE + ACCEPTED s61** - calibration baked
+   as defaults and into the shipped preset (0.793/0.793 hands, 0.760 weapon).
+   Rung CLOSED.
+2. ~~**SteamVR support**~~ **DONE + HEADSET-ACCEPTED s62 for BS1/BS2** (user,
+   2026-08-14, via Steam Link: "worked flawlessly", shim runtime visible in
+   F10). `bvr_steamvr32.dll` (BioVR's OpenXRShim rebuilt as a real
+   manifest-discovered OpenXR runtime) + Index/Vive/WMR native profiles +
+   in-mod auto-fallback via XR_RUNTIME_JSON (xr.ini mode=auto|native|steamvr).
+   Survives SteamVR quit/crash (drops flat). Zip ships 4 DLLs. TWO FOLLOW-UPS
+   from the headset run:
+   - **BSI on SteamVR: FIXED s62c (flat A-B-A; headset re-test pending)** -
+     root cause was Infinite's legacy DXGI 1.0 factory chain breaking
+     vrclient's texture sharing (every Submit failed 106 -> SteamVR void; no
+     display focus -> no input). BSI adapter now upgrades CreateDXGIFactory to
+     CreateDXGIFactory1 at init. See the s62c session-log entry.
+   - **Virtual Desktop's SteamVR toggle does NOT take for these games** - the
+     32-bit lane stayed VDXR regardless (user report). Harmless for real users
+     (VDXR working is the good outcome); documented so nobody chases it as a
+     bug. SteamVR testing lane = Steam Link.
+3. **BS2 left-eye flicker** (issue #31) - *(s62: instrumented; NOT reproduced
+   in the user's Steam Link attempt - but a NEW ON-DEMAND LEAD found)*: **on
+   every SHOT the hand visibly snaps to its original (authored) pose and back
+   within a split second** (user, s62 headset run on SteamVR). That is a
+   restamp-shaped defect with a per-shot trigger - the first reproducible
+   flicker this rung has had, and plausibly the same root as the reporter's
+   symptom. NEXT SESSION: flat-first fire-snap hunt in the sim save (drive
+   fire via the pad seam, correlate per-shot with [flick]/vrbones catches and
+   the [pair] line; if the counters stay clean while the snap renders, the
+   revert is NOT on the driven banks - hunt the actual writer: recoil anim
+   event, actor-rotation lane, weapon socket). ANSWERED (user, s62b): the
+   fire-snap ALSO happens on VDXR - engine-inherent, not shim timing, which
+   makes the flat sim hunt fully representative. The [pair] instrument +
+   capture recipe (TESTING S62 leg 1 step 5) remain the reporter deliverable
+   if their symptom differs.
+4. **"No OpenXR runtime" / does-not-enter-VR fix + user-facing help** (issues #29,
+   #35, #37) - some users get no VR at all on non-VDXR runtimes and the documented
+   fix steps have not worked for everyone. Wants a real fix where there is one, and
+   otherwise a diagnostic/repair script that reports what the loader actually sees
+   (active runtime json, registry key, bitness) instead of prose troubleshooting.
+5. **HUD element hiding** - BS1 enemy health bars + lock-on icon (uscript property hunt
+   via the Exec `set` seam; fallback per-draw skip), BS2 check, + the BSI crosshair
+   re-sweep fix from the s60 diagnosis.
+6. **F10 menu overhaul** - controller navigation (laser -> virtual mouse, DR-6/DR-7),
+   tabs with debug separated, pre-preset readability (issue #36).
+7. **Two-handed grips for BS1** - adapt BioVR M6-S2 (their docs/modules/hands.md; grab
+   anchor = the game's own animated off-hand, latched on engine-owned frames) onto our
+   ROADMAP.md:505-517 spec.
+8. **Roomscale body-follow + snap-turn pivot** (likely 2 sessions) - pawn follows
+   physical displacement WITH collision; BS1/BS2 probe `AActor::Move`/`MoveSmooth` exec
+   natives (BioVR's research doc ranks them - vr-features-research.md in their repo);
+   Infinite separately. Fixes the snap-turn pivot for free. **Moved to the end by the
+   user 2026-08-14.** **Do NOT bundle the standing/floor recenter work here** - rung 9.
+9. **LAST / most likely deferred: standing-pose (floor-based) recenter** - STAGE/LOCAL_FLOOR
+   reference space + seated/standing modes (the parked ROADMAP item). **Demoted to the
+   very end by the user (s60b headset verdict): "the standing and seated reset view both
+   worked fine for me... it's good enough for now."** The s60b both-sticks chord
+   recenters to wherever the head is at the click, and that satisfies the use case.
+   Only pick this up if a later headset session produces an actual complaint.
+
 ### Infinite: current state after session 59 (THE OWN-RIG HOLD DISCRIMINATION - HEADSET ACCEPTED 2026-08-13 and merged; **v0.8.0 RELEASED same night** - Infinite's first public build; the tattoo-poster NON-HOLD beat deferred to the roadmap)
 
 **v0.8.0 SHIPPED (2026-08-13, from `bioshock-infinite` @ e6e568f):**
@@ -7375,6 +7540,252 @@ and it resumes.
   (install.ps1 backs theirs up automatically).
 
 ## Session log (newest first)
+
+### Session 62d (same day) - X+Y menu chord (Steam Link overlay workaround)
+
+User report: under Steam Link the physical menu button sometimes opens the
+Steam overlay instead of the in-game pause. New core chord, all three games:
+**LEFT controller X+Y pressed together = the menu button** - feeds the same
+tap/hold lane (tap = START pulse on release, hold = BACK), suppression latches
+until both buttons release so the second button cannot fire its game action on
+the way out. Sim-verified (chord log line fires on x+y down, X/Y masked).
+Documented in TROUBLESHOOTING. Same shape as the recenter chord; the donor
+project shipped the same workaround for the same reason.
+
+### Session 62c (same day) - BSI-SteamVR ROOT-CAUSED AND FIXED FLAT (DXGI 1.0 factory)
+
+The s62b BSI symptom (SteamVR void + dead input, shim armed) is SOLVED at the
+root, flat A-B-A on the null rig; in-headset Steam Link re-test pending.
+
+- **Evidence chain:** ovrshim.log showed every Submit failing 106
+  SharedTexturesNotSupported; vrclient_BioShockInfinite.txt named it: "Failed
+  to create sync texture. Ensure application was built using DXGI 1.1 (i.e.
+  Call CreateDXGIFactory1)". Falsifications: MISC_SHARED on the eye targets
+  did NOT fix it; a fresh shim-owned FL11 submit device did NOT fix it (the
+  failure follows the process); TextureType_DXGISharedHandle moved the error
+  to 105. Discriminator: CreateTexture2D(MISC_SHARED_KEYEDMUTEX) returns
+  E_INVALIDARG on BSI's device but passes on BS1's - both FL11, creationFlags
+  0x0. Conclusion: Infinite enumerates its adapter via legacy DXGI 1.0
+  CreateDXGIFactory, and 1.0-chain devices cannot create the keyed-mutex
+  resources vrclient's sync texture needs.
+- **Fix (BSI adapter, decoupled):** gfx::install_dxgi11_upgrade() forwards
+  CreateDXGIFactory -> CreateDXGIFactory1 at adapter init (before the game
+  touches D3D) - literally the vrclient advice, applied for the game. Verified
+  hook + upgrade log lines, keyed-mutex probe now PASSES, and submits went
+  ok=0/fail=291 per 5s -> ok=300/fail=0 on the DIRECT path (BS1-identical).
+  Dead input was downstream of the same cause (SteamVR routes input only to
+  the app it displays); expected fixed - user confirms on Steam Link.
+- **Shim hardening kept from the hunt:** keyed-mutex probe with pre-engaged
+  DXGI-shared-handle submit fallback (for any OTHER app with a 1.0 chain),
+  5s submit outcome heartbeat (transition-only logging is what let dead
+  submits read as healthy for a whole session), named compositor errors,
+  device identity log (featureLevel/creationFlags) at session create.
+
+### Session 62b (same day) - HEADSET VERDICTS: BS1/BS2 SteamVR ACCEPTED; BSI-SteamVR broken; fire-snap lead
+
+**MERGE PENDING:** `mod-followups` is checked out by the parallel
+input-fixes worktree, so this session's branch
+`claude/steamvr-support-flicker-4aa33c` is pushed but NOT yet merged.
+Merge it into `mod-followups` when that worktree releases the branch.
+
+User ran the S62 legs (Steam Link; VD's SteamVR toggle never moved the 32-bit
+lane off VDXR - documented, harmless):
+
+1. **BS1 + BS2 on SteamVR via Steam Link: "worked flawlessly"** - shim runtime
+   confirmed in F10. RUNG 2 CLOSED for the shipped games.
+2. **BSI on SteamVR: shim armed but unusable** - headset in the SteamVR void,
+   game flat on the monitor, ALL input dead (pad + keyboard, menu unreachable).
+   Matches the pause-on-focus-loss trait; flat E2E passed, so it is the
+   in-headset focus/present interaction. Follow-up session; non-gating.
+3. **Issue-#31 flicker: not reproduced** in the user's attempt, BUT a NEW
+   on-demand lead: **every shot makes the hand snap to its authored pose and
+   back for a split second**. Restamp-shaped, per-shot trigger, first
+   reproducible flicker on this rung - next session hunts it flat-first
+   (fire via the pad seam, correlate with [flick]/[pair]/vrbones per shot).
+   Open: does it also happen on VDXR?
+
+### Session 62 - 2026-08-14 - STEAMVR SUPPORT BUILT + FLAT-VERIFIED (rung 2) + [pair] instrument (rung 3 widening)
+
+**Rung 2 code-complete and flat-verified end-to-end; headset legs pending (user
+checklist: TESTING.md "S62"). Rung 3 instrumented; repro attempt rides the same
+headset session.** Branch `claude/steamvr-support-flicker-4aa33c` off
+`mod-followups`.
+
+1. **Native profiles (commit 1):** valve/index_controller + htc/vive_controller
+   + microsoft/motion_controller suggested bindings beside touch/simple;
+   boolean squeeze/click feeds the FLOAT grips via spec conversion; Vive/WMR
+   leave btn_b/x/y unbound (advisory logged). Sim accepts all five profiles
+   (19/6/17/14/15 bindings, typo-catcher preserved, touch stays authoritative).
+2. **The shim (commits 2-3): `bvr_steamvr32.dll`** - BioVR's OpenXRShim
+   (permission recorded in THIRD_PARTY_NOTICES.md) rebuilt from their
+   openxr_loader.dll filename hijack into a REAL OpenXR runtime: sole export
+   xrNegotiateLoaderRuntimeInterface, GIPA dispatch (xrsim shape) - a missing
+   function is a runtime error, never the donor's error-127 load failure.
+   Added the 4 entry points the mod calls that the donor lacked (enumerate-
+   extensions, GetSystemProperties, GetActionStatePose, ResultToString), quad
+   cap 8->16, dynamic eye-target rebuild (BS2 mid-session resolution change),
+   float-read digital fallback (closes the donor's open 'WMR radials' hazard),
+   binding manifests regenerated per launch for OUR 19-action 'gameplay' set.
+   KEPT VERBATIM: GetProjectionRaw U=b/D=t direct assignment, NO swap guard,
+   validate-and-shout (the donor's costliest bug - weeks; desktop mirror is
+   not a witness); WaitGetPoses pacing; Dq=50m; ColorSpace_Gamma; __cdecl
+   entry points vs __stdcall FnTable. OpenVR SDK 2.15.6 vendored
+   (third_party/openvr_headers, BSD-3, sha256 pins; openvr_api.dll committed
+   per user decision).
+3. **Runtime selection (commit 5):** xr.ini mode=auto|native|steamvr (NOT a
+   vrpreset key - the F10 save would eat it); auto = native first, then write
+   manifest + SetEnvironmentVariable(XR_RUNTIME_JSON) + retry IN-PROCESS
+   (loader re-runs discovery env-var-first while nothing is loaded - verified
+   in the vendored loader). No registry writes. Healthy native = byte-for-byte
+   today's flow (sim-regressed). Elevation warning; ActiveRuntime heuristic
+   logs but never decides. This likely closes most of rung 4 - the -51
+   explainer now names the bundled fix.
+4. **Quit resilience (found by E2E, fixed):** an OpenVR scene app that lingers
+   after VREvent_Quit is HARD-KILLED by vrserver ~5s later (no dump, no WER) -
+   that is what killed the first two E2E runs (Room Setup auto-launching as a
+   scene app triggered the transition). The shim now acknowledges and severs
+   the OpenVR connection at session destroy; the game drops to flat and lives.
+   Verified: hard vrserver kill mid-stereo -> BS1 kept running flat.
+5. **E2E flat proof (SteamVR 2.16.7, null driver, no headset):** xr_hello32
+   FULL PASS through the shim; BS1 booted via the shim to FOCUSED with FULL
+   alternate-eye stereo + HUD quad + aim laser live on real SteamVR.
+6. **[pair] instrument (rung 3 widening):** core pair_probe() counters (pairs,
+   aborts by kind incl. lone-left, per-eye captures, acquire/wait failures,
+   untagged-in-projection, rebuilds, and capture AGE at stereo submit - stale
+   left age IS the double image) + BS2 [pair] minute line beside [flick] with
+   pass-2 skip reasons split (every skip fires after the left tag = lone-left
+   candidate) and vrmirror state. Sim baseline at the save: pairs=1145
+   cap=1145/1146 ab=0 stale=0/0 skew=0. Healthy/defect shapes: VERIFICATION.md.
+7. **Traps burned:** SteamVR scene-app transitions kill the current scene app
+   (Room Setup, SteamVR Home - rig disables Home, ignores Room Setup);
+   force-killed vrserver leaves Steam's appid state stuck ('Running' - user
+   must click STOP); vrmonitor close does NOT stop vrserver while a client
+   is connected; the null driver refuses Room Setup's establish-tracking step
+   (wizard unnecessary - compositor accepts frames without chaperone data).
+8. **Open, needs the headset (user checklist TESTING.md S62):** VDXR sanity
+   (leg 0), VD-SteamVR leg 1 (watch for VDXR's 32-bit key wrongly winning
+   while SteamVR owns the headset - xr.ini mode=steamvr is the documented
+   override, and a miss here feeds rung 4), Steam Link leg 2, and the BS2
+   chapter-2 flicker hunt at 2888x3088 -> mid-session 5160x5520 with the
+   [pair] line watching. Release builds INSTALLED to BS1+BS2; tuned presets
+   backed up (*.s62-backup-*). If no repro after a real attempt: ship the
+   reporter a build + the leg-1-step-5 recipe verbatim (play protocol, clock
+   the minute, vrmirror A/B).
+
+### Session 61 - 2026-08-14 - BS1 HAND & WEAPON SCALING SOLVED (ladder rung 1)
+
+On a session branch off `mod-followups` @ ac61e70, merged back into `mod-followups`.
+All flat, in the simulator (vrstereo on, drive on, A-B-A proofs); no headset needed
+until the calibration pass.
+
+- **The decisive experiment (E1)**: the s16 dead-end #2 had an untested cell - that
+  test scaled bones 27-42 AND still wrote bone 43's `.s` at authored value (BS2's
+  later bisection localised its identical blowup to the pivot's own scale channel).
+  Scaling with bones 43/44's `.s` left engine-owned entirely: hand halves, ATTACHED
+  PISTOL UNCHANGED. The BS2 cluster recipe transfers; E2/E3 bisections never needed.
+- **Cluster lane (bones.cpp drive)**: anchor-relative translations *= s for every
+  cluster bone (right anchor IS attach bone 43, so the hand scales about the grip);
+  `.s` = pinned reference * s for mode-selected bones; scale rows pinned at ref
+  recapture (engine scale-restamps measured 0 - adopting our own write would
+  compound s^n); authored `.s` written back on off edges (the sleeve lesson);
+  reapply() replays scale on the stereo second pass. Probe modes stay behind
+  `vrbones scalemode 0..3`.
+- **Weapon lane (wskel, BS2 s41 port)**: holdable via class-agnostic +0x45C read
+  (the vtable-gated path was re-confirmed live to pin a stale weapon), skeleton at
+  the same +0x3FC, pistol 8 bones. Uniform about the grip, quats adopted per frame
+  (~1.7 adopts/drive - drum/recoil keep playing), numeric A-B-A to the last digit,
+  1390 drives at 0.5 with zero compounding. Wrench: NO skeleton (rigid mesh) -
+  negative-cache + one log line, hand still scales. Switch cycle
+  pistol->wrench->pistol proven live via game-key scancodes.
+- **Shipped surfaces**: `vrhands scale [l|r|both] <f>`, `vrhands wscale <f>`, F10
+  sliders (hand 0.2-4.0 per tuning hand + both-hands button, weapon 0.3-2.5),
+  preset keys `handScaleL`/`handScaleR`/`wScale` - cold-boot round-trip verified
+  (47 values, wskel auto-binds at the loaded value under auto-VR).
+- **HEADSET VERDICT (same day): "everything looks perfect."** Accepted calibration
+  baked as defaults + shipped preset: hands 0.793/0.793, weapon 0.760; aim re-bake
+  L -11.0/+37.0, R +0.2/-4.5, R ray origin right -2.1 up +12.9 cm. Shipped
+  `release/preset-bs1/vrpreset.ini` now matches the accepted live ini 47/47.
+- **Not needed**: route B (DrawScale re-test) and route A (fovA consumer hunt) -
+  the cluster lever passed first; both stay recorded in ENGINE_NOTES s61.
+- **Traps for the next session**: BS1's harness commands are ONE PER LINE
+  (`game-cmd "a" "b"`, never "a; b" - the hands parser eats the semicolon);
+  game-key needs `-Game bs1 -Key <k>`; xrsim-shot needs the fg-shot foreground
+  wrapper pattern (ALT-tap + SetForegroundWindow + verify in the same invocation);
+  `vrpreset save` during tests CLOBBERS the user's tuned ini - back it up first,
+  restore after (done this session, laserOn included).
+
+**Next**: rung 1 is CLOSED (calibration accepted and baked). Ladder rung 2
+(roomscale body-follow + snap-turn pivot) is the next work session.
+
+### Session 60b (same day) - HEADSET VERDICTS IN + round 2: auto-VR at boot, both-sticks recenter chord
+
+**Headset verdicts (user): the s60 turn fix "working perfectly for both games";
+the F10 Ctrl+click tip "perfect".** Round-2 asks landed the same day:
+
+- **Auto-VR at boot (BS1 + BS2, default ON)**: install() posts the same pending
+  the preset button posts after the boot value-load; the game-thread lane arms
+  the full stack on the first frame. New append-only preset key `autoVr` + an
+  "Auto-start VR at launch" checkbox in the pinned preset block. (BS2 did NOT
+  actually auto-arm before - only Infinite did; now all three start in VR.)
+  Sim-verified on BS1: boot -> armed -> stereo live with zero interaction.
+- **Both-sticks-click recenter chord (all three games)**: detected in the XR
+  composer on the RAW clicks (load-bearing: BS1/BS2 EAT the right click as the
+  ammo modifier, so the composed pad never shows the chord), one edge per
+  chord, re-arms only after both release, both click bits + the ammo-modifier
+  read suppressed while held. Core queue + per-adapter drain into the existing
+  recenter request (`take_recenter_chord`, snap-turn shape). Sim-verified end
+  to end on BS1 and BSI (queued -> drained -> "vr camera recentered" same
+  frame, twice, both press orders); BS2 is the same duplicated shape,
+  headset-checked via TESTING S60b.
+- **Deferred**: controller-driven F10 (open/use/close from the controllers) is
+  ladder rung 6 (the F10 overhaul). STANDING-pose recenter went to rung 8
+  (last / maybe never) after the headset verdict below.
+
+**ROUND-2 HEADSET VERDICTS (user, same night): auto-VR at boot "working for
+BS1 and BS2"; the both-sticks chord "working as expected in all 3 games".**
+Follow-ups from that pass, all landed:
+
+- The auto-VR opt-out was made reachable WITHOUT the overlay (the user's "just
+  in case it bugs out" ask): the F10 checkbox already existed, and `autoVr=1`
+  is now a documented, commented key in both shipped `release/preset-bs*/
+  vrpreset.ini` files, with a TROUBLESHOOTING section and a README pointer -
+  so a user whose launch is unusable can flip it with the game closed.
+- **Standing/floor-based recenter DEMOTED to ladder rung 8** on the user's own
+  verdict: "the standing and seated reset view both worked fine for me... it's
+  good enough for now." The chord's recenter-to-current-head-pose covers it.
+
+**s60b is CLOSED.** Everything is on `mod-followups`; `main` still holds
+v0.8.0 until the whole feedback list ships as the next release.
+
+### Session 60 - 2026-08-13 - FEEDBACK QUICK WINS (all three games) + the post-v0.8.0 session ladder
+
+On branch `claude/mod-feedback-fixes-c6bbe7` (off `main` @ 747efc5), merged into the new
+integration branch `mod-followups` - the user's branch discipline for the whole feedback
+program (main gets one merge at the next release). Triage source: the user's 14-item
+feedback list + the GitHub tracker (#9-#38) + the BioVRDev repo, which the user got an
+explicit green light to copy code from (RESEARCH.md boundary updated).
+
+- **Shipped**: instant move direction for BS1/BS2 (the 180-arc fix - publishes the
+  not-yet-transferred body error into core's s52 stick lane, default ON, sim-verified
+  mechanism AND sign on BS1); BS1 boot preset-value auto-load; F10 usability (pinned BS1
+  preset block, 1 Hz ini read, fullscreen warning, Ctrl+click tip x3 games);
+  docs/TROUBLESHOOTING.md + README SteamVR-claim corrections + zip packaging.
+- **Diagnosed, deferred**: HUD sliders PASS (quad follows preset A/B exactly); BS1
+  custom-resolution lane WORKS (2704x2704 wrote, survived a clean quit, booted - the
+  #32 suspects are the revert dialog / fullscreen); BSI crosshair hide root-cause
+  candidate: no re-sweep while cached instances live, so per-weapon widgets spawned
+  after the sweep are never hidden.
+- **Traps burned**: the sim (VDXR policy) freezes pose delivery when the game loses
+  focus - every PowerShell tool invocation can steal focus, so foreground (ALT-tap +
+  SetForegroundWindow + verify) INSIDE the same invocation as the test, and read the
+  heartbeat calls/s (278 focused vs 143 not) as the focus tell. BS1 auto-continues into
+  the newest save on launch (boot.ps1 "0 presses"). The walk-direction ground truth
+  needs UE's LEFT-handed frame (facing yaw 0 = +x, +y is to the RIGHT) - a
+  right-handed compass reading mislabels every direction test. The first BS1 save spot
+  (Vita-Chamber corner) has electrified water - stick-forward there kills the player.
+- **Next session**: BS1 hand & weapon scaling research (ladder rung 1), or - if the
+  user prefers a headset session first - the S60 checklist: BS2 movedir A/B, BS1 feel
+  check of the turn fix.
 
 ### Session 58 (close-out, same day) - HEADSET ACCEPTED, merged to bioshock-infinite; s59 = the missing-hands scripted-beat class
 

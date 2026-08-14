@@ -382,6 +382,35 @@ int current_eye_sign();
 // clears it and logs (self-heal after a mode-boundary skew).
 void sr_push_eye(int eyeSign); // game thread, at submit; -1 left, +1 right
 
+// --- s62: the [pair] probe (issue #31, BS2 left-eye double image) -----------
+// Cumulative counters over the per-eye present pairing layer - the quantity
+// the bone-restamp [flick] instrument does NOT measure. The right-tagged
+// present submits BOTH eyes' most-recently-released images, so any pair break
+// leaves the LEFT eye stale while the right stays fresh; `staleL` counts
+// stereo submits whose left capture was older than 50 ms, and ageMax tracks
+// the worst observed capture age at submit. Read by the BS2 adapter's minute
+// line; purely additive (nothing in core prints, BS1/BSI behavior unchanged).
+struct PairProbe {
+    uint32_t pairs = 0;          // completed L->R pairs
+    uint32_t aborts = 0;         // total pair aborts (all kinds)
+    uint32_t abortExpired = 0;   //   hold outlived kPairHoldMaxMs
+    uint32_t abortLeft = 0;      //   a second LEFT arrived while a pair was open
+    uint32_t abortUntagged = 0;  //   an untagged present completed the pair
+    uint32_t cap[2] = {0, 0};    // SR captures per eye (L, R)
+    uint32_t acqFail = 0;        // xrAcquireSwapchainImage failures
+    uint32_t waitFail = 0;       // xrWaitSwapchainImage failures (release still runs)
+    uint32_t untaggedProj = 0;   // untagged presents captured in projection mode
+    uint32_t rebuilds = 0;       // swapchain destroy/recreate cycles
+    uint32_t stereoSubmits = 0;  // submits with both eyes valid
+    uint32_t staleL = 0;         // stereo submits with left capture age > 50 ms
+    uint32_t staleR = 0;
+    uint32_t ageMaxL = 0;        // worst capture age at submit, ms - DRAINED on read
+    uint32_t ageMaxR = 0;        //   (window = the caller's own read cadence)
+    uint32_t ringPushed = 0, ringPopped = 0, ringDropped = 0, ringCleared = 0;
+    bool mirrorOn = false;       // desktop mirror pin state (vrmirror)
+};
+void pair_probe(PairProbe* out);
+
 // --- M7: the aim laser ------------------------------------------------------
 // A row of soft dots along the hand's aim ray, submitted as extra XR quad
 // layers. Doing it as compositor layers rather than as geometry in the game

@@ -741,6 +741,9 @@ void on_calcview(const FrameContext& ctx) {
         // culling, correct engine-side FX anchoring) and the hand CLUSTER
         // moves to the controller instead.
         gp.loc = {loc[0], loc[1], loc[2]};
+        // The weapon-scale lane rides the same per-frame slot (session 61);
+        // it no-ops at wscale 1.0 and drops itself on weapon switches.
+        bones::wskel_drive();
         if (!bones::drive(ctx, target, gp, hand)) return;
     } else {
         uint8_t* p = static_cast<uint8_t*>(target);
@@ -796,11 +799,38 @@ void handle_command(const char* args) {
         BVR_LOG("[hands] pose source = %s", aim ? "AIM (matches laser + bullets)"
                                                 : "GRIP (physical hand axis)");
     } else if (strcmp(verb, "scale") == 0) {
-        BVR_LOG("[hands] scale has no working lever yet - three flat-proven dead ends "
-                "2026-07-27 (ENGINE_NOTES session 16 part 2): cluster bone .s blows the "
-                "attached weapon up (the attach path inverts chain scale), and the rig "
-                "actor's DrawScale is geometry-inert on the fg path. Needs the "
-                "attach/fg render-path disasm or the vm_draw lane - next session's task");
+        // "scale [l|r|both] <f>" - no side = both hands. Session 61: the
+        // lever the s16 dead ends never tested (bones.h set_scale).
+        int side = -1;
+        const char* nums = rest;
+        if ((rest[0] == 'l' || rest[0] == 'r') && (rest[1] == ' ' || rest[1] == '\t')) {
+            side = rest[0] == 'r' ? 1 : 0;
+            nums = rest + 2;
+        } else if (strncmp(rest, "both", 4) == 0) {
+            nums = rest + 4;
+        }
+        float f = 0.0f;
+        if (sscanf_s(nums, "%f", &f) == 1 && f > 0.0f) {
+            bones::set_scale(side, f);
+            BVR_LOG("[hands] scale %s = %.3f (L=%.3f R=%.3f; 1.0 = authored)",
+                    side < 0 ? "both" : side == 1 ? "right" : "left", f, bones::scale(0),
+                    bones::scale(1));
+        } else {
+            BVR_LOG("[hands] usage: vrhands scale [l|r|both] <f> (current L=%.3f R=%.3f; "
+                    "probe mode via vrbones scalemode)",
+                    bones::scale(0), bones::scale(1));
+        }
+    } else if (strcmp(verb, "wscale") == 0) {
+        float f = 0.0f;
+        if (sscanf_s(rest, "%f", &f) == 1 && f > 0.0f) {
+            bones::set_weapon_scale(f);
+            BVR_LOG("[hands] weapon scale = %.3f (1.0 = authored, lane drops itself)",
+                    bones::weapon_scale());
+        } else {
+            BVR_LOG("[hands] usage: vrhands wscale <f> (current %.3f; uniform about the "
+                    "grip, per-frame drive of the holdable's own skeleton)",
+                    bones::weapon_scale());
+        }
     } else if (strcmp(verb, "probe") == 0) {
         int n = 1;
         if (sscanf_s(rest, "%d", &n) != 1 || n <= 0) n = 1;
@@ -1004,6 +1034,19 @@ void draw_debug_ui() {
     float rr = g_rotRollDeg[tuneHand].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("trim roll (deg)", &rr, -180.0f, 180.0f))
         g_rotRollDeg[tuneHand].store(rr, std::memory_order_relaxed);
+
+    // Session 61: hand + weapon scale (deliberately independent of world
+    // scale - the rig can be the wrong size while the world is right).
+    // The hand slider edits the tuning hand's cluster; the weapon slider is
+    // uniform about the grip and only binds skeletal holdables (the wrench
+    // is a rigid mesh and stays authored).
+    float hs = bones::scale(tuneHand);
+    if (ImGui::SliderFloat("model scale (x, independent of worldscale)", &hs, 0.2f, 4.0f))
+        bones::set_scale(tuneHand, hs);
+    if (ImGui::Button("scale both hands to this")) bones::set_scale(-1, hs);
+    float ws = bones::weapon_scale();
+    if (ImGui::SliderFloat("WEAPON scale (uniform, about the grip)", &ws, 0.3f, 2.5f))
+        bones::set_weapon_scale(ws);
 
     if (ImGui::Button("Save offsets")) save_config();
     ImGui::SameLine();

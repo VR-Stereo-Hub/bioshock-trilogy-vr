@@ -423,3 +423,58 @@ evidence, and both need a headset.
   way), Present-hook reentrancy, MinHook targets moved by a game update (check the build line
   at the top of ENGINE_NOTES.md).
 - The mod must always fail soft: if a scan/hook fails, log it and let the game run flat.
+
+## S60 headset checklist (feedback quick wins, 2026-08-13)
+
+Both items are F10-toggleable live - no relaunch needed for the A/B.
+
+1. **Instant move direction (the 180-arc fix).** Walk forward and snap your head
+   ~180 quickly, stick still held. Expected: your walk direction flips with your
+   head immediately - no arc, no curve. A/B: F10 > Body / locomotion (M7.5) >
+   "Instant move direction" checkbox OFF reproduces the old arcing walk.
+   If the walk ever goes the WRONG way (mirrored) with the box ON, report it -
+   that is a sign flip and toggling OFF restores the old behaviour.
+2. **Boot preset auto-load.** After a fresh launch (before pressing VR PRESET 1),
+   open F10 and check your tuned slider values (world scale, aim trims, HUD size)
+   already show YOUR numbers, not defaults. VR PRESET 1 still arms VR as before.
+
+### S60b additions (same day)
+
+3. **Auto-start VR.** Launch the game, touch nothing: it should arrive in VR
+   (stereo + controllers) with no F10 trip. The pinned preset block's
+   "Auto-start VR at launch" checkbox + Save preset values opts out.
+4. **Both-sticks recenter.** Click both thumbsticks together: the view recenters
+   (same as the F10 button). It fires once per press-pair and re-arms after
+   both are released. Sim-verified end to end on BS1; feel-check in the headset.
+
+## S61 headset checklist (hand & weapon scaling calibration, 2026-08-14)
+
+**DONE 2026-08-14: "everything looks perfect."** Accepted values are now the
+shipped defaults - hands **0.793**/0.793, weapon **0.760** (plus the aim re-bake:
+L trim -11.0/+37.0, R trim +0.2/-4.5, R ray origin right -2.1 up +12.9 cm). Keep
+the steps below as the RE-calibration recipe for a different player or rig.
+
+Everything is live-adjustable in F10 > Hands + weapon (M7) - no relaunch for any
+step. Ctrl+click a slider to type an exact value.
+
+1. **Hand size.** With the pistol (or any gun) equipped, drag
+   "model scale (x, independent of worldscale)" down (tuning hand R) until the
+   hand reads life-size. Expect the hand to shrink AROUND THE GRIP - the gun
+   itself must not change size or position while you drag. BS2 landed near
+   0.75-0.8; expect the same ballpark. Then "scale both hands to this" (or tune
+   L separately with the plasmid hand).
+2. **Weapon size.** Drag "WEAPON scale (uniform, about the grip)" until the gun
+   reads right in the now-correct hand. The whole gun scales together (body,
+   drum, hammer); the grip stays in your fist. BS2 landed near 0.77.
+   **The wrench will NOT scale** (it has no skeleton - engine fact, not a bug);
+   its hand still scales.
+3. **Sanity while scaled**: fire, reload, and switch weapons - animations
+   (recoil, drum spin) must keep playing on the scaled gun, a switched-to gun
+   picks the scale up automatically, and the laser/aim dot must still agree
+   with the barrel. In a cutscene the authored-size weapon must come back
+   (and your scale must return after it).
+4. **Save it**: "Save preset values" - `handScaleL`/`handScaleR`/`wScale` are
+   preset keys now and reload at every boot.
+5. **Report the numbers** (hand L/R + weapon) for the shipped-defaults decision,
+   plus any percept notes (skin distortion at the wrist, gun swimming in the
+   fist, plasmid FX misplaced on the scaled left hand).

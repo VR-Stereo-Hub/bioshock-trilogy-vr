@@ -1,0 +1,8 @@
+; The loader looks up "xrNegotiateLoaderRuntimeInterface" by its UNDECORATED
+; name. XRAPI_CALL is __stdcall, so on Win32 a plain __declspec(dllexport)
+; would publish it as _xrNegotiateLoaderRuntimeInterface@8 and the loader
+; would report "failed to find negotiate function". A .def file pins the exact
+; name - same reason src/tools/xrsim/xrsim.def exists.
+LIBRARY bvr_steamvr32
+EXPORTS
+    xrNegotiateLoaderRuntimeInterface

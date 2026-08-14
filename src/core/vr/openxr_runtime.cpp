@@ -27,6 +27,7 @@
 #include <imgui.h>
 
 #include <tlhelp32.h>
+#include <shlobj.h>
 #include <share.h>
 #include <atomic>
 #include <cmath>
@@ -360,6 +361,24 @@ uint64_t g_lastIdleLogMs = 0; // rate limit for the SUBMISSION IDLE heartbeat
 constexpr uint32_t kPairHoldMaxMs = 500;
 std::atomic<uint32_t> g_srPairs{0}, g_srPairAborts{0};
 std::atomic<bool> g_loggedFirstPair{false};
+
+// Session 62: the [pair] probe (issue #31 - BS2 left-eye double image on
+// SteamVR). The shipped [flick] instrument measures bone restamps and came
+// back CLEAN from the reporter, so the untested layer is per-eye present
+// pairing: the RIGHT present submits both eyes' most-recently-released
+// images, and any pair break leaves the LEFT eye stale while the right stays
+// fresh - exactly a left-eye-only double image under head motion. These
+// cumulative counters cover every break mechanism the code audit named;
+// drained per-minute by the BS2 adapter next to [flick] (pair_probe()).
+std::atomic<uint32_t> g_pmAbortExpired{0}, g_pmAbortLeft{0}, g_pmAbortUntag{0};
+std::atomic<uint32_t> g_pmCap[2] = {};       // SR captures per eye
+std::atomic<uint32_t> g_pmAcqFail{0}, g_pmWaitFail{0};
+std::atomic<uint32_t> g_pmUntaggedProj{0};   // untagged present captured in projection mode
+std::atomic<uint32_t> g_pmRebuilds{0};
+std::atomic<uint32_t> g_pmStereoSubmits{0}, g_pmStaleL{0}, g_pmStaleR{0};
+std::atomic<uint32_t> g_pmAgeMax[2] = {};    // worst capture age at submit, ms
+std::atomic<uint64_t> g_pmLastCapMs[2] = {}; // tick of last SR capture per eye
+constexpr uint32_t kPmStaleAgeMs = 50; // > any healthy cadence (SR ~14ms, AER ~28ms)
 
 // Session 42 (Infinite I6 judder): pair-CADENCE statistics. The judder question
 // is not "how many pairs per second" but "how EVENLY are they spaced" - a mean
@@ -1846,6 +1865,9 @@ void destroy_swapchains() {
     // Whatever a queued rebuild was for, it has just happened.
     g_resizePending.store(false, std::memory_order_relaxed);
     reset_aer(); // the held eye images died with the swapchains
+    g_pmRebuilds.fetch_add(1, std::memory_order_relaxed); // [pair] probe
+    g_pmLastCapMs[0].store(0, std::memory_order_relaxed);
+    g_pmLastCapMs[1].store(0, std::memory_order_relaxed);
 }
 
 // Lazy: sized to the HUD capture RT, format = the eye swapchains' pick
@@ -2296,20 +2318,170 @@ void pump_events() {
         } else if (ev.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
             teardown_session("instance loss pending");
             return;
+        } else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            // s62: log-only. Bindings are resolved runtime-side; this line just
+            // marks WHEN a SteamVR-family runtime rebound the controllers. Do
+            // not call xrGetCurrentInteractionProfile here - it would grow the
+            // mod's runtime surface past the 39 entry points the SteamVR shim
+            // mirrors.
+            BVR_LOG("xr: interaction profile changed (runtime rebound controllers)");
         }
         ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }
 }
 
-} // namespace
+// --------------------------------------------------------------------------
+// SteamVR shim runtime selection (s62). SteamVR ships no 32-bit OpenXR
+// runtime; the release zip carries bvr_steamvr32.dll (an OpenXR-on-OpenVR
+// runtime, src/tools/ovrshim/) + openvr_api.dll beside the mod. When the
+// native runtime attempt fails, the mod writes a runtime manifest and points
+// the statically linked loader at it via XR_RUNTIME_JSON, then retries -
+// verified loader mechanic: while no runtime is loaded, every pre-instance
+// call re-runs discovery and reads the env var first (manifest_file.cpp:654),
+// and a failed xrCreateInstance unloads again (loader_core.cpp:305). No
+// registry writes, no admin, no loader-file swapping; a healthy native
+// runtime (VDXR) keeps today's control flow byte-for-byte.
+//
+// Mode override: %LOCALAPPDATA%\BioshockVR\xr.ini, [runtime] mode=
+// auto|native|steamvr. Deliberately NOT a vrpreset key - the F10 preset save
+// rewrites vrpreset.ini wholesale and would silently drop an unknown key.
 
-void init_instance() {
+// Root data dir (%LOCALAPPDATA%\BioshockVR), NOT the per-game subdir - the
+// runtime choice is machine-wide, like the runtimes themselves.
+bool xr_root_dir(wchar_t* out /*MAX_PATH*/) {
+    wchar_t local[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local)))
+        return false;
+    swprintf_s(out, MAX_PATH, L"%s\\BioshockVR", local);
+    return true;
+}
+
+// Returns the mode string ("auto"/"native"/"steamvr"); logs only if the file
+// exists so a default setup stays log-quiet.
+void xr_mode_read(char* mode, size_t n) {
+    strcpy_s(mode, n, "auto");
+    wchar_t root[MAX_PATH];
+    if (!xr_root_dir(root)) return;
+    wchar_t ini[MAX_PATH];
+    swprintf_s(ini, L"%s\\xr.ini", root);
+    if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) return;
+    wchar_t val[32] = {};
+    GetPrivateProfileStringW(L"runtime", L"mode", L"auto", val, 32, ini);
+    char narrow[32] = {};
+    WideCharToMultiByte(CP_UTF8, 0, val, -1, narrow, sizeof(narrow), nullptr, nullptr);
+    if (_stricmp(narrow, "native") == 0 || _stricmp(narrow, "steamvr") == 0 ||
+        _stricmp(narrow, "auto") == 0)
+        strcpy_s(mode, n, narrow);
+    else
+        BVR_LOG("xr: xr.ini [runtime] mode '%s' not recognized - using 'auto'", narrow);
+    BVR_LOG("xr: runtime mode '%s' (xr.ini)", mode);
+}
+
+// The shim ships beside bioshockvr.dll (both live next to the game exe).
+bool shim_dll_path(wchar_t* out /*MAX_PATH*/) {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&init_instance), &self))
+        return false;
+    wchar_t path[MAX_PATH];
+    if (!GetModuleFileNameW(self, path, MAX_PATH)) return false;
+    wchar_t* slash = wcsrchr(path, L'\\');
+    if (!slash) return false;
+    *slash = 0;
+    swprintf_s(out, MAX_PATH, L"%s\\bvr_steamvr32.dll", path);
+    return GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES;
+}
+
+// BOM-less UTF-8 with an absolute, JSON-escaped library_path - same contract
+// tools/xrsim-install.ps1 documents for the sim's manifest. Rewritten every
+// launch so a moved game folder self-heals.
+bool shim_write_manifest(const wchar_t* shimDll, wchar_t* manifestOut /*MAX_PATH*/) {
+    wchar_t root[MAX_PATH];
+    if (!xr_root_dir(root)) return false;
+    wchar_t dir[MAX_PATH];
+    swprintf_s(dir, L"%s\\steamvr", root);
+    CreateDirectoryW(root, nullptr);
+    CreateDirectoryW(dir, nullptr);
+    swprintf_s(manifestOut, MAX_PATH, L"%s\\bvr_steamvr32.json", dir);
+
+    char dllUtf8[MAX_PATH * 3] = {};
+    WideCharToMultiByte(CP_UTF8, 0, shimDll, -1, dllUtf8, sizeof(dllUtf8), nullptr, nullptr);
+    char escaped[MAX_PATH * 6] = {};
+    size_t j = 0;
+    for (size_t i = 0; dllUtf8[i] && j + 2 < sizeof(escaped); ++i) {
+        if (dllUtf8[i] == '\\') escaped[j++] = '\\';
+        escaped[j++] = dllUtf8[i];
+    }
+
+    FILE* f = _wfsopen(manifestOut, L"wb", _SH_DENYWR); // "wb": no BOM, no CRLF
+    if (!f) return false;
+    fprintf(f,
+            "{\n  \"file_format_version\": \"1.0.0\",\n  \"runtime\": {\n"
+            "    \"name\": \"BioshockVR SteamVR shim (OpenVR)\",\n"
+            "    \"library_path\": \"%s\"\n  }\n}\n",
+            escaped);
+    fclose(f);
+    return true;
+}
+
+bool process_is_elevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elev{};
+    DWORD n = 0;
+    const bool ok =
+        GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &n) != 0;
+    CloseHandle(token);
+    return ok && elev.TokenIsElevated != 0;
+}
+
+// Logging-only heuristic: what does the 32-bit ActiveRuntime key claim? From
+// this 32-bit process a plain HKLM open lands on the WOW6432Node view. NEVER
+// short-circuits - the authoritative test stays "did xrCreateInstance
+// succeed" (the registry can lie; the loader's own probe cannot).
+void log_active_runtime_expectation() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Khronos\\OpenXR\\1", 0,
+                      KEY_READ, &key) != ERROR_SUCCESS) {
+        BVR_LOG("xr: no 32-bit ActiveRuntime key registered - expecting to use "
+                "the SteamVR shim if the native attempt fails");
+        return;
+    }
+    wchar_t val[MAX_PATH] = {};
+    DWORD len = sizeof(val);
+    DWORD type = 0;
+    const LSTATUS rs =
+        RegQueryValueExW(key, L"ActiveRuntime", nullptr, &type,
+                         reinterpret_cast<LPBYTE>(val), &len);
+    RegCloseKey(key);
+    if (rs != ERROR_SUCCESS || type != REG_SZ || !val[0]) {
+        BVR_LOG("xr: 32-bit ActiveRuntime value missing - expecting to use the "
+                "SteamVR shim if the native attempt fails");
+        return;
+    }
+    char narrow[MAX_PATH * 3] = {};
+    WideCharToMultiByte(CP_UTF8, 0, val, -1, narrow, sizeof(narrow), nullptr, nullptr);
+    if (wcsstr(val, L"steamxr"))
+        BVR_LOG("xr: 32-bit ActiveRuntime points at SteamVR ('%s') which has no "
+                "32-bit support - expecting the shim", narrow);
+    else if (GetFileAttributesW(val) == INVALID_FILE_ATTRIBUTES)
+        BVR_LOG("xr: 32-bit ActiveRuntime manifest missing on disk ('%s') - "
+                "expecting the shim", narrow);
+    else
+        BVR_LOG("xr: 32-bit ActiveRuntime: '%s'", narrow);
+}
+
+// One native-or-shim instance attempt: enumerate -> D3D11 check -> create.
+// `label` names the attempt in every log line; `quietExplainer` suppresses
+// the SteamVR wall of text when a shim fallback is about to run anyway.
+XrResult try_create_instance(const char* label, bool quietExplainer) {
     uint32_t extCount = 0;
     XrResult r = xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr);
     if (XR_FAILED(r)) {
-        BVR_LOG("xr: no 32-bit OpenXR runtime reachable (%d) - VR disabled, game runs flat",
+        BVR_LOG("xr: [%s] no 32-bit OpenXR runtime reachable (%d)", label,
                 static_cast<int>(r));
-        return;
+        return r;
     }
     std::vector<XrExtensionProperties> exts(extCount, {XR_TYPE_EXTENSION_PROPERTIES});
     xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount, exts.data());
@@ -2317,8 +2489,8 @@ void init_instance() {
     for (const auto& e : exts)
         if (strcmp(e.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) hasD3D11 = true;
     if (!hasD3D11) {
-        BVR_LOG("xr: runtime lacks XR_KHR_D3D11_enable - VR disabled");
-        return;
+        BVR_LOG("xr: [%s] runtime lacks XR_KHR_D3D11_enable", label);
+        return XR_ERROR_EXTENSION_NOT_PRESENT;
     }
 
     const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
@@ -2331,25 +2503,80 @@ void init_instance() {
     ici.enabledExtensionNames = enabled;
     r = xrCreateInstance(&ici, &g_instance);
     if (XR_FAILED(r)) {
-        BVR_LOG("xr: xrCreateInstance failed: %s - VR disabled, game runs flat", res_str(r));
+        BVR_LOG("xr: [%s] xrCreateInstance failed: %s", label, res_str(r));
         // XR_ERROR_RUNTIME_UNAVAILABLE from a 32-bit process is very rarely a
         // broken install: SteamVR has never shipped a 32-bit OpenXR runtime, and
         // BioShock is a 32-bit game. Anyone on Lighthouse hardware (Index, Vive)
         // or running Steam Link, i.e. with SteamVR as the active runtime, lands
         // here every single time. Saying so turns "the mod does nothing" into an
         // actionable report - and it is a whole class of them.
-        if (r == XR_ERROR_RUNTIME_UNAVAILABLE) {
+        if (r == XR_ERROR_RUNTIME_UNAVAILABLE && !quietExplainer) {
             BVR_LOG("xr: -----------------------------------------------------------");
             BVR_LOG("xr: The active OpenXR runtime has no 32-bit support. This game is");
             BVR_LOG("xr: 32-bit, so VR cannot start. SteamVR is the usual cause: it has");
             BVR_LOG("xr: never shipped a 32-bit OpenXR runtime, which also covers Index,");
             BVR_LOG("xr: Vive and Steam Link setups.");
-            BVR_LOG("xr: Workaround today: set a runtime that does ship 32-bit - Virtual");
-            BVR_LOG("xr: Desktop (VDXR) or the Oculus/Meta runtime - as the active OpenXR");
-            BVR_LOG("xr: runtime, then relaunch.");
+            BVR_LOG("xr: Fix: copy bvr_steamvr32.dll and openvr_api.dll from the release");
+            BVR_LOG("xr: zip next to the game exe (beside bioshockvr.dll) - the mod then");
+            BVR_LOG("xr: falls back to its bundled SteamVR shim automatically. Or set a");
+            BVR_LOG("xr: runtime that ships 32-bit (Virtual Desktop's VDXR, Oculus/Meta)");
+            BVR_LOG("xr: as the active OpenXR runtime and relaunch.");
             BVR_LOG("xr: -----------------------------------------------------------");
         }
         g_instance = XR_NULL_HANDLE;
+        return r;
+    }
+    return XR_SUCCESS;
+}
+
+} // namespace
+
+void init_instance() {
+    char mode[16];
+    xr_mode_read(mode, sizeof(mode));
+
+    wchar_t shimDll[MAX_PATH];
+    const bool shimPresent = shim_dll_path(shimDll);
+    const bool wantNative = _stricmp(mode, "steamvr") != 0;
+    const bool mayFallBack = shimPresent && _stricmp(mode, "native") != 0;
+
+    XrResult r = XR_ERROR_RUNTIME_UNAVAILABLE;
+    if (wantNative) {
+        if (_stricmp(mode, "auto") == 0) log_active_runtime_expectation();
+        r = try_create_instance("native", /*quietExplainer=*/mayFallBack);
+    }
+
+    if (XR_FAILED(r) && mayFallBack) {
+        if (wantNative)
+            BVR_LOG("xr: native runtime unavailable - falling back to the SteamVR shim");
+        else
+            BVR_LOG("xr: runtime mode 'steamvr' - using the SteamVR shim directly");
+        if (process_is_elevated())
+            BVR_LOG("xr: WARNING - game is running elevated; the shim cannot be "
+                    "selected (XR_RUNTIME_JSON is ignored for admin processes). "
+                    "Run the game non-elevated.");
+        wchar_t manifest[MAX_PATH];
+        if (!shim_write_manifest(shimDll, manifest)) {
+            BVR_LOG("xr: could not write the shim manifest - VR disabled, game runs flat");
+            return;
+        }
+        char manifestUtf8[MAX_PATH * 3] = {};
+        WideCharToMultiByte(CP_UTF8, 0, manifest, -1, manifestUtf8,
+                            sizeof(manifestUtf8), nullptr, nullptr);
+        BVR_LOG("xr: shim manifest: %s", manifestUtf8);
+        SetEnvironmentVariableW(L"XR_RUNTIME_JSON", manifest);
+        r = try_create_instance("steamvr shim", /*quietExplainer=*/true);
+        if (XR_FAILED(r))
+            BVR_LOG("xr: SteamVR shim also failed (%s) - VR disabled, game runs "
+                    "flat (is SteamVR installed?)", res_str(r));
+    } else if (XR_FAILED(r) && !shimPresent && _stricmp(mode, "steamvr") == 0) {
+        BVR_LOG("xr: runtime mode 'steamvr' but bvr_steamvr32.dll is not beside "
+                "the mod - VR disabled, game runs flat");
+    }
+
+    if (XR_FAILED(r)) {
+        if (_stricmp(mode, "native") == 0 || !mayFallBack)
+            BVR_LOG("xr: VR disabled, game runs flat");
         return;
     }
 
@@ -2524,6 +2751,7 @@ void on_present_begin(IDXGISwapChain* swapchain) {
                 kPairHoldMaxMs);
         g_srPairOpen = false;
         g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+        g_pmAbortExpired.fetch_add(1, std::memory_order_relaxed);
     }
 
     // M8 (a): headset idle (session left FOCUSED after having held it) - skip
@@ -3397,6 +3625,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
             }
         } else {
             g_srPairAborts.fetch_add(1, std::memory_order_relaxed);
+            // [pair] probe: name the break. A second LEFT means the previous
+            // left's sibling never presented (the lone-tag mechanism);
+            // untagged means the pair closed on a non-stereo present.
+            if (srSign < 0)
+                g_pmAbortLeft.fetch_add(1, std::memory_order_relaxed);
+            else
+                g_pmAbortUntag.fetch_add(1, std::memory_order_relaxed);
         }
     }
     bool pairHold = srFrame && srSign < 0 && !pairSecond &&
@@ -3423,10 +3658,18 @@ void on_present_end(IDXGISwapChain* swapchain) {
             int target = srFrame ? srEye
                          : (aerActive && imageSign == currentEyeSign) ? g_currentEye
                                                                       : 0;
+            // [pair] probe: an untagged present in projection mode captures
+            // into the LEFT swapchain (index 0) - candidate mechanism for a
+            // wrong-content left eye.
+            if (projectionMode && !srFrame && !aerActive)
+                g_pmUntaggedProj.fetch_add(1, std::memory_order_relaxed);
             uint32_t index = 0;
             int64_t tAcq = phase_now();
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-            if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_swapchains[target], &ai, &index))) {
+            XrResult acqRes = xrAcquireSwapchainImage(g_swapchains[target], &ai, &index);
+            if (XR_FAILED(acqRes))
+                g_pmAcqFail.fetch_add(1, std::memory_order_relaxed);
+            if (XR_SUCCEEDED(acqRes)) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
                 bool imageReady;
@@ -3435,6 +3678,12 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     imageReady = XR_SUCCEEDED(xrWaitSwapchainImage(g_swapchains[target], &wi));
                 }
                 phase_record(kPhAcquire, tAcq);
+                if (!imageReady)
+                    // The release below still runs (spec requires it), which
+                    // makes an UNDEFINED-content image the eye's most recently
+                    // released one - counted, because that is one of the
+                    // stale-left candidate mechanisms.
+                    g_pmWaitFail.fetch_add(1, std::memory_order_relaxed);
                 if (imageReady) {
                     // Same size + same typeless family (guaranteed at creation),
                     // so a straight GPU copy carries the frame - overlay
@@ -3472,6 +3721,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     else
                         g_eyePose[srEye] = gen[srEye].pose;
                     g_eyeValid[srEye] = true;
+                    g_pmCap[srEye].fetch_add(1, std::memory_order_relaxed);
+                    g_pmLastCapMs[srEye].store(GetTickCount64(),
+                                               std::memory_order_relaxed);
                     if (!g_loggedFirstSr.exchange(true))
                         BVR_LOG("xr: first SequentialReentry eye frame captured "
                                 "(eye %c)", srEye == 0 ? 'L' : 'R');
@@ -3536,6 +3788,25 @@ void on_present_end(IDXGISwapChain* swapchain) {
                     // with the per-eye located poses. Converges in 2 frames.
                     bool stereo = (aerActive || srFrame) && g_eyeValid[0] &&
                                   g_eyeValid[1];
+                    // [pair] probe: THE quantity for issue #31. A stereo
+                    // submit references each eye's most-recently-released
+                    // image; if the left one is old, the left eye shows a
+                    // stale frame with a stale pose - the double image.
+                    if (stereo) {
+                        g_pmStereoSubmits.fetch_add(1, std::memory_order_relaxed);
+                        const uint64_t nowMs = GetTickCount64();
+                        for (int e = 0; e < 2; ++e) {
+                            uint64_t last = g_pmLastCapMs[e].load(std::memory_order_relaxed);
+                            if (last == 0) continue; // AER fills these too; 0 = untracked
+                            uint32_t age = static_cast<uint32_t>(nowMs - last);
+                            if (age > kPmStaleAgeMs)
+                                (e == 0 ? g_pmStaleL : g_pmStaleR)
+                                    .fetch_add(1, std::memory_order_relaxed);
+                            uint32_t m = g_pmAgeMax[e].load(std::memory_order_relaxed);
+                            while (age > m && !g_pmAgeMax[e].compare_exchange_weak(
+                                                  m, age, std::memory_order_relaxed)) {}
+                        }
+                    }
                     for (int eye = 0; eye < 2; ++eye) {
                         if (stereo) {
                             projViews[eye].pose = g_eyePose[eye];
@@ -4826,6 +5097,34 @@ void sr_push_eye(int eyeSign) {
     g_srPushed.fetch_add(1, std::memory_order_relaxed);
 }
 
+void pair_probe(PairProbe* out) {
+    if (!out) return;
+    out->pairs = g_srPairs.load(std::memory_order_relaxed);
+    out->aborts = g_srPairAborts.load(std::memory_order_relaxed);
+    out->abortExpired = g_pmAbortExpired.load(std::memory_order_relaxed);
+    out->abortLeft = g_pmAbortLeft.load(std::memory_order_relaxed);
+    out->abortUntagged = g_pmAbortUntag.load(std::memory_order_relaxed);
+    out->cap[0] = g_pmCap[0].load(std::memory_order_relaxed);
+    out->cap[1] = g_pmCap[1].load(std::memory_order_relaxed);
+    out->acqFail = g_pmAcqFail.load(std::memory_order_relaxed);
+    out->waitFail = g_pmWaitFail.load(std::memory_order_relaxed);
+    out->untaggedProj = g_pmUntaggedProj.load(std::memory_order_relaxed);
+    out->rebuilds = g_pmRebuilds.load(std::memory_order_relaxed);
+    out->stereoSubmits = g_pmStereoSubmits.load(std::memory_order_relaxed);
+    out->staleL = g_pmStaleL.load(std::memory_order_relaxed);
+    out->staleR = g_pmStaleR.load(std::memory_order_relaxed);
+    // Drained on read (like the [flick] dmax window): the caller's cadence
+    // defines the window, so the printed worst age lines up with the minute
+    // the user reports seeing the defect.
+    out->ageMaxL = g_pmAgeMax[0].exchange(0, std::memory_order_relaxed);
+    out->ageMaxR = g_pmAgeMax[1].exchange(0, std::memory_order_relaxed);
+    out->ringPushed = g_srPushed.load(std::memory_order_relaxed);
+    out->ringPopped = g_srPopped.load(std::memory_order_relaxed);
+    out->ringDropped = g_srDropped.load(std::memory_order_relaxed);
+    out->ringCleared = g_srCleared.load(std::memory_order_relaxed);
+    out->mirrorOn = g_mirror.load(std::memory_order_relaxed);
+}
+
 } // namespace bvr::vr
 
 #else // !BVR_WITH_OPENXR
@@ -4838,6 +5137,7 @@ void init_instance() {
 void on_present_begin(IDXGISwapChain*) {}
 void on_present_end(IDXGISwapChain*) {}
 void on_resize(unsigned, unsigned, unsigned) {}
+void pair_probe(PairProbe*) {}
 void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
 bool peek_head_pose(HeadPose&) { return false; }
