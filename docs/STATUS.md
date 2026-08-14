@@ -7540,6 +7540,42 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 62f (same day) - **v0.8.2 RELEASED**: BS1 load-save crash root-caused and fixed
+
+User crash report (BioShock 1, v0.8.1, crashes on loading a save; log
+bioshockvr(11).log). ROOT-CAUSED FROM THE LOG ALONE, no repro needed:
+
+- Fault: `0xC0000005 at ntdll+0x541A9` reading `[0x1A1D0008]`, region
+  `state=10000` (MEM_FREE), `eax=esi=0x1A1D0000`, on the game thread
+  (tid = calcTid = beatTid). A heap HANDLE *is* the heap base, and
+  `_HEAP.SegmentSignature` is at +0x08 on x86 -> the mod locked a
+  DESTROYED heap. `edi`/stack carried bioshockvr.dll+0x364030 (the
+  static Sweep).
+- Trigger: `camera.cpp` re-arms the UShockUserSettings scan on
+  "entered gameplay view" (the log prints that exact string at
+  21:51:06.880); the level load then destroys heaps while the re-armed
+  scan is enumerating and locking them (the beat at the crash shows
+  call1=306 ms, submit=453/s - peak load churn).
+- THE DEFECT: `walk_one_heap` guarded the WALK with __try/__except but
+  called `HeapLock` and `HeapUnlock` OUTSIDE it - the guard covered the
+  imagined fault and missed the real one.
+- Fix (core, so all three games inherit it): `heap_lock_seh` /
+  `heap_unlock_seh` / guarded `GetProcessHeaps`, plus `heap_still_live`
+  (re-enumerate and check membership before locking) so the common case
+  never takes the fault at all. New Sweep counters `deadHeaps` /
+  `faultedHeaps` ride the BS1 scan log line as "SKIPPED n dead + n
+  faulted heap(s), survived".
+- **BS2 and Infinite audited and NOT affected**: neither uses the heap
+  walk (BS2 `scan_for_vtable_object` and BSI `scan_region_seh` are
+  VirtualQuery region sweeps, both already SEH-guarded). Audit also
+  confirmed no Heap* API call exists anywhere outside heap_scan.cpp.
+- Sim-verified after the fix: scan still finds and accepts the settings
+  object (1 match, 1 accepted, 10 heaps/271784 blocks, no skips).
+- Aggravating factor worth remembering: 2K's CSERHelper.dll displaces
+  our exception filter and RETRIES the faulting instruction, turning one
+  AV into 259,000 logged repeats - a first-chance __except never reaches
+  it, which is why guarding at the SEH frame is the right fix.
+
 ### Session 62e (same day) - **v0.8.1 RELEASED**
 
 https://github.com/mohamad-balouza/bioshock-vr/releases/tag/v0.8.1 - the

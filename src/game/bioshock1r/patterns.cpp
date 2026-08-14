@@ -98,11 +98,19 @@ void log_scan_result(const char* what, const ObjectScan& scan, const ScanResult&
             BVR_LOG("[b1r] %s: %d further match(es) not recorded (cap %d)", what,
                     s.matches - s.recorded, bvr::heap_scan::kMaxRecorded);
     }
+    // s62f: dead/faulted heap counts ride the same line. Before v0.8.2 either
+    // one was a process-killing access violation (a heap destroyed by a level
+    // load while this scan held its handle); now they are survivable skips, so
+    // seeing them here is the guard working.
+    char guarded[96] = "";
+    if (s.deadHeaps || s.faultedHeaps)
+        sprintf_s(guarded, " - SKIPPED %u dead + %u faulted heap(s), survived",
+                  s.deadHeaps, s.faultedHeaps);
     BVR_LOG("[b1r] %s scan via %s: %d match(es), %d accepted, chosen=%p "
-            "(%.1f ms, %u slice(s), %u heap(s)/%u block(s), %d exclude span(s)%s)",
+            "(%.1f ms, %u slice(s), %u heap(s)/%u block(s), %d exclude span(s)%s%s)",
             what, r.path, r.matches, r.accepted, r.object,
             static_cast<double>(s.elapsedUs) / 1000.0, s.slices, s.heaps, s.blocks,
-            s.excludeSpans,
+            s.excludeSpans, guarded,
             s.excludes.truncated  ? " - EXCLUSION TABLE FULL, SOME STACKS NOT EXCLUDED"
             : s.excludeMissed > 0 ? " - SOME THREAD STACKS NOT EXCLUDED"
             : s.excludeMissed < 0 ? " - THREAD ENUMERATION FAILED"

@@ -3,6 +3,29 @@
 Newest first. The version is read from `CMakeLists.txt` by `tools/package.ps1`, so the zip
 name, the DLL banner and the tag cannot disagree.
 
+## v0.8.2 - crash fix: loading a save in BioShock 1
+
+**Fixes a crash when loading a save in BioShock 1.** If this hit you, it was not your
+setup - it was a real bug, and it is fixed. Everything else in v0.8.1 is unchanged;
+update if you play BioShock 1, and there is no harm in updating either way.
+
+What was happening: to control the in-game FOV, the mod locates one of the engine's
+settings objects by walking the game's memory heaps. Loading a save destroys and
+recreates engine objects, so the mod re-runs that search right as the level comes up -
+and a level load also destroys whole heaps. If a heap disappeared during the search, the
+mod locked memory that no longer existed and the game died instantly with an access
+violation. It was a race, which is why it hit some people every time and others never.
+
+The fix makes every heap operation crash-proof (the protective guard was there, but the
+one call that actually failed sat just outside it), skips heaps that are already gone
+before touching them, and records both cases in the log instead of taking the process
+down. Any skips now appear on the scan line as `SKIPPED n dead + n faulted heap(s),
+survived` - that text means the guard did its job.
+
+BioShock 2 and BioShock Infinite were checked and were never affected: they locate
+objects a different way that has always been guarded. The fix lives in shared code, so
+all three games are covered from here on.
+
 ## v0.8.1 - SteamVR / Steam Link support, hand & weapon scaling, quality-of-life
 
 The first batch of post-0.8.0 community-feedback work. All three games, same drop-in
