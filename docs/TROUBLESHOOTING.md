@@ -77,7 +77,7 @@ reg add "HKLM\SOFTWARE\WOW6432Node\Khronos\OpenXR\1\ApiLayers\Implicit" /v "C:\P
 SteamVR's release channel does not ship a 32-bit OpenXR runtime, so the mod cannot talk
 to it directly. Since v0.8.x the zip bundles a compatibility shim that fixes this:
 **`bvr_steamvr32.dll` + `openvr_api.dll`**, installed next to the game exe like the other
-two DLLs. Nothing to configure - when no native 32-bit OpenXR runtime works, the mod
+mod DLLs. Nothing to configure - when no native 32-bit OpenXR runtime works, the mod
 automatically falls back to the shim, which talks to SteamVR over its OpenVR interface
 (fully 32-bit capable). This covers Index, Vive, WMR and Steam Link setups.
 
