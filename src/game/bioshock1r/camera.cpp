@@ -71,6 +71,10 @@ std::atomic<float> g_worldScale{100.0f};       // Unreal units per meter
 // anchor. Defaults 0 by the user's call (session 16 part 4) - they tune by
 // eye and persist their value via the VR preset ini.
 std::atomic<float> g_headOffUpUu{0.0f};
+// Whether the head anchor also moves the HAND anchor (see the FrameContext
+// publish). On by default because it is a no-op while the anchor is 0, which
+// is the shipped value; `headoff hands off` is the rollback.
+std::atomic<bool>  g_headAnchorHands{true};
 std::atomic<float> g_headOffFwdUu{0.0f};
 // VR preset 1 (session 16 part 3): one button/command arming the user's full
 // VR configuration - every switch they flipped by hand, in a safe order,
@@ -456,18 +460,28 @@ void apply_command(const char* cmd, const char* args) {
         // lower than the game's own camera implies. Same values, same
         // vrpreset.ini keys, now reachable from the seam.
         char which[8] = {};
+        char val[8] = {};
         float v = 0.0f;
-        if (sscanf_s(args, "%7s %f", which, static_cast<unsigned>(sizeof which), &v) == 2) {
+        if (sscanf_s(args, "%7s %7s", which, static_cast<unsigned>(sizeof which), val,
+                     static_cast<unsigned>(sizeof val)) == 2 &&
+            strcmp(which, "hands") == 0) {
+            g_headAnchorHands.store(strncmp(val, "on", 2) == 0,
+                                    std::memory_order_relaxed);
+        } else if (sscanf_s(args, "%7s %f", which,
+                            static_cast<unsigned>(sizeof which), &v) == 2) {
             if (strcmp(which, "up") == 0)
                 g_headOffUpUu.store(v, std::memory_order_relaxed);
             else if (strcmp(which, "fwd") == 0)
                 g_headOffFwdUu.store(v, std::memory_order_relaxed);
         }
-        BVR_LOG("[b1r] head anchor: up=%.1f fwd=%.1f UU (headoff up <uu> | headoff fwd "
-                "<uu>; worldScale %.0f UU/m, so 1 UU is %.1f mm of real height) - "
+        BVR_LOG("[b1r] head anchor: up=%.1f fwd=%.1f UU, hands %s (headoff up <uu> | "
+                "fwd <uu> | hands on|off; worldScale %.0f UU/m, 1 UU = %.1f mm) - "
                 "'vrpreset save' to keep",
                 g_headOffUpUu.load(std::memory_order_relaxed),
                 g_headOffFwdUu.load(std::memory_order_relaxed),
+                g_headAnchorHands.load(std::memory_order_relaxed)
+                    ? "FOLLOW (gun stays on the controller axis)"
+                    : "detached (camera only - the old behaviour)",
                 g_worldScale.load(std::memory_order_relaxed),
                 1000.0f / g_worldScale.load(std::memory_order_relaxed));
     } else if (strcmp(cmd, "heightlock") == 0) {
@@ -875,6 +889,8 @@ void save_vr_preset() {
     fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
     fprintf(f, "headUpUu=%.1f\n", g_headOffUpUu.load(std::memory_order_relaxed));
     fprintf(f, "headFwdUu=%.1f\n", g_headOffFwdUu.load(std::memory_order_relaxed));
+    fprintf(f, "headAnchorHands=%d\n",
+            g_headAnchorHands.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
     fprintf(f, "gameFovDeg=%.1f\n", g_gameFovDeg.load(std::memory_order_relaxed));
     fprintf(f, "aimTrimLPitch=%.1f\n", aim::trim_pitch_deg(0));
@@ -1018,6 +1034,8 @@ void load_vr_preset_values() {
         ++n;
         if (strcmp(key, "worldScale") == 0) g_worldScale.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "headUpUu") == 0) g_headOffUpUu.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "headAnchorHands") == 0)
+            g_headAnchorHands.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "headFwdUu") == 0) g_headOffFwdUu.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "ipdMm") == 0) g_ipdMm.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "gameFovDeg") == 0) g_gameFovDeg.store(v, std::memory_order_relaxed);
@@ -1725,6 +1743,36 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.baseX = baseLoc.x;
         fc.baseY = baseLoc.y;
         fc.baseZ = baseLoc.z;
+
+        // Head anchor -> the SHARED base, so the hands ride it too.
+        //
+        // baseLoc is the engine's own camera, and the system is otherwise
+        // coherent: the camera adds its recenter-relative head offset to it,
+        // the hands add the controller's recenter-relative offset to it, and
+        // because both offsets are measured from the same recenter pose, head
+        // and hands move together for free.
+        //
+        // The head ANCHOR (headoff up/fwd) broke that. It was added to the
+        // camera further down and never to the base, so a lift raised the eye
+        // while the engine kept placing the hands at its own eye height - at
+        // 25 UU that is a 25 cm decoupling, and the gun visibly stops sitting
+        // on the controller's axis. Applying it here, in the frame both
+        // consumers read, is the whole fix.
+        //
+        // Same composition as the camera's own: fwd rides the FINAL view yaw,
+        // up is world-up. `headoff hands off` restores the old behaviour
+        // without a rebuild, and with the anchor at 0 this is a no-op either
+        // way.
+        if (g_headAnchorHands.load(std::memory_order_relaxed)) {
+            const float hoUp = g_headOffUpUu.load(std::memory_order_relaxed);
+            const float hoFwd = g_headOffFwdUu.load(std::memory_order_relaxed);
+            if (rot && (hoUp != 0.0f || hoFwd != 0.0f)) {
+                const float vyaw = static_cast<float>(rot->yaw) / kRotUnitsPerRadian;
+                fc.baseX += cosf(vyaw) * hoFwd;
+                fc.baseY += sinf(vyaw) * hoFwd;
+                fc.baseZ += hoUp;
+            }
+        }
         if (rot) {
             fc.camPitch = rot->pitch;
             fc.camYaw = rot->yaw;
