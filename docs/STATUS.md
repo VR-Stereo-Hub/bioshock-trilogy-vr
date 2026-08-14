@@ -7546,6 +7546,11 @@ and it resumes.
 
 ### Session 62b (same day) - HEADSET VERDICTS: BS1/BS2 SteamVR ACCEPTED; BSI-SteamVR broken; fire-snap lead
 
+**MERGE PENDING:** `mod-followups` is checked out by the parallel
+input-fixes worktree, so this session's branch
+`claude/steamvr-support-flicker-4aa33c` is pushed but NOT yet merged.
+Merge it into `mod-followups` when that worktree releases the branch.
+
 User ran the S62 legs (Steam Link; VD's SteamVR toggle never moved the 32-bit
 lane off VDXR - documented, harmless):
 
