@@ -2296,6 +2296,13 @@ void pump_events() {
         } else if (ev.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
             teardown_session("instance loss pending");
             return;
+        } else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            // s62: log-only. Bindings are resolved runtime-side; this line just
+            // marks WHEN a SteamVR-family runtime rebound the controllers. Do
+            // not call xrGetCurrentInteractionProfile here - it would grow the
+            // mod's runtime surface past the 39 entry points the SteamVR shim
+            // mirrors.
+            BVR_LOG("xr: interaction profile changed (runtime rebound controllers)");
         }
         ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }

@@ -408,9 +408,112 @@ void input_create(XrInstance instance) {
     sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(simple) / sizeof(simple[0]));
     xrSuggestInteractionProfileBindings(instance, &sb); // best-effort
 
+    // SteamVR-family profiles (s62). All best-effort like touch: a runtime that
+    // rejects a profile only loses that hardware, never the session. Boolean
+    // inputs (squeeze/click on Vive/WMR) bound to FLOAT actions are converted
+    // to 0.0/1.0 by the runtime per spec 11.4 - the grip hysteresis
+    // (0.70/0.55) latches at 1.0 and releases at 0.0, so no read path changes.
+    // Unbound actions simply read inactive (read_float/read_bool return 0).
+
+    // Valve Index. A/B on BOTH hands (left has no x/y paths), analog squeeze,
+    // no menu button (system/click is reserved - never bind), no thumbrest:
+    // the noThumbrestYet fallback keeps RS-click as the ammo modifier, and
+    // menu goes to a firm left-trackpad press (boolean action on the float
+    // force component - the runtime thresholds it).
+    XrActionSuggestedBinding index[] = {
+        {g_move, path(instance, "/user/hand/left/input/thumbstick")},
+        {g_look, path(instance, "/user/hand/right/input/thumbstick")},
+        {g_fire, path(instance, "/user/hand/right/input/trigger/value")},
+        {g_plasmid, path(instance, "/user/hand/left/input/trigger/value")},
+        {g_gripR, path(instance, "/user/hand/right/input/squeeze/value")},
+        {g_gripL, path(instance, "/user/hand/left/input/squeeze/value")},
+        {g_btnA, path(instance, "/user/hand/right/input/a/click")},
+        {g_btnB, path(instance, "/user/hand/right/input/b/click")},
+        {g_btnX, path(instance, "/user/hand/left/input/a/click")},
+        {g_btnY, path(instance, "/user/hand/left/input/b/click")},
+        {g_stickClickL, path(instance, "/user/hand/left/input/thumbstick/click")},
+        {g_stickClickR, path(instance, "/user/hand/right/input/thumbstick/click")},
+        {g_menu, path(instance, "/user/hand/left/input/trackpad/force")},
+        {g_poseL, path(instance, "/user/hand/left/input/grip/pose")},
+        {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
+        {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
+        {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+    };
+    sb.interactionProfile = path(instance, "/interaction_profiles/valve/index_controller");
+    sb.suggestedBindings = index;
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(index) / sizeof(index[0]));
+    r = xrSuggestInteractionProfileBindings(instance, &sb);
+    if (XR_FAILED(r))
+        BVR_LOG("xr-input: index_controller binding suggestion failed (%d)",
+                static_cast<int>(r));
+
+    // HTC Vive wands: trigger, squeeze CLICK only, menu on both hands, and a
+    // trackpad standing in for both sticks. No face buttons exist, so jump/
+    // heal/reload (btn_b/x/y) stay unbound natively - the SteamVR shim's
+    // binding JSONs plus SteamVR's own binding UI are the full-coverage path.
+    // stick_r = right trackpad click is eaten as the ammo modifier on BS1/BS2,
+    // which suits a trackpad: press the pad, touch direction picks the slot.
+    XrActionSuggestedBinding vive[] = {
+        {g_move, path(instance, "/user/hand/left/input/trackpad")},
+        {g_look, path(instance, "/user/hand/right/input/trackpad")},
+        {g_fire, path(instance, "/user/hand/right/input/trigger/value")},
+        {g_plasmid, path(instance, "/user/hand/left/input/trigger/value")},
+        {g_gripR, path(instance, "/user/hand/right/input/squeeze/click")},
+        {g_gripL, path(instance, "/user/hand/left/input/squeeze/click")},
+        {g_btnA, path(instance, "/user/hand/right/input/menu/click")},
+        {g_stickClickL, path(instance, "/user/hand/left/input/trackpad/click")},
+        {g_stickClickR, path(instance, "/user/hand/right/input/trackpad/click")},
+        {g_menu, path(instance, "/user/hand/left/input/menu/click")},
+        {g_poseL, path(instance, "/user/hand/left/input/grip/pose")},
+        {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
+        {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
+        {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+    };
+    sb.interactionProfile = path(instance, "/interaction_profiles/htc/vive_controller");
+    sb.suggestedBindings = vive;
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(vive) / sizeof(vive[0]));
+    r = xrSuggestInteractionProfileBindings(instance, &sb);
+    if (XR_FAILED(r))
+        BVR_LOG("xr-input: vive_controller binding suggestion failed (%d)",
+                static_cast<int>(r));
+    else
+        BVR_LOG("xr-input: vive wands have no face buttons - jump/heal/reload "
+                "unbound natively; use the SteamVR shim + binding UI for full "
+                "wand support");
+
+    // WMR motion controllers: thumbstick AND trackpad, squeeze click, menu on
+    // both hands, no face buttons. Trackpad clicks stand in for A (use) and X;
+    // B/Y stay unbound (same advisory as Vive). Never hardware-tested - the
+    // SteamVR binding UI is the correction mechanism.
+    XrActionSuggestedBinding wmr[] = {
+        {g_move, path(instance, "/user/hand/left/input/thumbstick")},
+        {g_look, path(instance, "/user/hand/right/input/thumbstick")},
+        {g_fire, path(instance, "/user/hand/right/input/trigger/value")},
+        {g_plasmid, path(instance, "/user/hand/left/input/trigger/value")},
+        {g_gripR, path(instance, "/user/hand/right/input/squeeze/click")},
+        {g_gripL, path(instance, "/user/hand/left/input/squeeze/click")},
+        {g_btnA, path(instance, "/user/hand/right/input/trackpad/click")},
+        {g_btnX, path(instance, "/user/hand/left/input/trackpad/click")},
+        {g_stickClickL, path(instance, "/user/hand/left/input/thumbstick/click")},
+        {g_stickClickR, path(instance, "/user/hand/right/input/thumbstick/click")},
+        {g_menu, path(instance, "/user/hand/left/input/menu/click")},
+        {g_poseL, path(instance, "/user/hand/left/input/grip/pose")},
+        {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
+        {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
+        {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+    };
+    sb.interactionProfile =
+        path(instance, "/interaction_profiles/microsoft/motion_controller");
+    sb.suggestedBindings = wmr;
+    sb.countSuggestedBindings = static_cast<uint32_t>(sizeof(wmr) / sizeof(wmr[0]));
+    r = xrSuggestInteractionProfileBindings(instance, &sb);
+    if (XR_FAILED(r))
+        BVR_LOG("xr-input: motion_controller binding suggestion failed (%d)",
+                static_cast<int>(r));
+
     g_created = true;
-    BVR_LOG("xr-input: action set ready (%d actions, touch_controller bindings "
-            "suggested)", made);
+    BVR_LOG("xr-input: action set ready (%d actions; touch + simple + index + "
+            "vive + wmr bindings suggested)", made);
 }
 
 void input_on_session_created(XrSession session, XrSpace baseSpace) {
