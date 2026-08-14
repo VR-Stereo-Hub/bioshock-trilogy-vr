@@ -50,11 +50,27 @@ powershell -NoProfile -Command "(Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Kh
 
 If the key is correct and it still runs flat, check for a broken API layer (next section).
 
+**Reported: OBS can cause this.** Several users have had "no OpenXR runtime" disappear
+after **uninstalling OBS Studio** - the mechanism is not confirmed yet, but it has the
+shape of a capture hook or a leftover implicit API layer getting in front of the loader.
+Try these in order, least drastic first:
+
+1. **Close OBS completely** and relaunch the game - check the system tray, OBS keeps
+   running there after you close its window.
+2. **Disable OBS's game/VR capture** (Game Capture source, the "Game Capture" hook, and
+   any VR-capture plugin), then relaunch.
+3. **Check the API-layer key** in the next section for anything OBS-related and disable
+   that entry.
+4. Only if none of that works: uninstall OBS to confirm, then reinstall it. If it only
+   works with OBS gone, please open an issue with your OBS version and plugin list -
+   that is a fixable bug and we want the details.
+
 ## Crash at launch or `xrCreateInstance failed: -32`: 32-bit API layers
 
 A 32-bit **implicit OpenXR API layer** from another tool can break the loader before the
-mod ever reaches the runtime. Known offender: the ReShade XR layer
-(`ReShade32_XR.json`); OpenXR Toolkit and similar overlays have the same failure shape.
+mod ever reaches the runtime. Known offenders: the ReShade XR layer
+(`ReShade32_XR.json`); OpenXR Toolkit and similar overlays have the same failure shape,
+and capture tools such as OBS are a suspect in the same class (above).
 
 Look under this registry key:
 
@@ -71,6 +87,41 @@ reg add "HKLM\SOFTWARE\WOW6432Node\Khronos\OpenXR\1\ApiLayers\Implicit" /v "C:\P
 ```
 
 (Adjust the path to match the value name you actually see in the key.)
+
+## In the headset, but it is a flat floating screen (no stereo, no head tracking)
+
+**Different problem from the one above** - here VR started fine, so the log has no
+runtime error at all. What you are looking at is the mod's fallback "mono screen" mode:
+the game shows on a flat panel in VR, your head does not move the in-game camera, and
+there is no depth.
+
+Confirm it in the log - these lines at startup are the symptom:
+
+```
+[bsi][reentry] stereo off            (or [bs2]/[reentry] on the other games)
+vrstereo off - back to the mono quad (session stays live)
+drive: lane=off ... headOff=(0.0 0.0 0.0)
+```
+
+**Cause: your saved `vrpreset.ini` has VR stereo and head-drive switched off**, and it
+overrides the shipped defaults on every launch - including after an update, which is why
+reinstalling the mod does not help. It usually happens after pressing Save in the F10
+menu at a moment when VR happened to be disarmed.
+
+Two ways to fix it:
+
+- **Replace the preset (recommended).** Close the game, then copy the matching
+  `preset-bs1\` / `preset-bs2\` / `preset-bsi\` `vrpreset.ini` out of the release zip
+  over the one in your data folder (paths in the table at the top of this file), and
+  relaunch. Deleting your `vrpreset.ini` outright works too - the built-in defaults then
+  apply. The shipped presets are the calibrated ones that get tested.
+- **Arm it live.** Press **F10** and tick **VR stereo** and the **camera / head drive**
+  options (BioShock 1 and 2: the **VR PRESET 1** / **APPLY PRESET** button does the whole
+  sequence in one click), then save if you want it to persist.
+
+While you are there, two settings worth checking in the same file: a **near-square
+resolution** (e.g. 2064x2208 - not 2560x1440 or any 16:9 value, see the resolution
+section below) and **windowed** rather than exclusive fullscreen.
 
 ## SteamVR / Steam Link: supported through the bundled shim
 

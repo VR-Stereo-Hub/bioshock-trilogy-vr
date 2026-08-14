@@ -70,10 +70,17 @@ To uninstall, delete the mod's DLLs (restore itsloopyo's backup if you made one)
 
 **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** covers every "no VR / flat mode"
 report received so far: the 32-bit OpenXR registry key (and how to fix it per runtime),
-broken 32-bit API layers (ReShade and friends), the bundled SteamVR shim (how the
-automatic fallback works, its log, the `xr.ini` override, controller coverage), the
-`XR_RUNTIME_JSON` override, and per-game resolution/windowed-mode guidance. The release
-zip ships the same text as `TROUBLESHOOTING.txt`.
+broken 32-bit API layers (ReShade and friends - and OBS, which several users had to
+close or remove), the bundled SteamVR shim (how the automatic fallback works, its log,
+the `xr.ini` override, controller coverage), the `XR_RUNTIME_JSON` override, and
+per-game resolution/windowed-mode guidance. The release zip ships the same text as
+`TROUBLESHOOTING.txt`.
+
+Two symptoms are easy to confuse, so start by telling them apart: if the log shows **no
+OpenXR runtime**, that is the runtime/registry side above. If VR starts fine but the game
+is **a flat floating screen with no head tracking**, that is a saved `vrpreset.ini` with
+stereo and head-drive switched off - copy the matching `preset-*` file from the zip over
+yours, or arm it in F10 (see the "flat floating screen" section).
 
 ### If it crashes or misbehaves: clear your settings first
 
