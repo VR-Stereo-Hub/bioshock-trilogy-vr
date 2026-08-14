@@ -9,7 +9,7 @@ of its own; the zip ships `bvr_steamvr32.dll` + `openvr_api.dll` and the mod fal
 them automatically - covers Index, Vive, WMR and Steam Link; see
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).
 
-One zip serves all three games - the same two DLLs adapt to whichever game they are dropped
+One zip serves all three games - the same DLL set adapts to whichever game it is dropped
 into:
 
 | game | install folder (under `steamapps\common\`) | status |
@@ -64,7 +64,7 @@ session. No game files are modified and no game assets are distributed.
    (aspect A)`; the closer `aspect` is to 1.0, the less you are wasting.
 4. Launch the game through Steam. The mod logs to `%LOCALAPPDATA%\BioshockVR\bioshockvr.log`.
 
-To uninstall, delete the two DLLs (restore itsloopyo's backup if you made one).
+To uninstall, delete the mod's DLLs (restore itsloopyo's backup if you made one).
 
 ### Troubleshooting
 
@@ -119,6 +119,7 @@ there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
 | X | reload / hack / inject EVE |
 | Y | first-aid kit |
 | Left menu button | pause (hold: map/objectives) |
+| **X + Y together** | same as the menu button (use it when Steam Link's overlay eats the real one) |
 
    Under VR the right stick no longer pitches the view (your head does); `vrinput pitchkill
    off` restores stick pitch if you want it back.
