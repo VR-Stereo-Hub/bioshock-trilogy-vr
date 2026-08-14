@@ -101,6 +101,11 @@ paused** (the game sees an unfocused session - close the dashboard to resume), a
 quitting SteamVR mid-game drops the game back to flat rendering (it keeps running;
 restart the game to re-enter VR after SteamVR is back).
 
+**Menu button opens the Steam overlay instead of the game menu?** Steam Link sometimes
+swallows the left menu button before the game sees it. Press **X and Y together (left
+controller)** - the chord is the menu button: tap = pause menu, hold = the back/select
+action, exactly like the real button. It works on every runtime, not just SteamVR.
+
 To force a path, create `%LOCALAPPDATA%\BioshockVR\xr.ini` containing:
 
 ```
