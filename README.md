@@ -119,6 +119,7 @@ there are any, land in `%LOCALAPPDATA%\BioshockVR\crash\`.
 | X | reload / hack / inject EVE |
 | Y | first-aid kit |
 | Left menu button | pause (hold: map/objectives) |
+| **X + Y together** | same as the menu button (use it when Steam Link's overlay eats the real one) |
 
    Under VR the right stick no longer pitches the view (your head does); `vrinput pitchkill
    off` restores stick pitch if you want it back.
