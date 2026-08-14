@@ -426,3 +426,70 @@ with the box ON, toggle OFF and report; that is the one open question.
   was NOT sim-run - confirm the game arrives in stereo).
 - **Both-sticks recenter**: click both thumbsticks together - view recenters.
   Chord verified on BS1/BSI; BS2's drain is the same duplicated shape.
+
+## S62 headset checklist - SteamVR legs + issue #31 flicker hunt (2026-08-14)
+
+The build under test ships the SteamVR shim (`bvr_steamvr32.dll` + `openvr_api.dll`
+beside the game exe; install.ps1 copies them). Three legs, in this order. After EVERY
+leg, keep `bioshockvr.log` (+ `%LOCALAPPDATA%\BioshockVR\ovrshim.log` on the SteamVR
+legs) - the prev.log rotation only keeps one generation.
+
+### Leg 0 - VDXR sanity (Quest 3 default lane - MUST NOT regress)
+
+1. Virtual Desktop, OpenXR runtime = **VDXR** (the normal setup). Launch BS1.
+2. Verify in headset: stereo arms itself, hands/weapon track, ammo radial
+   (thumbrest + stick), both-sticks recenter, F10 opens.
+3. Log check: `instance created on runtime 'Virtual Desktop` and NO
+   `falling back` line. The one new log line allowed here is
+   `xr: 32-bit ActiveRuntime: ...virtualdesktop-openxr-32.json`.
+4. BS2 quick pass of the same. Anything off = STOP, report; the default lane
+   outranks everything below.
+
+### Leg 1 - Virtual Desktop's SteamVR mode
+
+1. Virtual Desktop Streaming tab: set OpenXR runtime = **SteamVR**. Connect
+   (SteamVR should start in the headset).
+2. Launch BS1. EXPECTED log: either `native runtime unavailable - falling back
+   to the SteamVR shim` OR (if VD keeps its 32-bit VDXR key registered and the
+   native attempt wrongly "succeeds" without a headset session) the game sits
+   flat with `instance created on runtime 'Virtual Desktop...'` and repeated
+   session retries. **In the second case**: quit, create
+   `%LOCALAPPDATA%\BioshockVR\xr.ini` containing `[runtime]` / `mode=steamvr`,
+   relaunch - and REPORT that the auto heuristic missed, it matters for rung 4.
+3. Once on the shim (`instance created on runtime 'BioshockVR SteamVR shim'`):
+   BS1 stereo, hands, triggers, grips (radials!), A/B/X/Y, ammo radial, menu
+   button, both-sticks recenter. Open the SteamVR dashboard - input must PAUSE
+   - close it - input resumes.
+4. World geometry check (the donor's GetProjectionRaw trap): look straight
+   ahead, then pitch head up/down repeatedly - the world must NOT stretch,
+   shrink or keystone vertically. `ovrshim.log` records
+   `eye N GetProjectionRaw ...` raws - keep the log regardless.
+5. BS2 flicker hunt (the reason these rungs share a session): load the save,
+   F10 resolution preset `max` (2888x3088), play ~5 min with sharp head turns
+   while strafing. Then F10 Custom resolution **5160x5520** (the reporter's
+   exact size), play 10+ more minutes the same way. Watch for a DOUBLE IMAGE
+   in the LEFT eye. If it appears: note the clock time, then F10/console
+   `vrmirror off` and report whether it changes anything (A/B twice). The
+   log's `[pair]` minute line is the instrument - nothing to do, just keep
+   the log and report the minute you saw it.
+6. If BS2 survives 15+ min clean at 5160x5520: that is a RESULT (no repro on
+   VD-SteamVR); say so and move on.
+
+### Leg 2 - Steam Link
+
+1. Close Virtual Desktop fully. Connect with the Steam Link app (SteamVR
+   starts). Same launches as leg 1 (the xr.ini from leg 1 step 2 can stay for
+   this leg if it was needed; remove it afterwards).
+2. BS1 short pass: stereo + controls + dashboard pause/resume.
+3. BS2: repeat the flicker hunt (leg 1 step 5) - the reporter's rig is
+   lighthouse+SteamVR, and Steam Link is the closer transport to that regime
+   (extra latency = more pass-2 skip pressure).
+4. SteamVR recenter (long-press the system button or dashboard recenter):
+   the in-game view should recenter without breaking anything.
+5. Optional resilience check: quit SteamVR from the desktop while the game
+   runs - the game must DROP TO FLAT and keep running (not die).
+
+### Cleanup
+
+Remove `%LOCALAPPDATA%\BioshockVR\xr.ini` if created (restores auto mode) and
+set Virtual Desktop back to VDXR.
