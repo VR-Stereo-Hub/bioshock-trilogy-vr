@@ -61,6 +61,22 @@ Quality of life and fixes:
   pairing instrument now watches the layer the previous instrument could not see; if
   you can reproduce that flicker, an up-to-date log is now genuinely useful evidence
 
+Two gotchas worth knowing (both now written up in TROUBLESHOOTING):
+
+- **"No OpenXR runtime" with OBS installed.** Several users have had this disappear
+  after removing OBS Studio. Before uninstalling anything, try: fully close OBS (it
+  keeps running in the tray), disable its game/VR capture hooks and plugins, and check
+  the 32-bit implicit API-layer registry key for an OBS entry. If it genuinely only
+  works with OBS uninstalled, please open an issue with your OBS version and plugin
+  list - that is a bug worth fixing properly.
+- **In the headset but only a flat floating screen?** That is not a runtime problem -
+  it is the mod running with stereo and head-drive disarmed, almost always because a
+  saved `vrpreset.ini` has them switched off and keeps overriding the shipped defaults
+  after every update. Fix: copy the matching `preset-*` `vrpreset.ini` from the zip over
+  the one in `%LOCALAPPDATA%\BioshockVR\...` (or delete yours), or arm it live in F10 -
+  VR stereo + camera/head drive, or the one-click **VR PRESET 1** / **APPLY PRESET** on
+  BioShock 1 and 2.
+
 ## v0.8.0 - BioShock Infinite joins, early access: all three games in one zip
 
 **BioShock Infinite is now playable in VR.** Same two DLLs, third game: drop them into
