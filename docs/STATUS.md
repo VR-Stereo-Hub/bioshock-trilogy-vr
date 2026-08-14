@@ -7541,6 +7541,17 @@ and it resumes.
 
 ## Session log (newest first)
 
+### Session 62d (same day) - X+Y menu chord (Steam Link overlay workaround)
+
+User report: under Steam Link the physical menu button sometimes opens the
+Steam overlay instead of the in-game pause. New core chord, all three games:
+**LEFT controller X+Y pressed together = the menu button** - feeds the same
+tap/hold lane (tap = START pulse on release, hold = BACK), suppression latches
+until both buttons release so the second button cannot fire its game action on
+the way out. Sim-verified (chord log line fires on x+y down, X/Y masked).
+Documented in TROUBLESHOOTING. Same shape as the recenter chord; the donor
+project shipped the same workaround for the same reason.
+
 ### Session 62c (same day) - BSI-SteamVR ROOT-CAUSED AND FIXED FLAT (DXGI 1.0 factory)
 
 The s62b BSI symptom (SteamVR void + dead input, shim armed) is SOLVED at the

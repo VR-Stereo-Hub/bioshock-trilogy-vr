@@ -647,8 +647,38 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // the table's own comment; the composer only lands the bit.
     if (read_bool(session, g_btnA)) pad.buttons |= map.faceA;
     if (read_bool(session, g_btnB)) pad.buttons |= map.faceB;
-    if (read_bool(session, g_btnX)) pad.buttons |= map.faceX;
-    if (read_bool(session, g_btnY)) pad.buttons |= map.faceY;
+    // s62c: LEFT X+Y PRESSED TOGETHER = the menu button. Under Steam Link the
+    // physical menu press is sometimes swallowed by the Steam overlay before
+    // it reaches the game (user report 2026-08-14; the donor project shipped
+    // the same chord for the same reason on its shim path). Detected on the
+    // raw booleans; the chord feeds the SAME tap/hold menu lane below (tap =
+    // START pulse on release, hold = BACK), so pause semantics stay identical
+    // to the real button. The suppression LATCHES until BOTH buttons release,
+    // so the button released second cannot fire its game action on the way
+    // out. The single-frame leak of the first-pressed button before the
+    // second joins is accepted - same class as the recenter chord's
+    // documented leak.
+    const bool btnXDown = read_bool(session, g_btnX);
+    const bool btnYDown = read_bool(session, g_btnY);
+    const bool menuChord = btnXDown && btnYDown;
+    static bool s_menuChordLatch = false;
+    if (menuChord) {
+        if (!s_menuChordLatch) {
+            static bool s_chordTold = false;
+            if (!s_chordTold) {
+                s_chordTold = true;
+                BVR_LOG("xr-input: left X+Y menu chord fired (pause without "
+                        "the menu button - Steam Link overlay workaround)");
+            }
+        }
+        s_menuChordLatch = true;
+    } else if (!btnXDown && !btnYDown) {
+        s_menuChordLatch = false;
+    }
+    if (!s_menuChordLatch) {
+        if (btnXDown) pad.buttons |= map.faceX;
+        if (btnYDown) pad.buttons |= map.faceY;
+    }
     // Feedback session 2 (2026-08-13): BOTH-STICKS-CLICK = recenter chord.
     // Detected here on the RAW clicks - on BS1/BS2 the right click is eaten
     // as the ammo modifier and never reaches the composed pad, so the bridge
@@ -783,8 +813,9 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     }
 
     // Left menu: short press pulses START on release, holding it past the
-    // threshold holds BACK until release.
-    bool menuDown = read_bool(session, g_menu);
+    // threshold holds BACK until release. The X+Y chord above joins here so
+    // both routes share one tap/hold state machine.
+    bool menuDown = read_bool(session, g_menu) || menuChord;
     if (menuDown) {
         if (g_menuDownMs == 0) g_menuDownMs = now;
         if (now - g_menuDownMs >= kMenuLongMs) pad.buttons |= XINPUT_GAMEPAD_BACK;
