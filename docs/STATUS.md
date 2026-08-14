@@ -108,8 +108,9 @@ and HEADSET-ACCEPTED ("everything looks perfect", 2026-08-14):**
 
 **THE SESSION LADDER (user-ordered, s60):**
 
-1. ~~**BS1 hand & weapon scaling**~~ **DONE s61** (see above; headset calibration
-   pass rides the next headset checklist).
+1. ~~**BS1 hand & weapon scaling**~~ **DONE + ACCEPTED s61** - calibration baked
+   as defaults and into the shipped preset (0.793/0.793 hands, 0.760 weapon).
+   Rung CLOSED.
 2. **Roomscale body-follow + snap-turn pivot** (likely 2 sessions) - pawn follows
    physical displacement WITH collision; BS1/BS2 probe `AActor::Move`/`MoveSmooth` exec
    natives (BioVR's research doc ranks them - vr-features-research.md in their repo);
