@@ -449,9 +449,13 @@ Both items are F10-toggleable live - no relaunch needed for the A/B.
 
 ## S61 headset checklist (hand & weapon scaling calibration, 2026-08-14)
 
+**DONE 2026-08-14: "everything looks perfect."** Accepted values are now the
+shipped defaults - hands **0.793**/0.793, weapon **0.760** (plus the aim re-bake:
+L trim -11.0/+37.0, R trim +0.2/-4.5, R ray origin right -2.1 up +12.9 cm). Keep
+the steps below as the RE-calibration recipe for a different player or rig.
+
 Everything is live-adjustable in F10 > Hands + weapon (M7) - no relaunch for any
-step. Ship defaults are 1.0 = authored (exactly the old look); nothing changes
-until you move a slider. Ctrl+click a slider to type an exact value.
+step. Ctrl+click a slider to type an exact value.
 
 1. **Hand size.** With the pistol (or any gun) equipped, drag
    "model scale (x, independent of worldscale)" down (tuning hand R) until the
