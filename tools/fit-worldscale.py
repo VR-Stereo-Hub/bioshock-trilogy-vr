@@ -87,12 +87,43 @@ def fit_quadratic(pts):
     return a, b, c, rms
 
 
+BIN_S = 0.010   # resample step: 10 ms
+
+
+def rebin(samples):
+    """Average samples into fixed 10 ms bins before any differencing.
+
+    Necessary because the capture rate is wildly variable: paced in VR it is
+    ~90-190 Hz, but flat and unpaced the engine calls CalcView ~1750 times a
+    second (median gap 0.57 ms, measured). Differencing adjacent samples at
+    that spacing is dominated by the 0.001 UU log quantisation, which is how a
+    first pass reported |dz/dt| peaks of 38000 UU/s. Binning first makes the
+    velocity estimate independent of frame rate.
+    """
+    out, bucket, edge = [], [], None
+    for t, z in samples:
+        if edge is None:
+            edge = t
+        if t >= edge + BIN_S:
+            if bucket:
+                out.append((edge + BIN_S / 2.0, sum(bucket) / len(bucket)))
+            # skip empty bins rather than interpolating across capture gaps
+            while t >= edge + BIN_S:
+                edge += BIN_S
+            bucket = []
+        bucket.append(z)
+    if bucket:
+        out.append((edge + BIN_S / 2.0, sum(bucket) / len(bucket)))
+    return out
+
+
 def arcs(samples):
     """Contiguous runs where the camera is genuinely moving vertically."""
     vel = []
     for (ta, za), (tb, zb) in zip(samples, samples[1:]):
         dt = tb - ta
-        vel.append(abs((zb - za) / dt) if dt > 1e-6 else 0.0)
+        # a gap larger than a few bins means the capture paused - not motion
+        vel.append(abs((zb - za) / dt) if 1e-6 < dt < 0.05 else 0.0)
     out, cur = [], []
     for i, v in enumerate(vel):
         if v > MIN_SPEED_UU_S:
@@ -114,9 +145,11 @@ def main():
                     help="the value currently configured, for comparison")
     a = ap.parse_args()
 
-    s = load(a.log)
-    print(f"{len(s)} samples over {s[-1][0]:.1f}s, "
-          f"z {min(z for _, z in s):.1f}..{max(z for _, z in s):.1f} UU")
+    raw = load(a.log)
+    s = rebin(raw)
+    print(f"{len(raw)} samples over {raw[-1][0]:.1f}s "
+          f"-> {len(s)} bins of {BIN_S*1000:.0f} ms, "
+          f"z {min(z for _, z in raw):.1f}..{max(z for _, z in raw):.1f} UU")
 
     good = []
     for lo, hi in arcs(s):

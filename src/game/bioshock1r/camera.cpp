@@ -421,6 +421,22 @@ void apply_command(const char* cmd, const char* args) {
         BVR_LOG("[b1r] command: recenter");
     } else if (strcmp(cmd, "vrpopup") == 0) {
         startup_dialog::handle_command(args); // logs its own echo
+    } else if (strcmp(cmd, "worldscale") == 0) {
+        // Overlay-only until now, same trap headoff had. worldScale does TWO
+        // jobs: it converts head translation into camera translation, and it
+        // converts the IPD into world units (ipd/1000 * worldScale UU), which
+        // is what sets PERCEIVED world size. Too low a value makes the stereo
+        // baseline too small, the world reads as oversized, and the player
+        // feels short - which is the symptom that started this.
+        float v = 0.0f;
+        if (sscanf_s(args, "%f", &v) == 1 && v >= 10.0f && v <= 400.0f)
+            g_worldScale.store(v, std::memory_order_relaxed);
+        const float ws = g_worldScale.load(std::memory_order_relaxed);
+        BVR_LOG("[b1r] worldScale = %.1f UU/m (worldscale <10..400>) - eye "
+                "separation %.2f UU at ipd %.1f mm; 1 UU = %.1f mm. "
+                "'vrpreset save' to keep",
+                ws, g_ipdMm.load(std::memory_order_relaxed) / 1000.0f * ws,
+                g_ipdMm.load(std::memory_order_relaxed), 1000.0f / ws);
     } else if (strcmp(cmd, "vrscale") == 0) {
         unsigned secs = 0;
         if (sscanf_s(args, "%u", &secs) != 1 || secs == 0) secs = 20;
