@@ -1,0 +1,31 @@
+OpenVR SDK 2.15.6 - vendored subset (headers + 32-bit runtime loader)
+======================================================================
+
+Source:   https://github.com/ValveSoftware/openvr
+Commit:   0924064 ("OpenVR SDK 2.15.6", master HEAD as of 2026-08-14)
+License:  BSD-3-Clause (see LICENSE in this directory, copied verbatim
+          from the same commit)
+
+Files and SHA-256:
+
+  openvr.h
+    641ef9791fa8a281c490c85337cb3cbea8929055cfad1c78275d26cef587884f
+  openvr_capi.h
+    2ba5ac520f344e2359dd25103975e9aca9c0011a38e84789113dadd51f386a41
+  bin/win32/openvr_api.dll
+    ab696e4f218a95b3e396bc310f9fe6485df48c99c0969762083212b1e1f025a6
+
+Why vendored, not a submodule: the upstream repo carries ~500 MB of
+history and prebuilt binaries for every platform; the SteamVR shim
+(src/tools/ovrshim/) needs exactly these two headers at build time and
+the one win32 DLL at run time. tools/package.ps1 verifies the DLL's
+SHA-256 against this file before staging it into the release zip.
+
+Version notes: these headers declare SteamVR SDK constants 2.15.6 and
+interface versions IVRSystem_026 / IVRCompositor_029 / IVRInput_011 -
+byte-identical to the copies the donor shim code (BioVRDev's OpenXRShim,
+see THIRD_PARTY_NOTICES.md) was written and tested against.
+openvr_api.dll is Valve's thin runtime loader: it locates the installed
+SteamVR runtime via its vrpaths registry and serves interfaces by
+version string, so it must ship beside the game exe for the shim to
+reach SteamVR from a 32-bit process.
