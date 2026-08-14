@@ -702,8 +702,15 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // the bind work from the first second of a session, before any left
         // thumbrest touch has taught the ammo lane to let go.
         const bool borrow = ammoOwnsClick && bvr::input::ammoless_weapon_active();
-        const bool armed =
-            bind != bvr::input::RecenterBind::Off && (!ammoOwnsClick || borrow);
+        // ...and stand down entirely where the pad map FORWARDS the stick click
+        // to the game. On BioShock 1 that bit is 0 and the click is free, which
+        // is what this bind relies on; Infinite forwards it as XToggleZoom, and
+        // one physical click must not both zoom and recenter. Read off the same
+        // map the composer uses rather than testing the profile enum, so the two
+        // cannot disagree about who owns the button.
+        const bool padForwardsClick = map.stickClickR != 0;
+        const bool armed = bind != bvr::input::RecenterBind::Off &&
+                           !padForwardsClick && (!ammoOwnsClick || borrow);
 
         if (armed != g_recenterArmed || (armed && borrow != g_recenterBorrowed)) {
             g_recenterArmed = armed;
@@ -719,6 +726,10 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             else if (bind == bvr::input::RecenterBind::Off)
                 BVR_LOG("xr-input: recenter bind off ('vrinput recenterbind "
                         "thumbrest|click')");
+            else if (padForwardsClick)
+                BVR_LOG("xr-input: recenter bind STANDS DOWN - this game's pad map "
+                        "forwards the right stick click to the game, so the bind "
+                        "cannot claim it");
             else
                 BVR_LOG("xr-input: recenter bind STANDS DOWN - the ammo modifier owns "
                         "the right stick click (ammomod %s). Set 'vrinput ammomod "
