@@ -106,33 +106,67 @@ and HEADSET-ACCEPTED ("everything looks perfect", 2026-08-14):**
   the accepted preset becomes the shipped default.
 - Full derivations + falsification reconciliation: ENGINE_NOTES "Session 61".
 
-**THE SESSION LADDER (user-ordered, s60):**
+**FLICKER LOG RECEIVED 2026-08-14 (issue #31 reporter) - read this before
+starting rung 3.** File: the user's `bioshockvr(9).log` (BS2, mod 0.7.0). What it
+establishes and what it does NOT:
+
+- **Runtime: `SteamVR/OpenXR` 2.17.6, system `SteamVR/OpenXR : lighthouse`** -
+  base-station hardware, NOT a Quest. This is why rungs 2 and 3 belong in one
+  session: our own SteamVR leg is the most plausible repro lane.
+- Their swapchain pair was **5160x5520** (raised mid-session from 2888x3088) -
+  a very large target; worth replicating when chasing the defect.
+- **Only ~2 usable gameplay minutes.** Stereo armed 13:58:25; `[flick]` min=1 and
+  min=2 carry data, min=3 is all zeros (they had stopped). The ask was 12+ min.
+- **The instrument came back CLEAN: `fl1=0/0 fl2=0/0` in every minute**, dmax
+  16/0/0/0 ms (baseline), pe1 2674/1336 then 2280/1146 - same order as the
+  documented BS2 ambient baseline (~1900 hands + ~950 wskel per min), pe2 never
+  fired. **So either the defect did not occur during those two minutes, or the
+  fl counters do not detect it. Do not assume the counters will catch it** -
+  budget for widening the instrument (per-eye present pairing under SteamVR)
+  rather than just re-collecting.
+- Session ends on the known benign host exit-path fault (WM_CLOSE teardown).
+- `xr=VISIBLE/neverFocused` appears 300x but only pre-gameplay; it reaches
+  FOCUSED in play. Not an anomaly.
+
+**THE SESSION LADDER (user-REORDERED 2026-08-14, after rung 1 shipped - this
+order supersedes the s60 one):**
 
 1. ~~**BS1 hand & weapon scaling**~~ **DONE + ACCEPTED s61** - calibration baked
    as defaults and into the shipped preset (0.793/0.793 hands, 0.760 weapon).
    Rung CLOSED.
-2. **Roomscale body-follow + snap-turn pivot** (likely 2 sessions) - pawn follows
-   physical displacement WITH collision; BS1/BS2 probe `AActor::Move`/`MoveSmooth` exec
-   natives (BioVR's research doc ranks them - vr-features-research.md in their repo);
-   Infinite separately. Fixes the snap-turn pivot for free. **Do NOT bundle the
-   standing/floor recenter work here** - see rung 8.
-3. **SteamVR support** - adapt BioVR's `OpenXRShim` (OpenXR-on-OpenVR DLL; their
-   docs/modules/shim.md documents the GetProjectionRaw U/D trap that cost them weeks) +
-   add Index/Vive/WMR interaction profiles to `openxr_input.cpp` + a loader-choice
-   install step. Their clone is at C:/Users/user/AppData/Local/Temp/biovr (re-clone if
-   gone - scratchpad paths are too long for git).
-4. **BS2 left-eye flicker** (issue #31: chapter 2+, VDXR; another report on SteamVR) -
-   FIRST collect the 12+ min `[flick]` instrumented log from the user (never collected,
-   ENGINE_NOTES 2363-2385), plus a chapter-2 save repro. Restamp race vs pair-break.
-5. **Two-handed grips for BS1** - adapt BioVR M6-S2 (their docs/modules/hands.md; grab
-   anchor = the game's own animated off-hand, latched on engine-owned frames) onto our
-   ROADMAP.md:505-517 spec.
-6. **F10 menu overhaul** - controller navigation (laser -> virtual mouse, DR-6/DR-7),
-   tabs with debug separated, pre-preset readability (issue #36).
-7. **HUD element hiding** - BS1 enemy health bars + lock-on icon (uscript property hunt
+2. **SteamVR support** *(NOW THE TOP PRIORITY)* - adapt BioVR's `OpenXRShim`
+   (OpenXR-on-OpenVR DLL; their docs/modules/shim.md documents the GetProjectionRaw
+   U/D trap that cost them weeks) + add Index/Vive/WMR interaction profiles to
+   `openxr_input.cpp` + a loader-choice install step. Their clone is at
+   C:/Users/user/AppData/Local/Temp/biovr (re-clone if gone - scratchpad paths are
+   too long for git). **NO LONGER HARDWARE-BLOCKED (user, 2026-08-14): testable via
+   Virtual Desktop's SteamVR option AND via Steam Link - test BOTH legs. Quest 3
+   controllers/support stay THE default and must not regress; other hardware
+   (Index/Vive/WMR/G2/PSVR2) does not need full verification for now.**
+3. **BS2 left-eye flicker** (issue #31) - **do it in the SAME session as rung 2 if
+   possible**: the one user log we have was captured on SteamVR/OpenXR 2.17.6 on
+   lighthouse hardware, so running our own SteamVR leg is the most likely repro
+   lane. Log received 2026-08-14 (see the s61 addendum below for what it does and
+   does not show). Restamp race vs pair-break.
+4. **"No OpenXR runtime" / does-not-enter-VR fix + user-facing help** (issues #29,
+   #35, #37) - some users get no VR at all on non-VDXR runtimes and the documented
+   fix steps have not worked for everyone. Wants a real fix where there is one, and
+   otherwise a diagnostic/repair script that reports what the loader actually sees
+   (active runtime json, registry key, bitness) instead of prose troubleshooting.
+5. **HUD element hiding** - BS1 enemy health bars + lock-on icon (uscript property hunt
    via the Exec `set` seam; fallback per-draw skip), BS2 check, + the BSI crosshair
    re-sweep fix from the s60 diagnosis.
-8. **LAST / maybe never: standing-pose (floor-based) recenter** - STAGE/LOCAL_FLOOR
+6. **F10 menu overhaul** - controller navigation (laser -> virtual mouse, DR-6/DR-7),
+   tabs with debug separated, pre-preset readability (issue #36).
+7. **Two-handed grips for BS1** - adapt BioVR M6-S2 (their docs/modules/hands.md; grab
+   anchor = the game's own animated off-hand, latched on engine-owned frames) onto our
+   ROADMAP.md:505-517 spec.
+8. **Roomscale body-follow + snap-turn pivot** (likely 2 sessions) - pawn follows
+   physical displacement WITH collision; BS1/BS2 probe `AActor::Move`/`MoveSmooth` exec
+   natives (BioVR's research doc ranks them - vr-features-research.md in their repo);
+   Infinite separately. Fixes the snap-turn pivot for free. **Moved to the end by the
+   user 2026-08-14.** **Do NOT bundle the standing/floor recenter work here** - rung 9.
+9. **LAST / most likely deferred: standing-pose (floor-based) recenter** - STAGE/LOCAL_FLOOR
    reference space + seated/standing modes (the parked ROADMAP item). **Demoted to the
    very end by the user (s60b headset verdict): "the standing and seated reset view both
    worked fine for me... it's good enough for now."** The s60b both-sticks chord
