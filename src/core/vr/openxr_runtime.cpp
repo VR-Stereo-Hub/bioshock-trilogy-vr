@@ -27,6 +27,7 @@
 #include <imgui.h>
 
 #include <tlhelp32.h>
+#include <shlobj.h>
 #include <share.h>
 #include <atomic>
 #include <cmath>
@@ -2308,15 +2309,158 @@ void pump_events() {
     }
 }
 
-} // namespace
+// --------------------------------------------------------------------------
+// SteamVR shim runtime selection (s62). SteamVR ships no 32-bit OpenXR
+// runtime; the release zip carries bvr_steamvr32.dll (an OpenXR-on-OpenVR
+// runtime, src/tools/ovrshim/) + openvr_api.dll beside the mod. When the
+// native runtime attempt fails, the mod writes a runtime manifest and points
+// the statically linked loader at it via XR_RUNTIME_JSON, then retries -
+// verified loader mechanic: while no runtime is loaded, every pre-instance
+// call re-runs discovery and reads the env var first (manifest_file.cpp:654),
+// and a failed xrCreateInstance unloads again (loader_core.cpp:305). No
+// registry writes, no admin, no loader-file swapping; a healthy native
+// runtime (VDXR) keeps today's control flow byte-for-byte.
+//
+// Mode override: %LOCALAPPDATA%\BioshockVR\xr.ini, [runtime] mode=
+// auto|native|steamvr. Deliberately NOT a vrpreset key - the F10 preset save
+// rewrites vrpreset.ini wholesale and would silently drop an unknown key.
 
-void init_instance() {
+// Root data dir (%LOCALAPPDATA%\BioshockVR), NOT the per-game subdir - the
+// runtime choice is machine-wide, like the runtimes themselves.
+bool xr_root_dir(wchar_t* out /*MAX_PATH*/) {
+    wchar_t local[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local)))
+        return false;
+    swprintf_s(out, MAX_PATH, L"%s\\BioshockVR", local);
+    return true;
+}
+
+// Returns the mode string ("auto"/"native"/"steamvr"); logs only if the file
+// exists so a default setup stays log-quiet.
+void xr_mode_read(char* mode, size_t n) {
+    strcpy_s(mode, n, "auto");
+    wchar_t root[MAX_PATH];
+    if (!xr_root_dir(root)) return;
+    wchar_t ini[MAX_PATH];
+    swprintf_s(ini, L"%s\\xr.ini", root);
+    if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) return;
+    wchar_t val[32] = {};
+    GetPrivateProfileStringW(L"runtime", L"mode", L"auto", val, 32, ini);
+    char narrow[32] = {};
+    WideCharToMultiByte(CP_UTF8, 0, val, -1, narrow, sizeof(narrow), nullptr, nullptr);
+    if (_stricmp(narrow, "native") == 0 || _stricmp(narrow, "steamvr") == 0 ||
+        _stricmp(narrow, "auto") == 0)
+        strcpy_s(mode, n, narrow);
+    else
+        BVR_LOG("xr: xr.ini [runtime] mode '%s' not recognized - using 'auto'", narrow);
+    BVR_LOG("xr: runtime mode '%s' (xr.ini)", mode);
+}
+
+// The shim ships beside bioshockvr.dll (both live next to the game exe).
+bool shim_dll_path(wchar_t* out /*MAX_PATH*/) {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&init_instance), &self))
+        return false;
+    wchar_t path[MAX_PATH];
+    if (!GetModuleFileNameW(self, path, MAX_PATH)) return false;
+    wchar_t* slash = wcsrchr(path, L'\\');
+    if (!slash) return false;
+    *slash = 0;
+    swprintf_s(out, MAX_PATH, L"%s\\bvr_steamvr32.dll", path);
+    return GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES;
+}
+
+// BOM-less UTF-8 with an absolute, JSON-escaped library_path - same contract
+// tools/xrsim-install.ps1 documents for the sim's manifest. Rewritten every
+// launch so a moved game folder self-heals.
+bool shim_write_manifest(const wchar_t* shimDll, wchar_t* manifestOut /*MAX_PATH*/) {
+    wchar_t root[MAX_PATH];
+    if (!xr_root_dir(root)) return false;
+    wchar_t dir[MAX_PATH];
+    swprintf_s(dir, L"%s\\steamvr", root);
+    CreateDirectoryW(root, nullptr);
+    CreateDirectoryW(dir, nullptr);
+    swprintf_s(manifestOut, MAX_PATH, L"%s\\bvr_steamvr32.json", dir);
+
+    char dllUtf8[MAX_PATH * 3] = {};
+    WideCharToMultiByte(CP_UTF8, 0, shimDll, -1, dllUtf8, sizeof(dllUtf8), nullptr, nullptr);
+    char escaped[MAX_PATH * 6] = {};
+    size_t j = 0;
+    for (size_t i = 0; dllUtf8[i] && j + 2 < sizeof(escaped); ++i) {
+        if (dllUtf8[i] == '\\') escaped[j++] = '\\';
+        escaped[j++] = dllUtf8[i];
+    }
+
+    FILE* f = _wfsopen(manifestOut, L"wb", _SH_DENYWR); // "wb": no BOM, no CRLF
+    if (!f) return false;
+    fprintf(f,
+            "{\n  \"file_format_version\": \"1.0.0\",\n  \"runtime\": {\n"
+            "    \"name\": \"BioshockVR SteamVR shim (OpenVR)\",\n"
+            "    \"library_path\": \"%s\"\n  }\n}\n",
+            escaped);
+    fclose(f);
+    return true;
+}
+
+bool process_is_elevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elev{};
+    DWORD n = 0;
+    const bool ok =
+        GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &n) != 0;
+    CloseHandle(token);
+    return ok && elev.TokenIsElevated != 0;
+}
+
+// Logging-only heuristic: what does the 32-bit ActiveRuntime key claim? From
+// this 32-bit process a plain HKLM open lands on the WOW6432Node view. NEVER
+// short-circuits - the authoritative test stays "did xrCreateInstance
+// succeed" (the registry can lie; the loader's own probe cannot).
+void log_active_runtime_expectation() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Khronos\\OpenXR\\1", 0,
+                      KEY_READ, &key) != ERROR_SUCCESS) {
+        BVR_LOG("xr: no 32-bit ActiveRuntime key registered - expecting to use "
+                "the SteamVR shim if the native attempt fails");
+        return;
+    }
+    wchar_t val[MAX_PATH] = {};
+    DWORD len = sizeof(val);
+    DWORD type = 0;
+    const LSTATUS rs =
+        RegQueryValueExW(key, L"ActiveRuntime", nullptr, &type,
+                         reinterpret_cast<LPBYTE>(val), &len);
+    RegCloseKey(key);
+    if (rs != ERROR_SUCCESS || type != REG_SZ || !val[0]) {
+        BVR_LOG("xr: 32-bit ActiveRuntime value missing - expecting to use the "
+                "SteamVR shim if the native attempt fails");
+        return;
+    }
+    char narrow[MAX_PATH * 3] = {};
+    WideCharToMultiByte(CP_UTF8, 0, val, -1, narrow, sizeof(narrow), nullptr, nullptr);
+    if (wcsstr(val, L"steamxr"))
+        BVR_LOG("xr: 32-bit ActiveRuntime points at SteamVR ('%s') which has no "
+                "32-bit support - expecting the shim", narrow);
+    else if (GetFileAttributesW(val) == INVALID_FILE_ATTRIBUTES)
+        BVR_LOG("xr: 32-bit ActiveRuntime manifest missing on disk ('%s') - "
+                "expecting the shim", narrow);
+    else
+        BVR_LOG("xr: 32-bit ActiveRuntime: '%s'", narrow);
+}
+
+// One native-or-shim instance attempt: enumerate -> D3D11 check -> create.
+// `label` names the attempt in every log line; `quietExplainer` suppresses
+// the SteamVR wall of text when a shim fallback is about to run anyway.
+XrResult try_create_instance(const char* label, bool quietExplainer) {
     uint32_t extCount = 0;
     XrResult r = xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr);
     if (XR_FAILED(r)) {
-        BVR_LOG("xr: no 32-bit OpenXR runtime reachable (%d) - VR disabled, game runs flat",
+        BVR_LOG("xr: [%s] no 32-bit OpenXR runtime reachable (%d)", label,
                 static_cast<int>(r));
-        return;
+        return r;
     }
     std::vector<XrExtensionProperties> exts(extCount, {XR_TYPE_EXTENSION_PROPERTIES});
     xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount, exts.data());
@@ -2324,8 +2468,8 @@ void init_instance() {
     for (const auto& e : exts)
         if (strcmp(e.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) hasD3D11 = true;
     if (!hasD3D11) {
-        BVR_LOG("xr: runtime lacks XR_KHR_D3D11_enable - VR disabled");
-        return;
+        BVR_LOG("xr: [%s] runtime lacks XR_KHR_D3D11_enable", label);
+        return XR_ERROR_EXTENSION_NOT_PRESENT;
     }
 
     const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
@@ -2338,25 +2482,80 @@ void init_instance() {
     ici.enabledExtensionNames = enabled;
     r = xrCreateInstance(&ici, &g_instance);
     if (XR_FAILED(r)) {
-        BVR_LOG("xr: xrCreateInstance failed: %s - VR disabled, game runs flat", res_str(r));
+        BVR_LOG("xr: [%s] xrCreateInstance failed: %s", label, res_str(r));
         // XR_ERROR_RUNTIME_UNAVAILABLE from a 32-bit process is very rarely a
         // broken install: SteamVR has never shipped a 32-bit OpenXR runtime, and
         // BioShock is a 32-bit game. Anyone on Lighthouse hardware (Index, Vive)
         // or running Steam Link, i.e. with SteamVR as the active runtime, lands
         // here every single time. Saying so turns "the mod does nothing" into an
         // actionable report - and it is a whole class of them.
-        if (r == XR_ERROR_RUNTIME_UNAVAILABLE) {
+        if (r == XR_ERROR_RUNTIME_UNAVAILABLE && !quietExplainer) {
             BVR_LOG("xr: -----------------------------------------------------------");
             BVR_LOG("xr: The active OpenXR runtime has no 32-bit support. This game is");
             BVR_LOG("xr: 32-bit, so VR cannot start. SteamVR is the usual cause: it has");
             BVR_LOG("xr: never shipped a 32-bit OpenXR runtime, which also covers Index,");
             BVR_LOG("xr: Vive and Steam Link setups.");
-            BVR_LOG("xr: Workaround today: set a runtime that does ship 32-bit - Virtual");
-            BVR_LOG("xr: Desktop (VDXR) or the Oculus/Meta runtime - as the active OpenXR");
-            BVR_LOG("xr: runtime, then relaunch.");
+            BVR_LOG("xr: Fix: copy bvr_steamvr32.dll and openvr_api.dll from the release");
+            BVR_LOG("xr: zip next to the game exe (beside bioshockvr.dll) - the mod then");
+            BVR_LOG("xr: falls back to its bundled SteamVR shim automatically. Or set a");
+            BVR_LOG("xr: runtime that ships 32-bit (Virtual Desktop's VDXR, Oculus/Meta)");
+            BVR_LOG("xr: as the active OpenXR runtime and relaunch.");
             BVR_LOG("xr: -----------------------------------------------------------");
         }
         g_instance = XR_NULL_HANDLE;
+        return r;
+    }
+    return XR_SUCCESS;
+}
+
+} // namespace
+
+void init_instance() {
+    char mode[16];
+    xr_mode_read(mode, sizeof(mode));
+
+    wchar_t shimDll[MAX_PATH];
+    const bool shimPresent = shim_dll_path(shimDll);
+    const bool wantNative = _stricmp(mode, "steamvr") != 0;
+    const bool mayFallBack = shimPresent && _stricmp(mode, "native") != 0;
+
+    XrResult r = XR_ERROR_RUNTIME_UNAVAILABLE;
+    if (wantNative) {
+        if (_stricmp(mode, "auto") == 0) log_active_runtime_expectation();
+        r = try_create_instance("native", /*quietExplainer=*/mayFallBack);
+    }
+
+    if (XR_FAILED(r) && mayFallBack) {
+        if (wantNative)
+            BVR_LOG("xr: native runtime unavailable - falling back to the SteamVR shim");
+        else
+            BVR_LOG("xr: runtime mode 'steamvr' - using the SteamVR shim directly");
+        if (process_is_elevated())
+            BVR_LOG("xr: WARNING - game is running elevated; the shim cannot be "
+                    "selected (XR_RUNTIME_JSON is ignored for admin processes). "
+                    "Run the game non-elevated.");
+        wchar_t manifest[MAX_PATH];
+        if (!shim_write_manifest(shimDll, manifest)) {
+            BVR_LOG("xr: could not write the shim manifest - VR disabled, game runs flat");
+            return;
+        }
+        char manifestUtf8[MAX_PATH * 3] = {};
+        WideCharToMultiByte(CP_UTF8, 0, manifest, -1, manifestUtf8,
+                            sizeof(manifestUtf8), nullptr, nullptr);
+        BVR_LOG("xr: shim manifest: %s", manifestUtf8);
+        SetEnvironmentVariableW(L"XR_RUNTIME_JSON", manifest);
+        r = try_create_instance("steamvr shim", /*quietExplainer=*/true);
+        if (XR_FAILED(r))
+            BVR_LOG("xr: SteamVR shim also failed (%s) - VR disabled, game runs "
+                    "flat (is SteamVR installed?)", res_str(r));
+    } else if (XR_FAILED(r) && !shimPresent && _stricmp(mode, "steamvr") == 0) {
+        BVR_LOG("xr: runtime mode 'steamvr' but bvr_steamvr32.dll is not beside "
+                "the mod - VR disabled, game runs flat");
+    }
+
+    if (XR_FAILED(r)) {
+        if (_stricmp(mode, "native") == 0 || !mayFallBack)
+            BVR_LOG("xr: VR disabled, game runs flat");
         return;
     }
 

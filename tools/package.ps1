@@ -22,8 +22,18 @@ $version = $Matches[1]
 if (-not $SkipBuild) { & "$repo\tools\build.ps1" -Release }
 
 $bin = "$repo\build\src\RelWithDebInfo"
-foreach ($n in @("bioshockvr.dll", "xinput1_3.dll")) {
+foreach ($n in @("bioshockvr.dll", "xinput1_3.dll", "bvr_steamvr32.dll")) {
     if (-not (Test-Path "$bin\$n")) { throw "missing build output: $bin\$n" }
+}
+
+# s62: Valve's 32-bit OpenVR loader ships beside the SteamVR shim. Verify the
+# committed binary against its recorded hash before it goes anywhere near a
+# release zip (third_party\openvr_headers\PROVENANCE.txt is the authority).
+$ovrDll = "$repo\third_party\openvr_headers\bin\win32\openvr_api.dll"
+$prov = Get-Content "$repo\third_party\openvr_headers\PROVENANCE.txt" -Raw
+$hash = (Get-FileHash $ovrDll -Algorithm SHA256).Hash.ToLower()
+if ($prov -notmatch [regex]::Escape($hash)) {
+    throw "openvr_api.dll sha256 $hash does not appear in PROVENANCE.txt - refusing to package"
 }
 
 # Refuse to ship a DLL whose compiled-in version does not match CMakeLists.txt.
@@ -43,6 +53,10 @@ New-Item -ItemType Directory -Path "$stage\preset-bsi" -Force | Out-Null
 
 Copy-Item "$bin\bioshockvr.dll" $stage
 Copy-Item "$bin\xinput1_3.dll"  $stage
+# s62: SteamVR support - the OpenXR-on-OpenVR shim runtime + Valve's loader.
+# The mod falls back to them automatically when no native 32-bit runtime works.
+Copy-Item "$bin\bvr_steamvr32.dll" $stage
+Copy-Item $ovrDll $stage
 Copy-Item "$repo\README.md" "$stage\README.txt"
 Copy-Item "$repo\docs\TROUBLESHOOTING.md" "$stage\TROUBLESHOOTING.txt"
 foreach ($n in @("vrpreset.ini", "hands.ini", "weapons.ini", "HOW-TO-USE.txt")) {

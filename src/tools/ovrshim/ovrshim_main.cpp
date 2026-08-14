@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
+#include <share.h>
 #include <vector>
 #include <string>
 
@@ -69,7 +70,7 @@ void ShimLog(const char* fmt, ...)
             EnsureModuleDir();
             _snprintf_s(path, MAX_PATH, _TRUNCATE, "%s\\ovrshim.log", g_moduleDir);
         }
-        fopen_s(&g_log, path, "w");
+        g_log = _fsopen(path, "w", _SH_DENYNO); // tailable while the game runs
     }
 
     if (g_log)
@@ -271,6 +272,38 @@ static bool VrConnect()
     return true;
 }
 
+// Full disconnect, so SteamVR stops counting us as a scene app. CONTRACT
+// MISMATCH THIS SOLVES (found in the s62 null-driver E2E): an OpenXR app that
+// gets STOPPING ends its session and keeps running, waiting for READY - but
+// an OpenVR scene app that received VREvent_Quit and does not EXIT the
+// process is hard-killed by vrserver ~5s later, no dump, no WER. These games
+// must survive SteamVR quitting (they can run flat), so on Quit we let the
+// mod tear the session down and then sever the OpenVR connection here. The
+// mod's 5s bring-up retry + EnsureVr() below reconnect if SteamVR returns.
+static bool g_quitReceived = false;
+
+static void VrDisconnect(const char* why)
+{
+    if (!g_vr.ok && !g_vr.sys) return;
+    SLOG("OpenVR disconnect (%s)", why);
+    if (g_vrShutdown) g_vrShutdown();
+    g_vr.sys = nullptr;
+    g_vr.comp = nullptr;
+    g_vr.input = nullptr;
+    g_vr.ovl = nullptr;
+    g_vr.ok = false;
+    // Force a fresh geometry cache (and eye-target rebuild) on reconnect -
+    // the next SteamVR may drive a different headset.
+    g_st.rtW = g_st.rtH = 0;
+    g_st.haveOrigin = false;
+    g_st.hmdValid = false;
+}
+
+static bool EnsureVr()
+{
+    return g_vr.ok || VrConnect();
+}
+
 // ---------------------------------------------------------------- helpers
 static const XrInstance  kInstance = (XrInstance)0x5601;
 static const XrSession   kSession  = (XrSession)0x5602;
@@ -359,8 +392,10 @@ static void PumpVrEvents()
     {
         if (ev.eventType == vr::VREvent_Quit)
         {
-            SLOG("SteamVR requested quit");
+            SLOG("SteamVR requested quit - acknowledging; will disconnect at "
+                 "session destroy so the game can keep running flat");
             g_vr.sys->AcknowledgeQuit_Exiting();
+            g_quitReceived = true;
             Events_Push(XR_SESSION_STATE_STOPPING);
         }
     }

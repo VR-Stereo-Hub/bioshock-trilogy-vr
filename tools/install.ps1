@@ -48,6 +48,16 @@ if ((Test-Path $existing) -and -not (Test-Path $backup)) {
 
 Copy-Item $proxy (Join-Path $GamePath "xinput1_3.dll") -Force
 Copy-Item $mod (Join-Path $GamePath "bioshockvr.dll") -Force
+
+# s62: the SteamVR shim runtime + Valve's OpenVR loader, when built. Optional
+# by design - without them the mod simply has no SteamVR fallback.
+$shim = Join-Path $outDir "bvr_steamvr32.dll"
+$ovr = Join-Path $repo "third_party\openvr_headers\bin\win32\openvr_api.dll"
+if (Test-Path $shim) {
+    Copy-Item $shim (Join-Path $GamePath "bvr_steamvr32.dll") -Force
+    Copy-Item $ovr (Join-Path $GamePath "openvr_api.dll") -Force
+    Write-Host "Installed SteamVR shim (bvr_steamvr32.dll + openvr_api.dll)"
+}
 Write-Host "Installed $config build to $GamePath"
 switch ($Game) {
     "bs2" { Write-Host "Log will appear at $env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.log" }
