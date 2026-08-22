@@ -1,7 +1,13 @@
 # Controls and `BioshockVR.ini`
 
-User-facing controller configuration. **The ini is the source of truth**; the F10
-panel is intended to become a front-end onto it rather than a parallel store.
+User-facing configuration: the controller map, and the comfort/scale keys that
+have grown alongside it. **The ini is intended to be the source of truth**; the
+F10 panel is intended to become a front-end onto it rather than a parallel store.
+
+**Today it is not, and the direction of the override is the opposite of what you
+would guess.** A saved `vrpreset.ini` loads *after* this file and wins — see
+[The F10 / ini relationship](#the-f10--ini-relationship-and-why-it-is-not-finished)
+at the bottom. The startup echo says so on every line it can.
 
 Location: `%LOCALAPPDATA%\BioshockVR\BioshockVR.ini` for BioShock 1, and the
 `bs2\` / `bsi\` subfolders for the other two — the games never share files, and
@@ -36,6 +42,22 @@ report. Only the *live* rows have code behind them.
 | `JumpOnR3` | `0`, `1` | `1` | Additive — the layout's own jump button still jumps. Yields when `ControllerDpadModifier=2` |
 
 Button names: `A B X Y LB RB LS RS DUP DDOWN DLEFT DRIGHT START BACK NONE`.
+
+### Live — comfort and scale
+
+BRVR's key names, units and shipped defaults, so a config carries between the two
+mods. **A saved `vrpreset.ini` overrides all three** (it stores them as
+`handScaleL`/`handScaleR`, `wScale` and `headUpUu`), which is how an in-headset
+F10 calibration is kept.
+
+| Key | Range | Default (BS1) | Notes |
+|---|---|---|---|
+| `HandsScale` | 0.05–5.0 | `0.8` | Viewmodel hand size, 1.0 = authored. Independent of world scale by design — the rig can be the wrong size while the world is right. Also `vrhands scale both <f>` and the F10 "model scale" slider |
+| `GunScale` | 0.05–5.0 | `0.8` | Weapon size, 1.0 = authored (and 1.0 releases the lane entirely). Uniform about the grip. Also `vrhands wscale <f>` and the F10 "WEAPON scale" slider |
+| `CameraHeightOffset` | −100–100 | `9` | **In centimetres, + is up**, above the game's own eye point. The pawn's eye height was authored for a monitor and reads short in VR. Stored internally as UU; at the shipped world scale of 100 the two are the same number. Also the F10 "Head offset up (UU)" slider |
+
+An out-of-range value is **refused and logged**, not clamped — a silent clamp
+reads in the headset exactly like the key not being implemented.
 
 ### Planned — present in BRVR, not yet here
 

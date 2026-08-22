@@ -145,10 +145,22 @@ std::atomic<int> g_rAnchorOverride{-1};
 // render reliably - and the reference recapture PINS the scale rows of bones
 // we scale-wrote (see the adopt block) so g_ref can never re-adopt our own
 // write and compound refS * s^n.
-// Defaults are the user's session-61 in-headset calibration (2026-08-14,
-// "everything looks perfect") - the same standing rule the aim trims follow:
-// the accepted preset becomes the shipped default. 1.0 = authored size.
-std::atomic<float> g_scale[2] = {0.793f, 0.793f}; // [0] left, [1] right
+// The default was the user's session-61 in-headset calibration (2026-08-14,
+// 0.793, "everything looks perfect"). 2026-08-22: BRVR ships HandsScale=0.8 and
+// the user wants the two mods to match exactly, so the shipped default is 0.80.
+// State plainly what that is worth: 0.793 -> 0.80 is under one percent and is
+// almost certainly not what the "hands read tiny" report was about. It is
+// adopted for parity; the number that actually moves is the camera height
+// (camera.cpp g_headOffUpUu), and `HandsScale` in BioshockVR.ini exists so the
+// next headset session can find the real one without a rebuild per guess.
+//
+// NOTE the mechanism differs from BRVR's even at the same number: BRVR writes
+// the AHands ACTOR's DrawScale (+0x2AC), while this cluster scale compresses
+// bone translations toward the wrist anchor. Actor DrawScale is deliberately
+// NOT ported for the hands - the rig is positioned by writing bone translations
+// here, so an actor-level scale would silently scale our own writes with it.
+// 1.0 = authored size.
+std::atomic<float> g_scale[2] = {0.80f, 0.80f}; // [0] left, [1] right
 // Probe modes (vrbones scalemode <n>): which cluster bones get the .s write.
 // 0 = all except attach/muzzle (intended ship mode), 1 = fingers only (wrist
 // keeps authored .s), 2 = wrist only, 3 = translation-only (no .s anywhere -
@@ -184,7 +196,10 @@ bool scale_selects(int mode, int hand, int idx, int first) {
 // channel = captured reference * ws, pinned exactly like the cluster scale.
 // At ws == 1.0 the lane drops the skeleton entirely and restores the
 // captured pose - zero interference at the default.
-std::atomic<float> g_wScale{0.760f}; // s61 in-headset calibration (1.0 = authored)
+// 0.760 was the s61 in-headset calibration; 0.80 is BRVR's GunScale, adopted
+// 2026-08-22 for parity (see the g_scale note above for what a 5% change is
+// worth). 1.0 = authored, and at 1.0 the lane drops entirely.
+std::atomic<float> g_wScale{0.80f};
 void* g_wHoldable = nullptr; // the actor the lane is bound to
 void* g_wSkelInst = nullptr;
 Qts* g_wBones = nullptr;
@@ -195,6 +210,21 @@ Qts g_wWritten[kMaxBones]; // what we last wrote (adoption + reapply source)
 bool g_wWrittenValid = false;
 uint32_t g_wAdopts = 0;
 uint32_t g_wDrives = 0;
+
+// 2026-08-22: the same weapon scale, for holdables that have NO skeleton to
+// drive. The WRENCH is one (+0x3FC is null - rigid melee mesh), and before this
+// the lane simply logged "stays unbound" and left it at authored size forever,
+// which is the one place this mod did visibly less than BRVR. BRVR has never
+// had the problem because it scales the weapon ACTOR (DrawScale +0x2AC), which
+// does not need bones at all.
+//
+// Semantics match the skeleton lane: g_wScale is a MULTIPLIER on the actor's
+// authored DrawScale, captured at bind. (BRVR writes its GunScale absolutely;
+// for BS1 weapons the authored value is 1.0, so the two agree - the captured
+// ref is logged so a weapon where it is not shows up rather than hides.)
+void* g_dsHoldable = nullptr; // the actor the lane is bound to
+float g_dsRaw = 1.0f;         // the authored field value, restored on release
+float g_dsWrote = 0.0f;       // what we last wrote (0 = nothing written yet)
 
 std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
 std::atomic<uint32_t> g_writes{0};
@@ -679,6 +709,131 @@ void restore_hidden(int hand) {
     }
 }
 
+// ---- rigid-holdable DrawScale lane (2026-08-22) -----------------------------
+// The offsets are this repo's own (patterns.h session 12: AActor::SetDrawScale
+// 0x375830 disassembled, field poked live), NOT carried across from BRVR - and
+// patterns.h also records the honest earlier miss, where +0x168/+0x16C looked
+// like DrawScale and were not. The DIRTY PROTOCOL is the part that makes the
+// difference: patterns.h states outright that a raw field poke without it is
+// invisible, which is the likeliest explanation of that earlier miss.
+//
+// THE WEAPON ACTOR RENDERS ITS DrawScale. HEADSET-CONFIRMED 2026-08-22 (the
+// wrench visibly changed size), which SETTLES the question session 16 left open.
+//
+// That matters because session 16 measured DrawScale on the RIG actor and found
+// the geometry INERT through the foreground path - gun width 240 -> 234 px at
+// s=0.5, a 2% change where 50% was asked - and concluded "the fg rig path
+// consumes actor DrawScale for bone translations but NOT for skin/attached-mesh
+// size". It named the WEAPON actor as the case it could not isolate: "it could
+// at best scale the gun, never the hand." That guess was right, and the split
+// is real: the rig actor's DrawScale does not size geometry, the weapon
+// actor's does.
+
+bool ds_read(void* actor, float* out) {
+    float v = 0.0f;
+    if (!read_n(static_cast<uint8_t*>(actor) + patterns::kActorDrawScaleOffset, &v, sizeof v))
+        return false;
+    // Zero is Unreal's "unset, treat as 1" and session 12 saw it on the AHands
+    // actor, so it is a legal authored value, not a failed read. Everything
+    // else outside a plausible scale range fails closed: a wrong pointer reads
+    // as garbage far more often than as a plausible scale, and this is the only
+    // cheap check between us and writing into an unrelated object's field.
+    if (v != 0.0f && !(v > 0.001f && v < 1000.0f)) return false;
+    *out = v;
+    return true;
+}
+
+bool ds_write(void* actor, float v) {
+    if (!write_n(static_cast<uint8_t*>(actor) + patterns::kActorDrawScaleOffset, &v, sizeof v))
+        return false;
+    // The protocol SetDrawScale itself runs. Read-modify-write each field, and
+    // treat a failed read as "leave that one alone" rather than as a reason to
+    // abandon the write - the scale is already in.
+    uint8_t* a = static_cast<uint8_t*>(actor);
+    uint32_t flags = 0;
+    if (read_n(a + patterns::kActorDirtyFlagsOffset, &flags, sizeof flags)) {
+        flags |= 0x10u;
+        write_n(a + patterns::kActorDirtyFlagsOffset, &flags, sizeof flags);
+    }
+    uint32_t rev = 0;
+    if (read_n(a + patterns::kActorRenderRevOffset, &rev, sizeof rev)) {
+        ++rev;
+        write_n(a + patterns::kActorRenderRevOffset, &rev, sizeof rev);
+    }
+    uint8_t zero = 0;
+    write_n(a + patterns::kActorDirtyByteOffset, &zero, 1);
+    return true;
+}
+
+// Hand the actor back. `restore` is FALSE whenever the actor may already be
+// gone: BRVR's ArmHide_Reset carries the same rule for the same reason - by the
+// time a change is noticed the old actor can be destroyed and its address
+// reused, and write_n's SEH guard does not save you from a VALID write into
+// somebody else's object. Restoring is only safe while the actor is still the
+// one the rig says it is holding.
+void ds_drop(const char* why, bool restore) {
+    if (!g_dsHoldable) return;
+    void* actor = g_dsHoldable;
+    bool wrote = false;
+    if (restore && g_dsWrote != 0.0f) wrote = ds_write(actor, g_dsRaw);
+    BVR_LOG("[bones] wscale rigid: released %p (%s) - DrawScale %s %.3f", actor,
+            why ? why : "?", wrote ? "restored to" : "left at",
+            wrote ? g_dsRaw : g_dsWrote);
+    g_dsHoldable = nullptr;
+    g_dsRaw = 1.0f;
+    g_dsWrote = 0.0f;
+}
+
+// Drive the lane for a skeleton-less holdable. `hold` is the CURRENT holdable
+// as the rig reports it this frame, so nothing here ever touches a stale actor.
+void ds_drive(void* hold, float ws) {
+    if (hold != g_dsHoldable) {
+        // Do NOT restore the outgoing actor - see ds_drop's comment.
+        ds_drop("holdable changed", false);
+        float raw = 0.0f;
+        if (!ds_read(hold, &raw)) {
+            // One line per holdable rather than one per frame: wskel_resolve's
+            // negative cache has already gated us to that rate.
+            BVR_LOG("[bones] wscale rigid: %p DrawScale (+0x%X) did not read as a "
+                    "scale - lane stays unbound",
+                    hold, patterns::kActorDrawScaleOffset);
+            return;
+        }
+        g_dsHoldable = hold;
+        g_dsRaw = raw;
+        g_dsWrote = 0.0f;
+        BVR_LOG("[bones] wscale rigid: bound %p, authored DrawScale %.3f - no skeleton, "
+                "scaling the ACTOR instead",
+                hold, raw);
+    }
+    // ABSOLUTE, not a multiple of the authored value, and this is BRVR's
+    // behaviour rather than a guess: `*p = g_cfg.gunScale`. The first cut
+    // multiplied, on the assumption (written into its own commit message) that
+    // BS1 weapons are authored at 1.0. The first headset run falsified it in
+    // one line - `authored DrawScale 0.800` on the WRENCH - so wScale 0.80 was
+    // rendering it at 0.64 and it read too small. Absolute also makes the knob
+    // mean one thing: GunScale=0.8 is the same size in both mods, so a config
+    // carries across, which is the whole point of using BRVR's key name.
+    //
+    // It does mean wScale is "fraction of authored" on the skeleton lane and
+    // "the DrawScale itself" here. That asymmetry is BRVR's too, and BRVR is
+    // the size that was accepted in a headset.
+    const float want = ws;
+    // Re-assert rather than write once: the engine restamps DrawScale on equip
+    // and on some animation transitions, and a one-shot poke was BS2-proven not
+    // to render reliably. Reading first keeps this to zero writes on the frames
+    // where nothing has moved it.
+    float now = 0.0f;
+    if (ds_read(g_dsHoldable, &now) && fabsf(now - want) < 0.0005f) return;
+    if (!ds_write(g_dsHoldable, want)) {
+        ds_drop("write faulted", false);
+        return;
+    }
+    if (g_dsWrote == 0.0f)
+        BVR_LOG("[bones] wscale rigid: DrawScale %.3f -> %.3f", g_dsRaw, want);
+    g_dsWrote = want;
+}
+
 // ---- weapon-skeleton scale lane (session 61) --------------------------------
 
 void wskel_set_dirty(uint8_t v) {
@@ -834,6 +989,9 @@ void on_world_change() {
     // (wskel_intact re-resolves through the dead actor and fails, so
     // wskel_drop degrades to a pointer clear, which is exactly right here).
     wskel_drop("world change");
+    // Same rule, and here it is not a judgement call: the actor is definitely
+    // gone, so forget it without writing.
+    ds_drop("world change", false);
 }
 
 void release(const char* why) {
@@ -968,17 +1126,45 @@ float weapon_scale() {
 void wskel_drive() {
     float ws = g_wScale.load(std::memory_order_relaxed);
     if (ws == 1.0f) {
-        // The default is a total drop - no adoption, no writes, no cached
-        // pointers. The lane only ever exists while the knob is off 1.0.
+        // 1.0 is a total drop on BOTH lanes - no adoption, no writes, no cached
+        // pointers. A lane only ever exists while the knob is off 1.0. This is
+        // also the one moment the rigid lane can safely restore: the holdable
+        // has not changed, so the actor is still the live one.
         if (g_wHoldable) wskel_drop("scale back to 1.0");
+        if (g_dsHoldable) ds_drop("scale back to 1.0", true);
         return;
     }
-    if (!wskel_resolve()) return;
-    wskel_compose(ws);
+    if (wskel_resolve()) {
+        // A skeletal weapon must never carry both lanes - they would compound.
+        // Restore ONLY if the rigid lane is bound to the actor still in hand.
+        // The first headset run took this branch on a weapon SWITCH (log:
+        // "released ... holdable has a skeleton after all"), which meant
+        // writing through the outgoing actor - the exact stale-pointer case
+        // ds_drop's `restore` flag exists to refuse.
+        if (g_dsHoldable) {
+            void* live = nullptr;
+            const bool same = hands::current_holdable(&live) && live == g_dsHoldable;
+            ds_drop("holdable has a skeleton after all", same);
+        }
+        wskel_compose(ws);
+        return;
+    }
+    // No skeleton to drive: either there is no holdable at all, or it is a
+    // rigid mesh (the wrench), in which case scale the actor instead.
+    void* hold = nullptr;
+    if (!hands::current_holdable(&hold) || !hold) {
+        ds_drop("holdable gone", false);
+        return;
+    }
+    ds_drive(hold, ws);
 }
 
 void wskel_release(const char* why) {
     if (g_wHoldable) wskel_drop(why);
+    // The rigid lane can restore here: release() is called from live sites that
+    // still hold the actor, not from the world-change path (which drops it
+    // itself, without writing).
+    if (g_dsHoldable) ds_drop(why, true);
 }
 
 void set_hide_inactive(bool on) {

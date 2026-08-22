@@ -69,9 +69,18 @@ std::atomic<float> g_worldScale{100.0f};       // Unreal units per meter
 // User head-anchor offset (session 16 part 3): the pawn's authored eye
 // height reads wrong once worldScale moves (60 UU = 0.6 m at 100 UU/m - the
 // "head very wrong" report); vertical + view-forward sliders correct the
-// anchor. Defaults 0 by the user's call (session 16 part 4) - they tune by
-// eye and persist their value via the VR preset ini.
-std::atomic<float> g_headOffUpUu{0.0f};
+// anchor. Shipped 0 from session 16 part 4 until 2026-08-22.
+//
+// Now 9 UU, which is BRVR's CameraHeightOffset=9 - its own comment: "the pawn's
+// eye height was authored for a monitor and reads short in VR". BRVR calls the
+// number cm and this file calls it UU, and both are right, because 1 UU == 1 cm
+// at worldScale 100 (BRVR's EyeSeparation is documented "game units == cm", so
+// its 3.2 cm half-IPD IS 3.2 UU, which is 100 UU/m - the same world scale this
+// file already ships). Of every number the two mods disagreed on, this was the
+// only large one, which is why it is the first suspect for the user's report
+// that the hands and weapon read tiny. `CameraHeightOffset` in BioshockVR.ini
+// and the F10 "Head offset up" slider both move it; a saved vrpreset wins.
+std::atomic<float> g_headOffUpUu{9.0f};
 
 // ---- head bob ---------------------------------------------------------------
 // On by default: a camera that bobs while the player's real head does not is a
@@ -204,8 +213,10 @@ std::atomic<float> g_gameFovDeg{100.0f};
 std::atomic<int32_t> g_lastOptionFov{0};       // telemetry: what the option holds now
 
 // M4 rung 1: AlternateEye. Half-IPD camera shift per eye, eye picked by
-// vr::current_eye_sign() (0 while AER is off).
-std::atomic<float> g_ipdMm{63.0f};
+// vr::current_eye_sign() (0 while AER is off). 64 mm is BRVR's EyeSeparation=3.2
+// (it stores HALF the IPD, in cm) - a 0.5 mm per eye difference from the 63 that
+// shipped before, adopted for exact parity rather than because it is visible.
+std::atomic<float> g_ipdMm{64.0f};
 // Head-offset telemetry: the recenter-relative offset applied to loc this
 // frame, in UU - makes the world-scale slider's effect a number on screen.
 std::atomic<float> g_headOffX{0.0f}, g_headOffY{0.0f}, g_headOffZ{0.0f};
@@ -2041,6 +2052,19 @@ void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* world
     if (pose) *pose = g_recenterPose;
     if (yawUnits) *yawUnits = g_recenterYawUnits;
     if (worldScale) *worldScale = g_worldScale.load(std::memory_order_relaxed);
+}
+
+// See camera.h: cm in (BRVR's unit and key name), UU stored, converted once
+// against the world scale as it stands at ini-read time.
+float set_head_up_cm(float cm) {
+    const float ws = g_worldScale.load(std::memory_order_relaxed);
+    const float uu = cm * (ws > 1.0f ? ws : 100.0f) / 100.0f;
+    g_headOffUpUu.store(uu, std::memory_order_relaxed);
+    return uu;
+}
+
+float head_up_uu() {
+    return g_headOffUpUu.load(std::memory_order_relaxed);
 }
 
 bool driven_eye_cam(int eye, float loc[3], int32_t rot[3]) {

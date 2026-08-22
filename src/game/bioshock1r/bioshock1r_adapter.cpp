@@ -10,6 +10,7 @@
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
+#include <cstdlib>  // _wtof, for the ini's float keys
 #include <cstring>
 
 #include <windows.h>
@@ -63,14 +64,60 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // heuristic until somebody puts a headset on for it.
     bvr::input::set_pad_brvr_defaults(true);
 
-    // GameTurnSpeed: the game's own sensitivity slider, the other half of the
-    // TurnAxisMax cap. -1 (the default) leaves the player's own choice alone;
-    // BRVR ships 70, which is "7" in the options menu, as a starting point.
+    // ---- BioshockVR.ini [VR] keys this adapter owns -------------------------
+    // PRECEDENCE, and it is not the obvious one: init() runs BEFORE
+    // arm_vr_preset() -> load_vr_preset_values(), so a saved vrpreset.ini
+    // OVERRIDES everything read here. That is the existing "tuned sliders over
+    // defaults" contract and it is deliberate - the F10 save is how an
+    // in-headset calibration is kept. It is also easy to mistake for the ini
+    // being ignored, which is why the echo below says so out loud. (Making the
+    // ini the single source of truth is blocked on the F10 writer, which
+    // rewrites vrpreset.ini wholesale and drops unknown keys - docs/CONTROLS.md
+    // names it as the blocker. Do not try to solve it from here.)
     {
         wchar_t ini[MAX_PATH];
         swprintf_s(ini, L"%s\\BioshockVR.ini", bvr::log::data_dir());
+        // GameTurnSpeed: the game's own sensitivity slider, the other half of
+        // the TurnAxisMax cap. -1 (the default) leaves the player's own choice
+        // alone; BRVR ships 70, which is "7" in the options menu.
         const int turn = GetPrivateProfileIntW(L"VR", L"GameTurnSpeed", -1, ini);
         if (turn >= 0) game_ini::write_turn_sensitivity(turn);
+
+        // Floats go through the string reader - GetPrivateProfileInt cannot do
+        // decimals, and 0.80 is the whole point. Same idiom as TurnAxisMax in
+        // core's xr-input reader. An out-of-range value is REFUSED and logged
+        // loudly rather than clamped: a silent clamp reads in the headset
+        // exactly like the key not being implemented at all.
+        wchar_t wv[24] = {};
+
+        // HandsScale / GunScale: BRVR's key names and BRVR's 0.8 defaults, so a
+        // config carries between the two mods. Both also live on `vrhands
+        // scale` / `vrhands wscale` and on the F10 sliders, which is how the
+        // number gets found in a headset without a rebuild per guess.
+        GetPrivateProfileStringW(L"VR", L"HandsScale", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v >= 0.05f && v <= 5.0f) bones::set_scale(-1, v);
+            else BVR_LOG("[b1r] HandsScale must be between 0.05 and 5.0 - ignoring");
+        }
+        GetPrivateProfileStringW(L"VR", L"GunScale", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v >= 0.05f && v <= 5.0f) bones::set_weapon_scale(v);
+            else BVR_LOG("[b1r] GunScale must be between 0.05 and 5.0 - ignoring");
+        }
+        // CameraHeightOffset: cm above the pawn's own eye point, + up. BRVR's
+        // key, name and units; it ships 9 and so do we. Stored as UU.
+        GetPrivateProfileStringW(L"VR", L"CameraHeightOffset", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v >= -100.0f && v <= 100.0f) camera::set_head_up_cm(v);
+            else BVR_LOG("[b1r] CameraHeightOffset must be -100 to 100 cm - ignoring");
+        }
+
+        BVR_LOG("[b1r] ini: HandsScale %.3f | GunScale %.3f | CameraHeightOffset "
+                "%.1f UU (a saved vrpreset.ini loads LATER and overrides all three)",
+                bones::scale(1), bones::weapon_scale(), camera::head_up_uu());
     }
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;

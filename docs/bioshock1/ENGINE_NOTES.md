@@ -3613,3 +3613,97 @@ BRVR first tried a **draw-signature heuristic**: in-game menus issue 20-31
 non-indexed draws per frame against gameplay's 120+, because menus hide the HUD.
 The gap looked clean at 4x with no overlap across seven captures. In practice it
 **flipped twelve times in one spot during ordinary gameplay**.
+
+## Session 63 (2026-08-22) - the rigid-holdable DrawScale lane, and what it inherits
+
+**Status: HEADSET-CONFIRMED 2026-08-22 - the wrench visibly changed size.**
+That settles a question open since session 16; see "the split", below.
+
+### The gap
+
+`bones.cpp`'s weapon-scale lane (`wskel_*`, session 61) drives the equipped
+holdable's own `SkeletonInstance`. The **wrench has none** - actor `+0x3FC` is
+null, it is a rigid melee mesh (flat-proven 2026-08-14) - so the lane logged
+`holdable ... has no resolvable SkeletonInstance (+0x3FC) ... lane stays
+unbound` and the wrench rendered at authored size no matter what `wScale` said.
+BRVR never had the problem: it scales the weapon **actor** (`GunScale` ->
+`DrawScale`), which needs no bones.
+
+### The lane
+
+Only where the skeleton lane cannot bind. A holdable WITH a skeleton keeps the
+existing path; carrying both would compound.
+
+- Field: `kActorDrawScaleOffset` +0x2AC, with the **dirty protocol** -
+  `[actor+0xD0] |= 0x10`, `[actor+0x3F4]++`, `[actor+0x3E4] = 0`. All four
+  constants were derived here in session 12 (AActor::SetDrawScale 0x375830
+  disassembled, field poked live); nothing was carried across from BRVR.
+  A raw poke without the revision bump is invisible - see the session-12 entry.
+- `wScale` is a MULTIPLIER on the captured authored value, matching the sibling
+  lane. BRVR writes its `GunScale` absolutely; for BS1 weapons the authored
+  value is 1.0, so the two agree, and the captured value is logged so a weapon
+  where it is not shows up rather than hides.
+- **A field reading 0.0 is expected**, not garbage: session 12 recorded "the
+  AHands actor read 0.0 there", which is Unreal's unset-means-one. It binds as
+  a 1.0 multiplier while the raw 0.0 is kept for the restore.
+- Re-asserts per frame (read-then-write, so zero writes when nothing moved it),
+  because the engine restamps `DrawScale` on equip and a one-shot poke was
+  BS2-proven not to render reliably.
+- **Restores only when the actor is provably live** - on `wScale` returning to
+  1.0, and on explicit release. A holdable CHANGE and a world change both
+  forget it WITHOUT writing. That is BRVR's `ArmHide_Reset` rule and it exists
+  for the same reason: by the time the change is noticed the old actor may be
+  destroyed and its address reused, and an SEH guard does not save you from a
+  VALID write into somebody else's object.
+
+### The split: the RIG actor's DrawScale is inert, the WEAPON actor's is not
+
+Session 16 measured `DrawScale` on the **RIG** actor and found the geometry
+inert through the foreground path - **gun width 240 -> 234 px at s=0.5**, 2%
+where 50% was asked - concluding that the fg rig path consumes actor DrawScale
+for bone translations but NOT for skin/attached-mesh size. It named the
+**WEAPON** actor as the case it could not isolate: "it could at best scale the
+gun, never the hand."
+
+**That guess was right, and the split is real.** The wrench visibly resized in a
+headset on 2026-08-22. So: rig-actor DrawScale does not size geometry; weapon-
+actor DrawScale does. The attach-matrix disassembly session 16 queued as the
+fallback (`AActor::AttachToBone` 0x379EF0 / the fg bake at 0x3DBF7C) is **not
+needed for weapon size** and can stay parked.
+
+### Two things the first headset run corrected
+
+**1. The wrench is authored at DrawScale 0.800, not 1.0.** Logged as
+`wscale rigid: bound 7B912A20, authored DrawScale 0.800`. The lane's first cut
+treated `wScale` as a MULTIPLIER on the authored value on the explicit
+assumption that BS1 weapons are authored at 1.0 - so `wScale 0.80` rendered the
+wrench at **0.64** and it read too small. It is now **absolute**, which is what
+BRVR does (`*p = g_cfg.gunScale`) and which makes `GunScale=0.8` mean the same
+size in both mods. The consequence to know: `wScale` is "fraction of authored"
+on the skeleton lane and "the DrawScale itself" here. That asymmetry is BRVR's
+too, and BRVR is the size that was accepted in a headset.
+
+**2. A weapon SWITCH reached the restore path.** Logged as
+`released 7B912A20 (holdable has a skeleton after all) - DrawScale restored to
+0.800`: the wrench went out of hand, a skeletal weapon bound, and the lane
+restored through the OUTGOING actor - exactly the stale-pointer case `ds_drop`'s
+`restore` flag exists to refuse. That branch now checks the bound actor is still
+`hands::current_holdable` before writing.
+
+### How to verify a change here
+
+The wrench must be EQUIPPED. `boot.ps1 -Attach` lands on the newest save, and
+that save is the bathysphere intro ("Pick up the RADIO") with no weapon, so the
+simulator cannot reach it without a later save or scripted navigation - which is
+why this went to a headset. Once equipped, the log lines above are the evidence:
+`bound <ptr>, authored DrawScale <x>` then `DrawScale <x> -> <ws>`, and a
+hand-back line on unequip.
+
+### Ini keys added the same session
+
+`HandsScale`, `GunScale` (0.05-5.0) and `CameraHeightOffset` (cm, + up) in
+`BioshockVR.ini`'s `[VR]` section, read in `Bioshock1RAdapter::init`. BRVR's key
+names, units and defaults (0.8 / 0.8 / 9), so a config carries between the two
+mods. **A saved `vrpreset.ini` loads later and overrides all three** - the
+startup echo says so, because in a headset that is indistinguishable from the
+ini being ignored.

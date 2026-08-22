@@ -1483,3 +1483,46 @@ Not verified: the `vrscreen` console command. `command.txt` is polled from the
 CalcView hook, which does not pump at the main menu, so the line was written and
 never read. The parser is untested at runtime; the F10 overlay controls call the
 same functions and are the primary surface.
+
+### 2026-08-22 (session 63) - BRVR parity on size and height, and where parity is only a number
+
+The user reported the weapon and hands reading tiny and asked for BRVR's scale,
+which felt right. Comparing BRVR's shipped `dist/BioshockVR.ini` against these
+defaults, most of the pipeline already agreed and the agreement was not luck:
+
+| Knob | BRVR | Here before | Delta |
+|---|---|---|---|
+| World scale | `EyeSeparation=3.2`, documented "game units == cm" -> 100 UU/m | `worldScale=100` | same |
+| Foreground lens | `2*atan(tan(fov/2)/(W/H)*1.3333)` | session-28 `k=(4/3)*(H/W)` | algebraically identical |
+| IPD | 64 mm | 63 mm | negligible |
+| Hand scale | `HandsScale=0.8` | `0.793` | ~1% |
+| Weapon scale | `GunScale=0.8` | `0.760` | ~5% |
+| **Camera height** | **`CameraHeightOffset=9` cm** | **0** | **the only large one** |
+
+**The decision worth recording is what we did NOT claim.** Adopting 0.80/0.80 is
+parity, not a fix: a 1% and a 5% change cannot be what a "reads tiny" report is
+about, and saying otherwise would have made the next headset session measure the
+wrong thing. The height was shipped at BRVR's 9 cm as the actual candidate, and
+`HandsScale`/`GunScale`/`CameraHeightOffset` were added to `BioshockVR.ini` so
+the real number can be found by dialling in one session rather than by a rebuild
+per guess.
+
+**Ini precedence is deliberately the opposite of the intent, and is logged.**
+`Bioshock1RAdapter::init` runs before `arm_vr_preset()` -> `load_vr_preset_values()`,
+so a saved `vrpreset.ini` overrides the ini keys. That preserves in-headset F10
+calibrations, which is right, but in a headset it is indistinguishable from the
+ini being ignored - hence the startup echo saying so on the same line. The clean
+model (ini is the source of truth, F10 is a front-end) stays blocked on the F10
+writer, which rewrites `vrpreset.ini` wholesale and drops unknown keys.
+
+**Mechanism parity was deliberately NOT taken for the hands.** BRVR scales the
+AHands actor's `DrawScale` (+0x2AC). The hands here are POSITIONED by writing
+bone translations, so an actor-level scale would silently scale our own writes
+with them; the cluster compression stays. The weapon is the opposite case - it
+is positioned by the engine through the attach bone - so a skeleton-less
+holdable (the wrench) now scales through the weapon actor's `DrawScale`, which
+is the one place this mod did visibly less than BRVR. Headset-confirmed the
+same day, which settles session 16's open question: the RIG actor's DrawScale is
+inert through the fg path, the WEAPON actor's is not. It also corrected the
+lane - the wrench is authored at 0.800, so a multiplier compounded to 0.64 and
+the knob is now absolute, as BRVR's is. See `docs/bioshock1/ENGINE_NOTES.md`.

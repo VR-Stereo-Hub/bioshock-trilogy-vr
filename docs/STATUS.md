@@ -2,6 +2,113 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-22 - s63 part 2: BRVR parity on size and height (BioVRDev)
+
+**Branch `s63-bs1-comfort`.** Two commits added this part - the probe disarm and
+everything else - and neither touches `src/core/`.
+
+**The bob probe is DISARMED.** `59e8193` had armed it at boot as a TEMPORARY
+measure marked REVERT BEFORE MERGE; it did its job (that build produced the
+absolute-world-Z discriminator), so the rule it suspended is back. **This branch
+is now mergeable on that count.**
+
+### The scale report, and what the comparison actually found
+
+The report was that the weapon and hands read tiny and should match BRVR.
+Comparing BRVR's shipped `dist/BioshockVR.ini` against these defaults:
+
+| Knob | BRVR | Here before | Delta |
+|---|---|---|---|
+| World scale | `EyeSeparation=3.2`, documented "game units == cm" -> 100 UU/m | `worldScale=100` | **same** |
+| Foreground lens | `2*atan(tan(fov/2)/(W/H)*1.3333)` | s28 `k=(4/3)*(H/W)` | **identical algebra** |
+| IPD | 64 mm | 63 mm | negligible |
+| Hand scale | `HandsScale=0.8` | `0.793` | ~1% |
+| Weapon scale | `GunScale=0.8` | `0.760` | ~5% |
+| **Camera height** | **`CameraHeightOffset=9` cm** | **0** | **the only large one** |
+
+**Adopting 0.80/0.80 was PARITY, NOT A FIX, and the headset run confirmed it** -
+the scale still read rough at BRVR's numbers. The user's own dialled values,
+saved through F10, are **`handScaleL/R = 0.904`, `wScale = 0.868`** with height
+kept at 9 - i.e. bigger than BRVR on both. Those are the numbers to consider
+promoting to shipped defaults once they settle.
+
+Height went to BRVR's 9 UU (1 UU == 1 cm at worldScale 100) and IPD to 64.
+`release/preset-bs1/vrpreset.ini` carries all four, or installing it would put
+the old values straight back.
+
+**Three BRVR keys are live in `BioshockVR.ini`**: `HandsScale`, `GunScale`
+(0.05-5.0) and `CameraHeightOffset` (cm, + up), read in
+`Bioshock1RAdapter::init`. **PRECEDENCE IS BACKWARDS AND ON PURPOSE**: `init()`
+runs before `arm_vr_preset()` -> `load_vr_preset_values()`, so a saved
+`vrpreset.ini` overrides all three. That preserves F10 calibrations but is
+indistinguishable in a headset from the ini being ignored, so the startup echo
+says so on the same line.
+
+### The wrench scales now, and it settled a question open since session 16
+
+Skeleton-less holdables (the wrench: `+0x3FC` null) now scale through the weapon
+**actor's** `DrawScale` (+0x2AC) with the dirty protocol - this repo's own
+session-12 constants. **Headset-confirmed: the wrench visibly changed size.**
+
+That settles session 16's open question. It had measured DrawScale on the **RIG**
+actor, found the geometry inert through the fg path (240 -> 234 px at s=0.5) and
+named the **WEAPON** actor as the case it could not isolate. The split is real:
+rig-actor DrawScale does not size geometry, weapon-actor DrawScale does. **The
+attach-matrix disassembly session 16 queued as the fallback is not needed for
+weapon size and can stay parked.**
+
+The same run corrected the lane twice, both from single log lines:
+
+- **The wrench is authored at DrawScale 0.800, not 1.0.** The first cut treated
+  `wScale` as a multiplier on the authored value, so 0.80 rendered it at
+  **0.64**. It is now ABSOLUTE, as BRVR's is. Consequence to know: `wScale` is
+  "fraction of authored" on the skeleton lane and "the DrawScale itself" here -
+  BRVR's asymmetry too.
+- **A weapon switch reached the restore path** and wrote through the OUTGOING
+  actor. That branch now checks the bound actor is still `current_holdable`.
+
+### F10 audit (asked for after the panel turned out to hold more than expected)
+
+- **Head bob is NOT broken.** `killHeadBob` defaults on, and the log line
+  `headbob: camera base = Pawn.Location + eyeHeight` fires when the substitution
+  runs - it did, in the user's own session. What was still bobbing was the GUN,
+  which is the separate s63 defect `bae3d09` fixed (the two consumers of the
+  camera location had diverged). There is no separate weapon-bob toggle and
+  there should not be one - it was a bug, not an option.
+- **"Save preset values" does NOT save everything in F10.** It writes a
+  hand-maintained list of 50 keys. Real gaps, all live F10 controls that do not
+  survive a restart: **claimed hfov** ("stop the swim" - the distortion knob),
+  **stick deadzone**, **kill right-stick pitch**, the three **laser** sliders
+  (only `laserOn` is saved), and **screen distance / screen width** (only
+  `screenPlaceMode` and `screenHeightM` are saved). Weapon/hand offsets are fine
+  - they go to `hands.ini`, which the same button writes.
+- **The F10 "Ammo-select modifier" combo is DEAD.** It writes `g_ammoMod`
+  (`xinput_bridge.cpp`, session 23, three values). The BRVR-shaped
+  `ControllerDpadModifier` (`openxr_input.cpp`, `g_dpadMod`, five values) takes
+  over whenever it is not `Legacy` - "explicit choice: no heuristic, no
+  fallback" - and s63 ships mode 1, so **nothing reads the combo any more**. It
+  still moves a slider that does nothing.
+- **The modifier only gates AMMO SELECT.** There is no MODIFIER + X + Y ->
+  "WHAT IS THIS?" / MAP lane here. What exists is a plain **X+Y chord -> menu**
+  (short = START, hold = BACK), a Steam Link overlay workaround, and
+  **both-stick-click -> recenter**. BRVR's map-on-hold behaviour is not ported.
+
+## Next steps
+
+1. **Settle the scale.** 0.904 / 0.868 are the dialled values; confirm they hold
+   across weapons now that the wrench is absolute rather than 0.64, then promote
+   them to the shipped defaults (the standing rule the s61 calibration followed).
+2. **Decide the two dead/absent controls above**: delete the ammo-modifier combo
+   or re-point it at `g_dpadMod`, and decide whether the MODIFIER+X+Y map lane
+   is wanted.
+3. **The preset writer.** It is both the "F10 eats unknown keys" blocker AND the
+   reason the six controls above do not persist. One fix covers both.
+4. **Per-weapon grip offsets.** `hands.ini` ships all-zero here; BRVR ships tuned
+   offsets per weapon slot. They move the gun rather than resize it, but they
+   change apparent size strongly.
+5. **Still open from part 1**: one controller unbound at boot (BRVR does not
+   have it), and this mod's performance being worse than BRVR's.
+
 ## Session 2026-08-22 - s63 BS1 comfort + controls (BioVRDev)
 
 **Branch `s63-bs1-comfort`, 26 commits, all headset-verified unless said

@@ -27,6 +27,15 @@ void set_fov_override(float hfovDeg); // <= 0 disables; game value restored
 void get_recenter_state(bvr::vr::HeadPose* pose, int32_t* yawUnits, float* worldScale);
 void set_recenter_state(const bvr::vr::HeadPose& pose, int32_t yawUnits, float worldScale);
 
+// BioshockVR.ini `CameraHeightOffset`, in CENTIMETRES with + up, which is
+// BRVR's key, name and units. Stored as UU (the unit every slider and the VR
+// preset use) by converting once against the CURRENT world scale - so this is
+// an ini-time conversion, not a live one, exactly like every other UU-valued
+// slider here. At the shipped worldScale of 100 the two units are the same
+// number anyway. Returns the UU actually stored, for the caller's log echo.
+float set_head_up_cm(float cm);
+float head_up_uu();
+
 // Session 21 fg view-sync: the FINAL per-eye camera of the most recent
 // SequentialReentry pair (0 = left, 1 = right), stashed after each pass's
 // eye offset. The engine's fg scene node ctor runs BEFORE CalcView inside
