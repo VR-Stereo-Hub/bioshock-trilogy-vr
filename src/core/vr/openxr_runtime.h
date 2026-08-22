@@ -330,6 +330,31 @@ void set_pose_audit(bool on);
 void publish_gameplay_view(bool strictGameplay);
 void handle_cine_command(const char* args);
 
+// --- Screen placement: where the cinema quad hangs ---------------------------
+// Applies to every frame that goes to the quad instead of the projection layer:
+// menus, the map, the manual, machine flows, the hack board, loading screens
+// and cutscenes. `vrscreen anchor mode anchor|head|origin`.
+//
+//   anchor (default) - world-locked, placed ONCE from the head pose at the
+//                      moment the screen opens, yaw flattened so it is never
+//                      tilted. It stays put while you look around, which is
+//                      what makes it readable, and re-places on the next
+//                      screen. Ported from the BRVR mod.
+//   head             - rides the view space. Follows your gaze; swims.
+//   origin           - world-locked at the recenter origin's forward. The
+//                      pre-port default, and the reason a menu could open
+//                      behind a player who had turned since recentring.
+//
+// release_screen_anchor() forces the next screen frame to re-place. Call it
+// from a recenter so the screen comes back to the player.
+void handle_screen_command(const char* args);
+void release_screen_anchor();
+int screen_place_mode();
+void set_screen_place_mode(int mode);
+const char* screen_place_name(int mode);
+float screen_height_m();
+void set_screen_height_m(float m);
+
 // --- Session 29: what the VR rig does while a cinematic holds ----------------
 // `vrcine drive off|authored|authored+look` (default authored). The verb is
 // `drive` and not `mode` because `vrcine mode` already means quad-vs-stereo,
