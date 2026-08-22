@@ -212,3 +212,27 @@ changes.
 
 Verify with the same probe: the moving `actor Z` span should collapse to the
 standing value. That is a numeric pass condition, not a judgement call.
+
+---
+
+## 7. Observed side effect: the wrench idle animations are gone
+
+Reported in the headset 2026-08-21, on the build carrying the anchored-screens
+and camera head-bob work. The wrench's idle fidget/slap no longer plays. **The
+user considers this an improvement** - BRVR ships `IdleAnimMode=1` specifically
+to suppress the wrench slap - so it is recorded as wanted behaviour, not a
+regression to chase.
+
+**It is unattributed.** Nothing in that build was aimed at idle animation, and
+the plausible causes are not distinguished:
+
+- `swaykill` was already default-on and freezes the driven rig's reference, so
+  the idle fidget may simply never have played since session 20 and only now
+  been noticed.
+- The camera head-bob substitution changed the view origin, which could make a
+  small residual fidget imperceptible without removing it.
+
+Worth one cheap check before anyone relies on it: `vrhands swaykill off`, hold
+the wrench, stand still. If the fidget returns, the freeze owns it and the
+behaviour is stable. If it does not, something else is suppressing it and that
+is worth knowing before a future change re-enables it by accident.
