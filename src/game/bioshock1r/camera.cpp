@@ -1400,6 +1400,25 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             }
         }
 
+        // RE-TAKE THE HAND/RAY ORIGIN. baseLoc was snapshotted ~150 lines above,
+        // BEFORE the head-bob substitution that just ran, and the hand viewmodel
+        // and the aim ray are both built on it (frame_context.h:
+        // out.loc.z = ctx.baseZ + d[2] * worldScale). So the head-bob fix stopped
+        // the VIEW bobbing and left the GUN bobbing - the two consumers of the
+        // camera location silently diverged the moment that fix landed.
+        //
+        // MEASURED 2026-08-22 (bracketed bob probe, hand still): with the pawn's
+        // own world Z perfectly flat, bone 43 after our write still moved 2.91 UU
+        // mean in ABSOLUTE world space - our write is authoritative and lands
+        // exactly where told, it was simply being told a bobbing number. Relative
+        // to the pawn the gun swung 9.28 UU while walking. That is this line.
+        //
+        // Here and not earlier: AFTER the substitution, BEFORE the head offset
+        // below - which is what "pre eye-offset" has always meant. When the
+        // head-bob kill is off this is a no-op, so `vrcam headbob off` still A/Bs
+        // the whole behaviour.
+        if (loc) baseLoc = *loc;
+
         float dxr[3] = {hp.px - g_recenterPose.px, hp.py - g_recenterPose.py,
                         hp.pz - g_recenterPose.pz};
         float d[3];
