@@ -2,6 +2,78 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-21 - BS1 VR comfort lane (BioVRDev)
+
+A second contributor's first working session. Four branches, three pushed.
+
+**SHIPPED AND HEADSET-VERIFIED - `feat/anchored-screen-quad` (pushed, no PR yet)**
+
+1. **The cinema quad is anchored where the screen opened.** It took the head pose
+   once, flattens the yaw so the panel is never tilted, and stays world-locked
+   until the screen closes; it re-places on the next screen, on a recenter, and
+   after 0.45 m of head travel. The two old placements (recenter-origin, and
+   head-locked for `screen_only` intervals) survive as modes 1 and 2. Verified in
+   the headset: main menu, loading, pause, vending and hacking all sit still with
+   black around them.
+
+2. **Screens are identified BY NAME from the movie stack.** Walking
+   `GetFlashGUIController` -> `GetTopPlayingMovie` (both pure field walks) yields
+   the top screen's filename: `PausePC.swf`, `HUDRadial.swf` for ordinary
+   gameplay, `craftingstation.swf`, `Fadeout.swf`. That is what fixed the pause
+   menu, which no render-side signal can see - it draws over a live world, so
+   CalcView keeps firing, the view actor stays the pawn, the fov matches and the
+   frame is not pure gameswf. Routing on the name also delivered per-screen
+   placement, which was queued as a separate item.
+   **`LevelInfo::Pauser` was tried first and is falsified**: null through three
+   real pauses. Recorded in `docs/bioshock1/ENGINE_NOTES.md`.
+
+3. **Camera head bob, landing dip and damage shake removed** - next-step item 4
+   from the previous session, the one credited to the user as "the BioVR-proven
+   lever". The camera base becomes `Pawn.Location + eyeHeight` rather than
+   filtering the bob out afterwards, which cannot tell a bob from a lift or a
+   stair. Skipped during cinematics. Default on, F10 checkbox, persisted.
+
+**OPEN, AND FULLY MEASURED - the weapon walk bob**
+
+The gun bobs with the step while the hands do not. Four candidates are ruled out
+with evidence and the cause is pinned; see
+`docs/bioshock1/VIEWMODEL-RIG-DIFFERENCES.md`, which also compares this rig
+against the BRVR mod's end to end.
+
+**It is the `AHands` actor's vertical position.** Probe, peak-to-peak per second:
+**0.15-0.96 UU standing against 5.3 to 22.8 UU moving.** Actor rotation is flat
+(0.46 deg max), so a rotational bob is falsified. The hand-skeleton freeze holds
+during walking (1.0-1.6 UU deltas against a 6 UU gate), so widening that gate was
+a measured no-op. The weapon's own skeleton is not it either - neither mod drives
+its pose and BRVR has no bob.
+
+**Pinning the actor's Z was tried and gave a byte-identical result, because the
+write was made during CalcView and the game tick erases actor writes made there.**
+BRVR re-applies its actor rotator from Present for exactly this reason. Right
+field, wrong write site.
+
+**Next step: pin the actor Z from Present, after the game tick.** Pass condition
+is numeric: re-run `vrprobe bob` and the moving `actor Z` span must collapse to
+the standing value. If it does not, get a MOVING sample of `weapon vs actor`
+first - the weapon actor caches only after the first shot and every sample so far
+is a standing one.
+
+**Branches**
+
+| Branch | State |
+|---|---|
+| `feat/anchored-screen-quad` | pushed, verified, **ready for a PR** |
+| `docs/viewmodel-rig-differences` | pushed - the rig comparison and the falsification record |
+| `probe/weapon-bob-source` | pushed - the read-only diagnostic, **delete once the fix lands** |
+| `docs/collaboration-workflow` | local only - `CONTRIBUTING.md`, PR/issue templates, `docs/ORG-PRACTICES.md`. Held pending review |
+
+**Noticed, not chased:** the wrench idle animations are gone, which the user
+counts as an improvement. Unattributed - nothing in that build targeted idle
+animation. `vrhands swaykill off` with the wrench held is the check.
+
+**Repo note:** `main` has no ruleset, so branch discipline is honour-based today.
+`docs/ORG-PRACTICES.md` lists what to turn on, including a CI build check.
+
 ## The three games (one branch, one release line)
 
 **ALL THREE MODS ARE ON `main` AND ALL THREE WORK, as of v0.8.0 (2026-08-13,
