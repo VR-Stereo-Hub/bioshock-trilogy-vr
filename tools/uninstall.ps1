@@ -10,9 +10,10 @@ $ErrorActionPreference = "Stop"
 
 if (-not $GamePath) {
     switch ($Game) {
-        "bs2" { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final" }
-        "bsi" { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock Infinite\Binaries\Win32" }
-        default { $GamePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final" }
+        default {
+            . (Join-Path $PSScriptRoot "lib\resolve-game-path.ps1")
+            $GamePath = Resolve-BvrGamePath -Game $Game
+        }
     }
 }
 

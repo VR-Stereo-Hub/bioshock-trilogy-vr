@@ -4,10 +4,15 @@
 # our headroom for stereo render targets. Read-only: this script never patches.
 # NOTE: keep this file pure ASCII (PowerShell 5.1 misreads BOM-less UTF-8).
 param(
-    [string]$ExePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final\BioshockHD.exe"
+    [string]$ExePath = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $ExePath) {
+    . (Join-Path $PSScriptRoot "lib\resolve-game-path.ps1")
+    $ExePath = Join-Path (Resolve-BvrGamePath -Game bs1 -Quiet) "BioshockHD.exe"
+}
 if (-not (Test-Path $ExePath)) { throw "Not found: $ExePath" }
 
 $fs = [System.IO.File]::OpenRead($ExePath)

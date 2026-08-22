@@ -167,11 +167,8 @@ if ($Attach) {
     if ($Boot -eq "map") {
         if (-not $Map) { throw "-Boot map needs -Map <name.bsm>" }
         if (-not $GamePath) {
-            $GamePath = if ($Game -eq "bs2") {
-                "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final"
-            } else {
-                "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final"
-            }
+            . (Join-Path $PSScriptRoot "lib\resolve-game-path.ps1")
+            $GamePath = Resolve-BvrGamePath -Game $Game -Quiet
         }
         $exeName = if ($Game -eq "bs2") { "Bioshock2HD.exe" } else { "BioshockHD.exe" }
         $exe = Join-Path $GamePath $exeName
