@@ -16,6 +16,7 @@
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
 #include "game/bioshock1r/game_ini.h"
+#include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/hands.h"
@@ -1713,7 +1714,13 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         aim::on_calcview(fc);
         // The viewmodel write goes LAST in the frame: the engine placed the
         // hands during its own tick, so ours has to be the one that survives.
+        // The bob probe brackets the drive: `pre` reads the bone array as the
+        // ENGINE evaluated it, `post` re-reads the same slot once we have
+        // written it, so "did our write land" is measured rather than assumed.
+        // Read-only on both sides, and neither may scan.
+        probe_bob::on_calcview_pre(fc);
         hands::on_calcview(fc);
+        probe_bob::on_calcview_post(fc);
     }
 
     // Foreground lens match: post-tick, pre-render, every frame - nothing

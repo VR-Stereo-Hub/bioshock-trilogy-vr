@@ -58,6 +58,7 @@ add_library(bioshockvr SHARED
     game/bioshock1r/bioshock1r_adapter.h
     game/bioshock1r/body.cpp
     game/bioshock1r/screens.cpp
+    game/bioshock1r/probe_bob.cpp
     game/bioshock1r/body.h
     game/bioshock1r/bones.cpp
     game/bioshock1r/bones.h

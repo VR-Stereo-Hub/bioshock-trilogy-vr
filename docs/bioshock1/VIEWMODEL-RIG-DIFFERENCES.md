@@ -204,6 +204,10 @@ anything else.
 
 ### The fix this implies
 
+> **BUILT, RUN, AND FALSIFIED THE NEXT DAY - see section 7 before acting on any
+> of this.** The write lands and moves the rig, and the bob survives it. What
+> follows is kept as the reasoning that led there, not as an instruction.
+
 Pin the AHands actor's Z **from Present, after the game tick**, mirroring
 `CameraHook_LateHandsWrite`. Not from the CalcView path. Everything else about
 the earlier attempt (bob-free target from `Pawn.Location + eyeHeight`, re-arm on
@@ -215,7 +219,93 @@ standing value. That is a numeric pass condition, not a judgement call.
 
 ---
 
-## 7. Observed side effect: the wrench idle animations are gone
+## 7. FALSIFIED 2026-08-22: pinning the actor Z from Present
+
+Built, deployed, run in the headset. **The gun still bobs.** Reverted; nothing
+of it is in the tree. It is written up at length because it looks obviously
+right, it is the fix section 6 prescribes, and its telemetry is what finally
+narrows the search.
+
+The pin took the actor's Z to the pawn's own eye point (the camera's base) plus
+the rig's steady height above it, learned while standing and held while walking,
+published on the game thread and written from a new `IGameAdapter::onPresent()`
+seam in the D3D11 Present detour.
+
+Three results, all from its own log:
+
+1. **The write lands.** It read the actor's Z back at the next Present before
+   overwriting it, so "engine drift across the frame" is exactly what the engine
+   did to our value across a whole tick and draw. Standing, that number is
+   **0.00 UU**, for windows of 200+ samples at a time. Nothing erases a
+   Present-time write. Present is a real seam and the "the game tick erases it"
+   half of section 6 is not the explanation for anything here.
+2. **The rig's steady height above the pawn eye point is 0.00 UU.** `ref +0.00`
+   every window. The AHands actor sits exactly ON the engine's view point, so
+   the actor's Z and the camera's Z are the same number, and the bob on one is
+   the bob on the other.
+3. **It moved the rig visibly, in the worst possible way: the gun desynced
+   between the two eyes.** Under SequentialReentry the eyes are rendered one
+   BUILD apart, each with its own CalcView and its own Present, so a write
+   placed between two builds reaches one eye and not the other. Any future
+   per-frame write to the viewmodel from Present inherits this, and it is a
+   reason to prefer the game thread for anything the renderer reads twice.
+
+**A write that lands, visibly moves the rig, and leaves the bob untouched means
+the gun's height is not read from the actor at the moment we are writing it.**
+That is the whole value of the run. Combined with the drift figures - the engine
+re-places the actor by 2.9 to 17.2 UU across a frame whenever the player is
+moving, and by 0.00 when they are not - the remaining story is candidate B from
+section 4: the engine resolves an attached actor's transform during its OWN
+tick, from the parent's transform and bone array as they were then. The hands
+still look right because they are drawn from the bones we wrote; the weapon
+lags into the pose the tick saw.
+
+**Do not re-run a Z pin at a later write site.** Present is already the last
+moment in the frame that is ours, and it was not late enough - or rather, being
+late is not the axis the problem lies on.
+
+### What round 2 measures
+
+The one number that separates "the gun rides the actor rigidly" from "the attach
+chain itself bobs" has never been sampled while the player was moving, because
+`weapon_actor()` only returns what a trigger pull taught the aim seam and the
+player had always stopped by the time they had fired. The probe now resolves the
+weapon through `resolve_weapon_actor` instead, and reports each bucket's speed
+range so a window that straddles the standing/moving line can be told from a
+clean one - several round-1 "moving" windows were transitions, which is why
+their spans ranged from 0.00 to 22.8 UU with no pattern.
+
+**And a probe must never scan.** The first attempt at this resolved the weapon
+through `resolve_weapon_actor`, which sweeps the heap when its cache is empty.
+With a WRENCH held the vtable-gated accept took nothing - `APlayerWeapon scan:
+2 match(es), 0 accepted` - so a 3.9-second sliced sweep re-ran every 8 seconds
+for the whole session and the player reported the framerate before anything
+else. This is the session-18 backoff defect wearing a different hat. The right
+source was already in the tree: `hands::current_holdable()` reads the equipped
+holdable straight off `hands+0x45C`, is class-agnostic (which is why the
+session-21 per-weapon profiles use it), costs one pointer load, and resolves the
+wrench like everything else.
+
+- `wpn-vs-actor` **flat** while moving: the gun rides the actor rigidly, the bob
+  enters above it, and the fix is an actor write EARLIER in the frame than the
+  tick's attachment update - not later.
+- `wpn-vs-actor` **oscillating**: the attach chain bobs on its own, no actor
+  write of any kind can reach it, and the fix is a late re-assert of bone 43.
+
+### The structural difference that keeps making this hard
+
+Worth stating plainly, because it is the answer to "the other mod does not have
+this problem". **BRVR pins the AHands actor and hangs everything off it**, so
+there is no engine placement left to bob and the attached weapon inherits a
+stationary parent for free. **This rig leaves the actor engine-placed and
+cancels it in the bone targets** (`ptc = qaInv (grip - actorLoc)`), which
+cancels perfectly for the hands and not at all for a weapon the engine attaches
+on its own schedule. The bob is not a missing constant; it is that one of the
+two things hanging off the actor compensates and the other does not.
+
+---
+
+## 8. Observed side effect: the wrench idle animations are gone
 
 Reported in the headset 2026-08-21, on the build carrying the anchored-screens
 and camera head-bob work. The wrench's idle fidget/slap no longer plays. **The
