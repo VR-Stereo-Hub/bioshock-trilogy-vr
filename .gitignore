@@ -30,3 +30,12 @@ desktop.ini
 
 # release zips built by tools/package.ps1
 /dist/
+
+# xrsim per-eye captures. `xrsim-shot.ps1 -Out name` (a bare name, no path)
+# copies name_left.png / name_right.png / name_sbs.png / name.json into the
+# CURRENT directory, which from the repo root means straight into the tree.
+# The PNGs are rendered game frames, so committing one breaks the hard rule
+# against game-derived content. Pass a path outside the repo, or rely on this.
+/*_left.png
+/*_right.png
+/*_sbs.png
