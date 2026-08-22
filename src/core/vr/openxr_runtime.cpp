@@ -5015,6 +5015,15 @@ void set_screen_place_mode(int mode) {
     }
 }
 
+float screen_width_m() { return g_screenWidthM.load(std::memory_order_relaxed); }
+
+void set_screen_width_m(float m) {
+    if (m < 0.3f) m = 0.3f;
+    if (m > 20.0f) m = 20.0f;
+    g_screenWidthM.store(m, std::memory_order_relaxed);
+    BVR_LOG("xr: screen width = %.2f m", m);
+}
+
 float screen_height_m() { return g_screenHeightM.load(std::memory_order_relaxed); }
 
 void set_screen_height_m(float m) {

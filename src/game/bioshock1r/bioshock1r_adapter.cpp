@@ -39,6 +39,11 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // with until somebody tests them, and then they opt in on this same line.
     // A saved VR preset can still override it afterwards (vrpreset load).
     bvr::vr::set_screen_place_mode(0);
+    // User ask (2026-08-22): the anchored menus read too large. BS1 only - the
+    // core default stays 2.4 for BS2 and Infinite, neither of which has been in
+    // a headset with anchored placement at all. The F10 slider and
+    // `vrscreen width` still move it, and a saved preset still overrides.
+    bvr::vr::set_screen_width_m(1.9f);
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }

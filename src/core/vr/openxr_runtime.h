@@ -361,6 +361,10 @@ void set_screen_place_mode(int mode);
 const char* screen_place_name(int mode);
 float screen_height_m();
 void set_screen_height_m(float m);
+// Quad width in metres. The core DEFAULT is unchanged (2.4); a game opts into a
+// different size from its own adapter, the same way screen placement does.
+float screen_width_m();
+void set_screen_width_m(float m);
 
 // --- Session 29: what the VR rig does while a cinematic holds ----------------
 // `vrcine drive off|authored|authored+look` (default authored). The verb is

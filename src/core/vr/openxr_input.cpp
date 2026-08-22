@@ -591,6 +591,46 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     }
     g_syncOk.fetch_add(1, std::memory_order_relaxed);
 
+    // s63 BOOT INPUT DEAD WINDOW - measurement only, nothing here changes
+    // behaviour for any game. xrSyncActions succeeding does NOT mean the
+    // controllers are usable: until the runtime binds an interaction profile
+    // every action reads isActive=false, so buttons and sticks do nothing while
+    // the mod looks healthy. MEASURED 2026-08-22 on VDXR, same build, two boots:
+    // the first profile bind landed 0.11 s after attach on one run and 11.14 s
+    // on the next, which is the reported "thumbstick dead for several seconds"
+    // and "A button did nothing for ten seconds". The runtime owns that timing,
+    // so this records WHEN it ends rather than trying to force it.
+    {
+        static bool everActive = false;
+        static uint64_t firstSyncMs = 0;
+        if (!everActive) {
+            const uint64_t nowMs = GetTickCount64();
+            if (!firstSyncMs) firstSyncMs = nowMs;
+            XrActionStateBoolean probe{XR_TYPE_ACTION_STATE_BOOLEAN};
+            XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+            // g_btnA is the exact action the user reported dead, so probe it
+            // rather than a proxy.
+            gi.action = g_btnA;
+            if (gi.action && XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &probe)) &&
+                probe.isActive) {
+                everActive = true;
+                BVR_LOG("xr-input: controllers LIVE - first active action %llu ms after the "
+                        "first successful sync (before this, every button and stick reads "
+                        "inactive however healthy the mod looks)",
+                        static_cast<unsigned long long>(nowMs - firstSyncMs));
+            } else if (nowMs - firstSyncMs >= 2000) {
+                static uint64_t lastWarnMs = 0;
+                if (nowMs - lastWarnMs >= 2000) {
+                    lastWarnMs = nowMs;
+                    BVR_LOG("xr-input: no interaction profile bound yet - %llu ms of dead "
+                            "controllers so far (runtime has not rebound; wake or move the "
+                            "controllers)",
+                            static_cast<unsigned long long>(nowMs - firstSyncMs));
+                }
+            }
+        }
+    }
+
     // M6: hand grip poses for the aim ray (never fatal - a hand that fails to
     // locate just leaves its slot invalid and the aim falls back to the view).
     locate_hand(session, g_poseL, g_gripSpaceL, predictedDisplayTime, g_hands[0]);
