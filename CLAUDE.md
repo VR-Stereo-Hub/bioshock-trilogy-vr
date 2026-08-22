@@ -11,9 +11,14 @@ The two remasters are Vengeance (UE2.5). **BioShock Infinite is Unreal Engine 3 
 different engine, so no number transfers, and even shapes are suspect.
 
 **`main` is THE branch: all three mods live there, all three work, all three shipped in v0.8.0
-(2026-08-13, session 59).** Branch every new session off `main` and merge back to it - the old
-per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and fully contained in
-`main`; do not start work on them.
+(2026-08-13, session 59).** Branch every new session off `main` and merge back to it **through a
+pull request** - the old per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and
+fully contained in `main`; do not start work on them.
+
+**Read `CONTRIBUTING.md` before your first commit.** More than one person works here now:
+`main` is never committed to directly, every change reaches it through a reviewed PR, and
+one commit is one logical change. `docs/ORG-PRACTICES.md` covers the repo and org settings
+that back those rules up.
 
 ## Hard rules
 
@@ -123,6 +128,8 @@ per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and fully c
 
 | File | Purpose |
 |---|---|
+| `CONTRIBUTING.md` | **Branch, commit and PR rules.** Read before your first commit of a session |
+| `docs/ORG-PRACTICES.md` | Repo and `VR-Stereo-Hub` settings that enforce the above (admin) |
 | `docs/STATUS.md` | **Session handoff**: current state, next steps, blockers, session log |
 | `docs/ROADMAP.md` | BS1/BS2 milestones M0–M10 with acceptance criteria and checkboxes |
 | `docs/ARCHITECTURE.md` | Module design, core/adapter contract, stereo strategy, decision log |
