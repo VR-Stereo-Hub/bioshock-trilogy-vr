@@ -9,6 +9,9 @@
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
+#include <cstring>
+
+#include "game/bioshock1r/screens.h"
 
 namespace bvr::b1r {
 
@@ -43,6 +46,14 @@ void Bioshock1RAdapter::drawDebugUi() {
     body::draw_debug_ui();
     input_drive::draw_debug_ui();
     scenedraw::draw_debug_ui();
+}
+
+bool Bioshock1RAdapter::handleCommand(const char* cmd, const char* args) {
+    if (strcmp(cmd, "vrscreens") == 0) {
+        screens::handle_command(args);
+        return true;
+    }
+    return false;
 }
 
 bvr::game::IGameAdapter* create_adapter() {

@@ -330,6 +330,13 @@ void set_pose_audit(bool on);
 void publish_gameplay_view(bool strictGameplay);
 void handle_cine_command(const char* args);
 
+// A full-screen pause interface is up. Published by the adapter from the game's
+// own pause field, because the pause menu draws OVER a live world and so is
+// invisible to every render-side signal the verdict already has: CalcView keeps
+// firing, the view actor is still the pawn, the fov matches, and the frame is
+// not pure gameswf. Games that never call this behave exactly as before.
+void publish_ui_pause(bool paused);
+
 // --- Screen placement: where the cinema quad hangs ---------------------------
 // Applies to every frame that goes to the quad instead of the projection layer:
 // menus, the map, the manual, machine flows, the hack board, loading screens

@@ -157,6 +157,10 @@ std::atomic<bool> g_cameraMode{false};    // M3: drive the game camera from the 
 // it is the one that reads as "a screen in the room".
 //
 // 0 = anchor (default), 1 = head-locked, 2 = recenter origin (the old default).
+// Published by the adapter: a full-screen pause interface is up. A fifth input
+// to the cinematic verdict, and the only one that is not render-side - see
+// publish_ui_pause() in the header for why the render side cannot see it.
+std::atomic<bool> g_uiPaused{false};
 std::atomic<int> g_screenPlaceMode{0};
 std::atomic<float> g_screenHeightM{0.0f}; // vertical nudge applied to the anchor
 
@@ -3529,7 +3533,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
         bool fovMm = bvr::hud::fov_mismatch();
         bool screenOnly = bvr::hud::screen_only(); // hack/loading/FMV screens
         bool stereoCine = g_cineStereo.load(std::memory_order_relaxed);
-        bool wantCine = stale || !strict || screenOnly || (fovMm && !stereoCine);
+        bool uiPaused = g_uiPaused.load(std::memory_order_relaxed);
+        bool wantCine =
+            stale || !strict || screenOnly || uiPaused || (fovMm && !stereoCine);
         bool active = g_cineActive.load(std::memory_order_relaxed);
         if (wantCine != active) {
             if (++g_cineStreak >= kCineHysteresis) {
@@ -3541,9 +3547,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 else
                     g_cineExits.fetch_add(1, std::memory_order_relaxed);
                 BVR_LOG("xr: cinematic quad %s (strict=%d stale=%d fovMismatch=%d "
-                        "screenOnly=%d)",
+                        "screenOnly=%d uiPaused=%d)",
                         active ? "ON" : "off", strict ? 1 : 0, stale ? 1 : 0,
-                        fovMm ? 1 : 0, screenOnly ? 1 : 0);
+                        fovMm ? 1 : 0, screenOnly ? 1 : 0, uiPaused ? 1 : 0);
             }
         } else {
             g_cineStreak = 0;
@@ -4476,10 +4482,11 @@ void draw_debug_ui() {
                     g_mirrorHolds.load(std::memory_order_relaxed), mirrorBlits);
     uint32_t cineEnters = g_cineEnters.load(std::memory_order_relaxed);
     if (cineEnters || g_cineActive.load(std::memory_order_relaxed))
-        ImGui::Text("cinematic: %s | enters %u exits %u presents %u",
+        ImGui::Text("cinematic: %s | enters %u exits %u presents %u | uiPaused %d",
                     g_cineActive.load(std::memory_order_relaxed) ? "ACTIVE (quad)" : "off",
                     cineEnters, g_cineExits.load(std::memory_order_relaxed),
-                    g_cinePresents.load(std::memory_order_relaxed));
+                    g_cinePresents.load(std::memory_order_relaxed),
+                    g_uiPaused.load(std::memory_order_relaxed) ? 1 : 0);
 
     input_draw_debug_ui(); // M5 action-layer status line
 
@@ -4957,6 +4964,10 @@ void publish_gameplay_view(bool strictGameplay) {
                          std::memory_order_relaxed);
 }
 
+void publish_ui_pause(bool paused) {
+    g_uiPaused.store(paused, std::memory_order_relaxed);
+}
+
 CineDrive cine_drive() {
     return static_cast<CineDrive>(g_cineDrive.load(std::memory_order_relaxed));
 }
@@ -5419,6 +5430,7 @@ void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* sw
 }
 void set_pose_audit(bool) {}
 void publish_gameplay_view(bool) {}
+void publish_ui_pause(bool) {}
 void handle_cine_command(const char*) {}
 void handle_screen_command(const char*) {}
 void release_screen_anchor() {}
