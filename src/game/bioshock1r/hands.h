@@ -66,8 +66,6 @@ void on_calcview(const FrameContext& ctx);
 //   fname <index>|weapon    resolve a name index to its string via GNames
 //                           (session 20); `weapon` reads the cached weapon
 //                           actor's attach-bone FName
-//   bobgate on|off|status   while moving, only rotation may re-arm reference
-//                           tracking - keeps the engine's walk bob out of the rig
 //   swaykill on|off|status  freeze the drive's reference against the idle
 //                           animation's breathing (default ON; session 20 -
 //                           real animations pass the threshold)

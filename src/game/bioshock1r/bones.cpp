@@ -96,33 +96,6 @@ constexpr float kSwayAngThreshDeg = 12.0f;
 // crossing so the freeze lands on the SETTLED pose, not the last big frame.
 constexpr uint64_t kSwaySettleMs = 600;
 uint64_t g_lastBigDeltaMs = 0;
-
-// Session 63 WALK-BOB GATE (default ON; `vrhands bobgate on|off`).
-//
-// MEASURED 2026-08-22, bracketed bob probe, user's hand deliberately still:
-// the engine's walk bob puts a mean 10.60 UU (peak 29.30) of VERTICAL travel
-// into bone 43 while moving. kSwayPosThreshUu is 6.0 - twice the STANDING idle
-// envelope it was calibrated against (3.01 UU, session 20). So walking trips
-// the positional trigger on essentially every frame, the drive re-adopts the
-// engine's BOBBING pose as its own reference, and the bob rides into the VR rig
-// through the recapture path. The residual that survived our write measured
-// 2.73 UU mean - which IS the session-20 idle envelope, i.e. exactly one
-// sub-threshold frame's worth, and is why it did not scale with the bob.
-//
-// THE GATE IS ON THE TRIGGER, NOT ON ADOPTION. Freezing outright while moving
-// would also freeze equip/reload/melee played while walking. The bob is very
-// nearly pure TRANSLATION, and every real animation rotates the anchor tens of
-// degrees, so while the pawn has ground speed only the ANGULAR trigger may
-// re-arm tracking. Standing still is unchanged in every respect.
-std::atomic<bool> g_bobGate{true};
-// The same threshold the probe used to bucket MOVING from standing.
-constexpr float kBobGateMovingUu = 20.0f;
-float g_groundSpeedUu = 0.0f;
-float g_prevPawnLoc[3] = {0.0f, 0.0f, 0.0f};
-uint64_t g_prevPawnMs = 0;
-
-// Defined below read_n(), which it uses.
-void update_ground_speed(void* viewActor);
 // Telemetry (1 Hz while frozen): the probe deltas the threshold judges, so
 // the thresholds are set from measured idle amplitude, not guesses.
 uint64_t g_lastSwayTlmMs = 0;
@@ -278,31 +251,6 @@ bool read_n(const void* src, void* dst, size_t n) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
-}
-
-// Ground speed of the view pawn, EMA-smoothed exactly the way the probe did it
-// so the two numbers are comparable in the log.
-void update_ground_speed(void* viewActor) {
-    if (!viewActor) {
-        g_prevPawnMs = 0;
-        g_groundSpeedUu = 0.0f;
-        return;
-    }
-    float loc[3];
-    if (!read_n(static_cast<uint8_t*>(viewActor) + patterns::kActorLocOffset, loc, sizeof loc))
-        return;
-    const uint64_t now = GetTickCount64();
-    if (g_prevPawnMs && now > g_prevPawnMs) {
-        const float dt = static_cast<float>(now - g_prevPawnMs) * 0.001f;
-        const float dx = loc[0] - g_prevPawnLoc[0];
-        const float dy = loc[1] - g_prevPawnLoc[1];
-        const float inst = sqrtf(dx * dx + dy * dy) / dt;
-        g_groundSpeedUu += (inst - g_groundSpeedUu) * 0.25f;
-    }
-    g_prevPawnMs = now;
-    g_prevPawnLoc[0] = loc[0];
-    g_prevPawnLoc[1] = loc[1];
-    g_prevPawnLoc[2] = loc[2];
 }
 
 bool write_n(void* dst, const void* src, size_t n) {
@@ -993,23 +941,6 @@ bool sway_kill() {
     return g_swayKill.load(std::memory_order_relaxed);
 }
 
-void set_bob_gate(bool on) {
-    bool was = g_bobGate.exchange(on, std::memory_order_relaxed);
-    if (was != on) g_refValid = false; // re-freeze under the new rule
-    BVR_LOG("[bones] walk-bob gate %s (%s)", on ? "ON" : "off",
-            on ? "while moving, only rotation may re-arm reference tracking - the "
-                 "engine's walk bob can no longer be adopted into the VR rig"
-               : "positional trigger live while moving - the walk bob is adopted again");
-}
-
-bool bob_gate() {
-    return g_bobGate.load(std::memory_order_relaxed);
-}
-
-float ground_speed_uu() {
-    return g_groundSpeedUu;
-}
-
 void set_scale(int hand, float s) {
     if (s < 0.05f) s = 0.05f;
     if (s > 20.0f) s = 20.0f;
@@ -1091,11 +1022,6 @@ bool barrel_ref_axis(float d0[3]) {
 }
 
 bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
-    // Walk-bob gate: the ground speed the sway trigger is judged against. Read
-    // here, in the once-per-frame pass-1 path, for the same reason the
-    // telemetry window is - one sample per frame, not one per hand.
-    update_ground_speed(ctx.viewActor);
-
     // Telemetry window: opened here (the once-per-frame pass-1 path) so every
     // module's lines for one sample land together in the log.
     if (g_telemetry.load(std::memory_order_relaxed)) {
@@ -1158,13 +1084,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 if (posUu > maxPos) maxPos = posUu;
                 if (angDeg > maxAng) maxAng = angDeg;
             }
-            // Session 63: while the pawn is walking the positional trigger is
-            // the walk bob and nothing else, so only rotation may re-arm
-            // tracking. See the kBobGateMovingUu block for the measurement.
-            const bool gateHolding = g_bobGate.load(std::memory_order_relaxed) &&
-                                     g_groundSpeedUu > kBobGateMovingUu;
-            const bool posTrip = !gateHolding && maxPos > kSwayPosThreshUu;
-            if (posTrip || maxAng > kSwayAngThreshDeg)
+            if (maxPos > kSwayPosThreshUu || maxAng > kSwayAngThreshDeg)
                 g_lastBigDeltaMs = nowMs;
             // Track through the animation AND a settle window past its last
             // big frame, so the eventual freeze holds the SETTLED pose.
@@ -1172,11 +1092,9 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             if (g_telemetry.load(std::memory_order_relaxed) &&
                 nowMs - g_lastSwayTlmMs >= 1000) {
                 g_lastSwayTlmMs = nowMs;
-                BVR_LOG("[tlm] sway probe: dpos=%.2f UU dang=%.2f deg (thresh %.1f/%.1f) "
-                        "%s | speed %.0f UU/s bobgate %s",
+                BVR_LOG("[tlm] sway probe: dpos=%.2f UU dang=%.2f deg (thresh %.1f/%.1f) %s",
                         maxPos, maxAng, kSwayPosThreshUu, kSwayAngThreshDeg,
-                        adopt ? "TRACKING" : "frozen", g_groundSpeedUu,
-                        gateHolding ? "HOLDING (pos trigger ignored)" : "idle");
+                        adopt ? "TRACKING" : "frozen");
             }
         }
         if (adopt || !g_refValid) {
