@@ -66,6 +66,9 @@ struct PadMap {
     bool flick;
     bool flickAmmoModPref; // honour `vrinput ammomod`; else thumbrest-only
     uint16_t flickUp, flickDown, flickLeft, flickRight;
+    // s63: what JUMP is on this game's pad, for the R3-jump lane. BS1/BS2 bind
+    // jump to XENON_Y; Infinite's audited retail map puts it on A.
+    uint16_t jumpBit;
 };
 
 // BioShock 1 and 2. Session 19's headset-revised audit, verbatim: the game's
@@ -85,6 +88,7 @@ constexpr PadMap kPadMapBioshock1 = {
     XINPUT_GAMEPAD_LEFT_THUMB, 0, // RS-click eaten: it IS the ammo modifier
     true, true,
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
+    XINPUT_GAMEPAD_Y, // jump
 };
 
 // PASSTHROUGH. The game's own pad layout with nothing rearranged: A=Use,
@@ -104,6 +108,7 @@ constexpr PadMap kPadMapPassthrough = {
     XINPUT_GAMEPAD_LEFT_THUMB, 0,
     true, true,
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
+    XINPUT_GAMEPAD_Y, // jump
 };
 
 // BioShock Infinite (UE3). From the audited retail XboxTypeS_* binding set
@@ -183,6 +188,30 @@ PadOverride g_padOverride;
 // the stick therefore has to flip the thumbrest with it - which is exactly the
 // pairing BRVR's ControllerDpadFlip encodes.
 std::atomic<bool> g_dpadLeft{false};
+
+// s63 D-PAD MODIFIER SOURCE (controls.ini [pad] dpadModifier).
+// Ported from BRVR's ControllerDpadModifier, minus its mode 5 (left hand near
+// head), which needs head-distance hysteresis and is deferred.
+//
+//   auto (default, unchanged)  the shipped heuristic: left thumbrest, with the
+//                              right stick click standing in until a real
+//                              thumbrest touch is seen, so controllers without
+//                              a thumbrest sensor are not stranded.
+//   off        no modifier - ammo select is unreachable, sticks are never eaten
+//   rightrest  right thumbrest        leftrest   left thumbrest
+//   r3         right stick click      leftgrip   left grip past the hysteresis
+//
+// BRVR's note carries over: a Rift has no thumbrest sensor at all, so those
+// users need r3.
+enum class DpadMod { Auto = -1, Off = 0, RightRest = 1, R3 = 2, LeftGrip = 3, LeftRest = 4 };
+std::atomic<int> g_dpadMod{static_cast<int>(DpadMod::Auto)};
+
+// s63 R3 -> JUMP, from BRVR. The game binds R3 to Zoom, which is a comfort
+// hazard in a headset and is already removed here, so the click is free. It is
+// ADDITIVE - the layout's own jump button still jumps - and it yields when R3 is
+// carrying the d-pad modifier instead, because otherwise every ammo select
+// would also jump.
+std::atomic<bool> g_jumpOnR3{true};
 
 uint16_t xinput_bit_by_name(const char* v, bool* ok) {
     struct { const char* name; uint16_t bit; } kNames[] = {
@@ -292,6 +321,30 @@ void pad_map_load_overrides(PadMap base) {
         }
     }
 
+    {
+        wchar_t wmod[16] = {};
+        GetPrivateProfileStringW(L"pad", L"dpadModifier", L"", wmod, 16, ini);
+        if (wmod[0]) {
+            char md[16] = {};
+            sprintf_s(md, "%ls", wmod);
+            int v = -2;
+            if (_stricmp(md, "auto") == 0) v = static_cast<int>(DpadMod::Auto);
+            else if (_stricmp(md, "off") == 0) v = static_cast<int>(DpadMod::Off);
+            else if (_stricmp(md, "rightrest") == 0) v = static_cast<int>(DpadMod::RightRest);
+            else if (_stricmp(md, "r3") == 0) v = static_cast<int>(DpadMod::R3);
+            else if (_stricmp(md, "leftgrip") == 0) v = static_cast<int>(DpadMod::LeftGrip);
+            else if (_stricmp(md, "leftrest") == 0) v = static_cast<int>(DpadMod::LeftRest);
+            if (v == -2)
+                BVR_LOG("xr-input: controls.ini [pad] dpadModifier = '%s' unknown - keeping "
+                        "auto. Values: auto off rightrest r3 leftgrip leftrest",
+                        md);
+            else
+                g_dpadMod.store(v, std::memory_order_relaxed);
+        }
+    }
+    g_jumpOnR3.store(GetPrivateProfileIntW(L"pad", L"jumpOnR3", 1, ini) != 0,
+                     std::memory_order_relaxed);
+
     PadMap m = base;
     pad_key(ini, "faceA", &m.faceA);
     pad_key(ini, "faceB", &m.faceB);
@@ -323,6 +376,28 @@ void pad_map_load_overrides(PadMap base) {
             g_dpadLeft.load(std::memory_order_relaxed) ? "right" : "left",
             g_dpadLeft.load(std::memory_order_relaxed) ? "left" : "right",
             g_dpadLeft.load(std::memory_order_relaxed) ? "walking" : "turning");
+    {
+        const int md = g_dpadMod.load(std::memory_order_relaxed);
+        const char* mn = md == static_cast<int>(DpadMod::Off)      ? "off"
+                         : md == static_cast<int>(DpadMod::RightRest) ? "rightrest"
+                         : md == static_cast<int>(DpadMod::R3)        ? "r3"
+                         : md == static_cast<int>(DpadMod::LeftGrip)  ? "leftgrip"
+                         : md == static_cast<int>(DpadMod::LeftRest)  ? "leftrest"
+                                                                     : "auto";
+        BVR_LOG("xr-input: controls.ini d-pad modifier = %s | R3 jump = %s", mn,
+                g_jumpOnR3.load(std::memory_order_relaxed) ? "on" : "off");
+        // A thumbrest cannot modify the stick its own thumb has to push.
+        const bool leftSel = g_dpadLeft.load(std::memory_order_relaxed);
+        if ((leftSel && md == static_cast<int>(DpadMod::LeftRest)) ||
+            (!leftSel && md == static_cast<int>(DpadMod::RightRest)))
+            BVR_LOG("xr-input: WARNING - dpadModifier '%s' is on the SAME hand as the "
+                    "selecting stick. One thumb cannot rest on the thumbrest and push "
+                    "that stick at once; use r3 or leftgrip, or flip dpadSide.",
+                    mn);
+        if (md == static_cast<int>(DpadMod::R3) && g_jumpOnR3.load(std::memory_order_relaxed))
+            BVR_LOG("xr-input: R3 is the d-pad modifier, so the R3 jump lane yields to it "
+                    "- the layout's own jump button is unaffected");
+    }
 }
 
 // The compiled base for the current game, before controls.ini is applied.
@@ -1029,9 +1104,20 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     }
     if (!chordHeld) {
         if (clickL) pad.buttons |= map.stickClickL;
-        // Forwarded only where the map says so: on BioShock 1 this bit is 0
-        // and the click is consumed below as the ammo modifier instead.
-        if (map.stickClickR && clickRraw) pad.buttons |= map.stickClickR;
+        // s63, from BRVR: R3's precedence is MODIFIER > JUMP > passthrough.
+        // Whichever wins, the other two must not also fire - otherwise every
+        // ammo select would jump, or every jump would zoom.
+        const int dpadModNow = g_dpadMod.load(std::memory_order_relaxed);
+        const bool r3IsModifier =
+            map.flick && (dpadModNow == static_cast<int>(DpadMod::R3) ||
+                          (dpadModNow == static_cast<int>(DpadMod::Auto) &&
+                           map.flickAmmoModPref));
+        const bool r3IsJump = !r3IsModifier && g_jumpOnR3.load(std::memory_order_relaxed);
+        if (r3IsJump && clickRraw && map.jumpBit) pad.buttons |= map.jumpBit;
+        // Forwarded only where the map says so, and only when the click is
+        // carrying neither of the two jobs above.
+        if (map.stickClickR && clickRraw && !r3IsModifier && !r3IsJump)
+            pad.buttons |= map.stickClickR;
     }
 
     uint64_t now = GetTickCount64();
@@ -1077,8 +1163,21 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // modifier, and the ammo-modifier preference (a BioShock 1 comfort
         // setting) does not apply. Thumbrest-only, unconditionally.
         bool clickMod = false;
-        bool restMod = restL;
-        if (map.flickAmmoModPref) {
+        // Auto's cross-hand default, before either branch below refines it.
+        bool restMod = dpadLeft ? restR : restL;
+        const int dpadMod = g_dpadMod.load(std::memory_order_relaxed);
+        if (dpadMod != static_cast<int>(DpadMod::Auto)) {
+            // Explicit choice: no heuristic, no fallback. The user picked a
+            // source and it is the only one that arms.
+            switch (static_cast<DpadMod>(dpadMod)) {
+                case DpadMod::Off:       clickMod = false; restMod = false; break;
+                case DpadMod::RightRest: clickMod = false; restMod = restR; break;
+                case DpadMod::LeftRest:  clickMod = false; restMod = restL; break;
+                case DpadMod::R3:        clickMod = rsClick; restMod = false; break;
+                case DpadMod::LeftGrip:  clickMod = false; restMod = g_gripLatchedL; break;
+                default: break;
+            }
+        } else if (map.flickAmmoModPref) {
             const bvr::input::AmmoMod mode = bvr::input::ammo_mod();
             // Thumbrest is the default, but not every controller has one (Pico
             // has no thumbrest; some SteamVR setups do not report it) and
