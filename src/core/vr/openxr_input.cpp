@@ -87,6 +87,25 @@ constexpr PadMap kPadMapBioshock1 = {
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
 };
 
+// PASSTHROUGH. The game's own pad layout with nothing rearranged: A=Use,
+// B=MedHypo, X=Reload/Hack/EVE, Y=Jump, exactly as User.ini XENON_* defines it
+// and exactly what the BRVR mod documents as stock controller semantics. This
+// is what a player who knows the flat game expects every button to do.
+// Everything except the four faces is inherited from the session-19 table,
+// including the eaten RS-click - that one is not a preference, the ammo
+// modifier needs it. Selected with `profile = passthrough` in controls.ini.
+constexpr PadMap kPadMapPassthrough = {
+    "passthrough",
+    XINPUT_GAMEPAD_A,            // Touch A -> use / interact / menu confirm
+    XINPUT_GAMEPAD_B,            // Touch B -> first aid (med hypo)
+    XINPUT_GAMEPAD_X,            // Touch X -> reload / hack / EVE inject
+    XINPUT_GAMEPAD_Y,            // Touch Y -> jump
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+    XINPUT_GAMEPAD_LEFT_THUMB, 0,
+    true, true,
+    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
+};
+
 // BioShock Infinite (UE3). From the audited retail XboxTypeS_* binding set
 // (ENGINE_NOTES "The audited retail pad map"): A = TBar transfer + Jump,
 // B = TBar dodge/reverse + ToggleCrouch, X = ReloadOrHoldToHackOrUse,
@@ -146,6 +165,24 @@ struct PadOverride {
     PadMap map{};
 };
 PadOverride g_padOverride;
+
+// s63 D-PAD SIDE (controls.ini [pad] dpadSide = right|left).
+//
+//   right (default, unchanged) - LEFT thumbrest modifies, RIGHT stick selects.
+//                                Turning is suppressed while selecting; walking
+//                                continues. This is what shipped.
+//   left                       - RIGHT thumbrest modifies, LEFT stick selects.
+//                                Walking is suppressed while selecting; turning
+//                                continues. A d-pad lives on the left of a pad,
+//                                so for a lot of people this is the one that
+//                                matches their hands (user ask, 2026-08-22).
+//
+// The modifier is ALWAYS the opposite hand from the stick, and that is not a
+// preference: one thumb cannot rest on a thumbrest and push that same stick at
+// the same time, so the modifier is necessarily cross-hand either way. Flipping
+// the stick therefore has to flip the thumbrest with it - which is exactly the
+// pairing BRVR's ControllerDpadFlip encodes.
+std::atomic<bool> g_dpadLeft{false};
 
 uint16_t xinput_bit_by_name(const char* v, bool* ok) {
     struct { const char* name; uint16_t bit; } kNames[] = {
@@ -211,10 +248,49 @@ const char* xinput_bit_name(uint16_t bit) {
     }
 }
 
-void pad_map_load_overrides(const PadMap& base) {
+void pad_map_load_overrides(PadMap base) {
     wchar_t ini[MAX_PATH];
     swprintf_s(ini, L"%s\\controls.ini", bvr::log::data_dir());
     if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) return; // stay quiet
+
+    // A named profile replaces the base wholesale; individual keys below then
+    // override on top of whichever profile was chosen. So `profile =
+    // passthrough` alone is a complete answer, and a profile plus one key is
+    // still a complete answer.
+    {
+        wchar_t wprof[32] = {};
+        GetPrivateProfileStringW(L"pad", L"profile", L"", wprof, 32, ini);
+        if (wprof[0]) {
+            char prof[32] = {};
+            sprintf_s(prof, "%ls", wprof);
+            if (_stricmp(prof, "passthrough") == 0) {
+                base = kPadMapPassthrough;
+            } else if (_stricmp(prof, "default") == 0 || _stricmp(prof, "session19") == 0) {
+                // Explicitly the shipped table. Named so reverting is one word.
+            } else {
+                BVR_LOG("xr-input: controls.ini [pad] profile = '%s' is not a profile - "
+                        "using the shipped default. Profiles: default (a.k.a. session19), "
+                        "passthrough",
+                        prof);
+            }
+        }
+    }
+
+    {
+        wchar_t wside[16] = {};
+        GetPrivateProfileStringW(L"pad", L"dpadSide", L"", wside, 16, ini);
+        if (wside[0]) {
+            char side[16] = {};
+            sprintf_s(side, "%ls", wside);
+            if (_stricmp(side, "left") == 0) g_dpadLeft.store(true, std::memory_order_relaxed);
+            else if (_stricmp(side, "right") == 0)
+                g_dpadLeft.store(false, std::memory_order_relaxed);
+            else
+                BVR_LOG("xr-input: controls.ini [pad] dpadSide = '%s' is not left or right "
+                        "- keeping right",
+                        side);
+        }
+    }
 
     PadMap m = base;
     pad_key(ini, "faceA", &m.faceA);
@@ -241,6 +317,12 @@ void pad_map_load_overrides(const PadMap& base) {
             xinput_bit_name(m.stickClickL), xinput_bit_name(m.stickClickR),
             xinput_bit_name(m.flickUp), xinput_bit_name(m.flickDown),
             xinput_bit_name(m.flickLeft), xinput_bit_name(m.flickRight));
+    BVR_LOG("xr-input: controls.ini d-pad side = %s (%s thumbrest modifies, %s stick "
+            "selects; %s is suppressed while selecting)",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "LEFT" : "right",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "right" : "left",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "left" : "right",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "walking" : "turning");
 }
 
 const PadMap& active_pad_map() {
@@ -963,8 +1045,11 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // band allows several selects in one hold; grips suppress it (the
     // radials read the stick).
     if (map.flick) {
+        // s63: which stick selects. Default right (shipped); `dpadSide = left`
+        // moves it to the movement stick, where a d-pad normally lives.
+        const bool dpadLeft = g_dpadLeft.load(std::memory_order_relaxed);
         float rawX = 0.0f, rawY = 0.0f;
-        read_vec2(session, g_look, &rawX, &rawY);
+        read_vec2(session, dpadLeft ? g_move : g_look, &rawX, &rawY);
         bool gripHeld = g_gripLatchedL || g_gripLatchedR;
 
         // Session 23: the modifier can also be the LEFT thumbrest. It has to be
@@ -999,9 +1084,13 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             // Thumbrest mode the stick click keeps working UNTIL a real
             // thumbrest touch is observed - after that the mapping is exactly
             // what was chosen.
-            const bool noThumbrestYet = !g_thumbrestSeen[0];
+            // Watch the hand that actually carries the modifier for this side.
+            const bool noThumbrestYet = !g_thumbrestSeen[dpadLeft ? 1 : 0];
             clickMod = (mode != bvr::input::AmmoMod::Thumbrest || noThumbrestYet) && rsClick;
-            restMod = mode != bvr::input::AmmoMod::Click && restL;
+            // Cross-hand, always: the modifier thumbrest is on the opposite
+            // hand from the selecting stick, because one thumb cannot rest and
+            // push the same stick at once.
+            restMod = mode != bvr::input::AmmoMod::Click && (dpadLeft ? restR : restL);
         }
         const bool modHeld = clickMod || restMod;
 
@@ -1016,9 +1105,16 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             // past the select threshold.
             const bool pushed =
                 fabsf(rawX) >= kFlickPress || fabsf(rawY) >= kFlickPress;
+            // Suppress the stick that is being used to SELECT, so the gesture
+            // does not also turn (right stick) or walk (left stick).
             if (clickMod || pushed) {
-                pad.rx = 0;
-                pad.ry = 0;
+                if (dpadLeft) {
+                    pad.lx = 0;
+                    pad.ly = 0;
+                } else {
+                    pad.rx = 0;
+                    pad.ry = 0;
+                }
             }
             if (g_flickArmed && now >= g_flickCooldownMs) {
                 // Directions the map leaves at 0 are simply never emitted -
