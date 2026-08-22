@@ -2,6 +2,94 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-22 - BS1 comfort lane part 2 (BioVRDev)
+
+**HEADSET-VERIFIED: the main-menu heap sweep.** `fix/bs1-menu-rig-sweep`. The
+AHands rig scan ran behind the LOOSE gameplay gate, whose `viewActor == pc`
+escape hatch is exactly the shape of the main menu - so the viewmodel drive
+armed on the menu and swept the heap for an actor that cannot exist. Measured:
+**5237 ms across 1245 slices**, started on the menu and unfinished until 30 s
+after the level loaded, starving the frame to **3 presents/s and 15 input
+drives/s**, which the user reported as a dead controller. Fixed by gating only
+the START of a sweep on `body::is_gameplay_view` - the strict predicate that
+already gates the head drive and the FOV write, documented to read false on the
+menu attract scene. An in-flight sweep keeps its slices. User confirmed: "menu
+buttons worked". Three lines, `hands.cpp` only, no core.
+
+**FALSIFIED: pinning the AHands actor Z from Present.** This was the fix
+`VIEWMODEL-RIG-DIFFERENCES.md` section 6 prescribed. Built, run, reverted -
+**the gun still bobs**, and it desynced the gun between the eyes. Its own
+telemetry is the value:
+
+- The write LANDS: drift across a whole frame is **0.00 UU** while standing.
+- While MOVING the engine re-places the actor by **2.9 to 17.2 UU** after our
+  write and before the draw, so the pin only ever held in the one state with
+  nothing to hold.
+- The rig sits EXACTLY on the pawn eye point (learned residual **+0.00 UU**).
+- Under SequentialReentry the eyes render one BUILD apart, each with its own
+  CalcView and Present, so a per-frame write placed between them reaches one eye
+  and not the other. **Any future viewmodel write should be on the game thread.**
+
+Full write-up in `docs/bioshock1/VIEWMODEL-RIG-DIFFERENCES.md` section 7, which
+also retracts section 6's instruction. Clean straight-walking actor Z spans are
+**3.1-8.4 UU** against 0.00 standing; the wilder round-1 figures were windows
+straddling the standing/moving boundary.
+
+**The bob is still open, and the next measurement is built.**
+`s63-bs1-comfort` carries a probe that brackets the drive: bone 43 in
+array A before AND after our write, bone 43 in array B (`SkeletonInstance+0x54`,
+the lazily-filled BY-NAME array nothing in this tree has ever written), the
+actor and the weapon, all as heights above the pawn. Attachment is by bone NAME,
+so if it resolves through B the gun renders from an array we do not touch -
+steady hands, bobbing gun, exactly. **It is default-off**: `vrprobe bob on`.
+
+**This session ships as ONE branch, `s63-bs1-comfort`, matching the repo's own
+convention.** Every merge into `main` since 2026-07-31 has been a session branch
+- `s60`, `s61`, `s62`, `si44` - carrying 1 to 28 commits across several
+unrelated features, merged with a single `merge: <summary>` commit. The work had
+briefly been split one-branch-per-change, which is not how this repo operates
+and made nine branches out of one session. **Feature-level review lives in the
+COMMITS**, one per feature, so any single one can be dropped without the others.
+
+**Anchored screen placement is now BS1-only.** `g_screenPlaceMode` lives in core
+and shipped defaulting to 0 (anchor), which silently changed the cinema quad for
+BS2 and Infinite - neither of which has been in a headset with it. Core defaults
+to the pre-existing 2 again and the BS1 adapter opts in during init, where the
+registry has already resolved the host exe. **This is the pattern for anything
+that has to land in `src/core/`.**
+
+**FOV 100 and a graphics setup script.** `feat/bs1-setup-graphics-defaults`. The
+BS1 default and the release preset both said 130 while the game's own
+`HorizontalFOV` read 100, so the F10 slider and the video menu disagreed;
+nothing was ever at 130, because the game-FOV WRITE is default off. Both now say
+100. `tools/Setup-BS1.bat` writes what the mod cannot - measured on a live
+install: `LevelOfAnisotropy` read 16 in `Engine.RenderConfig` but **4 in all
+three D3D device sections**, which are the ones the renderer consumes, and
+`WindowedViewportX/Y` had been reset to **640x480** while the fullscreen pair
+still read 2750x2850. `StartupFullscreen=False`, so the WINDOWED pair is the
+live one. Ran it; the config is correct now. **Not yet confirmed in game.**
+
+**`docs/NAVIGATION.md`** (branch `docs/navigation-router`, no code). The docs are
+~2 MB and the session protocol says to read `STATUS.md` first, which taken
+literally is ~200,000 tokens before any work starts - this file is 826 KB, of
+which the first 150 lines are live and the last 664 KB are 45 stale "Previous
+state" blocks. The router carries measured sizes, a cheap start recipe, and how
+each file is organised. Its load-bearing fact: **`<game>/ENGINE_NOTES.md` changes
+organising principle at about line 1450** - topic-ordered above, session-ordered
+below - so anything added after that is not findable by browsing headings and
+must be grepped by identifier.
+
+**Next step: run the bracketed probe and find the bob's carrier.** Build
+`s63-bs1-comfort`, `vrprobe bob on`, walk with any weapon for fifteen
+seconds. Bone 43 in A bobbing before our write and flat after means we own A and
+the gun is not drawn from it; B bobbing means the fix is a second write, not an
+actor pin. Do NOT re-run a Z pin at a later write site - Present was already the
+last moment in the frame and lateness is not the axis.
+
+**Also open, cheap, needs the other contributor's agreement:** archiving
+`STATUS.md`'s 45 historical blocks into `docs/history/`, and adding one index
+line for `NAVIGATION.md` to the shared `CLAUDE.md`.
+
 ## The three games (one branch, one release line)
 
 **ALL THREE MODS ARE ON `main` AND ALL THREE WORK, as of v0.8.0 (2026-08-13,
