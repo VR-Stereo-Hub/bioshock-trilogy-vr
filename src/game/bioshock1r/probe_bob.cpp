@@ -15,12 +15,20 @@
 namespace bvr::b1r::probe_bob {
 namespace {
 
-// DEFAULT OFF. A build handed to the user must behave exactly like the verified
-// one until they arm the diagnostic with `vrprobe bob on`. Two instrumented
-// builds this session each cost a play session - one to a repeating heap sweep,
-// one to a gun that desynced between the eyes - and neither was something the
-// user had asked to test.
-std::atomic<bool> g_on{false};
+// *** TEMPORARILY ARMED AT BOOT - REVERT TO false BEFORE THIS BRANCH MERGES ***
+// User directive (2026-08-22): they are not opening the console to type
+// `vrprobe bob on`, so the measurement has to happen by just playing. This is
+// safe to auto-arm ONLY because the probe is read-only, bounded to kMaxLines
+// windows, and sits inside the gameplay-gated viewmodel block - it cannot
+// sweep, cannot write, and goes quiet on its own after ~80 windows.
+//
+// The standing rule this suspends, and why it exists: a build handed to the
+// user must behave exactly like the verified one until they arm the diagnostic.
+// Two instrumented builds this session each cost a play session - one to a
+// repeating heap sweep, one to a gun that desynced between the eyes - and
+// neither was something the user had asked to test. Restore `false` (and delete
+// the boot log below) as soon as the bob's carrier is identified.
+std::atomic<bool> g_on{true};
 
 // Bounded: the question is answerable in about ten seconds of walking, and a
 // line a second would drown the log over a long session.
@@ -145,6 +153,17 @@ void on_calcview_pre(const FrameContext& ctx) {
     g_frameBucket = nullptr;
     void* viewActor = ctx.viewActor;
     if (!g_on.load(std::memory_order_relaxed) || !viewActor) return;
+
+    // TEMPORARY (see g_on): announce once, so the log proves which build is
+    // running and that the probe is live without anyone typing a command.
+    static bool announced = false;
+    if (!announced) {
+        announced = true;
+        BVR_LOG("[b1r] bobsrc: ARMED AT BOOT (temporary) - walk with a weapon for "
+                "~15 s; %d windows then it stops. `vrprobe bob off` to silence.",
+                kMaxLines);
+    }
+
     if (g_lines >= kMaxLines) return;
 
     float pawnLoc[3];
