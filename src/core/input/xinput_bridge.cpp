@@ -807,6 +807,12 @@ void set_pad_passthrough_default(bool on) {
     g_padPassthroughDefault.store(on, std::memory_order_relaxed);
 }
 
+std::atomic<bool> g_padBrvrDefaults{false};
+bool pad_brvr_defaults() { return g_padBrvrDefaults.load(std::memory_order_relaxed); }
+void set_pad_brvr_defaults(bool on) {
+    g_padBrvrDefaults.store(on, std::memory_order_relaxed);
+}
+
 void set_pad_profile(PadProfile p) {
     int v = static_cast<int>(p);
     if (v < 0 || v > static_cast<int>(PadProfile::Infinite))

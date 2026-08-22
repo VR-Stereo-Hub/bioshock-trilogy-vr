@@ -52,6 +52,13 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // `profile = session19` in controls.ini - and is what BioShock 2 keeps,
     // since it shares the profile and has never been in a headset with this.
     bvr::input::set_pad_passthrough_default(true);
+    // ...and the BRVR mod's control defaults with it (user directive): d-pad
+    // modifier on the RIGHT thumbrest with the LEFT stick selecting, which is
+    // where a d-pad lives on a real pad, and R3 jumping since zoom is already
+    // unreachable here. BRVR ships ControllerDpadModifier=1, ControllerDpadFlip=0,
+    // JumpOnR3=1. BioShock 2 shares this pad profile and keeps the older
+    // heuristic until somebody puts a headset on for it.
+    bvr::input::set_pad_brvr_defaults(true);
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }

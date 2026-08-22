@@ -177,6 +177,11 @@ void set_pad_profile(PadProfile p);
 bool pad_passthrough_default();
 void set_pad_passthrough_default(bool on);
 
+// s63: the BRVR mod's control defaults, adopted by BioShock 1 from its adapter.
+// BioShock 2 and Infinite keep the pre-s63 heuristic until somebody tests them.
+bool pad_brvr_defaults();
+void set_pad_brvr_defaults(bool on);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping

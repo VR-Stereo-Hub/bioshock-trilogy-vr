@@ -10,7 +10,7 @@
 #include <windows.h>
 #include <Xinput.h> // button bit constants only
 
-#include <cstdio>  // swprintf_s/sprintf_s for the controls.ini reader
+#include <cstdio>  // swprintf_s/sprintf_s for the BioshockVR.ini reader
 
 #include <imgui.h>
 
@@ -97,7 +97,7 @@ constexpr PadMap kPadMapBioshock1 = {
 // is what a player who knows the flat game expects every button to do.
 // Everything except the four faces is inherited from the session-19 table,
 // including the eaten RS-click - that one is not a preference, the ammo
-// modifier needs it. Selected with `profile = passthrough` in controls.ini.
+// modifier needs it. Selected with `profile = passthrough` in BioshockVR.ini.
 constexpr PadMap kPadMapPassthrough = {
     "passthrough",
     XINPUT_GAMEPAD_A,            // Touch A -> use / interact / menu confirm
@@ -139,7 +139,7 @@ constexpr PadMap kPadMapInfinite = {
 };
 
 // ---------------------------------------------------------------------------
-// s63 USER-OVERRIDABLE PAD MAP - controls.ini
+// s63 USER-OVERRIDABLE PAD MAP - BioshockVR.ini
 //
 // Ported in spirit from the BRVR mod, whose Keybinds.h makes the same argument
 // for keyboard hotkeys: a binding that can only be changed by rebuilding is not
@@ -171,7 +171,7 @@ struct PadOverride {
 };
 PadOverride g_padOverride;
 
-// s63 D-PAD SIDE (controls.ini [pad] dpadSide = right|left).
+// s63 D-PAD SIDE (BioshockVR.ini [VR] ControllerDpadFlip).
 //
 //   right (default, unchanged) - LEFT thumbrest modifies, RIGHT stick selects.
 //                                Turning is suppressed while selecting; walking
@@ -189,22 +189,27 @@ PadOverride g_padOverride;
 // pairing BRVR's ControllerDpadFlip encodes.
 std::atomic<bool> g_dpadLeft{false};
 
-// s63 D-PAD MODIFIER SOURCE (controls.ini [pad] dpadModifier).
+// s63 D-PAD MODIFIER SOURCE (BioshockVR.ini [pad] dpadModifier).
 // Ported from BRVR's ControllerDpadModifier, minus its mode 5 (left hand near
 // head), which needs head-distance hysteresis and is deferred.
 //
-//   auto (default, unchanged)  the shipped heuristic: left thumbrest, with the
-//                              right stick click standing in until a real
-//                              thumbrest touch is seen, so controllers without
-//                              a thumbrest sensor are not stranded.
-//   off        no modifier - ammo select is unreachable, sticks are never eaten
-//   rightrest  right thumbrest        leftrest   left thumbrest
-//   r3         right stick click      leftgrip   left grip past the hysteresis
+// Numbering is BRVR's, so a config carries across unchanged:
+//   0 off · 1 right thumbrest · 2 R3 · 3 left grip · 4 left thumbrest
+//   5 (left hand near head) is NOT implemented here yet.
 //
-// BRVR's note carries over: a Rift has no thumbrest sensor at all, so those
-// users need r3.
-enum class DpadMod { Auto = -1, Off = 0, RightRest = 1, R3 = 2, LeftGrip = 3, LeftRest = 4 };
-std::atomic<int> g_dpadMod{static_cast<int>(DpadMod::Auto)};
+// Legacy is internal and deliberately NOT settable from the ini - BRVR has no
+// such mode and the user does not want one. It is only the pre-s63 heuristic
+// (left thumbrest, with R3 standing in until a real thumbrest touch is seen),
+// kept as the default so BioShock 2 and Infinite, which have never been tested
+// with anything else, are untouched. BioShock 1 picks a real mode in its
+// adapter.
+//
+// BRVR's hardware note carries over: a Rift reports no thumbrest at all, so
+// those users need 2. Index/Beyond/Varjo/Somnium need 2 for the opposite
+// reason - their thumbrest IS the trackpad, where a thumb naturally rests, and
+// the modifier is held.
+enum class DpadMod { Legacy = -1, Off = 0, RightRest = 1, R3 = 2, LeftGrip = 3, LeftRest = 4 };
+std::atomic<int> g_dpadMod{static_cast<int>(DpadMod::Legacy)};
 
 // s63 R3 -> JUMP, from BRVR. The game binds R3 to Zoom, which is a comfort
 // hazard in a headset and is already removed here, so the click is free. It is
@@ -240,13 +245,13 @@ void pad_key(const wchar_t* ini, const char* key, uint16_t* field) {
     wchar_t wkey[32];
     swprintf_s(wkey, L"%hs", key);
     wchar_t wbuf[32] = {};
-    GetPrivateProfileStringW(L"pad", wkey, L"", wbuf, 32, ini);
+    GetPrivateProfileStringW(L"VR", wkey, L"", wbuf, 32, ini);
     if (!wbuf[0]) return;
     sprintf_s(buf, "%ls", wbuf);
     bool ok = false;
     const uint16_t bit = xinput_bit_by_name(buf, &ok);
     if (!ok) {
-        BVR_LOG("xr-input: controls.ini [pad] %s = '%s' is not a button name - "
+        BVR_LOG("xr-input: BioshockVR.ini [pad] %s = '%s' is not a button name - "
                 "keeping the default. Names: A B X Y LB RB LS RS DUP DDOWN DLEFT "
                 "DRIGHT START BACK NONE",
                 key, buf);
@@ -278,9 +283,26 @@ const char* xinput_bit_name(uint16_t bit) {
 }
 
 void pad_map_load_overrides(PadMap base) {
+    // Adopt BRVR's shipped control defaults BEFORE the file is read, so the ini
+    // still has the last word on every one of them.
+    if (bvr::input::pad_brvr_defaults()) {
+        g_dpadMod.store(static_cast<int>(DpadMod::RightRest), std::memory_order_relaxed);
+        g_dpadLeft.store(true, std::memory_order_relaxed);  // ControllerDpadFlip=0
+        g_jumpOnR3.store(true, std::memory_order_relaxed);
+    }
+
     wchar_t ini[MAX_PATH];
-    swprintf_s(ini, L"%s\\controls.ini", bvr::log::data_dir());
-    if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) return; // stay quiet
+    swprintf_s(ini, L"%s\\BioshockVR.ini", bvr::log::data_dir());
+    if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) {
+        // No file is the normal case. Still say what the defaults resolved to
+        // when they are not the historical ones, so "why is my d-pad on the
+        // left stick" has an answer in the log rather than only in a commit.
+        if (bvr::input::pad_brvr_defaults())
+            BVR_LOG("xr-input: no BioshockVR.ini - defaults: face buttons passthrough, "
+                    "ControllerDpadModifier=1 (right thumbrest), ControllerDpadFlip=0 "
+                    "(left stick selects), JumpOnR3=1");
+        return;
+    }
 
     // A named profile replaces the base wholesale; individual keys below then
     // override on top of whichever profile was chosen. So `profile =
@@ -288,7 +310,7 @@ void pad_map_load_overrides(PadMap base) {
     // still a complete answer.
     {
         wchar_t wprof[32] = {};
-        GetPrivateProfileStringW(L"pad", L"profile", L"", wprof, 32, ini);
+        GetPrivateProfileStringW(L"VR", L"FaceLayout", L"", wprof, 32, ini);
         if (wprof[0]) {
             char prof[32] = {};
             sprintf_s(prof, "%ls", wprof);
@@ -297,7 +319,7 @@ void pad_map_load_overrides(PadMap base) {
             } else if (_stricmp(prof, "default") == 0 || _stricmp(prof, "session19") == 0) {
                 // Explicitly the shipped table. Named so reverting is one word.
             } else {
-                BVR_LOG("xr-input: controls.ini [pad] profile = '%s' is not a profile - "
+                BVR_LOG("xr-input: BioshockVR.ini [pad] profile = '%s' is not a profile - "
                         "using the shipped default. Profiles: default (a.k.a. session19), "
                         "passthrough",
                         prof);
@@ -305,63 +327,53 @@ void pad_map_load_overrides(PadMap base) {
         }
     }
 
+    // BRVR key names and numbering, so a BioshockVR.ini carries across.
     {
-        wchar_t wside[16] = {};
-        GetPrivateProfileStringW(L"pad", L"dpadSide", L"", wside, 16, ini);
-        if (wside[0]) {
-            char side[16] = {};
-            sprintf_s(side, "%ls", wside);
-            if (_stricmp(side, "left") == 0) g_dpadLeft.store(true, std::memory_order_relaxed);
-            else if (_stricmp(side, "right") == 0)
-                g_dpadLeft.store(false, std::memory_order_relaxed);
-            else
-                BVR_LOG("xr-input: controls.ini [pad] dpadSide = '%s' is not left or right "
-                        "- keeping right",
-                        side);
+        const int md = GetPrivateProfileIntW(L"VR", L"ControllerDpadModifier", -1, ini);
+        if (md == 5) {
+            BVR_LOG("xr-input: ControllerDpadModifier=5 (left hand near head) is not "
+                    "implemented yet - falling back to 1 (right thumbrest)");
+            g_dpadMod.store(static_cast<int>(DpadMod::RightRest), std::memory_order_relaxed);
+        } else if (md >= 0 && md <= 4) {
+            g_dpadMod.store(md, std::memory_order_relaxed);
+        } else if (md != -1) {
+            BVR_LOG("xr-input: ControllerDpadModifier=%d is out of range - keeping the "
+                    "current setting. 0 off, 1 right thumbrest, 2 R3, 3 left grip, "
+                    "4 left thumbrest",
+                    md);
         }
     }
-
     {
-        wchar_t wmod[16] = {};
-        GetPrivateProfileStringW(L"pad", L"dpadModifier", L"", wmod, 16, ini);
-        if (wmod[0]) {
-            char md[16] = {};
-            sprintf_s(md, "%ls", wmod);
-            int v = -2;
-            if (_stricmp(md, "auto") == 0) v = static_cast<int>(DpadMod::Auto);
-            else if (_stricmp(md, "off") == 0) v = static_cast<int>(DpadMod::Off);
-            else if (_stricmp(md, "rightrest") == 0) v = static_cast<int>(DpadMod::RightRest);
-            else if (_stricmp(md, "r3") == 0) v = static_cast<int>(DpadMod::R3);
-            else if (_stricmp(md, "leftgrip") == 0) v = static_cast<int>(DpadMod::LeftGrip);
-            else if (_stricmp(md, "leftrest") == 0) v = static_cast<int>(DpadMod::LeftRest);
-            if (v == -2)
-                BVR_LOG("xr-input: controls.ini [pad] dpadModifier = '%s' unknown - keeping "
-                        "auto. Values: auto off rightrest r3 leftgrip leftrest",
-                        md);
-            else
-                g_dpadMod.store(v, std::memory_order_relaxed);
-        }
+        const int flip = GetPrivateProfileIntW(L"VR", L"ControllerDpadFlip", -1, ini);
+        if (flip == 0) g_dpadLeft.store(true, std::memory_order_relaxed);   // LEFT stick
+        else if (flip == 1) g_dpadLeft.store(false, std::memory_order_relaxed);
+        else if (flip != -1)
+            BVR_LOG("xr-input: ControllerDpadFlip=%d is not 0 or 1 - keeping the current "
+                    "setting",
+                    flip);
     }
-    g_jumpOnR3.store(GetPrivateProfileIntW(L"pad", L"jumpOnR3", 1, ini) != 0,
-                     std::memory_order_relaxed);
+    g_jumpOnR3.store(
+        GetPrivateProfileIntW(L"VR", L"JumpOnR3",
+                              g_jumpOnR3.load(std::memory_order_relaxed) ? 1 : 0, ini) != 0,
+        std::memory_order_relaxed);
 
     PadMap m = base;
-    pad_key(ini, "faceA", &m.faceA);
-    pad_key(ini, "faceB", &m.faceB);
-    pad_key(ini, "faceX", &m.faceX);
-    pad_key(ini, "faceY", &m.faceY);
-    pad_key(ini, "gripL", &m.gripL);
-    pad_key(ini, "gripR", &m.gripR);
-    pad_key(ini, "stickClickL", &m.stickClickL);
-    pad_key(ini, "stickClickR", &m.stickClickR);
-    pad_key(ini, "flickUp", &m.flickUp);
-    pad_key(ini, "flickDown", &m.flickDown);
-    pad_key(ini, "flickLeft", &m.flickLeft);
-    pad_key(ini, "flickRight", &m.flickRight);
+    pad_key(ini, "FaceA", &m.faceA);
+    pad_key(ini, "FaceB", &m.faceB);
+    pad_key(ini, "FaceX", &m.faceX);
+    pad_key(ini, "FaceY", &m.faceY);
+    pad_key(ini, "GripL", &m.gripL);
+    pad_key(ini, "GripR", &m.gripR);
+    pad_key(ini, "StickClickL", &m.stickClickL);
+    pad_key(ini, "StickClickR", &m.stickClickR);
+    pad_key(ini, "FlickUp", &m.flickUp);
+    pad_key(ini, "FlickDown", &m.flickDown);
+    pad_key(ini, "FlickLeft", &m.flickLeft);
+    pad_key(ini, "FlickRight", &m.flickRight);
 
     g_padOverride.map = m;
     g_padOverride.loaded = true;
-    BVR_LOG("xr-input: controls.ini loaded - pad map '%s' resolved to "
+    BVR_LOG("xr-input: BioshockVR.ini loaded - pad map '%s' resolved to "
             "A=%s B=%s X=%s Y=%s | gripL=%s gripR=%s | stickL=%s stickR=%s | "
             "flick U=%s D=%s L=%s R=%s",
             m.name, xinput_bit_name(m.faceA), xinput_bit_name(m.faceB),
@@ -370,7 +382,7 @@ void pad_map_load_overrides(PadMap base) {
             xinput_bit_name(m.stickClickL), xinput_bit_name(m.stickClickR),
             xinput_bit_name(m.flickUp), xinput_bit_name(m.flickDown),
             xinput_bit_name(m.flickLeft), xinput_bit_name(m.flickRight));
-    BVR_LOG("xr-input: controls.ini d-pad side = %s (%s thumbrest modifies, %s stick "
+    BVR_LOG("xr-input: BioshockVR.ini d-pad side = %s (%s thumbrest modifies, %s stick "
             "selects; %s is suppressed while selecting)",
             g_dpadLeft.load(std::memory_order_relaxed) ? "LEFT" : "right",
             g_dpadLeft.load(std::memory_order_relaxed) ? "right" : "left",
@@ -383,8 +395,8 @@ void pad_map_load_overrides(PadMap base) {
                          : md == static_cast<int>(DpadMod::R3)        ? "r3"
                          : md == static_cast<int>(DpadMod::LeftGrip)  ? "leftgrip"
                          : md == static_cast<int>(DpadMod::LeftRest)  ? "leftrest"
-                                                                     : "auto";
-        BVR_LOG("xr-input: controls.ini d-pad modifier = %s | R3 jump = %s", mn,
+                                                                     : "legacy heuristic";
+        BVR_LOG("xr-input: BioshockVR.ini d-pad modifier = %s | R3 jump = %s", mn,
                 g_jumpOnR3.load(std::memory_order_relaxed) ? "on" : "off");
         // A thumbrest cannot modify the stick its own thumb has to push.
         const bool leftSel = g_dpadLeft.load(std::memory_order_relaxed);
@@ -400,7 +412,7 @@ void pad_map_load_overrides(PadMap base) {
     }
 }
 
-// The compiled base for the current game, before controls.ini is applied.
+// The compiled base for the current game, before BioshockVR.ini is applied.
 const PadMap& compiled_pad_map() {
     if (bvr::input::pad_profile() == bvr::input::PadProfile::Infinite) return kPadMapInfinite;
     return bvr::input::pad_passthrough_default() ? kPadMapPassthrough : kPadMapBioshock1;
@@ -857,7 +869,7 @@ void input_create(XrInstance instance) {
                 static_cast<int>(r));
 
     g_created = true;
-    // s63: apply controls.ini on top of the compiled default for THIS game.
+    // s63: apply BioshockVR.ini on top of the compiled default for THIS game.
     // After the profile is known, so the override lands on the right base.
     pad_map_load_overrides(compiled_pad_map());
 
@@ -1108,9 +1120,13 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // Whichever wins, the other two must not also fire - otherwise every
         // ammo select would jump, or every jump would zoom.
         const int dpadModNow = g_dpadMod.load(std::memory_order_relaxed);
+        // R3 only counts as the modifier when it IS the modifier. The legacy
+        // heuristic can fall back to R3 at runtime, so it counts too - but a
+        // real mode (including 1/3/4) frees the click, which is what makes the
+        // jump lane reachable at all. This is the line that was swallowing it.
         const bool r3IsModifier =
             map.flick && (dpadModNow == static_cast<int>(DpadMod::R3) ||
-                          (dpadModNow == static_cast<int>(DpadMod::Auto) &&
+                          (dpadModNow == static_cast<int>(DpadMod::Legacy) &&
                            map.flickAmmoModPref));
         const bool r3IsJump = !r3IsModifier && g_jumpOnR3.load(std::memory_order_relaxed);
         if (r3IsJump && clickRraw && map.jumpBit) pad.buttons |= map.jumpBit;
@@ -1166,7 +1182,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // Auto's cross-hand default, before either branch below refines it.
         bool restMod = dpadLeft ? restR : restL;
         const int dpadMod = g_dpadMod.load(std::memory_order_relaxed);
-        if (dpadMod != static_cast<int>(DpadMod::Auto)) {
+        if (dpadMod != static_cast<int>(DpadMod::Legacy)) {
             // Explicit choice: no heuristic, no fallback. The user picked a
             // source and it is the only one that arms.
             switch (static_cast<DpadMod>(dpadMod)) {
