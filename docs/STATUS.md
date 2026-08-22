@@ -2,6 +2,115 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-22 - s63 BS1 comfort + controls (BioVRDev)
+
+**Branch `s63-bs1-comfort`, 26 commits, all headset-verified unless said
+otherwise.** One session branch, one commit per finished thing - the repo's own
+convention since 2026-07-31, which the previous session had drifted from into
+nine feature branches.
+
+**SOLVED: the weapon bob. It was ours, and it was three lines.** `baseLoc` is
+snapshotted at `camera.cpp:1247`, the head-bob substitution writes `loc` at
+:1394, and the hand viewmodel AND the aim ray are both built on `ctx.baseZ`
+(`frame_context.h`: `out.loc.z = ctx.baseZ + d[2] * worldScale`). So the head-bob
+fix stopped the VIEW bobbing and left the GUN bobbing - the two consumers of the
+camera location diverged the moment that fix landed. Fixed by re-taking
+`baseLoc` after the substitution and before the head offset (`bae3d09`).
+
+The measurement that settled it, and the one to reach for first next time:
+**with the pawn's own world Z perfectly flat, bone 43 AFTER our write still
+moved 2.91 UU mean in ABSOLUTE world space.** Our write was always authoritative
+- it was being told a bobbing number. Relative to the pawn the gun swung 9.28 UU
+while walking.
+
+**Three approaches falsified on the way, all assuming the ENGINE wrote bob into
+the bone after us:**
+- actor Z pin from Present (s62): write lands, gun still bobs.
+- array B is the carrier: **max |B - actor| = 0.0000 UU over 36 windows**.
+- sway re-adopt gated on ground speed: gate engaged in 44/51 windows,
+  A-post 2.73 -> 3.22. No effect. Committed and reverted (`bcdb4cf`/`2e1bcb6`),
+  kept as a pair so the falsification stays on the record.
+
+**The split that would have ended it in one step: standing 2.88 vs moving 2.92 -
+identical.** The residual was never walk bob, so every fix aimed at keeping the
+engine out was defending a door the bob does not use.
+
+**Turn rate and walking direction, both ported from BRVR, both verified.** The
+game's turn response is nearly vertical at the top of the stick (0.98 -> ~105
+deg/s, 0.99 -> ~140, 1.00 -> ~200), so a 2% difference in push doubled the rate.
+`TurnAxisMax=0.95` caps it; `GameTurnSpeed=70` writes the game's own Sensitivity
+slider because a cap over a low sensitivity just leaves turning sluggish - the
+two are halves of one fix. **Frame-rate dependence is FALSIFIED in BRVR** (40
+samples, 142-239 CalcView/s, no correlation); do not re-derive it.
+
+`StickPrecomp` undoes the game's PER-AXIS deadzone (0.225) bending the walk
+direction by up to ~11 deg when `body::moveDirInstant` rotates the movement
+stick. It needs turning AND walking at once, which is why it never showed
+standing still, and it read as the TURN snapping when it was the walk direction.
+One deliberate deviation from BRVR, called out in the code: the band ramps in
+over the first 6% of deflection instead of being added whole at an axis crossing
+- that step landed exactly on the game's threshold where rounding dithers, which
+was the residual jitter after the snap was fixed.
+
+**Controls now match BRVR's shape.** `%LOCALAPPDATA%\BioshockVR\BioshockVR.ini`,
+one `[VR]` section, BRVR's key names and numbering so a config carries across.
+BS1 defaults: face buttons **passthrough** (A=use, B=med hypo, X=reload/hack,
+Y=jump), `ControllerDpadModifier=1` (right thumbrest),
+`ControllerDpadFlip=0` (LEFT stick selects), `JumpOnR3=1`. The session-19
+rearrangement is kept as `FaceLayout=session19`, one word away. R3 jump had
+never fired: the old `auto` modifier mode counted R3 as a possible modifier on
+any game with `flickAmmoModPref`, and modifier beats jump in the precedence
+chain. Auto is gone from the ini.
+
+**`docs/CONTROLS.md` is new** and separates LIVE keys from PLANNED ones. The ini
+is deliberately written ahead of the code, so a planned key doing nothing is not
+a bug report. It also names the blocker for the intended "ini is the source of
+truth, F10 is a front-end" model: **the F10 save rewrites `vrpreset.ini`
+wholesale and drops unknown keys**, which is why `xr.ini` and `BioshockVR.ini`
+are separate files. Fix that writer before the ini grows, not after.
+
+**`tools/lib/resolve-game-path.ps1` is new.** Five scripts hardcoded one
+contributor's drive layout (BS1 on K:), so `install.ps1` died with "Cannot find
+drive" on this machine while a stale DLL already in the folder kept loading -
+which is how a probe got "run" against a build ten days old. Resolution order:
+explicit `-GamePath`, `BVR_BS1_PATH` env, every Steam library from
+`libraryfolders.vdf`, the Epic roots, then the historical default last.
+
+**OPEN: one controller unbound at boot, cause unknown.** Reproduced once with
+the census armed: every LEFT-hand action dead together (move, left trigger, left
+grip, X, Y, left stick click) while every right-hand one was live. That is a
+hand with no interaction profile, not a binding we got wrong - our suggestions
+for those six paths could not fail as a set. The runtime's own
+profile-changed event arrived **61 ms after** the controllers first went live,
+and the change-watcher never fired again, so the hand stayed dead all session.
+`xrAttachSessionActionSets` is one-shot per session, so nothing can re-bind from
+inside a running game. **The user reports BRVR does not have this bug**, and the
+obvious structural difference is ruled out - BRVR also attaches before
+`xrBeginSession`. Not yet explained. Next reproduction: check the settled census
+AND whether the dead hand still TRACKS, which separates "controller was asleep"
+from "live controller, actions unbound".
+
+**Next step: the F10 -> ini writer, then the remaining BRVR options.** The user
+is bringing this mod up to BRVR parity and is explicit that BRVR is the
+inspiration for every change. The three that look like real playability gaps
+rather than polish: `GripThreshold`/`GripHysteresis` (Index grips read high from
+a resting hand and eat the face buttons), the turning/accessibility block, and
+the F10 writer that gates all of it. **BRVR is READ-ONLY from here - a
+reference, not a work tree.**
+
+**Also open:** the user finds this mod's performance worse than BRVR's. Worth a
+dedicated session - the telemetry already exists (`input drive: 44/s` steady
+now, against the 3 presents/s the s62 heap sweep caused), so the log can
+probably answer it rather than guesswork.
+
+**DEPLOYED RIGHT NOW:** `s63-bs1-comfort` content, built and installed to
+`C:\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final`.
+The log reads `v0.8.2-25-g7811b6a-dirty` because the build was taken before the
+final commit; that dirty tree is exactly what `47cb521` then committed, so the
+DLL matches HEAD. **The bob probe is ARMED AT BOOT** (`59e8193`, marked
+TEMPORARY) - it is read-only and self-limits after 80 windows, but it must be
+reverted before this branch merges.
+
 ## Session 2026-08-22 - BS1 comfort lane part 2 (BioVRDev)
 
 **HEADSET-VERIFIED: the main-menu heap sweep.** `fix/bs1-menu-rig-sweep`. The
