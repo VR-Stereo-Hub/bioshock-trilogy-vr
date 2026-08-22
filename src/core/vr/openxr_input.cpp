@@ -10,6 +10,8 @@
 #include <windows.h>
 #include <Xinput.h> // button bit constants only
 
+#include <cstdio>  // swprintf_s/sprintf_s for the controls.ini reader
+
 #include <imgui.h>
 
 #include <atomic>
@@ -112,7 +114,137 @@ constexpr PadMap kPadMapInfinite = {
     XINPUT_GAMEPAD_DPAD_RIGHT,
 };
 
+// ---------------------------------------------------------------------------
+// s63 USER-OVERRIDABLE PAD MAP - controls.ini
+//
+// Ported in spirit from the BRVR mod, whose Keybinds.h makes the same argument
+// for keyboard hotkeys: a binding that can only be changed by rebuilding is not
+// a binding, it is a decision imposed on every user. The tables below stay the
+// DEFAULTS and nothing changes for anyone who does not write the file.
+//
+// Its own file, deliberately NOT vrpreset.ini: the F10 preset save rewrites
+// that wholesale and would silently drop unknown keys - the same reason xr.ini
+// is separate. Lives in the per-game data dir, so BS1, BS2 and Infinite each
+// get their own control scheme, which they need anyway (their face buttons mean
+// different things - see the two tables above).
+//
+//   [pad]
+//   faceA = A        ; what the RIGHT controller's A button sends to the game
+//   faceB = Y        ; BS1 default: Touch B -> game Y = jump
+//   faceX = X
+//   faceY = B        ; BS1 default: Touch Y -> game B = first aid
+//   gripL = LB
+//   gripR = RB
+//   stickClickL = LS
+//   stickClickR = NONE   ; BS1: eaten, it IS the ammo modifier
+//
+// Names: A B X Y LB RB LS RS DUP DDOWN DLEFT DRIGHT START BACK NONE.
+// The whole resolved table is logged at init - BRVR's other lesson, that a
+// binding you cannot see resolved is one you cannot debug.
+struct PadOverride {
+    bool loaded = false;
+    PadMap map{};
+};
+PadOverride g_padOverride;
+
+uint16_t xinput_bit_by_name(const char* v, bool* ok) {
+    struct { const char* name; uint16_t bit; } kNames[] = {
+        {"A", XINPUT_GAMEPAD_A},         {"B", XINPUT_GAMEPAD_B},
+        {"X", XINPUT_GAMEPAD_X},         {"Y", XINPUT_GAMEPAD_Y},
+        {"LB", XINPUT_GAMEPAD_LEFT_SHOULDER},
+        {"RB", XINPUT_GAMEPAD_RIGHT_SHOULDER},
+        {"LS", XINPUT_GAMEPAD_LEFT_THUMB},
+        {"RS", XINPUT_GAMEPAD_RIGHT_THUMB},
+        {"DUP", XINPUT_GAMEPAD_DPAD_UP}, {"DDOWN", XINPUT_GAMEPAD_DPAD_DOWN},
+        {"DLEFT", XINPUT_GAMEPAD_DPAD_LEFT}, {"DRIGHT", XINPUT_GAMEPAD_DPAD_RIGHT},
+        {"START", XINPUT_GAMEPAD_START}, {"BACK", XINPUT_GAMEPAD_BACK},
+        {"NONE", 0},
+    };
+    for (const auto& e : kNames)
+        if (_stricmp(v, e.name) == 0) { *ok = true; return e.bit; }
+    *ok = false;
+    return 0;
+}
+
+// Reads one key, leaving the default in place when absent or unrecognised. An
+// unrecognised value is LOUD - a typo that silently kept the default is exactly
+// the failure this whole mechanism exists to remove.
+void pad_key(const wchar_t* ini, const char* key, uint16_t* field) {
+    char buf[32] = {};
+    wchar_t wkey[32];
+    swprintf_s(wkey, L"%hs", key);
+    wchar_t wbuf[32] = {};
+    GetPrivateProfileStringW(L"pad", wkey, L"", wbuf, 32, ini);
+    if (!wbuf[0]) return;
+    sprintf_s(buf, "%ls", wbuf);
+    bool ok = false;
+    const uint16_t bit = xinput_bit_by_name(buf, &ok);
+    if (!ok) {
+        BVR_LOG("xr-input: controls.ini [pad] %s = '%s' is not a button name - "
+                "keeping the default. Names: A B X Y LB RB LS RS DUP DDOWN DLEFT "
+                "DRIGHT START BACK NONE",
+                key, buf);
+        return;
+    }
+    *field = bit;
+}
+
+const char* xinput_bit_name(uint16_t bit) {
+    bool ok = false;
+    (void)ok;
+    switch (bit) {
+        case XINPUT_GAMEPAD_A: return "A";
+        case XINPUT_GAMEPAD_B: return "B";
+        case XINPUT_GAMEPAD_X: return "X";
+        case XINPUT_GAMEPAD_Y: return "Y";
+        case XINPUT_GAMEPAD_LEFT_SHOULDER: return "LB";
+        case XINPUT_GAMEPAD_RIGHT_SHOULDER: return "RB";
+        case XINPUT_GAMEPAD_LEFT_THUMB: return "LS";
+        case XINPUT_GAMEPAD_RIGHT_THUMB: return "RS";
+        case XINPUT_GAMEPAD_DPAD_UP: return "DUP";
+        case XINPUT_GAMEPAD_DPAD_DOWN: return "DDOWN";
+        case XINPUT_GAMEPAD_DPAD_LEFT: return "DLEFT";
+        case XINPUT_GAMEPAD_DPAD_RIGHT: return "DRIGHT";
+        case XINPUT_GAMEPAD_START: return "START";
+        case XINPUT_GAMEPAD_BACK: return "BACK";
+        default: return "NONE";
+    }
+}
+
+void pad_map_load_overrides(const PadMap& base) {
+    wchar_t ini[MAX_PATH];
+    swprintf_s(ini, L"%s\\controls.ini", bvr::log::data_dir());
+    if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) return; // stay quiet
+
+    PadMap m = base;
+    pad_key(ini, "faceA", &m.faceA);
+    pad_key(ini, "faceB", &m.faceB);
+    pad_key(ini, "faceX", &m.faceX);
+    pad_key(ini, "faceY", &m.faceY);
+    pad_key(ini, "gripL", &m.gripL);
+    pad_key(ini, "gripR", &m.gripR);
+    pad_key(ini, "stickClickL", &m.stickClickL);
+    pad_key(ini, "stickClickR", &m.stickClickR);
+    pad_key(ini, "flickUp", &m.flickUp);
+    pad_key(ini, "flickDown", &m.flickDown);
+    pad_key(ini, "flickLeft", &m.flickLeft);
+    pad_key(ini, "flickRight", &m.flickRight);
+
+    g_padOverride.map = m;
+    g_padOverride.loaded = true;
+    BVR_LOG("xr-input: controls.ini loaded - pad map '%s' resolved to "
+            "A=%s B=%s X=%s Y=%s | gripL=%s gripR=%s | stickL=%s stickR=%s | "
+            "flick U=%s D=%s L=%s R=%s",
+            m.name, xinput_bit_name(m.faceA), xinput_bit_name(m.faceB),
+            xinput_bit_name(m.faceX), xinput_bit_name(m.faceY),
+            xinput_bit_name(m.gripL), xinput_bit_name(m.gripR),
+            xinput_bit_name(m.stickClickL), xinput_bit_name(m.stickClickR),
+            xinput_bit_name(m.flickUp), xinput_bit_name(m.flickDown),
+            xinput_bit_name(m.flickLeft), xinput_bit_name(m.flickRight));
+}
+
 const PadMap& active_pad_map() {
+    if (g_padOverride.loaded) return g_padOverride.map;
     return bvr::input::pad_profile() == bvr::input::PadProfile::Infinite
                ? kPadMapInfinite
                : kPadMapBioshock1;
@@ -564,6 +696,12 @@ void input_create(XrInstance instance) {
                 static_cast<int>(r));
 
     g_created = true;
+    // s63: apply controls.ini on top of the compiled default for THIS game.
+    // After the profile is known, so the override lands on the right base.
+    pad_map_load_overrides(bvr::input::pad_profile() == bvr::input::PadProfile::Infinite
+                               ? kPadMapInfinite
+                               : kPadMapBioshock1);
+
     BVR_LOG("xr-input: action set ready (%d actions; touch + simple + index + "
             "vive + wmr bindings suggested)", made);
 }
