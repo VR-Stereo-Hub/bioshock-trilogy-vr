@@ -16,6 +16,7 @@
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
 #include "game/bioshock1r/game_ini.h"
+#include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/hands.h"
@@ -1864,6 +1865,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // flows draw over a live world, so no render-side signal can see them; the
     // engine's own movie stack names them exactly.
     screens::on_calcview(self, viewActor ? *viewActor : nullptr);
+    probe_bob::on_calcview(self, viewActor ? *viewActor : nullptr);
     bvr::vr::publish_ui_pause(screens::panel_screen_up());
 
     {

@@ -11,6 +11,7 @@
 #include "game/bioshock1r/scenedraw.h"
 #include <cstring>
 
+#include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 
 namespace bvr::b1r {
@@ -49,6 +50,15 @@ void Bioshock1RAdapter::drawDebugUi() {
 }
 
 bool Bioshock1RAdapter::handleCommand(const char* cmd, const char* args) {
+    if (strcmp(cmd, "vrprobe") == 0) {
+        const char* a = args;
+        while (*a == ' ') ++a;
+        if (strncmp(a, "bob", 3) == 0) {
+            probe_bob::handle_command(a + 3);
+            return true;
+        }
+        return false;
+    }
     if (strcmp(cmd, "vrscreens") == 0) {
         screens::handle_command(args);
         return true;
