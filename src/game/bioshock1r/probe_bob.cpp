@@ -73,6 +73,13 @@ struct Bucket {
     P2P boneB;      // bone 43, array B - the by-name array, never ours
     P2P wpnZ;       // the symptom
     P2P boneACompPre; // component-space Z of the same bone, unrotated
+    // Session 63: every column above is a height ABOVE THE PAWN, so a moving
+    // pawn under a still bone and a moving bone over a still pawn are the SAME
+    // number. These two are ABSOLUTE world Z, which is what tells them apart:
+    //   pawnZabs spans ~3, postAbs flat -> the pawn moves under a fixed bone
+    //   postAbs spans ~3, pawnZabs flat -> what WE write is what is moving
+    P2P pawnZabs;   // the pawn's own world Z
+    P2P postAbs;    // bone 43 after our write, in world Z, not relative
     P2P speed;      // so a window straddling the standing/moving line shows it
     int samples = 0;
     int postSamples = 0;
@@ -83,6 +90,8 @@ struct Bucket {
         boneB.reset();
         wpnZ.reset();
         boneACompPre.reset();
+        pawnZabs.reset();
+        postAbs.reset();
         speed.reset();
         samples = 0;
         postSamples = 0;
@@ -143,6 +152,10 @@ void log_bucket(const char* tag, const Bucket& b) {
             "| weapon %5.2f  (UU above the pawn, peak-to-peak)",
             tag, b.actorZ.span(), b.boneAPre.span(), b.boneAPost.span(), b.boneB.span(),
             b.wpnZ.span());
+    // THE DISCRIMINATOR. Same window, ABSOLUTE world Z - see the bucket fields.
+    BVR_LOG("[b1r] bobsrc %-8s   WORLD Z: pawn %5.2f | bone43 post %5.2f  "
+            "(peak-to-peak, absolute - relative post was %5.2f)",
+            tag, b.pawnZabs.span(), b.postAbs.span(), b.boneAPost.span());
     BVR_LOG("[b1r] bobsrc %-8s   bone43 A component Z %5.2f | n=%d/%d | speed %.0f-%.0f UU/s",
             tag, b.boneACompPre.span(), b.samples, b.postSamples, b.speed.lo, b.speed.hi);
 }
@@ -194,6 +207,7 @@ void on_calcview_pre(const FrameContext& ctx) {
     Bucket& b = (g_speed > kMovingUu) ? g_move : g_stand;
     b.speed.add(g_speed);
     b.actorZ.add(actorLoc[2] - pawnLoc[2]);
+    b.pawnZabs.add(pawnLoc[2]);
 
     // Stash the frame's basis so the post sample lands in the same frame's
     // terms rather than re-reading a rig the drive has just moved.
@@ -274,7 +288,9 @@ void on_calcview_post(const FrameContext& ctx) {
                           patterns::kSkelInstBoneCountOffset, patterns::kBoneWeaponAttach,
                           comp))
         return;
-    b->boneAPost.add(bone_world_z(comp) - g_framePawnZ);
+    const float postWorldZ = bone_world_z(comp);
+    b->boneAPost.add(postWorldZ - g_framePawnZ);
+    b->postAbs.add(postWorldZ);
     ++b->postSamples;
 }
 
