@@ -169,6 +169,14 @@ enum class PadProfile { Bioshock1 = 0, Infinite = 1 };
 PadProfile pad_profile();
 void set_pad_profile(PadProfile p);
 
+// s63: which face-button layout the Bioshock1 profile resolves to when no
+// controls.ini says otherwise. false (the shipped session-19 rearrangement) is
+// the default so BioShock 2, which shares this profile and has never been
+// tested with anything else, is untouched. BioShock 1 opts in from its own
+// adapter. controls.ini `profile =` still overrides either way.
+bool pad_passthrough_default();
+void set_pad_passthrough_default(bool on);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping

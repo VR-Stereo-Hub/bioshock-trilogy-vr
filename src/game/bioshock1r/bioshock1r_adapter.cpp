@@ -12,6 +12,7 @@
 #include "game/bioshock1r/scenedraw.h"
 #include <cstring>
 
+#include "core/input/xinput_bridge.h"
 #include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 
@@ -44,6 +45,13 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // a headset with anchored placement at all. The F10 slider and
     // `vrscreen width` still move it, and a saved preset still overrides.
     bvr::vr::set_screen_width_m(1.9f);
+    // Face buttons pass straight through by default (user directive,
+    // 2026-08-22): A=use, B=med hypo, X=reload/hack/EVE, Y=jump, which is the
+    // game's own pad layout and the BRVR mod's stock semantics. The session-19
+    // rearrangement (Touch B=jump, Touch Y=first aid) is still one line away -
+    // `profile = session19` in controls.ini - and is what BioShock 2 keeps,
+    // since it shares the profile and has never been in a headset with this.
+    bvr::input::set_pad_passthrough_default(true);
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }

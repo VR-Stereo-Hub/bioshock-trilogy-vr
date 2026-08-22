@@ -799,6 +799,14 @@ void set_ammo_mod(AmmoMod m) {
 PadProfile pad_profile() {
     return static_cast<PadProfile>(g_padProfile.load(std::memory_order_relaxed));
 }
+std::atomic<bool> g_padPassthroughDefault{false};
+bool pad_passthrough_default() {
+    return g_padPassthroughDefault.load(std::memory_order_relaxed);
+}
+void set_pad_passthrough_default(bool on) {
+    g_padPassthroughDefault.store(on, std::memory_order_relaxed);
+}
+
 void set_pad_profile(PadProfile p) {
     int v = static_cast<int>(p);
     if (v < 0 || v > static_cast<int>(PadProfile::Infinite))

@@ -325,11 +325,15 @@ void pad_map_load_overrides(PadMap base) {
             g_dpadLeft.load(std::memory_order_relaxed) ? "walking" : "turning");
 }
 
+// The compiled base for the current game, before controls.ini is applied.
+const PadMap& compiled_pad_map() {
+    if (bvr::input::pad_profile() == bvr::input::PadProfile::Infinite) return kPadMapInfinite;
+    return bvr::input::pad_passthrough_default() ? kPadMapPassthrough : kPadMapBioshock1;
+}
+
 const PadMap& active_pad_map() {
     if (g_padOverride.loaded) return g_padOverride.map;
-    return bvr::input::pad_profile() == bvr::input::PadProfile::Infinite
-               ? kPadMapInfinite
-               : kPadMapBioshock1;
+    return compiled_pad_map();
 }
 
 XrActionSet g_actionSet = XR_NULL_HANDLE;
@@ -780,9 +784,7 @@ void input_create(XrInstance instance) {
     g_created = true;
     // s63: apply controls.ini on top of the compiled default for THIS game.
     // After the profile is known, so the override lands on the right base.
-    pad_map_load_overrides(bvr::input::pad_profile() == bvr::input::PadProfile::Infinite
-                               ? kPadMapInfinite
-                               : kPadMapBioshock1);
+    pad_map_load_overrides(compiled_pad_map());
 
     BVR_LOG("xr-input: action set ready (%d actions; touch + simple + index + "
             "vive + wmr bindings suggested)", made);
