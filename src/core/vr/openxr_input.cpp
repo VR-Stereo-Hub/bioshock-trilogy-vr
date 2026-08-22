@@ -221,6 +221,69 @@ std::atomic<bool> g_jumpOnR3{true};
 // One settled census, scheduled when the controllers first go live. 0 = done.
 uint64_t g_settleCensusAtMs = 0;
 
+// s63 MOVEMENT-STICK DEADZONE PRE-COMPENSATION, ported from the BRVR mod.
+//
+// THE BUG. The game applies its stick deadzone PER AXIS (0.225, from its own
+// User.ini bindings), not radially. Anything that ROTATES the movement vector
+// moves magnitude between the two axes, so the game's per-axis threshold then
+// bends the direction - by up to ~11 degrees - and snaps to a pure sidestep
+// once the forward component drops under the band.
+//
+// WHY IT SHOWS UP HERE. body.cpp's moveDirInstant (default ON) publishes the
+// not-yet-transferred body-yaw error every CalcView and rotates the movement
+// stick by it, so the walk direction stays instant while the body catches up
+// under the slew cap. That rotation is exactly the trigger: the error is only
+// non-zero WHILE TURNING, and the stick is only pushed WHILE WALKING - which is
+// why the fault appears when doing both at once and never when standing still.
+// Reported as smooth turning that repeatedly snaps a few degrees.
+//
+// THE FIX. Split direction from magnitude, and pre-expand each axis so that
+// after the game subtracts its per-axis band what survives is proportional to
+// the direction actually asked for. The magnitude is what the player asked for
+// and must survive untouched; only the direction is being corrupted.
+//
+// NOT BY EDITING User.ini, which is BRVR's hard-won note: those are binding
+// lines carrying several bindings each (XENON_LTHUMB_XAXIS also holds
+// `Axis xLean DeadZone=0.4`), the file has multiple binding sections, and the
+// game rewrites it at exit. String surgery there risks breaking the controls
+// outright, for a value that can simply be inverted here.
+//
+// Core default is OFF so BS2 and Infinite are untouched; BS1 opts in.
+std::atomic<bool> g_stickPrecomp{false};
+std::atomic<float> g_gameStickDeadzone{0.225f};
+
+void precomp_stick_deadzone(float& x, float& y) {
+    if (!g_stickPrecomp.load(std::memory_order_relaxed)) return;
+    const float d = g_gameStickDeadzone.load(std::memory_order_relaxed);
+    if (d <= 0.0f || d >= 0.95f) return;
+    const float mag = sqrtf(x * x + y * y);
+    if (mag < 1e-4f) return; // centred; leave it alone
+    const float ux = x / mag, uy = y / mag;
+    const float m = (mag > 1.0f) ? 1.0f : mag;
+
+    // s63 DEVIATION FROM BRVR, and revert it first if this feels wrong.
+    //
+    // The straight formula adds the whole band `d` the instant an axis leaves
+    // zero, so at an axis crossing that axis STEPS from 0 to +-0.225 in one
+    // frame - and lands exactly ON the game's threshold, where float rounding
+    // can dither between "inside the deadzone" and "just past it" from frame to
+    // frame. Walking near-straight while turning sweeps an axis through zero
+    // continuously, which is exactly when the residual jitter was reported.
+    //
+    // Ramping the band in over the first few percent of deflection removes the
+    // step without touching the direction anywhere it matters: past kRamp the
+    // result is bit-identical to BRVR's.
+    constexpr float kRamp = 0.06f;
+    auto axis = [&](float u) {
+        const float a = fabsf(u);
+        if (a < 1e-4f) return 0.0f;
+        const float t = (a >= kRamp) ? 1.0f : (a / kRamp);
+        return (u < 0.0f ? -1.0f : 1.0f) * (a * m * (1.0f - d) + d * t);
+    };
+    x = axis(ux);
+    y = axis(uy);
+}
+
 // s63 TURN RESPONSE, ported from the BRVR mod.
 //
 // THE BUG. The game's own turn rate is nearly VERTICAL at the top of the stick.
@@ -330,6 +393,7 @@ void pad_map_load_overrides(PadMap base) {
         g_jumpOnR3.store(true, std::memory_order_relaxed);
         g_turnAxisMax.store(0.95f, std::memory_order_relaxed);
         g_turnAxisExp.store(1.0f, std::memory_order_relaxed);
+        g_stickPrecomp.store(true, std::memory_order_relaxed);
     }
 
     wchar_t ini[MAX_PATH];
@@ -403,6 +467,12 @@ void pad_map_load_overrides(PadMap base) {
             if (v > 0.05f && v <= 1.0f) g_turnAxisMax.store(v, std::memory_order_relaxed);
             else BVR_LOG("xr-input: TurnAxisMax must be between 0.05 and 1.0 - ignoring");
         }
+        GetPrivateProfileStringW(L"VR", L"GameStickDeadzone", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v >= 0.0f && v < 0.95f) g_gameStickDeadzone.store(v, std::memory_order_relaxed);
+            else BVR_LOG("xr-input: GameStickDeadzone must be 0.0 to 0.95 - ignoring");
+        }
         GetPrivateProfileStringW(L"VR", L"TurnAxisExp", L"", wv, 24, ini);
         if (wv[0]) {
             const float v = static_cast<float>(_wtof(wv));
@@ -410,6 +480,11 @@ void pad_map_load_overrides(PadMap base) {
             else BVR_LOG("xr-input: TurnAxisExp must be between 0.5 and 4.0 - ignoring");
         }
     }
+    g_stickPrecomp.store(
+        GetPrivateProfileIntW(L"VR", L"StickPrecomp",
+                              g_stickPrecomp.load(std::memory_order_relaxed) ? 1 : 0,
+                              ini) != 0,
+        std::memory_order_relaxed);
     g_jumpOnR3.store(
         GetPrivateProfileIntW(L"VR", L"JumpOnR3",
                               g_jumpOnR3.load(std::memory_order_relaxed) ? 1 : 0, ini) != 0,
@@ -459,6 +534,10 @@ void pad_map_load_overrides(PadMap base) {
                 mn, g_jumpOnR3.load(std::memory_order_relaxed) ? "on" : "off",
                 g_turnAxisMax.load(std::memory_order_relaxed),
                 g_turnAxisExp.load(std::memory_order_relaxed));
+        BVR_LOG("xr-input: StickPrecomp %s (game per-axis deadzone %.3f) - undoes the "
+                "direction bend when the movement stick is rotated while turning",
+                g_stickPrecomp.load(std::memory_order_relaxed) ? "on" : "off",
+                g_gameStickDeadzone.load(std::memory_order_relaxed));
         // A thumbrest cannot modify the stick its own thumb has to push.
         const bool leftSel = g_dpadLeft.load(std::memory_order_relaxed);
         if ((leftSel && md == static_cast<int>(DpadMod::LeftRest)) ||
@@ -1120,6 +1199,8 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     read_vec2(session, g_look, &lx, &ly);
     apply_deadzone(mx, my);
     apply_deadzone(lx, ly);
+    // AFTER our own deadzone, so ours is not re-expanded by the pre-comp.
+    precomp_stick_deadzone(mx, my);
     lx = shape_turn_axis(lx); // turn only; Y is pitch and is left alone
     pad.lx = axis_to_thumb(mx);
     pad.ly = axis_to_thumb(my); // XR +y = stick forward = XInput +Y (up)

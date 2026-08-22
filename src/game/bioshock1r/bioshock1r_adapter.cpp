@@ -12,7 +12,10 @@
 #include "game/bioshock1r/scenedraw.h"
 #include <cstring>
 
+#include <windows.h>
+
 #include "core/input/xinput_bridge.h"
+#include "game/bioshock1r/game_ini.h"
 #include "game/bioshock1r/probe_bob.h"
 #include "game/bioshock1r/screens.h"
 
@@ -59,6 +62,16 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // JumpOnR3=1. BioShock 2 shares this pad profile and keeps the older
     // heuristic until somebody puts a headset on for it.
     bvr::input::set_pad_brvr_defaults(true);
+
+    // GameTurnSpeed: the game's own sensitivity slider, the other half of the
+    // TurnAxisMax cap. -1 (the default) leaves the player's own choice alone;
+    // BRVR ships 70, which is "7" in the options menu, as a starting point.
+    {
+        wchar_t ini[MAX_PATH];
+        swprintf_s(ini, L"%s\\BioshockVR.ini", bvr::log::data_dir());
+        const int turn = GetPrivateProfileIntW(L"VR", L"GameTurnSpeed", -1, ini);
+        if (turn >= 0) game_ini::write_turn_sensitivity(turn);
+    }
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }

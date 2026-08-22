@@ -17,6 +17,8 @@ namespace {
 // console drivers, verified present in the shipped file at lines 467/499/531.
 // Never touch those.
 constexpr char kPcSection[] = "[WinDrv.WindowsClient]";
+// The game's own options live here - same section BRVR writes Sensitivity into.
+constexpr char kUserSection[] = "[ShockGame.ShockUserSettings]";
 
 wchar_t g_path[MAX_PATH] = {};
 bool g_searched = false;
@@ -59,6 +61,31 @@ bool write_all(const wchar_t* p, const std::string& data) {
 }
 
 // [start, end) byte span of the PC driver section's BODY, or false.
+// s63: the same span walk, for any named section. pc_section_span keeps its
+// name and its caller; this is what the turn-sensitivity write needs, since the
+// game's own slider lives in a different section from the viewport.
+bool section_span(const std::string& text, const char* section, size_t& start,
+                  size_t& end) {
+    size_t at = text.find(section);
+    if (at == std::string::npos) return false;
+    size_t bodyStart = text.find('\n', at);
+    if (bodyStart == std::string::npos) return false;
+    ++bodyStart;
+    size_t p = bodyStart;
+    while (p < text.size()) {
+        if (text[p] == '[') break;
+        size_t nl = text.find('\n', p);
+        if (nl == std::string::npos) {
+            p = text.size();
+            break;
+        }
+        p = nl + 1;
+    }
+    start = bodyStart;
+    end = p;
+    return true;
+}
+
 bool pc_section_span(const std::string& text, size_t& start, size_t& end) {
     size_t at = text.find(kPcSection);
     if (at == std::string::npos) return false;
@@ -207,6 +234,53 @@ Viewport read_viewport() {
     v.startupFullscreen = section_bool(text, start, end, "StartupFullscreen");
     v.valid = true;
     return v;
+}
+
+// s63 TURN SENSITIVITY, ported from BRVR. The game's own slider - "7" in the
+// options menu is 70 here.
+//
+// WHY THE MOD TOUCHES IT AT ALL. The shipped default reads far too slow once
+// the right stick is the only way to turn, and the mod now caps the axis at
+// TurnAxisMax to kill the game's near-vertical response at full deflection. A
+// low sensitivity underneath that cap leaves turning sluggish, so the cap and
+// this are two halves of one fix - shipping either alone is worse than
+// shipping neither.
+//
+// Negative means "leave whatever the player chose alone", which is the default.
+bool write_turn_sensitivity(int value) {
+    if (value < 0) return true; // explicitly not ours to touch
+    if (value > 200) {
+        BVR_LOG("[b1r] game ini: refusing Sensitivity %d (over 200)", value);
+        return false;
+    }
+    if (!path()[0]) {
+        BVR_LOG("[b1r] game ini: cannot write Sensitivity - no Bioshock.ini located");
+        return false;
+    }
+    std::string text;
+    if (!read_all(g_path, text)) {
+        BVR_LOG("[b1r] game ini: read failed for Sensitivity (err %lu)", GetLastError());
+        return false;
+    }
+    size_t start = 0, end = 0;
+    if (!section_span(text, kUserSection, start, end)) {
+        BVR_LOG("[b1r] game ini: %s not found - Sensitivity not written", kUserSection);
+        return false;
+    }
+    const long before = section_value(text, start, end, "Sensitivity");
+    if (before == value) {
+        BVR_LOG("[b1r] game ini: Sensitivity already %d", value);
+        return true;
+    }
+    if (!set_section_value(text, start, end, "Sensitivity", value)) return false;
+    if (!write_all(g_path, text)) {
+        BVR_LOG("[b1r] game ini: write failed for Sensitivity (err %lu)", GetLastError());
+        return false;
+    }
+    BVR_LOG("[b1r] game ini: Sensitivity %ld -> %d (the in-game turn slider; pairs with "
+            "TurnAxisMax)",
+            before, value);
+    return true;
 }
 
 bool write_viewport(uint32_t w, uint32_t h) {

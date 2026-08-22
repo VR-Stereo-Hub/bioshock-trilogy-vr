@@ -52,6 +52,12 @@ Viewport read_viewport();
 // partially written file. Game thread, on explicit request only.
 bool write_viewport(uint32_t w, uint32_t h);
 
+// s63: the game's own turn-sensitivity slider ("7" in the options menu = 70).
+// Negative leaves the player's choice alone, which is the default. Pairs with
+// the TurnAxisMax cap - see the definition for why one without the other is
+// worse than neither.
+bool write_turn_sensitivity(int value);
+
 // One log line: located path, current geometry, and whether it agrees with the
 // live backbuffer. A disagreement means the ini was not honoured - most likely
 // the game rewrote it at exit from its own in-memory values.
