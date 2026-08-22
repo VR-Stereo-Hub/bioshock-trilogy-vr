@@ -311,6 +311,58 @@ void invalidate_hand_slots() {
     }
 }
 
+// s63: WHICH actions are live, by name. A dead stick and a centred stick are
+// the same zeros to read_vec2(), so "the left stick did nothing while A worked"
+// cannot be diagnosed from behaviour - isActive is the only thing that
+// separates a binding the runtime never resolved from a genuinely idle input.
+// Log-only; called once when the controllers first go live and again if any
+// action's liveness later changes.
+bool action_is_active(XrSession session, XrAction a, int type) {
+    if (!a) return false;
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = a;
+    if (type == 0) {
+        XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
+        return XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &st)) && st.isActive;
+    }
+    if (type == 1) {
+        XrActionStateFloat st{XR_TYPE_ACTION_STATE_FLOAT};
+        return XR_SUCCEEDED(xrGetActionStateFloat(session, &gi, &st)) && st.isActive;
+    }
+    XrActionStateVector2f st{XR_TYPE_ACTION_STATE_VECTOR2F};
+    return XR_SUCCEEDED(xrGetActionStateVector2f(session, &gi, &st)) && st.isActive;
+}
+
+uint32_t action_liveness_mask(XrSession session) {
+    uint32_t m = 0;
+    if (action_is_active(session, g_move, 2)) m |= 1u << 0;
+    if (action_is_active(session, g_look, 2)) m |= 1u << 1;
+    if (action_is_active(session, g_fire, 1)) m |= 1u << 2;
+    if (action_is_active(session, g_plasmid, 1)) m |= 1u << 3;
+    if (action_is_active(session, g_gripL, 1)) m |= 1u << 4;
+    if (action_is_active(session, g_gripR, 1)) m |= 1u << 5;
+    if (action_is_active(session, g_btnA, 0)) m |= 1u << 6;
+    if (action_is_active(session, g_btnB, 0)) m |= 1u << 7;
+    if (action_is_active(session, g_btnX, 0)) m |= 1u << 8;
+    if (action_is_active(session, g_btnY, 0)) m |= 1u << 9;
+    if (action_is_active(session, g_stickClickL, 0)) m |= 1u << 10;
+    if (action_is_active(session, g_stickClickR, 0)) m |= 1u << 11;
+    return m;
+}
+
+void log_action_census(XrSession session, const char* why) {
+    const uint32_t m = action_liveness_mask(session);
+    BVR_LOG("xr-input: action census (%s): move=%d look=%d fire=%d plasmid=%d gripL=%d "
+            "gripR=%d A=%d B=%d X=%d Y=%d stickL=%d stickR=%d",
+            why, (m >> 0) & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1, (m >> 4) & 1,
+            (m >> 5) & 1, (m >> 6) & 1, (m >> 7) & 1, (m >> 8) & 1, (m >> 9) & 1,
+            (m >> 10) & 1, (m >> 11) & 1);
+    if (!((m >> 0) & 1) && ((m >> 6) & 1))
+        BVR_LOG("xr-input: LEFT STICK IS NOT BOUND while the A button is - the runtime "
+                "resolved some bindings and not this one; move will read dead-centre "
+                "however hard it is pushed");
+}
+
 bool read_vec2(XrSession session, XrAction action, float* x, float* y) {
     XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = action;
@@ -591,6 +643,20 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     }
     g_syncOk.fetch_add(1, std::memory_order_relaxed);
 
+    // s63: re-census on any CHANGE in which actions are live - that is how a
+    // stick that dies mid-session, or comes back, gets a timestamp.
+    {
+        static uint32_t lastMask = 0xFFFFFFFFu;
+        static uint64_t lastCensusMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (nowMs - lastCensusMs >= 500) {
+            lastCensusMs = nowMs;
+            const uint32_t m = action_liveness_mask(session);
+            if (lastMask != 0xFFFFFFFFu && m != lastMask) log_action_census(session, "changed");
+            lastMask = m;
+        }
+    }
+
     // s63 BOOT INPUT DEAD WINDOW - measurement only, nothing here changes
     // behaviour for any game. xrSyncActions succeeding does NOT mean the
     // controllers are usable: until the runtime binds an interaction profile
@@ -608,8 +674,8 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             if (!firstSyncMs) firstSyncMs = nowMs;
             XrActionStateBoolean probe{XR_TYPE_ACTION_STATE_BOOLEAN};
             XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
-            // g_btnA is the exact action the user reported dead, so probe it
-            // rather than a proxy.
+            // g_btnA is the exact action one report named, so probe it rather
+            // than a proxy.
             gi.action = g_btnA;
             if (gi.action && XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &probe)) &&
                 probe.isActive) {
@@ -618,6 +684,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                         "first successful sync (before this, every button and stick reads "
                         "inactive however healthy the mod looks)",
                         static_cast<unsigned long long>(nowMs - firstSyncMs));
+                log_action_census(session, "at first live");
             } else if (nowMs - firstSyncMs >= 2000) {
                 static uint64_t lastWarnMs = 0;
                 if (nowMs - lastWarnMs >= 2000) {
