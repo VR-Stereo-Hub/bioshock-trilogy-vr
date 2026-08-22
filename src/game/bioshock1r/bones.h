@@ -106,6 +106,16 @@ void wskel_release(const char* why);
 void set_sway_kill(bool on);
 bool sway_kill();
 
+// Session 63: the walk-bob gate (default ON; `vrhands bobgate on|off`). While
+// the pawn has ground speed, only the ANGULAR sway trigger may re-arm reference
+// tracking - the positional one is the engine's walk bob and nothing else.
+// MEASURED 2026-08-22: bob puts a mean 10.60 UU (peak 29.30) into bone 43 while
+// moving, against a 6.0 UU threshold calibrated on the 3.01 UU STANDING idle
+// envelope, so walking re-adopted the bobbing pose every frame.
+void set_bob_gate(bool on);
+bool bob_gate();
+float ground_speed_uu();
+
 // Seam commands (game thread): status | list [n] | skel [hands|weapon] |
 // poke <idx> <dUU> |
 // freeze on|off | collapse on|off | ref | anchor <idx> | lcluster <lo> <hi> <anchor> |
