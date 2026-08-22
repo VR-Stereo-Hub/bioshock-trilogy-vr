@@ -161,3 +161,54 @@ alone today and both produced byte-identical results.
 - **The sleeve must be re-pinned after the cluster write**, not before. BRVR
   pinned sleeve bones at the wrist the engine had just written, the cluster write
   then moved the wrist, and the forearm stayed behind as a spike out of the palm.
+
+---
+
+## 6. ANSWERED 2026-08-21: the AHands actor's LOCATION bobs
+
+The probe in §4 ran and separated the candidates on its first session. Player
+walking in circles in a small room, wrench then a gun equipped.
+
+| Quantity | Standing peak-to-peak | Moving peak-to-peak |
+|---|---|---|
+| **actor Z above the pawn** | 0.15 – 0.96 UU | **5.3, 5.5, 6.0, 7.7, 8.1, 10.5, 17.2, 22.8 UU** |
+| actor pitch | 0 – 3.4 deg (aim) | **0.46 deg max** |
+| actor roll | 0.00 | 0.00 |
+| weapon vs actor | 0.1 – 1.9 UU | *no sample* |
+| weapon pitch / roll | 0.5 – 39 deg (equip) | *no sample* |
+
+**Candidate A is falsified.** The actor's rotation is flat while moving: 0.46 deg
+peak-to-peak at most, against 0.00 for roll. A rotational bob would have shown
+here and did not.
+
+**The actor's vertical position is the bob.** Ten to twenty-five times larger
+moving than standing, on a gait cadence, up to 22.8 UU peak-to-peak.
+
+So the Z-pin attempt (§3 item 2) had the right quantity and failed on **write
+ordering**, not on the theory. A write made during CalcView is erased by the game
+tick before the frame draws, which is precisely why BRVR has
+`CameraHook_LateHandsWrite` re-applying from Present. This repo made the write in
+the wrong place, not to the wrong field.
+
+**Caveat on the measurement.** Actor Z is sampled relative to the pawn, so
+terrain contributes in principle. Against that: standing spans stay under 1 UU,
+the moving spans are gait-cadenced, and the room was small and flat. Treat the
+absolute numbers as indicative and the standing-vs-moving ratio as the result.
+
+**Candidate B is untested, not eliminated.** The weapon actor is only cached
+after the first shot, and by the time one was cached the player had stopped, so
+every `weapon vs actor` sample is a standing sample. It is largely moot - an
+actor-location bob of this size explains the symptom on its own - but if pinning
+the actor does not fully settle the gun, get a moving sample before doing
+anything else.
+
+### The fix this implies
+
+Pin the AHands actor's Z **from Present, after the game tick**, mirroring
+`CameraHook_LateHandsWrite`. Not from the CalcView path. Everything else about
+the earlier attempt (bob-free target from `Pawn.Location + eyeHeight`, re-arm on
+a large drift so stairs and lifts pass through) stands; only the write site
+changes.
+
+Verify with the same probe: the moving `actor Z` span should collapse to the
+standing value. That is a numeric pass condition, not a judgement call.
