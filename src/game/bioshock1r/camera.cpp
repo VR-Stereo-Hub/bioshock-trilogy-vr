@@ -193,7 +193,14 @@ std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL
 // Session 4: direct game-FOV write through the settings object (the video
 // option's storage). Distinct from the dead PC+0xE0 override above.
 std::atomic<bool>  g_gameFovWrite{false};
-std::atomic<float> g_gameFovDeg{130.0f};
+// 100, matching the BRVR mod's shipping value and the game's own HorizontalFOV
+// default here. 130 was a leftover from the session-4 experiment that found the
+// real control, and it was misleading rather than harmful: the WRITE is default
+// OFF, so nothing was ever set to 130 - but the F10 slider showed 130 while the
+// in-game video menu showed 100, which reads as two FOVs fighting. Lowering FOV
+// below 100 also buys frames, because the game stops rendering side content
+// that never reaches the display (BRVR's dist/BioshockVR.ini, section 1).
+std::atomic<float> g_gameFovDeg{100.0f};
 std::atomic<int32_t> g_lastOptionFov{0};       // telemetry: what the option holds now
 
 // M4 rung 1: AlternateEye. Half-IPD camera shift per eye, eye picked by
