@@ -195,6 +195,35 @@ The available runtime manifests on your machine are listed under
 must name the 32-bit manifest (not the 64-bit one), and **elevated (admin) shells
 silently ignore it** - set it in the same non-elevated context that launches the game.
 
+## One controller does nothing at all (the other is fine)
+
+Symptom: every button and the stick on ONE hand are dead for a whole session,
+while the other controller works normally. Aiming and the hand model may still
+track, because tracking and *actions* are separate.
+
+**This is not a stick fault and not a binding the mod got wrong.** The runtime
+binds an interaction profile per hand, and if a controller was asleep when the
+session started it can end up with no profile at all - every action on that hand
+then reads inactive no matter how hard you push it.
+
+Confirm it in `bioshockvr.log`. Look for the census line:
+
+```
+xr-input: action census (settled): move=0 look=1 fire=1 plasmid=0 gripL=0
+          gripR=1 A=1 B=1 X=0 Y=0 stickL=0 stickR=1
+xr-input: THE WHOLE LEFT CONTROLLER IS UNBOUND ...
+```
+
+Every `0` on one hand and every `1` on the other is the signature. Measured on
+VDXR 2026-08-22: the runtime's own "interaction profile changed" event landed
+61 ms after the controllers first went live, and the dead hand never recovered
+for the rest of the run.
+
+**Fix:** wake both controllers *before* launching, and give them a moment to be
+seen. If it has already happened, restart the game - the action set is attached
+to the session once and cannot be re-attached, so there is nothing the mod can
+re-try from inside a running session.
+
 ## Resolution and windowed mode
 
 The eye render IS the game's backbuffer, so the game's own resolution is the VR

@@ -218,6 +218,45 @@ std::atomic<int> g_dpadMod{static_cast<int>(DpadMod::Legacy)};
 // would also jump.
 std::atomic<bool> g_jumpOnR3{true};
 
+// One settled census, scheduled when the controllers first go live. 0 = done.
+uint64_t g_settleCensusAtMs = 0;
+
+// s63 TURN RESPONSE, ported from the BRVR mod.
+//
+// THE BUG. The game's own turn rate is nearly VERTICAL at the top of the stick.
+// Measured there: 0.98 -> ~105 deg/s, 0.99 -> ~140, 1.00 -> ~200. A 2%
+// difference in how hard the stick is pushed DOUBLES the turn speed, which is
+// why turning feels steady while held and different every time it is re-pushed.
+//
+// FRAME-RATE DEPENDENCE IS FALSIFIED, and was BRVR's first hypothesis too: 40
+// samples across 142-239 CalcView calls/s show no correlation. Do not re-derive
+// this.
+//
+// THE FIX. Cap what the game is ever sent so the cliff is unreachable, and the
+// same push always turns at the same rate. 0.95 gives roughly 90-110 deg/s.
+// That trades top speed for repeatability, which is why it is tunable - and why
+// BRVR pairs it with raising the game's OWN sensitivity slider (GameTurnSpeed),
+// since a cap alone just makes turning slow.
+//
+// Exp shapes the rest of the range: 1.0 linear, above 1.0 finer near centre.
+//
+// Core defaults are the no-op pair (1.0 / 1.0) so BS2 and Infinite are
+// untouched; BioShock 1 takes BRVR's 0.95 with the rest of its defaults.
+std::atomic<float> g_turnAxisMax{1.0f};
+std::atomic<float> g_turnAxisExp{1.0f};
+
+// Applied to the TURN axis only - the right stick's X. Sign-preserving.
+float shape_turn_axis(float v) {
+    const float mx = g_turnAxisMax.load(std::memory_order_relaxed);
+    const float ex = g_turnAxisExp.load(std::memory_order_relaxed);
+    if (mx >= 0.999f && ex <= 1.001f && ex >= 0.999f) return v; // exact no-op
+    const float sign = v < 0.0f ? -1.0f : 1.0f;
+    float a = fabsf(v);
+    if (a > 1.0f) a = 1.0f;
+    if (ex > 1.001f || ex < 0.999f) a = powf(a, ex);
+    return sign * a * mx;
+}
+
 uint16_t xinput_bit_by_name(const char* v, bool* ok) {
     struct { const char* name; uint16_t bit; } kNames[] = {
         {"A", XINPUT_GAMEPAD_A},         {"B", XINPUT_GAMEPAD_B},
@@ -289,6 +328,8 @@ void pad_map_load_overrides(PadMap base) {
         g_dpadMod.store(static_cast<int>(DpadMod::RightRest), std::memory_order_relaxed);
         g_dpadLeft.store(true, std::memory_order_relaxed);  // ControllerDpadFlip=0
         g_jumpOnR3.store(true, std::memory_order_relaxed);
+        g_turnAxisMax.store(0.95f, std::memory_order_relaxed);
+        g_turnAxisExp.store(1.0f, std::memory_order_relaxed);
     }
 
     wchar_t ini[MAX_PATH];
@@ -352,6 +393,23 @@ void pad_map_load_overrides(PadMap base) {
                     "setting",
                     flip);
     }
+    {
+        // Floats through the string reader - GetPrivateProfileInt cannot do
+        // decimals, and 0.95 is the whole point.
+        wchar_t wv[24] = {};
+        GetPrivateProfileStringW(L"VR", L"TurnAxisMax", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v > 0.05f && v <= 1.0f) g_turnAxisMax.store(v, std::memory_order_relaxed);
+            else BVR_LOG("xr-input: TurnAxisMax must be between 0.05 and 1.0 - ignoring");
+        }
+        GetPrivateProfileStringW(L"VR", L"TurnAxisExp", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v >= 0.5f && v <= 4.0f) g_turnAxisExp.store(v, std::memory_order_relaxed);
+            else BVR_LOG("xr-input: TurnAxisExp must be between 0.5 and 4.0 - ignoring");
+        }
+    }
     g_jumpOnR3.store(
         GetPrivateProfileIntW(L"VR", L"JumpOnR3",
                               g_jumpOnR3.load(std::memory_order_relaxed) ? 1 : 0, ini) != 0,
@@ -396,8 +454,11 @@ void pad_map_load_overrides(PadMap base) {
                          : md == static_cast<int>(DpadMod::LeftGrip)  ? "leftgrip"
                          : md == static_cast<int>(DpadMod::LeftRest)  ? "leftrest"
                                                                      : "legacy heuristic";
-        BVR_LOG("xr-input: BioshockVR.ini d-pad modifier = %s | R3 jump = %s", mn,
-                g_jumpOnR3.load(std::memory_order_relaxed) ? "on" : "off");
+        BVR_LOG("xr-input: BioshockVR.ini d-pad modifier = %s | R3 jump = %s | "
+                "TurnAxisMax %.2f exp %.2f",
+                mn, g_jumpOnR3.load(std::memory_order_relaxed) ? "on" : "off",
+                g_turnAxisMax.load(std::memory_order_relaxed),
+                g_turnAxisExp.load(std::memory_order_relaxed));
         // A thumbrest cannot modify the stick its own thumb has to push.
         const bool leftSel = g_dpadLeft.load(std::memory_order_relaxed);
         if ((leftSel && md == static_cast<int>(DpadMod::LeftRest)) ||
@@ -662,10 +723,23 @@ void log_action_census(XrSession session, const char* why) {
             why, (m >> 0) & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1, (m >> 4) & 1,
             (m >> 5) & 1, (m >> 6) & 1, (m >> 7) & 1, (m >> 8) & 1, (m >> 9) & 1,
             (m >> 10) & 1, (m >> 11) & 1);
-    if (!((m >> 0) & 1) && ((m >> 6) & 1))
-        BVR_LOG("xr-input: LEFT STICK IS NOT BOUND while the A button is - the runtime "
-                "resolved some bindings and not this one; move will read dead-centre "
-                "however hard it is pushed");
+    // MEASURED 2026-08-22: when this fires it is never one binding. Every
+    // LEFT-hand action goes dead together (move, left trigger, left grip, X, Y,
+    // left stick click) while every right-hand one stays live, which is a
+    // controller with no interaction profile rather than a binding we got
+    // wrong - our suggestions for those six paths could not fail as a set.
+    const uint32_t kLeft = (1u << 0) | (1u << 3) | (1u << 4) | (1u << 8) | (1u << 9) | (1u << 10);
+    const uint32_t kRight = (1u << 1) | (1u << 2) | (1u << 5) | (1u << 6) | (1u << 7) | (1u << 11);
+    const bool leftDead = (m & kLeft) == 0;
+    const bool rightDead = (m & kRight) == 0;
+    if (leftDead && !rightDead)
+        BVR_LOG("xr-input: THE WHOLE LEFT CONTROLLER IS UNBOUND (every left action "
+                "inactive, right hand fine). Not a stick fault - the runtime has no "
+                "interaction profile for that hand. Wake or re-pair the left controller; "
+                "it usually means it was asleep when the session started.");
+    else if (rightDead && !leftDead)
+        BVR_LOG("xr-input: THE WHOLE RIGHT CONTROLLER IS UNBOUND (every right action "
+                "inactive, left hand fine). Wake or re-pair the right controller.");
 }
 
 bool read_vec2(XrSession session, XrAction action, float* x, float* y) {
@@ -958,6 +1032,10 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         static uint32_t lastMask = 0xFFFFFFFFu;
         static uint64_t lastCensusMs = 0;
         const uint64_t nowMs = GetTickCount64();
+        if (g_settleCensusAtMs && nowMs >= g_settleCensusAtMs) {
+            g_settleCensusAtMs = 0;
+            log_action_census(session, "settled");
+        }
         if (nowMs - lastCensusMs >= 500) {
             lastCensusMs = nowMs;
             const uint32_t m = action_liveness_mask(session);
@@ -994,6 +1072,11 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                         "inactive however healthy the mod looks)",
                         static_cast<unsigned long long>(nowMs - firstSyncMs));
                 log_action_census(session, "at first live");
+                // The runtime's own profile-changed event lands AFTER this
+                // (measured: 61 ms), so the first-live census is a snapshot
+                // taken mid-binding. Take another once it has settled, and let
+                // the change-watcher below carry it from there.
+                g_settleCensusAtMs = GetTickCount64() + 1500;
             } else if (nowMs - firstSyncMs >= 2000) {
                 static uint64_t lastWarnMs = 0;
                 if (nowMs - lastWarnMs >= 2000) {
@@ -1037,6 +1120,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     read_vec2(session, g_look, &lx, &ly);
     apply_deadzone(mx, my);
     apply_deadzone(lx, ly);
+    lx = shape_turn_axis(lx); // turn only; Y is pitch and is left alone
     pad.lx = axis_to_thumb(mx);
     pad.ly = axis_to_thumb(my); // XR +y = stick forward = XInput +Y (up)
     pad.rx = axis_to_thumb(lx);
