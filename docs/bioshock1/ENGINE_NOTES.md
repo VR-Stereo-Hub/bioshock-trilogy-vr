@@ -3518,3 +3518,98 @@ fg path (route B - unnecessary, the cluster lever passed first) and the fovA
 consumer hunt (route A - stays parked with its in-headset world-coupling
 negative). `kActorDrawScaleOffset`/dirty-protocol constants remain declared,
 still unreferenced.
+
+## The Flash movie stack - WHICH interface screen is up, by name
+
+**Ported from BRVR, 2026-08-21.** Consumed by `src/game/bioshock1r/screens.cpp`
+and published into the cinematic verdict via `bvr::vr::publish_ui_pause`.
+
+### Why a render-side signal cannot answer this
+
+The pause menu and the machine flows draw OVER a live world, which defeats every
+signal the verdict had. CalcView keeps firing, so it is not stale. The view actor
+is still the player pawn, so it is still strict. The game renders and claims the
+same fov. The frame is not pure gameswf, so `screen_only()` is false. The main
+menu and loading screens moved to the anchored cinema quad while the pause menu
+stayed on the head-locked HUD panel.
+
+### The chain
+
+The whole interface is a stack of named Flash movies. The engine exposes
+`GetTopPlayingMovie`, which BRVR decoded by eye rather than calling (it is an
+exec native taking an FFrame). Both getters are pure field walks:
+
+```
+GetFlashGUIController, ecx = LevelInfo:
+    mov eax,[ecx+0xFC]      ; XLevel
+    mov eax,[eax+0x5C]
+    mov eax,[eax+0x4C]
+    cmp [eax+0x48],0        ; TArray ArrayNum - the getter bails when zero
+    mov eax,[eax+0x44]      ; TArray Data
+    mov eax,[eax]           ; data[0]
+    mov eax,[eax+0x7C]      ; the controller
+
+GetTopPlayingMovie, ecx = FlashGUIController:
+    mov edx,[ecx+0x15C]     ; count
+    mov eax,[ecx+0x158]     ; array data
+    mov ecx,[eax+edx*4-4]   ; data[count-1] == the TOP
+```
+
+The movie's filename is a **string** at `+0x40` on the movie object, so it needs
+no name table. `+0x4C` also carries it but degrades to `"NoFileSpecified"` on
+some entries; `+0x40` held on every sample.
+
+**`AActor::Level` is derived at runtime, not assumed.** The controller and the
+pawn must agree on the offset, both must point at the same object, and that
+object's own copy must point at **itself**. Nothing but LevelInfo passes all
+three. Measured `+0xF8` on this build, but the code never trusts that literal.
+
+### Measured, first run of the probe, 2026-08-21
+
+| Top movie | Meaning |
+|---|---|
+| `HUDRadial.swf` | ordinary gameplay |
+| `PausePC.swf` | the pause menu |
+| `craftingstation.swf` | a vending machine |
+| `Fadeout.swf` | a loading transition |
+
+Pause, vending and hacking screens were all confirmed anchoring in a headset the
+same day.
+
+### Fail-closed behaviour
+
+- The LevelInfo self-reference is re-proved every frame, so a level change
+  re-finds rather than depending on a reset hook nobody remembers to call.
+- Array data is checked as a **buffer**, not an object. This is not pedantry: the
+  object test demands a vtable whose first entry is executable, and a TArray
+  buffer's first word is element 0, whose own first word is a vtable POINTER
+  living in read-only data. Running the object test there rejects a correct
+  pointer every time, and it cost BRVR a session. Fail closed is right; failing
+  closed on the wrong predicate is not.
+- The walk reports **which step** it stopped at. A six-deep chain decoded from
+  instructions has six ways to be wrong and "did not resolve" distinguishes none
+  of them. That cost BRVR a session too.
+- An unreadable name leaves the previous verdict standing rather than dropping
+  the panel out from under a screen the player is reading.
+- If the chain never resolves, placement behaves exactly as it did before.
+
+### FALSIFIED: LevelInfo::Pauser
+
+The first attempt used `Level+0x668`, which BRVR recorded as the pause field and
+its source called "the one reliable signal". **It read null through three real
+pauses on this build** and is not used.
+
+That offset was never a measured result in BRVR either. Its detector shared one
+dependency with two other features (`FindLevel`, which needs the pawn) and all
+three were silent for a whole 16-minute session with their switches on. The
+comment claiming reliability outlived the evidence for it.
+
+**Also falsified in BRVR, as sway fixes:** `AdditiveHandBobAnim` and
+`WeaponBobDamping`, both observed inert. Do not revive either.
+
+### Rejected alternative, on the record
+
+BRVR first tried a **draw-signature heuristic**: in-game menus issue 20-31
+non-indexed draws per frame against gameplay's 120+, because menus hide the HUD.
+The gap looked clean at 4x with no overlap across seven captures. In practice it
+**flipped twelve times in one spot during ordinary gameplay**.

@@ -1432,3 +1432,54 @@ runtime.
   half-switched pad, and a partially-populated POD would silently unbind controls
   to bit 0. The BioShock 1 table reproduces the previous literals exactly - that,
   not an assertion, is the inertness argument, and it was measured (see below).
+
+### 2026-08-21 - the cinema screen is anchored where it opened, not where you recentred
+
+Ported from the BRVR mod as the first item of the consolidation
+(`docs/bioshock1/PORT-PLAN.md`).
+
+The quad that carries menus, the map, the manual, machine flows, the hack board,
+loading screens and cutscenes had two placements and each had a failure the
+other did not. `g_space` with an identity pose put it at the recenter origin's
+forward, so a player who had turned since recentring got a menu behind them.
+`g_viewSpace` pinned it to the head, so it swam with every glance. Session 22
+picked between them per screen type, which meant choosing which failure to have.
+
+Anchor mode is the third option and is now the default: take the head pose once,
+when the screen opens, flatten the forward vector to horizontal so the panel is
+never tilted, and leave the quad there in world space until the screen closes.
+The player can look around a stationary screen, which is what makes it readable.
+It re-places on the next screen, on a recenter, and after 0.45 m of head travel
+(headset off the desk, player stood up), and on nothing else - ordinary head
+motion must never move it.
+
+**Two details are load-bearing and both are somebody else's scar tissue.**
+
+The yaw is `atan2(-fx, -fz)`, not `atan2(fx, -fz)`. The quad's visible face is
+its local +Z and `R_y(yaw)*(0,0,1) = (sin yaw, 0, cos yaw)`, so the second form
+builds the MIRROR of the head yaw: the panel sits askew by twice the yaw, in
+opposite directions looking left versus right, and is dead straight at yaw 0 -
+which is exactly why it shipped in BRVR and survived testing. Any test of this
+code that does not turn the head cannot see the bug.
+
+The pose comes from the unconditional `xrLocateSpace` at frame open, and the
+anchor is not latched on a frame where that pose is invalid. BRVR anchored from
+a variable only the gameplay path wrote, so every screen shown before the first
+gameplay frame - the startup movies, the main menu - landed at the local origin
+instead of in front of the player.
+
+**Verified in the simulator, no headset** (`tools/xrsim-launch.ps1 -Game bs1`,
+main menu, one quad layer throughout):
+
+| Check | Result |
+|---|---|
+| Placed at all | `screen anchored at yaw 0.0 deg, head (0.00 1.60 0.00) m` |
+| Survives a pure 50 deg head turn | quad pose `(0.000 1.60 -1.750)` **identical** before and after, so it is world-locked and not following the head |
+| Re-anchors on travel | `screen re-anchoring - head moved 1.20 m from the anchor` |
+| Re-anchors on the RIGHT heading | at head yaw 50 it logged `yaw 50.0` and placed at `(-0.141 1.60 -1.125)`, which is head + 1.75 m along the head's own forward to **0.0000 m**. The mirrored placement would have been 2.681 m away |
+| Black around it | every capture reported `1 layer(s): quad`, no projection layer |
+
+Not verified: the `vrscreen` console command. `command.txt` is polled from the
+CalcView hook, which does not pump at the main menu, so the line was written and
+never read. The parser is untested at runtime; the F10 overlay controls call the
+same functions and are the primary surface.

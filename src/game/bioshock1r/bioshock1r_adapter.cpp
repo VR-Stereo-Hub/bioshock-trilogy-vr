@@ -1,6 +1,7 @@
 #include "game/bioshock1r/bioshock1r_adapter.h"
 
 #include "core/util/log.h"
+#include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/aim.h"
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
@@ -9,6 +10,9 @@
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
+#include <cstring>
+
+#include "game/bioshock1r/screens.h"
 
 namespace bvr::b1r {
 
@@ -28,6 +32,12 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     hands::init(image);        // M7 viewmodel; the actor is located lazily
     bones::init(image);        // M7-v2 skeleton drive; located lazily off the actor
     body::init(image);         // M7.5 body yaw transfer; default off, probe-gated
+    // Anchored screen placement is a CORE behaviour and this is where BS1 -
+    // and only BS1 - asks for it. It is headset-verified here and nowhere
+    // else; BS2 and Infinite keep the recenter-origin placement they shipped
+    // with until somebody tests them, and then they opt in on this same line.
+    // A saved VR preset can still override it afterwards (vrpreset load).
+    bvr::vr::set_screen_place_mode(0);
     BVR_LOG("[b1r] adapter ready, capabilities 0x%X", capabilities());
     return true;
 }
@@ -43,6 +53,14 @@ void Bioshock1RAdapter::drawDebugUi() {
     body::draw_debug_ui();
     input_drive::draw_debug_ui();
     scenedraw::draw_debug_ui();
+}
+
+bool Bioshock1RAdapter::handleCommand(const char* cmd, const char* args) {
+    if (strcmp(cmd, "vrscreens") == 0) {
+        screens::handle_command(args);
+        return true;
+    }
+    return false;
 }
 
 bvr::game::IGameAdapter* create_adapter() {

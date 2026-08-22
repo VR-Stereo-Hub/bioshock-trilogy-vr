@@ -16,6 +16,7 @@
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/console_exec.h"
 #include "game/bioshock1r/game_ini.h"
+#include "game/bioshock1r/screens.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
@@ -878,6 +879,8 @@ void save_vr_preset() {
         fprintf(f, "hudQuadWidthM=%.2f\n", hw);
         fprintf(f, "hudQuadUpM=%.2f\n", hu);
     }
+    fprintf(f, "screenPlaceMode=%d\n", bvr::vr::screen_place_mode());
+    fprintf(f, "screenHeightM=%.2f\n", bvr::vr::screen_height_m());
     fclose(f);
     BVR_LOG("[b1r] VR preset values saved to vrpreset.ini");
     // The per-hand model offsets live in hands.ini; saving them here too makes
@@ -978,6 +981,9 @@ void load_vr_preset_values() {
         else if (strcmp(key, "hudQuadDistM") == 0) hudD = v;
         else if (strcmp(key, "hudQuadWidthM") == 0) hudW = v;
         else if (strcmp(key, "hudQuadUpM") == 0) hudU = v;
+        else if (strcmp(key, "screenPlaceMode") == 0)
+            bvr::vr::set_screen_place_mode(static_cast<int>(v));
+        else if (strcmp(key, "screenHeightM") == 0) bvr::vr::set_screen_height_m(v);
         else --n;
     }
     fclose(f);
@@ -1191,6 +1197,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // F10 button posts (seated pose + view yaw).
     if (bvr::input::take_recenter_chord()) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
+        // A recenter with a screen open must bring the screen too, or the
+        // player recenters and the thing they were reading stays behind them.
+        bvr::vr::release_screen_anchor();
         BVR_LOG("[b1r] recenter requested (stick chord)");
     }
     if (g_vrPresetSavePending.exchange(false, std::memory_order_relaxed)) save_vr_preset();
@@ -1850,6 +1859,12 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             frames = 0;
         }
     }
+
+    // Which interface screen is up, by NAME. The pause menu and the machine
+    // flows draw over a live world, so no render-side signal can see them; the
+    // engine's own movie stack names them exactly.
+    screens::on_calcview(self, viewActor ? *viewActor : nullptr);
+    bvr::vr::publish_ui_pause(screens::panel_screen_up());
 
     {
         int32_t moved = body::on_calcview(self, viewActor ? *viewActor : nullptr,

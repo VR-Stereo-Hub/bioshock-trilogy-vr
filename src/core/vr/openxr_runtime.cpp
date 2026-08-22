@@ -142,6 +142,47 @@ std::atomic<float> g_screenDistM{1.75f};  // quad distance in meters
 std::atomic<float> g_screenWidthM{2.4f};  // quad width in meters
 std::atomic<bool> g_cameraMode{false};    // M3: drive the game camera from the HMD
 
+// ---- SCREEN PLACEMENT (ported from the BRVR mod, docs/bioshock1/PORT-PLAN.md)
+// Where the cinema quad sits while the game is on it: the menus, the map, the
+// manual, the machine flows, the hack board, loading screens and cutscenes.
+//
+// The two pre-existing placements each had a failure the other did not:
+//   - g_space with an IDENTITY pose puts the screen at the RECENTER ORIGIN's
+//     forward, so a player who has turned since recentring gets a menu behind
+//     them and has to hunt for it.
+//   - g_viewSpace pins it to the head, so the screen swims with every glance
+//     and cannot be read the way a screen on a wall can.
+// Anchor mode takes the head pose ONCE, when the screen opens, and leaves the
+// quad there in world space until it closes. That is the BRVR behaviour, and
+// it is the one that reads as "a screen in the room".
+//
+// 0 = anchor, 1 = head-locked, 2 = recenter origin.
+//
+// THE DEFAULT HERE IS THE OLD BEHAVIOUR, ON PURPOSE. This is core, so it is
+// BioShock 1, BioShock 2 and Infinite at once, and anchor placement has only
+// been verified in a headset on BS1. A game opts in from its own adapter
+// (bioshock1r_adapter.cpp init) - so the new placement is BS1-specific until
+// somebody puts the headset on for the other two, at which point their
+// adapters opt in the same way and this default can finally move to 0.
+constexpr int kScreenPlaceLegacy = 2;
+// Published by the adapter: a full-screen pause interface is up. A fifth input
+// to the cinematic verdict, and the only one that is not render-side - see
+// publish_ui_pause() in the header for why the render side cannot see it.
+std::atomic<bool> g_uiPaused{false};
+std::atomic<int> g_screenPlaceMode{kScreenPlaceLegacy};
+std::atomic<float> g_screenHeightM{0.0f}; // vertical nudge applied to the anchor
+
+// Anchor state. Present thread only - the quad branch below is the sole reader
+// and writer, so no synchronisation is needed or wanted here.
+bool g_screenAnchorSet = false;
+XrPosef g_screenAnchor = {};
+float g_screenAnchorHead[3] = {0.0f, 0.0f, 0.0f};
+// Drop a stale anchor once the head has travelled this far from where the
+// screen was placed: headset picked up off a desk, player stood up, roomscale
+// step. Below it, ordinary head motion must NOT move the screen.
+constexpr float kScreenReanchorM = 0.45f;
+std::atomic<uint32_t> g_screenAnchors{0}; // how many times a screen was placed
+
 // Session 19 HUD floating quad: the gameswf HUD captured by core/gfx/
 // hud_capture is copied into its own swapchain and composited head-locked
 // (g_viewSpace) during stereo gameplay. Sliders persist via vrpreset.ini.
@@ -3500,7 +3541,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
         bool fovMm = bvr::hud::fov_mismatch();
         bool screenOnly = bvr::hud::screen_only(); // hack/loading/FMV screens
         bool stereoCine = g_cineStereo.load(std::memory_order_relaxed);
-        bool wantCine = stale || !strict || screenOnly || (fovMm && !stereoCine);
+        bool uiPaused = g_uiPaused.load(std::memory_order_relaxed);
+        bool wantCine =
+            stale || !strict || screenOnly || uiPaused || (fovMm && !stereoCine);
         bool active = g_cineActive.load(std::memory_order_relaxed);
         if (wantCine != active) {
             if (++g_cineStreak >= kCineHysteresis) {
@@ -3512,9 +3555,9 @@ void on_present_end(IDXGISwapChain* swapchain) {
                 else
                     g_cineExits.fetch_add(1, std::memory_order_relaxed);
                 BVR_LOG("xr: cinematic quad %s (strict=%d stale=%d fovMismatch=%d "
-                        "screenOnly=%d)",
+                        "screenOnly=%d uiPaused=%d)",
                         active ? "ON" : "off", strict ? 1 : 0, stale ? 1 : 0,
-                        fovMm ? 1 : 0, screenOnly ? 1 : 0);
+                        fovMm ? 1 : 0, screenOnly ? 1 : 0, uiPaused ? 1 : 0);
             }
         } else {
             g_cineStreak = 0;
@@ -3761,6 +3804,13 @@ void on_present_end(IDXGISwapChain* swapchain) {
                                  {static_cast<int32_t>(g_swapW), static_cast<int32_t>(g_swapH)}};
 
                 if (projectionMode) {
+                    // Back in the world: forget where the last screen hung, so
+                    // the NEXT one is placed where the player is looking then.
+                    // Released here rather than on the cine-verdict transition
+                    // because the verdict already carries hysteresis - a screen
+                    // must never be re-placed part-way through being read.
+                    g_screenAnchorSet = false;
+
                     // fov = the symmetric fov the game rendered with (hfov
                     // written by the adapter, vfov via aspect).
                     float halfH = hfovDeg * 0.5f / 57.29578f;
@@ -3882,22 +3932,112 @@ void on_present_end(IDXGISwapChain* swapchain) {
                         BVR_LOG("xr: alternate-eye stereo live (both eyes hold offset images)");
                 } else {
                     float width = g_screenWidthM.load(std::memory_order_relaxed);
-                    // Session 22 (user feedback, first headset run): SCREEN-ONLY
-                    // intervals (hack minigame, loading screens - world-less 2D
-                    // boards) ride the HEAD-LOCKED view space, exactly like the
-                    // pause-menu panel, so the board is centered on wherever the
-                    // player is looking instead of the recenter-origin facing.
-                    // Cinematic scenes (fov-mismatch/strict legs) and the plain
-                    // camera-off screen keep the world-locked space unchanged.
-                    bool headLock = g_cineActive.load(std::memory_order_relaxed) &&
-                                    bvr::hud::screen_only() &&
-                                    g_viewSpace != XR_NULL_HANDLE;
-                    quad.space = headLock ? g_viewSpace : g_space;
+                    float dist = g_screenDistM.load(std::memory_order_relaxed);
+                    int place = g_screenPlaceMode.load(std::memory_order_relaxed);
+
+                    // Session 22 (user feedback, first headset run) put
+                    // SCREEN-ONLY intervals (hack minigame, loading screens -
+                    // world-less 2D boards) on the HEAD-LOCKED view space so
+                    // the board landed where the player was looking rather
+                    // than on the recenter-origin facing. Anchor mode gets
+                    // that placement right for EVERY screen without the
+                    // swimming, so the screen-only special case is no longer
+                    // needed; it survives only as placement mode 1.
+                    bool headLock = place == 1 && g_viewSpace != XR_NULL_HANDLE;
+
+                    if (place == 0 && g_viewSpace != XR_NULL_HANDLE) {
+                        // ---- ANCHOR MODE ------------------------------------
+                        float hp[3], hq[4];
+                        bool poseOk = false;
+                        {
+                            std::lock_guard<std::mutex> lock(g_poseMutex);
+                            poseOk = g_poseValid;
+                            if (poseOk) {
+                                hp[0] = g_headPose.px;
+                                hp[1] = g_headPose.py;
+                                hp[2] = g_headPose.pz;
+                                hq[0] = g_headPose.qx;
+                                hq[1] = g_headPose.qy;
+                                hq[2] = g_headPose.qz;
+                                hq[3] = g_headPose.qw;
+                            }
+                        }
+
+                        // Re-anchor after a long head translation only. Every
+                        // smaller motion must leave the screen where it is,
+                        // which is the entire point of the mode.
+                        if (g_screenAnchorSet && poseOk) {
+                            const float dx = hp[0] - g_screenAnchorHead[0];
+                            const float dy = hp[1] - g_screenAnchorHead[1];
+                            const float dz = hp[2] - g_screenAnchorHead[2];
+                            const float d2 = dx * dx + dy * dy + dz * dz;
+                            if (d2 > kScreenReanchorM * kScreenReanchorM) {
+                                g_screenAnchorSet = false;
+                                BVR_LOG("xr: screen re-anchoring - head moved %.2f m "
+                                        "from the anchor",
+                                        sqrtf(d2));
+                            }
+                        }
+
+                        // NEVER anchor to a pose we do not have. BRVR shipped
+                        // this bug: it anchored from a variable only gameplay
+                        // wrote, so every screen shown before the first
+                        // gameplay frame - the startup movies, the main menu -
+                        // landed at the LOCAL origin instead of in front of
+                        // the player. Here the pose comes from the unconditional
+                        // xrLocateSpace at frame open, and if it is not valid
+                        // this frame we hold the previous anchor (or fall
+                        // through to the origin placement on the very first
+                        // frame) rather than latching a bad one.
+                        if (!g_screenAnchorSet && poseOk) {
+                            // Head forward = q * (0,0,-1), flattened to
+                            // horizontal so the screen is never tilted even if
+                            // the player opened it while looking up or down.
+                            float fx = -2.0f * (hq[0] * hq[2] + hq[1] * hq[3]);
+                            float fz = -(1.0f - 2.0f * (hq[0] * hq[0] + hq[1] * hq[1]));
+                            float len = sqrtf(fx * fx + fz * fz);
+                            if (len < 1e-4f) { fx = 0.0f; fz = -1.0f; len = 1.0f; }
+                            fx /= len;
+                            fz /= len;
+
+                            // The quad's visible face is its local +Z, and
+                            // R_y(yaw)*(0,0,1) = (sin yaw, 0, cos yaw), so
+                            // putting +Z on -forward wants yaw = atan2(-fx,-fz).
+                            // BRVR's first attempt used atan2(fx,-fz), which
+                            // builds the MIRROR of the head yaw: the quad sits
+                            // askew by 2*yaw, in the opposite direction looking
+                            // left versus right, and is dead straight at yaw 0 -
+                            // which is exactly why it survived testing.
+                            const float yaw = atan2f(-fx, -fz);
+                            g_screenAnchor.orientation = {0.0f, sinf(yaw * 0.5f), 0.0f,
+                                                          cosf(yaw * 0.5f)};
+                            g_screenAnchor.position = {
+                                hp[0] + fx * dist,
+                                hp[1] + g_screenHeightM.load(std::memory_order_relaxed),
+                                hp[2] + fz * dist};
+                            g_screenAnchorSet = true;
+                            g_screenAnchorHead[0] = hp[0];
+                            g_screenAnchorHead[1] = hp[1];
+                            g_screenAnchorHead[2] = hp[2];
+                            g_screenAnchors.fetch_add(1, std::memory_order_relaxed);
+                            BVR_LOG("xr: screen anchored at yaw %.1f deg, head "
+                                    "(%.2f %.2f %.2f) m, %.2f m out",
+                                    yaw * 57.29578f, hp[0], hp[1], hp[2], dist);
+                        }
+                    }
+
+                    if (place == 0 && g_screenAnchorSet) {
+                        quad.space = g_space;
+                        quad.pose = g_screenAnchor;
+                    } else {
+                        // Head-locked, recenter-origin, or anchor mode on a
+                        // frame with no valid head pose yet.
+                        quad.space = headLock ? g_viewSpace : g_space;
+                        quad.pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+                        quad.pose.position = {0.0f, 0.0f, -dist};
+                    }
                     quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
                     quad.subImage = sub;
-                    quad.pose.orientation.w = 1.0f;
-                    quad.pose.position = {0.0f, 0.0f,
-                                          -g_screenDistM.load(std::memory_order_relaxed)};
                     quad.size = {width, width * static_cast<float>(g_swapH) /
                                             static_cast<float>(g_swapW)};
                     layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
@@ -4350,20 +4490,39 @@ void draw_debug_ui() {
                     g_mirrorHolds.load(std::memory_order_relaxed), mirrorBlits);
     uint32_t cineEnters = g_cineEnters.load(std::memory_order_relaxed);
     if (cineEnters || g_cineActive.load(std::memory_order_relaxed))
-        ImGui::Text("cinematic: %s | enters %u exits %u presents %u",
+        ImGui::Text("cinematic: %s | enters %u exits %u presents %u | uiPaused %d",
                     g_cineActive.load(std::memory_order_relaxed) ? "ACTIVE (quad)" : "off",
                     cineEnters, g_cineExits.load(std::memory_order_relaxed),
-                    g_cinePresents.load(std::memory_order_relaxed));
+                    g_cinePresents.load(std::memory_order_relaxed),
+                    g_uiPaused.load(std::memory_order_relaxed) ? 1 : 0);
 
     input_draw_debug_ui(); // M5 action-layer status line
 
-    if (!camMode) {
+    // The cinema screen. These used to be drawn only while camera mode was OFF,
+    // which hid them during the exact sessions that need them: with camera mode
+    // ON the quad is what menus, machine flows, the map and cutscenes are shown
+    // on, and the player has no other way to reach its size or placement.
+    if (ImGui::CollapsingHeader("Cinema screen (menus, map, cutscenes)")) {
+        int place = g_screenPlaceMode.load(std::memory_order_relaxed);
+        if (ImGui::Combo("Screen placement", &place,
+                         "Anchored where it opened\0Follows your head\0At the recenter "
+                         "origin\0"))
+            set_screen_place_mode(place);
         float dist = g_screenDistM.load(std::memory_order_relaxed);
-        if (ImGui::SliderFloat("Screen distance (m)", &dist, 0.5f, 5.0f))
+        if (ImGui::SliderFloat("Screen distance (m)", &dist, 0.5f, 5.0f)) {
             g_screenDistM.store(dist, std::memory_order_relaxed);
+            release_screen_anchor(); // otherwise the slider does nothing until it closes
+        }
         float width = g_screenWidthM.load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("Screen width (m)", &width, 0.5f, 6.0f))
             g_screenWidthM.store(width, std::memory_order_relaxed);
+        float sh = g_screenHeightM.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("Screen height offset (m)", &sh, -1.5f, 1.5f))
+            set_screen_height_m(sh);
+        if (ImGui::Button("Re-place screen here")) release_screen_anchor();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s | placed %u", g_screenAnchorSet ? "placed" : "unplaced",
+                            g_screenAnchors.load(std::memory_order_relaxed));
     }
 
     // Session 19 HUD quad: capture toggle + head-locked placement.
@@ -4813,6 +4972,10 @@ void publish_gameplay_view(bool strictGameplay) {
                          std::memory_order_relaxed);
 }
 
+void publish_ui_pause(bool paused) {
+    g_uiPaused.store(paused, std::memory_order_relaxed);
+}
+
 CineDrive cine_drive() {
     return static_cast<CineDrive>(g_cineDrive.load(std::memory_order_relaxed));
 }
@@ -4829,6 +4992,89 @@ void set_cine_drive(CineDrive mode) {
     int v = static_cast<int>(mode);
     if (g_cineDrive.exchange(v, std::memory_order_relaxed) != v)
         BVR_LOG("xr: cinematic drive = %s", cine_drive_name(mode));
+}
+
+// ---- screen placement -------------------------------------------------------
+const char* screen_place_name(int mode) {
+    switch (mode) {
+        case 1: return "head";
+        case 2: return "origin";
+        default: return "anchor";
+    }
+}
+
+void release_screen_anchor() { g_screenAnchorSet = false; }
+
+int screen_place_mode() { return g_screenPlaceMode.load(std::memory_order_relaxed); }
+
+void set_screen_place_mode(int mode) {
+    if (mode < 0 || mode > 2) return;
+    if (g_screenPlaceMode.exchange(mode, std::memory_order_relaxed) != mode) {
+        release_screen_anchor(); // the next frame places it under the new rule
+        BVR_LOG("xr: screen placement = %s", screen_place_name(mode));
+    }
+}
+
+float screen_height_m() { return g_screenHeightM.load(std::memory_order_relaxed); }
+
+void set_screen_height_m(float m) {
+    if (m < -3.0f) m = -3.0f;
+    if (m > 3.0f) m = 3.0f;
+    g_screenHeightM.store(m, std::memory_order_relaxed);
+    release_screen_anchor();
+}
+
+void handle_screen_command(const char* args) {
+    if (strncmp(args, "anchor mode", 11) == 0) {
+        const char* v = args + 11;
+        while (*v == ' ') ++v;
+        if (strncmp(v, "head", 4) == 0) {
+            set_screen_place_mode(1);
+        } else if (strncmp(v, "origin", 6) == 0) {
+            set_screen_place_mode(2);
+        } else if (strncmp(v, "anchor", 6) == 0) {
+            set_screen_place_mode(0);
+        } else {
+            BVR_LOG("xr: usage: vrscreen anchor mode anchor|head|origin  (current %s)",
+                    screen_place_name(screen_place_mode()));
+        }
+    } else if (strncmp(args, "anchor now", 10) == 0) {
+        release_screen_anchor();
+        BVR_LOG("xr: screen anchor released - it re-places on the next screen frame");
+    } else if (strncmp(args, "dist ", 5) == 0) {
+        float v = static_cast<float>(atof(args + 5));
+        if (v >= 0.3f && v <= 20.0f) {
+            g_screenDistM.store(v, std::memory_order_relaxed);
+            release_screen_anchor();
+            BVR_LOG("xr: screen distance = %.2f m", v);
+        } else {
+            BVR_LOG("xr: usage: vrscreen dist <0.3..20>  (current %.2f)",
+                    g_screenDistM.load(std::memory_order_relaxed));
+        }
+    } else if (strncmp(args, "width ", 6) == 0) {
+        float v = static_cast<float>(atof(args + 6));
+        if (v >= 0.3f && v <= 20.0f) {
+            g_screenWidthM.store(v, std::memory_order_relaxed);
+            BVR_LOG("xr: screen width = %.2f m", v);
+        } else {
+            BVR_LOG("xr: usage: vrscreen width <0.3..20>  (current %.2f)",
+                    g_screenWidthM.load(std::memory_order_relaxed));
+        }
+    } else if (strncmp(args, "height ", 7) == 0) {
+        float v = static_cast<float>(atof(args + 7));
+        set_screen_height_m(v);
+        BVR_LOG("xr: screen height offset = %.2f m", screen_height_m());
+    } else {
+        BVR_LOG("xr: screen placement=%s dist=%.2f m width=%.2f m height=%+.2f m "
+                "(anchored %u times, currently %s)",
+                screen_place_name(screen_place_mode()),
+                g_screenDistM.load(std::memory_order_relaxed),
+                g_screenWidthM.load(std::memory_order_relaxed), screen_height_m(),
+                g_screenAnchors.load(std::memory_order_relaxed),
+                g_screenAnchorSet ? "placed" : "unplaced");
+        BVR_LOG("xr: usage: vrscreen anchor mode anchor|head|origin | anchor now | "
+                "dist <m> | width <m> | height <m>");
+    }
 }
 
 void handle_cine_command(const char* args) {
@@ -5192,7 +5438,15 @@ void fov_audit(float* tanH, float* tanV, int* src, unsigned* swapW, unsigned* sw
 }
 void set_pose_audit(bool) {}
 void publish_gameplay_view(bool) {}
+void publish_ui_pause(bool) {}
 void handle_cine_command(const char*) {}
+void handle_screen_command(const char*) {}
+void release_screen_anchor() {}
+int screen_place_mode() { return 0; }
+void set_screen_place_mode(int) {}
+const char* screen_place_name(int) { return "anchor"; }
+float screen_height_m() { return 0.0f; }
+void set_screen_height_m(float) {}
 bool cinematic_active() { return false; }
 CineDrive cine_drive() { return CineDrive::Authored; }
 void set_cine_drive(CineDrive) {}
