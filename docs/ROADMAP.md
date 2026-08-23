@@ -489,6 +489,19 @@ fixed or the release waits:**
 
 ## M9 - Comfort + UI/config + release polish (~2–3 sessions)
 
+**Scripted-event comfort track (BS1, s64 2026-08-22):**
+- [ ] **Scripted-event signals confirmed on this build** (`scripted.cpp`): the three
+      offsets ported from BRVR - hands+0x594 bit 2, controller+0x9E0, pawn+0x464 bit 1 -
+      plus the held window. BUILT AND INSTALLED, NOT YET SEEN IN A LOG. Acceptance: one
+      run covering the opening bathysphere, a Little Sister rescue and the plasmid
+      balcony, with the bathysphere oracle reading `HOLDS`, the rescue leaving the
+      animation signal SILENT, and no anchor/shape failures. Derivations and the exact
+      log expectations: `docs/bioshock1/ENGINE_NOTES.md` § Session 64.
+- [ ] **Authored-camera rotation follow judged in a headset** (F10 "Scripted events"):
+      both axes / horizontal only / neither. Ships at "both axes" = unchanged behaviour;
+      acceptance is a user verdict on whether a level horizon during a scripted or
+      cinematic camera is more comfortable or reads as dead.
+
 **Two-hand track (user's call 2026-07-28, sequenced AFTER the session-20 aim work -
 which SHIPPED 2026-07-28 on branch s20-aim-sync: one trim algebra (28.21 -> 0.03 deg),
 vrrec record+replay, FName/GNames + named skeleton dumps, the muzzle ray, the idle-sway

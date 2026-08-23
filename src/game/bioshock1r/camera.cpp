@@ -22,6 +22,7 @@
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/scripted.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
 #include "game/shared/ue_math.h"
@@ -890,6 +891,8 @@ void save_vr_preset() {
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
     fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
     fprintf(f, "cineSubsInFrame=%d\n", bvr::hud::cine_subs_in_frame() ? 1 : 0);
+    fprintf(f, "scriptedRotFollow=%d\n", static_cast<int>(scripted::rot_follow()));
+    fprintf(f, "scriptedHoldMs=%d\n", scripted::hold_ms());
     fprintf(f, "effectsInFrame=%d\n", bvr::hud::effects_in_frame() ? 1 : 0);
     fprintf(f, "effectMaxVerts=%u\n", bvr::hud::effect_max_verts());
     fprintf(f, "postFxRtOnly=%d\n", bvr::hud::postfx_rt_only() ? 1 : 0);
@@ -997,6 +1000,13 @@ void load_vr_preset_values() {
             int m = static_cast<int>(v);
             if (m >= 0 && m <= 2) bvr::vr::set_cine_drive(static_cast<bvr::vr::CineDrive>(m));
         }
+        else if (strcmp(key, "scriptedRotFollow") == 0) {
+            int sm = static_cast<int>(v);
+            if (sm >= 0 && sm <= 2)
+                scripted::set_rot_follow(static_cast<scripted::RotFollow>(sm));
+        }
+        else if (strcmp(key, "scriptedHoldMs") == 0)
+            scripted::set_hold_ms(static_cast<int>(v));
         else if (strcmp(key, "aimDotOn") == 0)
             aim::handle_command(v != 0.0f ? "dot on" : "dot off");
         else if (strcmp(key, "aimDotDistM") == 0) {
@@ -1291,6 +1301,12 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
     bvr::vr::publish_gameplay_view(strictGameplay);
 
+    // s64: the scripted-EVENT signals (BRVR's M7 window). Deliberately NOT
+    // gated on strictGameplay - a scripted sequence is exactly when the view
+    // actor may not be the pawn, and the signals read the hands actor and the
+    // controller, not the view. Read-only, three dwords, gates nothing yet.
+    scripted::observe(self);
+
     // Session 29: the cinematic drive policy (vrcine drive off|authored|
     // authored+look). `cineHold` is the draw-based signal ORed with the pixel
     // watch - it must NOT be plain letterbox(), because with the bars
@@ -1584,6 +1600,20 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             loc->z += g_wobbleAmp.load(std::memory_order_relaxed) * sinf(2.0f * kPi * t);
         }
     }
+    // s64 comfort: the game's own authored rotation, and only when the game is
+    // the one rotating the view. `vrDrove` is the head drive's own verdict, so
+    // !vrDrove is exactly the pass-through case - CalcView's rotator reaching
+    // the player untouched. During ordinary VR gameplay the head has already
+    // overwritten pitch and roll absolutely above, so there is nothing there for
+    // this to remove; the axes only survive when the head is NOT driving.
+    //
+    // The scene term matters as much as the drive term: a MENU also stops the
+    // head drive, and holding a menu's framing is pointless and would log on
+    // every inventory open. A no-op at the default (follow both axes).
+    if (rot)
+        scripted::apply_rotation_policy(!vrDrove, cineHold || scripted::scripted_window(),
+                                        &rot->pitch, &rot->yaw, &rot->roll);
+
     if (rot) {
         rot->pitch += static_cast<int32_t>(g_pitchDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
         rot->yaw   += static_cast<int32_t>(g_yawDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);

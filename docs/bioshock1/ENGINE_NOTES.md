@@ -3778,3 +3778,184 @@ Worth recording because the config was never wrong. The log echoed
 the runtime` 100 s later, so both ends worked. What went wrong was **the
 controllers repeatedly unbinding mid-session** - see STATUS. Before suspecting
 the modifier again, check the census timestamps.
+
+## Session 64 (2026-08-22) - scripted EVENTS: three offsets ported from BRVR, and what re-derives them
+
+**Source: the BRVR mod** (`docs/brvr-reference/BioshockVR/Game/GameState.cpp`,
+its M7-S1/S4/S5/S6 banners). Everything below is BRVR's measurement, cited so it
+is not re-derived from scratch, plus the checks this tree adds because a
+carried-over offset is a guess until this build agrees with it.
+
+**These are not cutscene signals.** The cutscene detector here is `wantCine` in
+`src/core/vr/openxr_runtime.cpp` and it is already the stronger of the two mods'
+- BRVR's own `docs/CONSOLIDATION.md` records that BRVR shipped exactly one
+cutscene signal (the letterbox bar draw, `DrawHook_CutsceneBarsActive()`) and
+**never wired a caller to it**, while that same draw is `bar_draw_active()` here,
+consumed, and combined with four signals BRVR has none of. Nothing in the
+cutscene path was touched. What was missing here is the *scripted sequence*
+question: the world renders, the HUD may be up, and the game is moving the player
+through an authored moment.
+
+### hands+0x594 bit 2 - CurrentlyExecutingScriptedHandAnimationSequence
+
+`Hands.uc` lines 80-82 are three consecutive bools, and UE2 packs consecutive
+bools into one DWORD:
+
+| bit | field |
+|---|---|
+| 0 | `bFinishedStateAnimations` |
+| 1 | `AbilityHasBeenReleased` |
+| 2 | `CurrentlyExecutingScriptedHandAnimationSequence` |
+
+BRVR computed the DWORD's address by walking the field list from its proven
+`+0x494`/`+0x498` anchor. **The walk is the weak link, not the bit.**
+
+**MEASURED, BRVR M7-S1, 2026-08-10:** the bit set 0.8 s after the tester marked a
+scripted scene starting and cleared 0.75 s before they marked it ending - both
+inside reaction time on the marker key - and fired **exactly once** in six
+minutes covering weapon fire, plasmid fire, four gene-machine opens, a Little
+Sister rescue and walking. Zero false positives.
+
+**WHAT IT DOES NOT COVER, measured in the same run:** the Little Sister **rescue**
+and the **EVE injection** both leave this bit clear. They are Hands *states*
+(`ExorcisingGatherer`, `InjectingEve`), a different mechanism. **A build in which
+a rescue fires this signal has a wrong offset - it has not improved on BRVR.**
+That is the sharpest single test of the port.
+
+**FALSIFIED, BRVR M7-S3 - do not gate anything on bit 0.** It is
+`bFinishedStateAnimations` and it looked perfect, but gating the arms on it
+produced *opposite* failures in two scenes: arms hidden for the whole Little
+Sister crawl, arms stuck visible and frozen on the plasmid balcony. `state
+PlayingScriptedHandAnimation` has an **empty body** and never touches the flag,
+so during the crawl it kept the `true` left over from the last weapon state.
+
+### pawn+0x464 bit 1 - Pawn.bCannotFall (the bathysphere)
+
+`Pawn.uc` line 46. Pawn's own fields start at the `AActor` base `0x450`; lines
+13..44 are exactly 32 bools - one full DWORD at `+0x460` - so the next three
+start a fresh one:
+
+| offset | contents |
+|---|---|
+| `+0x460` | lines 13..44, thirty-two bools, one DWORD exactly |
+| `+0x464` bit 0 | `ShouldNotTakeDamageOnNextLanding` |
+| `+0x464` bit 1 | `bCannotFall` |
+| `+0x464` bit 2 | `bUseHavokRigidBodyCapsuleCollisions` |
+
+**THE ORACLE.** `ShockPlayer` defaults bit 2 **true**, and
+`ActionEnableBathysphereModeForPlayer` clears it in the same call that sets bit
+1. So entering a ride must flip **bit 1 up and bit 2 down in the same write** -
+two bits moving in opposite directions at once is not something a wrong offset
+produces by chance. Every edge logs both bits and says whether the oracle held,
+so the offset can be confirmed or refuted straight out of the log.
+
+It exists so the rotation comfort settings can **leave a ride alone**: a
+bathysphere is not a scripted animation, so without this signal a rotation freeze
+applies there too and the camera stops following the sphere. BRVR shipped that
+exact bug for as long as the signal was missing, and could not fix it by level
+name because the mod does not know what map it is on.
+
+### controller+0x9E0 - ShockPlayerController.bIsForcingPlayerMove
+
+`ShockPlayerController` pushes `NullInput` and then calls `StartForcePlayerMove`,
+which **interpolates** the player into position and heading *before* the scripted
+animation begins. Through that whole window the hands flag is still false.
+
+**It could not be computed.** Six interface-typed fields (`ICanBeUsed`,
+`ICanBeFocused`, `ICanBeHacked`) plus a `TArray` sit between the class base and
+the flag, and interface size in this fork is unknown - an unknown that compounds
+six times. BRVR found it by **differential probe** (M7-S5) and correlated it
+across three events whose durations differ by 24x - 1.0 s ("went straight in"),
+0.24 s (instant), 5.75 s ("the slewing") - each matching an independent tester
+report. The flag drops 0.09 s after the scripted animation begins.
+
+**Shape check, every read.** A lone bool is exactly 0 or 1. Anything else means a
+stale pointer or a wrong offset, which is not hypothetical: BRVR caught its own
+bathysphere read doing precisely that.
+
+### The held window - ONE SCENE, ONE WINDOW
+
+A scene raises the two signals **in sequence**: the forced move walks you into
+place, then the scripted animation plays. They normally overlap, so nothing
+downstream sees a gap.
+
+**The order is not guaranteed.** BRVR measured the Little Sister crawl, 2026-08-11:
+
+```
+22:46:10.556  FORCEDMOVE: --- forced move done ---
+22:46:10.557  SCRIPTED: aim released back to the player   <- the collapse
+22:46:10.561  SCRIPTED: *** SCRIPTED ANIMATION BEGAN ***  <- 5 ms later
+```
+
+One frame at 231 CalcView/s. Its camera hook released the aim in it, re-armed its
+base from an aim field that happened to read exactly (0,0), and the field sat
+**18.6 deg off the pawn for the whole 58-second scene**. So the pair is held:
+rises instantly, falls only after the hold with neither signal set. Held in the
+producer, not the consumer, because consumers layer different policies on top.
+
+### What re-derives all three here, rather than trusting them
+
+The rule is that an offset carried between builds is a guess until this build
+agrees with it. This tree has something BRVR did not - **`fname_text()`, FName
+index resolved to text via `GNames`** - so the anchor check is stronger here than
+the one BRVR had to settle for ("does this field *shape* like a name"):
+
+1. **Object identity.** The hands actor's own `UObject` name (`+0x28` ->
+   `fname_text`) must read `PlayerHands`. patterns.h already records that
+   cross-check.
+2. **The walk.** All four FName slots the same field walk produces - `+0x498`
+   `HandsOffscreenAnimationName`, `+0x4B8` `InjectingEveAnimationName`, `+0x4D8`
+   `ExorcisingGathererAnimationName`, `+0x558` `CurrentScriptedAnimationName` -
+   must resolve to non-null text. Four points along the walk's length.
+3. **The pawn.** `Hands.Base` at `hands+0x450` must pass
+   `body::is_gameplay_view()`, i.e. carry `kShockPlayerVtableRva`.
+4. **The bool.** `ctl+0x9E0` must read exactly 0 or 1.
+
+Any failure logs loudly and holds **every** signal false. Nothing is gated on a
+value the check cannot stand behind.
+
+**MEASURED AND NOT KEPT, BRVR M7-S2:** `+0x558` read `None` (index 0) for an
+entire run *including* throughout a scripted sequence. Animation-level naming
+does not come from that field, and the index-comparison idea it was going to
+enable is unproven. It is an anchor slot here and nothing more.
+
+### The three invariants that came with the port
+
+All three were bought expensively in BRVR (`docs/brvr-reference/docs/INVARIANTS.md`
+- *Locomotion and the aim field*) and none of them should be relearned:
+
+1. **Never write `Controller.Rotation` while a sequence is moving the player.**
+   Three balcony falls entered far right, straight on and far left and all landed
+   on the same spot with no write. With a heading substituted in, both
+   straight-on runs landed badly wrong. **The write itself is the damage.**
+2. **Never let the window break mid-scene.** A per-frame "are you still in
+   control" predicate over the HUD threw one landing 3.7 m. That is what the hold
+   exists for.
+3. **Follow the camera alone, never the camera and the aim field.** They are not
+   independent - the balcony's opening snap moves both by 41.03 deg/s, so
+   following both applied it twice and the view finished a whole snap past the
+   authored heading. The measurement that originally justified following both was
+   a deg/s average over 67 seconds, **and a rate cannot see a one-frame spike.**
+
+### Where the game's rotation actually reaches the player here - measured against this tree
+
+Worth writing down because it is not what the BRVR port would suggest, and it
+changed what the comfort work had to be.
+
+During **ordinary VR gameplay** `camera.cpp` overwrites `rot->pitch` and
+`rot->roll` **absolutely** from the head, and writes yaw as `gameYaw +
+headResidual`. So the game's screen shake, weapon kick and auto-pan **already
+never reach the player in pitch or roll** - that fell out of the head drive years
+of sessions ago and nobody wrote it down. Only yaw passes through.
+
+The authored rotation reaches the player in exactly one case: **when the head
+drive does not run at all**, and CalcView's rotator passes through untouched.
+That is a scripted or cinematic camera taking the view (and, incidentally, a
+menu - which is why the comfort policy also requires a scene to be active).
+
+**Consequence:** BRVR's `FreezeGameplayRotation`, which exists to kill shake and
+kick during play, would be **largely redundant here** - the axes it targets are
+already gone. What is left of it is a yaw latch, which is the risky axis (it
+feeds `body::on_calcview` and the pawn's facing) for a much smaller prize. It was
+deliberately not ported. `ScriptedRotationFollow`'s job, by contrast, lands
+cleanly and is what shipped.

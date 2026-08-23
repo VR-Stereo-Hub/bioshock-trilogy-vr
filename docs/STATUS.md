@@ -2,6 +2,177 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-22 - s64: scripted events, and the cutscene detector that did not need porting (BioVRDev)
+
+**Branch `s64-bs1-scripted-events`, cut from `s63-bs1-comfort`** (which is still
+30 commits ahead of `main` and unmerged, so this one stacks - see *Branch* below).
+**`git diff s63-bs1-comfort -- src/core/` is EMPTY.** Everything new is in
+`src/game/bioshock1r/`.
+
+### The finding that reframed the session
+
+The queued task was "port BRVR's scripted-event detector first". Researching
+parity before writing anything turned up that **BRVR's *cutscene* detector is the
+weaker of the two and there was nothing to port there.**
+
+BRVR's own `docs/CONSOLIDATION.md` - written 2026-08-15 explicitly for the merge
+into this repo, comparing its `9e56d58` against our `5bc5999` - says it directly:
+BRVR spent three sessions and nine graveyard entries hunting a cutscene signal
+while shipping one the whole time, `DrawHook_CutsceneBarsActive()`, **with zero
+callers anywhere in its tree**. That is the same letterbox-bar draw we consume as
+`bar_draw_active()`, and `wantCine` combines it with four signals BRVR has none
+of. Its verdict: *"the cutscene work is not a port. It is wiring on this side,
+plus four hardening signals from his side."*
+
+**So `wantCine` was not touched.** The genuine gap - and what "scripted-event
+detector" means in BRVR's own vocabulary - is its **M7 window machinery**, which
+answers a different question: the world renders, the HUD may be up, and the game
+is moving you through an authored moment.
+
+### What landed: four signals, in `src/game/bioshock1r/scripted.cpp`
+
+| Signal | Where | Note |
+|---|---|---|
+| `scripted_anim()` | hands `+0x594` bit 2 | `CurrentlyExecutingScriptedHandAnimationSequence` |
+| `forced_move()` | controller `+0x9E0` | `bIsForcingPlayerMove` - the game walking you into place |
+| `bathysphere()` | pawn `+0x464` bit 1 | `Pawn.bCannotFall` - exists so comfort settings leave a ride alone |
+| `scripted_window()` | held union of the first two | **Ask this one.** Rises instantly, falls after the hold |
+
+Full derivations, BRVR's measurements and the three invariants that travelled
+with them are in `docs/bioshock1/ENGINE_NOTES.md` § *Session 64*.
+
+**Nothing is trusted.** Every offset is re-derived on this build before use, and
+the check is *stronger* here than BRVR's because this tree has `fname_text()`:
+the hands actor must name itself `PlayerHands`, all four FName slots along the
+same field walk must resolve to real text, `Hands.Base` must pass
+`body::is_gameplay_view()`, and `ctl+0x9E0` must read exactly 0 or 1. Any failure
+logs loudly and holds **every** signal false.
+
+### The comfort control, and the half of it that was deliberately not built
+
+Reading the CalcView body before building the two queued toggles retired one of
+them. **During ordinary VR gameplay the game's pitch and roll already never reach
+the player** - `camera.cpp` overwrites both *absolutely* from the head, and only
+yaw passes through as `gameYaw + headResidual`. So screen shake, weapon kick and
+the auto-pan are already gone in the axes that matter, and BRVR's
+`FreezeGameplayRotation` is largely redundant here.
+
+What is left of it is a **yaw latch**, and yaw is the risky axis: it feeds
+`driveYawOffsetRad` into `body::on_calcview`, which steers the pawn, and BRVR's
+graves 12 and 13 are both about that coupling. Small prize, sharp edge, **not
+ported.** If it is ever wanted it needs its own session and its own headset run.
+
+The authored rotation reaches the player in exactly one case: **when the head
+drive does not run at all.** That is a scripted or cinematic camera, and it is
+the only case `apply_rotation_policy` touches. A menu also stops the head drive,
+so the policy additionally requires `cinematic_hold() || scripted_window()` -
+otherwise it would latch a menu's framing and log on every inventory open.
+
+### F10: a new "Scripted events (M7 window)" section
+
+No new ini keys - these are headset-judged questions and the panel is what that
+is for. It registers through the adapter's existing `drawDebugUi()` chain, so
+**zero core change**.
+
+- **Live readout**: the four signals, the anchor verdict, the raw dwords, the
+  last animation edge and the edge counters. This is how a wrong offset is spotted
+  in the headset instead of only in the log.
+- **"When the game takes the camera, follow its rotation"** - both axes /
+  horizontal only / neither. **Defaults to both axes, i.e. bit-for-bit today's
+  behaviour**; horizontal-only is the candidate comfort default.
+- **"During a cutscene, your head"** - this surfaces `cine_drive()`, which has
+  been implemented and preset-saved as `cineDrive` since session 29 and had
+  **never had a panel control**, only the `vrcine drive` console command.
+- **Scene hold slider** (default 250 ms).
+
+Both new values are added to `save_vr_preset()` / `load_vr_preset_values()` as
+`scriptedRotFollow` and `scriptedHoldMs` - deliberately, because that writer is a
+hand-maintained list and anything left off it silently fails to survive a restart.
+
+### Build and deploy state (2026-08-22, end of s64)
+
+- **Debug, installed** to `C:\Program Files (x86)\Steam\steamapps\common\BioShock
+  Remastered\Build\Final`.
+- **Nothing is armed and nothing changes behaviour by default.** The signals are
+  read-only and gate nothing; the rotation policy is a no-op at its default.
+- **Not verified in a headset.** No scripted event has been observed on this
+  build - the simulator cannot make the game run one, so this needs a real run.
+
+### Verified in a headset vs merely built
+
+| Verified by the user | Only built |
+|---|---|
+| (nothing this session) | All four signals, and whether the three offsets hold on this build |
+| | The anchor and shape checks firing or staying quiet |
+| | The rotation-follow policy at horizontal-only and neither |
+| | The cutscene head-drive combo reached from the panel |
+| | `scriptedRotFollow` / `scriptedHoldMs` surviving a restart |
+
+## Next steps
+
+**FIRST, AND IT GATES EVERYTHING ELSE: confirm the three offsets on this build.**
+Phase A is diagnostic by design - one run, then read the log:
+
+```
+grep "scripted:" %LOCALAPPDATA%\BioshockVR\bioshockvr.log
+```
+
+A run covering the opening bathysphere, a Little Sister rescue and the
+plasmid-injection balcony answers all of it. What correct looks like:
+
+1. **Opening bathysphere** - `forced move BEGAN`, then `bathysphere ON` with
+   `oracle HOLDS (bits oppose)`, the ride bracketed on both edges. **The oracle
+   line is the offset's proof**: entering a ride must raise bit 1 while lowering
+   bit 2 in the same write, which a wrong offset does not produce by chance.
+2. **Plasmid balcony** - `*** SCRIPTED ANIMATION BEGAN ***` / `ended` bracketing
+   the scene.
+3. **Little Sister rescue** - **the animation signal must stay SILENT.** BRVR
+   measured the rescue and the EVE injection both leaving that bit clear; they are
+   Hands *states*, a different mechanism. A rescue that fires it means the offset
+   is wrong, not that this build sees more.
+4. **No `ANCHOR FAILED`, no `SHAPE CHECK FAILED`**, and **no chatter during
+   ordinary combat or walking** - BRVR's six-minute reference run had exactly one
+   edge pair and zero false positives.
+
+The F10 section shows the same four signals live, so a scene can be judged
+without leaving the headset.
+
+**THEN the comfort question, which is a preference and not a measurement.** Set
+*When the game takes the camera, follow its rotation* to **Horizontal only**,
+play a cutscene and a scripted scene, and decide whether the level horizon is
+better or whether it reads as dead. If it is the right default, promote it. Try
+**Neither** too - it is the strongest comfort setting and the one to reach for if
+authored camera motion is the problem.
+
+**THEN, if the signals hold**, the rest of BRVR's scripted QOL becomes reachable
+- arms shown during a scripted scene, hands and aim released. That rides on
+`ArmHide_HandMotion`, a separate mechanism from anything here, and is its own
+session.
+
+Carried over from s63 and still open:
+
+5. **Confirm the MAP opens** - MODIFIER + menu (or MODIFIER + X+Y), held ~1 s.
+   Built in s63, never confirmed. Also confirm UP/DOWN still step ammo ONE type
+   per push.
+6. **Bake the F10 window geometry** from the probe:
+   `grep "overlay: window" bioshockvr.log | tail -3`, then drop the probe.
+7. **Settle the scale.** 0.904 / 0.868 dialled, both bigger than BRVR's 0.8.
+8. **THE STANDING BUG: controllers unbind mid-session.** Eight census events in
+   five minutes on 2026-08-22. BRVR reportedly does not do this, so its
+   `InputHook.cpp` action setup is the comparison.
+9. **Still open**: this mod's performance being worse than BRVR's.
+
+### Branch
+
+`s64-bs1-scripted-events` was cut from `s63-bs1-comfort`, which is the second of
+the two options the last session wrote down. It inherits all 30 of s63's commits.
+
+**Consequence, and it has not changed:** a PR from `s64` against `main` shows
+s63's commits too until s63 merges. If s63 is merged first, replant with
+`git rebase --onto main s63-bs1-comfort s64-bs1-scripted-events` **and rebuild** -
+a replanted branch has never been compiled in its new position.
+
+
 ## Session 2026-08-22 - s63: BRVR parity, the wrench, and F10 from the controllers (BioVRDev)
 
 **Branch `s63-bs1-comfort`.** Two commits added this part - the probe disarm and

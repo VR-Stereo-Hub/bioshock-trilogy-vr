@@ -1679,3 +1679,87 @@ intersection. **`screen_place_mode`, which the cinema screen already uses, is
 exactly the placement behaviour wanted** ("follows you as you walk, but a head
 turn does not drag it") - a future attempt should reuse it rather than invent
 one.
+
+### 2026-08-22 (session 64) - scripted events are a separate question from cutscenes
+
+The session was queued as "port BRVR's scripted-event detector, then the rotation
+toggles". Researching parity first turned up a finding that reframed it, and it
+is worth keeping because the same mistake is available to anyone reading BRVR's
+graveyard.
+
+**BRVR's *cutscene* detector was not the thing to port; ours is already the
+stronger one.** BRVR's `docs/CONSOLIDATION.md` - written 2026-08-15 explicitly
+for the merge into this repo, comparing its `9e56d58` against our `5bc5999` -
+records that it spent three sessions and nine graveyard entries hunting a
+cutscene signal while having one the whole time: `DrawHook_CutsceneBarsActive()`,
+fed by the textureless 29-vertex letterbox-bar draw, **exported with zero callers
+anywhere in its tree.** That same draw is `bvr::hud::bar_draw_active()` here, it
+is consumed, and `wantCine` combines it with four more signals BRVR has none of:
+the backbuffer letterbox pixel watch, the view-actor vtable test
+(`body::is_gameplay_view`), CalcView staleness, and the rendered-vs-claimed FOV
+mismatch, all under hysteresis. Its own verdict: *"the cutscene work is not a
+port. It is wiring on this side, plus four hardening signals from his side."*
+
+**So `wantCine` was not touched.** What was genuinely missing here is a different
+question: a scripted SEQUENCE, where the world renders, the HUD may be up, and
+the game is moving the player through an authored moment. That is BRVR's M7
+window, CONSOLIDATION's Tier 2 item 6, and it ports cleanly because it is
+engine-side and offset-driven rather than render-side.
+
+**Held in the producer, not the consumer.** `scripted_window()` is the union of
+the animation and forced-move signals held open for a settable delay, and the
+hold lives with the signals rather than in whoever reads them. BRVR learned that
+from the Little Sister crawl: the two signals failed to overlap for a single
+frame at 231 CalcView/s, its camera hook released and re-armed the aim inside a
+live scene, and the field ran 18.6 deg off for the next 58 seconds. Two correct
+signals that failed to overlap, not a racy one. Consumers layer their own
+policies on top; none of them get to decide when a scene is over.
+
+**Zero core change.** The signals, the policy and the F10 section all live in
+`src/game/bioshock1r/scripted.cpp`, and `git diff s63-bs1-comfort -- src/core/`
+is empty. The panel section registers through the adapter's existing
+`drawDebugUi()` chain, which is where every other BS1 section already lives.
+
+### 2026-08-22 (session 64) - where the game's rotation actually reaches the player
+
+The queued next-step was two toggles: freeze injected rotation during gameplay,
+and drop injected vertical rotation during scripted events. Reading the CalcView
+body before building either changed what got built, and the measurement is worth
+recording because it retires half the work rather than doing it.
+
+**During ordinary VR gameplay the game's pitch and roll already never reach the
+player.** `camera.cpp` overwrites `rot->pitch` and `rot->roll` *absolutely* from
+the head, and writes yaw as `gameYaw + headResidual`. Screen shake, weapon kick
+and the auto-pan toward enemies all arrive as those deltas - and two of the three
+axes are discarded by construction. This fell out of the head drive long ago and
+had never been written down, which is why BRVR's `FreezeGameplayRotation`
+(exactly that feature, and a real win *there*) read as a gap here.
+
+**What is left of it is a yaw latch**, which is the one axis that is genuinely
+risky: yaw feeds `driveYawOffsetRad` into `body::on_calcview`, which steers the
+pawn, and BRVR's graves 12 and 13 are both about that coupling. Small prize,
+sharp edge. **Deliberately not ported**; if it is ever wanted, it needs its own
+session and its own headset run, not a rider on this one.
+
+**The authored rotation does reach the player in exactly one case: when the head
+drive does not run at all**, and CalcView's rotator passes through untouched.
+That is a scripted or cinematic camera taking the view. It is the case the
+comfort complaint was actually about, and it is the only case
+`apply_rotation_policy` touches - so the control reads "when the game takes the
+camera, follow its rotation: both axes / horizontal only / neither".
+
+**The scene term is not decoration.** A menu also stops the head drive. Gating on
+the drive alone would latch a menu's framing and log on every inventory open, so
+the policy additionally requires `cinematic_hold() || scripted_window()`.
+
+**Pitch is held absolutely, not differenced.** An authored pitch slew is removed
+entirely and the horizon stays where the shot opened, rather than the shot
+drifting by whatever it accumulated before the policy engaged.
+
+**One control that already existed got a panel entry rather than a rewrite.**
+`cine_drive()` (off / authored / authored+look) has been implemented and
+preset-saved as `cineDrive` since session 29 and has only ever been reachable
+from the `vrcine drive` console command. Authored+look - the head adding a
+look-around delta on top of an authored shot - is squarely this section's
+subject, so it is surfaced in the same F10 group. This is the third time a
+session has proposed building something the panel already had.
