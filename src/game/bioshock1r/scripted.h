@@ -198,7 +198,7 @@ int yaw_adjust_units();
 // NO scripted animation is playing - the forced-move phase, where the game is
 // walking you into position and your hands have nothing to do - then show them
 // the moment an animation starts, because that animation is what you are meant
-// to be watching. Uses DrawScale3D; see bones::set_actor_hidden.
+// to be watching. Collapses every bone; see bones::collapse_rig.
 bool hide_rig_in_scenes();
 void set_hide_rig_in_scenes(bool on);
 
@@ -214,13 +214,17 @@ bool want_rig_hidden();
 // note_hand_motion() takes bones::hand_motion()'s output once per CalcView.
 // `have == false` means CANNOT ANSWER and routes to arms VISIBLE.
 //
-// DrawScale3D IS A SAFE HIDE - the bone array keeps being evaluated behind a
-// hidden actor (measured unconfounded, round 11: 3 samples taken while hidden,
-// 3 distinct bone positions). Round 10 claimed the opposite from a run where the
-// hide was DRIVEN by the motion reading, which guaranteed the correlation it
-// then read as causation.
-void note_hand_motion(bool have, float smoothed, float raw, int bone,
-                      const float pos[3], bool rigHidden, int skelDirty);
+// FALSIFIED - DrawScale3D IS NOT A SAFE HIDE. Round 11 claimed it was, from 3
+// samples taken while hidden; s64 measured 293 CONSECUTIVE samples with 0 of 47
+// bones moving against 21-47 moving at full scale, and the arm hide was rewritten
+// to collapse bones with the actor left at full scale (bones::collapse_rig).
+// Three samples could not see it: the array freezes at whatever pose it last
+// held, so a short window reads as ordinary stillness. Round 10 was right about
+// the conclusion and wrong about the evidence - it read a run where the hide was
+// DRIVEN by the motion reading, which guaranteed the correlation it called
+// causation. DO NOT hide this rig by actor scale: you cannot hide a thing from
+// the renderer and keep measuring what the renderer drives.
+void note_hand_motion(bool have, float smoothed, float raw, int bone);
 
 // The latched verdict: moving, or moved within arm_hold_ms().
 bool hands_moving();

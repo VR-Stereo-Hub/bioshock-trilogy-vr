@@ -878,8 +878,7 @@ void arm_motion_readout(float* raw, float* smoothed, int* bone, bool* blind) {
     if (blind) *blind = g_armBlind.load(std::memory_order_relaxed) != 0;
 }
 
-void note_hand_motion(bool have, float smoothed, float raw, int bone,
-                      const float pos[3], bool rigHidden, int skelDirty) {
+void note_hand_motion(bool have, float smoothed, float raw, int bone) {
     g_armBone.store(bone, std::memory_order_relaxed);
     g_armBlind.store(have ? 0 : 1, std::memory_order_relaxed);
 
@@ -922,24 +921,6 @@ void note_hand_motion(bool have, float smoothed, float raw, int bone,
                       (nowMs - g_armLastMovingMs) < static_cast<unsigned long long>(hold);
     g_armMoving.store((moving || held) ? 1 : 0, std::memory_order_relaxed);
 
-    // Calibration. The BONE is the load-bearing half: a run of exact 0.0000 means
-    // the engine holding a pose or us writing the bone we read, and nothing else
-    // tells those apart. 2 Hz, and only inside a window.
-    static unsigned long long lastLog = 0;
-    if (scripted_window() && nowMs - lastLog >= 500) {
-        lastLog = nowMs;
-        // THE POSITION AND THE HIDDEN FLAG ARE THE EXPERIMENT. A delta of zero
-        // means either the engine is holding a pose or the array has stopped
-        // being evaluated, and those need opposite fixes. If p is bit-identical
-        // while hidden=1 and moves while hidden=0, hiding by DrawScale3D freezes
-        // the signal - the one assumption s64 carried over from BRVR untested.
-        BVR_LOG("[b1r] scripted: motion raw %.4f smoothed %.4f thresh %.4f bone %d "
-                "p=(%.3f %.3f %.3f) hidden=%d dirty=%d -> %s",
-                raw, smoothed, g_armMotionThresh.load(std::memory_order_relaxed), bone,
-                pos ? pos[0] : 0.0f, pos ? pos[1] : 0.0f, pos ? pos[2] : 0.0f,
-                rigHidden ? 1 : 0, skelDirty,
-                moving ? "MOVING" : (held ? "still (held)" : "still"));
-    }
 }
 
 bool want_rig_hidden() {

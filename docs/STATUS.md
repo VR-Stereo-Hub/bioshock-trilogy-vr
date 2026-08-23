@@ -4,91 +4,73 @@
 
 ## Session 2026-08-22/23 - s64: scripted events (BioVRDev)
 
-**Branch `s64-bs1-scripted-events`, 3 commits, cut from `s63-bs1-comfort`** (which
-is 30 commits ahead of `main` and unmerged - this one STACKS). Replant with
-`git rebase --onto main s63-bs1-comfort s64-bs1-scripted-events` **and rebuild**
-once s63 merges.
+**Branch `s64-bs1-scripted-events`, cut from `s63-bs1-comfort`** (which is 30 commits
+ahead of `main` and unmerged - this one STACKS). Both branches are now proposed as
+**stacked draft PRs into `staging`**, per VOID's workflow (see `CLAUDE.md`, "Branches,
+PRs and staging"): `s63 -> staging`, and `s64 -> s63`, which GitHub retargets to
+`staging` when s63 merges.
 
-**`git diff s63-bs1-comfort -- src/core/` IS NO LONGER EMPTY** - round 8 moved the
-movement-stick pre-compensation from `openxr_input.cpp` to `xinput_bridge.cpp`,
-because it was running on the wrong side of the head-relative rotation. **The
-change is inert for BS2 and Infinite by construction**: `stick_precomp()`
-defaults false in core and only BioShock 1 opts in (`set_pad_brvr_defaults(true)`
-in its adapter), so with the switch off the lane is unreachable and the composed
-pad is bit-identical. Everything else in s64 is still confined to
-`src/game/bioshock1r/`. Recorded in `docs/PORT-CANDIDATES.md` and the
-`docs/ARCHITECTURE.md` decision log.
+**`git diff s63-bs1-comfort...HEAD -- src/core/` IS NO LONGER EMPTY** - round 8 moved the
+movement-stick pre-compensation from `openxr_input.cpp` to `xinput_bridge.cpp`, because it
+was running on the wrong side of the head-relative rotation. **The change is inert for BS2
+and Infinite by construction**: `stick_precomp()` defaults false in core and only BioShock
+1 opts in (`set_pad_brvr_defaults(true)`), so with the switch off the composed pad is
+bit-identical. Everything else in s64 is confined to `src/game/bioshock1r/`. Recorded in
+`docs/PORT-CANDIDATES.md` and the `docs/ARCHITECTURE.md` decision log.
 
-> **Measure s64's own core footprint against ITS BASE, not against `main`.** This
-> branch is stacked on `s63-bs1-comfort`, which is itself unmerged, so
-> `git diff main...HEAD -- src/core/` reports 8 files and ~1800 insertions -
-> almost all of it s63's. s64's own contribution is:
->
-> ```
-> git diff --stat s63-bs1-comfort...HEAD -- src/core/
->   xinput_bridge.cpp | 130 +++-   xinput_bridge.h | 13 +   openxr_input.cpp | 88 +--
-> ```
->
-> Three files, and the net is the pre-compensation MOVING between two of them.
+> **Measure s64's own core footprint against ITS BASE, not against `main`** - this branch
+> is stacked, so `git diff main...HEAD -- src/core/` reports ~1800 insertions that are
+> almost all s63's. s64's own contribution is three files, and the net is the
+> pre-compensation MOVING between two of them.
 
-### Verified in a headset vs merely built
+### Current state: ALL FOUR SCENES VERIFIED. The diagnostics are stripped.
 
-| Verified by the user | Built, NOT verified |
+The two scenes s64 had never been run against - **the bathysphere** and **the Big Daddy
+scripted event** - were both run in a headset on 2026-08-23 and both passed, confirmed
+perceptually by the user and corroborated in the log. The balcony fall and the Little
+Sister crawl were then re-tested and still pass.
+
+| Verified in a headset | Still NOT verified |
 |---|---|
-| All three offsets: anchor 4/4 with correct meanings, bathysphere oracle held on both edges, window bridged a real 16 ms gap | The arm hide - the `DrawScale3D` mechanism has STILL never been exercised. Round 8 replaced the predicate feeding it, so this is now one gate away rather than two |
-| Right-stick turn during a scene; free head look during scenes | The rig-motion gate itself: threshold 0.02 and hold 300 ms are BRVR's numbers, to be calibrated from this build's own logged values |
-| No vertical injection in cutscenes (rotation follow = horizontal only) | The bathysphere and the Big Daddy scripted event - no part of s64 has been run against either |
-| Screenshake/auto-turn suppression - now the DEFAULT | Whether the blur is s63 or older - three bisect builds are ready |
-| The hands gate releasing the skeleton (log-confirmed 02:37:24.155) | The `presetVersion` migration for the cine-drive default |
+| Bathysphere: oracle held on BOTH edges again, panel gate engaged mid-ride and released at the landing, body transfer balanced, landing clean | The `presetVersion` migration for the cine-drive default |
+| Big Daddy: the bone-collapse hide engaged once at +5 s and released once at scene end - 93 s, no flapping, no one-way door | The black square ~60 s into a descent - **pre-existing and separately tracked**, see below |
+| Balcony fall and Little Sister crawl, re-tested after the above | |
+| All three offsets; screenshake/auto-turn suppression; free head look during scenes | |
 
-**Still open:** the bathysphere and the Big Daddy scripted event, neither of
-which has been through any of this - see NEXT SESSION below. **The blur is GONE**,
-the scripted landing is fixed and confirmed, and the arm hide works on both
-scenes it has been run against.
+**The black square is NOT an s64 regression.** At 16:16:07 the quad came on with
+`strict=1 stale=1 fovMismatch=1 screenOnly=1 uiPaused=0` - `uiPaused=0` proves the s64
+gate held. It is the `stale=1` term (CalcView stops across the arrival and map
+transition), which is session 22's finding and needs a render-side answer of its own.
 
-### NEXT SESSION - the two scenes that have not been through this
+### The diagnostics are GONE, and the instrument lied twice on the way out
 
-The arm hide, the field-write gate and the rotation recentre are confirmed on the
-**balcony fall** and the **Little Sister crawl** only. Both of these need a run:
+All three scripted-window diagnostic lines are stripped now that both scenes have passed,
+along with `array_motion`, `skeleton_dirty` and the `note_hand_motion` parameters that
+existed only to feed them. Also removed: the dead `set_actor_hidden`/`actor_hidden`
+`DrawScale3D` path that d51fa4e orphaned, and three comments still asserting the
+falsified "DrawScale3D is a safe hide" claim.
 
-1. **The bathysphere.** It is the one scene the scripted signals were NEVER
-   measured on - BRVR's own warning, carried in `scripted.h`: if the ride does not
-   set `hands+0x594` bit 2, the window never opens there and graveyard entry 12
-   comes straight back (the opening bathysphere walked into the back wall). The
-   body-transfer gate covers `bathysphere()` separately, so watch the LANDING and
-   whether looking around during the ride affects it.
-2. **The Big Daddy scripted event.** Never tested at all.
+**Both ways the instrument misled are written up in `ENGINE_NOTES.md` session 64 part 3**,
+because the instrument is gone and cannot explain itself:
 
-What to read afterwards:
+1. **The STALE watchdog cries wolf when a pause menu opens mid-scene.** It fired once, 6 ms
+   after `PausePC.swf` came up, and never recurred after the panel closed. A menu freezes
+   the game's animation, so every read genuinely is our own collapse - indistinguishable
+   from a broken hide without the screen stack. Anything reviving it must stand it down
+   while `screens::panel_screen_up()`.
+2. **`0/47 bones moved while collapsed` is the HEALTHY state**, not the `DrawScale3D`
+   failure returning - the gate samples before writing, so both reads see the same
+   authored pose. The tell is that every `47/47` sample carried an identical
+   `max 5009.3979`, which is the magnitude of our own collapse write.
 
-```
-grep -E "scripted: motion|array probe|STALE for|rig hidden|body transfer" %LOCALAPPDATA%\BioshockVR\bioshockvr.log
-```
+### Next steps
 
-- A `motion has been STALE for N ms` line means the gate is frozen and the HIDE
-  mechanism is wrong again - not the threshold. That line exists to stop the next
-  session tuning numbers for a round.
-- `array probe: 0/47 ... collapsed=1` would mean the bone collapse suppresses
-  evaluation the same way the actor scale did, which would be a new finding.
-
-
-### Build and deploy state
-
-- **Installed** to `C:\Program Files (x86)\Steam\...\BioShock Remastered\Build\Final`,
-  Debug, rebuilt from the CLEAN commit after the final push. The log's first lines
-  should read **`v0.8.2-34-gd51fa4e`** with no `-dirty`; a different sha means the
-  next session is testing something other than this branch.
-- **NO PROBE IS ARMED**, but three DIAGNOSTIC LOG LINES are deliberately live
-  inside scripted windows, and they should be stripped once the bathysphere and
-  the Big Daddy scene have passed:
-  - `scripted: motion raw ... p=(...) hidden=N dirty=N` at 2 Hz
-  - `[bones] array probe: N/47 bones moved ...` at 4 Hz
-  - `[bones] motion has been STALE for N ms ...` - the watchdog. **If this line
-    appears, the gate is frozen and the HIDE mechanism is wrong, not the
-    threshold.** It exists to stop the next session tuning numbers for a round.
-- **Three bisect DLLs in `build/bisect/`** (`main-5bc5999`,
-  `s63-bs1-comfort-08785f8`, `HEAD-<sha>`) with `README.txt`. Swap one file, no
-  rebuild. `build/` is gitignored, so these are local only.
+- **Land the stacked PRs**: `s63 -> staging` first, then `s64` retargets to `staging`
+  automatically. Fix and **re-test** any conflict on the branch before merging.
+- The `stale=1` black square on bathysphere descents - render-side, its own session.
+- The `presetVersion` migration for the cine-drive default.
+- Calibrate the rig-motion gate's threshold 0.02 / hold 300 ms against this build's own
+  values. They are still BRVR's numbers; nothing has needed them moved yet.
 
 ### Part 1's signals are CONFIRMED. Everything below rests on that.
 

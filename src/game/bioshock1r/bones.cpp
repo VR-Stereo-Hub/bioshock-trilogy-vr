@@ -1221,60 +1221,6 @@ void wskel_release(const char* why) {
     if (g_dsHoldable) ds_drop(why, true);
 }
 
-// ---- s64: hide the whole rig for a scripted scene --------------------------
-//
-// DrawScale3D at +0x2B0, three floats. See the banner on
-// kActorDrawScale3DOffset for why this is NOT the scalar at +0x2AC, which
-// session 63 measured as geometry-inert and which s64 tried first.
-//
-// One-shot per edge. This is an actor field, so unlike a bone write nothing
-// re-evaluates over it and there is no dirty byte to keep clearing - which is
-// also why it does not fight the skeleton drive or its reference capture.
-namespace {
-std::atomic<bool> g_rigHidden{false};
-void* g_rigScaleActor = nullptr;
-float g_rigScaleSaved[3] = {1.0f, 1.0f, 1.0f};
-bool g_rigScaleHave = false;
-constexpr float kRigHiddenScale = 0.0001f; // never exactly zero
-} // namespace
-
-bool actor_hidden() { return g_rigHidden.load(std::memory_order_relaxed); }
-
-void set_actor_hidden(void* handsActor, bool hidden) {
-    // A new actor: the saved scale belonged to an object that may already be
-    // destroyed and its address reused. Drop it WITHOUT restoring - writing a
-    // dead object's scale into a live one is worse than forgetting it.
-    if (handsActor != g_rigScaleActor) {
-        g_rigScaleActor = handsActor;
-        g_rigScaleHave = false;
-        g_rigHidden.store(false, std::memory_order_relaxed);
-    }
-    if (!handsActor) return;
-
-    uint8_t* const p = static_cast<uint8_t*>(handsActor) + patterns::kActorDrawScale3DOffset;
-
-    if (hidden && !g_rigHidden.load(std::memory_order_relaxed)) {
-        float cur[3] = {};
-        if (!read_n(p, cur, sizeof cur)) return;
-        // Refuse to save an already-collapsed scale: restoring THAT would leave
-        // the hands invisible for good.
-        if (cur[0] <= kRigHiddenScale * 10.0f) return;
-        memcpy(g_rigScaleSaved, cur, sizeof g_rigScaleSaved);
-        g_rigScaleHave = true;
-        const float tiny[3] = {kRigHiddenScale, kRigHiddenScale, kRigHiddenScale};
-        if (!write_n(p, tiny, sizeof tiny)) return;
-        g_rigHidden.store(true, std::memory_order_relaxed);
-        BVR_LOG("[bones] rig hidden for a scripted scene (DrawScale3D %.3f %.3f %.3f -> %.4f)",
-                cur[0], cur[1], cur[2], kRigHiddenScale);
-    } else if (!hidden && g_rigHidden.load(std::memory_order_relaxed)) {
-        if (g_rigScaleHave) write_n(p, g_rigScaleSaved, sizeof g_rigScaleSaved);
-        g_rigHidden.store(false, std::memory_order_relaxed);
-        BVR_LOG("[bones] rig shown again (DrawScale3D -> %.3f %.3f %.3f%s)",
-                g_rigScaleSaved[0], g_rigScaleSaved[1], g_rigScaleSaved[2],
-                g_rigScaleHave ? "" : " - no saved value, left as-is");
-    }
-}
-
 // ---- KEEP THE ENGINE EVALUATING WHILE THE RIG IS HIDDEN --------------------
 //
 // The arm hide reads the bone array to decide when to come back, and the array
@@ -1300,16 +1246,6 @@ void keep_evaluating(void* handsActor) {
     set_dirty(1);
 }
 
-// The dirty byte as it reads right now, or -1 if it cannot be read. Logged
-// beside the motion sample so "the array is not changing" can be told apart
-// from "the render pass was never asked to rebuild it".
-int skeleton_dirty() {
-    if (!g_skelInst) return -1;
-    uint8_t v = 0;
-    if (!read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstDirtyOffset, &v, 1))
-        return -1;
-    return v;
-}
 
 // ---- DRAW NOTHING WITHOUT LEAVING THE RENDER SET ---------------------------
 //
@@ -1379,62 +1315,6 @@ void end_collapse(void* handsActor) {
     g_collapseArmed = false;
     if (!handsActor || !locate(handsActor)) return;
     set_dirty(1); // let the render pass rebuild the authored pose again
-}
-
-// ---- WHOLE-ARRAY MOTION PROBE ----------------------------------------------
-//
-// The arm hide has now failed three times on the Little Sister crawl, and every
-// round of it has argued about ONE bone. This asks the question that cannot be
-// argued with: over the whole 47-bone array, how many bones moved since the last
-// sample, and which one moved most.
-//
-// It settles two things at once that the single-bone signal cannot:
-//   - "the array is frozen" vs "bone 27 specifically is not in this animation",
-//     which need completely different fixes and look identical from bone 27.
-//   - whether the hide is what freezes it, by reporting the hidden flag beside
-//     the count instead of inferring causation from a gate we control.
-//
-// Read-only. ~2.2 KB per call, called at a few Hz from the scripted path only.
-float g_probePrev[kMaxBones][3];
-bool g_probeHave = false;
-void* g_probeOwner = nullptr;
-
-bool array_motion(void* handsActor, int* outMoved, float* outMax, int* outBone) {
-    if (!handsActor || !locate(handsActor) || !g_bones) return false;
-
-    if (g_probeOwner != g_skelInst) {
-        g_probeOwner = g_skelInst;
-        g_probeHave = false;
-    }
-
-    int moved = 0;
-    float best = 0.0f;
-    int bestIdx = -1;
-    const int n = g_boneCount < kMaxBones ? g_boneCount : kMaxBones;
-
-    for (int i = 0; i < n; ++i) {
-        Qts cur{};
-        if (!read_n(&g_bones[i], &cur, sizeof cur)) continue;
-        if (g_probeHave) {
-            const float dx = cur.p[0] - g_probePrev[i][0];
-            const float dy = cur.p[1] - g_probePrev[i][1];
-            const float dz = cur.p[2] - g_probePrev[i][2];
-            const float d = sqrtf(dx * dx + dy * dy + dz * dz);
-            if (d > 0.0005f) ++moved;
-            if (d > best) {
-                best = d;
-                bestIdx = i;
-            }
-        }
-        memcpy(g_probePrev[i], cur.p, sizeof g_probePrev[i]);
-    }
-
-    const bool had = g_probeHave;
-    g_probeHave = true;
-    if (outMoved) *outMoved = moved;
-    if (outMax) *outMax = best;
-    if (outBone) *outBone = bestIdx;
-    return had; // first call establishes the baseline and answers nothing
 }
 
 int motion_bone() { return motion_bone_idx(); }

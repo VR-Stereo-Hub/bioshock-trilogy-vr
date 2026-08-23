@@ -66,28 +66,6 @@ void release(const char* why);
 // behind at the moment a cutscene started or ended. Game thread.
 void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid);
 
-// Session 19: collapse the whole INACTIVE hand's cluster + sleeve while the
-// other hand drives (default ON; `vrhands hideinactive on|off`). The
-// weapon-attach bone hides by translation, never scale - the attach path
-// inverse-decomposes chain scale (session 16). Restores from the reference
-// on toggle-off and on hand switch, before the incoming hand is driven.
-// s64: hide the WHOLE rig - arms, hands and weapon - for a scripted scene.
-//
-// DrawScale3D (+0x2B0), NOT the scalar DrawScale at +0x2AC. Session 63 measured
-// that scalar as geometry-inert on the rig actor and s64 wasted a build on it;
-// the per-axis vector is the one that works, measured in BRVR and re-derived
-// here against the same actor. Never writes exact zero - the attach path
-// inverse-decomposes chain scale (session 16).
-//
-// One-shot on each edge, NOT per frame: this is an actor field, so nothing
-// re-evaluates over it the way the engine re-evaluates the bone array. The saved
-// value is dropped WITHOUT restoring when the actor pointer changes - the old
-// address may already belong to something else. Refuses to save an
-// already-collapsed scale, which would otherwise make the hands permanently
-// invisible. Idempotent; game thread.
-void set_actor_hidden(void* handsActor, bool hidden);
-bool actor_hidden();
-
 // s64 arm hide, mechanism half: model-space motion of one ENGINE-OWNED wrist
 // since the previous call, peak-held. Model space matters - the actor tracks the
 // camera every frame, so a world-space measurement reads "moving" constantly.
@@ -100,9 +78,10 @@ bool actor_hidden();
 // Returns false until TWO samples exist - one reading is not a difference, and
 // calling that "still" hid the arms on the first frame of the first scene.
 // `outPos` is the sampled bone's own position, so a zero delta can be told apart
-// from an array that is no longer being evaluated. That distinction has been
-// used once already and the answer was: the array STAYS LIVE behind a hidden
-// actor, so DrawScale3D is a safe hide.
+// from an array that is no longer being evaluated. That distinction settled the
+// hide mechanism: the array does NOT stay live behind an actor hidden by
+// DrawScale3D (293 consecutive samples, 0 of 47 bones moving), which is why the
+// rig is hidden by collapsing bones with the actor left at full scale.
 // `outStale` is set when the bone still holds the collapse WE wrote, meaning the
 // engine has not re-evaluated since and there is no new pose to difference. The
 // caller must then leave the motion state untouched - it is not "no motion" and
@@ -117,9 +96,6 @@ bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outP
 // See the banner in the .cpp for the measurement that made this necessary.
 void keep_evaluating(void* handsActor);
 
-// The evaluate-if-dirty byte as it reads now, or -1. Diagnostic.
-int skeleton_dirty();
-
 // Hide the rig's GEOMETRY while leaving the actor in the render set, so the
 // engine keeps animating it and anything read from the bone array stays honest.
 // Call every frame for as long as it should stay hidden - it is write-only and
@@ -129,18 +105,14 @@ int skeleton_dirty();
 void collapse_rig(void* handsActor);
 void end_collapse(void* handsActor);
 
-// DIAGNOSTIC, read-only: how many of the 47 bones moved since the previous call,
-// which one moved most, and by how much. Answers the question a single-bone
-// signal cannot - "the array is frozen" and "this animation does not move the
-// bone we sample" are indistinguishable from bone 27 alone and need opposite
-// fixes. Returns false on the call that establishes the baseline.
-bool array_motion(void* handsActor, int* outMoved, float* outMax, int* outBone);
-
-// Which bone the call above is measuring, or -1 when both clusters are ours.
-// For the log line - a run of exact zeros is only interpretable if you know
-// whether it came from a bone we were writing.
+// Which bone hand_motion() is measuring, or -1 when both clusters are ours.
 int motion_bone();
 
+// Session 19: collapse the whole INACTIVE hand's cluster + sleeve while the
+// other hand drives (default ON; `vrhands hideinactive on|off`). The
+// weapon-attach bone hides by translation, never scale - the attach path
+// inverse-decomposes chain scale (session 16). Restores from the reference
+// on toggle-off and on hand switch, before the incoming hand is driven.
 void set_hide_inactive(bool on);
 bool hide_inactive();
 

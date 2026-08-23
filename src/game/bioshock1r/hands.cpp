@@ -708,49 +708,9 @@ void on_calcview(const FrameContext& ctx) {
             // a 5000-unit spike that pins the arms up, as stillness it hides them
             // on our own write. Leave the verdict alone and wait for a real one.
             if (!stale)
-                scripted::note_hand_motion(have, smoothed, raw, bones::motion_bone(), pos,
-                                           g_rigWasCollapsed, bones::skeleton_dirty());
-
-            // IF EVERY READING IS STALE, THE ENGINE IS NOT REFRESHING THE ARRAY
-            // AT ALL and the whole gate is frozen at whatever it last decided -
-            // which looks exactly like the arms simply not hiding. That would
-            // mean the collapse plus set_dirty(0) suppresses the evaluation the
-            // same way the actor hide did, and the answer is a different hide
-            // rather than more tuning. Say so instead of costing another run.
-            {
-                static uint64_t lastFresh = 0;
-                static uint64_t lastMoan = 0;
-                const uint64_t nowS = GetTickCount64();
-                if (!stale) lastFresh = nowS;
-                if (lastFresh && nowS - lastFresh > 2000 && nowS - lastMoan > 5000) {
-                    lastMoan = nowS;
-                    BVR_LOG("[bones] motion has been STALE for %llu ms - every read is "
-                            "our own collapse, so the engine is not re-evaluating the "
-                            "array while it is collapsed. The gate is frozen; the hide "
-                            "mechanism is the problem, not the threshold.",
-                            nowS - lastFresh);
-                }
-            }
-
-            // The whole-array question, at 4 Hz. Deliberately AFTER the gate has
-            // been fed, so it never influences the decision it is measuring.
-            {
-                static uint64_t lastProbe = 0;
-                const uint64_t nowProbe = GetTickCount64();
-                if (nowProbe - lastProbe >= 250) {
-                    lastProbe = nowProbe;
-                    int movedBones = 0, maxBone = -1;
-                    float maxD = 0.0f;
-                    if (bones::array_motion(rig, &movedBones, &maxD, &maxBone))
-                        BVR_LOG("[bones] array probe: %d/47 bones moved, max %.4f at "
-                                "bone %d | collapsed=%d dirty=%d",
-                                movedBones, maxD, maxBone, g_rigWasCollapsed ? 1 : 0,
-                                bones::skeleton_dirty());
-                }
-            }
+                scripted::note_hand_motion(have, smoothed, raw, bones::motion_bone());
         } else {
-            scripted::note_hand_motion(false, 0.0f, 0.0f, bones::motion_bone(), nullptr,
-                                       false, -1);
+            scripted::note_hand_motion(false, 0.0f, 0.0f, bones::motion_bone());
         }
 
         if (rig) {

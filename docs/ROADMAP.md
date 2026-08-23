@@ -500,22 +500,35 @@ fixed or the release waits:**
       **CONFIRMED in a headset run 2026-08-22**: anchor 4/4 with correct meanings,
       bathysphere oracle held on both edges, and the held window bridged a real
       16 ms gap on the first run.
-- [ ] **The PausePC.swf gate verified** (`camera.cpp`): a bathysphere ride and
+- [x] **The PausePC.swf gate verified** (`camera.cpp`): a bathysphere ride and
       scripted scenes must no longer drop to the head-locked cinematic quad, and
       the head must steer during a scripted scene. Acceptance: no `cinematic quad
       ON ... uiPaused=1` during either, and looking around during a scene moves
       the view.
+      **CONFIRMED 2026-08-23** on a full bathysphere ride: the gate engaged mid-ride
+      (16:15:42) and released at the landing (16:16:18). The quad that DID appear at
+      16:16:07 carried `uiPaused=0` - it is the pre-existing `stale=1` term (session
+      22), not this gate.
 - [ ] **Gameplay rotation freeze judged** (F10, default off): shake and the
       auto-pan onto enemies stop reaching the view while the stick is centred, a
       bathysphere ride still follows the sphere with it ON, and the camera-only
       aim drift is judged acceptable or not.
-- [ ] **Right-stick turn during a scripted scene judged** (F10, default off),
+- [x] **Right-stick turn during a scripted scene judged** (F10, default off),
       including that a SECOND scene in the same session opens framed correctly -
-      the both-edges reset.
+      the both-edges reset. **CONFIRMED 2026-08-23**: four scenes in one session
+      (bathysphere, Big Daddy, balcony fall, Little Sister crawl), each framed
+      correctly on open.
 - [ ] **Authored-camera rotation follow judged in a headset** (F10 "Scripted events"):
       both axes / horizontal only / neither. Ships at "both axes" = unchanged behaviour;
       acceptance is a user verdict on whether a level horizon during a scripted or
       cinematic camera is more comfortable or reads as dead.
+
+- [x] **The scripted-scene arm hide exercised end-to-end** (`bones::collapse_rig`):
+      the bone-collapse hide must engage during a scene and release at its end without
+      freezing the bone array the way `DrawScale3D` did. **CONFIRMED 2026-08-23** on a
+      93 s Big Daddy scene: one engage at +5 s, one release at scene end, no flapping
+      and no one-way door. The scripted-window diagnostics are stripped as of this
+      session; the two ways they misled are in `ENGINE_NOTES.md` § Session 64 part 3.
 
 **Two-hand track (user's call 2026-07-28, sequenced AFTER the session-20 aim work -
 which SHIPPED 2026-07-28 on branch s20-aim-sync: one trim algebra (28.21 -> 0.03 deg),

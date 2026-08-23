@@ -4290,3 +4290,90 @@ would difference against on the way back out is from before the scene - and
 absorbing that delta would swallow the entire turn the scene just made. The
 filter therefore re-arms whenever more than 250 ms has passed since its last
 call, with dt as the witness that it was not being called.
+
+## Session 64 part 3 (2026-08-23) - the bathysphere and Big Daddy runs, and two traps in the instrument
+
+The two scenes s64 had never been run against were both verified in a headset,
+and both passed. What is worth keeping is not the pass - it is the two ways the
+instrument lied on the way there, because the instrument is now stripped and
+cannot explain itself.
+
+### The bathysphere: what actually carries the ride
+
+The window covers the **boarding forced-move only** and then closes; the ride
+itself is carried by `bathysphere()` (`pawn+0x464` bit 1), not by
+`scripted_window()`. Measured:
+
+```
+16:15:05.517  body transfer STANDS DOWN        <- window opens (forced move)
+16:15:06.877  bathysphere ON   (pawn+0x464 = 00000002, bCannotFall=1 havokCapsule=0 - oracle HOLDS)
+16:15:07.014  last motion sample               <- window closes, 70 s of ride still to go
+16:15:42.175  panel screen up during a bathysphere ride - NOT treating it as a UI pause
+16:16:18.389  bathysphere off  (pawn+0x464 = 00000004, bCannotFall=0 havokCapsule=1 - oracle HOLDS)
+16:16:18.568  body transfer resumes
+```
+
+The oracle held on both edges a second time, on a different ride from part 2's.
+
+**This is why the consumers are `scripted_window() || bathysphere()` and not the
+window alone** (`body.cpp:492`, `camera.cpp:2091`). The panel gate firing at
+16:15:42 - 35 s after the window shut - is the whole design working. A future
+session that sees "no window samples during the ride" and reaches for graveyard
+entry 12 is reading a correct measurement and drawing the wrong conclusion.
+
+The black square ~60 s into the descent is still there and is NOT this:
+
+```
+16:16:07.422  cinematic quad ON (strict=1 stale=1 fovMismatch=1 screenOnly=1 uiPaused=0)
+```
+
+`uiPaused=0` - the part-2 gate held. It is the `stale=1` term (CalcView stops
+being called across the arrival and map transition), which is session 22's
+finding and needs a render-side answer of its own.
+
+### TRAP 1: a pause menu opened mid-scene makes the STALE watchdog cry wolf
+
+The watchdog s64 added said, in words, "the gate is frozen; the hide mechanism is
+the problem, not the threshold" - and it was written precisely so a later session
+would trust it and not tune numbers. It fired once, and it was **wrong**:
+
+```
+16:18:51.888  screens: top = "..\FlashMovies\PausePC.swf" (2 playing) -> PANEL
+16:18:53.909  [bones] motion has been STALE for 2015 ms - ...
+16:18:55.116  screens: top = "..\FlashMovies\HUDRadial.swf" (1 playing) -> gameplay
+```
+
+"STALE for 2015 ms" back-dates the freeze to 16:18:51.894 - **6 ms after the
+panel came up** - and it never recurred once the panel closed. A menu freezes the
+game's own animation, so every bone read genuinely *is* our own collapse, which
+is exactly the state the watchdog was built to detect. The two are
+indistinguishable from the bone array alone; only the screen stack separates
+them. Anything reviving this watchdog must stand it down while
+`screens::panel_screen_up()`.
+
+### TRAP 2: `0/47 bones moved while collapsed` is the HEALTHY state
+
+The array probe was added to catch the collapse suppressing evaluation the way
+`DrawScale3D` did. On the passing run, 323 of 352 collapsed probes read `0/47` -
+92%, which reads as the failure returning. It is not.
+
+The gate samples **before** writing the collapse, so two consecutive reads
+normally both see the engine's authored pose and nothing has moved between them.
+`0/47` is what a working hide looks like. The tell is the other bucket: every
+`47/47` sample carried an identical `max 5009.3979`, and that constant is the
+magnitude of our own collapse write - the probe straddling it, not the hands
+moving. A raw count of moved bones cannot answer this question; only the
+constant-vs-varying character of the maximum can.
+
+### The scene that did exercise the hide
+
+93 s, one engage, one release, no flapping and no one-way door:
+
+```
+16:17:38.046  hidden=0     <- scene opens, arms visible
+16:17:43.050  hidden=1     <- hold expires, rig collapses
+16:19:11.123  hidden=0     <- window closes, authored pose restored
+```
+
+That is the first time the bone-collapse hide has been exercised end-to-end
+without freezing, which is what `DrawScale3D` could never do.
