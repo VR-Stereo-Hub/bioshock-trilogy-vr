@@ -43,6 +43,17 @@ report. Only the *live* rows have code behind them.
 
 Button names: `A B X Y LB RB LS RS DUP DDOWN DLEFT DRIGHT START BACK NONE`.
 
+### Gestures that are not in the ini
+
+| Gesture | What it does |
+|---|---|
+| **Menu button, or X + Y** (left hand) | **Pause** (START). The X+Y chord exists because on many setups no menu button reaches the game at all - SteamVR claims the left one, the Meta runtime the right |
+| **MODIFIER + menu button, or MODIFIER + X + Y** | **"What is this?"** (`ShowContextHelp`), and **holding it ~0.5 s opens the MAP** - `ShockPlayerController` gates the map behind `HintButtonHeld` / `HintHoldTime = 0.5 s`. The modifier is whatever `ControllerDpadModifier` is set to. With the modifier OFF, holding the menu button alone still reaches BACK as a fallback |
+| **R3 + L3, tap** | Opens / closes the **F10 panel**. Point at it with the right controller, **right trigger clicks**, **right stick UP/DOWN scrolls**, and **right stick LEFT/RIGHT tweaks whatever slider you are pointing at** - relative to its current value, 1% of its range per step, so it never jumps to where you happen to be aiming (dominant axis, so scrolling never nudges a value on the way past). While it is up the right trigger and right stick are swallowed in-game (so a click cannot fire and a scroll cannot turn), and the crosshair, aim laser and aim dot are hidden. The **left stick still walks** |
+| **R3 + L3, hold ~0.6 s** | **Recenter** (seated pose + view yaw). It takes the hold rather than the tap because it is rare and deliberate |
+| **Modifier + selecting stick UP / DOWN** | Cycle the equipped weapon's ammo type. Pulsed, so one step per push - dominant axis only, diagonals ignored |
+| **Modifier + selecting stick RIGHT, held ~0.5 s** | **The MAP.** Right is the game's hint button, and `ShockPlayerController` gates the map behind `HintButtonHeld` / `HintHoldTime = 0.5 s` - so this one direction is HELD rather than pulsed. A short push is the hint on its own |
+
 ### Live — comfort and scale
 
 BRVR's key names, units and shipped defaults, so a config carries between the two

@@ -134,6 +134,7 @@ that back those rules up.
 | `docs/ROADMAP.md` | BS1/BS2 milestones M0–M10 with acceptance criteria and checkboxes |
 | `docs/ARCHITECTURE.md` | Module design, core/adapter contract, stereo strategy, decision log |
 | `docs/RESEARCH.md` | All research findings with sources (engine, prior art, VR runtimes, legal) |
+| `docs/PORT-CANDIDATES.md` | **BS1 behaviours BS2/Infinite have never been tested with**, and the exact one-line opt-in for each. Add a row in the same commit as any core default only one game opts into |
 | `docs/CONTROLS.md` | **Controller config**: `BioshockVR.ini` reference, which keys are live vs planned, hardware notes that decide the d-pad modifier |
 | `docs/VERIFICATION.md` | **Verification catalog**: intent -> tool -> command -> how to read the result. The simulated OpenXR runtime, the command seam, screenshots, img-diff, frame dumps, record/replay - and what still needs a human in the headset |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |

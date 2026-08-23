@@ -869,6 +869,15 @@ void save_vr_preset() {
     fprintf(f, "killHeadBob=%d\n", g_killHeadBob.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
+    // s63: the d-pad modifier trio. They are ALSO BioshockVR.ini keys
+    // (ControllerDpadModifier / ControllerDpadFlip / JumpOnR3), and this file
+    // loads later, so saving them here is what makes the F10 controls stick -
+    // at the cost of this file then shadowing those ini keys, which is the same
+    // trade every other value in here already makes. -1 is the legacy heuristic
+    // and is a real state, not "unset".
+    fprintf(f, "dpadModifier=%d\n", bvr::input::dpad_modifier());
+    fprintf(f, "dpadSelectLeft=%d\n", bvr::input::dpad_select_left() ? 1 : 0);
+    fprintf(f, "jumpOnR3=%d\n", bvr::input::jump_on_r3() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
     fprintf(f, "swingOn=%d\n", bvr::input::swing::enabled() ? 1 : 0);
     fprintf(f, "swingThreshold=%.2f\n", bvr::input::swing::threshold_ms());
@@ -955,6 +964,11 @@ void load_vr_preset_values() {
             g_killHeadBob.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
+        else if (strcmp(key, "dpadModifier") == 0)
+            bvr::input::set_dpad_modifier(static_cast<int>(v));
+        else if (strcmp(key, "dpadSelectLeft") == 0)
+            bvr::input::set_dpad_select_left(v != 0.0f);
+        else if (strcmp(key, "jumpOnR3") == 0) bvr::input::set_jump_on_r3(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
         else if (strcmp(key, "swingOn") == 0) bvr::input::swing::set_enabled(v != 0.0f);
         else if (strcmp(key, "swingThreshold") == 0) bvr::input::swing::set_threshold_ms(v);
@@ -1064,7 +1078,14 @@ constexpr uint64_t kExecReassertMs = 300000; // 5 minutes
 // engine's SET handler on change, on a world event, and on the slow safety
 // net. Game thread.
 void assert_crosshair(uint64_t now) {
-    int want = g_crosshairVisible.load(std::memory_order_relaxed) ? 1 : 0;
+    // Hidden while the F10 panel is up - it sits in the middle of the view,
+    // right where the panel is, and reads as a smudge on the menu. This is a
+    // suppression, not a setting change: the `due` test below is edge-driven,
+    // so it hides on open and comes back on close.
+    int want = (g_crosshairVisible.load(std::memory_order_relaxed) &&
+                !bvr::overlay::visible())
+                   ? 1
+                   : 0;
     bool due = want != g_crosshairApplied ||
                (want == 0 && now - g_crosshairAssertMs >= kExecReassertMs);
     if (!due) return;

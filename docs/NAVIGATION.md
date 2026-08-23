@@ -34,6 +34,7 @@ that line. Sizes, measured 2026-08-22:
 | `RELEASE_NOTES.md` | 310 | 19 K |
 | `TROUBLESHOOTING.md` | 244 | 13 K |
 | `bioshock2/FREEZE_HANDOFF.md` | 95 | 6 K |
+| `PORT-CANDIDATES.md` | 79 | 8 K |
 
 ---
 
@@ -69,6 +70,7 @@ grep -n "^## M7" docs/ROADMAP.md        # then sed that range
 | How to verify something without a headset | `VERIFICATION.md` § 1 *decision table* | `sed -n '22,57p'` first - it routes onward |
 | What still needs a human in a headset | `VERIFICATION.md` § 6 | `sed -n '567,$p'` |
 | Install / launch / test a game | `<game>/TESTING.md` | grep the milestone or symptom |
+| Whether a BS1 behaviour is safe to turn on for BS2/Infinite | `PORT-CANDIDATES.md` | read whole - it is short, and each row carries the opt-in line |
 | A user-reported bug | `TROUBLESHOOTING.md` | small enough to read whole |
 | Prior art, legal, runtime research | `RESEARCH.md` | grep the topic |
 | What shipped in a version | `RELEASE_NOTES.md` | grep the version |

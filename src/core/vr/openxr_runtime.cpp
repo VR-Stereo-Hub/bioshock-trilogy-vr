@@ -8,6 +8,7 @@
 
 #include "core/gfx/blit.h"
 #include "core/gfx/hud_capture.h"
+#include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/util/xr_math.h"
 
@@ -3152,6 +3153,10 @@ struct LaserSnapshot {
 // built, capped at `budget` quads. Render thread, projection mode only.
 uint32_t build_laser_from(const LaserSnapshot& ls, XrCompositionLayerQuad* quads,
                           int budget) {
+    // Nothing aiming-related while the F10 panel is up: the beam lands ON the
+    // panel and fights the cursor for the same pixels. Suppression only - the
+    // user's `laserOn` setting is untouched and comes straight back.
+    if (bvr::overlay::visible()) return 0;
     if (!ls.on || budget < 1) return 0;
     if (g_laserSwapchain == XR_NULL_HANDLE || !g_laserDot || !g_viewsValid) return 0;
 
@@ -3327,6 +3332,7 @@ bool publish_laser_image() {
 // game_point_to_xr. All that happens here is billboarding and sizing, so
 // there is no second algebra that can drift from the first.
 uint32_t build_aim_dot_slot(XrCompositionLayerQuad* quad, int slot) {
+    if (bvr::overlay::visible()) return 0; // see build_laser_from
     const bool two = (slot == 1);
     if (!(two ? g_dot2On : g_dotOn).load(std::memory_order_relaxed)) return 0;
     if (!(two ? g_dot2Valid : g_dotValid).load(std::memory_order_relaxed)) return 0;

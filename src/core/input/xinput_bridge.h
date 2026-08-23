@@ -138,9 +138,37 @@ void set_snap_angle_deg(float d);
 // act as a no-button modifier. It must be the LEFT thumbrest, because your
 // right thumb cannot rest on the right thumbrest and push the right stick at
 // the same time. Default is Click - unchanged behaviour for existing users.
+//
+// SUPERSEDED FOR ANY GAME THAT PICKS A REAL D-PAD MODIFIER (see below). It is
+// still the live control wherever dpad_modifier() reads Legacy, which today is
+// BioShock 2 and Infinite - neither has been in a headset with the s63 modes.
 enum class AmmoMod { Click = 0, Thumbrest = 1, Both = 2 };
 AmmoMod ammo_mod();
 void set_ammo_mod(AmmoMod m);
+
+// s63 D-PAD MODIFIER, ported from BRVR's ControllerDpadModifier - the state
+// lives in the XR composer (openxr_input.cpp) beside the code that reads it
+// every frame, and is reached from here the same way the flourish chord is.
+//
+// Numbering is BRVR's so a BioshockVR.ini carries between the two mods:
+//   0 off · 1 right thumbrest · 2 R3 · 3 left grip · 4 left thumbrest
+// -1 is the internal Legacy heuristic - not settable from the ini, and the
+// default, so games that have never been tested with a real mode keep the
+// pre-s63 behaviour. When it is anything but -1 the AmmoMod above is ignored
+// entirely: "explicit choice, no heuristic, no fallback".
+//
+// dpad_select_left() is BRVR's ControllerDpadFlip: true = the LEFT (movement)
+// stick selects the slot and walking is suppressed while the modifier is held;
+// false = the RIGHT (look) stick selects and turning is suppressed instead.
+//
+// jump_on_r3() is additive - the layout's own jump button still jumps - and
+// yields when R3 IS the modifier, or every ammo select would also jump.
+int  dpad_modifier();
+void set_dpad_modifier(int m);
+bool dpad_select_left();
+void set_dpad_select_left(bool on);
+bool jump_on_r3();
+void set_jump_on_r3(bool on);
 int take_snap_steps(); // +right/-left steps queued since the last drain
 
 // Feedback session 2 (2026-08-13): BOTH-STICKS-CLICK = recenter chord. The XR

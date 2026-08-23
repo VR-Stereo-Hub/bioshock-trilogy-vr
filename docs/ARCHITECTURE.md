@@ -1526,3 +1526,156 @@ same day, which settles session 16's open question: the RIG actor's DrawScale is
 inert through the fg path, the WEAPON actor's is not. It also corrected the
 lane - the wrench is authored at 0.800, so a multiplier compounded to 0.64 and
 the knob is now absolute, as BRVR's is. See `docs/bioshock1/ENGINE_NOTES.md`.
+
+### 2026-08-22 (session 63) - the F10 panel in a headset
+
+The panel was unreachable in VR: ImGui's default corner, 420x420 inside a
+~2750x2850 backbuffer, unscaled font, mouse-only. Making it controller-driven
+turned up four things that are worth recording because each one LOOKED like a
+tuning problem and was not - and each cost a headset session to find, because a
+clean build proves nothing about a runtime contract.
+
+**R3 + L3 TAP opens the panel; HOLD (~0.6 s) recenters.** The chord already
+existed as recenter-only; it is now split by duration. Recenter took the hold
+because it is rare and deliberate. **This changes recenter for BS2 and Infinite
+too** - they drain the same chord - so it has a `docs/PORT-CANDIDATES.md` row.
+
+**Point with the right controller, click with RT.** `overlay.cpp` injects
+`io.MousePos` between `ImGui_ImplWin32_NewFrame()` and `ImGui::NewFrame()` -
+the only window where an injected cursor is not overwritten by the real one.
+The maths is deliberately position-free: rotate the aim direction into the
+HEAD's frame, divide out the forward component, scale by the eye tangents from
+`fov_audit`. **If the cursor sits off the ray, expect a constant scale factor,
+not a redesign** - the backbuffer holds the game's render at the game's FOV
+while the compositor presents through the claimed FOV, and those only agree
+because the session-15 lens match makes them.
+
+RT is swallowed **for the game only** while the panel is up, in
+`compose_synthetic` - deliberately NOT where the XR pad is published, because
+the overlay reads that same published pad to get the trigger. Everything else
+stays live, so you can still walk with the panel open.
+
+**THE HALF-SCREEN CUTOFF: the panel was never too tall, it was being
+guillotined.** ImGui's Win32 backend sets `io.DisplaySize` from the **window
+client rect** (`imgui_impl_win32.cpp:410`, `GetClientRect`), and the DX11
+backend sets the D3D **viewport** to exactly that
+(`imgui_impl_dx11.cpp:113-114`). We draw into the BACKBUFFER, which in VR is
+near-square (~2750x2780) - but Windows CLAMPS a window to the monitor, so on a
+1440p display the client rect is roughly half that height. Everything below it
+fell outside the viewport and was never rasterised, at a fixed ~50% of the eye
+image regardless of what the window asked for.
+
+Note the comparison that matters is **backbuffer vs CLIENT RECT**, not
+backbuffer vs render resolution - those two are near-identical and neither
+explains it. Two observations corroborate rather than contradict it: the cut is
+at the same ~50% **on the flat monitor too** (expected - the backbuffer is
+scaled into the window for display, so a viewport covering its top half still
+covers the top half of what you see), and **UEVR shows the identical symptom**,
+which is what you would predict from any mod that draws ImGui into a hooked
+Present while the game renders a backbuffer larger than its own window. (Noted
+as a symptom only - UEVR is all-rights-reserved and no code was consulted.) Fixed by pointing `io.DisplaySize` at the backbuffer after the
+Win32 backend runs (and rescaling the real mouse into that space so the desktop
+cursor still lands where it looks like it lands). This also makes the centring
+maths and the controller pointer correct, both of which already assumed
+backbuffer pixels. **The probe logs the proof once**:
+`overlay: window client rect ... vs backbuffer ...` - if those heights match,
+the cutoff was something else and this diagnosis is wrong.
+
+**IMGUI INPUT MUST GO THROUGH THE EVENT QUEUE - three bugs, one cause.**
+Reported: the cursor rendered in the RIGHT EYE ONLY, the trigger stopped
+clicking, and the stick-drag moved the cursor without changing any slider.
+
+Since ImGui 1.87 (vendored here: **1.92.8**) `io.MousePos`, `io.MouseDown[]` and
+`io.MouseWheel` are DERIVED state, rebuilt from queued events inside
+`NewFrame()` - `imgui.cpp:10535` is literally
+`io.MouseDown[button] = e->MouseButton.Down`, and `imgui.cpp:808` lists
+"Backend writing to io.MouseDown[] -> backend should call
+io.AddMouseButtonEvent()" as obsolete. The first cut wrote the FIELDS. Position
+survived by luck (nothing else queues a position event while the physical mouse
+is still); the button writes were overwritten every single frame, because the
+queue always carries the real button state. Hence a cursor that moved but could
+not click or drag. Now `AddMousePosEvent` / `AddMouseButtonEvent` /
+`AddMouseWheelEvent` throughout - including the real-mouse rescale, which was a
+field write for the same reason.
+
+The right-eye-only half was a second bug in the same function: it BAILED OUT on
+a failed pose read, leaving the cursor position unset for that present. Each eye
+is its own Present under SequentialReentry, so failing on alternate passes sets
+the cursor on one eye and not the other. It now holds the last good position.
+
+**The slider reset-to-aim: ImGui sliders position ABSOLUTELY on click.**
+`imgui_widgets.cpp` computes `clicked_around_grab` and preserves the value ONLY
+when the click lands on the grab handle - click the track and the value jumps to
+the cursor. The synthetic click-drag therefore reset the slider to the aim point
+on every re-engage. ImGui stores `HoveredId` but no hovered RECT, so the grab's
+position is not discoverable from outside; pre-aiming at it is impossible.
+
+The widget already implements the right path for keyboard/gamepad
+(`ActiveIdSource == Keyboard || Gamepad`): it starts from the CURRENT value and
+applies a relative delta, **one arrow-key press = 1% of the slider range**, and
+never looks at the cursor. Reaching it needs `SetActiveID` plus an
+`ActiveIdSource` override from `imgui_internal.h`; the keys themselves go through
+the public event API. Activation happens in `UpdateSliderTweak()`, which must run
+AFTER `NewFrame` (HoveredWindow is updated there) and BEFORE the sliders are
+submitted. Step RATE is ours, not ImGui's repeat timer - the key is pulsed once
+per due step (2-30/s, squared response), so stick pressure still means something.
+
+**The runaway scroll was a QUEUE BACKLOG, not momentum.** `UpdateInputEvents`'
+wheel branch is `if (trickle_fast_inputs && (mouse_moved || mouse_button_changed))
+break;` - it stops draining. Trickling is on by default, and the ray cursor moves
+every present (hand jitter guarantees it), so every wheel event was DEFERRED
+rather than applied; they queued up and drained about one per frame, which kept
+the panel scrolling after the stick was released.
+
+Trickling exists for real hardware, where a burst inside one frame must be spread
+so a fast click is not merged into a move. Our input is synthetic and already
+frame-paced - exactly one consistent pointer state per present - so
+`io.ConfigInputTrickleEventQueue = false` is correct here, not a workaround.
+
+**Both stick speeds are now PER SECOND, not per frame.** The present rate swings
+between ~100 and ~240/s (each eye presents separately under SequentialReentry),
+so a per-frame step made drag and scroll speed a function of framerate. That is
+also why the slider drag read about four times too fast.
+
+**Polish from the first in-headset look**: the window scale was right but the
+TEXT was too big (h/1080 = 2.37x), so the lift is now half that and there is a
+**"UI text scale" slider** - it is a perceptual number and guessing it from
+outside a headset is how the first attempt got it wrong. The panel is 0.45 of the
+backbuffer tall and centred, so trimming pulls in equally top and bottom -
+sized for a viewport that is now genuinely the full eye image. **Right stick scrolls it**, and the
+right stick and trigger are both swallowed in-game while it is up, so a scroll
+cannot turn you and a click cannot fire; the left stick still walks. **The
+crosshair, aim laser and aim dot are hidden** while it is up - the beam used to
+land on the panel and fight the cursor for the same pixels.
+
+**Anchored (world-locked) placement was asked for and DROPPED as too big.** It
+would mean the panel leaving the backbuffer for its own quad layer - render
+ImGui to an offscreen RT, copy into a new swapchain, submit at the anchor pose,
+and re-do the pointer as a ray/plane intersection. The `screen_place_mode`
+anchor logic the cinema screen already uses is exactly the placement behaviour
+wanted ("follows you, but a head turn does not drag it"), so a future attempt
+should reuse it rather than invent one. The panel stays head-locked for now.
+
+**The window opened small and off-lens because `io.IniFilename = nullptr`** -
+ImGui never persisted anything, and there is no record of where it was left.
+Interim default: centred, 42% x 52% of the backbuffer, with `FontGlobalScale`
+tracking backbuffer height (a 1080p-authored font is sub-pixel at 2560 square).
+**A probe logs the real geometry** on change, debounced 1 s, as fractions of the
+backbuffer so the baked number is resolution-independent:
+
+```
+grep "overlay: window" %LOCALAPPDATA%\BioshockVR\bioshockvr.log | tail -3
+```
+
+Drag it where it belongs, read the fractions, bake them, drop the probe.
+
+
+**The one thing deliberately NOT done: world-anchored placement.** Asked for and
+dropped as too big. The panel is drawn into the backbuffer, which is what makes
+it head-locked by construction; anchoring means giving it its own quad layer -
+render ImGui to an offscreen RT, copy into a new swapchain, submit at the anchor
+pose, raise the compositor's layer budget, and redo the pointer as a ray/plane
+intersection. **`screen_place_mode`, which the cinema screen already uses, is
+exactly the placement behaviour wanted** ("follows you as you walk, but a head
+turn does not drag it") - a future attempt should reuse it rather than invent
+one.

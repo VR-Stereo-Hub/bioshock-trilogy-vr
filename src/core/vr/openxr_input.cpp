@@ -4,6 +4,7 @@
 
 #include "core/input/swing.h"
 #include "core/input/xinput_bridge.h"
+#include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 
@@ -30,11 +31,20 @@ constexpr float kGripRelease = 0.55f;
 // the game's per-tick edge detection cannot miss it.
 constexpr uint64_t kMenuLongMs = 500;
 constexpr uint64_t kStartPulseMs = 150;
-// Ammo-slot select (session 19, headset-revised): while the right-stick
-// CLICK is held, stick directions past kFlickPress select the ammo slot
-// (dpad up/down/left pulses); re-arm inside +-kFlickRearm, cooldown against
-// machine-gunning. Zoom is removed - RS-click never reaches the game.
-constexpr float kFlickPress = 0.65f;
+// Both-stick-click chord: tap toggles the F10 panel, hold recentres. The gap
+// between them is deliberate - a tap that overruns kChordTapMs does nothing at
+// all rather than recentring by accident.
+constexpr uint64_t kChordTapMs = 350;
+constexpr uint64_t kChordHoldMs = 600;
+// Ammo-slot select: while the d-pad modifier is held, stick directions past
+// kFlickPress emit a dpad direction. Zoom is removed, so RS-click is free.
+//
+// 0.5 and DOMINANT-AXIS-ONLY, both from BRVR (InputHook.cpp): a thumbstick
+// makes diagonals far too easy to hit when the intent is one direction, and
+// the old 0.65 with no dominance test could resolve a deliberate "up" as
+// "left" depending on which comparison ran first.
+constexpr float kFlickPress = 0.5f;
+// PULSE PATH ONLY (PadMap::flickHold == false - Infinite). See the drive.
 constexpr float kFlickRearm = 0.30f;
 constexpr uint64_t kFlickPulseMs = 150;
 constexpr uint64_t kFlickCooldownMs = 300;
@@ -65,6 +75,24 @@ struct PadMap {
     // Infinite gets the fourth direction its dpad nav needs.
     bool flick;
     bool flickAmmoModPref; // honour `vrinput ammomod`; else thumbrest-only
+    // WHICH emitted bits are HELD rather than pulsed. Per DIRECTION, because
+    // in this game the two kinds sit side by side on the same d-pad.
+    //
+    // HOLD is required for the hint button. ENGINE_NOTES' flat-verified pad
+    // audit: "BACK=ShowContextHelp, DPAD_RIGHT=hints", and BRVR found (its
+    // session 38) that ShockPlayerController gates the MAP SCREEN behind
+    // HintButtonHeld with HintHoldTime = 0.5 s. A pulse cannot satisfy a
+    // half-second hold, so the map is unreachable by construction without this.
+    //
+    // PULSE is required for ammo. The same audit: "DPAD_UP and DPAD_DOWN CYCLE
+    // the equipped weapon's AMMO TYPE ... flat-proven: 00 Buck -> Electric Buck
+    // -> Exploding Buck". A cycle that is held does not settle - it spins. The
+    // first cut of this made the whole map hold-or-pulse and would have traded
+    // an unreachable map for ammo that machine-guns; the distinction is not
+    // per-game, it is per-direction.
+    //
+    // Infinite holds nothing: its fourth direction drives a nav cycle.
+    uint16_t flickHoldBits;
     uint16_t flickUp, flickDown, flickLeft, flickRight;
     // s63: what JUMP is on this game's pad, for the R3-jump lane. BS1/BS2 bind
     // jump to XENON_Y; Infinite's audited retail map puts it on A.
@@ -87,7 +115,13 @@ constexpr PadMap kPadMapBioshock1 = {
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
     XINPUT_GAMEPAD_LEFT_THUMB, 0, // RS-click eaten: it IS the ammo modifier
     true, true,
-    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
+    XINPUT_GAMEPAD_DPAD_RIGHT, // hold the HINT button only - up/down cycle ammo
+    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
+    // DPAD_RIGHT = hints (ENGINE_NOTES pad audit), and holding it ~0.5 s is
+    // how the MAP opens. It shipped as 0 on the belief that BS1 needed only
+    // three directions for its ammo types - which cost the map and the
+    // context help, not a fourth ammo slot.
+    XINPUT_GAMEPAD_DPAD_RIGHT,
     XINPUT_GAMEPAD_Y, // jump
 };
 
@@ -107,7 +141,9 @@ constexpr PadMap kPadMapPassthrough = {
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
     XINPUT_GAMEPAD_LEFT_THUMB, 0,
     true, true,
-    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
+    XINPUT_GAMEPAD_DPAD_RIGHT, // same game, same reason as kPadMapBioshock1
+    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
+    XINPUT_GAMEPAD_DPAD_RIGHT,
     XINPUT_GAMEPAD_Y, // jump
 };
 
@@ -134,6 +170,8 @@ constexpr PadMap kPadMapInfinite = {
     XINPUT_GAMEPAD_LEFT_THUMB,    // sprint
     XINPUT_GAMEPAD_RIGHT_THUMB,   // XToggleZoom - forwarded, unlike BS1
     true, false,                  // thumbrest-only modifier
+    0, // flickHoldBits: Infinite CYCLES on the fourth direction - a held bit
+       // would scroll its nav continuously. Everything stays pulsed.
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
     XINPUT_GAMEPAD_DPAD_RIGHT,
 };
@@ -1272,12 +1310,32 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     const bool clickL = read_bool(session, g_stickClickL);
     const bool clickRraw = read_bool(session, g_stickClickR);
     const bool chordHeld = clickL && clickRraw;
-    static bool s_chordArmed = true;
-    if (chordHeld && s_chordArmed) {
-        s_chordArmed = false;
-        bvr::input::queue_recenter_chord();
-    } else if (!clickL && !clickRraw) {
-        s_chordArmed = true;
+    // 2026-08-22: the chord now carries TWO jobs, split by duration.
+    //   TAP  (release under kChordTapMs)  -> toggle the F10 panel
+    //   HOLD (past kChordHoldMs)          -> recenter, once, on the way past
+    // Recenter keeps the chord because it is the one thing you must be able to
+    // do when the view is already wrong; it takes the HOLD because it is rare
+    // and deliberate, while opening the panel is neither. A hold that has
+    // already recentered must NOT also toggle on release, hence s_chordFired.
+    static uint64_t s_chordDownMs = 0;
+    static bool s_chordFired = false; // this hold already recentred
+    const uint64_t nowChord = GetTickCount64();
+    if (chordHeld) {
+        if (s_chordDownMs == 0) s_chordDownMs = nowChord;
+        if (!s_chordFired && nowChord - s_chordDownMs >= kChordHoldMs) {
+            s_chordFired = true;
+            bvr::input::queue_recenter_chord();
+        }
+    } else if (s_chordDownMs != 0) {
+        // Released. Both clicks are up by construction of chordHeld going
+        // false only when at least one is - require BOTH up before re-arming,
+        // so rolling off one click and back on is not a second gesture.
+        if (!clickL && !clickRraw) {
+            if (!s_chordFired && nowChord - s_chordDownMs < kChordTapMs)
+                bvr::overlay::set_visible(!bvr::overlay::visible());
+            s_chordDownMs = 0;
+            s_chordFired = false;
+        }
     }
     if (!chordHeld) {
         if (clickL) pad.buttons |= map.stickClickL;
@@ -1293,7 +1351,14 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             map.flick && (dpadModNow == static_cast<int>(DpadMod::R3) ||
                           (dpadModNow == static_cast<int>(DpadMod::Legacy) &&
                            map.flickAmmoModPref));
-        const bool r3IsJump = !r3IsModifier && g_jumpOnR3.load(std::memory_order_relaxed);
+        // ...and it can only CLAIM the click on a game whose map actually has a
+        // jump bit. Infinite's does not (its initializer stops at flickRight, so
+        // jumpBit value-initialises to 0) and it forwards RS-click for
+        // XToggleZoom instead. Without this guard the lane won the click, emitted
+        // nothing, and then blocked the forward below - so s63 silently ate
+        // Infinite's zoom on a global default it never opted into.
+        const bool r3IsJump = !r3IsModifier && map.jumpBit &&
+                              g_jumpOnR3.load(std::memory_order_relaxed);
         if (r3IsJump && clickRraw && map.jumpBit) pad.buttons |= map.jumpBit;
         // Forwarded only where the map says so, and only when the click is
         // carrying neither of the two jobs above.
@@ -1313,6 +1378,8 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // reaches the game. Direction reads the PRE-deadzone stick; the re-arm
     // band allows several selects in one hold; grips suppress it (the
     // radials read the stick).
+    // Set by the flick block below; read by the menu lane after it.
+    bool modHeldForMenu = false;
     if (map.flick) {
         // s63: which stick selects. Default right (shipped); `dpadSide = left`
         // moves it to the movement stick, where a d-pad normally lives.
@@ -1375,21 +1442,34 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             restMod = mode != bvr::input::AmmoMod::Click && (dpadLeft ? restR : restL);
         }
         const bool modHeld = clickMod || restMod;
+        // The menu lane below needs to know whether the modifier is down: it is
+        // what turns the menu button from PAUSE into CONTEXT HELP. Published
+        // here rather than recomputed, so the two can never disagree.
+        modHeldForMenu = modHeld;
 
         if (modHeld && !g_rsClickWasDown) g_flickArmed = true;
         g_rsClickWasDown = modHeld;
         if (modHeld && !gripHeld) {
-            // Turn suppression. RS-click never reaches the game, so killing turn
-            // for its whole hold costs nothing. A thumb PARKED on the thumbrest
-            // is not a deliberate gesture though - suppressing turn for as long
-            // as it rests there would break turning during normal play - so in
-            // thumbrest mode only suppress while the stick is actually pushed
-            // past the select threshold.
-            const bool pushed =
-                fabsf(rawX) >= kFlickPress || fabsf(rawY) >= kFlickPress;
-            // Suppress the stick that is being used to SELECT, so the gesture
-            // does not also turn (right stick) or walk (left stick).
-            if (clickMod || pushed) {
+            // DOMINANT AXIS ONLY, BRVR's exact test. A thumbstick makes
+            // diagonals far too easy to hit when one direction was meant, and
+            // the previous first-match chain resolved a deliberate "up" as
+            // "left" whenever the cross-axis happened to be over threshold too.
+            // Directions the map leaves at 0 are never emitted - that is how
+            // BS1 keeps a three-way select while Infinite gets its fourth.
+            const float ax = fabsf(rawX), ay = fabsf(rawY);
+            uint16_t bit = 0;
+            if (ay >= kFlickPress && ay >= ax) bit = rawY > 0.0f ? map.flickUp : map.flickDown;
+            else if (ax >= kFlickPress && ax > ay)
+                bit = rawX < 0.0f ? map.flickLeft : map.flickRight;
+
+            // Turn/walk suppression. RS-click never reaches the game, so
+            // killing the stick for its whole hold costs nothing there. A thumb
+            // PARKED on a thumbrest is not a deliberate gesture though -
+            // suppressing for as long as it rests would break normal play - so
+            // in thumbrest mode only suppress while a direction is actually
+            // resolved. Suppress the stick doing the SELECTING, so the gesture
+            // does not also walk (left) or turn (right).
+            if (clickMod || bit) {
                 if (dpadLeft) {
                     pad.lx = 0;
                     pad.ly = 0;
@@ -1398,21 +1478,19 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                     pad.ry = 0;
                 }
             }
-            if (g_flickArmed && now >= g_flickCooldownMs) {
-                // Directions the map leaves at 0 are simply never emitted -
-                // that is how BioShock 1 keeps its three-way ammo select while
-                // Infinite gets the fourth direction its nav cycle needs.
-                uint16_t bit = 0;
-                if (rawY >= kFlickPress) bit = map.flickUp;
-                else if (rawY <= -kFlickPress) bit = map.flickDown;
-                else if (rawX <= -kFlickPress) bit = map.flickLeft;
-                else if (rawX >= kFlickPress) bit = map.flickRight;
-                if (bit) {
-                    g_flickPulseBit = bit;
-                    g_flickPulseUntilMs = now + kFlickPulseMs;
-                    g_flickCooldownMs = now + kFlickCooldownMs;
-                    g_flickArmed = false;
-                }
+
+            if (bit && (bit & map.flickHoldBits)) {
+                // HELD - see PadMap::flickHoldBits. Set for as long as the
+                // direction is, which is what lets ShockPlayerController satisfy
+                // HintButtonHeld / HintHoldTime = 0.5 s and open the MAP.
+                pad.buttons |= bit;
+            } else if (g_flickArmed && now >= g_flickCooldownMs && bit) {
+                // PULSED - one edge per return-to-centre, for maps whose
+                // directions CYCLE rather than select.
+                g_flickPulseBit = bit;
+                g_flickPulseUntilMs = now + kFlickPulseMs;
+                g_flickCooldownMs = now + kFlickCooldownMs;
+                g_flickArmed = false;
             }
             if (rawX > -kFlickRearm && rawX < kFlickRearm && rawY > -kFlickRearm &&
                 rawY < kFlickRearm)
@@ -1435,12 +1513,36 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         }
     }
 
-    // Left menu: short press pulses START on release, holding it past the
-    // threshold holds BACK until release. The X+Y chord above joins here so
-    // both routes share one tap/hold state machine.
-    bool menuDown = read_bool(session, g_menu) || menuChord;
-    if (menuDown) {
+    // Left menu, or the X+Y chord that stands in for it. The MODIFIER decides
+    // which of the two things this is - that is BRVR's shape, and it is what
+    // reaches the map:
+    //
+    //     menu / X+Y             -> START (pause)
+    //     MODIFIER + menu / X+Y  -> BACK  (ShowContextHelp, "WHAT IS THIS?")
+    //
+    // and BACK must be HELD, because ShockPlayerController gates the MAP SCREEN
+    // behind HintButtonHeld with HintHoldTime = 0.5 s. BRVR: `if (s.menu) btn |=
+    // (mod ? XI_BACK : XI_START);`.
+    //
+    // WHAT THIS REPLACES, and why the old shape could not work: BACK used to be
+    // the LONG PRESS of the menu button, with no modifier involved. That put
+    // context help behind the one input most likely not to exist - "on many
+    // setups no menu button reaches the game at all: SteamVR claims the left
+    // one for its dashboard, the Meta runtime the right" - and the X+Y chord,
+    // which exists precisely for those setups, could then only ever produce
+    // START. Hanging it off the modifier instead means the chord reaches it too.
+    const bool menuRaw = read_bool(session, g_menu);
+    const bool menuDown = menuRaw || menuChord;
+    if (menuDown && modHeldForMenu) {
+        // Held for as long as the gesture is, so the 0.5 s hint timer can run.
+        pad.buttons |= XINPUT_GAMEPAD_BACK;
+        g_menuDownMs = 0;         // never also count as a pause tap
+        g_startPulseUntilMs = 0;  // and cancel one already in flight
+    } else if (menuDown) {
         if (g_menuDownMs == 0) g_menuDownMs = now;
+        // The long-press route to BACK is kept as a fallback for anyone whose
+        // d-pad modifier is off (dpadModifier = 0), who would otherwise have no
+        // way to reach context help at all.
         if (now - g_menuDownMs >= kMenuLongMs) pad.buttons |= XINPUT_GAMEPAD_BACK;
     } else {
         if (g_menuDownMs != 0 && now - g_menuDownMs < kMenuLongMs)
@@ -1521,6 +1623,59 @@ void set_flourish_chord_suspended(bool on) {
         bvr::vr::g_flourishChordSuspended.exchange(on, std::memory_order_relaxed);
     if (was != on)
         BVR_LOG("xr-input: flourish chord %s", on ? "SUSPENDED (A passes through)" : "resumed");
+}
+
+// s63 d-pad modifier / flip / R3-jump, reached from the F10 panel and the
+// command seam. Same arrangement as the flourish chord above: the state stays
+// in the composer's TU next to the per-frame reader, the accessors live in
+// bvr::input beside the other composed-state readers.
+int dpad_modifier() {
+    return bvr::vr::g_dpadMod.load(std::memory_order_relaxed);
+}
+
+void set_dpad_modifier(int m) {
+    // -1 (Legacy) is reachable deliberately: it is how a game with no tested
+    // mode gets the pre-s63 heuristic back, and how an A/B against it is run.
+    if (m < -1 || m > 4) return;
+    const int was = bvr::vr::g_dpadMod.exchange(m, std::memory_order_relaxed);
+    if (was == m) return;
+    static const char* kNames[] = {"off", "right thumbrest", "R3", "left grip",
+                                   "left thumbrest"};
+    BVR_LOG("xr-input: d-pad modifier = %s", m < 0 ? "legacy heuristic" : kNames[m]);
+    // The one combination that cannot work, said at the moment it is chosen
+    // rather than only in the startup echo.
+    const bool leftSel = bvr::vr::g_dpadLeft.load(std::memory_order_relaxed);
+    if ((leftSel && m == 4) || (!leftSel && m == 1))
+        BVR_LOG("xr-input: WARNING - that thumbrest is on the SAME hand as the selecting "
+                "stick. One thumb cannot rest on it and push that stick at once - use R3 "
+                "or the left grip, or flip the selecting stick.");
+    if (m == 2 && bvr::vr::g_jumpOnR3.load(std::memory_order_relaxed))
+        BVR_LOG("xr-input: R3 is the modifier now, so the R3 jump lane yields to it - the "
+                "layout's own jump button is unaffected");
+}
+
+bool dpad_select_left() {
+    return bvr::vr::g_dpadLeft.load(std::memory_order_relaxed);
+}
+
+void set_dpad_select_left(bool on) {
+    const bool was = bvr::vr::g_dpadLeft.exchange(on, std::memory_order_relaxed);
+    if (was == on) return;
+    BVR_LOG("xr-input: d-pad side = %s (%s stick selects, %s is suppressed while selecting)",
+            on ? "LEFT" : "right", on ? "left" : "right", on ? "walking" : "turning");
+}
+
+bool jump_on_r3() {
+    return bvr::vr::g_jumpOnR3.load(std::memory_order_relaxed);
+}
+
+void set_jump_on_r3(bool on) {
+    const bool was = bvr::vr::g_jumpOnR3.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr-input: R3 jump %s%s", on ? "ON (additive)" : "off",
+                on && bvr::vr::g_dpadMod.load(std::memory_order_relaxed) == 2
+                    ? " - but R3 is the d-pad modifier, so it yields"
+                    : "");
 }
 
 } // namespace bvr::input

@@ -1495,9 +1495,22 @@ BACK=ShowContextHelp, DPAD_RIGHT=hints. **DPAD_UP and DPAD_DOWN cycle the
 equipped weapon's AMMO TYPE** (CallHudFunction DPadUp/DownPressed - flat-proven:
 00 Buck -> Electric Buck -> Exploding Buck on the shotgun). The VR bindings
 re-route the face buttons XR-side (openxr_input.cpp): Touch A->XInput Y (jump),
-B->A (use), Y->B (heal), X->X; right-stick Y flicks pulse DPAD_UP/DOWN for ammo
-(rising edge past 0.65 pre-deadzone, re-arm inside 0.30, 300 ms cooldown,
-suppressed while a grip is held - the radials read the stick).
+B->A (use), Y->B (heal), X->X.
+
+**The d-pad lane (revised 2026-08-22).** Held modifier + the selecting stick,
+dominant axis past 0.5 pre-deadzone, suppressed while a grip is held (the
+radials read the stick). Emission is **per direction**, because the two kinds of
+binding sit on the same d-pad:
+
+| Direction | Binding | Emission |
+|---|---|---|
+| UP / DOWN | ammo type, and it **CYCLES** | **PULSED** - re-arm inside 0.30, 300 ms cooldown. A held cycle does not settle, it spins |
+| LEFT | nothing verified | pulsed |
+| RIGHT | **hints** - and holding it ~0.5 s is how the **MAP** opens | **HELD** |
+
+`PadMap::flickHoldBits` is the switch. See "The d-pad must be HELD" below for
+why the map was unreachable before this, and for BRVR's independent finding of
+the same thing.
 
 ### Hide-inactive: the attach bone must never be scaled
 
@@ -3707,3 +3720,61 @@ names, units and defaults (0.8 / 0.8 / 9), so a config carries between the two
 mods. **A saved `vrpreset.ini` loads later and overrides all three** - the
 startup echo says so, because in a headset that is indistinguishable from the
 ini being ignored.
+
+## The d-pad must be HELD, not pulsed - and that is what gates the MAP
+
+**Ported from BRVR 2026-08-22, after the modifier "did not work" in a headset.**
+
+BRVR shipped a 120 ms pulse first and had to undo it. Its own note
+(`BioshockVR/Input/InputHook.cpp`, its session 38):
+
+> HELD, not pulsed. The first version emitted a 120ms pulse to avoid
+> weapon-switch spam -- but weapons are on the RADIAL in this game, and the
+> d-pad drives HUD functions. One of those is the hint button, and
+> `ShockPlayerController` gates the MAP SCREEN behind `HintButtonHeld` with
+> `HintHoldTime=0.5s`. A pulse made the map unreachable by construction.
+
+This mod was in exactly that state until now: `kFlickPulseMs = 150`, so **the
+map screen could not be opened at all** through the modifier, no matter how the
+gesture was performed. Fixed by holding the bit for as long as the direction is
+held (`PadMap::flickHold`).
+
+**But holding is only safe on the direction that needs it, and the first cut of
+this got that wrong.** It made hold-vs-pulse a per-GAME switch on the theory
+that BS1's directions SELECT a slot. The pad audit above says otherwise with
+better evidence - UP/DOWN **cycle** (`00 Buck -> Electric Buck -> Exploding
+Buck`) - and a held cycle spins rather than settling. So the switch is
+per-DIRECTION (`PadMap::flickHoldBits`): RIGHT (hints) is held, everything else
+is pulsed, and Infinite holds nothing.
+
+**THERE ARE TWO ROUTES TO THE MAP, and the one BRVR actually ships is the MENU
+button, not the d-pad.** BRVR `InputHook.cpp`:
+`if (s.menu) btn |= (mod ? XI_BACK : XI_START);` - the MODIFIER changes what the
+menu button MEANS. Menu alone is START (pause); modifier + menu is BACK, which
+is `ShowContextHelp` ("WHAT IS THIS?"), and holding it past `HintHoldTime` opens
+the map. The same applies to the X+Y chord that stands in for the menu button on
+setups where the runtime eats it.
+
+This mod had BACK on the menu button's LONG PRESS instead, with no modifier
+involved - which put context help behind the one input most likely not to reach
+the game at all, and left the X+Y chord able to produce only START. Now
+modifier-gated, with the long press kept as a fallback for `dpadModifier = 0`.
+
+**The d-pad route, which is real but secondary: `flickRight` was 0.** BS1's map emitted only UP/DOWN/LEFT, on the belief that
+three directions covered its three ammo types. But `DPAD_RIGHT = hints` - so
+holding right emitted **nothing at all**, and no amount of hold could reach the
+map. Both halves are needed: the bit has to be sent, and it has to be held.
+
+Two smaller corrections landed with it, both BRVR's numbers: the select
+threshold is **0.5** (was 0.65), and the direction is **dominant-axis only**
+(`ay >= 0.5 && ay >= ax` -> up/down, else `ax >= 0.5 && ax > ay` -> left/right).
+The previous first-match chain could resolve a deliberate "up" as "left"
+whenever the cross axis also happened to be over threshold.
+
+### What the modifier failure actually was
+
+Worth recording because the config was never wrong. The log echoed
+`d-pad modifier = rightrest` at startup and `RIGHT thumbrest touch reported by
+the runtime` 100 s later, so both ends worked. What went wrong was **the
+controllers repeatedly unbinding mid-session** - see STATUS. Before suspecting
+the modifier again, check the census timestamps.
