@@ -2151,3 +2151,132 @@ that did not contain the arm fix at all. Two questions confounded by one switch.
 It now says so in the panel, in colour, and logs once when a scene starts while
 it is off. **A switch that changes more than its label implies costs exactly the
 session it was built to save.**
+
+### 2026-08-23 (session 64) - the pre-compensation was in the wrong ORDER, not the wrong shape
+
+s63 ported BRVR's movement-stick deadzone pre-compensation and put the call in
+`openxr_input.cpp`, at the point the XR stick is read. The head-relative rotation
+that the compensation exists to protect happens later, in `xinput_bridge.cpp`'s
+`compose()`. So the chain ran:
+
+    deadzone -> PRECOMP -> int16 -> ROTATE -> [game's per-axis band]
+
+and the compensation was computed for a direction the game never received. BRVR
+does it the other way round and only when it actually rotated
+(`Input/InputHook.cpp`). Modelled against the game's own 0.225 per-axis band, the
+old order does not merely bias the walk - **for small head offsets it erases the
+rotation entirely** (5 deg and 10 deg both arrive as 0.0), peaks at 18.5 deg of
+error at partial deflection near 20 deg, and flips sign past 45. The new order is
+exact at every angle and magnitude tested.
+
+**The fix is the move.** `precomp_stick_deadzone` and its two atomics now live in
+`xinput_bridge.cpp` beside the rotation, applied immediately after it and only
+inside the `deg != 0.0f` branch; the ini keys and per-game defaults stay in
+`openxr_input.cpp` and reach the state through `bvr::input::set_stick_precomp` /
+`set_game_stick_deadzone`. The s63 ramp deviation is unchanged.
+
+**Why this core change is safe for the games it was not judged on.**
+`stick_precomp()` defaults false and only BioShock 1 opts in, from its own
+adapter via `set_pad_brvr_defaults(true)`. With it off the lane is unreachable and
+the composed pad is bit-identical, so BS2 and Infinite keep exactly the behaviour
+they have. Recorded in `docs/PORT-CANDIDATES.md`.
+
+**The lesson, and it is BRVR graveyard entry 14's verbatim:** *when a correction
+is provably exact and the symptom survives, go and measure what the other side
+received.* The published rotation angle was algebraically exact the whole time -
+`residual - moved + yaw_adjust` matches the rotator writes term for term - and
+two sessions were spent re-deriving it. Nothing was wrong with the number; it was
+being applied on the wrong side of a distortion.
+
+### 2026-08-23 (session 64) - a faithful reading of a real flag can still answer the wrong question
+
+The arm hide was gated on `scripted_window() && !scripted_anim()` and never fired.
+The log showed why: `hands+0x594` bit 2 was already set on the first frame of the
+window, so the predicate was a correct reading of a correct offset - of *"is a
+scripted sequence running"*, which stays true through the parts of a scene where
+the hands sit perfectly still. The question actually being asked was *"do the
+hands have anything to do"*, and no flag on that actor answers it.
+
+Replaced by a measurement: `bones::hand_motion()` differences one engine-owned
+wrist per CalcView, `scripted.cpp` thresholds and holds it. The mechanism
+(`DrawScale3D`) was never at fault and did not change.
+
+**Where the module boundary landed, and why.** The measurement is in `bones.cpp`
+because it owns the skeleton; the threshold, the hold and the fail-safe direction
+are in `scripted.cpp` because they are policy, F10-facing and preset-backed. Same
+split this pair already used for the drive itself.
+
+**Fail toward the failure nobody has reported.** When both clusters are ours
+there is no honest wrist and the sampler returns "cannot answer". That routes to
+arms VISIBLE, because the failure on record is arms hidden for a whole scene and
+there is no matching record of arms shown for one frame.
+
+### 2026-08-23 (session 64) - never write the field the engine is steering by
+
+A scripted forced move steers the player by `Controller.Rotation`. The M7.5 body
+transfer writes that same field every frame so the pawn's yaw follows the head.
+The two had never met, because until s64 the head drive did not run during
+scripted scenes - part 2's `PausePC.swf` fix changed that deliberately, to let
+the player look around, and switched the transfer on inside scenes as a side
+effect nobody costed. Headset result: look around during a scene and you land
+"way off"; hold still and you land exactly right.
+
+The transfer now stands down for `scripted_window() || bathysphere()`. The held
+window is used rather than the raw `forced_move()` because BRVR threw a landing
+3.7 m by letting an equivalent predicate break mid-scene.
+
+**Two rules came out of it, and the second is the one with teeth:**
+
+- **A feature that removes a gate is also a feature that arms everything that
+  gate was incidentally holding off.** The PausePC fix was reviewed as "the head
+  drive now runs during scenes". What it actually did was set `vrDriving` true
+  inside scenes, and `vrDriving` is a precondition for machinery in three other
+  files. Enumerate the consumers of a flag before flipping the flag.
+- **The mod may steer the player, or the game may, and never both at once.**
+
+### 2026-08-23 (session 64) - two mods, two routes to head-relative walking
+
+Ported BRVR's `WalkDriftProbe` and it settled a question two sessions of theory
+had not. On all 25 samples of a normal walking run: `pub -0.0`, and
+`camYaw == pawnYaw`.
+
+**The head-relative stick-rotation lane is inert here.** The body transfer keeps
+the pawn's yaw under the camera, so the angle the composer would rotate the stick
+by is always zero. BRVR does the opposite: it never writes the aim field and
+redirects walking purely by rotating the stick, on the identity
+`walk = aimFieldYaw + stickAngle + R` - which leaves aim, the weapon trace and
+forced-move sequences untouched by construction.
+
+Neither route is wrong, and this is not a call to switch: the field write is what
+makes the *body* follow the head, which the stick rotation cannot do. But the
+cost is now known and paid once - the scripted-landing gate above exists only
+because we write the field.
+
+It also retires a red herring: **`moveYawSign` scales a value that is almost
+always zero**, so flipping it in a headset changes nothing. That is the expected
+result and says nothing about whether the sign is right.
+
+### 2026-08-23 (session 64) - a correlation you caused is not a measurement
+
+The arm hide is gated on measured rig motion. Round 9 shipped a diagnostic that
+logged the sampled bone's position beside the hidden flag, saw 212 bit-identical
+samples while hidden, and concluded that hiding the rig freezes the bone array -
+BRVR's M7-S5 latch through a new door. The gate was moved off motion onto
+`forced_move()` on that basis, and it was written up as measured fact.
+
+**It was not a measurement.** In that build `hidden` was computed FROM the motion
+reading, so "hidden" and "motion is zero" were the same event. The data could not
+have come out any other way, whatever the engine was doing.
+
+Round 10 decoupled them by accident - the hide ran off `forced_move()` while the
+sampler kept running - and the unconfounded answer was the opposite: 3 samples
+while hidden, 3 distinct positions. `DrawScale3D` is a safe hide.
+
+**The rule: before reading a correlation as causation, check whether your own
+code closes the loop.** A diagnostic that observes a variable the system is
+steering measures the steering, not the system. The tell was available in the
+same dataset and was missed - the frozen value also appeared with `hidden=0`.
+
+The useful finding was underneath it all along: 229 of 336 samples read raw
+exactly 0.0000, because CalcView fires far above the animation tick rate. The
+hold, not the threshold, is what this feature runs on.

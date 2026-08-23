@@ -122,6 +122,23 @@ int g_hiddenHand = -1; // whose cluster is collapsed right now (game thread)
 bool g_wasCollapsed = false;
 int g_collapsedHand = -1; // whose sleeve g_wasCollapsed refers to
 
+// ---- s64: WHICH CLUSTERS ARE OURS -------------------------------------------
+//
+// Per hand, set by drive() and cleared by release(). The s64 motion gate reads
+// a WRIST to answer "is the engine animating the rig right now", and a wrist we
+// are writing reports our own rigid transform - bit-for-bit identical every
+// frame while the controller is still, so the delta is not merely small, it is
+// exactly zero. BRVR spent 189 and 223 consecutive `raw 0.0000` samples
+// learning that (ArmHide.cpp, MotionBone banner) and its rule is the one this
+// mirrors: sample the wrist of a cluster we are NOT writing, or say we cannot.
+//
+// BOTH FLAGS ARE SET BY ONE drive() CALL. The driven hand's cluster is posed,
+// and with hide-inactive on the OTHER hand's cluster is pinned too - and unlike
+// BRVR's HideBone, which pins each bone at that cluster's own wrist and so
+// leaves the wrist write a no-op, ours pins every bone at the DRIVEN target.
+// A collapsed hand is therefore not honest here and must count as written.
+bool g_clWritten[2] = {false, false};
+
 void* g_cacheSkelInst = nullptr;
 uint64_t g_cacheMs = 0;
 
@@ -958,6 +975,36 @@ bool wskel_compose(float ws) {
     return true;
 }
 
+// s64 arm hide: is the ENGINE animating the rig right now? Mechanism only -
+// threshold, hold and the fail-safe direction are scripted.cpp's.
+//
+// Sample the wrist of a cluster we are NOT writing. A wrist we write reports our
+// own rigid transform, bit-for-bit identical every frame while the controller is
+// still, so its delta is not small - it is exactly zero. When both are ours,
+// say -1 rather than hand back a guaranteed zero.
+//
+// Full derivation, and the two BRVR constraints that do NOT apply here (its
+// release-before-measure, and its hide-by-bone latch), in ENGINE_NOTES,
+// "The arms during a scene: MOTION answers what the flag cannot".
+
+float g_motPrevP[3] = {};
+float g_motPrevQ[4] = {};
+bool g_motHave = false;
+int g_motBone = -1;   // which bone g_motPrev* describes
+float g_motSmoothed = 0.0f;
+
+void motion_reset() {
+    g_motHave = false;
+    g_motBone = -1;
+    g_motSmoothed = 0.0f;
+}
+
+int motion_bone_idx() {
+    if (!g_clWritten[1]) return patterns::kBoneRWrist;
+    if (!g_clWritten[0]) return patterns::kBoneLWrist;
+    return -1; // both clusters are ours - no honest bone exists
+}
+
 } // namespace
 
 void init(const bvr::pattern_scan::ProcessImage& image) {
@@ -978,6 +1025,8 @@ void on_world_change() {
     g_cacheMs = 0;
     g_hiddenHand = -1; // the collapsed bones died with the old world
     g_cacheHiddenCount = 0;
+    g_clWritten[0] = g_clWritten[1] = false;
+    motion_reset(); // a new rig is a new bone history, not a frame of motion
     // Session 29: the sleeve latch dies with the world too. It was hoisted out
     // of drive() so release() could reach it, which also means it now has to be
     // cleared here - a stale `true` would make release() write a dead world's
@@ -1011,6 +1060,7 @@ void release(const char* why) {
         g_cacheCount = g_cacheSleeveCount = g_cacheHiddenCount = 0;
         g_refValid = false;
         g_hasWritten[0] = g_hasWritten[1] = false;
+        g_clWritten[0] = g_clWritten[1] = false;
         memset(g_scaleWrote, 0, sizeof g_scaleWrote); // the bank died with the world
         wskel_drop("rig released (no rig skeleton)"); // intact-gated, safe here
         return;
@@ -1054,6 +1104,10 @@ void release(const char* why) {
     g_hiddenHand = -1;
     g_wasCollapsed = false;
     g_collapsedHand = -1;
+    // Both clusters are the engine's again, which is exactly the condition the
+    // s64 motion gate needs: a scripted scene releases here, so the wrist it
+    // samples carries the authored animation and not our rigid transform.
+    g_clWritten[0] = g_clWritten[1] = false;
 
     // Stop reapply() dead. Its only brakes are the instance check and a 100 ms
     // cache age, so without this it keeps repainting - and re-clearing the
@@ -1219,6 +1273,84 @@ void set_actor_hidden(void* handsActor, bool hidden) {
                 g_rigScaleSaved[0], g_rigScaleSaved[1], g_rigScaleSaved[2],
                 g_rigScaleHave ? "" : " - no saved value, left as-is");
     }
+}
+
+int motion_bone() { return motion_bone_idx(); }
+
+bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outPos[3]) {
+    const int bone = motion_bone_idx();
+    if (bone < 0) return false;
+
+    // Re-resolve rather than trust the cache. This runs on scripted frames,
+    // which are exactly the frames drive() does NOT run - so g_bones may be
+    // hundreds of frames stale, and locate() is the same check drive() makes
+    // before every write.
+    if (!handsActor || !locate(handsActor)) return false;
+    if (!g_bones || bone >= g_boneCount) return false;
+
+    Qts cur{};
+    if (!read_n(&g_bones[bone], &cur, sizeof cur)) return false;
+
+    // A hand switch changes WHICH bone this is, and the distance between two
+    // different bones is not motion. Drop the history instead of measuring
+    // across the change.
+    if (bone != g_motBone) {
+        g_motBone = bone;
+        g_motHave = false;
+        g_motSmoothed = 0.0f;
+    }
+
+    // NO HISTORY IS NOT ZERO MOTION, and reporting it as zero is what hid the
+    // arms on the first frame of the very first scene (measured 03:21:20.583:
+    // first sample, raw 0.0000, rig hidden the same millisecond). A difference
+    // needs two samples. Take this one, then say we cannot answer yet - which
+    // the caller turns into arms VISIBLE.
+    if (!g_motHave) {
+        memcpy(g_motPrevP, cur.p, sizeof g_motPrevP);
+        memcpy(g_motPrevQ, cur.q, sizeof g_motPrevQ);
+        g_motHave = true;
+        return false;
+    }
+
+    float raw = 0.0f;
+    {
+        const float dx = cur.p[0] - g_motPrevP[0];
+        const float dy = cur.p[1] - g_motPrevP[1];
+        const float dz = cur.p[2] - g_motPrevP[2];
+        const float dPos = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        // Quaternion difference: 1 - |dot| is 0 for an identical orientation and
+        // grows with the angle between them. A wrist can rotate in place without
+        // its position moving at all, so position alone would miss it.
+        float dot = 0.0f;
+        for (int i = 0; i < 4; ++i) dot += cur.q[i] * g_motPrevQ[i];
+        if (dot < 0.0f) dot = -dot;
+        if (dot > 1.0f) dot = 1.0f;
+
+        // The 50 is BRVR's, and it is arbitrary by construction - it only makes
+        // a small rotation comparable to a small translation. The LOGGED raw and
+        // smoothed values are what calibrate the threshold against it; the
+        // constant itself is not a measurement and must not be treated as one.
+        raw = dPos + (1.0f - dot) * 50.0f;
+    }
+
+    memcpy(g_motPrevP, cur.p, sizeof g_motPrevP);
+    memcpy(g_motPrevQ, cur.q, sizeof g_motPrevQ);
+    g_motHave = true;
+
+    // Peak-hold with decay: a single frame of motion must not be lost between
+    // samples, and an animation that eases in and out must not chatter.
+    g_motSmoothed *= 0.90f;
+    if (raw > g_motSmoothed) g_motSmoothed = raw;
+
+    if (outSmoothed) *outSmoothed = g_motSmoothed;
+    if (outRaw) *outRaw = raw;
+    // The VALUE, not just the delta. A delta of zero has two completely
+    // different causes - the engine holding a pose, or the array no longer being
+    // evaluated at all - and only the position tells them apart across a
+    // hidden/shown transition. See the ENGINE_NOTES warning this exists to test.
+    if (outPos) memcpy(outPos, cur.p, sizeof(float) * 3);
+    return true;
 }
 
 void set_hide_inactive(bool on) {
@@ -1578,6 +1710,13 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         for (size_t k = 0; k < hSleeveCount; ++k) hideBone(hSleeve[k]);
         g_hiddenHand = ih;
     }
+
+    // s64 motion gate: record which clusters this frame's write owns, so
+    // motion_bone() can pick a wrist that is still the ENGINE's. g_hiddenHand
+    // is authoritative for the inactive side - it is restored and cleared above
+    // when the feature turns off or the driven hand switches.
+    g_clWritten[hand] = true;
+    g_clWritten[1 - hand] = (g_hiddenHand == 1 - hand);
 
     if (!read_n(&g_bones[anchor], &g_lastWrittenAnchor[hand], sizeof(Qts))) return false;
     g_hasWritten[hand] = true;

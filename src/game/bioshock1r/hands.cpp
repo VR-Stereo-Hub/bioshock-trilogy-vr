@@ -669,6 +669,23 @@ void on_calcview(const FrameContext& ctx) {
         // cooldown, so asking is cheap when it cannot answer.
         void* rig = hands_actor();
         if (!rig) rig = find_hands_actor(ctx, false);
+
+        // s64 round 8: sample first, then decide - only this site owns the rig
+        // actor and runs every CalcView. Outside a window we report "cannot
+        // answer", which resets the latch to VISIBLE so a window can never open
+        // onto a stale "still". The bones history is deliberately not reset
+        // across that gap, so the first in-window sample reads as a spike and
+        // shows the arms for a frame - the safe direction, and self-correcting.
+        if (rig && scripted::scripted_window()) {
+            float smoothed = 0.0f, raw = 0.0f, pos[3] = {};
+            const bool have = bones::hand_motion(rig, &smoothed, &raw, pos);
+            scripted::note_hand_motion(have, smoothed, raw, bones::motion_bone(), pos,
+                                       bones::actor_hidden());
+        } else {
+            scripted::note_hand_motion(false, 0.0f, 0.0f, bones::motion_bone(), nullptr,
+                                       bones::actor_hidden());
+        }
+
         if (rig) bones::set_actor_hidden(rig, scripted::want_rig_hidden());
     }
 

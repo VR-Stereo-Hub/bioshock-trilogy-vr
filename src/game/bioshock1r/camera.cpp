@@ -191,7 +191,10 @@ uint64_t g_lockOnAssertMs = 0;
 // "head turned right" is a SIM derivation (walk under a yawed head must track
 // the head), not an assumption - flip here if the walk tracks the mirror
 // heading instead.
-constexpr float kMoveYawSign = 1.0f;
+// s64: NOW A LIVE TOGGLE, body::move_yaw_sign(). It stays documented here
+// because this is where it is applied, but a constant was the wrong shape for a
+// value this banner already admitted was underived.
+
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
@@ -868,6 +871,7 @@ void save_vr_preset() {
     fprintf(f, "bodyRate=%.2f\n", body::rate_per_sec());
     fprintf(f, "bodyDeadzoneDeg=%.1f\n", body::deadzone_deg());
     fprintf(f, "moveDirInstant=%d\n", body::move_dir_instant() ? 1 : 0);
+    fprintf(f, "moveYawSign=%d\n", body::move_yaw_sign());
     fprintf(f, "autoVr=%d\n", g_autoVr.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "killHeadBob=%d\n", g_killHeadBob.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
@@ -902,6 +906,8 @@ void save_vr_preset() {
     fprintf(f, "scriptedTurnRate=%.1f\n", scripted::scripted_turn_deg_per_sec());
     fprintf(f, "scriptedFreezeHands=%d\n", scripted::freeze_hands_in_scenes() ? 1 : 0);
     fprintf(f, "scriptedHideRig=%d\n", scripted::hide_rig_in_scenes() ? 1 : 0);
+    fprintf(f, "scriptedArmMotion=%.4f\n", scripted::arm_motion_threshold());
+    fprintf(f, "scriptedArmHoldMs=%d\n", scripted::arm_hold_ms());
     fprintf(f, "effectsInFrame=%d\n", bvr::hud::effects_in_frame() ? 1 : 0);
     fprintf(f, "effectMaxVerts=%u\n", bvr::hud::effect_max_verts());
     fprintf(f, "postFxRtOnly=%d\n", bvr::hud::postfx_rt_only() ? 1 : 0);
@@ -1000,6 +1006,8 @@ void load_vr_preset_values() {
         else if (strcmp(key, "bodyRate") == 0) bodyRate = v;
         else if (strcmp(key, "bodyDeadzoneDeg") == 0) bodyDz = v;
         else if (strcmp(key, "moveDirInstant") == 0) body::set_move_dir_instant(v != 0.0f);
+        else if (strcmp(key, "moveYawSign") == 0)
+            body::set_move_yaw_sign(v < 0.0f ? -1 : 1);
         else if (strcmp(key, "autoVr") == 0) g_autoVr.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "killHeadBob") == 0)
             g_killHeadBob.store(v != 0.0f, std::memory_order_relaxed);
@@ -1060,6 +1068,10 @@ void load_vr_preset_values() {
             scripted::set_freeze_hands_in_scenes(v != 0.0f);
         else if (strcmp(key, "scriptedHideRig") == 0)
             scripted::set_hide_rig_in_scenes(v != 0.0f);
+        else if (strcmp(key, "scriptedArmMotion") == 0)
+            scripted::set_arm_motion_threshold(v);
+        else if (strcmp(key, "scriptedArmHoldMs") == 0)
+            scripted::set_arm_hold_ms(static_cast<int>(v));
         else if (strcmp(key, "aimDotOn") == 0)
             aim::handle_command(v != 0.0f ? "dot on" : "dot off");
         else if (strcmp(key, "aimDotDistM") == 0) {
@@ -2122,7 +2134,16 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // camera was adjusted by, so the two cannot drift apart.
         bvr::input::publish_move_yaw_offset(
             (vrDrove && body::move_dir_instant())
-                ? kMoveYawSign *
+                ? body::move_yaw_sign() *
+                      static_cast<float>(wrap_rot(residualUnits - moved +
+                                                  scripted::yaw_adjust_units())) /
+                      kRotUnitsPerDegree
+                : 0.0f);
+        // Hand the probe exactly what was published, rather than letting it
+        // rebuild the expression and quietly diverge from it.
+        body::note_published_move_yaw(
+            (vrDrove && body::move_dir_instant())
+                ? body::move_yaw_sign() *
                       static_cast<float>(wrap_rot(residualUnits - moved +
                                                   scripted::yaw_adjust_units())) /
                       kRotUnitsPerDegree

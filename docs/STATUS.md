@@ -9,28 +9,38 @@ is 30 commits ahead of `main` and unmerged - this one STACKS). Replant with
 `git rebase --onto main s63-bs1-comfort s64-bs1-scripted-events` **and rebuild**
 once s63 merges.
 
-**`git diff s63-bs1-comfort -- src/core/` is EMPTY** - every line of s64 is in
-`src/game/bioshock1r/`, so nothing here can reach BS2 or Infinite. Those two are
-UNTOUCHED, which is not the same as verified.
+**`git diff s63-bs1-comfort -- src/core/` IS NO LONGER EMPTY** - round 8 moved the
+movement-stick pre-compensation from `openxr_input.cpp` to `xinput_bridge.cpp`,
+because it was running on the wrong side of the head-relative rotation. **The
+change is inert for BS2 and Infinite by construction**: `stick_precomp()`
+defaults false in core and only BioShock 1 opts in (`set_pad_brvr_defaults(true)`
+in its adapter), so with the switch off the lane is unreachable and the composed
+pad is bit-identical. Everything else in s64 is still confined to
+`src/game/bioshock1r/`. Recorded in `docs/PORT-CANDIDATES.md` and the
+`docs/ARCHITECTURE.md` decision log.
 
 ### Verified in a headset vs merely built
 
 | Verified by the user | Built, NOT verified |
 |---|---|
-| All three offsets: anchor 4/4 with correct meanings, bathysphere oracle held on both edges, window bridged a real 16 ms gap | The arm hide (`DrawScale3D` +0x2B0) - mechanism never exercised, see round 7 |
-| Right-stick turn during a scene; free head look during scenes | The `presetVersion` migration for the cine-drive default |
-| No vertical injection in cutscenes (rotation follow = horizontal only) | Whether the blur is s63 or older - three bisect builds are ready |
-| Screenshake/auto-turn suppression - now the DEFAULT | |
-| The hands gate releasing the skeleton (log-confirmed 02:37:24.155) | |
+| All three offsets: anchor 4/4 with correct meanings, bathysphere oracle held on both edges, window bridged a real 16 ms gap | The arm hide - the `DrawScale3D` mechanism has STILL never been exercised. Round 8 replaced the predicate feeding it, so this is now one gate away rather than two |
+| Right-stick turn during a scene; free head look during scenes | The rig-motion gate itself: threshold 0.02 and hold 300 ms are BRVR's numbers, to be calibrated from this build's own logged values |
+| No vertical injection in cutscenes (rotation follow = horizontal only) | The scripted-event landing with the head free - round 10 gates the field write; this is the pass/fail |
+| Screenshake/auto-turn suppression - now the DEFAULT | Whether the blur is s63 or older - three bisect builds are ready |
+| The hands gate releasing the skeleton (log-confirmed 02:37:24.155) | The `presetVersion` migration for the cine-drive default |
 
-**Still broken and named for next session:** the arm hide (wrong predicate, see
-round 7), the head-driven walking direction, and the walking blur.
+**Still open:** whether gating the field write fixes the scripted landing (one
+run, look around freely through a scene). **The blur is GONE**, and both round-9
+questions are now ANSWERED by measurement - see round 10.
 
 ### Build and deploy state
 
 - **Installed** to `C:\Program Files (x86)\Steam\...\BioShock Remastered\Build\Final`,
-  Debug, built from this branch's tip.
-- **NO PROBE IS ARMED.** Nothing diagnostic ships on by default.
+  Debug, built from this branch's tip **including round 8** (arm-hide motion gate
+  + the walking-direction reorder). Clean build, no warnings.
+- **NO PROBE IS ARMED.** Nothing diagnostic ships on by default. The one new log
+  line - `scripted: motion raw ... smoothed ... bone N` - is throttled to 2 Hz and
+  only prints inside a scripted window.
 - **Three bisect DLLs in `build/bisect/`** (`main-5bc5999`,
   `s63-bs1-comfort-08785f8`, `HEAD-<sha>`) with `README.txt`. Swap one file, no
   rebuild. `build/` is gitignored, so these are local only.
@@ -193,6 +203,193 @@ scripted-scene turn ON, engine-owns-hands ON, hide-rig ON, and BS1 opting into
 `CineDrive::Off` **from the adapter** so BS2 and Infinite keep the authored
 behaviour they have never been tested away from. The rotation freeze stays OFF -
 it is the one still unjudged.
+
+### Round 10 (2026-08-23) - it was the FIELD WRITE, and the arm hide had to change signal
+
+Two findings, both settled by the log rather than by argument, and both already
+written down in BRVR.
+
+**1. Looking around during a scripted event moved where you landed, because we
+write the field the game steers by.** Headset pair: look around with head and
+right stick -> "way off"; hold both completely still -> "the exact right spot".
+
+`vrbody walk:` explains it on all 25 samples: **`pub -0.0` every time, and
+`camYaw == pawnYaw` every time.** The head-relative *stick rotation* never fires -
+the body transfer keeps the pawn glued to the camera by writing
+`Controller.Rotation`, which is exactly the field a forced move steers by.
+**BRVR graveyard entry 16: "the write itself is the damage."**
+
+`body::on_calcview` gated on `armed`, `vrDriving` and `is_gameplay_view` and
+nothing else. It now stands down for `scripted_window() || bathysphere()` - the
+HELD window, because entry 16's second half is a landing thrown 3.7 m by a
+predicate that broke mid-scene.
+
+**Why it only appeared now, and this is the transferable part:** s64 part 2's
+`PausePC.swf` fix made the head drive live during scenes, deliberately. That set
+`vrDriving` true inside scenes for the first time - and `vrDriving` is a
+precondition for machinery in three other files. **Enumerate the consumers of a
+flag before flipping it.**
+
+**2. The arm hide: a false alarm, then the real finding.**
+
+Round 10 read 212 bit-identical bone positions while hidden as proof that hiding
+freezes the array, and moved the gate to `forced_move()`. **That was a confounded
+measurement** - in that build the hide was driven BY the motion reading, so the
+correlation was guaranteed. The decoupled run says the opposite: **3 samples
+while hidden, 3 distinct positions.** `DrawScale3D` is a safe hide and the motion
+gate is sound. Retracted, and written up in ENGINE_NOTES and the decision log.
+
+**The real constraint, from the same run:** of 336 samples inside scripted
+windows, **229 read raw exactly `0.0000`** - CalcView fires at 118-240/s while the
+animation ticks far slower, so most consecutive reads see the same pose. A
+sampling artefact, not stillness. Measured: raw p90 0.0271, smoothed p75 0.0402,
+p90 0.2403, max 77.66.
+
+So `0.02` is a sound threshold and **300 ms was far too sharp a hold**. BRVR
+ships 300 and ran **4000** in a headset; the distribution says its live value was
+right, and that is the default now. The gate is back on motion, the two F10
+sliders and preset keys are back, and the hold is labelled as the setting that
+matters.
+
+**3. Retired red herring: `moveYawSign` is not the walking-direction lever.** It
+scales a value the probe shows is always ~0, so flipping it in a headset changes
+nothing. Round 9's "the sign is now exposed" was wrong. The toggle and the probe
+both stay - the probe earned itself outright - but the sign is not the open
+question it looked like.
+
+**Architecturally**: BRVR redirects walking by rotating the *stick* and never
+writes the aim field; this mod writes the field and treats the stick rotation as
+a correction that never fires. Not a call to switch - the field write is what
+makes the BODY follow the head - but it is why BS1 had a scripted-landing bug
+BRVR does not.
+
+### Round 9 (2026-08-23) - headset says: blur GONE, arms still hidden, walk still wrong
+
+**The blur is gone.** Nothing this session touched rendering, so it is the
+pre-compensation move by elimination - and there is a mechanism. `StickPrecomp`
+arrived in s63 and ran on EVERY walking frame; a real thumbstick pushed "forward"
+carries a small strafe component, and the old formula parked that axis at ~0.225,
+sitting exactly on the game's own deadzone threshold where rounding flips it
+between inside and outside frame to frame. A few degrees of walk-direction
+flicker at ~118 Hz, while walking and never while standing still. **s63's own
+comment already records this as "the residual jitter"** and added the ramp to
+soften it - a ramp moves the cliff, it does not remove it. s64 applies the
+compensation only when the stick is actually being rotated, so the always-on
+dither is gone. Predicts the bisect nobody ran: `main` clean, s63 blurry.
+
+**The arms: one bug proven and fixed, one question still open.**
+
+Proven, from the log at 03:21:20.583 - the first sample of the scene and the hide
+are the same millisecond:
+
+```
+20.583  motion raw 0.0000 ... bone 27 -> still     <- first sample, NO history
+20.583  rig hidden (DrawScale3D 1.000 -> 0.0001)
+```
+
+A difference needs two samples; the first call returned a hard-coded `raw = 0`,
+which reads as "still". `hand_motion()` now takes the first sample and returns
+"cannot answer", which routes to arms VISIBLE.
+
+**What is NOT yet established** - and round 8 nearly claimed it: that the hide
+freezes the bone array. The log does not support that. At 21.089 the rig was
+VISIBLE and `raw` was also 0.0000, so "the hide froze the array" and "the engine
+is holding a static pose" produce identical logs and need opposite fixes. The
+calibration line now prints the sampled bone's own POSITION and the hidden flag.
+One run separates them: `p=` bit-identical while `hidden=1` and moving while
+`hidden=0` means the hide is the cause.
+
+Also on the record: `*** SCRIPTED ANIMATION BEGAN ***` fired once and **never
+ended** across 47 s of log. Part of "hidden for the whole event" is that flag
+never dropping, which no arm predicate can fix.
+
+**The walking direction: the magnitude was fixed and the SIGN is now exposed.**
+
+`kMoveYawSign` was a compile-time `1.0f` in `camera.cpp`, copied from Infinite,
+and **its own banner said settling it was a SIM derivation, not an assumption,
+and to flip it if the walk tracked the mirror heading.** It was never derived for
+this game.
+
+**It could not have been felt until now.** The old pre-compensation order
+collapsed small offsets to zero, so for ordinary head movement the walk went
+straight ahead whichever sign was in use. Fixing the magnitude is what exposed
+the direction - the same shape as round 7, where one defect was hiding behind
+another.
+
+A first-principles pass (UE yaw grows +X toward +Y, heading = `pawnYaw - stickAngle`,
+the composer ADDS the published degrees to the stick angle) says the published
+value should be `pawnYaw - camYaw` and we publish `camYaw - pawnYaw`. **That chain
+rests on three convention assumptions, which is exactly what the graveyard warns
+about, so it is not being trusted.** Instead:
+
+- **The sign is a LIVE toggle** (`body::move_yaw_sign`, F10 "Walk goes the WRONG
+  way - mirror it", `vrbody movesign -1`, preset key `moveYawSign`). A rebuild is
+  the wrong instrument for a five-second headset question.
+
+  > **DISPROVED BY THE PROBE, round 10.** The value it scales is `-0.0` in normal
+  > play, so the toggle cannot do anything and the flip in a headset correctly
+  > did nothing. The sign was never the walking-direction bug.
+- **BRVR's WalkDriftProbe is ported** (`vrbody walkprobe on`, or the F10 box,
+  default off). Once a second while moving it logs where the pawn ACTUALLY
+  travelled against where the player was looking, and **scores BOTH signs** -
+  `ERR as-is` and `ERR flipped`. Whichever sits near 0 is the answer, with no
+  derivation involved. It needs the head turned off the body WHILE walking, and
+  says so in the line when the offset is too small to discriminate.
+
+### Round 8 (2026-08-23) - the motion gate, and a walking bug that was an ORDERING bug
+
+Both of round 7's named items. Built, installed, clean; neither felt yet.
+
+**The arm hide.** `want_rig_hidden()` is now `scripted_window() && !hands_moving()`
+- `scripted_anim()` has left the predicate entirely. `bones::hand_motion()`
+differences one engine-owned wrist per CalcView and `scripted.cpp` thresholds
+(0.02) and holds (300 ms) it; the bone is chosen against the driven cluster, and
+"cannot answer" routes to arms VISIBLE. The `DrawScale3D` mechanism did not
+change. **Full write-up in ENGINE_NOTES**, including the two BRVR constraints
+that turned out not to apply here and the one assumption still carried across
+untested - that the engine keeps evaluating the bone array while the actor sits at
+`DrawScale3D` 0.0001. That would show as `raw 0.0000` on a VALID bone for a whole
+scene, which is why the bone index is in the log line.
+
+**The walking direction was an ordering bug, not a tuning one.** The published
+angle was exact the whole time (`residual - moved + yaw_adjust` matches the
+rotator writes term for term), which is why re-deriving it twice achieved nothing.
+s63 called the deadzone pre-compensation at the XR stick read, but the
+head-relative rotation happens later in `compose()` - so it compensated a
+direction the game never received. Modelled against the game's own 0.225 band:
+
+| head offset | old order | new order |
+|---|---|---|
+| 5 deg | **0.0** - erased outright | 5.0 |
+| 10 deg | **0.0** | 10.0 |
+| 20 deg, full push | 9.3 | 20.0 |
+| 20 deg, partial push | 1.5 (err **-18.5**) | 20.0 |
+| 70 deg | 80.7 | 70.0 |
+
+**The small-offset collapse to zero explains the report better than a bias
+would**: for ordinary head movement the rotation was not bent, it was deleted.
+45 and 90 deg are exact in BOTH orders, which is how it survived any spot-check
+taken on an axis or a diagonal.
+
+**One behaviour change to judge deliberately:** with the head centred the stick is
+no longer pre-expanded, because there is no rotation to compensate for. If
+straight-line walking feels different from the last build, that is this, and it is
+the intended direction.
+
+**A stale note that would have cost the next session.** This file said the
+pre-compensation "has never been ported here". It had been, in s63 `47cb521`, and
+it was ON by default for BS1 the whole time. Corrected in place with a note
+saying why - a stale "not done yet" sends the next session to write code that
+already exists.
+
+**Two headset questions, in this order:**
+
+1. **Arms.** Any scripted scene; the opening bathysphere boarding is cheapest.
+   Expect arms/hands/weapon gone while the game walks you into position, back the
+   instant the rig moves. Then set the two Advanced sliders from the logged
+   `raw`/`smoothed` - the shipped numbers are BRVR's, not this build's.
+2. **Walking.** Push forward and hold ~20 deg of head offset. The fault needs
+   turning AND walking at once and never showed standing still.
 
 ### Round 7 (2026-08-23) - the arm predicate is WRONG, and the log proves it
 
@@ -389,8 +586,15 @@ the movement *stick*, never the field" - and entry 14 records that the residual
 drift was the game's own **square (per-axis) deadzone of 0.225** applied after
 the value left the mod, reproduced seven for seven and fixed by
 `PrecompStickDeadzone` pre-compensation. **Read entries 12-15 of BRVR's
-`CLAUDE.md` graveyard and `Input/InputHook.cpp` before touching this.** That
-pre-compensation is CONSOLIDATION's Tier 1 item 1 and has never been ported here.
+`CLAUDE.md` graveyard and `Input/InputHook.cpp` before touching this.**
+
+> **CORRECTED 2026-08-23 (round 8).** The last sentence of this paragraph used
+> to read "that pre-compensation is CONSOLIDATION's Tier 1 item 1 and has never
+> been ported here". **It had been ported, in s63 (`47cb521`), and it was ON by
+> default for BS1 the whole time** - it was simply being applied at the wrong
+> point in the chain, which is what round 8 found and fixed. A stale "not done
+> yet" is worse than no note: it sends the next session to write code that
+> already exists instead of reading the code that does.
 
 **3. The blur, by bisect** - builds are ready, see round 6 above. Deliberately
 AFTER 1 and 2 at the user's direction.

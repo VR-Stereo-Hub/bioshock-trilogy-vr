@@ -88,6 +88,28 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
 void set_actor_hidden(void* handsActor, bool hidden);
 bool actor_hidden();
 
+// s64 arm hide, mechanism half: model-space motion of one ENGINE-OWNED wrist
+// since the previous call, peak-held. Model space matters - the actor tracks the
+// camera every frame, so a world-space measurement reads "moving" constantly.
+//
+// RETURNS FALSE WHEN IT CANNOT ANSWER (both clusters driven). The caller must
+// treat that as "cannot say" and fail toward SHOWING the arms: the failure on
+// record is arms hidden for a whole scene, and there is no matching one for arms
+// shown for a frame. `outRaw` is the un-smoothed value, logged to calibrate the
+// threshold. Game thread. Derivation in ENGINE_NOTES.
+// Returns false until TWO samples exist - one reading is not a difference, and
+// calling that "still" hid the arms on the first frame of the first scene.
+// `outPos` is the sampled bone's own position, so a zero delta can be told apart
+// from an array that is no longer being evaluated. That distinction has been
+// used once already and the answer was: the array STAYS LIVE behind a hidden
+// actor, so DrawScale3D is a safe hide.
+bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outPos[3]);
+
+// Which bone the call above is measuring, or -1 when both clusters are ours.
+// For the log line - a run of exact zeros is only interpretable if you know
+// whether it came from a bone we were writing.
+int motion_bone();
+
 void set_hide_inactive(bool on);
 bool hide_inactive();
 

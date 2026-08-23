@@ -511,6 +511,11 @@ inline constexpr uint32_t kActorDirtyByteOffset = 0x3E4;  // = 0
 inline constexpr int kHandsRigBoneCount = 47;
 inline constexpr int kBoneRClusterFirst = 27;
 inline constexpr int kBoneRClusterLast = 44;
+// The same index as kBoneRClusterFirst, named separately on purpose: the s64
+// motion gate samples a WRIST, not whichever bone happens to sort first in the
+// cluster. If the cluster bounds are ever re-measured the two must be free to
+// move apart, and a mirror of kBoneLWrist makes the pair greppable.
+inline constexpr int kBoneRWrist = 27;
 inline constexpr int kBoneWeaponAttach = 43;
 inline constexpr int kBoneRSleeve[] = {24, 25, 26, 45, 46};
 // Left mirror, measured with Electro Bolt raised (left arm forward): wrist 6,

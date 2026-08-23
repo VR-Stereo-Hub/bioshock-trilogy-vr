@@ -187,6 +187,42 @@ void set_hide_rig_in_scenes(bool on);
 // True when the rig should be hidden RIGHT NOW. Game thread.
 bool want_rig_hidden();
 
+// ---- the arm hide runs on measured rig MOTION ------------------------------
+//
+// Round 7 killed the old predicate `scripted_window() && !scripted_anim()`: the
+// animation flag is already true on the first frame of the window, so it answers
+// "is a sequence running" and never "do the hands have anything to do".
+//
+// note_hand_motion() takes bones::hand_motion()'s output once per CalcView.
+// `have == false` means CANNOT ANSWER and routes to arms VISIBLE.
+//
+// DrawScale3D IS A SAFE HIDE - the bone array keeps being evaluated behind a
+// hidden actor (measured unconfounded, round 11: 3 samples taken while hidden,
+// 3 distinct bone positions). Round 10 claimed the opposite from a run where the
+// hide was DRIVEN by the motion reading, which guaranteed the correlation it
+// then read as causation.
+void note_hand_motion(bool have, float smoothed, float raw, int bone,
+                      const float pos[3], bool rigHidden);
+
+// The latched verdict: moving, or moved within arm_hold_ms().
+bool hands_moving();
+void arm_motion_readout(float* raw, float* smoothed, int* bone, bool* blind);
+
+// Preset keys `scriptedArmMotion` / `scriptedArmHoldMs`.
+//
+// THE HOLD IS THE LOAD-BEARING ONE. 229 of 336 samples inside scripted windows
+// read raw exactly 0.0000 - CalcView fires far above the animation tick rate, so
+// most consecutive reads see the same pose. A short hold therefore makes a
+// moving rig look still. BRVR ships 300 and ran 4000 in a headset; the measured
+// distribution says its live value was right, and 4000 is the default here.
+//
+// Separate from hold_ms(), which holds the scripted WINDOW open across the
+// forced-move/animation gap.
+float arm_motion_threshold();
+void set_arm_motion_threshold(float t);
+int arm_hold_ms();
+void set_arm_hold_ms(int ms);
+
 bool freeze_hands_in_scenes();
 void set_freeze_hands_in_scenes(bool on);
 

@@ -210,6 +210,19 @@ void set_pad_passthrough_default(bool on);
 bool pad_brvr_defaults();
 void set_pad_brvr_defaults(bool on);
 
+// s63/s64: pre-compensate the GAME's per-axis movement deadzone, so rotating
+// the movement stick for head-relative locomotion does not bend the direction.
+// Applied in compose(), immediately after that rotation and only when one
+// happened. The ini keys and per-game defaults live in openxr_input.cpp and
+// reach this state through these setters.
+//
+// OFF by default: BioShock 1 opts in with the rest of the BRVR control defaults,
+// and with it off this lane is unreachable and the composed pad is bit-identical.
+bool stick_precomp();
+void set_stick_precomp(bool on);
+float game_stick_deadzone();
+void set_game_stick_deadzone(float d);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping

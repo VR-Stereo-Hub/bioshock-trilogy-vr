@@ -64,6 +64,81 @@ std::atomic<bool> g_pitchLiftOnBumpers{true};
 std::atomic<float> g_moveYawOffDeg{0.0f};
 std::atomic<uint64_t> g_moveYawOffMs{0};
 
+// s63 MOVEMENT-STICK DEADZONE PRE-COMPENSATION, ported from the BRVR mod.
+//
+// THE BUG. The game applies its stick deadzone PER AXIS (0.225, from its own
+// User.ini bindings), not radially. Anything that ROTATES the movement vector
+// moves magnitude between the two axes, so the game's per-axis threshold then
+// bends the direction - by up to ~11 degrees - and snaps to a pure sidestep
+// once the forward component drops under the band.
+//
+// WHY IT SHOWS UP HERE. body.cpp's moveDirInstant (default ON) publishes the
+// not-yet-transferred body-yaw error every CalcView, and the rotation block
+// below turns the movement stick by it so the walk direction stays instant
+// while the body catches up under the slew cap. That rotation is exactly the
+// trigger: the error is only non-zero WHILE TURNING, and the stick is only
+// pushed WHILE WALKING - which is why the fault appears when doing both at once
+// and never when standing still. Reported as smooth turning that repeatedly
+// snaps a few degrees.
+//
+// s64: THIS CODE MOVED HERE FROM openxr_input.cpp, AND THE MOVE IS THE FIX. It
+// used to run on the raw XR stick, BEFORE the rotation below, so it compensated
+// the direction the player asked for while the game bent the ROTATED one. Modelled
+// against the 0.225 band, a 20 deg offset arrived as 9.3 at full push and 1.5 at
+// partial, and 5 and 10 deg arrived as ZERO. Rotating first is exact at every
+// angle. Applied only when we rotated, which is BRVR's rule: an unrotated stick
+// meets the game's own deadzone exactly as it always has.
+//
+// THE FIX. Split direction from magnitude, and pre-expand each axis so that
+// after the game subtracts its per-axis band what survives is proportional to
+// the direction actually asked for. The magnitude is what the player asked for
+// and must survive untouched; only the direction is being corrupted.
+//
+// NOT BY EDITING User.ini, which is BRVR's hard-won note: those are binding
+// lines carrying several bindings each (XENON_LTHUMB_XAXIS also holds
+// `Axis xLean DeadZone=0.4`), the file has multiple binding sections, and the
+// game rewrites it at exit. String surgery there risks breaking the controls
+// outright, for a value that can simply be inverted here.
+//
+// Core default is OFF so BS2 and Infinite are untouched; BS1 opts in from its
+// adapter (set_pad_brvr_defaults -> set_stick_precomp). With it off this whole
+// lane is unreachable and the composed pad is bit-identical, which is what
+// keeps the s64 move safe for the two games it was never judged on.
+std::atomic<bool> g_stickPrecomp{false};
+std::atomic<float> g_gameStickDeadzone{0.225f};
+
+void precomp_stick_deadzone(float& x, float& y) {
+    if (!g_stickPrecomp.load(std::memory_order_relaxed)) return;
+    const float d = g_gameStickDeadzone.load(std::memory_order_relaxed);
+    if (d <= 0.0f || d >= 0.95f) return;
+    const float mag = sqrtf(x * x + y * y);
+    if (mag < 1e-4f) return; // centred; leave it alone
+    const float ux = x / mag, uy = y / mag;
+    const float m = (mag > 1.0f) ? 1.0f : mag;
+
+    // s63 DEVIATION FROM BRVR, and revert it first if this feels wrong.
+    //
+    // The straight formula adds the whole band `d` the instant an axis leaves
+    // zero, so at an axis crossing that axis STEPS from 0 to +-0.225 in one
+    // frame - and lands exactly ON the game's threshold, where float rounding
+    // can dither between "inside the deadzone" and "just past it" from frame to
+    // frame. Walking near-straight while turning sweeps an axis through zero
+    // continuously, which is exactly when the residual jitter was reported.
+    //
+    // Ramping the band in over the first few percent of deflection removes the
+    // step without touching the direction anywhere it matters: past kRamp the
+    // result is bit-identical to BRVR's.
+    constexpr float kRamp = 0.06f;
+    auto axis = [&](float u) {
+        const float a = fabsf(u);
+        if (a < 1e-4f) return 0.0f;
+        const float t = (a >= kRamp) ? 1.0f : (a / kRamp);
+        return (u < 0.0f ? -1.0f : 1.0f) * (a * m * (1.0f - d) + d * t);
+    };
+    x = axis(ux);
+    y = axis(uy);
+}
+
 // ---- Session 30: the pitch SERVO, and why zeroing the stick was not enough ---
 //
 // Killing the stick's pitch stops it fighting the HMD, but it also means the
@@ -419,18 +494,41 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
         if (stamp && now - stamp <= kVrGameplayStaleMs && (out.lx || out.ly)) {
             float deg = g_moveYawOffDeg.load(std::memory_order_relaxed);
             if (deg != 0.0f) {
+                // Normalised: the pre-compensation is defined on a unit stick.
                 const float r = deg * 0.01745329252f;
                 const float c = cosf(r), s = sinf(r);
-                const float x = static_cast<float>(out.lx);
-                const float y = static_cast<float>(out.ly);
-                const float xr = x * c + y * s;  // clockwise from above:
-                const float yr = y * c - x * s;  // +deg deflects forward toward +x
-                out.lx = static_cast<int16_t>(xr > 32767.0f    ? 32767
-                                              : xr < -32768.0f ? -32768
-                                                               : lroundf(xr));
-                out.ly = static_cast<int16_t>(yr > 32767.0f    ? 32767
-                                              : yr < -32768.0f ? -32768
-                                                               : lroundf(yr));
+                const float x = static_cast<float>(out.lx) / 32767.0f;
+                const float y = static_cast<float>(out.ly) / 32767.0f;
+                float xr = x * c + y * s;  // clockwise from above:
+                float yr = y * c - x * s;  // +deg deflects forward toward +x
+
+                // KEEP THE SPEED THE PLAYER ASKED FOR (BRVR). The pair the game
+                // receives is a SQUARE - each axis clamps independently - while this
+                // rotation is circular, so a diagonal rotated onto an axis would be
+                // clipped by an angle-dependent amount. 1/peak caps speed uniformly
+                // and keeps the direction. A no-op for our radially-normalised XR
+                // stick; a guard against a future square-ranged publisher.
+                {
+                    const float ax = fabsf(xr), ay = fabsf(yr);
+                    const float peak = (ax > ay) ? ax : ay;
+                    if (peak > 1.0f) {
+                        const float k = 1.0f / peak;
+                        xr *= k;
+                        yr *= k;
+                    }
+                }
+
+                // AFTER the rotation and only on this path - see the banner on
+                // precomp_stick_deadzone.
+                precomp_stick_deadzone(xr, yr);
+
+                const float xs = xr * 32767.0f, ys = yr * 32767.0f;
+                out.lx = static_cast<int16_t>(xs > 32767.0f    ? 32767
+                                              : xs < -32768.0f ? -32768
+                                                               : lroundf(xs));
+                out.ly = static_cast<int16_t>(ys > 32767.0f    ? 32767
+                                              : ys < -32768.0f ? -32768
+                                                               : lroundf(ys));
             }
         }
     }
@@ -832,6 +930,18 @@ std::atomic<bool> g_padBrvrDefaults{false};
 bool pad_brvr_defaults() { return g_padBrvrDefaults.load(std::memory_order_relaxed); }
 void set_pad_brvr_defaults(bool on) {
     g_padBrvrDefaults.store(on, std::memory_order_relaxed);
+}
+
+bool stick_precomp() { return g_stickPrecomp.load(std::memory_order_relaxed); }
+void set_stick_precomp(bool on) {
+    g_stickPrecomp.store(on, std::memory_order_relaxed);
+}
+
+float game_stick_deadzone() { return g_gameStickDeadzone.load(std::memory_order_relaxed); }
+void set_game_stick_deadzone(float d) {
+    if (d < 0.0f) d = 0.0f;
+    if (d > 0.90f) d = 0.90f;
+    g_gameStickDeadzone.store(d, std::memory_order_relaxed);
 }
 
 void set_pad_profile(PadProfile p) {

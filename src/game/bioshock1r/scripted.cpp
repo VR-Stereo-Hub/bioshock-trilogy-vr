@@ -227,6 +227,41 @@ std::atomic<int> g_hideRig{1};
 std::atomic<int> g_panelUp{0};
 std::atomic<int> g_panelSuppressed{0};
 
+// ---- the arm hide runs on measured rig MOTION, and the HOLD is the whole job -
+//
+// RETRACTED, round 11. Round 10 claimed hiding the rig freezes the bone array
+// and moved the gate to forced_move() on that basis. **The claim was wrong and
+// the evidence was confounded**: in the round-9 build `hidden` was CAUSED by
+// motion reading zero, so identical bone values while hidden were guaranteed by
+// construction and proved nothing about causation. Measuring a variable you are
+// controlling is not a measurement.
+//
+// The round-10 build decoupled them - the hide ran off forced_move(), motion ran
+// free - and the unconfounded answer is the opposite: **3 samples taken while
+// hidden, 3 DISTINCT bone positions.** The array stays live behind a hidden
+// actor, exactly as BRVR's ArmHide.h always said. DrawScale3D is a safe hide.
+//
+// WHAT THE SAME RUN DID ESTABLISH, and it is the real finding: of 336 samples
+// inside scripted windows, **229 read raw exactly 0.0000**. CalcView fires at
+// 118-240/s while the engine's animation ticks far slower, so most consecutive
+// reads simply see the same pose. That is a SAMPLING ARTEFACT, not stillness -
+// and it is why the peak-hold and, above all, the HOLD carry this feature.
+//
+// Measured distribution over that run: raw p75 0.0021, p90 0.0271, max 77.66;
+// smoothed p75 0.0402, p90 0.2403. So 0.02 is a sound threshold - but 300 ms is
+// far too sharp a hold against a signal that reads zero two thirds of the time.
+// **BRVR ships 300 and ran 4000 in a headset**; the distribution above says its
+// live value was the right one, so that is the default here.
+std::atomic<float> g_armMotionThresh{0.02f};
+std::atomic<int> g_armHoldMs{4000};
+// Latched by note_hand_motion() on the game thread, read everywhere else.
+std::atomic<int> g_armMoving{1};   // fail-safe default: arms VISIBLE
+std::atomic<int> g_armBlind{1};    // no honest wrist to measure this frame
+std::atomic<float> g_armRaw{0.0f}; // live values for the F10 readout
+std::atomic<float> g_armSmoothed{0.0f};
+std::atomic<int> g_armBone{-1};
+unsigned long long g_armLastMovingMs = 0; // game thread only
+
 // ---- the gameplay rotation freeze ------------------------------------------
 //
 // RETRACTION, and the reason this exists. s64 part 1 measured that the head
@@ -486,6 +521,14 @@ void reset() {
     g_forced.store(0, std::memory_order_relaxed);
     g_bathy.store(0, std::memory_order_relaxed);
     g_window.store(0, std::memory_order_relaxed);
+    // The arm latch resets to VISIBLE, never to hidden: a new world with a stale
+    // "still" would collapse the rig before a single sample was taken.
+    g_armMoving.store(1, std::memory_order_relaxed);
+    g_armBlind.store(1, std::memory_order_relaxed);
+    g_armRaw.store(0.0f, std::memory_order_relaxed);
+    g_armSmoothed.store(0.0f, std::memory_order_relaxed);
+    g_armBone.store(-1, std::memory_order_relaxed);
+    g_armLastMovingMs = 0;
 }
 
 // Defined below with their banners; declared here because observe() drives them.
@@ -718,8 +761,105 @@ void set_hide_rig_in_scenes(bool on) {
             on ? "ON" : "off");
 }
 
+float arm_motion_threshold() { return g_armMotionThresh.load(std::memory_order_relaxed); }
+
+void set_arm_motion_threshold(float t) {
+    if (t < 0.0001f) t = 0.0001f;
+    if (t > 1.0f) t = 1.0f;
+    g_armMotionThresh.store(t, std::memory_order_relaxed);
+}
+
+int arm_hold_ms() { return g_armHoldMs.load(std::memory_order_relaxed); }
+
+void set_arm_hold_ms(int ms) {
+    if (ms < 0) ms = 0;
+    if (ms > 10000) ms = 10000;
+    g_armHoldMs.store(ms, std::memory_order_relaxed);
+}
+
+bool hands_moving() { return g_armMoving.load(std::memory_order_relaxed) != 0; }
+
+void arm_motion_readout(float* raw, float* smoothed, int* bone, bool* blind) {
+    if (raw) *raw = g_armRaw.load(std::memory_order_relaxed);
+    if (smoothed) *smoothed = g_armSmoothed.load(std::memory_order_relaxed);
+    if (bone) *bone = g_armBone.load(std::memory_order_relaxed);
+    if (blind) *blind = g_armBlind.load(std::memory_order_relaxed) != 0;
+}
+
+void note_hand_motion(bool have, float smoothed, float raw, int bone,
+                      const float pos[3], bool rigHidden) {
+    g_armBone.store(bone, std::memory_order_relaxed);
+    g_armBlind.store(have ? 0 : 1, std::memory_order_relaxed);
+
+    // Cannot answer means VISIBLE. The only number available would be a
+    // guaranteed zero, which reads as "still" and hides the arms for the whole
+    // scene - the failure on record. The scripted release should make this
+    // unreachable; it is here because "should" is how that bug happened once.
+    if (!have) {
+        g_armRaw.store(0.0f, std::memory_order_relaxed);
+        g_armSmoothed.store(0.0f, std::memory_order_relaxed);
+        g_armMoving.store(1, std::memory_order_relaxed);
+        // Say so: this state is invisible from outside - the arms simply never
+        // hide. The bone separates the two causes. Throttled, window only.
+        static unsigned long long lastBlind = 0;
+        const unsigned long long nowBlind = GetTickCount64();
+        if (scripted_window() && nowBlind - lastBlind >= 2000) {
+            lastBlind = nowBlind;
+            BVR_LOG("[b1r] scripted: motion CANNOT BE MEASURED (bone %d) - arms stay "
+                    "visible. %s",
+                    bone,
+                    bone < 0 ? "Both hand clusters are ours; the scripted release is "
+                               "not standing the drive down."
+                             : "The skeleton could not be reached this frame.");
+        }
+        return;
+    }
+
+    g_armRaw.store(raw, std::memory_order_relaxed);
+    g_armSmoothed.store(smoothed, std::memory_order_relaxed);
+
+    // GetTickCount64's ~15.6 ms resolution is a rounding error for a
+    // hundreds-of-ms hold. It would NOT be for a per-frame dt - that was s64's
+    // round-2 bug, in the freeze accumulator.
+    const unsigned long long nowMs = GetTickCount64();
+    const bool moving = smoothed > g_armMotionThresh.load(std::memory_order_relaxed);
+    if (moving) g_armLastMovingMs = nowMs;
+
+    const int hold = g_armHoldMs.load(std::memory_order_relaxed);
+    const bool held = g_armLastMovingMs != 0 &&
+                      (nowMs - g_armLastMovingMs) < static_cast<unsigned long long>(hold);
+    g_armMoving.store((moving || held) ? 1 : 0, std::memory_order_relaxed);
+
+    // Calibration. The BONE is the load-bearing half: a run of exact 0.0000 means
+    // the engine holding a pose or us writing the bone we read, and nothing else
+    // tells those apart. 2 Hz, and only inside a window.
+    static unsigned long long lastLog = 0;
+    if (scripted_window() && nowMs - lastLog >= 500) {
+        lastLog = nowMs;
+        // THE POSITION AND THE HIDDEN FLAG ARE THE EXPERIMENT. A delta of zero
+        // means either the engine is holding a pose or the array has stopped
+        // being evaluated, and those need opposite fixes. If p is bit-identical
+        // while hidden=1 and moves while hidden=0, hiding by DrawScale3D freezes
+        // the signal - the one assumption s64 carried over from BRVR untested.
+        BVR_LOG("[b1r] scripted: motion raw %.4f smoothed %.4f thresh %.4f bone %d "
+                "p=(%.3f %.3f %.3f) hidden=%d -> %s",
+                raw, smoothed, g_armMotionThresh.load(std::memory_order_relaxed), bone,
+                pos ? pos[0] : 0.0f, pos ? pos[1] : 0.0f, pos ? pos[2] : 0.0f,
+                rigHidden ? 1 : 0,
+                moving ? "MOVING" : (held ? "still (held)" : "still"));
+    }
+}
+
 bool want_rig_hidden() {
-    return enabled() && hide_rig_in_scenes() && scripted_window() && !scripted_anim();
+    // MOTION, restored round 11 - see the banner above g_armMotionThresh for why
+    // round 10's "hiding freezes the array" was a confounded measurement.
+    //
+    // scripted_anim() is deliberately not here: round 7 measured it already true
+    // on the first frame of the window, so it cannot separate the still parts of
+    // a scene from the animated ones. forced_move() is not here either - it
+    // covered 0.4 to 1.0 s of scenes that ran 60 to 90 s, which is why the hide
+    // read as "not triggering at all".
+    return enabled() && hide_rig_in_scenes() && scripted_window() && !hands_moving();
 }
 
 bool freeze_hands_in_scenes() {
@@ -894,17 +1034,30 @@ void draw_debug_ui() {
             );
 
     bool hideRig = hide_rig_in_scenes();
-    if (ImGui::Checkbox("Hide arms until an animation plays", &hideRig))
+    if (ImGui::Checkbox("Hide arms while your hands have nothing to do", &hideRig))
         set_hide_rig_in_scenes(hideRig);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
             "While the game is only walking you into position there is nothing for\n"
             "your hands to do, so arms, hands and weapon are hidden. They come back\n"
-            "the moment a scripted animation starts."
+            "the moment the rig actually moves.\n\n"
+            "Gated on MEASURED movement, not on the game's sequence flag - that\n"
+            "flag is already true on the first frame of a scene and stays true\n"
+            "through the parts where the hands sit perfectly still.\n\n"
+            "If the arms vanish mid-animation, raise the hold under Advanced."
             );
-    if (hideRig && scripted_window())
-        ImGui::TextDisabled("     rig %s right now",
-                            want_rig_hidden() ? "HIDDEN (no animation playing)" : "shown");
+    if (hideRig && scripted_window()) {
+        float raw = 0.0f, smoothed = 0.0f;
+        int bone = -1;
+        bool blind = true;
+        arm_motion_readout(&raw, &smoothed, &bone, &blind);
+        ImGui::TextDisabled("     rig %s | motion %.4f vs %.4f | bone %d%s",
+                            want_rig_hidden() ? "HIDDEN" : "shown", smoothed,
+                            arm_motion_threshold(), bone,
+                            blind ? "  <- CANNOT MEASURE, showing arms" : "");
+        ImGui::TextDisabled("     raw %.4f (two thirds of samples read 0 - the view "
+                            "updates faster than the animation)", raw);
+    }
 
 
     ImGui::Separator();
@@ -1001,6 +1154,29 @@ void draw_debug_ui() {
             " leave the shot or walk into geometry.");
 
     int hold = g_holdMs.load(std::memory_order_relaxed);
+    float thr = arm_motion_threshold();
+    if (ImGui::SliderFloat("Advanced: arm motion threshold", &thr, 0.001f, 0.2f, "%.4f"))
+        set_arm_motion_threshold(thr);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "How much the rig has to move before the arms count as animating.\n\n"
+            "Measured over one session: smoothed sits at 0.040 for three quarters\n"
+            "of samples and 0.240 for nine tenths, peaking at 77. 0.02 is well\n"
+            "clear of the noise floor.");
+
+    int armHold = arm_hold_ms();
+    if (ImGui::SliderInt("Advanced: arms stay up (ms)", &armHold, 0, 10000))
+        set_arm_hold_ms(armHold);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "How long the arms stay up after the rig last moved.\n\n"
+            "THIS IS THE SETTING THAT MATTERS. Two thirds of samples read exactly\n"
+            "zero because the view updates far faster than the animation does, so\n"
+            "a short hold makes a moving rig look still. 4000 is what BRVR ran in\n"
+            "a headset.\n\n"
+            "Lower it if the arms linger through long dead stretches; raise it if\n"
+            "they flicker out mid-animation.");
+
     if (ImGui::SliderInt("Advanced: scene hold (ms)", &hold, 0, 1000))
         set_hold_ms(hold);
     if (ImGui::IsItemHovered())
