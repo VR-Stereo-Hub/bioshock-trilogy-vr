@@ -4,7 +4,7 @@
 
 ## Session 2026-08-22/23 - s64: scripted events (BioVRDev)
 
-**Branch `s64-bs1-scripted-events`, 2 commits, cut from `s63-bs1-comfort`** (which
+**Branch `s64-bs1-scripted-events`, 3 commits, cut from `s63-bs1-comfort`** (which
 is 30 commits ahead of `main` and unmerged - this one STACKS). Replant with
 `git rebase --onto main s63-bs1-comfort s64-bs1-scripted-events` **and rebuild**
 once s63 merges.
@@ -45,6 +45,32 @@ pad is bit-identical. Everything else in s64 is still confined to
 which has been through any of this - see NEXT SESSION below. **The blur is GONE**,
 the scripted landing is fixed and confirmed, and the arm hide works on both
 scenes it has been run against.
+
+### NEXT SESSION - the two scenes that have not been through this
+
+The arm hide, the field-write gate and the rotation recentre are confirmed on the
+**balcony fall** and the **Little Sister crawl** only. Both of these need a run:
+
+1. **The bathysphere.** It is the one scene the scripted signals were NEVER
+   measured on - BRVR's own warning, carried in `scripted.h`: if the ride does not
+   set `hands+0x594` bit 2, the window never opens there and graveyard entry 12
+   comes straight back (the opening bathysphere walked into the back wall). The
+   body-transfer gate covers `bathysphere()` separately, so watch the LANDING and
+   whether looking around during the ride affects it.
+2. **The Big Daddy scripted event.** Never tested at all.
+
+What to read afterwards:
+
+```
+grep -E "scripted: motion|array probe|STALE for|rig hidden|body transfer" %LOCALAPPDATA%\BioshockVR\bioshockvr.log
+```
+
+- A `motion has been STALE for N ms` line means the gate is frozen and the HIDE
+  mechanism is wrong again - not the threshold. That line exists to stop the next
+  session tuning numbers for a round.
+- `array probe: 0/47 ... collapsed=1` would mean the bone collapse suppresses
+  evaluation the same way the actor scale did, which would be a new finding.
+
 
 ### Build and deploy state
 
@@ -262,31 +288,6 @@ also called into - a standing race), and the trusted-sample logic.
 the 2 Hz motion line (`p=` / `dirty=`), the 4 Hz whole-array probe, and a
 stale-watchdog that says outright if the gate has frozen. Strip them once the
 scenes below pass.
-
-### NEXT SESSION - the two scenes that have not been through this
-
-The arm hide, the field-write gate and the rotation recentre are confirmed on the
-**balcony fall** and the **Little Sister crawl** only. Both of these need a run:
-
-1. **The bathysphere.** It is the one scene the scripted signals were NEVER
-   measured on - BRVR's own warning, carried in `scripted.h`: if the ride does not
-   set `hands+0x594` bit 2, the window never opens there and graveyard entry 12
-   comes straight back (the opening bathysphere walked into the back wall). The
-   body-transfer gate covers `bathysphere()` separately, so watch the LANDING and
-   whether looking around during the ride affects it.
-2. **The Big Daddy scripted event.** Never tested at all.
-
-What to read afterwards:
-
-```
-grep -E "scripted: motion|array probe|STALE for|rig hidden|body transfer" %LOCALAPPDATA%\BioshockVR\bioshockvr.log
-```
-
-- A `motion has been STALE for N ms` line means the gate is frozen and the HIDE
-  mechanism is wrong again - not the threshold. That line exists to stop the next
-  session tuning numbers for a round.
-- `array probe: 0/47 ... collapsed=1` would mean the bone collapse suppresses
-  evaluation the same way the actor scale did, which would be a new finding.
 
 ### Round 10 (2026-08-23) - it was the FIELD WRITE, and the arm hide had to change signal
 
