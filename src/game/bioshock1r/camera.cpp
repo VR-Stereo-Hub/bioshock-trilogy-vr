@@ -836,6 +836,8 @@ void vr_preset_path(wchar_t* out, size_t count) {
     swprintf_s(out, count, L"%s\\vrpreset.ini", bvr::log::data_dir());
 }
 
+constexpr int kPresetVersion = 2; // see the preset-schema banner below
+
 void save_vr_preset() {
     wchar_t path[MAX_PATH];
     vr_preset_path(path, MAX_PATH);
@@ -888,11 +890,18 @@ void save_vr_preset() {
     fprintf(f, "swingDelayMs=%u\n", bvr::input::swing::delay_ms());
     fprintf(f, "swingHeadRel=%d\n", bvr::input::swing::head_relative() ? 1 : 0);
     fprintf(f, "laserOn=%d\n", aim::laser_enabled() ? 1 : 0);
+    fprintf(f, "presetVersion=%d\n", kPresetVersion);
     fprintf(f, "cineBarsHidden=%d\n", bvr::hud::bars_hidden() ? 1 : 0);
     fprintf(f, "cineDrive=%d\n", static_cast<int>(bvr::vr::cine_drive()));
     fprintf(f, "cineSubsInFrame=%d\n", bvr::hud::cine_subs_in_frame() ? 1 : 0);
     fprintf(f, "scriptedRotFollow=%d\n", static_cast<int>(scripted::rot_follow()));
     fprintf(f, "scriptedHoldMs=%d\n", scripted::hold_ms());
+    fprintf(f, "scriptedFreezeRot=%d\n", scripted::freeze_game_rot() ? 1 : 0);
+    fprintf(f, "scriptedFreezeBleed=%.1f\n", scripted::freeze_bleed_deg_per_sec());
+    fprintf(f, "scriptedTurnOn=%d\n", scripted::scripted_turn() ? 1 : 0);
+    fprintf(f, "scriptedTurnRate=%.1f\n", scripted::scripted_turn_deg_per_sec());
+    fprintf(f, "scriptedFreezeHands=%d\n", scripted::freeze_hands_in_scenes() ? 1 : 0);
+    fprintf(f, "scriptedHideRig=%d\n", scripted::hide_rig_in_scenes() ? 1 : 0);
     fprintf(f, "effectsInFrame=%d\n", bvr::hud::effects_in_frame() ? 1 : 0);
     fprintf(f, "effectMaxVerts=%u\n", bvr::hud::effect_max_verts());
     fprintf(f, "postFxRtOnly=%d\n", bvr::hud::postfx_rt_only() ? 1 : 0);
@@ -921,7 +930,36 @@ void save_vr_preset() {
     aim::save_weapon_profiles();
 }
 
+// ---- preset schema version, and why cineDrive needed one -------------------
+//
+// BS1 wants CineDrive::Off by default (headset-settled 2026-08-23: the head keeps
+// steering through a cutscene). Two attempts at that failed for the same reason
+// in different clothes.
+//
+// First it was set in the adapter's init(), which runs BEFORE the preset loads -
+// so a saved vrpreset.ini simply overwrote it. Then it was applied after the
+// load but only when the preset had no cineDrive line - which does nothing when
+// the preset DOES have one, and every preset saved before 2026-08-23 carries
+// `cineDrive=1` from the old default. Reported twice: "head control still isnt
+// defaulting to the camera controlled by head option".
+//
+// A DEFAULT CHANGE CANNOT BE DELIVERED THROUGH A FILE THAT ALREADY STORES THE
+// OLD DEFAULT, and no amount of has-the-key logic fixes that: a stored value
+// that happens to equal the old default is indistinguishable from a deliberate
+// choice. It needs a schema version, which is the ordinary answer.
+//
+// `presetVersion` is written on every save from now on. A preset with no version
+// (or an older one) predates this default, so its cineDrive is discarded and the
+// BS1 default applies. Anything the user chooses AFTER this ships is saved with
+// the current version and wins normally.
+int g_presetVersion = 0;
+bool g_presetHadCineDrive = false;
+bool preset_had_cine_drive() { return g_presetHadCineDrive; }
+int preset_version() { return g_presetVersion; }
+
 void load_vr_preset_values() {
+    g_presetHadCineDrive = false;
+    g_presetVersion = 0;
     wchar_t path[MAX_PATH];
     vr_preset_path(path, MAX_PATH);
     FILE* f = nullptr;
@@ -996,7 +1034,10 @@ void load_vr_preset_values() {
             bvr::hud::set_postfx_rt_only(v != 0.0f);
         else if (strcmp(key, "cineSubsInFrame") == 0)
             bvr::hud::set_cine_subs_in_frame(v != 0.0f);
+        else if (strcmp(key, "presetVersion") == 0)
+            g_presetVersion = static_cast<int>(v);
         else if (strcmp(key, "cineDrive") == 0) {
+            g_presetHadCineDrive = true;
             int m = static_cast<int>(v);
             if (m >= 0 && m <= 2) bvr::vr::set_cine_drive(static_cast<bvr::vr::CineDrive>(m));
         }
@@ -1007,6 +1048,18 @@ void load_vr_preset_values() {
         }
         else if (strcmp(key, "scriptedHoldMs") == 0)
             scripted::set_hold_ms(static_cast<int>(v));
+        else if (strcmp(key, "scriptedFreezeRot") == 0)
+            scripted::set_freeze_game_rot(v != 0.0f);
+        else if (strcmp(key, "scriptedFreezeBleed") == 0)
+            scripted::set_freeze_bleed_deg_per_sec(v);
+        else if (strcmp(key, "scriptedTurnOn") == 0)
+            scripted::set_scripted_turn(v != 0.0f);
+        else if (strcmp(key, "scriptedTurnRate") == 0)
+            scripted::set_scripted_turn_deg_per_sec(v);
+        else if (strcmp(key, "scriptedFreezeHands") == 0)
+            scripted::set_freeze_hands_in_scenes(v != 0.0f);
+        else if (strcmp(key, "scriptedHideRig") == 0)
+            scripted::set_hide_rig_in_scenes(v != 0.0f);
         else if (strcmp(key, "aimDotOn") == 0)
             aim::handle_command(v != 0.0f ? "dot on" : "dot off");
         else if (strcmp(key, "aimDotDistM") == 0) {
@@ -1068,6 +1121,19 @@ void apply_vr_preset() {
     hands::handle_command("pose aim"); // align to the AIM ray
     body::handle_command("on");        // M7.5: stick-forward = look direction
     load_vr_preset_values();           // tuned sliders (ini) over defaults
+    // BS1 ships CineDrive::Off (headset-settled 2026-08-23: the head keeps
+    // steering through a cutscene). Applied HERE rather than in the adapter's
+    // init(), which runs before this: a vrpreset.ini saved before that default
+    // existed carries cineDrive=1 and would silently reinstate the old
+    // behaviour. A preset that DID choose still wins - this only fills the gap.
+    if (!preset_had_cine_drive() || preset_version() < kPresetVersion) {
+        bvr::vr::set_cine_drive(bvr::vr::CineDrive::Off);
+        BVR_LOG("[b1r] cine drive: preset %s - applying the BS1 default (off: your head "
+                "keeps steering through a cutscene). Save the preset to keep your own "
+                "choice from now on.",
+                preset_had_cine_drive() ? "predates this default (presetVersion < 2)"
+                                        : "had no cineDrive");
+    }
     aim::note_preset_baseline();       // seed source for new weapon profiles
     aim::reapply_weapon_profile();     // the active weapon profile beats the baseline
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
@@ -1292,6 +1358,32 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     int32_t residualUnits = 0;
     int32_t gameYawUnitsRaw = rot ? rot->yaw : 0; // the engine's own body yaw
 
+    // ---- the comfort yaw, applied HERE and nowhere else --------------------
+    //
+    // IT USED TO BE APPLIED AT THE END OF THE BODY, and that is what made
+    // distant geometry smear while walking. Everything downstream reads the
+    // rotator: apply_eye_offset builds the eye separation axis from it, and the
+    // stereo second pass replays a stash (g_srBaseRot) taken inside the drive
+    // block. An adjustment added after both meant the LEFT eye carried it and
+    // the RIGHT eye did not - a per-eye yaw disagreement, which is a double
+    // image that resolves the moment you stand still. Reported as "things in
+    // the distance become blurry when walking and clear after stopping".
+    //
+    // Applied before all of that, in one place, so every consumer agrees.
+    // gameYawUnitsRaw is captured ABOVE it, so body::on_calcview keeps steering
+    // by the engine own value and this stays camera-only, as chosen.
+    float turnStickX = 0.0f;
+    if (scripted::wants_turn_axis()) {
+        // Only read the pad when something needs it: the accessor takes the
+        // input mutex and this runs on the game thread every CalcView.
+        bvr::input::Gamepad xr{};
+        bool xrActive = false;
+        bvr::input::last_xr_pad(&xr, &xrActive);
+        if (xrActive) turnStickX = static_cast<float>(xr.rx) / 32767.0f;
+    }
+    scripted::observe(self, gameYawUnitsRaw, turnStickX);
+    if (rot) rot->yaw += scripted::yaw_adjust_units();
+
     // Session 22: the strict gameplay-view verdict (body.cpp predicate, no
     // menu-attract escape hatch) now gates the live head drive, the FOV
     // write, and the eye offsets, so it is computed up front - it used to
@@ -1305,7 +1397,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // gated on strictGameplay - a scripted sequence is exactly when the view
     // actor may not be the pawn, and the signals read the hands actor and the
     // controller, not the view. Read-only, three dwords, gates nothing yet.
-    scripted::observe(self);
+    // The turn axis, read once. Both comfort accumulators need it and both are
+    // advanced inside observe(), which runs on every CalcView - including the
+    // ones where the game owns the camera and the head-drive block is skipped.
 
     // Session 29: the cinematic drive policy (vrcine drive off|authored|
     // authored+look). `cineHold` is the draw-based signal ORed with the pixel
@@ -1610,9 +1704,10 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // The scene term matters as much as the drive term: a MENU also stops the
     // head drive, and holding a menu's framing is pointless and would log on
     // every inventory open. A no-op at the default (follow both axes).
-    if (rot)
+    if (rot) {
         scripted::apply_rotation_policy(!vrDrove, cineHold || scripted::scripted_window(),
                                         &rot->pitch, &rot->yaw, &rot->roll);
+    }
 
     if (rot) {
         rot->pitch += static_cast<int32_t>(g_pitchDeg.load(std::memory_order_relaxed) * kRotUnitsPerDegree);
@@ -1959,7 +2054,40 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // flows draw over a live world, so no render-side signal can see them; the
     // engine's own movie stack names them exactly.
     screens::on_calcview(self, viewActor ? *viewActor : nullptr);
-    bvr::vr::publish_ui_pause(screens::panel_screen_up());
+
+    // s64 part 2: PausePC.swf IS ON THE STACK DURING BATHYSPHERE RIDES AND EVERY
+    // SCRIPTED SCENE, not just at the pause menu. Measured 2026-08-22:
+    //
+    //   23:07:56.892  screens: top = "..\FlashMovies\PausePC.swf" (2 playing) -> PANEL
+    //   23:07:56.928  xr: cinematic quad ON (... uiPaused=1)
+    //   23:08:14.929  screens: top = "..\FlashMovies\HUDRadial.swf" -> gameplay
+    //   23:08:14.929  scripted: bathysphere off          <- the same millisecond
+    //
+    // uiPaused is an unconditional term in core's wantCine, so the ride and every
+    // scripted scene dropped to the head-locked quad ("a square that is headlocked
+    // with black behind it"). And because cinematic_active() also gates the head
+    // drive below, it is why looking around during a scene did nothing at all -
+    // two reported defects, one cause.
+    //
+    // Narrow by construction: at the REAL pause menu neither signal is set, so
+    // that path is untouched, and genuinely screen-only cases (hack minigame,
+    // loading, FMV) arrive through screen_only() instead and are also untouched.
+    const bool panelUp = screens::panel_screen_up();
+    const bool sceneOwnsPanel = scripted::scripted_window() || scripted::bathysphere();
+    {
+        static bool s_wasSuppressing = false;
+        const bool suppressing = panelUp && sceneOwnsPanel;
+        if (suppressing != s_wasSuppressing) {
+            s_wasSuppressing = suppressing;
+            BVR_LOG("[b1r] scripted: panel screen up during a %s - %s",
+                    scripted::bathysphere() ? "bathysphere ride" : "scripted scene",
+                    suppressing ? "NOT treating it as a UI pause (the scene keeps its "
+                                  "stereo projection and your head keeps steering)"
+                                : "released; the panel is a real UI pause again");
+        }
+    }
+    scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
+    bvr::vr::publish_ui_pause(panelUp && !sceneOwnsPanel);
 
     {
         int32_t moved = body::on_calcview(self, viewActor ? *viewActor : nullptr,
@@ -1968,6 +2096,9 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // These two are the same integer, which is what makes the invariant a
         // theorem instead of a tolerance.
         if (moved) g_recenterYawUnits = wrap_rot(g_recenterYawUnits + moved);
+        // The rotation freeze must not treat our own body transfer as the game
+        // turning the player - that is what inverted left/right head look.
+        scripted::note_body_yaw(moved);
 
         // Feedback session (2026-08-13): instant move direction. Publish the
         // NOT-YET-TRANSFERRED body error (residual minus what the transfer
@@ -1980,10 +2111,20 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // Infinite's model, so the walk still tracks the head. Publishing an
         // explicit 0 when off/not-driving closes the gate now instead of
         // riding the core lane's 500 ms staleness window.
+        //
+        // s64: THE COMFORT YAW BELONGS IN THIS SUM TOO. The freeze and the
+        // scripted-scene turn move the CAMERA away from the pawn, so the
+        // camera-to-pawn angle is `residual - moved + yaw_adjust` and not
+        // `residual - moved`. Leaving the term out meant stick-forward tracked
+        // the pawn while the view tracked something else - reported as "the
+        // walking direction is now going to the wrong place", and it appeared
+        // the moment the freeze became a default. Exactly the same units the
+        // camera was adjusted by, so the two cannot drift apart.
         bvr::input::publish_move_yaw_offset(
             (vrDrove && body::move_dir_instant())
                 ? kMoveYawSign *
-                      static_cast<float>(wrap_rot(residualUnits - moved)) /
+                      static_cast<float>(wrap_rot(residualUnits - moved +
+                                                  scripted::yaw_adjust_units())) /
                       kRotUnitsPerDegree
                 : 0.0f);
     }

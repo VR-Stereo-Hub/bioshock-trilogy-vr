@@ -25,9 +25,18 @@
 
 namespace bvr::b1r::scripted {
 
-// Game thread, from CalcViewDetour, every call. `playerController` is
-// CalcView's own `self`. Cheap: three dword reads once the anchor has locked.
-void observe(void* playerController);
+// MASTER SWITCH. With it off nothing here reads engine memory and nothing is
+// applied to the camera, so the whole module can be taken out of the frame in a
+// headset without a rebuild. That is the cheapest way to answer "did this cause
+// it?" - one toggle instead of a bisect across builds and sessions.
+bool enabled();
+void set_enabled(bool on);
+
+// Game thread, from CalcViewDetour, EVERY call - the comfort accumulators are
+// advanced here precisely because this is the one entry point that never stops
+// running. `playerController` is CalcView's own `self`, `gameYawUnits` is the
+// engine's own yaw before anything touches it, `turnStickX` is the turn axis.
+void observe(void* playerController, int gameYawUnits, float turnStickX);
 
 // A scripted hand-animation sequence is running - the game is deliberately
 // animating the player's hands as part of an authored moment.
@@ -103,9 +112,92 @@ const char* rot_follow_name(RotFollow m);
 void apply_rotation_policy(bool gameOwnsCamera, bool sceneActive, int* pitch, int* yaw,
                            int* roll);
 
+// ---- the gameplay rotation freeze ------------------------------------------
+//
+// RETRACTS s64 part 1. That session measured the head drive overwriting
+// rot->pitch and rot->roll ABSOLUTELY and concluded BRVR's
+// FreezeGameplayRotation was redundant here. It is not: yaw is composed as
+// `gameYawUnits + residualUnits`, so the engine's own yaw reaches the view
+// untouched, and screenshake and the auto-pan onto enemy groups both arrive
+// through it. Reported from a headset 2026-08-22 and fixed here.
+bool freeze_game_rot();
+void set_freeze_game_rot(bool on);
+float freeze_bleed_deg_per_sec();
+void set_freeze_bleed_deg_per_sec(float d);
+bool freeze_holding(); // the game yaw is being held back RIGHT NOW
+
+// True when anything actually needs the turn axis this frame. The accessor that
+// supplies it takes the input mutex, and this runs on the game thread every
+// CalcView, so the caller skips the read entirely when nothing is listening.
+bool wants_turn_axis();
+
+// The exact number of yaw units OUR OWN body transfer just handed to the pawn.
+//
+// THIS IS WHY LEFT/RIGHT CAME OUT INVERTED. body::on_calcview steers the pawn to
+// follow your head, which moves the ENGINE yaw by that amount on the next frame
+// - and the freeze, seeing the engine yaw move with the stick centred, dutifully
+// absorbed it. So turning your head left moved the view right by exactly the
+// amount the body had followed. Pitch was unaffected because the body only ever
+// transfers yaw, which is precisely the "up and down is correct" half of the
+// report.
+//
+// Same integer, same discipline as the recenter absorption in camera.cpp: the
+// freeze subtracts what the body took before deciding what the game injected.
+void note_body_yaw(int movedUnits);
+
+// Live values for the F10 readout, in degrees.
+float freeze_offset_deg();
+float scripted_turn_deg();
+
+// ---- turning yourself during a scripted scene ------------------------------
+//
+// A scripted sequence pushes NullInput, so the game DISCARDS stick input and a
+// turn routed through the game does nothing. This is a mod-side accumulator
+// applied to the CAMERA ONLY - never to Controller.Rotation, which is BRVR's
+// invariant 1 ("the write itself is the damage").
+bool scripted_turn();
+void set_scripted_turn(bool on);
+float scripted_turn_deg_per_sec();
+void set_scripted_turn_deg_per_sec(float d);
+
+// The total yaw the camera should be adjusted by this frame: the freeze offset
+// it is declining, plus the player's own turn during a scripted scene.
+//
+// APPLY IT UNCONDITIONALLY, not inside the head-drive block. Both halves have to
+// work while the GAME owns the camera, which is when that block does not run.
+int yaw_adjust_units();
+
+// ---- the rig during a scripted scene ---------------------------------------
+//
+// Two halves of the same idea: while the game is running an authored moment,
+// your hands are not yours.
+//
+// freeze_hands_in_scenes(): stop the controller driving the bone cluster and
+// hand the skeleton back to the engine, so the authored animation plays and you
+// cannot drag the rig around mid-scene.
+//
+// hide_rig_in_scenes(): hide arms, hands and weapon while a scene is running and
+// NO scripted animation is playing - the forced-move phase, where the game is
+// walking you into position and your hands have nothing to do - then show them
+// the moment an animation starts, because that animation is what you are meant
+// to be watching. Uses DrawScale3D; see bones::set_actor_hidden.
+bool hide_rig_in_scenes();
+void set_hide_rig_in_scenes(bool on);
+
+// True when the rig should be hidden RIGHT NOW. Game thread.
+bool want_rig_hidden();
+
+bool freeze_hands_in_scenes();
+void set_freeze_hands_in_scenes(bool on);
+
 // The scene hold, in ms. Preset-backed like every other F10 value.
 int hold_ms();
 void set_hold_ms(int ms);
+
+// Publishes what the interface-screen detector saw, and whether a scene claimed
+// it, so the F10 readout can explain the PausePC.swf suppression rather than
+// leaving it invisible.
+void publish_panel_state(bool panelUp, bool suppressed);
 
 // F10 "Scripted events" section.
 void draw_debug_ui();

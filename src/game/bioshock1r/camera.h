@@ -62,4 +62,10 @@ void restore_game_fov_if_stale(uint64_t staleMs);
 // Called from the overlay through IGameAdapter::drawDebugUi().
 void draw_debug_ui();
 
+
+// True when the vrpreset.ini just loaded carried an explicit cineDrive value.
+// The adapter uses it to apply BS1's own default only when the user has not
+// already chosen - a saved preset must still win once they have.
+bool preset_had_cine_drive();
+int  preset_version();
 } // namespace bvr::b1r::camera

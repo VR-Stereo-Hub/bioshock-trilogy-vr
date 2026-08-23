@@ -1167,6 +1167,60 @@ void wskel_release(const char* why) {
     if (g_dsHoldable) ds_drop(why, true);
 }
 
+// ---- s64: hide the whole rig for a scripted scene --------------------------
+//
+// DrawScale3D at +0x2B0, three floats. See the banner on
+// kActorDrawScale3DOffset for why this is NOT the scalar at +0x2AC, which
+// session 63 measured as geometry-inert and which s64 tried first.
+//
+// One-shot per edge. This is an actor field, so unlike a bone write nothing
+// re-evaluates over it and there is no dirty byte to keep clearing - which is
+// also why it does not fight the skeleton drive or its reference capture.
+namespace {
+std::atomic<bool> g_rigHidden{false};
+void* g_rigScaleActor = nullptr;
+float g_rigScaleSaved[3] = {1.0f, 1.0f, 1.0f};
+bool g_rigScaleHave = false;
+constexpr float kRigHiddenScale = 0.0001f; // never exactly zero
+} // namespace
+
+bool actor_hidden() { return g_rigHidden.load(std::memory_order_relaxed); }
+
+void set_actor_hidden(void* handsActor, bool hidden) {
+    // A new actor: the saved scale belonged to an object that may already be
+    // destroyed and its address reused. Drop it WITHOUT restoring - writing a
+    // dead object's scale into a live one is worse than forgetting it.
+    if (handsActor != g_rigScaleActor) {
+        g_rigScaleActor = handsActor;
+        g_rigScaleHave = false;
+        g_rigHidden.store(false, std::memory_order_relaxed);
+    }
+    if (!handsActor) return;
+
+    uint8_t* const p = static_cast<uint8_t*>(handsActor) + patterns::kActorDrawScale3DOffset;
+
+    if (hidden && !g_rigHidden.load(std::memory_order_relaxed)) {
+        float cur[3] = {};
+        if (!read_n(p, cur, sizeof cur)) return;
+        // Refuse to save an already-collapsed scale: restoring THAT would leave
+        // the hands invisible for good.
+        if (cur[0] <= kRigHiddenScale * 10.0f) return;
+        memcpy(g_rigScaleSaved, cur, sizeof g_rigScaleSaved);
+        g_rigScaleHave = true;
+        const float tiny[3] = {kRigHiddenScale, kRigHiddenScale, kRigHiddenScale};
+        if (!write_n(p, tiny, sizeof tiny)) return;
+        g_rigHidden.store(true, std::memory_order_relaxed);
+        BVR_LOG("[bones] rig hidden for a scripted scene (DrawScale3D %.3f %.3f %.3f -> %.4f)",
+                cur[0], cur[1], cur[2], kRigHiddenScale);
+    } else if (!hidden && g_rigHidden.load(std::memory_order_relaxed)) {
+        if (g_rigScaleHave) write_n(p, g_rigScaleSaved, sizeof g_rigScaleSaved);
+        g_rigHidden.store(false, std::memory_order_relaxed);
+        BVR_LOG("[bones] rig shown again (DrawScale3D -> %.3f %.3f %.3f%s)",
+                g_rigScaleSaved[0], g_rigScaleSaved[1], g_rigScaleSaved[2],
+                g_rigScaleHave ? "" : " - no saved value, left as-is");
+    }
+}
+
 void set_hide_inactive(bool on) {
     bool was = g_hideInactive.exchange(on, std::memory_order_relaxed);
     if (was != on)

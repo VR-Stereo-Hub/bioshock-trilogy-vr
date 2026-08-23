@@ -482,6 +482,23 @@ inline constexpr uint32_t kActorAttachBoneNameOffset = 0xF0;
 // +0x2AC, written by AActor::SetDrawScale (0x375830) together with the dirty
 // protocol below - a raw field poke without the protocol is invisible.
 inline constexpr uint32_t kActorDrawScaleOffset = 0x2AC;
+
+// DrawScale3D - THREE floats (X/Y/Z) immediately after the scalar above.
+//
+// A DIFFERENT FIELD FROM +0x2AC, AND IT MATTERS. Session 63 measured the scalar
+// DrawScale as GEOMETRY-INERT on the rig actor ("rig-actor DrawScale does not
+// size geometry; weapon-actor DrawScale does"), and s64 wasted a build trying to
+// hide the arms with it. DrawScale3D is the one that works: measured in BRVR
+// (Hands/ArmHide.cpp, kDrawScale3DOff) and used there to hide arms, hands and
+// weapon together for scripted scenes.
+//
+// The layout is self-consistent - a scalar scale followed by a per-axis vector
+// is the ordinary Unreal shape - but the two are NOT interchangeable here, which
+// is exactly why the inert one is documented right above this.
+//
+// NEVER WRITE EXACT ZERO. The attach path inverse-decomposes chain scale
+// (session 16), the same division that makes bone 43 untouchable.
+inline constexpr uint32_t kActorDrawScale3DOffset = 0x2B0;
 inline constexpr uint32_t kActorDirtyFlagsOffset = 0xD0;  // |= 0x10 on transform-ish change
 inline constexpr uint32_t kActorRenderRevOffset = 0x3F4;  // ++ (UpdateRenderRevision)
 inline constexpr uint32_t kActorDirtyByteOffset = 0x3E4;  // = 0

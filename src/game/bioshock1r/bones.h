@@ -71,6 +71,23 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
 // weapon-attach bone hides by translation, never scale - the attach path
 // inverse-decomposes chain scale (session 16). Restores from the reference
 // on toggle-off and on hand switch, before the incoming hand is driven.
+// s64: hide the WHOLE rig - arms, hands and weapon - for a scripted scene.
+//
+// DrawScale3D (+0x2B0), NOT the scalar DrawScale at +0x2AC. Session 63 measured
+// that scalar as geometry-inert on the rig actor and s64 wasted a build on it;
+// the per-axis vector is the one that works, measured in BRVR and re-derived
+// here against the same actor. Never writes exact zero - the attach path
+// inverse-decomposes chain scale (session 16).
+//
+// One-shot on each edge, NOT per frame: this is an actor field, so nothing
+// re-evaluates over it the way the engine re-evaluates the bone array. The saved
+// value is dropped WITHOUT restoring when the actor pointer changes - the old
+// address may already belong to something else. Refuses to save an
+// already-collapsed scale, which would otherwise make the hands permanently
+// invisible. Idempotent; game thread.
+void set_actor_hidden(void* handsActor, bool hidden);
+bool actor_hidden();
+
 void set_hide_inactive(bool on);
 bool hide_inactive();
 

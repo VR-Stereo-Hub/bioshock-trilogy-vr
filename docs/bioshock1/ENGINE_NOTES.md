@@ -3959,3 +3959,149 @@ already gone. What is left of it is a yaw latch, which is the risky axis (it
 feeds `body::on_calcview` and the pawn's facing) for a much smaller prize. It was
 deliberately not ported. `ScriptedRotationFollow`'s job, by contrast, lands
 cleanly and is what shipped.
+
+## Session 64 part 2 (2026-08-22) - the offsets confirmed, and PausePC.swf
+
+### All three offsets CONFIRMED in a headset run
+
+The part-1 build was diagnostic and the run settled every question it asked.
+
+**The anchor resolved four real, semantically correct names**, which is a
+stronger result than "four slots resolved":
+
+```
+scripted: anchor ok - PlayerHands confirmed, 4/4 name slots resolve
+          (+0x498 'HandsDown', +0x4B8 'Eve_ArmJab',
+           +0x4D8 'GathererSave_Heal', +0x558 'None')
+```
+
+`HandsOffscreenAnimationName` reads `HandsDown`, `InjectingEveAnimationName`
+reads `Eve_ArmJab`, `ExorcisingGathererAnimationName` reads `GathererSave_Heal`.
+Those are the right *meanings*, not just well-formed names, so the field walk
+behind `hands+0x594` is standing exactly where the derivation says.
+
+**The bathysphere two-bit oracle held on BOTH edges:**
+
+```
+23:07:19.626  bathysphere ON   (pawn+0x464 = 00000002, bCannotFall=1 havokCapsule=0 - oracle HOLDS)
+23:08:14.929  bathysphere off  (pawn+0x464 = 00000004, bCannotFall=0 havokCapsule=1 - oracle HOLDS)
+```
+
+Bits 1 and 2 moving in opposite directions in the same write, both times. That is
+not something a wrong offset produces by chance.
+
+**The held window earned itself on the first run:**
+
+```
+23:11:25.323  forced move BEGAN
+23:11:26.415  --- forced move done ---
+23:11:26.424  *** SCRIPTED ANIMATION BEGAN ***
+23:11:26.424  window bridged a 16 ms gap between the two signals
+```
+
+Nine milliseconds of daylight between the two signals - the exact defect BRVR
+measured on the Little Sister crawl, reproduced here immediately. Without the
+hold, anything reading the pair would have seen the scene end and restart.
+
+`forced move` also bracketed the bathysphere boarding at 1.22 s (23:07:18.393 to
+23:07:19.617), consistent with BRVR's 1.0 s "went straight in" measurement.
+
+### PausePC.swf is on the movie stack during rides and scripted scenes
+
+**The finding that fixed two reported defects at once.** `PausePC.swf` is not
+only the pause menu: the game keeps it on the playing-movie stack for the whole
+of a bathysphere ride and every scripted scene, at `(2 playing)` rather than the
+`(1 playing)` seen at a real pause.
+
+`screens::panel_screen_up()` matched it, that fed `publish_ui_pause(true)`, and
+`uiPaused` is an unconditional term in core's `wantCine`:
+
+```
+23:07:56.892  screens: top = "..\FlashMovies\PausePC.swf" (2 playing) -> PANEL
+23:07:56.928  xr: cinematic quad ON (strict=1 stale=0 fovMismatch=1 screenOnly=0 uiPaused=1)
+23:08:14.929  screens: top = "..\FlashMovies\HUDRadial.swf" -> gameplay
+23:08:14.929  scripted: bathysphere off              <- the same millisecond
+```
+
+Two user-visible consequences, reported independently and diagnosed as one cause:
+
+1. **The ride rendered on a head-locked quad** - "a square that is headlocked
+   with black behind it" - instead of in stereo.
+2. **The head was dead during scripted scenes.** `cinematic_active()` also gates
+   the head drive in `CalcViewDetour`, so `driveHead` was false and looking
+   around did nothing: "you stay looking wherever the game wants you to look,
+   which feels very bad".
+
+**Two candidates ruled out rather than assumed.** `g_cineStereo` already defaults
+**true**, so the `fovMm && !stereoCine` term contributes nothing even though the
+scripted camera genuinely renders 80 deg against a claimed 100. And `screen-only`
+engaged 5 s *after* the quad (23:08:02 vs 23:07:56), so it is downstream of the
+quad rather than a trigger. **`uiPaused` was the sole cause.**
+
+The fix is one gate in the adapter: a panel screen is only a UI pause when no
+scripted window is open and no bathysphere ride is running. At a real pause menu
+neither signal is set, so that path is untouched; hack/loading/FMV screens arrive
+through `screen_only()` and are untouched too.
+
+### RETRACTION: the game's yaw DOES reach the camera during gameplay
+
+Part 1 recorded that the head drive overwrites `rot->pitch` and `rot->roll`
+absolutely, concluded that shake and the auto-pan therefore never reach the
+player, and left BRVR's `FreezeGameplayRotation` deliberately unported as
+"largely redundant here".
+
+**That conclusion was wrong, and a headset run refuted it.** The measurement it
+rested on was correct but incomplete: yaw is not overwritten.
+
+```cpp
+rot->yaw = gameYawUnits + residualUnits;   // camera.cpp
+```
+
+`gameYawUnits` is the engine's own value, so everything the game puts into yaw
+arrives untouched. Reported 2026-08-22: *"I am getting screenshake with world
+events and its making me look at groups of enemies that the game normally turns
+you to."* Screenshake reads as horizontal because horizontal is the only axis
+left.
+
+**The lesson worth keeping:** "two of the three axes are discarded" is not "the
+feature is redundant". The one surviving axis was the one the complaint was
+about. A per-axis audit needs a per-axis conclusion.
+
+The freeze now ships, absorbing the game's yaw *delta* into an offset rather than
+clamping the value, so the view declines to be turned instead of snapping. It
+excludes itself while the turn stick is off centre, during a scripted window, and
+during a bathysphere ride - the last of which is only possible because part 1's
+signal exists, and is the bug BRVR shipped for as long as its own signal was
+missing.
+
+**Known trade, accepted deliberately (user's call):** the filter is camera-only.
+Aim and body still turn with the game, so the crosshair can sit off centre after
+a large shake. The offset is bounded at 60 deg and says so in the log if it ever
+reaches that, because an unbounded offset is an unbounded divergence between
+where you are looking and where the pawn is facing.
+
+### Turning yourself during a scripted scene
+
+A scripted sequence pushes `NullInput`, so the game discards stick input and a
+turn routed through the game does nothing. Ported from BRVR's `ScriptedManualYaw`
+as a mod-side accumulator applied to the **camera only**.
+
+It is never written into `Controller.Rotation`. That is BRVR's invariant 1 and it
+was expensive: three balcony falls entered far right, straight on and far left
+and all landed on the same spot with no write, while a substituted heading put
+both straight-on runs badly wrong. **The write itself is the damage.**
+
+### The both-edges rule, and a third door it came through
+
+BRVR's rule is that a reference latched inside a scripted window must be dropped
+on **both** edges, or the second scene of a session differences against a value
+left over from the end of the first ("first almost perfect, second way off").
+
+That applies here to the scripted-turn accumulator and the freeze reference, and
+both are reset on the window's rising and falling edge. But there is a third gap
+BRVR did not have: **the freeze filter only runs while the head drive runs.** A
+menu, a cutscene or a scripted camera stops calling it entirely, so the yaw it
+would difference against on the way back out is from before the scene - and
+absorbing that delta would swallow the entire turn the scene just made. The
+filter therefore re-arms whenever more than 250 ms has passed since its last
+call, with dt as the witness that it was not being called.

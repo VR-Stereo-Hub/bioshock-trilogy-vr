@@ -490,13 +490,28 @@ fixed or the release waits:**
 ## M9 - Comfort + UI/config + release polish (~2–3 sessions)
 
 **Scripted-event comfort track (BS1, s64 2026-08-22):**
-- [ ] **Scripted-event signals confirmed on this build** (`scripted.cpp`): the three
+- [x] **Scripted-event signals confirmed on this build** (`scripted.cpp`): the three
       offsets ported from BRVR - hands+0x594 bit 2, controller+0x9E0, pawn+0x464 bit 1 -
       plus the held window. BUILT AND INSTALLED, NOT YET SEEN IN A LOG. Acceptance: one
       run covering the opening bathysphere, a Little Sister rescue and the plasmid
       balcony, with the bathysphere oracle reading `HOLDS`, the rescue leaving the
       animation signal SILENT, and no anchor/shape failures. Derivations and the exact
       log expectations: `docs/bioshock1/ENGINE_NOTES.md` § Session 64.
+      **CONFIRMED in a headset run 2026-08-22**: anchor 4/4 with correct meanings,
+      bathysphere oracle held on both edges, and the held window bridged a real
+      16 ms gap on the first run.
+- [ ] **The PausePC.swf gate verified** (`camera.cpp`): a bathysphere ride and
+      scripted scenes must no longer drop to the head-locked cinematic quad, and
+      the head must steer during a scripted scene. Acceptance: no `cinematic quad
+      ON ... uiPaused=1` during either, and looking around during a scene moves
+      the view.
+- [ ] **Gameplay rotation freeze judged** (F10, default off): shake and the
+      auto-pan onto enemies stop reaching the view while the stick is centred, a
+      bathysphere ride still follows the sphere with it ON, and the camera-only
+      aim drift is judged acceptable or not.
+- [ ] **Right-stick turn during a scripted scene judged** (F10, default off),
+      including that a SECOND scene in the same session opens framed correctly -
+      the both-edges reset.
 - [ ] **Authored-camera rotation follow judged in a headset** (F10 "Scripted events"):
       both axes / horizontal only / neither. Ships at "both axes" = unchanged behaviour;
       acceptance is a user verdict on whether a level horizon during a scripted or

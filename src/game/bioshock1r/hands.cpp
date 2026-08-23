@@ -31,6 +31,7 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/scripted.h"
 
 #include <windows.h>
 
@@ -634,8 +635,14 @@ void on_calcview(const FrameContext& ctx) {
     // false with the head drive - an accident, not a contract, and one that
     // authored+look breaks by design (it drives the head again, which would
     // hand the controllable rig straight back over the authored animation).
-    if (gameplayView && bvr::hud::cinematic_hold() &&
-        bvr::vr::cine_drive() != bvr::vr::CineDrive::Off) {
+    // s64: a scripted scene joins the same gate. The engine is animating the
+    // hands on purpose there, and leaving the controller in charge lets the
+    // player drag the rig around mid-scene. Same release path, same reason.
+    const bool scriptedScene =
+        scripted::freeze_hands_in_scenes() && scripted::scripted_window();
+    if (gameplayView && (scriptedScene || (bvr::hud::cinematic_hold() &&
+                                           bvr::vr::cine_drive() !=
+                                               bvr::vr::CineDrive::Off))) {
         gameplayView = false;
         // Release HERE, not only on the cinematic entry edge. Measured in
         // headset (session 29): switching drive mode to `off` mid-cutscene
@@ -647,6 +654,22 @@ void on_calcview(const FrameContext& ctx) {
         // Releasing where the suppression happens closes that by construction,
         // and release() is idempotent - it self-limits to one real pass.
         bones::release("hands gated for cinematic");
+    }
+
+    // s64: the rig itself. Hidden while a scene runs with no animation playing
+    // (the game is walking you into position), shown the instant one starts.
+    // Applied ABOVE the early return, so the unhide still runs on the frame the
+    // gate closes - session 29's collapsed-hand bug was exactly a restore living
+    // inside code the gate had already skipped.
+    {
+        // The cached pointer, or resolve it here if it is empty. find_hands_actor
+        // normally runs ~20 lines BELOW this - past the scripted gate's early
+        // return - so during a scene an empty cache would never refill and the
+        // hide would silently do nothing. The resolver has its own scan
+        // cooldown, so asking is cheap when it cannot answer.
+        void* rig = hands_actor();
+        if (!rig) rig = find_hands_actor(ctx, false);
+        if (rig) bones::set_actor_hidden(rig, scripted::want_rig_hidden());
     }
 
     if (!gameplayView) return;

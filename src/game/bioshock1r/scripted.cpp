@@ -6,12 +6,14 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/shared/ue_math.h"
 
 #include <windows.h>
 
 #include <imgui.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cwchar>
 
@@ -94,12 +96,53 @@ constexpr uint32_t kHavokCapsuleBit = 1u << 2;
 // precisely that. The shape check in forced_move_tick refuses anything wider.
 constexpr uint32_t kCtlForcedMoveOffset = 0x9E0;
 
+// ---- a clock that can actually see a frame ---------------------------------
+//
+// GetTickCount64 HAS ~15.6 ms RESOLUTION AND CalcView RUNS AT ~118/s, so most
+// frames are 8.5 ms apart and the tick counter does not move between them. The
+// first version of the freeze below computed dt from it and treated dt == 0 as
+// "I was not called last frame, re-arm the reference" - which fired on roughly
+// every other frame, re-armed constantly, and therefore never accumulated a
+// single unit of the offset it exists to accumulate. It shipped looking
+// plausible and did exactly nothing.
+//
+// QPC has the resolution the question needs. dt is clamped to 0 across a real
+// gap so a discontinuity still re-arms; the point is that an ordinary frame is
+// no longer indistinguishable from one.
+LARGE_INTEGER g_qpcFreq{};
+long long g_qpcLast = 0;
+
+double tick_seconds() {
+    if (!g_qpcFreq.QuadPart) QueryPerformanceFrequency(&g_qpcFreq);
+    LARGE_INTEGER n;
+    QueryPerformanceCounter(&n);
+    double dt = 0.0;
+    if (g_qpcLast) dt = static_cast<double>(n.QuadPart - g_qpcLast) / g_qpcFreq.QuadPart;
+    g_qpcLast = n.QuadPart;
+    if (dt < 0.0 || dt > 0.25) dt = 0.0; // a real gap: the caller re-arms
+    return dt;
+}
+
 // ---- guarded memory helpers (no C++ objects in an SEH frame) ---------------
 
+// SEH ONLY, DELIBERATELY - AND THIS IS A PERFORMANCE FIX, NOT A STYLE ONE.
+//
+// These used to call bvr::pattern_scan::is_memory_valid() first, which sounds
+// like cheap belt-and-braces and is not: it is a VirtualQuery, a syscall that
+// takes the process address-space lock. observe() does four of these per
+// CalcView at ~118 CalcView/s, so it was ~470 VirtualQuery calls a second on the
+// GAME THREAD, every frame, forever. This tree already has a rule against
+// exactly that shape ("never add a per-frame memory scan") and this walked into
+// it sideways, because each individual call looks like a bounds check.
+//
+// The __try/__except IS the protection and always was - it is the idiom the rest
+// of this adapter uses (body.cpp's read_rot has no VirtualQuery either). A bad
+// pointer faults, the handler catches it, the read reports false. The pointers
+// themselves are validated once per change in anchor_check, which is where a
+// one-shot check belongs.
 bool read_u32(const void* obj, uint32_t off, uint32_t* out) {
     if (!obj) return false;
     const uint8_t* p = static_cast<const uint8_t*>(obj) + off;
-    if (!bvr::pattern_scan::is_memory_valid(p, 4)) return false;
     __try {
         *out = *reinterpret_cast<const uint32_t*>(p);
         return true;
@@ -111,7 +154,6 @@ bool read_u32(const void* obj, uint32_t off, uint32_t* out) {
 bool read_ptr_at(const void* obj, uint32_t off, void** out) {
     if (!obj) return false;
     const uint8_t* p = static_cast<const uint8_t*>(obj) + off;
-    if (!bvr::pattern_scan::is_memory_valid(p, sizeof(void*))) return false;
     __try {
         *out = *reinterpret_cast<void* const*>(p);
         return true;
@@ -121,6 +163,11 @@ bool read_ptr_at(const void* obj, uint32_t off, void** out) {
 }
 
 // ---- published state (game thread writes, overlay thread reads) ------------
+
+// Master switch. Exists so the entire module can be taken out of the frame in
+// the headset without a rebuild - which is the cheapest possible answer to "did
+// this cause it?" and beats bisecting builds by a whole session per question.
+std::atomic<int> g_enabled{1};
 
 std::atomic<int> g_anim{0};
 std::atomic<int> g_forced{0};
@@ -154,11 +201,16 @@ int g_anchorNamesOk = 0;
 // running in a world that has only just started.
 unsigned long long g_windowLastOnMs = 0;
 
+// Yaw the body transfer handed to the pawn since the last freeze tick.
+int g_bodyYawPending = 0;
+
 // ---- the rotation-follow policy -------------------------------------------
 //
 // Default Both, which is bit-for-bit today's behaviour: the policy is a no-op
 // until the player picks otherwise in F10.
-std::atomic<int> g_rotFollow{static_cast<int>(RotFollow::Both)};
+// Settled in a headset 2026-08-23: horizontal only. The user ran a full session
+// on it and reported "vertical injection in cutscenes is gone".
+std::atomic<int> g_rotFollow{static_cast<int>(RotFollow::HorizontalOnly)};
 
 // The reference latched on the frame the game took the camera. Held absolutely
 // rather than differenced, so an authored pitch slew is removed entirely and
@@ -168,6 +220,67 @@ int g_rotRefPitch = 0;
 int g_rotRefYaw = 0;
 int g_rotRefRoll = 0;
 std::atomic<unsigned> g_rotHolds{0}; // shots this policy has levelled
+std::atomic<int> g_gameOwnsCam{0};   // live, for the panel to explain itself
+// Default settled in a headset 2026-08-23.
+std::atomic<int> g_freezeHands{1};
+std::atomic<int> g_hideRig{1};
+std::atomic<int> g_panelUp{0};
+std::atomic<int> g_panelSuppressed{0};
+
+// ---- the gameplay rotation freeze ------------------------------------------
+//
+// RETRACTION, and the reason this exists. s64 part 1 measured that the head
+// drive overwrites rot->pitch and rot->roll ABSOLUTELY and concluded BRVR's
+// FreezeGameplayRotation was redundant here. **That was wrong.** Yaw is not
+// overwritten - camera.cpp composes `gameYawUnits + residualUnits` - so the
+// engine's own yaw reaches the view untouched, and screenshake and the auto-pan
+// onto enemy groups both arrive through it. Reported from a headset, 2026-08-22:
+// "I am getting screenshake with world events and its making me look at groups
+// of enemies that the game normally turns you to".
+//
+// The filter absorbs the game's yaw DELTA into an offset rather than clamping
+// the value, so nothing ever snaps: the view simply declines to be turned.
+std::atomic<int> g_freezeOn{1}; // headset-confirmed 2026-08-23
+std::atomic<float> g_freezeBleedDegPerSec{0.0f}; // 0 = hold indefinitely
+std::atomic<int> g_freezeHolding{0};
+std::atomic<unsigned> g_freezeEvents{0};
+bool g_freezeHave = false;
+int g_freezePrevYaw = 0;
+float g_freezeOffsetUnits = 0.0f; // float so the bleed can be sub-unit per frame
+unsigned long long g_freezeLastMs = 0;
+
+// A bound, because an unbounded offset is an unbounded divergence between where
+// you are looking and where the pawn is facing. 60 deg is far past anything a
+// shake or an auto-pan produces, so hitting it means something else is wrong -
+// and it says so once rather than silently drifting.
+constexpr float kFreezeMaxUnits = 60.0f * 65536.0f / 360.0f;
+
+// ---- the player's own turn during a scripted scene -------------------------
+//
+// A scripted sequence pushes NullInput, so the game DISCARDS stick input and our
+// turn - which goes through the game - does nothing. This is BRVR's
+// ScriptedManualYaw: a mod-side accumulator applied to the CAMERA ONLY.
+//
+// It is never written into Controller.Rotation. That is BRVR's invariant 1 and
+// it was bought expensively: three balcony falls entered far right, straight on
+// and far left and all landed on the same spot with NO write, and with a heading
+// substituted in both straight-on runs landed badly wrong. The write itself is
+// the damage.
+std::atomic<int> g_scriptedTurnOn{1}; // headset-settled 2026-08-23: on
+std::atomic<float> g_scriptedTurnRate{90.0f}; // deg/s at full stick
+float g_scriptedTurnUnits = 0.0f;
+unsigned long long g_scriptedTurnLastMs = 0;
+
+// Dropped on BOTH edges of the window, and this is not defensive coding - it is
+// a bug BRVR shipped and had to chase. A latch set on the first scripted frame
+// and never cleared means the SECOND scene of a session differences against a
+// value left over from the END of the first. Reported as "both runs had the
+// balcony fall land in different spots - first almost perfect, second way off".
+void reset_scene_accumulators() {
+    g_scriptedTurnUnits = 0.0f;
+    g_scriptedTurnLastMs = 0;
+    g_freezeHave = false; // a scene moves the camera on purpose; do not difference across it
+}
 
 // ============================================================================
 //  THE ANCHOR CHECK - stronger here than in BRVR, because this repo has names
@@ -346,8 +459,11 @@ void window_tick() {
         g_windowLastOnMs = 0;
 
     const int want = held ? 1 : 0;
-    if (want != g_window.load(std::memory_order_relaxed))
+    if (want != g_window.load(std::memory_order_relaxed)) {
         g_window.store(want, std::memory_order_relaxed);
+        // BOTH edges. See reset_scene_accumulators.
+        reset_scene_accumulators();
+    }
 }
 
 } // namespace
@@ -362,13 +478,53 @@ bool anchor_ok() { return g_anchorOk.load(std::memory_order_relaxed) != 0; }
 
 void reset() {
     g_windowLastOnMs = 0;
+    g_freezeOffsetUnits = 0.0f;
+    g_freezeHave = false;
+    g_scriptedTurnUnits = 0.0f;
+    g_bodyYawPending = 0;
     g_anim.store(0, std::memory_order_relaxed);
     g_forced.store(0, std::memory_order_relaxed);
     g_bathy.store(0, std::memory_order_relaxed);
     g_window.store(0, std::memory_order_relaxed);
 }
 
-void observe(void* playerController) {
+// Defined below with their banners; declared here because observe() drives them.
+void update_freeze(int gameYawUnits, float turnStickX, double dt);
+void update_scripted_turn(float turnStickX, double dt);
+
+bool enabled() { return g_enabled.load(std::memory_order_relaxed) != 0; }
+
+void set_enabled(bool on) {
+    if (g_enabled.exchange(on ? 1 : 0, std::memory_order_relaxed) == (on ? 1 : 0)) return;
+    if (!on) reset();
+    BVR_LOG("[b1r] scripted: module %s - %s", on ? "ON" : "OFF (nothing read, nothing applied)",
+            on ? "signals live" : "use this to A/B whether this module causes a symptom");
+}
+
+void observe(void* playerController, int gameYawUnits, float turnStickX) {
+    if (!enabled()) {
+        // Say so ONCE. The switch exists to take this module out of the frame
+        // for an A/B, and it is easy to leave off and then wonder why the arms
+        // never hide - which is exactly what happened on 2026-08-23.
+        static bool s_said = false;
+        if (!s_said) {
+            s_said = true;
+            BVR_LOG("[b1r] scripted: module is OFF - no signals, no arm hide, no hands "
+                    "gate, no camera adjustment. Tick it back on in F10 to test any of "
+                    "those.");
+        }
+        return;
+    }
+    // The comfort accumulators advance HERE, before any early return, because
+    // observe() is the one thing in this module that runs on every single
+    // CalcView. The first version drove them from inside the head-drive block
+    // in camera.cpp, which meant they stopped the moment the game took the
+    // camera - i.e. during exactly the scenes they exist to handle. That is why
+    // the right stick did nothing during a scripted scene.
+    const double dt = tick_seconds();
+    update_freeze(gameYawUnits, turnStickX, dt);
+    update_scripted_turn(turnStickX, dt);
+
     void* hands = hands::hands_actor();
     if (!hands) {
         // Hands actor gone (level load, save reload). FAIL CLOSED: a stale
@@ -401,6 +557,181 @@ void observe(void* playerController) {
     window_tick();
 }
 
+bool freeze_game_rot() { return g_freezeOn.load(std::memory_order_relaxed) != 0; }
+bool freeze_holding() { return g_freezeHolding.load(std::memory_order_relaxed) != 0; }
+
+bool wants_turn_axis() {
+    return freeze_game_rot() || (scripted_turn() && scripted_window());
+}
+
+void note_body_yaw(int movedUnits) {
+    if (movedUnits) g_bodyYawPending += movedUnits;
+}
+
+void set_freeze_game_rot(bool on) {
+    if (g_freezeOn.exchange(on ? 1 : 0, std::memory_order_relaxed) == (on ? 1 : 0)) return;
+    g_freezeHave = false;
+    g_freezeOffsetUnits = 0.0f;
+    BVR_LOG("[b1r] scripted: freeze the game's own rotation during play = %s",
+            on ? "ON (shake and the auto-pan stop reaching the view)" : "off");
+}
+
+float freeze_bleed_deg_per_sec() {
+    return g_freezeBleedDegPerSec.load(std::memory_order_relaxed);
+}
+
+void set_freeze_bleed_deg_per_sec(float d) {
+    if (d < 0.0f) d = 0.0f;
+    if (d > 90.0f) d = 90.0f;
+    g_freezeBleedDegPerSec.store(d, std::memory_order_relaxed);
+}
+
+// Called from the VR gameplay path with the engine's own yaw, BEFORE the head
+// residual is added. Returns the yaw the camera should use.
+//
+// `turnStickX` is the player's own turning and it must always survive - that is
+// what lets the freeze work at all without touching the stick, and it keeps
+// BRVR's grave 12 (zeroing the stick freezes Controller.Rotation, and forced
+// moves steer by it) out of this entirely.
+// Bookkeeping only. Called from observe(), which runs on EVERY CalcView -
+// unlike the first version, which lived inside the head-drive block and so
+// stopped running during exactly the scenes it needed to track across.
+void update_freeze(int gameYawUnits, float turnStickX, double dt) {
+    if (!freeze_game_rot()) {
+        g_freezeHave = false;
+        g_freezeOffsetUnits = 0.0f;
+        g_freezeHolding.store(0, std::memory_order_relaxed);
+        return;
+    }
+
+    // dt == 0 means a real gap (QPC clamps it there), so re-arm rather than
+    // difference across it. See the tick_seconds banner for why this used to
+    // fire on nearly every frame and silently disable the whole feature.
+    if (!g_freezeHave || dt <= 0.0) {
+        g_freezeHave = true;
+        g_freezePrevYaw = gameYawUnits;
+        return;
+    }
+    int delta = wrap_rot(gameYawUnits - g_freezePrevYaw);
+    g_freezePrevYaw = gameYawUnits;
+
+    // Subtract what OUR OWN body transfer put there. body::on_calcview steers
+    // the pawn to follow the head, and that shows up here one frame later as an
+    // engine-yaw change with the stick centred - indistinguishable from the
+    // game turning you, and absorbing it inverted the head look. Exact integers
+    // both ways, so nothing is left over.
+    if (g_bodyYawPending) {
+        delta = wrap_rot(delta - g_bodyYawPending);
+        g_bodyYawPending = 0;
+    }
+
+    // The exclusions are the whole reason the signals had to land first.
+    //   - a scripted scene turns you ON PURPOSE and must not be resisted
+    //   - a bathysphere ride is not a scripted animation, so without its own
+    //     signal the freeze applies there too and the camera stops following
+    //     the sphere. BRVR shipped exactly that bug for as long as the signal
+    //     was missing, and could not fix it by level name because the mod does
+    //     not know what map it is on.
+    //   - your own turn always wins
+    const bool excluded = scripted_window() || bathysphere() || fabsf(turnStickX) > 0.02f;
+
+    if (!excluded && delta != 0) {
+        // Absorb the delta rather than clamping the value, so the view declines
+        // to be turned instead of snapping back.
+        g_freezeOffsetUnits += static_cast<float>(delta);
+        if (!g_freezeHolding.exchange(1, std::memory_order_relaxed))
+            g_freezeEvents.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        g_freezeHolding.store(0, std::memory_order_relaxed);
+    }
+
+    // Optional bleed-back. At 0 the offset is held indefinitely, which is a true
+    // freeze; above 0 the view returns to the game's heading at that rate.
+    const float bleed = g_freezeBleedDegPerSec.load(std::memory_order_relaxed);
+    if (bleed > 0.0f && g_freezeOffsetUnits != 0.0f) {
+        const float step = bleed * kRotUnitsPerDegree * static_cast<float>(dt);
+        if (fabsf(g_freezeOffsetUnits) <= step)
+            g_freezeOffsetUnits = 0.0f;
+        else
+            g_freezeOffsetUnits -= (g_freezeOffsetUnits > 0.0f ? step : -step);
+    }
+
+    if (fabsf(g_freezeOffsetUnits) > kFreezeMaxUnits) {
+        g_freezeOffsetUnits = g_freezeOffsetUnits > 0.0f ? kFreezeMaxUnits : -kFreezeMaxUnits;
+        static unsigned long long s_lastWarn = 0;
+        const unsigned long long now = GetTickCount64();
+        if (now - s_lastWarn > 5000) {
+            s_lastWarn = now;
+            BVR_LOG("[b1r] scripted: freeze offset hit the 60 deg bound - the view and the "
+                    "pawn are as far apart as this is allowed to take them. Something is "
+                    "turning the player continuously; check the exclusions.");
+        }
+    }
+}
+
+void update_scripted_turn(float turnStickX, double dt) {
+    if (!scripted_turn() || !scripted_window()) return;
+    if (dt <= 0.0 || fabsf(turnStickX) <= 0.02f) return;
+    g_scriptedTurnUnits += turnStickX *
+                           g_scriptedTurnRate.load(std::memory_order_relaxed) *
+                           kRotUnitsPerDegree * static_cast<float>(dt);
+}
+
+bool scripted_turn() { return g_scriptedTurnOn.load(std::memory_order_relaxed) != 0; }
+
+void set_scripted_turn(bool on) {
+    if (g_scriptedTurnOn.exchange(on ? 1 : 0, std::memory_order_relaxed) == (on ? 1 : 0))
+        return;
+    g_scriptedTurnUnits = 0.0f;
+    BVR_LOG("[b1r] scripted: turn yourself during a scripted scene = %s", on ? "ON" : "off");
+}
+
+float scripted_turn_deg_per_sec() {
+    return g_scriptedTurnRate.load(std::memory_order_relaxed);
+}
+
+void set_scripted_turn_deg_per_sec(float d) {
+    if (d < 0.0f) d = 0.0f;
+    if (d > 360.0f) d = 360.0f;
+    g_scriptedTurnRate.store(d, std::memory_order_relaxed);
+}
+
+// Pure reads. All the advancing happens in observe().
+int yaw_adjust_units() {
+    // With the module off nothing advances these, so a stale offset would stay
+    // applied forever and the switch would not actually take it out of the
+    // frame - which is the one thing it exists to do.
+    if (!enabled()) return 0;
+    int adj = -static_cast<int>(g_freezeOffsetUnits);
+    if (scripted_turn() && scripted_window()) adj += static_cast<int>(g_scriptedTurnUnits);
+    return adj;
+}
+
+float freeze_offset_deg() { return g_freezeOffsetUnits / kRotUnitsPerDegree; }
+float scripted_turn_deg() { return g_scriptedTurnUnits / kRotUnitsPerDegree; }
+
+bool hide_rig_in_scenes() { return g_hideRig.load(std::memory_order_relaxed) != 0; }
+
+void set_hide_rig_in_scenes(bool on) {
+    if (g_hideRig.exchange(on ? 1 : 0, std::memory_order_relaxed) == (on ? 1 : 0)) return;
+    BVR_LOG("[b1r] scripted: hide the rig when a scene has nothing for your hands = %s",
+            on ? "ON" : "off");
+}
+
+bool want_rig_hidden() {
+    return enabled() && hide_rig_in_scenes() && scripted_window() && !scripted_anim();
+}
+
+bool freeze_hands_in_scenes() {
+    return g_freezeHands.load(std::memory_order_relaxed) != 0;
+}
+
+void set_freeze_hands_in_scenes(bool on) {
+    if (g_freezeHands.exchange(on ? 1 : 0, std::memory_order_relaxed) == (on ? 1 : 0)) return;
+    BVR_LOG("[b1r] scripted: the engine owns your hands during a scene = %s",
+            on ? "ON" : "off");
+}
+
 int hold_ms() { return g_holdMs.load(std::memory_order_relaxed); }
 
 void set_hold_ms(int ms) {
@@ -427,8 +758,14 @@ void set_rot_follow(RotFollow m) {
             rot_follow_name(m));
 }
 
+void publish_panel_state(bool panelUp, bool suppressed) {
+    g_panelUp.store(panelUp ? 1 : 0, std::memory_order_relaxed);
+    g_panelSuppressed.store(suppressed ? 1 : 0, std::memory_order_relaxed);
+}
+
 void apply_rotation_policy(bool gameOwnsCamera, bool sceneActive, int* pitch, int* yaw,
                            int* roll) {
+    g_gameOwnsCam.store(gameOwnsCamera && sceneActive ? 1 : 0, std::memory_order_relaxed);
     const RotFollow mode = rot_follow();
     if (!gameOwnsCamera || !sceneActive || mode == RotFollow::Both || !pitch || !yaw ||
         !roll) {
@@ -464,6 +801,30 @@ void apply_rotation_policy(bool gameOwnsCamera, bool sceneActive, int* pitch, in
 void draw_debug_ui() {
     if (!ImGui::CollapsingHeader("Scripted events (M7 window)")) return;
 
+    bool on = enabled();
+    if (ImGui::Checkbox("Scripted-event module ENABLED", &on)) set_enabled(on);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Untick to take this whole module out of the frame - no engine reads,\n"
+            "no camera adjustment, nothing. It is here so a symptom can be blamed\n"
+            "on or cleared of this code in one session, instead of a bisect across\n"
+            "builds."
+            );
+    if (!on) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
+                           "     MODULE OFF - the arm hide and the hands gate are off too");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "This switch is for A/B testing a symptom against this module, and it\n"
+                "takes EVERYTHING here with it - including hiding the arms during a\n"
+                "scene and handing your hands back to the engine.\n\n"
+                "If you are testing whether this code causes something, that is what\n"
+                "you want. If you are testing the arms, tick it back on first."
+                );
+        return;
+    }
+
+
     ImGui::Text("signals   anim %d   forcedMove %d   bathysphere %d   window %d",
                 scripted_anim() ? 1 : 0, forced_move() ? 1 : 0, bathysphere() ? 1 : 0,
                 scripted_window() ? 1 : 0);
@@ -488,6 +849,11 @@ void draw_debug_ui() {
                               "before use.\nThis says the check did not pass - the log names "
                               "which half failed.\nNothing is being driven by them.");
     }
+
+    if (g_panelUp.load(std::memory_order_relaxed))
+        ImGui::Text("panel     PausePC/interface screen up, treated as a UI pause: %s",
+                    g_panelSuppressed.load(std::memory_order_relaxed) ? "NO (a scene owns it)"
+                                                                      : "yes");
 
     const unsigned long long edge = g_lastAnimEdgeMs.load(std::memory_order_relaxed);
     if (edge) {
@@ -515,15 +881,86 @@ void draw_debug_ui() {
                            "ctl+0x9E0 failed the bool shape check %u times", shapeFails);
 
     ImGui::Separator();
+    ImGui::TextDisabled("DURING A SCRIPTED SCENE");
+
+    bool freezeHands = freeze_hands_in_scenes();
+    if (ImGui::Checkbox("The engine owns your hands", &freezeHands))
+        set_freeze_hands_in_scenes(freezeHands);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "The authored animation plays instead of your controller, so you cannot\n"
+            "drag the rig around in the middle of a scene. The skeleton is handed\n"
+            "back to the engine properly, not just left alone."
+            );
+
+    bool hideRig = hide_rig_in_scenes();
+    if (ImGui::Checkbox("Hide arms until an animation plays", &hideRig))
+        set_hide_rig_in_scenes(hideRig);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "While the game is only walking you into position there is nothing for\n"
+            "your hands to do, so arms, hands and weapon are hidden. They come back\n"
+            "the moment a scripted animation starts."
+            );
+    if (hideRig && scripted_window())
+        ImGui::TextDisabled("     rig %s right now",
+                            want_rig_hidden() ? "HIDDEN (no animation playing)" : "shown");
+
+
+    ImGui::Separator();
+    ImGui::TextDisabled("COMFORT");
+
+    // ---- the gameplay rotation freeze --------------------------------------
+    bool freeze = freeze_game_rot();
+    if (ImGui::Checkbox("Ignore screenshake and auto-turn during play", &freeze))
+        set_freeze_game_rot(freeze);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "The game turns your view for you: shake from world events, weapon kick,\n"
+            "and the pan that swings you onto a group of enemies. This declines it.\n\n"
+            "Your own turning always wins - it only holds while your stick is centred.\n"
+            "Scripted scenes and bathysphere rides are excluded automatically.\n\n"
+            "TRADE: your aim still turns with the game, so the crosshair can sit off\n"
+            "centre after a big shake. That is the thing to judge in the headset."
+            );
+    if (freeze)
+        ImGui::TextDisabled("     %s - holding %.0f deg, %u event%s so far",
+                            freeze_holding() ? "ACTIVE NOW" : "watching",
+                            freeze_offset_deg(),
+                            g_freezeEvents.load(std::memory_order_relaxed),
+                            g_freezeEvents.load(std::memory_order_relaxed) == 1 ? "" : "s");
+
+    // ---- turning yourself during a scene ------------------------------------
+    bool turn = scripted_turn();
+    if (ImGui::Checkbox("Right stick can turn you during a scripted scene", &turn))
+        set_scripted_turn(turn);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "A scripted scene tells the game to ignore the controller, so a normal turn\n"
+            "does nothing during one. This turns the camera directly instead.\n\n"
+            "It is never written into the game own aim field - doing that during a\n"
+            "scene is what threw the reference mod balcony landing metres off."
+            );
+    if (turn && scripted_window())
+        ImGui::TextDisabled("     turned %.0f deg in this scene", scripted_turn_deg());
+
+    ImGui::Separator();
 
     static const char* const kFollowItems[] = {
         "Both axes (as authored)",
         "Horizontal only",
         "Neither axis",
     };
+    const bool ownsCam = g_gameOwnsCam.load(std::memory_order_relaxed) != 0;
+    ImGui::Text("the game owns the camera right now: %s", ownsCam ? "YES" : "no");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The control below only does anything while this says YES.\n\n"
+                          "While your head is driving - which is most scripted scenes now -\n"
+                          "pitch and roll come absolutely from you and the game cannot inject\n"
+                          "any vertical rotation at all, so there is nothing left to block.");
+
     int follow = static_cast<int>(rot_follow());
-    if (ImGui::Combo("When the game takes the camera, follow its rotation",
-                     &follow, kFollowItems, 3))
+    if (ImGui::Combo("While the game owns it, follow its rotation", &follow, kFollowItems, 3))
         set_rot_follow(static_cast<RotFollow>(follow));
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
@@ -564,7 +1001,7 @@ void draw_debug_ui() {
             " leave the shot or walk into geometry.");
 
     int hold = g_holdMs.load(std::memory_order_relaxed);
-    if (ImGui::SliderInt("Scene hold after both signals drop (ms)", &hold, 0, 1000))
+    if (ImGui::SliderInt("Advanced: scene hold (ms)", &hold, 0, 1000))
         set_hold_ms(hold);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("A bug fix, not a comfort setting. One scene announces itself "
