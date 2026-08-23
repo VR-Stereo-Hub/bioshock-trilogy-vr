@@ -19,6 +19,18 @@ pad is bit-identical. Everything else in s64 is still confined to
 `src/game/bioshock1r/`. Recorded in `docs/PORT-CANDIDATES.md` and the
 `docs/ARCHITECTURE.md` decision log.
 
+> **Measure s64's own core footprint against ITS BASE, not against `main`.** This
+> branch is stacked on `s63-bs1-comfort`, which is itself unmerged, so
+> `git diff main...HEAD -- src/core/` reports 8 files and ~1800 insertions -
+> almost all of it s63's. s64's own contribution is:
+>
+> ```
+> git diff --stat s63-bs1-comfort...HEAD -- src/core/
+>   xinput_bridge.cpp | 130 +++-   xinput_bridge.h | 13 +   openxr_input.cpp | 88 +--
+> ```
+>
+> Three files, and the net is the pre-compensation MOVING between two of them.
+
 ### Verified in a headset vs merely built
 
 | Verified by the user | Built, NOT verified |
@@ -37,11 +49,17 @@ scenes it has been run against.
 ### Build and deploy state
 
 - **Installed** to `C:\Program Files (x86)\Steam\...\BioShock Remastered\Build\Final`,
-  Debug, built from this branch's tip **including round 8** (arm-hide motion gate
-  + the walking-direction reorder). Clean build, no warnings.
-- **NO PROBE IS ARMED.** Nothing diagnostic ships on by default. The one new log
-  line - `scripted: motion raw ... smoothed ... bone N` - is throttled to 2 Hz and
-  only prints inside a scripted window.
+  Debug, rebuilt from the CLEAN commit after the final push. The log's first lines
+  should read **`v0.8.2-34-gd51fa4e`** with no `-dirty`; a different sha means the
+  next session is testing something other than this branch.
+- **NO PROBE IS ARMED**, but three DIAGNOSTIC LOG LINES are deliberately live
+  inside scripted windows, and they should be stripped once the bathysphere and
+  the Big Daddy scene have passed:
+  - `scripted: motion raw ... p=(...) hidden=N dirty=N` at 2 Hz
+  - `[bones] array probe: N/47 bones moved ...` at 4 Hz
+  - `[bones] motion has been STALE for N ms ...` - the watchdog. **If this line
+    appears, the gate is frozen and the HIDE mechanism is wrong, not the
+    threshold.** It exists to stop the next session tuning numbers for a round.
 - **Three bisect DLLs in `build/bisect/`** (`main-5bc5999`,
   `s63-bs1-comfort-08785f8`, `HEAD-<sha>`) with `README.txt`. Swap one file, no
   rebuild. `build/` is gitignored, so these are local only.
