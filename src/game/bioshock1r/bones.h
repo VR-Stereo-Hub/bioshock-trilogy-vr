@@ -103,7 +103,38 @@ bool actor_hidden();
 // from an array that is no longer being evaluated. That distinction has been
 // used once already and the answer was: the array STAYS LIVE behind a hidden
 // actor, so DrawScale3D is a safe hide.
-bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outPos[3]);
+// `outStale` is set when the bone still holds the collapse WE wrote, meaning the
+// engine has not re-evaluated since and there is no new pose to difference. The
+// caller must then leave the motion state untouched - it is not "no motion" and
+// it is certainly not the 5000-unit spike that differencing it produces.
+bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outPos[3],
+                 bool* outStale);
+
+// Ask the engine to re-evaluate the bone array this frame. Call once per frame
+// for as long as anything is READING the array while the drive is stood down -
+// release() sets the dirty byte once and then early-returns, so without this the
+// render pass stops rebuilding and every array-derived signal silently freezes.
+// See the banner in the .cpp for the measurement that made this necessary.
+void keep_evaluating(void* handsActor);
+
+// The evaluate-if-dirty byte as it reads now, or -1. Diagnostic.
+int skeleton_dirty();
+
+// Hide the rig's GEOMETRY while leaving the actor in the render set, so the
+// engine keeps animating it and anything read from the bone array stays honest.
+// Call every frame for as long as it should stay hidden - it is write-only and
+// has no restore path, because the engine's own evaluation puts the authored
+// pose back the moment this stops. end_collapse() re-flags the array on the way
+// out. See the banner in the .cpp for the measurement behind it.
+void collapse_rig(void* handsActor);
+void end_collapse(void* handsActor);
+
+// DIAGNOSTIC, read-only: how many of the 47 bones moved since the previous call,
+// which one moved most, and by how much. Answers the question a single-bone
+// signal cannot - "the array is frozen" and "this animation does not move the
+// bone we sample" are indistinguishable from bone 27 alone and need opposite
+// fixes. Returns false on the call that establishes the baseline.
+bool array_motion(void* handsActor, int* outMoved, float* outMax, int* outBone);
 
 // Which bone the call above is measuring, or -1 when both clusters are ours.
 // For the log line - a run of exact zeros is only interpretable if you know

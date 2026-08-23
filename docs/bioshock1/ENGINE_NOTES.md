@@ -4174,54 +4174,54 @@ hand and the collapsed one.
 2. **BRVR could not hide by bone while measuring by bone.** Its collapse cleared
    the skeleton's dirty byte, the engine stopped re-evaluating the whole array,
    the sampled bone froze, and a scene that started hidden stayed hidden forever
-   while one that started animating stayed visible - a bistable latch that
-   explained two separately reported scenes at once. **Our hide is `DrawScale3D`
-   at +0x2B0, an ACTOR field**: the bone array is untouched, the dirty byte is
-   never cleared (the drive that clears it is released), and the signal stays
-   honest whether the rig is visible or not.
+   while one that started animating stayed visible - a bistable latch.
 
-   > **TESTED, AND IT HOLDS - but the first attempt to test it was invalid, and
-   > that is the more useful half of this note.**
-   >
-   > Round 9 logged the sampled bone's position beside the hidden flag and found
-   > 212 bit-identical samples while hidden. That was read as proof that hiding
-   > freezes the array. **It proved nothing.** In that build the hide was DRIVEN
-   > by the motion reading, so `hidden=1` and `motion==0` were the same event:
-   > the correlation was guaranteed by construction. Measuring a variable you are
-   > controlling is not a measurement.
-   >
-   > Round 10 decoupled them - the hide ran off `forced_move()` while the motion
-   > sampler ran free - and the unconfounded answer is the opposite: **3 samples
-   > taken while hidden, 3 distinct bone positions.** The bone array keeps being
-   > evaluated behind an actor at `DrawScale3D` 0.0001, exactly as BRVR's
-   > `ArmHide.h` says. **DrawScale3D is a safe hide, and the motion gate is
-   > sound.**
+#### FINAL, and it inverts what this section said for three rounds
 
-#### The real constraint: the view samples far faster than the animation ticks
+**`DrawScale3D` IS NOT A SAFE HIDE HERE.** Measured 2026-08-23 with a read-only
+whole-array probe, which is the only measurement in this arc that was never
+confounded by the gate it was testing:
 
-The same run measured what actually makes this hard. Of **336 samples inside
-scripted windows, 229 read `raw` exactly `0.0000`** - CalcView fires at 118-240/s
-while the engine's animation ticks far slower, so most consecutive reads simply
-see the same pose.
-
-**That is a sampling artefact, not stillness**, and it is why the peak-hold and
-above all the HOLD carry this feature rather than the threshold.
-
-| statistic | raw | smoothed |
+| | samples | bones moving |
 |---|---|---|
-| p75 | 0.0021 | 0.0402 |
-| p90 | 0.0271 | 0.2403 |
-| max | 77.66 | 77.66 |
+| actor at `0.0001` | **293** | **0 of 47, every one** |
+| actor at full scale | 183 | 21-47 on 116 of them |
 
-So `0.02` is a sound threshold - well clear of the noise floor - but **300 ms is
-far too sharp a hold** against a signal that reads zero two thirds of the time.
-BRVR ships `ScriptedHandsHoldMs=300` and ran **4000** in a headset; the
-distribution above says its live value was the right one, and 4000 is the default
-here.
+Scaling the actor down takes it out of whatever the engine animates, so the whole
+bone array freezes - not one bone, all of them. The motion gate reads that array
+to decide when the arms come back, so hiding that way is a one-way door.
+**BRVR's `ArmHide.h` says the opposite and is correct for BRVR; it does not hold
+in this build, and three separate workarounds** (re-flagging the dirty byte every
+frame, a timed re-check, discarding readings taken across the frozen gap) **all
+failed, each in a new direction, because none addressed the freeze itself.**
 
-**What a too-short hold looks like from the outside:** the arms never appear to
-hide at all, or flicker. Gating on `forced_move()` instead has the same symptom
-for a different reason - it covered 0.4 to 1.0 s of scenes that ran 60 to 90 s.
+**What works: collapse the BONES and leave the actor at full `DrawScale3D`.** The
+actor stays in the render set, the engine keeps animating it, the array stays
+live, and the signal is honest with no re-check machinery at all. Three things
+are load-bearing and each cost a headset cycle to find:
+
+1. **Write POSITION and SCALE, not scale alone.** A zero-scale bone still renders
+   as a degenerate polygon *at its own position* - reported as "a strange looking
+   small black polygon where both the right and left arm are supposed to be".
+   Everything goes to a single point far below the actor. The session-19
+   inactive-hand hide has always written both, for exactly this reason.
+2. **Every bone, not just the clusters and sleeves.** Collapsing 44 of 47 leaves
+   the root and spine at full scale, which is another way for geometry to survive.
+3. **READING BEFORE WRITING IS NOT ENOUGH.** CalcView runs at 118-240/s against an
+   animation tick well below that, so on many calls the bone still holds *our own
+   collapse* - and differencing that produces a 5000-unit spike that reads as
+   violent motion, trips the hold and pins the arms up permanently. The sampler
+   must recognise its own write (bit-for-bit; we wrote the value) and report it as
+   **stale**: not motion, not stillness, no new information. One real sample per
+   engine tick is the correct rate anyway.
+
+The weapon-attach bone still hides by translation and never by scale - session
+16's divide-by-chain-scale is unchanged by any of this.
+
+> **The generalised rule, and it is the reusable part:** *you cannot hide a thing
+> from the renderer and keep measuring what the renderer drives.* BRVR wrote its
+> version about the dirty byte; the real constraint is the render set, and actor
+> scale is inside it while bone scale is not.
 
 **The general shape, worth more than the feature:** a predicate can be a faithful
 reading of a real engine flag and still answer the wrong question. Round 7's log

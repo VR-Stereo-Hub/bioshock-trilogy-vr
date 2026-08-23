@@ -584,6 +584,11 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
             patterns::kPlayerWeaponVtableRva);
 }
 
+// s64: the rig's geometry is collapsed by bone during an arm-hide re-check, so
+// the engine keeps animating an actor the player cannot see. Tracked here
+// because the collapse is write-only and needs an explicit edge on the way out.
+bool g_rigWasCollapsed = false;
+
 void on_calcview(const FrameContext& ctx) {
     // Overlay request, applied from THIS thread (same rule as aim.cpp: the
     // render thread must never touch engine state directly).
@@ -676,17 +681,90 @@ void on_calcview(const FrameContext& ctx) {
         // onto a stale "still". The bones history is deliberately not reset
         // across that gap, so the first in-window sample reads as a spike and
         // shows the arms for a frame - the safe direction, and self-correcting.
+        // ---- READ, THEN HIDE. THE ACTOR IS NEVER SCALED DOWN ----------------
+        //
+        // The rig is hidden by collapsing its BONES, with the actor left at full
+        // DrawScale3D. That one choice removes the whole problem the previous
+        // three attempts were built around: an actor scaled to 0.0001 leaves
+        // whatever the engine animates, so the bone array freezes (measured: 293
+        // consecutive samples, 0 of 47 bones moving) and the motion gate can hide
+        // the arms but never bring them back. At full scale the engine keeps
+        // animating it every frame, so the reading is always honest and none of
+        // the re-check machinery is needed.
+        //
+        // ORDER IS THE WHOLE THING. The sample is taken FIRST, off the pose the
+        // engine wrote early this frame; the collapse is written after. So we
+        // never measure our own write, which is the trap INVARIANTS.md warns
+        // about - avoided by sequencing rather than by choosing a different bone.
         if (rig && scripted::scripted_window()) {
+            bones::keep_evaluating(rig);
+
             float smoothed = 0.0f, raw = 0.0f, pos[3] = {};
-            const bool have = bones::hand_motion(rig, &smoothed, &raw, pos);
-            scripted::note_hand_motion(have, smoothed, raw, bones::motion_bone(), pos,
-                                       bones::actor_hidden());
+            bool stale = false;
+            const bool have = bones::hand_motion(rig, &smoothed, &raw, pos, &stale);
+            // STALE IS NOT AN ANSWER, so it must not become one. The bone still
+            // holds our own collapse, which means the engine has not refreshed it
+            // since - feeding that in either direction is wrong: as motion it is
+            // a 5000-unit spike that pins the arms up, as stillness it hides them
+            // on our own write. Leave the verdict alone and wait for a real one.
+            if (!stale)
+                scripted::note_hand_motion(have, smoothed, raw, bones::motion_bone(), pos,
+                                           g_rigWasCollapsed, bones::skeleton_dirty());
+
+            // IF EVERY READING IS STALE, THE ENGINE IS NOT REFRESHING THE ARRAY
+            // AT ALL and the whole gate is frozen at whatever it last decided -
+            // which looks exactly like the arms simply not hiding. That would
+            // mean the collapse plus set_dirty(0) suppresses the evaluation the
+            // same way the actor hide did, and the answer is a different hide
+            // rather than more tuning. Say so instead of costing another run.
+            {
+                static uint64_t lastFresh = 0;
+                static uint64_t lastMoan = 0;
+                const uint64_t nowS = GetTickCount64();
+                if (!stale) lastFresh = nowS;
+                if (lastFresh && nowS - lastFresh > 2000 && nowS - lastMoan > 5000) {
+                    lastMoan = nowS;
+                    BVR_LOG("[bones] motion has been STALE for %llu ms - every read is "
+                            "our own collapse, so the engine is not re-evaluating the "
+                            "array while it is collapsed. The gate is frozen; the hide "
+                            "mechanism is the problem, not the threshold.",
+                            nowS - lastFresh);
+                }
+            }
+
+            // The whole-array question, at 4 Hz. Deliberately AFTER the gate has
+            // been fed, so it never influences the decision it is measuring.
+            {
+                static uint64_t lastProbe = 0;
+                const uint64_t nowProbe = GetTickCount64();
+                if (nowProbe - lastProbe >= 250) {
+                    lastProbe = nowProbe;
+                    int movedBones = 0, maxBone = -1;
+                    float maxD = 0.0f;
+                    if (bones::array_motion(rig, &movedBones, &maxD, &maxBone))
+                        BVR_LOG("[bones] array probe: %d/47 bones moved, max %.4f at "
+                                "bone %d | collapsed=%d dirty=%d",
+                                movedBones, maxD, maxBone, g_rigWasCollapsed ? 1 : 0,
+                                bones::skeleton_dirty());
+                }
+            }
         } else {
             scripted::note_hand_motion(false, 0.0f, 0.0f, bones::motion_bone(), nullptr,
-                                       bones::actor_hidden());
+                                       false, -1);
         }
 
-        if (rig) bones::set_actor_hidden(rig, scripted::want_rig_hidden());
+        if (rig) {
+            const bool hide = scripted::want_rig_hidden();
+            if (hide) {
+                bones::collapse_rig(rig);
+            } else if (g_rigWasCollapsed) {
+                // No restore write: the engine re-evaluates the whole array early
+                // next frame, so simply stopping puts the authored pose back. All
+                // this does is re-flag the array so the render pass rebuilds too.
+                bones::end_collapse(rig);
+            }
+            g_rigWasCollapsed = hide;
+        }
     }
 
     if (!gameplayView) return;

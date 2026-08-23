@@ -1275,9 +1275,173 @@ void set_actor_hidden(void* handsActor, bool hidden) {
     }
 }
 
+// ---- KEEP THE ENGINE EVALUATING WHILE THE RIG IS HIDDEN --------------------
+//
+// The arm hide reads the bone array to decide when to come back, and the array
+// stopped changing the moment the rig hid: measured over two scenes, 172 and 112
+// samples inside a single hidden window, ONE distinct wrist position each. A
+// gate that can hide but never un-hide is a bistable latch, and it is why the
+// Little Sister bottle catch never brought the arms back.
+//
+// BRVR's DECISIONS.md names the mechanism without naming this consequence:
+// "the engine evaluates once early in the frame, and the dirty byte controls
+// whether the RENDER PASS rebuilds again before drawing." In BRVR six passes
+// write that byte every frame - sleeve collapse, inactive-hand hide and cluster
+// write pushing 0; the three restores pushing 1 - so it is being re-armed
+// constantly. Here, release() is idempotent by design: it sets the byte to 1
+// ONCE when the scene starts and then early-returns for the rest of the scene,
+// so after the render pass consumes that one evaluation nothing ever asks again.
+//
+// So ask again, every frame, for as long as something is reading the array.
+// Cheap (one byte), safe (1 is the engine's own default - it means "you own
+// this"), and it cannot fight the drive, which is not running during a scene.
+void keep_evaluating(void* handsActor) {
+    if (!handsActor || !locate(handsActor)) return;
+    set_dirty(1);
+}
+
+// The dirty byte as it reads right now, or -1 if it cannot be read. Logged
+// beside the motion sample so "the array is not changing" can be told apart
+// from "the render pass was never asked to rebuild it".
+int skeleton_dirty() {
+    if (!g_skelInst) return -1;
+    uint8_t v = 0;
+    if (!read_n(static_cast<uint8_t*>(g_skelInst) + patterns::kSkelInstDirtyOffset, &v, 1))
+        return -1;
+    return v;
+}
+
+// ---- DRAW NOTHING WITHOUT LEAVING THE RENDER SET ---------------------------
+//
+// MEASURED 2026-08-23, and it is the fact this whole lane turns on: with the
+// actor at DrawScale3D 0.0001 the bone array is FROZEN - 293 consecutive probe
+// samples, 0 of 47 bones moving, every one. Shown, the same probe reports 21-47
+// bones moving. Hiding the actor takes it out of whatever the engine animates.
+//
+// So during a re-check the actor goes back to full scale - the engine animates
+// it again and the motion signal becomes honest - and the GEOMETRY is hidden
+// here instead, by collapsing the bones that carry it. The player never sees the
+// arms; the engine thinks it is drawing them.
+//
+// WRITE-ONLY, AND THAT IS DELIBERATE. There is no restore path and none is
+// needed: the engine re-evaluates the whole array early in each frame, so the
+// moment this stops being called the authored pose is back by itself. That also
+// means it cannot strand the rig if a scene ends mid-collapse.
+//
+// THE WEAPON-ATTACH BONE HIDES BY TRANSLATION, NEVER SCALE. The engine's attach
+// path inverse-decomposes chain scale (session 16), so a zero there is a divide
+// by zero and the gun fills the screen. Same exception, same reason, as the
+// session-19 inactive-hand hide this mirrors.
+// Our own collapse marker. The sampler reads the array far faster than the
+// engine re-evaluates it (CalcView runs 118-240/s against an animation tick well
+// below that), so on plenty of calls the bone still holds what WE wrote. Reading
+// that back as a 5000-unit delta is not motion; it is no new information, and
+// treating it as motion pinned the arms up permanently. hand_motion() compares
+// against this and reports "stale" instead.
+const float kCollapsePos[3] = {0.0f, 0.0f, -5000.0f};
+bool g_collapseArmed = false;
+
+void collapse_rig(void* handsActor) {
+    if (!handsActor || !locate(handsActor) || !g_bones) return;
+
+    static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const float* const kFarBelow = kCollapsePos;
+    g_collapseArmed = true;
+
+    // POSITION AS WELL AS SCALE, and the first cut got that wrong. Writing scale
+    // alone leaves the collapsed geometry sitting exactly where the arm was, and
+    // a zero-scale bone still renders as a degenerate polygon there - reported
+    // from a headset as "a strange looking small black polygon where both the
+    // right and left arm are supposed to be", once every re-check. The
+    // session-19 inactive-hand hide has always written both for this reason; the
+    // only thing it does differently is pin at the driven target, which does not
+    // exist here, so everything goes far below the actor instead.
+    auto hideBone = [&](int idx) {
+        if (idx < 0 || idx >= g_boneCount) return;
+        write_n(g_bones[idx].p, kFarBelow, 12);
+        // The attach bone hides by TRANSLATION ONLY - see the banner above.
+        if (idx != patterns::kBoneWeaponAttach) write_n(g_bones[idx].s, kZero, 12);
+    };
+
+    // EVERY bone, not just the clusters and sleeves. The first cut collapsed 44
+    // of 47 and left the root and spine (0-2) at full scale, which is another way
+    // for residual geometry to survive. The engine restores the whole array next
+    // frame regardless, so there is nothing to be gained by being selective.
+    for (int i = 0; i < g_boneCount; ++i) hideBone(i);
+
+    // The render pass must not rebuild over this before drawing. The engine's
+    // own early evaluation next frame is untouched by it - that is exactly the
+    // distinction DECISIONS.md draws, and it is what makes this safe.
+    set_dirty(0);
+}
+
+void end_collapse(void* handsActor) {
+    g_collapseArmed = false;
+    if (!handsActor || !locate(handsActor)) return;
+    set_dirty(1); // let the render pass rebuild the authored pose again
+}
+
+// ---- WHOLE-ARRAY MOTION PROBE ----------------------------------------------
+//
+// The arm hide has now failed three times on the Little Sister crawl, and every
+// round of it has argued about ONE bone. This asks the question that cannot be
+// argued with: over the whole 47-bone array, how many bones moved since the last
+// sample, and which one moved most.
+//
+// It settles two things at once that the single-bone signal cannot:
+//   - "the array is frozen" vs "bone 27 specifically is not in this animation",
+//     which need completely different fixes and look identical from bone 27.
+//   - whether the hide is what freezes it, by reporting the hidden flag beside
+//     the count instead of inferring causation from a gate we control.
+//
+// Read-only. ~2.2 KB per call, called at a few Hz from the scripted path only.
+float g_probePrev[kMaxBones][3];
+bool g_probeHave = false;
+void* g_probeOwner = nullptr;
+
+bool array_motion(void* handsActor, int* outMoved, float* outMax, int* outBone) {
+    if (!handsActor || !locate(handsActor) || !g_bones) return false;
+
+    if (g_probeOwner != g_skelInst) {
+        g_probeOwner = g_skelInst;
+        g_probeHave = false;
+    }
+
+    int moved = 0;
+    float best = 0.0f;
+    int bestIdx = -1;
+    const int n = g_boneCount < kMaxBones ? g_boneCount : kMaxBones;
+
+    for (int i = 0; i < n; ++i) {
+        Qts cur{};
+        if (!read_n(&g_bones[i], &cur, sizeof cur)) continue;
+        if (g_probeHave) {
+            const float dx = cur.p[0] - g_probePrev[i][0];
+            const float dy = cur.p[1] - g_probePrev[i][1];
+            const float dz = cur.p[2] - g_probePrev[i][2];
+            const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (d > 0.0005f) ++moved;
+            if (d > best) {
+                best = d;
+                bestIdx = i;
+            }
+        }
+        memcpy(g_probePrev[i], cur.p, sizeof g_probePrev[i]);
+    }
+
+    const bool had = g_probeHave;
+    g_probeHave = true;
+    if (outMoved) *outMoved = moved;
+    if (outMax) *outMax = best;
+    if (outBone) *outBone = bestIdx;
+    return had; // first call establishes the baseline and answers nothing
+}
+
 int motion_bone() { return motion_bone_idx(); }
 
-bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outPos[3]) {
+bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outPos[3],
+                 bool* outStale) {
+    if (outStale) *outStale = false;
     const int bone = motion_bone_idx();
     if (bone < 0) return false;
 
@@ -1290,6 +1454,18 @@ bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outP
 
     Qts cur{};
     if (!read_n(&g_bones[bone], &cur, sizeof cur)) return false;
+
+    // OUR OWN WRITE IS NOT A READING. If the bone still carries the collapse we
+    // wrote, the engine has not re-evaluated since - so there is no new pose to
+    // difference, and differencing anyway produces a 5000-unit spike that reads
+    // as violent motion. Report it as stale and let the caller leave the motion
+    // state exactly as it was; the next call the engine HAS refreshed is a real
+    // sample. Bit-for-bit, because we wrote the value ourselves.
+    if (g_collapseArmed && cur.p[0] == kCollapsePos[0] && cur.p[1] == kCollapsePos[1] &&
+        cur.p[2] == kCollapsePos[2]) {
+        if (outStale) *outStale = true;
+        return false;
+    }
 
     // A hand switch changes WHICH bone this is, and the distance between two
     // different bones is not motion. Drop the history instead of measuring

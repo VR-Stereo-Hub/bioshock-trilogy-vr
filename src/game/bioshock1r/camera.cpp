@@ -904,6 +904,7 @@ void save_vr_preset() {
     fprintf(f, "scriptedFreezeBleed=%.1f\n", scripted::freeze_bleed_deg_per_sec());
     fprintf(f, "scriptedTurnOn=%d\n", scripted::scripted_turn() ? 1 : 0);
     fprintf(f, "scriptedTurnRate=%.1f\n", scripted::scripted_turn_deg_per_sec());
+    fprintf(f, "scriptedRecentre=%d\n", scripted::scripted_recentre_mode());
     fprintf(f, "scriptedFreezeHands=%d\n", scripted::freeze_hands_in_scenes() ? 1 : 0);
     fprintf(f, "scriptedHideRig=%d\n", scripted::hide_rig_in_scenes() ? 1 : 0);
     fprintf(f, "scriptedArmMotion=%.4f\n", scripted::arm_motion_threshold());
@@ -1064,6 +1065,8 @@ void load_vr_preset_values() {
             scripted::set_scripted_turn(v != 0.0f);
         else if (strcmp(key, "scriptedTurnRate") == 0)
             scripted::set_scripted_turn_deg_per_sec(v);
+        else if (strcmp(key, "scriptedRecentre") == 0)
+            scripted::set_scripted_recentre_mode(static_cast<int>(v));
         else if (strcmp(key, "scriptedFreezeHands") == 0)
             scripted::set_freeze_hands_in_scenes(v != 0.0f);
         else if (strcmp(key, "scriptedHideRig") == 0)

@@ -2280,3 +2280,43 @@ same dataset and was missed - the frozen value also appeared with `hidden=0`.
 The useful finding was underneath it all along: 229 of 336 samples read raw
 exactly 0.0000, because CalcView fires far above the animation tick rate. The
 hold, not the threshold, is what this feature runs on.
+
+### 2026-08-23 (session 64) - the arm hide, and four rounds of fixing the wrong thing
+
+The arm hide took four headset cycles, and only the last one changed the thing
+that was actually wrong. The rest are worth recording because the failure was
+methodological, not technical.
+
+**What was wrong:** hiding the rig by scaling the actor to `DrawScale3D 0.0001`
+takes it out of whatever the engine animates, so the entire bone array freezes -
+and the gate that decides when the arms come back reads that array. A one-way
+door. **What was built instead:** re-flagging the dirty byte every frame, then a
+timed re-check that showed the rig briefly, then logic to discard readings taken
+across the frozen gap. Each addressed a consequence; none addressed the freeze.
+
+**The fix was to delete, not to add.** Hide by collapsing the BONES with the
+actor left at full scale: it stays in the render set, the engine keeps animating
+it, the array stays live. That removed the re-check timer, its two sliders, two
+preset keys, a latch state machine that `want_rig_hidden()` was carrying (and
+which the F10 render thread was calling into - a standing race), and the
+trusted-sample logic.
+
+**Three method failures, each of which cost a cycle:**
+
+- **A correlation you cause is not a measurement.** The first evidence for the
+  freeze was 212 bit-identical bone positions while hidden - from a build where
+  the hide was *computed from* the motion reading. The data could not have come
+  out any other way. Before reading a correlation as causation, check whether
+  your own code closes the loop.
+- **Then it was retracted on a grouping error.** "3 samples, 3 distinct values"
+  looked like the array staying live; those three came from three *different*
+  hidden windows, and a freeze predicts exactly that, since each window freezes
+  at a different pose. The question was always *within* one window.
+- **Read-before-write is not sufficient when you write faster than the engine
+  refreshes.** CalcView runs 118-240/s; the animation ticks well below that. The
+  sampler has to recognise its own write and report it as stale.
+
+**And one process note.** The tester said twice that the answer was already in
+the reference mod's docs, and it was - `INVARIANTS.md` offers "hide through
+`DrawScale3D`, **or measure something the write does not touch**". Three rounds
+went into the first clause. The second clause was the one that applied.

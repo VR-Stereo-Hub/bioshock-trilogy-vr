@@ -252,6 +252,45 @@ std::atomic<int> g_panelSuppressed{0};
 // far too sharp a hold against a signal that reads zero two thirds of the time.
 // **BRVR ships 300 and ran 4000 in a headset**; the distribution above says its
 // live value was the right one, so that is the default here.
+// ---- the scene turns you, so hand your own turning back ---------------------
+//
+// Ported from BRVR's ScriptedRecentre. Without it the scene's authored rotation
+// lands ON TOP of however far you turned yourself, so a scene that means to
+// point you at a doorway points you at the doorway PLUS your own offset - and
+// the more you looked around, the more wrong the framing.
+//
+// With it, your own turning is handed back as the scene turns: the authored
+// direction wins and you still had free look on the way there.
+//
+//   0  off  - scene rotation lands on top of your own turning
+//   1  wash - spend |d| of your offset for every d the scene turns (BRVR's ship)
+//   2  drop - the whole offset goes the moment the scene first turns you
+//
+// Mode 1 is the default because it is proportional: a scene that turns you a
+// long way takes all of it back, and one that nudges you takes a nudge.
+std::atomic<int> g_scriptedRecentre{1};
+std::atomic<unsigned> g_recentreEvents{0};
+float g_recentreCancelled = 0.0f; // for the log line, game thread
+
+// ---- HOW THE RIG IS HIDDEN, AND WHY IT IS NOT THE ACTOR SCALE ---------------
+//
+// By collapsing the BONES, with the actor left at full DrawScale3D.
+//
+// Scaling the actor to 0.0001 takes it out of whatever the engine animates, so
+// the bone array FREEZES - measured 2026-08-23 as 293 consecutive probe samples
+// with 0 of 47 bones moving, against 21-47 moving whenever the rig was shown.
+// The gate reads that array to decide when the arms come back, so hiding that
+// way is a one-way door: the arms can go and can never return. Three separate
+// attempts to work around it (re-flagging the dirty byte every frame, a timed
+// re-check, then discarding readings taken across the frozen gap) all failed,
+// each in a new direction, because none of them addressed the freeze itself.
+//
+// Collapsing bones instead keeps the actor in the render set, so the engine
+// animates it every frame and the reading is always honest. The caller takes
+// its sample BEFORE writing the collapse, so it never measures our own write -
+// which is INVARIANTS.md's 'you cannot hide by bone and measure by bone',
+// answered by sequencing rather than by choosing a different bone.
+
 std::atomic<float> g_armMotionThresh{0.02f};
 std::atomic<int> g_armHoldMs{4000};
 // Latched by note_hand_motion() on the game thread, read everywhere else.
@@ -532,7 +571,9 @@ void reset() {
 }
 
 // Defined below with their banners; declared here because observe() drives them.
-void update_freeze(int gameYawUnits, float turnStickX, double dt);
+void update_freeze(int gameDelta, float turnStickX, double dt);
+int game_yaw_delta(int gameYawUnits, double dt);
+void update_scripted_recentre(int gameDelta);
 void update_scripted_turn(float turnStickX, double dt);
 
 bool enabled() { return g_enabled.load(std::memory_order_relaxed) != 0; }
@@ -565,8 +606,12 @@ void observe(void* playerController, int gameYawUnits, float turnStickX) {
     // camera - i.e. during exactly the scenes they exist to handle. That is why
     // the right stick did nothing during a scripted scene.
     const double dt = tick_seconds();
-    update_freeze(gameYawUnits, turnStickX, dt);
+    const int gameDelta = game_yaw_delta(gameYawUnits, dt);
+    update_freeze(gameDelta, turnStickX, dt);
     update_scripted_turn(turnStickX, dt);
+    // AFTER the turn accumulator advances, so a frame in which you turn and the
+    // scene turns nets out the same way round every time.
+    update_scripted_recentre(gameDelta);
 
     void* hands = hands::hands_actor();
     if (!hands) {
@@ -639,21 +684,20 @@ void set_freeze_bleed_deg_per_sec(float d) {
 // Bookkeeping only. Called from observe(), which runs on EVERY CalcView -
 // unlike the first version, which lived inside the head-drive block and so
 // stopped running during exactly the scenes it needed to track across.
-void update_freeze(int gameYawUnits, float turnStickX, double dt) {
-    if (!freeze_game_rot()) {
-        g_freezeHave = false;
-        g_freezeOffsetUnits = 0.0f;
-        g_freezeHolding.store(0, std::memory_order_relaxed);
-        return;
-    }
-
+// HOW FAR THE GAME MOVED ITS OWN YAW THIS FRAME, with our body transfer taken
+// back out. Computed UNCONDITIONALLY and shared, because two consumers need it
+// and neither may be able to blind the other by being switched off - which is
+// what would happen if this stayed inside the freeze, since the freeze ships
+// OFF and the scripted recentre ships ON.
+int game_yaw_delta(int gameYawUnits, double dt) {
     // dt == 0 means a real gap (QPC clamps it there), so re-arm rather than
     // difference across it. See the tick_seconds banner for why this used to
     // fire on nearly every frame and silently disable the whole feature.
     if (!g_freezeHave || dt <= 0.0) {
         g_freezeHave = true;
         g_freezePrevYaw = gameYawUnits;
-        return;
+        g_bodyYawPending = 0; // never carried across a gap
+        return 0;
     }
     int delta = wrap_rot(gameYawUnits - g_freezePrevYaw);
     g_freezePrevYaw = gameYawUnits;
@@ -667,6 +711,41 @@ void update_freeze(int gameYawUnits, float turnStickX, double dt) {
         delta = wrap_rot(delta - g_bodyYawPending);
         g_bodyYawPending = 0;
     }
+    return delta;
+}
+
+// THE SCENE TURNS YOU, SO HAND YOUR OWN TURNING BACK. See the banner on
+// g_scriptedRecentre. Only ever REDUCES the player's accumulator toward zero, so
+// it can neither add rotation nor overshoot past centre.
+void update_scripted_recentre(int gameDelta) {
+    const int mode = g_scriptedRecentre.load(std::memory_order_relaxed);
+    if (!mode || gameDelta == 0) return;
+    if (!scripted_turn() || !scripted_window()) return;
+    if (g_scriptedTurnUnits == 0.0f) return;
+
+    const float have = fabsf(g_scriptedTurnUnits);
+    const float budget = (mode >= 2) ? have : fabsf(static_cast<float>(gameDelta));
+    const float take = budget < have ? budget : have;
+    const float cancel = g_scriptedTurnUnits < 0.0f ? -take : take;
+
+    g_scriptedTurnUnits -= cancel;
+    g_recentreCancelled += take;
+
+    if (g_scriptedTurnUnits == 0.0f && g_recentreCancelled > 0.0f) {
+        BVR_LOG("[b1r] scripted: recentred - %.1f deg of your own turning handed back "
+                "to the scene (mode %d)",
+                g_recentreCancelled / kRotUnitsPerDegree, mode);
+        g_recentreCancelled = 0.0f;
+        g_recentreEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void update_freeze(int delta, float turnStickX, double dt) {
+    if (!freeze_game_rot()) {
+        g_freezeOffsetUnits = 0.0f;
+        g_freezeHolding.store(0, std::memory_order_relaxed);
+        return;
+    }
 
     // The exclusions are the whole reason the signals had to land first.
     //   - a scripted scene turns you ON PURPOSE and must not be resisted
@@ -676,6 +755,7 @@ void update_freeze(int gameYawUnits, float turnStickX, double dt) {
     //     was missing, and could not fix it by level name because the mod does
     //     not know what map it is on.
     //   - your own turn always wins
+    if (dt <= 0.0) return; // the shared delta already re-armed on the gap
     const bool excluded = scripted_window() || bathysphere() || fabsf(turnStickX) > 0.02f;
 
     if (!excluded && delta != 0) {
@@ -777,6 +857,18 @@ void set_arm_hold_ms(int ms) {
     g_armHoldMs.store(ms, std::memory_order_relaxed);
 }
 
+int scripted_recentre_mode() { return g_scriptedRecentre.load(std::memory_order_relaxed); }
+
+void set_scripted_recentre_mode(int m) {
+    if (m < 0) m = 0;
+    if (m > 2) m = 2;
+    if (g_scriptedRecentre.exchange(m, std::memory_order_relaxed) == m) return;
+    BVR_LOG("[b1r] scripted: hand your turning back when the scene turns = %s",
+            m == 0   ? "off (scene rotation lands on top of your own turning)"
+            : m == 1 ? "wash out as the scene turns"
+                     : "drop it all the moment the scene turns");
+}
+
 bool hands_moving() { return g_armMoving.load(std::memory_order_relaxed) != 0; }
 
 void arm_motion_readout(float* raw, float* smoothed, int* bone, bool* blind) {
@@ -787,7 +879,7 @@ void arm_motion_readout(float* raw, float* smoothed, int* bone, bool* blind) {
 }
 
 void note_hand_motion(bool have, float smoothed, float raw, int bone,
-                      const float pos[3], bool rigHidden) {
+                      const float pos[3], bool rigHidden, int skelDirty) {
     g_armBone.store(bone, std::memory_order_relaxed);
     g_armBlind.store(have ? 0 : 1, std::memory_order_relaxed);
 
@@ -842,25 +934,27 @@ void note_hand_motion(bool have, float smoothed, float raw, int bone,
         // while hidden=1 and moves while hidden=0, hiding by DrawScale3D freezes
         // the signal - the one assumption s64 carried over from BRVR untested.
         BVR_LOG("[b1r] scripted: motion raw %.4f smoothed %.4f thresh %.4f bone %d "
-                "p=(%.3f %.3f %.3f) hidden=%d -> %s",
+                "p=(%.3f %.3f %.3f) hidden=%d dirty=%d -> %s",
                 raw, smoothed, g_armMotionThresh.load(std::memory_order_relaxed), bone,
                 pos ? pos[0] : 0.0f, pos ? pos[1] : 0.0f, pos ? pos[2] : 0.0f,
-                rigHidden ? 1 : 0,
+                rigHidden ? 1 : 0, skelDirty,
                 moving ? "MOVING" : (held ? "still (held)" : "still"));
     }
 }
 
 bool want_rig_hidden() {
-    // MOTION, restored round 11 - see the banner above g_armMotionThresh for why
-    // round 10's "hiding freezes the array" was a confounded measurement.
+    // MOTION. scripted_anim() is deliberately not here: round 7 measured it
+    // already true on the first frame of the window, so it cannot separate the
+    // still parts of a scene from the animated ones. forced_move() is not here
+    // either - it covered 0.4 to 1.0 s of scenes that ran 60 to 90 s.
     //
-    // scripted_anim() is deliberately not here: round 7 measured it already true
-    // on the first frame of the window, so it cannot separate the still parts of
-    // a scene from the animated ones. forced_move() is not here either - it
-    // covered 0.4 to 1.0 s of scenes that ran 60 to 90 s, which is why the hide
-    // read as "not triggering at all".
+    // A PURE PREDICATE again. It carried a re-check state machine while the hide
+    // was by actor scale; the F10 panel calls this from the render thread, so
+    // that had to be latched on the game thread and was a standing hazard. The
+    // bone collapse removed the need for it entirely.
     return enabled() && hide_rig_in_scenes() && scripted_window() && !hands_moving();
 }
+
 
 bool freeze_hands_in_scenes() {
     return g_freezeHands.load(std::memory_order_relaxed) != 0;
@@ -1059,6 +1153,25 @@ void draw_debug_ui() {
                             "updates faster than the animation)", raw);
     }
 
+
+    {
+        int rc = scripted_recentre_mode();
+        const char* kNames[] = {"off - it adds to your turning", "wash it out as the "
+                                "scene turns", "drop it the moment the scene turns"};
+        ImGui::TextDisabled("When the scene turns you to face something:");
+        if (ImGui::Combo("##scriptedrecentre", &rc, kNames, 3))
+            set_scripted_recentre_mode(rc);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "A scene that means to point you at a doorway otherwise points you''' + N + '''"
+                "at the doorway PLUS however far you turned yourself - so the more''' + N + '''"
+                "you looked around, the more wrong the framing.''' + N + N + '''"
+                "Wash out is proportional: a scene that turns you a long way takes''' + N + '''"
+                "all of your offset back, one that nudges you takes a nudge. Your''' + N + '''"
+                "free look on the way there is untouched either way.");
+        ImGui::TextDisabled("     you have turned %+.0f deg of your own so far",
+                            scripted_turn_deg());
+    }
 
     ImGui::Separator();
     ImGui::TextDisabled("COMFORT");

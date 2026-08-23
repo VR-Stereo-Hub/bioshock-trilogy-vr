@@ -25,13 +25,14 @@ pad is bit-identical. Everything else in s64 is still confined to
 |---|---|
 | All three offsets: anchor 4/4 with correct meanings, bathysphere oracle held on both edges, window bridged a real 16 ms gap | The arm hide - the `DrawScale3D` mechanism has STILL never been exercised. Round 8 replaced the predicate feeding it, so this is now one gate away rather than two |
 | Right-stick turn during a scene; free head look during scenes | The rig-motion gate itself: threshold 0.02 and hold 300 ms are BRVR's numbers, to be calibrated from this build's own logged values |
-| No vertical injection in cutscenes (rotation follow = horizontal only) | The scripted-event landing with the head free - round 10 gates the field write; this is the pass/fail |
+| No vertical injection in cutscenes (rotation follow = horizontal only) | The bathysphere and the Big Daddy scripted event - no part of s64 has been run against either |
 | Screenshake/auto-turn suppression - now the DEFAULT | Whether the blur is s63 or older - three bisect builds are ready |
 | The hands gate releasing the skeleton (log-confirmed 02:37:24.155) | The `presetVersion` migration for the cine-drive default |
 
-**Still open:** whether gating the field write fixes the scripted landing (one
-run, look around freely through a scene). **The blur is GONE**, and both round-9
-questions are now ANSWERED by measurement - see round 10.
+**Still open:** the bathysphere and the Big Daddy scripted event, neither of
+which has been through any of this - see NEXT SESSION below. **The blur is GONE**,
+the scripted landing is fixed and confirmed, and the arm hide works on both
+scenes it has been run against.
 
 ### Build and deploy state
 
@@ -203,6 +204,71 @@ scripted-scene turn ON, engine-owns-hands ON, hide-rig ON, and BS1 opting into
 `CineDrive::Off` **from the adapter** so BS2 and Infinite keep the authored
 behaviour they have never been tested away from. The rotation freeze stays OFF -
 it is the one still unjudged.
+
+### Rounds 11-14 (2026-08-23) - the arm hide lands, and the rotation recentre
+
+**BOTH SHIPPED AND HEADSET-CONFIRMED.**
+
+**The scene turns you to face things again.** BRVR's `ScriptedRecentre`, ported
+with its three modes (off / wash out / drop on first turn), default **wash out**
+to match BRVR's shipped `ScriptedRecentre=1`. Without it a scene's authored
+rotation lands ON TOP of however far you turned yourself, so it points you at the
+doorway plus your own offset. Proportional, and it only ever reduces the
+accumulator toward zero. F10 combo, preset key `scriptedRecentre`.
+
+> It needed one structural change: the game's own yaw delta was computed INSIDE
+> the rotation freeze, which ships **off**, while the recentre ships **on** - an
+> unrelated switch would have blinded it. The delta is now computed once in
+> `observe()` and shared.
+
+**The arm hide works, and the fix was to delete three rounds of workaround.**
+`DrawScale3D 0.0001` freezes the WHOLE bone array (measured with a read-only
+whole-array probe: 293 samples, 0 of 47 bones moving; 21-47 moving whenever the
+actor was at full scale). The gate reads that array, so hiding that way is a
+one-way door - which is why the Little Sister bottle catch never brought the arms
+back.
+
+**Now hidden by collapsing the BONES with the actor at full scale.** It stays in
+the render set, the engine keeps animating it, the array stays live. Full
+write-up in ENGINE_NOTES; the three load-bearing details are position-AND-scale
+(scale alone leaves a degenerate polygon at the joint), every bone rather than 44
+of 47, and **stale detection** - CalcView runs far above the animation tick, so
+the sampler reads back its own collapse and must report that as "no new
+information" rather than as a 5000-unit spike.
+
+**Deleted with it:** the re-check timer and its two sliders, two preset keys, a
+latch state machine `want_rig_hidden()` was carrying (which the F10 render thread
+also called into - a standing race), and the trusted-sample logic.
+
+**Diagnostics left in deliberately**, because two scenes are still unverified:
+the 2 Hz motion line (`p=` / `dirty=`), the 4 Hz whole-array probe, and a
+stale-watchdog that says outright if the gate has frozen. Strip them once the
+scenes below pass.
+
+### NEXT SESSION - the two scenes that have not been through this
+
+The arm hide, the field-write gate and the rotation recentre are confirmed on the
+**balcony fall** and the **Little Sister crawl** only. Both of these need a run:
+
+1. **The bathysphere.** It is the one scene the scripted signals were NEVER
+   measured on - BRVR's own warning, carried in `scripted.h`: if the ride does not
+   set `hands+0x594` bit 2, the window never opens there and graveyard entry 12
+   comes straight back (the opening bathysphere walked into the back wall). The
+   body-transfer gate covers `bathysphere()` separately, so watch the LANDING and
+   whether looking around during the ride affects it.
+2. **The Big Daddy scripted event.** Never tested at all.
+
+What to read afterwards:
+
+```
+grep -E "scripted: motion|array probe|STALE for|rig hidden|body transfer" %LOCALAPPDATA%\BioshockVR\bioshockvr.log
+```
+
+- A `motion has been STALE for N ms` line means the gate is frozen and the HIDE
+  mechanism is wrong again - not the threshold. That line exists to stop the next
+  session tuning numbers for a round.
+- `array probe: 0/47 ... collapsed=1` would mean the bone collapse suppresses
+  evaluation the same way the actor scale did, which would be a new finding.
 
 ### Round 10 (2026-08-23) - it was the FIELD WRITE, and the arm hide had to change signal
 

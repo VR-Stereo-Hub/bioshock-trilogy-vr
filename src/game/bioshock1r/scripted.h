@@ -160,6 +160,24 @@ void set_scripted_turn(bool on);
 float scripted_turn_deg_per_sec();
 void set_scripted_turn_deg_per_sec(float d);
 
+// ---- the scene turns you, so hand your own turning back --------------------
+//
+// Ported from BRVR's ScriptedRecentre. Without it a scene's authored rotation
+// lands ON TOP of however far you turned yourself, so a scene that means to
+// point you at a doorway points you at the doorway plus your own offset - and
+// the more you looked around during it, the more wrong the framing.
+//
+//   0  off  - scene rotation lands on top of your own turning
+//   1  wash - spend |d| of your offset for every d the scene turns (the default,
+//             and BRVR's shipped value; proportional, so a big authored turn
+//             takes all of it back and a nudge takes a nudge)
+//   2  drop - the whole offset goes the moment the scene first turns you
+//
+// Only ever REDUCES the accumulator toward zero, so it can neither add rotation
+// nor overshoot past centre. Preset key `scriptedRecentre`.
+int scripted_recentre_mode();
+void set_scripted_recentre_mode(int m);
+
 // The total yaw the camera should be adjusted by this frame: the freeze offset
 // it is declining, plus the player's own turn during a scripted scene.
 //
@@ -202,7 +220,7 @@ bool want_rig_hidden();
 // hide was DRIVEN by the motion reading, which guaranteed the correlation it
 // then read as causation.
 void note_hand_motion(bool have, float smoothed, float raw, int bone,
-                      const float pos[3], bool rigHidden);
+                      const float pos[3], bool rigHidden, int skelDirty);
 
 // The latched verdict: moving, or moved within arm_hold_ms().
 bool hands_moving();
