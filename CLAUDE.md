@@ -83,6 +83,10 @@ feature branch --PR--> staging --PR (at release time)--> main --> tagged release
   and still signalling that the subject is taken. Open it early as a draft by default.
 - **`main` changes only through a `staging` -> `main` PR**, and the release is cut from
   `main` after that merge.
+- **Always PR a feature branch into `staging`, never into another feature branch.**
+  VOID, 2026-08-23: stacked feature-to-feature PRs "can get quite dirty real quick".
+  If your work depends on another branch that has not merged yet, wait for it to land
+  in `staging` and rebase onto it, rather than opening a PR that targets it.
 
 **NEVER MERGE without the user confirming it first.** Agents may commit and open pull
 requests on their own judgement - that is the point of the flow above, and an open or
