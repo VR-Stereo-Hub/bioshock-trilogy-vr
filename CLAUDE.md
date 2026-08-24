@@ -129,7 +129,14 @@ wait; finishing a feature is not permission to merge it.
 .\tools\xrsim-shot.ps1 -Out shot             # per-eye compositor capture + JSON to assert on
 ```
 
-- BioShock 1: `K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final\BioshockHD.exe`
+**THE EXE PATHS BELOW ARE ONE MACHINE'S LAYOUT, NOT THE TRUTH.** Since 65f02fa the
+scripts resolve each game per-machine from the Steam library folders, so `-Game bs1`
+finds it wherever it is. Do not hardcode these, and do not trust them when a script
+disagrees - on the machine this was last verified on, BS1 lives under
+`C:\Program Files (x86)\Steam\`, not `K:`. The **appids** and the **data dirs** are
+the parts that are actually fixed.
+
+- BioShock 1: `<steam library>\steamapps\common\BioShock Remastered\Build\Final\BioshockHD.exe`
   (32-bit, D3D11, no DRM; Steam appid 409710). Launch through Steam; add `-allowconsole` to
   launch options for the Tab console. Data dir: `%LOCALAPPDATA%\BioshockVR\`.
 - BioShock 2: `D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final\Bioshock2HD.exe`

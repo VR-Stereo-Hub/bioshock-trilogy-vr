@@ -2,6 +2,105 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-23/24 - VOID's PR review, and the first simulator-verified merge gate
+
+**VOID reviewed PR 50 and PR 51.** Nine of his ten points were confirmed against the
+code, one was already fixed, and one was **worse than he measured**. Everything below
+is on `s63-bs1-comfort` (d0e1280) and `s64-bs1-scripted-events` (05fbb5e, 5ec730d,
+e15f051). Both PRs are `MERGEABLE / CLEAN`. **Neither has been merged - that is the
+one step that still needs William.**
+
+### The finding that mattered: compose_over() was NOT bit-identical
+
+s64 moved the deadzone pre-compensation into `compose_over()` and claimed the composed
+pad was bit-identical with `stick_precomp()` off. The precomp CALL was inert. The
+`1/peak` cap wrapped around it was not, and **BS2 and Infinite both reach it** -
+`bioshock2r/camera.cpp:2146` and `bioshockinf/camera.cpp:865` both publish a move-yaw
+offset, so the rotation lane runs on every walking frame.
+
+The cap scales BOTH axes where `main` clamped each independently, and `merge()` takes
+the larger-magnitude axis from the **physical** pad, which is square-ranged. A real
+stick at full diagonal arrives as `(32767, 32767)`, peak 1.414, and the cap pulls both
+to **23170** - ~9600 units an axis, reading as diagonal movement ~29% slow WHILE
+TURNING (the only time the offset is non-zero). VOID estimated "hundreds".
+
+`compose_over()` now branches: `stick_precomp()` off takes `main`'s integer rotate
+**character for character**, verified by diffing against `git show main:` rather than
+by reading it for intent. That is the lesson - the original claim was asserted and
+never checked, which is exactly how it survived review once already.
+
+### Five s63 control changes are now BS1 opt-in
+
+`kPadMapBioshock1` **serves BioShock 1 AND BioShock 2** - `PadProfile` is
+`{ Bioshock1 = 0, Infinite = 1 }` and no BS2 adapter calls `set_pad_profile`. That is
+what turned "one game gains a button" into four unopted core changes.
+
+| Gate | Core default (== `main`) |
+|---|---|
+| `flick_fourth_direction()` | off - `main` had `flickRight = 0` and no `flickHoldBits` field at all |
+| `menu_modifier_context_help()` | off - `main` reached BACK only via long-press |
+| `chord_tap_opens_panel()` | off - `main` recentred on the chord's rising edge, instantly |
+| `flick_press_threshold()` | `0.65f` |
+| `bvr::overlay::pad_drive()` | off - `InjectControllerPointer` did not exist in `main` |
+
+BS1 turns all five on in **one commented block** in its adapter, written to be pasted
+verbatim into the BS2/Infinite adapters; the core defaults move and the block goes away
+once all three are in. Five rows in `docs/PORT-CANDIDATES.md` say what to check first.
+The DOMINANT-AXIS test that shipped with the threshold change stays unconditional - it
+is a correctness fix (the old first-match chain resolved a deliberate "up" as "left")
+and nothing about it is game-specific. Only the number moved.
+
+### VERIFIED IN THE SIMULATOR, 2026-08-24 - and this is the pattern to reuse
+
+First end-to-end use of `bvr_xrsim32` as a **merge gate**. William had no access to the
+machine, so a headset pass was impossible; the sim answered everything except comfort.
+**Total cost: one launch and zero PNGs viewed.** Every assertion came from the mod log,
+`state.json`, and the capture **JSON sidecar** - `docs/VERIFICATION.md` 2.6 is right
+that "the JSON is the point", and it means a full verification run is nearly free.
+
+| Claim | Evidence |
+|---|---|
+| Sim healthy before blaming the mod | `xrsim-selftest`: 60 frames, FOCUSED, 0 errors |
+| Right runtime | `xrsim-launch` asserted `bvr-xrsim`; session FOCUSED |
+| Mod arms, reaches gameplay | `adapter ready, capabilities 0x3`; `view state: GAMEPLAY` |
+| **s64's offsets survived the move to `patterns.h`** | `scripted: anchor ok - 4/4 name slots resolve (+0x498 'HandsDown', +0x4B8 'Eve_ArmJab', +0x4D8 'GathererSave_Heal', +0x558 'None')` - real engine names, so the walk still lands |
+| **Three flick gates, one gesture** | thumbrest R + left stick `0.55` -> `Maps.swf` opened. Proves the fourth direction IS emitted, IS held long enough for `HintHoldTime = 0.5 s`, and that `0.55` cleared the threshold - impossible at `main`'s `0.65` |
+| Panel path is the DESIGNED one, not the wall bug | quad ON with `uiPaused=1` (the wall bug was `uiPaused=0`), and `Escape` released it back to `layers 3 (proj views 2)` - no one-way door |
+| **Chord: both branches** | ~1 s hold -> `recenter chord ... queued`. 220 ms tap -> `overlay: window pos ...` and NO recenter. Tap opens the panel, hold recentres, exactly as designed |
+| Stereo is real | capture JSON: `projViews 2`, `eyeSeparationM 0.063` == IPD, `claimRatioH 1.018` (within 0.05 of 1.0), `nonBlackPctL 73.4` |
+| Layer census | projection(`local`) + quad(`local`, world-locked) + quad(`view`, head-locked) |
+| Protocol clean | `errors 0`, `framesDiscarded 0`, `endsOutOfOrder 0` for the whole run |
+
+**Two log lines look like errors and are not**, so nobody re-investigates them: the
+`crash: our exception filter had been displaced by CSERHelper.dll - re-armed` line is
+the mod DEFENDING itself against Steam's crash reporter, and `engine-state re-assert
+queued` only matches a grep for "assert".
+
+### Still NOT verified, and the sim cannot answer it
+
+- **Comfort, judder, world scale, motion-to-photon.** `docs/VERIFICATION.md` 2.1 is
+  explicit: no lens distortion, no timewarp, no real display cadence, and none of
+  VDXR's Wi-Fi encode path. A pacing bug that reproduces in the sim is real; one that
+  does not may still exist on VDXR.
+- **BS2 and Infinite.** Nothing was run against either. That is *why* the five gates
+  default off rather than being called tested.
+- The `presetVersion` boot migration with `autoVr=0` - the path that was broken. The
+  fix is one call at the second load site; the failing configuration was not staged.
+
+### Next steps
+
+- **Merge #50, then #51** (it auto-retargets to `staging` when #50 lands). Both are
+  green and simulator-verified. **A headset pass on BS1 is still worth doing first** -
+  the values are unchanged but BS1 now reaches all five gates through new code.
+- Then rebase `fix/bs1-bathysphere-cine-quad` onto `staging` and PR it: the bathysphere
+  world-FOV fix and the near-wall quad fix, both already headset-confirmed.
+- `feat/anchored-screen-quad` is **stale and misleading** - its `f42e5fa` is the same
+  screen-placement fix that s63's `3aa7897` already carries, and reading it is what
+  produced the one wrong point in the review. Delete it.
+- The `stale=1` black square on bathysphere descents - render-side, its own session.
+- Turn jitter: open question recorded in ENGINE_NOTES - is it the VIEW rotating or the
+  DIRECTION OF TRAVEL stepping? Everything measured so far is the view.
+
 ## Session 2026-08-22/23 - s64: scripted events (BioVRDev)
 
 **Branch `s64-bs1-scripted-events`, cut from `s63-bs1-comfort`** (which is 30 commits
