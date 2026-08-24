@@ -210,6 +210,51 @@ void set_pad_passthrough_default(bool on);
 bool pad_brvr_defaults();
 void set_pad_brvr_defaults(bool on);
 
+// ---- s63 CONTROL CHANGES THAT ARE STILL BS1-ONLY ---------------------------
+//
+// Added in the PR-50 review pass (VOID, 2026-08-23). Each of these shipped as
+// an unconditional change to a CORE path, which means BioShock 1, BioShock 2
+// and Infinite at once - and only BioShock 1 has ever been in a headset with
+// them. `kPadMapBioshock1` in particular serves BS1 AND BS2 (PadProfile has no
+// Bioshock2 entry and no BS2 adapter selects one), so a table edit there lands
+// on a game nobody tested it against.
+//
+// Every one defaults to the PRE-s63 value, so with nothing opted in the
+// composed pad is what main produced. BioShock 1 turns them on in one block in
+// bioshock1r_adapter.cpp - THE SAME BLOCK BS2 AND INFINITE COPY VERBATIM once
+// somebody tests them, at which point these defaults can move and this section
+// can go away.
+
+// The FOURTH flick direction. Right-flick emits map.flickRight, and whatever
+// map.flickHoldBits names is HELD rather than pulsed - which is what makes the
+// BS1 map screen reachable (ShockPlayerController gates it behind
+// HintButtonHeld, HintHoldTime = 0.5 s). Before s63 the BS1/BS2 table had
+// flickRight = 0 and there was no hold concept at all, so with this false the
+// right flick emits nothing and every other direction pulses, as it did.
+bool flick_fourth_direction();
+void set_flick_fourth_direction(bool on);
+
+// MODIFIER + menu -> BACK (ShowContextHelp), held for as long as the gesture.
+// With this false the menu button keeps main's tap/hold machine: short press
+// pulses START, long press holds BACK, and the modifier means nothing to it.
+bool menu_modifier_context_help();
+void set_menu_modifier_context_help(bool on);
+
+// The both-sticks chord's TAP. Hold has always been recenter and stays that
+// way for everyone; the tap toggling the F10 panel is new, and it is only
+// useful on a game whose panel the controllers can actually drive - see
+// overlay_pad_drive(). False restores main's recenter-only chord.
+bool chord_tap_opens_panel();
+void set_chord_tap_opens_panel(bool on);
+
+// How far the right stick must deflect, with the modifier held, to count as a
+// flick. s63 lowered it from 0.65 to 0.5 and added a dominance test, because
+// 0.65 with no dominance could resolve a deliberate "up" as a diagonal. The
+// dominance test is harmless everywhere and stays unconditional; the threshold
+// is a feel change, so it defaults to the old number.
+float flick_press_threshold();
+void set_flick_press_threshold(float v);
+
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's
 // previous target becomes the passthrough, so a hook chain already wrapping

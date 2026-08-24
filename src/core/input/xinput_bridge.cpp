@@ -834,6 +834,40 @@ void set_pad_brvr_defaults(bool on) {
     g_padBrvrDefaults.store(on, std::memory_order_relaxed);
 }
 
+// s63 control changes that are still BS1-only - see the banner in the header.
+// Every default here is the PRE-s63 value on purpose: these sit on core paths
+// that BioShock 2 and Infinite both walk, and neither has been tested with the
+// new behaviour. BS1 opts in from its adapter in one copyable block.
+std::atomic<bool> g_flickFourthDir{false};
+bool flick_fourth_direction() { return g_flickFourthDir.load(std::memory_order_relaxed); }
+void set_flick_fourth_direction(bool on) {
+    g_flickFourthDir.store(on, std::memory_order_relaxed);
+}
+
+std::atomic<bool> g_menuModCtxHelp{false};
+bool menu_modifier_context_help() {
+    return g_menuModCtxHelp.load(std::memory_order_relaxed);
+}
+void set_menu_modifier_context_help(bool on) {
+    g_menuModCtxHelp.store(on, std::memory_order_relaxed);
+}
+
+std::atomic<bool> g_chordTapPanel{false};
+bool chord_tap_opens_panel() { return g_chordTapPanel.load(std::memory_order_relaxed); }
+void set_chord_tap_opens_panel(bool on) {
+    g_chordTapPanel.store(on, std::memory_order_relaxed);
+}
+
+// 0.65 is main's kFlickPress. Clamped to a band that cannot make the lane
+// unreachable (too high) or fire on stick noise (too low).
+std::atomic<float> g_flickPress{0.65f};
+float flick_press_threshold() { return g_flickPress.load(std::memory_order_relaxed); }
+void set_flick_press_threshold(float v) {
+    if (v < 0.25f) v = 0.25f;
+    if (v > 0.95f) v = 0.95f;
+    g_flickPress.store(v, std::memory_order_relaxed);
+}
+
 void set_pad_profile(PadProfile p) {
     int v = static_cast<int>(p);
     if (v < 0 || v > static_cast<int>(PadProfile::Infinite))

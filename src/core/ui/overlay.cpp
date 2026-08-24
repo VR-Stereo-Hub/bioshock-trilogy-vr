@@ -146,11 +146,23 @@ void forward_of(const float q[4], float out[3]) {
     out[2] = v[2] + w * tz + (x * ty - y * tx);
 }
 
+// s63 CONTROLLER DRIVE FOR THE F10 PANEL - BS1-only until tested. Core, so
+// it is all three games at once; BioShock 1 opts in from its adapter and BS2
+// and Infinite copy that one line when somebody puts the headset on for them.
+// Default false = the panel is mouse and keyboard, exactly as it shipped.
+std::atomic<bool> g_padDrive{false};
+
 // Feed ImGui a cursor from the right controller and a click from RT. Must run
 // AFTER ImGui_ImplWin32_NewFrame (which writes io.MousePos from the real
 // cursor) and BEFORE ImGui::NewFrame. Leaves the mouse ALONE whenever the hand
 // is not tracked, so a real mouse keeps working.
 void InjectControllerPointer() {
+    // BS1-ONLY UNTIL TESTED (VOID's review of PR 50). Driving the panel from a
+    // tracked controller is a CORE behaviour, so it reaches all three games,
+    // and only BioShock 1 has been in a headset with it. Off leaves the panel
+    // exactly as it was: mouse and keyboard, nothing injected. BioShock 1 opts
+    // in from its adapter, in the same block as the other s63 control gates.
+    if (!g_padDrive.load(std::memory_order_relaxed)) return;
     ImGuiIO& io = ImGui::GetIO();
 
     // EVERYTHING HERE GOES THROUGH THE EVENT QUEUE, and that is not a style
@@ -568,6 +580,10 @@ void on_resize() {
     }
     g_rtvBackbuffer = nullptr;
 }
+
+bool pad_drive() { return g_padDrive.load(std::memory_order_relaxed); }
+
+void set_pad_drive(bool on) { g_padDrive.store(on, std::memory_order_relaxed); }
 
 void set_visible(bool on) {
     g_visibleRequest.store(on ? 1 : 0, std::memory_order_relaxed);
