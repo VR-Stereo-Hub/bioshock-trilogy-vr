@@ -494,41 +494,75 @@ void compose_over(DWORD userIndex, XINPUT_STATE* xs, DWORD* result) {
         if (stamp && now - stamp <= kVrGameplayStaleMs && (out.lx || out.ly)) {
             float deg = g_moveYawOffDeg.load(std::memory_order_relaxed);
             if (deg != 0.0f) {
-                // Normalised: the pre-compensation is defined on a unit stick.
                 const float r = deg * 0.01745329252f;
                 const float c = cosf(r), s = sinf(r);
-                const float x = static_cast<float>(out.lx) / 32767.0f;
-                const float y = static_cast<float>(out.ly) / 32767.0f;
-                float xr = x * c + y * s;  // clockwise from above:
-                float yr = y * c - x * s;  // +deg deflects forward toward +x
+                if (!g_stickPrecomp.load(std::memory_order_relaxed)) {
+                    // ---- LEGACY PATH: bit-identical to the pre-s64 composer ----
+                    // BS2 and Infinite BOTH publish a move-yaw offset
+                    // (bioshock2r/camera.cpp, bioshockinf/camera.cpp), so both
+                    // reach this block on every walking frame. Neither has ever
+                    // been in a headset with the normalised path below, so while
+                    // the pre-compensation is off they get the ORIGINAL integer
+                    // rotate, character for character.
+                    //
+                    // WHAT DIVERGED, because it is not the obvious thing. The
+                    // precomp call really is inert when the switch is off. The
+                    // 1/peak cap is not: it scales BOTH axes, where this clamps
+                    // each independently. merge() takes the larger-magnitude axis
+                    // from the PHYSICAL pad, which is square-ranged, so a real
+                    // stick at full diagonal arrives as (32767, 32767) - peak
+                    // 1.414 - and the cap pulls both axes down to 23170. That is
+                    // ~9600 units an axis, and it reads as diagonal movement
+                    // running ~29% slow WHILE TURNING (the offset is only
+                    // non-zero then). Caught in VOID's review of PR 51, against
+                    // an inertness claim that had been asserted and not checked.
+                    const float x = static_cast<float>(out.lx);
+                    const float y = static_cast<float>(out.ly);
+                    const float xr = x * c + y * s;  // clockwise from above:
+                    const float yr = y * c - x * s;  // +deg deflects forward toward +x
+                    out.lx = static_cast<int16_t>(xr > 32767.0f    ? 32767
+                                                  : xr < -32768.0f ? -32768
+                                                                   : lroundf(xr));
+                    out.ly = static_cast<int16_t>(yr > 32767.0f    ? 32767
+                                                  : yr < -32768.0f ? -32768
+                                                                   : lroundf(yr));
+                } else {
+                    // ---- BS1 PATH: normalised, capped, then pre-compensated ----
+                    // Normalised: the pre-compensation is defined on a unit stick.
+                    const float x = static_cast<float>(out.lx) / 32767.0f;
+                    const float y = static_cast<float>(out.ly) / 32767.0f;
+                    float xr = x * c + y * s;  // clockwise from above:
+                    float yr = y * c - x * s;  // +deg deflects forward toward +x
 
-                // KEEP THE SPEED THE PLAYER ASKED FOR (BRVR). The pair the game
-                // receives is a SQUARE - each axis clamps independently - while this
-                // rotation is circular, so a diagonal rotated onto an axis would be
-                // clipped by an angle-dependent amount. 1/peak caps speed uniformly
-                // and keeps the direction. A no-op for our radially-normalised XR
-                // stick; a guard against a future square-ranged publisher.
-                {
-                    const float ax = fabsf(xr), ay = fabsf(yr);
-                    const float peak = (ax > ay) ? ax : ay;
-                    if (peak > 1.0f) {
-                        const float k = 1.0f / peak;
-                        xr *= k;
-                        yr *= k;
+                    // KEEP THE SPEED THE PLAYER ASKED FOR (BRVR). The pair the game
+                    // receives is a SQUARE - each axis clamps independently - while
+                    // this rotation is circular, so a diagonal rotated onto an axis
+                    // would be clipped by an angle-dependent amount. 1/peak caps
+                    // speed uniformly and keeps the direction. It belongs to THIS
+                    // path alone - the legacy branch above says what it costs a
+                    // game that never asked for it.
+                    {
+                        const float ax = fabsf(xr), ay = fabsf(yr);
+                        const float peak = (ax > ay) ? ax : ay;
+                        if (peak > 1.0f) {
+                            const float k = 1.0f / peak;
+                            xr *= k;
+                            yr *= k;
+                        }
                     }
+
+                    // AFTER the rotation and only on this path - see the banner on
+                    // precomp_stick_deadzone.
+                    precomp_stick_deadzone(xr, yr);
+
+                    const float xs = xr * 32767.0f, ys = yr * 32767.0f;
+                    out.lx = static_cast<int16_t>(xs > 32767.0f    ? 32767
+                                                  : xs < -32768.0f ? -32768
+                                                                   : lroundf(xs));
+                    out.ly = static_cast<int16_t>(ys > 32767.0f    ? 32767
+                                                  : ys < -32768.0f ? -32768
+                                                                   : lroundf(ys));
                 }
-
-                // AFTER the rotation and only on this path - see the banner on
-                // precomp_stick_deadzone.
-                precomp_stick_deadzone(xr, yr);
-
-                const float xs = xr * 32767.0f, ys = yr * 32767.0f;
-                out.lx = static_cast<int16_t>(xs > 32767.0f    ? 32767
-                                              : xs < -32768.0f ? -32768
-                                                               : lroundf(xs));
-                out.ly = static_cast<int16_t>(ys > 32767.0f    ? 32767
-                                              : ys < -32768.0f ? -32768
-                                                               : lroundf(ys));
             }
         }
     }

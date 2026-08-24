@@ -29,72 +29,13 @@ namespace {
 //  version is in the comment above each constant.
 // ============================================================================
 
-// Hands.uc declares three consecutive bools at lines 80-82, and UE2 packs
-// consecutive bools into one DWORD:
-//     bit 0  bFinishedStateAnimations
-//     bit 1  AbilityHasBeenReleased
-//     bit 2  CurrentlyExecutingScriptedHandAnimationSequence   <-- ours
-// BRVR computed the DWORD's address by walking the field list from its proven
-// +0x494/+0x498 anchor. THE WALK IS THE WEAK LINK, not the bit, which is why
-// anchor_check below re-validates the walk at four points along its length.
-constexpr uint32_t kHandsScriptedBits = 0x594;
-constexpr uint32_t kScriptedBit = 1u << 2;
-
-// FALSIFIED IN BRVR, M7-S3, recorded here so it is not re-proposed: bit 0 is
-// NOT "an animation is playing". It is bFinishedStateAnimations, it tracks the
-// Hands state machine's own animations, and gating on it produced OPPOSITE
-// failures in two scenes (arms hidden through the whole Little Sister crawl;
-// arms stuck visible and frozen on the plasmid balcony). The state
-// PlayingScriptedHandAnimation has an EMPTY BODY and never touches the flag.
-// DO NOT gate anything on bit 0.
-
-// The anchor slots. Four FNames on the hands actor, computed from the same
-// field walk that produces +0x594 - so if all four resolve to real names, the
-// walk is validated at four points along its length and +0x594 is standing on
-// something.
-//   +0x498  HandsOffscreenAnimationName        (BRVR's proven anchor)
-//   +0x4B8  InjectingEveAnimationName          (the plasmid injection)
-//   +0x4D8  ExorcisingGathererAnimationName    (the rescue)
-//   +0x558  CurrentScriptedAnimationName       (what is playing NOW)
-constexpr uint32_t kAnchorSlots[4] = {0x498, 0x4B8, 0x4D8, 0x558};
-
-// MEASURED AND NOT KEPT, BRVR M7-S2: +0x558 read 'None' (index 0) for an entire
-// run INCLUDING throughout a scripted sequence. So animation-level naming does
-// not come from that field and the index-comparison idea it was going to enable
-// is unproven. It is an anchor slot here and nothing more.
-
-// Hands.Base. Derived live in this repo already - see patterns.h's
-// kHandsCurrentHoldableOffset comment: "hands+0x450 held the pawn = Hands.Base;
-// the weapon's own +0x450 holds the hands actor: the attach chain
-// weapon -> hands -> pawn is self-consistent".
-constexpr uint32_t kHandsBaseOffset = 0x450;
-
-// Pawn.uc line 46 bCannotFall. Pawn's own fields start at the AActor base
-// 0x450; lines 13..44 are EXACTLY 32 bools, one full DWORD at +0x460, so the
-// next three start a fresh one at +0x464:
-//     bit 0  ShouldNotTakeDamageOnNextLanding
-//     bit 1  bCannotFall                            <-- ours
-//     bit 2  bUseHavokRigidBodyCapsuleCollisions
-// THE ORACLE: ShockPlayer defaults bit 2 TRUE, and
-// ActionEnableBathysphereModeForPlayer clears it in the same call that sets
-// bit 1. Entering a ride must therefore flip BIT 1 UP AND BIT 2 DOWN IN THE
-// SAME WRITE - two bits moving in opposite directions at once is not something
-// a wrong offset produces by chance. Every edge logs both bits so the oracle
-// can be read straight out of the log.
-constexpr uint32_t kPawnFlagsBOffset = 0x464;
-constexpr uint32_t kCannotFallBit = 1u << 1;
-constexpr uint32_t kHavokCapsuleBit = 1u << 2;
-
-// ShockPlayerController.bIsForcingPlayerMove. BRVR could NOT compute this one:
-// six interface-typed fields of unknown size sit between the class base and the
-// flag. Found by differential probe (M7-S5) and correlated across three events
-// whose durations differ by 24x - 1.0 s ("went straight in"), 0.24 s (instant),
-// 5.75 s ("the slewing") - each matching an independent tester report.
-//
-// A LONE BOOL IS EXACTLY 0 OR 1. Anything else means a stale pointer or a wrong
-// offset, which is not hypothetical: BRVR caught its own bathysphere read doing
-// precisely that. The shape check in forced_move_tick refuses anything wider.
-constexpr uint32_t kCtlForcedMoveOffset = 0x9E0;
+// THE ENGINE OFFSETS THIS MODULE READS LIVE IN patterns.h, section
+// "M7 scripted-event signals" - kHandsScriptedBits/kScriptedBit, kAnchorSlots,
+// kHandsBaseOffset, kPawnFlagsBOffset/kCannotFallBit/kHavokCapsuleBit and
+// kCtlForcedMoveOffset, each with the derivation that produced it. They were
+// declared here until VOID's review of PR 51; the repo rule is that every
+// engine address lives in patterns.cpp/.h and is documented in ENGINE_NOTES,
+// and nothing about this module was an exception to it.
 
 // ---- a clock that can actually see a frame ---------------------------------
 //
@@ -396,7 +337,7 @@ bool anchor_check(const void* hands) {
     const wchar_t* got[4] = {nullptr, nullptr, nullptr, nullptr};
     for (int i = 0; i < 4; ++i) {
         uint32_t idx = 0;
-        if (!read_u32(hands, kAnchorSlots[i], &idx)) continue;
+        if (!read_u32(hands, patterns::kAnchorSlots[i], &idx)) continue;
         got[i] = patterns::fname_text(static_cast<int32_t>(idx));
         if (got[i]) ++g_anchorNamesOk;
     }
@@ -411,7 +352,7 @@ bool anchor_check(const void* hands) {
         BVR_LOG("[b1r] scripted: ANCHOR FAILED - the field walk behind hands+0x%03X does "
                 "not land on real fields on this build. Every signal held false; RE-DERIVE "
                 "before trusting the offset (ENGINE_NOTES, scripted events).",
-                kHandsScriptedBits);
+                patterns::kHandsScriptedBits);
     return ok;
 }
 
@@ -419,10 +360,10 @@ bool anchor_check(const void* hands) {
 
 void anim_tick(const void* hands) {
     uint32_t bits = 0;
-    if (!read_u32(hands, kHandsScriptedBits, &bits)) return;
+    if (!read_u32(hands, patterns::kHandsScriptedBits, &bits)) return;
     g_rawHands.store(bits, std::memory_order_relaxed);
 
-    const int want = (bits & kScriptedBit) ? 1 : 0;
+    const int want = (bits & patterns::kScriptedBit) ? 1 : 0;
     if (want == g_anim.load(std::memory_order_relaxed)) return;
 
     g_anim.store(want, std::memory_order_relaxed);
@@ -431,21 +372,21 @@ void anim_tick(const void* hands) {
     g_animEdges.fetch_add(1, std::memory_order_relaxed);
     BVR_LOG("[b1r] scripted: %s  (hands+0x%03X = %08X)",
             want ? "*** SCRIPTED ANIMATION BEGAN ***" : "--- scripted animation ended ---",
-            kHandsScriptedBits, bits);
+            patterns::kHandsScriptedBits, bits);
 }
 
 void bathysphere_tick(const void* hands) {
     void* pawn = nullptr;
-    if (!read_ptr_at(hands, kHandsBaseOffset, &pawn) || !pawn) return;
+    if (!read_ptr_at(hands, patterns::kHandsBaseOffset, &pawn) || !pawn) return;
     // Hands.Base must be the player pawn, and this tree already has that test:
     // body::is_gameplay_view compares the actor's vtable to kShockPlayerVtableRva.
     if (!body::is_gameplay_view(pawn)) return;
 
     uint32_t bits = 0;
-    if (!read_u32(pawn, kPawnFlagsBOffset, &bits)) return;
+    if (!read_u32(pawn, patterns::kPawnFlagsBOffset, &bits)) return;
     g_rawPawn.store(bits, std::memory_order_relaxed);
 
-    const int want = (bits & kCannotFallBit) ? 1 : 0;
+    const int want = (bits & patterns::kCannotFallBit) ? 1 : 0;
     if (want == g_bathy.load(std::memory_order_relaxed)) return;
 
     g_bathy.store(want, std::memory_order_relaxed);
@@ -453,17 +394,17 @@ void bathysphere_tick(const void* hands) {
     // THE ORACLE, logged on every edge: entering a ride must raise bit 1 while
     // LOWERING bit 2 in the same write. If the log ever shows them moving
     // together, this offset is not what the derivation says it is.
-    const int havok = (bits & kHavokCapsuleBit) ? 1 : 0;
+    const int havok = (bits & patterns::kHavokCapsuleBit) ? 1 : 0;
     BVR_LOG("[b1r] scripted: bathysphere %s  (pawn+0x%03X = %08X, bCannotFall=%d "
             "havokCapsule=%d - oracle %s)",
-            want ? "ON" : "off", kPawnFlagsBOffset, bits, want, havok,
+            want ? "ON" : "off", patterns::kPawnFlagsBOffset, bits, want, havok,
             want != havok ? "HOLDS (bits oppose)"
                           : "BROKEN - both bits agree, suspect the offset");
 }
 
 void forced_move_tick(const void* controller) {
     uint32_t v = 0;
-    if (!read_u32(controller, kCtlForcedMoveOffset, &v)) return;
+    if (!read_u32(controller, patterns::kCtlForcedMoveOffset, &v)) return;
     g_rawCtl.store(v, std::memory_order_relaxed);
 
     // Shape check, every read. A lone bool is exactly 0 or 1.
@@ -471,7 +412,7 @@ void forced_move_tick(const void* controller) {
         if (g_shapeFails.fetch_add(1, std::memory_order_relaxed) == 0)
             BVR_LOG("[b1r] scripted: SHAPE CHECK FAILED - ctl+0x%03X reads %08X, which is "
                     "not a bool. Stale controller or wrong offset; forced-move held false.",
-                    kCtlForcedMoveOffset, v);
+                    patterns::kCtlForcedMoveOffset, v);
         if (g_forced.exchange(0, std::memory_order_relaxed))
             BVR_LOG("[b1r] scripted: --- forced move done --- (dropped by the shape check)");
         return;
@@ -483,7 +424,7 @@ void forced_move_tick(const void* controller) {
     g_forced.store(want, std::memory_order_relaxed);
     g_forcedEdges.fetch_add(1, std::memory_order_relaxed);
     BVR_LOG("[b1r] scripted: %s  (ctl+0x%03X = %u)",
-            want ? "forced move BEGAN" : "--- forced move done ---", kCtlForcedMoveOffset, v);
+            want ? "forced move BEGAN" : "--- forced move done ---", patterns::kCtlForcedMoveOffset, v);
 }
 
 // ---- ONE SCENE, ONE WINDOW - the held pair ---------------------------------
@@ -1144,11 +1085,11 @@ void draw_debug_ui() {
             set_scripted_recentre_mode(rc);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
-                "A scene that means to point you at a doorway otherwise points you''' + N + '''"
-                "at the doorway PLUS however far you turned yourself - so the more''' + N + '''"
-                "you looked around, the more wrong the framing.''' + N + N + '''"
-                "Wash out is proportional: a scene that turns you a long way takes''' + N + '''"
-                "all of your offset back, one that nudges you takes a nudge. Your''' + N + '''"
+                "A scene that means to point you at a doorway otherwise points you\n"
+                "at the doorway PLUS however far you turned yourself - so the more\n"
+                "you looked around, the more wrong the framing.\n\n"
+                "Wash out is proportional: a scene that turns you a long way takes\n"
+                "all of your offset back, one that nudges you takes a nudge. Your\n"
                 "free look on the way there is untouched either way.");
         ImGui::TextDisabled("     you have turned %+.0f deg of your own so far",
                             scripted_turn_deg());

@@ -1107,6 +1107,40 @@ void load_vr_preset_values() {
     if (n) BVR_LOG("[b1r] VR preset: %d value(s) loaded from vrpreset.ini", n);
 }
 
+// ---- preset migrations, and why every load path must call this -------------
+//
+// EVERY path that calls load_vr_preset_values() must call this straight after
+// it. There are two, and until VOID's review of PR 51 only one of them did:
+//
+//   1. apply_vr_preset()           - the "VR PRESET 1" button / auto-VR
+//   2. install_calcview_hook()     - the boot-time VALUES-ONLY load
+//
+// Path 2 was the gap. It exists so a user's saved sliders are live from the
+// first frame without pressing anything, and load_vr_preset_values() DOES
+// apply cineDrive (see its `cineDrive` key). With autoVr=1 - the default -
+// path 1 runs on the first CalcView and corrected it a moment later, which is
+// why this was never seen. With **autoVr=0** nothing corrected it, and a
+// pre-s64 preset carrying cineDrive=1 silently reinstated the old behaviour:
+// exactly the failure the presetVersion gate was added to prevent.
+//
+// It also cannot move to the adapter's init(), which runs BEFORE either load -
+// a migration has to see what the file actually said.
+//
+// Idempotent by construction: it only ever forces a default the preset did not
+// knowingly choose, so calling it on both paths is safe.
+void apply_preset_migrations() {
+    // BS1 ships CineDrive::Off (headset-settled 2026-08-23: the head keeps
+    // steering through a cutscene). A preset that DID choose still wins; this
+    // only fills the gap for one that predates the default existing.
+    if (!preset_had_cine_drive() || preset_version() < kPresetVersion) {
+        bvr::vr::set_cine_drive(bvr::vr::CineDrive::Off);
+        BVR_LOG("[b1r] cine drive: preset %s - applying the BS1 default (off: your head "
+                "keeps steering through a cutscene). Save the preset to keep your own "
+                "choice from now on.",
+                preset_had_cine_drive() ? "predates this default (presetVersion < 2)"
+                                        : "had no cineDrive");
+    }
+}
 void apply_vr_preset() {
     BVR_LOG("[b1r] VR PRESET 1: arming the full VR configuration");
     bvr::vr::set_enabled(true);        // paces the game to the headset
@@ -1136,19 +1170,7 @@ void apply_vr_preset() {
     hands::handle_command("pose aim"); // align to the AIM ray
     body::handle_command("on");        // M7.5: stick-forward = look direction
     load_vr_preset_values();           // tuned sliders (ini) over defaults
-    // BS1 ships CineDrive::Off (headset-settled 2026-08-23: the head keeps
-    // steering through a cutscene). Applied HERE rather than in the adapter's
-    // init(), which runs before this: a vrpreset.ini saved before that default
-    // existed carries cineDrive=1 and would silently reinstate the old
-    // behaviour. A preset that DID choose still wins - this only fills the gap.
-    if (!preset_had_cine_drive() || preset_version() < kPresetVersion) {
-        bvr::vr::set_cine_drive(bvr::vr::CineDrive::Off);
-        BVR_LOG("[b1r] cine drive: preset %s - applying the BS1 default (off: your head "
-                "keeps steering through a cutscene). Save the preset to keep your own "
-                "choice from now on.",
-                preset_had_cine_drive() ? "predates this default (presetVersion < 2)"
-                                        : "had no cineDrive");
-    }
+    apply_preset_migrations();         // see the banner on its definition
     aim::note_preset_baseline();       // seed source for new weapon profiles
     aim::reapply_weapon_profile();     // the active weapon profile beats the baseline
     scenedraw::handle_command("vrstereo on"); // last: 1t + stereo, sticky
@@ -2207,6 +2229,9 @@ bool install(void* eventPlayerCalcView) {
     // BS2's input auto-arm ("on") is deliberately NOT ported - that was a
     // BS2-local session-41 decision and would change BS1's boot behaviour.
     load_vr_preset_values();
+    // The migrations belong to the LOAD, not to the arming - a values-only
+    // boot with autoVr=0 would otherwise keep a pre-s64 cineDrive=1 forever.
+    apply_preset_migrations();
     aim::note_preset_baseline();
     aim::reapply_weapon_profile();
     // Feedback session 2 (user ask): start the game IN VR. Post the same

@@ -4228,6 +4228,30 @@ reading of a real engine flag and still answer the wrong question. Round 7's log
 did not show a broken mechanism; it showed the mechanism working perfectly on a
 question nobody wanted asked.
 
+#### The `DrawScale3D` offset itself, kept after the constant was deleted
+
+`kActorDrawScale3DOffset` was removed from `patterns.h` in the PR-51 review pass
+(VOID, 2026-08-23): once the hide moved to the bones it had no reader anywhere in
+`src/`, and its own comment still asserted the claim the table above falsified.
+The derivation is preserved here because deriving it again is not free, and
+because the neighbouring scalar is the trap:
+
+| field | offset | what it is |
+|---|---|---|
+| `DrawScale` (scalar) | `+0x2AC` | written by `AActor::SetDrawScale` (`0x375830`). **Geometry-inert on the rig actor** - session 63: "rig-actor DrawScale does not size geometry; weapon-actor DrawScale does" |
+| `DrawScale3D` (X/Y/Z floats) | `+0x2B0` | immediately after the scalar. The field BRVR hides arms with (`Hands/ArmHide.cpp`, `kDrawScale3DOff`) |
+
+The layout is the ordinary Unreal shape - a scalar scale followed by a per-axis
+vector - which is exactly why the two get confused; s64 wasted a build hiding the
+arms with `+0x2AC` before finding that out. Either one needs the dirty protocol
+(`kActorDirtyFlagsOffset |= 0x10`, `kActorRenderRevOffset++`,
+`kActorDirtyByteOffset = 0`); a raw field poke without it is invisible.
+
+**And if anything ever revives `+0x2B0`: NEVER WRITE EXACT ZERO.** The attach path
+inverse-decomposes chain scale (session 16), the same division that makes bone 43
+untouchable. That warning is about the write, not about the hide, and it survives
+the falsification above intact.
+
 ### RETRACTION: the game's yaw DOES reach the camera during gameplay
 
 Part 1 recorded that the head drive overwrites `rot->pitch` and `rot->roll`

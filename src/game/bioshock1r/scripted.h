@@ -107,8 +107,11 @@ const char* rot_follow_name(RotFollow m);
 // the camera and holding a menu's framing is both pointless and a source of
 // log noise on every inventory open.
 //
-// A no-op at RotFollow::Both, which is the default and is bit-for-bit today's
-// behaviour.
+// A no-op at RotFollow::Both, which was the default when this shipped and is
+// bit-for-bit the pre-s64 behaviour. THE DEFAULT IS NOW HorizontalOnly
+// (scripted.cpp g_rotFollow) - settled in the headset, because a scripted
+// camera that rolls or pitches the view is the comfort complaint itself.
+// Corrected in the PR-51 review pass; the comment had outlived the code.
 void apply_rotation_policy(bool gameOwnsCamera, bool sceneActive, int* pitch, int* yaw,
                            int* roll);
 
