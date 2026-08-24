@@ -33,17 +33,25 @@ constexpr uint64_t kMenuLongMs = 500;
 constexpr uint64_t kStartPulseMs = 150;
 // Both-stick-click chord: tap toggles the F10 panel, hold recentres. The gap
 // between them is deliberate - a tap that overruns kChordTapMs does nothing at
-// all rather than recentring by accident.
+// all rather than recentring by accident. BOTH ONLY APPLY WHERE
+// chord_tap_opens_panel() is on; elsewhere the chord recentres on its rising
+// edge as it always did, and neither constant is read.
 constexpr uint64_t kChordTapMs = 350;
 constexpr uint64_t kChordHoldMs = 600;
 // Ammo-slot select: while the d-pad modifier is held, stick directions past
-// kFlickPress emit a dpad direction. Zoom is removed, so RS-click is free.
+// flick_press_threshold() emit a dpad direction. Zoom is removed, so RS-click
+// is free.
 //
-// 0.5 and DOMINANT-AXIS-ONLY, both from BRVR (InputHook.cpp): a thumbstick
-// makes diagonals far too easy to hit when the intent is one direction, and
-// the old 0.65 with no dominance test could resolve a deliberate "up" as
-// "left" depending on which comparison ran first.
-constexpr float kFlickPress = 0.5f;
+// DOMINANT-AXIS-ONLY is unconditional and comes from BRVR (InputHook.cpp): a
+// thumbstick makes diagonals far too easy to hit when the intent is one
+// direction, and the old first-match chain resolved a deliberate "up" as
+// "left" depending on which comparison ran first. It is a correctness fix and
+// nothing about it is game-specific.
+//
+// THE 0.65 -> 0.5 THRESHOLD IS NOT, so it moved to the bridge as a settable
+// value defaulting to 0.65 - main's number - with BS1 asking for 0.5 from its
+// adapter. How far a stick must move before it means something is feel, and
+// feel is not portable to two games nobody has tested it on.
 // PULSE PATH ONLY (PadMap::flickHold == false - Infinite). See the drive.
 constexpr float kFlickRearm = 0.30f;
 constexpr uint64_t kFlickPulseMs = 150;
@@ -1265,10 +1273,25 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // do when the view is already wrong; it takes the HOLD because it is rare
     // and deliberate, while opening the panel is neither. A hold that has
     // already recentered must NOT also toggle on release, hence s_chordFired.
+    //
+    // THE SPLIT IS BS1-ONLY UNTIL TESTED (VOID's review of PR 50). It changes
+    // the chord for every game: recenter stops being instant and waits out
+    // kChordHoldMs, and a short chord now opens a panel that BS2 and Infinite
+    // cannot drive with a controller anyway (see overlay_pad_drive). With the
+    // gate off this is main's machine verbatim - one recenter on the chord's
+    // rising edge, re-armed only when both clicks are up.
     static uint64_t s_chordDownMs = 0;
     static bool s_chordFired = false; // this hold already recentred
+    static bool s_chordArmed = true;  // legacy path only
     const uint64_t nowChord = GetTickCount64();
-    if (chordHeld) {
+    if (!bvr::input::chord_tap_opens_panel()) {
+        if (chordHeld && s_chordArmed) {
+            s_chordArmed = false;
+            bvr::input::queue_recenter_chord();
+        } else if (!clickL && !clickRraw) {
+            s_chordArmed = true;
+        }
+    } else if (chordHeld) {
         if (s_chordDownMs == 0) s_chordDownMs = nowChord;
         if (!s_chordFired && nowChord - s_chordDownMs >= kChordHoldMs) {
             s_chordFired = true;
@@ -1404,11 +1427,24 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             // "left" whenever the cross-axis happened to be over threshold too.
             // Directions the map leaves at 0 are never emitted - that is how
             // BS1 keeps a three-way select while Infinite gets its fourth.
+            //
+            // THE FOURTH DIRECTION AND THE HOLD ARE BS1-ONLY UNTIL TESTED.
+            // kPadMapBioshock1 serves BioShock 1 AND BioShock 2 - PadProfile has
+            // no Bioshock2 entry and no BS2 adapter selects one - so the table's
+            // flickRight/flickHoldBits reach a game that has never been in a
+            // headset with them. Before s63 both were absent. Read them through
+            // the gate rather than editing the tables, which keeps the tables an
+            // honest statement of what each game's pad MEANS and puts the
+            // untested-ness in one place. (VOID's review of PR 50.)
+            const bool fourth = bvr::input::flick_fourth_direction();
+            const uint16_t mapRight = fourth ? map.flickRight : 0;
+            const uint16_t holdBits = fourth ? map.flickHoldBits : 0;
+            const float press = bvr::input::flick_press_threshold();
             const float ax = fabsf(rawX), ay = fabsf(rawY);
             uint16_t bit = 0;
-            if (ay >= kFlickPress && ay >= ax) bit = rawY > 0.0f ? map.flickUp : map.flickDown;
-            else if (ax >= kFlickPress && ax > ay)
-                bit = rawX < 0.0f ? map.flickLeft : map.flickRight;
+            if (ay >= press && ay >= ax) bit = rawY > 0.0f ? map.flickUp : map.flickDown;
+            else if (ax >= press && ax > ay)
+                bit = rawX < 0.0f ? map.flickLeft : mapRight;
 
             // Turn/walk suppression. RS-click never reaches the game, so
             // killing the stick for its whole hold costs nothing there. A thumb
@@ -1427,7 +1463,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                 }
             }
 
-            if (bit && (bit & map.flickHoldBits)) {
+            if (bit && (bit & holdBits)) {
                 // HELD - see PadMap::flickHoldBits. Set for as long as the
                 // direction is, which is what lets ShockPlayerController satisfy
                 // HintButtonHeld / HintHoldTime = 0.5 s and open the MAP.
@@ -1481,7 +1517,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // START. Hanging it off the modifier instead means the chord reaches it too.
     const bool menuRaw = read_bool(session, g_menu);
     const bool menuDown = menuRaw || menuChord;
-    if (menuDown && modHeldForMenu) {
+    if (menuDown && modHeldForMenu && bvr::input::menu_modifier_context_help()) {
         // Held for as long as the gesture is, so the 0.5 s hint timer can run.
         pad.buttons |= XINPUT_GAMEPAD_BACK;
         g_menuDownMs = 0;         // never also count as a pause tap

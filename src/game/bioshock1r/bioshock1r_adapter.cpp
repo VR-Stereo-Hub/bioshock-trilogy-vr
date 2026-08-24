@@ -1,5 +1,6 @@
 #include "game/bioshock1r/bioshock1r_adapter.h"
 
+#include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/aim.h"
@@ -64,6 +65,27 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // JumpOnR3=1. BioShock 2 shares this pad profile and keeps the older
     // heuristic until somebody puts a headset on for it.
     bvr::input::set_pad_brvr_defaults(true);
+
+    // ---- THE BS1 OPT-IN BLOCK. COPY IT WHOLE, DO NOT RE-DERIVE IT. ---------
+    //
+    // Added in the PR-50 review pass (VOID, 2026-08-23). Each line below turns
+    // on an s63 control change that lives in src/core/ and therefore reaches
+    // BioShock 1, BioShock 2 and Infinite at once. Only BioShock 1 has been in
+    // a headset with any of them, so core ships the PRE-s63 behaviour and this
+    // is the single place that asks for the new one.
+    //
+    // WHEN BS2 OR INFINITE ARE TESTED: paste this block into that adapter's
+    // init() unchanged. Nothing here is BS1-specific in its VALUES - it is
+    // BS1-specific only in having been verified. Once all three are in, flip
+    // the core defaults and delete the block from all three adapters.
+    //
+    // What each one is, and what off means, is on the declarations in
+    // core/input/xinput_bridge.h and core/ui/overlay.h.
+    bvr::input::set_flick_fourth_direction(true);   // right flick + the held hint bit
+    bvr::input::set_menu_modifier_context_help(true); // modifier + menu -> BACK, held
+    bvr::input::set_chord_tap_opens_panel(true);    // both-sticks TAP opens F10
+    bvr::input::set_flick_press_threshold(0.5f);    // was 0.65 with no dominance test
+    bvr::overlay::set_pad_drive(true);              // ray as cursor, RT as click
 
     // ---- BioshockVR.ini [VR] keys this adapter owns -------------------------
     // PRECEDENCE, and it is not the obvious one: init() runs BEFORE
