@@ -163,9 +163,10 @@ the tag lands on a reviewed commit.
 
 ## Working notes for agents
 
-- **Never commit or open a PR without the user confirming it first.** Suggest it, show
-  exactly what would go in, and wait for a yes. Being asked to do the work is not
-  permission to commit it, and finishing a feature is not permission either.
+- **Never merge without the user confirming it first.** Committing and opening PRs is
+  yours to do - that is what the flow above is for, and an open or draft PR changes
+  nothing until it is merged. The merge is the irreversible step: show what is about to
+  land and wait for a yes. Finishing a feature is not permission to merge it.
 - **Branch first, before the first edit.** The most common agent failure here is making
   three good commits on `staging` and only then noticing. Check `git branch --show-current`
   before you write anything.

@@ -84,9 +84,11 @@ feature branch --PR--> staging --PR (at release time)--> main --> tagged release
 - **`main` changes only through a `staging` -> `main` PR**, and the release is cut from
   `main` after that merge.
 
-**NEVER create a commit or a pull request without the user confirming it first.** Suggest
-it, show exactly what would go in, and wait for a yes. This is not the same as being asked
-to do the work - finishing a feature is not permission to commit it.
+**NEVER MERGE without the user confirming it first.** Agents may commit and open pull
+requests on their own judgement - that is the point of the flow above, and an open or
+draft PR changes nothing until someone merges it. The merge is the irreversible step and
+the one that needs a human saying yes (VOID, 2026-08-23). Show what is about to land and
+wait; finishing a feature is not permission to merge it.
 
 ## Session protocol
 
