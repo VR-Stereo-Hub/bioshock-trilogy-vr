@@ -1,5 +1,6 @@
 #include "game/bioshock1r/bioshock1r_adapter.h"
 
+#include "core/gfx/hud_capture.h"
 #include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
@@ -80,12 +81,27 @@ bool Bioshock1RAdapter::init(const bvr::pattern_scan::ProcessImage& image) {
     // the core defaults and delete the block from all three adapters.
     //
     // What each one is, and what off means, is on the declarations in
-    // core/input/xinput_bridge.h and core/ui/overlay.h.
+    // core/input/xinput_bridge.h and core/ui/overlay.h. The scene-leader latch
+    // just below is the same pattern and travels with this block.
     bvr::input::set_flick_fourth_direction(true);   // right flick + the held hint bit
     bvr::input::set_menu_modifier_context_help(true); // modifier + menu -> BACK, held
     bvr::input::set_chord_tap_opens_panel(true);    // both-sticks TAP opens F10
     bvr::input::set_flick_press_threshold(0.5f);    // was 0.65 with no dominance test
     bvr::overlay::set_pad_drive(true);              // ray as cursor, RT as click
+
+    // Walking into a wall must not look like the pause menu (s65). The world
+    // pass is identified by a DSV-bound draw COUNT >= 32, and a view filled by
+    // one near surface draws less than that - so screen_only() tripped, core's
+    // wantCine dropped the projection to the M2 quad, and the player got an
+    // anchored square with a frozen hand, toggling as they faced the wall.
+    // Measured 2026-08-23: 19 transitions in one run, "swf draws 145" identical
+    // on both sides, so the count was the whole verdict.
+    //
+    // The latch keeps calling a target the world while it still draws anything,
+    // once it has been confidently identified as one. BS1 ONLY: BS2 and
+    // Infinite keep the count-only rule until somebody puts a headset on for
+    // them, and then they opt in on this same line.
+    bvr::hud::set_scene_leader_latch(true);
 
     // ---- BioshockVR.ini [VR] keys this adapter owns -------------------------
     // PRECEDENCE, and it is not the obvious one: init() runs BEFORE
