@@ -4401,3 +4401,62 @@ constant-vs-varying character of the maximum can.
 
 That is the first time the bone-collapse hide has been exercised end-to-end
 without freezing, which is what `DrawScale3D` could never do.
+
+## Session 65 (2026-08-23) - the world FOV is overridden BELOW CalcView
+
+### The bathysphere renders 80 deg while CalcView reports 100
+
+The "black square" on a bathysphere was never the cinematic quad. Falsified
+directly: `vrcine off` kills `g_cineActive` outright and the box survived it.
+
+What actually happens, measured on the frame the player presses A:
+
+```
+19:48:40.950  scripted: forced move BEGAN  (ctl+0x9E0 = 1)
+19:48:40.957  fov watch: WORLD tanH=0.839100 (hfov 80.00 deg, 12/12 votes)
+19:48:40.966  rendered-fov mismatch ON (rendered 80.0 deg vs option 100.0)
+19:48:40.969  xr: claim substituted from the live WORLD lens (hfov 80.00 deg)
+```
+
+**CalcView reports `fov=100.0` for the entire ride** - every sample, boarding to
+landing. The narrowing therefore happens DOWNSTREAM of CalcView, which is why
+nothing in the camera path could see it and why the fov watch is the only
+instrument that catches it.
+
+The mod's response was correct and was itself the visible defect: it re-claims
+the OpenXR layer at the measured 80 deg, so the image fills 80 deg of a wider
+headset - a correct, full-resolution picture sitting in a box with black around
+it. Reported as "renders in a square, but the resolution is the same".
+
+### The two fields, and they were already in this file
+
+`PC+0x45C` is the world lens and `PC+0x648` its mirror. **Both were already
+derived here for another purpose**: the foreground scene-node ctor is passed
+`float PC+0x45C` (default 75.0) beside `PC+0x460`, and the note on `PC+0x65C`
+records the "75/75/60 fov floats" at `PC+0x648..0x650`. Session 65 only needed
+to WRITE them.
+
+BRVR reached the same two fields independently (`ClampWorldFov`, its
+`WorldFovOffset`/`WorldFovOffset2`) and measured the narrow side as 75.0 -> 60.0.
+**The numbers do not transfer** - this build reads 100 -> 80 - but the offsets
+agreeing with a derivation already in this tree is the corroboration that
+matters.
+
+### Why the guard is gated, and why the gate is not `bathysphere()`
+
+The window is `forced_move() || bathysphere()`. The narrowing lands **1.2 s
+before** the ride flag, on the forced-move frame, so gating on the ride alone
+misses the start - which is precisely the moment the player sees the box appear.
+
+Two things depend on the guard staying narrow:
+
+1. **It would blind the cutscene detector.** One leg of `wantCine` fires when the
+   game renders a different fov than it claims. Clamping globally deletes exactly
+   that evidence - BRVR's own `CONSOLIDATION.md` names this as integration hazard
+   number one for this port.
+2. **Weapon zoom uses the same field.** `Hands::FadeFOV` drives it downward when
+   you scope. A global floor would fight it; you cannot scope on a bathysphere,
+   so the gate removes the conflict rather than special-casing it.
+
+The restored value is SAMPLED, not hardcoded: whatever the lens read while no
+scene owned the camera. That accounts for the user's own FOV option for free.

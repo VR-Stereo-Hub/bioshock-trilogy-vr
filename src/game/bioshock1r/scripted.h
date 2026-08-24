@@ -202,6 +202,23 @@ int yaw_adjust_units();
 // walking you into position and your hands have nothing to do - then show them
 // the moment an animation starts, because that animation is what you are meant
 // to be watching. Collapses every bone; see bones::collapse_rig.
+// THE WORLD FOV GUARD (s65). A scripted camera narrows the world lens without
+// CalcView ever reporting it - measured on the bathysphere as 100 -> 80 deg on
+// the frame the forced move begins. The mod then honestly re-claims the layer
+// at the narrower value, and the player sees the picture in a small box with
+// black all round. This stops the narrowing instead.
+//
+// Deliberately scoped to `forced_move() || bathysphere()`: clamping everywhere
+// would delete the fov-mismatch leg of the cutscene detector (BRVR's
+// CONSOLIDATION.md names that hazard), and it is also what keeps weapon zoom
+// working, since Hands::FadeFOV drives the same field down when you scope.
+//
+// Self-calibrating: the value restored is whatever the lens read during
+// ordinary gameplay, so the user's own FOV option needs no separate read.
+bool world_fov_guard();
+void set_world_fov_guard(bool on);
+void world_fov_readout(float* gameplay, unsigned* snaps);
+
 bool hide_rig_in_scenes();
 void set_hide_rig_in_scenes(bool on);
 

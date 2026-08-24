@@ -92,6 +92,28 @@ bool read_u32(const void* obj, uint32_t off, uint32_t* out) {
     }
 }
 
+bool read_f32(const void* obj, uint32_t off, float* out) {
+    if (!obj) return false;
+    const uint8_t* p = static_cast<const uint8_t*>(obj) + off;
+    __try {
+        *out = *reinterpret_cast<const float*>(p);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool write_f32(void* obj, uint32_t off, float v) {
+    if (!obj) return false;
+    uint8_t* p = static_cast<uint8_t*>(obj) + off;
+    __try {
+        *reinterpret_cast<float*>(p) = v;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool read_ptr_at(const void* obj, uint32_t off, void** out) {
     if (!obj) return false;
     const uint8_t* p = static_cast<const uint8_t*>(obj) + off;
@@ -104,6 +126,12 @@ bool read_ptr_at(const void* obj, uint32_t off, void** out) {
 }
 
 // ---- published state (game thread writes, overlay thread reads) ------------
+// The world FOV guard. Game thread owns g_worldFovGameplay; the switch and the
+// counter are read by the F10 overlay thread.
+std::atomic<int> g_worldFovGuard{1};
+std::atomic<uint32_t> g_worldFovSnaps{0};
+float g_worldFovGameplay = 0.0f;
+
 
 // Master switch. Exists so the entire module can be taken out of the frame in
 // the headset without a rebuild - which is the cheapest possible answer to "did
@@ -526,6 +554,80 @@ void set_enabled(bool on) {
             on ? "signals live" : "use this to A/B whether this module causes a symptom");
 }
 
+// ---- THE WORLD FOV GUARD ---------------------------------------------------
+//
+// A scripted camera narrows the world lens and CalcView never mentions it.
+// MEASURED 2026-08-23, boarding a bathysphere: CalcView reports fov=100.0 for
+// the whole ride, and on the frame the forced move begins the renderer switches
+// to 80 deg (`rendered tanH 0.8391 = 80.0 deg vs option 100.0`). The mod does
+// the honest thing with that - it re-claims the layer at the measured 80 - and
+// the honest thing is what the player sees as a bug: the picture is correct and
+// still full-resolution, but it only fills 80 deg of a wider headset, so it sits
+// in a small box with black all round.
+//
+// So the fix is not on the claim side. It is to stop the narrowing.
+//
+// PORTED FROM BRVR's ClampWorldFov, with its shape and NOT its numbers: two
+// fields written together, snapped only when they move the wrong way, never a
+// fixed per-frame write. BRVR measured 75 -> 60; this build reads 100 -> 80.
+//
+// SELF-CALIBRATING, because there is no good constant to hardcode. The value to
+// restore is whatever the lens read during ordinary gameplay, which already
+// accounts for the user's FOV option, so it is sampled continuously while no
+// scene owns the camera and only replayed while one does.
+//
+// GATED, and the gate is the load-bearing part. BRVR's own CONSOLIDATION.md
+// names the hazard: this mod's cutscene detector has a leg that fires when the
+// game renders a different fov than it claims, and clamping deletes exactly
+// that evidence. Restricting the guard to the boarding-plus-ride window keeps
+// the leg intact everywhere else, and it is also why weapon zoom is safe -
+// Hands::FadeFOV drives the same field down when you scope, and you cannot
+// scope on a bathysphere.
+//
+// The window is `forced_move() || bathysphere()` and not `bathysphere()` alone:
+// the narrowing lands 1.2 s BEFORE the ride flag, on the frame the forced move
+// begins, which is the moment the player presses A.
+constexpr float kWorldFovEpsilon = 0.5f;
+
+void clamp_world_fov(void* pc) {
+    if (!pc || !g_worldFovGuard.load(std::memory_order_relaxed)) return;
+
+    float live = 0.0f;
+    if (!read_f32(pc, patterns::kPcWorldFovOffset, &live)) return;
+    if (!(live > 1.0f) || !(live < 170.0f)) return; // not a lens; leave it alone
+
+    const bool sceneOwnsLens = forced_move() || bathysphere();
+
+    if (!sceneOwnsLens) {
+        // Ordinary gameplay: this IS the value to restore. Remembered rather
+        // than derived, so the user's own FOV option needs no separate read.
+        g_worldFovGameplay = live;
+        return;
+    }
+    const float want = g_worldFovGameplay;
+    if (!(want > 1.0f)) return; // never seen gameplay yet - nothing to restore
+
+    // ONLY THE NARROW SIDE. A scene that opens the lens WIDER than gameplay is
+    // not the defect being fixed here, and snapping that back would be an
+    // unrequested content change.
+    if (live >= want - kWorldFovEpsilon) return;
+
+    const bool a = write_f32(pc, patterns::kPcWorldFovOffset, want);
+    const bool b = write_f32(pc, patterns::kPcWorldFovMirrorOffset, want);
+    g_worldFovSnaps.fetch_add(1, std::memory_order_relaxed);
+
+    static unsigned long long lastLog = 0;
+    const unsigned long long now = GetTickCount64();
+    if (now - lastLog >= 2000) {
+        lastLog = now;
+        BVR_LOG("[b1r] worldfov: scene narrowed the lens to %.1f - snapping both fields "
+                "back to %.1f (+0x%03X %s, +0x%03X %s, %s)",
+                live, want, patterns::kPcWorldFovOffset, a ? "ok" : "FAILED",
+                patterns::kPcWorldFovMirrorOffset, b ? "ok" : "FAILED",
+                bathysphere() ? "bathysphere ride" : "forced move");
+    }
+}
+
 void observe(void* playerController, int gameYawUnits, float turnStickX) {
     if (!enabled()) {
         // Say so ONCE. The switch exists to take this module out of the frame
@@ -540,6 +642,11 @@ void observe(void* playerController, int gameYawUnits, float turnStickX) {
         }
         return;
     }
+    // The lens guard runs before anything can early-return: a scripted camera
+    // narrows it on the same frame the forced move begins, and a frame missed
+    // there is a frame the player sees boxed.
+    clamp_world_fov(playerController);
+
     // The comfort accumulators advance HERE, before any early return, because
     // observe() is the one thing in this module that runs on every single
     // CalcView. The first version drove them from inside the head-drive block
@@ -773,6 +880,21 @@ int yaw_adjust_units() {
 
 float freeze_offset_deg() { return g_freezeOffsetUnits / kRotUnitsPerDegree; }
 float scripted_turn_deg() { return g_scriptedTurnUnits / kRotUnitsPerDegree; }
+
+bool world_fov_guard() { return g_worldFovGuard.load(std::memory_order_relaxed) != 0; }
+
+void set_world_fov_guard(bool on) {
+    if (g_worldFovGuard.exchange(on ? 1 : 0, std::memory_order_relaxed) != (on ? 1 : 0))
+        BVR_LOG("[b1r] worldfov guard %s (a scripted camera %s narrow the world lens "
+                "below its gameplay value; snaps so far %u)",
+                on ? "ON" : "off", on ? "may not" : "may",
+                g_worldFovSnaps.load(std::memory_order_relaxed));
+}
+
+void world_fov_readout(float* gameplay, unsigned* snaps) {
+    if (gameplay) *gameplay = g_worldFovGameplay;
+    if (snaps) *snaps = g_worldFovSnaps.load(std::memory_order_relaxed);
+}
 
 bool hide_rig_in_scenes() { return g_hideRig.load(std::memory_order_relaxed) != 0; }
 
@@ -1038,6 +1160,30 @@ void draw_debug_ui() {
 
     ImGui::Separator();
     ImGui::TextDisabled("DURING A SCRIPTED SCENE");
+
+    bool fovGuard = world_fov_guard();
+    if (ImGui::Checkbox("Keep the world lens at its gameplay width", &fovGuard))
+        set_world_fov_guard(fovGuard);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "A scripted camera can narrow the world FOV without CalcView ever\n"
+            "reporting it - measured on the bathysphere as 100 -> 80 degrees on the\n"
+            "frame you press A. The mod then honestly re-claims the layer at the\n"
+            "narrower value, and you see the picture in a small box with black all\n"
+            "round it: correct image, full resolution, just not filling the headset.\n\n"
+            "This snaps the lens back instead. It only ever WIDENS a narrowed lens\n"
+            "back to what gameplay was using, and only while boarding or riding, so\n"
+            "weapon zoom is untouched."
+            );
+    {
+        float gameplayFov = 0.0f;
+        unsigned snaps = 0;
+        world_fov_readout(&gameplayFov, &snaps);
+        if (gameplayFov > 1.0f)
+            ImGui::Text("lens      gameplay %.1f deg   snaps %u", gameplayFov, snaps);
+        else
+            ImGui::TextDisabled("lens      no gameplay sample yet");
+    }
 
     bool freezeHands = freeze_hands_in_scenes();
     if (ImGui::Checkbox("The engine owns your hands", &freezeHands))

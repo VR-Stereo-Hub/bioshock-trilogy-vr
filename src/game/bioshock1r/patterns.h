@@ -547,6 +547,28 @@ inline constexpr uint32_t kPawnForegroundFovOffset = 0x558; // research; not a r
 // address (the pawn's eye height). The session-13 "+0x558 non-lever" verdict
 // stands; this is its correction.
 inline constexpr uint32_t kPcForegroundFovOffset = 0x460;
+// THE WORLD FOV, and its mirror. Both floats on the PLAYERCONTROLLER, both
+// already derived in this tree for another purpose: the foreground scene-node
+// ctor below is passed `float PC+0x45C` (the world lens, default 75.0) beside
+// PC+0x460 (the foreground one), and the note on PC+0x65C records the
+// "75/75/60 fov floats" sitting at PC+0x648..0x650. Named here because s65
+// needs to WRITE them, not merely read them.
+//
+// A SCRIPTED CAMERA NARROWS THESE AND CalcView NEVER SAYS SO. Measured
+// 2026-08-23 on the bathysphere: CalcView keeps reporting fov=100.0 for the
+// whole ride while the renderer switches to 80 deg on the frame the forced
+// move begins (`rendered tanH 0.8391 = 80.0 deg vs option 100.0`). Rendering
+// narrower than we claim to OpenXR is what puts the picture in a small box
+// with black all round it - the image is correct and full-resolution, it just
+// occupies less of the headset than the layer says it does.
+//
+// BRVR reached the same two fields independently (`ClampWorldFov`,
+// `BioshockVR/Game/GameState.cpp`, its `WorldFovOffset`/`WorldFovOffset2`) and
+// measured the narrow side as 75.0 -> 60.0 there. THE NUMBERS DO NOT TRANSFER
+// - this build reads 100 -> 80 - but the OFFSETS agree with the derivation
+// already in this file, which is the corroboration that matters.
+inline constexpr uint32_t kPcWorldFovOffset = 0x45C;
+inline constexpr uint32_t kPcWorldFovMirrorOffset = 0x648;
 // cb0 fingerprint: floats 12..18 of every foreground draw hold the constant
 // screen-ray block (2*tanH, 0, -tanH, 0, 0, -2*tanV, tanV) of the fixed
 // projection; the capture spans floats 36..59 (viewport block, then the
