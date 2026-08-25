@@ -1198,8 +1198,14 @@ void assert_crosshair(uint64_t now) {
     // right where the panel is, and reads as a smudge on the menu. This is a
     // suppression, not a setting change: the `due` test below is edge-driven,
     // so it hides on open and comes back on close.
+    // ...and hidden while a scripted scene owns the view, for the same reason
+    // the aim dot and laser are (bvr::vr::publish_scene_active): you are not
+    // aiming during a cutscene, and a reticle pinned to the middle of a camera
+    // you are not steering reads as a smudge on the scene. Suppression, not a
+    // setting change - the edge-driven `due` test below brings it back when the
+    // scene ends, exactly as it does when the panel closes.
     int want = (g_crosshairVisible.load(std::memory_order_relaxed) &&
-                !bvr::overlay::visible())
+                !bvr::overlay::visible() && !scripted::scene_owns_aim())
                    ? 1
                    : 0;
     bool due = want != g_crosshairApplied ||
@@ -2128,6 +2134,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     }
     scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
     bvr::vr::publish_ui_pause(panelUp && !sceneOwnsPanel);
+    // Suppress the aim laser and the aim dot while a scene owns the view. The
+    // game's own reticle is NOT this call - it goes out through the engine SET
+    // handler in assert_crosshair, which reads the same predicate so the three
+    // can never disagree.
+    bvr::vr::publish_scene_active(scripted::scene_owns_aim());
 
     {
         int32_t moved = body::on_calcview(self, viewActor ? *viewActor : nullptr,

@@ -129,6 +129,7 @@ bool read_ptr_at(const void* obj, uint32_t off, void** out) {
 // The world FOV guard. Game thread owns g_worldFovGameplay; the switch and the
 // counter are read by the F10 overlay thread.
 std::atomic<int> g_worldFovGuard{1};
+std::atomic<int> g_hideAimInScenes{1};
 std::atomic<uint32_t> g_worldFovSnaps{0};
 float g_worldFovGameplay = 0.0f;
 
@@ -883,6 +884,25 @@ float scripted_turn_deg() { return g_scriptedTurnUnits / kRotUnitsPerDegree; }
 
 bool world_fov_guard() { return g_worldFovGuard.load(std::memory_order_relaxed) != 0; }
 
+bool hide_aim_in_scenes() {
+    return g_hideAimInScenes.load(std::memory_order_relaxed) != 0;
+}
+
+void set_hide_aim_in_scenes(bool on) {
+    if (g_hideAimInScenes.exchange(on ? 1 : 0, std::memory_order_relaxed) == (on ? 1 : 0))
+        return;
+    BVR_LOG("[b1r] scripted: crosshairs during a scene are %s (aim dot, laser and the "
+            "game's own reticle together)",
+            on ? "HIDDEN" : "left alone");
+}
+
+// One predicate for all three suppressions. Wider than the lens guard's on
+// purpose - see the header. Answers false with the module off, so the module
+// switch really does take everything with it.
+bool scene_owns_aim() {
+    return enabled() && hide_aim_in_scenes() && (scripted_window() || bathysphere());
+}
+
 void set_world_fov_guard(bool on) {
     if (g_worldFovGuard.exchange(on ? 1 : 0, std::memory_order_relaxed) != (on ? 1 : 0))
         BVR_LOG("[b1r] worldfov guard %s (a scripted camera %s narrow the world lens "
@@ -1160,6 +1180,23 @@ void draw_debug_ui() {
 
     ImGui::Separator();
     ImGui::TextDisabled("DURING A SCRIPTED SCENE");
+
+    bool hideAim = hide_aim_in_scenes();
+    if (ImGui::Checkbox("Hide every crosshair", &hideAim)) set_hide_aim_in_scenes(hideAim);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Three separate things, one switch, because during a cutscene none of\n"
+            "them is telling you anything:\n\n"
+            "  the aim DOT      a core quad layer\n"
+            "  the aim LASER    a core quad layer\n"
+            "  the game's own RETICLE, through the engine's SET handler\n\n"
+            "All three are suppressed, not turned off - your laser and reticle\n"
+            "settings are untouched and come straight back when the scene ends.\n\n"
+            "Covers rides (the bathysphere) as well as scripted scenes: you are\n"
+            "not aiming on either, and a reticle pinned to the middle of a camera\n"
+            "you are not steering reads as a smudge on the picture.");
+    ImGui::TextDisabled("     crosshairs are %s RIGHT NOW",
+                        scene_owns_aim() ? "SUPPRESSED - a scene owns the view" : "live");
 
     bool fovGuard = world_fov_guard();
     if (ImGui::Checkbox("Keep the world lens at its gameplay width", &fovGuard))
