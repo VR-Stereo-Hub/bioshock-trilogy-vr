@@ -10,27 +10,39 @@ here override any habit of committing straight to the checked-out branch.
 
 ## The one rule
 
-**Never commit or push to `main`.** Not a hotfix, not a one-line doc typo, not "it is
-obviously safe". `main` moves only through a merged pull request.
+**Never commit or push to `main` or `staging`.** Not a hotfix, not a one-line doc typo,
+not "it is obviously safe". Both move only through a merged pull request.
 
-The reason is not ceremony. `main` is what both of us branch from and what releases are
-cut from. A direct push rewrites the ground under whatever the other person branched an
-hour ago, and the conflict shows up later, in someone else's unrelated work, where it is
-expensive to untangle.
+`staging` is the day-to-day integration branch: work that is tested but not yet ready for
+a release. Your feature branches PR into `staging`; `main` receives a single
+`staging` -> `main` PR when a release is ready, and the tag is cut from `main` after it.
+
+The reason is not ceremony. `staging` is what both of us branch from, and `main` is what
+releases are cut from. A direct push rewrites the ground under whatever the other person
+branched an hour ago, and the conflict shows up later, in someone else's unrelated work,
+where it is expensive to untangle. Going through a PR is also how you *find out* there is
+a conflict at all, while it is still cheap to fix and re-test.
 
 ## The loop
 
 ```bash
-git checkout main
+git checkout staging
 git pull
 git checkout -b <type>/<short-topic>
 # ... work, commit, commit ...
 git push -u origin <type>/<short-topic>
-gh pr create --base main
+gh pr create --base staging --draft
 ```
 
-Then: review, address comments, merge, delete the branch. Release tags are cut from
-`main` after the merge, never from a branch.
+Then: review, address comments, merge, delete the branch.
+
+Open the PR **at every good stopping point** - a feature that works and has been tested -
+rather than saving it all for the end. Small and frequent is what lets the other person
+join a subject while it is still in flight, and it is how conflicts stay small. A large
+roll-up PR is for the end of a cycle, not the norm.
+
+Releases are their own step: a `staging` -> `main` PR, then the tag is cut from `main`
+after that merge, never from a branch.
 
 ### Branch names
 
@@ -55,15 +67,15 @@ subject stops being reviewable, which is the whole point of the exercise.
 
 ### Keep your branch fresh
 
-If `main` moves while you are working, bring it in rather than letting the gap grow:
+If `staging` moves while you are working, bring it in rather than letting the gap grow:
 
 ```bash
 git fetch origin
-git rebase origin/main
+git rebase origin/staging
 ```
 
 Rebase while the branch is yours alone and unpushed, or pushed but not yet under review.
-Once someone has started reviewing it, use `git merge origin/main` instead: a rebase
+Once someone has started reviewing it, use `git merge origin/staging` instead: a rebase
 rewrites the commits the reviewer has already read, and their comments end up attached
 to hashes that no longer exist.
 
@@ -140,15 +152,23 @@ Do not squash: the individual commits are the reviewable unit and squashing thro
 the reasoning in their bodies. Delete the branch after merge; it is recoverable from the
 PR forever.
 
+If the PR reports a conflict, fix it **on the branch and re-test it there** before
+merging. A conflict resolved blind at merge time is how a tested feature stops being one.
+
 ## Releases
 
-Cut from `main`, after the merge, never from a branch. Version bump, release notes and
-tag are their own `chore/` PR so that the tag lands on a reviewed commit.
+A release is a `staging` -> `main` PR, then the tag is cut from `main` after that merge,
+never from a branch. Version bump, release notes and tag are their own `chore/` PR so that
+the tag lands on a reviewed commit.
 
 ## Working notes for agents
 
+- **Never merge without the user confirming it first.** Committing and opening PRs is
+  yours to do - that is what the flow above is for, and an open or draft PR changes
+  nothing until it is merged. The merge is the irreversible step: show what is about to
+  land and wait for a yes. Finishing a feature is not permission to merge it.
 - **Branch first, before the first edit.** The most common agent failure here is making
-  three good commits on `main` and only then noticing. Check `git branch --show-current`
+  three good commits on `staging` and only then noticing. Check `git branch --show-current`
   before you write anything.
 - **Do not push someone else's branch,** including one an agent created in a previous
   session, unless you are explicitly continuing that work.

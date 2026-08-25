@@ -66,6 +66,48 @@ void release(const char* why);
 // behind at the moment a cutscene started or ended. Game thread.
 void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid);
 
+// s64 arm hide, mechanism half: model-space motion of one ENGINE-OWNED wrist
+// since the previous call, peak-held. Model space matters - the actor tracks the
+// camera every frame, so a world-space measurement reads "moving" constantly.
+//
+// RETURNS FALSE WHEN IT CANNOT ANSWER (both clusters driven). The caller must
+// treat that as "cannot say" and fail toward SHOWING the arms: the failure on
+// record is arms hidden for a whole scene, and there is no matching one for arms
+// shown for a frame. `outRaw` is the un-smoothed value, logged to calibrate the
+// threshold. Game thread. Derivation in ENGINE_NOTES.
+// Returns false until TWO samples exist - one reading is not a difference, and
+// calling that "still" hid the arms on the first frame of the first scene.
+// `outPos` is the sampled bone's own position, so a zero delta can be told apart
+// from an array that is no longer being evaluated. That distinction settled the
+// hide mechanism: the array does NOT stay live behind an actor hidden by
+// DrawScale3D (293 consecutive samples, 0 of 47 bones moving), which is why the
+// rig is hidden by collapsing bones with the actor left at full scale.
+// `outStale` is set when the bone still holds the collapse WE wrote, meaning the
+// engine has not re-evaluated since and there is no new pose to difference. The
+// caller must then leave the motion state untouched - it is not "no motion" and
+// it is certainly not the 5000-unit spike that differencing it produces.
+bool hand_motion(void* handsActor, float* outSmoothed, float* outRaw, float outPos[3],
+                 bool* outStale);
+
+// Ask the engine to re-evaluate the bone array this frame. Call once per frame
+// for as long as anything is READING the array while the drive is stood down -
+// release() sets the dirty byte once and then early-returns, so without this the
+// render pass stops rebuilding and every array-derived signal silently freezes.
+// See the banner in the .cpp for the measurement that made this necessary.
+void keep_evaluating(void* handsActor);
+
+// Hide the rig's GEOMETRY while leaving the actor in the render set, so the
+// engine keeps animating it and anything read from the bone array stays honest.
+// Call every frame for as long as it should stay hidden - it is write-only and
+// has no restore path, because the engine's own evaluation puts the authored
+// pose back the moment this stops. end_collapse() re-flags the array on the way
+// out. See the banner in the .cpp for the measurement behind it.
+void collapse_rig(void* handsActor);
+void end_collapse(void* handsActor);
+
+// Which bone hand_motion() is measuring, or -1 when both clusters are ours.
+int motion_bone();
+
 // Session 19: collapse the whole INACTIVE hand's cluster + sleeve while the
 // other hand drives (default ON; `vrhands hideinactive on|off`). The
 // weapon-attach bone hides by translation, never scale - the attach path

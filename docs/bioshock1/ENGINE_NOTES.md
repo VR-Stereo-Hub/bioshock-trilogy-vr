@@ -3778,3 +3778,626 @@ Worth recording because the config was never wrong. The log echoed
 the runtime` 100 s later, so both ends worked. What went wrong was **the
 controllers repeatedly unbinding mid-session** - see STATUS. Before suspecting
 the modifier again, check the census timestamps.
+
+## Session 64 (2026-08-22) - scripted EVENTS: three offsets ported from BRVR, and what re-derives them
+
+**Source: the BRVR mod** (`docs/brvr-reference/BioshockVR/Game/GameState.cpp`,
+its M7-S1/S4/S5/S6 banners). Everything below is BRVR's measurement, cited so it
+is not re-derived from scratch, plus the checks this tree adds because a
+carried-over offset is a guess until this build agrees with it.
+
+**These are not cutscene signals.** The cutscene detector here is `wantCine` in
+`src/core/vr/openxr_runtime.cpp` and it is already the stronger of the two mods'
+- BRVR's own `docs/CONSOLIDATION.md` records that BRVR shipped exactly one
+cutscene signal (the letterbox bar draw, `DrawHook_CutsceneBarsActive()`) and
+**never wired a caller to it**, while that same draw is `bar_draw_active()` here,
+consumed, and combined with four signals BRVR has none of. Nothing in the
+cutscene path was touched. What was missing here is the *scripted sequence*
+question: the world renders, the HUD may be up, and the game is moving the player
+through an authored moment.
+
+### hands+0x594 bit 2 - CurrentlyExecutingScriptedHandAnimationSequence
+
+`Hands.uc` lines 80-82 are three consecutive bools, and UE2 packs consecutive
+bools into one DWORD:
+
+| bit | field |
+|---|---|
+| 0 | `bFinishedStateAnimations` |
+| 1 | `AbilityHasBeenReleased` |
+| 2 | `CurrentlyExecutingScriptedHandAnimationSequence` |
+
+BRVR computed the DWORD's address by walking the field list from its proven
+`+0x494`/`+0x498` anchor. **The walk is the weak link, not the bit.**
+
+**MEASURED, BRVR M7-S1, 2026-08-10:** the bit set 0.8 s after the tester marked a
+scripted scene starting and cleared 0.75 s before they marked it ending - both
+inside reaction time on the marker key - and fired **exactly once** in six
+minutes covering weapon fire, plasmid fire, four gene-machine opens, a Little
+Sister rescue and walking. Zero false positives.
+
+**WHAT IT DOES NOT COVER, measured in the same run:** the Little Sister **rescue**
+and the **EVE injection** both leave this bit clear. They are Hands *states*
+(`ExorcisingGatherer`, `InjectingEve`), a different mechanism. **A build in which
+a rescue fires this signal has a wrong offset - it has not improved on BRVR.**
+That is the sharpest single test of the port.
+
+**FALSIFIED, BRVR M7-S3 - do not gate anything on bit 0.** It is
+`bFinishedStateAnimations` and it looked perfect, but gating the arms on it
+produced *opposite* failures in two scenes: arms hidden for the whole Little
+Sister crawl, arms stuck visible and frozen on the plasmid balcony. `state
+PlayingScriptedHandAnimation` has an **empty body** and never touches the flag,
+so during the crawl it kept the `true` left over from the last weapon state.
+
+### pawn+0x464 bit 1 - Pawn.bCannotFall (the bathysphere)
+
+`Pawn.uc` line 46. Pawn's own fields start at the `AActor` base `0x450`; lines
+13..44 are exactly 32 bools - one full DWORD at `+0x460` - so the next three
+start a fresh one:
+
+| offset | contents |
+|---|---|
+| `+0x460` | lines 13..44, thirty-two bools, one DWORD exactly |
+| `+0x464` bit 0 | `ShouldNotTakeDamageOnNextLanding` |
+| `+0x464` bit 1 | `bCannotFall` |
+| `+0x464` bit 2 | `bUseHavokRigidBodyCapsuleCollisions` |
+
+**THE ORACLE.** `ShockPlayer` defaults bit 2 **true**, and
+`ActionEnableBathysphereModeForPlayer` clears it in the same call that sets bit
+1. So entering a ride must flip **bit 1 up and bit 2 down in the same write** -
+two bits moving in opposite directions at once is not something a wrong offset
+produces by chance. Every edge logs both bits and says whether the oracle held,
+so the offset can be confirmed or refuted straight out of the log.
+
+It exists so the rotation comfort settings can **leave a ride alone**: a
+bathysphere is not a scripted animation, so without this signal a rotation freeze
+applies there too and the camera stops following the sphere. BRVR shipped that
+exact bug for as long as the signal was missing, and could not fix it by level
+name because the mod does not know what map it is on.
+
+### controller+0x9E0 - ShockPlayerController.bIsForcingPlayerMove
+
+`ShockPlayerController` pushes `NullInput` and then calls `StartForcePlayerMove`,
+which **interpolates** the player into position and heading *before* the scripted
+animation begins. Through that whole window the hands flag is still false.
+
+**It could not be computed.** Six interface-typed fields (`ICanBeUsed`,
+`ICanBeFocused`, `ICanBeHacked`) plus a `TArray` sit between the class base and
+the flag, and interface size in this fork is unknown - an unknown that compounds
+six times. BRVR found it by **differential probe** (M7-S5) and correlated it
+across three events whose durations differ by 24x - 1.0 s ("went straight in"),
+0.24 s (instant), 5.75 s ("the slewing") - each matching an independent tester
+report. The flag drops 0.09 s after the scripted animation begins.
+
+**Shape check, every read.** A lone bool is exactly 0 or 1. Anything else means a
+stale pointer or a wrong offset, which is not hypothetical: BRVR caught its own
+bathysphere read doing precisely that.
+
+### The held window - ONE SCENE, ONE WINDOW
+
+A scene raises the two signals **in sequence**: the forced move walks you into
+place, then the scripted animation plays. They normally overlap, so nothing
+downstream sees a gap.
+
+**The order is not guaranteed.** BRVR measured the Little Sister crawl, 2026-08-11:
+
+```
+22:46:10.556  FORCEDMOVE: --- forced move done ---
+22:46:10.557  SCRIPTED: aim released back to the player   <- the collapse
+22:46:10.561  SCRIPTED: *** SCRIPTED ANIMATION BEGAN ***  <- 5 ms later
+```
+
+One frame at 231 CalcView/s. Its camera hook released the aim in it, re-armed its
+base from an aim field that happened to read exactly (0,0), and the field sat
+**18.6 deg off the pawn for the whole 58-second scene**. So the pair is held:
+rises instantly, falls only after the hold with neither signal set. Held in the
+producer, not the consumer, because consumers layer different policies on top.
+
+### What re-derives all three here, rather than trusting them
+
+The rule is that an offset carried between builds is a guess until this build
+agrees with it. This tree has something BRVR did not - **`fname_text()`, FName
+index resolved to text via `GNames`** - so the anchor check is stronger here than
+the one BRVR had to settle for ("does this field *shape* like a name"):
+
+1. **Object identity.** The hands actor's own `UObject` name (`+0x28` ->
+   `fname_text`) must read `PlayerHands`. patterns.h already records that
+   cross-check.
+2. **The walk.** All four FName slots the same field walk produces - `+0x498`
+   `HandsOffscreenAnimationName`, `+0x4B8` `InjectingEveAnimationName`, `+0x4D8`
+   `ExorcisingGathererAnimationName`, `+0x558` `CurrentScriptedAnimationName` -
+   must resolve to non-null text. Four points along the walk's length.
+3. **The pawn.** `Hands.Base` at `hands+0x450` must pass
+   `body::is_gameplay_view()`, i.e. carry `kShockPlayerVtableRva`.
+4. **The bool.** `ctl+0x9E0` must read exactly 0 or 1.
+
+Any failure logs loudly and holds **every** signal false. Nothing is gated on a
+value the check cannot stand behind.
+
+**MEASURED AND NOT KEPT, BRVR M7-S2:** `+0x558` read `None` (index 0) for an
+entire run *including* throughout a scripted sequence. Animation-level naming
+does not come from that field, and the index-comparison idea it was going to
+enable is unproven. It is an anchor slot here and nothing more.
+
+### The three invariants that came with the port
+
+All three were bought expensively in BRVR (`docs/brvr-reference/docs/INVARIANTS.md`
+- *Locomotion and the aim field*) and none of them should be relearned:
+
+1. **Never write `Controller.Rotation` while a sequence is moving the player.**
+   Three balcony falls entered far right, straight on and far left and all landed
+   on the same spot with no write. With a heading substituted in, both
+   straight-on runs landed badly wrong. **The write itself is the damage.**
+2. **Never let the window break mid-scene.** A per-frame "are you still in
+   control" predicate over the HUD threw one landing 3.7 m. That is what the hold
+   exists for.
+3. **Follow the camera alone, never the camera and the aim field.** They are not
+   independent - the balcony's opening snap moves both by 41.03 deg/s, so
+   following both applied it twice and the view finished a whole snap past the
+   authored heading. The measurement that originally justified following both was
+   a deg/s average over 67 seconds, **and a rate cannot see a one-frame spike.**
+
+### Where the game's rotation actually reaches the player here - measured against this tree
+
+Worth writing down because it is not what the BRVR port would suggest, and it
+changed what the comfort work had to be.
+
+During **ordinary VR gameplay** `camera.cpp` overwrites `rot->pitch` and
+`rot->roll` **absolutely** from the head, and writes yaw as `gameYaw +
+headResidual`. So the game's screen shake, weapon kick and auto-pan **already
+never reach the player in pitch or roll** - that fell out of the head drive years
+of sessions ago and nobody wrote it down. Only yaw passes through.
+
+The authored rotation reaches the player in exactly one case: **when the head
+drive does not run at all**, and CalcView's rotator passes through untouched.
+That is a scripted or cinematic camera taking the view (and, incidentally, a
+menu - which is why the comfort policy also requires a scene to be active).
+
+**Consequence:** BRVR's `FreezeGameplayRotation`, which exists to kill shake and
+kick during play, would be **largely redundant here** - the axes it targets are
+already gone. What is left of it is a yaw latch, which is the risky axis (it
+feeds `body::on_calcview` and the pawn's facing) for a much smaller prize. It was
+deliberately not ported. `ScriptedRotationFollow`'s job, by contrast, lands
+cleanly and is what shipped.
+
+## Session 64 part 2 (2026-08-22) - the offsets confirmed, and PausePC.swf
+
+### All three offsets CONFIRMED in a headset run
+
+The part-1 build was diagnostic and the run settled every question it asked.
+
+**The anchor resolved four real, semantically correct names**, which is a
+stronger result than "four slots resolved":
+
+```
+scripted: anchor ok - PlayerHands confirmed, 4/4 name slots resolve
+          (+0x498 'HandsDown', +0x4B8 'Eve_ArmJab',
+           +0x4D8 'GathererSave_Heal', +0x558 'None')
+```
+
+`HandsOffscreenAnimationName` reads `HandsDown`, `InjectingEveAnimationName`
+reads `Eve_ArmJab`, `ExorcisingGathererAnimationName` reads `GathererSave_Heal`.
+Those are the right *meanings*, not just well-formed names, so the field walk
+behind `hands+0x594` is standing exactly where the derivation says.
+
+**The bathysphere two-bit oracle held on BOTH edges:**
+
+```
+23:07:19.626  bathysphere ON   (pawn+0x464 = 00000002, bCannotFall=1 havokCapsule=0 - oracle HOLDS)
+23:08:14.929  bathysphere off  (pawn+0x464 = 00000004, bCannotFall=0 havokCapsule=1 - oracle HOLDS)
+```
+
+Bits 1 and 2 moving in opposite directions in the same write, both times. That is
+not something a wrong offset produces by chance.
+
+**The held window earned itself on the first run:**
+
+```
+23:11:25.323  forced move BEGAN
+23:11:26.415  --- forced move done ---
+23:11:26.424  *** SCRIPTED ANIMATION BEGAN ***
+23:11:26.424  window bridged a 16 ms gap between the two signals
+```
+
+Nine milliseconds of daylight between the two signals - the exact defect BRVR
+measured on the Little Sister crawl, reproduced here immediately. Without the
+hold, anything reading the pair would have seen the scene end and restart.
+
+`forced move` also bracketed the bathysphere boarding at 1.22 s (23:07:18.393 to
+23:07:19.617), consistent with BRVR's 1.0 s "went straight in" measurement.
+
+### PausePC.swf is on the movie stack during rides and scripted scenes
+
+**The finding that fixed two reported defects at once.** `PausePC.swf` is not
+only the pause menu: the game keeps it on the playing-movie stack for the whole
+of a bathysphere ride and every scripted scene, at `(2 playing)` rather than the
+`(1 playing)` seen at a real pause.
+
+`screens::panel_screen_up()` matched it, that fed `publish_ui_pause(true)`, and
+`uiPaused` is an unconditional term in core's `wantCine`:
+
+```
+23:07:56.892  screens: top = "..\FlashMovies\PausePC.swf" (2 playing) -> PANEL
+23:07:56.928  xr: cinematic quad ON (strict=1 stale=0 fovMismatch=1 screenOnly=0 uiPaused=1)
+23:08:14.929  screens: top = "..\FlashMovies\HUDRadial.swf" -> gameplay
+23:08:14.929  scripted: bathysphere off              <- the same millisecond
+```
+
+Two user-visible consequences, reported independently and diagnosed as one cause:
+
+1. **The ride rendered on a head-locked quad** - "a square that is headlocked
+   with black behind it" - instead of in stereo.
+2. **The head was dead during scripted scenes.** `cinematic_active()` also gates
+   the head drive in `CalcViewDetour`, so `driveHead` was false and looking
+   around did nothing: "you stay looking wherever the game wants you to look,
+   which feels very bad".
+
+**Two candidates ruled out rather than assumed.** `g_cineStereo` already defaults
+**true**, so the `fovMm && !stereoCine` term contributes nothing even though the
+scripted camera genuinely renders 80 deg against a claimed 100. And `screen-only`
+engaged 5 s *after* the quad (23:08:02 vs 23:07:56), so it is downstream of the
+quad rather than a trigger. **`uiPaused` was the sole cause.**
+
+The fix is one gate in the adapter: a panel screen is only a UI pause when no
+scripted window is open and no bathysphere ride is running. At a real pause menu
+neither signal is set, so that path is untouched; hack/loading/FMV screens arrive
+through `screen_only()` and are untouched too.
+
+### Writing the aim field during a forced move throws the landing
+
+**Measured from a headset 2026-08-23, as a clean pair.** In a scripted event,
+looking around with the head and right stick landed the player "way off" the
+intended spot; holding head and stick completely still landed "in the exact right
+spot". Same scene, same build, one variable.
+
+`ctl+0x1E4` (`kActorViewDirOffset`, `Controller.Rotation`) is what a forced move
+steers by, and it is the same field `body.cpp`'s transfer writes every frame to
+keep the pawn's yaw under the player's head. So looking around re-aims the
+interpolation the game is running.
+
+**This is BRVR graveyard entry 16 reproduced**: *"A forced move steers by nothing
+of ours - three balcony falls entered far right, straight on and far left all
+landed on the same spot. The write itself is the damage."*
+
+**Why it only appeared in s64.** Part 2's `PausePC.swf` fix made the head drive
+live during scripted scenes, deliberately, so the player could look around
+instead of being pinned. That made `vrDriving` true inside a scene for the first
+time - which switched the body transfer on inside them too. One fix, two
+consequences, and only the intended one was considered.
+
+**The gate uses the HELD window, not the raw signal.** Entry 16's second half:
+*"never let the window break mid-scene - a per-frame 'are you still in control'
+predicate over the HUD did exactly that and threw one landing 3.7 m."*
+`scripted_window()` bridged a real 16 ms gap on its first run here. The
+bathysphere is included for the same reason with a different mover.
+
+**No turn-axis kill goes with it.** Graveyard entry 12: zeroing `sThumbRX` freezes
+`Controller.Rotation`, which forced-move sequences steer by, and the opening
+bathysphere walked into the back wall. This repo has never zeroed it and must not
+start.
+
+#### What the probe proved on the way, and it matters architecturally
+
+BRVR's `WalkDriftProbe`, ported as `vrbody walkprobe`, logged `pub -0.0` and
+`camYaw == pawnYaw` on **all 25 samples** of a normal walking run. The
+head-relative *stick rotation* lane is therefore inert in ordinary play: the body
+transfer keeps the pawn glued to the camera, so the angle it would rotate by is
+always zero.
+
+**The two mods take opposite routes to the same feature.** BRVR redirects walking
+by rotating the movement *stick* and never writes the aim field - `walk =
+aimFieldYaw + stickAngle + R` - which leaves aim, the weapon trace and
+forced-move sequences untouched by construction. This mod writes the field and
+treats the stick rotation as a correction that measurement shows never fires.
+**That difference is precisely why BS1 had a scripted-landing bug BRVR does not.**
+Gating the write fixes the symptom; the architectural difference is worth
+remembering before the next feature is built on the field write.
+
+A consequence worth writing down so it is not re-derived: **`moveYawSign` is not
+the walking-direction lever it looks like.** It scales a value that is almost
+always zero. It was flipped in a headset and changed nothing, which is the
+expected result, not evidence about the sign.
+
+### The arms during a scene: MOTION answers what the flag cannot
+
+**s64 round 7/8, 2026-08-23.** The arm hide's first predicate was
+`scripted_window() && !scripted_anim()` - hide while the game is walking you into
+position, show the moment an authored animation starts. It never fired once, and
+the log shows it was **right not to**:
+
+```
+02:37:24.155  scripted: *** SCRIPTED ANIMATION BEGAN ***  (hands+0x594 = 00000006)
+02:37:24.163  scripted: forced move BEGAN                 (ctl+0x9E0 = 1)
+```
+
+The animation flag was already true on the FIRST frame of the window, so
+`!scripted_anim()` was false throughout and the arms stayed up. **The mechanism
+was never the problem; the question was.** `hands+0x594` bit 2 answers *"is a
+scripted sequence running"*, and a scene holds a pose for seconds in the middle
+of one with the bit high the whole time. *"Do the hands have anything to do right
+now"* is a different question and no flag on this actor answers it - BRVR reached
+the same place from the other side and records `bFinishedStateAnimations` as
+falsified for precisely this (see the M7-S3 note above).
+
+**So measure the rig instead.** `bones::hand_motion()` differences one wrist's
+component-space `hkQsTransform` against the previous CalcView:
+
+```
+raw = |dp| + (1 - |dot(q, qPrev)|) * 50
+smoothed = max(raw, smoothed * 0.90)      // peak-hold with decay
+```
+
+- **Component space is what makes it honest.** The whole rig actor tracks the
+  camera every frame, so a world-space measurement reads "moving" constantly.
+  Only animation registers in the bone array's own frame.
+- **The `* 50` is arbitrary by construction** and must not be read as a
+  measurement. It only makes a small rotation comparable to a small translation.
+  The threshold is meaningful *only* against it, which is why the raw and
+  smoothed values are logged at 2 Hz inside a window rather than a constant being
+  shipped and trusted.
+- **The quaternion term is not optional.** A wrist can rotate in place without
+  its position moving at all, so `|dp|` alone misses a whole class of animation.
+
+**WHICH BONE, AND WHY IT CANNOT BE A CONSTANT.** A wrist *we* are writing reports
+our own rigid transform - bit-for-bit identical every frame while the controller
+is still, so the delta is not merely small, it is exactly zero. So sample the
+wrist of a cluster the drive is **not** writing: bone 27 (right) when the right
+cluster is free, else bone 6 (left), else **-1 meaning "cannot answer"**.
+
+BRVR paid for this the hard way: 189 and 223 consecutive `raw 0.0000` samples in
+two runs with the arms hidden for a whole scene, because its gate sampled bone 27
+while a plasmid put the weapon in the left hand and the free-hand drive was
+writing 27-44. **A run of exact zeros is only interpretable if you know which
+bone produced it**, which is why the bone index is in our log line.
+
+**-1 ROUTES TO ARMS VISIBLE.** The failure on record is arms hidden for a whole
+scene; there is no matching record of arms shown for one frame. Fail toward the
+one nobody has complained about.
+
+**One local difference from BRVR, and it matters.** Its `HideBone` pins each
+collapsed bone at *that cluster's own wrist*, so the wrist write is a no-op and a
+hidden hand still carries the engine's pose on the one bone the gate reads. Ours
+pins every collapsed bone at the **driven target** (`bones.cpp`, the
+hide-inactive block), so a collapsed cluster is **not** honest here and counts as
+written. Same rule, different reason - `g_clWritten[]` is set for both the driven
+hand and the collapsed one.
+
+#### Two of BRVR's constraints do not apply here, and the reasons are the point
+
+1. **BRVR had to release its weapon cluster immediately before measuring**,
+   because C1 let both clusters be driven inside a scripted window and there was
+   then no engine-owned wrist. Here the scripted gate calls `bones::release()`
+   (`hands.cpp`), which stands the *whole* drive down and hands the skeleton back
+   - so on a scripted frame neither cluster is ours and bone 27 is always
+   available. The blind guard is a backstop, not a load-bearing part.
+
+2. **BRVR could not hide by bone while measuring by bone.** Its collapse cleared
+   the skeleton's dirty byte, the engine stopped re-evaluating the whole array,
+   the sampled bone froze, and a scene that started hidden stayed hidden forever
+   while one that started animating stayed visible - a bistable latch.
+
+#### FINAL, and it inverts what this section said for three rounds
+
+**`DrawScale3D` IS NOT A SAFE HIDE HERE.** Measured 2026-08-23 with a read-only
+whole-array probe, which is the only measurement in this arc that was never
+confounded by the gate it was testing:
+
+| | samples | bones moving |
+|---|---|---|
+| actor at `0.0001` | **293** | **0 of 47, every one** |
+| actor at full scale | 183 | 21-47 on 116 of them |
+
+Scaling the actor down takes it out of whatever the engine animates, so the whole
+bone array freezes - not one bone, all of them. The motion gate reads that array
+to decide when the arms come back, so hiding that way is a one-way door.
+**BRVR's `ArmHide.h` says the opposite and is correct for BRVR; it does not hold
+in this build, and three separate workarounds** (re-flagging the dirty byte every
+frame, a timed re-check, discarding readings taken across the frozen gap) **all
+failed, each in a new direction, because none addressed the freeze itself.**
+
+**What works: collapse the BONES and leave the actor at full `DrawScale3D`.** The
+actor stays in the render set, the engine keeps animating it, the array stays
+live, and the signal is honest with no re-check machinery at all. Three things
+are load-bearing and each cost a headset cycle to find:
+
+1. **Write POSITION and SCALE, not scale alone.** A zero-scale bone still renders
+   as a degenerate polygon *at its own position* - reported as "a strange looking
+   small black polygon where both the right and left arm are supposed to be".
+   Everything goes to a single point far below the actor. The session-19
+   inactive-hand hide has always written both, for exactly this reason.
+2. **Every bone, not just the clusters and sleeves.** Collapsing 44 of 47 leaves
+   the root and spine at full scale, which is another way for geometry to survive.
+3. **READING BEFORE WRITING IS NOT ENOUGH.** CalcView runs at 118-240/s against an
+   animation tick well below that, so on many calls the bone still holds *our own
+   collapse* - and differencing that produces a 5000-unit spike that reads as
+   violent motion, trips the hold and pins the arms up permanently. The sampler
+   must recognise its own write (bit-for-bit; we wrote the value) and report it as
+   **stale**: not motion, not stillness, no new information. One real sample per
+   engine tick is the correct rate anyway.
+
+The weapon-attach bone still hides by translation and never by scale - session
+16's divide-by-chain-scale is unchanged by any of this.
+
+> **The generalised rule, and it is the reusable part:** *you cannot hide a thing
+> from the renderer and keep measuring what the renderer drives.* BRVR wrote its
+> version about the dirty byte; the real constraint is the render set, and actor
+> scale is inside it while bone scale is not.
+
+**The general shape, worth more than the feature:** a predicate can be a faithful
+reading of a real engine flag and still answer the wrong question. Round 7's log
+did not show a broken mechanism; it showed the mechanism working perfectly on a
+question nobody wanted asked.
+
+#### The `DrawScale3D` offset itself, kept after the constant was deleted
+
+`kActorDrawScale3DOffset` was removed from `patterns.h` in the PR-51 review pass
+(VOID, 2026-08-23): once the hide moved to the bones it had no reader anywhere in
+`src/`, and its own comment still asserted the claim the table above falsified.
+The derivation is preserved here because deriving it again is not free, and
+because the neighbouring scalar is the trap:
+
+| field | offset | what it is |
+|---|---|---|
+| `DrawScale` (scalar) | `+0x2AC` | written by `AActor::SetDrawScale` (`0x375830`). **Geometry-inert on the rig actor** - session 63: "rig-actor DrawScale does not size geometry; weapon-actor DrawScale does" |
+| `DrawScale3D` (X/Y/Z floats) | `+0x2B0` | immediately after the scalar. The field BRVR hides arms with (`Hands/ArmHide.cpp`, `kDrawScale3DOff`) |
+
+The layout is the ordinary Unreal shape - a scalar scale followed by a per-axis
+vector - which is exactly why the two get confused; s64 wasted a build hiding the
+arms with `+0x2AC` before finding that out. Either one needs the dirty protocol
+(`kActorDirtyFlagsOffset |= 0x10`, `kActorRenderRevOffset++`,
+`kActorDirtyByteOffset = 0`); a raw field poke without it is invisible.
+
+**And if anything ever revives `+0x2B0`: NEVER WRITE EXACT ZERO.** The attach path
+inverse-decomposes chain scale (session 16), the same division that makes bone 43
+untouchable. That warning is about the write, not about the hide, and it survives
+the falsification above intact.
+
+### RETRACTION: the game's yaw DOES reach the camera during gameplay
+
+Part 1 recorded that the head drive overwrites `rot->pitch` and `rot->roll`
+absolutely, concluded that shake and the auto-pan therefore never reach the
+player, and left BRVR's `FreezeGameplayRotation` deliberately unported as
+"largely redundant here".
+
+**That conclusion was wrong, and a headset run refuted it.** The measurement it
+rested on was correct but incomplete: yaw is not overwritten.
+
+```cpp
+rot->yaw = gameYawUnits + residualUnits;   // camera.cpp
+```
+
+`gameYawUnits` is the engine's own value, so everything the game puts into yaw
+arrives untouched. Reported 2026-08-22: *"I am getting screenshake with world
+events and its making me look at groups of enemies that the game normally turns
+you to."* Screenshake reads as horizontal because horizontal is the only axis
+left.
+
+**The lesson worth keeping:** "two of the three axes are discarded" is not "the
+feature is redundant". The one surviving axis was the one the complaint was
+about. A per-axis audit needs a per-axis conclusion.
+
+The freeze now ships, absorbing the game's yaw *delta* into an offset rather than
+clamping the value, so the view declines to be turned instead of snapping. It
+excludes itself while the turn stick is off centre, during a scripted window, and
+during a bathysphere ride - the last of which is only possible because part 1's
+signal exists, and is the bug BRVR shipped for as long as its own signal was
+missing.
+
+**Known trade, accepted deliberately (user's call):** the filter is camera-only.
+Aim and body still turn with the game, so the crosshair can sit off centre after
+a large shake. The offset is bounded at 60 deg and says so in the log if it ever
+reaches that, because an unbounded offset is an unbounded divergence between
+where you are looking and where the pawn is facing.
+
+### Turning yourself during a scripted scene
+
+A scripted sequence pushes `NullInput`, so the game discards stick input and a
+turn routed through the game does nothing. Ported from BRVR's `ScriptedManualYaw`
+as a mod-side accumulator applied to the **camera only**.
+
+It is never written into `Controller.Rotation`. That is BRVR's invariant 1 and it
+was expensive: three balcony falls entered far right, straight on and far left
+and all landed on the same spot with no write, while a substituted heading put
+both straight-on runs badly wrong. **The write itself is the damage.**
+
+### The both-edges rule, and a third door it came through
+
+BRVR's rule is that a reference latched inside a scripted window must be dropped
+on **both** edges, or the second scene of a session differences against a value
+left over from the end of the first ("first almost perfect, second way off").
+
+That applies here to the scripted-turn accumulator and the freeze reference, and
+both are reset on the window's rising and falling edge. But there is a third gap
+BRVR did not have: **the freeze filter only runs while the head drive runs.** A
+menu, a cutscene or a scripted camera stops calling it entirely, so the yaw it
+would difference against on the way back out is from before the scene - and
+absorbing that delta would swallow the entire turn the scene just made. The
+filter therefore re-arms whenever more than 250 ms has passed since its last
+call, with dt as the witness that it was not being called.
+
+## Session 64 part 3 (2026-08-23) - the bathysphere and Big Daddy runs, and two traps in the instrument
+
+The two scenes s64 had never been run against were both verified in a headset,
+and both passed. What is worth keeping is not the pass - it is the two ways the
+instrument lied on the way there, because the instrument is now stripped and
+cannot explain itself.
+
+### The bathysphere: what actually carries the ride
+
+The window covers the **boarding forced-move only** and then closes; the ride
+itself is carried by `bathysphere()` (`pawn+0x464` bit 1), not by
+`scripted_window()`. Measured:
+
+```
+16:15:05.517  body transfer STANDS DOWN        <- window opens (forced move)
+16:15:06.877  bathysphere ON   (pawn+0x464 = 00000002, bCannotFall=1 havokCapsule=0 - oracle HOLDS)
+16:15:07.014  last motion sample               <- window closes, 70 s of ride still to go
+16:15:42.175  panel screen up during a bathysphere ride - NOT treating it as a UI pause
+16:16:18.389  bathysphere off  (pawn+0x464 = 00000004, bCannotFall=0 havokCapsule=1 - oracle HOLDS)
+16:16:18.568  body transfer resumes
+```
+
+The oracle held on both edges a second time, on a different ride from part 2's.
+
+**This is why the consumers are `scripted_window() || bathysphere()` and not the
+window alone** (`body.cpp:492`, `camera.cpp:2091`). The panel gate firing at
+16:15:42 - 35 s after the window shut - is the whole design working. A future
+session that sees "no window samples during the ride" and reaches for graveyard
+entry 12 is reading a correct measurement and drawing the wrong conclusion.
+
+The black square ~60 s into the descent is still there and is NOT this:
+
+```
+16:16:07.422  cinematic quad ON (strict=1 stale=1 fovMismatch=1 screenOnly=1 uiPaused=0)
+```
+
+`uiPaused=0` - the part-2 gate held. It is the `stale=1` term (CalcView stops
+being called across the arrival and map transition), which is session 22's
+finding and needs a render-side answer of its own.
+
+### TRAP 1: a pause menu opened mid-scene makes the STALE watchdog cry wolf
+
+The watchdog s64 added said, in words, "the gate is frozen; the hide mechanism is
+the problem, not the threshold" - and it was written precisely so a later session
+would trust it and not tune numbers. It fired once, and it was **wrong**:
+
+```
+16:18:51.888  screens: top = "..\FlashMovies\PausePC.swf" (2 playing) -> PANEL
+16:18:53.909  [bones] motion has been STALE for 2015 ms - ...
+16:18:55.116  screens: top = "..\FlashMovies\HUDRadial.swf" (1 playing) -> gameplay
+```
+
+"STALE for 2015 ms" back-dates the freeze to 16:18:51.894 - **6 ms after the
+panel came up** - and it never recurred once the panel closed. A menu freezes the
+game's own animation, so every bone read genuinely *is* our own collapse, which
+is exactly the state the watchdog was built to detect. The two are
+indistinguishable from the bone array alone; only the screen stack separates
+them. Anything reviving this watchdog must stand it down while
+`screens::panel_screen_up()`.
+
+### TRAP 2: `0/47 bones moved while collapsed` is the HEALTHY state
+
+The array probe was added to catch the collapse suppressing evaluation the way
+`DrawScale3D` did. On the passing run, 323 of 352 collapsed probes read `0/47` -
+92%, which reads as the failure returning. It is not.
+
+The gate samples **before** writing the collapse, so two consecutive reads
+normally both see the engine's authored pose and nothing has moved between them.
+`0/47` is what a working hide looks like. The tell is the other bucket: every
+`47/47` sample carried an identical `max 5009.3979`, and that constant is the
+magnitude of our own collapse write - the probe straddling it, not the hands
+moving. A raw count of moved bones cannot answer this question; only the
+constant-vs-varying character of the maximum can.
+
+### The scene that did exercise the hide
+
+93 s, one engage, one release, no flapping and no one-way door:
+
+```
+16:17:38.046  hidden=0     <- scene opens, arms visible
+16:17:43.050  hidden=1     <- hold expires, rig collapses
+16:19:11.123  hidden=0     <- window closes, authored pose restored
+```
+
+That is the first time the bone-collapse hide has been exercised end-to-end
+without freezing, which is what `DrawScale3D` could never do.

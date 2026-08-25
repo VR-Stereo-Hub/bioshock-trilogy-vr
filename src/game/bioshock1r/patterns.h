@@ -482,6 +482,13 @@ inline constexpr uint32_t kActorAttachBoneNameOffset = 0xF0;
 // +0x2AC, written by AActor::SetDrawScale (0x375830) together with the dirty
 // protocol below - a raw field poke without the protocol is invisible.
 inline constexpr uint32_t kActorDrawScaleOffset = 0x2AC;
+
+// DrawScale3D (+0x2B0) USED TO BE DECLARED HERE. Removed in the PR-51 review
+// pass: the arm hide moved to the bones, leaving it with no reader in src/,
+// and its comment still asserted the "DrawScale3D is a safe hide" claim that
+// 293 read-only samples falsified. The offset, the +0x2AC/+0x2B0 distinction
+// and the never-write-exact-zero warning are all kept in ENGINE_NOTES,
+// "The DrawScale3D offset itself, kept after the constant was deleted".
 inline constexpr uint32_t kActorDirtyFlagsOffset = 0xD0;  // |= 0x10 on transform-ish change
 inline constexpr uint32_t kActorRenderRevOffset = 0x3F4;  // ++ (UpdateRenderRevision)
 inline constexpr uint32_t kActorDirtyByteOffset = 0x3E4;  // = 0
@@ -494,6 +501,11 @@ inline constexpr uint32_t kActorDirtyByteOffset = 0x3E4;  // = 0
 inline constexpr int kHandsRigBoneCount = 47;
 inline constexpr int kBoneRClusterFirst = 27;
 inline constexpr int kBoneRClusterLast = 44;
+// The same index as kBoneRClusterFirst, named separately on purpose: the s64
+// motion gate samples a WRIST, not whichever bone happens to sort first in the
+// cluster. If the cluster bounds are ever re-measured the two must be free to
+// move apart, and a mirror of kBoneLWrist makes the pair greppable.
+inline constexpr int kBoneRWrist = 27;
 inline constexpr int kBoneWeaponAttach = 43;
 inline constexpr int kBoneRSleeve[] = {24, 25, 26, 45, 46};
 // Left mirror, measured with Electro Bolt raised (left arm forward): wrist 6,
@@ -698,6 +710,81 @@ void hfov_scan_rearm(const char* why);
 
 // True once the settings object is bound, for status lines.
 bool settings_bound();
+
+// ---- M7 scripted-event signals (session 64, 2026-08-22/23) ------------------
+//
+// Every offset the scripted-event module reads. They lived in scripted.cpp
+// until VOID's review of PR 51 pointed out that the repo rule puts engine
+// addresses HERE and nowhere else; the derivations moved with them unchanged.
+// The bit masks travel with their owning field on purpose - a bit index is
+// only meaningful against the DWORD it was derived in, and splitting the two
+// across files is how the wrong bit gets read off the right offset.
+
+// Hands.uc declares three consecutive bools at lines 80-82, and UE2 packs
+// consecutive bools into one DWORD:
+//     bit 0  bFinishedStateAnimations
+//     bit 1  AbilityHasBeenReleased
+//     bit 2  CurrentlyExecutingScriptedHandAnimationSequence   <-- ours
+// BRVR computed the DWORD's address by walking the field list from its proven
+// +0x494/+0x498 anchor. THE WALK IS THE WEAK LINK, not the bit, which is why
+// scripted.cpp's anchor_check re-validates the walk at four points along it.
+inline constexpr uint32_t kHandsScriptedBits = 0x594;
+inline constexpr uint32_t kScriptedBit = 1u << 2;
+
+// FALSIFIED IN BRVR, M7-S3, recorded here so it is not re-proposed: bit 0 is
+// NOT "an animation is playing". It is bFinishedStateAnimations, it tracks the
+// Hands state machine's own animations, and gating on it produced OPPOSITE
+// failures in two scenes (arms hidden through the whole Little Sister crawl;
+// arms stuck visible and frozen on the plasmid balcony). The state
+// PlayingScriptedHandAnimation has an EMPTY BODY and never touches the flag.
+// DO NOT gate anything on bit 0.
+
+// The anchor slots. Four FNames on the hands actor, computed from the same
+// field walk that produces +0x594 - so if all four resolve to real names, the
+// walk is validated at four points along its length and +0x594 is standing on
+// something.
+//   +0x498  HandsOffscreenAnimationName        (BRVR's proven anchor)
+//   +0x4B8  InjectingEveAnimationName          (the plasmid injection)
+//   +0x4D8  ExorcisingGathererAnimationName    (the rescue)
+//   +0x558  CurrentScriptedAnimationName       (what is playing NOW)
+inline constexpr uint32_t kAnchorSlots[4] = {0x498, 0x4B8, 0x4D8, 0x558};
+
+// MEASURED AND NOT KEPT, BRVR M7-S2: +0x558 read 'None' (index 0) for an entire
+// run INCLUDING throughout a scripted sequence. So animation-level naming does
+// not come from that field and the index-comparison idea it was going to enable
+// is unproven. It is an anchor slot here and nothing more.
+
+// Hands.Base. Derived live in this repo already - see kHandsCurrentHoldableOffset
+// above: "hands+0x450 held the pawn = Hands.Base; the weapon's own +0x450 holds
+// the hands actor: the attach chain weapon -> hands -> pawn is self-consistent".
+inline constexpr uint32_t kHandsBaseOffset = 0x450;
+
+// Pawn.uc line 46 bCannotFall. Pawn's own fields start at the AActor base
+// 0x450; lines 13..44 are EXACTLY 32 bools, one full DWORD at +0x460, so the
+// next three start a fresh one at +0x464:
+//     bit 0  ShouldNotTakeDamageOnNextLanding
+//     bit 1  bCannotFall                            <-- ours
+//     bit 2  bUseHavokRigidBodyCapsuleCollisions
+// THE ORACLE: ShockPlayer defaults bit 2 TRUE, and
+// ActionEnableBathysphereModeForPlayer clears it in the same call that sets
+// bit 1. Entering a ride must therefore flip BIT 1 UP AND BIT 2 DOWN IN THE
+// SAME WRITE - two bits moving in opposite directions at once is not something
+// a wrong offset produces by chance. Every edge logs both bits so the oracle
+// can be read straight out of the log.
+inline constexpr uint32_t kPawnFlagsBOffset = 0x464;
+inline constexpr uint32_t kCannotFallBit = 1u << 1;
+inline constexpr uint32_t kHavokCapsuleBit = 1u << 2;
+
+// ShockPlayerController.bIsForcingPlayerMove. BRVR could NOT compute this one:
+// six interface-typed fields of unknown size sit between the class base and the
+// flag. Found by differential probe (M7-S5) and correlated across three events
+// whose durations differ by 24x - 1.0 s ("went straight in"), 0.24 s (instant),
+// 5.75 s ("the slewing") - each matching an independent tester report.
+//
+// A LONE BOOL IS EXACTLY 0 OR 1. Anything else means a stale pointer or a wrong
+// offset, which is not hypothetical: BRVR caught its own bathysphere read doing
+// precisely that. The shape check in forced_move_tick refuses anything wider.
+inline constexpr uint32_t kCtlForcedMoveOffset = 0x9E0;
 
 // ---- live-object search -----------------------------------------------------
 // Find a live object by its class vtable. There is no static pointer to most

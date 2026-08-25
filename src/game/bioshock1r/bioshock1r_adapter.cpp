@@ -11,6 +11,7 @@
 #include "game/bioshock1r/input_drive.h"
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/scenedraw.h"
+#include "game/bioshock1r/scripted.h"
 #include <cstdlib>  // _wtof, for the ini's float keys
 #include <cstring>
 
@@ -154,6 +155,7 @@ void Bioshock1RAdapter::drawDebugUi() {
     aim::draw_debug_ui();
     hands::draw_debug_ui();
     body::draw_debug_ui();
+    scripted::draw_debug_ui();
     input_drive::draw_debug_ui();
     scenedraw::draw_debug_ui();
 }

@@ -70,6 +70,22 @@ F10 calibration is kept.
 An out-of-range value is **refused and logged**, not clamped — a silent clamp
 reads in the headset exactly like the key not being implemented.
 
+### Live — turning and walking
+
+BRVR's names and shipped values, read from `BioshockVR.ini`. None of these has
+an F10 control.
+
+| Key | Range | Default (BS1) | Notes |
+|---|---|---|---|
+| `TurnAxisMax` | 0.05–1.0 | `0.95` | Caps what the game is ever sent on the turn axis. The game's own turn rate is nearly vertical at the top of the stick (0.98 → ~105 deg/s, 1.00 → ~200), so a 2% difference in push doubled the speed. Pairs with `GameTurnSpeed`, which raises the game's own sensitivity slider — a cap alone just makes turning slow |
+| `TurnAxisExp` | 0.5–4.0 | `1.0` | Shapes the rest of the range. 1.0 linear; above 1.0 is finer near centre |
+| `GameTurnSpeed` | 0–100, or -1 | `-1` | Writes the game's OWN sensitivity slider (`bioshock1r_adapter.cpp` → `game_ini::write_turn_sensitivity`). `-1` leaves whatever the player chose in the options menu. BRVR ships `70`, which shows as "7" in the menu. The other half of the cap above — a cap over a low sensitivity just leaves turning sluggish |
+| `StickPrecomp` | `0`, `1` | `1` | Undoes the game's **per-axis** movement deadzone so rotating the movement stick does not also bend the walk direction. **Applies only when the stick is actually being rotated** (head-relative locomotion, i.e. `moveDirInstant`) — with the head centred the stick reaches the game exactly as it always did. s64 moved this to AFTER the rotation; before that it compensated a direction the game never received and small head offsets were erased entirely |
+| `GameStickDeadzone` | 0.0–0.90 | `0.225` | The band `StickPrecomp` is undoing. Read off BS1's own `User.ini` `XENON_LTHUMB_*AXIS DeadZone`. **Not edited there on purpose:** those lines carry several bindings each, the file has multiple binding sections, and the game rewrites it at exit |
+
+Core defaults for all three are the no-op values (`1.0` / `1.0` / off); BioShock 1
+opts in with the rest of the BRVR control defaults. See `docs/PORT-CANDIDATES.md`.
+
 ### Planned — present in BRVR, not yet here
 
 | Key | What it does in BRVR |

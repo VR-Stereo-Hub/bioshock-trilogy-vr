@@ -31,6 +31,7 @@
 #include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/patterns.h"
+#include "game/bioshock1r/scripted.h"
 
 #include <windows.h>
 
@@ -583,6 +584,11 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
             patterns::kPlayerWeaponVtableRva);
 }
 
+// s64: the rig's geometry is collapsed by bone during an arm-hide re-check, so
+// the engine keeps animating an actor the player cannot see. Tracked here
+// because the collapse is write-only and needs an explicit edge on the way out.
+bool g_rigWasCollapsed = false;
+
 void on_calcview(const FrameContext& ctx) {
     // Overlay request, applied from THIS thread (same rule as aim.cpp: the
     // render thread must never touch engine state directly).
@@ -634,8 +640,14 @@ void on_calcview(const FrameContext& ctx) {
     // false with the head drive - an accident, not a contract, and one that
     // authored+look breaks by design (it drives the head again, which would
     // hand the controllable rig straight back over the authored animation).
-    if (gameplayView && bvr::hud::cinematic_hold() &&
-        bvr::vr::cine_drive() != bvr::vr::CineDrive::Off) {
+    // s64: a scripted scene joins the same gate. The engine is animating the
+    // hands on purpose there, and leaving the controller in charge lets the
+    // player drag the rig around mid-scene. Same release path, same reason.
+    const bool scriptedScene =
+        scripted::freeze_hands_in_scenes() && scripted::scripted_window();
+    if (gameplayView && (scriptedScene || (bvr::hud::cinematic_hold() &&
+                                           bvr::vr::cine_drive() !=
+                                               bvr::vr::CineDrive::Off))) {
         gameplayView = false;
         // Release HERE, not only on the cinematic entry edge. Measured in
         // headset (session 29): switching drive mode to `off` mid-cutscene
@@ -647,6 +659,72 @@ void on_calcview(const FrameContext& ctx) {
         // Releasing where the suppression happens closes that by construction,
         // and release() is idempotent - it self-limits to one real pass.
         bones::release("hands gated for cinematic");
+    }
+
+    // s64: the rig itself. Hidden while a scene runs with no animation playing
+    // (the game is walking you into position), shown the instant one starts.
+    // Applied ABOVE the early return, so the unhide still runs on the frame the
+    // gate closes - session 29's collapsed-hand bug was exactly a restore living
+    // inside code the gate had already skipped.
+    {
+        // The cached pointer, or resolve it here if it is empty. find_hands_actor
+        // normally runs ~20 lines BELOW this - past the scripted gate's early
+        // return - so during a scene an empty cache would never refill and the
+        // hide would silently do nothing. The resolver has its own scan
+        // cooldown, so asking is cheap when it cannot answer.
+        void* rig = hands_actor();
+        if (!rig) rig = find_hands_actor(ctx, false);
+
+        // s64 round 8: sample first, then decide - only this site owns the rig
+        // actor and runs every CalcView. Outside a window we report "cannot
+        // answer", which resets the latch to VISIBLE so a window can never open
+        // onto a stale "still". The bones history is deliberately not reset
+        // across that gap, so the first in-window sample reads as a spike and
+        // shows the arms for a frame - the safe direction, and self-correcting.
+        // ---- READ, THEN HIDE. THE ACTOR IS NEVER SCALED DOWN ----------------
+        //
+        // The rig is hidden by collapsing its BONES, with the actor left at full
+        // DrawScale3D. That one choice removes the whole problem the previous
+        // three attempts were built around: an actor scaled to 0.0001 leaves
+        // whatever the engine animates, so the bone array freezes (measured: 293
+        // consecutive samples, 0 of 47 bones moving) and the motion gate can hide
+        // the arms but never bring them back. At full scale the engine keeps
+        // animating it every frame, so the reading is always honest and none of
+        // the re-check machinery is needed.
+        //
+        // ORDER IS THE WHOLE THING. The sample is taken FIRST, off the pose the
+        // engine wrote early this frame; the collapse is written after. So we
+        // never measure our own write, which is the trap INVARIANTS.md warns
+        // about - avoided by sequencing rather than by choosing a different bone.
+        if (rig && scripted::scripted_window()) {
+            bones::keep_evaluating(rig);
+
+            float smoothed = 0.0f, raw = 0.0f, pos[3] = {};
+            bool stale = false;
+            const bool have = bones::hand_motion(rig, &smoothed, &raw, pos, &stale);
+            // STALE IS NOT AN ANSWER, so it must not become one. The bone still
+            // holds our own collapse, which means the engine has not refreshed it
+            // since - feeding that in either direction is wrong: as motion it is
+            // a 5000-unit spike that pins the arms up, as stillness it hides them
+            // on our own write. Leave the verdict alone and wait for a real one.
+            if (!stale)
+                scripted::note_hand_motion(have, smoothed, raw, bones::motion_bone());
+        } else {
+            scripted::note_hand_motion(false, 0.0f, 0.0f, bones::motion_bone());
+        }
+
+        if (rig) {
+            const bool hide = scripted::want_rig_hidden();
+            if (hide) {
+                bones::collapse_rig(rig);
+            } else if (g_rigWasCollapsed) {
+                // No restore write: the engine re-evaluates the whole array early
+                // next frame, so simply stopping puts the authored pose back. All
+                // this does is re-flag the array so the render pass rebuilds too.
+                bones::end_collapse(rig);
+            }
+            g_rigWasCollapsed = hide;
+        }
     }
 
     if (!gameplayView) return;

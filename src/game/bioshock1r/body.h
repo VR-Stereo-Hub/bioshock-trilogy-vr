@@ -88,6 +88,23 @@ void set_tuning(float ratePerSec, float deadzoneDeg);
 // CalcView, and core rotates the movement stick by it - the walk direction
 // tracks the head instantly while the slew-capped body transfer catches up.
 // Persisted as vrpreset key `moveDirInstant` (append-only).
+// Which way the composer rotates the movement stick for head-relative walking.
+// +1 as shipped, -1 mirrored. Was a compile-time constant in camera.cpp whose
+// own banner said to flip it if the walk tracked the mirror heading; it is live
+// because a rebuild is the wrong instrument for a five-second headset question.
+// Preset key `moveYawSign`.
+int move_yaw_sign();
+void set_move_yaw_sign(int s);
+
+// camera.cpp hands the probe the value it actually published, so the probe never
+// has to reconstruct it and cannot disagree with it.
+void note_published_move_yaw(float deg);
+
+// BRVR's WalkDriftProbe: pawn displacement vs where the player was looking, once
+// a second while moving, scoring BOTH signs. Default off.
+bool walk_probe_on();
+void set_walk_probe(bool on);
+
 bool move_dir_instant();
 void set_move_dir_instant(bool on);
 

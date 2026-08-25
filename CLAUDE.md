@@ -11,9 +11,11 @@ The two remasters are Vengeance (UE2.5). **BioShock Infinite is Unreal Engine 3 
 different engine, so no number transfers, and even shapes are suspect.
 
 **`main` is THE branch: all three mods live there, all three work, all three shipped in v0.8.0
-(2026-08-13, session 59).** Branch every new session off `main` and merge back to it **through a
-pull request** - the old per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and
-fully contained in `main`; do not start work on them.
+(2026-08-13, session 59)** - but day-to-day work no longer merges straight into it. Branch every
+new session off `staging` and open a **pull request back to `staging`**; `main` moves only through
+a `staging` -> `main` PR at release time. See "Branches, PRs and staging" below. The old per-game
+branches (`bioshock-2`, `bioshock-infinite`) are historical and fully contained in `main`; do not
+start work on them.
 
 **Read `CONTRIBUTING.md` before your first commit.** More than one person works here now:
 `main` is never committed to directly, every change reaches it through a reviewed PR, and
@@ -58,11 +60,41 @@ that back those rules up.
   no BS1 path changes behaviour. Consolidation and de-duplication are deferred to a dedicated
   "healing" session in the polish milestone.
 
+## Branches, PRs and staging
+
+Direction from VOID (2026-08-23), and it applies to everyone working here.
+
+```
+feature branch --PR--> staging --PR (at release time)--> main --> tagged release
+```
+
+- **Open a PR to merge a branch anywhere.** Never merge branch-to-branch by hand. The PR is
+  what tells you whether there are merge conflicts; when there are, fix them on the branch
+  and **re-test** before merging, rather than discovering them inside someone's unrelated
+  work later.
+- **`staging` is the day-to-day target**, not `main`. It holds work that is tested but not
+  yet ready for a release. Both contributors PR into it, which is what keeps the conflicts
+  small and early.
+- **PR at every good stopping point** - a feature that works and has been tested - not once
+  at the end. Small and frequent beats one large PR: it is what lets the other contributor
+  join a subject while it is still in flight. A large roll-up is for the end of a cycle.
+- **A PR does not have to be merged, and can be a draft.** An open or draft PR leaves
+  `staging`, `main` and the release completely untouched, while still surfacing conflicts
+  and still signalling that the subject is taken. Open it early as a draft by default.
+- **`main` changes only through a `staging` -> `main` PR**, and the release is cut from
+  `main` after that merge.
+
+**NEVER MERGE without the user confirming it first.** Agents may commit and open pull
+requests on their own judgement - that is the point of the flow above, and an open or
+draft PR changes nothing until someone merges it. The merge is the irreversible step and
+the one that needs a human saying yes (VOID, 2026-08-23). Show what is about to land and
+wait; finishing a feature is not permission to merge it.
+
 ## Session protocol
 
 - **START**: read `docs/STATUS.md`, then the current milestone in `docs/ROADMAP.md`, then
-  `git log --oneline -10`. **ALWAYS BRANCH FROM `main`** - every game ships from it since
-  v0.8.0; there is no per-game branch to hunt for. **Working on Infinite?** Same `main`, but
+  `git log --oneline -10`. **ALWAYS BRANCH FROM `staging`** - every game ships from the same
+  trunk; there is no per-game branch to hunt for. **Working on Infinite?** Same `staging`, but
   the ladder is `docs/bioshockinfinite/ROADMAP.md` (milestones I0-I11 after the 2026-08-05
   BS2-shaped restructure), which is separate from M0-M10.
 - Touching engine internals? Read the game's `docs/<game>/ENGINE_NOTES.md` first
@@ -97,7 +129,14 @@ that back those rules up.
 .\tools\xrsim-shot.ps1 -Out shot             # per-eye compositor capture + JSON to assert on
 ```
 
-- BioShock 1: `K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final\BioshockHD.exe`
+**THE EXE PATHS BELOW ARE ONE MACHINE'S LAYOUT, NOT THE TRUTH.** Since 65f02fa the
+scripts resolve each game per-machine from the Steam library folders, so `-Game bs1`
+finds it wherever it is. Do not hardcode these, and do not trust them when a script
+disagrees - on the machine this was last verified on, BS1 lives under
+`C:\Program Files (x86)\Steam\`, not `K:`. The **appids** and the **data dirs** are
+the parts that are actually fixed.
+
+- BioShock 1: `<steam library>\steamapps\common\BioShock Remastered\Build\Final\BioshockHD.exe`
   (32-bit, D3D11, no DRM; Steam appid 409710). Launch through Steam; add `-allowconsole` to
   launch options for the Tab console. Data dir: `%LOCALAPPDATA%\BioshockVR\`.
 - BioShock 2: `D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final\Bioshock2HD.exe`

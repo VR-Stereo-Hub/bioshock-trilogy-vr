@@ -210,6 +210,22 @@ void set_pad_passthrough_default(bool on);
 bool pad_brvr_defaults();
 void set_pad_brvr_defaults(bool on);
 
+// s63/s64: pre-compensate the GAME's per-axis movement deadzone, so rotating
+// the movement stick for head-relative locomotion does not bend the direction.
+// Applied in compose(), immediately after that rotation and only when one
+// happened. The ini keys and per-game defaults live in openxr_input.cpp and
+// reach this state through these setters.
+//
+// OFF by default: BioShock 1 opts in with the rest of the BRVR control defaults.
+// With it off, compose_over() takes a SEPARATE legacy branch that reproduces the
+// pre-s64 integer rotation exactly - not merely this call being skipped. That
+// distinction is the PR-51 review finding: the skip was always true, and the
+// 1/peak cap wrapped around it was not, which is what reached BS2 and Infinite.
+bool stick_precomp();
+void set_stick_precomp(bool on);
+float game_stick_deadzone();
+void set_game_stick_deadzone(float d);
+
 // ---- s63 CONTROL CHANGES THAT ARE STILL BS1-ONLY ---------------------------
 //
 // Added in the PR-50 review pass (VOID, 2026-08-23). Each of these shipped as
@@ -243,7 +259,7 @@ void set_menu_modifier_context_help(bool on);
 // The both-sticks chord's TAP. Hold has always been recenter and stays that
 // way for everyone; the tap toggling the F10 panel is new, and it is only
 // useful on a game whose panel the controllers can actually drive - see
-// overlay_pad_drive(). False restores main's recenter-only chord.
+// bvr::overlay::pad_drive(). False restores main's recenter-only chord.
 bool chord_tap_opens_panel();
 void set_chord_tap_opens_panel(bool on);
 
