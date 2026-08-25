@@ -782,6 +782,43 @@ bool ds_write(void* actor, float v) {
     return true;
 }
 
+// ---- the AUTHORED DrawScale memo, and why the lane cannot re-read it -------
+//
+// ds_drop refuses to restore whenever the actor may be gone (see its comment),
+// so a weapon switch LEAVES OUR WRITTEN VALUE on the wrench. Re-equip it and
+// ds_read hands back 0.868 - our own write - and the lane records that as the
+// "authored" scale. The log says so out loud: the first bind of a session reads
+// `authored DrawScale 0.800`, every later one reads `authored DrawScale 0.868`.
+//
+// THAT POISONING IS WHY THIS LANE WRITES ABSOLUTELY TODAY, and it is worth
+// knowing before anyone reverts the fractional change below. s63's first cut
+// multiplied - `authored * ws` - which is correct arithmetic on a correct
+// authored value and compounding nonsense on a poisoned one: 0.800 -> 0.640 ->
+// 0.512 -> ... one step smaller per equip. That was reported as "it read too
+// small", diagnosed as multiplication being wrong, and fixed by writing the
+// knob absolutely. The multiplication was never the bug. The memo was missing.
+//
+// Eight slots because a BioShock loadout is a handful of holdables and the
+// wrench is only ever one of them; the oldest entry is evicted, and a miss
+// simply falls back to the live read, which is exactly today's behaviour.
+struct DsAuthored {
+    void* actor;
+    float authored;
+};
+constexpr int kDsMemoSlots = 8;
+DsAuthored g_dsMemo[kDsMemoSlots]{};
+int g_dsMemoNext = 0;
+
+// The authored DrawScale for `actor`: remembered if we have seen it before our
+// first write, otherwise `live` (and remembered for next time).
+float ds_authored(void* actor, float live) {
+    for (const DsAuthored& e : g_dsMemo)
+        if (e.actor == actor) return e.authored;
+    g_dsMemo[g_dsMemoNext] = {actor, live};
+    g_dsMemoNext = (g_dsMemoNext + 1) % kDsMemoSlots;
+    return live;
+}
+
 // Hand the actor back. `restore` is FALSE whenever the actor may already be
 // gone: BRVR's ArmHide_Reset carries the same rule for the same reason - by the
 // time a change is noticed the old actor can be destroyed and its address
@@ -816,32 +853,49 @@ void ds_drive(void* hold, float ws) {
                     hold, patterns::kActorDrawScaleOffset);
             return;
         }
+        const float authored = ds_authored(hold, raw);
         g_dsHoldable = hold;
-        g_dsRaw = raw;
+        g_dsRaw = authored;
         g_dsWrote = 0.0f;
-        BVR_LOG("[bones] wscale rigid: bound %p, authored DrawScale %.3f - no skeleton, "
+        BVR_LOG("[bones] wscale rigid: bound %p, authored DrawScale %.3f%s - no skeleton, "
                 "scaling the ACTOR instead",
-                hold, raw);
+                hold, authored,
+                fabsf(authored - raw) < 0.0005f ? "" : " (remembered; the live read is our "
+                                                       "own earlier write)");
     }
-    // ABSOLUTE, not a multiple of the authored value, and this is BRVR's
-    // behaviour rather than a guess: `*p = g_cfg.gunScale`. The first cut
-    // multiplied, on the assumption (written into its own commit message) that
-    // BS1 weapons are authored at 1.0. The first headset run falsified it in
-    // one line - `authored DrawScale 0.800` on the WRENCH - so wScale 0.80 was
-    // rendering it at 0.64 and it read too small. Absolute also makes the knob
-    // mean one thing: GunScale=0.8 is the same size in both mods, so a config
-    // carries across, which is the whole point of using BRVR's key name.
+    // A FRACTION OF THE AUTHORED VALUE, matching the skeleton lane. Reverses
+    // s63, and the reversal is the wrench-scaling fix.
     //
-    // It does mean wScale is "fraction of authored" on the skeleton lane and
-    // "the DrawScale itself" here. That asymmetry is BRVR's too, and BRVR is
-    // the size that was accepted in a headset.
-    const float want = ws;
+    // wskel_compose writes `g_wRef[i].s * ws` - authored bone scale TIMES the
+    // knob - so every skeletal weapon lands at ws of the size its artist
+    // authored. Writing `ws` absolutely here made the knob mean something else
+    // entirely on this lane, and the wrench is authored at 0.800: at ws 0.868
+    // it rendered at 108.5% of authored while every other weapon sat at 86.8%,
+    // which is the wrench reading ~25% large next to them. Reported from a
+    // headset 2026-08-24, and the log carries the whole story in one line -
+    // `wscale rigid: DrawScale 0.800 -> 0.868`.
+    //
+    // WHY IT SURVIVED A HEADSET RUN: s63 dialled wScale to exactly 0.800, and
+    // 0.800 absolute on a weapon authored 0.800 leaves it at authored size. It
+    // looked right because the wrench was being left alone. The defect only
+    // appeared when the knob moved off that one value - same PR, no code change.
+    //
+    // The memo above is what makes this safe; without it this multiplies a
+    // poisoned "authored" and shrinks the wrench once per equip.
+    const float want = g_dsRaw * ws;
     // Re-assert rather than write once: the engine restamps DrawScale on equip
     // and on some animation transitions, and a one-shot poke was BS2-proven not
     // to render reliably. Reading first keeps this to zero writes on the frames
     // where nothing has moved it.
     float now = 0.0f;
-    if (ds_read(g_dsHoldable, &now) && fabsf(now - want) < 0.0005f) return;
+    if (ds_read(g_dsHoldable, &now) && fabsf(now - want) < 0.0005f) {
+        // Already there - usually because WE put it there before a switch and
+        // ds_drop declined to restore. Record it as ours, or the restore on the
+        // next release is gated off by g_dsWrote == 0 and the actor keeps our
+        // value for the rest of the session.
+        g_dsWrote = want;
+        return;
+    }
     if (!ds_write(g_dsHoldable, want)) {
         ds_drop("write faulted", false);
         return;
