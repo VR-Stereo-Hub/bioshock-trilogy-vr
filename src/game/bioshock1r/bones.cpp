@@ -956,6 +956,7 @@ bool wskel_resolve() {
     // every frame: negative-cache it per holdable with a 1 s retry, so a
     // TRANSIENT mid-equip failure on a skeletal weapon still self-heals,
     // and log the verdict once per holdable instead of forever.
+    static void* g_wDumpedHoldable = nullptr;
     static void* s_failedHold = nullptr;
     static uint64_t s_nextRetryMs = 0;
     void* hold = nullptr;
@@ -979,6 +980,41 @@ bool wskel_resolve() {
     s_failedHold = nullptr;
     Qts bank[kMaxBones];
     if (!read_n(sk.bones, bank, sizeof(Qts) * static_cast<size_t>(sk.count))) return false;
+    // ---- WHERE IS THE GRIP? Dump this weapon's own bones, once. ------------
+    //
+    // The viewmodel is placed as `controller + R * e`, so it pivots about the
+    // CONTROLLER. For it to look right, e has to be the vector that puts the
+    // weapon's GRIP on the controller. Get e wrong and the grip traces a circle
+    // of radius |e - e*| as the wrist turns - which is why a wrong offset still
+    // lines up perfectly at ONE rotation (where the wrong circle crosses the
+    // right point) and nowhere else. Every wrong value has such a rotation, so
+    // "it lines up at this angle" proves nothing, and tuning by eye at a single
+    // angle only moves which angle is perfect.
+    //
+    // e* IS NOT A MATTER OF TASTE. It is a property of the mesh, and the mesh
+    // is carrying it: these bones are in the weapon's own space, so whichever
+    // one is the handle IS the origin-to-grip vector, to be READ rather than
+    // dialled. If one is there, per-weapon position tuning stops being tuning
+    // and becomes a derivation - which is the outcome worth having, because a
+    // weapon nobody has tuned would then be right on sight.
+    //
+    // `vrbones skel weapon` has always been able to print this. It needed
+    // typing, which is impossible with both hands on the controllers, so it is
+    // now automatic: once per holdable, at bind, in ordinary play.
+    if (sk.count > 0 && sk.count <= 24 && hold != g_wDumpedHoldable) {
+        g_wDumpedHoldable = hold;
+        const wchar_t* wnames[kMaxBones];
+        const int wnamed = resolve_bone_names(sk, wnames, sk.count);
+        BVR_LOG("[bones] wskel GRIP HUNT: %d bone(s), %d named - the handle bone's pos IS "
+                "the grip offset this weapon wants (read it, do not dial it)",
+                sk.count, wnamed);
+        for (int i = 0; i < sk.count; ++i) {
+            const float* p = bank[i].p;
+            BVR_LOG("[bones]   %2d %-22S pos(%8.2f %8.2f %8.2f) |pos|=%7.2f UU", i,
+                    wnames[i] ? wnames[i] : L"<unnamed>", p[0], p[1], p[2],
+                    sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]));
+        }
+    }
     g_wHoldable = hold;
     g_wSkelInst = sk.inst;
     g_wBones = sk.bones;
