@@ -2,6 +2,120 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-24/25 - s65 bug-fix branch: five fixes landed, one hunt narrowed
+
+**Branch `fix/bs1-bathysphere-cine-quad`, rebased onto `staging`, 19 commits
+ahead.** PRs #50 and #51 were merged to `staging` this session (previous entry);
+this is the follow-on bug-fix branch, with **PR #54 open against `staging`, not
+merged**.
+
+> **The branch name is stale** - it started as the bathysphere fix and became the
+> general BS1 bug-fix branch at the user's direction. Do not read scope from it.
+
+### Current state - what landed, with the evidence
+
+| Landed | Evidence |
+|---|---|
+| **Bathysphere world FOV** | headset-confirmed. The game narrows the lens BELOW CalcView (100 -> 80 on the frame you press A) and the mod honestly re-claimed the layer at 80 |
+| **Near walls dropping to the anchored quad** | headset-confirmed. `scene_leader()`'s >=32 draw-count threshold; 19 transitions in one run -> 4, and a device was hacked successfully in the same run |
+| **Wrench scaled like every other weapon** | simulator-verified: `wscale rigid: DrawScale 0.800 -> 0.694` (was `-> 0.868`); on re-equip `authored DrawScale 0.800 (remembered; the live read is our own earlier write)` |
+| **Every crosshair hidden during a scene, and with empty hands** | headset-confirmed by the user |
+| **A real pause taken DURING a scene now anchors** | headset-confirmed for scripted scenes AND the bathysphere. Simulator trace: `panel opened during a scene - YOU pressed menu ... anchored quad` then `cinematic quad ON (... uiPaused=1)`, clean release on close |
+
+Two needed a second fix after the first shipped, and both are worth knowing:
+
+- **The wrench had TWO defects.** The lane wrote the knob absolutely
+  (`want = ws`) while the skeleton lane multiplies, so at wScale 0.868 the wrench
+  sat at 108.5% of authored while everything else sat at 86.8%. And `ds_drop`
+  never restores on a weapon switch, so the next bind read OUR OWN WRITE as
+  "authored" - which is why s63's first, correct, multiplying cut looked like it
+  shrank the wrench and was replaced by the absolute write. The memo is what
+  makes fractional safe.
+- **The pause fix's own logging lied.** s64's line computed
+  `panelUp && sceneOwnsPanel` and printed "NOT treating it as a UI pause" on the
+  very frame it WAS - so the run that proved the fix also printed a line saying
+  it had not happened.
+
+### The viewmodel desync - NOT solved, but the search space is much smaller
+
+Reported as: the gun aligns perfectly at exactly one wrist rotation and drifts at
+every other. All of this was measured this session.
+
+| Ruled out | Killed by |
+|---|---|
+| A wrong grip offset | the pistol's own bone 0 is `R_Grip` at `pos(0,0,0)` - the mesh is authored with the grip AT the origin, so the correct offset is 0, and 0 is what is configured |
+| A wrong rotation trim | at the one aligned rotation BOTH position and orientation are right; a constant trim error would be wrong at every rotation including that one |
+| Foreground/world lens mismatch (the user's own BRVR recollection) | already fixed here in session 28. Measured `k=1.381818`, fg **117.5 deg** - exactly BRVR's archived value for 2750x2850 @ world 100 - and the lenses agree on the vertical to **0.071%** |
+| The rig pivoting about the wrong bone | rig bone 43 is also `R_Grip`, the cluster anchor defaults to it (`override -1`), confirmed live as `right cluster 27-44 anchor 43` |
+| Our own bone write | four very different wrist poses at a fixed hand position wrote a **bit-identical** target every time - what a zero offset must do |
+| **Driving the weapon actor directly (BRVR HANDOFF_9 6.4)** | superseded by **HANDOFF_11 4.3(c)**: the rendered weapon follows the skeletal attachment matrix, not the actor transform, and direct actor positioning was already tried there and found insufficient. Measured here first: the actor Location sits 10-16 UU off the bone, does not rotate with it, and does not track it under translation |
+
+**Where it stands.** HANDOFF_11 4.2 says the answer is the **render-lock
+correction** - lateral and depth corrections read from captured renderer state,
+never derived from a formula. This repo implements exactly that
+(`render_lock_delta`) and ships it **off**. Armed in the headset, all three modes
+desynced identically to off - which reads as a refutation and is not one:
+
+```
+[bones] lock: refusing outsized delta (lat 30.0 depth -15.0)
+```
+
+The lock projected, produced a correction, and its own guard
+(`latMag > 30.0f || |dDepth| > 120.0f`) discarded it, so `ptc` was never nudged
+and all three modes collapsed to the uncorrected pose. **That A/B measured
+nothing.**
+
+### Next steps
+
+**Settle whether a 30 cm lateral correction is plausible, by measurement rather
+than by widening the guard.** Log raw `dLat`/`dDepth` beside the NDC they came
+from, hold the controller at a known pose, and see whether the 30 UU is a stable
+bias or noise. A stable bias that size, with the lenses matched to 0.07%, means
+the projection in `world_ndc` or the depth term is wrong somewhere specific - and
+that is findable. **Do not widen the guard first**: it would apply a correction
+nobody has shown to be correct, on a path that moves the whole cluster.
+
+Lower value, also open: PR #54 is unmerged; the numpad tuner has never had a key
+pressed with it; and `[hud] fov watch` has never once reported a foreground lens
+(`1 lens(es)`, `FG tanH=0.000000`) even with a weapon bound, so it corroborates
+nothing - the lens conclusion rests on the value written plus arithmetic.
+
+### Session log 2026-08-24/25
+
+**Headset-verified (user):** bathysphere FOV, near-wall quad, crosshairs during
+scenes and with empty hands, pause anchoring during scenes and the bathysphere.
+**Simulator-verified only:** wrench scale (both halves), the pause-anchor round
+trip. **Built but never exercised:** the numpad tuner, and the `gunxf`
+experiment - deliberately, since it is superseded and stays off.
+
+**Diagnostics left ARMED in the installed build**, all read-only, none of them
+shipping behaviour - strip or gate them before any release:
+
+- `[bones] wskel GRIP HUNT:` - dumps the weapon's bones once per holdable
+- `[bones] attach probe:` - one line a second while a holdable is bound
+- `[b1r] PAUSER HUNT:` - rides the panel edges, silent unless a panel opens
+
+`gunxf` is the only thing here that WRITES, and it defaults off.
+
+Odd things seen and not chased:
+
+- **`[hud] fov watch` is blind to the foreground pass.** One line in the whole
+  log, `FG tanH=0.000000`, with a weapon bound and its viewmodel rendering.
+- **`Pauser` is now properly falsified**, not by a copied offset. The hunt swept
+  `Level+0x0..0x2000` across a real pause: nothing goes null -> object, and all
+  32 slots that changed are `TArray {Data,Num,Max}` triples growing by one, i.e.
+  menu allocation churn. The pause fix uses the composed pad instead.
+- **The Flash menus ignore synthetic mouse clicks**, and arrow keys did not move
+  the highlight either; `vrinput test press DD/A` is the reliable menu lane.
+  `boot.ps1` presses Continue and so reaches whatever save is NEWEST, which cost
+  two wasted level loads before it was written down (VERIFICATION.md gotchas 22
+  and 23).
+- **The game would not launch for ~2 hours** mid-session: the mod initialised and
+  the game exited before its first Present. Not the code - the display read
+  `4096x1152` after a KVM switch while `Bioshock.ini` pins a `2750x2850`
+  viewport. Diagnosis worth keeping: mod inits, game exits before Present, D3D
+  selftest passes = look at the display.
+
 ## Session 2026-08-23/24 - VOID's PR review, and the first simulator-verified merge gate
 
 **VOID reviewed PR 50 and PR 51.** Nine of his ten points were confirmed against the
