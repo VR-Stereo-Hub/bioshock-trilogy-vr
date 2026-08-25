@@ -262,9 +262,9 @@ bool is_panel_movie(const char* name) {
 // is up and the diff runs on the RISING EDGE of one, so simply pausing the game
 // during ordinary play produces the answer. Nobody has to type anything mid-run,
 // which is the only way this gets measured in a headset.
-constexpr size_t kPauserScanBytes = 0x1000; // BRVR swept the same 4 KB
+constexpr size_t kPauserScanBytes = 0x2000; // BRVR swept 4 KB; widened after a miss
 constexpr int kPauserSlots = static_cast<int>(kPauserScanBytes / 4);
-constexpr int kPauserMaxReport = 12;        // a wall of hits is noise, not data
+constexpr int kPauserMaxReport = 24;        // a wall of hits is noise, not data
 void* g_pauserSnap[kPauserSlots] = {};
 bool g_pauserBaseline = false;
 uint64_t g_pauserNextMs = 0;
@@ -289,24 +289,31 @@ void pauser_baseline(uint64_t now) {
 void pauser_on_panel_up() {
     if (!g_pauserBaseline) return;
     const uint8_t* L = static_cast<const uint8_t*>(g_level);
+    // ANY change, classified - not just null -> object. The first cut only
+    // reported null -> object, which is the Pauser SHAPE, and a real pause on
+    // this build changed no such slot at all. Reporting every change says
+    // whether the field is a differently-shaped one (a bool, a count, a
+    // non-null handle) or whether LevelInfo is simply the wrong object.
     int found = 0;
     g_pauserCandidateN = 0;
     for (int i = 0; i < kPauserSlots; ++i) {
-        if (g_pauserSnap[i] != nullptr) continue; // was already something
         void* v = nullptr;
         if (!read_ptr_at(L, static_cast<size_t>(i) * 4, &v)) continue;
-        if (!v || !looks_like_object(v)) continue;
+        void* was = g_pauserSnap[i];
+        if (v == was) continue;
         ++found;
         if (found > kPauserMaxReport) continue;
+        const char* kind = (!was && v)   ? (looks_like_object(v) ? "null -> OBJECT" : "null -> value")
+                           : (was && !v) ? "value -> null"
+                                         : "changed";
         g_pauserCandidates[g_pauserCandidateN++] = i;
-        BVR_LOG("[b1r] PAUSER HUNT: Level+0x%X went null -> %p (object) when the panel "
-                "came up - candidate %d",
-                static_cast<unsigned>(i) * 4, v, found);
+        BVR_LOG("[b1r] PAUSER HUNT: Level+0x%X %s (%p -> %p) - candidate %d",
+                static_cast<unsigned>(i) * 4, kind, was, v, found);
     }
     if (found == 0)
-        BVR_LOG("[b1r] PAUSER HUNT: no slot in Level+0x0..0x%X went null -> object. "
-                "Either this panel is not a real pause, or the flag does not live on "
-                "LevelInfo on this build.",
+        BVR_LOG("[b1r] PAUSER HUNT: NOTHING changed in Level+0x0..0x%X across this "
+                "panel. LevelInfo is the wrong object on this build - the pause flag "
+                "is not on it at all, at any shape.",
                 static_cast<unsigned>(kPauserScanBytes));
     else if (found > kPauserMaxReport)
         BVR_LOG("[b1r] PAUSER HUNT: %d slots changed - too many to be meaningful. The "

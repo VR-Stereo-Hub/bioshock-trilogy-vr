@@ -170,6 +170,8 @@ std::atomic<uint64_t> g_resWritePending{0};
 // property offset or bitmask is ever needed, and SET also writes the class
 // default, so pawns spawned later (load crossings) inherit it. Re-asserted
 // on a slow cadence in case anything script-side calls EnableReticle.
+std::atomic<uint64_t> g_lastMenuPressMs{0};
+bool g_playerOpenedPanel = false;
 std::atomic<bool> g_crosshairVisible{false};
 // Hide every crosshair while nothing is equipped. Ported from BRVR, whose
 // XRSession crosshair gate reads HandsProbe_Armed(): "a dot floating in front
@@ -2152,8 +2154,52 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                                 : "released; the panel is a real UI pause again");
         }
     }
+    // ---- did the PLAYER open this panel, or did the scene? -----------------
+    //
+    // s64 stopped treating PausePC as a UI pause during a scene, correctly: the
+    // game pushes it for bathysphere rides and scripted scenes, and treating it
+    // as a pause flattened the whole ride to a quad and froze head steering.
+    // The cost was that a REAL pause taken during a scene also lost the quad,
+    // and the quad is the only thing that ever gets anchored - reported as "the
+    // pause menu is unanchored during scripted events".
+    //
+    // BRVR solves this with a true pause flag (Level.Pauser, its `paused` term
+    // in Hooks.cpp). THAT FIELD IS NOT ON LEVELINFO ON THIS BUILD, and this
+    // time that is a measured result rather than a copied offset: the hunt in
+    // screens.cpp swept Level+0x0..0x2000 across a real pause and every slot
+    // that moved was a TArray {Data,Num,Max} growing by one - menu allocation
+    // churn, not a flag. ENGINE_NOTES has the table.
+    //
+    // So use the one signal this mod owns outright: IT COMPOSES THE PAD. The
+    // game cannot open the pause menu without the player pressing menu, and the
+    // scene's own PausePC arrives with no press at all. Latch on the press,
+    // hold it until the panel closes.
+    //
+    // FAILS TOWARDS TODAY'S BEHAVIOUR. A pause opened some way the composed pad
+    // cannot see - a keyboard Escape - simply misses the window and behaves
+    // exactly as it does now, rather than flattening a ride.
+    {
+        constexpr uint16_t kPadStart = 0x0010; // XINPUT_GAMEPAD_START
+        constexpr uint64_t kPressWindowMs = 2000;
+        uint16_t btns = 0;
+        bvr::input::last_composed_buttons(&btns);
+        const uint64_t nowMs = GetTickCount64();
+        if (btns & kPadStart) g_lastMenuPressMs = nowMs;
+        static bool s_wasPanelUp = false;
+        if (panelUp && !s_wasPanelUp)
+            g_playerOpenedPanel = (nowMs - g_lastMenuPressMs) <= kPressWindowMs;
+        else if (!panelUp)
+            g_playerOpenedPanel = false;
+        if (panelUp != s_wasPanelUp && sceneOwnsPanel)
+            BVR_LOG("[b1r] scripted: panel %s during a scene - %s",
+                    panelUp ? "opened" : "closed",
+                    g_playerOpenedPanel
+                        ? "YOU pressed menu, so it is a real pause and gets the anchored quad"
+                        : "no menu press, so the scene pushed it - staying in stereo");
+        s_wasPanelUp = panelUp;
+    }
     scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
-    bvr::vr::publish_ui_pause(panelUp && !sceneOwnsPanel);
+    bvr::vr::publish_ui_pause(panelUp && (!sceneOwnsPanel || g_playerOpenedPanel));
     // Suppress the aim laser and the aim dot while a scene owns the view. The
     // game's own reticle is NOT this call - it goes out through the engine SET
     // handler in assert_crosshair, which reads the same predicate so the three

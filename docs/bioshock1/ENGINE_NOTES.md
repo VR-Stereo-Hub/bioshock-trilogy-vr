@@ -3617,6 +3617,44 @@ dependency with two other features (`FindLevel`, which needs the pawn) and all
 three were silent for a whole 16-minute session with their switches on. The
 comment claiming reliability outlived the evidence for it.
 
+
+**RE-TESTED PROPERLY 2026-08-24, and now falsified on evidence rather than on a
+borrowed number.** The original test above used BRVR's `0x668` - a copied
+offset, which the hard rules forbid for exactly this reason - so it could only
+ever have shown that ONE slot was wrong. BRVR did not guess that number either;
+it hunted it (`GameState.cpp HuntPauser`), and `0x668` is what its hunt returned
+on its build.
+
+The same hunt now exists here (`screens.cpp`, always-on, rides the panel edges)
+and was run against a real pause in ordinary gameplay:
+
+| Sweep | Filter | Result |
+|---|---|---|
+| `Level+0x0..0x1000` | slots going `null -> object` (the Pauser shape) | **nothing** |
+| `Level+0x0..0x2000` | ANY slot that changes | 32 slots, **none of them a flag** |
+
+Every one of those 32 is a `TArray` growing by one element - they arrive in
+triples, `{Data, ArrayNum, ArrayMax}`, with the two counts stepping together:
+
+```
+Level+0x1560 changed (8ADC5F30 -> 8B34B0D0)
+Level+0x1564 changed (00000015 -> 00000016)     ArrayNum
+Level+0x1568 changed (00000015 -> 00000016)     ArrayMax
+```
+
+That is menu allocation churn, not a pause flag. **The pause state is not on
+LevelInfo on this build at any shape, within 8 KB.** Do not try `Pauser` again
+without first widening the sweep or pointing the hunt at a different object -
+the PlayerController is the obvious next candidate and has not been swept.
+
+**What is used instead: the composed pad.** The mod composes the gamepad, so it
+knows when the PLAYER pressed menu; the game's own `PausePC` during a ride or a
+scripted scene arrives with no press at all. `camera.cpp` latches on the press
+and holds it until the panel closes, and that is what lets a real pause taken
+mid-scene keep the anchored quad while the scene's own panel does not. It fails
+towards today's behaviour: a pause opened by keyboard Escape misses the window
+and behaves exactly as before rather than flattening a ride.
+
 **Also falsified in BRVR, as sway fixes:** `AdditiveHandBobAnim` and
 `WeaponBobDamping`, both observed inert. Do not revive either.
 
