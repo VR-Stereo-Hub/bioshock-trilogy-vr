@@ -543,6 +543,35 @@ void* resolve_weapon_actor(const FrameContext& ctx) {
 
 bool weapon_scan_in_progress() { return g_weaponScan.sweeping; }
 
+
+// Is ANYTHING in your hands - a weapon or a plasmid? Ported from the BRVR mod
+// (Hands/HandsProbe.cpp `g_handsArmed`, read by Render/XRSession.cpp's crosshair
+// gate), including both of its non-obvious rules.
+//
+// OR, NOT AND. Mid-equip one pointer is briefly null while the other has already
+// been written, so requiring both would blink "unarmed" on every weapon switch.
+// BRVR's ability-MODE test is the strict one - `ability && !holdable` - and that
+// is a different question from this one. A plasmid counts as armed: you aim
+// those.
+//
+// FAILS TOWARDS ARMED, deliberately, and this is the rule worth keeping. Every
+// failure path returns true: an unknown rig, an unreadable pointer, a build
+// whose offsets did not resolve. The only consumer is a cosmetic suppression,
+// so a probe that never locks must leave the crosshair exactly as it has always
+// been rather than strand it off with no way to notice why. BRVR: "A cosmetic
+// gate should fail towards the old behaviour, never towards a permanently
+// missing reticle."
+bool armed() {
+    if (!has_vtable(g_handsActor, patterns::kHandsVtableRva)) return true;
+    const uint8_t* h = static_cast<const uint8_t*>(g_handsActor);
+    void* hold = nullptr;
+    void* abil = nullptr;
+    const bool okH = read_ptr(h + patterns::kHandsCurrentHoldableOffset, &hold);
+    const bool okA = read_ptr(h + patterns::kHandsCurrentAbilityOffset, &abil);
+    if (!okH && !okA) return true; // neither slot readable - say nothing
+    return (okH && hold != nullptr) || (okA && abil != nullptr);
+}
+
 bool current_holdable(void** out) {
     // Raw rig read, CLASS-AGNOSTIC: the MachineGun and GrenadeLauncher carry
     // a different native vtable than kPlayerWeaponVtableRva, so the

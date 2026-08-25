@@ -116,6 +116,11 @@ bool weapon_scan_in_progress();
 // layer's identity source - it validates by CLASS NAME, not vtable.
 bool current_holdable(void** out);
 
+// Is a weapon OR a plasmid equipped? Ported from BRVR, which gates its crosshair
+// on exactly this. Returns TRUE on every failure path - the consumer is a
+// cosmetic suppression and must fail towards the crosshair being shown.
+bool armed();
+
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.

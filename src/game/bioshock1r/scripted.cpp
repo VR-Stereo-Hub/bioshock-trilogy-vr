@@ -1195,8 +1195,13 @@ void draw_debug_ui() {
             "Covers rides (the bathysphere) as well as scripted scenes: you are\n"
             "not aiming on either, and a reticle pinned to the middle of a camera\n"
             "you are not steering reads as a smudge on the picture.");
-    ImGui::TextDisabled("     crosshairs are %s RIGHT NOW",
-                        scene_owns_aim() ? "SUPPRESSED - a scene owns the view" : "live");
+    ImGui::TextDisabled("     a scene is %s crosshairs RIGHT NOW",
+                        scene_owns_aim() ? "HIDING" : "not hiding");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "This is the SCENE reason only. Empty hands is a separate switch, on\n"
+            "the camera page - either one hides all three crosshairs, and this\n"
+            "readout does not know about the other.");
 
     bool fovGuard = world_fov_guard();
     if (ImGui::Checkbox("Keep the world lens at its gameplay width", &fovGuard))

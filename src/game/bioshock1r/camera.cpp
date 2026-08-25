@@ -170,7 +170,13 @@ std::atomic<uint64_t> g_resWritePending{0};
 // property offset or bitmask is ever needed, and SET also writes the class
 // default, so pawns spawned later (load crossings) inherit it. Re-asserted
 // on a slow cadence in case anything script-side calls EnableReticle.
-std::atomic<bool> g_crosshairVisible{false}; // `vrxhair on` re-shows it
+std::atomic<bool> g_crosshairVisible{false};
+// Hide every crosshair while nothing is equipped. Ported from BRVR, whose
+// XRSession crosshair gate reads HandsProbe_Armed(): "a dot floating in front
+// of you before the game has given you anything to aim - the whole opening of
+// the game - reads as a bug, and it follows you into every scene where the game
+// takes your weapon away." Default on.
+std::atomic<bool> g_hideAimUnarmed{true}; // `vrxhair on` re-shows it
 int g_crosshairApplied = -1;                 // last state pushed (-1 = never)
 uint64_t g_crosshairAssertMs = 0;            // game thread only
 // Session 22 round 5 (user ask, pre-release): the pad SOFT LOCK-ON (aim
@@ -1190,6 +1196,20 @@ void apply_vr_preset() {
 // a slow safety net for a script-side caller we have not identified.
 constexpr uint64_t kExecReassertMs = 300000; // 5 minutes
 
+// Should every crosshair be hidden this frame, and why? ONE predicate for all
+// three of them - the core aim dot and laser (published to core below) and the
+// game's own reticle (assert_crosshair) - so they can never disagree.
+//
+// Two reasons, and they are independent switches because they are independent
+// judgements: a scene owning the view is scripted.cpp's call, and empty hands is
+// hands.cpp's. BRVR keeps them separate too, and its comment says why - it first
+// expected empty hands to cover cutscenes, "a full playthrough of the opening
+// says it does not, so the sequence is named directly".
+bool aim_suppressed() {
+    if (scripted::scene_owns_aim()) return true;
+    return g_hideAimUnarmed.load(std::memory_order_relaxed) && !hands::armed();
+}
+
 // Crosshair upkeep (see the globals): push the wanted state through the
 // engine's SET handler on change, on a world event, and on the slow safety
 // net. Game thread.
@@ -1205,7 +1225,7 @@ void assert_crosshair(uint64_t now) {
     // setting change - the edge-driven `due` test below brings it back when the
     // scene ends, exactly as it does when the panel closes.
     int want = (g_crosshairVisible.load(std::memory_order_relaxed) &&
-                !bvr::overlay::visible() && !scripted::scene_owns_aim())
+                !bvr::overlay::visible() && !aim_suppressed())
                    ? 1
                    : 0;
     bool due = want != g_crosshairApplied ||
@@ -2138,7 +2158,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // game's own reticle is NOT this call - it goes out through the engine SET
     // handler in assert_crosshair, which reads the same predicate so the three
     // can never disagree.
-    bvr::vr::publish_scene_active(scripted::scene_owns_aim());
+    bvr::vr::publish_aim_suppressed(aim_suppressed());
 
     {
         int32_t moved = body::on_calcview(self, viewActor ? *viewActor : nullptr,
@@ -2437,6 +2457,21 @@ void draw_debug_ui() {
         bool xhair = g_crosshairVisible.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Flat-screen crosshair (default off in VR)", &xhair))
             g_crosshairVisible.store(xhair, std::memory_order_relaxed);
+        bool hideUnarmed = g_hideAimUnarmed.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Hide every crosshair with empty hands", &hideUnarmed))
+            g_hideAimUnarmed.store(hideUnarmed, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Aim dot, aim laser and the game's own reticle, all three, whenever\n"
+                "NOTHING is equipped - no weapon and no plasmid. A plasmid counts as\n"
+                "armed; you aim those.\n\n"
+                "From the BRVR mod: a dot floating in front of you before the game has\n"
+                "given you anything to aim - the whole opening - reads as a bug, and it\n"
+                "follows you into every scene where the game takes your weapon away.\n\n"
+                "Separate from the scripted-scene switch under Scripted events: empty\n"
+                "hands does NOT cover cutscenes, which is why both exist.");
+        ImGui::TextDisabled("     crosshairs are %s RIGHT NOW",
+                            aim_suppressed() ? "SUPPRESSED" : "live");
         bool lockoff = g_lockOnDisabled.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Lock-on disabled (pad aim magnetism off)", &lockoff))
             g_lockOnDisabled.store(lockoff, std::memory_order_relaxed);

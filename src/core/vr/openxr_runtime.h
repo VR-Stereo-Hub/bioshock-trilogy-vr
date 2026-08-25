@@ -337,16 +337,19 @@ void handle_cine_command(const char* args);
 // not pure gameswf. Games that never call this behave exactly as before.
 void publish_ui_pause(bool paused);
 
-// A scripted scene owns the view right now. Published by the adapter for the
-// same reason publish_ui_pause is: no render-side signal can separate a scene
-// that walks the player from ordinary play. Consumed ONLY to suppress aiming
-// furniture that has no meaning while the scene has the camera - the aim laser
-// and the aim dot. It changes no setting and nothing else reads it, so a game
-// that never calls this behaves exactly as before.
+// Aiming furniture should be hidden right now. Published by the adapter, for the
+// same reason publish_ui_pause is: the reasons are all game-side facts no
+// render-side signal can see. Consumed ONLY to suppress the aim laser and the
+// aim dot. It changes no setting and nothing else reads it, so a game that never
+// calls this behaves exactly as before.
+//
+// The adapter owns the POLICY - core deliberately does not know why. BS1
+// publishes it for two reasons: a scripted scene owns the view, or nothing is
+// equipped at all (no weapon and no plasmid, so there is nothing to aim).
 //
 // The game's OWN reticle is not here: it goes through that game's engine SET
 // handler, so each adapter hides its own (BS1: camera.cpp assert_crosshair).
-void publish_scene_active(bool active);
+void publish_aim_suppressed(bool active);
 
 // --- Screen placement: where the cinema quad hangs ---------------------------
 // Applies to every frame that goes to the quad instead of the projection layer:
