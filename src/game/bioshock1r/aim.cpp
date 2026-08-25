@@ -112,6 +112,12 @@ std::atomic<float> g_posUpCm[2] = {0.5f, 12.9f};
 // an in-headset checklist item. Game thread only (except the UI name copy).
 struct WeaponProfile {
     float trimPitch, trimYaw, posFwd, posRight, posUp;
+    // s65: the MODEL grip offset (hands.cpp), as opposed to the four above
+    // which steer the aim RAY. Per weapon because the number is the model's
+    // own origin-to-grip vector - see hands.h's banner. Zero means "as before":
+    // a profile written by an older build has no grip keys, loads them as 0,
+    // and the model sits exactly where it used to.
+    float gripFwd, gripRight, gripUp;
 };
 std::map<std::string, WeaponProfile> g_weaponProfiles;
 std::string g_weaponKey;          // active profile key ("" = none)
@@ -948,6 +954,7 @@ void stash_active_profile() {
     p.posFwd = g_posFwdCm[1].load(std::memory_order_relaxed);
     p.posRight = g_posRightCm[1].load(std::memory_order_relaxed);
     p.posUp = g_posUpCm[1].load(std::memory_order_relaxed);
+    hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
 }
 
 void apply_weapon_key(const std::string& key, const char* why) {
@@ -972,13 +979,17 @@ void apply_weapon_key(const std::string& key, const char* why) {
                                               g_yawOffsetDeg[1].load(std::memory_order_relaxed),
                                               g_posFwdCm[1].load(std::memory_order_relaxed),
                                               g_posRightCm[1].load(std::memory_order_relaxed),
-                                              g_posUpCm[1].load(std::memory_order_relaxed)};
+                                              g_posUpCm[1].load(std::memory_order_relaxed),
+                                              0.0f, 0.0f, 0.0f};
+        if (!g_presetBaselineValid)
+            hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
         g_weaponProfiles[key] = p;
         g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
         g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
         g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
         g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
         g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
+        hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
         BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): trim %.2f/%.2f pos "
                 "%.1f/%.1f/%.1f",
                 key.c_str(), g_presetBaselineValid ? "preset baseline" : "current R values",
@@ -990,8 +1001,11 @@ void apply_weapon_key(const std::string& key, const char* why) {
         g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
         g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
         g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
-        BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f (%s)",
-                key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp, why);
+        hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
+        BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f "
+                "grip %.1f/%.1f/%.1f (%s)",
+                key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp,
+                p.gripFwd, p.gripRight, p.gripUp, why);
     }
 }
 
@@ -1111,6 +1125,11 @@ void load_weapon_profiles() {
         else if (strcmp(field, "posFwd") == 0) p.posFwd = v;
         else if (strcmp(field, "posRight") == 0) p.posRight = v;
         else if (strcmp(field, "posUp") == 0) p.posUp = v;
+        // s65 grip keys. A file written before this existed simply has none of
+        // them, they stay 0, and the model sits exactly where it used to.
+        else if (strcmp(field, "gripFwd") == 0) p.gripFwd = v;
+        else if (strcmp(field, "gripRight") == 0) p.gripRight = v;
+        else if (strcmp(field, "gripUp") == 0) p.gripUp = v;
         else continue;
         ++n;
     }
@@ -1140,7 +1159,9 @@ void note_preset_baseline() {
                         g_yawOffsetDeg[1].load(std::memory_order_relaxed),
                         g_posFwdCm[1].load(std::memory_order_relaxed),
                         g_posRightCm[1].load(std::memory_order_relaxed),
-                        g_posUpCm[1].load(std::memory_order_relaxed)};
+                        g_posUpCm[1].load(std::memory_order_relaxed), 0.0f, 0.0f, 0.0f};
+    hands::model_offset_cm(1, &g_presetBaseline.gripFwd, &g_presetBaseline.gripRight,
+                           &g_presetBaseline.gripUp);
     g_presetBaselineValid = true;
     BVR_LOG("[aim] preset R baseline noted: trim %.2f/%.2f pos %.1f/%.1f/%.1f (seeds new "
             "weapon profiles)",
@@ -1183,6 +1204,12 @@ void save_weapon_profiles() {
         fprintf(f, "%s.posFwd=%.2f\n", key.c_str(), p.posFwd);
         fprintf(f, "%s.posRight=%.2f\n", key.c_str(), p.posRight);
         fprintf(f, "%s.posUp=%.2f\n", key.c_str(), p.posUp);
+
+        fprintf(f, "%s.gripFwd=%.2f\n", key.c_str(), p.gripFwd);
+
+        fprintf(f, "%s.gripRight=%.2f\n", key.c_str(), p.gripRight);
+
+        fprintf(f, "%s.gripUp=%.2f\n", key.c_str(), p.gripUp);
     }
     fclose(f);
     BVR_LOG("[aim] %u weapon profile(s) saved to weapons.ini",

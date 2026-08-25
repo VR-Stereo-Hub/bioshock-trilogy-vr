@@ -86,6 +86,24 @@ int active_hand();
 
 // Live mesh-alignment trim (degrees, per hand) - read by `vraim synccheck` so
 // its model chain sweeps the REAL tuned values (session 20).
+// The MODEL GRIP OFFSET, in cm, in the controller's own final frame (fwd along
+// the barrel as oriented, then right, then up). This is what makes a weapon
+// pivot about its GRIP instead of about its actor origin: with all three at
+// zero the model's origin is pinned to the controller and everything else
+// swings on a radius as you rotate - reported as "the weapon is connected to a
+// circle and the axis is the controller".
+//
+// PER WEAPON, NOT PER HAND. BRVR tuned the same three numbers per slot and its
+// shipped values are nowhere near each other - forward 58 for the wrench, 44
+// for the pistol, 16 for the shotgun - because the number IS the model's
+// origin-to-grip vector and every model has its own. aim.cpp's weapon profiles
+// carry them and push them here on a weapon change; these accessors are that
+// seam. The F10 sliders still edit the live value, which is how a profile gets
+// its numbers in the first place (it is a visual judgement - BRVR's note is
+// blunt that it "cannot be made from a log").
+void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm);
+void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm);
+
 float model_trim_pitch_deg(int hand);
 float model_trim_yaw_deg(int hand);
 float model_trim_roll_deg(int hand);

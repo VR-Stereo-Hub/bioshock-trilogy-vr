@@ -1105,6 +1105,20 @@ bool active() {
            (g_weaponActor != nullptr || g_handsActor != nullptr);
 }
 
+void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm) {
+    if (hand < 0 || hand > 1) return;
+    if (fwdCm) *fwdCm = g_posFwdCm[hand].load(std::memory_order_relaxed);
+    if (rightCm) *rightCm = g_posRightCm[hand].load(std::memory_order_relaxed);
+    if (upCm) *upCm = g_posUpCm[hand].load(std::memory_order_relaxed);
+}
+
+void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm) {
+    if (hand < 0 || hand > 1) return;
+    g_posFwdCm[hand].store(fwdCm, std::memory_order_relaxed);
+    g_posRightCm[hand].store(rightCm, std::memory_order_relaxed);
+    g_posUpCm[hand].store(upCm, std::memory_order_relaxed);
+}
+
 void save_offsets() {
     save_config();
 }
@@ -1138,6 +1152,19 @@ void draw_debug_ui() {
     ImGui::SameLine();
     ImGui::RadioButton("R (weapon)", &tuneHand, 1);
 
+    ImGui::TextDisabled("GRIP OFFSET - where the model sits on the controller");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "These three ARE the fix for \"the weapon swings on a circle around the\n"
+            "controller\". At 0/0/0 the model's own ORIGIN is pinned to your hand,\n"
+            "so its grip - which is somewhere else in the model - orbits that point\n"
+            "as you rotate. Dial them until the weapon pivots about the GRIP when\n"
+            "you twist your wrist. That is a visual judgement and cannot be read\n"
+            "off a log, which is why it is a slider and not a constant.\n\n"
+            "SAVED PER WEAPON since s65: the number is the model's own\n"
+            "origin-to-grip vector, so every weapon needs its own. Tune with that\n"
+            "weapon in hand, then press Save preset values - it writes weapons.ini\n"
+            "as well, and switching weapons restores each one's numbers.");
     float f = g_posFwdCm[tuneHand].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("offset forward (cm)", &f, -120.0f, 120.0f))
         g_posFwdCm[tuneHand].store(f, std::memory_order_relaxed);
