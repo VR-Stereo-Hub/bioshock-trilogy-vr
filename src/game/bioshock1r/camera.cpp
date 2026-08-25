@@ -2143,16 +2143,22 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     const bool panelUp = screens::panel_screen_up();
     const bool sceneOwnsPanel = scripted::scripted_window() || scripted::bathysphere();
     {
+        // ONE line, and it states the decision actually taken. The s64 version
+        // read `panelUp && sceneOwnsPanel` and so announced "NOT treating it as
+        // a UI pause" even on the frame we were treating it as exactly that,
+        // once the menu-press latch above started overriding it.
         static bool s_wasSuppressing = false;
-        const bool suppressing = panelUp && sceneOwnsPanel;
+        const bool suppressing = panelUp && sceneOwnsPanel && !g_playerOpenedPanel;
         if (suppressing != s_wasSuppressing) {
             s_wasSuppressing = suppressing;
-            BVR_LOG("[b1r] scripted: panel screen up during a %s - %s",
+            BVR_LOG("[b1r] scripted: panel during a %s - %s",
                     scripted::bathysphere() ? "bathysphere ride" : "scripted scene",
-                    suppressing ? "NOT treating it as a UI pause (the scene keeps its "
-                                  "stereo projection and your head keeps steering)"
-                                : "released; the panel is a real UI pause again");
+                    suppressing
+                        ? "the SCENE pushed it (no menu press) - not a UI pause, so the "
+                          "scene keeps its stereo projection and your head keeps steering"
+                        : "YOU pressed menu - a real pause, so it gets the anchored quad");
         }
+        if (!panelUp) g_playerOpenedPanel = false; // cleared only after logging
     }
     // ---- did the PLAYER open this panel, or did the scene? -----------------
     //
@@ -2188,15 +2194,11 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         static bool s_wasPanelUp = false;
         if (panelUp && !s_wasPanelUp)
             g_playerOpenedPanel = (nowMs - g_lastMenuPressMs) <= kPressWindowMs;
-        else if (!panelUp)
-            g_playerOpenedPanel = false;
-        if (panelUp != s_wasPanelUp && sceneOwnsPanel)
-            BVR_LOG("[b1r] scripted: panel %s during a scene - %s",
-                    panelUp ? "opened" : "closed",
-                    g_playerOpenedPanel
-                        ? "YOU pressed menu, so it is a real pause and gets the anchored quad"
-                        : "no menu press, so the scene pushed it - staying in stereo");
         s_wasPanelUp = panelUp;
+        // NOT cleared here. The verdict has to survive until the block below
+        // has logged it, or the close edge reports the post-reset value and
+        // every close reads "no menu press" however it opened - which is
+        // exactly what the first cut did.
     }
     scripted::publish_panel_state(panelUp, panelUp && sceneOwnsPanel);
     bvr::vr::publish_ui_pause(panelUp && (!sceneOwnsPanel || g_playerOpenedPanel));
