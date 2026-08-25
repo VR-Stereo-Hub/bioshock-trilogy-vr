@@ -1785,6 +1785,56 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         if (wantS) memcpy(cb.s, sv, 12);
     }
 
+    // ---- ATTACH PROBE: is the weapon actually AT the bone we pivot about? ---
+    //
+    // Everything upstream of this point measured clean while the viewmodel
+    // still desynced as the wrist turned: the weapon's own bone 0 is R_Grip at
+    // its model origin, rig bone 43 is R_Grip too, the cluster anchor defaults
+    // to that bone, every offset and trim reads 0.00, the render lock is off,
+    // and a four-pose rotation sweep at a fixed hand position wrote a
+    // bit-identical target every time. A zero offset behaving perfectly is what
+    // that sweep proves, so the displacement enters AFTER our write.
+    //
+    // The one link never measured is the attachment itself. The weapon is a
+    // SEPARATE ACTOR attached to the rig bone, so its world transform is
+    // `bone * weaponRelative`. A non-zero relative translation swings it about
+    // the bone as the bone turns - which is "rotating from hand position rather
+    // than gun position" exactly, and is invisible to every check above because
+    // all of them live upstream of it.
+    //
+    // So compare the two directly: where the weapon actor says it is, against
+    // where the bone we just wrote actually is in world space. The delta IS the
+    // lever arm, if there is one, and it is a property of the attachment rather
+    // than of taste - so it can be compensated once for every weapon instead of
+    // dialled per weapon.
+    {
+        static uint64_t s_lastAttachMs = 0;
+        const uint64_t nowAtt = GetTickCount64();
+        if (nowAtt - s_lastAttachMs >= 1000) {
+            s_lastAttachMs = nowAtt;
+            void* hold = nullptr;
+            float wl[3];
+            Qts ab{};
+            if (hands::current_holdable(&hold) && hold &&
+                read_n(static_cast<uint8_t*>(hold) + patterns::kActorLocOffset, wl, 12) &&
+                read_n(&g_bones[anchor], &ab, sizeof ab)) {
+                // The bone we just wrote is in COMPONENT space; lift it to world
+                // through the actor transform we already decomposed above.
+                float bw[3];
+                qts_rotate(qa, ab.p, bw);
+                bw[0] += actorLoc[0];
+                bw[1] += actorLoc[1];
+                bw[2] += actorLoc[2];
+                const float d[3] = {wl[0] - bw[0], wl[1] - bw[1], wl[2] - bw[2]};
+                const float mag = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                BVR_LOG("[bones] attach probe: weapon loc=(%.1f %.1f %.1f) bone%d "
+                        "world=(%.1f %.1f %.1f) delta=(%.2f %.2f %.2f) |d|=%.2f UU",
+                        wl[0], wl[1], wl[2], anchor, bw[0], bw[1], bw[2], d[0], d[1], d[2],
+                        mag);
+            }
+        }
+    }
+
     // Sleeve collapse: zero scale hides the geometry; pinning the position at
     // the target keeps any residual skin inside the fist instead of smeared
     // toward the shoulder. On the off-transition the reference values are
