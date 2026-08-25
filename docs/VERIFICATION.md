@@ -561,6 +561,24 @@ $a.NonBlackPctL      -gt 50     # something was rendered
     JSON sitting in the worktree - never committable (hard rule). Pass an
     absolute `-Out` outside the repo, or delete the copies before `git add`.
     (Session 41 - they showed up in `git status` next to a real commit.)
+22. **The Flash menus IGNORE synthetic mouse clicks. Use the keyboard or the
+    pad.** `game-click.ps1` reports `clicked window(x,y)` and the menu does not
+    move - the click is delivered and swallowed, so it looks like a bad
+    coordinate and is not. This is the same gameswf behaviour that
+    `game-key.ps1` was written for (session 24: "synthetic clicks and Enter
+    presses were largely IGNORED"). **Arrow keys via `game-key.ps1`, or
+    `vrinput test press DU|DD|A` via `game-cmd.ps1`, both work** - the latter is
+    what `boot.ps1` already uses to walk the title screen. Reach for one of
+    those first and never spend a screenshot confirming a click landed.
+23. **`boot.ps1` presses Continue - it loads the NEWEST save, not the one you
+    want.** It is a "reach gameplay" tool, not a "reach a scenario" tool, and
+    the save it lands on may have no weapon equipped at all, which silently
+    disables anything holdable-gated (`wskel`/`wscale rigid` log nothing at
+    `wscale 1.0` or with no holdable - absence of those lines is NOT evidence the
+    lane is broken; check `vrhands status` for `weapon actor=00000000` first).
+    To reach a specific save, boot with `boot.ps1 -Attach`, then Escape ->
+    arrow keys -> LOAD, per gotcha 22. (Session 65, chasing the wrench-scale
+    regression on a save that had no wrench.)
 
 ---
 
