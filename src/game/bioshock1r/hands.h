@@ -104,6 +104,14 @@ int active_hand();
 void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm);
 void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm);
 
+// Per weapon since s65, for the same reason the grip offset is: a residual
+// ROTATION error shows up as a POSITION error at the end of the grip lever
+// (err ~ r * delta), so it vanishes at whatever orientation the offset was
+// tuned in and returns everywhere else. Tuning position alone cannot fix it -
+// which is why BRVR's shipped table carries a rotation column per slot, and
+// why its pistol needs 8 degrees of yaw.
+void set_model_trim_deg(int hand, float pitchDeg, float yawDeg, float rollDeg);
+
 float model_trim_pitch_deg(int hand);
 float model_trim_yaw_deg(int hand);
 float model_trim_roll_deg(int hand);

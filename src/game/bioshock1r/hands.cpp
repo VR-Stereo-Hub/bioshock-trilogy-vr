@@ -1105,6 +1105,13 @@ bool active() {
            (g_weaponActor != nullptr || g_handsActor != nullptr);
 }
 
+void set_model_trim_deg(int hand, float pitchDeg, float yawDeg, float rollDeg) {
+    if (hand < 0 || hand > 1) return;
+    g_rotPitchDeg[hand].store(pitchDeg, std::memory_order_relaxed);
+    g_rotYawDeg[hand].store(yawDeg, std::memory_order_relaxed);
+    g_rotRollDeg[hand].store(rollDeg, std::memory_order_relaxed);
+}
+
 void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm) {
     if (hand < 0 || hand > 1) return;
     if (fwdCm) *fwdCm = g_posFwdCm[hand].load(std::memory_order_relaxed);
