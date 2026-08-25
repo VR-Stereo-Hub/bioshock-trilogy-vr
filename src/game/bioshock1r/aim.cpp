@@ -1808,6 +1808,12 @@ void* learned_weapon_object() {
     return g_objRight;
 }
 
+void weapon_key_name(char* out, size_t count) {
+    if (!out || !count) return;
+    std::lock_guard<std::mutex> lock(g_weaponKeyUiMutex);
+    strncpy_s(out, count, g_weaponKeyUi, _TRUNCATE);
+}
+
 bool weapon_key_is(const char* name) {
     // The profile key IS the equipped holdable's class name, maintained by
     // update_weapon_profile off Hands.CurrentHoldable. Session 31 reuses it as

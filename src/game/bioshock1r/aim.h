@@ -80,6 +80,10 @@ void* learned_weapon_object();
 // Session 31's swing gesture gates on weapon_key_is("Wrench"). Game thread.
 bool weapon_key_is(const char* name);
 
+// The active weapon profile's key, for logging. Writes "-" when none is
+// resolved. Safe from any thread (the name is mutex-guarded).
+void weapon_key_name(char* out, size_t count);
+
 // The live aim trim (degrees), PER HAND (0 = left/plasmid, 1 = right/weapon)
 // since session 16 part 3 - shared so the laser, the fire ray and the M7
 // viewmodel stay one ray. set_trim is the VR-preset load path.

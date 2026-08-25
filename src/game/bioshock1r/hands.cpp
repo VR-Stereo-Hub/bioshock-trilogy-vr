@@ -618,7 +618,116 @@ void init(const bvr::pattern_scan::ProcessImage& image) {
 // because the collapse is write-only and needs an explicit edge on the way out.
 bool g_rigWasCollapsed = false;
 
+
+// ---- NUMPAD TUNER (s65, ported from the BRVR mod) --------------------------
+//
+// BRVR's HandsProbe.cpp PollGripKeys, cut down to the two modes William asked
+// for. Its reason for existing transfers exactly: the grip offset and the model
+// trim are "three numbers whose only test is 'does the gun pivot about the grip
+// when I twist my wrist' - a visual judgement that cannot be made from a log and
+// takes one rebuild per guess". The F10 sliders can do it, but not while both
+// hands are on the controllers and the gun is held at the angle being judged.
+//
+//   Numpad 8 / 2   forward / back   (POSITION)   pitch   (ROTATION)
+//   Numpad 6 / 4   right / left                  yaw
+//   Numpad 0 / 5   up / down                     roll
+//   Numpad 7       cycle step   0.5 -> 2 -> 5
+//   Numpad 9       cycle mode   POSITION <-> ROTATION
+//
+// EDITS THE RIGHT (WEAPON) HAND, matching the F10 tuning-hand default.
+//
+// PER WEAPON. Every edit is stashed into the ACTIVE weapon's profile and the log
+// line names it, so a pistol session cannot silently land on the wrench - which
+// is the failure the per-weapon split exists to prevent. Persisting on every
+// change is BRVR's behaviour too, and it is what makes a tuning session survive
+// a crash; these numbers cost headset time and nothing else re-derives them.
+//
+// FOCUS-GATED. Without this the keys fire while alt-tabbed, which turns a stray
+// numpad press in another window into a silent retune.
+constexpr int kTuneModePos = 0;
+constexpr int kTuneModeRot = 1;
+int g_tuneMode = kTuneModePos;
+float g_tuneStep = 2.0f;
+
+bool game_has_focus() {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+void tuner_log(const char* what) {
+    char wk[48] = "-";
+    aim::weapon_key_name(wk, sizeof wk);
+    if (g_tuneMode == kTuneModePos)
+        BVR_LOG("[hands] numpad: %s %s POSITION fwd %+.1f right %+.1f up %+.1f cm "
+                "(step %.1f)",
+                wk, what, g_posFwdCm[1].load(std::memory_order_relaxed),
+                g_posRightCm[1].load(std::memory_order_relaxed),
+                g_posUpCm[1].load(std::memory_order_relaxed), g_tuneStep);
+    else
+        BVR_LOG("[hands] numpad: %s %s ROTATION pitch %+.1f yaw %+.1f roll %+.1f deg "
+                "(step %.1f)",
+                wk, what, g_rotPitchDeg[1].load(std::memory_order_relaxed),
+                g_rotYawDeg[1].load(std::memory_order_relaxed),
+                g_rotRollDeg[1].load(std::memory_order_relaxed), g_tuneStep);
+}
+
+void poll_numpad_tuner() {
+    if (!game_has_focus()) return;
+
+    struct Bind { int vk; int axis; float sign; };
+    static const Bind kBinds[6] = {
+        {VK_NUMPAD8, 0, +1.0f}, {VK_NUMPAD2, 0, -1.0f},
+        {VK_NUMPAD6, 1, +1.0f}, {VK_NUMPAD4, 1, -1.0f},
+        {VK_NUMPAD0, 2, +1.0f}, {VK_NUMPAD5, 2, -1.0f},
+    };
+    static bool prev[6] = {};
+    static bool prevStep = false;
+    static bool prevMode = false;
+
+    // Mode, then step - both edge-detected so a held key moves one notch.
+    const bool modeDown = (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0;
+    if (modeDown && !prevMode) {
+        g_tuneMode = (g_tuneMode == kTuneModePos) ? kTuneModeRot : kTuneModePos;
+        tuner_log("now editing");
+    }
+    prevMode = modeDown;
+
+    const bool stepDown = (GetAsyncKeyState(VK_NUMPAD7) & 0x8000) != 0;
+    if (stepDown && !prevStep) {
+        g_tuneStep = (g_tuneStep < 1.0f) ? 2.0f : (g_tuneStep < 3.0f ? 5.0f : 0.5f);
+        tuner_log("step now");
+    }
+    prevStep = stepDown;
+
+    bool moved = false;
+    for (int i = 0; i < 6; ++i) {
+        const bool down = (GetAsyncKeyState(kBinds[i].vk) & 0x8000) != 0;
+        if (down && !prev[i]) {
+            const float d = kBinds[i].sign * g_tuneStep;
+            std::atomic<float>* dst =
+                (g_tuneMode == kTuneModePos)
+                    ? (kBinds[i].axis == 0 ? g_posFwdCm : kBinds[i].axis == 1 ? g_posRightCm
+                                                                             : g_posUpCm)
+                    : (kBinds[i].axis == 0 ? g_rotPitchDeg : kBinds[i].axis == 1 ? g_rotYawDeg
+                                                                                 : g_rotRollDeg);
+            dst[1].store(dst[1].load(std::memory_order_relaxed) + d, std::memory_order_relaxed);
+            moved = true;
+        }
+        prev[i] = down;
+    }
+    if (!moved) return;
+    tuner_log("set");
+    // Persist immediately, both files: save_weapon_profiles() stashes the live
+    // values into the active profile first, so weapons.ini picks up the edit.
+    save_offsets();
+    aim::save_weapon_profiles();
+}
+
 void on_calcview(const FrameContext& ctx) {
+    poll_numpad_tuner(); // in-headset grip/trim tuning - see its banner
     // Overlay request, applied from THIS thread (same rule as aim.cpp: the
     // render thread must never touch engine state directly).
     int pending = g_pendingEnable.exchange(-1, std::memory_order_relaxed);
