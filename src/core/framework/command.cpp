@@ -289,6 +289,8 @@ bool core_command(const char* cmd, const char* args) {
         bvr::vr::handle_mirror_command(args);
     } else if (strcmp(cmd, "vrcine") == 0) {
         bvr::vr::handle_cine_command(args);
+    } else if (strcmp(cmd, "vrscreen") == 0) {
+        bvr::vr::handle_screen_command(args);
     } else if (strcmp(cmd, "vroverlay") == 0) {
         // An explicit "off" is off; anything else (including a bare command) is
         // on. BS2's reading, kept because "vroverlay" alone meaning "hide it"

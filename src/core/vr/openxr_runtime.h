@@ -330,6 +330,42 @@ void set_pose_audit(bool on);
 void publish_gameplay_view(bool strictGameplay);
 void handle_cine_command(const char* args);
 
+// A full-screen pause interface is up. Published by the adapter from the game's
+// own pause field, because the pause menu draws OVER a live world and so is
+// invisible to every render-side signal the verdict already has: CalcView keeps
+// firing, the view actor is still the pawn, the fov matches, and the frame is
+// not pure gameswf. Games that never call this behave exactly as before.
+void publish_ui_pause(bool paused);
+
+// --- Screen placement: where the cinema quad hangs ---------------------------
+// Applies to every frame that goes to the quad instead of the projection layer:
+// menus, the map, the manual, machine flows, the hack board, loading screens
+// and cutscenes. `vrscreen anchor mode anchor|head|origin`.
+//
+//   anchor (default) - world-locked, placed ONCE from the head pose at the
+//                      moment the screen opens, yaw flattened so it is never
+//                      tilted. It stays put while you look around, which is
+//                      what makes it readable, and re-places on the next
+//                      screen. Ported from the BRVR mod.
+//   head             - rides the view space. Follows your gaze; swims.
+//   origin           - world-locked at the recenter origin's forward. The
+//                      pre-port default, and the reason a menu could open
+//                      behind a player who had turned since recentring.
+//
+// release_screen_anchor() forces the next screen frame to re-place. Call it
+// from a recenter so the screen comes back to the player.
+void handle_screen_command(const char* args);
+void release_screen_anchor();
+int screen_place_mode();
+void set_screen_place_mode(int mode);
+const char* screen_place_name(int mode);
+float screen_height_m();
+void set_screen_height_m(float m);
+// Quad width in metres. The core DEFAULT is unchanged (2.4); a game opts into a
+// different size from its own adapter, the same way screen placement does.
+float screen_width_m();
+void set_screen_width_m(float m);
+
 // --- Session 29: what the VR rig does while a cinematic holds ----------------
 // `vrcine drive off|authored|authored+look` (default authored). The verb is
 // `drive` and not `mode` because `vrcine mode` already means quad-vs-stereo,

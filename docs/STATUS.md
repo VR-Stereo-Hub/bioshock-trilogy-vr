@@ -2,6 +2,376 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-22 - s63: BRVR parity, the wrench, and F10 from the controllers (BioVRDev)
+
+**Branch `s63-bs1-comfort`.** Two commits added this part - the probe disarm and
+everything else - and neither touches `src/core/`.
+
+**The bob probe is DISARMED.** `59e8193` had armed it at boot as a TEMPORARY
+measure marked REVERT BEFORE MERGE; it did its job (that build produced the
+absolute-world-Z discriminator), so the rule it suspended is back. **This branch
+is now mergeable on that count.**
+
+### Scale: BRVR parity was not the fix, and the headset confirmed that
+
+Comparing BRVR's shipped `dist/BioshockVR.ini` against these defaults, world
+scale, foreground lens and IPD ALREADY agreed (`EyeSeparation=3.2` documented as
+"game units == cm" IS 100 UU/m; BRVR's fg-lens formula IS the session-28
+`k=(4/3)*(H/W)`). Hand and weapon scale were within 1% and 5%. **The only large
+disagreement was camera height: `CameraHeightOffset=9` cm against our 0.**
+
+Adopting 0.80/0.80 was therefore parity, not a fix, and it still read rough in
+the headset. **The dialled values are `handScaleL/R = 0.904`, `wScale = 0.868`**
+with height at 9 - bigger than BRVR on both. Promote them to shipped defaults
+once they settle. The user's read on why BRVR's numbers do not transfer: BRVR
+scales the whole ACTOR, we compress bone translations about the wrist - same
+number, different pivot.
+
+`HandsScale`, `GunScale` and `CameraHeightOffset` are now `BioshockVR.ini` keys
+(BRVR's names and units), read in `Bioshock1RAdapter::init`. **PRECEDENCE IS
+BACKWARDS AND ON PURPOSE**: `init()` runs before `load_vr_preset_values()`, so a
+saved `vrpreset.ini` overrides all three. That preserves F10 calibrations but is
+indistinguishable in a headset from the ini being ignored, so the startup echo
+says so on the same line.
+
+### The wrench scales, settling a question open since session 16
+
+Skeleton-less holdables now scale through the weapon **actor's** `DrawScale`
+(+0x2AC, this repo's own session-12 constants, with the dirty protocol).
+**Headset-confirmed.** Session 16 had measured DrawScale on the **RIG** actor,
+found the geometry inert through the fg path (240 -> 234 px at s=0.5) and named
+the WEAPON actor as the case it could not isolate. The split is real: rig-actor
+DrawScale does not size geometry, weapon-actor DrawScale does - so the
+attach-matrix disassembly s16 queued as the fallback can stay parked.
+
+Two corrections came out of the first run, both from single log lines: the
+wrench is **authored at DrawScale 0.800, not 1.0** (so a multiplier rendered it
+at 0.64 - it is absolute now, as BRVR's is), and a weapon SWITCH reached the
+restore path and wrote through the OUTGOING actor. Full detail in
+`docs/bioshock1/ENGINE_NOTES.md`.
+
+### F10 audit (the panel already held more than expected)
+
+- **Head bob is NOT broken.** `killHeadBob` defaults on and logs
+  `headbob: camera base = Pawn.Location + eyeHeight` when it runs - it did. What
+  was still bobbing was the GUN, the separate s63 defect `bae3d09` fixed. There
+  is no weapon-bob toggle and should not be: it was a bug, not an option.
+- **"Save preset values" does NOT save everything in F10.** It writes a
+  hand-maintained list. Live controls that do not survive a restart: **claimed
+  hfov** ("stop the swim"), **stick deadzone**, **kill right-stick pitch**, the
+  three **laser** sliders, and **screen distance / width**.
+- **The old "Ammo-select modifier" combo was dead on BS1** - superseded by
+  `ControllerDpadModifier`, which takes over whenever it is not Legacy. It is
+  still live for BS2/Infinite, so the panel now shows it only when it is the one
+  being read, with the five BRVR modes as the primary control.
+
+### F10 is now usable from the controllers (2026-08-22, part 3)
+
+**R3+L3 taps to open, holds ~0.6 s to recenter.** The right controller points,
+RT clicks, the right stick scrolls on Y and tweaks the pointed-at slider on X.
+RT and the right stick are swallowed for the game while it is up (a click must
+not fire, a scroll must not turn); the left stick still walks. Crosshair, aim
+laser and aim dot are suppressed - the beam lands on the panel and fights the
+cursor for the same pixels.
+
+**Four things had to be understood rather than guessed, and each cost a headset
+session before it was.** The full write-ups are in `docs/ARCHITECTURE.md`'s
+decision log under *2026-08-22 (session 63) - the F10 panel in a headset*; the
+one-line versions:
+
+- **The half-screen cutoff was a VIEWPORT bug, not a too-tall panel.** ImGui's
+  viewport is the window CLIENT RECT; we draw into the BACKBUFFER, and Windows
+  clamps a window to the monitor.
+- **ImGui input has been event-driven since 1.87.** Writing `io.MouseDown[]`
+  directly is silently overwritten inside `NewFrame`.
+- **Event trickling stopped the wheel queue draining**, so scrolling ran on
+  after the stick was released. Synthetic frame-paced input wants it off.
+- **Sliders position ABSOLUTELY on click**, so a synthesised click-drag reset
+  the value to wherever you aimed. The keyboard/gamepad path is relative.
+
+**The window geometry is not baked yet** - a probe logs it instead, as fractions
+of the backbuffer so the number is resolution-independent:
+
+```
+grep "overlay: window" %LOCALAPPDATA%\BioshockVR\bioshockvr.log | tail -3
+```
+
+## Build and deploy state (2026-08-22, end of s63)
+
+- **Deployed to** `C:\Program Files (x86)\Steam\steamapps\common\BioShock
+  Remastered\Build\Final`, **Debug**, rebuilt from `17b6e88` after the amend so
+  the log's build id matches `git describe` (`v0.8.2-30-g17b6e88`). An earlier
+  install in this session stamped `g98db02a-dirty`; if a log shows that, it is
+  the pre-amend build of identical code, not a different change.
+- **No probe is armed.** `probe_bob` is back to `g_on{false}`.
+- `git diff main...s63-bs1-comfort -- src/core/` is **NOT empty** - ~1,700 lines
+  across 8 core files, because the whole input/overlay lane lives there. Which
+  parts reach BS2 and Infinite, and how each is gated, is the whole point of
+  `docs/PORT-CANDIDATES.md`. **Six rows there are changes those two games take
+  UNTESTED**, the sharp ones being `DPAD_RIGHT` (BS2 now emits it where it
+  previously emitted nothing) and `BACK` on modifier+menu (neither game checked).
+
+### Verified in a headset vs merely built
+
+| Verified by the user | Only built |
+|---|---|
+| Wrench scales (settles s16's rig-vs-weapon DrawScale question) | MODIFIER + menu / X+Y -> `BACK` -> map |
+| F10 opens on R3+L3, points, clicks, scrolls | The d-pad route to the map (`flickRight` + per-direction hold) |
+| Slider tweak, cutoff fix, text size, speeds | `imgui_internal.h` slider-tweak timing under other conditions |
+| Scale still "rough" at BRVR parity; 0.904 / 0.868 dialled | Infinite `XToggleZoom` leak fix (`map.jumpBit` guard) |
+
+## Next steps
+
+**THE NEXT SESSION IS CUTSCENES / SCRIPTED EVENTS, on a new branch.** BRVR is the
+reference and it already solves all of this - port its approach rather than
+re-deriving, and cite it in the docs.
+
+1. **A real scripted-event detector, BRVR-shaped.** This is the foundation the
+   rest depends on, so it goes first. Today's verdict is
+   `bvr::vr::cinematic_active()` / the `g_gameplayView` publish, which is a
+   heuristic stack (strict view actor, staleness, fov mismatch, `screen_only`,
+   `uiPaused`) with hysteresis - see the `wantCine` block in
+   `openxr_runtime.cpp`. BRVR's is better and is the thing to match.
+2. **F10 toggle: remove injected ROTATION during gameplay, not position.** The
+   two are separable in `camera.cpp`'s CalcView body - `rot->pitch/yaw/roll` are
+   written well away from the `loc->` writes and the head-bob substitution.
+3. **Scripted events: drop injected VERTICAL rotation, keep horizontal.** Pitch
+   is the comfort hazard in a scripted camera; yaw is what makes looking around
+   during one feel alive. Depends on (1) being trustworthy.
+4. **The rest of BRVR's cutscene QOL**, per the user's list.
+
+Carried over, and all of it cheap to check during a cutscene session:
+
+5. **Confirm the MAP opens** - MODIFIER + menu (or MODIFIER + X+Y), held ~1 s.
+   That is BRVR's route (`if (s.menu) btn |= (mod ? XI_BACK : XI_START)`); the
+   first attempt missed it and fixed only the d-pad route. Also confirm UP/DOWN
+   still step ammo ONE type per push (they CYCLE, so they stay pulsed).
+6. **Bake the F10 window geometry** from the probe:
+   `grep "overlay: window" bioshockvr.log | tail -3` gives pos/size as fractions
+   of the backbuffer, plus the text scale. Then drop the probe.
+7. **Settle the scale.** 0.904 / 0.868 are the dialled values, both bigger than
+   BRVR's 0.8. The user's read is that BRVR's scaling "doesn't translate" -
+   plausibly because BRVR scales the whole ACTOR while we compress bone
+   translations about the wrist: same number, different pivot.
+8. **THE STANDING BUG: controllers unbind mid-session.** Eight census events in
+   five minutes on 2026-08-22 (right hand 18:15:52 and 18:16:46, left hand three
+   times 18:17-18:18), each preceded by `interaction profile changed` and each
+   recovering. This is what actually broke the d-pad modifier the first time.
+   BRVR reportedly does not do this, so its `InputHook.cpp` action setup is the
+   comparison. `grep "interaction profile changed\|census" bioshockvr.log`.
+9. **Still open**: this mod's performance being worse than BRVR's.
+
+### Where to cut the cutscene branch from
+
+`s63-bs1-comfort` is **30 commits ahead of `main` and unmerged**. Cutting the new
+branch from `main` would mean testing cutscenes without the F10 panel, the
+controller pointer or the head-bob fix - i.e. without the tools. Two options,
+and it is a real choice rather than a formality:
+
+- **Merge `s63-bs1-comfort` into `main` first** (deliberately, not as session
+  cleanup), then branch from `main`. Cleanest, and it is what the branch is for.
+- **Cut the cutscene branch from `s63-bs1-comfort`.** Fine, but it stacks, and
+  the stacked branch must be replanted onto `main` with
+  `git rebase --onto main s63-bs1-comfort <new>` once s63 merges - and rebuilt,
+  because a replanted branch has never been compiled in its new position.
+
+## Session 2026-08-22 - s63 BS1 comfort + controls (BioVRDev)
+
+**Branch `s63-bs1-comfort`, 26 commits, all headset-verified unless said
+otherwise.** One session branch, one commit per finished thing - the repo's own
+convention since 2026-07-31, which the previous session had drifted from into
+nine feature branches.
+
+**SOLVED: the weapon bob. It was ours, and it was three lines.** `baseLoc` is
+snapshotted at `camera.cpp:1247`, the head-bob substitution writes `loc` at
+:1394, and the hand viewmodel AND the aim ray are both built on `ctx.baseZ`
+(`frame_context.h`: `out.loc.z = ctx.baseZ + d[2] * worldScale`). So the head-bob
+fix stopped the VIEW bobbing and left the GUN bobbing - the two consumers of the
+camera location diverged the moment that fix landed. Fixed by re-taking
+`baseLoc` after the substitution and before the head offset (`bae3d09`).
+
+The measurement that settled it, and the one to reach for first next time:
+**with the pawn's own world Z perfectly flat, bone 43 AFTER our write still
+moved 2.91 UU mean in ABSOLUTE world space.** Our write was always authoritative
+- it was being told a bobbing number. Relative to the pawn the gun swung 9.28 UU
+while walking.
+
+**Three approaches falsified on the way, all assuming the ENGINE wrote bob into
+the bone after us:**
+- actor Z pin from Present (s62): write lands, gun still bobs.
+- array B is the carrier: **max |B - actor| = 0.0000 UU over 36 windows**.
+- sway re-adopt gated on ground speed: gate engaged in 44/51 windows,
+  A-post 2.73 -> 3.22. No effect. Committed and reverted (`bcdb4cf`/`2e1bcb6`),
+  kept as a pair so the falsification stays on the record.
+
+**The split that would have ended it in one step: standing 2.88 vs moving 2.92 -
+identical.** The residual was never walk bob, so every fix aimed at keeping the
+engine out was defending a door the bob does not use.
+
+**Turn rate and walking direction, both ported from BRVR, both verified.** The
+game's turn response is nearly vertical at the top of the stick (0.98 -> ~105
+deg/s, 0.99 -> ~140, 1.00 -> ~200), so a 2% difference in push doubled the rate.
+`TurnAxisMax=0.95` caps it; `GameTurnSpeed=70` writes the game's own Sensitivity
+slider because a cap over a low sensitivity just leaves turning sluggish - the
+two are halves of one fix. **Frame-rate dependence is FALSIFIED in BRVR** (40
+samples, 142-239 CalcView/s, no correlation); do not re-derive it.
+
+`StickPrecomp` undoes the game's PER-AXIS deadzone (0.225) bending the walk
+direction by up to ~11 deg when `body::moveDirInstant` rotates the movement
+stick. It needs turning AND walking at once, which is why it never showed
+standing still, and it read as the TURN snapping when it was the walk direction.
+One deliberate deviation from BRVR, called out in the code: the band ramps in
+over the first 6% of deflection instead of being added whole at an axis crossing
+- that step landed exactly on the game's threshold where rounding dithers, which
+was the residual jitter after the snap was fixed.
+
+**Controls now match BRVR's shape.** `%LOCALAPPDATA%\BioshockVR\BioshockVR.ini`,
+one `[VR]` section, BRVR's key names and numbering so a config carries across.
+BS1 defaults: face buttons **passthrough** (A=use, B=med hypo, X=reload/hack,
+Y=jump), `ControllerDpadModifier=1` (right thumbrest),
+`ControllerDpadFlip=0` (LEFT stick selects), `JumpOnR3=1`. The session-19
+rearrangement is kept as `FaceLayout=session19`, one word away. R3 jump had
+never fired: the old `auto` modifier mode counted R3 as a possible modifier on
+any game with `flickAmmoModPref`, and modifier beats jump in the precedence
+chain. Auto is gone from the ini.
+
+**`docs/CONTROLS.md` is new** and separates LIVE keys from PLANNED ones. The ini
+is deliberately written ahead of the code, so a planned key doing nothing is not
+a bug report. It also names the blocker for the intended "ini is the source of
+truth, F10 is a front-end" model: **the F10 save rewrites `vrpreset.ini`
+wholesale and drops unknown keys**, which is why `xr.ini` and `BioshockVR.ini`
+are separate files. Fix that writer before the ini grows, not after.
+
+**`tools/lib/resolve-game-path.ps1` is new.** Five scripts hardcoded one
+contributor's drive layout (BS1 on K:), so `install.ps1` died with "Cannot find
+drive" on this machine while a stale DLL already in the folder kept loading -
+which is how a probe got "run" against a build ten days old. Resolution order:
+explicit `-GamePath`, `BVR_BS1_PATH` env, every Steam library from
+`libraryfolders.vdf`, the Epic roots, then the historical default last.
+
+**OPEN: one controller unbound at boot, cause unknown.** Reproduced once with
+the census armed: every LEFT-hand action dead together (move, left trigger, left
+grip, X, Y, left stick click) while every right-hand one was live. That is a
+hand with no interaction profile, not a binding we got wrong - our suggestions
+for those six paths could not fail as a set. The runtime's own
+profile-changed event arrived **61 ms after** the controllers first went live,
+and the change-watcher never fired again, so the hand stayed dead all session.
+`xrAttachSessionActionSets` is one-shot per session, so nothing can re-bind from
+inside a running game. **The user reports BRVR does not have this bug**, and the
+obvious structural difference is ruled out - BRVR also attaches before
+`xrBeginSession`. Not yet explained. Next reproduction: check the settled census
+AND whether the dead hand still TRACKS, which separates "controller was asleep"
+from "live controller, actions unbound".
+
+**Next step: the F10 -> ini writer, then the remaining BRVR options.** The user
+is bringing this mod up to BRVR parity and is explicit that BRVR is the
+inspiration for every change. The three that look like real playability gaps
+rather than polish: `GripThreshold`/`GripHysteresis` (Index grips read high from
+a resting hand and eat the face buttons), the turning/accessibility block, and
+the F10 writer that gates all of it. **BRVR is READ-ONLY from here - a
+reference, not a work tree.**
+
+**Also open:** the user finds this mod's performance worse than BRVR's. Worth a
+dedicated session - the telemetry already exists (`input drive: 44/s` steady
+now, against the 3 presents/s the s62 heap sweep caused), so the log can
+probably answer it rather than guesswork.
+
+**DEPLOYED RIGHT NOW:** `s63-bs1-comfort` content, built and installed to
+`C:\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final`.
+The log reads `v0.8.2-25-g7811b6a-dirty` because the build was taken before the
+final commit; that dirty tree is exactly what `47cb521` then committed, so the
+DLL matches HEAD. **The bob probe is ARMED AT BOOT** (`59e8193`, marked
+TEMPORARY) - it is read-only and self-limits after 80 windows, but it must be
+reverted before this branch merges.
+
+## Session 2026-08-22 - BS1 comfort lane part 2 (BioVRDev)
+
+**HEADSET-VERIFIED: the main-menu heap sweep.** `fix/bs1-menu-rig-sweep`. The
+AHands rig scan ran behind the LOOSE gameplay gate, whose `viewActor == pc`
+escape hatch is exactly the shape of the main menu - so the viewmodel drive
+armed on the menu and swept the heap for an actor that cannot exist. Measured:
+**5237 ms across 1245 slices**, started on the menu and unfinished until 30 s
+after the level loaded, starving the frame to **3 presents/s and 15 input
+drives/s**, which the user reported as a dead controller. Fixed by gating only
+the START of a sweep on `body::is_gameplay_view` - the strict predicate that
+already gates the head drive and the FOV write, documented to read false on the
+menu attract scene. An in-flight sweep keeps its slices. User confirmed: "menu
+buttons worked". Three lines, `hands.cpp` only, no core.
+
+**FALSIFIED: pinning the AHands actor Z from Present.** This was the fix
+`VIEWMODEL-RIG-DIFFERENCES.md` section 6 prescribed. Built, run, reverted -
+**the gun still bobs**, and it desynced the gun between the eyes. Its own
+telemetry is the value:
+
+- The write LANDS: drift across a whole frame is **0.00 UU** while standing.
+- While MOVING the engine re-places the actor by **2.9 to 17.2 UU** after our
+  write and before the draw, so the pin only ever held in the one state with
+  nothing to hold.
+- The rig sits EXACTLY on the pawn eye point (learned residual **+0.00 UU**).
+- Under SequentialReentry the eyes render one BUILD apart, each with its own
+  CalcView and Present, so a per-frame write placed between them reaches one eye
+  and not the other. **Any future viewmodel write should be on the game thread.**
+
+Full write-up in `docs/bioshock1/VIEWMODEL-RIG-DIFFERENCES.md` section 7, which
+also retracts section 6's instruction. Clean straight-walking actor Z spans are
+**3.1-8.4 UU** against 0.00 standing; the wilder round-1 figures were windows
+straddling the standing/moving boundary.
+
+**The bob is still open, and the next measurement is built.**
+`s63-bs1-comfort` carries a probe that brackets the drive: bone 43 in
+array A before AND after our write, bone 43 in array B (`SkeletonInstance+0x54`,
+the lazily-filled BY-NAME array nothing in this tree has ever written), the
+actor and the weapon, all as heights above the pawn. Attachment is by bone NAME,
+so if it resolves through B the gun renders from an array we do not touch -
+steady hands, bobbing gun, exactly. **It is default-off**: `vrprobe bob on`.
+
+**This session ships as ONE branch, `s63-bs1-comfort`, matching the repo's own
+convention.** Every merge into `main` since 2026-07-31 has been a session branch
+- `s60`, `s61`, `s62`, `si44` - carrying 1 to 28 commits across several
+unrelated features, merged with a single `merge: <summary>` commit. The work had
+briefly been split one-branch-per-change, which is not how this repo operates
+and made nine branches out of one session. **Feature-level review lives in the
+COMMITS**, one per feature, so any single one can be dropped without the others.
+
+**Anchored screen placement is now BS1-only.** `g_screenPlaceMode` lives in core
+and shipped defaulting to 0 (anchor), which silently changed the cinema quad for
+BS2 and Infinite - neither of which has been in a headset with it. Core defaults
+to the pre-existing 2 again and the BS1 adapter opts in during init, where the
+registry has already resolved the host exe. **This is the pattern for anything
+that has to land in `src/core/`.**
+
+**FOV 100 and a graphics setup script.** `feat/bs1-setup-graphics-defaults`. The
+BS1 default and the release preset both said 130 while the game's own
+`HorizontalFOV` read 100, so the F10 slider and the video menu disagreed;
+nothing was ever at 130, because the game-FOV WRITE is default off. Both now say
+100. `tools/Setup-BS1.bat` writes what the mod cannot - measured on a live
+install: `LevelOfAnisotropy` read 16 in `Engine.RenderConfig` but **4 in all
+three D3D device sections**, which are the ones the renderer consumes, and
+`WindowedViewportX/Y` had been reset to **640x480** while the fullscreen pair
+still read 2750x2850. `StartupFullscreen=False`, so the WINDOWED pair is the
+live one. Ran it; the config is correct now. **Not yet confirmed in game.**
+
+**`docs/NAVIGATION.md`** (branch `docs/navigation-router`, no code). The docs are
+~2 MB and the session protocol says to read `STATUS.md` first, which taken
+literally is ~200,000 tokens before any work starts - this file is 826 KB, of
+which the first 150 lines are live and the last 664 KB are 45 stale "Previous
+state" blocks. The router carries measured sizes, a cheap start recipe, and how
+each file is organised. Its load-bearing fact: **`<game>/ENGINE_NOTES.md` changes
+organising principle at about line 1450** - topic-ordered above, session-ordered
+below - so anything added after that is not findable by browsing headings and
+must be grepped by identifier.
+
+**Next step: run the bracketed probe and find the bob's carrier.** Build
+`s63-bs1-comfort`, `vrprobe bob on`, walk with any weapon for fifteen
+seconds. Bone 43 in A bobbing before our write and flat after means we own A and
+the gun is not drawn from it; B bobbing means the fix is a second write, not an
+actor pin. Do NOT re-run a Z pin at a later write site - Present was already the
+last moment in the frame and lateness is not the axis.
+
+**Also open, cheap, needs the other contributor's agreement:** archiving
+`STATUS.md`'s 45 historical blocks into `docs/history/`, and adding one index
+line for `NAVIGATION.md` to the shared `CLAUDE.md`.
+
 ## The three games (one branch, one release line)
 
 **ALL THREE MODS ARE ON `main` AND ALL THREE WORK, as of v0.8.0 (2026-08-13,

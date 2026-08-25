@@ -42,11 +42,8 @@ $modLog = switch ($Game) { "bs2" { "$env:LOCALAPPDATA\BioshockVR\bs2\bioshockvr.
                            default { "$env:LOCALAPPDATA\BioshockVR\bioshockvr.log" } }
 
 if (-not $GamePath) {
-    $GamePath = switch ($Game) {
-        "bs2" { "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final" }
-        "bsi" { "D:\SteamLibrary\steamapps\common\BioShock Infinite\Binaries\Win32" }
-        default { "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final" }
-    }
+    . (Join-Path $PSScriptRoot "lib\resolve-game-path.ps1")
+    $GamePath = Resolve-BvrGamePath -Game $Game -Quiet
 }
 $exe = Join-Path $GamePath $exeName
 if (-not (Test-Path $exe)) { throw "game exe not found: $exe" }

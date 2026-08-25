@@ -138,9 +138,37 @@ void set_snap_angle_deg(float d);
 // act as a no-button modifier. It must be the LEFT thumbrest, because your
 // right thumb cannot rest on the right thumbrest and push the right stick at
 // the same time. Default is Click - unchanged behaviour for existing users.
+//
+// SUPERSEDED FOR ANY GAME THAT PICKS A REAL D-PAD MODIFIER (see below). It is
+// still the live control wherever dpad_modifier() reads Legacy, which today is
+// BioShock 2 and Infinite - neither has been in a headset with the s63 modes.
 enum class AmmoMod { Click = 0, Thumbrest = 1, Both = 2 };
 AmmoMod ammo_mod();
 void set_ammo_mod(AmmoMod m);
+
+// s63 D-PAD MODIFIER, ported from BRVR's ControllerDpadModifier - the state
+// lives in the XR composer (openxr_input.cpp) beside the code that reads it
+// every frame, and is reached from here the same way the flourish chord is.
+//
+// Numbering is BRVR's so a BioshockVR.ini carries between the two mods:
+//   0 off · 1 right thumbrest · 2 R3 · 3 left grip · 4 left thumbrest
+// -1 is the internal Legacy heuristic - not settable from the ini, and the
+// default, so games that have never been tested with a real mode keep the
+// pre-s63 behaviour. When it is anything but -1 the AmmoMod above is ignored
+// entirely: "explicit choice, no heuristic, no fallback".
+//
+// dpad_select_left() is BRVR's ControllerDpadFlip: true = the LEFT (movement)
+// stick selects the slot and walking is suppressed while the modifier is held;
+// false = the RIGHT (look) stick selects and turning is suppressed instead.
+//
+// jump_on_r3() is additive - the layout's own jump button still jumps - and
+// yields when R3 IS the modifier, or every ammo select would also jump.
+int  dpad_modifier();
+void set_dpad_modifier(int m);
+bool dpad_select_left();
+void set_dpad_select_left(bool on);
+bool jump_on_r3();
+void set_jump_on_r3(bool on);
 int take_snap_steps(); // +right/-left steps queued since the last drain
 
 // Feedback session 2 (2026-08-13): BOTH-STICKS-CLICK = recenter chord. The XR
@@ -168,6 +196,64 @@ bool take_recenter_chord();
 enum class PadProfile { Bioshock1 = 0, Infinite = 1 };
 PadProfile pad_profile();
 void set_pad_profile(PadProfile p);
+
+// s63: which face-button layout the Bioshock1 profile resolves to when no
+// controls.ini says otherwise. false (the shipped session-19 rearrangement) is
+// the default so BioShock 2, which shares this profile and has never been
+// tested with anything else, is untouched. BioShock 1 opts in from its own
+// adapter. controls.ini `profile =` still overrides either way.
+bool pad_passthrough_default();
+void set_pad_passthrough_default(bool on);
+
+// s63: the BRVR mod's control defaults, adopted by BioShock 1 from its adapter.
+// BioShock 2 and Infinite keep the pre-s63 heuristic until somebody tests them.
+bool pad_brvr_defaults();
+void set_pad_brvr_defaults(bool on);
+
+// ---- s63 CONTROL CHANGES THAT ARE STILL BS1-ONLY ---------------------------
+//
+// Added in the PR-50 review pass (VOID, 2026-08-23). Each of these shipped as
+// an unconditional change to a CORE path, which means BioShock 1, BioShock 2
+// and Infinite at once - and only BioShock 1 has ever been in a headset with
+// them. `kPadMapBioshock1` in particular serves BS1 AND BS2 (PadProfile has no
+// Bioshock2 entry and no BS2 adapter selects one), so a table edit there lands
+// on a game nobody tested it against.
+//
+// Every one defaults to the PRE-s63 value, so with nothing opted in the
+// composed pad is what main produced. BioShock 1 turns them on in one block in
+// bioshock1r_adapter.cpp - THE SAME BLOCK BS2 AND INFINITE COPY VERBATIM once
+// somebody tests them, at which point these defaults can move and this section
+// can go away.
+
+// The FOURTH flick direction. Right-flick emits map.flickRight, and whatever
+// map.flickHoldBits names is HELD rather than pulsed - which is what makes the
+// BS1 map screen reachable (ShockPlayerController gates it behind
+// HintButtonHeld, HintHoldTime = 0.5 s). Before s63 the BS1/BS2 table had
+// flickRight = 0 and there was no hold concept at all, so with this false the
+// right flick emits nothing and every other direction pulses, as it did.
+bool flick_fourth_direction();
+void set_flick_fourth_direction(bool on);
+
+// MODIFIER + menu -> BACK (ShowContextHelp), held for as long as the gesture.
+// With this false the menu button keeps main's tap/hold machine: short press
+// pulses START, long press holds BACK, and the modifier means nothing to it.
+bool menu_modifier_context_help();
+void set_menu_modifier_context_help(bool on);
+
+// The both-sticks chord's TAP. Hold has always been recenter and stays that
+// way for everyone; the tap toggling the F10 panel is new, and it is only
+// useful on a game whose panel the controllers can actually drive - see
+// overlay_pad_drive(). False restores main's recenter-only chord.
+bool chord_tap_opens_panel();
+void set_chord_tap_opens_panel(bool on);
+
+// How far the right stick must deflect, with the modifier held, to count as a
+// flick. s63 lowered it from 0.65 to 0.5 and added a dominance test, because
+// 0.65 with no dominance could resolve a deliberate "up" as a diagonal. The
+// dominance test is harmless everywhere and stays unconditional; the threshold
+// is a feel change, so it defaults to the old number.
+float flick_press_threshold();
+void set_flick_press_threshold(float v);
 
 // Install the bridge's composing XInputGetState wrapper into an import slot
 // (e.g. the game module's IAT entry for xinput1_3 ordinal 2). The slot's

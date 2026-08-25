@@ -4,11 +4,14 @@
 
 #include "core/input/swing.h"
 #include "core/input/xinput_bridge.h"
+#include "core/ui/overlay.h"
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 
 #include <windows.h>
 #include <Xinput.h> // button bit constants only
+
+#include <cstdio>  // swprintf_s/sprintf_s for the BioshockVR.ini reader
 
 #include <imgui.h>
 
@@ -28,11 +31,28 @@ constexpr float kGripRelease = 0.55f;
 // the game's per-tick edge detection cannot miss it.
 constexpr uint64_t kMenuLongMs = 500;
 constexpr uint64_t kStartPulseMs = 150;
-// Ammo-slot select (session 19, headset-revised): while the right-stick
-// CLICK is held, stick directions past kFlickPress select the ammo slot
-// (dpad up/down/left pulses); re-arm inside +-kFlickRearm, cooldown against
-// machine-gunning. Zoom is removed - RS-click never reaches the game.
-constexpr float kFlickPress = 0.65f;
+// Both-stick-click chord: tap toggles the F10 panel, hold recentres. The gap
+// between them is deliberate - a tap that overruns kChordTapMs does nothing at
+// all rather than recentring by accident. BOTH ONLY APPLY WHERE
+// chord_tap_opens_panel() is on; elsewhere the chord recentres on its rising
+// edge as it always did, and neither constant is read.
+constexpr uint64_t kChordTapMs = 350;
+constexpr uint64_t kChordHoldMs = 600;
+// Ammo-slot select: while the d-pad modifier is held, stick directions past
+// flick_press_threshold() emit a dpad direction. Zoom is removed, so RS-click
+// is free.
+//
+// DOMINANT-AXIS-ONLY is unconditional and comes from BRVR (InputHook.cpp): a
+// thumbstick makes diagonals far too easy to hit when the intent is one
+// direction, and the old first-match chain resolved a deliberate "up" as
+// "left" depending on which comparison ran first. It is a correctness fix and
+// nothing about it is game-specific.
+//
+// THE 0.65 -> 0.5 THRESHOLD IS NOT, so it moved to the bridge as a settable
+// value defaulting to 0.65 - main's number - with BS1 asking for 0.5 from its
+// adapter. How far a stick must move before it means something is feel, and
+// feel is not portable to two games nobody has tested it on.
+// PULSE PATH ONLY (PadMap::flickHold == false - Infinite). See the drive.
 constexpr float kFlickRearm = 0.30f;
 constexpr uint64_t kFlickPulseMs = 150;
 constexpr uint64_t kFlickCooldownMs = 300;
@@ -63,7 +83,28 @@ struct PadMap {
     // Infinite gets the fourth direction its dpad nav needs.
     bool flick;
     bool flickAmmoModPref; // honour `vrinput ammomod`; else thumbrest-only
+    // WHICH emitted bits are HELD rather than pulsed. Per DIRECTION, because
+    // in this game the two kinds sit side by side on the same d-pad.
+    //
+    // HOLD is required for the hint button. ENGINE_NOTES' flat-verified pad
+    // audit: "BACK=ShowContextHelp, DPAD_RIGHT=hints", and BRVR found (its
+    // session 38) that ShockPlayerController gates the MAP SCREEN behind
+    // HintButtonHeld with HintHoldTime = 0.5 s. A pulse cannot satisfy a
+    // half-second hold, so the map is unreachable by construction without this.
+    //
+    // PULSE is required for ammo. The same audit: "DPAD_UP and DPAD_DOWN CYCLE
+    // the equipped weapon's AMMO TYPE ... flat-proven: 00 Buck -> Electric Buck
+    // -> Exploding Buck". A cycle that is held does not settle - it spins. The
+    // first cut of this made the whole map hold-or-pulse and would have traded
+    // an unreachable map for ammo that machine-guns; the distinction is not
+    // per-game, it is per-direction.
+    //
+    // Infinite holds nothing: its fourth direction drives a nav cycle.
+    uint16_t flickHoldBits;
     uint16_t flickUp, flickDown, flickLeft, flickRight;
+    // s63: what JUMP is on this game's pad, for the R3-jump lane. BS1/BS2 bind
+    // jump to XENON_Y; Infinite's audited retail map puts it on A.
+    uint16_t jumpBit;
 };
 
 // BioShock 1 and 2. Session 19's headset-revised audit, verbatim: the game's
@@ -82,7 +123,36 @@ constexpr PadMap kPadMapBioshock1 = {
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
     XINPUT_GAMEPAD_LEFT_THUMB, 0, // RS-click eaten: it IS the ammo modifier
     true, true,
-    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, 0,
+    XINPUT_GAMEPAD_DPAD_RIGHT, // hold the HINT button only - up/down cycle ammo
+    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
+    // DPAD_RIGHT = hints (ENGINE_NOTES pad audit), and holding it ~0.5 s is
+    // how the MAP opens. It shipped as 0 on the belief that BS1 needed only
+    // three directions for its ammo types - which cost the map and the
+    // context help, not a fourth ammo slot.
+    XINPUT_GAMEPAD_DPAD_RIGHT,
+    XINPUT_GAMEPAD_Y, // jump
+};
+
+// PASSTHROUGH. The game's own pad layout with nothing rearranged: A=Use,
+// B=MedHypo, X=Reload/Hack/EVE, Y=Jump, exactly as User.ini XENON_* defines it
+// and exactly what the BRVR mod documents as stock controller semantics. This
+// is what a player who knows the flat game expects every button to do.
+// Everything except the four faces is inherited from the session-19 table,
+// including the eaten RS-click - that one is not a preference, the ammo
+// modifier needs it. Selected with `profile = passthrough` in BioshockVR.ini.
+constexpr PadMap kPadMapPassthrough = {
+    "passthrough",
+    XINPUT_GAMEPAD_A,            // Touch A -> use / interact / menu confirm
+    XINPUT_GAMEPAD_B,            // Touch B -> first aid (med hypo)
+    XINPUT_GAMEPAD_X,            // Touch X -> reload / hack / EVE inject
+    XINPUT_GAMEPAD_Y,            // Touch Y -> jump
+    XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
+    XINPUT_GAMEPAD_LEFT_THUMB, 0,
+    true, true,
+    XINPUT_GAMEPAD_DPAD_RIGHT, // same game, same reason as kPadMapBioshock1
+    XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
+    XINPUT_GAMEPAD_DPAD_RIGHT,
+    XINPUT_GAMEPAD_Y, // jump
 };
 
 // BioShock Infinite (UE3). From the audited retail XboxTypeS_* binding set
@@ -108,14 +178,435 @@ constexpr PadMap kPadMapInfinite = {
     XINPUT_GAMEPAD_LEFT_THUMB,    // sprint
     XINPUT_GAMEPAD_RIGHT_THUMB,   // XToggleZoom - forwarded, unlike BS1
     true, false,                  // thumbrest-only modifier
+    0, // flickHoldBits: Infinite CYCLES on the fourth direction - a held bit
+       // would scroll its nav continuously. Everything stays pulsed.
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT,
     XINPUT_GAMEPAD_DPAD_RIGHT,
 };
 
+// ---------------------------------------------------------------------------
+// s63 USER-OVERRIDABLE PAD MAP - BioshockVR.ini
+//
+// Ported in spirit from the BRVR mod, whose Keybinds.h makes the same argument
+// for keyboard hotkeys: a binding that can only be changed by rebuilding is not
+// a binding, it is a decision imposed on every user. The tables below stay the
+// DEFAULTS and nothing changes for anyone who does not write the file.
+//
+// Its own file, deliberately NOT vrpreset.ini: the F10 preset save rewrites
+// that wholesale and would silently drop unknown keys - the same reason xr.ini
+// is separate. Lives in the per-game data dir, so BS1, BS2 and Infinite each
+// get their own control scheme, which they need anyway (their face buttons mean
+// different things - see the two tables above).
+//
+//   [pad]
+//   faceA = A        ; what the RIGHT controller's A button sends to the game
+//   faceB = Y        ; BS1 default: Touch B -> game Y = jump
+//   faceX = X
+//   faceY = B        ; BS1 default: Touch Y -> game B = first aid
+//   gripL = LB
+//   gripR = RB
+//   stickClickL = LS
+//   stickClickR = NONE   ; BS1: eaten, it IS the ammo modifier
+//
+// Names: A B X Y LB RB LS RS DUP DDOWN DLEFT DRIGHT START BACK NONE.
+// The whole resolved table is logged at init - BRVR's other lesson, that a
+// binding you cannot see resolved is one you cannot debug.
+struct PadOverride {
+    bool loaded = false;
+    PadMap map{};
+};
+PadOverride g_padOverride;
+
+// s63 D-PAD SIDE (BioshockVR.ini [VR] ControllerDpadFlip).
+//
+//   right (default, unchanged) - LEFT thumbrest modifies, RIGHT stick selects.
+//                                Turning is suppressed while selecting; walking
+//                                continues. This is what shipped.
+//   left                       - RIGHT thumbrest modifies, LEFT stick selects.
+//                                Walking is suppressed while selecting; turning
+//                                continues. A d-pad lives on the left of a pad,
+//                                so for a lot of people this is the one that
+//                                matches their hands (user ask, 2026-08-22).
+//
+// The modifier is ALWAYS the opposite hand from the stick, and that is not a
+// preference: one thumb cannot rest on a thumbrest and push that same stick at
+// the same time, so the modifier is necessarily cross-hand either way. Flipping
+// the stick therefore has to flip the thumbrest with it - which is exactly the
+// pairing BRVR's ControllerDpadFlip encodes.
+std::atomic<bool> g_dpadLeft{false};
+
+// s63 D-PAD MODIFIER SOURCE (BioshockVR.ini [pad] dpadModifier).
+// Ported from BRVR's ControllerDpadModifier, minus its mode 5 (left hand near
+// head), which needs head-distance hysteresis and is deferred.
+//
+// Numbering is BRVR's, so a config carries across unchanged:
+//   0 off · 1 right thumbrest · 2 R3 · 3 left grip · 4 left thumbrest
+//   5 (left hand near head) is NOT implemented here yet.
+//
+// Legacy is internal and deliberately NOT settable from the ini - BRVR has no
+// such mode and the user does not want one. It is only the pre-s63 heuristic
+// (left thumbrest, with R3 standing in until a real thumbrest touch is seen),
+// kept as the default so BioShock 2 and Infinite, which have never been tested
+// with anything else, are untouched. BioShock 1 picks a real mode in its
+// adapter.
+//
+// BRVR's hardware note carries over: a Rift reports no thumbrest at all, so
+// those users need 2. Index/Beyond/Varjo/Somnium need 2 for the opposite
+// reason - their thumbrest IS the trackpad, where a thumb naturally rests, and
+// the modifier is held.
+enum class DpadMod { Legacy = -1, Off = 0, RightRest = 1, R3 = 2, LeftGrip = 3, LeftRest = 4 };
+std::atomic<int> g_dpadMod{static_cast<int>(DpadMod::Legacy)};
+
+// s63 R3 -> JUMP, from BRVR. The game binds R3 to Zoom, which is a comfort
+// hazard in a headset and is already removed here, so the click is free. It is
+// ADDITIVE - the layout's own jump button still jumps - and it yields when R3 is
+// carrying the d-pad modifier instead, because otherwise every ammo select
+// would also jump.
+std::atomic<bool> g_jumpOnR3{true};
+
+// One settled census, scheduled when the controllers first go live. 0 = done.
+uint64_t g_settleCensusAtMs = 0;
+
+// s63 MOVEMENT-STICK DEADZONE PRE-COMPENSATION, ported from the BRVR mod.
+//
+// THE BUG. The game applies its stick deadzone PER AXIS (0.225, from its own
+// User.ini bindings), not radially. Anything that ROTATES the movement vector
+// moves magnitude between the two axes, so the game's per-axis threshold then
+// bends the direction - by up to ~11 degrees - and snaps to a pure sidestep
+// once the forward component drops under the band.
+//
+// WHY IT SHOWS UP HERE. body.cpp's moveDirInstant (default ON) publishes the
+// not-yet-transferred body-yaw error every CalcView and rotates the movement
+// stick by it, so the walk direction stays instant while the body catches up
+// under the slew cap. That rotation is exactly the trigger: the error is only
+// non-zero WHILE TURNING, and the stick is only pushed WHILE WALKING - which is
+// why the fault appears when doing both at once and never when standing still.
+// Reported as smooth turning that repeatedly snaps a few degrees.
+//
+// THE FIX. Split direction from magnitude, and pre-expand each axis so that
+// after the game subtracts its per-axis band what survives is proportional to
+// the direction actually asked for. The magnitude is what the player asked for
+// and must survive untouched; only the direction is being corrupted.
+//
+// NOT BY EDITING User.ini, which is BRVR's hard-won note: those are binding
+// lines carrying several bindings each (XENON_LTHUMB_XAXIS also holds
+// `Axis xLean DeadZone=0.4`), the file has multiple binding sections, and the
+// game rewrites it at exit. String surgery there risks breaking the controls
+// outright, for a value that can simply be inverted here.
+//
+// Core default is OFF so BS2 and Infinite are untouched; BS1 opts in.
+std::atomic<bool> g_stickPrecomp{false};
+std::atomic<float> g_gameStickDeadzone{0.225f};
+
+void precomp_stick_deadzone(float& x, float& y) {
+    if (!g_stickPrecomp.load(std::memory_order_relaxed)) return;
+    const float d = g_gameStickDeadzone.load(std::memory_order_relaxed);
+    if (d <= 0.0f || d >= 0.95f) return;
+    const float mag = sqrtf(x * x + y * y);
+    if (mag < 1e-4f) return; // centred; leave it alone
+    const float ux = x / mag, uy = y / mag;
+    const float m = (mag > 1.0f) ? 1.0f : mag;
+
+    // s63 DEVIATION FROM BRVR, and revert it first if this feels wrong.
+    //
+    // The straight formula adds the whole band `d` the instant an axis leaves
+    // zero, so at an axis crossing that axis STEPS from 0 to +-0.225 in one
+    // frame - and lands exactly ON the game's threshold, where float rounding
+    // can dither between "inside the deadzone" and "just past it" from frame to
+    // frame. Walking near-straight while turning sweeps an axis through zero
+    // continuously, which is exactly when the residual jitter was reported.
+    //
+    // Ramping the band in over the first few percent of deflection removes the
+    // step without touching the direction anywhere it matters: past kRamp the
+    // result is bit-identical to BRVR's.
+    constexpr float kRamp = 0.06f;
+    auto axis = [&](float u) {
+        const float a = fabsf(u);
+        if (a < 1e-4f) return 0.0f;
+        const float t = (a >= kRamp) ? 1.0f : (a / kRamp);
+        return (u < 0.0f ? -1.0f : 1.0f) * (a * m * (1.0f - d) + d * t);
+    };
+    x = axis(ux);
+    y = axis(uy);
+}
+
+// s63 TURN RESPONSE, ported from the BRVR mod.
+//
+// THE BUG. The game's own turn rate is nearly VERTICAL at the top of the stick.
+// Measured there: 0.98 -> ~105 deg/s, 0.99 -> ~140, 1.00 -> ~200. A 2%
+// difference in how hard the stick is pushed DOUBLES the turn speed, which is
+// why turning feels steady while held and different every time it is re-pushed.
+//
+// FRAME-RATE DEPENDENCE IS FALSIFIED, and was BRVR's first hypothesis too: 40
+// samples across 142-239 CalcView calls/s show no correlation. Do not re-derive
+// this.
+//
+// THE FIX. Cap what the game is ever sent so the cliff is unreachable, and the
+// same push always turns at the same rate. 0.95 gives roughly 90-110 deg/s.
+// That trades top speed for repeatability, which is why it is tunable - and why
+// BRVR pairs it with raising the game's OWN sensitivity slider (GameTurnSpeed),
+// since a cap alone just makes turning slow.
+//
+// Exp shapes the rest of the range: 1.0 linear, above 1.0 finer near centre.
+//
+// Core defaults are the no-op pair (1.0 / 1.0) so BS2 and Infinite are
+// untouched; BioShock 1 takes BRVR's 0.95 with the rest of its defaults.
+std::atomic<float> g_turnAxisMax{1.0f};
+std::atomic<float> g_turnAxisExp{1.0f};
+
+// Applied to the TURN axis only - the right stick's X. Sign-preserving.
+float shape_turn_axis(float v) {
+    const float mx = g_turnAxisMax.load(std::memory_order_relaxed);
+    const float ex = g_turnAxisExp.load(std::memory_order_relaxed);
+    if (mx >= 0.999f && ex <= 1.001f && ex >= 0.999f) return v; // exact no-op
+    const float sign = v < 0.0f ? -1.0f : 1.0f;
+    float a = fabsf(v);
+    if (a > 1.0f) a = 1.0f;
+    if (ex > 1.001f || ex < 0.999f) a = powf(a, ex);
+    return sign * a * mx;
+}
+
+uint16_t xinput_bit_by_name(const char* v, bool* ok) {
+    struct { const char* name; uint16_t bit; } kNames[] = {
+        {"A", XINPUT_GAMEPAD_A},         {"B", XINPUT_GAMEPAD_B},
+        {"X", XINPUT_GAMEPAD_X},         {"Y", XINPUT_GAMEPAD_Y},
+        {"LB", XINPUT_GAMEPAD_LEFT_SHOULDER},
+        {"RB", XINPUT_GAMEPAD_RIGHT_SHOULDER},
+        {"LS", XINPUT_GAMEPAD_LEFT_THUMB},
+        {"RS", XINPUT_GAMEPAD_RIGHT_THUMB},
+        {"DUP", XINPUT_GAMEPAD_DPAD_UP}, {"DDOWN", XINPUT_GAMEPAD_DPAD_DOWN},
+        {"DLEFT", XINPUT_GAMEPAD_DPAD_LEFT}, {"DRIGHT", XINPUT_GAMEPAD_DPAD_RIGHT},
+        {"START", XINPUT_GAMEPAD_START}, {"BACK", XINPUT_GAMEPAD_BACK},
+        {"NONE", 0},
+    };
+    for (const auto& e : kNames)
+        if (_stricmp(v, e.name) == 0) { *ok = true; return e.bit; }
+    *ok = false;
+    return 0;
+}
+
+// Reads one key, leaving the default in place when absent or unrecognised. An
+// unrecognised value is LOUD - a typo that silently kept the default is exactly
+// the failure this whole mechanism exists to remove.
+void pad_key(const wchar_t* ini, const char* key, uint16_t* field) {
+    char buf[32] = {};
+    wchar_t wkey[32];
+    swprintf_s(wkey, L"%hs", key);
+    wchar_t wbuf[32] = {};
+    GetPrivateProfileStringW(L"VR", wkey, L"", wbuf, 32, ini);
+    if (!wbuf[0]) return;
+    sprintf_s(buf, "%ls", wbuf);
+    bool ok = false;
+    const uint16_t bit = xinput_bit_by_name(buf, &ok);
+    if (!ok) {
+        BVR_LOG("xr-input: BioshockVR.ini [pad] %s = '%s' is not a button name - "
+                "keeping the default. Names: A B X Y LB RB LS RS DUP DDOWN DLEFT "
+                "DRIGHT START BACK NONE",
+                key, buf);
+        return;
+    }
+    *field = bit;
+}
+
+const char* xinput_bit_name(uint16_t bit) {
+    bool ok = false;
+    (void)ok;
+    switch (bit) {
+        case XINPUT_GAMEPAD_A: return "A";
+        case XINPUT_GAMEPAD_B: return "B";
+        case XINPUT_GAMEPAD_X: return "X";
+        case XINPUT_GAMEPAD_Y: return "Y";
+        case XINPUT_GAMEPAD_LEFT_SHOULDER: return "LB";
+        case XINPUT_GAMEPAD_RIGHT_SHOULDER: return "RB";
+        case XINPUT_GAMEPAD_LEFT_THUMB: return "LS";
+        case XINPUT_GAMEPAD_RIGHT_THUMB: return "RS";
+        case XINPUT_GAMEPAD_DPAD_UP: return "DUP";
+        case XINPUT_GAMEPAD_DPAD_DOWN: return "DDOWN";
+        case XINPUT_GAMEPAD_DPAD_LEFT: return "DLEFT";
+        case XINPUT_GAMEPAD_DPAD_RIGHT: return "DRIGHT";
+        case XINPUT_GAMEPAD_START: return "START";
+        case XINPUT_GAMEPAD_BACK: return "BACK";
+        default: return "NONE";
+    }
+}
+
+void pad_map_load_overrides(PadMap base) {
+    // Adopt BRVR's shipped control defaults BEFORE the file is read, so the ini
+    // still has the last word on every one of them.
+    if (bvr::input::pad_brvr_defaults()) {
+        g_dpadMod.store(static_cast<int>(DpadMod::RightRest), std::memory_order_relaxed);
+        g_dpadLeft.store(true, std::memory_order_relaxed);  // ControllerDpadFlip=0
+        g_jumpOnR3.store(true, std::memory_order_relaxed);
+        g_turnAxisMax.store(0.95f, std::memory_order_relaxed);
+        g_turnAxisExp.store(1.0f, std::memory_order_relaxed);
+        g_stickPrecomp.store(true, std::memory_order_relaxed);
+    }
+
+    wchar_t ini[MAX_PATH];
+    swprintf_s(ini, L"%s\\BioshockVR.ini", bvr::log::data_dir());
+    if (GetFileAttributesW(ini) == INVALID_FILE_ATTRIBUTES) {
+        // No file is the normal case. Still say what the defaults resolved to
+        // when they are not the historical ones, so "why is my d-pad on the
+        // left stick" has an answer in the log rather than only in a commit.
+        if (bvr::input::pad_brvr_defaults())
+            BVR_LOG("xr-input: no BioshockVR.ini - defaults: face buttons passthrough, "
+                    "ControllerDpadModifier=1 (right thumbrest), ControllerDpadFlip=0 "
+                    "(left stick selects), JumpOnR3=1");
+        return;
+    }
+
+    // A named profile replaces the base wholesale; individual keys below then
+    // override on top of whichever profile was chosen. So `profile =
+    // passthrough` alone is a complete answer, and a profile plus one key is
+    // still a complete answer.
+    {
+        wchar_t wprof[32] = {};
+        GetPrivateProfileStringW(L"VR", L"FaceLayout", L"", wprof, 32, ini);
+        if (wprof[0]) {
+            char prof[32] = {};
+            sprintf_s(prof, "%ls", wprof);
+            if (_stricmp(prof, "passthrough") == 0) {
+                base = kPadMapPassthrough;
+            } else if (_stricmp(prof, "default") == 0 || _stricmp(prof, "session19") == 0) {
+                // Explicitly the shipped table. Named so reverting is one word.
+            } else {
+                BVR_LOG("xr-input: BioshockVR.ini [pad] profile = '%s' is not a profile - "
+                        "using the shipped default. Profiles: default (a.k.a. session19), "
+                        "passthrough",
+                        prof);
+            }
+        }
+    }
+
+    // BRVR key names and numbering, so a BioshockVR.ini carries across.
+    {
+        const int md = GetPrivateProfileIntW(L"VR", L"ControllerDpadModifier", -1, ini);
+        if (md == 5) {
+            BVR_LOG("xr-input: ControllerDpadModifier=5 (left hand near head) is not "
+                    "implemented yet - falling back to 1 (right thumbrest)");
+            g_dpadMod.store(static_cast<int>(DpadMod::RightRest), std::memory_order_relaxed);
+        } else if (md >= 0 && md <= 4) {
+            g_dpadMod.store(md, std::memory_order_relaxed);
+        } else if (md != -1) {
+            BVR_LOG("xr-input: ControllerDpadModifier=%d is out of range - keeping the "
+                    "current setting. 0 off, 1 right thumbrest, 2 R3, 3 left grip, "
+                    "4 left thumbrest",
+                    md);
+        }
+    }
+    {
+        const int flip = GetPrivateProfileIntW(L"VR", L"ControllerDpadFlip", -1, ini);
+        if (flip == 0) g_dpadLeft.store(true, std::memory_order_relaxed);   // LEFT stick
+        else if (flip == 1) g_dpadLeft.store(false, std::memory_order_relaxed);
+        else if (flip != -1)
+            BVR_LOG("xr-input: ControllerDpadFlip=%d is not 0 or 1 - keeping the current "
+                    "setting",
+                    flip);
+    }
+    {
+        // Floats through the string reader - GetPrivateProfileInt cannot do
+        // decimals, and 0.95 is the whole point.
+        wchar_t wv[24] = {};
+        GetPrivateProfileStringW(L"VR", L"TurnAxisMax", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v > 0.05f && v <= 1.0f) g_turnAxisMax.store(v, std::memory_order_relaxed);
+            else BVR_LOG("xr-input: TurnAxisMax must be between 0.05 and 1.0 - ignoring");
+        }
+        GetPrivateProfileStringW(L"VR", L"GameStickDeadzone", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v >= 0.0f && v < 0.95f) g_gameStickDeadzone.store(v, std::memory_order_relaxed);
+            else BVR_LOG("xr-input: GameStickDeadzone must be 0.0 to 0.95 - ignoring");
+        }
+        GetPrivateProfileStringW(L"VR", L"TurnAxisExp", L"", wv, 24, ini);
+        if (wv[0]) {
+            const float v = static_cast<float>(_wtof(wv));
+            if (v >= 0.5f && v <= 4.0f) g_turnAxisExp.store(v, std::memory_order_relaxed);
+            else BVR_LOG("xr-input: TurnAxisExp must be between 0.5 and 4.0 - ignoring");
+        }
+    }
+    g_stickPrecomp.store(
+        GetPrivateProfileIntW(L"VR", L"StickPrecomp",
+                              g_stickPrecomp.load(std::memory_order_relaxed) ? 1 : 0,
+                              ini) != 0,
+        std::memory_order_relaxed);
+    g_jumpOnR3.store(
+        GetPrivateProfileIntW(L"VR", L"JumpOnR3",
+                              g_jumpOnR3.load(std::memory_order_relaxed) ? 1 : 0, ini) != 0,
+        std::memory_order_relaxed);
+
+    PadMap m = base;
+    pad_key(ini, "FaceA", &m.faceA);
+    pad_key(ini, "FaceB", &m.faceB);
+    pad_key(ini, "FaceX", &m.faceX);
+    pad_key(ini, "FaceY", &m.faceY);
+    pad_key(ini, "GripL", &m.gripL);
+    pad_key(ini, "GripR", &m.gripR);
+    pad_key(ini, "StickClickL", &m.stickClickL);
+    pad_key(ini, "StickClickR", &m.stickClickR);
+    pad_key(ini, "FlickUp", &m.flickUp);
+    pad_key(ini, "FlickDown", &m.flickDown);
+    pad_key(ini, "FlickLeft", &m.flickLeft);
+    pad_key(ini, "FlickRight", &m.flickRight);
+
+    g_padOverride.map = m;
+    g_padOverride.loaded = true;
+    BVR_LOG("xr-input: BioshockVR.ini loaded - pad map '%s' resolved to "
+            "A=%s B=%s X=%s Y=%s | gripL=%s gripR=%s | stickL=%s stickR=%s | "
+            "flick U=%s D=%s L=%s R=%s",
+            m.name, xinput_bit_name(m.faceA), xinput_bit_name(m.faceB),
+            xinput_bit_name(m.faceX), xinput_bit_name(m.faceY),
+            xinput_bit_name(m.gripL), xinput_bit_name(m.gripR),
+            xinput_bit_name(m.stickClickL), xinput_bit_name(m.stickClickR),
+            xinput_bit_name(m.flickUp), xinput_bit_name(m.flickDown),
+            xinput_bit_name(m.flickLeft), xinput_bit_name(m.flickRight));
+    BVR_LOG("xr-input: BioshockVR.ini d-pad side = %s (%s thumbrest modifies, %s stick "
+            "selects; %s is suppressed while selecting)",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "LEFT" : "right",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "right" : "left",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "left" : "right",
+            g_dpadLeft.load(std::memory_order_relaxed) ? "walking" : "turning");
+    {
+        const int md = g_dpadMod.load(std::memory_order_relaxed);
+        const char* mn = md == static_cast<int>(DpadMod::Off)      ? "off"
+                         : md == static_cast<int>(DpadMod::RightRest) ? "rightrest"
+                         : md == static_cast<int>(DpadMod::R3)        ? "r3"
+                         : md == static_cast<int>(DpadMod::LeftGrip)  ? "leftgrip"
+                         : md == static_cast<int>(DpadMod::LeftRest)  ? "leftrest"
+                                                                     : "legacy heuristic";
+        BVR_LOG("xr-input: BioshockVR.ini d-pad modifier = %s | R3 jump = %s | "
+                "TurnAxisMax %.2f exp %.2f",
+                mn, g_jumpOnR3.load(std::memory_order_relaxed) ? "on" : "off",
+                g_turnAxisMax.load(std::memory_order_relaxed),
+                g_turnAxisExp.load(std::memory_order_relaxed));
+        BVR_LOG("xr-input: StickPrecomp %s (game per-axis deadzone %.3f) - undoes the "
+                "direction bend when the movement stick is rotated while turning",
+                g_stickPrecomp.load(std::memory_order_relaxed) ? "on" : "off",
+                g_gameStickDeadzone.load(std::memory_order_relaxed));
+        // A thumbrest cannot modify the stick its own thumb has to push.
+        const bool leftSel = g_dpadLeft.load(std::memory_order_relaxed);
+        if ((leftSel && md == static_cast<int>(DpadMod::LeftRest)) ||
+            (!leftSel && md == static_cast<int>(DpadMod::RightRest)))
+            BVR_LOG("xr-input: WARNING - dpadModifier '%s' is on the SAME hand as the "
+                    "selecting stick. One thumb cannot rest on the thumbrest and push "
+                    "that stick at once; use r3 or leftgrip, or flip dpadSide.",
+                    mn);
+        if (md == static_cast<int>(DpadMod::R3) && g_jumpOnR3.load(std::memory_order_relaxed))
+            BVR_LOG("xr-input: R3 is the d-pad modifier, so the R3 jump lane yields to it "
+                    "- the layout's own jump button is unaffected");
+    }
+}
+
+// The compiled base for the current game, before BioshockVR.ini is applied.
+const PadMap& compiled_pad_map() {
+    if (bvr::input::pad_profile() == bvr::input::PadProfile::Infinite) return kPadMapInfinite;
+    return bvr::input::pad_passthrough_default() ? kPadMapPassthrough : kPadMapBioshock1;
+}
+
 const PadMap& active_pad_map() {
-    return bvr::input::pad_profile() == bvr::input::PadProfile::Infinite
-               ? kPadMapInfinite
-               : kPadMapBioshock1;
+    if (g_padOverride.loaded) return g_padOverride.map;
+    return compiled_pad_map();
 }
 
 XrActionSet g_actionSet = XR_NULL_HANDLE;
@@ -309,6 +800,71 @@ void invalidate_hand_slots() {
         g_hands[i].valid.store(false, std::memory_order_relaxed);
         g_aims[i].valid.store(false, std::memory_order_relaxed);
     }
+}
+
+// s63: WHICH actions are live, by name. A dead stick and a centred stick are
+// the same zeros to read_vec2(), so "the left stick did nothing while A worked"
+// cannot be diagnosed from behaviour - isActive is the only thing that
+// separates a binding the runtime never resolved from a genuinely idle input.
+// Log-only; called once when the controllers first go live and again if any
+// action's liveness later changes.
+bool action_is_active(XrSession session, XrAction a, int type) {
+    if (!a) return false;
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = a;
+    if (type == 0) {
+        XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
+        return XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &st)) && st.isActive;
+    }
+    if (type == 1) {
+        XrActionStateFloat st{XR_TYPE_ACTION_STATE_FLOAT};
+        return XR_SUCCEEDED(xrGetActionStateFloat(session, &gi, &st)) && st.isActive;
+    }
+    XrActionStateVector2f st{XR_TYPE_ACTION_STATE_VECTOR2F};
+    return XR_SUCCEEDED(xrGetActionStateVector2f(session, &gi, &st)) && st.isActive;
+}
+
+uint32_t action_liveness_mask(XrSession session) {
+    uint32_t m = 0;
+    if (action_is_active(session, g_move, 2)) m |= 1u << 0;
+    if (action_is_active(session, g_look, 2)) m |= 1u << 1;
+    if (action_is_active(session, g_fire, 1)) m |= 1u << 2;
+    if (action_is_active(session, g_plasmid, 1)) m |= 1u << 3;
+    if (action_is_active(session, g_gripL, 1)) m |= 1u << 4;
+    if (action_is_active(session, g_gripR, 1)) m |= 1u << 5;
+    if (action_is_active(session, g_btnA, 0)) m |= 1u << 6;
+    if (action_is_active(session, g_btnB, 0)) m |= 1u << 7;
+    if (action_is_active(session, g_btnX, 0)) m |= 1u << 8;
+    if (action_is_active(session, g_btnY, 0)) m |= 1u << 9;
+    if (action_is_active(session, g_stickClickL, 0)) m |= 1u << 10;
+    if (action_is_active(session, g_stickClickR, 0)) m |= 1u << 11;
+    return m;
+}
+
+void log_action_census(XrSession session, const char* why) {
+    const uint32_t m = action_liveness_mask(session);
+    BVR_LOG("xr-input: action census (%s): move=%d look=%d fire=%d plasmid=%d gripL=%d "
+            "gripR=%d A=%d B=%d X=%d Y=%d stickL=%d stickR=%d",
+            why, (m >> 0) & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1, (m >> 4) & 1,
+            (m >> 5) & 1, (m >> 6) & 1, (m >> 7) & 1, (m >> 8) & 1, (m >> 9) & 1,
+            (m >> 10) & 1, (m >> 11) & 1);
+    // MEASURED 2026-08-22: when this fires it is never one binding. Every
+    // LEFT-hand action goes dead together (move, left trigger, left grip, X, Y,
+    // left stick click) while every right-hand one stays live, which is a
+    // controller with no interaction profile rather than a binding we got
+    // wrong - our suggestions for those six paths could not fail as a set.
+    const uint32_t kLeft = (1u << 0) | (1u << 3) | (1u << 4) | (1u << 8) | (1u << 9) | (1u << 10);
+    const uint32_t kRight = (1u << 1) | (1u << 2) | (1u << 5) | (1u << 6) | (1u << 7) | (1u << 11);
+    const bool leftDead = (m & kLeft) == 0;
+    const bool rightDead = (m & kRight) == 0;
+    if (leftDead && !rightDead)
+        BVR_LOG("xr-input: THE WHOLE LEFT CONTROLLER IS UNBOUND (every left action "
+                "inactive, right hand fine). Not a stick fault - the runtime has no "
+                "interaction profile for that hand. Wake or re-pair the left controller; "
+                "it usually means it was asleep when the session started.");
+    else if (rightDead && !leftDead)
+        BVR_LOG("xr-input: THE WHOLE RIGHT CONTROLLER IS UNBOUND (every right action "
+                "inactive, left hand fine). Wake or re-pair the right controller.");
 }
 
 bool read_vec2(XrSession session, XrAction action, float* x, float* y) {
@@ -512,6 +1068,10 @@ void input_create(XrInstance instance) {
                 static_cast<int>(r));
 
     g_created = true;
+    // s63: apply BioshockVR.ini on top of the compiled default for THIS game.
+    // After the profile is known, so the override lands on the right base.
+    pad_map_load_overrides(compiled_pad_map());
+
     BVR_LOG("xr-input: action set ready (%d actions; touch + simple + index + "
             "vive + wmr bindings suggested)", made);
 }
@@ -591,6 +1151,70 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     }
     g_syncOk.fetch_add(1, std::memory_order_relaxed);
 
+    // s63: re-census on any CHANGE in which actions are live - that is how a
+    // stick that dies mid-session, or comes back, gets a timestamp.
+    {
+        static uint32_t lastMask = 0xFFFFFFFFu;
+        static uint64_t lastCensusMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (g_settleCensusAtMs && nowMs >= g_settleCensusAtMs) {
+            g_settleCensusAtMs = 0;
+            log_action_census(session, "settled");
+        }
+        if (nowMs - lastCensusMs >= 500) {
+            lastCensusMs = nowMs;
+            const uint32_t m = action_liveness_mask(session);
+            if (lastMask != 0xFFFFFFFFu && m != lastMask) log_action_census(session, "changed");
+            lastMask = m;
+        }
+    }
+
+    // s63 BOOT INPUT DEAD WINDOW - measurement only, nothing here changes
+    // behaviour for any game. xrSyncActions succeeding does NOT mean the
+    // controllers are usable: until the runtime binds an interaction profile
+    // every action reads isActive=false, so buttons and sticks do nothing while
+    // the mod looks healthy. MEASURED 2026-08-22 on VDXR, same build, two boots:
+    // the first profile bind landed 0.11 s after attach on one run and 11.14 s
+    // on the next, which is the reported "thumbstick dead for several seconds"
+    // and "A button did nothing for ten seconds". The runtime owns that timing,
+    // so this records WHEN it ends rather than trying to force it.
+    {
+        static bool everActive = false;
+        static uint64_t firstSyncMs = 0;
+        if (!everActive) {
+            const uint64_t nowMs = GetTickCount64();
+            if (!firstSyncMs) firstSyncMs = nowMs;
+            XrActionStateBoolean probe{XR_TYPE_ACTION_STATE_BOOLEAN};
+            XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+            // g_btnA is the exact action one report named, so probe it rather
+            // than a proxy.
+            gi.action = g_btnA;
+            if (gi.action && XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &probe)) &&
+                probe.isActive) {
+                everActive = true;
+                BVR_LOG("xr-input: controllers LIVE - first active action %llu ms after the "
+                        "first successful sync (before this, every button and stick reads "
+                        "inactive however healthy the mod looks)",
+                        static_cast<unsigned long long>(nowMs - firstSyncMs));
+                log_action_census(session, "at first live");
+                // The runtime's own profile-changed event lands AFTER this
+                // (measured: 61 ms), so the first-live census is a snapshot
+                // taken mid-binding. Take another once it has settled, and let
+                // the change-watcher below carry it from there.
+                g_settleCensusAtMs = GetTickCount64() + 1500;
+            } else if (nowMs - firstSyncMs >= 2000) {
+                static uint64_t lastWarnMs = 0;
+                if (nowMs - lastWarnMs >= 2000) {
+                    lastWarnMs = nowMs;
+                    BVR_LOG("xr-input: no interaction profile bound yet - %llu ms of dead "
+                            "controllers so far (runtime has not rebound; wake or move the "
+                            "controllers)",
+                            static_cast<unsigned long long>(nowMs - firstSyncMs));
+                }
+            }
+        }
+    }
+
     // M6: hand grip poses for the aim ray (never fatal - a hand that fails to
     // locate just leaves its slot invalid and the aim falls back to the view).
     locate_hand(session, g_poseL, g_gripSpaceL, predictedDisplayTime, g_hands[0]);
@@ -621,6 +1245,9 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     read_vec2(session, g_look, &lx, &ly);
     apply_deadzone(mx, my);
     apply_deadzone(lx, ly);
+    // AFTER our own deadzone, so ours is not re-expanded by the pre-comp.
+    precomp_stick_deadzone(mx, my);
+    lx = shape_turn_axis(lx); // turn only; Y is pitch and is left alone
     pad.lx = axis_to_thumb(mx);
     pad.ly = axis_to_thumb(my); // XR +y = stick forward = XInput +Y (up)
     pad.rx = axis_to_thumb(lx);
@@ -691,18 +1318,75 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     const bool clickL = read_bool(session, g_stickClickL);
     const bool clickRraw = read_bool(session, g_stickClickR);
     const bool chordHeld = clickL && clickRraw;
-    static bool s_chordArmed = true;
-    if (chordHeld && s_chordArmed) {
-        s_chordArmed = false;
-        bvr::input::queue_recenter_chord();
-    } else if (!clickL && !clickRraw) {
-        s_chordArmed = true;
+    // 2026-08-22: the chord now carries TWO jobs, split by duration.
+    //   TAP  (release under kChordTapMs)  -> toggle the F10 panel
+    //   HOLD (past kChordHoldMs)          -> recenter, once, on the way past
+    // Recenter keeps the chord because it is the one thing you must be able to
+    // do when the view is already wrong; it takes the HOLD because it is rare
+    // and deliberate, while opening the panel is neither. A hold that has
+    // already recentered must NOT also toggle on release, hence s_chordFired.
+    //
+    // THE SPLIT IS BS1-ONLY UNTIL TESTED (VOID's review of PR 50). It changes
+    // the chord for every game: recenter stops being instant and waits out
+    // kChordHoldMs, and a short chord now opens a panel that BS2 and Infinite
+    // cannot drive with a controller anyway (see overlay_pad_drive). With the
+    // gate off this is main's machine verbatim - one recenter on the chord's
+    // rising edge, re-armed only when both clicks are up.
+    static uint64_t s_chordDownMs = 0;
+    static bool s_chordFired = false; // this hold already recentred
+    static bool s_chordArmed = true;  // legacy path only
+    const uint64_t nowChord = GetTickCount64();
+    if (!bvr::input::chord_tap_opens_panel()) {
+        if (chordHeld && s_chordArmed) {
+            s_chordArmed = false;
+            bvr::input::queue_recenter_chord();
+        } else if (!clickL && !clickRraw) {
+            s_chordArmed = true;
+        }
+    } else if (chordHeld) {
+        if (s_chordDownMs == 0) s_chordDownMs = nowChord;
+        if (!s_chordFired && nowChord - s_chordDownMs >= kChordHoldMs) {
+            s_chordFired = true;
+            bvr::input::queue_recenter_chord();
+        }
+    } else if (s_chordDownMs != 0) {
+        // Released. Both clicks are up by construction of chordHeld going
+        // false only when at least one is - require BOTH up before re-arming,
+        // so rolling off one click and back on is not a second gesture.
+        if (!clickL && !clickRraw) {
+            if (!s_chordFired && nowChord - s_chordDownMs < kChordTapMs)
+                bvr::overlay::set_visible(!bvr::overlay::visible());
+            s_chordDownMs = 0;
+            s_chordFired = false;
+        }
     }
     if (!chordHeld) {
         if (clickL) pad.buttons |= map.stickClickL;
-        // Forwarded only where the map says so: on BioShock 1 this bit is 0
-        // and the click is consumed below as the ammo modifier instead.
-        if (map.stickClickR && clickRraw) pad.buttons |= map.stickClickR;
+        // s63, from BRVR: R3's precedence is MODIFIER > JUMP > passthrough.
+        // Whichever wins, the other two must not also fire - otherwise every
+        // ammo select would jump, or every jump would zoom.
+        const int dpadModNow = g_dpadMod.load(std::memory_order_relaxed);
+        // R3 only counts as the modifier when it IS the modifier. The legacy
+        // heuristic can fall back to R3 at runtime, so it counts too - but a
+        // real mode (including 1/3/4) frees the click, which is what makes the
+        // jump lane reachable at all. This is the line that was swallowing it.
+        const bool r3IsModifier =
+            map.flick && (dpadModNow == static_cast<int>(DpadMod::R3) ||
+                          (dpadModNow == static_cast<int>(DpadMod::Legacy) &&
+                           map.flickAmmoModPref));
+        // ...and it can only CLAIM the click on a game whose map actually has a
+        // jump bit. Infinite's does not (its initializer stops at flickRight, so
+        // jumpBit value-initialises to 0) and it forwards RS-click for
+        // XToggleZoom instead. Without this guard the lane won the click, emitted
+        // nothing, and then blocked the forward below - so s63 silently ate
+        // Infinite's zoom on a global default it never opted into.
+        const bool r3IsJump = !r3IsModifier && map.jumpBit &&
+                              g_jumpOnR3.load(std::memory_order_relaxed);
+        if (r3IsJump && clickRraw && map.jumpBit) pad.buttons |= map.jumpBit;
+        // Forwarded only where the map says so, and only when the click is
+        // carrying neither of the two jobs above.
+        if (map.stickClickR && clickRraw && !r3IsModifier && !r3IsJump)
+            pad.buttons |= map.stickClickR;
     }
 
     uint64_t now = GetTickCount64();
@@ -717,9 +1401,14 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     // reaches the game. Direction reads the PRE-deadzone stick; the re-arm
     // band allows several selects in one hold; grips suppress it (the
     // radials read the stick).
+    // Set by the flick block below; read by the menu lane after it.
+    bool modHeldForMenu = false;
     if (map.flick) {
+        // s63: which stick selects. Default right (shipped); `dpadSide = left`
+        // moves it to the movement stick, where a d-pad normally lives.
+        const bool dpadLeft = g_dpadLeft.load(std::memory_order_relaxed);
         float rawX = 0.0f, rawY = 0.0f;
-        read_vec2(session, g_look, &rawX, &rawY);
+        read_vec2(session, dpadLeft ? g_move : g_look, &rawX, &rawY);
         bool gripHeld = g_gripLatchedL || g_gripLatchedR;
 
         // Session 23: the modifier can also be the LEFT thumbrest. It has to be
@@ -745,8 +1434,21 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         // modifier, and the ammo-modifier preference (a BioShock 1 comfort
         // setting) does not apply. Thumbrest-only, unconditionally.
         bool clickMod = false;
-        bool restMod = restL;
-        if (map.flickAmmoModPref) {
+        // Auto's cross-hand default, before either branch below refines it.
+        bool restMod = dpadLeft ? restR : restL;
+        const int dpadMod = g_dpadMod.load(std::memory_order_relaxed);
+        if (dpadMod != static_cast<int>(DpadMod::Legacy)) {
+            // Explicit choice: no heuristic, no fallback. The user picked a
+            // source and it is the only one that arms.
+            switch (static_cast<DpadMod>(dpadMod)) {
+                case DpadMod::Off:       clickMod = false; restMod = false; break;
+                case DpadMod::RightRest: clickMod = false; restMod = restR; break;
+                case DpadMod::LeftRest:  clickMod = false; restMod = restL; break;
+                case DpadMod::R3:        clickMod = rsClick; restMod = false; break;
+                case DpadMod::LeftGrip:  clickMod = false; restMod = g_gripLatchedL; break;
+                default: break;
+            }
+        } else if (map.flickAmmoModPref) {
             const bvr::input::AmmoMod mode = bvr::input::ammo_mod();
             // Thumbrest is the default, but not every controller has one (Pico
             // has no thumbrest; some SteamVR setups do not report it) and
@@ -754,42 +1456,77 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
             // Thumbrest mode the stick click keeps working UNTIL a real
             // thumbrest touch is observed - after that the mapping is exactly
             // what was chosen.
-            const bool noThumbrestYet = !g_thumbrestSeen[0];
+            // Watch the hand that actually carries the modifier for this side.
+            const bool noThumbrestYet = !g_thumbrestSeen[dpadLeft ? 1 : 0];
             clickMod = (mode != bvr::input::AmmoMod::Thumbrest || noThumbrestYet) && rsClick;
-            restMod = mode != bvr::input::AmmoMod::Click && restL;
+            // Cross-hand, always: the modifier thumbrest is on the opposite
+            // hand from the selecting stick, because one thumb cannot rest and
+            // push the same stick at once.
+            restMod = mode != bvr::input::AmmoMod::Click && (dpadLeft ? restR : restL);
         }
         const bool modHeld = clickMod || restMod;
+        // The menu lane below needs to know whether the modifier is down: it is
+        // what turns the menu button from PAUSE into CONTEXT HELP. Published
+        // here rather than recomputed, so the two can never disagree.
+        modHeldForMenu = modHeld;
 
         if (modHeld && !g_rsClickWasDown) g_flickArmed = true;
         g_rsClickWasDown = modHeld;
         if (modHeld && !gripHeld) {
-            // Turn suppression. RS-click never reaches the game, so killing turn
-            // for its whole hold costs nothing. A thumb PARKED on the thumbrest
-            // is not a deliberate gesture though - suppressing turn for as long
-            // as it rests there would break turning during normal play - so in
-            // thumbrest mode only suppress while the stick is actually pushed
-            // past the select threshold.
-            const bool pushed =
-                fabsf(rawX) >= kFlickPress || fabsf(rawY) >= kFlickPress;
-            if (clickMod || pushed) {
-                pad.rx = 0;
-                pad.ry = 0;
-            }
-            if (g_flickArmed && now >= g_flickCooldownMs) {
-                // Directions the map leaves at 0 are simply never emitted -
-                // that is how BioShock 1 keeps its three-way ammo select while
-                // Infinite gets the fourth direction its nav cycle needs.
-                uint16_t bit = 0;
-                if (rawY >= kFlickPress) bit = map.flickUp;
-                else if (rawY <= -kFlickPress) bit = map.flickDown;
-                else if (rawX <= -kFlickPress) bit = map.flickLeft;
-                else if (rawX >= kFlickPress) bit = map.flickRight;
-                if (bit) {
-                    g_flickPulseBit = bit;
-                    g_flickPulseUntilMs = now + kFlickPulseMs;
-                    g_flickCooldownMs = now + kFlickCooldownMs;
-                    g_flickArmed = false;
+            // DOMINANT AXIS ONLY, BRVR's exact test. A thumbstick makes
+            // diagonals far too easy to hit when one direction was meant, and
+            // the previous first-match chain resolved a deliberate "up" as
+            // "left" whenever the cross-axis happened to be over threshold too.
+            // Directions the map leaves at 0 are never emitted - that is how
+            // BS1 keeps a three-way select while Infinite gets its fourth.
+            //
+            // THE FOURTH DIRECTION AND THE HOLD ARE BS1-ONLY UNTIL TESTED.
+            // kPadMapBioshock1 serves BioShock 1 AND BioShock 2 - PadProfile has
+            // no Bioshock2 entry and no BS2 adapter selects one - so the table's
+            // flickRight/flickHoldBits reach a game that has never been in a
+            // headset with them. Before s63 both were absent. Read them through
+            // the gate rather than editing the tables, which keeps the tables an
+            // honest statement of what each game's pad MEANS and puts the
+            // untested-ness in one place. (VOID's review of PR 50.)
+            const bool fourth = bvr::input::flick_fourth_direction();
+            const uint16_t mapRight = fourth ? map.flickRight : 0;
+            const uint16_t holdBits = fourth ? map.flickHoldBits : 0;
+            const float press = bvr::input::flick_press_threshold();
+            const float ax = fabsf(rawX), ay = fabsf(rawY);
+            uint16_t bit = 0;
+            if (ay >= press && ay >= ax) bit = rawY > 0.0f ? map.flickUp : map.flickDown;
+            else if (ax >= press && ax > ay)
+                bit = rawX < 0.0f ? map.flickLeft : mapRight;
+
+            // Turn/walk suppression. RS-click never reaches the game, so
+            // killing the stick for its whole hold costs nothing there. A thumb
+            // PARKED on a thumbrest is not a deliberate gesture though -
+            // suppressing for as long as it rests would break normal play - so
+            // in thumbrest mode only suppress while a direction is actually
+            // resolved. Suppress the stick doing the SELECTING, so the gesture
+            // does not also walk (left) or turn (right).
+            if (clickMod || bit) {
+                if (dpadLeft) {
+                    pad.lx = 0;
+                    pad.ly = 0;
+                } else {
+                    pad.rx = 0;
+                    pad.ry = 0;
                 }
+            }
+
+            if (bit && (bit & holdBits)) {
+                // HELD - see PadMap::flickHoldBits. Set for as long as the
+                // direction is, which is what lets ShockPlayerController satisfy
+                // HintButtonHeld / HintHoldTime = 0.5 s and open the MAP.
+                pad.buttons |= bit;
+            } else if (g_flickArmed && now >= g_flickCooldownMs && bit) {
+                // PULSED - one edge per return-to-centre, for maps whose
+                // directions CYCLE rather than select.
+                g_flickPulseBit = bit;
+                g_flickPulseUntilMs = now + kFlickPulseMs;
+                g_flickCooldownMs = now + kFlickCooldownMs;
+                g_flickArmed = false;
             }
             if (rawX > -kFlickRearm && rawX < kFlickRearm && rawY > -kFlickRearm &&
                 rawY < kFlickRearm)
@@ -812,12 +1549,36 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         }
     }
 
-    // Left menu: short press pulses START on release, holding it past the
-    // threshold holds BACK until release. The X+Y chord above joins here so
-    // both routes share one tap/hold state machine.
-    bool menuDown = read_bool(session, g_menu) || menuChord;
-    if (menuDown) {
+    // Left menu, or the X+Y chord that stands in for it. The MODIFIER decides
+    // which of the two things this is - that is BRVR's shape, and it is what
+    // reaches the map:
+    //
+    //     menu / X+Y             -> START (pause)
+    //     MODIFIER + menu / X+Y  -> BACK  (ShowContextHelp, "WHAT IS THIS?")
+    //
+    // and BACK must be HELD, because ShockPlayerController gates the MAP SCREEN
+    // behind HintButtonHeld with HintHoldTime = 0.5 s. BRVR: `if (s.menu) btn |=
+    // (mod ? XI_BACK : XI_START);`.
+    //
+    // WHAT THIS REPLACES, and why the old shape could not work: BACK used to be
+    // the LONG PRESS of the menu button, with no modifier involved. That put
+    // context help behind the one input most likely not to exist - "on many
+    // setups no menu button reaches the game at all: SteamVR claims the left
+    // one for its dashboard, the Meta runtime the right" - and the X+Y chord,
+    // which exists precisely for those setups, could then only ever produce
+    // START. Hanging it off the modifier instead means the chord reaches it too.
+    const bool menuRaw = read_bool(session, g_menu);
+    const bool menuDown = menuRaw || menuChord;
+    if (menuDown && modHeldForMenu && bvr::input::menu_modifier_context_help()) {
+        // Held for as long as the gesture is, so the 0.5 s hint timer can run.
+        pad.buttons |= XINPUT_GAMEPAD_BACK;
+        g_menuDownMs = 0;         // never also count as a pause tap
+        g_startPulseUntilMs = 0;  // and cancel one already in flight
+    } else if (menuDown) {
         if (g_menuDownMs == 0) g_menuDownMs = now;
+        // The long-press route to BACK is kept as a fallback for anyone whose
+        // d-pad modifier is off (dpadModifier = 0), who would otherwise have no
+        // way to reach context help at all.
         if (now - g_menuDownMs >= kMenuLongMs) pad.buttons |= XINPUT_GAMEPAD_BACK;
     } else {
         if (g_menuDownMs != 0 && now - g_menuDownMs < kMenuLongMs)
@@ -898,6 +1659,59 @@ void set_flourish_chord_suspended(bool on) {
         bvr::vr::g_flourishChordSuspended.exchange(on, std::memory_order_relaxed);
     if (was != on)
         BVR_LOG("xr-input: flourish chord %s", on ? "SUSPENDED (A passes through)" : "resumed");
+}
+
+// s63 d-pad modifier / flip / R3-jump, reached from the F10 panel and the
+// command seam. Same arrangement as the flourish chord above: the state stays
+// in the composer's TU next to the per-frame reader, the accessors live in
+// bvr::input beside the other composed-state readers.
+int dpad_modifier() {
+    return bvr::vr::g_dpadMod.load(std::memory_order_relaxed);
+}
+
+void set_dpad_modifier(int m) {
+    // -1 (Legacy) is reachable deliberately: it is how a game with no tested
+    // mode gets the pre-s63 heuristic back, and how an A/B against it is run.
+    if (m < -1 || m > 4) return;
+    const int was = bvr::vr::g_dpadMod.exchange(m, std::memory_order_relaxed);
+    if (was == m) return;
+    static const char* kNames[] = {"off", "right thumbrest", "R3", "left grip",
+                                   "left thumbrest"};
+    BVR_LOG("xr-input: d-pad modifier = %s", m < 0 ? "legacy heuristic" : kNames[m]);
+    // The one combination that cannot work, said at the moment it is chosen
+    // rather than only in the startup echo.
+    const bool leftSel = bvr::vr::g_dpadLeft.load(std::memory_order_relaxed);
+    if ((leftSel && m == 4) || (!leftSel && m == 1))
+        BVR_LOG("xr-input: WARNING - that thumbrest is on the SAME hand as the selecting "
+                "stick. One thumb cannot rest on it and push that stick at once - use R3 "
+                "or the left grip, or flip the selecting stick.");
+    if (m == 2 && bvr::vr::g_jumpOnR3.load(std::memory_order_relaxed))
+        BVR_LOG("xr-input: R3 is the modifier now, so the R3 jump lane yields to it - the "
+                "layout's own jump button is unaffected");
+}
+
+bool dpad_select_left() {
+    return bvr::vr::g_dpadLeft.load(std::memory_order_relaxed);
+}
+
+void set_dpad_select_left(bool on) {
+    const bool was = bvr::vr::g_dpadLeft.exchange(on, std::memory_order_relaxed);
+    if (was == on) return;
+    BVR_LOG("xr-input: d-pad side = %s (%s stick selects, %s is suppressed while selecting)",
+            on ? "LEFT" : "right", on ? "left" : "right", on ? "walking" : "turning");
+}
+
+bool jump_on_r3() {
+    return bvr::vr::g_jumpOnR3.load(std::memory_order_relaxed);
+}
+
+void set_jump_on_r3(bool on) {
+    const bool was = bvr::vr::g_jumpOnR3.exchange(on, std::memory_order_relaxed);
+    if (was != on)
+        BVR_LOG("xr-input: R3 jump %s%s", on ? "ON (additive)" : "off",
+                on && bvr::vr::g_dpadMod.load(std::memory_order_relaxed) == 2
+                    ? " - but R3 is the d-pad modifier, so it yields"
+                    : "");
 }
 
 } // namespace bvr::input

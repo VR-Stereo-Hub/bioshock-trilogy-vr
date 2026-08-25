@@ -14,20 +14,8 @@ $repo = Split-Path -Parent $PSScriptRoot
 $config = if ($Release) { "RelWithDebInfo" } else { "Debug" }
 $outDir = Join-Path $repo "build\src\$config"
 
-if ($Game -eq "bs2") {
-    $exeName = "Bioshock2HD.exe"
-    if (-not $GamePath) { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock 2 Remastered\Build\Final" }
-} elseif ($Game -eq "bsi") {
-    $exeName = "BioShockInfinite.exe"
-    if (-not $GamePath) { $GamePath = "D:\SteamLibrary\steamapps\common\BioShock Infinite\Binaries\Win32" }
-} else {
-    $exeName = "BioshockHD.exe"
-    if (-not $GamePath) { $GamePath = "K:\SteamLibrary\steamapps\common\BioShock Remastered\Build\Final" }
-}
-
-if (-not (Test-Path (Join-Path $GamePath $exeName))) {
-    throw "$exeName not found in '$GamePath' - pass -GamePath."
-}
+. (Join-Path $PSScriptRoot "lib\resolve-game-path.ps1")
+$GamePath = Resolve-BvrGamePath -Game $Game -GamePath $GamePath
 
 $proxy = Join-Path $outDir "xinput1_3.dll"
 $mod = Join-Path $outDir "bioshockvr.dll"

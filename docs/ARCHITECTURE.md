@@ -1432,3 +1432,250 @@ runtime.
   half-switched pad, and a partially-populated POD would silently unbind controls
   to bit 0. The BioShock 1 table reproduces the previous literals exactly - that,
   not an assertion, is the inertness argument, and it was measured (see below).
+
+### 2026-08-21 - the cinema screen is anchored where it opened, not where you recentred
+
+Ported from the BRVR mod as the first item of the consolidation
+(`docs/bioshock1/PORT-PLAN.md`).
+
+The quad that carries menus, the map, the manual, machine flows, the hack board,
+loading screens and cutscenes had two placements and each had a failure the
+other did not. `g_space` with an identity pose put it at the recenter origin's
+forward, so a player who had turned since recentring got a menu behind them.
+`g_viewSpace` pinned it to the head, so it swam with every glance. Session 22
+picked between them per screen type, which meant choosing which failure to have.
+
+Anchor mode is the third option and is now the default: take the head pose once,
+when the screen opens, flatten the forward vector to horizontal so the panel is
+never tilted, and leave the quad there in world space until the screen closes.
+The player can look around a stationary screen, which is what makes it readable.
+It re-places on the next screen, on a recenter, and after 0.45 m of head travel
+(headset off the desk, player stood up), and on nothing else - ordinary head
+motion must never move it.
+
+**Two details are load-bearing and both are somebody else's scar tissue.**
+
+The yaw is `atan2(-fx, -fz)`, not `atan2(fx, -fz)`. The quad's visible face is
+its local +Z and `R_y(yaw)*(0,0,1) = (sin yaw, 0, cos yaw)`, so the second form
+builds the MIRROR of the head yaw: the panel sits askew by twice the yaw, in
+opposite directions looking left versus right, and is dead straight at yaw 0 -
+which is exactly why it shipped in BRVR and survived testing. Any test of this
+code that does not turn the head cannot see the bug.
+
+The pose comes from the unconditional `xrLocateSpace` at frame open, and the
+anchor is not latched on a frame where that pose is invalid. BRVR anchored from
+a variable only the gameplay path wrote, so every screen shown before the first
+gameplay frame - the startup movies, the main menu - landed at the local origin
+instead of in front of the player.
+
+**Verified in the simulator, no headset** (`tools/xrsim-launch.ps1 -Game bs1`,
+main menu, one quad layer throughout):
+
+| Check | Result |
+|---|---|
+| Placed at all | `screen anchored at yaw 0.0 deg, head (0.00 1.60 0.00) m` |
+| Survives a pure 50 deg head turn | quad pose `(0.000 1.60 -1.750)` **identical** before and after, so it is world-locked and not following the head |
+| Re-anchors on travel | `screen re-anchoring - head moved 1.20 m from the anchor` |
+| Re-anchors on the RIGHT heading | at head yaw 50 it logged `yaw 50.0` and placed at `(-0.141 1.60 -1.125)`, which is head + 1.75 m along the head's own forward to **0.0000 m**. The mirrored placement would have been 2.681 m away |
+| Black around it | every capture reported `1 layer(s): quad`, no projection layer |
+
+Not verified: the `vrscreen` console command. `command.txt` is polled from the
+CalcView hook, which does not pump at the main menu, so the line was written and
+never read. The parser is untested at runtime; the F10 overlay controls call the
+same functions and are the primary surface.
+
+### 2026-08-22 (session 63) - BRVR parity on size and height, and where parity is only a number
+
+The user reported the weapon and hands reading tiny and asked for BRVR's scale,
+which felt right. Comparing BRVR's shipped `dist/BioshockVR.ini` against these
+defaults, most of the pipeline already agreed and the agreement was not luck:
+
+| Knob | BRVR | Here before | Delta |
+|---|---|---|---|
+| World scale | `EyeSeparation=3.2`, documented "game units == cm" -> 100 UU/m | `worldScale=100` | same |
+| Foreground lens | `2*atan(tan(fov/2)/(W/H)*1.3333)` | session-28 `k=(4/3)*(H/W)` | algebraically identical |
+| IPD | 64 mm | 63 mm | negligible |
+| Hand scale | `HandsScale=0.8` | `0.793` | ~1% |
+| Weapon scale | `GunScale=0.8` | `0.760` | ~5% |
+| **Camera height** | **`CameraHeightOffset=9` cm** | **0** | **the only large one** |
+
+**The decision worth recording is what we did NOT claim.** Adopting 0.80/0.80 is
+parity, not a fix: a 1% and a 5% change cannot be what a "reads tiny" report is
+about, and saying otherwise would have made the next headset session measure the
+wrong thing. The height was shipped at BRVR's 9 cm as the actual candidate, and
+`HandsScale`/`GunScale`/`CameraHeightOffset` were added to `BioshockVR.ini` so
+the real number can be found by dialling in one session rather than by a rebuild
+per guess.
+
+**Ini precedence is deliberately the opposite of the intent, and is logged.**
+`Bioshock1RAdapter::init` runs before `arm_vr_preset()` -> `load_vr_preset_values()`,
+so a saved `vrpreset.ini` overrides the ini keys. That preserves in-headset F10
+calibrations, which is right, but in a headset it is indistinguishable from the
+ini being ignored - hence the startup echo saying so on the same line. The clean
+model (ini is the source of truth, F10 is a front-end) stays blocked on the F10
+writer, which rewrites `vrpreset.ini` wholesale and drops unknown keys.
+
+**Mechanism parity was deliberately NOT taken for the hands.** BRVR scales the
+AHands actor's `DrawScale` (+0x2AC). The hands here are POSITIONED by writing
+bone translations, so an actor-level scale would silently scale our own writes
+with them; the cluster compression stays. The weapon is the opposite case - it
+is positioned by the engine through the attach bone - so a skeleton-less
+holdable (the wrench) now scales through the weapon actor's `DrawScale`, which
+is the one place this mod did visibly less than BRVR. Headset-confirmed the
+same day, which settles session 16's open question: the RIG actor's DrawScale is
+inert through the fg path, the WEAPON actor's is not. It also corrected the
+lane - the wrench is authored at 0.800, so a multiplier compounded to 0.64 and
+the knob is now absolute, as BRVR's is. See `docs/bioshock1/ENGINE_NOTES.md`.
+
+### 2026-08-22 (session 63) - the F10 panel in a headset
+
+The panel was unreachable in VR: ImGui's default corner, 420x420 inside a
+~2750x2850 backbuffer, unscaled font, mouse-only. Making it controller-driven
+turned up four things that are worth recording because each one LOOKED like a
+tuning problem and was not - and each cost a headset session to find, because a
+clean build proves nothing about a runtime contract.
+
+**R3 + L3 TAP opens the panel; HOLD (~0.6 s) recenters.** The chord already
+existed as recenter-only; it is now split by duration. Recenter took the hold
+because it is rare and deliberate. **This changes recenter for BS2 and Infinite
+too** - they drain the same chord - so it has a `docs/PORT-CANDIDATES.md` row.
+
+**Point with the right controller, click with RT.** `overlay.cpp` injects
+`io.MousePos` between `ImGui_ImplWin32_NewFrame()` and `ImGui::NewFrame()` -
+the only window where an injected cursor is not overwritten by the real one.
+The maths is deliberately position-free: rotate the aim direction into the
+HEAD's frame, divide out the forward component, scale by the eye tangents from
+`fov_audit`. **If the cursor sits off the ray, expect a constant scale factor,
+not a redesign** - the backbuffer holds the game's render at the game's FOV
+while the compositor presents through the claimed FOV, and those only agree
+because the session-15 lens match makes them.
+
+RT is swallowed **for the game only** while the panel is up, in
+`compose_synthetic` - deliberately NOT where the XR pad is published, because
+the overlay reads that same published pad to get the trigger. Everything else
+stays live, so you can still walk with the panel open.
+
+**THE HALF-SCREEN CUTOFF: the panel was never too tall, it was being
+guillotined.** ImGui's Win32 backend sets `io.DisplaySize` from the **window
+client rect** (`imgui_impl_win32.cpp:410`, `GetClientRect`), and the DX11
+backend sets the D3D **viewport** to exactly that
+(`imgui_impl_dx11.cpp:113-114`). We draw into the BACKBUFFER, which in VR is
+near-square (~2750x2780) - but Windows CLAMPS a window to the monitor, so on a
+1440p display the client rect is roughly half that height. Everything below it
+fell outside the viewport and was never rasterised, at a fixed ~50% of the eye
+image regardless of what the window asked for.
+
+Note the comparison that matters is **backbuffer vs CLIENT RECT**, not
+backbuffer vs render resolution - those two are near-identical and neither
+explains it. Two observations corroborate rather than contradict it: the cut is
+at the same ~50% **on the flat monitor too** (expected - the backbuffer is
+scaled into the window for display, so a viewport covering its top half still
+covers the top half of what you see), and **UEVR shows the identical symptom**,
+which is what you would predict from any mod that draws ImGui into a hooked
+Present while the game renders a backbuffer larger than its own window. (Noted
+as a symptom only - UEVR is all-rights-reserved and no code was consulted.) Fixed by pointing `io.DisplaySize` at the backbuffer after the
+Win32 backend runs (and rescaling the real mouse into that space so the desktop
+cursor still lands where it looks like it lands). This also makes the centring
+maths and the controller pointer correct, both of which already assumed
+backbuffer pixels. **The probe logs the proof once**:
+`overlay: window client rect ... vs backbuffer ...` - if those heights match,
+the cutoff was something else and this diagnosis is wrong.
+
+**IMGUI INPUT MUST GO THROUGH THE EVENT QUEUE - three bugs, one cause.**
+Reported: the cursor rendered in the RIGHT EYE ONLY, the trigger stopped
+clicking, and the stick-drag moved the cursor without changing any slider.
+
+Since ImGui 1.87 (vendored here: **1.92.8**) `io.MousePos`, `io.MouseDown[]` and
+`io.MouseWheel` are DERIVED state, rebuilt from queued events inside
+`NewFrame()` - `imgui.cpp:10535` is literally
+`io.MouseDown[button] = e->MouseButton.Down`, and `imgui.cpp:808` lists
+"Backend writing to io.MouseDown[] -> backend should call
+io.AddMouseButtonEvent()" as obsolete. The first cut wrote the FIELDS. Position
+survived by luck (nothing else queues a position event while the physical mouse
+is still); the button writes were overwritten every single frame, because the
+queue always carries the real button state. Hence a cursor that moved but could
+not click or drag. Now `AddMousePosEvent` / `AddMouseButtonEvent` /
+`AddMouseWheelEvent` throughout - including the real-mouse rescale, which was a
+field write for the same reason.
+
+The right-eye-only half was a second bug in the same function: it BAILED OUT on
+a failed pose read, leaving the cursor position unset for that present. Each eye
+is its own Present under SequentialReentry, so failing on alternate passes sets
+the cursor on one eye and not the other. It now holds the last good position.
+
+**The slider reset-to-aim: ImGui sliders position ABSOLUTELY on click.**
+`imgui_widgets.cpp` computes `clicked_around_grab` and preserves the value ONLY
+when the click lands on the grab handle - click the track and the value jumps to
+the cursor. The synthetic click-drag therefore reset the slider to the aim point
+on every re-engage. ImGui stores `HoveredId` but no hovered RECT, so the grab's
+position is not discoverable from outside; pre-aiming at it is impossible.
+
+The widget already implements the right path for keyboard/gamepad
+(`ActiveIdSource == Keyboard || Gamepad`): it starts from the CURRENT value and
+applies a relative delta, **one arrow-key press = 1% of the slider range**, and
+never looks at the cursor. Reaching it needs `SetActiveID` plus an
+`ActiveIdSource` override from `imgui_internal.h`; the keys themselves go through
+the public event API. Activation happens in `UpdateSliderTweak()`, which must run
+AFTER `NewFrame` (HoveredWindow is updated there) and BEFORE the sliders are
+submitted. Step RATE is ours, not ImGui's repeat timer - the key is pulsed once
+per due step (2-30/s, squared response), so stick pressure still means something.
+
+**The runaway scroll was a QUEUE BACKLOG, not momentum.** `UpdateInputEvents`'
+wheel branch is `if (trickle_fast_inputs && (mouse_moved || mouse_button_changed))
+break;` - it stops draining. Trickling is on by default, and the ray cursor moves
+every present (hand jitter guarantees it), so every wheel event was DEFERRED
+rather than applied; they queued up and drained about one per frame, which kept
+the panel scrolling after the stick was released.
+
+Trickling exists for real hardware, where a burst inside one frame must be spread
+so a fast click is not merged into a move. Our input is synthetic and already
+frame-paced - exactly one consistent pointer state per present - so
+`io.ConfigInputTrickleEventQueue = false` is correct here, not a workaround.
+
+**Both stick speeds are now PER SECOND, not per frame.** The present rate swings
+between ~100 and ~240/s (each eye presents separately under SequentialReentry),
+so a per-frame step made drag and scroll speed a function of framerate. That is
+also why the slider drag read about four times too fast.
+
+**Polish from the first in-headset look**: the window scale was right but the
+TEXT was too big (h/1080 = 2.37x), so the lift is now half that and there is a
+**"UI text scale" slider** - it is a perceptual number and guessing it from
+outside a headset is how the first attempt got it wrong. The panel is 0.45 of the
+backbuffer tall and centred, so trimming pulls in equally top and bottom -
+sized for a viewport that is now genuinely the full eye image. **Right stick scrolls it**, and the
+right stick and trigger are both swallowed in-game while it is up, so a scroll
+cannot turn you and a click cannot fire; the left stick still walks. **The
+crosshair, aim laser and aim dot are hidden** while it is up - the beam used to
+land on the panel and fight the cursor for the same pixels.
+
+**Anchored (world-locked) placement was asked for and DROPPED as too big.** It
+would mean the panel leaving the backbuffer for its own quad layer - render
+ImGui to an offscreen RT, copy into a new swapchain, submit at the anchor pose,
+and re-do the pointer as a ray/plane intersection. The `screen_place_mode`
+anchor logic the cinema screen already uses is exactly the placement behaviour
+wanted ("follows you, but a head turn does not drag it"), so a future attempt
+should reuse it rather than invent one. The panel stays head-locked for now.
+
+**The window opened small and off-lens because `io.IniFilename = nullptr`** -
+ImGui never persisted anything, and there is no record of where it was left.
+Interim default: centred, 42% x 52% of the backbuffer, with `FontGlobalScale`
+tracking backbuffer height (a 1080p-authored font is sub-pixel at 2560 square).
+**A probe logs the real geometry** on change, debounced 1 s, as fractions of the
+backbuffer so the baked number is resolution-independent:
+
+```
+grep "overlay: window" %LOCALAPPDATA%\BioshockVR\bioshockvr.log | tail -3
+```
+
+Drag it where it belongs, read the fractions, bake them, drop the probe.
+
+
+**The one thing deliberately NOT done: world-anchored placement.** Asked for and
+dropped as too big. The panel is drawn into the backbuffer, which is what makes
+it head-locked by construction; anchoring means giving it its own quad layer -
+render ImGui to an offscreen RT, copy into a new swapchain, submit at the anchor
+pose, raise the compositor's layer budget, and redo the pointer as a ray/plane
+intersection. **`screen_place_mode`, which the cinema screen already uses, is
+exactly the placement behaviour wanted** ("follows you as you walk, but a head
+turn does not drag it") - a future attempt should reuse it rather than invent
+one.

@@ -11,9 +11,14 @@ The two remasters are Vengeance (UE2.5). **BioShock Infinite is Unreal Engine 3 
 different engine, so no number transfers, and even shapes are suspect.
 
 **`main` is THE branch: all three mods live there, all three work, all three shipped in v0.8.0
-(2026-08-13, session 59).** Branch every new session off `main` and merge back to it - the old
-per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and fully contained in
-`main`; do not start work on them.
+(2026-08-13, session 59).** Branch every new session off `main` and merge back to it **through a
+pull request** - the old per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and
+fully contained in `main`; do not start work on them.
+
+**Read `CONTRIBUTING.md` before your first commit.** More than one person works here now:
+`main` is never committed to directly, every change reaches it through a reviewed PR, and
+one commit is one logical change. `docs/ORG-PRACTICES.md` covers the repo and org settings
+that back those rules up.
 
 ## Hard rules
 
@@ -123,10 +128,14 @@ per-game branches (`bioshock-2`, `bioshock-infinite`) are historical and fully c
 
 | File | Purpose |
 |---|---|
+| `CONTRIBUTING.md` | **Branch, commit and PR rules.** Read before your first commit of a session |
+| `docs/ORG-PRACTICES.md` | Repo and `VR-Stereo-Hub` settings that enforce the above (admin) |
 | `docs/STATUS.md` | **Session handoff**: current state, next steps, blockers, session log |
 | `docs/ROADMAP.md` | BS1/BS2 milestones M0–M10 with acceptance criteria and checkboxes |
 | `docs/ARCHITECTURE.md` | Module design, core/adapter contract, stereo strategy, decision log |
 | `docs/RESEARCH.md` | All research findings with sources (engine, prior art, VR runtimes, legal) |
+| `docs/PORT-CANDIDATES.md` | **BS1 behaviours BS2/Infinite have never been tested with**, and the exact one-line opt-in for each. Add a row in the same commit as any core default only one game opts into |
+| `docs/CONTROLS.md` | **Controller config**: `BioshockVR.ini` reference, which keys are live vs planned, hardware notes that decide the d-pad modifier |
 | `docs/VERIFICATION.md` | **Verification catalog**: intent -> tool -> command -> how to read the result. The simulated OpenXR runtime, the command seam, screenshots, img-diff, frame dumps, record/replay - and what still needs a human in the headset |
 | `docs/bioshock1/ENGINE_NOTES.md` | BS1 reverse-engineering knowledge base: signatures, offsets, class layouts, hook points; also holds the full derivation recipes |
 | `docs/bioshock1/TESTING.md` | How to install, launch, verify each milestone; VR setup; crash triage |

@@ -12,6 +12,7 @@ public:
     bool init(const bvr::pattern_scan::ProcessImage& image) override;
     void setFov(float hfovDeg) override;
     void drawDebugUi() override;
+    bool handleCommand(const char* cmd, const char* args) override;
 };
 
 // The process-lifetime instance, handed to game/adapter_registry.cpp.

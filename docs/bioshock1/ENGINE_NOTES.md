@@ -1495,9 +1495,22 @@ BACK=ShowContextHelp, DPAD_RIGHT=hints. **DPAD_UP and DPAD_DOWN cycle the
 equipped weapon's AMMO TYPE** (CallHudFunction DPadUp/DownPressed - flat-proven:
 00 Buck -> Electric Buck -> Exploding Buck on the shotgun). The VR bindings
 re-route the face buttons XR-side (openxr_input.cpp): Touch A->XInput Y (jump),
-B->A (use), Y->B (heal), X->X; right-stick Y flicks pulse DPAD_UP/DOWN for ammo
-(rising edge past 0.65 pre-deadzone, re-arm inside 0.30, 300 ms cooldown,
-suppressed while a grip is held - the radials read the stick).
+B->A (use), Y->B (heal), X->X.
+
+**The d-pad lane (revised 2026-08-22).** Held modifier + the selecting stick,
+dominant axis past 0.5 pre-deadzone, suppressed while a grip is held (the
+radials read the stick). Emission is **per direction**, because the two kinds of
+binding sit on the same d-pad:
+
+| Direction | Binding | Emission |
+|---|---|---|
+| UP / DOWN | ammo type, and it **CYCLES** | **PULSED** - re-arm inside 0.30, 300 ms cooldown. A held cycle does not settle, it spins |
+| LEFT | nothing verified | pulsed |
+| RIGHT | **hints** - and holding it ~0.5 s is how the **MAP** opens | **HELD** |
+
+`PadMap::flickHoldBits` is the switch. See "The d-pad must be HELD" below for
+why the map was unreachable before this, and for BRVR's independent finding of
+the same thing.
 
 ### Hide-inactive: the attach bone must never be scaled
 
@@ -3518,3 +3531,250 @@ fg path (route B - unnecessary, the cluster lever passed first) and the fovA
 consumer hunt (route A - stays parked with its in-headset world-coupling
 negative). `kActorDrawScaleOffset`/dirty-protocol constants remain declared,
 still unreferenced.
+
+## The Flash movie stack - WHICH interface screen is up, by name
+
+**Ported from BRVR, 2026-08-21.** Consumed by `src/game/bioshock1r/screens.cpp`
+and published into the cinematic verdict via `bvr::vr::publish_ui_pause`.
+
+### Why a render-side signal cannot answer this
+
+The pause menu and the machine flows draw OVER a live world, which defeats every
+signal the verdict had. CalcView keeps firing, so it is not stale. The view actor
+is still the player pawn, so it is still strict. The game renders and claims the
+same fov. The frame is not pure gameswf, so `screen_only()` is false. The main
+menu and loading screens moved to the anchored cinema quad while the pause menu
+stayed on the head-locked HUD panel.
+
+### The chain
+
+The whole interface is a stack of named Flash movies. The engine exposes
+`GetTopPlayingMovie`, which BRVR decoded by eye rather than calling (it is an
+exec native taking an FFrame). Both getters are pure field walks:
+
+```
+GetFlashGUIController, ecx = LevelInfo:
+    mov eax,[ecx+0xFC]      ; XLevel
+    mov eax,[eax+0x5C]
+    mov eax,[eax+0x4C]
+    cmp [eax+0x48],0        ; TArray ArrayNum - the getter bails when zero
+    mov eax,[eax+0x44]      ; TArray Data
+    mov eax,[eax]           ; data[0]
+    mov eax,[eax+0x7C]      ; the controller
+
+GetTopPlayingMovie, ecx = FlashGUIController:
+    mov edx,[ecx+0x15C]     ; count
+    mov eax,[ecx+0x158]     ; array data
+    mov ecx,[eax+edx*4-4]   ; data[count-1] == the TOP
+```
+
+The movie's filename is a **string** at `+0x40` on the movie object, so it needs
+no name table. `+0x4C` also carries it but degrades to `"NoFileSpecified"` on
+some entries; `+0x40` held on every sample.
+
+**`AActor::Level` is derived at runtime, not assumed.** The controller and the
+pawn must agree on the offset, both must point at the same object, and that
+object's own copy must point at **itself**. Nothing but LevelInfo passes all
+three. Measured `+0xF8` on this build, but the code never trusts that literal.
+
+### Measured, first run of the probe, 2026-08-21
+
+| Top movie | Meaning |
+|---|---|
+| `HUDRadial.swf` | ordinary gameplay |
+| `PausePC.swf` | the pause menu |
+| `craftingstation.swf` | a vending machine |
+| `Fadeout.swf` | a loading transition |
+
+Pause, vending and hacking screens were all confirmed anchoring in a headset the
+same day.
+
+### Fail-closed behaviour
+
+- The LevelInfo self-reference is re-proved every frame, so a level change
+  re-finds rather than depending on a reset hook nobody remembers to call.
+- Array data is checked as a **buffer**, not an object. This is not pedantry: the
+  object test demands a vtable whose first entry is executable, and a TArray
+  buffer's first word is element 0, whose own first word is a vtable POINTER
+  living in read-only data. Running the object test there rejects a correct
+  pointer every time, and it cost BRVR a session. Fail closed is right; failing
+  closed on the wrong predicate is not.
+- The walk reports **which step** it stopped at. A six-deep chain decoded from
+  instructions has six ways to be wrong and "did not resolve" distinguishes none
+  of them. That cost BRVR a session too.
+- An unreadable name leaves the previous verdict standing rather than dropping
+  the panel out from under a screen the player is reading.
+- If the chain never resolves, placement behaves exactly as it did before.
+
+### FALSIFIED: LevelInfo::Pauser
+
+The first attempt used `Level+0x668`, which BRVR recorded as the pause field and
+its source called "the one reliable signal". **It read null through three real
+pauses on this build** and is not used.
+
+That offset was never a measured result in BRVR either. Its detector shared one
+dependency with two other features (`FindLevel`, which needs the pawn) and all
+three were silent for a whole 16-minute session with their switches on. The
+comment claiming reliability outlived the evidence for it.
+
+**Also falsified in BRVR, as sway fixes:** `AdditiveHandBobAnim` and
+`WeaponBobDamping`, both observed inert. Do not revive either.
+
+### Rejected alternative, on the record
+
+BRVR first tried a **draw-signature heuristic**: in-game menus issue 20-31
+non-indexed draws per frame against gameplay's 120+, because menus hide the HUD.
+The gap looked clean at 4x with no overlap across seven captures. In practice it
+**flipped twelve times in one spot during ordinary gameplay**.
+
+## Session 63 (2026-08-22) - the rigid-holdable DrawScale lane, and what it inherits
+
+**Status: HEADSET-CONFIRMED 2026-08-22 - the wrench visibly changed size.**
+That settles a question open since session 16; see "the split", below.
+
+### The gap
+
+`bones.cpp`'s weapon-scale lane (`wskel_*`, session 61) drives the equipped
+holdable's own `SkeletonInstance`. The **wrench has none** - actor `+0x3FC` is
+null, it is a rigid melee mesh (flat-proven 2026-08-14) - so the lane logged
+`holdable ... has no resolvable SkeletonInstance (+0x3FC) ... lane stays
+unbound` and the wrench rendered at authored size no matter what `wScale` said.
+BRVR never had the problem: it scales the weapon **actor** (`GunScale` ->
+`DrawScale`), which needs no bones.
+
+### The lane
+
+Only where the skeleton lane cannot bind. A holdable WITH a skeleton keeps the
+existing path; carrying both would compound.
+
+- Field: `kActorDrawScaleOffset` +0x2AC, with the **dirty protocol** -
+  `[actor+0xD0] |= 0x10`, `[actor+0x3F4]++`, `[actor+0x3E4] = 0`. All four
+  constants were derived here in session 12 (AActor::SetDrawScale 0x375830
+  disassembled, field poked live); nothing was carried across from BRVR.
+  A raw poke without the revision bump is invisible - see the session-12 entry.
+- `wScale` is a MULTIPLIER on the captured authored value, matching the sibling
+  lane. BRVR writes its `GunScale` absolutely; for BS1 weapons the authored
+  value is 1.0, so the two agree, and the captured value is logged so a weapon
+  where it is not shows up rather than hides.
+- **A field reading 0.0 is expected**, not garbage: session 12 recorded "the
+  AHands actor read 0.0 there", which is Unreal's unset-means-one. It binds as
+  a 1.0 multiplier while the raw 0.0 is kept for the restore.
+- Re-asserts per frame (read-then-write, so zero writes when nothing moved it),
+  because the engine restamps `DrawScale` on equip and a one-shot poke was
+  BS2-proven not to render reliably.
+- **Restores only when the actor is provably live** - on `wScale` returning to
+  1.0, and on explicit release. A holdable CHANGE and a world change both
+  forget it WITHOUT writing. That is BRVR's `ArmHide_Reset` rule and it exists
+  for the same reason: by the time the change is noticed the old actor may be
+  destroyed and its address reused, and an SEH guard does not save you from a
+  VALID write into somebody else's object.
+
+### The split: the RIG actor's DrawScale is inert, the WEAPON actor's is not
+
+Session 16 measured `DrawScale` on the **RIG** actor and found the geometry
+inert through the foreground path - **gun width 240 -> 234 px at s=0.5**, 2%
+where 50% was asked - concluding that the fg rig path consumes actor DrawScale
+for bone translations but NOT for skin/attached-mesh size. It named the
+**WEAPON** actor as the case it could not isolate: "it could at best scale the
+gun, never the hand."
+
+**That guess was right, and the split is real.** The wrench visibly resized in a
+headset on 2026-08-22. So: rig-actor DrawScale does not size geometry; weapon-
+actor DrawScale does. The attach-matrix disassembly session 16 queued as the
+fallback (`AActor::AttachToBone` 0x379EF0 / the fg bake at 0x3DBF7C) is **not
+needed for weapon size** and can stay parked.
+
+### Two things the first headset run corrected
+
+**1. The wrench is authored at DrawScale 0.800, not 1.0.** Logged as
+`wscale rigid: bound 7B912A20, authored DrawScale 0.800`. The lane's first cut
+treated `wScale` as a MULTIPLIER on the authored value on the explicit
+assumption that BS1 weapons are authored at 1.0 - so `wScale 0.80` rendered the
+wrench at **0.64** and it read too small. It is now **absolute**, which is what
+BRVR does (`*p = g_cfg.gunScale`) and which makes `GunScale=0.8` mean the same
+size in both mods. The consequence to know: `wScale` is "fraction of authored"
+on the skeleton lane and "the DrawScale itself" here. That asymmetry is BRVR's
+too, and BRVR is the size that was accepted in a headset.
+
+**2. A weapon SWITCH reached the restore path.** Logged as
+`released 7B912A20 (holdable has a skeleton after all) - DrawScale restored to
+0.800`: the wrench went out of hand, a skeletal weapon bound, and the lane
+restored through the OUTGOING actor - exactly the stale-pointer case `ds_drop`'s
+`restore` flag exists to refuse. That branch now checks the bound actor is still
+`hands::current_holdable` before writing.
+
+### How to verify a change here
+
+The wrench must be EQUIPPED. `boot.ps1 -Attach` lands on the newest save, and
+that save is the bathysphere intro ("Pick up the RADIO") with no weapon, so the
+simulator cannot reach it without a later save or scripted navigation - which is
+why this went to a headset. Once equipped, the log lines above are the evidence:
+`bound <ptr>, authored DrawScale <x>` then `DrawScale <x> -> <ws>`, and a
+hand-back line on unequip.
+
+### Ini keys added the same session
+
+`HandsScale`, `GunScale` (0.05-5.0) and `CameraHeightOffset` (cm, + up) in
+`BioshockVR.ini`'s `[VR]` section, read in `Bioshock1RAdapter::init`. BRVR's key
+names, units and defaults (0.8 / 0.8 / 9), so a config carries between the two
+mods. **A saved `vrpreset.ini` loads later and overrides all three** - the
+startup echo says so, because in a headset that is indistinguishable from the
+ini being ignored.
+
+## The d-pad must be HELD, not pulsed - and that is what gates the MAP
+
+**Ported from BRVR 2026-08-22, after the modifier "did not work" in a headset.**
+
+BRVR shipped a 120 ms pulse first and had to undo it. Its own note
+(`BioshockVR/Input/InputHook.cpp`, its session 38):
+
+> HELD, not pulsed. The first version emitted a 120ms pulse to avoid
+> weapon-switch spam -- but weapons are on the RADIAL in this game, and the
+> d-pad drives HUD functions. One of those is the hint button, and
+> `ShockPlayerController` gates the MAP SCREEN behind `HintButtonHeld` with
+> `HintHoldTime=0.5s`. A pulse made the map unreachable by construction.
+
+This mod was in exactly that state until now: `kFlickPulseMs = 150`, so **the
+map screen could not be opened at all** through the modifier, no matter how the
+gesture was performed. Fixed by holding the bit for as long as the direction is
+held (`PadMap::flickHold`).
+
+**But holding is only safe on the direction that needs it, and the first cut of
+this got that wrong.** It made hold-vs-pulse a per-GAME switch on the theory
+that BS1's directions SELECT a slot. The pad audit above says otherwise with
+better evidence - UP/DOWN **cycle** (`00 Buck -> Electric Buck -> Exploding
+Buck`) - and a held cycle spins rather than settling. So the switch is
+per-DIRECTION (`PadMap::flickHoldBits`): RIGHT (hints) is held, everything else
+is pulsed, and Infinite holds nothing.
+
+**THERE ARE TWO ROUTES TO THE MAP, and the one BRVR actually ships is the MENU
+button, not the d-pad.** BRVR `InputHook.cpp`:
+`if (s.menu) btn |= (mod ? XI_BACK : XI_START);` - the MODIFIER changes what the
+menu button MEANS. Menu alone is START (pause); modifier + menu is BACK, which
+is `ShowContextHelp` ("WHAT IS THIS?"), and holding it past `HintHoldTime` opens
+the map. The same applies to the X+Y chord that stands in for the menu button on
+setups where the runtime eats it.
+
+This mod had BACK on the menu button's LONG PRESS instead, with no modifier
+involved - which put context help behind the one input most likely not to reach
+the game at all, and left the X+Y chord able to produce only START. Now
+modifier-gated, with the long press kept as a fallback for `dpadModifier = 0`.
+
+**The d-pad route, which is real but secondary: `flickRight` was 0.** BS1's map emitted only UP/DOWN/LEFT, on the belief that
+three directions covered its three ammo types. But `DPAD_RIGHT = hints` - so
+holding right emitted **nothing at all**, and no amount of hold could reach the
+map. Both halves are needed: the bit has to be sent, and it has to be held.
+
+Two smaller corrections landed with it, both BRVR's numbers: the select
+threshold is **0.5** (was 0.65), and the direction is **dominant-axis only**
+(`ay >= 0.5 && ay >= ax` -> up/down, else `ax >= 0.5 && ax > ay` -> left/right).
+The previous first-match chain could resolve a deliberate "up" as "left"
+whenever the cross axis also happened to be over threshold.
+
+### What the modifier failure actually was
+
+Worth recording because the config was never wrong. The log echoed
+`d-pad modifier = rightrest` at startup and `RIGHT thumbrest touch reported by
+the runtime` 100 s later, so both ends worked. What went wrong was **the
+controllers repeatedly unbinding mid-session** - see STATUS. Before suspecting
+the modifier again, check the census timestamps.

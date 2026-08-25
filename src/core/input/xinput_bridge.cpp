@@ -2,6 +2,7 @@
 
 #include "core/hooks/pattern_scan.h"
 #include "core/input/swing.h"
+#include "core/ui/overlay.h"
 #include "core/util/log.h"
 
 #include <windows.h>
@@ -264,7 +265,27 @@ Gamepad compose_synthetic(uint64_t now) {
     // (swing.cpp's gate is closed for every other holdable).
     if (bvr::input::swing::rt_pulse(now)) test.rt = 255;
 
-    return merge(syn, test);
+    Gamepad out = merge(syn, test);
+    // The F10 panel clicks with the RIGHT TRIGGER, and the right trigger is
+    // also fire. Swallow it for the GAME while the panel is up - and only it
+    // (user's call): sticks, faces and grips stay live, so you can still walk
+    // and turn with the panel open.
+    //
+    // It has to happen HERE and not where the XR pad is published: the overlay
+    // reads that same published pad to get the trigger, so zeroing it upstream
+    // would leave the panel with nothing to click with. This is the last point
+    // before the game sees anything, and it also catches the swing pulse above
+    // - a wrench swing should not fire while you are aiming at a checkbox.
+    if (bvr::overlay::visible()) {
+        out.rt = 0;
+        // ...and the right stick, which now scrolls the panel. Turning while
+        // reading a menu is not something anyone asked for, and leaving it
+        // live would mean every scroll also spun the view. The LEFT stick is
+        // deliberately untouched - walking with the panel open still works.
+        out.rx = 0;
+        out.ry = 0;
+    }
+    return out;
 }
 
 // The stick value the pitch kill substitutes for a hard zero. See the block
@@ -799,6 +820,54 @@ void set_ammo_mod(AmmoMod m) {
 PadProfile pad_profile() {
     return static_cast<PadProfile>(g_padProfile.load(std::memory_order_relaxed));
 }
+std::atomic<bool> g_padPassthroughDefault{false};
+bool pad_passthrough_default() {
+    return g_padPassthroughDefault.load(std::memory_order_relaxed);
+}
+void set_pad_passthrough_default(bool on) {
+    g_padPassthroughDefault.store(on, std::memory_order_relaxed);
+}
+
+std::atomic<bool> g_padBrvrDefaults{false};
+bool pad_brvr_defaults() { return g_padBrvrDefaults.load(std::memory_order_relaxed); }
+void set_pad_brvr_defaults(bool on) {
+    g_padBrvrDefaults.store(on, std::memory_order_relaxed);
+}
+
+// s63 control changes that are still BS1-only - see the banner in the header.
+// Every default here is the PRE-s63 value on purpose: these sit on core paths
+// that BioShock 2 and Infinite both walk, and neither has been tested with the
+// new behaviour. BS1 opts in from its adapter in one copyable block.
+std::atomic<bool> g_flickFourthDir{false};
+bool flick_fourth_direction() { return g_flickFourthDir.load(std::memory_order_relaxed); }
+void set_flick_fourth_direction(bool on) {
+    g_flickFourthDir.store(on, std::memory_order_relaxed);
+}
+
+std::atomic<bool> g_menuModCtxHelp{false};
+bool menu_modifier_context_help() {
+    return g_menuModCtxHelp.load(std::memory_order_relaxed);
+}
+void set_menu_modifier_context_help(bool on) {
+    g_menuModCtxHelp.store(on, std::memory_order_relaxed);
+}
+
+std::atomic<bool> g_chordTapPanel{false};
+bool chord_tap_opens_panel() { return g_chordTapPanel.load(std::memory_order_relaxed); }
+void set_chord_tap_opens_panel(bool on) {
+    g_chordTapPanel.store(on, std::memory_order_relaxed);
+}
+
+// 0.65 is main's kFlickPress. Clamped to a band that cannot make the lane
+// unreachable (too high) or fire on stick noise (too low).
+std::atomic<float> g_flickPress{0.65f};
+float flick_press_threshold() { return g_flickPress.load(std::memory_order_relaxed); }
+void set_flick_press_threshold(float v) {
+    if (v < 0.25f) v = 0.25f;
+    if (v > 0.95f) v = 0.95f;
+    g_flickPress.store(v, std::memory_order_relaxed);
+}
+
 void set_pad_profile(PadProfile p) {
     int v = static_cast<int>(p);
     if (v < 0 || v > static_cast<int>(PadProfile::Infinite))
@@ -1065,18 +1134,91 @@ void draw_debug_ui() {
             set_snap_angle_deg(sa);
     }
 
-    // Session 23: how you hold the ammo-select modifier. Thumbrest is the
-    // default; "Both" exists for controllers whose runtime reports no
-    // thumbrest at all (Pico, some SteamVR setups) - see xinput_bridge.h.
+    // ---- ammo select: the modifier, the stick, and what R3 does -----------
+    // s63: this used to be the session-23 "Ammo-select modifier" combo alone,
+    // which quietly stopped doing anything on BioShock 1 the moment that game
+    // started picking a real d-pad modifier - dpad_modifier() != Legacy means
+    // "explicit choice, no heuristic, no fallback", and the combo feeds only
+    // the heuristic. It is still the live control on BioShock 2 and Infinite,
+    // so it is shown when, and only when, it is the one being read.
+#ifdef BVR_WITH_OPENXR
+    ImGui::Separator();
+    {
+        // -1 (Legacy) is a real state but not something to OFFER: it is the
+        // pre-s63 heuristic, kept for games with no tested mode. Show it as a
+        // read-only row and let the combo pick a real mode from there.
+        const int md = dpad_modifier();
+        const char* dmNames[] = {"Off", "Right thumbrest", "R3 (right stick click)",
+                                 "Left grip", "Left thumbrest"};
+        int sel = (md >= 0 && md <= 4) ? md : 1; // preview a sane entry while legacy
+        if (md < 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                               "d-pad modifier: legacy heuristic (pick one below to "
+                               "take over)");
+        if (ImGui::Combo("D-pad modifier", &sel, dmNames, 5)) set_dpad_modifier(sel);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "HOLD this, then push the selecting stick up / down / left to pick an "
+                "ammo slot.\nThat stick stops walking (or turning) while held, so a "
+                "select can never move you.\n\n"
+                "The thumbrest is the capacitive pad above the face buttons - resting "
+                "your thumb\non it is enough, there is nothing to press.\n\n"
+                "Rift CV1 reports no thumbrest at all: use R3.\n"
+                "Index, Bigscreen Beyond, Varjo, Somnium: their \"thumbrest\" IS the "
+                "trackpad your\nthumb already rests on, and the modifier is HELD - so it "
+                "would suppress the\nstick continuously. Use R3 there too.\n\n"
+                "Same numbering as ControllerDpadModifier in BioshockVR.ini, and as the "
+                "BRVR mod.");
+
+        bool selLeft = dpad_select_left();
+        int side = selLeft ? 0 : 1;
+        const char* sideNames[] = {"Left stick (walking pauses)",
+                                   "Right stick (turning pauses)"};
+        if (ImGui::Combo("...selected with", &side, sideNames, 2))
+            set_dpad_select_left(side == 0);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Which stick picks the slot while the modifier is held.\n\n"
+                "Keep the modifier on the OPPOSITE hand from this stick: one thumb "
+                "cannot rest\non a thumbrest and push that same stick at the same time. "
+                "Choosing both on one\nhand logs a warning and will not work.\n\n"
+                "Left is where a d-pad lives on a real pad. Matches ControllerDpadFlip "
+                "(0 = left).");
+
+        // Only meaningful while the heuristic is the thing being read.
+        if (md < 0) {
+            int am = g_ammoMod.load(std::memory_order_relaxed);
+            const char* amNames[] = {"Right-stick click", "Left thumbrest", "Either"};
+            if (ImGui::Combo("Legacy modifier", &am, amNames, 3))
+                set_ammo_mod(static_cast<AmmoMod>(am));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The pre-s63 heuristic, read only while the d-pad "
+                                  "modifier above is legacy.\nThumbrest mode falls back "
+                                  "to the stick click until a real thumbrest\ntouch is "
+                                  "seen, so ammo select cannot go missing on a "
+                                  "controller\nthat has no thumbrest.");
+        }
+
+        bool r3j = jump_on_r3();
+        if (ImGui::Checkbox("Jump on R3 (right stick click)", &r3j)) set_jump_on_r3(r3j);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "ADDITIVE - the layout's own jump button still jumps.\n\n"
+                "The game binds R3 to zoom. A FOV zoom inside a headset is a comfort "
+                "hazard and\nis removed here, which leaves the click free.\n\n"
+                "Yields when R3 is the d-pad modifier above, or every ammo select would "
+                "also jump.\nPrecedence is modifier > jump > passthrough.\n\n"
+                "Matches JumpOnR3 in BioshockVR.ini.");
+        if (r3j && dpad_modifier() == 2)
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                               "   R3 is the modifier, so the jump lane is yielding");
+    }
+#else
     int am = g_ammoMod.load(std::memory_order_relaxed);
     const char* amNames[] = {"Right-stick click", "Left thumbrest", "Either"};
     if (ImGui::Combo("Ammo-select modifier", &am, amNames, 3))
         set_ammo_mod(static_cast<AmmoMod>(am));
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Hold this, then push the RIGHT stick up/down/left to pick an "
-                          "ammo slot.\nThe thumbrest is the pad above the buttons - it is "
-                          "the LEFT one,\nbecause your right thumb cannot rest and push the "
-                          "right stick at once.");
+#endif
 
     // Session 31 swing-to-attack (its own module; see core/input/swing.h).
     ImGui::Separator();

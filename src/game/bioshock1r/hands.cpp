@@ -28,6 +28,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/aim.h"
+#include "game/bioshock1r/body.h"
 #include "game/bioshock1r/bones.h"
 #include "game/bioshock1r/patterns.h"
 
@@ -258,6 +259,21 @@ void* find_hands_actor(const FrameContext& ctx, bool probeOnly) {
     if (!probeOnly) {
         if (has_vtable(g_handsActor, patterns::kHandsVtableRva)) return g_handsActor;
         g_handsActor = nullptr;
+        // NO PAWN, NO RIG - so do not go looking for one. The gameplayView
+        // that gets us here has a `viewActor == pc` escape hatch, and the main
+        // menu is exactly that shape, so the drive arms on the menu and sweeps
+        // the heap for an actor that cannot exist. Measured 2026-08-22: a
+        // sweep started on the menu spent 5237 ms across 1245 slices and did
+        // not finish until 30 s after the level had loaded; with the menu up
+        // long enough it starves the frame (presents 3/s, input drive 15/s)
+        // and reads as a dead controller. body::is_gameplay_view is the STRICT
+        // predicate that already gates the head drive and the FOV write, and
+        // is documented to read false on the menu attract scene.
+        //
+        // Only the START of a sweep is gated. A sweep already in flight keeps
+        // its slices - the existing rule below, for the same reason: slices
+        // spread minutes apart never finish.
+        if (!g_handsScan.sweeping && !body::is_gameplay_view(ctx.viewActor)) return nullptr;
         uint64_t now = GetTickCount64();
         // Exponential backoff on consecutive empty scans (2s -> 32s cap).
         // The rig legitimately does not exist for long stretches (the NG+
