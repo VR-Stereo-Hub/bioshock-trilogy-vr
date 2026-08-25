@@ -258,6 +258,9 @@ char g_status[160] = "idle";
 // drift reported in session 20 (its model was calibrated against the old
 // fg composition and miscorrects laterally at large hand yaws).
 // `vrbones lock abs` remains the live A/B back to the old behavior.
+std::atomic<bool> g_gunXform{false};
+float g_gunXfLast[3] = {0.0f, 0.0f, 0.0f};
+bool g_gunXfWrote = false;
 std::atomic<int> g_renderLock{0};         // 0 off, 1 abs (true position), 2 diff
                                           // (head-split cancel only)
 // Correction gains. Session 13 measured "gain 0.5 lands, 1.0 doubles" and
@@ -1785,6 +1788,65 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         if (wantS) memcpy(cb.s, sv, 12);
     }
 
+
+    // ---- HANDOFF_9 6.4: DRIVE THE WEAPON ACTOR ITSELF ----------------------
+    //
+    // "gun+0x1D8 / +0x1E4 are real fields the attach system rewrites from the
+    // bone every frame ... They are therefore writable in principle ... If that
+    // write survives, the gun stops caring what the arms do - firing, reload,
+    // empty-idle, equip settle and the shot origin all resolve at once, and the
+    // large grip offsets stop being necessary. NEVER TESTED. This is the
+    // highest-value unknown in the project."
+    //
+    // It explains the attach probe above, which I misread. I measured the gun
+    // sitting 10-16 UU off the bone, not rotating with it, and concluded the
+    // field was inert bookkeeping. BRVR measured the same wander (>20 cm) and
+    // read it correctly: the field is LIVE and ANIMATION-driven. The gun does
+    // not follow the bone we write - it follows where the fidget/fire animation
+    // put the attach socket. That is the desync, and no grip offset or rotation
+    // trim can cancel an animation.
+    //
+    // FIRST QUESTION IS ONLY "DOES THE WRITE SURVIVE". So this writes the
+    // controller pose straight onto the weapon actor, no offsets, exactly the
+    // dumb test HANDOFF_9 asks for, and reads it back on the NEXT frame before
+    // writing again. If the readback matches, the engine let it stand and the
+    // real version is worth building. If it drifts, the write is too early and
+    // it needs the post-tick path bones::reapply() already uses.
+    //
+    // OFF BY DEFAULT. It writes an engine actor's transform every frame; that
+    // is not something to arm without asking.
+    if (g_gunXform.load(std::memory_order_relaxed)) {
+        void* hold = nullptr;
+        if (hands::current_holdable(&hold) && hold) {
+            uint8_t* g = static_cast<uint8_t*>(hold);
+            // Readback of LAST frame's write, before this one lands.
+            float back[3];
+            if (g_gunXfWrote && read_n(g + patterns::kActorLocOffset, back, 12)) {
+                const float d[3] = {back[0] - g_gunXfLast[0], back[1] - g_gunXfLast[1],
+                                    back[2] - g_gunXfLast[2]};
+                const float mag = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                static uint64_t s_lastMs = 0;
+                const uint64_t nowMs = GetTickCount64();
+                if (nowMs - s_lastMs >= 1000) {
+                    s_lastMs = nowMs;
+                    BVR_LOG("[bones] gunxf: wrote (%.1f %.1f %.1f) read back (%.1f %.1f %.1f) "
+                            "drift %.2f UU - %s",
+                            g_gunXfLast[0], g_gunXfLast[1], g_gunXfLast[2], back[0], back[1],
+                            back[2], mag,
+                            mag < 0.5f ? "THE WRITE SURVIVED"
+                                       : "the engine overwrote it (needs the post-tick path)");
+                }
+            }
+            const float wl[3] = {gp.loc.x, gp.loc.y, gp.loc.z};
+            const int32_t wr[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
+            if (write_n(g + patterns::kActorLocOffset, wl, 12)) {
+                write_n(g + patterns::kActorViewDirOffset, wr, 12);
+                memcpy(g_gunXfLast, wl, 12);
+                g_gunXfWrote = true;
+            }
+        }
+    }
+
     // ---- ATTACH PROBE: is the weapon actually AT the bone we pivot about? ---
     //
     // Everything upstream of this point measured clean while the viewmodel
@@ -2074,6 +2136,13 @@ void handle_command(const char* args) {
                     i, names[i] ? names[i] : L"<unnamed>", b.p[0], b.p[1], b.p[2], b.q[0],
                     b.q[1], b.q[2], b.q[3]);
         }
+    } else if (strcmp(verb, "gunxf") == 0) {
+        const bool on = (strncmp(rest, "on", 2) == 0);
+        g_gunXform.store(on, std::memory_order_relaxed);
+        g_gunXfWrote = false;
+        BVR_LOG("[bones] gunxf %s - writing the controller pose onto the WEAPON ACTOR "
+                "(HANDOFF_9 6.4). Watch for 'gunxf:' lines.",
+                on ? "ON" : "off");
     } else if (strcmp(verb, "poke") == 0) {
         int idx = -1;
         float d = 30.0f;
@@ -2193,6 +2262,22 @@ void draw_debug_ui() {
     ImGui::Text("Bones: count %d writes %u hand %d", g_boneCount,
                 g_writes.load(std::memory_order_relaxed),
                 g_lastHand.load(std::memory_order_relaxed));
+    {
+        bool gx = g_gunXform.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("EXPERIMENT: drive the WEAPON ACTOR directly", &gx))
+            g_gunXform.store(gx, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "HANDOFF_9 section 6.4, never tested until now. The weapon is a\n"
+                "SEPARATE ACTOR whose transform the attach system rewrites from the\n"
+                "animated bone every frame - so the gun follows the FIDGET, not your\n"
+                "controller, and no grip offset or rotation trim can cancel an\n"
+                "animation.\n\n"
+                "This writes the controller pose straight onto that actor, no\n"
+                "offsets. If the write survives, the gun stops caring what the arms\n"
+                "do and the per-weapon offsets stop being necessary.\n\n"
+                "Watch the log for \"gunxf:\" - it says whether the write survived.");
+    }
     bool col = g_collapse.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Hide the driven arm (collapse sleeve bones)", &col))
         g_collapse.store(col, std::memory_order_relaxed);
