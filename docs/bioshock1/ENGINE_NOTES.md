@@ -4346,6 +4346,48 @@ offset and model trim added earlier this branch become unnecessary rather than
 merely untuned - which is the "weapons correct by default" outcome asked for,
 and matches HANDOFF_11's account of why nine hand-tuned slots were ever needed.
 
+
+#### TESTED 2026-08-25: all three lock modes desync identically - because the lock REFUSES ITS OWN ANSWER
+
+Headset test, ABS / DIFF / off, all three the same. That reads as "the render
+lock is not the fix" and it is not what happened. The log:
+
+```
+[bones] lock: refusing outsized delta (lat 30.0 depth -15.0)
+```
+
+`render_lock_delta` armed, projected, produced a correction, and then
+`bones.cpp`'s own sanity guard threw it away:
+
+```cpp
+if (latMag > 30.0f || dDepth < -120.0f || dDepth > 120.0f)   // refuse
+```
+
+The lateral term hit the 30 UU ceiling, so `ptc` was never nudged and all three
+modes collapsed to the uncorrected pose. **The A/B measured nothing.** (HANDOFF_7
+rule 11: check whether the test was valid before believing the result.)
+
+**The real question is now sharp: is a 30 cm lateral correction plausible?**
+
+- If **yes**, the guard is simply too tight for this configuration and the fix is
+  to widen it - but 30 cm is enormous for a viewmodel nudge, so this is the less
+  likely branch.
+- If **no**, the correction is mis-scaled and the guard is doing its job. That
+  points back at `render_lock_delta`'s inputs: it takes world `tanH` from
+  `hfov_option_ptr()` and projects through `ctx.cam*`. Session 28 fixed the
+  lens-ratio assumption (`k` really is ~1 now, measured `k=1.381818`, fg 117.5,
+  lenses agreeing to 0.071%), so the remaining suspects are the NDC projection in
+  `world_ndc` and the depth term, not the lens.
+
+**Next session starts here**, and it is a measurement, not a guess: log the raw
+`dLat` / `dDepth` alongside the NDC the correction was derived from, hold the
+controller still at a known pose, and see whether the 30 UU is a stable bias or
+noise. A stable bias of that size with the lenses matched means the projection
+model is wrong somewhere specific, and that is findable.
+
+Do NOT widen the guard first. It would apply a correction nobody has shown to be
+correct, on a path that already moves the whole cluster.
+
 ### RETRACTION: the game's yaw DOES reach the camera during gameplay
 
 Part 1 recorded that the head drive overwrites `rot->pitch` and `rot->roll`
