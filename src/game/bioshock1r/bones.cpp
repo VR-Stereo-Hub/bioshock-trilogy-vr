@@ -283,6 +283,15 @@ std::atomic<float> g_lockPull{12.8f};
 std::atomic<float> g_lockDeltaMag{0.0f};  // telemetry: |delta| UU last frame
 std::atomic<uint32_t> g_lockSolves{0};
 std::atomic<uint32_t> g_lockSkips{0};
+// Measure-only lane (session 66). The lock's guard refuses its own answer at
+// `lat 30.0`, and a refusal returns before anything is published - so with the
+// lock ARMED the only evidence of the correction is a rate-limited "refusing"
+// line, and with it OFF there is no evidence at all. `vrbones lockprobe on`
+// runs the solve for its NUMBERS with the lock still off: the delta is
+// computed, logged and thrown away, and nothing is ever added to ptc unless
+// `lock` itself is non-zero. That is what makes the s65 A/B repeatable without
+// arming a correction nobody has shown to be correct.
+std::atomic<bool> g_lockProbe{false};
 
 // In-headset telemetry (vrbones log on): ~5 Hz shared sample window. The
 // headset cannot be watched from outside, so the log carries every frame of
@@ -665,10 +674,57 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
     outLat[2] = delta[2] - outDepth[2];
     float latMag = sqrtf(outLat[0] * outLat[0] + outLat[1] * outLat[1] + outLat[2] * outLat[2]);
 
+    // Session 66 diagnostic terms. `latMag` is the component of the FULL delta
+    // perpendicular to the fg forward, so it conflates two unrelated things:
+    // a genuine lateral disagreement, and the perpendicular shadow that any
+    // depth move casts when the anchor is off axis (a point at NDC n sits
+    // n*tan(fov/2)*w off the axis, so changing w by dDepth moves it sideways
+    // by n*tan(fov/2)*dDepth for free). At the observed dDepth of -15 and a
+    // half-screen anchor that shadow alone is ~9 UU. The terms below separate
+    // them, and none of them feed the guard or the correction.
+    //
+    //   nat   - where the fg model says ptc renders TODAY, in NDC.
+    //   dndc  - nat vs the world's answer. Dimensionless, so it survives every
+    //           depth and UU scale factor, and its two axes name the suspect:
+    //           X -> tanH / the right basis, Y -> live_inv_aspect / invTanVFg.
+    //   latP  - the lateral correction solved at CONSTANT depth (wNat instead
+    //           of wStar). This is the honest lateral term. Taken against M1 in
+    //           both modes so an ABS/DIFF comparison compares like with like.
+    //   split - the camera-vs-actor yaw the lock exists to cancel. A correction
+    //           that does not scale with this is not doing its job, whatever
+    //           its magnitude.
+    // latP is -1 when it could not be solved, so a reader can tell that apart
+    // from a genuine zero (the two mean opposite things).
+    float natX = 0.0f, natY = 0.0f, latPure = -1.0f;
+    if (wNat > 1.0f) {
+        natX = (M1[0] * ptc[0] + M1[1] * ptc[1] + M1[2] * ptc[2] + M1[3]) / wNat;
+        natY = (M1[4] * ptc[0] + M1[5] * ptc[1] + M1[6] * ptc[2] + M1[7]) / wNat;
+        float pSame[3];
+        if (solve_fg(M1, ndcX, ndcY, wNat, pSame)) {
+            float dx = pSame[0] - ptc[0], dy = pSame[1] - ptc[1], dz = pSame[2] - ptc[2];
+            latPure = sqrtf(dx * dx + dy * dy + dz * dz);
+        }
+    }
+    // Wrapped into [-180, 180). Both yaws are FREE-RUNNING rotator units, so
+    // they are folded onto one turn BEFORE subtracting - a raw int32 subtract
+    // of two far-apart values is signed overflow, and the difference is the
+    // only part that means anything anyway.
+    const int32_t kTurn = 65536;
+    int32_t splitUnits = (camRot.yaw % kTurn) - (actorRot.yaw % kTurn);
+    float splitDeg = static_cast<float>(splitUnits) / kRotUnitsPerDegree;
+    splitDeg -= floorf((splitDeg + 180.0f) / 360.0f) * 360.0f;
+
     if (g_tlmWindowOpen) {
-        BVR_LOG("[tlm] lock mode=%d tgt=(%.3f %.3f) df=%.1f k=%.2f wNat=%.1f w*=%.1f "
-                "lat=%.2f depth=%+.2f",
-                mode, ndcX, ndcY, df, k, wNat, wStar, latMag, dDepth);
+        BVR_LOG("[tlm] lock mode=%d%s tgt=(%.3f %.3f) nat=(%.3f %.3f) dndc=(%+.3f %+.3f) "
+                "df=%.1f k=%.2f wNat=%.1f w*=%.1f lat=%.2f latP=%.2f depth=%+.2f "
+                "split=%+.1f",
+                mode,
+                !g_lockProbe.load(std::memory_order_relaxed) ? ""
+                : mode == 0                                  ? " PROBE(solving abs)"
+                                                             : " PROBE",
+                ndcX,
+                ndcY, natX, natY, ndcX - natX, ndcY - natY, df, k, wNat, wStar, latMag,
+                latPure, dDepth, splitDeg);
     }
     // Per-axis refusal: the depth correction is LARGE by design (~25-70 UU),
     // the lateral one is not - a big lateral delta still means a model bug.
@@ -1698,14 +1754,20 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // transform lands the anchor on the world-correct pixel (fails soft to
     // the uncorrected pose when no fresh capture exists - e.g. rig off
     // screen, menu, or the watch not hitting).
-    if (g_renderLock.load(std::memory_order_relaxed) != 0) {
+    // `lockprobe` runs the solve for its telemetry with the lock still off -
+    // the APPLY stays gated on the lock mode alone, so a probe can never move
+    // a bone.
+    int lockMode = g_renderLock.load(std::memory_order_relaxed);
+    if (lockMode != 0 || g_lockProbe.load(std::memory_order_relaxed)) {
         float dLat[3], dDepth[3];
         if (render_lock_delta(ctx, gp, qaInv, actorRot, actorLoc, ptc, dLat, dDepth)) {
-            float gl = g_lockGain.load(std::memory_order_relaxed);
-            float gd = g_lockDepthGain.load(std::memory_order_relaxed);
-            ptc[0] += dLat[0] * gl + dDepth[0] * gd;
-            ptc[1] += dLat[1] * gl + dDepth[1] * gd;
-            ptc[2] += dLat[2] * gl + dDepth[2] * gd;
+            if (lockMode != 0) {
+                float gl = g_lockGain.load(std::memory_order_relaxed);
+                float gd = g_lockDepthGain.load(std::memory_order_relaxed);
+                ptc[0] += dLat[0] * gl + dDepth[0] * gd;
+                ptc[1] += dLat[1] * gl + dDepth[1] * gd;
+                ptc[2] += dLat[2] * gl + dDepth[2] * gd;
+            }
             g_lockSolves.fetch_add(1, std::memory_order_relaxed);
         } else {
             g_lockSkips.fetch_add(1, std::memory_order_relaxed);
@@ -2071,9 +2133,10 @@ void handle_command(const char* args) {
                 bvr::hud::cinematic_hold() ? 1 : 0,
                 bvr::vr::cine_drive_name(bvr::vr::cine_drive()));
         int lockMode = g_renderLock.load(std::memory_order_relaxed);
-        BVR_LOG("[bones] render lock: %s |delta|=%.2f UU gain=%.2f dgain=%.2f solves=%u "
+        BVR_LOG("[bones] render lock: %s%s |delta|=%.2f UU gain=%.2f dgain=%.2f solves=%u "
                 "skips=%u",
                 lockMode == 0 ? "off" : lockMode == 2 ? "DIFF" : "ABS",
+                g_lockProbe.load(std::memory_order_relaxed) ? " +PROBE (measure only)" : "",
                 g_lockDeltaMag.load(std::memory_order_relaxed),
                 g_lockGain.load(std::memory_order_relaxed),
                 g_lockDepthGain.load(std::memory_order_relaxed),
@@ -2201,6 +2264,14 @@ void handle_command(const char* args) {
         BVR_LOG("[bones] render lock %s", mode == 0   ? "OFF"
                                           : mode == 2 ? "DIFF (head-split cancel only)"
                                                       : "ABS (anchor to true world pixel)");
+    } else if (strcmp(verb, "lockprobe") == 0) {
+        bool on = strncmp(rest, "on", 2) == 0;
+        g_lockProbe.store(on, std::memory_order_relaxed);
+        BVR_LOG("[bones] render lock probe %s%s", on ? "ON (measure only, applies nothing)"
+                                                     : "off",
+                on && !g_telemetry.load(std::memory_order_relaxed)
+                    ? " - `vrbones telemetry on` for the [tlm] lock lines"
+                    : "");
     } else if (strcmp(verb, "lockgain") == 0) {
         float g = 0.5f;
         if (sscanf_s(rest, "%f", &g) == 1 && g >= 0.0f && g <= 2.0f) {
@@ -2261,7 +2332,7 @@ void handle_command(const char* args) {
         }
     } else {
         BVR_LOG("[bones] unknown command '%s' (status|list|poke|freeze|collapse|ref|anchor|"
-                "lcluster|scalemode|lock|lockgain|lockdgain|lockpull|log)",
+                "lcluster|scalemode|lock|lockprobe|lockgain|lockdgain|lockpull|log)",
                 verb);
     }
 }

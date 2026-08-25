@@ -4388,6 +4388,81 @@ model is wrong somewhere specific, and that is findable.
 Do NOT widen the guard first. It would apply a correction nobody has shown to be
 correct, on a path that already moves the whole cluster.
 
+#### CORRECTION 2026-08-25 (s66): "lat 30.0" was never a measurement of the correction
+
+Re-reading the s65 headset log rather than the one line quoted from it. The run
+left **three** refusals, not one:
+
+```
+[14:43:55.383] [bones] lock: refusing outsized delta (lat 64.8 depth -4.1)
+[14:44:10.335] [bones] lock: refusing outsized delta (lat 30.0 depth -16.6)
+[14:44:21.346] [bones] lock: refusing outsized delta (lat 30.0 depth -15.0)
+```
+
+**That line only prints when `latMag > 30.0f`, so the sample is censored from
+below at exactly the number we were treating as the finding.** "Is a 30 cm
+lateral correction plausible?" is the wrong question - 30.0 is the guard's own
+threshold showing through a filter that can never report anything smaller. The
+one uncensored number in the set is the **64.8**, more than twice it.
+
+The camera is stationary across all three (`loc=(-37382.0 518.1 7779.3)` in
+every one), so what separates them is orientation: `rot=(64064 65158 0)` at
+64.8 against `(1452 63974 0)` and `(1194 64160 0)` at the two 30.0 readings.
+The two near-identical poses give near-identical `lat`, so the term is
+deterministic and pose-stable - and roughly 10 deg of pitch more than doubles
+it. **Strong pose dependence under a stationary camera is the shape of the
+finding**, and neither the magnitude nor its cause can be read off a censored
+log line.
+
+Also true of that run, and worth knowing before repeating it: `[tlm] lock`
+never fired once (`vrbones telemetry on` was never issued), and no `render
+lock` command line appears at all - the lock was armed from the F10 radio,
+which does not log. There is no other lock data in the run.
+
+#### The s66 instrument: `vrbones lockprobe`, and the terms that decensor this
+
+`render_lock_delta` now computes four diagnostic terms beside the existing
+ones. All read-only; none of them feed the guard or the correction.
+
+| Term | What it is | Why |
+|---|---|---|
+| `nat=(x y)` | where the fg model says `ptc` renders TODAY, in NDC | the model's own answer, to set against the world's |
+| `dndc=(x y)` | `tgt - nat` | dimensionless, so it survives every depth and UU scale factor. Its two axes name the suspect: X -> `tanH` / the right basis, Y -> `live_inv_aspect` / `invTanVFg` |
+| `latP` | the lateral correction solved at CONSTANT depth (`wNat`, not `w*`) | `lat` is the component of the FULL delta perpendicular to the fg forward, so it also carries the sideways shadow any depth move casts on an off-axis anchor - a point at NDC n sits `n*tan(fov/2)*w` off axis, so changing w by `depth` moves it sideways for free (~9 UU at the observed depth -15 and a half-screen anchor). `latP` is the honest lateral term; `lat` is not. `-1` means unsolvable, which is not `0` |
+| `split` | camera yaw minus actor yaw, degrees | the head-split the lock exists to cancel. A correction that does not scale with this is not doing its job, whatever its magnitude |
+
+`vrbones lockprobe on|off` runs the solve **for its numbers with the lock still
+off** - the apply stays gated on the lock mode alone, so a probe can never move
+a bone. That is what makes the s65 A/B repeatable without arming a correction
+nobody has shown to be correct. It needs `vrbones telemetry on` for the lines
+(the probe command says so when telemetry is off), and `vrbones status` reads
+`+PROBE (measure only)` while it is armed.
+
+**Read `k` first.** Under the session-28 lens match `k` collapses to 1 by
+construction (`invTanHFg = 1/tanH`). If the log shows ~2.06 instead,
+`fg_fov_match_active()` was false, the legacy 60-deg constants were used, and
+every downstream number is mis-scaled for that reason alone - nothing else in
+the run means anything until that reads ~1.00.
+
+**Decision rule, written before the run:**
+
+| Observation | Verdict |
+|---|---|
+| `latP` small (<=3 UU) and `dndc` ~ 0 | model and world agree laterally; `lat` is the depth move's shadow, and the guard is gating the wrong quantity |
+| `latP` large and stable at a fixed pose | the model genuinely disagrees; mis-scaled, and `dndc`'s larger axis names the term |
+| `latP` swings frame to frame at a fixed pose | unstable input (hand sway, per-eye vs mono `ctx.cam*`), not a scale error |
+| `latP` does not scale with `split` | the lock is not cancelling what it exists to cancel - refuted regardless of magnitude |
+
+Baseline to compare against: the session-21 `simhead` sweep recorded above
+(`lat` 1.04-11.59 with the yaw transfer off, 4.50-4.96 with it on). The run
+must be at the headset's own viewport - the s65 log reads `backbuffer 2750x2850
+aspect 0.96491`, `WORLD tanH=1.191754 tanV=1.235090 (hfov 100.00 deg)` -
+because `live_inv_aspect()` feeds both `world_ndc`'s `tanV` and `invTanVFg`,
+and a 16:9 run would answer a different question.
+
+**NOT RUN YET.** The instrument is built and installed; the sweep is the next
+thing that happens.
+
 ### RETRACTION: the game's yaw DOES reach the camera during gameplay
 
 Part 1 recorded that the head drive overwrites `rot->pitch` and `rot->roll`

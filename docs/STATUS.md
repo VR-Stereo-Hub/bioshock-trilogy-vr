@@ -2,6 +2,134 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-25 - s66: the render-lock question was mis-stated, and the instrument to state it properly
+
+**Same branch `fix/bs1-bathysphere-cine-quad`, PR #54 still open against
+`staging`, still not merged.** One commit added.
+
+### The 30 UU was never measured
+
+s65 handed over "is a 30 cm lateral correction plausible?" on the strength of
+one log line. Re-reading the s65 log rather than the quote: the refusal line
+only prints when `latMag > 30.0f`, so **every sample it can ever produce is
+censored from below at 30.0.** The number we were treating as the finding is
+the guard's own threshold. The run left three refusals, and the uncensored one
+reads **64.8**:
+
+```
+[14:43:55.383] lock: refusing outsized delta (lat 64.8 depth -4.1)
+[14:44:10.335] lock: refusing outsized delta (lat 30.0 depth -16.6)
+[14:44:21.346] lock: refusing outsized delta (lat 30.0 depth -15.0)
+```
+
+The camera is stationary in all three, so orientation is the only thing that
+separates them - and ~10 deg of pitch more than doubles `lat`. Two
+near-identical poses give near-identical values, so the term is deterministic
+and pose-stable. **Strong pose dependence under a stationary camera is the real
+shape of this**, and it is not readable off a censored line. Also: `[tlm] lock`
+never fired in that run at all (`vrbones telemetry on` was never issued; the
+lock was armed from the F10 radio, which does not log).
+
+### What landed: `vrbones lockprobe` and four terms that decensor it
+
+All in `bones.cpp`, read-only, none of it feeding the guard or the correction,
+all of it off by default. `git diff main...HEAD -- src/core/` is unchanged by
+this commit.
+
+- **`latP`** - the lateral correction solved at CONSTANT depth. `lat` is the
+  component of the *full* delta perpendicular to the fg forward, so it also
+  carries the sideways shadow that any depth move casts on an off-axis anchor
+  (~9 UU at the observed depth -15 alone). `latP` is the honest lateral term.
+- **`nat` / `dndc`** - where the fg model says the anchor renders today, and
+  its disagreement with the world, in NDC. Dimensionless, so it survives every
+  scale factor, and its larger axis names the suspect term: X -> `tanH` / the
+  right basis, Y -> `live_inv_aspect` / `invTanVFg`.
+- **`split`** - camera-vs-actor yaw. The lock exists to cancel this; a
+  correction that does not scale with it is refuted whatever its magnitude.
+- **`vrbones lockprobe on`** - runs the solve for its numbers with the lock
+  still OFF. The apply stays gated on the lock mode alone, so a probe can never
+  move a bone.
+
+### The sweep to run, and how to read it
+
+Flat, headset-free, on the synthetic lanes (`simhead` + `vrhands simpose`).
+Prerequisite: the headset's own viewport - the s65 log confirms `backbuffer
+2750x2850`, `hfov 100.00`, which this machine already runs. A 16:9 run answers
+a different question, because `live_inv_aspect()` feeds both `world_ndc`'s
+`tanV` and `invTanVFg`.
+
+```
+vrbones telemetry on
+vrbones lockprobe on
+simhead 0 0 0            ; vrhands simpose 0 0 0
+simhead 15 0 0  /  30 0 0  /  -15 0 0  /  -30 0 0     (hand parked - the split axis)
+simhead 0 0 0
+vrhands simpose 0 0 45  /  0 0 -45  /  0 60 0  /  0 -60 0   (the wrist axis)
+vrbones lockprobe off    ; vrbones telemetry off
+```
+
+Then read `[tlm] lock` out of the log. **`k` first**: under the session-28 lens
+match it collapses to 1 by construction, so anything near 2.06 means
+`fg_fov_match_active()` was false and every downstream number is mis-scaled for
+that reason alone. With `k ~ 1.00`, the full decision table is in
+`docs/bioshock1/ENGINE_NOTES.md` (s66 section), and the comparison baseline is
+the session-21 `simhead` sweep recorded there: `lat` 1.04-11.59 transfer off,
+4.50-4.96 transfer on.
+
+### Also settled this session, by reading
+
+**HANDOFF_11 4.3(a) - the Euler-shear rotation trim - is already fixed here**,
+and can be struck off the BRVR port list. Session 20 unified the model and ray
+chains onto a quaternion composed in the controller's LOCAL frame
+(`frame_context.h` `model_pose_from_xr`), which is the same conclusion BRVR's
+HANDOFF_9 S5 reached; s65 then made the trim per-weapon. BRVR's HANDOFF_12
+issue ledger carries no viewmodel-alignment entry, consistent with it being
+closed there too. The "aligns at one wrist rotation" symptom has the shape of
+that bug but cannot be that bug in this tree.
+
+### DO NOT REACH GAMEPLAY WITH `boot.ps1` FOR THIS
+
+**User directive, 2026-08-25: do not click Continue.** `boot.ps1` presses A
+through the menu until the gameplay transition, which reaches whatever save is
+**NEWEST** - the trap already written up as VERIFICATION.md gotchas 22 and 23.
+The sweep was aborted at this step and nothing was measured.
+
+The sweep itself needs no menu interaction at all: it is pure `game-cmd.ps1`
+console commands, so **the game only has to already be standing in the world**,
+by whatever route the user prefers. Ask which save, or ask the user to load in
+and say when - do not navigate the menus.
+
+### Session log 2026-08-25
+
+**Built and installed, NOT RUN. Nothing here is headset-verified, or verified at
+all** - no measurement was taken this session. One launch was authorised and
+aborted before the game reached gameplay (see above), so the instrument has
+never executed once.
+
+The instrument is a measurement device with no shipped behaviour: `lockprobe`
+defaults off, `lock` still defaults off, the guard is untouched, and with both
+off the only new code that executes is one atomic read in `drive()`.
+
+**Build state:** the DLL in the BS1 folder is Debug, built from this branch's
+HEAD *after* the final commit, so its `build:` log line matches `git describe
+--tags --dirty` exactly, with no `-dirty`. Check that before trusting any
+silence from a probe - a stale DLL reading as "the diagnostic found nothing" has
+cost this project a session before.
+
+**Scope:** this commit adds nothing to `src/core/` (`git diff HEAD~1 HEAD --
+src/core/` is empty). The branch as a whole is *not* core-clean - `git diff
+main...HEAD -- src/core/` carries ~2085 lines across 10 files - but all of that
+is inherited s63/s64 work already gated BS1-opt-in by `d0e1280` and reviewed by
+VOID. BS2 and Infinite are untouched by s66, which is not the same as verified.
+
+The s65 diagnostics listed below are still ARMED in the installed build, plus
+the s66 additions - all read-only, all default-off. Strip or gate before release.
+
+A ready-to-run copy of the sweep is at
+`%LOCALAPPDATA%\Temp\claude\...\scratchpad\lock-sweep.ps1` from the s66 session;
+it is scratch, not in the tree, and the sequence is reproduced above so nothing
+depends on it surviving.
+
 ## Session 2026-08-24/25 - s65 bug-fix branch: five fixes landed, one hunt narrowed
 
 **Branch `fix/bs1-bathysphere-cine-quad`, rebased onto `staging`, 19 commits
@@ -67,13 +195,10 @@ nothing.**
 
 ### Next steps
 
-**Settle whether a 30 cm lateral correction is plausible, by measurement rather
-than by widening the guard.** Log raw `dLat`/`dDepth` beside the NDC they came
-from, hold the controller at a known pose, and see whether the 30 UU is a stable
-bias or noise. A stable bias that size, with the lenses matched to 0.07%, means
-the projection in `world_ndc` or the depth term is wrong somewhere specific - and
-that is findable. **Do not widen the guard first**: it would apply a correction
-nobody has shown to be correct, on a path that moves the whole cluster.
+**Run the s66 lock sweep.** The instrument is built and installed; nothing has
+been measured with it yet. See "s66" below for the sequence, the decision rule,
+and how to get into gameplay - **not** with `boot.ps1`. **Do not widen the guard first**: it would apply a correction nobody
+has shown to be correct, on a path that moves the whole cluster.
 
 Lower value, also open: PR #54 is unmerged; the numpad tuner has never had a key
 pressed with it; and `[hud] fov watch` has never once reported a foreground lens
