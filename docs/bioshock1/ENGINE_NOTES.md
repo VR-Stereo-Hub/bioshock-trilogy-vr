@@ -4290,6 +4290,62 @@ inverse-decomposes chain scale (session 16), the same division that makes bone 4
 untouchable. That warning is about the write, not about the hide, and it survives
 the falsification above intact.
 
+
+### The viewmodel desync: it is the RENDER LOCK, and it was switched off
+
+**BRVR HANDOFF_11 section 4.2 settles this, and supersedes HANDOFF_9 6.4.**
+Chasing 6.4 - "write the weapon actor's own transform" - is a dead end that BRVR
+already walked. HANDOFF_11 4.3(c):
+
+> The rendered weapon follows a **skeletal attachment matrix**, not the weapon
+> actor's top-level transform. That is why per-weapon grip offsets drift and why
+> nine hand-tuned slots are needed at all. The prior-art notes state plainly that
+> direct actor positioning was insufficient for this exact reason.
+
+Measured here independently before reading it: the weapon actor's Location sits
+10-16 UU off the bone we pivot about, does not rotate with that bone, and does
+not track it under translation either. Same conclusion, arrived at the slow way.
+**This repo already implements 4.3(c)** - bones.cpp's rigid cluster write IS
+`newBonePos = targetAnchorPos + targetRot * (refBonePos - refAnchorPos)`.
+
+**What 4.2 says the answer actually is:**
+
+> Prior art does not use a formula. It computes a **render-lock correction** -
+> lateral and depth corrections for the hand anchor derived from *captured
+> renderer state*, failing soft to the uncorrected pose when that state isn't
+> fresh. That is the answer. The foreground projection's effect on a world-space
+> placement is a function of live renderer state, not of two FOV numbers. **You
+> have to read it, not derive it.**
+
+That is `render_lock_delta()` in bones.cpp, line for line: it reads the live
+world tanH from `hfov_option_ptr()`, projects the target through the live camera
+rotator to NDC, derives a lateral and a depth correction, and returns false -
+failing soft - when the capture is not fresh.
+
+**It defaults to OFF** (`g_renderLock{0}`), and a live run measured
+`render lock: off |delta|=0.00 UU gain=0.90 dgain=0.90 solves=0 skips=0`.
+
+**And its precondition only became true in session 28.** The function's own
+comment says the correction assumes the lens ratio `k` collapses to 1 - which
+was true only at 16:9. The shipped 0.75 match constant left the fg lens
+1.7778/aspect narrower than the world everywhere else, so at this square
+backbuffer `k` was really 1.78 while the code assumed 1, and the correction was
+mis-scaled by that factor. Session 28 fixed the constant to `(4/3)*(H/W)`;
+measured this session as `k=1.381818`, fg 117.5 deg, the two lenses agreeing on
+the vertical to 0.071%. So the render lock's assumption holds NOW and did not
+before - which is the likeliest reason it was left off.
+
+**The test is a config change, not a build** (BRVR rule 6, "config bisection
+beats commit bisection"): F10 -> bones -> `lock ABS (true position)`, or
+`vrbones lock 1`. `vrbones lock diff` is the head-split-cancel-only variant, and
+`vrbones lockgain <0..2>` / `lockdepthgain` tune it. Watch `solves` climb and
+`skips` stay near zero in `vrbones status`.
+
+**What this predicts.** If the render lock is the answer, the per-weapon grip
+offset and model trim added earlier this branch become unnecessary rather than
+merely untuned - which is the "weapons correct by default" outcome asked for,
+and matches HANDOFF_11's account of why nine hand-tuned slots were ever needed.
+
 ### RETRACTION: the game's yaw DOES reach the camera during gameplay
 
 Part 1 recorded that the head drive overwrites `rot->pitch` and `rot->roll`

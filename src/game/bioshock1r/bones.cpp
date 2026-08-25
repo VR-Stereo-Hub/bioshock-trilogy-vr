@@ -1791,6 +1791,14 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
 
     // ---- HANDOFF_9 6.4: DRIVE THE WEAPON ACTOR ITSELF ----------------------
     //
+    // SUPERSEDED BEFORE IT WAS EVER RUN - keep it OFF. HANDOFF_11 4.3(c) says
+    // direct actor positioning was already tried and found insufficient, because
+    // the rendered weapon follows the skeletal attachment matrix rather than the
+    // actor's top-level transform. The real answer is the RENDER LOCK above
+    // (HANDOFF_11 4.2), which this repo implements and ships switched off. This
+    // block stays only because it is the cheap way to confirm 4.3(c) on this
+    // build if anyone doubts it: arm it and watch the gun not settle.
+    //
     // "gun+0x1D8 / +0x1E4 are real fields the attach system rewrites from the
     // bone every frame ... They are therefore writable in principle ... If that
     // write survives, the gun stops caring what the arms do - firing, reload,
