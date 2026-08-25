@@ -649,6 +649,20 @@ constexpr int kTuneModeRot = 1;
 int g_tuneMode = kTuneModePos;
 float g_tuneStep = 2.0f;
 
+// NUMLOCK IS THE TRAP, and it is why the first cut did nothing. GetAsyncKeyState
+// only reports VK_NUMPAD0..9 while NumLock is ON; with it OFF the very same keys
+// send VK_UP/DOWN/LEFT/RIGHT, VK_INSERT, VK_CLEAR, VK_HOME and VK_PRIOR instead,
+// so every bind silently reads "not pressed". BRVR carried VK_PRIOR as a second
+// binding for the mode key, which is the same wound treated in one place.
+//
+// Both spellings are accepted. The alternates cost nothing when NumLock is on
+// (the numpad sends the NUMPAD codes then, and the arrows are a different
+// physical key), and they are what make the feature work at all when it is off.
+bool key_down(int vkPrimary, int vkAlt) {
+    return ((GetAsyncKeyState(vkPrimary) & 0x8000) != 0) ||
+           (vkAlt && (GetAsyncKeyState(vkAlt) & 0x8000) != 0);
+}
+
 bool game_has_focus() {
     HWND fg = GetForegroundWindow();
     if (!fg) return false;
@@ -675,27 +689,52 @@ void tuner_log(const char* what) {
 }
 
 void poll_numpad_tuner() {
-    if (!game_has_focus()) return;
-
-    struct Bind { int vk; int axis; float sign; };
+    struct Bind { int vk; int alt; int axis; float sign; };
+    // alt = what the same physical key sends with NumLock OFF.
     static const Bind kBinds[6] = {
-        {VK_NUMPAD8, 0, +1.0f}, {VK_NUMPAD2, 0, -1.0f},
-        {VK_NUMPAD6, 1, +1.0f}, {VK_NUMPAD4, 1, -1.0f},
-        {VK_NUMPAD0, 2, +1.0f}, {VK_NUMPAD5, 2, -1.0f},
+        {VK_NUMPAD8, VK_UP, 0, +1.0f},    {VK_NUMPAD2, VK_DOWN, 0, -1.0f},
+        {VK_NUMPAD6, VK_RIGHT, 1, +1.0f}, {VK_NUMPAD4, VK_LEFT, 1, -1.0f},
+        {VK_NUMPAD0, VK_INSERT, 2, +1.0f}, {VK_NUMPAD5, VK_CLEAR, 2, -1.0f},
     };
     static bool prev[6] = {};
     static bool prevStep = false;
     static bool prevMode = false;
 
+    // Say it once, with the NumLock state, so a dead tuner explains itself in
+    // the log instead of looking like the feature was never built.
+    static bool s_told = false;
+    if (!s_told) {
+        s_told = true;
+        BVR_LOG("[hands] numpad tuner armed - NumLock is %s. 8/2 fwd, 6/4 right, 0/5 up; "
+                "7 cycles step, 9 cycles POSITION/ROTATION. Both NumLock states work.",
+                (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF");
+    }
+
+    // Keys BEFORE focus, so "pressed but the window was not foreground" is a
+    // thing the log can say rather than a silent nothing.
+    bool anyDown = key_down(VK_NUMPAD7, VK_HOME) || key_down(VK_NUMPAD9, VK_PRIOR);
+    for (int i = 0; i < 6 && !anyDown; ++i)
+        anyDown = key_down(kBinds[i].vk, kBinds[i].alt);
+    if (!game_has_focus()) {
+        static uint64_t s_lastBlockedMs = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (anyDown && nowMs - s_lastBlockedMs >= 2000) {
+            s_lastBlockedMs = nowMs;
+            BVR_LOG("[hands] numpad: key held, but the game window is not foreground - "
+                    "ignoring (click the game window first)");
+        }
+        return;
+    }
+
     // Mode, then step - both edge-detected so a held key moves one notch.
-    const bool modeDown = (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0;
+    const bool modeDown = key_down(VK_NUMPAD9, VK_PRIOR);
     if (modeDown && !prevMode) {
         g_tuneMode = (g_tuneMode == kTuneModePos) ? kTuneModeRot : kTuneModePos;
         tuner_log("now editing");
     }
     prevMode = modeDown;
 
-    const bool stepDown = (GetAsyncKeyState(VK_NUMPAD7) & 0x8000) != 0;
+    const bool stepDown = key_down(VK_NUMPAD7, VK_HOME);
     if (stepDown && !prevStep) {
         g_tuneStep = (g_tuneStep < 1.0f) ? 2.0f : (g_tuneStep < 3.0f ? 5.0f : 0.5f);
         tuner_log("step now");
@@ -704,7 +743,7 @@ void poll_numpad_tuner() {
 
     bool moved = false;
     for (int i = 0; i < 6; ++i) {
-        const bool down = (GetAsyncKeyState(kBinds[i].vk) & 0x8000) != 0;
+        const bool down = key_down(kBinds[i].vk, kBinds[i].alt);
         if (down && !prev[i]) {
             const float d = kBinds[i].sign * g_tuneStep;
             std::atomic<float>* dst =
