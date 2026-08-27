@@ -2040,10 +2040,31 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             const float tgtRollDeg =
                 static_cast<float>(static_cast<int16_t>(gp.rot.roll & 0xFFFF)) /
                 kRotUnitsPerDegree;
-            BVR_LOG("[b1r] ROLLCHECK: target roll %+7.1f deg | our bone write drifted "
-                    "%.2f deg (local x %+.2f y %+.2f z %+.2f) | engineEval=%d  %s",
-                    tgtRollDeg, driftDeg, cx, cy, cz, engineEvaluated ? 1 : 0,
-                    driftDeg > 3.0f ? "<-- OUR WRITE IS BEING CHANGED" : "(write held)");
+            // s68e: WHICH CLUSTER IS THIS. bones::drive() is called for ONE hand
+            // per frame - hands.cpp passes active_hand() - so the other hand is
+            // not driven at all that frame and renders wherever the engine put
+            // it. active_hand() is inferred from the last trigger/bumper, which
+            // means switching to a plasmid WITHOUT firing it can leave the drive
+            // on the right cluster while the plasmid sits in the left, untouched
+            // by every offset, profile and capture in this module.
+            //
+            // That is a hypothesis, and this line is how it gets settled rather
+            // than argued: if a plasmid is equipped (abil=1) while hand=1, the
+            // plasmid is undriven and nothing in the viewmodel path can be the
+            // cause of a wrong position. Costs one integer on a line that was
+            // already printing.
+            void* abilNow = nullptr;
+            const bool haveAbilNow = hands::current_ability(&abilNow) && abilNow;
+            BVR_LOG("[b1r] ROLLCHECK: hand=%d abil=%d | target roll %+7.1f deg | our bone "
+                    "write drifted %.2f deg (local x %+.2f y %+.2f z %+.2f) | "
+                    "engineEval=%d  %s%s",
+                    hand, haveAbilNow ? 1 : 0, tgtRollDeg, driftDeg, cx, cy, cz,
+                    engineEvaluated ? 1 : 0,
+                    driftDeg > 3.0f ? "<-- OUR WRITE IS BEING CHANGED" : "(write held)",
+                    (haveAbilNow && hand == 1)
+                        ? "  <== PLASMID EQUIPPED BUT THE RIGHT CLUSTER IS DRIVEN - the "
+                          "plasmid is UNDRIVEN this frame"
+                        : "");
         }
     }
     // s68: the engine's own verdict on what the hands are doing, read ONCE per
