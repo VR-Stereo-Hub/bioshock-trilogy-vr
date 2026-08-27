@@ -152,6 +152,14 @@ void wskel_release(const char* why);
 // s67 per-weapon animation gate (BRVR's HandAnimSlot). When off, the reference
 // pose never adopts the engine's - used for the WRENCH, whose swing animation
 // fights manual melee. hands.cpp publishes this on every weapon switch.
+// s67 per-STATE animation policy: a bitmask over hands_state::State saying
+// which engine animations may reach the rig. Default FIRING|POSTFIRING - recoil
+// in, idle and reload out. Idle is refused because GetIdlingHandsAnim() draws a
+// weighted-random entry, so adopting it settles the gun somewhere different
+// every time (the "crosshair moves randomly between shots" report).
+void set_anim_state_mask(uint32_t mask);
+uint32_t anim_state_mask();
+
 void set_anim_allowed(bool on);
 bool anim_allowed();
 

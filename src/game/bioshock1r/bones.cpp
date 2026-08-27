@@ -23,6 +23,7 @@
 #include "core/vr/openxr_runtime.h" // cine_drive/name for the vrbones status residue line
 #include "game/bioshock1r/camera.h"
 #include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/hands_state.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -906,6 +907,26 @@ std::atomic<bool> g_freezeOnly{false};
 // only the WRENCH is gated off, because a swing animation fights manual melee.
 std::atomic<bool> g_animAllowed{true};
 
+// s67 PER-STATE ANIMATION POLICY. A bitmask over hands_state::State, so every
+// animation the rig can play is individually allowed or refused.
+//
+// This is what the movement threshold could never do. A reload and a recoil are
+// the same signal at different sizes, so a threshold either takes both or
+// neither - and taking the reload is what left the crosshair pointing somewhere
+// else until the next shot pulled it back. The engine knows which is which and
+// says so in Hands.uc's own state machine; we just ask.
+//
+// Default: FIRING and POSTFIRING adopt (recoil), everything else is refused.
+// Idling is refused on purpose and is the important one - GetIdlingHandsAnim()
+// picks a WEIGHTED RANDOM entry out of Holdable::IdlingHandsAnim[], so every
+// return to idle can settle somewhere different. Adopting that is the whole
+// "crosshair moves randomly between shots" report.
+constexpr uint32_t state_bit(hands_state::State st) {
+    return 1u << static_cast<int>(st);
+}
+std::atomic<uint32_t> g_animStateMask{state_bit(hands_state::State::Firing) |
+                                      state_bit(hands_state::State::PostFiring)};
+
 std::atomic<int> g_rFirst{-1}; // -1 = the authored kBoneRClusterFirst
 std::atomic<int> g_rLast{-1};
 
@@ -1454,6 +1475,11 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
     if (refValid) *refValid = g_refValid;
 }
 
+void set_anim_state_mask(uint32_t mask) {
+    g_animStateMask.store(mask, std::memory_order_relaxed);
+}
+uint32_t anim_state_mask() { return g_animStateMask.load(std::memory_order_relaxed); }
+
 void set_anim_allowed(bool on) {
     const bool was = g_animAllowed.exchange(on, std::memory_order_relaxed);
     if (was != on)
@@ -1788,6 +1814,9 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     }
 
     if (!handsActor || !locate(handsActor)) return false;
+    // One-shot derivation of the engine Hands state machine. Backs off on its
+    // own and never becomes a per-frame scan once located.
+    if (!hands_state::located()) hands_state::locate(handsActor);
 
     int first = 0, last = 0, anchor = 0;
     cluster_of(hand, &first, &last, &anchor);
@@ -1891,12 +1920,29 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             }
         }
 
+        // The state machine decides, when it can be read. The movement
+        // threshold below stays as the fallback for the window before the
+        // StateFrame offset is derived, and for anything the table cannot name.
+        const hands_state::State hs = hands_state::current(handsActor);
+        const bool stateKnown = hands_state::located() && hs != hands_state::State::Unknown;
+        const bool stateAllows =
+            (g_animStateMask.load(std::memory_order_relaxed) & state_bit(hs)) != 0;
+
         bool adopt = true;
         if (s_forceCapture) {
             // Track until the rig settles, then this weapon's own pose is in.
             adopt = (GetTickCount64() - g_lastBigDeltaMs) <
                     g_swaySettleMs.load(std::memory_order_relaxed);
             if (!adopt) s_forceCapture = false;
+        } else if (g_refValid && stateKnown) {
+            // Named state: obey the mask, and skip the threshold entirely.
+            adopt = g_animAllowed.load(std::memory_order_relaxed) && stateAllows;
+            static hands_state::State s_lastLogged = hands_state::State::Unknown;
+            if (hs != s_lastLogged) {
+                s_lastLogged = hs;
+                BVR_LOG("[bones] hands state -> %s : engine animation %s",
+                        hands_state::to_string(hs), adopt ? "ADOPTED" : "refused");
+            }
         } else if (g_refValid && !g_animAllowed.load(std::memory_order_relaxed)) {
             // This weapon does not take engine animation at all (the wrench).
             // Its reference is whatever it settled into and it stays there.
