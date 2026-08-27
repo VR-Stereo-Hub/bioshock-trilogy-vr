@@ -97,6 +97,7 @@ hands_state::State g_lastKnownState = hands_state::State::Unknown; // for the lo
 void* g_lastHoldable = nullptr;
 bool g_capArmed = false;
 uint64_t g_capArmedMs = 0;
+int g_capStillFrames = 0; // consecutive settled evaluations while armed
 hands_state::State g_capPrevState = hands_state::State::Unknown;
 // An equip that never reaches Idling must not adopt forever. Generous - the
 // slowest BS1 equip measured well under this - and it logs when it bites.
@@ -113,6 +114,7 @@ void rest_reset() {
     g_lastHoldable = nullptr;
     g_capArmed = false;
     g_capArmedMs = 0;
+    g_capStillFrames = 0;
     g_capPrevState = hands_state::State::Unknown;
 }
 
@@ -2104,15 +2106,64 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 // The engine says when the equip is over. Track until it does,
                 // so an animation longer than any timer still plays out in full.
                 if (hs == hands_state::State::Idling) {
+                    // ...but Idling is where the idle animation STARTS, not where
+                    // the pose arrives. Hands.uc plays it through
+                    // PlayAnimationOnChannelInstantEaseIn, so on the first Idling
+                    // frame the rig is still blending out of the equip pose.
+                    // Capturing there captures a partial blend.
+                    //
+                    // And the blend RATE differs per path - AbilityIdling eases at
+                    // 4, AbilityGenericIdling at 8 - so a fixed capture instant
+                    // lands correctly for one plasmid and wrong for another with
+                    // no setting between them. That is exactly the report: "the
+                    // other plasmid is still wrong", and "the positions were
+                    // perfect earlier" when the old 1200 ms timer happened to
+                    // outlast the blend.
+                    //
+                    // So: keep adopting and WAIT FOR THE POSE TO STOP MOVING,
+                    // measured on the same probe bones and the same thresholds
+                    // the idle-sway kill already uses. No new constant, and it
+                    // adapts to whatever rate the engine chose.
                     adopt = true;
-                    captureRest = true;
-                    g_capArmed = false;
+                    float maxPos = 0.0f, maxAng = 0.0f;
+                    static const int kSettleProbe[2] = {patterns::kBoneLWrist,
+                                                        patterns::kBoneWeaponAttach};
+                    for (int k = 0; k < 2; ++k) {
+                        const int b = kSettleProbe[k];
+                        if (b >= g_boneCount) continue;
+                        const float dp[3] = {fresh[b].p[0] - g_ref[b].p[0],
+                                             fresh[b].p[1] - g_ref[b].p[1],
+                                             fresh[b].p[2] - g_ref[b].p[2]};
+                        const float ang = quat_angle_deg(fresh[b].q, g_ref[b].q);
+                        const float pos =
+                            sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+                        if (pos > maxPos) maxPos = pos;
+                        if (ang > maxAng) maxAng = ang;
+                    }
+                    const bool still =
+                        g_refValid &&
+                        maxAng <= g_swayAngThreshDeg.load(std::memory_order_relaxed) &&
+                        maxPos <= g_swayPosThreshUu.load(std::memory_order_relaxed);
+                    // TWO consecutive still evaluations, so a momentary plateau
+                    // part-way through an ease does not read as arrival.
+                    if (still && ++g_capStillFrames >= 2) {
+                        captureRest = true;
+                        g_capArmed = false;
+                        g_capStillFrames = 0;
+                        BVR_LOG("[bones] equip settled (%.2f deg / %.2f UU of drift left) - "
+                                "capturing here, not on the Idling edge: the idle anim "
+                                "eases in, so the edge is mid-blend.",
+                                maxAng, maxPos);
+                    } else if (!still) {
+                        g_capStillFrames = 0;
+                    }
                 } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
                     // Idling never arrived. Stop rather than adopt forever, and
                     // SAY SO - a silent expiry here is exactly the failure mode
                     // the old fixed timer had.
                     adopt = false;
                     g_capArmed = false;
+                    g_capStillFrames = 0;
                     BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
                             "reference left as-is. If the pose looks wrong, this line is "
                             "why.",

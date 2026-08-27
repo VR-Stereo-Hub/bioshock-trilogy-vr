@@ -784,12 +784,13 @@ bool game_has_focus() {
 void tuner_log(const char* what) {
     char wk[48] = "-";
     aim::weapon_key_name(wk, sizeof wk);
+    const int th = active_hand(); // s68b: report the hand actually being tuned
     if (g_tuneMode == kTuneModePos)
         BVR_LOG("[hands] numpad: %s %s PLACEMENT fwd %+.1f right %+.1f up %+.1f cm "
                 "(step %.1f) - where the gun SITS; per weapon; cannot cause an orbit",
-                wk, what, g_viewFwdCm[1].load(std::memory_order_relaxed),
-                g_viewRightCm[1].load(std::memory_order_relaxed),
-                g_viewUpCm[1].load(std::memory_order_relaxed), g_tuneStep);
+                wk, what, g_viewFwdCm[th].load(std::memory_order_relaxed),
+                g_viewRightCm[th].load(std::memory_order_relaxed),
+                g_viewUpCm[th].load(std::memory_order_relaxed), g_tuneStep);
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
         aim::aim_trim_deg(1, &cp, &cy);
@@ -915,11 +916,16 @@ void poll_numpad_tuner() {
                                                                               : g_viewUpCm)
                     : (kBinds[i].axis == 0 ? g_rotPitchDeg : kBinds[i].axis == 1 ? g_rotYawDeg
                                                                                  : g_rotRollDeg);
-            // Every one of these is now a per-hand array, index 1 = right. The
-            // numpad tuner is the WEAPON hand's tuner by design (it is what the
-            // hand on the controller is holding while tuning); the left hand's
-            // equivalents are the F10 sliders, which follow the L/R radio.
-            const int di = 1;
+            // Every one of these is a per-hand array. s68b: tune the hand that is
+            // actually LIVE, not a hardcoded right.
+            //
+            // 9c3fe50 pinned this to 1 on the reasoning that the numpad is the
+            // weapon hand's tuner. Once active_hand() started reporting 0 for a
+            // plasmid, that made the numpad silently inert while one was equipped
+            // - reported as "none of the numpad modes change anything for the
+            // plasmids". The tester cannot type, so an in-headset tuner that does
+            // nothing for half the things you can hold is not a small loss.
+            const int di = active_hand();
             dst[di].store(dst[di].load(std::memory_order_relaxed) + d, std::memory_order_relaxed);
             moved = true;
         }

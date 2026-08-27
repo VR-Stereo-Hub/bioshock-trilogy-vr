@@ -2546,3 +2546,43 @@ seeded Plasmid row is correspondingly rebuilt from the tester's left-hand tuning
 **Migration note:** a `Plasmid.*` block written by the s68 build holds right-hand
 values under a key that now means the left hand. Those entries must be deleted,
 not carried - a stale one is not merely old, it is in the wrong frame.
+
+### 2026-08-27 (session 68c) - Idling is where the idle animation STARTS
+
+s68b replaced the equip-capture timer with the engine's own `Idling` edge, which
+was the right direction and still landed too early. `Hands.uc` starts the idle
+animation with `PlayAnimationOnChannelInstantEaseIn` - a BLEND - so on the first
+`Idling` frame the rig is still easing out of the equip pose. Capturing there
+captures a partial blend.
+
+**And the blend rate differs per path.** `AbilityIdling` eases at 4;
+`AbilityGenericIdling` eases at 8. A fixed capture instant therefore lands
+correctly for one plasmid and wrong for another with nothing configurable between
+them - which is precisely the report that made no sense for three rounds: *"the
+other plasmid is still wrong"*, with both sharing one global profile.
+
+The tester supplied the decisive clue by pointing back at their own earlier
+message: the positions were *perfect* on the build whose 1200 ms timer happened
+to outlast the blend, and wrong only the once it expired early. That is not an
+argument for the timer - it is the observation that **the correct capture moment
+is "after the pose stops moving", which the timer approximated and the state edge
+does not.**
+
+So the capture now waits for the pose to be STILL, measured on the same probe
+bones and the same thresholds the idle-sway kill already uses - two consecutive
+settled evaluations, bounded by the existing 4 s backstop. No new constant, and
+it adapts to whatever rate the engine picked.
+
+**The refinement of the rule this session keeps teaching.** "Read the state the
+engine publishes, don't infer it" got us here, and it was right - but a state
+edge answers *when the engine changed its mind*, not *when the consequences have
+finished arriving*. Those are different instants whenever a transition is
+animated. Read the state to know WHAT is happening; measure the geometry to know
+when it is DONE.
+
+**Regression fixed in the same pass.** 9c3fe50 pinned the numpad tuner to hand 1
+on the reasoning that it is the weapon hand's tuner. Once `active_hand()` began
+reporting 0 for a plasmid, that made the tuner silently inert while one was
+equipped - "none of the numpad modes change anything for the plasmids". It now
+follows `active_hand()`. The tester cannot type mid-session, so an in-headset
+tuner that does nothing for half of what you can hold is not a small loss.
