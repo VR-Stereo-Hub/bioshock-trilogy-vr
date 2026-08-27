@@ -98,15 +98,14 @@ void* g_lastHoldable = nullptr;
 void* g_lastAbility = nullptr; // read only to label the log line - see s68f
 bool g_capArmed = false;
 uint64_t g_capArmedMs = 0;
-Qts g_capLastFresh[kMaxBones]{}; // previous engine evaluation, for the settle test
-bool g_capLastFreshValid = false;
+uint64_t g_capIdlingAtMs = 0; // when Idling was first seen while armed (0 = not yet)
+// How long after the engine reports Idling to take the snapshot. The rig stays
+// FROZEN for this whole window, so none of the idle animation reaches it - only
+// its endpoint is sampled. 700 ms clears the longest ease measured (the plasmid
+// cluster, 2156 ms to true stillness but visually settled far sooner); weapons
+// settle inside 265 ms and do not mind waiting. `vrbones equipdelay <ms>`.
+std::atomic<unsigned> g_capEquipDelayMs{700};
 bool g_capBlendPending = false; // ease onto the snapshot instead of popping to it
-// Stillness has its own thresholds: the ADOPTION threshold (25 deg) answers
-// "is this a real animation", not "has the pose stopped" (s68e). Just above
-// the measured +-1.2 deg idle envelope, so still means only breathing is left.
-constexpr float kCapStillDeg = 1.5f;
-constexpr float kCapStillUu = 0.5f;
-constexpr uint64_t kCapMinTrackMs = 150; // never snapshot sooner than this
 hands_state::State g_capPrevState = hands_state::State::Unknown;
 // An equip that never reaches Idling must not adopt forever. Generous - the
 // slowest BS1 equip measured well under this - and it logs when it bites.
@@ -124,7 +123,7 @@ void rest_reset() {
     g_lastAbility = nullptr;
     g_capArmed = false;
     g_capArmedMs = 0;
-    g_capLastFreshValid = false;
+    g_capIdlingAtMs = 0;
     g_capBlendPending = false;
     g_capPrevState = hands_state::State::Unknown;
 }
@@ -2128,6 +2127,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             g_lastHoldable = liveHold;
             g_lastAbility = liveAbil;
             if (!g_capArmed) g_capArmedMs = GetTickCount64();
+            g_capIdlingAtMs = 0;
             g_capArmed = true;
             g_lastBigDeltaMs = GetTickCount64();
             // The rest pose is a property of WHAT YOU ARE HOLDING, so a new one
@@ -2192,62 +2192,45 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                     // arrives as a short settle rather than a pop - and the fidget
                     // is never followed, only its endpoint is taken.
                     adopt = false;
+                    // A FIXED DELAY, because stillness is not available here.
+                    //
+                    // Measured 03:17 with a correct probe: the WEAPON cluster
+                    // settles in 157-265 ms, but the PLASMID cluster takes 2156 ms
+                    // and lands at 1.24 deg against a 1.5 deg threshold - where the
+                    // idle envelope is +-1.2 deg (session 20). A plasmid rig never
+                    // actually goes still; the idle fidget keeps it moving, so the
+                    // test crosses its threshold essentially at random and the
+                    // capture instant is a coin flip. Probing PROPERLY therefore
+                    // made it worse than probing the wrong bone: "sometimes early"
+                    // became "any time at all".
+                    //
+                    // The build the tester called almost perfect used a fixed
+                    // 1200 ms timer, whose only failure was firing before the equip
+                    // had finished. Anchoring the same idea to the Idling EDGE
+                    // removes that failure - the equip is over by definition once
+                    // the engine reports Idling - and leaves a deterministic,
+                    // race-free instant that is identical for every plasmid.
                     const uint64_t nowCap = GetTickCount64();
-                    // Settle is measured between CONSECUTIVE ENGINE EVALUATIONS,
-                    // not against g_ref - g_ref is frozen now, so it would never
-                    // converge. Uses a stillness threshold of its own; the
-                    // adoption threshold answers a different question (s68e).
-                    // PROBE THE DRIVEN CLUSTER, not the weapon-attach bone.
-                    //
-                    // s68h probed kBoneWeaponAttach alone. A PLASMID has no weapon
-                    // attached, so that bone barely moves during a plasmid's equip:
-                    // the test asked "has the pose stopped moving?" of a bone that
-                    // never started, answered yes on the first comparison, and
-                    // snapshotted mid-blend. The log is unambiguous - EVERY capture
-                    // in the 03:12 run fired at 250-266 ms, which is simply the
-                    // second engine evaluation (the engine evaluates ~6 times a
-                    // second), whatever was actually happening in the rig.
-                    //
-                    // It survived on weapons because bone 43 really does move with
-                    // a gun attached, and on Electrobolt because its ease finishes
-                    // inside 250 ms. Telekinesis eases for longer, so 250 ms is
-                    // still mid-blend for it - and because every plasmid shares one
-                    // reference, its bad capture then set Electrobolt's position
-                    // too, exactly as reported.
-                    //
-                    // The whole driven cluster is the honest probe: it is the thing
-                    // being captured, so if any of it is still moving the capture is
-                    // early, whatever is or is not in the hand.
-                    float maxAng = 0.0f, maxPos = 0.0f;
-                    for (int b = first; b <= last && b < g_boneCount; ++b) {
-                        const float dp[3] = {fresh[b].p[0] - g_capLastFresh[b].p[0],
-                                             fresh[b].p[1] - g_capLastFresh[b].p[1],
-                                             fresh[b].p[2] - g_capLastFresh[b].p[2]};
-                        const float ang = quat_angle_deg(fresh[b].q, g_capLastFresh[b].q);
-                        const float pos =
-                            sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
-                        if (ang > maxAng) maxAng = ang;
-                        if (pos > maxPos) maxPos = pos;
+                    if (!g_capIdlingAtMs) {
+                        g_capIdlingAtMs = nowCap;
+                        BVR_LOG("[bones] equip done (engine reports Idling) - rig FROZEN "
+                                "here so no idle animation is followed into it; snapshot "
+                                "in %u ms.",
+                                g_capEquipDelayMs.load(std::memory_order_relaxed));
                     }
-                    const bool settled =
-                        g_capLastFreshValid && maxAng <= kCapStillDeg && maxPos <= kCapStillUu;
-                    memcpy(g_capLastFresh, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
-                    g_capLastFreshValid = true;
-
-                    if (settled && nowCap - g_capArmedMs >= kCapMinTrackMs) {
-                        // ONE-SHOT. Not adoption: this is the only frame the
-                        // engine's pose is taken, and the blend below carries the
-                        // rig onto it.
+                    if (nowCap - g_capIdlingAtMs >=
+                        g_capEquipDelayMs.load(std::memory_order_relaxed)) {
                         memcpy(g_restoreFrom, g_ref,
                                sizeof(Qts) * static_cast<size_t>(g_boneCount));
-                        adopt = true;      // let the capture below write g_ref
+                        adopt = true;      // ONE frame - the snapshot, not adoption
                         captureRest = true;
                         g_capArmed = false;
-                        g_capLastFreshValid = false;
+                        g_capIdlingAtMs = 0;
                         g_capBlendPending = true;
-                        BVR_LOG("[bones] equip settled %llu ms after the switch: cluster %d-%d moved %.2f deg / %.2f UU between the last two engine evaluations (still under %.1f / %.1f) - taking ONE snapshot. The rig was frozen throughout, so no idle animation was followed into it.",
-                                static_cast<unsigned long long>(nowCap - g_capArmedMs),
-                                first, last, maxAng, maxPos, kCapStillDeg, kCapStillUu);
+                        BVR_LOG("[bones] snapshot taken %u ms after Idling (%llu ms after the "
+                                "switch) - one frame, not adoption.",
+                                g_capEquipDelayMs.load(std::memory_order_relaxed),
+                                static_cast<unsigned long long>(nowCap - g_capArmedMs));
                     }
                 } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
                     // Idling never arrived. Stop rather than adopt forever, and
@@ -2255,7 +2238,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                     // the old fixed timer had.
                     adopt = false;
                     g_capArmed = false;
-                    g_capLastFreshValid = false;
+                    g_capIdlingAtMs = 0;
                     BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
                             "reference left as-is. If the pose looks wrong, this line is "
                             "why.",
@@ -3156,6 +3139,18 @@ void handle_command(const char* args) {
                 g_swayAngThreshDeg.load(std::memory_order_relaxed),
                 g_swayPosThreshUu.load(std::memory_order_relaxed),
                 g_swaySettleMs.load(std::memory_order_relaxed));
+    } else if (strcmp(verb, "equipdelay") == 0) {
+        unsigned ms = 0;
+        if (sscanf_s(rest, "%u", &ms) == 1) {
+            if (ms > 3000) ms = 3000;
+            g_capEquipDelayMs.store(ms, std::memory_order_relaxed);
+        }
+        BVR_LOG("[bones] equip snapshot delay = %u ms after the engine reports Idling. "
+                "The rig is frozen for that window, so raising it costs nothing visually - "
+                "it only delays when this holdable's reference pose is sampled. RAISE it if "
+                "a weapon or plasmid settles into the wrong place; LOWER it if the pose "
+                "visibly corrects itself a moment after you equip.",
+                g_capEquipDelayMs.load(std::memory_order_relaxed));
     } else if (strcmp(verb, "rest") == 0) {
         // "rest on|off | rest ms <n> | rest drop | rest" (status)
         if (strncmp(rest, "on", 2) == 0) {
@@ -3433,6 +3428,19 @@ void draw_debug_ui() {
                 "reload.\n\n"
                 "On: ease back to the canonical pose captured during Idling.\n"
                 "Off: the s67 behaviour, for comparison.");
+        int ed = static_cast<int>(g_capEquipDelayMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("equip snapshot delay (ms after Idling)", &ed, 0, 2000))
+            g_capEquipDelayMs.store(static_cast<unsigned>(ed < 0 ? 0 : ed),
+                                    std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "When a weapon or plasmid is equipped, the rig FREEZES at the equip\n"
+                "pose and its reference is sampled this long afterwards.\n\n"
+                "The freeze is why no idle animation plays on equip. The delay is\n"
+                "how long the engine gets to finish easing into its idle pose\n"
+                "before we sample it.\n\n"
+                "Wrong position after equipping -> RAISE it.\n"
+                "Pose visibly corrects itself a moment after equipping -> LOWER it.");
         int rb = static_cast<int>(g_restBlendMs.load(std::memory_order_relaxed));
         if (ImGui::SliderInt("return blend (ms, 0 = snap)", &rb, 0, 500))
             set_rest_blend_ms(static_cast<unsigned>(rb < 0 ? 0 : rb));

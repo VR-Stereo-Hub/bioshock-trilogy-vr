@@ -2817,3 +2817,40 @@ is what made nine identical timings look like data instead of a flat line.
 **And the flat line was the tell.** Nine captures at 250-266 ms is not a
 distribution, and the spread of real equip animations is not 16 ms. Check whether
 a measurement VARIES before believing what it says.
+
+### 2026-08-27 (session 68j) - a plasmid rig never goes still, so stop asking
+
+Fixing the settle probe (68i) made things worse, not better, and the measurement
+it enabled is why:
+
+| driven cluster | time to "settle" | delta at capture |
+|---|---|---|
+| 27-44 (weapon) | 157 ms, 265 ms | 0.31-0.96 deg |
+| **6-21 (plasmid)** | **2156 ms** | **1.24 deg** |
+
+The plasmid cluster takes 2.2 s and lands at 1.24 deg against a 1.5 deg
+threshold - where the measured idle envelope is +-1.2 deg. **A plasmid rig never
+actually goes still**: the idle fidget keeps it moving, so the test crosses its
+threshold essentially at random. Probing CORRECTLY turned "sometimes early" into
+"any time at all", which is exactly the regression reported.
+
+So the answer is not a better threshold, it is a different question. The build the
+tester called almost perfect used a fixed 1200 ms timer whose only failure was
+firing before the equip had finished. Anchoring the same idea to the **Idling
+edge** removes that failure - the equip is over by definition once the engine says
+Idling - and leaves a deterministic instant identical for every holdable.
+
+Freeze at the edge (so no idle animation is followed into the rig), wait a fixed
+delay, take one snapshot, ease onto it. Default 700 ms, exposed on F10 and
+`vrbones equipdelay` because the right value is perceptual and the tester is the
+only one who can see it.
+
+**The rule: not every quantity a system exposes is measurable in it.** Four rounds
+were spent building a detector for "the pose has settled" in a rig that is
+animated continuously by design. The detector was refined three times and finally
+made correct - and correctness revealed there was nothing to detect. **Before
+building a measurement, check that the thing being measured actually occurs.**
+
+**And a regression is information.** Making the probe right made the symptom worse,
+which is only possible if the probe had been suppressing the real variance. That
+inversion located the answer faster than any of the fixes that preceded it.
