@@ -955,12 +955,13 @@ std::string narrow_key(const wchar_t* w) {
     return s;
 }
 
-// s68b: which HAND does a profile own? Weapons are the right hand; the plasmid is
-// the left, because that is where BioShock puts it. This used to be hardcoded to 1
-// everywhere, so the "Plasmid" profile wrote the RIGHT hand's trims and offsets -
-// values the plasmid never reads. Tuning its crosshair moved the weapon's ray, and
-// the bolt kept leaving on the untouched left one.
-int profile_hand(const std::string& key) { return key == "Plasmid" ? 0 : 1; }
+// s68d: every profile is a RIGHT-hand record again, which is what the build the
+// tester called good did. s68b routed the "Plasmid" key to hand 0 because a plasmid
+// is held in the left hand and fires off the left ray - true, and it still did not
+// fix the second-plasmid defect, so it was churn plus a change in which offsets a
+// plasmid reads. Kept as one function rather than a scatter of literal 1s, so if
+// the hand question comes back it changes in one place.
+int profile_hand(const std::string&) { return 1; }
 
 // Capture the live values of the active profile's OWN hand (no-op keyless).
 void stash_active_profile() {
@@ -1272,17 +1273,16 @@ void seed_default_profiles() {
         .viewFwd = -4.00f, .viewRight = -2.00f, .viewUp = 15.00f,
         .animOn = 0.00f,
         .modelPitch = -12.00f, .modelYaw = -16.00f, .modelRoll = -18.00f};
-    // s68b: a LEFT-hand profile (profile_hand()), because that is the hand the
-    // plasmid is in and the hand its shot leaves from. Values are the tester's own
-    // left-hand tuning: trims and aim origin from vrpreset.ini (aimTrimL*/aimPosL*),
-    // grip/placement/model trim from hands.ini (*L). ONE key for every plasmid.
+    // ONE key for every plasmid - the tester's call, "global, not per plasmid".
+    // These are the values from the build the tester confirmed good; s68b's
+    // left-hand variant is reverted along with profile_hand().
     g_weaponProfiles["Plasmid"] = {
-        .trimPitch = -11.00f, .trimYaw = 37.00f,
-        .posFwd = -2.80f, .posRight = 0.60f, .posUp = 0.50f,
-        .gripFwd = 45.50f, .gripRight = -14.90f, .gripUp = -12.30f,
-        .viewFwd = -2.00f, .viewRight = 2.00f, .viewUp = 11.00f,
+        .trimPitch = -1.20f, .trimYaw = -4.20f,
+        .posFwd = -0.70f, .posRight = -2.10f, .posUp = 18.70f,
+        .gripFwd = 44.00f, .gripRight = 16.70f, .gripUp = -15.40f,
+        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 11.00f,
         .animOn = 1.00f,
-        .modelPitch = -111.00f, .modelYaw = -16.00f, .modelRoll = 22.00f};
+        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
 }
 
 void weapons_ini_path(wchar_t* out, size_t count) {

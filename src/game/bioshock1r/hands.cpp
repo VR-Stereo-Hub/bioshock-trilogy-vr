@@ -22,7 +22,6 @@
 //   +0x450, adjacent to Owner at +0x454, the classic UE2 pair.
 
 #include "game/bioshock1r/hands.h"
-#include "game/bioshock1r/hands_state.h"
 
 #include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
@@ -581,28 +580,14 @@ int active_hand() {
     int mode = g_handMode.load(std::memory_order_relaxed);
     if (mode == 0 || mode == 1) return mode;
 
-    // s68b: WHAT YOU ARE HOLDING beats what you last pressed. In BioShock the
-    // plasmid is in the LEFT hand, and the engine says so - Hands.uc parks the
-    // rig in an Ability* state while one is equipped.
+    // s68d: BACK to pure trigger/bumper inference, on the tester's call. s68b made
+    // this follow Hands.CurrentAbility so a plasmid forced the left hand. That was
+    // reasoned from the engine and it did NOT fix the second-plasmid defect, so it
+    // was cost without benefit - and it moved plasmids onto a different set of
+    // offsets than the build the tester had already called good.
     //
-    // Inferring the hand from the last trigger/bumper was wrong in a way that
-    // produced two separate-looking reports. Both the crosshair and the
-    // viewmodel follow this function, but a plasmid SHOT is routed by pointer
-    // identity to Hand::Left regardless. So switching to a plasmid without
-    // firing it left auto-hand on the RIGHT: the plasmid was drawn with the
-    // weapon's offsets ("still had the wrong position"), and the dot was drawn
-    // off g_ray[1] while the bolt left g_ray[0] ("shoots slightly up and to the
-    // right of the crosshair"). Firing it once fixed both, which is exactly what
-    // a trigger-inferred hand would do.
-    //
-    // An explicit hand mode above still wins - this only replaces the guess.
-    //
-    // s68c: prefer the POINTER. CurrentAbility is a live field read, where
-    // last_ability() is a cached state lookup that goes stale after 500 ms and
-    // reports false whenever the drive is not running. The state is the fallback.
-    void* abil = nullptr;
-    if (current_ability(&abil)) return abil ? 0 : 1;
-    if (hands_state::last_ability()) return 0;
+    // hands::current_ability() is still there and is still the honest signal if
+    // the hand ever does need to follow what is equipped. It just is not the bug.
 
     bool lb = false, rb = false;
     bvr::input::last_composed_bumpers(&lb, &rb);
