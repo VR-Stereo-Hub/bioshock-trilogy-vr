@@ -2110,9 +2110,31 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     {
         void* liveHold = nullptr;
         if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
+        // s68f: THE ABILITY IS DELIBERATELY NOT PART OF THIS. It is read only to
+        // label the log line.
+        //
+        // 422f735 added it to the identity so that one plasmid replacing another
+        // would force a fresh reference capture. That reasoning was sound and the
+        // result was a regression, because the behaviour it replaced was the one
+        // the tester had already called almost perfect: CurrentHoldable is NULL
+        // for every plasmid, so plasmid-to-plasmid was null -> null, no change,
+        // NO recapture - and both plasmids therefore shared one reference pose
+        // and sat in the same place. Their words afterwards: "it was almost
+        // perfect earlier position wise switching between the two, but it was
+        // just breaking when switching to weapons."
+        //
+        // Both halves of that sentence are this rule. Switching between plasmids
+        // was clean BECAUSE nothing recaptured. The weapon transition broke
+        // because it is the only edge where a capture fires, so it is the only
+        // place the capture's own quality can hurt - which is the settle
+        // threshold's job (s68e), not identity's.
+        //
+        // And sharing one pose across every plasmid IS "global, not per plasmid",
+        // which is what was asked for. A per-plasmid capture is a per-plasmid
+        // position by construction.
         void* liveAbil = nullptr;
         if (!hands::current_ability(&liveAbil)) liveAbil = nullptr;
-        const bool changed = liveHold != g_lastHoldable || liveAbil != g_lastAbility;
+        const bool changed = liveHold != g_lastHoldable;
         if (changed) {
             void* const prevHold = g_lastHoldable;
             void* const prevAbil = g_lastAbility;

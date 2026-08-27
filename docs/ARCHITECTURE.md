@@ -2660,3 +2660,48 @@ to but not fired could be undriven. The census refuted it: 29 samples of
 continuously across its own switch. The hypothesis was wrong and the measurement
 cost one integer on a line that was already printing - which is the correct ratio,
 and the opposite of the four speculative fixes that preceded it.
+
+### 2026-08-27 (session 68f) - why "reverting it" did not restore it
+
+The tester asked the question that broke the deadlock: *why didn't reverting the
+commit put it back?* Because the revert (5ecbd49) undid the HAND changes only.
+The CAPTURE path had been rewritten four times underneath and none of it was
+reverted, so "back to the good build" was never true.
+
+**The good build was e8d938d, and its capture identity was `CurrentHoldable`
+alone.** `CurrentHoldable` is NULL for every plasmid, so that identity had a
+property nobody designed and nobody noticed:
+
+| transition | holdable | capture? |
+|---|---|---|
+| weapon -> plasmid | actor -> null | YES |
+| **plasmid A -> plasmid B** | **null -> null** | **NO** |
+| plasmid -> weapon | null -> actor | YES |
+
+Plasmid-to-plasmid never recaptured, so every plasmid shared ONE reference pose
+and they all sat in the same place. That is exactly the report: *"it was almost
+perfect earlier position wise switching between the two, but it was just breaking
+when switching to weapons."* Both halves of that sentence are this table.
+Switching between plasmids was clean BECAUSE nothing recaptured; the weapon
+transition broke because it is the only edge where a capture fires, and therefore
+the only place the capture's own quality can hurt.
+
+422f735 then added `CurrentAbility` to the identity so one plasmid replacing
+another would force a fresh capture. The reasoning was sound in isolation and it
+destroyed the working half - it converted a shared pose into a per-plasmid pose,
+which is a per-plasmid POSITION by construction, and the opposite of the "global,
+not per plasmid" the tester had asked for two rounds earlier.
+
+**Two rules out of this.**
+
+**A revert must be defined against a BUILD, not a commit.** "Revert the hand
+stuff" undid one axis while three others stayed rewritten, and the result was
+then read as evidence about the hand. Before reverting to restore a known-good
+behaviour, diff every axis that build differed on and say which ones are staying
+changed and why.
+
+**An accidental property can be the load-bearing one.** Nothing intended plasmids
+to share a reference pose; it fell out of watching a field that happens to be
+null for all of them. It was still the behaviour that worked, and "fixing" the
+accident regressed the feature. When a change makes a previously-good behaviour
+worse, suspect that the change removed an accident the behaviour depended on.
