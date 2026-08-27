@@ -2012,6 +2012,45 @@ s68 uses both facts: capture ONE canonical rest during `WeaponIdling` per holdab
 and ease back to it when an adopted state exits. Design rationale in
 `ARCHITECTURE.md`, decision log 2026-08-27.
 
+**Session 68c - `Idling` is where the idle animation STARTS.** Both `WeaponIdling`
+(:1147) and `AbilityIdling` (:1556) begin the idle through an EASE-IN
+(`PlayAnimationOnChannelFlatEaseIn` / `...InstantEaseIn`), so on the first `Idling`
+frame the rig is still blending out of the equip pose. Anything captured there is
+a partial blend. The ease RATE differs per path - `AbilityIdling` at 4,
+`AbilityGenericIdling` at 8 - so a fixed capture instant lands correctly for one
+plasmid and wrong for another with nothing configurable between them. Capture when
+the pose STOPS MOVING, not on the state edge.
+
+### Hands.CurrentAbility is where plasmids live - `+0x454`
+
+`Hands.uc` declares them in separate slots:
+
+```
+var private travel ShockPawn PawnOwner;       // +0x450  kHandsBaseOffset
+var private transient Ability CurrentAbility; // +0x454  kHandsCurrentAbilityOffset
+var private transient Ability OldAbility;     // +0x458
+var private Holdable CurrentHoldable;         // +0x45C  kHandsCurrentHoldableOffset
+```
+
+**`CurrentHoldable` is NULL while a plasmid is equipped** - the plasmid is in
+`CurrentAbility`. Confirmed in the log: every plasmid switch prints bones'
+`wscale rigid: released (holdable gone)`, whose test is literally `!hold`.
+
+Consequences for anything keying off "what is in your hands":
+
+- A plasmid looks like EMPTY HANDS to `CurrentHoldable` alone. That is what left
+  the last weapon's whole profile applied - trims, placement, and the animation
+  gate - while a plasmid was up.
+- Every plasmid looks like EVERY OTHER plasmid, because they are all null there.
+  Switching plasmid A for plasmid B is invisible, so B inherits A's captured
+  reference pose and renders at A's position with no setting able to touch it.
+- **Identity is the PAIR** `(CurrentHoldable, CurrentAbility)`. Watch both.
+
+The offset was already derived and documented here (bracketed by `kHandsBaseOffset`
+and `kHandsCurrentHoldableOffset`, four consecutive pointer fields with ours at
+each end) and used only by `hands::armed()` for a cosmetic crosshair gate. The
+viewmodel drive had never read it.
+
 ### Falsified this session, with the measurement that killed each
 
 | Theory | Killed by |

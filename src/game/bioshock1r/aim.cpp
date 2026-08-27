@@ -1147,8 +1147,16 @@ void update_weapon_profile(const FrameContext& ctx) {
     std::string key;
     const char* why = "weapon change";
     if (haveRig && !w) {
-        key = "Plasmid";
-        why = "plasmid equipped (CurrentHoldable null)";
+        // s68c: CONFIRM it with Hands.CurrentAbility rather than inferring a
+        // plasmid from an empty holdable slot - empty hands are also null there.
+        void* abil = nullptr;
+        const bool haveAbil = hands::current_ability(&abil) && abil != nullptr;
+        if (haveAbil) {
+            key = "Plasmid"; // ONE key for every plasmid - the tester's call
+            why = "plasmid equipped (Hands.CurrentAbility)";
+        } else {
+            why = "hands empty (no holdable, no ability)";
+        }
     } else {
         const wchar_t* name = w ? patterns::object_class_name(w) : nullptr;
         if (w && !name)

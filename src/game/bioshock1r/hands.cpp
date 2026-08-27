@@ -596,6 +596,12 @@ int active_hand() {
     // a trigger-inferred hand would do.
     //
     // An explicit hand mode above still wins - this only replaces the guess.
+    //
+    // s68c: prefer the POINTER. CurrentAbility is a live field read, where
+    // last_ability() is a cached state lookup that goes stale after 500 ms and
+    // reports false whenever the drive is not running. The state is the fallback.
+    void* abil = nullptr;
+    if (current_ability(&abil)) return abil ? 0 : 1;
     if (hands_state::last_ability()) return 0;
 
     bool lb = false, rb = false;
@@ -669,6 +675,31 @@ bool armed() {
     const bool okA = read_ptr(h + patterns::kHandsCurrentAbilityOffset, &abil);
     if (!okH && !okA) return true; // neither slot readable - say nothing
     return (okH && hold != nullptr) || (okA && abil != nullptr);
+}
+
+bool current_ability(void** out) {
+    // s68c: the equipped PLASMID. Hands.uc keeps abilities in their OWN slot
+    // (`var private transient Ability CurrentAbility`, two above CurrentHoldable),
+    // which is why CurrentHoldable reads NULL with a plasmid up - the thing IS
+    // equipped, just not in the field we were watching.
+    //
+    // This is the per-plasmid IDENTITY the drive never had. Switching one plasmid
+    // for another leaves CurrentHoldable null both sides, so the holdable test
+    // cannot see it, and the Equipping state EDGE that stood in for it is
+    // transient - it only registers if the engine happens to re-evaluate the bone
+    // array on those frames. A pointer compare cannot be missed that way: the
+    // value is still different on the next evaluation, whenever that comes.
+    //
+    // Same contract as current_holdable(): false when the rig itself is
+    // unreadable; *out may be null, which means "no plasmid equipped".
+    if (!has_vtable(g_handsActor, patterns::kHandsVtableRva)) return false;
+    void* abil = nullptr;
+    if (!read_ptr(static_cast<const uint8_t*>(g_handsActor) +
+                      patterns::kHandsCurrentAbilityOffset,
+                  &abil))
+        return false;
+    *out = abil;
+    return true;
 }
 
 bool current_holdable(void** out) {

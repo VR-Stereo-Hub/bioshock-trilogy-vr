@@ -95,6 +95,7 @@ hands_state::State g_lastKnownState = hands_state::State::Unknown; // for the lo
 // Idling, and there is no timer to outlast. The Equipping EDGE also arms the
 // capture, which is the only signal that can see one plasmid replace another.
 void* g_lastHoldable = nullptr;
+void* g_lastAbility = nullptr; // s68c: the plasmid half of the identity pair
 bool g_capArmed = false;
 uint64_t g_capArmedMs = 0;
 int g_capStillFrames = 0; // consecutive settled evaluations while armed
@@ -112,6 +113,7 @@ void rest_reset() {
     g_wasAdopting = false;
     g_lastKnownState = hands_state::State::Unknown;
     g_lastHoldable = nullptr;
+    g_lastAbility = nullptr;
     g_capArmed = false;
     g_capArmedMs = 0;
     g_capStillFrames = 0;
@@ -2048,6 +2050,48 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         (g_animStateMask.load(std::memory_order_relaxed) & state_bit(hs)) != 0;
     bool adoptedThisFrame = false;
 
+    // ---- s68c WHAT ARE YOU HOLDING, and did it change? ----------------------
+    // EVERY FRAME, deliberately outside the recapture block below. s68b had this
+    // inside it, so the arming signals were only sampled when the engine happened
+    // to re-evaluate the bone array - and the Equipping EDGE is transient, so it
+    // was simply missed most of the time. Measured in the 02:10 run: 8 equip edges
+    // seen against 42 holdable changes.
+    //
+    // IDENTITY IS A PAIR. Hands.uc keeps weapons in CurrentHoldable and plasmids
+    // in CurrentAbility (`var private transient Ability CurrentAbility`), so a
+    // plasmid leaves the holdable slot NULL. Watching only the holdable made every
+    // plasmid look identical to every other plasmid - which is why the second one
+    // kept the first one's reference pose, at the first one's position, and no
+    // offset could touch it. A pointer compare also cannot be missed the way an
+    // edge can: if the value differs it still differs on the next evaluation.
+    {
+        void* liveHold = nullptr;
+        if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
+        void* liveAbil = nullptr;
+        if (!hands::current_ability(&liveAbil)) liveAbil = nullptr;
+        const bool changed = liveHold != g_lastHoldable || liveAbil != g_lastAbility;
+        if (changed) {
+            void* const prevHold = g_lastHoldable;
+            void* const prevAbil = g_lastAbility;
+            g_lastHoldable = liveHold;
+            g_lastAbility = liveAbil;
+            if (!g_capArmed) g_capArmedMs = GetTickCount64();
+            g_capArmed = true;
+            g_capStillFrames = 0;
+            g_lastBigDeltaMs = GetTickCount64();
+            // The rest pose is a property of WHAT YOU ARE HOLDING, so a new one
+            // invalidates it - otherwise the incoming holdable is restored to the
+            // outgoing one's rest, the s67 wrench-posed-as-a-pistol defect.
+            g_restValid = false;
+            g_restoreStartMs = 0;
+            BVR_LOG("[bones] holding changed (holdable %p -> %p, ability %p -> %p%s) - "
+                    "tracking until the pose settles, then capturing this one's "
+                    "reference and canonical rest",
+                    prevHold, liveHold, prevAbil, liveAbil, liveAbil ? ", PLASMID" : "");
+        }
+        if (stateKnown) g_capPrevState = hs;
+    }
+
     if (engineEvaluated || !g_refValid) {
         // Session 20 sway kill: the idle breathing is the authored idle
         // ANIMATION (channel 0/1 - no script parameter to zero, measured),
@@ -2065,36 +2109,6 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // wrench was posed as a pistol - reported as "super off with a massive
         // pivot". The gate is about whether to follow animation, not about
         // whether this weapon gets its own pose at all.
-        {
-            // TWO arming signals, because neither sees everything. The holdable
-            // pointer catches every weapon change but is NULL for every plasmid,
-            // so it is blind to one plasmid replacing another. The Equipping EDGE
-            // catches that - the engine plays an equip animation either way - and
-            // it is also the honest start of the window we want to track.
-            void* liveHold = nullptr;
-            if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
-            const bool holdChanged = liveHold != g_lastHoldable;
-            const bool equipEdge =
-                stateKnown && hs == hands_state::State::Equipping &&
-                g_capPrevState != hands_state::State::Equipping;
-            if (holdChanged || equipEdge) {
-                g_lastHoldable = liveHold;
-                if (!g_capArmed) g_capArmedMs = GetTickCount64();
-                g_capArmed = true;
-                g_lastBigDeltaMs = GetTickCount64();
-                // The rest pose is a property of WHAT YOU ARE HOLDING, so a new
-                // one invalidates it. Without this the incoming weapon would be
-                // restored to the outgoing one's rest - the s67 wrench-posed-as-
-                // a-pistol defect.
-                g_restValid = false;
-                g_restoreStartMs = 0;
-                BVR_LOG("[bones] %s - tracking until the engine reports Idling, then "
-                        "capturing this holdable's reference and canonical rest",
-                        holdChanged ? "holdable changed" : "equip animation started");
-            }
-            if (stateKnown) g_capPrevState = hs;
-        }
-
         // The state machine decides, when it can be read (hs/stateKnown/stateAllows
         // are read once per frame above). The movement threshold below stays as
         // the fallback for the window before the StateFrame offset is derived,
