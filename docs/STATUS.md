@@ -2,6 +2,85 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-26/27 - s67: the viewmodel desync is SOLVED, and it was the drive architecture
+
+**Same branch `fix/bs1-bathysphere-cine-quad`.** Two commits: `f39187f` (the
+architecture fix) and `3a0a4a8` (the Hands state machine, NOT verified).
+
+### Current state
+
+**The rotational desync is fixed and headset-confirmed.** The gun tracked the
+controller but swung on an oval as the wrist rolled - zero at 0 deg, worst at
+180. Tester's verdict after the architecture change: *"it looked like it was
+actually rotating in place correctly"*, then *"YES! Finally"*, then *"Almost
+perfect"*. Every offset, pose and trim theory before that was inside the wrong
+architecture, which is why they all measured clean and none of them mattered.
+
+**The cause.** BRVR moves the ACTOR and leaves the skeleton alone - cluster
+replayed verbatim, bone 43 position-only, actor carries the assembly - so the
+rig's internal pose is always as authored. This tree did the inverse. Named by
+BRVR's own log (`WEAPONHAND: freezing the RIGHT cluster`, `B43: ... this bone is
+still the engine's`), not by reasoning. Full write-up, with the algebra and the
+five falsified theories, in `docs/bioshock1/ENGINE_NOTES.md` "Session 67".
+
+| Landed | Evidence |
+|---|---|
+| `vrhands mode brvr` (mode 3), now the default | headset: the oval is gone |
+| Pivot and placement split onto separate knobs | a 15 cm height fix on the grip offset bought an 8 in orbit (+4 in at 0 deg, -12 at 180); the view-frame knob cannot create a lever |
+| Per-weapon placement, crosshair and `animOn` | tester tuned all eight; values baked into `seed_default_profiles()` |
+| Sleeve collapses to the frozen wrist | fixed the spike of skin out of the palm (screenshot) |
+| Cluster + weapon scale run in freeze mode | first cut bypassed both and the rig came back full size |
+| Weapon change forces a fresh reference capture | without it the wrench spent a session posed as a pistol |
+| Adopt threshold 12 -> 25 deg | BRVR measures real animations at 130-170 deg at the wrist, idle at 1.8-4.6 |
+
+**Instruments, all read-only and ALWAYS ON** (the tester cannot type with both
+hands on the controllers): `ROLLCHECK` (does the bone write survive the tick -
+it does, 0.13 deg), `FOVPROBE` (is the fg lens match reaching the renderer - it
+is, 117.46), `ANIMREJECT` (largest movement the threshold turned down, BRVR's
+method for choosing it from data). Strip or gate before release.
+
+### Next steps
+
+**Fix the recoil apex freeze** - it is the one thing blocking the animation
+system. Ceasing to adopt at a state boundary leaves the reference wherever it
+was, so the pistol sticks at the top of its recoil until a weapon switch (same
+shape: pistol stuck on ammo-out, shotgun stuck on its first reload). The fix is
+to capture a canonical REST reference during `Idling` and RESTORE it on leaving
+an adopted state, rather than merely ceasing to adopt.
+
+Then the equip cycle: state gating stops us FOLLOWING an animation, not the
+engine PLAYING one. `Holdable`'s `EquippingHandsAnim` / `IdlingHandsAnim[]` /
+`AdditiveHandBobAnim` are `config travel` and settable BY NAME through the Exec
+seam that already runs `set` - no offsets, so it survives Epic and GOG.
+
+Lower value, still open: PR #54 unmerged; the equip idle cycle; per-weapon
+crosshairs are tuned but reload still desyncs the crosshair until the next shot.
+
+### Session log 2026-08-26/27
+
+**Headset-verified by the tester:** the oval is gone; per-weapon placement,
+crosshair and pivot values; the wrench with `animOn=0` (manual swinging, no
+swing animation); scale correct; the vertex spike fixed.
+
+**Built but NOT verified:** the Hands state machine (`3a0a4a8`). The run that
+exercised it found four defects - the recoil apex freeze, the ammo-out freeze,
+the shotgun's first reload, and the equip cycle surviving. The state READ works;
+the policy on top of it does not.
+
+**The simulator cannot see any of this.** Its aim pose is synthesised as
+`grip + aimtrim`, so the whole class of defect is absent there by construction.
+Do not read a green flat run as a pass.
+
+**Two instruments turned out to be blind, and both cost a hypothesis:**
+`[hud] fov watch` reporting `1 lens(es)` / `FG tanH=0.000000` is not evidence
+the foreground pass is missing; and the s65 "bit-identical target at four wrist
+poses" bisection ran through `vrhands simpose`, which hard-codes the position
+and never calls `get_hand_pose` at all.
+
+**Odd and not chased:** `presents=0/s` appeared in one reentry line mid-session.
+The command file is polled from Present, so while that holds, `command.txt`
+cannot be delivered at all.
+
 ## Session 2026-08-25 - s66: the render-lock question was mis-stated, and the instrument to state it properly
 
 **Same branch `fix/bs1-bathysphere-cine-quad`, PR #54 still open against

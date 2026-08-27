@@ -1910,6 +1910,108 @@ baked as CODE DEFAULTS (their explicit ask); their four live profiles
 rescued to weapons.ini via wsave before anything could drop them (the run
 had not pressed save).
 
+## Session 67 - the viewmodel drive ARCHITECTURE, and the Hands state machine
+
+### The desync was never an offset
+
+The BS1 viewmodel tracked the controller but swung on an oval as the wrist
+rolled: zero error at 0 deg, worst at 180, closed again at 360. Two sessions of
+offset, pose and trim tuning never touched it, and every stage measured clean -
+because the fault was structural.
+
+**The two mods drive the rig in opposite directions.** BRVR moves the ACTOR and
+leaves the skeleton alone: the hand cluster is replayed verbatim (frozen), bone
+43 takes position but not rotation, and the actor transform carries the whole
+assembly to the controller, so the rig's internal pose is always exactly as
+authored. Named by BRVR's own log rather than by reasoning:
+
+```
+>>> WEAPONHAND: freezing the RIGHT cluster, bones 27-44.
+>>> WEAPONHAND: pose settled after 359 ms (rig went still) -- freezing from here.
+>>> B43: attach rotation drift 1.29 deg (cluster frozen; this bone is still the engine's)
+```
+
+This tree did the inverse - actor left where `Hands.UpdateLocation` pins it (on
+the camera, every frame), cluster 27-44 retargeted inside it, bone 43 included,
+about a reference that is itself a snapshot of an animated pose. Source: BRVR
+`Camera/CameraHook.cpp` `DriveHands` and `Hands/ArmHide.cpp`.
+
+`vrhands mode brvr` (mode 3) is that architecture and is now the shipped
+default: position from the GRIP pose, rotation from the AIM pose, grip offset
+SUBTRACTED along the model axes, cluster frozen, bone 43 position-only.
+
+### The grip offset IS the pivot - and that is why tuning it could never work
+
+A body point renders at `gp.loc + R(theta) * (G - gripOffset)`, so the offset
+decides which mesh point stays still. Using it to correct the gun's HEIGHT
+displaces the pivot by the same amount, which becomes an orbit the moment the
+wrist rotates. Measured this session: a 15 cm height correction bought an 8 inch
+orbit (tester: +4 in at 0 deg, -12 in at 180 - midpoint -4, amplitude 8).
+
+So placement was split onto its own knob, applied in the VIEW frame after the
+model transform, where it cannot create a lever. **Two knobs, two jobs: grip =
+where it pivots, view = where it sits.** Anyone tempted to fix a height problem
+with the grip offset should read this paragraph first.
+
+### The idle animation is a WEIGHTED RANDOM draw
+
+`Holdable.uc`:
+
+```uc
+var config travel array<name>  IdlingHandsAnim;
+var config travel array<float> IdlingHandsAnimWeight;
+```
+
+`GetIdlingHandsAnim()` returns a weighted-random entry. `Hands.uc`'s
+`WeaponIdling` loops it, and skips the loop entirely when the name is `'None'`.
+Every return to idle can therefore settle the rig somewhere different - which is
+the "crosshair moves randomly between shots" report, and the randomness is the
+game's rather than the mod's. BRVR's `IdleAnimMode=1` exists for exactly this;
+its own config echo reads "(all entries -> entry[0], kills the wrench slap)".
+
+Neighbouring `config travel` properties on `Holdable`, all settable by name
+through the engine SET seam (no offsets needed, so they survive Epic and GOG):
+`EquippingHandsAnim` (the cycle on equip), `AdditiveHandBobAnim`,
+`UnEquippingHandsAnim`, `IdlingAnim`, `AttachBone`.
+
+### Hands state machine - DERIVED, not hardcoded
+
+`ShockGame.Hands` is a UnrealScript state machine; gameplay code keys off
+`GetHands().GetStateName()`. UE2 keeps the current state in the object's
+`FStateFrame`, and the offsets differ per build.
+
+`hands_state.cpp` derives both by sweeping candidate pointers off the Hands
+actor and accepting only the pair whose `UState` name resolves, through GNames,
+to a state `Hands.uc` actually declares. A wrong offset cannot pass that test,
+so no number is carried between builds or storefronts. Uses the UObject layout
+already recorded here: name index `+0x28`, class `+0x30`.
+
+The states, from `Hands.uc`: `HandsOffscreen` (auto), `WeaponEquipping`,
+`WeaponIdling`, `WeaponFiring`, `PostWeaponFiring`, `WeaponReloading`,
+`ProceduralWeaponReloading`, `WeaponUnEquipping`, the zoom quartet, the ability
+equivalents, `InjectingEve`, `UsingGathererTool`, `ExorcisingGatherer`,
+`PlayingScriptedHandAnimation`.
+
+**Known defect in the policy built on it (not in the read):** ceasing to adopt
+at a state boundary leaves the reference wherever it was, so the pistol freezes
+at the apex of its recoil until a weapon switch. The fix shape is to capture a
+canonical REST reference during `Idling` and restore it on leaving an adopted
+state.
+
+### Falsified this session, with the measurement that killed each
+
+| Theory | Killed by |
+|---|---|
+| Aim-vs-grip pose choice for the model | headset A/B: no change. The aim pose is also a deliberate s11 fix so barrel, laser and bullet are one ray |
+| Bone 43's rotation applied twice | writing position-only stops the gun rotating ENTIRELY. BRVR gets away with it only because its ACTOR carries the rotation |
+| A rigid lever arm | three-axis offset tuning across two sessions never nulled it, and the required value changed between sessions |
+| The game erasing our roll | BRVR measured 5-102 deg on its ACTOR rotator (its S59) and fixed it from Present (S60); this tree's BONE write holds to 0.13 deg drift, measured by `ROLLCHECK` |
+| The foreground lens match not reaching the renderer | `FOVPROBE`: field holds 117.46 and the engine does not restamp it. The first write is 83.6 only because the backbuffer dims are not known yet - a real, minor, self-correcting bug |
+
+`[hud] fov watch` reporting `1 lens(es)` / `FG tanH=0.000000` every run is a
+BLIND INSTRUMENT, not evidence that the foreground pass is missing. It cost a
+hypothesis; do not read it as a finding.
+
 ## Session 22 - scripted-camera scenes: the descent's real mechanism (measured flat)
 
 The session-22 plan carried two hypotheses for the bathysphere descent
