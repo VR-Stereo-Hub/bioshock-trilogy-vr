@@ -105,6 +105,21 @@ uint64_t g_capStillSinceMs = 0; // when the pose first went still (0 = moving)
 // the point: the timer was too blunt, but time was the right unit.
 constexpr uint64_t kCapSettleHoldMs = 350; // stillness must persist this long
 constexpr uint64_t kCapMinTrackMs = 200;   // never capture sooner than this
+
+// STILLNESS IS NOT ADOPTION, and conflating them is what made the settle test a
+// no-op. s68d reused g_swayAngThreshDeg, which is the ANIMATION ADOPTION
+// threshold - 25 deg, raised in s67 because BRVR measures real animations at
+// 130-170 deg at the wrist. Asking "has the pose stopped moving?" with a 25 deg
+// tolerance answers yes on almost any two consecutive evaluations of a smooth
+// ease, so the test fired on the second evaluation whenever that landed and the
+// race it was written to close was never gated at all. Measured: a capture fired
+// at 2.34 deg of drift, where the idle envelope is +-1.2 deg (session 20) - the
+// pose was still visibly moving.
+//
+// These are absolute and deliberately just above that idle envelope: the pose is
+// "still" when the only thing left in it is breathing.
+constexpr float kCapStillDeg = 1.5f;
+constexpr float kCapStillUu = 0.5f;
 hands_state::State g_capPrevState = hands_state::State::Unknown;
 // An equip that never reaches Idling must not adopt forever. Generous - the
 // slowest BS1 equip measured well under this - and it logs when it bites.
@@ -2184,9 +2199,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         if (ang > maxAng) maxAng = ang;
                     }
                     const bool still =
-                        g_refValid &&
-                        maxAng <= g_swayAngThreshDeg.load(std::memory_order_relaxed) &&
-                        maxPos <= g_swayPosThreshUu.load(std::memory_order_relaxed);
+                        g_refValid && maxAng <= kCapStillDeg && maxPos <= kCapStillUu;
                     // STILLNESS MUST HOLD IN WALL-CLOCK, not for a count of
                     // evaluations. Measured 2026-08-27: the engine re-evaluates
                     // the bone array on about 5% of frames - 7 engineEval=1
@@ -2218,19 +2231,27 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         const bool pastMinimum =
                             nowSettle - g_capArmedMs >= kCapMinTrackMs;
                         if (g_capStillFrames >= 2 && heldLongEnough && pastMinimum) {
+                            // READ BEFORE ZEROING. s68d logged these after
+                            // clearing them, so every line printed "held still
+                            // <uptime> ms across 0 evaluations" - garbage that
+                            // was then read as evidence. An instrument that
+                            // lies is worse than no instrument.
+                            const unsigned long long heldMs =
+                                static_cast<unsigned long long>(nowSettle -
+                                                                g_capStillSinceMs);
+                            const int evals = g_capStillFrames;
+                            const unsigned long long sinceSwitch =
+                                static_cast<unsigned long long>(nowSettle - g_capArmedMs);
                             captureRest = true;
                             g_capArmed = false;
                             g_capStillFrames = 0;
                             g_capStillSinceMs = 0;
-                            BVR_LOG("[bones] equip settled: %.2f deg / %.2f UU of drift, "
-                                    "held still %llu ms across %d evaluations, %llu ms "
-                                    "after the switch - capturing the reference here.",
-                                    maxAng, maxPos,
-                                    static_cast<unsigned long long>(nowSettle -
-                                                                   g_capStillSinceMs),
-                                    g_capStillFrames,
-                                    static_cast<unsigned long long>(nowSettle -
-                                                                    g_capArmedMs));
+                            BVR_LOG("[bones] equip settled: %.2f deg / %.2f UU of drift "
+                                    "(still under %.1f deg / %.1f UU), held still %llu ms "
+                                    "across %d evaluations, %llu ms after the switch - "
+                                    "capturing the reference here.",
+                                    maxAng, maxPos, kCapStillDeg, kCapStillUu, heldMs,
+                                    evals, sinceSwitch);
                         }
                     }
                 } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {

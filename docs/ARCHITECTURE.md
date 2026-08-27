@@ -2623,3 +2623,40 @@ the fact that the evidence had not moved. **When a fix changes nothing at all,
 the next step is to instrument, not to theorise again** - and the instrument that
 finally answered it, `engineEval` on the ROLLCHECK line, had been printing in
 every log the whole time.
+
+### 2026-08-27 (session 68e) - the settle test was a no-op, and its log was lying
+
+Two defects in the settle detector, both mine, both introduced while fixing the
+thing they then hid.
+
+**The threshold answered a different question.** s68d's stillness test reused
+`g_swayAngThreshDeg` - the ANIMATION ADOPTION threshold, 25 deg, raised in s67
+because BRVR measures real animations at 130-170 deg at the wrist. "Is this
+movement big enough to be a real animation?" and "has the pose stopped moving?"
+are not the same question and do not share an answer. With a 25 deg tolerance,
+any two consecutive evaluations of a smooth ease read as "still", so the test
+fired on the second evaluation whenever that landed - the race it was written to
+close was never gated at all. Measured: a capture fired at **2.34 deg of drift**,
+against a measured idle envelope of +-1.2 deg. The pose was still visibly moving.
+
+Stillness now has its own absolute constants, set just above that idle envelope:
+the pose is still when the only thing left in it is breathing.
+
+**And the instrument was lying.** The log line read `g_capStillSinceMs` and
+`g_capStillFrames` AFTER zeroing them, so every capture printed `held still
+19246078 ms across 0 evaluations` - the tick count and a zero. That number was
+sitting in the log through two rounds of diagnosis being read as evidence.
+
+**An instrument that lies is worse than no instrument**, because it is trusted.
+The tell was available and obvious - 19,246,078 ms is 5.3 hours and "0
+evaluations" cannot coexist with a rule requiring at least two - and it was read
+past because the line was mine and assumed correct. Read the numbers an
+instrument prints for PLAUSIBILITY before reading them for meaning.
+
+**On the hypothesis this round started with.** The measurement said `bones::drive()`
+runs for one hand and `active_hand()` is trigger-inferred, so a plasmid switched
+to but not fired could be undriven. The census refuted it: 29 samples of
+`hand=0 abil=1` against 8 of `hand=1 abil=1`, with the second plasmid driven
+continuously across its own switch. The hypothesis was wrong and the measurement
+cost one integer on a line that was already printing - which is the correct ratio,
+and the opposite of the four speculative fixes that preceded it.
