@@ -2502,3 +2502,47 @@ swing animation fights manual melee. s68 also used it to gate "does this weapon
 get a correct resting pose", which is a different question with a different
 answer, and starving the wrench of a rest capture is what put the s67 defect back.
 When reaching for an existing flag, check that the question is the same one.
+
+### 2026-08-27 (session 68b) - the hand was inferred from the trigger, not read from the game
+
+`active_hand()` decided which hand was live from the last bumper or trigger the
+player touched. Both the crosshair and the viewmodel follow it. A plasmid SHOT
+does not - it is routed to `Hand::Left` by pointer identity, from the learned
+object map.
+
+So switching to a plasmid **without firing it** left auto-hand on the RIGHT, and
+two reports that sounded unrelated came out of that one gap:
+
+- *"it seems that it shoots slightly up and to the right of the crosshair"* - the
+  dot was drawn from `g_ray[1]` while the bolt left on `g_ray[0]`. Two rays, two
+  trims, one crosshair.
+- *"the other plasmid still had the wrong position and nothing fixed it"* - the
+  plasmid was being drawn with the RIGHT hand's offsets, which are the equipped
+  weapon's profile.
+
+And it explains why one plasmid was fine and the other was not, with no
+difference between them: the tester had been **firing** the good one.
+
+**The engine knows which hand it is.** `Hands.uc` parks the rig in an `Ability*`
+state while a plasmid is equipped, so `hands_state` now carries an `ability` flag
+per row and `active_hand()` reads it instead of guessing. An explicit hand mode
+still wins - this replaces only the inference.
+
+**The rule, again, and it is the third time this session: a value the game
+publishes should not be inferred from a side effect.** s67 replaced "guess the
+animation from movement magnitude" with the state machine. s68 replaced "guess
+the equip is over from a 1200 ms timer" with the same state machine. This
+replaces "guess the hand from the last trigger" with it too. Every one of these
+was a proxy that agreed with the truth most of the time, which is exactly what
+made each one survive so long.
+
+**Profiles now own a hand.** `profile_hand()` maps the `"Plasmid"` key to hand 0
+and everything else to hand 1. Before this the Plasmid profile wrote the RIGHT
+hand's trims and offsets - values a plasmid never reads - so tuning its crosshair
+moved the weapon's ray and the bolt kept leaving on the untouched left one. The
+seeded Plasmid row is correspondingly rebuilt from the tester's left-hand tuning
+(`vrpreset.ini`'s `aimTrimL*`/`aimPosL*`, `hands.ini`'s `*L`).
+
+**Migration note:** a `Plasmid.*` block written by the s68 build holds right-hand
+values under a key that now means the left hand. Those entries must be deleted,
+not carried - a stale one is not merely old, it is in the wrong frame.

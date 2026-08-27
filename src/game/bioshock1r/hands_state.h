@@ -57,6 +57,26 @@ const char* to_string(State s);
 // True once locate() has succeeded.
 bool located();
 
+// s68b: is the thing in the hands a PLASMID (an ability) rather than a weapon?
+//
+// The State buckets above deliberately fold WeaponFiring and AbilityFiring into
+// one value, because the animation policy does not care which it is. The HAND
+// assignment very much does: in BioShock the plasmid is in the LEFT hand and the
+// gun is in the right, and every offset, trim and ray in this mod is per hand.
+//
+// Hands.uc names it directly - the ability states are the ones declared Ability*,
+// plus InjectingEve - so this is READ, not inferred. It is what active_hand() now
+// uses instead of guessing from the last trigger pulled, which is what left a
+// plasmid rendered with the WEAPON's offsets and its shot coming off a different
+// ray than the crosshair was drawn from.
+//
+// current_is_ability() needs the actor and is game-thread only. last_ability() is
+// the cached answer for callers that have neither (active_hand runs from more
+// than one thread); it reports false once the cache is older than ~500 ms, so a
+// stale value can never outlive the rig it came from.
+bool current_is_ability(const void* handsActor);
+bool last_ability();
+
 // Status line for `vrhands state` and the F10 panel.
 void log_status(const void* handsActor);
 

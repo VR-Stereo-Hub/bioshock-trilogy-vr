@@ -955,21 +955,29 @@ std::string narrow_key(const wchar_t* w) {
     return s;
 }
 
-// Capture the live R-hand values into the active profile (no-op keyless).
+// s68b: which HAND does a profile own? Weapons are the right hand; the plasmid is
+// the left, because that is where BioShock puts it. This used to be hardcoded to 1
+// everywhere, so the "Plasmid" profile wrote the RIGHT hand's trims and offsets -
+// values the plasmid never reads. Tuning its crosshair moved the weapon's ray, and
+// the bolt kept leaving on the untouched left one.
+int profile_hand(const std::string& key) { return key == "Plasmid" ? 0 : 1; }
+
+// Capture the live values of the active profile's OWN hand (no-op keyless).
 void stash_active_profile() {
     if (g_weaponKey.empty()) return;
+    const int ph = profile_hand(g_weaponKey);
     WeaponProfile& p = g_weaponProfiles[g_weaponKey];
-    p.trimPitch = g_pitchOffsetDeg[1].load(std::memory_order_relaxed);
-    p.trimYaw = g_yawOffsetDeg[1].load(std::memory_order_relaxed);
-    p.posFwd = g_posFwdCm[1].load(std::memory_order_relaxed);
-    p.posRight = g_posRightCm[1].load(std::memory_order_relaxed);
-    p.posUp = g_posUpCm[1].load(std::memory_order_relaxed);
-    hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
-    hands::view_offset_cm(1, &p.viewFwd, &p.viewRight, &p.viewUp);
+    p.trimPitch = g_pitchOffsetDeg[ph].load(std::memory_order_relaxed);
+    p.trimYaw = g_yawOffsetDeg[ph].load(std::memory_order_relaxed);
+    p.posFwd = g_posFwdCm[ph].load(std::memory_order_relaxed);
+    p.posRight = g_posRightCm[ph].load(std::memory_order_relaxed);
+    p.posUp = g_posUpCm[ph].load(std::memory_order_relaxed);
+    hands::model_offset_cm(ph, &p.gripFwd, &p.gripRight, &p.gripUp);
+    hands::view_offset_cm(ph, &p.viewFwd, &p.viewRight, &p.viewUp);
     p.animOn = bones::anim_allowed() ? 1.0f : 0.0f;
-    p.modelPitch = hands::model_trim_pitch_deg(1);
-    p.modelYaw = hands::model_trim_yaw_deg(1);
-    p.modelRoll = hands::model_trim_roll_deg(1);
+    p.modelPitch = hands::model_trim_pitch_deg(ph);
+    p.modelYaw = hands::model_trim_yaw_deg(ph);
+    p.modelRoll = hands::model_trim_roll_deg(ph);
 }
 
 void apply_weapon_key(const std::string& key, const char* why) {
@@ -980,6 +988,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
         std::lock_guard<std::mutex> lock(g_weaponKeyUiMutex);
         strcpy_s(g_weaponKeyUi, key.empty() ? "-" : key.c_str());
     }
+    const int ph = profile_hand(key);
     if (key.empty()) {
         // s68: a genuinely UNKNOWN holdable (the rig itself unreadable). This is
         // no longer the plasmid case - that resolves to "Plasmid" below - so it
@@ -1006,38 +1015,38 @@ void apply_weapon_key(const std::string& key, const char* why) {
                                               g_posUpCm[1].load(std::memory_order_relaxed),
                                               0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         if (!g_presetBaselineValid) {
-            hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
-            hands::view_offset_cm(1, &p.viewFwd, &p.viewRight, &p.viewUp);
+            hands::model_offset_cm(ph, &p.gripFwd, &p.gripRight, &p.gripUp);
+            hands::view_offset_cm(ph, &p.viewFwd, &p.viewRight, &p.viewUp);
             p.animOn = 1.0f;
-            p.modelPitch = hands::model_trim_pitch_deg(1);
-            p.modelYaw = hands::model_trim_yaw_deg(1);
-            p.modelRoll = hands::model_trim_roll_deg(1);
+            p.modelPitch = hands::model_trim_pitch_deg(ph);
+            p.modelYaw = hands::model_trim_yaw_deg(ph);
+            p.modelRoll = hands::model_trim_roll_deg(ph);
         }
         g_weaponProfiles[key] = p;
-        g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
-        g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
-        g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
-        g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
-        g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
-        hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
-        hands::set_view_offset_cm(1, p.viewFwd, p.viewRight, p.viewUp);
+        g_pitchOffsetDeg[ph].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[ph].store(p.trimYaw, std::memory_order_relaxed);
+        g_posFwdCm[ph].store(p.posFwd, std::memory_order_relaxed);
+        g_posRightCm[ph].store(p.posRight, std::memory_order_relaxed);
+        g_posUpCm[ph].store(p.posUp, std::memory_order_relaxed);
+        hands::set_model_offset_cm(ph, p.gripFwd, p.gripRight, p.gripUp);
+        hands::set_view_offset_cm(ph, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
-        hands::set_model_trim_deg(1, p.modelPitch, p.modelYaw, p.modelRoll);
+        hands::set_model_trim_deg(ph, p.modelPitch, p.modelYaw, p.modelRoll);
         BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): trim %.2f/%.2f pos "
                 "%.1f/%.1f/%.1f",
                 key.c_str(), g_presetBaselineValid ? "preset baseline" : "current R values",
                 why, p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp);
     } else {
         const WeaponProfile& p = it->second;
-        g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
-        g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
-        g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
-        g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
-        g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
-        hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
-        hands::set_view_offset_cm(1, p.viewFwd, p.viewRight, p.viewUp);
+        g_pitchOffsetDeg[ph].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[ph].store(p.trimYaw, std::memory_order_relaxed);
+        g_posFwdCm[ph].store(p.posFwd, std::memory_order_relaxed);
+        g_posRightCm[ph].store(p.posRight, std::memory_order_relaxed);
+        g_posUpCm[ph].store(p.posUp, std::memory_order_relaxed);
+        hands::set_model_offset_cm(ph, p.gripFwd, p.gripRight, p.gripUp);
+        hands::set_view_offset_cm(ph, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
-        hands::set_model_trim_deg(1, p.modelPitch, p.modelYaw, p.modelRoll);
+        hands::set_model_trim_deg(ph, p.modelPitch, p.modelYaw, p.modelRoll);
         BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f "
                 "grip %.1f/%.1f/%.1f (%s)",
                 key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp,
@@ -1221,14 +1230,14 @@ void seed_default_profiles() {
         .animOn = 1.00f,
         .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
     g_weaponProfiles["MachineGun"] = {
-        .trimPitch = 0.83f, .trimYaw = -9.70f,
+        .trimPitch = 1.83f, .trimYaw = -10.20f,
         .posFwd = 0.00f, .posRight = -3.50f, .posUp = 13.10f,
         .gripFwd = 52.00f, .gripRight = 17.00f, .gripUp = -14.70f,
         .viewFwd = 1.50f, .viewRight = 0.50f, .viewUp = 12.00f,
         .animOn = 1.00f,
         .modelPitch = -0.50f, .modelYaw = -9.00f, .modelRoll = -1.00f};
     g_weaponProfiles["Pistol"] = {
-        .trimPitch = 0.83f, .trimYaw = -9.70f,
+        .trimPitch = 2.83f, .trimYaw = -9.70f,
         .posFwd = -0.70f, .posRight = -2.06f, .posUp = 18.71f,
         .gripFwd = 44.00f, .gripRight = 16.70f, .gripUp = -15.40f,
         .viewFwd = 2.00f, .viewRight = 0.00f, .viewUp = 11.00f,
@@ -1242,7 +1251,7 @@ void seed_default_profiles() {
         .animOn = 1.00f,
         .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
     g_weaponProfiles["Shotgun"] = {
-        .trimPitch = -3.17f, .trimYaw = -6.20f,
+        .trimPitch = -2.17f, .trimYaw = -6.70f,
         .posFwd = 0.00f, .posRight = -2.76f, .posUp = 7.50f,
         .gripFwd = 16.00f, .gripRight = 11.80f, .gripUp = -11.80f,
         .viewFwd = 2.50f, .viewRight = 1.00f, .viewUp = 6.00f,
@@ -1255,13 +1264,17 @@ void seed_default_profiles() {
         .viewFwd = -4.00f, .viewRight = -2.00f, .viewUp = 15.00f,
         .animOn = 0.00f,
         .modelPitch = -12.00f, .modelYaw = -16.00f, .modelRoll = -18.00f};
+    // s68b: a LEFT-hand profile (profile_hand()), because that is the hand the
+    // plasmid is in and the hand its shot leaves from. Values are the tester's own
+    // left-hand tuning: trims and aim origin from vrpreset.ini (aimTrimL*/aimPosL*),
+    // grip/placement/model trim from hands.ini (*L). ONE key for every plasmid.
     g_weaponProfiles["Plasmid"] = {
-        .trimPitch = -1.20f, .trimYaw = -4.20f,
-        .posFwd = -0.70f, .posRight = -2.10f, .posUp = 18.70f,
-        .gripFwd = 44.00f, .gripRight = 16.70f, .gripUp = -15.40f,
-        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 11.00f,
+        .trimPitch = -11.00f, .trimYaw = 37.00f,
+        .posFwd = -2.80f, .posRight = 0.60f, .posUp = 0.50f,
+        .gripFwd = 45.50f, .gripRight = -14.90f, .gripUp = -12.30f,
+        .viewFwd = -2.00f, .viewRight = 2.00f, .viewUp = 11.00f,
         .animOn = 1.00f,
-        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
+        .modelPitch = -111.00f, .modelYaw = -16.00f, .modelRoll = 22.00f};
 }
 
 void weapons_ini_path(wchar_t* out, size_t count) {

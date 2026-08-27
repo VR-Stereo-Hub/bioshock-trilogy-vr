@@ -21,7 +21,8 @@
 //   weapon's Base pointer (its attach parent, = the AHands actor) sits at
 //   +0x450, adjacent to Owner at +0x454, the classic UE2 pair.
 
-#include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/hands_state.h"
 
 #include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
@@ -579,6 +580,23 @@ void load_config() {
 int active_hand() {
     int mode = g_handMode.load(std::memory_order_relaxed);
     if (mode == 0 || mode == 1) return mode;
+
+    // s68b: WHAT YOU ARE HOLDING beats what you last pressed. In BioShock the
+    // plasmid is in the LEFT hand, and the engine says so - Hands.uc parks the
+    // rig in an Ability* state while one is equipped.
+    //
+    // Inferring the hand from the last trigger/bumper was wrong in a way that
+    // produced two separate-looking reports. Both the crosshair and the
+    // viewmodel follow this function, but a plasmid SHOT is routed by pointer
+    // identity to Hand::Left regardless. So switching to a plasmid without
+    // firing it left auto-hand on the RIGHT: the plasmid was drawn with the
+    // weapon's offsets ("still had the wrong position"), and the dot was drawn
+    // off g_ray[1] while the bolt left g_ray[0] ("shoots slightly up and to the
+    // right of the crosshair"). Firing it once fixed both, which is exactly what
+    // a trigger-inferred hand would do.
+    //
+    // An explicit hand mode above still wins - this only replaces the guess.
+    if (hands_state::last_ability()) return 0;
 
     bool lb = false, rb = false;
     bvr::input::last_composed_bumpers(&lb, &rb);
