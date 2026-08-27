@@ -37,6 +37,16 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
 // camera can never disagree about where the player is standing.
 void on_calcview(const FrameContext& ctx);
 
+// s67 CROSSHAIR trim, for the in-headset tuner (BRVR calls it CursorOffset).
+// This is the AIM ray: the laser, the dot and the bullet all come off it, so
+// moving it moves all three together by construction.
+// set_aim_trim_all writes the LIVE trim; the weapon profile stash/apply then
+// carries it PER WEAPON, like grip and placement. It was briefly global (s67)
+// on the hope that one crosshair would serve every gun - it does not, for the
+// same reason the grip offsets are per weapon.
+void aim_trim_deg(int hand, float* pitchDeg, float* yawDeg);
+void set_aim_trim_all(float pitchDeg, float yawDeg);
+
 // Seam command handler: args after the "vraim" verb (game thread).
 //   on | off | status
 //   probe on|off            install/enable the seam hooks in telemetry mode

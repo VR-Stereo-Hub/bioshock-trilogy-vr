@@ -17,6 +17,7 @@
 #include "core/util/log.h"
 #include "core/vr/openxr_runtime.h"
 #include "game/bioshock1r/camera.h"
+#include "game/bioshock1r/hands.h"
 #include "game/bioshock1r/patterns.h"
 
 #include <windows.h>
@@ -805,6 +806,14 @@ void __fastcall BuildDetour(void* ecx, void* edx, void* a1, void* a2, void* a3,
     // render side's 300 ms quad fallback on purpose (quad-over-forced-FOV for
     // ~100 ms is invisible; projection-over-restored-FOV would not be).
     if (depth == 0) camera::restore_game_fov_if_stale(400);
+
+    // s67: and put the viewmodel rotation back. The game tick runs between
+    // CalcView and here and resets the hands rotator - BRVR measured it eating
+    // ROLL by 5-102 deg while pitch and yaw held, which is exactly the "arc
+    // that grows with the twist" this tree has been chasing. BRVR re-writes
+    // from Present; this is the same position in the frame on the thread that
+    // owns the data. No-ops unless the viewmodel drive wrote this frame.
+    if (depth == 0) hands::late_write();
 
     // Stereo eye tag for pass 1 (LEFT), pushed BEFORE the original: the
     // pass's Present strictly follows (async via the pump in threaded mode,

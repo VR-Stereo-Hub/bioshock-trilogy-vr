@@ -152,6 +152,23 @@ bool armed();
 // model sliders along with the preset's own values.
 void save_offsets();
 
+// s67 view-frame placement (where the gun SITS; cannot create an orbit, unlike
+// the grip offset which is the pivot). Per weapon since s67 - the shotgun sits
+// differently in the hand from the pistol.
+void view_offset_cm(float* fwdCm, float* rightCm, float* upCm);
+void set_view_offset_cm(float fwdCm, float rightCm, float upCm);
+
+// s67: re-apply the viewmodel rotation AFTER the game tick has reset it.
+//
+// BRVR measured the tick erasing ROLL by 5-102 deg (pitch and yaw held), and
+// fixed it by writing the rotator a second time from Present. Verified on this
+// machine: BRVR's readback reports r=0.0 all run, and its viewmodel is clean.
+//
+// Called from scenedraw's build detour at depth 0 - game thread, after
+// CalcView, before the frame is built. Same place camera.cpp restores a stale
+// FOV from, and for the same reason. Cheap and safe when nothing was written.
+void late_write();
+
 // Overlay section (render thread).
 void draw_debug_ui();
 

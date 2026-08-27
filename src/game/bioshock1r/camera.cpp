@@ -2025,7 +2025,45 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
                     k = (4.0f / 3.0f) * (static_cast<float>(bbH) /
                                          static_cast<float>(bbW));
                 float fg = 2.0f * atanf(tanW * k) * kRadToDeg;
+                // s67 FOVPROBE, modelled on BRVR's line so the two logs can be
+                // read side by side. BRVR prints, every run:
+                //     >>> FOVPROBE: writing ForegroundFov at +0x460 = 117.5 (was 60.0)
+                // This tree has computed the same 117.5 all along and NEVER SAID
+                // SO, which is why nobody could tell the write from a no-op. It
+                // matters because `[hud] fov watch` reports "1 lens(es)" and
+                // "FG tanH=0.000000" on every run: if a 117.5 foreground pass
+                // really rendered beside the 100 deg world pass there would be
+                // TWO distinct lenses in the constant buffers, and there is one.
+                //
+                // Two lines: the first write (with the value we displaced, which
+                // should read 60.0 if this field is the one BRVR drives), then a
+                // 1 Hz readback of what the field holds NOW. If it reads back as
+                // something other than what we wrote, the engine is restamping
+                // it and the lens match has never actually been in effect.
+                const float wasFg = *fgFov;
                 *fgFov = fg;
+                {
+                    static bool s_toldFg = false;
+                    if (!s_toldFg) {
+                        s_toldFg = true;
+                        BVR_LOG("[b1r] FOVPROBE: writing ForegroundFov at +0x%X = %.1f "
+                                "(was %.1f) | world %d deg, k=%.6f, backbuffer %ux%u",
+                                patterns::kPcForegroundFovOffset, fg, wasFg, *opt, k, bbW,
+                                bbH);
+                    }
+                    static uint64_t s_lastFgMs = 0;
+                    const uint64_t nowFg = GetTickCount64();
+                    if (nowFg - s_lastFgMs >= 1000) {
+                        s_lastFgMs = nowFg;
+                        BVR_LOG("[b1r] FOVPROBE: field held %.2f before our write this "
+                                "frame (we write %.2f) %s",
+                                wasFg, fg,
+                                (wasFg > fg + 0.5f || wasFg < fg - 0.5f)
+                                    ? "<-- ENGINE IS RESTAMPING IT: our lens match is NOT "
+                                      "reaching the renderer"
+                                    : "(our value is holding)");
+                    }
+                }
                 g_fgFovWritten.store(fg, std::memory_order_relaxed);
                 g_fgFovK.store(k, std::memory_order_relaxed);
             }
