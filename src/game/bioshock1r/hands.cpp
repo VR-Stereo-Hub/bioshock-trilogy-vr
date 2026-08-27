@@ -21,7 +21,7 @@
 //   weapon's Base pointer (its attach parent, = the AHands actor) sits at
 //   +0x450, adjacent to Owner at +0x454, the classic UE2 pair.
 
-#include "game/bioshock1r/hands.h"
+#include "game/bioshock1r/hands.h"
 
 #include "core/gfx/hud_capture.h"
 #include "core/input/xinput_bridge.h"
@@ -580,15 +580,6 @@ int active_hand() {
     int mode = g_handMode.load(std::memory_order_relaxed);
     if (mode == 0 || mode == 1) return mode;
 
-    // s68d: BACK to pure trigger/bumper inference, on the tester's call. s68b made
-    // this follow Hands.CurrentAbility so a plasmid forced the left hand. That was
-    // reasoned from the engine and it did NOT fix the second-plasmid defect, so it
-    // was cost without benefit - and it moved plasmids onto a different set of
-    // offsets than the build the tester had already called good.
-    //
-    // hands::current_ability() is still there and is still the honest signal if
-    // the hand ever does need to follow what is equipped. It just is not the bug.
-
     bool lb = false, rb = false;
     bvr::input::last_composed_bumpers(&lb, &rb);
     if (rb && !lb) g_autoHand.store(1, std::memory_order_relaxed);
@@ -660,31 +651,6 @@ bool armed() {
     const bool okA = read_ptr(h + patterns::kHandsCurrentAbilityOffset, &abil);
     if (!okH && !okA) return true; // neither slot readable - say nothing
     return (okH && hold != nullptr) || (okA && abil != nullptr);
-}
-
-bool current_ability(void** out) {
-    // s68c: the equipped PLASMID. Hands.uc keeps abilities in their OWN slot
-    // (`var private transient Ability CurrentAbility`, two above CurrentHoldable),
-    // which is why CurrentHoldable reads NULL with a plasmid up - the thing IS
-    // equipped, just not in the field we were watching.
-    //
-    // This is the per-plasmid IDENTITY the drive never had. Switching one plasmid
-    // for another leaves CurrentHoldable null both sides, so the holdable test
-    // cannot see it, and the Equipping state EDGE that stood in for it is
-    // transient - it only registers if the engine happens to re-evaluate the bone
-    // array on those frames. A pointer compare cannot be missed that way: the
-    // value is still different on the next evaluation, whenever that comes.
-    //
-    // Same contract as current_holdable(): false when the rig itself is
-    // unreadable; *out may be null, which means "no plasmid equipped".
-    if (!has_vtable(g_handsActor, patterns::kHandsVtableRva)) return false;
-    void* abil = nullptr;
-    if (!read_ptr(static_cast<const uint8_t*>(g_handsActor) +
-                      patterns::kHandsCurrentAbilityOffset,
-                  &abil))
-        return false;
-    *out = abil;
-    return true;
 }
 
 bool current_holdable(void** out) {
@@ -800,13 +766,12 @@ bool game_has_focus() {
 void tuner_log(const char* what) {
     char wk[48] = "-";
     aim::weapon_key_name(wk, sizeof wk);
-    const int th = active_hand(); // s68b: report the hand actually being tuned
     if (g_tuneMode == kTuneModePos)
         BVR_LOG("[hands] numpad: %s %s PLACEMENT fwd %+.1f right %+.1f up %+.1f cm "
                 "(step %.1f) - where the gun SITS; per weapon; cannot cause an orbit",
-                wk, what, g_viewFwdCm[th].load(std::memory_order_relaxed),
-                g_viewRightCm[th].load(std::memory_order_relaxed),
-                g_viewUpCm[th].load(std::memory_order_relaxed), g_tuneStep);
+                wk, what, g_viewFwdCm[1].load(std::memory_order_relaxed),
+                g_viewRightCm[1].load(std::memory_order_relaxed),
+                g_viewUpCm[1].load(std::memory_order_relaxed), g_tuneStep);
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
         aim::aim_trim_deg(1, &cp, &cy);
@@ -932,16 +897,11 @@ void poll_numpad_tuner() {
                                                                               : g_viewUpCm)
                     : (kBinds[i].axis == 0 ? g_rotPitchDeg : kBinds[i].axis == 1 ? g_rotYawDeg
                                                                                  : g_rotRollDeg);
-            // Every one of these is a per-hand array. s68b: tune the hand that is
-            // actually LIVE, not a hardcoded right.
-            //
-            // 9c3fe50 pinned this to 1 on the reasoning that the numpad is the
-            // weapon hand's tuner. Once active_hand() started reporting 0 for a
-            // plasmid, that made the numpad silently inert while one was equipped
-            // - reported as "none of the numpad modes change anything for the
-            // plasmids". The tester cannot type, so an in-headset tuner that does
-            // nothing for half the things you can hold is not a small loss.
-            const int di = active_hand();
+            // Every one of these is now a per-hand array, index 1 = right. The
+            // numpad tuner is the WEAPON hand's tuner by design (it is what the
+            // hand on the controller is holding while tuning); the left hand's
+            // equivalents are the F10 sliders, which follow the L/R radio.
+            const int di = 1;
             dst[di].store(dst[di].load(std::memory_order_relaxed) + d, std::memory_order_relaxed);
             moved = true;
         }

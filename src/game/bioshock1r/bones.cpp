@@ -74,43 +74,6 @@ uint64_t g_restoreStartMs = 0; // 0 = not blending
 bool g_wasAdopting = false;    // last known-state verdict, for edge detection
 hands_state::State g_lastKnownState = hands_state::State::Unknown; // for the log line
 
-// ---- s68b THE EQUIP CAPTURE, state-driven ---------------------------------
-// s68 armed a fresh reference capture on a holdable change and then TRACKED FOR
-// A FIXED 1200 ms (g_swaySettleMs). That timer is the wrong instrument and it
-// produced all three of the 2026-08-27 reports:
-//
-//  - "the wrench position was super off with a massive pivot on launch" - the
-//    wrench is animOn=0, so once the timer expired the state branch refused
-//    forever AND the rest capture (gated on g_animAllowed) never ran. Its
-//    reference was whatever the timer happened to freeze, mid-equip. This is
-//    the s67 wrench-posed-as-a-pistol defect re-entering through the new gate.
-//  - "it did an equip animation but froze it before it finished" - the equip
-//    outlasted 1200 ms, adoption stopped, g_ref froze part-way through it.
-//  - "it applied it to both plasmids" - liveHold is NULL for EVERY plasmid, so
-//    plasmid-to-plasmid is null != null == false and the holdable-change test
-//    never fires. Nothing recaptured, so one bad pose served both.
-//
-// The engine already says when an equip starts and when it has finished:
-// State::Equipping, then State::Idling. Track through the equip, capture at
-// Idling, and there is no timer to outlast. The Equipping EDGE also arms the
-// capture, which is the only signal that can see one plasmid replace another.
-void* g_lastHoldable = nullptr;
-void* g_lastAbility = nullptr; // read only to label the log line - see s68f
-bool g_capArmed = false;
-uint64_t g_capArmedMs = 0;
-uint64_t g_capIdlingAtMs = 0; // when Idling was first seen while armed (0 = not yet)
-// How long after the engine reports Idling to take the snapshot. The rig stays
-// FROZEN for this whole window, so none of the idle animation reaches it - only
-// its endpoint is sampled. 700 ms clears the longest ease measured (the plasmid
-// cluster, 2156 ms to true stillness but visually settled far sooner); weapons
-// settle inside 265 ms and do not mind waiting. `vrbones equipdelay <ms>`.
-std::atomic<unsigned> g_capEquipDelayMs{700};
-bool g_capBlendPending = false; // ease onto the snapshot instead of popping to it
-hands_state::State g_capPrevState = hands_state::State::Unknown;
-// An equip that never reaches Idling must not adopt forever. Generous - the
-// slowest BS1 equip measured well under this - and it logs when it bites.
-constexpr uint64_t kCapArmTimeoutMs = 4000;
-
 // Reset every scrap of s68 rest state. Called wherever the reference dies -
 // a new bone array, a new world, an explicit release: a rest pose that outlives
 // the skeleton it was captured from is a pose from a dead rig.
@@ -119,13 +82,6 @@ void rest_reset() {
     g_restoreStartMs = 0;
     g_wasAdopting = false;
     g_lastKnownState = hands_state::State::Unknown;
-    g_lastHoldable = nullptr;
-    g_lastAbility = nullptr;
-    g_capArmed = false;
-    g_capArmedMs = 0;
-    g_capIdlingAtMs = 0;
-    g_capBlendPending = false;
-    g_capPrevState = hands_state::State::Unknown;
 }
 
 // Everything the last drive() wrote, for reapply() (the stereo second pass).
@@ -2041,31 +1997,10 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             const float tgtRollDeg =
                 static_cast<float>(static_cast<int16_t>(gp.rot.roll & 0xFFFF)) /
                 kRotUnitsPerDegree;
-            // s68e: WHICH CLUSTER IS THIS. bones::drive() is called for ONE hand
-            // per frame - hands.cpp passes active_hand() - so the other hand is
-            // not driven at all that frame and renders wherever the engine put
-            // it. active_hand() is inferred from the last trigger/bumper, which
-            // means switching to a plasmid WITHOUT firing it can leave the drive
-            // on the right cluster while the plasmid sits in the left, untouched
-            // by every offset, profile and capture in this module.
-            //
-            // That is a hypothesis, and this line is how it gets settled rather
-            // than argued: if a plasmid is equipped (abil=1) while hand=1, the
-            // plasmid is undriven and nothing in the viewmodel path can be the
-            // cause of a wrong position. Costs one integer on a line that was
-            // already printing.
-            void* abilNow = nullptr;
-            const bool haveAbilNow = hands::current_ability(&abilNow) && abilNow;
-            BVR_LOG("[b1r] ROLLCHECK: hand=%d abil=%d | target roll %+7.1f deg | our bone "
-                    "write drifted %.2f deg (local x %+.2f y %+.2f z %+.2f) | "
-                    "engineEval=%d  %s%s",
-                    hand, haveAbilNow ? 1 : 0, tgtRollDeg, driftDeg, cx, cy, cz,
-                    engineEvaluated ? 1 : 0,
-                    driftDeg > 3.0f ? "<-- OUR WRITE IS BEING CHANGED" : "(write held)",
-                    (haveAbilNow && hand == 1)
-                        ? "  <== PLASMID EQUIPPED BUT THE RIGHT CLUSTER IS DRIVEN - the "
-                          "plasmid is UNDRIVEN this frame"
-                        : "");
+            BVR_LOG("[b1r] ROLLCHECK: target roll %+7.1f deg | our bone write drifted "
+                    "%.2f deg (local x %+.2f y %+.2f z %+.2f) | engineEval=%d  %s",
+                    tgtRollDeg, driftDeg, cx, cy, cz, engineEvaluated ? 1 : 0,
+                    driftDeg > 3.0f ? "<-- OUR WRITE IS BEING CHANGED" : "(write held)");
         }
     }
     // s68: the engine's own verdict on what the hands are doing, read ONCE per
@@ -2078,70 +2013,6 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     const bool stateAllows =
         (g_animStateMask.load(std::memory_order_relaxed) & state_bit(hs)) != 0;
     bool adoptedThisFrame = false;
-
-    // ---- s68c WHAT ARE YOU HOLDING, and did it change? ----------------------
-    // EVERY FRAME, deliberately outside the recapture block below. s68b had this
-    // inside it, so the arming signals were only sampled when the engine happened
-    // to re-evaluate the bone array - and the Equipping EDGE is transient, so it
-    // was simply missed most of the time. Measured in the 02:10 run: 8 equip edges
-    // seen against 42 holdable changes.
-    //
-    // IDENTITY IS A PAIR. Hands.uc keeps weapons in CurrentHoldable and plasmids
-    // in CurrentAbility (`var private transient Ability CurrentAbility`), so a
-    // plasmid leaves the holdable slot NULL. Watching only the holdable made every
-    // plasmid look identical to every other plasmid - which is why the second one
-    // kept the first one's reference pose, at the first one's position, and no
-    // offset could touch it. A pointer compare also cannot be missed the way an
-    // edge can: if the value differs it still differs on the next evaluation.
-    {
-        void* liveHold = nullptr;
-        if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
-        // s68f: THE ABILITY IS DELIBERATELY NOT PART OF THIS. It is read only to
-        // label the log line.
-        //
-        // 422f735 added it to the identity so that one plasmid replacing another
-        // would force a fresh reference capture. That reasoning was sound and the
-        // result was a regression, because the behaviour it replaced was the one
-        // the tester had already called almost perfect: CurrentHoldable is NULL
-        // for every plasmid, so plasmid-to-plasmid was null -> null, no change,
-        // NO recapture - and both plasmids therefore shared one reference pose
-        // and sat in the same place. Their words afterwards: "it was almost
-        // perfect earlier position wise switching between the two, but it was
-        // just breaking when switching to weapons."
-        //
-        // Both halves of that sentence are this rule. Switching between plasmids
-        // was clean BECAUSE nothing recaptured. The weapon transition broke
-        // because it is the only edge where a capture fires, so it is the only
-        // place the capture's own quality can hurt - which is the settle
-        // threshold's job (s68e), not identity's.
-        //
-        // And sharing one pose across every plasmid IS "global, not per plasmid",
-        // which is what was asked for. A per-plasmid capture is a per-plasmid
-        // position by construction.
-        void* liveAbil = nullptr;
-        if (!hands::current_ability(&liveAbil)) liveAbil = nullptr;
-        const bool changed = liveHold != g_lastHoldable;
-        if (changed) {
-            void* const prevHold = g_lastHoldable;
-            void* const prevAbil = g_lastAbility;
-            g_lastHoldable = liveHold;
-            g_lastAbility = liveAbil;
-            if (!g_capArmed) g_capArmedMs = GetTickCount64();
-            g_capIdlingAtMs = 0;
-            g_capArmed = true;
-            g_lastBigDeltaMs = GetTickCount64();
-            // The rest pose is a property of WHAT YOU ARE HOLDING, so a new one
-            // invalidates it - otherwise the incoming holdable is restored to the
-            // outgoing one's rest, the s67 wrench-posed-as-a-pistol defect.
-            g_restValid = false;
-            g_restoreStartMs = 0;
-            BVR_LOG("[bones] holding changed (holdable %p -> %p, ability %p -> %p%s) - "
-                    "tracking until the pose settles, then capturing this one's "
-                    "reference and canonical rest",
-                    prevHold, liveHold, prevAbil, liveAbil, liveAbil ? ", PLASMID" : "");
-        }
-        if (stateKnown) g_capPrevState = hs;
-    }
 
     if (engineEvaluated || !g_refValid) {
         // Session 20 sway kill: the idle breathing is the authored idle
@@ -2160,100 +2031,36 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // wrench was posed as a pistol - reported as "super off with a massive
         // pivot". The gate is about whether to follow animation, not about
         // whether this weapon gets its own pose at all.
+        static void* s_lastHoldable = nullptr;
+        static bool s_forceCapture = false;
+        {
+            void* liveHold = nullptr;
+            if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
+            if (liveHold != s_lastHoldable) {
+                s_lastHoldable = liveHold;
+                s_forceCapture = true;
+                g_lastBigDeltaMs = GetTickCount64(); // let the equip settle first
+                // s68: the rest pose is a property of WHAT YOU ARE HOLDING, so a
+                // new holdable invalidates it. Without this the incoming weapon
+                // would be restored to the outgoing one's rest - the same class
+                // of bug as the s67 wrench-posed-as-a-pistol.
+                g_restValid = false;
+                g_restoreStartMs = 0;
+                BVR_LOG("[bones] holdable changed - forcing a fresh reference capture");
+            }
+        }
+
         // The state machine decides, when it can be read (hs/stateKnown/stateAllows
         // are read once per frame above). The movement threshold below stays as
         // the fallback for the window before the StateFrame offset is derived,
         // and for anything the table cannot name.
         bool captureRest = false;
         bool adopt = true;
-        if (g_capArmed) {
-            if (stateKnown) {
-                // The engine says when the equip is over. Track until it does,
-                // so an animation longer than any timer still plays out in full.
-                if (hs == hands_state::State::Idling) {
-                    // FREEZE HERE, CAPTURE LATER. The two things s68c-g kept
-                    // conflating are separable, and the tester's clue separates
-                    // them:
-                    //
-                    //   "when the 2nd plasmid reached its broken state, switching
-                    //    to the other plasmid fixed the position of both" - on the
-                    //    build that WAITED. So the settled capture is the CORRECT
-                    //    pose; waiting is not the mistake.
-                    //   "1 cycle animation ... fixed" - on the build that captured
-                    //    at this edge. So ADOPTING while waiting is the mistake:
-                    //    g_ref tracking the engine live is what plays the idle
-                    //    fidget into the rig.
-                    //
-                    // So: stop adopting AT the edge (the rig holds still, no idle
-                    // animation reaches it), keep the arm alive, and take ONE
-                    // snapshot once the engine's own pose has stopped moving. The
-                    // existing rest-restore blend then eases the rig from the
-                    // frozen equip pose onto that settled pose, so the correction
-                    // arrives as a short settle rather than a pop - and the fidget
-                    // is never followed, only its endpoint is taken.
-                    adopt = false;
-                    // A FIXED DELAY, because stillness is not available here.
-                    //
-                    // Measured 03:17 with a correct probe: the WEAPON cluster
-                    // settles in 157-265 ms, but the PLASMID cluster takes 2156 ms
-                    // and lands at 1.24 deg against a 1.5 deg threshold - where the
-                    // idle envelope is +-1.2 deg (session 20). A plasmid rig never
-                    // actually goes still; the idle fidget keeps it moving, so the
-                    // test crosses its threshold essentially at random and the
-                    // capture instant is a coin flip. Probing PROPERLY therefore
-                    // made it worse than probing the wrong bone: "sometimes early"
-                    // became "any time at all".
-                    //
-                    // The build the tester called almost perfect used a fixed
-                    // 1200 ms timer, whose only failure was firing before the equip
-                    // had finished. Anchoring the same idea to the Idling EDGE
-                    // removes that failure - the equip is over by definition once
-                    // the engine reports Idling - and leaves a deterministic,
-                    // race-free instant that is identical for every plasmid.
-                    const uint64_t nowCap = GetTickCount64();
-                    if (!g_capIdlingAtMs) {
-                        g_capIdlingAtMs = nowCap;
-                        BVR_LOG("[bones] equip done (engine reports Idling) - rig FROZEN "
-                                "here so no idle animation is followed into it; snapshot "
-                                "in %u ms.",
-                                g_capEquipDelayMs.load(std::memory_order_relaxed));
-                    }
-                    if (nowCap - g_capIdlingAtMs >=
-                        g_capEquipDelayMs.load(std::memory_order_relaxed)) {
-                        memcpy(g_restoreFrom, g_ref,
-                               sizeof(Qts) * static_cast<size_t>(g_boneCount));
-                        adopt = true;      // ONE frame - the snapshot, not adoption
-                        captureRest = true;
-                        g_capArmed = false;
-                        g_capIdlingAtMs = 0;
-                        g_capBlendPending = true;
-                        BVR_LOG("[bones] snapshot taken %u ms after Idling (%llu ms after the "
-                                "switch) - one frame, not adoption.",
-                                g_capEquipDelayMs.load(std::memory_order_relaxed),
-                                static_cast<unsigned long long>(nowCap - g_capArmedMs));
-                    }
-                } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
-                    // Idling never arrived. Stop rather than adopt forever, and
-                    // SAY SO - a silent expiry here is exactly the failure mode
-                    // the old fixed timer had.
-                    adopt = false;
-                    g_capArmed = false;
-                    g_capIdlingAtMs = 0;
-                    BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
-                            "reference left as-is. If the pose looks wrong, this line is "
-                            "why.",
-                            static_cast<unsigned long long>(kCapArmTimeoutMs),
-                            hands_state::to_string(hs));
-                } else {
-                    adopt = true; // still equipping
-                }
-            } else {
-                // No state machine yet (the offset is derived once, early). Fall
-                // back to the old fixed window rather than tracking forever.
-                adopt = (GetTickCount64() - g_lastBigDeltaMs) <
-                        g_swaySettleMs.load(std::memory_order_relaxed);
-                if (!adopt) g_capArmed = false;
-            }
+        if (s_forceCapture) {
+            // Track until the rig settles, then this weapon's own pose is in.
+            adopt = (GetTickCount64() - g_lastBigDeltaMs) <
+                    g_swaySettleMs.load(std::memory_order_relaxed);
+            if (!adopt) s_forceCapture = false;
         } else if (g_refValid && stateKnown) {
             // Named state: obey the mask, and skip the threshold entirely.
             adopt = g_animAllowed.load(std::memory_order_relaxed) && stateAllows;
@@ -2266,12 +2073,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // weighted-random idle anim every time the state's loop comes
             // round). The equip settle above has to have finished first, or
             // the "rest" would be a frame of the equip animation.
-            // NOT gated on g_animAllowed. s68 gated it, and that is what left the
-            // WRENCH (animOn=0) with no rest and no capture at all beyond the old
-            // timer's guess - "super off with a massive pivot on launch". Whether
-            // a weapon FOLLOWS its firing animation and whether it gets a correct
-            // resting pose are different questions; only the first is animOn's.
-            if (!adopt && !g_restValid && hs == hands_state::State::Idling) {
+            if (!adopt && !g_restValid && hs == hands_state::State::Idling &&
+                g_animAllowed.load(std::memory_order_relaxed)) {
                 adopt = true;
                 captureRest = true;
             }
@@ -2379,18 +2182,6 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 memcpy(g_rest, g_ref, sizeof(Qts) * static_cast<size_t>(g_boneCount));
                 g_restValid = true;
                 g_restoreStartMs = 0;
-                // s68h: the equip snapshot is a JUMP - the rig was frozen at the
-                // equip pose while the engine eased into idle, so g_ref just moved
-                // in one step. Hand it to the rest-restore blend (g_restoreFrom was
-                // filled with the frozen pose at the snapshot) so it arrives as a
-                // short settle instead of a pop. Same easing the recoil recovery
-                // uses; no new machinery.
-                if (g_capBlendPending) {
-                    g_capBlendPending = false;
-                    if (g_restRestore.load(std::memory_order_relaxed) &&
-                        g_restBlendMs.load(std::memory_order_relaxed) > 0)
-                        g_restoreStartMs = GetTickCount64();
-                }
                 BVR_LOG("[b1r] RESTREF: canonical rest pose captured during Idling for this "
                         "holdable (%d bones). Animations that end now snap back to THIS, "
                         "instead of freezing wherever the state boundary caught them.",
@@ -3139,18 +2930,6 @@ void handle_command(const char* args) {
                 g_swayAngThreshDeg.load(std::memory_order_relaxed),
                 g_swayPosThreshUu.load(std::memory_order_relaxed),
                 g_swaySettleMs.load(std::memory_order_relaxed));
-    } else if (strcmp(verb, "equipdelay") == 0) {
-        unsigned ms = 0;
-        if (sscanf_s(rest, "%u", &ms) == 1) {
-            if (ms > 3000) ms = 3000;
-            g_capEquipDelayMs.store(ms, std::memory_order_relaxed);
-        }
-        BVR_LOG("[bones] equip snapshot delay = %u ms after the engine reports Idling. "
-                "The rig is frozen for that window, so raising it costs nothing visually - "
-                "it only delays when this holdable's reference pose is sampled. RAISE it if "
-                "a weapon or plasmid settles into the wrong place; LOWER it if the pose "
-                "visibly corrects itself a moment after you equip.",
-                g_capEquipDelayMs.load(std::memory_order_relaxed));
     } else if (strcmp(verb, "rest") == 0) {
         // "rest on|off | rest ms <n> | rest drop | rest" (status)
         if (strncmp(rest, "on", 2) == 0) {
@@ -3428,19 +3207,6 @@ void draw_debug_ui() {
                 "reload.\n\n"
                 "On: ease back to the canonical pose captured during Idling.\n"
                 "Off: the s67 behaviour, for comparison.");
-        int ed = static_cast<int>(g_capEquipDelayMs.load(std::memory_order_relaxed));
-        if (ImGui::SliderInt("equip snapshot delay (ms after Idling)", &ed, 0, 2000))
-            g_capEquipDelayMs.store(static_cast<unsigned>(ed < 0 ? 0 : ed),
-                                    std::memory_order_relaxed);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "When a weapon or plasmid is equipped, the rig FREEZES at the equip\n"
-                "pose and its reference is sampled this long afterwards.\n\n"
-                "The freeze is why no idle animation plays on equip. The delay is\n"
-                "how long the engine gets to finish easing into its idle pose\n"
-                "before we sample it.\n\n"
-                "Wrong position after equipping -> RAISE it.\n"
-                "Pose visibly corrects itself a moment after equipping -> LOWER it.");
         int rb = static_cast<int>(g_restBlendMs.load(std::memory_order_relaxed));
         if (ImGui::SliderInt("return blend (ms, 0 = snap)", &rb, 0, 500))
             set_rest_blend_ms(static_cast<unsigned>(rb < 0 ? 0 : rb));

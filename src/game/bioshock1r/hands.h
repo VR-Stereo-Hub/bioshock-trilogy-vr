@@ -147,13 +147,6 @@ bool current_holdable(void** out);
 // cosmetic suppression and must fail towards the crosshair being shown.
 bool armed();
 
-// s68c: the equipped PLASMID actor, from Hands.CurrentAbility. Abilities live in
-// their own slot, which is why current_holdable() reads NULL with a plasmid up.
-// This is the per-plasmid identity the viewmodel drive needs to notice one
-// plasmid replacing another. False when the rig is unreadable; *out null means
-// no plasmid equipped.
-bool current_ability(void** out);
-
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.

@@ -5,7 +5,6 @@
 
 #include <windows.h>
 
-#include <atomic>
 #include <cstring>
 
 namespace bvr::b1r::hands_state {
@@ -18,39 +17,38 @@ namespace {
 struct StateRow {
     const wchar_t* name;
     State state;
-    bool ability; // s68b: a PLASMID state, not a weapon one - see the header
 };
 const StateRow kStates[] = {
-    {L"HandsOffscreen", State::Offscreen, false},
-    {L"WeaponIdling", State::Idling, false},
-    {L"WeaponZoomedIdling", State::Idling, false},
-    {L"AbilityIdling", State::Idling, true},
-    {L"AbilityGenericIdling", State::Idling, true},
-    {L"WeaponEquipping", State::Equipping, false},
-    {L"AbilityFastEquipping", State::Equipping, true},
-    {L"AbilitySlowEquipping", State::Equipping, true},
-    {L"AbilityGenericEquipping", State::Equipping, true},
-    {L"WeaponUnEquipping", State::UnEquipping, false},
-    {L"AbilityFastUnEquipping", State::UnEquipping, true},
-    {L"AbilitySlowUnEquipping", State::UnEquipping, true},
-    {L"AbilityGenericUnEquipping", State::UnEquipping, true},
-    {L"WeaponFiring", State::Firing, false},
-    {L"WeaponZoomedFiring", State::Firing, false},
-    {L"AbilityFiring", State::Firing, true},
-    {L"PostWeaponFiring", State::PostFiring, false},
-    {L"PostWeaponZoomedFiring", State::PostFiring, false},
-    {L"FinishAbilityFiringWithEve", State::PostFiring, true},
-    {L"FinishAbilityFiringWithoutEve", State::PostFiring, true},
-    {L"WeaponReloading", State::Reloading, false},
-    {L"ProceduralWeaponReloading", State::Reloading, false},
-    {L"WeaponZoomingIn", State::Zooming, false},
-    {L"WeaponZoomingOut", State::Zooming, false},
-    {L"PlayingScriptedHandAnimation", State::Scripted, false},
-    {L"InjectingEve", State::Scripted, true},
-    {L"UsingGathererTool", State::Scripted, false},
-    {L"ExorcisingGatherer", State::Scripted, false},
-    {L"ProceduralLoweringHands", State::Scripted, false},
-    {L"TransitionalState", State::Unknown, false},
+    {L"HandsOffscreen", State::Offscreen},
+    {L"WeaponIdling", State::Idling},
+    {L"WeaponZoomedIdling", State::Idling},
+    {L"AbilityIdling", State::Idling},
+    {L"AbilityGenericIdling", State::Idling},
+    {L"WeaponEquipping", State::Equipping},
+    {L"AbilityFastEquipping", State::Equipping},
+    {L"AbilitySlowEquipping", State::Equipping},
+    {L"AbilityGenericEquipping", State::Equipping},
+    {L"WeaponUnEquipping", State::UnEquipping},
+    {L"AbilityFastUnEquipping", State::UnEquipping},
+    {L"AbilitySlowUnEquipping", State::UnEquipping},
+    {L"AbilityGenericUnEquipping", State::UnEquipping},
+    {L"WeaponFiring", State::Firing},
+    {L"WeaponZoomedFiring", State::Firing},
+    {L"AbilityFiring", State::Firing},
+    {L"PostWeaponFiring", State::PostFiring},
+    {L"PostWeaponZoomedFiring", State::PostFiring},
+    {L"FinishAbilityFiringWithEve", State::PostFiring},
+    {L"FinishAbilityFiringWithoutEve", State::PostFiring},
+    {L"WeaponReloading", State::Reloading},
+    {L"ProceduralWeaponReloading", State::Reloading},
+    {L"WeaponZoomingIn", State::Zooming},
+    {L"WeaponZoomingOut", State::Zooming},
+    {L"PlayingScriptedHandAnimation", State::Scripted},
+    {L"InjectingEve", State::Scripted},
+    {L"UsingGathererTool", State::Scripted},
+    {L"ExorcisingGatherer", State::Scripted},
+    {L"ProceduralLoweringHands", State::Scripted},
+    {L"TransitionalState", State::Unknown},
 };
 
 // The search windows. UE2 keeps FStateFrame near the top of UObject and
@@ -100,32 +98,6 @@ const StateRow* state_row_of(const void* maybeState) {
 } // namespace
 
 bool located() { return g_located; }
-
-// s68b cache. active_hand() is called from more than one thread and has no actor
-// pointer; these give it an answer without either. Staleness is the whole safety
-// property: if the drive stops running the flag must not keep asserting "plasmid".
-std::atomic<bool> g_lastAbility{false};
-std::atomic<unsigned long long> g_lastAbilityMs{0};
-constexpr unsigned long long kAbilityCacheMs = 500;
-
-bool current_is_ability(const void* handsActor) {
-    if (!g_located || !handsActor) return false;
-    const void* frame = nullptr;
-    if (!read_at(handsActor, g_stateFrameOff, &frame)) return false;
-    const void* node = nullptr;
-    if (!read_at(frame, g_stateNodeOff, &node) || !node) return false;
-    const StateRow* row = state_row_of(node);
-    if (!row) return false;
-    g_lastAbility.store(row->ability, std::memory_order_relaxed);
-    g_lastAbilityMs.store(GetTickCount64(), std::memory_order_relaxed);
-    return row->ability;
-}
-
-bool last_ability() {
-    const unsigned long long at = g_lastAbilityMs.load(std::memory_order_relaxed);
-    if (!at || GetTickCount64() - at > kAbilityCacheMs) return false;
-    return g_lastAbility.load(std::memory_order_relaxed);
-}
 
 const char* to_string(State s) {
     switch (s) {
@@ -192,13 +164,6 @@ State current(const void* handsActor) {
     // between transitions. Report Unknown rather than inventing one.
     if (!node) return State::Unknown;
     const StateRow* row = state_row_of(node);
-    // s68b: refresh the ability cache from here too. bones::drive() calls this
-    // every frame and current_is_ability() has no other regular caller, so this
-    // is what actually keeps last_ability() fresh.
-    if (row) {
-        g_lastAbility.store(row->ability, std::memory_order_relaxed);
-        g_lastAbilityMs.store(GetTickCount64(), std::memory_order_relaxed);
-    }
     return row ? row->state : State::Unknown;
 }
 
