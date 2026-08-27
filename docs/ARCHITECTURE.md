@@ -2406,3 +2406,65 @@ model offset, view placement and aim trim are each one value for every plasmid.
 The F10 sliders' L/R radio is the whole tuning surface for them; the numpad tuner
 stays the WEAPON hand's tuner, which is why it now writes index 1 rather than the
 old shared index 0.
+
+### 2026-08-27 (session 68) - the plasmid had no key, so it wore the weapon's profile
+
+**The engine parks `Hands.CurrentHoldable` at NULL while a PLASMID is equipped.**
+That one fact produced two defects that looked unrelated, and it is why the s68
+per-hand placement fix - correct in itself - did not cure the reported symptom.
+
+The proof is in the log, not in reasoning. Every plasmid switch prints bones'
+`wscale rigid: released (holdable gone)`, whose test is literally `!hold`, and
+prints **no `[aim] weapon profile ... applied` line at all**. `update_weapon_profile()`
+turned that null into an EMPTY key, and `apply_weapon_key()` dropped an empty key
+on the floor with `if (key.empty()) return;` - no log, nothing applied. So the
+outgoing WEAPON's entire profile stayed live: aim trim, placement, grip, and
+`animOn`.
+
+Both reports fall out of that:
+
+- *"the plasmids move to a different position after switching to a weapon and
+  switching back"* - they were wearing the weapon's profile, because nothing had
+  replaced it.
+- *"the animations aren't playing for the plasmids"* - `bones::set_anim_allowed()`
+  is one global, and the WRENCH sets it to 0. After a wrench, the gate stayed shut
+  and nothing reopened it. The run that reported this shows wrench<->plasmid
+  switching throughout.
+
+**The rule: a silent early return on a "nothing here" value is a bug waiting for a
+second meaning.** `key.empty()` meant "unresolvable" when it was written; the
+plasmid then made it also mean "a plasmid is equipped", and the branch could not
+tell them apart because it did nothing and said nothing either way. Both now have
+a name - `"Plasmid"` is a real profile key, and the genuinely-unknown case logs
+that the previous profile is still applied.
+
+**One key for every plasmid**, not one per plasmid (tester's call, 2026-08-27), so
+they share one position and one crosshair.
+
+**And a method note.** The first fix this session went in on a diagnosis that fit
+the symptom perfectly - a shared global behind a per-instance setting, which was
+also real and is also fixed - but was never checked against a log. The log had the
+answer the whole time, in a line about a scale lane that nobody would think to
+grep for. **Read the run before designing the fix, and grep for the absence of the
+line you expect, not just for the presence of the one you fear.**
+
+### 2026-08-27 (session 68) - the default profiles were scrambled twice over
+
+`seed_default_profiles()` wrote bare aggregate initialisers in the order given by
+the comment above it - trim, pos, animOn, view, grip, model - while `WeaponProfile`
+declares grip BEFORE view and `animOn` AFTER both. Every field past `posUp` was
+silently assigned to the wrong member. The Wrench ended up with `animOn = -16.70`:
+nonzero, so its animation gate read as ON, which is the one thing it must not be.
+
+Underneath it, a stale duplicate block re-assigned all eight weapons with FIVE
+values each. Aggregate init zero-fills the remainder, so grip, view, `animOn` and
+the model trims all went to zero and the second block won. **A fresh install had
+no recoil on any weapon and no placement on any of them.**
+
+Neither bug could be seen by anyone whose `weapons.ini` already overrode every
+field by name - which is every machine this has ever been tested on. The tester's
+own tuning file was hiding the shipping defaults.
+
+Now designated initialisers, which cannot drift out of order again. **When a
+struct's field order is load-bearing for a literal, name the fields** - the
+compiler is the only reader that will reliably notice.

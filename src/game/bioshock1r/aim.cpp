@@ -980,7 +980,16 @@ void apply_weapon_key(const std::string& key, const char* why) {
         std::lock_guard<std::mutex> lock(g_weaponKeyUiMutex);
         strcpy_s(g_weaponKeyUi, key.empty() ? "-" : key.c_str());
     }
-    if (key.empty()) return;
+    if (key.empty()) {
+        // s68: a genuinely UNKNOWN holdable (the rig itself unreadable). This is
+        // no longer the plasmid case - that resolves to "Plasmid" below - so it
+        // is rare, and it is worth saying out loud rather than silently leaving
+        // the previous weapon's whole profile applied, which is what it does.
+        BVR_LOG("[aim] holdable unresolved - profile UNCHANGED, '%s' stays applied "
+                "(%s). Slider edits will land in that profile.",
+                g_weaponKeyUi, why);
+        return;
+    }
     ++g_weaponSwaps;
     auto it = g_weaponProfiles.find(key);
     if (it == g_weaponProfiles.end()) {
@@ -1103,14 +1112,43 @@ void update_weapon_profile(const FrameContext& ctx) {
         }
     }
     if (haveRig || w) g_weaponScanMisses = 0;
-    if (w == g_weaponKeyActor) return;
+    if (w == g_weaponKeyActor && !(haveRig && !w && g_weaponKey.empty())) return;
     g_weaponKeyActor = w;
-    const wchar_t* name = w ? patterns::object_class_name(w) : nullptr;
-    if (w && !name)
-        BVR_LOG("[aim] holdable %p has NO resolvable class name - profile key cleared, "
-                "slider edits will touch no profile until it resolves",
-                w);
-    apply_weapon_key(name ? narrow_key(name) : std::string(), "weapon change");
+
+    // ---- s68 THE PLASMID KEY ------------------------------------------------
+    // The engine parks `Hands.CurrentHoldable` at NULL while a PLASMID is
+    // equipped - proven by the log, where every plasmid switch prints bones'
+    // "wscale rigid: released (holdable gone)" (its test is `!hold`) and no
+    // profile line at all. The old code turned that null into an EMPTY key,
+    // which apply_weapon_key() dropped on the floor: nothing was applied, so
+    // the outgoing WEAPON's entire profile stayed live - its aim trim, its
+    // placement, its grip, and critically its animOn.
+    //
+    // That is both defects the tester reported in one mechanism:
+    //   - the plasmids "move to a different position after switching to a
+    //     weapon and switching back" - they were wearing the weapon's profile;
+    //   - "the animations aren't playing for the plasmids" - after the WRENCH
+    //     (animOn=0) the gate stayed shut, and nothing reopened it. The log
+    //     shows wrench<->plasmid switching throughout the run that reported it.
+    //
+    // A null holdable during a gameplay view means a plasmid: this function is
+    // already gated on g_gameplayView, and in BS1 gameplay the hands always hold
+    // something. ONE key for every plasmid, which is the tester's call - "global,
+    // not per plasmid" - so all of them share one position and one crosshair.
+    std::string key;
+    const char* why = "weapon change";
+    if (haveRig && !w) {
+        key = "Plasmid";
+        why = "plasmid equipped (CurrentHoldable null)";
+    } else {
+        const wchar_t* name = w ? patterns::object_class_name(w) : nullptr;
+        if (w && !name)
+            BVR_LOG("[aim] holdable %p has NO resolvable class name - profile key cleared, "
+                    "slider edits will touch no profile until it resolves",
+                    w);
+        if (name) key = narrow_key(name);
+    }
+    apply_weapon_key(key, why);
 }
 
 // DEFAULT PROFILES = the tester's calibrated set. Refreshed s67 after the
@@ -1133,22 +1171,97 @@ void update_weapon_profile(const FrameContext& ctx) {
 // Seeded BEFORE weapons.ini loads, so a user's own file always overrides,
 // key by key.
 void seed_default_profiles() {
-    g_weaponProfiles["ChemicalThrower"] = {0.83f, -9.20f, 0.93f, -0.43f, -9.78f, 1.00f, 0.00f, 0.00f, 15.00f, 42.00f, 14.70f, 1.00f, 0.00f, 0.00f, 0.00f};
-    g_weaponProfiles["Crossbow"] = {0.83f, -9.20f, 0.00f, -4.40f, 11.00f, 1.00f, 0.00f, 0.00f, 15.00f, 44.00f, 14.70f, -21.00f, 0.00f, 0.00f, 0.00f};
-    g_weaponProfiles["GrenadeLauncher"] = {0.83f, -9.20f, 0.00f, -2.80f, 7.50f, 1.00f, 0.00f, 0.00f, 15.00f, 24.00f, 16.70f, -15.00f, 0.00f, 0.00f, 0.00f};
-    g_weaponProfiles["MachineGun"] = {0.83f, -9.70f, 0.00f, -3.50f, 13.10f, 1.00f, 1.50f, 0.50f, 12.00f, 52.00f, 17.00f, -14.70f, -0.50f, -9.00f, -1.00f};
-    g_weaponProfiles["Pistol"] = {0.83f, -9.70f, -0.70f, -2.06f, 18.71f, 1.00f, 2.00f, 0.00f, 11.00f, 44.00f, 16.70f, -15.40f, 0.00f, -8.00f, 0.00f};
-    g_weaponProfiles["ResearchCamera"] = {0.83f, -9.20f, 0.00f, -2.80f, 7.50f, 1.00f, 0.00f, 0.00f, 15.00f, 44.00f, 14.70f, -13.00f, 0.00f, 0.00f, 0.00f};
-    g_weaponProfiles["Shotgun"] = {-3.17f, -6.20f, 0.00f, -2.76f, 7.50f, 1.00f, 2.50f, 1.00f, 6.00f, 16.00f, 11.80f, -11.80f, -2.00f, -8.00f, 0.00f};
-    g_weaponProfiles["Wrench"] = {-6.67f, -14.70f, 0.00f, -2.80f, 7.50f, 0.00f, -4.00f, -2.00f, 15.00f, 58.00f, 18.30f, -16.70f, -12.00f, -16.00f, -18.00f};
-    g_weaponProfiles["ChemicalThrower"] = {0.00f, -8.17f, 0.93f, -0.43f, -9.78f};
-    g_weaponProfiles["Crossbow"] = {0.23f, -6.65f, 0.00f, -4.40f, 11.00f};
-    g_weaponProfiles["GrenadeLauncher"] = {0.00f, 0.00f, 0.00f, -2.80f, 7.50f};
-    g_weaponProfiles["MachineGun"] = {2.80f, -1.17f, 0.00f, -3.50f, 13.10f};
-    g_weaponProfiles["Pistol"] = {-1.17f, -4.20f, -0.70f, -2.06f, 18.71f};
-    g_weaponProfiles["ResearchCamera"] = {0.00f, 0.00f, 0.00f, -2.80f, 7.50f};
-    g_weaponProfiles["Shotgun"] = {0.00f, 0.00f, 0.00f, -2.76f, 7.50f};
-    g_weaponProfiles["Wrench"] = {0.00f, 0.00f, 0.00f, -2.80f, 7.50f};
+    // s68: DESIGNATED INITIALISERS, and that is the point of this rewrite.
+    //
+    // These rows used to be bare aggregate lists written in the order the comment
+    // above gives (trim, pos, animOn, view, grip, model) while the STRUCT declares
+    // grip BEFORE view and animOn AFTER both - so every field past posUp was
+    // silently assigned to the wrong member. The Wrench came out with
+    // animOn = -16.70: nonzero, so its animation gate read as ON, which is the one
+    // thing it must not be. Every weapon's grip and placement were scrambled into
+    // each other besides.
+    //
+    // Worse, a stale duplicate block underneath re-assigned all eight with FIVE
+    // values each, and aggregate init zero-fills the rest - grip, view, animOn and
+    // the model trims all went to zero, so a FRESH INSTALL had no recoil on any
+    // weapon at all. Both bugs were invisible to anyone whose weapons.ini already
+    // overrode every field by name, which is how they survived s67 and a headset
+    // run: the tester's own file was hiding them.
+    //
+    // Named initialisers cannot drift out of order again. The values are the
+    // tester's calibrated set, transcribed from their weapons.ini - which is what
+    // the live tuning writes, and therefore the ground truth.
+    //
+    // Seeded BEFORE weapons.ini loads, so a user's own file always overrides,
+    // key by key.
+    //
+    // "Plasmid" is s68 and is ONE key for EVERY plasmid - the tester's call,
+    // "global, not per plasmid". See resolve_holdable_key() for why a plasmid
+    // needs a key at all: the engine parks Hands.CurrentHoldable at NULL while
+    // one is equipped, which used to leave the last WEAPON's profile applied.
+    g_weaponProfiles["ChemicalThrower"] = {
+        .trimPitch = 0.83f, .trimYaw = -9.20f,
+        .posFwd = 0.93f, .posRight = -0.43f, .posUp = -9.78f,
+        .gripFwd = 42.00f, .gripRight = 14.70f, .gripUp = 1.00f,
+        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 15.00f,
+        .animOn = 1.00f,
+        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
+    g_weaponProfiles["Crossbow"] = {
+        .trimPitch = 0.83f, .trimYaw = -9.20f,
+        .posFwd = 0.00f, .posRight = -4.40f, .posUp = 11.00f,
+        .gripFwd = 44.00f, .gripRight = 14.70f, .gripUp = -21.00f,
+        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 15.00f,
+        .animOn = 1.00f,
+        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
+    g_weaponProfiles["GrenadeLauncher"] = {
+        .trimPitch = 0.83f, .trimYaw = -9.20f,
+        .posFwd = 0.00f, .posRight = -2.80f, .posUp = 7.50f,
+        .gripFwd = 24.00f, .gripRight = 16.70f, .gripUp = -15.00f,
+        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 15.00f,
+        .animOn = 1.00f,
+        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
+    g_weaponProfiles["MachineGun"] = {
+        .trimPitch = 0.83f, .trimYaw = -9.70f,
+        .posFwd = 0.00f, .posRight = -3.50f, .posUp = 13.10f,
+        .gripFwd = 52.00f, .gripRight = 17.00f, .gripUp = -14.70f,
+        .viewFwd = 1.50f, .viewRight = 0.50f, .viewUp = 12.00f,
+        .animOn = 1.00f,
+        .modelPitch = -0.50f, .modelYaw = -9.00f, .modelRoll = -1.00f};
+    g_weaponProfiles["Pistol"] = {
+        .trimPitch = 0.83f, .trimYaw = -9.70f,
+        .posFwd = -0.70f, .posRight = -2.06f, .posUp = 18.71f,
+        .gripFwd = 44.00f, .gripRight = 16.70f, .gripUp = -15.40f,
+        .viewFwd = 2.00f, .viewRight = 0.00f, .viewUp = 11.00f,
+        .animOn = 1.00f,
+        .modelPitch = 0.00f, .modelYaw = -8.00f, .modelRoll = 0.00f};
+    g_weaponProfiles["ResearchCamera"] = {
+        .trimPitch = 0.83f, .trimYaw = -9.20f,
+        .posFwd = 0.00f, .posRight = -2.80f, .posUp = 7.50f,
+        .gripFwd = 44.00f, .gripRight = 14.70f, .gripUp = -13.00f,
+        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 15.00f,
+        .animOn = 1.00f,
+        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
+    g_weaponProfiles["Shotgun"] = {
+        .trimPitch = -3.17f, .trimYaw = -6.20f,
+        .posFwd = 0.00f, .posRight = -2.76f, .posUp = 7.50f,
+        .gripFwd = 16.00f, .gripRight = 11.80f, .gripUp = -11.80f,
+        .viewFwd = 2.50f, .viewRight = 1.00f, .viewUp = 6.00f,
+        .animOn = 1.00f,
+        .modelPitch = -2.00f, .modelYaw = -8.00f, .modelRoll = 0.00f};
+    g_weaponProfiles["Wrench"] = {
+        .trimPitch = -6.67f, .trimYaw = -14.70f,
+        .posFwd = 0.00f, .posRight = -2.80f, .posUp = 7.50f,
+        .gripFwd = 58.00f, .gripRight = 18.30f, .gripUp = -16.70f,
+        .viewFwd = -4.00f, .viewRight = -2.00f, .viewUp = 15.00f,
+        .animOn = 0.00f,
+        .modelPitch = -12.00f, .modelYaw = -16.00f, .modelRoll = -18.00f};
+    g_weaponProfiles["Plasmid"] = {
+        .trimPitch = -1.20f, .trimYaw = -4.20f,
+        .posFwd = -0.70f, .posRight = -2.10f, .posUp = 18.70f,
+        .gripFwd = 44.00f, .gripRight = 16.70f, .gripUp = -15.40f,
+        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 11.00f,
+        .animOn = 1.00f,
+        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
 }
 
 void weapons_ini_path(wchar_t* out, size_t count) {
