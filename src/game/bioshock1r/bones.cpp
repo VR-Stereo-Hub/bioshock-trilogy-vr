@@ -98,7 +98,13 @@ void* g_lastHoldable = nullptr;
 void* g_lastAbility = nullptr; // s68c: the plasmid half of the identity pair
 bool g_capArmed = false;
 uint64_t g_capArmedMs = 0;
-int g_capStillFrames = 0; // consecutive settled evaluations while armed
+int g_capStillFrames = 0;      // consecutive settled evaluations while armed
+uint64_t g_capStillSinceMs = 0; // when the pose first went still (0 = moving)
+// The engine evaluates the bone array on ~5% of frames, so these are in
+// WALL-CLOCK. Both are far under the 1200 ms the old fixed timer used, which is
+// the point: the timer was too blunt, but time was the right unit.
+constexpr uint64_t kCapSettleHoldMs = 350; // stillness must persist this long
+constexpr uint64_t kCapMinTrackMs = 200;   // never capture sooner than this
 hands_state::State g_capPrevState = hands_state::State::Unknown;
 // An equip that never reaches Idling must not adopt forever. Generous - the
 // slowest BS1 equip measured well under this - and it logs when it bites.
@@ -117,6 +123,7 @@ void rest_reset() {
     g_capArmed = false;
     g_capArmedMs = 0;
     g_capStillFrames = 0;
+    g_capStillSinceMs = 0;
     g_capPrevState = hands_state::State::Unknown;
 }
 
@@ -2078,6 +2085,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             if (!g_capArmed) g_capArmedMs = GetTickCount64();
             g_capArmed = true;
             g_capStillFrames = 0;
+            g_capStillSinceMs = 0;
             g_lastBigDeltaMs = GetTickCount64();
             // The rest pose is a property of WHAT YOU ARE HOLDING, so a new one
             // invalidates it - otherwise the incoming holdable is restored to the
@@ -2158,18 +2166,51 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         g_refValid &&
                         maxAng <= g_swayAngThreshDeg.load(std::memory_order_relaxed) &&
                         maxPos <= g_swayPosThreshUu.load(std::memory_order_relaxed);
-                    // TWO consecutive still evaluations, so a momentary plateau
-                    // part-way through an ease does not read as arrival.
-                    if (still && ++g_capStillFrames >= 2) {
-                        captureRest = true;
-                        g_capArmed = false;
+                    // STILLNESS MUST HOLD IN WALL-CLOCK, not for a count of
+                    // evaluations. Measured 2026-08-27: the engine re-evaluates
+                    // the bone array on about 5% of frames - 7 engineEval=1
+                    // against 127 engineEval=0 in one run - and irregularly. A
+                    // count of two therefore lands wherever the engine's cadence
+                    // happens to put it: sometimes after the ease, sometimes in
+                    // the middle of it. That is a RACE, and it is what "it was
+                    // really close earlier, but it would just break at a certain
+                    // point" actually was. Nothing about the holdable changed
+                    // between a good capture and a bad one; only the timing did.
+                    //
+                    // Wall-clock is immune to the evaluation rate, which is why
+                    // the fixed 1200 ms timer this replaced looked so much better
+                    // than it deserved to. Keep the evaluation count as a floor
+                    // (two samples minimum, so "still" is a comparison and not a
+                    // single reading) and put the real gate on time.
+                    const uint64_t nowSettle = GetTickCount64();
+                    if (!still) {
                         g_capStillFrames = 0;
-                        BVR_LOG("[bones] equip settled (%.2f deg / %.2f UU of drift left) - "
-                                "capturing here, not on the Idling edge: the idle anim "
-                                "eases in, so the edge is mid-blend.",
-                                maxAng, maxPos);
-                    } else if (!still) {
-                        g_capStillFrames = 0;
+                        g_capStillSinceMs = 0;
+                    } else {
+                        ++g_capStillFrames;
+                        if (!g_capStillSinceMs) g_capStillSinceMs = nowSettle;
+                        const bool heldLongEnough =
+                            nowSettle - g_capStillSinceMs >= kCapSettleHoldMs;
+                        // ...and never before the equip could plausibly have
+                        // started moving at all, or a pose that is still simply
+                        // because the animation has not begun reads as arrival.
+                        const bool pastMinimum =
+                            nowSettle - g_capArmedMs >= kCapMinTrackMs;
+                        if (g_capStillFrames >= 2 && heldLongEnough && pastMinimum) {
+                            captureRest = true;
+                            g_capArmed = false;
+                            g_capStillFrames = 0;
+                            g_capStillSinceMs = 0;
+                            BVR_LOG("[bones] equip settled: %.2f deg / %.2f UU of drift, "
+                                    "held still %llu ms across %d evaluations, %llu ms "
+                                    "after the switch - capturing the reference here.",
+                                    maxAng, maxPos,
+                                    static_cast<unsigned long long>(nowSettle -
+                                                                   g_capStillSinceMs),
+                                    g_capStillFrames,
+                                    static_cast<unsigned long long>(nowSettle -
+                                                                    g_capArmedMs));
+                        }
                     }
                 } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
                     // Idling never arrived. Stop rather than adopt forever, and
@@ -2178,6 +2219,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                     adopt = false;
                     g_capArmed = false;
                     g_capStillFrames = 0;
+                    g_capStillSinceMs = 0;
                     BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
                             "reference left as-is. If the pose looks wrong, this line is "
                             "why.",

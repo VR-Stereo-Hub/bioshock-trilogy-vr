@@ -2586,3 +2586,40 @@ reporting 0 for a plasmid, that made the tuner silently inert while one was
 equipped - "none of the numpad modes change anything for the plasmids". It now
 follows `active_hand()`. The tester cannot type mid-session, so an in-headset
 tuner that does nothing for half of what you can hold is not a small loss.
+
+### 2026-08-27 (session 68d) - the engine evaluates the bone array 5% of the time
+
+**Measured:** 7 `engineEval=1` against 127 `engineEval=0` in one run. The engine
+re-evaluates the hands bone array on roughly **one frame in nineteen**, and
+irregularly.
+
+Everything in `drive()` that reasons about "the pose changed" runs only on those
+frames, because the whole recapture block is gated on `engineEvaluated`. So a
+condition expressed as *a count of evaluations* is really a condition on the
+engine's scheduling, which nothing in this mod controls or observes.
+
+s68c's settle detector required "two consecutive settled evaluations". With
+evaluations that sparse, where those two land - after the equip ease or in the
+middle of it - is a RACE. That is the whole of "it was really close earlier, but
+it would just break at a certain point": nothing about the holdable differed
+between a good capture and a bad one, only the timing did. It also explains why
+one plasmid looked right and another looked wrong while sharing one profile and
+one code path, and why FOUR successive fixes to identity, hand, profile and
+capture-edge changed the symptom not at all - none of them was in the loop.
+
+**The unit matters more than the threshold.** The fixed 1200 ms timer this
+lineage started with was blunt and it froze mid-equip when an animation outran
+it - but it was in WALL-CLOCK, and wall-clock is immune to the evaluation rate.
+Replacing it with an evaluation count fixed the bluntness and imported a race.
+The settle now gates on time (stillness must persist 350 ms, and never capture
+within 200 ms of the switch) with the evaluation count kept only as a floor, so
+"still" is always a comparison and never a single reading.
+
+**The diagnostic lesson, which cost four rounds.** A symptom that is bit-identical
+across changes to four different subsystems is evidence that NONE of them is
+involved. That should have redirected the search after the second attempt; instead
+each round produced a new plausible mechanism, and plausibility kept winning over
+the fact that the evidence had not moved. **When a fix changes nothing at all,
+the next step is to instrument, not to theorise again** - and the instrument that
+finally answered it, `engineEval` on the ROLLCHECK line, had been printing in
+every log the whole time.
