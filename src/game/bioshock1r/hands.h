@@ -155,8 +155,13 @@ void save_offsets();
 // s67 view-frame placement (where the gun SITS; cannot create an orbit, unlike
 // the grip offset which is the pivot). Per weapon since s67 - the shotgun sits
 // differently in the hand from the pistol.
-void view_offset_cm(float* fwdCm, float* rightCm, float* upCm);
-void set_view_offset_cm(float fwdCm, float rightCm, float upCm);
+//
+// s68: and PER HAND. It was one global triple serving both hands while the
+// per-weapon profiles rewrote it from the RIGHT hand on every weapon change, so
+// switching to a gun and back left the left-hand PLASMIDS parked at the gun's
+// placement with nothing to restore them. hand 0 = left/plasmid, 1 = right/weapon.
+void view_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm);
+void set_view_offset_cm(int hand, float fwdCm, float rightCm, float upCm);
 
 // s67: re-apply the viewmodel rotation AFTER the game tick has reset it.
 //

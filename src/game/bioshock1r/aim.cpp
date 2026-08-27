@@ -965,7 +965,7 @@ void stash_active_profile() {
     p.posRight = g_posRightCm[1].load(std::memory_order_relaxed);
     p.posUp = g_posUpCm[1].load(std::memory_order_relaxed);
     hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
-    hands::view_offset_cm(&p.viewFwd, &p.viewRight, &p.viewUp);
+    hands::view_offset_cm(1, &p.viewFwd, &p.viewRight, &p.viewUp);
     p.animOn = bones::anim_allowed() ? 1.0f : 0.0f;
     p.modelPitch = hands::model_trim_pitch_deg(1);
     p.modelYaw = hands::model_trim_yaw_deg(1);
@@ -998,7 +998,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
                                               0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         if (!g_presetBaselineValid) {
             hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
-            hands::view_offset_cm(&p.viewFwd, &p.viewRight, &p.viewUp);
+            hands::view_offset_cm(1, &p.viewFwd, &p.viewRight, &p.viewUp);
             p.animOn = 1.0f;
             p.modelPitch = hands::model_trim_pitch_deg(1);
             p.modelYaw = hands::model_trim_yaw_deg(1);
@@ -1011,7 +1011,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
         g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
         g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
         hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
-        hands::set_view_offset_cm(p.viewFwd, p.viewRight, p.viewUp);
+        hands::set_view_offset_cm(1, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
         hands::set_model_trim_deg(1, p.modelPitch, p.modelYaw, p.modelRoll);
         BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): trim %.2f/%.2f pos "
@@ -1026,7 +1026,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
         g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
         g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
         hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
-        hands::set_view_offset_cm(p.viewFwd, p.viewRight, p.viewUp);
+        hands::set_view_offset_cm(1, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
         hands::set_model_trim_deg(1, p.modelPitch, p.modelYaw, p.modelRoll);
         BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f "
@@ -1219,7 +1219,7 @@ void note_preset_baseline() {
                         g_posUpCm[1].load(std::memory_order_relaxed), 0.0f, 0.0f, 0.0f};
     hands::model_offset_cm(1, &g_presetBaseline.gripFwd, &g_presetBaseline.gripRight,
                            &g_presetBaseline.gripUp);
-    hands::view_offset_cm(&g_presetBaseline.viewFwd, &g_presetBaseline.viewRight,
+    hands::view_offset_cm(1, &g_presetBaseline.viewFwd, &g_presetBaseline.viewRight,
                           &g_presetBaseline.viewUp);
     g_presetBaseline.animOn = 1.0f;
     g_presetBaseline.modelPitch = hands::model_trim_pitch_deg(1);

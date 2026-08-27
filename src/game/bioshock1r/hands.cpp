@@ -78,7 +78,17 @@ std::atomic<bool> g_offsetRoll{true};
 // left exactly where the grip offset put it.
 //
 // Two knobs, two jobs: gripOffset = where it pivots, viewOffset = where it sits.
-std::atomic<float> g_viewFwdCm{0.0f}, g_viewRightCm{0.0f}, g_viewUpCm{0.0f};
+//
+// s68: PER HAND, and that was a bug fix, not a tidy-up. This was one global
+// triple applied to BOTH hands while apply_weapon_key() rewrote it from the
+// RIGHT hand's weapon profile on every weapon change. Plasmids are the left
+// hand and have no weapon profile, so nothing ever put it back: switching to a
+// gun and back left both plasmids sitting at the gun's placement. The tester's
+// report names the shape exactly - "correct as I switch back and forth between
+// the plasmids, but then they BOTH get locked to another position when I switch
+// to a weapon and switch back". Both, because one global served both hands.
+std::atomic<float> g_viewFwdCm[2]{0.0f, 0.0f}, g_viewRightCm[2]{0.0f, 0.0f},
+    g_viewUpCm[2]{0.0f, 0.0f};
 
 // ---- s67 LATE ROTATION WRITE (BRVR S60, ported) --------------------------
 // BRVR's S59 readback measured the game tick running AFTER its CalcView write
@@ -112,16 +122,24 @@ std::atomic<int> g_autoHand{1};       // the latched auto choice
 // degrees, applied in the CONTROLLER'S LOCAL frame as a quaternion compose -
 // euler adds after conversion only behave at one controller orientation (the
 // first headset test's "pivot" bug).
-// Defaults are ZERO on purpose. The ideal pivot correction (pull the mesh's gun
-// to the controller, ~-100 cm forward) is CULLED: the engine drops the whole
-// rig the moment the actor origin goes behind the camera (live-proven - the
-// rig vanished with the origin 32 UU back). Forward pull is therefore limited
+// The RIGHT hand defaults are ZERO on purpose. The ideal pivot correction (pull
+// the mesh's gun to the controller, ~-100 cm forward) is CULLED: the engine drops
+// the whole rig the moment the actor origin goes behind the camera (live-proven -
+// the rig vanished with the origin 32 UU back). Forward pull is therefore limited
 // to roughly the controller's own distance from the face, and where that line
-// sits is the user's in-headset call, not a default.
-std::atomic<float> g_posFwdCm[2]{0.0f, 0.0f}, g_posRightCm[2]{0.0f, 0.0f},
-    g_posUpCm[2]{0.0f, 0.0f};
-std::atomic<float> g_rotPitchDeg[2]{0.0f, 0.0f}, g_rotYawDeg[2]{0.0f, 0.0f},
-    g_rotRollDeg[2]{0.0f, 0.0f};
+// sits is the user's in-headset call, not a default. The right hand is also the
+// one the per-weapon profiles drive, so a default here would only ever be the
+// value held for the half-second before the first weapon resolves.
+//
+// The LEFT hand is different on both counts, so s68 ships the tester's calibrated
+// PLASMID pose as the default: nothing per-weapon drives the left hand (there are
+// no per-plasmid profiles), so without a default it sits at zero until someone
+// tunes it by hand. These are the values from the tester's own hands.ini, taken
+// 2026-08-27 after the s68 headset run.
+std::atomic<float> g_posFwdCm[2]{45.50f, 0.0f}, g_posRightCm[2]{-14.90f, 0.0f},
+    g_posUpCm[2]{-12.30f, 0.0f};
+std::atomic<float> g_rotPitchDeg[2]{-111.00f, 0.0f}, g_rotYawDeg[2]{-16.00f, 0.0f},
+    g_rotRollDeg[2]{22.00f, 0.0f};
 
 std::atomic<bool> g_writeRot{true}; // rotation write can be disabled on its own
 int32_t g_probeLeft = 0;
@@ -474,12 +492,16 @@ void save_config() {
     fprintf(f, "# suffix-less key (posFwdCm=...) still loads and applies to BOTH hands.\n");
     fprintf(f, "mode=%d\n", g_mode.load(std::memory_order_relaxed));
     fprintf(f, "aimPose=%d\n", g_useAimPose.load(std::memory_order_relaxed) ? 1 : 0);
-    // View-frame placement: moves the rig without moving the pivot (see banner).
-    fprintf(f, "viewFwdCm=%.2f\n", g_viewFwdCm.load(std::memory_order_relaxed));
-    fprintf(f, "viewRightCm=%.2f\n", g_viewRightCm.load(std::memory_order_relaxed));
-    fprintf(f, "viewUpCm=%.2f\n", g_viewUpCm.load(std::memory_order_relaxed));
     for (int h = 0; h < 2; ++h) {
         const char* s = h == 0 ? "L" : "R";
+        // View-frame placement: moves the rig without moving the pivot (see the
+        // banner). Per hand since s68 - a suffix-less key from an older file
+        // still loads into BOTH, which is the right migration: it is exactly
+        // what the shared global used to mean.
+        fprintf(f, "viewFwdCm%s=%.2f\n", s, g_viewFwdCm[h].load(std::memory_order_relaxed));
+        fprintf(f, "viewRightCm%s=%.2f\n", s,
+                g_viewRightCm[h].load(std::memory_order_relaxed));
+        fprintf(f, "viewUpCm%s=%.2f\n", s, g_viewUpCm[h].load(std::memory_order_relaxed));
         fprintf(f, "posFwdCm%s=%.2f\n", s, g_posFwdCm[h].load(std::memory_order_relaxed));
         fprintf(f, "posRightCm%s=%.2f\n", s, g_posRightCm[h].load(std::memory_order_relaxed));
         fprintf(f, "posUpCm%s=%.2f\n", s, g_posUpCm[h].load(std::memory_order_relaxed));
@@ -526,9 +548,9 @@ void load_config() {
             g_mode.store(m < 0 ? 0 : m > 3 ? 3 : m, std::memory_order_relaxed);
         }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
-        else if (strcmp(key, "viewFwdCm") == 0) g_viewFwdCm.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "viewRightCm") == 0) g_viewRightCm.store(v, std::memory_order_relaxed);
-        else if (strcmp(key, "viewUpCm") == 0) g_viewUpCm.store(v, std::memory_order_relaxed);
+        else if (store_hand_key(key, "viewFwdCm", g_viewFwdCm, v)) {}
+        else if (store_hand_key(key, "viewRightCm", g_viewRightCm, v)) {}
+        else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
         else if (store_hand_key(key, "posFwdCm", g_posFwdCm, v)) {}
         else if (store_hand_key(key, "posRightCm", g_posRightCm, v)) {}
         else if (store_hand_key(key, "posUpCm", g_posUpCm, v)) {}
@@ -747,9 +769,9 @@ void tuner_log(const char* what) {
     if (g_tuneMode == kTuneModePos)
         BVR_LOG("[hands] numpad: %s %s PLACEMENT fwd %+.1f right %+.1f up %+.1f cm "
                 "(step %.1f) - where the gun SITS; per weapon; cannot cause an orbit",
-                wk, what, g_viewFwdCm.load(std::memory_order_relaxed),
-                g_viewRightCm.load(std::memory_order_relaxed),
-                g_viewUpCm.load(std::memory_order_relaxed), g_tuneStep);
+                wk, what, g_viewFwdCm[1].load(std::memory_order_relaxed),
+                g_viewRightCm[1].load(std::memory_order_relaxed),
+                g_viewUpCm[1].load(std::memory_order_relaxed), g_tuneStep);
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
         aim::aim_trim_deg(1, &cp, &cy);
@@ -871,15 +893,15 @@ void poll_numpad_tuner() {
             // BRVR values and be left alone.
             std::atomic<float>* dst =
                 (g_tuneMode == kTuneModePos)
-                    ? (kBinds[i].axis == 0 ? &g_viewFwdCm : kBinds[i].axis == 1 ? &g_viewRightCm
-                                                                               : &g_viewUpCm)
+                    ? (kBinds[i].axis == 0 ? g_viewFwdCm : kBinds[i].axis == 1 ? g_viewRightCm
+                                                                              : g_viewUpCm)
                     : (kBinds[i].axis == 0 ? g_rotPitchDeg : kBinds[i].axis == 1 ? g_rotYawDeg
                                                                                  : g_rotRollDeg);
-            // The rotation arrays are per-hand (index 1 = right); the view
-            // placement is a single triple, so it is always index 0.
-            // The view placement is a single triple (index 0); the grip and
-            // rotation arrays are per-hand, index 1 = right.
-            const int di = (g_tuneMode == kTuneModePos) ? 0 : 1;
+            // Every one of these is now a per-hand array, index 1 = right. The
+            // numpad tuner is the WEAPON hand's tuner by design (it is what the
+            // hand on the controller is holding while tuning); the left hand's
+            // equivalents are the F10 sliders, which follow the L/R radio.
+            const int di = 1;
             dst[di].store(dst[di].load(std::memory_order_relaxed) + d, std::memory_order_relaxed);
             moved = true;
         }
@@ -1228,9 +1250,10 @@ void on_calcview(const FrameContext& ctx) {
     // however the wrist is turned. Roll is dropped - the camera's own roll must
     // not tip the viewmodel's placement.
     {
-        const float vf = g_viewFwdCm.load(std::memory_order_relaxed);
-        const float vr = g_viewRightCm.load(std::memory_order_relaxed);
-        const float vu = g_viewUpCm.load(std::memory_order_relaxed);
+        const int vh = hand & 1; // s68: per hand - the plasmid sits differently
+        const float vf = g_viewFwdCm[vh].load(std::memory_order_relaxed);
+        const float vr = g_viewRightCm[vh].load(std::memory_order_relaxed);
+        const float vu = g_viewUpCm[vh].load(std::memory_order_relaxed);
         if (vf != 0.0f || vr != 0.0f || vu != 0.0f) {
             FRotator camRot{ctx.camPitch, ctx.camYaw, 0};
             float cf[3], cr[3], cu[3];
@@ -1334,18 +1357,28 @@ void handle_command(const char* args) {
                               "NOT the small mode-2 numbers - see the sign note in on_calcview)"
                             : "BONES (M7-v2: hand cluster follows the controller)");
     } else if (strcmp(verb, "viewpos") == 0) {
+        // s68: "viewpos [l|r] <fwd> <right> <up>". The hand is optional and
+        // defaults to RIGHT, which is what the command has always meant - the
+        // triple only became per-hand when the plasmids turned out to be sharing
+        // the weapon's copy of it.
+        const char* p2 = rest;
+        int vh = 1;
+        if (*p2 == 'l' || *p2 == 'L') { vh = 0; ++p2; }
+        else if (*p2 == 'r' || *p2 == 'R') { vh = 1; ++p2; }
+        while (*p2 == ' ' || *p2 == '	') ++p2;
         float vf = 0.0f, vr = 0.0f, vu = 0.0f;
-        if (sscanf_s(rest, "%f %f %f", &vf, &vr, &vu) == 3) {
-            g_viewFwdCm.store(vf, std::memory_order_relaxed);
-            g_viewRightCm.store(vr, std::memory_order_relaxed);
-            g_viewUpCm.store(vu, std::memory_order_relaxed);
+        if (sscanf_s(p2, "%f %f %f", &vf, &vr, &vu) == 3) {
+            g_viewFwdCm[vh].store(vf, std::memory_order_relaxed);
+            g_viewRightCm[vh].store(vr, std::memory_order_relaxed);
+            g_viewUpCm[vh].store(vu, std::memory_order_relaxed);
             save_offsets();
         }
-        BVR_LOG("[hands] view placement fwd%+.1f right%+.1f up%+.1f cm - changes where "
+        BVR_LOG("[hands] view placement %s fwd%+.1f right%+.1f up%+.1f cm - changes where "
                 "the gun SITS without touching where it PIVOTS",
-                g_viewFwdCm.load(std::memory_order_relaxed),
-                g_viewRightCm.load(std::memory_order_relaxed),
-                g_viewUpCm.load(std::memory_order_relaxed));
+                vh == 0 ? "L (plasmid)" : "R (weapon)",
+                g_viewFwdCm[vh].load(std::memory_order_relaxed),
+                g_viewRightCm[vh].load(std::memory_order_relaxed),
+                g_viewUpCm[vh].load(std::memory_order_relaxed));
     } else if (strcmp(verb, "offsetroll") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_offsetRoll.store(on, std::memory_order_relaxed);
@@ -1583,16 +1616,18 @@ void model_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm) {
     if (upCm) *upCm = g_posUpCm[hand].load(std::memory_order_relaxed);
 }
 
-void view_offset_cm(float* fwdCm, float* rightCm, float* upCm) {
-    if (fwdCm) *fwdCm = g_viewFwdCm.load(std::memory_order_relaxed);
-    if (rightCm) *rightCm = g_viewRightCm.load(std::memory_order_relaxed);
-    if (upCm) *upCm = g_viewUpCm.load(std::memory_order_relaxed);
+void view_offset_cm(int hand, float* fwdCm, float* rightCm, float* upCm) {
+    if (hand < 0 || hand > 1) return;
+    if (fwdCm) *fwdCm = g_viewFwdCm[hand].load(std::memory_order_relaxed);
+    if (rightCm) *rightCm = g_viewRightCm[hand].load(std::memory_order_relaxed);
+    if (upCm) *upCm = g_viewUpCm[hand].load(std::memory_order_relaxed);
 }
 
-void set_view_offset_cm(float fwdCm, float rightCm, float upCm) {
-    g_viewFwdCm.store(fwdCm, std::memory_order_relaxed);
-    g_viewRightCm.store(rightCm, std::memory_order_relaxed);
-    g_viewUpCm.store(upCm, std::memory_order_relaxed);
+void set_view_offset_cm(int hand, float fwdCm, float rightCm, float upCm) {
+    if (hand < 0 || hand > 1) return;
+    g_viewFwdCm[hand].store(fwdCm, std::memory_order_relaxed);
+    g_viewRightCm[hand].store(rightCm, std::memory_order_relaxed);
+    g_viewUpCm[hand].store(upCm, std::memory_order_relaxed);
 }
 
 void set_model_offset_cm(int hand, float fwdCm, float rightCm, float upCm) {
@@ -1695,15 +1730,21 @@ void draw_debug_ui() {
             "gun PIVOTS about. Using it to fix height moves the pivot by the same\n"
             "amount - measured s67, a 15 cm height fix bought an 8 inch orbit.");
     {
-        float vf = g_viewFwdCm.load(std::memory_order_relaxed);
+        // s68: per hand, following the L/R radio above. These used to drive ONE
+        // triple shared by both hands, which is how the plasmids ended up parked
+        // at the weapon's placement - see the banner on g_viewFwdCm. The R values
+        // belong to the equipped weapon's profile and are stashed back into it on
+        // the next weapon change; the L values are the plasmids' own and persist
+        // in hands.ini.
+        float vf = g_viewFwdCm[tuneHand].load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("place forward (cm)", &vf, -60.0f, 60.0f))
-            g_viewFwdCm.store(vf, std::memory_order_relaxed);
-        float vr = g_viewRightCm.load(std::memory_order_relaxed);
+            g_viewFwdCm[tuneHand].store(vf, std::memory_order_relaxed);
+        float vr = g_viewRightCm[tuneHand].load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("place right (cm)", &vr, -60.0f, 60.0f))
-            g_viewRightCm.store(vr, std::memory_order_relaxed);
-        float vu = g_viewUpCm.load(std::memory_order_relaxed);
+            g_viewRightCm[tuneHand].store(vr, std::memory_order_relaxed);
+        float vu = g_viewUpCm[tuneHand].load(std::memory_order_relaxed);
         if (ImGui::SliderFloat("place up (cm)", &vu, -60.0f, 60.0f))
-            g_viewUpCm.store(vu, std::memory_order_relaxed);
+            g_viewUpCm[tuneHand].store(vu, std::memory_order_relaxed);
     }
     ImGui::TextDisabled("GRIP OFFSET - where the model PIVOTS (not where it sits)");
     if (ImGui::IsItemHovered())

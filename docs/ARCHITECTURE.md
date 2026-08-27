@@ -2368,3 +2368,41 @@ Three details that are policy, not incidental:
   recovery the animation would have played. 0 ms = snap, and the F10 checkbox is
   a live A/B back to the s67 behaviour, because this is a perceptual question and
   the simulator cannot answer it.
+
+### 2026-08-27 (session 68) - a shared global behind a per-instance setting
+
+The viewmodel's view-frame PLACEMENT (`g_viewFwdCm/RightCm/UpCm` in `hands.cpp`)
+was a single global triple applied to both hands. The per-weapon profile system
+added in s67 then wrote it on every weapon change, from the RIGHT hand's profile.
+
+Plasmids are the LEFT hand and have no per-weapon profile, so nothing ever put
+the value back. The tester's report is the exact signature of that shape:
+
+> correct as I switch back and forth between the plasmids, but then they **both**
+> get locked to another position when I switch to a weapon and switch back
+
+Every clause is diagnostic. *Plasmid to plasmid is fine* - no weapon profile
+applies, so nothing overwrites it. *Locked after a weapon round trip* - the
+weapon's placement was written and there is no plasmid profile to restore it.
+And **both**, which is the clincher: two plasmids cannot share a fault unless the
+thing they share is one variable.
+
+**The rule: when a setting becomes per-instance, every global it reads or writes
+becomes a candidate.** s67 made placement per-WEAPON without making its storage
+per-HAND, so the weapon lane silently acquired write access to the plasmid lane.
+The sibling values had already been converted - `g_posFwdCm[2]`, `g_rotPitchDeg[2]`,
+and the aim trims - which is why this one was invisible: every call around it
+already passed a hand index, so the one that did not read as intentional.
+
+The fix makes it `[2]` like its siblings, routes the ini through the existing
+`store_hand_key()` (so a suffix-less key from an older file loads into BOTH hands
+- exactly what the shared global used to mean), and passes hand 1 at all five
+`aim.cpp` call sites, since `WeaponProfile` is a right-hand record by construction.
+
+**Also settled here:** plasmid position and plasmid crosshair are GLOBAL across
+all plasmids, not per plasmid (tester's call, 2026-08-27). That falls out of the
+same structure - only the right hand has per-weapon profiles - so the left hand's
+model offset, view placement and aim trim are each one value for every plasmid.
+The F10 sliders' L/R radio is the whole tuning surface for them; the numpad tuner
+stays the WEAPON hand's tuner, which is why it now writes index 1 rather than the
+old shared index 0.
