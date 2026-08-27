@@ -98,7 +98,7 @@ void* g_lastHoldable = nullptr;
 void* g_lastAbility = nullptr; // read only to label the log line - see s68f
 bool g_capArmed = false;
 uint64_t g_capArmedMs = 0;
-Qts g_capLastFresh{};          // previous engine evaluation, for the settle test
+Qts g_capLastFresh[kMaxBones]{}; // previous engine evaluation, for the settle test
 bool g_capLastFreshValid = false;
 bool g_capBlendPending = false; // ease onto the snapshot instead of popping to it
 // Stillness has its own thresholds: the ADOPTION threshold (25 deg) answers
@@ -2197,20 +2197,41 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                     // not against g_ref - g_ref is frozen now, so it would never
                     // converge. Uses a stillness threshold of its own; the
                     // adoption threshold answers a different question (s68e).
-                    const int probe = patterns::kBoneWeaponAttach < g_boneCount
-                                          ? patterns::kBoneWeaponAttach
-                                          : 0;
-                    bool settled = false;
-                    if (g_capLastFreshValid) {
-                        const float dp[3] = {fresh[probe].p[0] - g_capLastFresh.p[0],
-                                             fresh[probe].p[1] - g_capLastFresh.p[1],
-                                             fresh[probe].p[2] - g_capLastFresh.p[2]};
-                        const float ang = quat_angle_deg(fresh[probe].q, g_capLastFresh.q);
+                    // PROBE THE DRIVEN CLUSTER, not the weapon-attach bone.
+                    //
+                    // s68h probed kBoneWeaponAttach alone. A PLASMID has no weapon
+                    // attached, so that bone barely moves during a plasmid's equip:
+                    // the test asked "has the pose stopped moving?" of a bone that
+                    // never started, answered yes on the first comparison, and
+                    // snapshotted mid-blend. The log is unambiguous - EVERY capture
+                    // in the 03:12 run fired at 250-266 ms, which is simply the
+                    // second engine evaluation (the engine evaluates ~6 times a
+                    // second), whatever was actually happening in the rig.
+                    //
+                    // It survived on weapons because bone 43 really does move with
+                    // a gun attached, and on Electrobolt because its ease finishes
+                    // inside 250 ms. Telekinesis eases for longer, so 250 ms is
+                    // still mid-blend for it - and because every plasmid shares one
+                    // reference, its bad capture then set Electrobolt's position
+                    // too, exactly as reported.
+                    //
+                    // The whole driven cluster is the honest probe: it is the thing
+                    // being captured, so if any of it is still moving the capture is
+                    // early, whatever is or is not in the hand.
+                    float maxAng = 0.0f, maxPos = 0.0f;
+                    for (int b = first; b <= last && b < g_boneCount; ++b) {
+                        const float dp[3] = {fresh[b].p[0] - g_capLastFresh[b].p[0],
+                                             fresh[b].p[1] - g_capLastFresh[b].p[1],
+                                             fresh[b].p[2] - g_capLastFresh[b].p[2]};
+                        const float ang = quat_angle_deg(fresh[b].q, g_capLastFresh[b].q);
                         const float pos =
                             sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
-                        settled = ang <= kCapStillDeg && pos <= kCapStillUu;
+                        if (ang > maxAng) maxAng = ang;
+                        if (pos > maxPos) maxPos = pos;
                     }
-                    g_capLastFresh = fresh[probe];
+                    const bool settled =
+                        g_capLastFreshValid && maxAng <= kCapStillDeg && maxPos <= kCapStillUu;
+                    memcpy(g_capLastFresh, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
                     g_capLastFreshValid = true;
 
                     if (settled && nowCap - g_capArmedMs >= kCapMinTrackMs) {
@@ -2224,12 +2245,9 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         g_capArmed = false;
                         g_capLastFreshValid = false;
                         g_capBlendPending = true;
-                        BVR_LOG("[bones] equip settled %llu ms after the switch (engine pose "
-                                "still to within %.1f deg / %.1f UU) - taking ONE snapshot. "
-                                "The rig was frozen throughout, so no idle animation was "
-                                "followed into it.",
+                        BVR_LOG("[bones] equip settled %llu ms after the switch: cluster %d-%d moved %.2f deg / %.2f UU between the last two engine evaluations (still under %.1f / %.1f) - taking ONE snapshot. The rig was frozen throughout, so no idle animation was followed into it.",
                                 static_cast<unsigned long long>(nowCap - g_capArmedMs),
-                                kCapStillDeg, kCapStillUu);
+                                first, last, maxAng, maxPos, kCapStillDeg, kCapStillUu);
                     }
                 } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
                     // Idling never arrived. Stop rather than adopt forever, and

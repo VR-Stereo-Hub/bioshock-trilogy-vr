@@ -2776,3 +2776,44 @@ choosing a point on it. There was no dial - there were two independent decisions
 (when to stop following, and when to sample) that one flag happened to control.
 A tester's A/B across two builds is what exposed it, because it reported both
 symptoms and their signs, which no single-build measurement here could.
+
+### 2026-08-27 (session 68i) - the settle probe watched a bone that does not move
+
+The tester's report was precise enough to be a bisect on its own:
+
+> Any weapon switching to electrobolt works just fine and switching to the other
+> plasmid is fine, then any weapon switching to telekinesis sets its position
+> incorrectly and sets electrobolt to the same position
+
+The same plasmid being fine down one path and broken down another rules out its
+pose being inherently different. And the log gave the mechanism outright: **every
+capture in the run fired at 250-266 ms**, nine of them, regardless of what was
+being equipped. That is not a settle detector, it is the SECOND ENGINE EVALUATION
+- the engine evaluates the bone array about six times a second, so #2 always lands
+there.
+
+The settle test probed `kBoneWeaponAttach`. **A plasmid has no weapon attached**,
+so that bone barely moves during a plasmid's equip: the test asked "has the pose
+stopped moving?" of a bone that never started, answered yes on its first
+comparison, and snapshotted mid-blend.
+
+It survived on weapons because bone 43 genuinely moves with a gun on it, and on
+Electrobolt because its ease finishes inside 250 ms. Telekinesis eases for longer,
+so 250 ms is still mid-blend for it - and since every plasmid shares one reference,
+its bad capture set Electrobolt's position too. Every clause of the report is that
+one line of code.
+
+The probe is now the whole DRIVEN CLUSTER, which is the thing actually being
+captured: if any of it is still moving the capture is early, whatever is or is not
+in the hand.
+
+**The rule: a probe must be chosen for the thing being measured, not inherited
+from the code it was copied out of.** `kBoneWeaponAttach` came from the sway-kill
+threshold, where the question was "is a WEAPON animating" and the bone was right.
+Reused to ask "has THIS RIG settled", it was a constant. A measurement taken on
+the wrong instrument does not read as an error - it reads as a clean result, which
+is what made nine identical timings look like data instead of a flat line.
+
+**And the flat line was the tell.** Nine captures at 250-266 ms is not a
+distribution, and the spread of real equip animations is not 16 ms. Check whether
+a measurement VARIES before believing what it says.
