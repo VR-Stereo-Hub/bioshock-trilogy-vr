@@ -74,6 +74,34 @@ uint64_t g_restoreStartMs = 0; // 0 = not blending
 bool g_wasAdopting = false;    // last known-state verdict, for edge detection
 hands_state::State g_lastKnownState = hands_state::State::Unknown; // for the log line
 
+// ---- s68b THE EQUIP CAPTURE, state-driven ---------------------------------
+// s68 armed a fresh reference capture on a holdable change and then TRACKED FOR
+// A FIXED 1200 ms (g_swaySettleMs). That timer is the wrong instrument and it
+// produced all three of the 2026-08-27 reports:
+//
+//  - "the wrench position was super off with a massive pivot on launch" - the
+//    wrench is animOn=0, so once the timer expired the state branch refused
+//    forever AND the rest capture (gated on g_animAllowed) never ran. Its
+//    reference was whatever the timer happened to freeze, mid-equip. This is
+//    the s67 wrench-posed-as-a-pistol defect re-entering through the new gate.
+//  - "it did an equip animation but froze it before it finished" - the equip
+//    outlasted 1200 ms, adoption stopped, g_ref froze part-way through it.
+//  - "it applied it to both plasmids" - liveHold is NULL for EVERY plasmid, so
+//    plasmid-to-plasmid is null != null == false and the holdable-change test
+//    never fires. Nothing recaptured, so one bad pose served both.
+//
+// The engine already says when an equip starts and when it has finished:
+// State::Equipping, then State::Idling. Track through the equip, capture at
+// Idling, and there is no timer to outlast. The Equipping EDGE also arms the
+// capture, which is the only signal that can see one plasmid replace another.
+void* g_lastHoldable = nullptr;
+bool g_capArmed = false;
+uint64_t g_capArmedMs = 0;
+hands_state::State g_capPrevState = hands_state::State::Unknown;
+// An equip that never reaches Idling must not adopt forever. Generous - the
+// slowest BS1 equip measured well under this - and it logs when it bites.
+constexpr uint64_t kCapArmTimeoutMs = 4000;
+
 // Reset every scrap of s68 rest state. Called wherever the reference dies -
 // a new bone array, a new world, an explicit release: a rest pose that outlives
 // the skeleton it was captured from is a pose from a dead rig.
@@ -82,6 +110,10 @@ void rest_reset() {
     g_restoreStartMs = 0;
     g_wasAdopting = false;
     g_lastKnownState = hands_state::State::Unknown;
+    g_lastHoldable = nullptr;
+    g_capArmed = false;
+    g_capArmedMs = 0;
+    g_capPrevState = hands_state::State::Unknown;
 }
 
 // Everything the last drive() wrote, for reapply() (the stereo second pass).
@@ -2031,23 +2063,34 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // wrench was posed as a pistol - reported as "super off with a massive
         // pivot". The gate is about whether to follow animation, not about
         // whether this weapon gets its own pose at all.
-        static void* s_lastHoldable = nullptr;
-        static bool s_forceCapture = false;
         {
+            // TWO arming signals, because neither sees everything. The holdable
+            // pointer catches every weapon change but is NULL for every plasmid,
+            // so it is blind to one plasmid replacing another. The Equipping EDGE
+            // catches that - the engine plays an equip animation either way - and
+            // it is also the honest start of the window we want to track.
             void* liveHold = nullptr;
             if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
-            if (liveHold != s_lastHoldable) {
-                s_lastHoldable = liveHold;
-                s_forceCapture = true;
-                g_lastBigDeltaMs = GetTickCount64(); // let the equip settle first
-                // s68: the rest pose is a property of WHAT YOU ARE HOLDING, so a
-                // new holdable invalidates it. Without this the incoming weapon
-                // would be restored to the outgoing one's rest - the same class
-                // of bug as the s67 wrench-posed-as-a-pistol.
+            const bool holdChanged = liveHold != g_lastHoldable;
+            const bool equipEdge =
+                stateKnown && hs == hands_state::State::Equipping &&
+                g_capPrevState != hands_state::State::Equipping;
+            if (holdChanged || equipEdge) {
+                g_lastHoldable = liveHold;
+                if (!g_capArmed) g_capArmedMs = GetTickCount64();
+                g_capArmed = true;
+                g_lastBigDeltaMs = GetTickCount64();
+                // The rest pose is a property of WHAT YOU ARE HOLDING, so a new
+                // one invalidates it. Without this the incoming weapon would be
+                // restored to the outgoing one's rest - the s67 wrench-posed-as-
+                // a-pistol defect.
                 g_restValid = false;
                 g_restoreStartMs = 0;
-                BVR_LOG("[bones] holdable changed - forcing a fresh reference capture");
+                BVR_LOG("[bones] %s - tracking until the engine reports Idling, then "
+                        "capturing this holdable's reference and canonical rest",
+                        holdChanged ? "holdable changed" : "equip animation started");
             }
+            if (stateKnown) g_capPrevState = hs;
         }
 
         // The state machine decides, when it can be read (hs/stateKnown/stateAllows
@@ -2056,11 +2099,35 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // and for anything the table cannot name.
         bool captureRest = false;
         bool adopt = true;
-        if (s_forceCapture) {
-            // Track until the rig settles, then this weapon's own pose is in.
-            adopt = (GetTickCount64() - g_lastBigDeltaMs) <
-                    g_swaySettleMs.load(std::memory_order_relaxed);
-            if (!adopt) s_forceCapture = false;
+        if (g_capArmed) {
+            if (stateKnown) {
+                // The engine says when the equip is over. Track until it does,
+                // so an animation longer than any timer still plays out in full.
+                if (hs == hands_state::State::Idling) {
+                    adopt = true;
+                    captureRest = true;
+                    g_capArmed = false;
+                } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
+                    // Idling never arrived. Stop rather than adopt forever, and
+                    // SAY SO - a silent expiry here is exactly the failure mode
+                    // the old fixed timer had.
+                    adopt = false;
+                    g_capArmed = false;
+                    BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
+                            "reference left as-is. If the pose looks wrong, this line is "
+                            "why.",
+                            static_cast<unsigned long long>(kCapArmTimeoutMs),
+                            hands_state::to_string(hs));
+                } else {
+                    adopt = true; // still equipping
+                }
+            } else {
+                // No state machine yet (the offset is derived once, early). Fall
+                // back to the old fixed window rather than tracking forever.
+                adopt = (GetTickCount64() - g_lastBigDeltaMs) <
+                        g_swaySettleMs.load(std::memory_order_relaxed);
+                if (!adopt) g_capArmed = false;
+            }
         } else if (g_refValid && stateKnown) {
             // Named state: obey the mask, and skip the threshold entirely.
             adopt = g_animAllowed.load(std::memory_order_relaxed) && stateAllows;
@@ -2073,8 +2140,12 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // weighted-random idle anim every time the state's loop comes
             // round). The equip settle above has to have finished first, or
             // the "rest" would be a frame of the equip animation.
-            if (!adopt && !g_restValid && hs == hands_state::State::Idling &&
-                g_animAllowed.load(std::memory_order_relaxed)) {
+            // NOT gated on g_animAllowed. s68 gated it, and that is what left the
+            // WRENCH (animOn=0) with no rest and no capture at all beyond the old
+            // timer's guess - "super off with a massive pivot on launch". Whether
+            // a weapon FOLLOWS its firing animation and whether it gets a correct
+            // resting pose are different questions; only the first is animOn's.
+            if (!adopt && !g_restValid && hs == hands_state::State::Idling) {
                 adopt = true;
                 captureRest = true;
             }

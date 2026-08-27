@@ -2468,3 +2468,37 @@ own tuning file was hiding the shipping defaults.
 Now designated initialisers, which cannot drift out of order again. **When a
 struct's field order is load-bearing for a literal, name the fields** - the
 compiler is the only reader that will reliably notice.
+
+### 2026-08-27 (session 68b) - a timer standing in for a state the engine reports
+
+s68's rest-pose fix armed a fresh reference capture on a holdable change and then
+tracked for a FIXED 1200 ms (`g_swaySettleMs`) before freezing. That timer was the
+wrong instrument, and it produced three reports that looked like three bugs:
+
+| Report | Mechanism |
+|---|---|
+| "the wrench position was super off with a massive pivot on launch" | animOn=0, so once the timer expired the state branch refused forever - and the rest capture was gated on `g_animAllowed`, so it never ran either. The reference was whatever the timer froze, mid-equip |
+| "it did an equip animation but froze it before it finished" | the equip outlasted 1200 ms; adoption stopped part-way through |
+| "it applied it to both plasmids" | `CurrentHoldable` is NULL for EVERY plasmid, so plasmid-to-plasmid is `null != null` == false. The holdable-change test never fired, so one bad pose served all of them |
+
+**The engine already reports both edges we were guessing at**: `State::Equipping`
+starts the window, `State::Idling` ends it. Tracking until Idling means an
+animation longer than any timer still plays out in full, and there is no constant
+to tune. The Equipping EDGE also arms the capture, which is the only signal that
+can see one plasmid replace another - the holdable pointer is blind to it.
+
+**Two lessons, and the first is the one that keeps recurring here.**
+
+**A timer is a guess about a state.** If the system publishes that state, read it.
+s67 built the `Hands` state machine reader precisely so animation decisions could
+stop being inferred from magnitudes and durations - and then s68 put a duration
+back in the one place the state machine was most directly applicable. A timeout
+survives, but only as a backstop that LOGS when it bites; a silent expiry is what
+made this hard to see.
+
+**Gates must not be reused for questions they were not asked.** `animOn` answers
+"does this weapon FOLLOW its firing animation" - the wrench does not, because a
+swing animation fights manual melee. s68 also used it to gate "does this weapon
+get a correct resting pose", which is a different question with a different
+answer, and starving the wrench of a rest capture is what put the s67 defect back.
+When reaching for an existing flag, check that the question is the same one.
