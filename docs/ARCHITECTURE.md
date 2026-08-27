@@ -2320,3 +2320,51 @@ trusted-sample logic.
 the reference mod's docs, and it was - `INVARIANTS.md` offers "hide through
 `DrawScale3D`, **or measure something the write does not touch**". Three rounds
 went into the first clause. The second clause was the one that applied.
+
+### 2026-08-27 (session 68) - "stop adopting" is not "go back"
+
+s67 replaced the movement threshold with the engine's own `Hands` state machine,
+so recoil could be adopted and a reload refused by NAME instead of by size. The
+read works. The policy on top of it shipped a defect that the threshold never
+had, and the shape of the mistake is worth keeping.
+
+**The defect.** When the state leaves the adopt mask the drive stopped adopting -
+and stopping is not returning. `g_ref` kept whatever frame it last took, and
+`Hands.uc` leaves `WeaponFiring` at the TOP of the recoil, not after the gun has
+come back down. So the pistol froze at its recoil apex and stayed there until a
+weapon switch. The ammo-out freeze and the shotgun's first reload are the same
+bug through different doors: `Firing -> Reloading` is a mask exit like any other.
+
+**Why the threshold never had it.** BRVR gates on `adopt = (now - lastBigDelta) <
+holdMs`, so it keeps tracking for ~1.2 s past the animation's last big frame and
+re-freezes on the SETTLED pose. The settle window was the whole mechanism, and
+the state branch is what threw it away. That is the general lesson: a per-state
+gate answers "may this animation reach the rig", and silently drops the answer to
+"where does the rig go when it stops" - which the thing it replaced was quietly
+handling all along. **When replacing a heuristic, enumerate what it was doing
+incidentally, not just what it was for.**
+
+**Why we did not just reinstate the settle window.** It would re-freeze onto
+whatever the idle animation had drifted to, and `Holdable::GetIdlingHandsAnim()`
+draws a WEIGHTED RANDOM entry from `IdlingHandsAnim[]` every time `WeaponIdling`'s
+loop comes round (Holdable.uc:32). That randomness is precisely the "crosshair
+moves randomly between shots" report s67 fixed, so BRVR's answer is not portable
+here - its threshold gate never had a per-weapon crosshair riding on the pose.
+
+**What was built instead.** A CANONICAL rest pose: one snapshot per holdable,
+taken the first time the engine reports `WeaponIdling`, restored when an adopted
+state ends. Once per holdable rather than per return-to-idle, which is what makes
+it deterministic and what keeps the per-weapon crosshair true between shots.
+
+Three details that are policy, not incidental:
+
+- **Position and rotation only.** The scale rows stay with the `g_scaleWrote`
+  pinning bank; restoring them would undo session 61's pin-vs-adopt architecture.
+- **The edge is only trusted on a KNOWN state.** The engine parks `StateNode` at
+  null between transitions, and reading that blip as "the animation ended" would
+  abort a recoil halfway through it.
+- **The return is BLENDED (120 ms smoothstep), not snapped.** The pose being left
+  is a recoil apex; cutting straight to rest reads as a jerk, where easing is the
+  recovery the animation would have played. 0 ms = snap, and the F10 checkbox is
+  a live A/B back to the s67 behaviour, because this is a perceptual question and
+  the simulator cannot answer it.

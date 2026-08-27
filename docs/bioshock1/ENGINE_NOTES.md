@@ -1992,11 +1992,25 @@ The states, from `Hands.uc`: `HandsOffscreen` (auto), `WeaponEquipping`,
 equivalents, `InjectingEve`, `UsingGathererTool`, `ExorcisingGatherer`,
 `PlayingScriptedHandAnimation`.
 
-**Known defect in the policy built on it (not in the read):** ceasing to adopt
-at a state boundary leaves the reference wherever it was, so the pistol freezes
-at the apex of its recoil until a weapon switch. The fix shape is to capture a
-canonical REST reference during `Idling` and restore it on leaving an adopted
-state.
+**Session 68 - where the states EXIT, which is the part the policy got wrong.**
+`WeaponFiring` (Hands.uc:1184) runs `PlayWeaponFiringAnimations()` and then
+`TransitionToNextStateInSequence()`; `PostWeaponFiring` (:1210) is a single
+`PostFired()` call and another transition. Neither waits for the gun to come back
+down, so **the state leaves the adopt mask at the TOP of the recoil, not at its
+end.** s67's policy merely ceased adopting there, which left the reference at the
+apex and froze the pistol until a weapon switch - and `Firing -> Reloading` is the
+same exit, which is why the ammo-out freeze and the shotgun's first reload had the
+same shape.
+
+`WeaponIdling` (:1147) is the counterpart and the only state that means "the
+animation is over": it re-reads the active holdable, plays the idling anim and
+LOOPS (`goto J0xBE`), redrawing `GetIdlingHandsAnim()` each time round - which is
+the weighted-random draw recorded above, and why the loop's pose cannot be trusted
+as a reference more than once.
+
+s68 uses both facts: capture ONE canonical rest during `WeaponIdling` per holdable
+and ease back to it when an adopted state exits. Design rationale in
+`ARCHITECTURE.md`, decision log 2026-08-27.
 
 ### Falsified this session, with the measurement that killed each
 

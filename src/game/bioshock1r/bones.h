@@ -160,6 +160,25 @@ void wskel_release(const char* why);
 void set_anim_state_mask(uint32_t mask);
 uint32_t anim_state_mask();
 
+// s68 CANONICAL REST POSE (`vrbones rest on|off|ms <n>|drop`, and the F10
+// ANIMATION section). s67's state mask stops ADOPTING when an animation's state
+// ends, but stopping is not returning: the state machine leaves WeaponFiring at
+// the TOP of the recoil, so the reference froze at the apex and the pistol stuck
+// there until a weapon switch (same shape: the ammo-out freeze, the shotgun's
+// first reload). This captures one canonical pose per holdable, the first time
+// the engine reports WeaponIdling, and eases the rig back to it when an adopted
+// state ends. Once per holdable, not per return-to-idle, because
+// GetIdlingHandsAnim() is weighted-random per loop - re-capturing would put the
+// "crosshair moves randomly between shots" report straight back.
+// Blend default 120 ms; 0 = snap. Only position and rotation are restored - the
+// scale rows stay with the g_scaleWrote pinning bank.
+void set_rest_restore(bool on);
+bool rest_restore();
+void set_rest_blend_ms(unsigned ms);
+unsigned rest_blend_ms();
+void rest_status(bool* captured, bool* blending);
+void drop_rest();
+
 void set_anim_allowed(bool on);
 bool anim_allowed();
 
