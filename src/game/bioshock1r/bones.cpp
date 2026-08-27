@@ -98,6 +98,15 @@ void* g_lastHoldable = nullptr;
 void* g_lastAbility = nullptr; // read only to label the log line - see s68f
 bool g_capArmed = false;
 uint64_t g_capArmedMs = 0;
+Qts g_capLastFresh{};          // previous engine evaluation, for the settle test
+bool g_capLastFreshValid = false;
+bool g_capBlendPending = false; // ease onto the snapshot instead of popping to it
+// Stillness has its own thresholds: the ADOPTION threshold (25 deg) answers
+// "is this a real animation", not "has the pose stopped" (s68e). Just above
+// the measured +-1.2 deg idle envelope, so still means only breathing is left.
+constexpr float kCapStillDeg = 1.5f;
+constexpr float kCapStillUu = 0.5f;
+constexpr uint64_t kCapMinTrackMs = 150; // never snapshot sooner than this
 hands_state::State g_capPrevState = hands_state::State::Unknown;
 // An equip that never reaches Idling must not adopt forever. Generous - the
 // slowest BS1 equip measured well under this - and it logs when it bites.
@@ -115,6 +124,8 @@ void rest_reset() {
     g_lastAbility = nullptr;
     g_capArmed = false;
     g_capArmedMs = 0;
+    g_capLastFreshValid = false;
+    g_capBlendPending = false;
     g_capPrevState = hands_state::State::Unknown;
 }
 
@@ -2160,37 +2171,73 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 // The engine says when the equip is over. Track until it does,
                 // so an animation longer than any timer still plays out in full.
                 if (hs == hands_state::State::Idling) {
-                    // CAPTURE ON THE IDLING EDGE, AND STOP ADOPTING THERE.
+                    // FREEZE HERE, CAPTURE LATER. The two things s68c-g kept
+                    // conflating are separable, and the tester's clue separates
+                    // them:
                     //
-                    // s68c-e kept adopting PAST this edge while waiting for the
-                    // pose to settle, reasoning that Idling is where the idle
-                    // animation starts rather than where the pose arrives. That
-                    // is true, and it is exactly why adopting past it plays one
-                    // cycle of the idle animation into the rig on every equip -
-                    // reported twice: killed by 9c3fe50, and back the moment the
-                    // settle wait went in.
+                    //   "when the 2nd plasmid reached its broken state, switching
+                    //    to the other plasmid fixed the position of both" - on the
+                    //    build that WAITED. So the settled capture is the CORRECT
+                    //    pose; waiting is not the mistake.
+                    //   "1 cycle animation ... fixed" - on the build that captured
+                    //    at this edge. So ADOPTING while waiting is the mistake:
+                    //    g_ref tracking the engine live is what plays the idle
+                    //    fidget into the rig.
                     //
-                    // The settle machinery existed to fix the plasmid position.
-                    // That turned out to be the capture IDENTITY (5ca2ced:
-                    // CurrentHoldable is null for every plasmid, so all plasmids
-                    // share one reference and must not recapture between them).
-                    // With that fixed the settle wait buys nothing and costs the
-                    // idle cycle, so it is gone rather than tuned.
-                    adopt = true;
-                    captureRest = true;
-                    g_capArmed = false;
-                    BVR_LOG("[bones] equip done (engine reports Idling) - captured this "
-                            "holdable's reference and canonical rest, %llu ms after the "
-                            "switch. Adoption STOPS here: following Idling any further is "
-                            "what plays the idle animation into the rig.",
-                            static_cast<unsigned long long>(GetTickCount64() -
-                                                            g_capArmedMs));
+                    // So: stop adopting AT the edge (the rig holds still, no idle
+                    // animation reaches it), keep the arm alive, and take ONE
+                    // snapshot once the engine's own pose has stopped moving. The
+                    // existing rest-restore blend then eases the rig from the
+                    // frozen equip pose onto that settled pose, so the correction
+                    // arrives as a short settle rather than a pop - and the fidget
+                    // is never followed, only its endpoint is taken.
+                    adopt = false;
+                    const uint64_t nowCap = GetTickCount64();
+                    // Settle is measured between CONSECUTIVE ENGINE EVALUATIONS,
+                    // not against g_ref - g_ref is frozen now, so it would never
+                    // converge. Uses a stillness threshold of its own; the
+                    // adoption threshold answers a different question (s68e).
+                    const int probe = patterns::kBoneWeaponAttach < g_boneCount
+                                          ? patterns::kBoneWeaponAttach
+                                          : 0;
+                    bool settled = false;
+                    if (g_capLastFreshValid) {
+                        const float dp[3] = {fresh[probe].p[0] - g_capLastFresh.p[0],
+                                             fresh[probe].p[1] - g_capLastFresh.p[1],
+                                             fresh[probe].p[2] - g_capLastFresh.p[2]};
+                        const float ang = quat_angle_deg(fresh[probe].q, g_capLastFresh.q);
+                        const float pos =
+                            sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+                        settled = ang <= kCapStillDeg && pos <= kCapStillUu;
+                    }
+                    g_capLastFresh = fresh[probe];
+                    g_capLastFreshValid = true;
+
+                    if (settled && nowCap - g_capArmedMs >= kCapMinTrackMs) {
+                        // ONE-SHOT. Not adoption: this is the only frame the
+                        // engine's pose is taken, and the blend below carries the
+                        // rig onto it.
+                        memcpy(g_restoreFrom, g_ref,
+                               sizeof(Qts) * static_cast<size_t>(g_boneCount));
+                        adopt = true;      // let the capture below write g_ref
+                        captureRest = true;
+                        g_capArmed = false;
+                        g_capLastFreshValid = false;
+                        g_capBlendPending = true;
+                        BVR_LOG("[bones] equip settled %llu ms after the switch (engine pose "
+                                "still to within %.1f deg / %.1f UU) - taking ONE snapshot. "
+                                "The rig was frozen throughout, so no idle animation was "
+                                "followed into it.",
+                                static_cast<unsigned long long>(nowCap - g_capArmedMs),
+                                kCapStillDeg, kCapStillUu);
+                    }
                 } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
                     // Idling never arrived. Stop rather than adopt forever, and
                     // SAY SO - a silent expiry here is exactly the failure mode
                     // the old fixed timer had.
                     adopt = false;
                     g_capArmed = false;
+                    g_capLastFreshValid = false;
                     BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
                             "reference left as-is. If the pose looks wrong, this line is "
                             "why.",
@@ -2331,6 +2378,18 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 memcpy(g_rest, g_ref, sizeof(Qts) * static_cast<size_t>(g_boneCount));
                 g_restValid = true;
                 g_restoreStartMs = 0;
+                // s68h: the equip snapshot is a JUMP - the rig was frozen at the
+                // equip pose while the engine eased into idle, so g_ref just moved
+                // in one step. Hand it to the rest-restore blend (g_restoreFrom was
+                // filled with the frozen pose at the snapshot) so it arrives as a
+                // short settle instead of a pop. Same easing the recoil recovery
+                // uses; no new machinery.
+                if (g_capBlendPending) {
+                    g_capBlendPending = false;
+                    if (g_restRestore.load(std::memory_order_relaxed) &&
+                        g_restBlendMs.load(std::memory_order_relaxed) > 0)
+                        g_restoreStartMs = GetTickCount64();
+                }
                 BVR_LOG("[b1r] RESTREF: canonical rest pose captured during Idling for this "
                         "holdable (%d bones). Animations that end now snap back to THIS, "
                         "instead of freezing wherever the state boundary caught them.",

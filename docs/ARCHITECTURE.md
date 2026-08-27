@@ -2736,3 +2736,43 @@ maintained, and here it was actively causing the next bug.
 which one fixed that" is a bisect, and it was faster than every measurement taken
 this session. Behaviour a tester has explicitly attributed to a commit should be
 treated as a REGRESSION TEST for every later commit, not re-derived from symptoms.
+
+### 2026-08-27 (session 68h) - waiting was never the mistake; ADOPTING while waiting was
+
+The tester's clue separated two things this session had treated as one knob:
+
+> Last run when the 1 cycle animation was happening, when the 2nd plasmid reached
+> its broken state after a weapon switch, switching to the other plasmid fixed the
+> position of both. This run had the 1 cycle animation fixed, but when the plasmid
+> broke by switching to weapons, switching between plasmids didn't fix either.
+
+Both halves are the same mechanism seen from opposite sides. Plasmid-to-plasmid
+DOES recapture - not through the holdable (null for all plasmids) but through the
+**Equipping edge**, which the arm also watches. So on the waiting build a plasmid
+switch ran a settle-quality capture, landed a good pose, and - because all
+plasmids share one reference - fixed both at once. On the edge-capture build the
+same switch takes a mid-blend pose, so it fixes nothing.
+
+**That makes the settled capture the correct pose, and waiting is not the defect.**
+The defect was ADOPTING while waiting: `adopt = true` makes `g_ref` track the
+engine every evaluation, and tracking during `Idling` is following the idle
+fidget - which is the "1 cycle animation on equip" exactly.
+
+They separate cleanly:
+
+- **Stop adopting at the `Idling` edge.** The rig freezes at the equip pose, so no
+  idle animation ever reaches it.
+- **Stay armed, and take ONE snapshot** once the engine's own pose has stopped
+  moving. Settle is measured between consecutive ENGINE evaluations, not against
+  `g_ref` - `g_ref` is frozen now, so comparing to it would never converge. That
+  comparison is also why the earlier version needed adoption at all.
+- **Ease onto the snapshot** with the rest-restore blend that already exists, so a
+  one-step correction arrives as a short settle rather than a pop.
+
+**The rule: when one change fixes A and breaks B, look for the two mechanisms
+before trading them off.** Four rounds treated "capture early" and "capture late"
+as a single dial with A at one end and B at the other, and spent themselves
+choosing a point on it. There was no dial - there were two independent decisions
+(when to stop following, and when to sample) that one flag happened to control.
+A tester's A/B across two builds is what exposed it, because it reported both
+symptoms and their signs, which no single-build measurement here could.
