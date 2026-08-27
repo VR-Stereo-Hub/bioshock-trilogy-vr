@@ -95,31 +95,9 @@ hands_state::State g_lastKnownState = hands_state::State::Unknown; // for the lo
 // Idling, and there is no timer to outlast. The Equipping EDGE also arms the
 // capture, which is the only signal that can see one plasmid replace another.
 void* g_lastHoldable = nullptr;
-void* g_lastAbility = nullptr; // s68c: the plasmid half of the identity pair
+void* g_lastAbility = nullptr; // read only to label the log line - see s68f
 bool g_capArmed = false;
 uint64_t g_capArmedMs = 0;
-int g_capStillFrames = 0;      // consecutive settled evaluations while armed
-uint64_t g_capStillSinceMs = 0; // when the pose first went still (0 = moving)
-// The engine evaluates the bone array on ~5% of frames, so these are in
-// WALL-CLOCK. Both are far under the 1200 ms the old fixed timer used, which is
-// the point: the timer was too blunt, but time was the right unit.
-constexpr uint64_t kCapSettleHoldMs = 350; // stillness must persist this long
-constexpr uint64_t kCapMinTrackMs = 200;   // never capture sooner than this
-
-// STILLNESS IS NOT ADOPTION, and conflating them is what made the settle test a
-// no-op. s68d reused g_swayAngThreshDeg, which is the ANIMATION ADOPTION
-// threshold - 25 deg, raised in s67 because BRVR measures real animations at
-// 130-170 deg at the wrist. Asking "has the pose stopped moving?" with a 25 deg
-// tolerance answers yes on almost any two consecutive evaluations of a smooth
-// ease, so the test fired on the second evaluation whenever that landed and the
-// race it was written to close was never gated at all. Measured: a capture fired
-// at 2.34 deg of drift, where the idle envelope is +-1.2 deg (session 20) - the
-// pose was still visibly moving.
-//
-// These are absolute and deliberately just above that idle envelope: the pose is
-// "still" when the only thing left in it is breathing.
-constexpr float kCapStillDeg = 1.5f;
-constexpr float kCapStillUu = 0.5f;
 hands_state::State g_capPrevState = hands_state::State::Unknown;
 // An equip that never reaches Idling must not adopt forever. Generous - the
 // slowest BS1 equip measured well under this - and it logs when it bites.
@@ -137,8 +115,6 @@ void rest_reset() {
     g_lastAbility = nullptr;
     g_capArmed = false;
     g_capArmedMs = 0;
-    g_capStillFrames = 0;
-    g_capStillSinceMs = 0;
     g_capPrevState = hands_state::State::Unknown;
 }
 
@@ -2142,8 +2118,6 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             g_lastAbility = liveAbil;
             if (!g_capArmed) g_capArmedMs = GetTickCount64();
             g_capArmed = true;
-            g_capStillFrames = 0;
-            g_capStillSinceMs = 0;
             g_lastBigDeltaMs = GetTickCount64();
             // The rest pose is a property of WHAT YOU ARE HOLDING, so a new one
             // invalidates it - otherwise the incoming holdable is restored to the
@@ -2186,104 +2160,37 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 // The engine says when the equip is over. Track until it does,
                 // so an animation longer than any timer still plays out in full.
                 if (hs == hands_state::State::Idling) {
-                    // ...but Idling is where the idle animation STARTS, not where
-                    // the pose arrives. Hands.uc plays it through
-                    // PlayAnimationOnChannelInstantEaseIn, so on the first Idling
-                    // frame the rig is still blending out of the equip pose.
-                    // Capturing there captures a partial blend.
+                    // CAPTURE ON THE IDLING EDGE, AND STOP ADOPTING THERE.
                     //
-                    // And the blend RATE differs per path - AbilityIdling eases at
-                    // 4, AbilityGenericIdling at 8 - so a fixed capture instant
-                    // lands correctly for one plasmid and wrong for another with
-                    // no setting between them. That is exactly the report: "the
-                    // other plasmid is still wrong", and "the positions were
-                    // perfect earlier" when the old 1200 ms timer happened to
-                    // outlast the blend.
+                    // s68c-e kept adopting PAST this edge while waiting for the
+                    // pose to settle, reasoning that Idling is where the idle
+                    // animation starts rather than where the pose arrives. That
+                    // is true, and it is exactly why adopting past it plays one
+                    // cycle of the idle animation into the rig on every equip -
+                    // reported twice: killed by 9c3fe50, and back the moment the
+                    // settle wait went in.
                     //
-                    // So: keep adopting and WAIT FOR THE POSE TO STOP MOVING,
-                    // measured on the same probe bones and the same thresholds
-                    // the idle-sway kill already uses. No new constant, and it
-                    // adapts to whatever rate the engine chose.
+                    // The settle machinery existed to fix the plasmid position.
+                    // That turned out to be the capture IDENTITY (5ca2ced:
+                    // CurrentHoldable is null for every plasmid, so all plasmids
+                    // share one reference and must not recapture between them).
+                    // With that fixed the settle wait buys nothing and costs the
+                    // idle cycle, so it is gone rather than tuned.
                     adopt = true;
-                    float maxPos = 0.0f, maxAng = 0.0f;
-                    static const int kSettleProbe[2] = {patterns::kBoneLWrist,
-                                                        patterns::kBoneWeaponAttach};
-                    for (int k = 0; k < 2; ++k) {
-                        const int b = kSettleProbe[k];
-                        if (b >= g_boneCount) continue;
-                        const float dp[3] = {fresh[b].p[0] - g_ref[b].p[0],
-                                             fresh[b].p[1] - g_ref[b].p[1],
-                                             fresh[b].p[2] - g_ref[b].p[2]};
-                        const float ang = quat_angle_deg(fresh[b].q, g_ref[b].q);
-                        const float pos =
-                            sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
-                        if (pos > maxPos) maxPos = pos;
-                        if (ang > maxAng) maxAng = ang;
-                    }
-                    const bool still =
-                        g_refValid && maxAng <= kCapStillDeg && maxPos <= kCapStillUu;
-                    // STILLNESS MUST HOLD IN WALL-CLOCK, not for a count of
-                    // evaluations. Measured 2026-08-27: the engine re-evaluates
-                    // the bone array on about 5% of frames - 7 engineEval=1
-                    // against 127 engineEval=0 in one run - and irregularly. A
-                    // count of two therefore lands wherever the engine's cadence
-                    // happens to put it: sometimes after the ease, sometimes in
-                    // the middle of it. That is a RACE, and it is what "it was
-                    // really close earlier, but it would just break at a certain
-                    // point" actually was. Nothing about the holdable changed
-                    // between a good capture and a bad one; only the timing did.
-                    //
-                    // Wall-clock is immune to the evaluation rate, which is why
-                    // the fixed 1200 ms timer this replaced looked so much better
-                    // than it deserved to. Keep the evaluation count as a floor
-                    // (two samples minimum, so "still" is a comparison and not a
-                    // single reading) and put the real gate on time.
-                    const uint64_t nowSettle = GetTickCount64();
-                    if (!still) {
-                        g_capStillFrames = 0;
-                        g_capStillSinceMs = 0;
-                    } else {
-                        ++g_capStillFrames;
-                        if (!g_capStillSinceMs) g_capStillSinceMs = nowSettle;
-                        const bool heldLongEnough =
-                            nowSettle - g_capStillSinceMs >= kCapSettleHoldMs;
-                        // ...and never before the equip could plausibly have
-                        // started moving at all, or a pose that is still simply
-                        // because the animation has not begun reads as arrival.
-                        const bool pastMinimum =
-                            nowSettle - g_capArmedMs >= kCapMinTrackMs;
-                        if (g_capStillFrames >= 2 && heldLongEnough && pastMinimum) {
-                            // READ BEFORE ZEROING. s68d logged these after
-                            // clearing them, so every line printed "held still
-                            // <uptime> ms across 0 evaluations" - garbage that
-                            // was then read as evidence. An instrument that
-                            // lies is worse than no instrument.
-                            const unsigned long long heldMs =
-                                static_cast<unsigned long long>(nowSettle -
-                                                                g_capStillSinceMs);
-                            const int evals = g_capStillFrames;
-                            const unsigned long long sinceSwitch =
-                                static_cast<unsigned long long>(nowSettle - g_capArmedMs);
-                            captureRest = true;
-                            g_capArmed = false;
-                            g_capStillFrames = 0;
-                            g_capStillSinceMs = 0;
-                            BVR_LOG("[bones] equip settled: %.2f deg / %.2f UU of drift "
-                                    "(still under %.1f deg / %.1f UU), held still %llu ms "
-                                    "across %d evaluations, %llu ms after the switch - "
-                                    "capturing the reference here.",
-                                    maxAng, maxPos, kCapStillDeg, kCapStillUu, heldMs,
-                                    evals, sinceSwitch);
-                        }
-                    }
+                    captureRest = true;
+                    g_capArmed = false;
+                    BVR_LOG("[bones] equip done (engine reports Idling) - captured this "
+                            "holdable's reference and canonical rest, %llu ms after the "
+                            "switch. Adoption STOPS here: following Idling any further is "
+                            "what plays the idle animation into the rig.",
+                            static_cast<unsigned long long>(GetTickCount64() -
+                                                            g_capArmedMs));
                 } else if (GetTickCount64() - g_capArmedMs > kCapArmTimeoutMs) {
                     // Idling never arrived. Stop rather than adopt forever, and
                     // SAY SO - a silent expiry here is exactly the failure mode
                     // the old fixed timer had.
                     adopt = false;
                     g_capArmed = false;
-                    g_capStillFrames = 0;
-                    g_capStillSinceMs = 0;
                     BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
                             "reference left as-is. If the pose looks wrong, this line is "
                             "why.",

@@ -2705,3 +2705,34 @@ to share a reference pose; it fell out of watching a field that happens to be
 null for all of them. It was still the behaviour that worked, and "fixing" the
 accident regressed the feature. When a change makes a previously-good behaviour
 worse, suspect that the change removed an accident the behaviour depended on.
+
+### 2026-08-27 (session 68g) - adopting past Idling IS the equip idle cycle
+
+With the plasmid position fixed by the capture identity (68f), the weapons came
+back with "the 1 cycle idle animation on equip" - a defect 9c3fe50 had already
+killed, and which the tester had explicitly called out as fixed.
+
+The two are the same knob. 9c3fe50 captured on the FIRST `Idling` frame and
+stopped adopting there. s68c-e kept adopting PAST that edge while waiting for the
+pose to settle - and adopting during `Idling` is, definitionally, following the
+idle animation. One cycle of it, played into the rig, on every equip.
+
+**The settle machinery was built to fix the plasmid, and the plasmid was never a
+settle problem.** It was identity: `CurrentHoldable` is null for every plasmid, so
+all plasmids must SHARE one reference and must not recapture between themselves.
+Once that was right, the settle wait bought nothing and cost a regression, so it
+is deleted rather than tuned - 116 lines out of `bones.cpp`, and the three
+constants and two counters that went with it.
+
+**The rule: when a fix's premise is disproved, delete the fix.** Three commits of
+settle machinery survived the disproof of their own premise because each round
+they were merely *refined* - edge to count, count to wall-clock, threshold
+corrected - rather than re-examined. Every refinement made them more defensible in
+isolation and none of them re-asked whether the thing should exist. A fix whose
+reason has been withdrawn is not neutral: it is unexplained code that will be
+maintained, and here it was actively causing the next bug.
+
+**The tester's instrument was the branch history.** "I specifically called out
+which one fixed that" is a bisect, and it was faster than every measurement taken
+this session. Behaviour a tester has explicitly attributed to a commit should be
+treated as a REGRESSION TEST for every later commit, not re-derived from symptoms.
