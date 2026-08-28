@@ -2051,6 +2051,51 @@ a partial blend. The ease RATE differs per path - `AbilityIdling` at 4,
 plasmid and wrong for another with nothing configurable between them. Capture when
 the pose STOPS MOVING, not on the state edge.
 
+### ROLLCHECK's "drift" is not an angle while an animation is blending
+
+`ROLLCHECK` reports `2*acos(|w|)` of the delta between our write and what is
+there now, plus the delta's imaginary parts. During a plasmid animation it reads:
+
+```
+drifted 16.64 deg (local x +0.00 y +0.00 z -0.00)
+```
+
+**Those cannot both be true of a unit quaternion.** With x=y=z=0 a unit quat has
+w=+-1 and the angle is zero. w = cos(8.32 deg) = 0.9895 with zero imaginary parts
+means the delta is not unit - the rotation is UNCHANGED and only the MAGNITUDE
+differs, by about 1%.
+
+That is `PlayAnimationOnChannelInstantEaseIn` leaving a non-normalised blend
+quaternion in the bank while it eases, which is ordinary for an nlerp. **The
+engine is not overwriting our bone write during an animation.** Read the
+imaginary parts before believing the angle; a large `drifted` with a zero
+component split is a denormalisation, not a fight.
+
+Recorded because it was read as a fight twice and produced a fix for a
+non-problem.
+
+### An adopted animation moves the anchor, and in FREEZE-ONLY that moves the hand
+
+Mode 3 (BRVR's shape) sets `freeze_only`, which writes the cluster AS the
+reference pose - `p[i] = pa + (g_ref[i].p - pa) * s`, with `pa = g_ref[anchor].p` -
+and lets the ACTOR carry it to the controller.
+
+That holds while the reference is frozen. Once an animation is ADOPTED, `g_ref`
+tracks it, so `pa` moves and the entire cluster moves with it - while the actor
+placement, computed from the target, knows nothing about it. **The hand walks off
+the controller for the length of the animation**, which is what the plasmid firing
+screenshots show, and why `animOn=0` made Telekinesis sit still: no adoption, no
+drift.
+
+The fix is a rigid TRANSLATION of the cluster back onto the captured rest anchor
+(`g_rest[anchor].p`). The animation keeps its whole shape - fingers, wrist
+rotation, everything - and simply stops dragging the palm off the point the actor
+pinned. Rotation is deliberately not pinned: a wrist turning in place is the
+animation working, and it does not move the hand off the controller.
+
+This is a consequence of BRVR's architecture rather than a porting error - "the
+actor carries the assembly" only holds if the assembly's anchor stays put.
+
 ### The engine's tick overwrites a bone write, but only while it is ANIMATING
 
 `ROLLCHECK` measures whether our bone write survives to the next frame. The two

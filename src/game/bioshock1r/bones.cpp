@@ -926,7 +926,11 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
 // replaced by a verbatim replay and bone 43 is skipped. hands.cpp mode 3 drives
 // the actor, exactly as BRVR does.
 std::atomic<bool> g_freezeOnly{false};
-
+// s69e: hold the cluster's anchor on the captured rest while an adopted
+// animation plays, so the animation changes the POSE without dragging the hand
+// off the controller. Only meaningful in freeze-only mode. Toggleable so the
+// before/after is one checkbox rather than a rebuild.
+std::atomic<bool> g_animPin{true};
 // ---- s67: CAPTURE ONCE PER HOLDABLE ----------------------------------------
 //
 // The reference pose must be a property of WHAT YOU ARE HOLDING, captured once
@@ -2516,6 +2520,41 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     g_cacheCount = 0;
     g_cacheSleeveCount = 0;
     const float* pa = g_ref[anchor].p;
+    // ---- s69e PIN THE ANCHOR WHILE AN ANIMATION PLAYS -----------------------
+    // Freeze-only (mode 3, BRVR's shape) writes the cluster AS the reference
+    // pose and lets the ACTOR carry it to the controller. It scales about
+    // pa = g_ref[anchor].p - so the anchor is written wherever the pose has it.
+    //
+    // That is fine while the reference is frozen. It is NOT fine once an
+    // animation is adopted: g_ref then tracks the animation, the anchor moves
+    // with it, and the whole cluster moves - while the actor placement, computed
+    // from the target, knows nothing about it. The hand walks off the controller
+    // for the length of the animation. That is the plasmid firing screenshots,
+    // and it is why animOn=0 made Telekinesis sit still: no adoption, no drift.
+    //
+    // The fix is a rigid TRANSLATION back onto the captured rest anchor. The
+    // animation keeps its entire shape - fingers, wrist rotation, everything -
+    // it simply stops dragging the palm away from the point the actor pinned.
+    // Rotation is deliberately NOT pinned: a wrist that turns in place is the
+    // animation doing its job and does not move the hand off the controller.
+    float animPin[3] = {0.0f, 0.0f, 0.0f};
+    if (g_freezeOnly.load(std::memory_order_relaxed) &&
+        g_animPin.load(std::memory_order_relaxed) && g_restValid) {
+        animPin[0] = g_rest[anchor].p[0] - pa[0];
+        animPin[1] = g_rest[anchor].p[1] - pa[1];
+        animPin[2] = g_rest[anchor].p[2] - pa[2];
+        static uint64_t s_pinLog = 0;
+        const float mag = sqrtf(animPin[0] * animPin[0] + animPin[1] * animPin[1] +
+                                animPin[2] * animPin[2]);
+        const uint64_t nowPin = GetTickCount64();
+        if (mag > 1.0f && nowPin - s_pinLog >= 1000) {
+            s_pinLog = nowPin;
+            BVR_LOG("[bones] ANIMPIN: the adopted pose had walked the anchor %.1f UU off "
+                    "the captured rest; pinned back. The animation keeps its shape, the "
+                    "hand keeps its place.",
+                    mag);
+        }
+    }
     // Viewmodel scale (session 61, see the g_scale block comment): the
     // anchor-relative translations shrink by s for every cluster bone - the
     // cluster scales ABOUT THE ANCHOR, so the anchor write-loc is unchanged
@@ -2547,9 +2586,9 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // too big"). The cluster scales about the anchor exactly as the
             // retarget path does, so the authored pose is preserved in shape
             // and only its size changes.
-            p[0] = pa[0] + (g_ref[i].p[0] - pa[0]) * s;
-            p[1] = pa[1] + (g_ref[i].p[1] - pa[1]) * s;
-            p[2] = pa[2] + (g_ref[i].p[2] - pa[2]) * s;
+            p[0] = pa[0] + (g_ref[i].p[0] - pa[0]) * s + animPin[0];
+            p[1] = pa[1] + (g_ref[i].p[1] - pa[1]) * s + animPin[1];
+            p[2] = pa[2] + (g_ref[i].p[2] - pa[2]) * s + animPin[2];
             memcpy(q, g_ref[i].q, 16);
             if (attachBone) {
                 // Position always; rotation only if the attach-rotation toggle
@@ -3094,6 +3133,16 @@ void handle_command(const char* args) {
                    : "Follows the animation for the whole window and freezes wherever it "
                      "lands - one cycle of the idle fidget plays, and the reference is a "
                      "sample of it.");
+    } else if (strcmp(verb, "animpin") == 0) {
+        const bool on = strncmp(rest, "on", 2) == 0;
+        g_animPin.store(on, std::memory_order_relaxed);
+        BVR_LOG("[bones] anim anchor pin %s - %s",
+                on ? "ON" : "off",
+                on ? "an adopted animation changes the POSE but cannot drag the hand off "
+                     "the controller: the anchor is held on the captured rest and the "
+                     "cluster carried with it"
+                   : "the adopted pose moves the anchor too, so the hand follows the "
+                     "animation away from the controller (the s69 defect)");
     } else if (strcmp(verb, "attachrot") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_attachRot.store(on, std::memory_order_relaxed);
@@ -3338,6 +3387,21 @@ void draw_debug_ui() {
         bool sk = g_swayKill.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Freeze idle sway (untick = adopt everything)", &sk))
             g_swayKill.store(sk, std::memory_order_relaxed);
+
+        bool ap = g_animPin.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Animations cannot move the hand off the controller", &ap))
+            g_animPin.store(ap, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "The rig is carried to your controller by the ACTOR, with the hand pose\n"
+                "written underneath it. An adopted animation moves that pose - including\n"
+                "the palm - so without this the whole hand follows the animation away\n"
+                "from where your controller is."
+                "\n"
+                "ON: the palm is held on the captured rest and the animation plays\n"
+                "around it. Fingers, wrist rotation and shape are all unchanged."
+                "\n"
+                "Untick to see the difference; it needs no rebuild.");
 
         // s68k: the A/B for the equip capture. Render thread - atomic only, like
         // every other control in this panel.
