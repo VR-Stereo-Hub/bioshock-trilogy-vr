@@ -2537,9 +2537,27 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // it simply stops dragging the palm away from the point the actor pinned.
     // Rotation is deliberately NOT pinned: a wrist that turns in place is the
     // animation doing its job and does not move the hand off the controller.
+    //
+    // s69f: AND ITS ROTATION. Pinning only the position was half the fix. The
+    // actor's rotation is set from the controller on the assumption that the
+    // anchor still carries the pose it was captured with; when the animation
+    // turns the anchor, the whole hand turns with it and points somewhere else -
+    // "the position stays put now but the direction of it is still incorrect".
+    // The aim ray is separate and unaffected, which is why it still hits the
+    // same spot.
+    //
+    // qFix maps the animated anchor back onto the captured one and is applied to
+    // the whole cluster, positions and rotations alike, so the hand holds its
+    // place AND its heading while the fingers animate inside it.
     float animPin[3] = {0.0f, 0.0f, 0.0f};
+    float qFix[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    bool pinAnim = false;
     if (g_freezeOnly.load(std::memory_order_relaxed) &&
         g_animPin.load(std::memory_order_relaxed) && g_restValid) {
+        pinAnim = true;
+        float qInv[4];
+        quat_conj(g_ref[anchor].q, qInv);
+        quat_mul(g_rest[anchor].q, qInv, qFix);
         animPin[0] = g_rest[anchor].p[0] - pa[0];
         animPin[1] = g_rest[anchor].p[1] - pa[1];
         animPin[2] = g_rest[anchor].p[2] - pa[2];
@@ -2547,12 +2565,13 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         const float mag = sqrtf(animPin[0] * animPin[0] + animPin[1] * animPin[1] +
                                 animPin[2] * animPin[2]);
         const uint64_t nowPin = GetTickCount64();
-        if (mag > 1.0f && nowPin - s_pinLog >= 1000) {
+        const float angOff = quat_angle_deg(g_ref[anchor].q, g_rest[anchor].q);
+        if ((mag > 1.0f || angOff > 2.0f) && nowPin - s_pinLog >= 1000) {
             s_pinLog = nowPin;
-            BVR_LOG("[bones] ANIMPIN: the adopted pose had walked the anchor %.1f UU off "
-                    "the captured rest; pinned back. The animation keeps its shape, the "
-                    "hand keeps its place.",
-                    mag);
+            BVR_LOG("[bones] ANIMPIN: the adopted pose had taken the anchor %.1f UU and "
+                    "%.1f deg off the captured rest; pinned back on both. The animation "
+                    "keeps its shape, the hand keeps its place AND its heading.",
+                    mag, angOff);
         }
     }
     // Viewmodel scale (session 61, see the g_scale block comment): the
@@ -2586,10 +2605,21 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // too big"). The cluster scales about the anchor exactly as the
             // retarget path does, so the authored pose is preserved in shape
             // and only its size changes.
-            p[0] = pa[0] + (g_ref[i].p[0] - pa[0]) * s + animPin[0];
-            p[1] = pa[1] + (g_ref[i].p[1] - pa[1]) * s + animPin[1];
-            p[2] = pa[2] + (g_ref[i].p[2] - pa[2]) * s + animPin[2];
-            memcpy(q, g_ref[i].q, 16);
+            float off[3] = {(g_ref[i].p[0] - pa[0]) * s, (g_ref[i].p[1] - pa[1]) * s,
+                            (g_ref[i].p[2] - pa[2]) * s};
+            if (pinAnim) {
+                float rot[3];
+                qts_rotate(qFix, off, rot);
+                off[0] = rot[0];
+                off[1] = rot[1];
+                off[2] = rot[2];
+                quat_mul(qFix, g_ref[i].q, q);
+            } else {
+                memcpy(q, g_ref[i].q, 16);
+            }
+            p[0] = pa[0] + off[0] + animPin[0];
+            p[1] = pa[1] + off[1] + animPin[1];
+            p[2] = pa[2] + off[2] + animPin[2];
             if (attachBone) {
                 // Position always; rotation only if the attach-rotation toggle
                 // is on. BRVR ships position-only here and its own log shows

@@ -2087,11 +2087,23 @@ the controller for the length of the animation**, which is what the plasmid firi
 screenshots show, and why `animOn=0` made Telekinesis sit still: no adoption, no
 drift.
 
-The fix is a rigid TRANSLATION of the cluster back onto the captured rest anchor
-(`g_rest[anchor].p`). The animation keeps its whole shape - fingers, wrist
-rotation, everything - and simply stops dragging the palm off the point the actor
-pinned. Rotation is deliberately not pinned: a wrist turning in place is the
-animation working, and it does not move the hand off the controller.
+The fix is a rigid transform of the cluster back onto the captured rest anchor -
+**both position AND rotation**. `qFix = q_rest[anchor] * conj(q_ref[anchor])`
+applied to every bone's quat, and to every bone's offset from the anchor, with the
+anchor translated onto `g_rest[anchor].p`.
+
+Position alone is only half of it, and the half it leaves out is the one that
+shows. The actor's ROTATION is set from the controller on the assumption that the
+anchor still carries its captured orientation; when the animation turns the
+anchor, the whole hand turns with it and points somewhere else - reported as "the
+position stays put now but the direction of it is still incorrect even though it
+hits the same spot". The aim ray is computed separately, which is exactly why the
+shot still lands correctly while the model points wrong: **a hand that aims wrong
+while the bullet goes right is a viewmodel-frame problem, never an aim one.**
+
+What survives the pin is everything INSIDE the cluster - finger curl, splay, the
+shape of the animation. What is removed is the anchor's own motion, which is the
+only part the actor cannot absorb.
 
 This is a consequence of BRVR's architecture rather than a porting error - "the
 actor carries the assembly" only holds if the assembly's anchor stays put.
