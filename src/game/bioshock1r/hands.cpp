@@ -789,12 +789,13 @@ bool game_has_focus() {
 void tuner_log(const char* what) {
     char wk[48] = "-";
     aim::weapon_key_name(wk, sizeof wk);
+    const int th = active_hand(); // the hand the numpad just moved
     if (g_tuneMode == kTuneModePos)
-        BVR_LOG("[hands] numpad: %s %s PLACEMENT fwd %+.1f right %+.1f up %+.1f cm "
-                "(step %.1f) - where the gun SITS; per weapon; cannot cause an orbit",
-                wk, what, g_viewFwdCm[1].load(std::memory_order_relaxed),
-                g_viewRightCm[1].load(std::memory_order_relaxed),
-                g_viewUpCm[1].load(std::memory_order_relaxed), g_tuneStep);
+        BVR_LOG("[hands] numpad: %s [hand %s] %s PLACEMENT fwd %+.1f right %+.1f up %+.1f "
+                "cm (step %.1f) - where it SITS; cannot cause an orbit",
+                wk, th == 0 ? "L/plasmid" : "R/weapon", what, g_viewFwdCm[th].load(std::memory_order_relaxed),
+                g_viewRightCm[th].load(std::memory_order_relaxed),
+                g_viewUpCm[th].load(std::memory_order_relaxed), g_tuneStep);
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
         aim::aim_trim_deg(1, &cp, &cy);
@@ -920,11 +921,17 @@ void poll_numpad_tuner() {
                                                                               : g_viewUpCm)
                     : (kBinds[i].axis == 0 ? g_rotPitchDeg : kBinds[i].axis == 1 ? g_rotYawDeg
                                                                                  : g_rotRollDeg);
-            // Every one of these is now a per-hand array, index 1 = right. The
-            // numpad tuner is the WEAPON hand's tuner by design (it is what the
-            // hand on the controller is holding while tuning); the left hand's
-            // equivalents are the F10 sliders, which follow the L/R radio.
-            const int di = 1;
+            // TUNE THE HAND THAT IS ACTUALLY DRIVING, not a hardcoded right.
+            //
+            // These were a single global before the view offset went per-hand, so
+            // a fixed index used to be right. It is not now: the numpad wrote
+            // hand 1 while a plasmid is drawn by whichever hand active_hand()
+            // reports, so tuning a plasmid moved a set of values nothing was
+            // rendering - "the numpad wasn't moving them at all", exactly.
+            //
+            // active_hand() is the same function the drive itself uses to pick a
+            // cluster, so by construction this tunes what you are looking at.
+            const int di = active_hand();
             dst[di].store(dst[di].load(std::memory_order_relaxed) + d, std::memory_order_relaxed);
             moved = true;
         }
