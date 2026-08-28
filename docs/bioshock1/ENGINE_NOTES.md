@@ -2072,7 +2072,17 @@ imaginary parts before believing the angle; a large `drifted` with a zero
 component split is a denormalisation, not a fight.
 
 Recorded because it was read as a fight twice and produced a fix for a
-non-problem.
+non-problem - and then, worse, because the same fact was known and NOT applied
+one commit later.
+
+**Anything that consumes a bone quat must normalise it.** `conj()` is only the
+inverse of a UNIT quaternion; for a non-unit one the inverse is `conj(q)/|q|^2`.
+Build a correction out of `conj()` on a mid-blend quat and it comes out non-unit,
+after which `qts_rotate()` scales every offset it touches by `|q|^2` and
+`quat_mul()` compounds the error into every bone downstream. The rig is skinned
+on the assumption these are rotations, so the visible result is stretched
+geometry - spikes shooting out of the hand - rather than anything that reads as a
+wrong angle. Normalise the correction, and normalise the per-bone product.
 
 ### An adopted animation moves the anchor, and in FREEZE-ONLY that moves the hand
 

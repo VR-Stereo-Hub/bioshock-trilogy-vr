@@ -2554,10 +2554,37 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     bool pinAnim = false;
     if (g_freezeOnly.load(std::memory_order_relaxed) &&
         g_animPin.load(std::memory_order_relaxed) && g_restValid) {
-        pinAnim = true;
+        // NORMALISE, and this is not a nicety. The idle/equip ease-in leaves
+        // NON-UNIT quaternions in the bone bank (ENGINE_NOTES: it is what made
+        // ROLLCHECK report 16 deg with a zero component split). For a non-unit
+        // quat conj() is NOT the inverse - the inverse is conj(q)/|q|^2 - so
+        // qFix comes out non-unit, qts_rotate() then SCALES every offset by
+        // |qFix|^2 and quat_mul() compounds the error into every bone. That is
+        // a vertex explosion, not a rotation, and it is what the spiked hand in
+        // the 2026-08-27 screenshots was.
         float qInv[4];
         quat_conj(g_ref[anchor].q, qInv);
         quat_mul(g_rest[anchor].q, qInv, qFix);
+        const float fn = sqrtf(qFix[0] * qFix[0] + qFix[1] * qFix[1] + qFix[2] * qFix[2] +
+                               qFix[3] * qFix[3]);
+        if (fn > 1e-4f) {
+            qFix[0] /= fn;
+            qFix[1] /= fn;
+            qFix[2] /= fn;
+            qFix[3] /= fn;
+            pinAnim = true;
+        } else {
+            // Degenerate anchor quat - do not build a correction out of it.
+            // Failing to identity leaves the un-pinned pose, which is the old
+            // defect; smearing the mesh across the room is worse.
+            static bool s_warnedDegen = false;
+            if (!s_warnedDegen) {
+                s_warnedDegen = true;
+                BVR_LOG("[bones] ANIMPIN: anchor quat is degenerate (|q|=%.4f) - pin "
+                        "skipped this frame rather than writing a garbage rotation.",
+                        fn);
+            }
+        }
         animPin[0] = g_rest[anchor].p[0] - pa[0];
         animPin[1] = g_rest[anchor].p[1] - pa[1];
         animPin[2] = g_rest[anchor].p[2] - pa[2];
@@ -2614,6 +2641,19 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 off[1] = rot[1];
                 off[2] = rot[2];
                 quat_mul(qFix, g_ref[i].q, q);
+                // g_ref[i].q can itself be a mid-blend non-unit quat, so the
+                // product is too. Renormalise per bone: the rig is skinned on
+                // the assumption these are rotations, and a quat that is not
+                // unit stretches the vertices it drives.
+                const float bn = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+                if (bn > 1e-4f) {
+                    q[0] /= bn;
+                    q[1] /= bn;
+                    q[2] /= bn;
+                    q[3] /= bn;
+                } else {
+                    memcpy(q, g_ref[i].q, 16); // leave the engine's own value
+                }
             } else {
                 memcpy(q, g_ref[i].q, 16);
             }
