@@ -1371,11 +1371,16 @@ void seed_default_profiles() {
     g_weaponProfiles["ElectricBolt"].modelYaw = -16.00f;
     g_weaponProfiles["ElectricBolt"].modelRoll = 22.00f;
 
-    // TELEKINESIS TAKES NO ENGINE ANIMATION. Its grab animation throws the rig
-    // "super far away" (tester, 2026-08-27) - the same reason the WRENCH runs
-    // animOn=0, and exactly what a per-plasmid profile is for: this is now one
-    // weapon's setting rather than a global that would mute every plasmid.
-    g_weaponProfiles["Telekinesis"].animOn = 0.00f;
+    // TELEKINESIS KEEPS ITS ANIMATION. s69b gated it off because its grab
+    // animation threw the rig "super far away" - but that was the mode-3 late
+    // write never replaying the cluster (s69d), so ANY adopted animation on the
+    // left hand walked off the controller. The animation was never the fault,
+    // and the tester wants it: "it would be nice to have the animations".
+    //
+    // Left as a one-line change rather than deleted, because animOn is per
+    // profile and Telekinesis is the likeliest plasmid to still want it off if
+    // the grab turns out to move the rig for its own reasons:
+    //     g_weaponProfiles["Telekinesis"].animOn = 0.00f;
 }
 
 void weapons_ini_path(wchar_t* out, size_t count) {

@@ -1611,12 +1611,29 @@ void late_write() {
     if (!g_enabled.load(std::memory_order_relaxed)) return;
 
     const int mode = g_mode.load(std::memory_order_relaxed);
-    if (mode == 2) {
+    if (mode == 2 || mode == 3) {
         // Bone drive: the cached cluster write is the thing that has to survive
         // the tick, and reapply() already replays exactly it (with its own
         // 100 ms freshness guard, so a stale cache cannot keep painting).
+        //
+        // s69d: MODE 3 NEEDS THIS TOO, and not having it is a defect that hid
+        // for two sessions. Mode 3 is "BRVR shape, both halves" - it writes the
+        // ACTOR to carry the rig AND writes the cluster to keep the rig rigid
+        // underneath it - but this function replayed only the actor rotator for
+        // it and returned. The cluster write was never replayed past the tick.
+        //
+        // Invisible at idle, because the engine barely re-evaluates the bone
+        // array there and our write simply stands: ROLLCHECK reads 0.27 deg of
+        // drift. The moment an animation is ADOPTED the engine evaluates every
+        // frame, its tick lands after ours, and it wins - measured 15.73 deg on
+        // the same probe during an Electro Bolt. The rendered hand then follows
+        // the animation instead of staying pinned to the controller, which is
+        // the plasmid "moving away from my hand position" in the screenshots.
+        //
+        // Weapons hid it because their anchor is the weapon-attach bone, which
+        // the attachment path re-derives anyway.
         bones::reapply();
-        return;
+        if (mode == 2) return;
     }
 
     // Actor drive (modes 1 and 3) - the direct BRVR S60 port.

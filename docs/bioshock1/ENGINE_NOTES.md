@@ -2051,6 +2051,48 @@ a partial blend. The ease RATE differs per path - `AbilityIdling` at 4,
 plasmid and wrong for another with nothing configurable between them. Capture when
 the pose STOPS MOVING, not on the state edge.
 
+### The engine's tick overwrites a bone write, but only while it is ANIMATING
+
+`ROLLCHECK` measures whether our bone write survives to the next frame. The two
+regimes are far apart, measured 2026-08-27 on an Electro Bolt:
+
+```
+idle    our bone write drifted  0.27 deg   engineEval=0   (write held)
+firing  our bone write drifted 15.73 deg   engineEval=0   <-- OUR WRITE IS BEING CHANGED
+firing  our bone write drifted 15.16 deg   engineEval=1   (local x -5.36 y -2.40 z +10.17)
+```
+
+At idle the engine barely re-evaluates the hands bone array (see the ~5%-of-frames
+note above) so our write simply stands. **The moment an animation is adopted the
+engine evaluates every frame, its tick lands AFTER ours, and it wins.** The
+rendered pose is then the animation's, so a rig pinned to the controller walks off
+it for the length of the animation - visible as the plasmid hand translating away
+from the controller while firing.
+
+This is BRVR's S59/S60 finding in a second place: BRVR measured the tick resetting
+the hands ROTATOR and fixed it by writing again later in the frame, past the tick.
+The same is required of the BONE cluster.
+
+`hands::late_write()` (called from scenedraw's build detour, game thread, after
+CalcView) is where that second write lives. **It must replay the cluster in mode 3
+as well as mode 2.** Mode 3 is "BRVR shape, both halves" - it writes the ACTOR to
+carry the rig and the CLUSTER to keep the rig rigid beneath it - so it needs the
+bone replay exactly as mode 2 does. It only replayed the actor rotator until s69d,
+which is why any adopted animation on the left hand walked off the controller.
+
+Weapons hid it because their anchor is the weapon-attach bone (43), which the
+engine's attachment path re-derives anyway.
+
+### The left cluster's anchor is already correct
+
+Bone names, dumped live: `6 = Bip01_L_Hand`, then `7-21` are nothing but finger
+joints (`kBone_L_Thumb/Index/Middle/Ring/Pinky`, three each). Bone 6 IS the palm,
+so `kBoneLWrist` is the right anchor and there is no better bone to move it to.
+The right cluster's anchor at 43 is a different kind of thing - the point a WEAPON
+hangs from - and the asymmetry between the two is not a defect. Ruled out
+2026-08-27 as a cause of the plasmid animation walk; the cause was the late write
+above.
+
 ### Plasmids need their OWN numbers - one shared set cannot work
 
 Upgrade tiers are separate engine classes, so the ability class name has to be
