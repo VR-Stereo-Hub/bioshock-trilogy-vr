@@ -1974,6 +1974,36 @@ through the engine SET seam (no offsets needed, so they survive Epic and GOG):
 `EquippingHandsAnim` (the cycle on equip), `AdditiveHandBobAnim`,
 `UnEquippingHandsAnim`, `IdlingAnim`, `AttachBone`.
 
+### Every plasmid has its own idle FIDGET, and that is what a late capture samples
+
+`Hands.uc`'s `AbilityIdling` (:1556) starts the idle animation through
+`PlayAnimationOnChannelInstantEaseIn(0, CurrentAbility.GetIdlingAnim(), 4)`, and
+`Ability::GetIdlingAnim()` draws a WEIGHTED RANDOM entry from
+`IdlingAnimationName[]` - the same shape as `Holdable::GetIdlingHandsAnim()` for
+weapons. What each ability declares differs:
+
+| ability | `IdlingAnimationName` | source |
+|---|---|---|
+| `ElectricBoltAbility` | `ElectrokineticBolt_Fidget` (100), `..._Accent_A` (10) | its own defaults |
+| **`TelekinesisAbility`** | **none - inherits `Generic_Fidget`** | `Ability.uc:165` |
+| (no EVE) | `NoEve_Fidget` via `AbilityGenericIdling` (:1606, ease rate 8) | `Hands.uc:1834` |
+
+**Consequence for the viewmodel drive.** Any reference capture that samples the
+rig AFTER `Idling` begins is sampling a frame of that fidget, and each plasmid's
+fidget puts the hand somewhere different. A fixed post-equip window therefore
+lands correctly for one plasmid and wrongly for another with nothing configurable
+between them - measured 2026-08-27 as `Tele -> Weapon -> Tele` reliably wrong while
+`Electro -> Weapon -> Electro` was reliably fine.
+
+**The equip-END pose is the `Idling` EDGE**, the last frame before any fidget.
+Capture there and stop adopting; sampling later samples deeper into the fidget.
+Continuing to adopt through that window is also, exactly, what plays "one cycle of
+the idle animation" into the rig on every equip - one mechanism, both defects.
+
+A plasmid rig also never goes STILL: the fidget animates it continuously. Measured
+2156 ms to reach 1.24 deg against a +-1.2 deg idle envelope, so any "wait for the
+pose to settle" test crosses its threshold at random. Do not build one.
+
 ### Hands state machine - DERIVED, not hardcoded
 
 `ShockGame.Hands` is a UnrealScript state machine; gameplay code keys off

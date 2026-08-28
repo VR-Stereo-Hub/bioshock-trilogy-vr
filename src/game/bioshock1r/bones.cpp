@@ -979,8 +979,18 @@ std::atomic<uint32_t> g_animStateMask{state_bit(hands_state::State::Firing) |
 // is the apex of a recoil: cutting straight to rest reads as a jerk, whereas
 // easing over ~120 ms is the recovery the recoil animation would have played.
 // 0 ms = snap, and the F10 slider makes that an A/B in the headset.
-std::atomic<bool> g_restRestore{true};
-std::atomic<unsigned> g_restBlendMs{120};
+// s68k A/B: capture the equip reference on the engine's Idling edge (ON), or on
+// the old fixed 1200 ms window (off). See the long note at the use site - the
+// window is what plays one cycle of the idle fidget into the rig on every equip,
+// and what makes the frozen pose a sample of that fidget. Exposed on F10 and
+// `vrbones capidle on|off` so the two can be compared on one run, on the same
+// plasmid, without a rebuild.
+std::atomic<bool> g_capAtIdling{true};
+// An equip that never reaches Idling must not adopt forever. Generous - the
+// slowest BS1 equip measured well under this - and it logs when it bites.
+constexpr uint64_t kCapArmTimeoutMs = 4000;
+
+std::atomic<bool> g_restRestore{true};std::atomic<unsigned> g_restBlendMs{120};
 // The F10 panel runs on the RENDER thread and this module's rest state is plain
 // game-thread memory, so "retake the rest pose" crosses as an atomic REQUEST
 // that drive() consumes - the same discipline every other F10 control here
@@ -2057,10 +2067,71 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         bool captureRest = false;
         bool adopt = true;
         if (s_forceCapture) {
-            // Track until the rig settles, then this weapon's own pose is in.
-            adopt = (GetTickCount64() - g_lastBigDeltaMs) <
-                    g_swaySettleMs.load(std::memory_order_relaxed);
-            if (!adopt) s_forceCapture = false;
+            // ---- STOP AT THE IDLING EDGE, NEVER LATER -----------------------
+            //
+            // The fixed 1200 ms window this replaces made the rig FOLLOW the
+            // equip animation and then keep following into the idle FIDGET,
+            // freezing the reference wherever that fidget happened to be. One
+            // mechanism, both reported defects:
+            //
+            //   - the "1 cycle animation on every equip" IS that following;
+            //   - the frozen reference is a SAMPLE OF THE FIDGET mid-cycle.
+            //
+            // And it is deterministic per plasmid, because each plays a fixed
+            // fidget of its own: ElectricBoltAbility.uc declares
+            // ElectrokineticBolt_Fidget, while TelekinesisAbility.uc declares
+            // nothing and inherits Ability.uc's Generic_Fidget. Generic_Fidget at
+            // T+1200 ms sits away from rest; ElectrokineticBolt_Fidget happens to
+            // sit near it. Hence the tester's repro, every row of it:
+            //
+            //   Electro -> Weapon -> Electro   fine
+            //   Electro -> Tele                fine   (no recapture: see below)
+            //   Tele    -> Electro             fine   (no recapture)
+            //   Tele    -> Weapon -> Tele      WRONG  (the one fresh TK capture)
+            //
+            // Only weapon<->plasmid recaptures at all - CurrentHoldable is null
+            // for every plasmid, so plasmid-to-plasmid is null != null == false -
+            // which is why only that transition can go wrong, and why TK could
+            // carry a stale bad pose across whole sessions.
+            //
+            // Hands.uc starts the fidget when it enters Idling
+            // (AbilityIdling:1556, WeaponIdling:1147, both via
+            // PlayAnimationOnChannelInstantEaseIn). So the equip-END pose - the
+            // last frame before any fidget - is exactly the Idling edge. Capture
+            // there and stop. Sampling any LATER samples deeper into the fidget,
+            // which is why every attempt to wait longer made this worse.
+            const bool atIdling = g_capAtIdling.load(std::memory_order_relaxed);
+            if (atIdling && stateKnown) {
+                if (hs == hands_state::State::Idling) {
+                    adopt = true; // this one frame writes g_ref, then we are done
+                    captureRest = true;
+                    s_forceCapture = false;
+                    BVR_LOG("[bones] equip done (engine reports Idling) - captured this "
+                            "holdable's reference %llu ms after the switch, BEFORE the idle "
+                            "fidget starts. Adoption stops here; following Idling is what "
+                            "plays the idle animation into the rig.",
+                            static_cast<unsigned long long>(GetTickCount64() -
+                                                            g_lastBigDeltaMs));
+                } else if (GetTickCount64() - g_lastBigDeltaMs > kCapArmTimeoutMs) {
+                    // Idling never arrived. Stop rather than adopt forever, and SAY
+                    // SO - a silent expiry is what made the old timer hard to see.
+                    adopt = false;
+                    s_forceCapture = false;
+                    BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
+                            "reference left as-is. If the pose looks wrong, this line is "
+                            "why.",
+                            static_cast<unsigned long long>(kCapArmTimeoutMs),
+                            hands_state::to_string(hs));
+                } else {
+                    adopt = true; // still equipping
+                }
+            } else {
+                // No state machine yet (the offset is derived once, early), or the
+                // A/B is switched off: the original fixed window, unchanged.
+                adopt = (GetTickCount64() - g_lastBigDeltaMs) <
+                        g_swaySettleMs.load(std::memory_order_relaxed);
+                if (!adopt) s_forceCapture = false;
+            }
         } else if (g_refValid && stateKnown) {
             // Named state: obey the mask, and skip the threshold entirely.
             adopt = g_animAllowed.load(std::memory_order_relaxed) && stateAllows;
@@ -2947,6 +3018,18 @@ void handle_command(const char* args) {
                 g_restRestore.load(std::memory_order_relaxed) ? "ON" : "off",
                 g_restBlendMs.load(std::memory_order_relaxed), g_restValid ? 1 : 0,
                 g_restoreStartMs ? 1 : 0, hands_state::to_string(g_lastKnownState));
+    } else if (strcmp(verb, "capidle") == 0) {
+        const bool on = strncmp(rest, "on", 2) == 0;
+        g_capAtIdling.store(on, std::memory_order_relaxed);
+        BVR_LOG("[bones] equip capture = %s (%u ms window when off). %s",
+                on ? "ON THE IDLING EDGE" : "the old fixed window",
+                g_swaySettleMs.load(std::memory_order_relaxed),
+                on ? "The rig stops following the animation the moment the equip ends, "
+                     "so no idle fidget is played into it and the captured pose is the "
+                     "equip's end rather than a frame of the fidget."
+                   : "Follows the animation for the whole window and freezes wherever it "
+                     "lands - one cycle of the idle fidget plays, and the reference is a "
+                     "sample of it.");
     } else if (strcmp(verb, "attachrot") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_attachRot.store(on, std::memory_order_relaxed);
@@ -3191,6 +3274,24 @@ void draw_debug_ui() {
         bool sk = g_swayKill.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Freeze idle sway (untick = adopt everything)", &sk))
             g_swayKill.store(sk, std::memory_order_relaxed);
+
+        // s68k: the A/B for the equip capture. Render thread - atomic only, like
+        // every other control in this panel.
+        bool ci = g_capAtIdling.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Capture the equip pose at the Idling edge", &ci))
+            g_capAtIdling.store(ci, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "ON: the rig stops following the engine the instant the equip ends, so\n"
+                "the captured pose is the equip's END - the last frame before the idle\n"
+                "fidget starts."
+                "\n"
+                "OFF: follows the animation for a fixed window and freezes wherever it\n"
+                "lands. One cycle of the idle fidget plays on every equip, and the\n"
+                "reference becomes a sample of that fidget."
+                "\n"
+                "Each plasmid has its own fidget (Telekinesis inherits the generic one),\n"
+                "which is why OFF is wrong for one plasmid and fine for another.");
 
         // s68: the recoil-apex fix, live. This is the A/B for it - untick and
         // the s67 behaviour is back, so a headset run can settle whether the
