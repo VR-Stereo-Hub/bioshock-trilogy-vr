@@ -1354,6 +1354,23 @@ void seed_default_profiles() {
                           "Plasmid"})
         g_weaponProfiles[k] = kPlasmid;
 
+    // ELECTROBOLT KEEPS THE POSE IT HAD BEFORE TELEKINESIS OVERWROTE IT.
+    //
+    // Until 5a93e58 every plasmid shared the single hand-0 slot, so tuning
+    // Telekinesis moved Electrobolt with it - the defect that change fixed. The
+    // shared row above is therefore the TELEKINESIS-tuned pose, and Electrobolt's
+    // own is the one the tester confirmed perfect at 5ca2ced ("the positioning is
+    // perfect") before that overwrite. Restored here.
+    //
+    // Only placement and model trim differ; grip, the aim ray and the aim origin
+    // are common to both, so they are left on the shared row rather than copied.
+    g_weaponProfiles["ElectricBolt"].viewFwd = -2.00f;
+    g_weaponProfiles["ElectricBolt"].viewRight = 2.00f;
+    g_weaponProfiles["ElectricBolt"].viewUp = 11.00f;
+    g_weaponProfiles["ElectricBolt"].modelPitch = -111.00f;
+    g_weaponProfiles["ElectricBolt"].modelYaw = -16.00f;
+    g_weaponProfiles["ElectricBolt"].modelRoll = 22.00f;
+
     // TELEKINESIS TAKES NO ENGINE ANIMATION. Its grab animation throws the rig
     // "super far away" (tester, 2026-08-27) - the same reason the WRENCH runs
     // animOn=0, and exactly what a per-plasmid profile is for: this is now one
