@@ -978,21 +978,41 @@ std::string plasmid_key(std::string s) {
     return s.empty() ? std::string("Plasmid") : s;
 }
 
-// Capture the live R-hand values into the active profile (no-op keyless).
+// s69b: which HAND does a profile own? Weapons the right, plasmids the LEFT.
+//
+// Measured, not reasoned. Three observations in one session pin it down:
+// the numpad tuning hand 1 did not move a plasmid; retargeted to active_hand()
+// it did; and tuning one plasmid then moved the other. That is only possible if
+// plasmids render from hand 0, hand 0 carries ONE shared set of values, and the
+// profile layer - which read and wrote hand 1 throughout - was inert for them.
+// Per-plasmid profiles existed but nothing they stored was ever rendered.
+bool is_plasmid_key(const std::string& k) {
+    static const char* kPlasmids[] = {
+        "ElectricBolt", "Telekinesis", "Incineration", "IcicleAssault", "InsectSwarm",
+        "SecurityBeacon", "SpringBoardTrap", "SummonProtector", "AirBlast",
+        "BerserkRage", "DecoyHuman", "Plasmid"};
+    for (const char* n : kPlasmids)
+        if (k == n) return true;
+    return false;
+}
+int profile_hand(const std::string& key) { return is_plasmid_key(key) ? 0 : 1; }
+
+// Capture the live values of the active profile's OWN hand (no-op keyless).
 void stash_active_profile() {
     if (g_weaponKey.empty()) return;
+    const int ph = profile_hand(g_weaponKey);
     WeaponProfile& p = g_weaponProfiles[g_weaponKey];
-    p.trimPitch = g_pitchOffsetDeg[1].load(std::memory_order_relaxed);
-    p.trimYaw = g_yawOffsetDeg[1].load(std::memory_order_relaxed);
-    p.posFwd = g_posFwdCm[1].load(std::memory_order_relaxed);
-    p.posRight = g_posRightCm[1].load(std::memory_order_relaxed);
-    p.posUp = g_posUpCm[1].load(std::memory_order_relaxed);
-    hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
-    hands::view_offset_cm(1, &p.viewFwd, &p.viewRight, &p.viewUp);
+    p.trimPitch = g_pitchOffsetDeg[ph].load(std::memory_order_relaxed);
+    p.trimYaw = g_yawOffsetDeg[ph].load(std::memory_order_relaxed);
+    p.posFwd = g_posFwdCm[ph].load(std::memory_order_relaxed);
+    p.posRight = g_posRightCm[ph].load(std::memory_order_relaxed);
+    p.posUp = g_posUpCm[ph].load(std::memory_order_relaxed);
+    hands::model_offset_cm(ph, &p.gripFwd, &p.gripRight, &p.gripUp);
+    hands::view_offset_cm(ph, &p.viewFwd, &p.viewRight, &p.viewUp);
     p.animOn = bones::anim_allowed() ? 1.0f : 0.0f;
-    p.modelPitch = hands::model_trim_pitch_deg(1);
-    p.modelYaw = hands::model_trim_yaw_deg(1);
-    p.modelRoll = hands::model_trim_roll_deg(1);
+    p.modelPitch = hands::model_trim_pitch_deg(ph);
+    p.modelYaw = hands::model_trim_yaw_deg(ph);
+    p.modelRoll = hands::model_trim_roll_deg(ph);
 }
 
 void apply_weapon_key(const std::string& key, const char* why) {
@@ -1003,6 +1023,7 @@ void apply_weapon_key(const std::string& key, const char* why) {
         std::lock_guard<std::mutex> lock(g_weaponKeyUiMutex);
         strcpy_s(g_weaponKeyUi, key.empty() ? "-" : key.c_str());
     }
+    const int ph = profile_hand(key);
     if (key.empty()) {
         // s68: a genuinely UNKNOWN holdable (the rig itself unreadable). This is
         // no longer the plasmid case - that resolves to "Plasmid" below - so it
@@ -1029,38 +1050,38 @@ void apply_weapon_key(const std::string& key, const char* why) {
                                               g_posUpCm[1].load(std::memory_order_relaxed),
                                               0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         if (!g_presetBaselineValid) {
-            hands::model_offset_cm(1, &p.gripFwd, &p.gripRight, &p.gripUp);
-            hands::view_offset_cm(1, &p.viewFwd, &p.viewRight, &p.viewUp);
+            hands::model_offset_cm(ph, &p.gripFwd, &p.gripRight, &p.gripUp);
+            hands::view_offset_cm(ph, &p.viewFwd, &p.viewRight, &p.viewUp);
             p.animOn = 1.0f;
-            p.modelPitch = hands::model_trim_pitch_deg(1);
-            p.modelYaw = hands::model_trim_yaw_deg(1);
-            p.modelRoll = hands::model_trim_roll_deg(1);
+            p.modelPitch = hands::model_trim_pitch_deg(ph);
+            p.modelYaw = hands::model_trim_yaw_deg(ph);
+            p.modelRoll = hands::model_trim_roll_deg(ph);
         }
         g_weaponProfiles[key] = p;
-        g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
-        g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
-        g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
-        g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
-        g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
-        hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
-        hands::set_view_offset_cm(1, p.viewFwd, p.viewRight, p.viewUp);
+        g_pitchOffsetDeg[ph].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[ph].store(p.trimYaw, std::memory_order_relaxed);
+        g_posFwdCm[ph].store(p.posFwd, std::memory_order_relaxed);
+        g_posRightCm[ph].store(p.posRight, std::memory_order_relaxed);
+        g_posUpCm[ph].store(p.posUp, std::memory_order_relaxed);
+        hands::set_model_offset_cm(ph, p.gripFwd, p.gripRight, p.gripUp);
+        hands::set_view_offset_cm(ph, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
-        hands::set_model_trim_deg(1, p.modelPitch, p.modelYaw, p.modelRoll);
+        hands::set_model_trim_deg(ph, p.modelPitch, p.modelYaw, p.modelRoll);
         BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): trim %.2f/%.2f pos "
                 "%.1f/%.1f/%.1f",
                 key.c_str(), g_presetBaselineValid ? "preset baseline" : "current R values",
                 why, p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp);
     } else {
         const WeaponProfile& p = it->second;
-        g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
-        g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
-        g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
-        g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
-        g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);
-        hands::set_model_offset_cm(1, p.gripFwd, p.gripRight, p.gripUp);
-        hands::set_view_offset_cm(1, p.viewFwd, p.viewRight, p.viewUp);
+        g_pitchOffsetDeg[ph].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[ph].store(p.trimYaw, std::memory_order_relaxed);
+        g_posFwdCm[ph].store(p.posFwd, std::memory_order_relaxed);
+        g_posRightCm[ph].store(p.posRight, std::memory_order_relaxed);
+        g_posUpCm[ph].store(p.posUp, std::memory_order_relaxed);
+        hands::set_model_offset_cm(ph, p.gripFwd, p.gripRight, p.gripUp);
+        hands::set_view_offset_cm(ph, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
-        hands::set_model_trim_deg(1, p.modelPitch, p.modelYaw, p.modelRoll);
+        hands::set_model_trim_deg(ph, p.modelPitch, p.modelYaw, p.modelRoll);
         BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f "
                 "grip %.1f/%.1f/%.1f (%s)",
                 key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp,
@@ -1304,33 +1325,40 @@ void seed_default_profiles() {
         .viewFwd = -4.00f, .viewRight = -2.00f, .viewUp = 15.00f,
         .animOn = 0.00f,
         .modelPitch = -12.00f, .modelYaw = -16.00f, .modelRoll = -18.00f};
-    // s69 PLASMIDS: ONE row, assigned to every plasmid, so they start PERFECTLY
-    // ALIGNED and diverge only where the tester tunes one. This is BRVR's shape -
-    // its Config.cpp:345 seeds plasmidGrip[p] from the shared slot 8 for exactly
-    // the same reason - and it is what "I want that, but for them to all be
-    // perfectly aligned like how they are now" asks for.
+    // s69b PLASMIDS: ONE row for every plasmid, and it is a LEFT-HAND row.
     //
-    // The values ARE the previous shared "Plasmid" row, which is also what the
-    // tester's weapons.ini already holds, so the first run after this change must
-    // look identical to the last. Anything moving on first equip means this row
-    // and the ini have drifted - chase that, not the poses.
+    // profile_hand() sends these to hand 0, because that is the hand a plasmid
+    // actually renders from - measured, see the note there. So every value below
+    // is the LIVE left-hand value at the time of writing, which makes applying a
+    // plasmid profile a NO-OP against what the tester already had:
     //
-    // Declared ONCE and copied, so the eleven cannot drift apart in source.
-    const WeaponProfile kPlasmid{
-        .trimPitch = -1.20f, .trimYaw = -4.20f,
-        .posFwd = -0.70f, .posRight = -2.10f, .posUp = 18.70f,
-        .gripFwd = 44.00f, .gripRight = 16.70f, .gripUp = -15.40f,
-        .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 11.00f,
+    //   trim/pos   vrpreset.ini  aimTrimL* / aimPosL*
+    //   grip       hands.ini     posFwdCmL / posRightCmL / posUpCmL
+    //   view       hands.ini     viewFwdCmL / viewRightCmL / viewUpCmL
+    //   model      hands.ini     rotPitchDegL / rotYawDegL / rotRollDegL
+    //
+    // Declared once and copied, so the eleven start PERFECTLY ALIGNED - the
+    // tester's requirement - and diverge only where one is tuned. Unlike before,
+    // tuning one now actually stays on that one: the values live in the profile
+    // instead of in the single shared hand-0 slot that made every edit global.
+    WeaponProfile kPlasmid{
+        .trimPitch = -11.00f, .trimYaw = 37.00f,
+        .posFwd = -2.80f, .posRight = 0.60f, .posUp = 0.50f,
+        .gripFwd = 45.50f, .gripRight = -14.90f, .gripUp = -12.30f,
+        .viewFwd = 0.00f, .viewRight = -4.00f, .viewUp = 13.00f,
         .animOn = 1.00f,
-        .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
-    // These names are what plasmid_key() produces: the class name with "Ability"
-    // and any upgrade tier stripped. "Plasmid" stays as the fallback for an
-    // ability whose class name will not resolve.
+        .modelPitch = -59.00f, .modelYaw = -32.00f, .modelRoll = 22.00f};
     for (const char* k : {"ElectricBolt", "Telekinesis", "Incineration", "IcicleAssault",
                           "InsectSwarm", "SecurityBeacon", "SpringBoardTrap",
                           "SummonProtector", "AirBlast", "BerserkRage", "DecoyHuman",
                           "Plasmid"})
         g_weaponProfiles[k] = kPlasmid;
+
+    // TELEKINESIS TAKES NO ENGINE ANIMATION. Its grab animation throws the rig
+    // "super far away" (tester, 2026-08-27) - the same reason the WRENCH runs
+    // animOn=0, and exactly what a per-plasmid profile is for: this is now one
+    // weapon's setting rather than a global that would mute every plasmid.
+    g_weaponProfiles["Telekinesis"].animOn = 0.00f;
 }
 
 void weapons_ini_path(wchar_t* out, size_t count) {
