@@ -2045,12 +2045,28 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // pivot". The gate is about whether to follow animation, not about
         // whether this weapon gets its own pose at all.
         static void* s_lastHoldable = nullptr;
+        static void* s_lastAbility = nullptr;
         static bool s_forceCapture = false;
         {
+            // s69: IDENTITY IS THE PAIR. CurrentHoldable is NULL for every
+            // plasmid, so watching it alone makes every plasmid look like every
+            // other one - plasmid-to-plasmid is null != null == false and no
+            // recapture happens. The reference then belongs to whichever plasmid
+            // was equipped last, and the per-plasmid offsets it is tuned against
+            // sit on the wrong pose.
+            //
+            // The tester's BRVR config is why this matters: with PerPlasmidTuning
+            // its rotations differ by tens of degrees between plasmids
+            // (PlasmidRot0 -111,-64,22 vs PlasmidRot1 -35,-20,22), because the
+            // authored poses genuinely differ. Per-plasmid offsets only hold still
+            // if each plasmid also keeps its own captured reference.
             void* liveHold = nullptr;
             if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
-            if (liveHold != s_lastHoldable) {
+            void* liveAbil = nullptr;
+            if (!hands::current_ability(&liveAbil)) liveAbil = nullptr;
+            if (liveHold != s_lastHoldable || liveAbil != s_lastAbility) {
                 s_lastHoldable = liveHold;
+                s_lastAbility = liveAbil;
                 s_forceCapture = true;
                 // Reset the transit latch: this switch has not left Idling yet.
                 g_capLeftIdling = !stateKnown || hs != hands_state::State::Idling;
@@ -2061,7 +2077,9 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 // of bug as the s67 wrench-posed-as-a-pistol.
                 g_restValid = false;
                 g_restoreStartMs = 0;
-                BVR_LOG("[bones] holdable changed - forcing a fresh reference capture");
+                BVR_LOG("[bones] holding changed (holdable %p, ability %p%s) - forcing a "
+                        "fresh reference capture",
+                        liveHold, liveAbil, liveAbil ? ", PLASMID" : "");
             }
         }
 

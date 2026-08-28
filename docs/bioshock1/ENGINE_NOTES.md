@@ -2051,6 +2051,39 @@ a partial blend. The ease RATE differs per path - `AbilityIdling` at 4,
 plasmid and wrong for another with nothing configurable between them. Capture when
 the pose STOPS MOVING, not on the state edge.
 
+### Plasmids need their OWN numbers - one shared set cannot work
+
+Upgrade tiers are separate engine classes, so the ability class name has to be
+folded before it can key anything: `ElectricBoltAbility`, `ElectricBoltTwoAbility`,
+`ElectricBoltThreeAbility`, `ElectricBoltZeroAbility` are one plasmid, as are
+`TelekinesisAbility` / `TelekinesisTwoAbility`. Strip the trailing `Ability` and
+then a trailing `Zero`/`Two`/`Three` and eleven plasmids remain, which is what the
+game ships.
+
+**They are not interchangeable.** BRVR's shipped config, with `PerPlasmidTuning=1`,
+carries rotations that differ by tens of degrees between them:
+
+```
+PlasmidGrip0=45.50,-14.90,-12.30   PlasmidRot0=-111.00,-64.00,22.00
+PlasmidGrip1=49.50,-12.90,-12.30   PlasmidRot1=-35.00,-20.00,22.00
+PlasmidGrip2=45.50,-10.90,-6.30    PlasmidRot2=-111.00,-16.00,22.00
+```
+
+The authored poses genuinely differ, so **no single grip/rotation serves two
+plasmids** and no reference-capture instant can be found that makes one set work
+for both. Nine attempts in session 68 searched for that instant; the search was
+unsound, not merely unlucky. Per-plasmid values absorb the difference, which is
+why BRVR never had the defect.
+
+Per-plasmid values also require a **per-plasmid reference capture**: the identity
+must be the pair `(CurrentHoldable, CurrentAbility)`, or the offsets sit on
+whichever pose was captured last.
+
+Identity resolves through the ordinary UObject path - `object_class_name()` on the
+`CurrentAbility` INSTANCE - so no pawn scan and no new offsets are needed. (BRVR
+does scan the pawn for `AvailableAbilities` and match `ActiveAbility` into it for
+an index; that is its route, not a requirement.)
+
 ### Hands.CurrentAbility is where plasmids live - `+0x454`
 
 `Hands.uc` declares them in separate slots:

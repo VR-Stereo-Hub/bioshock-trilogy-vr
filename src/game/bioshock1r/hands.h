@@ -147,6 +147,13 @@ bool current_holdable(void** out);
 // cosmetic suppression and must fail towards the crosshair being shown.
 bool armed();
 
+// s69: the equipped PLASMID actor, from Hands.CurrentAbility (+0x454). Abilities
+// live in their own slot, which is why current_holdable() reads NULL with a
+// plasmid up. The profile layer resolves this pointer's CLASS NAME to key a
+// per-plasmid profile, the same way it keys weapons. False when the rig is
+// unreadable; *out null means no plasmid equipped.
+bool current_ability(void** out);
+
 // Persist the per-hand model offsets to hands.ini (same as `vrhands save`).
 // Called by `vrpreset save` too, so the one in-headset save button covers the
 // model sliders along with the preset's own values.

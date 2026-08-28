@@ -653,6 +653,29 @@ bool armed() {
     return (okH && hold != nullptr) || (okA && abil != nullptr);
 }
 
+bool current_ability(void** out) {
+    // The equipped PLASMID. Hands.uc keeps abilities in their OWN slot
+    // (`var private transient Ability CurrentAbility`, two fields above
+    // CurrentHoldable), which is why current_holdable() reads NULL with a plasmid
+    // up - the thing IS equipped, just not in the field the weapon path watches.
+    //
+    // The offset is already derived and documented in patterns.h, bracketed by
+    // kHandsBaseOffset and kHandsCurrentHoldableOffset, and already used by
+    // armed(). This is the same read, exposed so the profile layer can name WHICH
+    // plasmid is in hand rather than only whether one is.
+    //
+    // Same contract as current_holdable(): false when the rig itself is
+    // unreadable; *out may be null, which means no plasmid equipped.
+    if (!has_vtable(g_handsActor, patterns::kHandsVtableRva)) return false;
+    void* abil = nullptr;
+    if (!read_ptr(static_cast<const uint8_t*>(g_handsActor) +
+                      patterns::kHandsCurrentAbilityOffset,
+                  &abil))
+        return false;
+    *out = abil;
+    return true;
+}
+
 bool current_holdable(void** out) {
     // Raw rig read, CLASS-AGNOSTIC: the MachineGun and GrenadeLauncher carry
     // a different native vtable than kPlayerWeaponVtableRva, so the

@@ -955,6 +955,29 @@ std::string narrow_key(const wchar_t* w) {
     return s;
 }
 
+// s69: fold an ability class name down to the plasmid it is.
+//
+// Upgrade tiers are separate engine classes - ElectricBoltAbility,
+// ElectricBoltTwoAbility, ElectricBoltThreeAbility, ElectricBoltZeroAbility,
+// TelekinesisAbility, TelekinesisTwoAbility - so keying on the raw name would
+// hand an upgraded plasmid a fresh profile and drop the position the tester had
+// tuned. Strip the trailing "Ability", then a trailing tier word, and all tiers
+// of one plasmid share a profile. Yields ~11 keys, which is what BioShock ships.
+std::string plasmid_key(std::string s) {
+    auto chop = [&s](const char* suffix) {
+        const size_t n = strlen(suffix);
+        if (s.size() > n && s.compare(s.size() - n, n, suffix) == 0) {
+            s.erase(s.size() - n);
+            return true;
+        }
+        return false;
+    };
+    chop("Ability");
+    // Only one tier word, and only after "Ability" is gone.
+    chop("Three") || chop("Two") || chop("Zero");
+    return s.empty() ? std::string("Plasmid") : s;
+}
+
 // Capture the live R-hand values into the active profile (no-op keyless).
 void stash_active_profile() {
     if (g_weaponKey.empty()) return;
@@ -1112,34 +1135,60 @@ void update_weapon_profile(const FrameContext& ctx) {
         }
     }
     if (haveRig || w) g_weaponScanMisses = 0;
-    if (w == g_weaponKeyActor && !(haveRig && !w && g_weaponKey.empty())) return;
-    g_weaponKeyActor = w;
 
-    // ---- s68 THE PLASMID KEY ------------------------------------------------
-    // The engine parks `Hands.CurrentHoldable` at NULL while a PLASMID is
-    // equipped - proven by the log, where every plasmid switch prints bones'
-    // "wscale rigid: released (holdable gone)" (its test is `!hold`) and no
-    // profile line at all. The old code turned that null into an EMPTY key,
-    // which apply_weapon_key() dropped on the floor: nothing was applied, so
-    // the outgoing WEAPON's entire profile stayed live - its aim trim, its
-    // placement, its grip, and critically its animOn.
+    // ---- s69 THE PLASMID KEY, PER PLASMID -----------------------------------
+    // `Hands.CurrentHoldable` is NULL while a plasmid is equipped - abilities
+    // live in their own slot (`CurrentAbility`, patterns.h +0x454). s68 turned
+    // that null into ONE key, "Plasmid", shared by every plasmid.
     //
-    // That is both defects the tester reported in one mechanism:
-    //   - the plasmids "move to a different position after switching to a
-    //     weapon and switching back" - they were wearing the weapon's profile;
-    //   - "the animations aren't playing for the plasmids" - after the WRENCH
-    //     (animOn=0) the gate stayed shut, and nothing reopened it. The log
-    //     shows wrench<->plasmid switching throughout the run that reported it.
+    // That cannot work, and the tester's own BRVR config is the proof. With
+    // PerPlasmidTuning=1 it carries wildly different rotations per plasmid -
+    // PlasmidRot0 = -111,-64,22 against PlasmidRot1 = -35,-20,22 - because the
+    // plasmids' authored poses genuinely differ. Nine attempts to find the
+    // "right" shared capture instant failed because there is no such instant:
+    // no single set of numbers serves both. BRVR never had the defect because
+    // per-plasmid grip/rot ABSORBS the difference.
     //
-    // A null holdable during a gameplay view means a plasmid: this function is
-    // already gated on g_gameplayView, and in BS1 gameplay the hands always hold
-    // something. ONE key for every plasmid, which is the tester's call - "global,
-    // not per plasmid" - so all of them share one position and one crosshair.
+    // So each plasmid gets its own profile, keyed on its class name through the
+    // same path weapons already use. BRVR resolves identity by scanning the pawn
+    // for AvailableAbilities and matching ActiveAbility into it; that is not
+    // needed here, because object_class_name() walks obj -> +0x30 UClass ->
+    // validated vtable -> +0x28 FName -> GNames and names an Ability instance
+    // exactly as it names a Shotgun. No pawn scan, no new offsets.
+    void* abil = nullptr;
+    const bool haveAbil = hands::current_ability(&abil) && abil != nullptr;
+
+    // IDENTITY IS THE PAIR. Both plasmids leave the holdable null, so keying the
+    // change-detector on the holdable alone makes every plasmid look like every
+    // other one and the switch is never seen.
+    void* const ident = w ? w : abil;
+    if (ident == g_weaponKeyActor && !(haveRig && !ident && g_weaponKey.empty())) return;
+    g_weaponKeyActor = ident;
+
     std::string key;
     const char* why = "weapon change";
-    if (haveRig && !w) {
-        key = "Plasmid";
-        why = "plasmid equipped (CurrentHoldable null)";
+    if (haveRig && !w && haveAbil) {
+        const wchar_t* aname = patterns::object_class_name(abil);
+        if (aname) {
+            key = plasmid_key(narrow_key(aname));
+            why = "plasmid equipped (Hands.CurrentAbility)";
+        } else {
+            // Degrade to s68's shared key rather than to nothing: a plasmid with
+            // one set of numbers is worse than per-plasmid, and far better than
+            // the outgoing weapon's profile staying applied.
+            key = "Plasmid";
+            why = "plasmid equipped, class name unresolved - shared fallback";
+            static bool s_warned = false;
+            if (!s_warned) {
+                s_warned = true;
+                BVR_LOG("[aim] plasmid %p has NO resolvable class name - falling back to "
+                        "the shared 'Plasmid' profile. Per-plasmid tuning is OFF until "
+                        "this resolves; report this line.",
+                        abil);
+            }
+        }
+    } else if (haveRig && !w) {
+        why = "hands empty (no holdable, no ability)";
     } else {
         const wchar_t* name = w ? patterns::object_class_name(w) : nullptr;
         if (w && !name)
@@ -1255,13 +1304,33 @@ void seed_default_profiles() {
         .viewFwd = -4.00f, .viewRight = -2.00f, .viewUp = 15.00f,
         .animOn = 0.00f,
         .modelPitch = -12.00f, .modelYaw = -16.00f, .modelRoll = -18.00f};
-    g_weaponProfiles["Plasmid"] = {
+    // s69 PLASMIDS: ONE row, assigned to every plasmid, so they start PERFECTLY
+    // ALIGNED and diverge only where the tester tunes one. This is BRVR's shape -
+    // its Config.cpp:345 seeds plasmidGrip[p] from the shared slot 8 for exactly
+    // the same reason - and it is what "I want that, but for them to all be
+    // perfectly aligned like how they are now" asks for.
+    //
+    // The values ARE the previous shared "Plasmid" row, which is also what the
+    // tester's weapons.ini already holds, so the first run after this change must
+    // look identical to the last. Anything moving on first equip means this row
+    // and the ini have drifted - chase that, not the poses.
+    //
+    // Declared ONCE and copied, so the eleven cannot drift apart in source.
+    const WeaponProfile kPlasmid{
         .trimPitch = -1.20f, .trimYaw = -4.20f,
         .posFwd = -0.70f, .posRight = -2.10f, .posUp = 18.70f,
         .gripFwd = 44.00f, .gripRight = 16.70f, .gripUp = -15.40f,
         .viewFwd = 0.00f, .viewRight = 0.00f, .viewUp = 11.00f,
         .animOn = 1.00f,
         .modelPitch = 0.00f, .modelYaw = 0.00f, .modelRoll = 0.00f};
+    // These names are what plasmid_key() produces: the class name with "Ability"
+    // and any upgrade tier stripped. "Plasmid" stays as the fallback for an
+    // ability whose class name will not resolve.
+    for (const char* k : {"ElectricBolt", "Telekinesis", "Incineration", "IcicleAssault",
+                          "InsectSwarm", "SecurityBeacon", "SpringBoardTrap",
+                          "SummonProtector", "AirBlast", "BerserkRage", "DecoyHuman",
+                          "Plasmid"})
+        g_weaponProfiles[k] = kPlasmid;
 }
 
 void weapons_ini_path(wchar_t* out, size_t count) {
