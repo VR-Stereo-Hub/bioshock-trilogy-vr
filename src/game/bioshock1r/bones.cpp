@@ -541,6 +541,31 @@ bool locate(void* handsActor) {
         BVR_LOG("[bones] skeleton: inst=%p bones=%p count=%d%s", sk.inst,
                 static_cast<void*>(sk.bones), sk.count,
                 sk.count == patterns::kHandsRigBoneCount ? "" : " (UNEXPECTED count)");
+        // s69c: NAME THE LEFT CLUSTER, once per skeleton, always on.
+        //
+        // The two clusters anchor asymmetrically and nobody chose it: the RIGHT
+        // pins bone 43 (kBoneWeaponAttach), which sits at the gun's grip deep in
+        // the hand, so a recoil animation rotates about the thing you are looking
+        // at and the gun stays put. The LEFT pins bone 6 (kBoneLWrist), the FIRST
+        // bone of its range, with the palm and fingers hanging off it - so any
+        // animation that moves the palm relative to the wrist translates the
+        // visible hand away from the controller. That is the plasmid firing
+        // animation "moving away from my hand position" (screenshots, 2026-08-27:
+        // the fist sits centred at idle and the open hand is well left and low
+        // during the bolt).
+        //
+        // Picking a better left anchor needs the NAMES, and this is how they get
+        // into a log without the tester typing a command in the headset. Try one
+        // live with `vrbones lcluster 6 21 <anchor>`.
+        {
+            const wchar_t* nm[kMaxBones];
+            const int named = resolve_bone_names(sk, nm, sk.count);
+            const int lo = patterns::kBoneLClusterFirst, hi = patterns::kBoneLClusterLast;
+            for (int i = lo; i <= hi && i < sk.count; ++i)
+                BVR_LOG("[bones] LEFTBONE %2d = '%ls'%s", i,
+                        (named && nm[i]) ? nm[i] : L"?",
+                        i == patterns::kBoneLWrist ? "   <-- anchor today" : "");
+        }
         g_refValid = false; // new array = new reference
         g_hasWritten[0] = g_hasWritten[1] = false;
         rest_reset(); // s68: and a new array is a new rest pose
