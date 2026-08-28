@@ -986,7 +986,10 @@ std::atomic<uint32_t> g_animStateMask{state_bit(hands_state::State::Firing) |
 // `vrbones capidle on|off` so the two can be compared on one run, on the same
 // plasmid, without a rebuild.
 std::atomic<bool> g_capAtIdling{true};
-// An equip that never reaches Idling must not adopt forever. Generous - the
+// Has the rig left Idling since the capture was armed? Without this the Idling
+// "edge" is not an edge - see the note at the use site.
+bool g_capLeftIdling = false;
+hands_state::State g_capArmState = hands_state::State::Unknown; // for the log// An equip that never reaches Idling must not adopt forever. Generous - the
 // slowest BS1 equip measured well under this - and it logs when it bites.
 constexpr uint64_t kCapArmTimeoutMs = 4000;
 
@@ -2049,7 +2052,9 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             if (liveHold != s_lastHoldable) {
                 s_lastHoldable = liveHold;
                 s_forceCapture = true;
-                g_lastBigDeltaMs = GetTickCount64(); // let the equip settle first
+                // Reset the transit latch: this switch has not left Idling yet.
+                g_capLeftIdling = !stateKnown || hs != hands_state::State::Idling;
+                g_capArmState = hs;                g_lastBigDeltaMs = GetTickCount64(); // let the equip settle first
                 // s68: the rest pose is a property of WHAT YOU ARE HOLDING, so a
                 // new holdable invalidates it. Without this the incoming weapon
                 // would be restored to the outgoing one's rest - the same class
@@ -2102,16 +2107,32 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // which is why every attempt to wait longer made this worse.
             const bool atIdling = g_capAtIdling.load(std::memory_order_relaxed);
             if (atIdling && stateKnown) {
-                if (hs == hands_state::State::Idling) {
+                // THE RIG MUST LEAVE IDLING FIRST, or this is not an edge.
+                //
+                // CurrentHoldable clears at the START of a switch, while the state
+                // machine is still sitting in the OUTGOING item's WeaponIdling. So
+                // without this, the very next evaluation sees hs == Idling, captures
+                // the OUTGOING pose and disarms - before the incoming equip has
+                // played at all.
+                //
+                // Measured: every capture in the 20:42 run fired 234-282 ms after
+                // the switch. That is the engine's evaluation cadence (it evaluates
+                // the bone array on ~1 frame in 19), not an animation boundary - no
+                // real equip completes in 234 ms, and the 48 ms spread is sampling
+                // jitter rather than the difference between a wrench and a plasmid.
+                // A flat line across 41 captures of different holdables is the tell.
+                if (hs != hands_state::State::Idling) g_capLeftIdling = true;
+                if (hs == hands_state::State::Idling && g_capLeftIdling) {
                     adopt = true; // this one frame writes g_ref, then we are done
                     captureRest = true;
                     s_forceCapture = false;
                     BVR_LOG("[bones] equip done (engine reports Idling) - captured this "
-                            "holdable's reference %llu ms after the switch, BEFORE the idle "
-                            "fidget starts. Adoption stops here; following Idling is what "
-                            "plays the idle animation into the rig.",
+                            "holdable's reference %llu ms after the switch (armed in %s, "
+                            "left Idling, came back) - BEFORE the idle fidget starts. "
+                            "Adoption stops here.",
                             static_cast<unsigned long long>(GetTickCount64() -
-                                                            g_lastBigDeltaMs));
+                                                            g_lastBigDeltaMs),
+                            hands_state::to_string(g_capArmState));
                 } else if (GetTickCount64() - g_lastBigDeltaMs > kCapArmTimeoutMs) {
                     // Idling never arrived. Stop rather than adopt forever, and SAY
                     // SO - a silent expiry is what made the old timer hard to see.
