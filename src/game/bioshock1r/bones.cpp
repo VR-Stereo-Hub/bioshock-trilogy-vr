@@ -228,6 +228,41 @@ std::atomic<bool> g_animPinRot{true};
 // and the tester should be able to feel which is which: position and heading
 // suppress independently, live, no rebuild.
 std::atomic<bool> g_animPinPos{true};
+
+// ---- s70g: ARMS MODE, ported from BS2 -------------------------------------
+//
+// The tester: "BS2 uses arms visible and it seems to track correctly there. how
+// are the arm sleeves implemented? Maybe that is part of the fix." It is, and
+// BS2 had already written the diagnosis down.
+//
+// BS1 has only ever had TWO states for the arm bones: COLLAPSE them (zero scale,
+// hide the arm) or hand them back to the ENGINE. There is no third. So with arms
+// visible the forearm and upper arm stay engine-animated at their authored pose
+// while the hand is driven to the controller - and BS2's patterns.h names that
+// exact failure: "the engine's own animation leaves them at the idle pose, which
+// reads as FROZEN arms floating beside driven hands."
+//
+// That is the screenshot: a hand where we put it, on an arm going somewhere
+// else, hinged at an elbow nobody is driving.
+//
+// BS2 solved it by DRIVING THE ARM CHAIN THROUGH THE SAME TRANSFORM AS THE HAND
+// (bones.cpp: `if (armsMode == 1) for each arm bone compose_bone(hand, idx, 0)`
+// - mode 0, the identical composition the cluster gets). Its arm bones are a
+// declared set, deliberately kept out of the hand cluster: clavicle, upper arm,
+// lower arm and four twists.
+//
+// BS1's equivalent set already exists and is already excluded from the cluster
+// the same way - kBoneLSleeve {3,4,5,22,23} and kBoneRSleeve {24,25,26,45,46}.
+// They have only ever been hidden or abandoned, never driven.
+//
+// 0 = game   the engine owns them (what BS1 has always done with arms visible)
+// 1 = follow driven with the hand, BS2's shape
+// 2 = hide   the existing collapse
+//
+// Duplicated into this adapter rather than shared with BS2, per the repo's
+// decoupling rule: BS1 is the headset-accepted baseline and must not be put at
+// risk to serve BS2.
+std::atomic<int> g_armsMode{1};
 // s70c: THE LEFT HAND NEEDS ITS OWN THRESHOLD, and 5.0 is why Telekinesis and
 // Electrobolt behaved differently from every weapon.
 //
@@ -2992,6 +3027,75 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         if (wantS) memcpy(cb.s, sv, 12);
     }
 
+    // ---- s70g: THE ARM FOLLOWS THE HAND (BS2's arms mode 1) ----------------
+    //
+    // The same rigid transform the cluster just got, applied to the arm chain,
+    // so the elbow and shoulder travel with the hand instead of staying where
+    // the engine's idle animation left them. Only in FREEZE mode: the retarget
+    // path has its own composition and its own history, and this is not the
+    // session to change it underneath BS1's accepted baseline.
+    //
+    // Scale is restored to the authored value rather than written, so an arm
+    // coming back from a previous COLLAPSE is not left invisible - BS1 session
+    // 29's stranded-collapse bug, which BS2's own arms-mode transition block
+    // also guards against.
+    if (freezeOnly && g_armsMode.load(std::memory_order_relaxed) == 1 &&
+        !g_collapse.load(std::memory_order_relaxed)) {
+        const int* armIdx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        const size_t armCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
+                                          : _countof(patterns::kBoneLSleeve);
+        for (size_t k = 0; k < armCount; ++k) {
+            const int i = armIdx[k];
+            if (i < 0 || i >= g_boneCount) continue;
+            float off[3] = {(g_ref[i].p[0] - pa[0]) * s, (g_ref[i].p[1] - pa[1]) * s,
+                            (g_ref[i].p[2] - pa[2]) * s};
+            float q[4];
+            if (pinRot) {
+                float rot[3];
+                qts_rotate(qFix, off, rot);
+                off[0] = rot[0];
+                off[1] = rot[1];
+                off[2] = rot[2];
+                quat_mul(qFix, g_ref[i].q, q);
+                const float bn = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+                if (bn > 1e-4f) {
+                    q[0] /= bn;
+                    q[1] /= bn;
+                    q[2] /= bn;
+                    q[3] /= bn;
+                } else {
+                    memcpy(q, g_ref[i].q, 16);
+                }
+            } else {
+                memcpy(q, g_ref[i].q, 16);
+            }
+            const float* paArm = pinPos ? g_pinAnchorP[hand] : pa;
+            const float p[3] = {paArm[0] + off[0], paArm[1] + off[1], paArm[2] + off[2]};
+            if (!write_n(g_bones[i].p, p, 12) || !write_n(g_bones[i].q, q, 16)) continue;
+            if (g_scaleWrote[i]) {
+                write_n(g_bones[i].s, g_ref[i].s, 12);
+                g_scaleWrote[i] = false;
+            }
+            if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
+                CachedBone& ca = g_cache[g_cacheCount++];
+                ca.idx = i;
+                memcpy(ca.p, p, 12);
+                memcpy(ca.q, q, 16);
+                ca.writeScale = false;
+                ca.writeRot = true;
+            }
+        }
+        static bool s_saidArms = false;
+        if (!s_saidArms) {
+            s_saidArms = true;
+            BVR_LOG("[bones] ARMS: following the hand (BS2 arms mode 1) - %zu arm bones on "
+                    "the %s side driven with the cluster. Previously the engine kept them "
+                    "at the idle pose while the hand was driven, which is the arm bent at "
+                    "an elbow nobody was driving.",
+                    armCount, hand == 1 ? "RIGHT" : "LEFT");
+        }
+    }
+
 
     // ---- HANDOFF_9 6.4: DRIVE THE WEAPON ACTOR ITSELF ----------------------
     //
@@ -3179,7 +3283,10 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // toward the shoulder. On the off-transition the reference values are
     // written back explicitly - the engine cannot be relied on to re-evaluate
     // while the drive keeps clearing the dirty flag.
-    bool collapse = g_collapse.load(std::memory_order_relaxed);
+    // s70g: the arms radio and the old collapse checkbox mean the same thing at
+    // mode 2, so either one hides the arm and neither contradicts the other.
+    bool collapse = g_collapse.load(std::memory_order_relaxed) ||
+                    g_armsMode.load(std::memory_order_relaxed) == 2;
     const int* sleeve = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
     const size_t sleeveCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
                                          : _countof(patterns::kBoneLSleeve);
@@ -3835,6 +3942,28 @@ void draw_debug_ui() {
         ImGui::Separator();
 
         // s70f: the two halves of "suppress the movement, keep the animation".
+        // s70g: BS2's arms mode, which is the thing BS1 never had.
+        ImGui::TextDisabled("ARMS - who drives the elbow and shoulder");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "BS1 has only ever hidden the arm or handed it back to the engine.\n"
+                "With arms visible and the engine owning them, the forearm stays at\n"
+                "its authored idle pose while the hand is driven to your controller\n"
+                "- an arm bent at an elbow nobody is driving.\n\n"
+                "BS2 drives the arm chain through the SAME transform as the hand,\n"
+                "and tracks correctly with arms visible. This is that.\n\n"
+                "game   : the engine owns the arm (BS1's old behaviour)\n"
+                "follow : the arm travels with the hand (BS2's shape)\n"
+                "hide   : collapse it, the existing behaviour");
+        int am = g_armsMode.load(std::memory_order_relaxed);
+        if (ImGui::RadioButton("game", &am, 0)) g_armsMode.store(0, std::memory_order_relaxed);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("follow", &am, 1))
+            g_armsMode.store(1, std::memory_order_relaxed);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("hide", &am, 2)) g_armsMode.store(2, std::memory_order_relaxed);
+        ImGui::Separator();
+
         ImGui::TextDisabled("ANIMATION - what the engine may move");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
