@@ -314,9 +314,13 @@ bool g_armRefValid[2] = {false, false};
 // Per hand, and per the tester: "each shoulder will need anchoring and
 // positioning like the weapons". Component-space cm, applied to the anchored
 // shoulder joint.
-std::atomic<float> g_shoulderFwdCm[2] = {0.0f, 0.0f};
-std::atomic<float> g_shoulderRightCm[2] = {0.0f, 0.0f};
-std::atomic<float> g_shoulderUpCm[2] = {0.0f, 0.0f};
+// Head-relative, in cm: [0] left hand, [1] right hand. Defaults are a rough
+// human shoulder - 18 cm out to the side, 15 cm below the eyes, slightly back -
+// because 0,0,0 puts the shoulder joint inside your eyeball, which is not a
+// neutral starting point, it is just a wrong one.
+std::atomic<float> g_shoulderFwdCm[2] = {-5.0f, -5.0f};
+std::atomic<float> g_shoulderRightCm[2] = {-18.0f, 18.0f};
+std::atomic<float> g_shoulderUpCm[2] = {-15.0f, -15.0f};
 
 // Shortest-arc rotation taking unit vector a onto unit vector b.
 void quat_from_to(const float a[3], const float b[3], float out[4]) {
@@ -673,7 +677,10 @@ void* g_dsHoldable = nullptr; // the actor the lane is bound to
 float g_dsRaw = 1.0f;         // the authored field value, restored on release
 float g_dsWrote = 0.0f;       // what we last wrote (0 = nothing written yet)
 
-std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
+// s70j: ARMS VISIBLE BY DEFAULT while the arm solve is being tuned - the
+// tester cannot judge a shoulder anchor on an arm that is not drawn. The
+// F10 checkbox and the ARMS radio's 'hide' both still collapse it.
+std::atomic<bool> g_collapse{false}; // hide the driven arm's sleeve
 std::atomic<uint32_t> g_writes{0};
 std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
@@ -3175,12 +3182,38 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         const float L1 = norm3(aSEn) * s;
         const float L2 = norm3(aEWn) * s;
 
-        // The shoulder stays where the body puts it, plus the tester's own trim.
+        // ---- THE SHOULDER IS ANCHORED TO YOUR BODY, NOT TO THE RIG ---------
+        //
+        // THIS is why the shoulder pin, the graded blend and the first IK cut
+        // all "did nothing" to the rotation. Bone positions are COMPONENT SPACE
+        // - relative to the actor - and the actor's rotation is set from your
+        // controller every frame. So the entire space the arm lives in spins
+        // with your wrist, and a constant component-space shoulder is anchored
+        // TO THE SPINNING FRAME. There is no bone write that can fix that,
+        // which is exactly what three attempts at bone writes demonstrated.
+        //
+        // So place the shoulder in a HEAD-RELATIVE frame, where it actually
+        // lives, and convert into component space through the inverse actor
+        // rotation each frame. Now the actor can spin as much as it likes: the
+        // shoulder stays where your body is and the elbow solves against it.
+        //
+        // Yaw only, deliberately. Pitching your head must not swing your
+        // shoulder up and down - the body does not do that, and head-pitch
+        // coupling is what makes a VR arm feel like it is on a stick.
         const float uuPerCm = ctx.worldScale / 100.0f;
-        float S[3] = {ar[1].p[0], ar[1].p[1], ar[1].p[2]};
-        S[0] += g_shoulderFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
-        S[1] += g_shoulderRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
-        S[2] += g_shoulderUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        const float yawRad =
+            (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f);
+        const float cy = cosf(yawRad), sy = sinf(yawRad);
+        const float fCm = g_shoulderFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        const float rCm = g_shoulderRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        const float uCm = g_shoulderUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        // UE yaw-only basis: forward (cy, sy, 0), right (-sy, cy, 0), up (0,0,1).
+        const float sWorld[3] = {ctx.camX + cy * fCm - sy * rCm,
+                                 ctx.camY + sy * fCm + cy * rCm, ctx.camZ + uCm};
+        float sRel[3] = {sWorld[0] - actorLoc[0], sWorld[1] - actorLoc[1],
+                         sWorld[2] - actorLoc[2]};
+        float S[3];
+        qts_rotate(qaInv, sRel, S);
 
         // The hand is wherever the cluster write just put the anchor.
         const float* W = pinPos ? g_pinAnchorP[hand] : pa;
