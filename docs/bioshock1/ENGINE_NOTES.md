@@ -2084,6 +2084,32 @@ on the assumption these are rotations, so the visible result is stretched
 geometry - spikes shooting out of the hand - rather than anything that reads as a
 wrong angle. Normalise the correction, and normalise the per-bone product.
 
+**And that rule binds the INSTRUMENTS, not just the drive path.** The drive path
+was normalised in `825ced6`; the two always-on probes that read the same bank
+were not, and were still lying afterwards:
+
+- `quat_angle_deg()` took a raw dot product of two bank quats. That dot is
+  `|a||b|cos(theta/2)`, so it errs in both directions: magnitudes above 1 inflate
+  it, the `dot > 1` clamp fires, and it reports **0 deg while the bones genuinely
+  differ**; magnitudes below 1 deflate it and it **invents an angle** out of a
+  pure magnitude difference. The second case is the `ROLLCHECK` lie in another
+  form.
+- `ROLLCHECK` itself built `d = conj(qLastWritten) * cur` and read `d[3]` as
+  `cos(theta/2)` without normalising `d` - which is precisely how it produced
+  `drifted 16.64 deg (local x +0.00 y +0.00 z -0.00)`. Both readings cannot be
+  true of a rotation, and the rotation was in fact unchanged.
+
+The `quat_angle_deg()` case is the sharper one, because the `ANIMPIN` telemetry
+**gates** on its result (`angOff > 2.0`): a lying angle decides whether the line
+prints at all, and an instrument that chooses its own visibility cannot be
+checked against its own silence. A test whose only readout is a gated log line is
+worth nothing until the gate is trustworthy.
+
+**The general lesson: when a fix establishes an invariant, grep for every
+consumer of the thing the invariant is about - the diagnostics included.** The
+probes are what the next session reasons from, so a lying probe outlives the bug
+it was pointed at.
+
 ### An adopted animation moves the anchor, and in FREEZE-ONLY that moves the hand
 
 Mode 3 (BRVR's shape) sets `freeze_only`, which writes the cluster AS the

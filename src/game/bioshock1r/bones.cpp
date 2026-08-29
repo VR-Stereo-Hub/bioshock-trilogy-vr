@@ -1063,8 +1063,27 @@ void quat_nlerp(const float a[4], const float b[4], float t, float out[4]) {
 }
 
 // Angle between two quats, degrees. Shared by the rest-restore telemetry.
+//
+// NORMALISE BOTH INPUTS, and it is the same rule 825ced6 applied to the drive
+// path: every caller passes g_ref/g_rest, and that bank does NOT hold unit quats
+// while an animation is blending. The dot of two non-unit quats is
+// |a||b|cos(theta/2), so an unnormalised readout is wrong in BOTH directions -
+// magnitudes above 1 inflate the dot, it clamps at 1, and the instrument reports
+// 0 deg while the bones genuinely differ; magnitudes below 1 deflate it and the
+// instrument INVENTS an angle out of a pure magnitude difference. That second
+// case is the ROLLCHECK lie ("drifted 16.64 deg" with a +0.00/+0.00/-0.00
+// component split) wearing a different hat, and it cost session 68 two rounds of
+// diagnosis and one commit fixing a non-problem.
+//
+// It matters more here than in an ordinary readout: the ANIMPIN telemetry GATES
+// on this value (angOff > 2.0), so a lying angle decides whether the line prints
+// at all. An instrument that chooses its own visibility cannot be checked
+// against its own silence.
 float quat_angle_deg(const float a[4], const float b[4]) {
-    float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    const float na = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3]);
+    const float nb = sqrtf(b[0] * b[0] + b[1] * b[1] + b[2] * b[2] + b[3] * b[3]);
+    if (na < 1e-4f || nb < 1e-4f) return 0.0f; // degenerate: no angle to report
+    float dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) / (na * nb);
     if (dot < 0.0f) dot = -dot;
     if (dot > 1.0f) dot = 1.0f;
     return 2.0f * acosf(dot) * kRadToDeg;
@@ -2024,6 +2043,23 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             float qwInv[4], d[4];
             quat_conj(g_lastWrittenAnchor[hand].q, qwInv);
             quat_mul(qwInv, cur.q, d);
+            // NORMALISE THE DELTA before reading an angle out of it. Both
+            // operands come from the bone bank, which does not guarantee unit
+            // quats mid-blend, and conj() is not the inverse of a non-unit quat
+            // (825ced6). Un-normalised, d[3] is |qw||cur|cos(theta/2) and the
+            // components carry the same factor - which is EXACTLY how this probe
+            // came to report "drifted 16.64 deg (local x +0.00 y +0.00 z -0.00)"
+            // in session 68. Those two readings cannot both be true of a
+            // rotation; the rotation was unchanged and only the magnitude
+            // differed. It was believed twice and produced 137a44b, a fix for a
+            // problem that did not exist.
+            const float dn = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] + d[3] * d[3]);
+            if (dn > 1e-4f) {
+                d[0] /= dn;
+                d[1] /= dn;
+                d[2] /= dn;
+                d[3] /= dn;
+            }
             float w = d[3] < 0.0f ? -d[3] : d[3];
             if (w > 1.0f) w = 1.0f;
             const float driftDeg = 2.0f * acosf(w) * kRadToDeg;
