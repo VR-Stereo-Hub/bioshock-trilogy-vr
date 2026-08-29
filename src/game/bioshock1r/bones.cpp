@@ -166,6 +166,28 @@ std::atomic<float> g_swayAngThreshDeg{5.0f};    // s70: BRVR's HandAnimMinDeg
 // guessed a fourth time.
 std::atomic<unsigned> g_swaySettleMs{1200};     // BRVR HandAnimHoldMs
 uint64_t g_lastBigDeltaMs = 0;
+uint64_t g_lastBigDeltaHandMs[2] = {0, 0}; // s70c: per hand, as BRVR's lastBig[hand]
+// s70c: THE LEFT HAND NEEDS ITS OWN THRESHOLD, and 5.0 is why Telekinesis and
+// Electrobolt behaved differently from every weapon.
+//
+// MEASURED, the tester's 2026-08-28 23:48 run: with a plasmid equipped
+// ANIMREJECT reported 2.6, 3.2, 3.3, 3.4, 4.5, 4.9 and 5.0 deg. That is a whole
+// animation living inside the band BRVR calls idle breathing - so a 5.0
+// threshold rejects it outright (Telekinesis: no animation at all) or admits it
+// erratically as it flickers across the line (Electrobolt: motion that starts
+// and stops).
+//
+// It is not a tuning accident, it is the rig: the left cluster is bones 6-21 and
+// s68 dumped the names - 6 is the palm and 7-21 are NOTHING but finger joints.
+// There is no wrist or forearm in it, so a plasmid animation that is mostly
+// fingers barely rotates the one bone the threshold measures. BRVR's 41-135 deg
+// figures are the RIGHT cluster's wrist during a reload; they do not describe
+// this hand and were never meant to.
+//
+// 2.0 sits under every rejected plasmid reading above and clear of the sub-1 deg
+// noise. A FIRST ESTIMATE from one run, not a measurement of the idle floor -
+// ANIMREJECT now reports per hand, so the next run can set it properly.
+std::atomic<float> g_swayAngThreshLeftDeg{2.0f};
 
 // ---- s70: BRVR's EQUIP SETTLE, ported with its own numbers -----------------
 //
@@ -2315,21 +2337,21 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             adopt = false;
             uint64_t nowMs = GetTickCount64();
             float maxPos = 0.0f, maxAng = 0.0f;
-            // s70: PROBE THE WRISTS, NOT THE WEAPON ATTACH BONE.
+            // s70c: PROBE THE DRIVEN HAND'S ANCHOR, AND ONLY IT.
             //
-            // This used to sample bone 43. That bone is the weapon attach, and it
-            // is the one bone the engine keeps animating under freeze - BRVR
-            // measures its idle drift at 1-5 deg with PEAKS OF 41-135. Asking
-            // "has the pose changed?" of a bone that moves on its own means the
-            // answer is yes for reasons that have nothing to do with an
-            // animation being played, so adoption re-triggered off the attach
-            // bone's own drift.
+            // This took the MAX over both wrists, so one number stood for two
+            // hands: the right hand's movement could trigger adoption for a
+            // plasmid on the left, and ANIMREJECT reported a figure that named
+            // neither. A plasmid's whole animation measures 2.6-5.0 deg at the
+            // palm - inside the weapon hand's idle band - so mixing the two
+            // makes the one measurement that matters unreadable.
             //
-            // BRVR measures its cluster's WRIST, which is also what it anchors
-            // on - the probe and the anchor are the same bone, so "the reference
-            // moved" and "the thing everything hangs off moved" are one question.
-            static const int kProbe[2] = {patterns::kBoneLWrist, patterns::kBoneRWrist};
-            for (int k = 0; k < 2; ++k) {
+            // BRVR is per hand throughout: CaptureClusterRef(c, hand) measures
+            // `c.wrist` of the cluster it is capturing, with lastBig[hand] and
+            // rejPeak[hand] kept separately. drive() already knows its hand, so
+            // this is just using it.
+            const int kProbe[1] = {anchor};
+            for (int k = 0; k < 1; ++k) {
                 int b = kProbe[k];
                 if (b >= g_boneCount) continue;
                 float dp[3] = {fresh[b].p[0] - g_ref[b].p[0], fresh[b].p[1] - g_ref[b].p[1],
@@ -2343,12 +2365,19 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 if (posUu > maxPos) maxPos = posUu;
                 if (angDeg > maxAng) maxAng = angDeg;
             }
-            if (maxPos > g_swayPosThreshUu.load(std::memory_order_relaxed) ||
-                maxAng > g_swayAngThreshDeg.load(std::memory_order_relaxed))
-                g_lastBigDeltaMs = nowMs;
-            // Track through the animation AND a settle window past its last
-            // big frame, so the eventual freeze holds the SETTLED pose.
-            adopt = (nowMs - g_lastBigDeltaMs) < g_swaySettleMs.load(std::memory_order_relaxed);
+            // Per-hand threshold. The left hand carries the PLASMIDS, and a
+            // plasmid's animation is 2.6-5.0 deg at the palm where a weapon
+            // reload is 41-135 at the wrist - BRVR's "separate them by size"
+            // premise holds within a hand, not across them. One number cannot
+            // serve both, and the left cluster is palm + fingers only (6-21,
+            // measured s68), so there is no wrist chain to amplify anything.
+            const float thresh = (hand == 0)
+                                     ? g_swayAngThreshLeftDeg.load(std::memory_order_relaxed)
+                                     : g_swayAngThreshDeg.load(std::memory_order_relaxed);
+            if (maxPos > g_swayPosThreshUu.load(std::memory_order_relaxed) || maxAng > thresh)
+                g_lastBigDeltaHandMs[hand] = nowMs;
+            adopt = (nowMs - g_lastBigDeltaHandMs[hand]) <
+                    g_swaySettleMs.load(std::memory_order_relaxed);
 
             // BRVR's rejection-peak report, ported and ALWAYS ON. Its note:
             // "the tester saw recoil on every gun EXCEPT the Tommy gun -- whose
@@ -2359,16 +2388,17 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // others don't"), so this is how the threshold gets chosen from data
             // instead of guessed a third time.
             if (!adopt) {
-                static float s_rejPeak = 0.0f;
-                static uint64_t s_rejLog = 0;
-                if (maxAng > s_rejPeak) s_rejPeak = maxAng;
-                if (nowMs - s_rejLog >= 3000) {
-                    s_rejLog = nowMs;
-                    BVR_LOG("[bones] ANIMREJECT: largest movement REJECTED in the last 3 s "
-                            "was %.1f deg (threshold %.1f). If an animation is missing, set "
-                            "the threshold just under this.",
-                            s_rejPeak, g_swayAngThreshDeg.load(std::memory_order_relaxed));
-                    s_rejPeak = 0.0f;
+                static float s_rejPeak[2] = {0.0f, 0.0f};
+                static uint64_t s_rejLog[2] = {0, 0};
+                if (maxAng > s_rejPeak[hand]) s_rejPeak[hand] = maxAng;
+                if (nowMs - s_rejLog[hand] >= 3000) {
+                    s_rejLog[hand] = nowMs;
+                    BVR_LOG("[bones] ANIMREJECT: %s hand, largest movement REJECTED in the "
+                            "last 3 s was %.1f deg at bone %d (threshold %.1f). If an "
+                            "animation is missing, set that hand's threshold under this.",
+                            hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", s_rejPeak[hand],
+                            anchor, thresh);
+                    s_rejPeak[hand] = 0.0f;
                 }
             }
             if (g_telemetry.load(std::memory_order_relaxed) &&
