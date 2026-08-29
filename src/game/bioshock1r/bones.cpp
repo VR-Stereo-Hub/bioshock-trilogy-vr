@@ -321,6 +321,16 @@ bool g_armRefValid[2] = {false, false};
 std::atomic<float> g_shoulderFwdCm[2] = {-5.0f, -5.0f};
 std::atomic<float> g_shoulderRightCm[2] = {-18.0f, 18.0f};
 std::atomic<float> g_shoulderUpCm[2] = {-15.0f, -15.0f};
+// s70k: how far the elbow sits OUT from straight-down, 0 = hanging, 1 = level
+// with the shoulder. Human elbows rest down and a little outward.
+std::atomic<float> g_elbowOut{0.35f};
+// s70k: exponential smoothing on the solved elbow, ms. The hand is NEVER
+// smoothed - that would put latency on your own tracking, which is the one thing
+// a VR viewmodel must not do. Only the derived joint is eased.
+std::atomic<unsigned> g_elbowSmoothMs{70};
+float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
+bool g_elbowHavePrev[2] = {false, false};
+uint64_t g_elbowLastMs[2] = {0, 0};
 
 // Shortest-arc rotation taking unit vector a onto unit vector b.
 void quat_from_to(const float a[3], const float b[3], float out[4]) {
@@ -1961,6 +1971,29 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
 // set_rest_blend_ms / rest_blend_ms / rest_status / drop_rest all removed with
 // the machinery they controlled. See the s70 banners above.
 
+// s70k: the arm-solve knobs, persisted through hands.ini like every other
+// per-hand tuning value. The tester tuned the shoulder in the headset and then
+// could not tell me the numbers, which is the correct outcome to design for -
+// nobody should be memorising slider positions. They now survive a restart.
+void shoulder_cm(int hand, float* fwd, float* right, float* up) {
+    const int h = hand == 1 ? 1 : 0;
+    if (fwd) *fwd = g_shoulderFwdCm[h].load(std::memory_order_relaxed);
+    if (right) *right = g_shoulderRightCm[h].load(std::memory_order_relaxed);
+    if (up) *up = g_shoulderUpCm[h].load(std::memory_order_relaxed);
+}
+void set_shoulder_cm(int hand, float fwd, float right, float up) {
+    const int h = hand == 1 ? 1 : 0;
+    g_shoulderFwdCm[h].store(fwd, std::memory_order_relaxed);
+    g_shoulderRightCm[h].store(right, std::memory_order_relaxed);
+    g_shoulderUpCm[h].store(up, std::memory_order_relaxed);
+}
+float elbow_out() { return g_elbowOut.load(std::memory_order_relaxed); }
+void set_elbow_out(float v) { g_elbowOut.store(v, std::memory_order_relaxed); }
+unsigned elbow_smooth_ms() { return g_elbowSmoothMs.load(std::memory_order_relaxed); }
+void set_elbow_smooth_ms(unsigned v) {
+    g_elbowSmoothMs.store(v, std::memory_order_relaxed);
+}
+
 void set_anim_allowed(bool on) {
     const bool was = g_animAllowed.exchange(on, std::memory_order_relaxed);
     if (was != on)
@@ -3234,10 +3267,28 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             float hSq = L1 * L1 - aLen * aLen;
             const float hLen = hSq > 0.0f ? sqrtf(hSq) : 0.0f;
 
-            // The pole is the AUTHORED bend, re-projected perpendicular to the
-            // current shoulder->hand axis, so the elbow keeps bending the way it
-            // was posed rather than needing a hand-tuned hint.
-            float pole[3] = {aSEn[0], aSEn[1], aSEn[2]};
+            // ---- THE POLE LIVES IN THE HEAD FRAME TOO -------------------
+            //
+            // It used to be the authored bend, which is a COMPONENT-SPACE
+            // direction - so it span with the actor exactly as the shoulder did
+            // before it was moved out. A wrist roll rotated the pole, and the
+            // elbow orbited the shoulder->hand axis: "a tiny turn of the wrist
+            // causes the elbow to swing out way more than it should". The same
+            // frame bug as the shoulder, one level down.
+            //
+            // So the bend hint is body-relative and constant: mostly DOWN, a
+            // little outward, which is where a resting human elbow sits. Built
+            // in world space from the head's yaw basis, then rotated into
+            // component space - after which a wrist roll cannot move it.
+            const float outSign = (hand == 1) ? 1.0f : -1.0f;
+            const float eo = g_elbowOut.load(std::memory_order_relaxed);
+            float poleWorld[3] = {(-sy) * outSign * eo, (cy)*outSign * eo,
+                                  -(1.0f - eo * 0.5f)};
+            float pole[3];
+            qts_rotate(qaInv, poleWorld, pole);
+            norm3(pole);
+            // Project perpendicular to the current arm axis so it is a pure
+            // bend direction and cannot push the elbow along the arm.
             const float dp = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2];
             pole[0] -= dir[0] * dp;
             pole[1] -= dir[1] * dp;
@@ -3256,9 +3307,31 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 norm3(pole);
             }
 
-            const float E[3] = {S[0] + dir[0] * aLen + pole[0] * hLen,
-                                S[1] + dir[1] * aLen + pole[1] * hLen,
-                                S[2] + dir[2] * aLen + pole[2] * hLen};
+            float E[3] = {S[0] + dir[0] * aLen + pole[0] * hLen,
+                          S[1] + dir[1] * aLen + pole[1] * hLen,
+                          S[2] + dir[2] * aLen + pole[2] * hLen};
+
+            // A LITTLE SMOOTHING ON THE ELBOW ONLY. Reported as reacting "almost
+            // too fast that it feels jarring" - which it is: the solve is exact
+            // and instantaneous, so every jitter in the hand pose lands on the
+            // elbow at full amplitude. Ease the derived joint and that settles,
+            // while the hand itself stays perfectly live.
+            //
+            // Frame-rate independent: alpha = 1 - exp(-dt/tau), so the feel does
+            // not change between 72 and 120 Hz.
+            const unsigned tau = g_elbowSmoothMs.load(std::memory_order_relaxed);
+            const uint64_t nowE = GetTickCount64();
+            if (tau > 0 && g_elbowHavePrev[hand]) {
+                float dtMs = static_cast<float>(nowE - g_elbowLastMs[hand]);
+                if (dtMs < 0.0f) dtMs = 0.0f;
+                if (dtMs > 250.0f) dtMs = 250.0f; // a hitch must not snap the arm
+                const float alpha = 1.0f - expf(-dtMs / static_cast<float>(tau));
+                for (int c = 0; c < 3; ++c)
+                    E[c] = g_elbowPrev[hand][c] + (E[c] - g_elbowPrev[hand][c]) * alpha;
+            }
+            memcpy(g_elbowPrev[hand], E, sizeof g_elbowPrev[hand]);
+            g_elbowHavePrev[hand] = true;
+            g_elbowLastMs[hand] = nowE;
 
             // Upper arm: authored shoulder->elbow swung onto the solved one.
             float nSE[3];
@@ -4214,6 +4287,28 @@ void draw_debug_ui() {
             g_shoulderUpCm[uh].store(su, std::memory_order_relaxed);
         ImGui::Text("editing the %s shoulder (follows the driven hand)",
                     uh == 1 ? "RIGHT" : "LEFT");
+        float eo = g_elbowOut.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("elbow out", &eo, 0.0f, 1.0f, "%.2f"))
+            g_elbowOut.store(eo, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Which way the elbow bends. 0 hangs it straight down, 1 lifts it\n"
+                "level with the shoulder. A resting human elbow is about 0.35.\n\n"
+                "This is a BODY-relative direction, so rolling your wrist can no\n"
+                "longer swing the elbow - that was the same frame bug the shoulder\n"
+                "had, one level down.");
+        int es = static_cast<int>(g_elbowSmoothMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("elbow smoothing (ms)", &es, 0, 300))
+            g_elbowSmoothMs.store(static_cast<unsigned>(es < 0 ? 0 : es),
+                                  std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Eases the SOLVED ELBOW only. The hand is never smoothed - that\n"
+                "would put latency on your own tracking, which is the one thing a\n"
+                "VR viewmodel must not do.\n\n"
+                "The solve is exact and instant, so every jitter in the hand lands\n"
+                "on the elbow at full size. 0 = raw, 70 is the default.");
+        ImGui::Text("shoulder + elbow save to hands.ini with the other offsets");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "Where the arm is anchored to your body. The solver fixes the\n"

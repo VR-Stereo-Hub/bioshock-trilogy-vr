@@ -512,7 +512,15 @@ void save_config() {
         fprintf(f, "rotPitchDeg%s=%.2f\n", s, g_rotPitchDeg[h].load(std::memory_order_relaxed));
         fprintf(f, "rotYawDeg%s=%.2f\n", s, g_rotYawDeg[h].load(std::memory_order_relaxed));
         fprintf(f, "rotRollDeg%s=%.2f\n", s, g_rotRollDeg[h].load(std::memory_order_relaxed));
+        // s70k: the arm solve's shoulder joint, head-relative cm.
+        float sf = 0.0f, sr = 0.0f, su = 0.0f;
+        bones::shoulder_cm(h, &sf, &sr, &su);
+        fprintf(f, "shoulderFwdCm%s=%.2f\n", s, sf);
+        fprintf(f, "shoulderRightCm%s=%.2f\n", s, sr);
+        fprintf(f, "shoulderUpCm%s=%.2f\n", s, su);
     }
+    fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
+    fprintf(f, "elbowSmoothMs=%u\n", bones::elbow_smooth_ms());
     fclose(f);
     BVR_LOG("[hands] offsets saved to hands.ini");
 }
@@ -555,6 +563,21 @@ void load_config() {
         else if (store_hand_key(key, "viewFwdCm", g_viewFwdCm, v)) {}
         else if (store_hand_key(key, "viewRightCm", g_viewRightCm, v)) {}
         else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
+        else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
+        else if (strcmp(key, "elbowSmoothMs") == 0)
+            bones::set_elbow_smooth_ms(static_cast<unsigned>(v < 0.0f ? 0.0f : v));
+        else if (strncmp(key, "shoulder", 8) == 0) {
+            // shoulder<Axis>Cm<L|R> - read the axis and the hand out of the key
+            // rather than adding three more store_hand_key lanes for one feature.
+            const size_t n = strlen(key);
+            const int h = (n && key[n - 1] == 'R') ? 1 : 0;
+            float f2 = 0.0f, r2 = 0.0f, u2 = 0.0f;
+            bones::shoulder_cm(h, &f2, &r2, &u2);
+            if (strncmp(key + 8, "Fwd", 3) == 0) f2 = v;
+            else if (strncmp(key + 8, "Right", 5) == 0) r2 = v;
+            else if (strncmp(key + 8, "Up", 2) == 0) u2 = v;
+            bones::set_shoulder_cm(h, f2, r2, u2);
+        }
         else if (store_hand_key(key, "posFwdCm", g_posFwdCm, v)) {}
         else if (store_hand_key(key, "posRightCm", g_posRightCm, v)) {}
         else if (store_hand_key(key, "posUpCm", g_posUpCm, v)) {}

@@ -161,6 +161,15 @@ void wskel_release(const char* why);
 // SIZE and lets a hold window carry adoption to the animation's settled end.
 // See ENGINE_NOTES "Session 70".
 
+// s70k arm solve: the shoulder joint (head-relative cm, per hand) and the
+// elbow's bend/smoothing. Persisted via hands.ini so headset tuning survives.
+void shoulder_cm(int hand, float* fwd, float* right, float* up);
+void set_shoulder_cm(int hand, float fwd, float right, float up);
+float elbow_out();
+void set_elbow_out(float v);
+unsigned elbow_smooth_ms();
+void set_elbow_smooth_ms(unsigned v);
+
 void set_anim_allowed(bool on);
 bool anim_allowed();
 
