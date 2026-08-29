@@ -263,6 +263,34 @@ std::atomic<bool> g_animPinPos{true};
 // decoupling rule: BS1 is the headset-accepted baseline and must not be put at
 // risk to serve BS2.
 std::atomic<int> g_armsMode{1};
+
+// ---- s70h: THE SHOULDER IS NOT PART OF THE HAND ---------------------------
+//
+// Reported the moment arms-follow landed: "rotating the controller still rotates
+// the whole arm model around it." Correct, and it is what the first cut did by
+// construction - it applied the SAME rigid transform to every arm bone, so the
+// limb became one rigid body pivoting about the hand. Roll your wrist and your
+// shoulder swings, which no arm does.
+//
+// The bone order says how to fix it. patterns.h, measured with Electro Bolt
+// raised: 3 clavicle, 4 upperarm, 5 elbow, 22/23 forearm twist - a chain running
+// from the BODY to the HAND. So weight the drive along it: the wrist end takes
+// the transform in full, the shoulder end takes none, and the joints between
+// take a share. The clavicle then stays where the body puts it while the forearm
+// still follows the controller.
+//
+// HONEST ABOUT WHAT THIS IS: a graded blend, not inverse kinematics. A real
+// two-bone IK solve would fix the shoulder, put the hand on the controller and
+// SOLVE the elbow, and it is the correct answer if this is not good enough. This
+// is the cheap approximation that costs no new machinery and is tunable in the
+// headset, which is worth trying before building a solver.
+//
+// Weights run body -> hand over kBone?Sleeve's own order.
+constexpr float kArmFollowW[5] = {0.00f, 0.25f, 0.55f, 0.85f, 0.85f};
+// 1 = anchored shoulder (the weights above), 0 = the rigid limb this replaces.
+// A slider rather than a constant because how much shoulder travel reads as
+// natural is a feel question, and only the headset can answer it.
+std::atomic<float> g_armAnchor{1.0f};
 // s70c: THE LEFT HAND NEEDS ITS OWN THRESHOLD, and 5.0 is why Telekinesis and
 // Electrobolt behaved differently from every weapon.
 //
@@ -3070,7 +3098,22 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 memcpy(q, g_ref[i].q, 16);
             }
             const float* paArm = pinPos ? g_pinAnchorP[hand] : pa;
-            const float p[3] = {paArm[0] + off[0], paArm[1] + off[1], paArm[2] + off[2]};
+            float p[3] = {paArm[0] + off[0], paArm[1] + off[1], paArm[2] + off[2]};
+
+            // Blend from the engine's authored bone toward the fully-driven one
+            // by this joint's share. w = 1 is the rigid limb; w = 0 leaves the
+            // bone exactly where the engine had it, which is what keeps the
+            // shoulder still while the wrist follows.
+            const float anch = g_armAnchor.load(std::memory_order_relaxed);
+            const float wBase = kArmFollowW[k < 5 ? k : 4];
+            const float w = wBase + (1.0f - wBase) * (1.0f - anch);
+            if (w < 0.999f) {
+                for (int c = 0; c < 3; ++c)
+                    p[c] = g_ref[i].p[c] + (p[c] - g_ref[i].p[c]) * w;
+                float qb[4];
+                quat_nlerp(g_ref[i].q, q, w, qb);
+                memcpy(q, qb, 16);
+            }
             if (!write_n(g_bones[i].p, p, 12) || !write_n(g_bones[i].q, q, 16)) continue;
             if (g_scaleWrote[i]) {
                 write_n(g_bones[i].s, g_ref[i].s, 12);
@@ -3962,6 +4005,20 @@ void draw_debug_ui() {
             g_armsMode.store(1, std::memory_order_relaxed);
         ImGui::SameLine();
         if (ImGui::RadioButton("hide", &am, 2)) g_armsMode.store(2, std::memory_order_relaxed);
+        float aa = g_armAnchor.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("shoulder anchoring", &aa, 0.0f, 1.0f, "%.2f"))
+            g_armAnchor.store(aa, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "How much the arm is allowed to pivot about your hand.\n\n"
+                "1.00 : the shoulder stays where your body puts it and only the\n"
+                "       forearm and wrist follow - roll the controller and the\n"
+                "       shoulder does not move.\n"
+                "0.00 : the whole limb is one rigid body pivoting about the hand,\n"
+                "       so rotating the controller swings the shoulder too.\n\n"
+                "This is a graded blend along clavicle -> upperarm -> elbow ->\n"
+                "twists, not an IK solve. If no setting here looks right, the\n"
+                "answer is a real two-bone solver rather than a better number.");
         ImGui::Separator();
 
         ImGui::TextDisabled("ANIMATION - what the engine may move");
