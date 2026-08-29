@@ -2,6 +2,100 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-28 - s70: BRVR's chain, ported - the state mask was the root
+
+**Same branch `fix/bs1-bathysphere-cine-quad`, PR #54 still open against
+`staging`, still not merged.** Two commits this session (`7372ed9`, `669ac72`)
+plus this handoff. `git diff a1ffa22..HEAD -- src/core/` is EMPTY.
+
+### Current state
+
+**NOTHING THIS SESSION HAS BEEN RUN.** Both commits are built and installed and
+neither has been in a headset. The tester's report that opened the session -
+"the animation is still off in a few different ways that are hard to describe" -
+is unaddressed until someone plays it.
+
+**s68/s69's machinery is deleted, not disabled.** Tracing BRVR end to end showed
+the two mods are the same architecture that diverged at ONE decision, and every
+layer s67-s69 added is downstream compensation for it. 580 lines out, 499 in.
+
+| Was | Now |
+|---|---|
+| Per-state animation mask (Firing/PostFiring only) | gone - threshold + hold window, as BRVR |
+| Canonical rest pose + eased restore | gone - the hold window lands on the settled pose by construction |
+| Anchor pin + its quaternion normalisation | gone - it was correcting a moving anchor and an apex-stuck reference |
+| Freeze anchored on bone 43 (weapon attach) | bone 27, the wrist - BRVR's, and F10-switchable |
+| Adoption probe sampled bone 43 | probes the wrists |
+| Adopt threshold 25 deg | 5.0 deg, BRVR's HandAnimMinDeg |
+| No key debounce | 150 ms, BRVR's WeaponKeyDebounceMs |
+| Idling-edge capture | BRVR's settle: position stillness, 350 floor, 600 ceiling, MEAN of the window |
+| Crosshair per weapon/plasmid | global per hand |
+
+**The one thing s68 was missing.** s68 measured that a plasmid rig never goes
+still (2156 ms to reach 1.24 deg against a +-1.2 deg envelope) and concluded "a
+stillness test cannot work here", abandoning it after nine builds. BRVR reached
+the identical observation - "a looping idle never goes still" - and answered it
+by latching the MEAN of the settle window, the centre of the loop rather than a
+point on its circumference. That is now ported.
+
+**Full trace of BRVR's chain, with its own numbers, is in
+`docs/bioshock1/ENGINE_NOTES.md` "Session 70".**
+
+### THE FIRST TEST IS THE ANCHOR A/B, ALONE
+
+F10 -> FREEZE ANCHOR radio, `wrist 27` vs `attach 43`, same weapon, no rebuild
+between halves. It is the highest-information test available and it may account
+for much of the symptom on its own: a frozen cluster anchored on bone 43 is
+anchored on the one bone the engine keeps animating.
+
+**Judge it on whether the hand STAYS PUT through recoil and reload, NOT on where
+it sits.** The cluster is scaled to 0.80 about the anchor, so moving it shifts
+the whole hand by 0.2 x the bone separation. The per-weapon placement offsets
+were tuned against the old anchor and will need a re-tune either way.
+
+### Next steps
+
+1. **Anchor A/B** as above.
+2. Equip each weapon and both plasmids - no idle-fidget cycle, pose lands the
+   same place every time.
+3. Fire repeatedly - recoil plays AND the hand returns; no apex freeze.
+4. Plasmid -> plasmid, and plasmid -> weapon -> plasmid (s68: the only
+   transition that recaptured).
+5. **Read the settle log's SAMPLE COUNT.** `equip settled after N ms over K
+   engine evaluation(s)`. The settle only samples on frames the engine
+   re-evaluated the bone array, and s68 measured that at ~1 frame in 19 - so
+   BRVR's millisecond constants may not transfer. If K reads 2 or 3 the window is
+   too short to mean anything and the ceiling wants raising (F10, no rebuild).
+6. **Re-measure the idle envelope on the new probe.** `ANIMREJECT` reports the
+   largest movement rejected in the last 3 s. The threshold is back to 5.0 and
+   the old objection to it (s67: "the shotgun's idle crosses 5") was measured
+   through the bone-43 probe, so it needs re-taking, not assuming.
+
+### Live F10 knobs, all no-rebuild
+
+FREEZE ANCHOR radio (27/43); EQUIP SETTLE sliders (floor, still-for, ceiling,
+still-under UU/frame, switch debounce); ANIMATION adopt-threshold and hold.
+Commands: `vrbones settle [min still ceil uu debounce]`, `vrbones sway`,
+`vrbones anchor <n>`.
+
+### Diagnostics still ARMED in the shipping build
+
+`FOVPROBE`, `ANIMREJECT`, `LEFTBONE`, `ROLLCHECK` (now normalised - `7372ed9`),
+plus the settle line. `ANIMPIN`, `RESTREF` and `RESTORE` are gone with their
+machinery; their absence from the binary was verified by grep.
+
+### Session log 2026-08-28
+
+- `7372ed9` - normalised `quat_angle_deg` and `ROLLCHECK`, the two always-on
+  probes that read the bone bank raw. 825ced6 stated the rule and did not apply
+  it to them. `quat_angle_deg` GATED the ANIMPIN line it was reporting, so the
+  verification of 825ced6 depended on an instrument that commit condemned.
+- `669ac72` - the BRVR port above.
+- **825ced6 was verified STATICALLY only** and is now moot: it normalised the
+  anchor pin, and the pin is deleted. Its install was confirmed genuine (the
+  binary carried its string, hash matched the build) before that.
+
+
 ## Session 2026-08-27 - s68: the plasmid viewmodel, and nine wrong answers
 
 **Same branch `fix/bs1-bathysphere-cine-quad`, PR #54 still open against

@@ -3392,7 +3392,12 @@ void draw_debug_ui() {
                 "Anchoring the freeze on a bone the engine animates writes every\n"
                 "other bone relative to a MOVING point, so the whole cluster is\n"
                 "dragged along by it. If the hand walks off the controller during\n"
-                "recoil or a reload, this is the first thing to try.");
+                "recoil or a reload, this is the first thing to try.\n\n"
+                "EXPECT THE GUN TO SIT SLIGHTLY DIFFERENTLY. The cluster is scaled\n"
+                "to 0.80 ABOUT THIS ANCHOR, so moving it shifts the whole hand by\n"
+                "0.2 x the distance between the two bones. That is a placement\n"
+                "re-tune, not a fault - judge this switch on whether the hand\n"
+                "STAYS PUT during animation, not on where it sits.");
         const int curAnchor = g_rAnchorOverride.load(std::memory_order_relaxed);
         int asel = (curAnchor == patterns::kBoneWeaponAttach) ? 1
                    : (curAnchor == patterns::kBoneRWrist)     ? 0

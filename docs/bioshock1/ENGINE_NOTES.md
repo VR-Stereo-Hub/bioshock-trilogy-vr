@@ -2184,6 +2184,12 @@ is the piece all nine attempts were missing.
    The left cluster here already anchored on its wrist (6); s68 recorded the
    asymmetry as "not a defect".
 
+   **The anchor is also the point the cluster is SCALED about** (`g_scale` =
+   0.80), so moving it from 43 to 27 shifts the whole hand by `0.2 x (p43 -
+   p27)`. The per-weapon placement offsets were tuned against the old anchor
+   and will need a re-tune. Judge the anchor A/B on whether the hand STAYS
+   PUT through an animation, not on where it sits.
+
 3. **The adoption probe sampled bone 43 too**, so "has the pose changed?" was
    asked of a bone that moves on its own. This is what made s67 raise the adopt
    threshold from BRVR's 5 deg to 25 - the shotgun's idle "crossing 5" was bone
