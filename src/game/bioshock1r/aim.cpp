@@ -1335,94 +1335,75 @@ void seed_default_profiles() {
         .modelPitch = -12.00f, .modelYaw = -16.00f, .modelRoll = -18.00f};
     // s69b PLASMIDS: ONE row for every plasmid, and it is a LEFT-HAND row.
     //
-    // s70c: EACH PLASMID GETS ITS OWN ROTATION, and one shared value was the
-    // "electrobolt animates the completely wrong direction" report.
+    // s70d: ALL ELEVEN START FROM THE TESTER'S OWN TUNED PLASMID ROW, which is
+    // where they were before s70c and where testing put them back.
     //
-    // The eleven used to start PERFECTLY ALIGNED - one kPlasmid copied to every
-    // key - on the reasoning that they should differ only where tuned. The
-    // tester's own BRVR config says that premise is wrong. From
-    // BioshockVR.ini in the BRVR install, the build they call "pretty much
-    // perfect":
+    // BRVR's config does show the authored poses differ a lot between plasmids
+    // (PlasmidRot0 -111,-64,22 against PlasmidRot1 -35,-20,22, and 2/4/5 near
+    // -111,-14,22), so per-plasmid rotation is real and this table should
+    // eventually carry eleven different rows. What it must NOT carry is BRVR's
+    // numbers transcribed across: that was tried in s70c and moved the plasmids
+    // to the wrong position, because the model trim rotation is the basis the
+    // grip offset is applied along - the two are one calibration, not two.
     //
-    //   PlasmidGrip0=45.50,-14.90,-12.30   PlasmidRot0=-111.00,-64.00,22.00
-    //   PlasmidGrip1=49.50,-12.90,-12.30   PlasmidRot1= -35.00,-20.00,22.00
-    //   PlasmidGrip2=45.50,-10.90, -6.30   PlasmidRot2=-111.00,-16.00,22.00
-    //   PlasmidGrip4=49.50,-12.90,-12.30   PlasmidRot4=-113.25,-10.25,21.75
-    //   PlasmidGrip5=50.00,-13.90,-11.80   PlasmidRot5=-109.25,-16.00,22.00
-    //
-    // The GRIPS barely move. The ROTATIONS are enormous and genuinely different:
-    // plasmid 1 sits 76 deg of pitch and 44 deg of yaw away from plasmid 0. The
-    // authored poses differ that much, which is the whole reason PerPlasmidTuning
-    // exists in BRVR at all. This tree was giving every plasmid -59/-32/22 - a
-    // value that is not close to ANY of them, and sits roughly between the two
-    // clusters, so every plasmid was wrong and no two were wrong the same way.
-    //
-    // TWO THINGS CORROBORATE THE MAPPING rather than assuming it:
-    //   - PlasmidGrip0 is EXACTLY this tree's existing plasmid seed
-    //     (hands.ini posFwdCmL/posRightCmL/posUpCmL = 45.50/-14.90/-12.30), so
-    //     BRVR index 0 is the plasmid this seed was transcribed from:
-    //     ElectroBolt, which is also first in AvailableAbilities.
-    //   - The ROLL is 22.00 in BRVR and 22.00 here, on every entry. Two
-    //     independently tuned mods agreeing on one axis to the decimal is what
-    //     says the axis convention maps 1:1 and the numbers may be carried over.
-    //
-    // Index 1 is Telekinesis: second in AvailableAbilities, and the tester's s68
-    // repro cycled exactly these two as 0 and 1.
-    //
-    // EVERY OTHER PLASMID gets BRVR's index-2 rotation, NOT index 0's. Indices
-    // 2, 4 and 5 are independently tuned and land within a few degrees of each
-    // other (-111/-16, -113/-10, -109/-16) - three tuned entries agreeing is a
-    // far better default than the outlier at index 0 or the -59/-32 that was
-    // there. Their NAME mapping past index 1 is NOT corroborated, so no
-    // individual name claims one; they share the cluster centre until tuned.
+    // Derive them on this rig with the numpad tuner, one plasmid at a time.
     WeaponProfile kPlasmid{
         .trimPitch = -11.00f, .trimYaw = 37.00f,
         .posFwd = -2.80f, .posRight = 0.60f, .posUp = 0.50f,
         .gripFwd = 45.50f, .gripRight = -14.90f, .gripUp = -12.30f,
         .viewFwd = 0.00f, .viewRight = -4.00f, .viewUp = 13.00f,
         .animOn = 1.00f,
-        .modelPitch = -111.00f, .modelYaw = -16.00f, .modelRoll = 22.00f};
+        .modelPitch = -59.00f, .modelYaw = -32.00f, .modelRoll = 22.00f};
     for (const char* k : {"ElectricBolt", "Telekinesis", "Incineration", "IcicleAssault",
                           "InsectSwarm", "SecurityBeacon", "SpringBoardTrap",
                           "SummonProtector", "AirBlast", "BerserkRage", "DecoyHuman",
                           "Plasmid"})
         g_weaponProfiles[k] = kPlasmid;
 
-    // ---- s70c: THE TWO PLASMIDS BRVR'S CONFIG NAMES, set from its numbers ----
+    // ---- s70d: THE BRVR ROTATIONS WERE TRIED AND REVERTED. Read this before
+    // ---- transcribing them again.
     //
-    // ElectroBolt is BRVR index 0: PlasmidRot0 = -111.00,-64.00,22.00. s69
-    // transcribed the PITCH (-111) correctly and took the YAW from a different
-    // entry (-16, which is index 2's), so it has been 48 deg out in yaw ever
-    // since - "the electrobolt animates the completely wrong direction".
+    // s70c set these from the tester's BRVR config - ElectroBolt to
+    // PlasmidRot0 (-111,-64,22) and Telekinesis to PlasmidRot1 (-35,-20,22),
+    // with PlasmidGrip1 for Telekinesis. Tested, and it was WORSE: the plasmids
+    // moved to the wrong POSITION and the animation direction did not change at
+    // all.
+    //
+    // TWO THINGS THAT COST NOTHING TO KNOW, both from that one run:
+    //
+    //   1. The model trim ROTATION MOVES THE PLASMID. Position was correct
+    //      before and wrong after, and rotation was all that changed - so the
+    //      grip offset is applied along the model's rotated basis and the two
+    //      cannot be transcribed independently. BRVR's rot values are not
+    //      portable without its grip values AND whatever else composes that
+    //      basis; the matching roll of 22.00 was not enough to license the
+    //      transfer, and CLAUDE.md's "never copy a number, derive it" applied
+    //      here even though both mods are the same game.
+    //
+    //   2. A 48 DEG YAW CHANGE DID NOT MOVE THE ANIMATION DIRECTION. That is
+    //      the useful half. If the direction were a product of the actor's
+    //      rotation, 48 deg would have been unmissable. It is not the model
+    //      trim, and it is not the drive hand, the freeze anchor or the
+    //      adoption policy either - the symptom has now survived a change to
+    //      every one of them. Look somewhere else entirely.
+    //
+    // So these are the tester's own tuned values, unchanged, and they stay that
+    // way until something derives a replacement on this rig.
     g_weaponProfiles["ElectricBolt"].viewFwd = -2.00f;
     g_weaponProfiles["ElectricBolt"].viewRight = 2.00f;
     g_weaponProfiles["ElectricBolt"].viewUp = 11.00f;
-    g_weaponProfiles["ElectricBolt"].gripFwd = 45.50f;   // PlasmidGrip0
-    g_weaponProfiles["ElectricBolt"].gripRight = -14.90f;
-    g_weaponProfiles["ElectricBolt"].gripUp = -12.30f;
-    g_weaponProfiles["ElectricBolt"].modelPitch = -111.00f; // PlasmidRot0
-    g_weaponProfiles["ElectricBolt"].modelYaw = -64.00f;
+    g_weaponProfiles["ElectricBolt"].modelPitch = -111.00f;
+    g_weaponProfiles["ElectricBolt"].modelYaw = -16.00f;
     g_weaponProfiles["ElectricBolt"].modelRoll = 22.00f;
 
-    // Telekinesis is BRVR index 1, and it is the OUTLIER - the one plasmid whose
-    // authored pose is nowhere near the others. PlasmidGrip1/PlasmidRot1.
-    g_weaponProfiles["Telekinesis"].gripFwd = 49.50f;    // PlasmidGrip1
-    g_weaponProfiles["Telekinesis"].gripRight = -12.90f;
-    g_weaponProfiles["Telekinesis"].gripUp = -12.30f;
-    g_weaponProfiles["Telekinesis"].modelPitch = -35.00f; // PlasmidRot1
-    g_weaponProfiles["Telekinesis"].modelYaw = -20.00f;
-    g_weaponProfiles["Telekinesis"].modelRoll = 22.00f;
-
-    // TELEKINESIS ANIMATES. s69b gated it off because its grab animation threw
-    // the rig "super far away" - but that was the mode-3 late write never
-    // replaying the cluster (s69d), so ANY adopted animation on the left hand
-    // walked off the controller. The animation was never the fault, and the
-    // tester wants it: "it would be nice to have the animations".
+    // TELEKINESIS ANIMATES, and this one DID hold. s69b gated it off because its
+    // grab animation threw the rig "super far away" - but that was the mode-3
+    // late write never replaying the cluster (s69d), so ANY adopted left-hand
+    // animation walked off. The animation was never the fault.
     //
-    // SET EXPLICITLY rather than left to the shared row's 1.0, because a
-    // weapons.ini written while the gate was on still carries animOn=0 and that
-    // file overrides these seeds. A stale 0 there is exactly the "tele doesnt
-    // animate at all" report - see load_weapon_profiles().
+    // SET EXPLICITLY, because a weapons.ini written while the gate was on still
+    // carries animOn=0 and that file overrides these seeds. A stale 0 there was
+    // the whole of "tele doesnt animate at all".
     g_weaponProfiles["Telekinesis"].animOn = 1.00f;
 }
 

@@ -2337,6 +2337,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             adopt = false;
             uint64_t nowMs = GetTickCount64();
             float maxPos = 0.0f, maxAng = 0.0f;
+            float dAnchor[3] = {0.0f, 0.0f, 0.0f}; // s70d: signed, for ANIMDIR
             // s70c: PROBE THE DRIVEN HAND'S ANCHOR, AND ONLY IT.
             //
             // This took the MAX over both wrists, so one number stood for two
@@ -2364,6 +2365,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 float posUu = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
                 if (posUu > maxPos) maxPos = posUu;
                 if (angDeg > maxAng) maxAng = angDeg;
+                memcpy(dAnchor, dp, sizeof dAnchor);
             }
             // Per-hand threshold. The left hand carries the PLASMIDS, and a
             // plasmid's animation is 2.6-5.0 deg at the palm where a weapon
@@ -2378,6 +2380,35 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 g_lastBigDeltaHandMs[hand] = nowMs;
             adopt = (nowMs - g_lastBigDeltaHandMs[hand]) <
                     g_swaySettleMs.load(std::memory_order_relaxed);
+
+            // ---- s70d ANIMDIR: WHAT DIRECTION IS THE ANIMATION ACTUALLY GOING?
+            //
+            // "The electrobolt animates the completely wrong direction" has now
+            // survived a change to the freeze anchor, the adoption policy, the
+            // drive hand and a 48 deg swing of the model trim yaw. A symptom
+            // that does not move when four subsystems do is not in any of them,
+            // and this is the measurement that was never taken: the SIGNED
+            // model-space displacement of the anchor while the animation plays.
+            //
+            // Read it as UE component axes - x forward, y right, z up - against
+            // the hand the log names. If the reported motion matches what the
+            // animation looks like in the headset, the rig is being replayed
+            // correctly and the fault is in the frame it is CARRIED by. If it
+            // does not match, the fault is in this file.
+            //
+            // ALWAYS ON and throttled to 1 s, because the tester cannot type
+            // with both hands on the controllers.
+            if (adopt) {
+                static uint64_t s_dirLog[2] = {0, 0};
+                if (nowMs - s_dirLog[hand] >= 1000) {
+                    s_dirLog[hand] = nowMs;
+                    BVR_LOG("[bones] ANIMDIR: %s hand adopting - anchor bone %d moved "
+                            "fwd %+.2f right %+.2f up %+.2f UU (|d|=%.2f, %.1f deg) in "
+                            "MODEL space this step.",
+                            hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", anchor, dAnchor[0],
+                            dAnchor[1], dAnchor[2], maxPos, maxAng);
+                }
+            }
 
             // BRVR's rejection-peak report, ported and ALWAYS ON. Its note:
             // "the tester saw recoil on every gun EXCEPT the Tommy gun -- whose
