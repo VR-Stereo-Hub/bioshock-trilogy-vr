@@ -1071,10 +1071,10 @@ void apply_weapon_key(const std::string& key, const char* why) {
         hands::set_view_offset_cm(ph, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
         hands::set_model_trim_deg(ph, p.modelPitch, p.modelYaw, p.modelRoll);
-        BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): trim %.2f/%.2f pos "
-                "%.1f/%.1f/%.1f",
+        BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): pos %.1f/%.1f/%.1f "
+                "[crosshair is global, not per profile]",
                 key.c_str(), g_presetBaselineValid ? "preset baseline" : "current R values",
-                why, p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp);
+                why, p.posFwd, p.posRight, p.posUp);
     } else {
         const WeaponProfile& p = it->second;
         // s70: the crosshair is global - trim is deliberately not applied here.
@@ -1085,9 +1085,14 @@ void apply_weapon_key(const std::string& key, const char* why) {
         hands::set_view_offset_cm(ph, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
         hands::set_model_trim_deg(ph, p.modelPitch, p.modelYaw, p.modelRoll);
-        BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f "
-                "grip %.1f/%.1f/%.1f (%s)",
-                key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp,
+        // s70b: the trim is NOT printed here any more, and that matters. It was
+        // still reporting the profile's stored trimPitch/trimYaw as "applied"
+        // after the crosshair went global and stopped applying them - an
+        // instrument describing behaviour the code no longer has, which is the
+        // exact failure this file's own s68 notes were written about.
+        BVR_LOG("[aim] weapon profile '%s' applied: pos %.1f/%.1f/%.1f "
+                "grip %.1f/%.1f/%.1f (%s) [crosshair is global, not per profile]",
+                key.c_str(), p.posFwd, p.posRight, p.posUp,
                 p.gripFwd, p.gripRight, p.gripUp, why);
     }
 }

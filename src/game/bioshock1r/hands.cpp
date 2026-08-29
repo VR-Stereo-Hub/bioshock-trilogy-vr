@@ -576,19 +576,48 @@ void load_config() {
 // Bumpers are checked first so a same-frame trigger wins (firing is the
 // stronger evidence of which hand the player means). Shared with the aim
 // laser so the beam leaves the hand that is actually holding the weapon.
+// s70b: WHICH HAND IS DRIVEN IS DECIDED BY WHAT YOU ARE HOLDING, which is
+// BRVR's rule, and the input-based guess it replaces is a strong candidate for
+// "the electrobolt animates the complete wrong direction".
+//
+// This used to latch the hand off the last bumper or trigger you squeezed. So
+// with a plasmid equipped - which renders from the LEFT hand - pressing the
+// RIGHT trigger latched hand 1, and the drive then posed the wrong cluster from
+// the wrong controller's pose. Nothing about the plasmid changed; which hand the
+// mod thought it was moving did.
+//
+// BRVR (HandsProbe.cpp, the HANDMODE block):
+//     const bool ability = (abil != nullptr) && (hold == nullptr);
+//     poseHand = ability ? HAND_LEFT : HAND_RIGHT;
+//
+// BOTH POINTERS MUST AGREE, and that is deliberate in BRVR: mid-equip one of
+// them is briefly null, so requiring `ability && !holdable` refuses to flip the
+// hand during the switch. The verdict is LATCHED - it holds its previous value
+// until both pointers agree on a new one - so a one-frame null cannot move the
+// drive to the other arm.
+//
+// Modes 0 and 1 stay as manual overrides (left-handed play, and the control
+// condition for any test that needs a fixed hand).
 int active_hand() {
     int mode = g_handMode.load(std::memory_order_relaxed);
     if (mode == 0 || mode == 1) return mode;
 
-    bool lb = false, rb = false;
-    bvr::input::last_composed_bumpers(&lb, &rb);
-    if (rb && !lb) g_autoHand.store(1, std::memory_order_relaxed);
-    else if (lb && !rb) g_autoHand.store(0, std::memory_order_relaxed);
+    void* hold = nullptr;
+    if (!current_holdable(&hold)) hold = nullptr;
+    void* abil = nullptr;
+    if (!current_ability(&abil)) abil = nullptr;
 
-    uint8_t lt = 0, rt = 0;
-    bvr::input::last_composed_triggers(&lt, &rt);
-    if (rt >= 64 && lt < 64) g_autoHand.store(1, std::memory_order_relaxed);
-    else if (lt >= 64 && rt < 64) g_autoHand.store(0, std::memory_order_relaxed);
+    // Only move the latch when the two pointers agree on a verdict. Anything
+    // else - mid-equip, an unreadable rig - leaves it where it was.
+    if (abil != nullptr && hold == nullptr) {
+        if (g_autoHand.exchange(0, std::memory_order_relaxed) != 0)
+            BVR_LOG("[hands] HANDMODE: PLASMID - the LEFT hand drives "
+                    "(ability %p, holdable null)",
+                    abil);
+    } else if (hold != nullptr) {
+        if (g_autoHand.exchange(1, std::memory_order_relaxed) != 1)
+            BVR_LOG("[hands] HANDMODE: WEAPON - the RIGHT hand drives (holdable %p)", hold);
+    }
     return g_autoHand.load(std::memory_order_relaxed);
 }
 

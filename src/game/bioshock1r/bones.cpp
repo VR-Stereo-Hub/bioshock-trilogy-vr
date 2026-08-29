@@ -198,24 +198,24 @@ uint64_t g_settleStartMs = 0;   // when the switch was seen
 uint64_t g_settleLastMoved = 0; // last frame the wrist moved more than the threshold
 float g_settlePrevWrist[3] = {0.0f, 0.0f, 0.0f};
 bool g_settleHavePrev = false;
-// ---- THE MEAN OF THE LOOP, which is the piece s68 was missing ---------------
-// BRVR: "A LOOPING IDLE NEVER GOES STILL, so there is no single authored pose to
-// latch and 'the last frame before we take the cluster' is an arbitrary phase of
-// the loop... accumulate while settling and, if the rig never stills, latch the
-// MEAN -- the centre of the loop rather than a point on its circumference."
+// s70b: THERE IS NO POSE AVERAGING HERE, AND THE ATTEMPT AT IT WAS A BUG.
 //
-// s68 measured the same fact on a plasmid rig (2156 ms to reach 1.24 deg against
-// a +-1.2 deg idle envelope) and concluded "a stillness test cannot work here",
-// then abandoned the approach. BRVR reached the identical observation and
-// answered it with the mean instead. This is that answer.
+// BRVR accumulates ONE POINT over the settle window - the wrist position - and
+// uses the mean for its two-hand GRAB POINT (`g_anchorPos[oh]`), a feature this
+// tree does not have. Its POSE capture is `CaptureClusterRef`, which takes the
+// LIVE FRAME, still or not.
 //
-// BRVR averages one POINT (its two-hand grab point). Here the thing being
-// captured is a whole cluster, so the whole pose is averaged: positions
-// component-wise, quaternions sign-aligned against the first sample and
-// normalised at the end (the standard nlerp-style mean, which is exact enough
-// across the few degrees an idle loop spans).
-float g_settleAccP[kMaxBones][3] = {};
-float g_settleAccQ[kMaxBones][4] = {};
+// s70 generalised the mean from that one point to the whole cluster. That is
+// not a pose: averaging bone positions component-wise does not preserve BONE
+// LENGTHS, so the result is a skeleton that never existed. Measured immediately,
+// 2026-08-28 23:36:31 - the wrench captured "the MEAN of the window" over 48
+// engine evaluations spanning its entire equip animation, and the tester
+// reported the hand "super far away and super duper streched like a slenderman
+// hand". That is what an averaged skeleton looks like.
+//
+// The lesson generalises: a mean is only meaningful over a space where the
+// average of two valid values is itself valid. Positions of ONE point qualify.
+// A skeleton's bone array does not.
 int g_settleN = 0;
 
 // Drop every scrap of settle state. Called wherever the reference dies - a new
@@ -2259,10 +2259,11 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             //           end of the animation.
             //   CEILING (g_settleCeilMs) - a rig that never stills cannot wedge
             //           the window open forever.
-            //   MEAN    - and when the ceiling is what stopped it, the rig was
-            //           LOOPING, so the captured pose is the mean of the window
-            //           rather than whichever phase of the loop the ceiling
-            //           happened to land on.
+            // The capture is the LIVE FRAME either way, exactly as BRVR's
+            // CaptureClusterRef takes it. BRVR's mean-of-the-window applies only
+            // to its two-hand GRAB POINT - one point, where an average is
+            // meaningful - and never to a pose. See the s70b note on the settle
+            // state for what happened when that was generalised.
             const uint64_t nowS = GetTickCount64();
             if (anchor < g_boneCount) {
                 if (g_settleHavePrev) {
@@ -2276,22 +2277,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 memcpy(g_settlePrevWrist, fresh[anchor].p, sizeof g_settlePrevWrist);
                 g_settleHavePrev = true;
             }
-            // Accumulate the whole pose while the window is open, sign-aligning
-            // each quaternion against the first sample so opposite-hemisphere
-            // representations of the same rotation do not cancel.
-            if (g_settleN < INT_MAX) {
-                for (int i = 0; i < g_boneCount; ++i) {
-                    for (int k = 0; k < 3; ++k) g_settleAccP[i][k] += fresh[i].p[k];
-                    float sgn = 1.0f;
-                    if (g_settleN > 0) {
-                        float d = 0.0f;
-                        for (int k = 0; k < 4; ++k) d += g_settleAccQ[i][k] * fresh[i].q[k];
-                        if (d < 0.0f) sgn = -1.0f;
-                    }
-                    for (int k = 0; k < 4; ++k) g_settleAccQ[i][k] += fresh[i].q[k] * sgn;
-                }
-                ++g_settleN;
-            }
+            ++g_settleN; // sample count, for the log only
+
 
             const bool longEnough =
                 (nowS - g_settleStartMs) >= g_settleMinMs.load(std::memory_order_relaxed);
@@ -2306,42 +2293,17 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             } else {
                 adopt = true;         // this frame writes g_ref, then we are done
                 s_forceCapture = false;
-                if (!still && g_settleN > 0) {
-                    // THE RIG NEVER STOPPED, SO IT IS LOOPING. Latch the centre
-                    // of the loop. Without this the capture is a sample of the
-                    // idle fidget, which is exactly the "1 cycle animation on
-                    // every equip" and "the frozen pose is a sample of the
-                    // fidget" pair of reports.
-                    const float inv = 1.0f / static_cast<float>(g_settleN);
-                    for (int i = 0; i < g_boneCount; ++i) {
-                        for (int k = 0; k < 3; ++k) fresh[i].p[k] = g_settleAccP[i][k] * inv;
-                        float q[4];
-                        float n = 0.0f;
-                        for (int k = 0; k < 4; ++k) {
-                            q[k] = g_settleAccQ[i][k] * inv;
-                            n += q[k] * q[k];
-                        }
-                        n = sqrtf(n);
-                        // A degenerate sum means the samples cancelled; keep the
-                        // live frame rather than writing a garbage rotation.
-                        if (n > 1e-4f)
-                            for (int k = 0; k < 4; ++k) fresh[i].q[k] = q[k] / n;
-                    }
-                }
-                // THE SAMPLE COUNT IS PART OF THE MEASUREMENT, not decoration.
-                // This block only runs when the engine RE-EVALUATED the bone
-                // array, and s68 measured that at roughly 1 frame in 19 - so a
-                // 600 ms window may hold only a handful of samples. Whether
-                // BRVR's millisecond constants transfer to this tree at all
-                // depends on that number, and guessing it is how s68 lost nine
-                // builds. If this reads 2 or 3, the window is too short to mean
-                // anything and the ceiling wants raising (F10, no rebuild).
+                // The sample count is the measurement that says whether these
+                // constants transfer: this block runs only when the engine
+                // RE-EVALUATED the bone array. The first run answered it - 24 to
+                // 48 evaluations per window, not the 2 or 3 that s68's "1 frame
+                // in 19" implied - so the window has plenty of data.
                 BVR_LOG("[bones] equip settled after %llu ms over %d engine evaluation(s) "
-                        "(%s) - capturing this holdable's reference from here.",
+                        "(%s) - capturing this holdable's live pose as its reference.",
                         static_cast<unsigned long long>(nowS - g_settleStartMs), g_settleN,
                         still ? "rig went still"
-                              : "ceiling reached; the rig was looping, so the pose is "
-                                "the MEAN of the window, not one frame of the fidget");
+                              : "ceiling reached - the rig never stopped moving, so this "
+                                "pose is one frame of a loop and may sit off");
                 g_settleN = 0;
                 g_settleHavePrev = false;
             }
@@ -3458,10 +3420,9 @@ void draw_debug_ui() {
                 "floor    : ignore stillness before this - many draws PAUSE part-way\n"
                 "           through, and quiet inside a pause is not the end.\n"
                 "still    : how long the anchor must stay under the threshold.\n"
-                "ceiling  : give up waiting. A looping idle NEVER goes still, so when\n"
-                "           the ceiling is what stopped it the captured pose is the\n"
-                "           MEAN of the window - the centre of the loop rather than\n"
-                "           whichever phase the ceiling landed on.\n"
+                "ceiling  : give up waiting, and capture the live pose anyway. A\n"
+                "           looping idle never goes still, so a capture that hits the\n"
+                "           ceiling is one frame of that loop and may sit off.\n"
                 "debounce : the engine parks CurrentHoldable at NULL for a frame\n"
                 "           during fire and pump animations. Without this, those\n"
                 "           blips read as weapon switches.");
