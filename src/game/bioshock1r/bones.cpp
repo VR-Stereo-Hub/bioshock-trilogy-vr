@@ -167,6 +167,38 @@ std::atomic<float> g_swayAngThreshDeg{5.0f};    // s70: BRVR's HandAnimMinDeg
 std::atomic<unsigned> g_swaySettleMs{1200};     // BRVR HandAnimHoldMs
 uint64_t g_lastBigDeltaMs = 0;
 uint64_t g_lastBigDeltaHandMs[2] = {0, 0}; // s70c: per hand, as BRVR's lastBig[hand]
+
+// ---- s70d: PIN THE ANCHOR'S ORIENTATION, AND ONLY ITS ORIENTATION ----------
+//
+// MEASURED, the tester, on the build that deleted the s69 pin: "the animation is
+// correct but it points like 90 degrees left when the animation is going", while
+// casting, with the idle pose correct.
+//
+// That is the s69 defect exactly, and s69's own note named the mechanism before
+// this session deleted it: the ACTOR's rotation is set from the controller on
+// the assumption that the anchor still carries the orientation it was CAPTURED
+// with. An adopted animation turns the anchor; the cluster is replayed at that
+// turned orientation; the actor knows nothing about it, so the whole hand points
+// somewhere else for the length of the animation.
+//
+// s70 removed the pin as compensation for the per-state mask. Half of that was
+// right - the POSITION pin was fighting an anchor on bone 43, which the engine
+// animates, and moving the anchor to the wrist fixed that at source. The
+// ROTATION pin was not compensation for anything; it answers a problem that
+// survives the anchor fix, and the tester had already confirmed it working
+// ("position and rotation are correct").
+//
+// ROTATION ONLY. Position deliberately still follows the animation, because the
+// tester's report is that the MOTION is correct - it is only the pointing that
+// is wrong. Pinning position too would flatten the cast animation this exists to
+// let through.
+//
+// BRVR has no equivalent, and that is not evidence against it: BRVR's threshold
+// is 5.0 against a plasmid animation of 2.6-5.0 deg, so its plasmid hand barely
+// adopts at all and never reaches this case. A rigid hand cannot be re-pointed.
+float g_pinAnchorQ[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}};
+bool g_pinValid[2] = {false, false};
+std::atomic<bool> g_animPinRot{true};
 // s70c: THE LEFT HAND NEEDS ITS OWN THRESHOLD, and 5.0 is why Telekinesis and
 // Electrobolt behaved differently from every weapon.
 //
@@ -2326,6 +2358,21 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         still ? "rig went still"
                               : "ceiling reached - the rig never stopped moving, so this "
                                 "pose is one frame of a loop and may sit off");
+                // LATCH THE ORIENTATION THE ACTOR IS ABOUT TO BE ALIGNED TO.
+                // Everything after this frame is measured against it, so it has
+                // to be taken from the pose we are capturing, not from g_ref -
+                // adoption overwrites g_ref, which is the whole point.
+                if (anchor < g_boneCount) {
+                    const float* aq = fresh[anchor].q;
+                    const float n = sqrtf(aq[0] * aq[0] + aq[1] * aq[1] + aq[2] * aq[2] +
+                                          aq[3] * aq[3]);
+                    if (n > 1e-4f) {
+                        for (int k = 0; k < 4; ++k) g_pinAnchorQ[hand][k] = aq[k] / n;
+                        g_pinValid[hand] = true;
+                    } else {
+                        g_pinValid[hand] = false;
+                    }
+                }
                 g_settleN = 0;
                 g_settleHavePrev = false;
             }
@@ -2599,6 +2646,38 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // the delta is identity and the cluster replays verbatim; when it adopts, it
     // adopts the whole live pose and replays THAT verbatim. An animation moving
     // the hand is the animation doing its job - recoil is supposed to be visible.
+    //
+    // s70d: EXCEPT FOR ITS HEADING. See the pin banner up top - an adopted
+    // animation that turns the anchor re-points the whole hand, because the
+    // actor was aligned to the orientation captured at settle. qFix undoes only
+    // that turn.
+    float qFix[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    bool pinRot = false;
+    if (g_freezeOnly.load(std::memory_order_relaxed) &&
+        g_animPinRot.load(std::memory_order_relaxed) && g_pinValid[hand] &&
+        anchor < g_boneCount) {
+        float qInv[4];
+        quat_conj(g_ref[anchor].q, qInv);
+        quat_mul(g_pinAnchorQ[hand], qInv, qFix);
+        const float fn = sqrtf(qFix[0] * qFix[0] + qFix[1] * qFix[1] + qFix[2] * qFix[2] +
+                               qFix[3] * qFix[3]);
+        if (fn > 1e-4f) {
+            for (int k = 0; k < 4; ++k) qFix[k] /= fn;
+            pinRot = true;
+            // ALWAYS ON, throttled: how far the animation had turned the anchor
+            // IS the size of the defect this cancels, so it gets measured.
+            static uint64_t s_pinLog[2] = {0, 0};
+            const uint64_t nowPin = GetTickCount64();
+            const float turn = quat_angle_deg(g_ref[anchor].q, g_pinAnchorQ[hand]);
+            if (turn > 3.0f && nowPin - s_pinLog[hand] >= 1000) {
+                s_pinLog[hand] = nowPin;
+                BVR_LOG("[bones] ANIMPIN: %s hand - the animation had turned anchor bone "
+                        "%d by %.1f deg off the captured heading; pinned back. The "
+                        "animation keeps its motion, the hand keeps its heading.",
+                        hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", anchor, turn);
+            }
+        }
+    }
     // Viewmodel scale (session 61, see the g_scale block comment): the
     // anchor-relative translations shrink by s for every cluster bone - the
     // cluster scales ABOUT THE ANCHOR, so the anchor write-loc is unchanged
@@ -2632,11 +2711,37 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // and only its size changes.
             float off[3] = {(g_ref[i].p[0] - pa[0]) * s, (g_ref[i].p[1] - pa[1]) * s,
                             (g_ref[i].p[2] - pa[2]) * s};
-            // VERBATIM. BRVR's WriteCluster is fed the reference's own wrist,
-            // so its qDelta collapses to identity and every bone is rewritten
-            // exactly where the authored pose put it. This is that, with the
-            // viewmodel scale applied about the anchor.
-            memcpy(q, g_ref[i].q, 16);
+            // VERBATIM, unless the anchor has been turned by an adopted
+            // animation - see the s70d pin banner. qFix maps the animated anchor
+            // back onto the orientation the actor was aligned to, and is applied
+            // to the whole cluster so the hand keeps its heading while the
+            // animation plays inside it. Position is NOT pinned: the motion is
+            // correct and only the pointing was wrong.
+            //
+            // NORMALISED, both qFix and the per-bone product. The bone bank does
+            // not hold unit quats while an animation blends, conj() is not the
+            // inverse of a non-unit quat, and qts_rotate() would then scale every
+            // offset by |q|^2 - which is a vertex explosion, not a rotation
+            // (825ced6, and ENGINE_NOTES).
+            if (pinRot) {
+                float rot[3];
+                qts_rotate(qFix, off, rot);
+                off[0] = rot[0];
+                off[1] = rot[1];
+                off[2] = rot[2];
+                quat_mul(qFix, g_ref[i].q, q);
+                const float bn = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+                if (bn > 1e-4f) {
+                    q[0] /= bn;
+                    q[1] /= bn;
+                    q[2] /= bn;
+                    q[3] /= bn;
+                } else {
+                    memcpy(q, g_ref[i].q, 16);
+                }
+            } else {
+                memcpy(q, g_ref[i].q, 16);
+            }
             p[0] = pa[0] + off[0];
             p[1] = pa[1] + off[1];
             p[2] = pa[2] + off[2];
@@ -3473,6 +3578,22 @@ void draw_debug_ui() {
         // rest-restore controls that stood here - all three drove machinery this
         // session deleted. These are the numbers BRVR ships and the ones the
         // headset run needs to be able to move.
+        bool apr = g_animPinRot.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Animations cannot re-point the hand", &apr))
+            g_animPinRot.store(apr, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "The rig is carried to your controller by the ACTOR, which is aligned\n"
+                "to the orientation the hand had when its pose was captured. An\n"
+                "adopted animation TURNS that anchor, and the actor knows nothing\n"
+                "about it - so the whole hand points somewhere else for as long as\n"
+                "the animation plays.\n\n"
+                "Reported on the plasmids: \"the animation is correct but it points\n"
+                "like 90 degrees left when the animation is going\".\n\n"
+                "ON  : the animation keeps its MOTION and the hand keeps its heading.\n"
+                "off : the s70 behaviour, for comparison.\n\n"
+                "Position is never pinned - only the pointing was ever wrong.");
+
         ImGui::TextDisabled("EQUIP SETTLE - when the pose is captured after a switch");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
