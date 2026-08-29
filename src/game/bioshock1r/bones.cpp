@@ -3233,6 +3233,38 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // Yaw only, deliberately. Pitching your head must not swing your
         // shoulder up and down - the body does not do that, and head-pitch
         // coupling is what makes a VR arm feel like it is on a stick.
+        // ---- CONVERT THROUGH THE TRANSFORM WE INTEND, NOT THE LIVE ONE ----
+        //
+        // drive() runs BEFORE the actor write, so `qaInv` and `actorLoc` above
+        // hold whatever the ENGINE last left in the actor - and it rewrites that
+        // rotator every frame. MEASURED, ACTORWATCH over one session: 118 hits,
+        // pitch 27-60 deg, yaw up to 80, roll 40-60, continuously.
+        //
+        // So the world -> component conversion for the shoulder was going
+        // through a rotation up to 60 deg wrong, intermittently, depending on
+        // where the engine's tick fell relative to ours. That is both of the
+        // reported defects in one: "the shoulder isn't in a hard locked
+        // position" and "the whole arm juts forward a bit every few seconds".
+        // The pole made it worse because it goes through the same conversion on
+        // every single frame.
+        //
+        // hands.cpp publishes what it last wrote. Use that: it is the transform
+        // the rig is actually carried by once the write lands, it is not
+        // contested by the engine, and being one frame old costs far less than
+        // being 60 degrees wrong.
+        float aLoc[3] = {actorLoc[0], actorLoc[1], actorLoc[2]};
+        float qaUse[4] = {qaInv[0], qaInv[1], qaInv[2], qaInv[3]};
+        {
+            float wl[3];
+            int32_t wr[3];
+            if (hands::last_actor_write(wl, wr)) {
+                memcpy(aLoc, wl, sizeof aLoc);
+                FRotator wrot{wr[0], wr[1], wr[2]};
+                float qw[4];
+                ue_rot_to_quat(wrot, qw);
+                quat_conj(qw, qaUse);
+            }
+        }
         const float uuPerCm = ctx.worldScale / 100.0f;
         const float yawRad =
             (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f);
@@ -3243,10 +3275,9 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         // UE yaw-only basis: forward (cy, sy, 0), right (-sy, cy, 0), up (0,0,1).
         const float sWorld[3] = {ctx.camX + cy * fCm - sy * rCm,
                                  ctx.camY + sy * fCm + cy * rCm, ctx.camZ + uCm};
-        float sRel[3] = {sWorld[0] - actorLoc[0], sWorld[1] - actorLoc[1],
-                         sWorld[2] - actorLoc[2]};
+        float sRel[3] = {sWorld[0] - aLoc[0], sWorld[1] - aLoc[1], sWorld[2] - aLoc[2]};
         float S[3];
-        qts_rotate(qaInv, sRel, S);
+        qts_rotate(qaUse, sRel, S);
 
         // The hand is wherever the cluster write just put the anchor.
         const float* W = pinPos ? g_pinAnchorP[hand] : pa;
@@ -3285,7 +3316,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             float poleWorld[3] = {(-sy) * outSign * eo, (cy)*outSign * eo,
                                   -(1.0f - eo * 0.5f)};
             float pole[3];
-            qts_rotate(qaInv, poleWorld, pole);
+            qts_rotate(qaUse, poleWorld, pole);
             norm3(pole);
             // Project perpendicular to the current arm axis so it is a pure
             // bend direction and cannot push the elbow along the arm.

@@ -140,6 +140,18 @@ bool weapon_scan_in_progress();
 // the stale weapon). False = the rig is unknown/unreadable (fall back to
 // the legacy paths); true with *out possibly null. The per-weapon profile
 // layer's identity source - it validates by CLASS NAME, not vtable.
+// s70l: the actor transform WE INTEND, as last written by the drive.
+//
+// bones::drive() runs BEFORE the actor write each frame, so anything in drive()
+// that reads the actor's live loc/rot reads whatever the ENGINE last left there
+// - and the engine rewrites that rotator every frame by tens of degrees
+// (measured: ACTORWATCH, 27-60 pitch / up to 80 yaw / 40-60 roll). Any world <->
+// component conversion built on the live read is therefore wrong by that much,
+// intermittently. Use this instead.
+//
+// Returns false before the first write, when there is nothing to report.
+bool last_actor_write(float loc[3], int32_t rot[3]);
+
 bool current_holdable(void** out);
 
 // Is a weapon OR a plasmid equipped? Ported from BRVR, which gates its crosshair

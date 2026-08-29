@@ -709,6 +709,21 @@ bool armed() {
     return (okH && hold != nullptr) || (okA && abil != nullptr);
 }
 
+bool last_actor_write(float loc[3], int32_t rot[3]) {
+    if (g_writes.load(std::memory_order_relaxed) == 0) return false;
+    if (loc) {
+        loc[0] = g_lastX.load(std::memory_order_relaxed);
+        loc[1] = g_lastY.load(std::memory_order_relaxed);
+        loc[2] = g_lastZ.load(std::memory_order_relaxed);
+    }
+    if (rot) {
+        rot[0] = g_lastPitch.load(std::memory_order_relaxed);
+        rot[1] = g_lastYaw.load(std::memory_order_relaxed);
+        rot[2] = g_lastRoll.load(std::memory_order_relaxed);
+    }
+    return true;
+}
+
 bool current_ability(void** out) {
     // The equipped PLASMID. Hands.uc keeps abilities in their OWN slot
     // (`var private transient Ability CurrentAbility`, two fields above
