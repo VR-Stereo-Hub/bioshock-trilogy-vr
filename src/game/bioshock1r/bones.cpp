@@ -286,11 +286,70 @@ std::atomic<int> g_armsMode{1};
 // headset, which is worth trying before building a solver.
 //
 // Weights run body -> hand over kBone?Sleeve's own order.
-constexpr float kArmFollowW[5] = {0.00f, 0.25f, 0.55f, 0.85f, 0.85f};
-// 1 = anchored shoulder (the weights above), 0 = the rigid limb this replaces.
-// A slider rather than a constant because how much shoulder travel reads as
-// natural is a feel question, and only the headset can answer it.
-std::atomic<float> g_armAnchor{1.0f};
+// ---- s70i: A REAL TWO-BONE IK SOLVE ---------------------------------------
+//
+// The graded blend that stood here "did nothing", and the reason is worth
+// keeping: it blended each arm bone from the DRIVEN pose back toward g_ref - and
+// adoption copies the whole live bone array into g_ref every time it fires,
+// including the arm bones this pass had just written. So g_ref became our own
+// output and blending toward it was a no-op. A feedback loop, and this file
+// warns about the same shape for the scale channel ("adopting would feed our own
+// write back as refS * ws^n").
+//
+// The solver needs an authored reference that our writes can never contaminate,
+// so it gets its own: captured once per equip at the settle, from the engine's
+// own pose, in the window where we deliberately write nothing.
+//
+// THE SOLVE. Shoulder fixed, hand on the controller, elbow solved:
+//   d = |W - S| clamped into (|L1-L2|, L1+L2) so the triangle always closes
+//   a = (L1^2 - L2^2 + d^2) / 2d      distance along S->W to the elbow's foot
+//   h = sqrt(L1^2 - a^2)              how far the elbow stands off that line
+//   E = S + dir*a + pole*h
+// The pole is the AUTHORED bend direction re-projected perpendicular to the
+// current S->W axis, so the elbow keeps bending the way the artist posed it
+// instead of needing a hand-tuned hint.
+Qts g_armRef[2][5];        // authored clavicle/upperarm/elbow/twist/twist
+float g_armW0[2][3];       // authored wrist position, the chain's far end
+bool g_armRefValid[2] = {false, false};
+// Per hand, and per the tester: "each shoulder will need anchoring and
+// positioning like the weapons". Component-space cm, applied to the anchored
+// shoulder joint.
+std::atomic<float> g_shoulderFwdCm[2] = {0.0f, 0.0f};
+std::atomic<float> g_shoulderRightCm[2] = {0.0f, 0.0f};
+std::atomic<float> g_shoulderUpCm[2] = {0.0f, 0.0f};
+
+// Shortest-arc rotation taking unit vector a onto unit vector b.
+void quat_from_to(const float a[3], const float b[3], float out[4]) {
+    const float d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    if (d > 0.999999f) {
+        out[0] = out[1] = out[2] = 0.0f;
+        out[3] = 1.0f;
+        return;
+    }
+    if (d < -0.999999f) {
+        // Opposed: any perpendicular axis is a valid 180 deg turn. Take the
+        // cross with whichever cardinal axis a is least aligned to, so the
+        // result is never degenerate.
+        float t[3] = {1.0f, 0.0f, 0.0f};
+        if (fabsf(a[0]) > 0.9f) {
+            t[0] = 0.0f;
+            t[1] = 1.0f;
+        }
+        float ax[3] = {a[1] * t[2] - a[2] * t[1], a[2] * t[0] - a[0] * t[2],
+                       a[0] * t[1] - a[1] * t[0]};
+        const float n = sqrtf(ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]);
+        out[0] = ax[0] / n;
+        out[1] = ax[1] / n;
+        out[2] = ax[2] / n;
+        out[3] = 0.0f;
+        return;
+    }
+    const float c[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0]};
+    float q[4] = {c[0], c[1], c[2], 1.0f + d};
+    const float n = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    for (int k = 0; k < 4; ++k) out[k] = q[k] / n;
+}
 // s70c: THE LEFT HAND NEEDS ITS OWN THRESHOLD, and 5.0 is why Telekinesis and
 // Electrobolt behaved differently from every weapon.
 //
@@ -2543,6 +2602,24 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         for (int k = 0; k < 4; ++k) g_pinAnchorQ[hand][k] = aq[k] / n;
                         memcpy(g_pinAnchorP[hand], fresh[anchor].p, sizeof g_pinAnchorP[hand]);
                         g_pinValid[hand] = true;
+                        // s70i: and the AUTHORED ARM, for the IK solver. Taken
+                        // here because the settle window is the one place we
+                        // deliberately write nothing, so `fresh` is purely the
+                        // engine's pose and cannot be our own output fed back.
+                        {
+                            const int* aidx = hand == 1 ? patterns::kBoneRSleeve
+                                                        : patterns::kBoneLSleeve;
+                            bool ok = true;
+                            for (int k = 0; k < 5; ++k) {
+                                if (aidx[k] < 0 || aidx[k] >= g_boneCount) {
+                                    ok = false;
+                                    break;
+                                }
+                                g_armRef[hand][k] = fresh[aidx[k]];
+                            }
+                            memcpy(g_armW0[hand], fresh[anchor].p, sizeof g_armW0[hand]);
+                            g_armRefValid[hand] = ok;
+                        }
                     } else {
                         g_pinValid[hand] = false;
                     }
@@ -3055,87 +3132,170 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         if (wantS) memcpy(cb.s, sv, 12);
     }
 
-    // ---- s70g: THE ARM FOLLOWS THE HAND (BS2's arms mode 1) ----------------
+    // ---- s70i: SOLVE THE ARM, DO NOT CARRY IT -----------------------------
     //
-    // The same rigid transform the cluster just got, applied to the arm chain,
-    // so the elbow and shoulder travel with the hand instead of staying where
-    // the engine's idle animation left them. Only in FREEZE mode: the retarget
-    // path has its own composition and its own history, and this is not the
-    // session to change it underneath BS1's accepted baseline.
+    // Shoulder anchored, hand on the controller, elbow solved between them. The
+    // rigid limb this replaces pivoted the whole arm about the hand, so a wrist
+    // roll swung the shoulder - reported, and true by construction.
     //
-    // Scale is restored to the authored value rather than written, so an arm
-    // coming back from a previous COLLAPSE is not left invisible - BS1 session
-    // 29's stranded-collapse bug, which BS2's own arms-mode transition block
-    // also guards against.
+    // Everything geometric comes from g_armRef, captured at the settle from the
+    // engine's own pose. NOT from g_ref: adoption copies the live array into
+    // g_ref including the bones this pass writes, so g_ref is our own output one
+    // frame later and anything measured against it is measuring itself. That is
+    // exactly why the graded blend that stood here "did nothing".
     if (freezeOnly && g_armsMode.load(std::memory_order_relaxed) == 1 &&
-        !g_collapse.load(std::memory_order_relaxed)) {
+        !g_collapse.load(std::memory_order_relaxed) && g_armRefValid[hand]) {
         const int* armIdx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
-        const size_t armCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
-                                          : _countof(patterns::kBoneLSleeve);
-        for (size_t k = 0; k < armCount; ++k) {
-            const int i = armIdx[k];
-            if (i < 0 || i >= g_boneCount) continue;
-            float off[3] = {(g_ref[i].p[0] - pa[0]) * s, (g_ref[i].p[1] - pa[1]) * s,
-                            (g_ref[i].p[2] - pa[2]) * s};
-            float q[4];
-            if (pinRot) {
-                float rot[3];
-                qts_rotate(qFix, off, rot);
-                off[0] = rot[0];
-                off[1] = rot[1];
-                off[2] = rot[2];
-                quat_mul(qFix, g_ref[i].q, q);
-                const float bn = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-                if (bn > 1e-4f) {
-                    q[0] /= bn;
-                    q[1] /= bn;
-                    q[2] /= bn;
-                    q[3] /= bn;
-                } else {
-                    memcpy(q, g_ref[i].q, 16);
-                }
-            } else {
-                memcpy(q, g_ref[i].q, 16);
+        const Qts* ar = g_armRef[hand];
+        auto sub3 = [](const float a[3], const float b[3], float o[3]) {
+            o[0] = a[0] - b[0];
+            o[1] = a[1] - b[1];
+            o[2] = a[2] - b[2];
+        };
+        auto len3 = [](const float v[3]) {
+            return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        };
+        auto norm3 = [&](float v[3]) {
+            const float n = len3(v);
+            if (n > 1e-6f) {
+                v[0] /= n;
+                v[1] /= n;
+                v[2] /= n;
             }
-            const float* paArm = pinPos ? g_pinAnchorP[hand] : pa;
-            float p[3] = {paArm[0] + off[0], paArm[1] + off[1], paArm[2] + off[2]};
+            return n;
+        };
 
-            // Blend from the engine's authored bone toward the fully-driven one
-            // by this joint's share. w = 1 is the rigid limb; w = 0 leaves the
-            // bone exactly where the engine had it, which is what keeps the
-            // shoulder still while the wrist follows.
-            const float anch = g_armAnchor.load(std::memory_order_relaxed);
-            const float wBase = kArmFollowW[k < 5 ? k : 4];
-            const float w = wBase + (1.0f - wBase) * (1.0f - anch);
-            if (w < 0.999f) {
-                for (int c = 0; c < 3; ++c)
-                    p[c] = g_ref[i].p[c] + (p[c] - g_ref[i].p[c]) * w;
-                float qb[4];
-                quat_nlerp(g_ref[i].q, q, w, qb);
-                memcpy(q, qb, 16);
+        // Authored geometry: shoulder -> elbow -> wrist, scaled the same way the
+        // cluster is so the arm cannot end up a different size from the hand.
+        float aSE[3], aEW[3];
+        sub3(ar[2].p, ar[1].p, aSE);
+        sub3(g_armW0[hand], ar[2].p, aEW);
+        float aSEn[3] = {aSE[0], aSE[1], aSE[2]};
+        float aEWn[3] = {aEW[0], aEW[1], aEW[2]};
+        const float L1 = norm3(aSEn) * s;
+        const float L2 = norm3(aEWn) * s;
+
+        // The shoulder stays where the body puts it, plus the tester's own trim.
+        const float uuPerCm = ctx.worldScale / 100.0f;
+        float S[3] = {ar[1].p[0], ar[1].p[1], ar[1].p[2]};
+        S[0] += g_shoulderFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        S[1] += g_shoulderRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+        S[2] += g_shoulderUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
+
+        // The hand is wherever the cluster write just put the anchor.
+        const float* W = pinPos ? g_pinAnchorP[hand] : pa;
+
+        float dir[3];
+        sub3(W, S, dir);
+        const float dRaw = norm3(dir);
+        float d = dRaw;
+        if (L1 > 1e-4f && L2 > 1e-4f && d > 1e-4f) {
+            // Keep the triangle closable: never fully straight, never folded
+            // through itself - both make the solve degenerate and the elbow snap.
+            const float dMin = fabsf(L1 - L2) + 1e-3f;
+            const float dMax = L1 + L2 - 1e-3f;
+            if (d < dMin) d = dMin;
+            if (d > dMax) d = dMax;
+
+            const float aLen = (L1 * L1 - L2 * L2 + d * d) / (2.0f * d);
+            float hSq = L1 * L1 - aLen * aLen;
+            const float hLen = hSq > 0.0f ? sqrtf(hSq) : 0.0f;
+
+            // The pole is the AUTHORED bend, re-projected perpendicular to the
+            // current shoulder->hand axis, so the elbow keeps bending the way it
+            // was posed rather than needing a hand-tuned hint.
+            float pole[3] = {aSEn[0], aSEn[1], aSEn[2]};
+            const float dp = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2];
+            pole[0] -= dir[0] * dp;
+            pole[1] -= dir[1] * dp;
+            pole[2] -= dir[2] * dp;
+            if (norm3(pole) < 1e-4f) {
+                // Authored arm dead straight along the new axis: any
+                // perpendicular is as good as another.
+                float t[3] = {0.0f, 0.0f, 1.0f};
+                if (fabsf(dir[2]) > 0.9f) {
+                    t[1] = 1.0f;
+                    t[2] = 0.0f;
+                }
+                pole[0] = dir[1] * t[2] - dir[2] * t[1];
+                pole[1] = dir[2] * t[0] - dir[0] * t[2];
+                pole[2] = dir[0] * t[1] - dir[1] * t[0];
+                norm3(pole);
             }
-            if (!write_n(g_bones[i].p, p, 12) || !write_n(g_bones[i].q, q, 16)) continue;
-            if (g_scaleWrote[i]) {
-                write_n(g_bones[i].s, g_ref[i].s, 12);
-                g_scaleWrote[i] = false;
+
+            const float E[3] = {S[0] + dir[0] * aLen + pole[0] * hLen,
+                                S[1] + dir[1] * aLen + pole[1] * hLen,
+                                S[2] + dir[2] * aLen + pole[2] * hLen};
+
+            // Upper arm: authored shoulder->elbow swung onto the solved one.
+            float nSE[3];
+            sub3(E, S, nSE);
+            norm3(nSE);
+            float qUp[4], qUpF[4];
+            quat_from_to(aSEn, nSE, qUp);
+            quat_mul(qUp, ar[1].q, qUpF);
+
+            // Forearm: authored elbow->wrist swung onto the solved one.
+            float nEW[3];
+            sub3(W, E, nEW);
+            norm3(nEW);
+            float qFo[4], qFoF[4];
+            quat_from_to(aEWn, nEW, qFo);
+            quat_mul(qFo, ar[2].q, qFoF);
+
+            auto put = [&](int idx, const float pw[3], const float qw[4]) {
+                if (idx < 0 || idx >= g_boneCount) return;
+                if (!write_n(g_bones[idx].p, pw, 12)) return;
+                write_n(g_bones[idx].q, qw, 16);
+                if (g_scaleWrote[idx]) {
+                    write_n(g_bones[idx].s, g_ref[idx].s, 12);
+                    g_scaleWrote[idx] = false;
+                }
+                if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
+                    CachedBone& ca = g_cache[g_cacheCount++];
+                    ca.idx = idx;
+                    memcpy(ca.p, pw, 12);
+                    memcpy(ca.q, qw, 16);
+                    ca.writeScale = false;
+                    ca.writeRot = true;
+                }
+            };
+
+            // Clavicle: written at its AUTHORED transform, so the engine's idle
+            // animation cannot drift the shoulder either. This IS the anchor.
+            put(armIdx[0], ar[0].p, ar[0].q);
+            put(armIdx[1], S, qUpF);
+            put(armIdx[2], E, qFoF);
+
+            // Twists ride the forearm at the fraction along it they were
+            // authored at, so they stay evenly spaced however the elbow moves.
+            for (int k = 3; k < 5; ++k) {
+                float off0[3];
+                sub3(ar[k].p, ar[2].p, off0);
+                float t = off0[0] * aEWn[0] + off0[1] * aEWn[1] + off0[2] * aEWn[2];
+                t = (L2 > 1e-4f) ? (t * s) / L2 : 0.0f;
+                if (t < 0.0f) t = 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                const float tp[3] = {E[0] + (W[0] - E[0]) * t, E[1] + (W[1] - E[1]) * t,
+                                     E[2] + (W[2] - E[2]) * t};
+                float qk[4];
+                quat_mul(qFo, ar[k].q, qk);
+                put(armIdx[k], tp, qk);
             }
-            if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
-                CachedBone& ca = g_cache[g_cacheCount++];
-                ca.idx = i;
-                memcpy(ca.p, p, 12);
-                memcpy(ca.q, q, 16);
-                ca.writeScale = false;
-                ca.writeRot = true;
+
+            static uint64_t s_ikLog[2] = {0, 0};
+            const uint64_t nowIk = GetTickCount64();
+            if (nowIk - s_ikLog[hand] >= 5000) {
+                s_ikLog[hand] = nowIk;
+                BVR_LOG("[bones] ARMIK: %s arm solved - upper %.1f UU, fore %.1f UU, "
+                        "shoulder-to-hand %.1f UU%s. The shoulder is anchored at its "
+                        "authored joint; only the elbow and wrist move.",
+                        hand == 1 ? "RIGHT" : "LEFT", L1, L2, dRaw,
+                        (dRaw > L1 + L2 - 1e-3f)
+                            ? " (REACHED - the hand is further than the arm is long, so "
+                              "the elbow is locked straight)"
+                            : "");
             }
-        }
-        static bool s_saidArms = false;
-        if (!s_saidArms) {
-            s_saidArms = true;
-            BVR_LOG("[bones] ARMS: following the hand (BS2 arms mode 1) - %zu arm bones on "
-                    "the %s side driven with the cluster. Previously the engine kept them "
-                    "at the idle pose while the hand was driven, which is the arm bent at "
-                    "an elbow nobody was driving.",
-                    armCount, hand == 1 ? "RIGHT" : "LEFT");
         }
     }
 
@@ -4005,20 +4165,30 @@ void draw_debug_ui() {
             g_armsMode.store(1, std::memory_order_relaxed);
         ImGui::SameLine();
         if (ImGui::RadioButton("hide", &am, 2)) g_armsMode.store(2, std::memory_order_relaxed);
-        float aa = g_armAnchor.load(std::memory_order_relaxed);
-        if (ImGui::SliderFloat("shoulder anchoring", &aa, 0.0f, 1.0f, "%.2f"))
-            g_armAnchor.store(aa, std::memory_order_relaxed);
+        // s70i: the shoulder JOINT itself, per hand - "each shoulder will need
+        // anchoring and positioning like the weapons". The solver anchors the arm
+        // here and the elbow follows from it, so this is the one number that
+        // decides whether the arm reads as attached to you.
+        const int uh = g_lastHand.load(std::memory_order_relaxed) == 1 ? 1 : 0;
+        float sf = g_shoulderFwdCm[uh].load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("shoulder fwd (cm)", &sf, -40.0f, 40.0f, "%.1f"))
+            g_shoulderFwdCm[uh].store(sf, std::memory_order_relaxed);
+        float sr = g_shoulderRightCm[uh].load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("shoulder right (cm)", &sr, -40.0f, 40.0f, "%.1f"))
+            g_shoulderRightCm[uh].store(sr, std::memory_order_relaxed);
+        float su = g_shoulderUpCm[uh].load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("shoulder up (cm)", &su, -40.0f, 40.0f, "%.1f"))
+            g_shoulderUpCm[uh].store(su, std::memory_order_relaxed);
+        ImGui::Text("editing the %s shoulder (follows the driven hand)",
+                    uh == 1 ? "RIGHT" : "LEFT");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
-                "How much the arm is allowed to pivot about your hand.\n\n"
-                "1.00 : the shoulder stays where your body puts it and only the\n"
-                "       forearm and wrist follow - roll the controller and the\n"
-                "       shoulder does not move.\n"
-                "0.00 : the whole limb is one rigid body pivoting about the hand,\n"
-                "       so rotating the controller swings the shoulder too.\n\n"
-                "This is a graded blend along clavicle -> upperarm -> elbow ->\n"
-                "twists, not an IK solve. If no setting here looks right, the\n"
-                "answer is a real two-bone solver rather than a better number.");
+                "Where the arm is anchored to your body. The solver fixes the\n"
+                "shoulder here, puts the hand on your controller, and solves the\n"
+                "elbow between them - so rotating the controller bends the arm\n"
+                "instead of swinging the whole limb around the hand.\n\n"
+                "Set it to where your real shoulder sits relative to your head.\n"
+                "If the arm looks over-extended, the shoulder is too far away.");
         ImGui::Separator();
 
         ImGui::TextDisabled("ANIMATION - what the engine may move");
