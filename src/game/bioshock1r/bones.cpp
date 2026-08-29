@@ -197,8 +197,37 @@ uint64_t g_lastBigDeltaHandMs[2] = {0, 0}; // s70c: per hand, as BRVR's lastBig[
 // is 5.0 against a plasmid animation of 2.6-5.0 deg, so its plasmid hand barely
 // adopts at all and never reaches this case. A rigid hand cannot be re-pointed.
 float g_pinAnchorQ[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}};
+float g_pinAnchorP[2][3] = {{0, 0, 0}, {0, 0, 0}};
 bool g_pinValid[2] = {false, false};
 std::atomic<bool> g_animPinRot{true};
+// s70f: SUPPRESS THE ANIMATION'S ROOT MOTION, KEEP ITS ARTICULATION.
+//
+// The tester, with arms made visible and a screenshot to go with it: "the hand
+// placement that feels best rotates the entire hand model. The animation plays
+// correctly, but the direction of the hands can cause it to animate incorrectly.
+// Is there a way to entirely suppress just the movement and not the animation
+// itself?"
+//
+// That is the whole thing, and it is exactly separable. The plasmid's model trim
+// turns the entire hand model by tens of degrees so it sits right in VR
+// (rotPitchDegL -59, rotYawDegL -32). The authored animation then translates and
+// rotates the hand THROUGH that turned frame, so its root motion travels
+// somewhere the animator never intended - while the animation itself is playing
+// perfectly. Nothing about the pose is wrong; the frame its movement is
+// expressed in is.
+//
+// So split the animation in two, which the cluster's own shape lets us do for
+// free:
+//   ROOT   - the anchor bone (the palm, 6 on the left / the wrist, 27 on the
+//            right). Its motion is what carries the hand around. PINNED.
+//   SHAPE  - every other bone, taken RELATIVE to the anchor. Fingers, the grip,
+//            the whole cast pose. Left completely alone, so the animation still
+//            plays.
+//
+// Two toggles rather than one, because "movement" turned out to mean both halves
+// and the tester should be able to feel which is which: position and heading
+// suppress independently, live, no rebuild.
+std::atomic<bool> g_animPinPos{true};
 // s70c: THE LEFT HAND NEEDS ITS OWN THRESHOLD, and 5.0 is why Telekinesis and
 // Electrobolt behaved differently from every weapon.
 //
@@ -2449,6 +2478,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                                           aq[3] * aq[3]);
                     if (n > 1e-4f) {
                         for (int k = 0; k < 4; ++k) g_pinAnchorQ[hand][k] = aq[k] / n;
+                        memcpy(g_pinAnchorP[hand], fresh[anchor].p, sizeof g_pinAnchorP[hand]);
                         g_pinValid[hand] = true;
                     } else {
                         g_pinValid[hand] = false;
@@ -2786,9 +2816,13 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // that turn.
     float qFix[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     bool pinRot = false;
+    const bool pinPos = g_freezeOnly.load(std::memory_order_relaxed) &&
+                        g_animPinPos.load(std::memory_order_relaxed) && g_pinValid[hand] &&
+                        anchor < g_boneCount;
     if (g_freezeOnly.load(std::memory_order_relaxed) &&
-        g_animPinRot.load(std::memory_order_relaxed) && g_pinValid[hand] &&
-        anchor < g_boneCount) {
+        (g_animPinRot.load(std::memory_order_relaxed) ||
+         g_animPinPos.load(std::memory_order_relaxed)) &&
+        g_pinValid[hand] && anchor < g_boneCount) {
         float qInv[4];
         quat_conj(g_ref[anchor].q, qInv);
         quat_mul(g_pinAnchorQ[hand], qInv, qFix);
@@ -2796,7 +2830,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                                qFix[3] * qFix[3]);
         if (fn > 1e-4f) {
             for (int k = 0; k < 4; ++k) qFix[k] /= fn;
-            pinRot = true;
+            pinRot = g_animPinRot.load(std::memory_order_relaxed);
             // ALWAYS ON, throttled: how far the animation had turned the anchor
             // IS the size of the defect this cancels, so it gets measured.
             static uint64_t s_pinLog[2] = {0, 0};
@@ -2875,9 +2909,15 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             } else {
                 memcpy(q, g_ref[i].q, 16);
             }
-            p[0] = pa[0] + off[0];
-            p[1] = pa[1] + off[1];
-            p[2] = pa[2] + off[2];
+            // ROOT SUPPRESSED, SHAPE KEPT. `off` is measured against the
+            // ANIMATED anchor just above, so it still carries every bit of the
+            // animation's internal articulation; placing it at the CAPTURED
+            // anchor is what drops the root motion that was carrying the hand
+            // off through the trimmed frame.
+            const float* paOut = pinPos ? g_pinAnchorP[hand] : pa;
+            p[0] = paOut[0] + off[0];
+            p[1] = paOut[1] + off[1];
+            p[2] = paOut[2] + off[2];
             if (attachBone) {
                 // Position always; rotation only if the attach-rotation toggle
                 // is on. BRVR ships position-only here and its own log shows
@@ -3794,21 +3834,25 @@ void draw_debug_ui() {
                 "the case in question.");
         ImGui::Separator();
 
-        bool apr = g_animPinRot.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Animations cannot re-point the hand", &apr))
-            g_animPinRot.store(apr, std::memory_order_relaxed);
+        // s70f: the two halves of "suppress the movement, keep the animation".
+        ImGui::TextDisabled("ANIMATION - what the engine may move");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
-                "The rig is carried to your controller by the ACTOR, which is aligned\n"
-                "to the orientation the hand had when its pose was captured. An\n"
-                "adopted animation TURNS that anchor, and the actor knows nothing\n"
-                "about it - so the whole hand points somewhere else for as long as\n"
-                "the animation plays.\n\n"
-                "Reported on the plasmids: \"the animation is correct but it points\n"
-                "like 90 degrees left when the animation is going\".\n\n"
-                "ON  : the animation keeps its MOTION and the hand keeps its heading.\n"
-                "off : the s70 behaviour, for comparison.\n\n"
-                "Position is never pinned - only the pointing was ever wrong.");
+                "The hand model is TURNED by its placement trim so the plasmid sits\n"
+                "right in VR. The authored animation then moves the hand through\n"
+                "that turned frame, so its travel goes somewhere the animator never\n"
+                "intended - while the animation itself plays perfectly.\n\n"
+                "These split the animation in two:\n"
+                "  ROOT  - the anchor bone, whose motion carries the whole hand.\n"
+                "  SHAPE - every other bone relative to it: fingers, grip, the\n"
+                "          cast pose. Never suppressed, so the animation plays.\n\n"
+                "Untick both to see the raw engine behaviour.");
+        bool app = g_animPinPos.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Animation cannot MOVE the hand (keeps fingers)", &app))
+            g_animPinPos.store(app, std::memory_order_relaxed);
+        bool apr = g_animPinRot.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Animation cannot TURN the hand (keeps fingers)", &apr))
+            g_animPinRot.store(apr, std::memory_order_relaxed);
 
         ImGui::TextDisabled("EQUIP SETTLE - when the pose is captured after a switch");
         if (ImGui::IsItemHovered())
