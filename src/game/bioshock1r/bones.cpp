@@ -265,6 +265,30 @@ float g_settlePrevWrist[3] = {0.0f, 0.0f, 0.0f};
 float g_settlePrevQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // s70d: rotation too
 float g_settleFirstQ[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // s70d: window start, for the log
 bool g_settleHaveFirst = false;
+// s70e: TRUE while a settle window is open. BRVR does not merely wait during
+// this window - it RELEASES the cluster and writes nothing, so the engine plays
+// the equip natively. See the release block in drive().
+bool g_settleOpen = false;
+
+// ---- s70e CLUSTERTEST: is the rig we drive the rig you SEE? ----------------
+//
+// The control condition that should have been run before any of the last two
+// sessions' work. Zeroes the driven cluster's SCALE, which is how this file
+// already hides the inactive hand, so the geometry collapses to nothing.
+//
+//   the hand VANISHES -> we are driving the mesh you are looking at, and the
+//                        fault is somewhere downstream of the bone writes.
+//   the hand STAYS    -> the first-person plasmid hand is a DIFFERENT MESH and
+//                        every change made across two sessions was applied to a
+//                        skeleton that is not on screen. That would explain, in
+//                        one stroke, why the symptom never moved for the freeze
+//                        anchor, the adoption policy, the drive hand, a 48 deg
+//                        trim swing, the pin, or the settle.
+//
+// A BUTTON, not a console verb: the tester cannot type with both hands on the
+// controllers. Momentary - it collapses only while held on, and restore_hidden()
+// puts the cluster back the moment it is switched off.
+std::atomic<bool> g_clusterTest{false};
 bool g_settleHavePrev = false;
 // s70b: THERE IS NO POSE AVERAGING HERE, AND THE ATTEMPT AT IT WAS A BUG.
 //
@@ -2391,7 +2415,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 (nowS - g_settleStartMs) >= g_settleCeilMs.load(std::memory_order_relaxed);
 
             if (!still && !timedOut) {
-                adopt = true; // still equipping - track it
+                adopt = true;        // keep the reference current...
+                g_settleOpen = true; // ...but write NOTHING this frame (see below)
             } else {
                 adopt = true;         // this frame writes g_ref, then we are done
                 s_forceCapture = false;
@@ -2431,6 +2456,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 }
                 g_settleN = 0;
                 g_settleHavePrev = false;
+                g_settleOpen = false;
             }
         } else if (g_refValid && !g_animAllowed.load(std::memory_order_relaxed)) {
             // This weapon does not take engine animation at all (the wrench).
@@ -2575,6 +2601,57 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // downstream of the per-state mask cutting adoption at the recoil apex. With
     // the mask gone the hold window carries adoption to the animation's settled
     // end, so there is nothing to restore FROM and nothing to restore TO.
+
+    // ---- s70e: RELEASE THE CLUSTER WHILE THE SETTLE WINDOW IS OPEN ---------
+    //
+    // BRVR does not just WAIT through the settle - it hands the skeleton back
+    // (ArmHide_ReleaseWeaponHand) and then returns without writing anything
+    // until the rig stops moving:
+    //
+    //     if (!still && !timedOut) return false;
+    //
+    // so the engine plays the equip animation natively and the player sees the
+    // authored draw. The s70 port kept waiting but carried on WRITING the
+    // cluster every frame of the window, which is a different thing entirely:
+    // the rig is dragged along a half-finished pose until the capture lands.
+    //
+    // MEASURED, the tester, when the ceiling went 600 -> 1500: "weapons are at
+    // the wrong position after equip and take a second to align to the right
+    // position". One second is the ceiling. That is this defect, and it is what
+    // made a longer window unaffordable - which matters, because a rotating
+    // plasmid needs a longer window than a weapon does.
+    //
+    // Releasing makes the window free. Clear the reapply cache too, or the
+    // stereo second pass keeps repainting the last pose for up to 100 ms and
+    // keeps clearing the dirty flag while it does - so the engine would never
+    // get the cluster back (see release()'s own note).
+    if (g_settleOpen) {
+        g_cacheCount = 0;
+        g_cacheSleeveCount = 0;
+        g_clWritten[hand] = false;
+        set_dirty(1); // let the engine own and evaluate it this frame
+        return false;
+    }
+
+    // s70e CLUSTERTEST: collapse the DRIVEN cluster on demand. Placed before the
+    // write so the zeroed scale is what reaches the engine this frame.
+    if (g_clusterTest.load(std::memory_order_relaxed)) {
+        static const float kZeroS[3] = {0.0f, 0.0f, 0.0f};
+        for (int i = first; i <= last && i < g_boneCount; ++i)
+            if (i >= 0) write_n(g_bones[i].s, kZeroS, 12);
+        static bool s_saidIt = false;
+        if (!s_saidIt) {
+            s_saidIt = true;
+            BVR_LOG("[bones] CLUSTERTEST: collapsing the %s cluster (bones %d-%d). If the "
+                    "hand you are looking at is STILL THERE, it is not this skeleton - "
+                    "which would mean every viewmodel change made in s69/s70 was applied "
+                    "to a mesh that is not on screen.",
+                    hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", first, last);
+        }
+        g_clWritten[hand] = true;
+        set_dirty(0);
+        return true;
+    }
 
     // Hide-inactive bookkeeping, BEFORE the rigid write: if the hand about to
     // be driven is the one currently collapsed (hand switch), or the feature
@@ -2988,6 +3065,71 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                         "world=(%.1f %.1f %.1f) delta=(%.2f %.2f %.2f) |d|=%.2f UU",
                         wl[0], wl[1], wl[2], anchor, bw[0], bw[1], bw[2], d[0], d[1], d[2],
                         mag);
+            }
+
+            // ---- s70e: THE SAME QUESTION, ASKED OF THE PLASMID --------------
+            //
+            // The probe above is gated on current_holdable(), which is NULL for
+            // EVERY plasmid - so in three sessions it has never once run for
+            // one. That is the measurement gap this whole session was missing.
+            //
+            // The tester's words are "IT points like 90 degrees left", not "the
+            // hand points", and ROLLCHECK now proves the hand's bones hold
+            // exactly where we write them (62 held / 3 changed). A pinned hand
+            // carrying a separately-attached ability actor that rotates with the
+            // engine produces precisely that, and is invisible to every change
+            // made across s69 and s70 - which is what the symptom has been
+            // doing.
+            //
+            // Reports POSITION and ROTATION. The rotation is the one that
+            // matters: if the ability's own rotation swings tens of degrees
+            // against the bone we have pinned, the answer is the attachment.
+            void* abil = nullptr;
+            if (hands::current_ability(&abil) && abil) {
+                float al[3];
+                int32_t ar[3];
+                Qts ab2{};
+                const bool okLoc = read_n(
+                    static_cast<uint8_t*>(abil) + patterns::kActorLocOffset, al, 12);
+                const bool okRot = read_n(
+                    static_cast<uint8_t*>(abil) + patterns::kActorViewDirOffset, ar, 12);
+                if (!okLoc || !okRot) {
+                    // SAY SO rather than printing zeros. An Ability may not be
+                    // an Actor on this build, in which case these offsets are
+                    // meaningless and the plasmid is drawn some other way -
+                    // which is itself the answer.
+                    static bool s_warned = false;
+                    if (!s_warned) {
+                        s_warned = true;
+                        BVR_LOG("[bones] ability attach: %p is NOT readable at the actor "
+                                "loc/rot offsets (loc=%d rot=%d). It is not an Actor with "
+                                "the layout weapons have, so it is not attached the way a "
+                                "weapon is - look at how the plasmid is DRAWN instead.",
+                                abil, okLoc ? 1 : 0, okRot ? 1 : 0);
+                    }
+                } else if (read_n(&g_bones[anchor], &ab2, sizeof ab2)) {
+                    float bw2[3];
+                    qts_rotate(qa, ab2.p, bw2);
+                    bw2[0] += actorLoc[0];
+                    bw2[1] += actorLoc[1];
+                    bw2[2] += actorLoc[2];
+                    const float d2[3] = {al[0] - bw2[0], al[1] - bw2[1], al[2] - bw2[2]};
+                    const float mag2 =
+                        sqrtf(d2[0] * d2[0] + d2[1] * d2[1] + d2[2] * d2[2]);
+                    // The ability's rotation against the heading we pinned the
+                    // anchor to. If this moves during a cast, the plasmid is
+                    // turning independently of the hand.
+                    FRotator arot{ar[0], ar[1], ar[2]};
+                    float aq[4];
+                    ue_rot_to_quat(arot, aq);
+                    const float vsPin =
+                        g_pinValid[hand] ? quat_angle_deg(aq, g_pinAnchorQ[hand]) : -1.0f;
+                    BVR_LOG("[bones] ability attach: plasmid loc=(%.1f %.1f %.1f) bone%d "
+                            "world=(%.1f %.1f %.1f) delta=(%.2f %.2f %.2f) |d|=%.2f UU | "
+                            "its rotation is %.1f deg off the pinned anchor heading",
+                            al[0], al[1], al[2], anchor, bw2[0], bw2[1], bw2[2], d2[0],
+                            d2[1], d2[2], mag2, vsPin);
+                }
             }
         }
     }
@@ -3634,6 +3776,24 @@ void draw_debug_ui() {
         // rest-restore controls that stood here - all three drove machinery this
         // session deleted. These are the numbers BRVR ships and the ones the
         // headset run needs to be able to move.
+        // s70e: THE CONTROL CONDITION. First thing to press in the headset.
+        bool ct = g_clusterTest.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("TEST: collapse the driven hand (is this the mesh you see?)",
+                            &ct))
+            g_clusterTest.store(ct, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Zeroes the scale of the cluster this mod drives, so that skeleton\n"
+                "renders as nothing.\n\n"
+                "Hand VANISHES : we drive the mesh you are looking at. The fault is\n"
+                "                downstream of the bone writes.\n"
+                "Hand STAYS    : the hand on screen is a DIFFERENT MESH, and every\n"
+                "                viewmodel change made in the last two sessions went\n"
+                "                to a skeleton you cannot see.\n\n"
+                "Untick to restore. Equip a PLASMID before pressing this - that is\n"
+                "the case in question.");
+        ImGui::Separator();
+
         bool apr = g_animPinRot.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Animations cannot re-point the hand", &apr))
             g_animPinRot.store(apr, std::memory_order_relaxed);

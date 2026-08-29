@@ -109,6 +109,10 @@ std::atomic<float> g_viewFwdCm[2]{0.0f, 0.0f}, g_viewRightCm[2]{0.0f, 0.0f},
 void* g_lwObj = nullptr;
 int32_t g_lwRot[3] = {0, 0, 0};
 std::atomic<bool> g_lwValid{false};
+// s70e ACTORWATCH: the rotation we last asked the actor to hold, so the next
+// frame can see whether anything changed it. See the probe in the write path.
+int32_t g_awWrote[3] = {0, 0, 0};
+bool g_awWroteValid = false;
 std::atomic<bool> g_lateWrite{true}; // the fix; toggleable so it stays bisectable
 std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
                                       // retired), 2 = bones (M7-v2, default)
@@ -1353,6 +1357,44 @@ void on_calcview(const FrameContext& ctx) {
         if (!bones::drive(ctx, target, gp, hand)) return;
     } else {
         uint8_t* p = static_cast<uint8_t*>(target);
+        // ---- s70e ACTORWATCH: does the ACTOR keep the rotation we gave it? ---
+        //
+        // ROLLCHECK covers our BONE writes and says they hold (62 held / 3
+        // changed). Nothing has ever covered the ACTOR, and the actor is what
+        // carries the whole rig - so if the engine re-points it during a cast,
+        // every bone can be perfectly pinned and the hand still swings. That is
+        // the one remaining way to get "the animation is correct but it points
+        // 90 degrees left" out of a cluster we have proven is held.
+        //
+        // Read BEFORE this frame's write: whatever is there now is the result of
+        // last frame's write plus anything the engine did since. Always on,
+        // throttled, and it names the hand.
+        {
+            static uint64_t s_awLog = 0;
+            int32_t live[3] = {0, 0, 0};
+            if (g_awWroteValid && read12(p + patterns::kActorViewDirOffset, live)) {
+                {
+                    auto dg = [](int32_t a, int32_t b) {
+                        int32_t d = static_cast<int32_t>(
+                            static_cast<int16_t>((a - b) & 0xFFFF));
+                        return static_cast<float>(d) / kRotUnitsPerDegree;
+                    };
+                    const float dp = dg(live[0], g_awWrote[0]);
+                    const float dy = dg(live[1], g_awWrote[1]);
+                    const float dr = dg(live[2], g_awWrote[2]);
+                    const float worst = fmaxf(fabsf(dp), fmaxf(fabsf(dy), fabsf(dr)));
+                    const uint64_t nowAw = GetTickCount64();
+                    if (worst > 2.0f && nowAw - s_awLog >= 1000) {
+                        s_awLog = nowAw;
+                        BVR_LOG("[hands] ACTORWATCH: %s hand - the actor rotation we wrote "
+                                "was CHANGED before this frame by pitch %+.1f yaw %+.1f "
+                                "roll %+.1f deg. The rig is carried by this, so the hand "
+                                "swings with it however well the bones are pinned.",
+                                hand == 0 ? "LEFT/plasmid" : "RIGHT/weapon", dp, dy, dr);
+                    }
+                }
+            }
+        }
         bool wrote = write12(p + patterns::kActorLocOffset, loc);
         if (g_writeRot.load(std::memory_order_relaxed)) {
             int32_t rot[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
@@ -1362,6 +1404,10 @@ void on_calcview(const FrameContext& ctx) {
             g_lwObj = target;
             memcpy(g_lwRot, rot, sizeof rot);
             g_lwValid.store(true, std::memory_order_relaxed);
+            // s70e: remember what we asked for, so ACTORWATCH above can compare
+            // next frame's live value against it.
+            memcpy(g_awWrote, rot, sizeof rot);
+            g_awWroteValid = true;
         }
         if (!wrote) {
             g_handsActor = nullptr; // the write faulted - stop trusting this pointer
