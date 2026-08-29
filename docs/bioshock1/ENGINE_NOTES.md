@@ -2110,6 +2110,106 @@ consumer of the thing the invariant is about - the diagnostics included.** The
 probes are what the next session reasons from, so a lying probe outlives the bug
 it was pointed at.
 
+## Session 70: BRVR's viewmodel chain, traced end to end
+
+Source: the BRVR mirror - `Hands/HandsProbe.cpp`, `Hands/ArmHide.cpp`,
+`Camera/CameraHook.cpp`, `Core/Config.{h,cpp}`. Every number below is BRVR's own.
+
+### The chain
+
+**Offsets are ONE LIVE SET, swapped on switch.** `handsGrip[3]`, `handsRot[3]`
+and `cursorRot[3]` are the live values and the drive path reads nothing else.
+`UpdateWeaponGrip` saves the live set back to whichever table the outgoing item
+came from and loads the incoming one - `gripBySlot[9]` for weapons (slot 8 = any
+ability), `plasmidGrip[12]` for plasmids, indexed by `ResolvePlasmidId`. There is
+no per-hand split; which controller drives is a separate decision,
+`AbilityMode() ? HAND_LEFT : HAND_RIGHT`.
+
+**The ACTOR carries everything.** `handsRot` composes onto the controller's aim
+quat for the actor rotation; `handsGrip` is subtracted along the actor's own
+forward/right/up basis for its location. The skeleton is never posed by offsets.
+`WriteCluster` is fed the reference's OWN wrist, so the delta collapses to
+identity and the cluster replays verbatim.
+
+**Animation is a size threshold plus a hold window, and nothing else.**
+`CaptureClusterRef`, when already driving: exact `memcmp` of the live cluster
+against what we last wrote (bit-identical = our own pose, nothing happened);
+otherwise measure the wrist's rotation delta; `deg >= HandAnimMinDeg (5)` stamps
+`lastBig`; `playing = (now - lastBig) < HandAnimHoldMs (1200)`; while playing,
+adopt the whole live cluster as the new reference.
+
+**The hold window IS the settle mechanism.** Adoption keeps tracking for 1.2 s
+past the animation's last big frame, so the reference lands on the SETTLED pose
+by construction. Idle breathing (1-5 deg) never clears 5 deg, so idle is rejected
+BY SIZE - no state machine is involved anywhere.
+
+**Equip: release, wait for stillness, re-capture.** On a pose-key change BRVR
+releases the cluster, lets the equip play, and captures once the rig settles:
+
+| Guard | BRVR value | What it answers |
+|---|---|---|
+| `WeaponKeyDebounceMs` | 150 ms | The engine parks `CurrentHoldable` at NULL for a frame during fire/pump. MEASURED: the raw key fired **11 times in a 3-minute session with 2 real switches** |
+| `kSettleStillUnits` | 0.05 UU/frame | Stillness is measured on the wrist's POSITION, not any angle |
+| `kSettleStillMs` | 150 ms | How long that stillness must hold |
+| `kSettleMinMs` | 350 ms | A FLOOR - many draw animations pause part-way, and quiet inside a pause is not the end |
+| `WeaponSwitchSettleMs` | 600 ms | A CEILING, not a duration |
+
+### A LOOPING IDLE NEVER GOES STILL - and the mean is the answer
+
+BRVR: *"there is no single authored pose to latch and 'the last frame before we
+take the cluster' is an arbitrary phase of the loop... accumulate while settling
+and, if the rig never stills, latch the MEAN - the centre of the loop rather than
+a point on its circumference."*
+
+**s68 measured the identical fact** on a plasmid rig - 2156 ms to reach 1.24 deg
+against a +-1.2 deg idle envelope - and concluded *"a stillness test cannot work
+here"*, then abandoned the approach after nine builds. BRVR reached the same
+observation and answered it with the mean instead of abandoning it. That fallback
+is the piece all nine attempts were missing.
+
+### Where this tree had diverged
+
+1. **The per-state animation mask was the root of s67-s69.** It adopted only
+   `Firing`/`PostFiring`; `Hands.uc` leaves `WeaponFiring` at the TOP of the
+   recoil, so adoption was cut at the apex and the reference stuck there. The
+   canonical rest, its eased restore, the anchor pin and the quaternion
+   normalisation for that pin were all built to undo that one substitution. The
+   threshold+hold mechanism it overrode was already present in this file.
+
+2. **The freeze was anchored on bone 43, the WEAPON ATTACH.** BRVR's cluster spec
+   is `{27, 44, wrist 27}` and it anchors on the wrist; 43 is precisely the one
+   bone it leaves the engine still animating (*"cluster frozen; this bone is
+   still the engine's"*, 1-5 deg idle drift, peaks of 41-135). Anchoring a frozen
+   cluster on a moving bone writes every other bone relative to a moving point.
+   The left cluster here already anchored on its wrist (6); s68 recorded the
+   asymmetry as "not a defect".
+
+3. **The adoption probe sampled bone 43 too**, so "has the pose changed?" was
+   asked of a bone that moves on its own. This is what made s67 raise the adopt
+   threshold from BRVR's 5 deg to 25 - the shotgun's idle "crossing 5" was bone
+   43's own drift, not the hand. 25 deg is above some weapons' entire per-shot
+   wrist movement, which is BRVR's recorded Tommy-gun failure and was reported
+   here as well.
+
+4. **No key debounce at all** - the `(holdable, ability)` pair was compared raw
+   every frame.
+
+### One deliberate deviation from BRVR
+
+The crosshair is GLOBAL here, by the tester's direction. BRVR keys `cursorRot`
+per slot AND per plasmid; s67 tried global in this tree and recorded that it does
+not serve every gun. It is global **per hand**, because the seeded table puts the
+weapons at 0.83/-9.20 and the plasmid at -11.00/37.00 - 46 deg of yaw apart,
+which is two model frames rather than two opinions about one number.
+
+### Open question the first headset run must answer
+
+The settle block runs only when the engine RE-EVALUATED the bone array, and s68
+measured that at roughly 1 frame in 19. A 600 ms ceiling may therefore hold only
+a handful of samples, and BRVR's millisecond constants may not transfer. The
+settle log prints the sample count for exactly this reason; if it reads 2 or 3,
+the ceiling wants raising (F10, no rebuild).
+
 ### An adopted animation moves the anchor, and in FREEZE-ONLY that moves the hand
 
 Mode 3 (BRVR's shape) sets `freeze_only`, which writes the cluster AS the

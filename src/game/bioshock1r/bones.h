@@ -152,32 +152,14 @@ void wskel_release(const char* why);
 // s67 per-weapon animation gate (BRVR's HandAnimSlot). When off, the reference
 // pose never adopts the engine's - used for the WRENCH, whose swing animation
 // fights manual melee. hands.cpp publishes this on every weapon switch.
-// s67 per-STATE animation policy: a bitmask over hands_state::State saying
-// which engine animations may reach the rig. Default FIRING|POSTFIRING - recoil
-// in, idle and reload out. Idle is refused because GetIdlingHandsAnim() draws a
-// weighted-random entry, so adopting it settles the gun somewhere different
-// every time (the "crosshair moves randomly between shots" report).
-void set_anim_state_mask(uint32_t mask);
-uint32_t anim_state_mask();
-
-// s68 CANONICAL REST POSE (`vrbones rest on|off|ms <n>|drop`, and the F10
-// ANIMATION section). s67's state mask stops ADOPTING when an animation's state
-// ends, but stopping is not returning: the state machine leaves WeaponFiring at
-// the TOP of the recoil, so the reference froze at the apex and the pistol stuck
-// there until a weapon switch (same shape: the ammo-out freeze, the shotgun's
-// first reload). This captures one canonical pose per holdable, the first time
-// the engine reports WeaponIdling, and eases the rig back to it when an adopted
-// state ends. Once per holdable, not per return-to-idle, because
-// GetIdlingHandsAnim() is weighted-random per loop - re-capturing would put the
-// "crosshair moves randomly between shots" report straight back.
-// Blend default 120 ms; 0 = snap. Only position and rotation are restored - the
-// scale rows stay with the g_scaleWrote pinning bank.
-void set_rest_restore(bool on);
-bool rest_restore();
-void set_rest_blend_ms(unsigned ms);
-unsigned rest_blend_ms();
-void rest_status(bool* captured, bool* blending);
-void drop_rest();
+// s70: the per-STATE animation mask and the s68 canonical rest pose (with its
+// eased restore) are both GONE, along with the s69 anchor pin. They were one
+// chain of compensation: the mask cut adoption at `WeaponFiring`, which Hands.uc
+// leaves at the TOP of the recoil, so the reference stuck at the apex; the rest
+// pose put it back; the pin stopped the restored pose dragging the hand off the
+// controller. BRVR has none of them - it separates idle from real animation by
+// SIZE and lets a hold window carry adoption to the animation's settled end.
+// See ENGINE_NOTES "Session 70".
 
 void set_anim_allowed(bool on);
 bool anim_allowed();

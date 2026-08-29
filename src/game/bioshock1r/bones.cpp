@@ -62,27 +62,23 @@ bool g_refValid = false;
 Qts g_lastWrittenAnchor[2]; // per hand
 bool g_hasWritten[2] = {false, false};
 
-// s68 CANONICAL REST POSE. One snapshot per holdable, taken the first time the
-// engine reports WeaponIdling, and restored when an adopted animation ends.
-// See the "s68 REST REFERENCE" banner further down for why this exists at all.
-// ONLY p and q are ever applied from it - the scale rows stay g_ref's, because
-// scale is pinned by the g_scaleWrote bank and adopting it here would undo that.
-Qts g_rest[kMaxBones];
-bool g_restValid = false;
-Qts g_restoreFrom[kMaxBones]; // pose the blend started from (the frozen apex)
-uint64_t g_restoreStartMs = 0; // 0 = not blending
-bool g_wasAdopting = false;    // last known-state verdict, for edge detection
+// s70: THE CANONICAL REST POSE IS GONE, and so is the machinery around it.
+//
+// s68 captured one snapshot per holdable at the WeaponIdling edge and eased the
+// rig back to it whenever an adopted animation ended. It existed because s67's
+// per-state animation mask cut adoption at `WeaponFiring`, which Hands.uc leaves
+// at the TOP of the recoil - so the reference stuck at the apex and something
+// had to put it back.
+//
+// BRVR has no rest pose, no restore and no blend, because it never acquires the
+// defect: its adoption is a size threshold plus a HOLD WINDOW
+// (`playing = (now - lastBig) < HandAnimHoldMs`), so it keeps tracking for 1.2 s
+// past the animation's last big frame and the reference lands on the SETTLED
+// pose by construction. Delete the mask and the reason for all of this goes with
+// it. See ENGINE_NOTES "Session 70".
+//
+// g_lastKnownState survives only as telemetry - nothing gates on it now.
 hands_state::State g_lastKnownState = hands_state::State::Unknown; // for the log line
-
-// Reset every scrap of s68 rest state. Called wherever the reference dies -
-// a new bone array, a new world, an explicit release: a rest pose that outlives
-// the skeleton it was captured from is a pose from a dead rig.
-void rest_reset() {
-    g_restValid = false;
-    g_restoreStartMs = 0;
-    g_wasAdopting = false;
-    g_lastKnownState = hands_state::State::Unknown;
-}
 
 // Everything the last drive() wrote, for reapply() (the stereo second pass).
 struct CachedBone {
@@ -144,15 +140,93 @@ std::atomic<bool> g_swayKill{true};
 // It is kept because it can only ADD adoption, which is the direction of this
 // change, and dropping it outright is a second variable in one test.
 std::atomic<float> g_swayPosThreshUu{6.0f};
-std::atomic<float> g_swayAngThreshDeg{25.0f};   // s67: see below
-// 25, not BRVR's 5. BRVR's own HANDANIM log measures REAL animations at
-// 130-170 deg at the wrist and idle at 1.8-4.6, so the gap is enormous and 5
-// sits right at the top of the idle band. On this rig the shotgun's idle
-// crosses 5 and re-triggers adoption forever - reported s67 as "does an
-// animation cycle, stops, then does another and repeats". 25 is clear of
-// idle by 5x and clear of real animation by 5x.
+std::atomic<float> g_swayAngThreshDeg{5.0f};    // s70: BRVR's HandAnimMinDeg
+// s70: 5.0, WHICH IS BRVR'S, AND THE 25 IT REPLACES WAS AN ARTEFACT OF A BAD
+// PROBE.
+//
+// s67 set this to 25 with a specific justification: "on this rig the shotgun's
+// idle crosses 5 and re-triggers adoption forever - reported as 'does an
+// animation cycle, stops, then does another and repeats'." That observation was
+// real, but the cause was not the threshold. The probe was sampling bone 43, the
+// WEAPON ATTACH - the one bone the engine keeps animating under freeze, whose
+// idle drift BRVR measures at 1-5 deg with PEAKS OF 41-135. An idle that "crosses
+// 5" on that bone says nothing about whether the hand is animating.
+//
+// With the probe moved to the wrists (see kProbe below), the measurement this
+// number has to clear is the one both projects took independently and agreed on:
+// an idle envelope of 4.6 deg. BRVR sits at 5.0, just above it, and has done so
+// in a shipping build the tester calls "pretty much perfect".
+//
+// 25 was not merely cautious - it is above the per-shot wrist movement of some
+// weapons entirely, which is BRVR's own recorded failure ("the tester saw recoil
+// on every gun EXCEPT the Tommy gun") and was reported here too.
+//
+// STILL TUNABLE (`vrbones sway`, F10), and ANIMREJECT reports the largest thing
+// rejected in the last 3 s so the number can be set from data rather than
+// guessed a fourth time.
 std::atomic<unsigned> g_swaySettleMs{1200};     // BRVR HandAnimHoldMs
 uint64_t g_lastBigDeltaMs = 0;
+
+// ---- s70: BRVR's EQUIP SETTLE, ported with its own numbers -----------------
+//
+// All four are BRVR's, and three of them are answers to defects this tree has
+// re-derived the hard way (see ENGINE_NOTES "Session 70").
+//
+// g_keyDebounceMs   BRVR WeaponKeyDebounceMs 150. The engine parks
+//                   CurrentHoldable at NULL for a frame during fire/pump, so an
+//                   undebounced key change fires on animation frames. MEASURED
+//                   in BRVR: 11 changes in 3 minutes against 2 real switches.
+// g_settleStillUu   BRVR kSettleStillUnits 0.05. How still the WRIST POSITION
+//                   has to be, per frame, to count as settled. POSITION, not
+//                   angle - s68 probed angles against a 25 deg animation
+//                   threshold and the test never gated at all.
+// g_settleStillMs   BRVR kSettleStillMs 150. How long that stillness must hold.
+// g_settleMinMs     BRVR kSettleMinMs 350. A FLOOR before stillness may count,
+//                   because many draw animations pause part-way through and 150
+//                   ms of quiet inside a pause is not the end of the animation.
+// g_settleCeilMs    BRVR WeaponSwitchSettleMs 600. A CEILING, not a duration -
+//                   a rig that settles fast is picked up fast, and one that
+//                   never settles cannot wedge the window open.
+std::atomic<unsigned> g_keyDebounceMs{150};
+std::atomic<float> g_settleStillUu{0.05f};
+std::atomic<unsigned> g_settleStillMs{150};
+std::atomic<unsigned> g_settleMinMs{350};
+std::atomic<unsigned> g_settleCeilMs{600};
+
+// The settle window's own state. g_settleN > 0 means a window is open.
+uint64_t g_settleStartMs = 0;   // when the switch was seen
+uint64_t g_settleLastMoved = 0; // last frame the wrist moved more than the threshold
+float g_settlePrevWrist[3] = {0.0f, 0.0f, 0.0f};
+bool g_settleHavePrev = false;
+// ---- THE MEAN OF THE LOOP, which is the piece s68 was missing ---------------
+// BRVR: "A LOOPING IDLE NEVER GOES STILL, so there is no single authored pose to
+// latch and 'the last frame before we take the cluster' is an arbitrary phase of
+// the loop... accumulate while settling and, if the rig never stills, latch the
+// MEAN -- the centre of the loop rather than a point on its circumference."
+//
+// s68 measured the same fact on a plasmid rig (2156 ms to reach 1.24 deg against
+// a +-1.2 deg idle envelope) and concluded "a stillness test cannot work here",
+// then abandoned the approach. BRVR reached the identical observation and
+// answered it with the mean instead. This is that answer.
+//
+// BRVR averages one POINT (its two-hand grab point). Here the thing being
+// captured is a whole cluster, so the whole pose is averaged: positions
+// component-wise, quaternions sign-aligned against the first sample and
+// normalised at the end (the standard nlerp-style mean, which is exact enough
+// across the few degrees an idle loop spans).
+float g_settleAccP[kMaxBones][3] = {};
+float g_settleAccQ[kMaxBones][4] = {};
+int g_settleN = 0;
+
+// Drop every scrap of settle state. Called wherever the reference dies - a new
+// bone array, a new world, an explicit release - because a settle window that
+// outlives the skeleton it was measuring is a window onto a dead rig.
+void settle_reset() {
+    g_settleStartMs = 0;
+    g_settleLastMoved = 0;
+    g_settleHavePrev = false;
+    g_settleN = 0;
+}
 // Telemetry (1 Hz while frozen): the probe deltas the threshold judges, so
 // the thresholds are set from measured idle amplitude, not guesses.
 uint64_t g_lastSwayTlmMs = 0;
@@ -568,7 +642,7 @@ bool locate(void* handsActor) {
         }
         g_refValid = false; // new array = new reference
         g_hasWritten[0] = g_hasWritten[1] = false;
-        rest_reset(); // s68: and a new array is a new rest pose
+        settle_reset(); // s70: and a new array is a new settle window
     }
     g_skelInst = sk.inst;
     g_bones = sk.bones;
@@ -926,11 +1000,12 @@ bool render_lock_delta(const FrameContext& ctx, const GamePose& gp, const float 
 // replaced by a verbatim replay and bone 43 is skipped. hands.cpp mode 3 drives
 // the actor, exactly as BRVR does.
 std::atomic<bool> g_freezeOnly{false};
-// s69e: hold the cluster's anchor on the captured rest while an adopted
-// animation plays, so the animation changes the POSE without dragging the hand
-// off the controller. Only meaningful in freeze-only mode. Toggleable so the
-// before/after is one checkbox rather than a rebuild.
-std::atomic<bool> g_animPin{true};
+// s70: the s69 anchor pin is GONE. It held the cluster's anchor on the captured
+// rest while an adopted animation played, so the animation changed the pose
+// without dragging the hand off the controller. It was a correction for two
+// things that are both fixed at their source now: the freeze was anchored on
+// bone 43, which the engine animates (see cluster_of), and the state mask left
+// the reference stuck at the recoil apex. BRVR pins nothing.
 // ---- s67: CAPTURE ONCE PER HOLDABLE ----------------------------------------
 //
 // The reference pose must be a property of WHAT YOU ARE HOLDING, captured once
@@ -959,25 +1034,24 @@ std::atomic<bool> g_animPin{true};
 // only the WRENCH is gated off, because a swing animation fights manual melee.
 std::atomic<bool> g_animAllowed{true};
 
-// s67 PER-STATE ANIMATION POLICY. A bitmask over hands_state::State, so every
-// animation the rig can play is individually allowed or refused.
+// s70: THE PER-STATE ANIMATION MASK IS GONE, and it was the root of s67-s69.
 //
-// This is what the movement threshold could never do. A reload and a recoil are
-// the same signal at different sizes, so a threshold either takes both or
-// neither - and taking the reload is what left the crosshair pointing somewhere
-// else until the next shot pulled it back. The engine knows which is which and
-// says so in Hands.uc's own state machine; we just ask.
+// It adopted only Firing/PostFiring and refused everything else. Two costs, both
+// paid in full:
 //
-// Default: FIRING and POSTFIRING adopt (recoil), everything else is refused.
-// Idling is refused on purpose and is the important one - GetIdlingHandsAnim()
-// picks a WEIGHTED RANDOM entry out of Holdable::IdlingHandsAnim[], so every
-// return to idle can settle somewhere different. Adopting that is the whole
-// "crosshair moves randomly between shots" report.
-constexpr uint32_t state_bit(hands_state::State st) {
-    return 1u << static_cast<int>(st);
-}
-std::atomic<uint32_t> g_animStateMask{state_bit(hands_state::State::Firing) |
-                                      state_bit(hands_state::State::PostFiring)};
+//   - Hands.uc leaves `WeaponFiring` at the TOP of the recoil, so adoption was
+//     cut at the apex and the reference stuck there. Everything s68 and s69 then
+//     built - the canonical rest, the eased restore, the anchor pin, the
+//     quaternion normalisation for that pin - exists to undo this one line.
+//   - It refused reload, equip and melee outright, so the rig went rigid through
+//     every animation that is not a shot.
+//
+// BRVR separates idle from real animation BY SIZE, not by state: idle breathing
+// measures 1-5 deg at the wrist and a reload or a switch peaks at 41-135, so a
+// threshold in that gap rejects breathing and admits everything else, and the
+// hold window carries adoption to the animation's settled end. That mechanism is
+// already in this file (g_swayAngThreshDeg / g_swaySettleMs) - the mask was
+// layered on top of it and overrode it.
 
 // ---- s68 REST REFERENCE: what happens when an adopted animation ENDS -------
 //
@@ -1008,30 +1082,37 @@ std::atomic<uint32_t> g_animStateMask{state_bit(hands_state::State::Firing) |
 // is the apex of a recoil: cutting straight to rest reads as a jerk, whereas
 // easing over ~120 ms is the recovery the recoil animation would have played.
 // 0 ms = snap, and the F10 slider makes that an A/B in the headset.
-// s68k A/B: capture the equip reference on the engine's Idling edge (ON), or on
-// the old fixed 1200 ms window (off). See the long note at the use site - the
-// window is what plays one cycle of the idle fidget into the rig on every equip,
-// and what makes the frozen pose a sample of that fidget. Exposed on F10 and
-// `vrbones capidle on|off` so the two can be compared on one run, on the same
-// plasmid, without a rebuild.
-std::atomic<bool> g_capAtIdling{true};
-// Has the rig left Idling since the capture was armed? Without this the Idling
-// "edge" is not an edge - see the note at the use site.
-bool g_capLeftIdling = false;
-hands_state::State g_capArmState = hands_state::State::Unknown; // for the log// An equip that never reaches Idling must not adopt forever. Generous - the
-// slowest BS1 equip measured well under this - and it logs when it bites.
-constexpr uint64_t kCapArmTimeoutMs = 4000;
-
-std::atomic<bool> g_restRestore{true};std::atomic<unsigned> g_restBlendMs{120};
-// The F10 panel runs on the RENDER thread and this module's rest state is plain
-// game-thread memory, so "retake the rest pose" crosses as an atomic REQUEST
-// that drive() consumes - the same discipline every other F10 control here
-// follows (they all write atomics and nothing else).
-std::atomic<bool> g_restRetake{false};
+// s70: the Idling-edge capture (g_capAtIdling), the canonical-rest restore and
+// its blend are all gone with the mask that needed them. What replaces the
+// capture is BRVR's settle - see the settle block in drive().
 
 std::atomic<int> g_rFirst{-1}; // -1 = the authored kBoneRClusterFirst
 std::atomic<int> g_rLast{-1};
 
+// s70: THE RIGHT CLUSTER'S ANCHOR DEPENDS ON WHICH SHAPE IS DRIVING IT, and
+// getting that wrong is why a "frozen" cluster still moved.
+//
+// FREEZE (mode 3, BRVR's shape) ANCHORS ON THE WRIST, 27. BRVR's ClusterSpec is
+// {first, last, wrist} = {27, 44, 27} and every replay is anchored on that wrist
+// (ArmHide.cpp SpecFor/WriteCluster). Bone 43 is the WEAPON ATTACH, and it is
+// precisely the one bone BRVR deliberately leaves the engine still animating -
+// its own log says so: "cluster frozen; this bone is still the engine's", with
+// 1-5 deg of measured idle drift and peaks of 41-135.
+//
+// So anchoring the freeze on 43 anchors it on a MOVING bone: every other bone is
+// written relative to a point the engine is animating, and the whole cluster is
+// dragged along by it. That is the hand walking off the controller during an
+// animation, and it is what the s69 anchor pin was built to cancel - a
+// correction for a reference point that should never have been moving.
+//
+// s68 dumped the bone names and recorded the left/right asymmetry (left anchors
+// on 6, the palm; right on 43) as "not a defect". Against BRVR it is one: BRVR
+// anchors BOTH clusters on their wrist, and the left cluster here already does.
+//
+// RETARGET (mode 2) KEEPS 43, and that is not an oversight. Retarget maps the
+// anchor onto the controller, so the point it maps must be where the weapon
+// hangs; that path is this tree's own and 43 is right for it. BRVR has no
+// retarget at all, so there is nothing to be faithful to there.
 void cluster_of(int hand, int* first, int* last, int* anchor) {
     if (hand == 1) {
         int rf = g_rFirst.load(std::memory_order_relaxed);
@@ -1039,7 +1120,10 @@ void cluster_of(int hand, int* first, int* last, int* anchor) {
         *first = rf >= 0 ? rf : patterns::kBoneRClusterFirst;
         *last = rl >= 0 ? rl : patterns::kBoneRClusterLast;
         int ov = g_rAnchorOverride.load(std::memory_order_relaxed);
-        *anchor = ov >= 0 ? ov : patterns::kBoneWeaponAttach;
+        const int dflt = g_freezeOnly.load(std::memory_order_relaxed)
+                             ? patterns::kBoneRWrist
+                             : patterns::kBoneWeaponAttach;
+        *anchor = ov >= 0 ? ov : dflt;
     } else {
         *first = g_lFirst.load(std::memory_order_relaxed);
         *last = g_lLast.load(std::memory_order_relaxed);
@@ -1500,7 +1584,7 @@ void on_world_change() {
     g_boneCount = 0;
     g_refValid = false;
     g_hasWritten[0] = g_hasWritten[1] = false;
-    rest_reset(); // s68
+    settle_reset(); // s70
     g_cacheSkelInst = nullptr;
     g_cacheMs = 0;
     g_hiddenHand = -1; // the collapsed bones died with the old world
@@ -1540,7 +1624,7 @@ void release(const char* why) {
         g_cacheCount = g_cacheSleeveCount = g_cacheHiddenCount = 0;
         g_refValid = false;
         g_hasWritten[0] = g_hasWritten[1] = false;
-        rest_reset(); // s68
+        settle_reset(); // s70
         g_clWritten[0] = g_clWritten[1] = false;
         memset(g_scaleWrote, 0, sizeof g_scaleWrote); // the bank died with the world
         wskel_drop("rig released (no rig skeleton)"); // intact-gated, safe here
@@ -1607,7 +1691,7 @@ void release(const char* why) {
     if (g_skelInst) set_dirty(1);
     g_refValid = false;
     g_hasWritten[0] = g_hasWritten[1] = false;
-    rest_reset(); // s68: the next drive recaptures rest during the next Idling
+    settle_reset(); // s70: the next switch opens a fresh settle window
     g_lastBigDeltaMs = 0;
 
     BVR_LOG("[bones] released to the engine (%s): hidden hand %d restored, reapply cache "
@@ -1622,37 +1706,9 @@ void debug_state(int* hiddenHand, unsigned long long* cacheAgeMs, bool* refValid
     if (refValid) *refValid = g_refValid;
 }
 
-void set_anim_state_mask(uint32_t mask) {
-    g_animStateMask.store(mask, std::memory_order_relaxed);
-}
-uint32_t anim_state_mask() { return g_animStateMask.load(std::memory_order_relaxed); }
-
-void set_rest_restore(bool on) {
-    const bool was = g_restRestore.exchange(on, std::memory_order_relaxed);
-    if (was != on)
-        BVR_LOG("[bones] rest restore %s (%s)", on ? "ON" : "off",
-                on ? "an animation that ends returns the rig to the canonical rest pose"
-                   : "the s67 behaviour - the rig holds wherever the state boundary "
-                     "caught it (this is what froze the pistol at its recoil apex)");
-}
-bool rest_restore() { return g_restRestore.load(std::memory_order_relaxed); }
-
-void set_rest_blend_ms(unsigned ms) {
-    if (ms > 1000) ms = 1000;
-    g_restBlendMs.store(ms, std::memory_order_relaxed);
-    BVR_LOG("[bones] rest restore blend = %u ms%s", ms, ms ? "" : " (SNAP)");
-}
-unsigned rest_blend_ms() { return g_restBlendMs.load(std::memory_order_relaxed); }
-
-void rest_status(bool* captured, bool* blending) {
-    if (captured) *captured = g_restValid;
-    if (blending) *blending = g_restoreStartMs != 0;
-}
-
-void drop_rest() {
-    g_restRetake.store(true, std::memory_order_relaxed); // drive() consumes it
-    BVR_LOG("[bones] canonical rest drop queued - retaken on the next WeaponIdling");
-}
+// s70: set_anim_state_mask / anim_state_mask / set_rest_restore / rest_restore /
+// set_rest_blend_ms / rest_blend_ms / rest_status / drop_rest all removed with
+// the machinery they controlled. See the s70 banners above.
 
 void set_anim_allowed(bool on) {
     const bool was = g_animAllowed.exchange(on, std::memory_order_relaxed);
@@ -2081,16 +2137,11 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                     driftDeg > 3.0f ? "<-- OUR WRITE IS BEING CHANGED" : "(write held)");
         }
     }
-    // s68: the engine's own verdict on what the hands are doing, read ONCE per
-    // frame and hoisted out of the recapture block below. The rest-restore edge
-    // has to be seen on the frame the state changes, and a state change does not
-    // need an engine re-evaluation to happen - so it cannot live inside a block
-    // that only runs when the bone array moved.
-    const hands_state::State hs = hands_state::current(handsActor);
-    const bool stateKnown = hands_state::located() && hs != hands_state::State::Unknown;
-    const bool stateAllows =
-        (g_animStateMask.load(std::memory_order_relaxed) & state_bit(hs)) != 0;
-    bool adoptedThisFrame = false;
+    // s70: READ AND LOGGED, NEVER GATED ON. The state machine is still the best
+    // description of what the rig is doing and it stays in the telemetry, but it
+    // no longer decides what reaches the rig - the size threshold and hold window
+    // do, exactly as BRVR does it. See the s70 banner on the deleted mask.
+    g_lastKnownState = hands_state::current(handsActor);
 
     if (engineEvaluated || !g_refValid) {
         // Session 20 sway kill: the idle breathing is the authored idle
@@ -2129,141 +2180,170 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             if (!hands::current_holdable(&liveHold)) liveHold = nullptr;
             void* liveAbil = nullptr;
             if (!hands::current_ability(&liveAbil)) liveAbil = nullptr;
-            if (liveHold != s_lastHoldable || liveAbil != s_lastAbility) {
+
+            // s70: THE PAIR HAS TO HOLD STILL BEFORE IT COUNTS AS A SWITCH.
+            //
+            // Ported from BRVR (ArmHide.cpp, ArmHide_FreezeWeaponHand), where it
+            // is backed by a measurement this tree never took: "what you are
+            // holding changed" fired ELEVEN times in a three-minute session in
+            // which the player switched weapon TWICE. The engine does not hold
+            // CurrentHoldable steady - a shotgun's fire and pump animations park
+            // it at NULL for a frame - so every blip is TWO changes,
+            // hold -> null -> hold, and each one throws away the reference and
+            // recaptures from whatever the rig looked like mid-animation.
+            //
+            // Watching the (holdable, ability) PAIR does not help here: a NULL
+            // blip on the holdable while the ability is also NULL is still a
+            // change of the pair. Debouncing is what makes it one.
+            //
+            // A real switch still lands - the incoming item is a stable non-null
+            // key, so it simply commits one debounce later, which is nothing
+            // beside the settle window that follows it.
+            static void* s_pendHold = nullptr;
+            static void* s_pendAbil = nullptr;
+            static uint64_t s_pendSince = 0;
+            static bool s_pendInit = false;
+            const uint64_t nowKey = GetTickCount64();
+            if (!s_pendInit) {
+                s_pendInit = true;
+                s_pendHold = liveHold;
+                s_pendAbil = liveAbil;
+                s_pendSince = nowKey;
+            }
+            if (liveHold != s_pendHold || liveAbil != s_pendAbil) {
+                s_pendHold = liveHold;
+                s_pendAbil = liveAbil;
+                s_pendSince = nowKey;
+            }
+            const bool keyHeld =
+                (nowKey - s_pendSince) >= g_keyDebounceMs.load(std::memory_order_relaxed);
+
+            if (keyHeld && (liveHold != s_lastHoldable || liveAbil != s_lastAbility)) {
                 s_lastHoldable = liveHold;
                 s_lastAbility = liveAbil;
                 s_forceCapture = true;
-                // Reset the transit latch: this switch has not left Idling yet.
-                g_capLeftIdling = !stateKnown || hs != hands_state::State::Idling;
-                g_capArmState = hs;                g_lastBigDeltaMs = GetTickCount64(); // let the equip settle first
-                // s68: the rest pose is a property of WHAT YOU ARE HOLDING, so a
-                // new holdable invalidates it. Without this the incoming weapon
-                // would be restored to the outgoing one's rest - the same class
-                // of bug as the s67 wrench-posed-as-a-pistol.
-                g_restValid = false;
-                g_restoreStartMs = 0;
+                // s70: OPEN A FRESH SETTLE WINDOW. BRVR releases the cluster
+                // here so the equip can play, and stamps the window at the same
+                // moment; the settle block above then decides when it is over.
+                settle_reset();
+                g_settleStartMs = GetTickCount64();
+                g_lastBigDeltaMs = g_settleStartMs;
                 BVR_LOG("[bones] holding changed (holdable %p, ability %p%s) - forcing a "
                         "fresh reference capture",
                         liveHold, liveAbil, liveAbil ? ", PLASMID" : "");
             }
         }
 
-        // The state machine decides, when it can be read (hs/stateKnown/stateAllows
-        // are read once per frame above). The movement threshold below stays as
-        // the fallback for the window before the StateFrame offset is derived,
-        // and for anything the table cannot name.
-        bool captureRest = false;
+        // s70: BRVR'S POLICY, AND ONLY BRVR'S. Two branches, not five:
+        //   - a switch just happened -> settle, then capture once;
+        //   - otherwise -> size threshold + hold window.
+        // The per-state mask that used to sit between them is gone; see the s70
+        // banner where it was declared.
         bool adopt = true;
         if (s_forceCapture) {
-            // ---- STOP AT THE IDLING EDGE, NEVER LATER -----------------------
+            // ---- BRVR's EQUIP SETTLE (ArmHide.cpp, the g_wpSettling block) ---
             //
-            // The fixed 1200 ms window this replaces made the rig FOLLOW the
-            // equip animation and then keep following into the idle FIDGET,
-            // freezing the reference wherever that fidget happened to be. One
-            // mechanism, both reported defects:
+            // Release, let the equip animation play, and capture once the rig
+            // has STOPPED MOVING - not after a fixed number of milliseconds.
             //
-            //   - the "1 cycle animation on every equip" IS that following;
-            //   - the frozen reference is a SAMPLE OF THE FIDGET mid-cycle.
+            // The probe is the ANCHOR'S POSITION, frame to frame. s68 spent nine
+            // builds probing ANGLES against g_swayAngThreshDeg - the 25 deg
+            // animation-adoption threshold - so any two evaluations of a smooth
+            // ease read as "still" and the test never gated at all. BRVR probes
+            // position against a threshold of its own, and 0.05 model units is
+            // three orders of magnitude below the adoption threshold's scale.
             //
-            // And it is deterministic per plasmid, because each plays a fixed
-            // fidget of its own: ElectricBoltAbility.uc declares
-            // ElectrokineticBolt_Fidget, while TelekinesisAbility.uc declares
-            // nothing and inherits Ability.uc's Generic_Fidget. Generic_Fidget at
-            // T+1200 ms sits away from rest; ElectrokineticBolt_Fidget happens to
-            // sit near it. Hence the tester's repro, every row of it:
-            //
-            //   Electro -> Weapon -> Electro   fine
-            //   Electro -> Tele                fine   (no recapture: see below)
-            //   Tele    -> Electro             fine   (no recapture)
-            //   Tele    -> Weapon -> Tele      WRONG  (the one fresh TK capture)
-            //
-            // Only weapon<->plasmid recaptures at all - CurrentHoldable is null
-            // for every plasmid, so plasmid-to-plasmid is null != null == false -
-            // which is why only that transition can go wrong, and why TK could
-            // carry a stale bad pose across whole sessions.
-            //
-            // Hands.uc starts the fidget when it enters Idling
-            // (AbilityIdling:1556, WeaponIdling:1147, both via
-            // PlayAnimationOnChannelInstantEaseIn). So the equip-END pose - the
-            // last frame before any fidget - is exactly the Idling edge. Capture
-            // there and stop. Sampling any LATER samples deeper into the fidget,
-            // which is why every attempt to wait longer made this worse.
-            const bool atIdling = g_capAtIdling.load(std::memory_order_relaxed);
-            if (atIdling && stateKnown) {
-                // THE RIG MUST LEAVE IDLING FIRST, or this is not an edge.
-                //
-                // CurrentHoldable clears at the START of a switch, while the state
-                // machine is still sitting in the OUTGOING item's WeaponIdling. So
-                // without this, the very next evaluation sees hs == Idling, captures
-                // the OUTGOING pose and disarms - before the incoming equip has
-                // played at all.
-                //
-                // Measured: every capture in the 20:42 run fired 234-282 ms after
-                // the switch. That is the engine's evaluation cadence (it evaluates
-                // the bone array on ~1 frame in 19), not an animation boundary - no
-                // real equip completes in 234 ms, and the 48 ms spread is sampling
-                // jitter rather than the difference between a wrench and a plasmid.
-                // A flat line across 41 captures of different holdables is the tell.
-                if (hs != hands_state::State::Idling) g_capLeftIdling = true;
-                if (hs == hands_state::State::Idling && g_capLeftIdling) {
-                    adopt = true; // this one frame writes g_ref, then we are done
-                    captureRest = true;
-                    s_forceCapture = false;
-                    BVR_LOG("[bones] equip done (engine reports Idling) - captured this "
-                            "holdable's reference %llu ms after the switch (armed in %s, "
-                            "left Idling, came back) - BEFORE the idle fidget starts. "
-                            "Adoption stops here.",
-                            static_cast<unsigned long long>(GetTickCount64() -
-                                                            g_lastBigDeltaMs),
-                            hands_state::to_string(g_capArmState));
-                } else if (GetTickCount64() - g_lastBigDeltaMs > kCapArmTimeoutMs) {
-                    // Idling never arrived. Stop rather than adopt forever, and SAY
-                    // SO - a silent expiry is what made the old timer hard to see.
-                    adopt = false;
-                    s_forceCapture = false;
-                    BVR_LOG("[bones] equip capture timed out after %llu ms in state %s - "
-                            "reference left as-is. If the pose looks wrong, this line is "
-                            "why.",
-                            static_cast<unsigned long long>(kCapArmTimeoutMs),
-                            hands_state::to_string(hs));
-                } else {
-                    adopt = true; // still equipping
+            // Three guards, each answering a defect BRVR measured:
+            //   FLOOR   (g_settleMinMs) - many draw animations PAUSE part-way
+            //           through, and 150 ms of quiet inside a pause is not the
+            //           end of the animation.
+            //   CEILING (g_settleCeilMs) - a rig that never stills cannot wedge
+            //           the window open forever.
+            //   MEAN    - and when the ceiling is what stopped it, the rig was
+            //           LOOPING, so the captured pose is the mean of the window
+            //           rather than whichever phase of the loop the ceiling
+            //           happened to land on.
+            const uint64_t nowS = GetTickCount64();
+            if (anchor < g_boneCount) {
+                if (g_settleHavePrev) {
+                    const float dx = fresh[anchor].p[0] - g_settlePrevWrist[0];
+                    const float dy = fresh[anchor].p[1] - g_settlePrevWrist[1];
+                    const float dz = fresh[anchor].p[2] - g_settlePrevWrist[2];
+                    if (sqrtf(dx * dx + dy * dy + dz * dz) >
+                        g_settleStillUu.load(std::memory_order_relaxed))
+                        g_settleLastMoved = nowS;
                 }
-            } else {
-                // No state machine yet (the offset is derived once, early), or the
-                // A/B is switched off: the original fixed window, unchanged.
-                adopt = (GetTickCount64() - g_lastBigDeltaMs) <
-                        g_swaySettleMs.load(std::memory_order_relaxed);
-                if (!adopt) s_forceCapture = false;
+                memcpy(g_settlePrevWrist, fresh[anchor].p, sizeof g_settlePrevWrist);
+                g_settleHavePrev = true;
             }
-        } else if (g_refValid && stateKnown) {
-            // Named state: obey the mask, and skip the threshold entirely.
-            adopt = g_animAllowed.load(std::memory_order_relaxed) && stateAllows;
+            // Accumulate the whole pose while the window is open, sign-aligning
+            // each quaternion against the first sample so opposite-hemisphere
+            // representations of the same rotation do not cancel.
+            if (g_settleN < INT_MAX) {
+                for (int i = 0; i < g_boneCount; ++i) {
+                    for (int k = 0; k < 3; ++k) g_settleAccP[i][k] += fresh[i].p[k];
+                    float sgn = 1.0f;
+                    if (g_settleN > 0) {
+                        float d = 0.0f;
+                        for (int k = 0; k < 4; ++k) d += g_settleAccQ[i][k] * fresh[i].q[k];
+                        if (d < 0.0f) sgn = -1.0f;
+                    }
+                    for (int k = 0; k < 4; ++k) g_settleAccQ[i][k] += fresh[i].q[k] * sgn;
+                }
+                ++g_settleN;
+            }
 
-            // s68: the ONE-SHOT REST CAPTURE. WeaponIdling is the only state
-            // that means "the animation is over and the hands are where they
-            // live", so it is the honest place to take the canonical pose -
-            // and taking exactly one costs none of the per-loop randomness
-            // that keeps Idling out of the mask (Holdable.uc:32 picks a
-            // weighted-random idle anim every time the state's loop comes
-            // round). The equip settle above has to have finished first, or
-            // the "rest" would be a frame of the equip animation.
-            if (!adopt && !g_restValid && hs == hands_state::State::Idling &&
-                g_animAllowed.load(std::memory_order_relaxed)) {
-                adopt = true;
-                captureRest = true;
-            }
-            static hands_state::State s_lastLogged = hands_state::State::Unknown;
-            if (hs != s_lastLogged) {
-                s_lastLogged = hs;
-                // Report the MASK's verdict, not `adopt` - a rest-capture frame
-                // sets adopt without the mask having changed its mind.
-                BVR_LOG("[bones] hands state -> %s : engine animation %s%s",
-                        hands_state::to_string(hs),
-                        (stateAllows && g_animAllowed.load(std::memory_order_relaxed))
-                            ? "ADOPTED"
-                            : "refused",
-                        captureRest ? " (taking the canonical rest pose this frame)" : "");
+            const bool longEnough =
+                (nowS - g_settleStartMs) >= g_settleMinMs.load(std::memory_order_relaxed);
+            const bool still =
+                longEnough && g_settleLastMoved &&
+                (nowS - g_settleLastMoved) >= g_settleStillMs.load(std::memory_order_relaxed);
+            const bool timedOut =
+                (nowS - g_settleStartMs) >= g_settleCeilMs.load(std::memory_order_relaxed);
+
+            if (!still && !timedOut) {
+                adopt = true; // still equipping - track it
+            } else {
+                adopt = true;         // this frame writes g_ref, then we are done
+                s_forceCapture = false;
+                if (!still && g_settleN > 0) {
+                    // THE RIG NEVER STOPPED, SO IT IS LOOPING. Latch the centre
+                    // of the loop. Without this the capture is a sample of the
+                    // idle fidget, which is exactly the "1 cycle animation on
+                    // every equip" and "the frozen pose is a sample of the
+                    // fidget" pair of reports.
+                    const float inv = 1.0f / static_cast<float>(g_settleN);
+                    for (int i = 0; i < g_boneCount; ++i) {
+                        for (int k = 0; k < 3; ++k) fresh[i].p[k] = g_settleAccP[i][k] * inv;
+                        float q[4];
+                        float n = 0.0f;
+                        for (int k = 0; k < 4; ++k) {
+                            q[k] = g_settleAccQ[i][k] * inv;
+                            n += q[k] * q[k];
+                        }
+                        n = sqrtf(n);
+                        // A degenerate sum means the samples cancelled; keep the
+                        // live frame rather than writing a garbage rotation.
+                        if (n > 1e-4f)
+                            for (int k = 0; k < 4; ++k) fresh[i].q[k] = q[k] / n;
+                    }
+                }
+                // THE SAMPLE COUNT IS PART OF THE MEASUREMENT, not decoration.
+                // This block only runs when the engine RE-EVALUATED the bone
+                // array, and s68 measured that at roughly 1 frame in 19 - so a
+                // 600 ms window may hold only a handful of samples. Whether
+                // BRVR's millisecond constants transfer to this tree at all
+                // depends on that number, and guessing it is how s68 lost nine
+                // builds. If this reads 2 or 3, the window is too short to mean
+                // anything and the ceiling wants raising (F10, no rebuild).
+                BVR_LOG("[bones] equip settled after %llu ms over %d engine evaluation(s) "
+                        "(%s) - capturing this holdable's reference from here.",
+                        static_cast<unsigned long long>(nowS - g_settleStartMs), g_settleN,
+                        still ? "rig went still"
+                              : "ceiling reached; the rig was looping, so the pose is "
+                                "the MEAN of the window, not one frame of the fidget");
+                g_settleN = 0;
+                g_settleHavePrev = false;
             }
         } else if (g_refValid && !g_animAllowed.load(std::memory_order_relaxed)) {
             // This weapon does not take engine animation at all (the wrench).
@@ -2273,7 +2353,20 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             adopt = false;
             uint64_t nowMs = GetTickCount64();
             float maxPos = 0.0f, maxAng = 0.0f;
-            static const int kProbe[2] = {patterns::kBoneLWrist, patterns::kBoneWeaponAttach};
+            // s70: PROBE THE WRISTS, NOT THE WEAPON ATTACH BONE.
+            //
+            // This used to sample bone 43. That bone is the weapon attach, and it
+            // is the one bone the engine keeps animating under freeze - BRVR
+            // measures its idle drift at 1-5 deg with PEAKS OF 41-135. Asking
+            // "has the pose changed?" of a bone that moves on its own means the
+            // answer is yes for reasons that have nothing to do with an
+            // animation being played, so adoption re-triggered off the attach
+            // bone's own drift.
+            //
+            // BRVR measures its cluster's WRIST, which is also what it anchors
+            // on - the probe and the anchor are the same bone, so "the reference
+            // moved" and "the thing everything hangs off moved" are one question.
+            static const int kProbe[2] = {patterns::kBoneLWrist, patterns::kBoneRWrist};
             for (int k = 0; k < 2; ++k) {
                 int b = kProbe[k];
                 if (b >= g_boneCount) continue;
@@ -2347,110 +2440,15 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             }
             memcpy(g_ref, fresh, sizeof(Qts) * static_cast<size_t>(g_boneCount));
             g_refValid = true;
-            adoptedThisFrame = true;
 
-            // s68: snapshot the canonical rest AFTER the scale pinning above, so
-            // the rest carries the same pinned scale rows g_ref does. (Only p/q
-            // are ever applied from it, but keeping the rows consistent means a
-            // future reader cannot pick up a stale scale by accident.)
-            if (captureRest) {
-                memcpy(g_rest, g_ref, sizeof(Qts) * static_cast<size_t>(g_boneCount));
-                g_restValid = true;
-                g_restoreStartMs = 0;
-                BVR_LOG("[b1r] RESTREF: canonical rest pose captured during Idling for this "
-                        "holdable (%d bones). Animations that end now snap back to THIS, "
-                        "instead of freezing wherever the state boundary caught them.",
-                        g_boneCount);
-            }
         }
     }
 
-    // ---- s68 REST RESTORE: give the pose back when the animation ends -------
-    // Runs EVERY frame, outside the recapture block: the state can change on a
-    // frame where the engine did not re-evaluate, and the blend has to tick on
-    // its own clock regardless.
-    if (g_restRetake.exchange(false, std::memory_order_relaxed)) rest_reset();
-    if (!g_restRestore.load(std::memory_order_relaxed)) {
-        // Disabled: drop any blend in flight here, on the game thread, so
-        // re-enabling later cannot resume a stale one from minutes ago.
-        g_restoreStartMs = 0;
-    } else if (g_refValid) {
-        const uint64_t nowR = GetTickCount64();
-        const bool adoptsNow =
-            stateKnown && stateAllows && g_animAllowed.load(std::memory_order_relaxed);
-
-        // The EDGE, and the whole point of the fix: an adopted state just ended.
-        // Only trusted on a KNOWN state - the engine parks StateNode at null
-        // between transitions, and treating that blip as "the animation ended"
-        // would abort a recoil halfway through it.
-        if (stateKnown && g_wasAdopting && !adoptsNow) {
-            if (g_restValid) {
-                memcpy(g_restoreFrom, g_ref, sizeof(Qts) * static_cast<size_t>(g_boneCount));
-                g_restoreStartMs = nowR;
-                // ALWAYS ON but throttled: this edge fires once per SHOT, and a
-                // firefight would bury the rest of the log. The number is the
-                // point - how far the pose had been left from rest IS the size
-                // of the s67 defect, so it gets measured rather than shrugged at.
-                static uint64_t s_lastRestoreLog = 0;
-                if (nowR - s_lastRestoreLog >= 1500) {
-                    s_lastRestoreLog = nowR;
-                    const int probe = patterns::kBoneWeaponAttach < g_boneCount
-                                          ? patterns::kBoneWeaponAttach
-                                          : 0;
-                    BVR_LOG("[b1r] RESTORE: %s ended -> %s. Returning to the canonical rest "
-                            "over %u ms (the frozen pose was %.1f deg off rest at bone %d). "
-                            "Throttled to 1 line / 1.5 s.",
-                            hands_state::to_string(g_lastKnownState),
-                            hands_state::to_string(hs),
-                            g_restBlendMs.load(std::memory_order_relaxed),
-                            quat_angle_deg(g_ref[probe].q, g_rest[probe].q), probe);
-                }
-            } else {
-                // Throttled, NOT one-shot: a `static bool` here would hide a
-                // persistent failure behind one early and entirely expected line.
-                static uint64_t s_lastNoRestLog = 0;
-                if (nowR - s_lastNoRestLog >= 5000) {
-                    s_lastNoRestLog = nowR;
-                    BVR_LOG("[b1r] RESTORE: an animation ended with NO canonical rest "
-                            "captured yet - holding the last adopted pose (the s67 "
-                            "behaviour). Expected before a holdable's first Idling; if "
-                            "this keeps repeating, the Idling capture never ran.");
-                }
-            }
-        }
-        if (stateKnown) {
-            g_wasAdopting = adoptsNow;
-            g_lastKnownState = hs;
-        }
-
-        // A shot fired mid-recovery wins: the fresh animation is the truth and
-        // the half-finished blend has nothing left to say.
-        if (g_restoreStartMs && (adoptedThisFrame || adoptsNow)) g_restoreStartMs = 0;
-
-        if (g_restoreStartMs && g_restValid) {
-            const unsigned span = g_restBlendMs.load(std::memory_order_relaxed);
-            float t = span ? static_cast<float>(nowR - g_restoreStartMs) /
-                                 static_cast<float>(span)
-                           : 1.0f;
-            if (t < 0.0f) t = 0.0f;
-            if (t >= 1.0f) t = 1.0f;
-            // Smoothstep: a recoil recovery decelerates into rest, and a linear
-            // ramp reads as a mechanical slide at these durations.
-            const float e = t * t * (3.0f - 2.0f * t);
-            for (int i = 0; i < g_boneCount; ++i) {
-                // POSITION AND ROTATION ONLY. The scale rows belong to the
-                // g_scaleWrote pinning bank; writing them here would undo it.
-                for (int k = 0; k < 3; ++k)
-                    g_ref[i].p[k] = g_restoreFrom[i].p[k] * (1.0f - e) + g_rest[i].p[k] * e;
-                quat_nlerp(g_restoreFrom[i].q, g_rest[i].q, e, g_ref[i].q);
-            }
-            if (t >= 1.0f) {
-                g_restoreStartMs = 0;
-                if (g_telemetry.load(std::memory_order_relaxed))
-                    BVR_LOG("[tlm] rest: back at the canonical rest pose");
-            }
-        }
-    }
+    // s70: the s68 rest-restore block stood here - the adopted-state edge, the
+    // canonical-rest snapshot and the smoothstep blend back to it. All of it was
+    // downstream of the per-state mask cutting adoption at the recoil apex. With
+    // the mask gone the hold window carries adoption to the animation's settled
+    // end, so there is nothing to restore FROM and nothing to restore TO.
 
     // Hide-inactive bookkeeping, BEFORE the rigid write: if the hand about to
     // be driven is the one currently collapsed (hand switch), or the feature
@@ -2556,87 +2554,28 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     g_cacheCount = 0;
     g_cacheSleeveCount = 0;
     const float* pa = g_ref[anchor].p;
-    // ---- s69e PIN THE ANCHOR WHILE AN ANIMATION PLAYS -----------------------
-    // Freeze-only (mode 3, BRVR's shape) writes the cluster AS the reference
-    // pose and lets the ACTOR carry it to the controller. It scales about
-    // pa = g_ref[anchor].p - so the anchor is written wherever the pose has it.
+    // s70: THE s69 ANCHOR PIN STOOD HERE, and it is gone.
     //
-    // That is fine while the reference is frozen. It is NOT fine once an
-    // animation is adopted: g_ref then tracks the animation, the anchor moves
-    // with it, and the whole cluster moves - while the actor placement, computed
-    // from the target, knows nothing about it. The hand walks off the controller
-    // for the length of the animation. That is the plasmid firing screenshots,
-    // and it is why animOn=0 made Telekinesis sit still: no adoption, no drift.
+    // It translated and rotated the whole cluster back onto a captured rest
+    // anchor whenever an adopted animation moved it, so the hand could not walk
+    // off the controller. Three commits of it (e337532, ac33342, 825ced6, the
+    // last one normalising quaternions the pin itself had denormalised).
     //
-    // The fix is a rigid TRANSLATION back onto the captured rest anchor. The
-    // animation keeps its entire shape - fingers, wrist rotation, everything -
-    // it simply stops dragging the palm away from the point the actor pinned.
-    // Rotation is deliberately NOT pinned: a wrist that turns in place is the
-    // animation doing its job and does not move the hand off the controller.
+    // It was compensation for two separate faults, both fixed at source now:
     //
-    // s69f: AND ITS ROTATION. Pinning only the position was half the fix. The
-    // actor's rotation is set from the controller on the assumption that the
-    // anchor still carries the pose it was captured with; when the animation
-    // turns the anchor, the whole hand turns with it and points somewhere else -
-    // "the position stays put now but the direction of it is still incorrect".
-    // The aim ray is separate and unaffected, which is why it still hits the
-    // same spot.
+    //   1. The freeze was anchored on bone 43, the WEAPON ATTACH - the one bone
+    //      the engine keeps animating even under freeze. Every other bone was
+    //      written relative to a moving point, so the cluster was dragged by it
+    //      whether or not anything was adopted. cluster_of now anchors the
+    //      freeze on the WRIST, as BRVR does.
+    //   2. The per-state mask cut adoption at the recoil apex and left the
+    //      reference stuck there, so the "animation" the pin was fighting was
+    //      often a pose that should have finished. The hold window ends that.
     //
-    // qFix maps the animated anchor back onto the captured one and is applied to
-    // the whole cluster, positions and rotations alike, so the hand holds its
-    // place AND its heading while the fingers animate inside it.
-    float animPin[3] = {0.0f, 0.0f, 0.0f};
-    float qFix[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    bool pinAnim = false;
-    if (g_freezeOnly.load(std::memory_order_relaxed) &&
-        g_animPin.load(std::memory_order_relaxed) && g_restValid) {
-        // NORMALISE, and this is not a nicety. The idle/equip ease-in leaves
-        // NON-UNIT quaternions in the bone bank (ENGINE_NOTES: it is what made
-        // ROLLCHECK report 16 deg with a zero component split). For a non-unit
-        // quat conj() is NOT the inverse - the inverse is conj(q)/|q|^2 - so
-        // qFix comes out non-unit, qts_rotate() then SCALES every offset by
-        // |qFix|^2 and quat_mul() compounds the error into every bone. That is
-        // a vertex explosion, not a rotation, and it is what the spiked hand in
-        // the 2026-08-27 screenshots was.
-        float qInv[4];
-        quat_conj(g_ref[anchor].q, qInv);
-        quat_mul(g_rest[anchor].q, qInv, qFix);
-        const float fn = sqrtf(qFix[0] * qFix[0] + qFix[1] * qFix[1] + qFix[2] * qFix[2] +
-                               qFix[3] * qFix[3]);
-        if (fn > 1e-4f) {
-            qFix[0] /= fn;
-            qFix[1] /= fn;
-            qFix[2] /= fn;
-            qFix[3] /= fn;
-            pinAnim = true;
-        } else {
-            // Degenerate anchor quat - do not build a correction out of it.
-            // Failing to identity leaves the un-pinned pose, which is the old
-            // defect; smearing the mesh across the room is worse.
-            static bool s_warnedDegen = false;
-            if (!s_warnedDegen) {
-                s_warnedDegen = true;
-                BVR_LOG("[bones] ANIMPIN: anchor quat is degenerate (|q|=%.4f) - pin "
-                        "skipped this frame rather than writing a garbage rotation.",
-                        fn);
-            }
-        }
-        animPin[0] = g_rest[anchor].p[0] - pa[0];
-        animPin[1] = g_rest[anchor].p[1] - pa[1];
-        animPin[2] = g_rest[anchor].p[2] - pa[2];
-        static uint64_t s_pinLog = 0;
-        const float mag = sqrtf(animPin[0] * animPin[0] + animPin[1] * animPin[1] +
-                                animPin[2] * animPin[2]);
-        const uint64_t nowPin = GetTickCount64();
-        const float angOff = quat_angle_deg(g_ref[anchor].q, g_rest[anchor].q);
-        if ((mag > 1.0f || angOff > 2.0f) && nowPin - s_pinLog >= 1000) {
-            s_pinLog = nowPin;
-            BVR_LOG("[bones] ANIMPIN: the adopted pose had taken the anchor %.1f UU and "
-                    "%.1f deg off the captured rest; pinned back on both. The animation "
-                    "keeps its shape, the hand keeps its place AND its heading.",
-                    mag, angOff);
-        }
-    }
+    // BRVR pins nothing. Its WriteCluster is fed the reference's OWN wrist, so
+    // the delta is identity and the cluster replays verbatim; when it adopts, it
+    // adopts the whole live pose and replays THAT verbatim. An animation moving
+    // the hand is the animation doing its job - recoil is supposed to be visible.
     // Viewmodel scale (session 61, see the g_scale block comment): the
     // anchor-relative translations shrink by s for every cluster bone - the
     // cluster scales ABOUT THE ANCHOR, so the anchor write-loc is unchanged
@@ -2670,32 +2609,14 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // and only its size changes.
             float off[3] = {(g_ref[i].p[0] - pa[0]) * s, (g_ref[i].p[1] - pa[1]) * s,
                             (g_ref[i].p[2] - pa[2]) * s};
-            if (pinAnim) {
-                float rot[3];
-                qts_rotate(qFix, off, rot);
-                off[0] = rot[0];
-                off[1] = rot[1];
-                off[2] = rot[2];
-                quat_mul(qFix, g_ref[i].q, q);
-                // g_ref[i].q can itself be a mid-blend non-unit quat, so the
-                // product is too. Renormalise per bone: the rig is skinned on
-                // the assumption these are rotations, and a quat that is not
-                // unit stretches the vertices it drives.
-                const float bn = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-                if (bn > 1e-4f) {
-                    q[0] /= bn;
-                    q[1] /= bn;
-                    q[2] /= bn;
-                    q[3] /= bn;
-                } else {
-                    memcpy(q, g_ref[i].q, 16); // leave the engine's own value
-                }
-            } else {
-                memcpy(q, g_ref[i].q, 16);
-            }
-            p[0] = pa[0] + off[0] + animPin[0];
-            p[1] = pa[1] + off[1] + animPin[1];
-            p[2] = pa[2] + off[2] + animPin[2];
+            // VERBATIM. BRVR's WriteCluster is fed the reference's own wrist,
+            // so its qDelta collapses to identity and every bone is rewritten
+            // exactly where the authored pose put it. This is that, with the
+            // viewmodel scale applied about the anchor.
+            memcpy(q, g_ref[i].q, 16);
+            p[0] = pa[0] + off[0];
+            p[1] = pa[1] + off[1];
+            p[2] = pa[2] + off[2];
             if (attachBone) {
                 // Position always; rotation only if the attach-rotation toggle
                 // is on. BRVR ships position-only here and its own log shows
@@ -3061,12 +2982,17 @@ void handle_command(const char* args) {
                 g_lastHand.load(std::memory_order_relaxed), g_refValid ? 1 : 0,
                 g_collapse.load(std::memory_order_relaxed) ? 1 : 0,
                 g_hideInactive.load(std::memory_order_relaxed) ? 1 : 0, g_hiddenHand);
-        BVR_LOG("[bones] s68 rest: restore=%s blend=%ums captured=%d returning=%d | "
-                "hands state %s (mask 0x%X)",
-                g_restRestore.load(std::memory_order_relaxed) ? "ON" : "off",
-                g_restBlendMs.load(std::memory_order_relaxed), g_restValid ? 1 : 0,
-                g_restoreStartMs ? 1 : 0, hands_state::to_string(g_lastKnownState),
-                g_animStateMask.load(std::memory_order_relaxed));
+        BVR_LOG("[bones] s70 settle: window=%s floor=%ums still=%ums/%.3fUU ceiling=%ums "
+                "debounce=%ums | adopt above %.1f deg, hold %ums | hands state %s",
+                g_settleN > 0 ? "OPEN" : "closed",
+                g_settleMinMs.load(std::memory_order_relaxed),
+                g_settleStillMs.load(std::memory_order_relaxed),
+                g_settleStillUu.load(std::memory_order_relaxed),
+                g_settleCeilMs.load(std::memory_order_relaxed),
+                g_keyDebounceMs.load(std::memory_order_relaxed),
+                g_swayAngThreshDeg.load(std::memory_order_relaxed),
+                g_swaySettleMs.load(std::memory_order_relaxed),
+                hands_state::to_string(g_lastKnownState));
         // Session 30: the drive-residue state, on demand. Until now cacheAge
         // existed only on the `[b1r] cine edge` line and the sleeve latch was
         // printed nowhere at all, so a hands regression check had to provoke a
@@ -3210,45 +3136,27 @@ void handle_command(const char* args) {
                 g_swayAngThreshDeg.load(std::memory_order_relaxed),
                 g_swayPosThreshUu.load(std::memory_order_relaxed),
                 g_swaySettleMs.load(std::memory_order_relaxed));
-    } else if (strcmp(verb, "rest") == 0) {
-        // "rest on|off | rest ms <n> | rest drop | rest" (status)
-        if (strncmp(rest, "on", 2) == 0) {
-            set_rest_restore(true);
-        } else if (strncmp(rest, "off", 3) == 0) {
-            set_rest_restore(false);
-        } else if (strncmp(rest, "ms", 2) == 0) {
-            unsigned ms = 0;
-            if (sscanf_s(rest + 2, "%u", &ms) == 1) set_rest_blend_ms(ms);
-        } else if (strncmp(rest, "drop", 4) == 0) {
-            drop_rest();
-        }
-        BVR_LOG("[bones] rest restore %s, blend %u ms | captured=%d blending=%d | "
-                "last known state %s",
-                g_restRestore.load(std::memory_order_relaxed) ? "ON" : "off",
-                g_restBlendMs.load(std::memory_order_relaxed), g_restValid ? 1 : 0,
-                g_restoreStartMs ? 1 : 0, hands_state::to_string(g_lastKnownState));
-    } else if (strcmp(verb, "capidle") == 0) {
-        const bool on = strncmp(rest, "on", 2) == 0;
-        g_capAtIdling.store(on, std::memory_order_relaxed);
-        BVR_LOG("[bones] equip capture = %s (%u ms window when off). %s",
-                on ? "ON THE IDLING EDGE" : "the old fixed window",
-                g_swaySettleMs.load(std::memory_order_relaxed),
-                on ? "The rig stops following the animation the moment the equip ends, "
-                     "so no idle fidget is played into it and the captured pose is the "
-                     "equip's end rather than a frame of the fidget."
-                   : "Follows the animation for the whole window and freezes wherever it "
-                     "lands - one cycle of the idle fidget plays, and the reference is a "
-                     "sample of it.");
-    } else if (strcmp(verb, "animpin") == 0) {
-        const bool on = strncmp(rest, "on", 2) == 0;
-        g_animPin.store(on, std::memory_order_relaxed);
-        BVR_LOG("[bones] anim anchor pin %s - %s",
-                on ? "ON" : "off",
-                on ? "an adopted animation changes the POSE but cannot drag the hand off "
-                     "the controller: the anchor is held on the captured rest and the "
-                     "cluster carried with it"
-                   : "the adopted pose moves the anchor too, so the hand follows the "
-                     "animation away from the controller (the s69 defect)");
+    } else if (strcmp(verb, "settle") == 0) {
+        // s70: replaces `rest`, `capidle` and `animpin`, which controlled the
+        // three pieces of machinery this session deleted.
+        // "settle [minMs stillMs ceilMs stillUu debounceMs]"
+        unsigned mn = 0, st = 0, ce = 0, db = 0;
+        float uu = 0.0f;
+        const int n = sscanf_s(rest, "%u %u %u %f %u", &mn, &st, &ce, &uu, &db);
+        if (n >= 1 && mn > 0) g_settleMinMs.store(mn, std::memory_order_relaxed);
+        if (n >= 2 && st > 0) g_settleStillMs.store(st, std::memory_order_relaxed);
+        if (n >= 3 && ce > 0) g_settleCeilMs.store(ce, std::memory_order_relaxed);
+        if (n >= 4 && uu > 0.0f) g_settleStillUu.store(uu, std::memory_order_relaxed);
+        if (n >= 5) g_keyDebounceMs.store(db, std::memory_order_relaxed);
+        BVR_LOG("[bones] settle: floor %u ms, still for %u ms under %.3f UU/frame, "
+                "ceiling %u ms, key debounce %u ms (BRVR ships 350 / 150 / 0.05 / 600 "
+                "/ 150). Window %s.",
+                g_settleMinMs.load(std::memory_order_relaxed),
+                g_settleStillMs.load(std::memory_order_relaxed),
+                g_settleStillUu.load(std::memory_order_relaxed),
+                g_settleCeilMs.load(std::memory_order_relaxed),
+                g_keyDebounceMs.load(std::memory_order_relaxed),
+                g_settleN > 0 ? "OPEN" : "closed");
     } else if (strcmp(verb, "attachrot") == 0) {
         bool on = strncmp(rest, "on", 2) == 0;
         g_attachRot.store(on, std::memory_order_relaxed);
@@ -3269,10 +3177,10 @@ void handle_command(const char* args) {
     } else if (strcmp(verb, "ref") == 0) {
         g_refValid = false;
         g_hasWritten[0] = g_hasWritten[1] = false;
-        rest_reset();
+        settle_reset();
         set_dirty(1);
         BVR_LOG("[bones] reference pose recapture queued (next engine evaluation), "
-                "canonical rest dropped - it is retaken on the next Idling");
+                "settle window dropped");
     } else if (strcmp(verb, "anchor") == 0) {
         int idx = -1;
         sscanf_s(rest, "%d", &idx);
@@ -3468,6 +3376,45 @@ void draw_debug_ui() {
     }
 
     {
+        // s70: WHICH BONE THE FROZEN CLUSTER IS ANCHORED ON. The one control
+        // that needs no rebuild to answer the biggest open question, and it is a
+        // RADIO rather than a console verb on purpose - the tester cannot type
+        // with both hands on the controllers.
+        ImGui::TextDisabled("FREEZE ANCHOR - the bone everything else hangs off");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Wrist 27 is BRVR's. Its cluster spec is {27, 44, wrist 27} and\n"
+                "every replay is anchored on that wrist.\n\n"
+                "Attach 43 is what this tree shipped, and it is the WEAPON ATTACH\n"
+                "bone - the one bone BRVR deliberately leaves the engine still\n"
+                "animating. Its own log: cluster frozen, this bone is still the\n"
+                "engine's, with 1-5 deg of idle drift and peaks of 41-135.\n\n"
+                "Anchoring the freeze on a bone the engine animates writes every\n"
+                "other bone relative to a MOVING point, so the whole cluster is\n"
+                "dragged along by it. If the hand walks off the controller during\n"
+                "recoil or a reload, this is the first thing to try.");
+        const int curAnchor = g_rAnchorOverride.load(std::memory_order_relaxed);
+        int asel = (curAnchor == patterns::kBoneWeaponAttach) ? 1
+                   : (curAnchor == patterns::kBoneRWrist)     ? 0
+                                                              : 0; // -1 = wrist in freeze
+        if (ImGui::RadioButton("wrist 27 (BRVR)", &asel, 0)) {
+            g_rAnchorOverride.store(-1, std::memory_order_relaxed);
+            set_dirty(1);
+            BVR_LOG("[bones] freeze anchor = WRIST %d (F10, BRVR's own) - the cluster "
+                    "now hangs off a bone we write, not one the engine animates",
+                    patterns::kBoneRWrist);
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("attach 43 (old)", &asel, 1)) {
+            g_rAnchorOverride.store(patterns::kBoneWeaponAttach, std::memory_order_relaxed);
+            set_dirty(1);
+            BVR_LOG("[bones] freeze anchor = WEAPON ATTACH %d (F10) - the pre-s70 "
+                    "behaviour; this bone is still engine-animated",
+                    patterns::kBoneWeaponAttach);
+        }
+    }
+
+    {
         // s67: the animation-adoption threshold, live. See the g_swayAngThreshDeg
         // banner - these are BRVR's HandAnimMinDeg / HandAnimHoldMs, and the old
         // hardcoded 12 deg / 600 ms is what froze real animation out.
@@ -3494,62 +3441,46 @@ void draw_debug_ui() {
         if (ImGui::Checkbox("Freeze idle sway (untick = adopt everything)", &sk))
             g_swayKill.store(sk, std::memory_order_relaxed);
 
-        bool ap = g_animPin.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Animations cannot move the hand off the controller", &ap))
-            g_animPin.store(ap, std::memory_order_relaxed);
+        // s70: BRVR's settle window, live. Replaces the animpin / capidle /
+        // rest-restore controls that stood here - all three drove machinery this
+        // session deleted. These are the numbers BRVR ships and the ones the
+        // headset run needs to be able to move.
+        ImGui::TextDisabled("EQUIP SETTLE - when the pose is captured after a switch");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
-                "The rig is carried to your controller by the ACTOR, with the hand pose\n"
-                "written underneath it. An adopted animation moves that pose - including\n"
-                "the palm - so without this the whole hand follows the animation away\n"
-                "from where your controller is."
-                "\n"
-                "ON: the palm is held on the captured rest and the animation plays\n"
-                "around it. Fingers, wrist rotation and shape are all unchanged."
-                "\n"
-                "Untick to see the difference; it needs no rebuild.");
-
-        // s68k: the A/B for the equip capture. Render thread - atomic only, like
-        // every other control in this panel.
-        bool ci = g_capAtIdling.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Capture the equip pose at the Idling edge", &ci))
-            g_capAtIdling.store(ci, std::memory_order_relaxed);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "ON: the rig stops following the engine the instant the equip ends, so\n"
-                "the captured pose is the equip's END - the last frame before the idle\n"
-                "fidget starts."
-                "\n"
-                "OFF: follows the animation for a fixed window and freezes wherever it\n"
-                "lands. One cycle of the idle fidget plays on every equip, and the\n"
-                "reference becomes a sample of that fidget."
-                "\n"
-                "Each plasmid has its own fidget (Telekinesis inherits the generic one),\n"
-                "which is why OFF is wrong for one plasmid and fine for another.");
-
-        // s68: the recoil-apex fix, live. This is the A/B for it - untick and
-        // the s67 behaviour is back, so a headset run can settle whether the
-        // return-to-rest is an improvement without a rebuild.
-        bool rr = g_restRestore.load(std::memory_order_relaxed);
-        if (ImGui::Checkbox("Return to rest when an animation ends", &rr))
-            set_rest_restore(rr);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "The state machine leaves WeaponFiring at the TOP of the recoil.\n"
-                "Without this the rig simply stops adopting there and STAYS at the\n"
-                "apex until you switch weapons - the s67 pistol freeze, and the\n"
-                "same reason the gun stuck on ammo-out and the shotgun's first\n"
-                "reload.\n\n"
-                "On: ease back to the canonical pose captured during Idling.\n"
-                "Off: the s67 behaviour, for comparison.");
-        int rb = static_cast<int>(g_restBlendMs.load(std::memory_order_relaxed));
-        if (ImGui::SliderInt("return blend (ms, 0 = snap)", &rb, 0, 500))
-            set_rest_blend_ms(static_cast<unsigned>(rb < 0 ? 0 : rb));
-        ImGui::Text("rest pose: %s%s | state %s", g_restValid ? "captured" : "NOT YET",
-                    g_restoreStartMs ? ", returning now" : "",
+                "On a weapon or plasmid switch the rig follows the equip animation,\n"
+                "and the pose is captured once it stops moving.\n\n"
+                "floor    : ignore stillness before this - many draws PAUSE part-way\n"
+                "           through, and quiet inside a pause is not the end.\n"
+                "still    : how long the anchor must stay under the threshold.\n"
+                "ceiling  : give up waiting. A looping idle NEVER goes still, so when\n"
+                "           the ceiling is what stopped it the captured pose is the\n"
+                "           MEAN of the window - the centre of the loop rather than\n"
+                "           whichever phase the ceiling landed on.\n"
+                "debounce : the engine parks CurrentHoldable at NULL for a frame\n"
+                "           during fire and pump animations. Without this, those\n"
+                "           blips read as weapon switches.");
+        int smn = static_cast<int>(g_settleMinMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("floor (ms)", &smn, 0, 1500))
+            g_settleMinMs.store(static_cast<unsigned>(smn < 0 ? 0 : smn),
+                                std::memory_order_relaxed);
+        int sst = static_cast<int>(g_settleStillMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("still for (ms)", &sst, 0, 1000))
+            g_settleStillMs.store(static_cast<unsigned>(sst < 0 ? 0 : sst),
+                                  std::memory_order_relaxed);
+        int sce = static_cast<int>(g_settleCeilMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("ceiling (ms)", &sce, 100, 4000))
+            g_settleCeilMs.store(static_cast<unsigned>(sce < 1 ? 1 : sce),
+                                 std::memory_order_relaxed);
+        float suu = g_settleStillUu.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("still under (UU/frame)", &suu, 0.01f, 2.0f, "%.3f"))
+            g_settleStillUu.store(suu, std::memory_order_relaxed);
+        int sdb = static_cast<int>(g_keyDebounceMs.load(std::memory_order_relaxed));
+        if (ImGui::SliderInt("switch debounce (ms)", &sdb, 0, 1000))
+            g_keyDebounceMs.store(static_cast<unsigned>(sdb < 0 ? 0 : sdb),
+                                  std::memory_order_relaxed);
+        ImGui::Text("settle window: %s | state %s", g_settleN > 0 ? "OPEN" : "closed",
                     hands_state::to_string(g_lastKnownState));
-        ImGui::SameLine();
-        if (ImGui::SmallButton("retake")) drop_rest();
     }
 
     bool col = g_collapse.load(std::memory_order_relaxed);
