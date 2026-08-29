@@ -40,22 +40,23 @@ void on_calcview(const FrameContext& ctx);
 // s67 CROSSHAIR trim, for the in-headset tuner (BRVR calls it CursorOffset).
 // This is the AIM ray: the laser, the dot and the bullet all come off it, so
 // moving it moves all three together by construction.
-// s70: GLOBAL AGAIN, by the tester's direction - "the crosshair is a global
-// position". The weapon profile no longer stashes or applies it, so switching
-// weapon or plasmid cannot move the dot.
+// s70d: PER WEAPON AGAIN. The global crosshair was tried and reverted.
 //
-// GLOBAL PER HAND, not one value for both, and the seeded table is why: the
-// weapons cluster at 0.83/-9.20 while the plasmid sits at -11.00/37.00, which is
-// 46 deg of yaw apart. Those are two different model frames, not two opinions
-// about one number. Every weapon shares hand 1's value and every plasmid shares
-// hand 0's - which is the "all separate but linked to the same value" the
-// tester asked for.
+// s70 made it global at the tester's request - "the crosshair is a global
+// position", the one deviation they wanted from BRVR. Tested, and the report was
+// "now my crosshair is way off for all of my weapons".
 //
-// NOTE, because it is a reversal: s67 tried a global crosshair and recorded that
-// it "does not [serve every gun], for the same reason the grip offsets are per
-// weapon" - the seeded trims do differ by up to ~8 deg of yaw between weapons.
-// BRVR is not a precedent here either; it keys cursorRot per slot AND per
-// plasmid. This is the one deliberate deviation from BRVR in the s70 port.
+// It is the third independent time this answer has come back the same way:
+// s67 tried a global crosshair and recorded that it "does not [serve every gun],
+// for the same reason the grip offsets are per weapon"; BRVR itself keys
+// cursorRot per slot AND per plasmid, in the config the tester calls perfect;
+// and now s70. The seeded table says why in one line - the weapons span 0.83 to
+// -6.67 in pitch and -6.70 to -14.70 in yaw, and the plasmids sit at -11.00 and
+// +37.00. A single number cannot be right for a set that wide.
+//
+// If it is wanted global again, the thing to change is not this: give the tuner
+// a way to copy one weapon's trim to all of them, so they are all THE SAME by
+// choice while each stays individually settable.
 void aim_trim_deg(int hand, float* pitchDeg, float* yawDeg);
 void set_aim_trim_all(float pitchDeg, float yawDeg);
 

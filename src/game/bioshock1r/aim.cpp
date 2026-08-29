@@ -89,8 +89,8 @@ std::atomic<bool> g_muzzleRay{false};
 // weapon profile no longer swaps them. The defaults are the seeded set's own
 // numbers (plasmid -11.00/37.00, the weapons' common 0.83/-9.20) so a fresh
 // install lands where the per-weapon table used to put it.
-std::atomic<float> g_pitchOffsetDeg[2] = {-11.0f, 0.83f};
-std::atomic<float> g_yawOffsetDeg[2] = {37.0f, -9.20f};
+std::atomic<float> g_pitchOffsetDeg[2] = {-11.0f, 0.2f};
+std::atomic<float> g_yawOffsetDeg[2] = {37.0f, -4.5f};
 // Per-hand aim-ray ORIGIN offsets in cm (session 18 part 2, user request):
 // the model offsets move the MESH about its pivot, so a tuned model can sit
 // right while the ray no longer runs along the barrel. These move the RAY
@@ -1006,9 +1006,8 @@ void stash_active_profile() {
     if (g_weaponKey.empty()) return;
     const int ph = profile_hand(g_weaponKey);
     WeaponProfile& p = g_weaponProfiles[g_weaponKey];
-    // s70: trimPitch/trimYaw are NOT stashed - the crosshair is global now. The
-    // fields remain in the struct and in weapons.ini so existing files still
-    // parse, but nothing reads them back.
+    p.trimPitch = g_pitchOffsetDeg[ph].load(std::memory_order_relaxed);
+    p.trimYaw = g_yawOffsetDeg[ph].load(std::memory_order_relaxed);
     p.posFwd = g_posFwdCm[ph].load(std::memory_order_relaxed);
     p.posRight = g_posRightCm[ph].load(std::memory_order_relaxed);
     p.posUp = g_posUpCm[ph].load(std::memory_order_relaxed);
@@ -1063,7 +1062,8 @@ void apply_weapon_key(const std::string& key, const char* why) {
             p.modelRoll = hands::model_trim_roll_deg(ph);
         }
         g_weaponProfiles[key] = p;
-        // s70: the crosshair is global - trim is deliberately not applied here.
+        g_pitchOffsetDeg[ph].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[ph].store(p.trimYaw, std::memory_order_relaxed);
         g_posFwdCm[ph].store(p.posFwd, std::memory_order_relaxed);
         g_posRightCm[ph].store(p.posRight, std::memory_order_relaxed);
         g_posUpCm[ph].store(p.posUp, std::memory_order_relaxed);
@@ -1071,13 +1071,14 @@ void apply_weapon_key(const std::string& key, const char* why) {
         hands::set_view_offset_cm(ph, p.viewFwd, p.viewRight, p.viewUp);
         bones::set_anim_allowed(p.animOn != 0.0f);
         hands::set_model_trim_deg(ph, p.modelPitch, p.modelYaw, p.modelRoll);
-        BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): pos %.1f/%.1f/%.1f "
-                "[crosshair is global, not per profile]",
+        BVR_LOG("[aim] weapon profile '%s' CREATED from the %s (%s): trim %.2f/%.2f pos "
+                "%.1f/%.1f/%.1f",
                 key.c_str(), g_presetBaselineValid ? "preset baseline" : "current R values",
-                why, p.posFwd, p.posRight, p.posUp);
+                why, p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp);
     } else {
         const WeaponProfile& p = it->second;
-        // s70: the crosshair is global - trim is deliberately not applied here.
+        g_pitchOffsetDeg[ph].store(p.trimPitch, std::memory_order_relaxed);
+        g_yawOffsetDeg[ph].store(p.trimYaw, std::memory_order_relaxed);
         g_posFwdCm[ph].store(p.posFwd, std::memory_order_relaxed);
         g_posRightCm[ph].store(p.posRight, std::memory_order_relaxed);
         g_posUpCm[ph].store(p.posUp, std::memory_order_relaxed);
@@ -1090,9 +1091,9 @@ void apply_weapon_key(const std::string& key, const char* why) {
         // after the crosshair went global and stopped applying them - an
         // instrument describing behaviour the code no longer has, which is the
         // exact failure this file's own s68 notes were written about.
-        BVR_LOG("[aim] weapon profile '%s' applied: pos %.1f/%.1f/%.1f "
-                "grip %.1f/%.1f/%.1f (%s) [crosshair is global, not per profile]",
-                key.c_str(), p.posFwd, p.posRight, p.posUp,
+        BVR_LOG("[aim] weapon profile '%s' applied: trim %.2f/%.2f pos %.1f/%.1f/%.1f "
+                "grip %.1f/%.1f/%.1f (%s)",
+                key.c_str(), p.trimPitch, p.trimYaw, p.posFwd, p.posRight, p.posUp,
                 p.gripFwd, p.gripRight, p.gripUp, why);
     }
 }
@@ -1515,7 +1516,8 @@ void reapply_weapon_profile() {
     auto it = g_weaponProfiles.find(g_weaponKey);
     if (it == g_weaponProfiles.end()) return;
     const WeaponProfile& p = it->second;
-    // s70: trim is global and is not restored from a profile.
+    g_pitchOffsetDeg[1].store(p.trimPitch, std::memory_order_relaxed);
+    g_yawOffsetDeg[1].store(p.trimYaw, std::memory_order_relaxed);
     g_posFwdCm[1].store(p.posFwd, std::memory_order_relaxed);
     g_posRightCm[1].store(p.posRight, std::memory_order_relaxed);
     g_posUpCm[1].store(p.posUp, std::memory_order_relaxed);

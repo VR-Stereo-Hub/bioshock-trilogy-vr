@@ -243,14 +243,28 @@ std::atomic<float> g_swayAngThreshLeftDeg{2.0f};
 //                   never settles cannot wedge the window open.
 std::atomic<unsigned> g_keyDebounceMs{150};
 std::atomic<float> g_settleStillUu{0.05f};
+// s70d: the rotational half of the stillness test. 0.25 deg per engine
+// evaluation - the rig evaluates ~30 times per 359 ms window, so a genuine
+// settle sits far below this while the 15-100 deg turns ANIMPIN measured are
+// orders of magnitude above it. A first estimate; the settle log prints which
+// axis was still moving so it can be set from data.
+std::atomic<float> g_settleStillDeg{0.25f};
 std::atomic<unsigned> g_settleStillMs{150};
 std::atomic<unsigned> g_settleMinMs{350};
-std::atomic<unsigned> g_settleCeilMs{600};
+// s70d: 1500, not BRVR's 600 default - it is what the TESTER's own BRVR ini
+// sets (WeaponSwitchSettleMs=1500), and the plasmid captures here were landing
+// at 359 ms mid-rotation. A ceiling only bites when the rig never stills, so
+// raising it costs nothing when the settle works and saves the capture when it
+// does not.
+std::atomic<unsigned> g_settleCeilMs{1500};
 
 // The settle window's own state. g_settleN > 0 means a window is open.
 uint64_t g_settleStartMs = 0;   // when the switch was seen
 uint64_t g_settleLastMoved = 0; // last frame the wrist moved more than the threshold
 float g_settlePrevWrist[3] = {0.0f, 0.0f, 0.0f};
+float g_settlePrevQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // s70d: rotation too
+float g_settleFirstQ[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // s70d: window start, for the log
+bool g_settleHaveFirst = false;
 bool g_settleHavePrev = false;
 // s70b: THERE IS NO POSE AVERAGING HERE, AND THE ATTEMPT AT IT WAS A BUG.
 //
@@ -279,6 +293,7 @@ void settle_reset() {
     g_settleStartMs = 0;
     g_settleLastMoved = 0;
     g_settleHavePrev = false;
+    g_settleHaveFirst = false;
     g_settleN = 0;
 }
 // Telemetry (1 Hz while frozen): the probe deltas the threshold judges, so
@@ -2318,17 +2333,50 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // to its two-hand GRAB POINT - one point, where an average is
             // meaningful - and never to a pose. See the s70b note on the settle
             // state for what happened when that was generalised.
+            // ---- STILLNESS IS POSITION *AND* ROTATION -----------------------
+            //
+            // BRVR tests POSITION only, and for a WEAPON that is enough: an
+            // equip swings the wrist bodily through space, so when the position
+            // stops the animation is over.
+            //
+            // A PLASMID EQUIP BARELY MOVES THE PALM - IT TURNS IT. Measured, the
+            // tester's 2026-08-29 00:18 run: every plasmid capture reported
+            // "rig went still" at 359-375 ms against a 350 ms floor, i.e. at the
+            // earliest instant the floor allowed, while ANIMPIN went on to
+            // report the anchor 15, 28, 51, 52 and 100.5 deg off that captured
+            // heading. Both cannot be true of a settled rig. The position test
+            // was blind to the only axis that was still moving, so the capture
+            // latched a mid-rotation heading - and everything downstream then
+            // did correct work against a corrupt reference, which is why the
+            // anchor, the adoption policy, the model trim and the pin all
+            // changed nothing.
+            //
+            // The tester's own BRVR ini corroborates the shape of this:
+            // WeaponSwitchSettleMs=1500, raised from BRVR's 600 default, which
+            // is what you do when captures keep landing too early.
             const uint64_t nowS = GetTickCount64();
             if (anchor < g_boneCount) {
                 if (g_settleHavePrev) {
                     const float dx = fresh[anchor].p[0] - g_settlePrevWrist[0];
                     const float dy = fresh[anchor].p[1] - g_settlePrevWrist[1];
                     const float dz = fresh[anchor].p[2] - g_settlePrevWrist[2];
-                    if (sqrtf(dx * dx + dy * dy + dz * dz) >
-                        g_settleStillUu.load(std::memory_order_relaxed))
-                        g_settleLastMoved = nowS;
+                    const bool movedPos = sqrtf(dx * dx + dy * dy + dz * dz) >
+                                          g_settleStillUu.load(std::memory_order_relaxed);
+                    // quat_angle_deg normalises both sides (s70), which matters
+                    // here - the bank does not hold unit quats mid-blend and an
+                    // un-normalised angle is exactly how a rotating rig reads
+                    // as still.
+                    const bool movedRot =
+                        quat_angle_deg(fresh[anchor].q, g_settlePrevQuat) >
+                        g_settleStillDeg.load(std::memory_order_relaxed);
+                    if (movedPos || movedRot) g_settleLastMoved = nowS;
+                }
+                if (!g_settleHaveFirst) {
+                    memcpy(g_settleFirstQ, fresh[anchor].q, sizeof g_settleFirstQ);
+                    g_settleHaveFirst = true;
                 }
                 memcpy(g_settlePrevWrist, fresh[anchor].p, sizeof g_settlePrevWrist);
+                memcpy(g_settlePrevQuat, fresh[anchor].q, sizeof g_settlePrevQuat);
                 g_settleHavePrev = true;
             }
             ++g_settleN; // sample count, for the log only
@@ -2352,12 +2400,20 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 // RE-EVALUATED the bone array. The first run answered it - 24 to
                 // 48 evaluations per window, not the 2 or 3 that s68's "1 frame
                 // in 19" implied - so the window has plenty of data.
+                // HOW FAR THE ANCHOR TURNED ACROSS THE WHOLE WINDOW. If a
+                // capture reports "still" while this reads tens of degrees, the
+                // stillness test is lying again and this line is the proof -
+                // that is precisely how the 359 ms plasmid captures were caught.
+                const float turned =
+                    g_settleHaveFirst ? quat_angle_deg(fresh[anchor].q, g_settleFirstQ) : 0.0f;
                 BVR_LOG("[bones] equip settled after %llu ms over %d engine evaluation(s) "
-                        "(%s) - capturing this holdable's live pose as its reference.",
+                        "(%s) - anchor bone %d turned %.1f deg across the window. "
+                        "Capturing this holdable's live pose as its reference.",
                         static_cast<unsigned long long>(nowS - g_settleStartMs), g_settleN,
                         still ? "rig went still"
-                              : "ceiling reached - the rig never stopped moving, so this "
-                                "pose is one frame of a loop and may sit off");
+                              : "ceiling reached - the rig never stopped moving",
+                        anchor, turned);
+                g_settleHaveFirst = false;
                 // LATCH THE ORIENTATION THE ACTOR IS ABOUT TO BE ALIGNED TO.
                 // Everything after this frame is measured against it, so it has
                 // to be taken from the pose we are capturing, not from g_ref -
