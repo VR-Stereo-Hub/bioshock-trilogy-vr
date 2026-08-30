@@ -1799,6 +1799,32 @@ void late_write() {
     //
     // Separately toggleable so the before/after is one checkbox rather than a
     // rebuild, because a claim this size should be falsifiable in the headset.
+    // s70r LATEWRITE probe: how far had the engine moved the actor before this
+    // ran, and did our write stick? "its still happening" after the location
+    // replay landed means one of three things and this tells them apart:
+    //   delta ~0        - the engine is NOT moving the actor, and the desync is
+    //                     somewhere else entirely
+    //   delta large     - it is, and this replay is the right idea
+    //   delta large AND the same next frame - something writes it AFTER us, so
+    //                     late_write is not late enough
+    {
+        static uint64_t s_lwLog = 0;
+        float pre[3] = {0.0f, 0.0f, 0.0f};
+        const uint64_t nowLw = GetTickCount64();
+        if (nowLw - s_lwLog >= 500 &&
+            read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, pre)) {
+            const float d[3] = {pre[0] - g_lwLoc[0], pre[1] - g_lwLoc[1], pre[2] - g_lwLoc[2]};
+            const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (m > 0.5f) {
+                s_lwLog = nowLw;
+                char wk[48] = "?";
+                aim::weapon_key_name(wk, sizeof wk);
+                BVR_LOG("[hands] LATEWRITE: the engine had moved the actor %.1f UU off our "
+                        "write before the replay (%+.1f %+.1f %+.1f) | holding '%s'",
+                        m, d[0], d[1], d[2], wk);
+            }
+        }
+    }
     bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
     if (g_lateWriteLoc.load(std::memory_order_relaxed))
         ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, g_lwLoc) && ok;
