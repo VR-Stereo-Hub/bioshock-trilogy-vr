@@ -482,6 +482,11 @@ std::atomic<unsigned> g_elbowSmoothMs{70};
 // further than a real arm does.
 std::atomic<float> g_elbowFollowWrist{0.60f};
 float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
+// s72u: the free arm smooths its elbow in WORLD, not component space - see the
+// banner at the smoothing. Separate storage so the two frames never mix when a
+// hand changes role.
+float g_elbowPrevW[2][3] = {{0, 0, 0}, {0, 0, 0}};
+bool g_elbowHavePrevW[2] = {false, false};
 bool g_elbowHavePrev[2] = {false, false};
 // s72j: the forearm twist, smoothed on the elbow's own lane. Per hand, because
 // the two arms twist independently - FRIK: "each arm solves independently...
@@ -2853,7 +2858,58 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             // not change between 72 and 120 Hz.
             const unsigned tau = g_elbowSmoothMs.load(std::memory_order_relaxed);
             const uint64_t nowE = GetTickCount64();
-            if (tau > 0 && g_elbowHavePrev[hand]) {
+
+            // ---- s72u: SMOOTH THE ELBOW IN WORLD, NOT COMPONENT SPACE --------
+            //
+            // MEASURED, and it is the last coupling. With the off hand held
+            // perfectly still and the main hand moving, FOREARM logged the free
+            // WRIST steady to 0.4 UU while the free ELBOW swung 25 UU - and every
+            // geometric input to the elbow is fixed in world (shoulder,
+            // wrist, bone lengths, pole). The only term left is this one, and it
+            // is the only STATEFUL one.
+            //
+            // g_elbowPrev holds last frame's elbow in COMPONENT space, which
+            // moves and spins with the actor. Blending this frame's elbow against
+            // it while the actor has travelled in between drags the elbow after
+            // the actor - i.e. after the HELD hand. The wrist is not smoothed,
+            // which is exactly why it was immune, and why the forearm read as
+            // pivoting about a fixed wrist: "the forearms are perfectly synced".
+            //
+            // Smoothing is only meaningful between two poses in the SAME frame,
+            // so the free arm now carries its previous elbow in world and
+            // converts back afterwards. The held hand keeps the component-space
+            // lane: it is carried by the actor it is solved in, and it is the
+            // signed-off half of this subsystem. The same latent error exists
+            // there and is worth revisiting on its own.
+            if (freeBank && tau > 0) {
+                float aQ[4];
+                quat_conj(qaUse, aQ);
+                float Ew[3];
+                {
+                    const float sp[3] = {E[0] * rigScale, E[1] * rigScale, E[2] * rigScale};
+                    qts_rotate(aQ, sp, Ew);
+                    for (int c = 0; c < 3; ++c) Ew[c] += aLoc[c];
+                }
+                if (g_elbowHavePrevW[hand]) {
+                    float dtMs = static_cast<float>(nowE - g_elbowLastMs[hand]);
+                    if (dtMs < 0.0f) dtMs = 0.0f;
+                    if (dtMs > 250.0f) dtMs = 250.0f;
+                    const float alpha = 1.0f - expf(-dtMs / static_cast<float>(tau));
+                    for (int c = 0; c < 3; ++c)
+                        Ew[c] = g_elbowPrevW[hand][c] + (Ew[c] - g_elbowPrevW[hand][c]) * alpha;
+                }
+                memcpy(g_elbowPrevW[hand], Ew, sizeof g_elbowPrevW[hand]);
+                g_elbowHavePrevW[hand] = true;
+                // Back into the divided component space the rest of the solve uses.
+                float rel[3] = {Ew[0] - aLoc[0], Ew[1] - aLoc[1], Ew[2] - aLoc[2]};
+                qts_rotate(qaUse, rel, E);
+                if (rigScale > 0.01f && fabsf(rigScale - 1.0f) > 0.001f) {
+                    E[0] /= rigScale;
+                    E[1] /= rigScale;
+                    E[2] /= rigScale;
+                }
+            }
+            if (!freeBank && tau > 0 && g_elbowHavePrev[hand]) {
                 float dtMs = static_cast<float>(nowE - g_elbowLastMs[hand]);
                 if (dtMs < 0.0f) dtMs = 0.0f;
                 if (dtMs > 250.0f) dtMs = 250.0f; // a hitch must not snap the arm
@@ -3095,6 +3151,51 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                                 tw * (twistDeg / kRadToDeg), qkTw);
                 quat_mul(qkTw, qkBase, qk);
                 put(armIdx[k], tp, qk);
+            }
+
+            // ---- s72t FOREARM: is the free forearm's WORLD pose actually moving?
+            //
+            // The tester reports the two FOREARMS synced - shoulder and elbow now
+            // clean. Every input to this solve reads as actor-independent, so
+            // rather than guess a ninth time this lifts the free forearm's two
+            // ends into WORLD and prints them beside the held actor's own pose.
+            //
+            // World, because that is where "synced" is judged: E and W are in
+            // DrawScale-divided component space, so the lift is
+            //     world = aLoc + A * (rigScale * p)
+            // with A recovered from qaUse. If these world numbers move while the
+            // held hand moves, the coupling is real and its size is right here;
+            // if they hold, the forearm is where we put it and what is synced is
+            // something downstream of the bone write.
+            if (freeBank) {
+                static uint64_t s_faLog[2] = {0, 0};
+                const uint64_t nowFa = GetTickCount64();
+                if (nowFa - s_faLog[hand] >= 500) {
+                    s_faLog[hand] = nowFa;
+                    float aQ[4];
+                    quat_conj(qaUse, aQ);
+                    auto lift = [&](const float p[3], float out[3]) {
+                        const float sp[3] = {p[0] * rigScale, p[1] * rigScale,
+                                             p[2] * rigScale};
+                        qts_rotate(aQ, sp, out);
+                        out[0] += aLoc[0];
+                        out[1] += aLoc[1];
+                        out[2] += aLoc[2];
+                    };
+                    float eW[3], wW[3];
+                    lift(E, eW);
+                    lift(W, wW);
+                    BVR_LOG("[bones] FOREARM: %s free elbow world (%.1f %.1f %.1f) wrist "
+                            "(%.1f %.1f %.1f) | HELD actor at (%.1f %.1f %.1f) pitch %+.1f "
+                            "yaw %+.1f. Hold the off hand STILL and move the main hand: "
+                            "these two world points must not move.",
+                            hand == 1 ? "RIGHT" : "LEFT", eW[0], eW[1], eW[2], wW[0], wW[1],
+                            wW[2], aLoc[0], aLoc[1], aLoc[2],
+                            static_cast<float>(static_cast<int16_t>(ctx.camPitch & 0xFFFF)) /
+                                kRotUnitsPerDegree,
+                            static_cast<float>(static_cast<int16_t>(ctx.camYaw & 0xFFFF)) /
+                                kRotUnitsPerDegree);
+                }
             }
 
             // s72m: stash what we just wrote, for next frame's read-back.
