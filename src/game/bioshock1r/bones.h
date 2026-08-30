@@ -169,6 +169,8 @@ float elbow_out();
 void set_elbow_out(float v);
 unsigned elbow_smooth_ms();
 void set_elbow_smooth_ms(unsigned v);
+float elbow_follow_wrist();
+void set_elbow_follow_wrist(float v);
 
 void set_anim_allowed(bool on);
 bool anim_allowed();

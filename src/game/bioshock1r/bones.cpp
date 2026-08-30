@@ -199,7 +199,17 @@ uint64_t g_lastBigDeltaHandMs[2] = {0, 0}; // s70c: per hand, as BRVR's lastBig[
 float g_pinAnchorQ[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 1}};
 float g_pinAnchorP[2][3] = {{0, 0, 0}, {0, 0, 0}};
 bool g_pinValid[2] = {false, false};
-std::atomic<bool> g_animPinRot{true};
+// s70m: PER HAND, and defaulting OFF on the weapon side, because recoil IS the
+// animation moving the hand.
+//
+// The suppression was asked for about PLASMIDS - an authored cast that travels
+// through a heavily trimmed frame and ends up pointing somewhere wrong. Applying
+// it to both hands cancelled the one weapon animation that must move: "there is
+// no recoil on weapons". The log shows it plainly, ANIMPIN firing on the RIGHT
+// hand every second, pinning back the exact motion the tester was looking for.
+//
+// [0] left/plasmids: suppressed. [1] right/weapons: free.
+std::atomic<bool> g_animPinRot[2] = {true, false};
 // s70f: SUPPRESS THE ANIMATION'S ROOT MOTION, KEEP ITS ARTICULATION.
 //
 // The tester, with arms made visible and a screenshot to go with it: "the hand
@@ -227,7 +237,7 @@ std::atomic<bool> g_animPinRot{true};
 // Two toggles rather than one, because "movement" turned out to mean both halves
 // and the tester should be able to feel which is which: position and heading
 // suppress independently, live, no rebuild.
-std::atomic<bool> g_animPinPos{true};
+std::atomic<bool> g_animPinPos[2] = {true, false};
 
 // ---- s70g: ARMS MODE, ported from BS2 -------------------------------------
 //
@@ -328,6 +338,9 @@ std::atomic<float> g_elbowOut{0.35f};
 // smoothed - that would put latency on your own tracking, which is the one thing
 // a VR viewmodel must not do. Only the derived joint is eased.
 std::atomic<unsigned> g_elbowSmoothMs{70};
+// s70m: 0 = the elbow ignores wrist roll entirely (v2), 1 = it follows it fully
+// (v1). The tester wants "somewhere in between".
+std::atomic<float> g_elbowFollowWrist{0.40f};
 float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
 bool g_elbowHavePrev[2] = {false, false};
 uint64_t g_elbowLastMs[2] = {0, 0};
@@ -1993,6 +2006,10 @@ unsigned elbow_smooth_ms() { return g_elbowSmoothMs.load(std::memory_order_relax
 void set_elbow_smooth_ms(unsigned v) {
     g_elbowSmoothMs.store(v, std::memory_order_relaxed);
 }
+float elbow_follow_wrist() { return g_elbowFollowWrist.load(std::memory_order_relaxed); }
+void set_elbow_follow_wrist(float v) {
+    g_elbowFollowWrist.store(v, std::memory_order_relaxed);
+}
 
 void set_anim_allowed(bool on) {
     const bool was = g_animAllowed.exchange(on, std::memory_order_relaxed);
@@ -2997,11 +3014,11 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     float qFix[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     bool pinRot = false;
     const bool pinPos = g_freezeOnly.load(std::memory_order_relaxed) &&
-                        g_animPinPos.load(std::memory_order_relaxed) && g_pinValid[hand] &&
-                        anchor < g_boneCount;
+                        g_animPinPos[hand].load(std::memory_order_relaxed) &&
+                        g_pinValid[hand] && anchor < g_boneCount;
     if (g_freezeOnly.load(std::memory_order_relaxed) &&
-        (g_animPinRot.load(std::memory_order_relaxed) ||
-         g_animPinPos.load(std::memory_order_relaxed)) &&
+        (g_animPinRot[hand].load(std::memory_order_relaxed) ||
+         g_animPinPos[hand].load(std::memory_order_relaxed)) &&
         g_pinValid[hand] && anchor < g_boneCount) {
         float qInv[4];
         quat_conj(g_ref[anchor].q, qInv);
@@ -3010,7 +3027,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                                qFix[3] * qFix[3]);
         if (fn > 1e-4f) {
             for (int k = 0; k < 4; ++k) qFix[k] /= fn;
-            pinRot = g_animPinRot.load(std::memory_order_relaxed);
+            pinRot = g_animPinRot[hand].load(std::memory_order_relaxed);
             // ALWAYS ON, throttled: how far the animation had turned the anchor
             // IS the size of the defect this cancels, so it gets measured.
             static uint64_t s_pinLog[2] = {0, 0};
@@ -3311,6 +3328,13 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // little outward, which is where a resting human elbow sits. Built
             // in world space from the head's yaw basis, then rotated into
             // component space - after which a wrist roll cannot move it.
+            // HOW MUCH THE ELBOW FOLLOWS THE WRIST. v1 took the pole from the
+            // authored bend, a component-space direction, so the elbow swivelled
+            // with every wrist roll - too much. v2 put it in the body frame, so
+            // it stopped swivelling entirely - too little. "It should be
+            // somewhere in between the first version and this version", so it is
+            // a blend of exactly those two poles, on a slider.
+            const float wristK = g_elbowFollowWrist.load(std::memory_order_relaxed);
             const float outSign = (hand == 1) ? 1.0f : -1.0f;
             const float eo = g_elbowOut.load(std::memory_order_relaxed);
             float poleWorld[3] = {(-sy) * outSign * eo, (cy)*outSign * eo,
@@ -3318,6 +3342,18 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             float pole[3];
             qts_rotate(qaUse, poleWorld, pole);
             norm3(pole);
+            if (wristK > 0.001f) {
+                // The v1 pole: the authored bend, which lives in the rig's own
+                // frame and therefore turns with the wrist.
+                float poleRig[3] = {aSEn[0], aSEn[1], aSEn[2]};
+                norm3(poleRig);
+                for (int c = 0; c < 3; ++c)
+                    pole[c] = pole[c] * (1.0f - wristK) + poleRig[c] * wristK;
+                if (norm3(pole) < 1e-4f) {
+                    qts_rotate(qaUse, poleWorld, pole);
+                    norm3(pole);
+                }
+            }
             // Project perpendicular to the current arm axis so it is a pure
             // bend direction and cannot push the elbow along the arm.
             const float dp = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2];
@@ -3398,9 +3434,31 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 }
             };
 
-            // Clavicle: written at its AUTHORED transform, so the engine's idle
-            // animation cannot drift the shoulder either. This IS the anchor.
-            put(armIdx[0], ar[0].p, ar[0].q);
+            // ---- THE CLAVICLE RIDES THE SHOULDER, IT DOES NOT ORBIT IT ----
+            //
+            // It used to be written at ar[0].p - its AUTHORED position, which is
+            // a COMPONENT-SPACE point and therefore sweeps through the world as
+            // the actor turns. The upper arm was anchored in the head frame and
+            // the clavicle was not, so the two disagreed and the base of the arm
+            // circled the joint it hangs from: "extending my arm to a straight
+            // line and rotating my arm causes the base shoulder to spin on a
+            // swivel around where it should".
+            //
+            // Same frame bug as the shoulder and the pole before it, third and
+            // last place it was hiding. Hang the clavicle off the solved
+            // shoulder by its authored offset instead, carried by the same swing
+            // as the upper arm, so nothing about it is expressed in the rotating
+            // frame any more.
+            float clavOff[3] = {(ar[0].p[0] - ar[1].p[0]) * s,
+                                (ar[0].p[1] - ar[1].p[1]) * s,
+                                (ar[0].p[2] - ar[1].p[2]) * s};
+            float clavRot[3];
+            qts_rotate(qUp, clavOff, clavRot);
+            const float clavPos[3] = {S[0] + clavRot[0], S[1] + clavRot[1],
+                                      S[2] + clavRot[2]};
+            float qClav[4];
+            quat_mul(qUp, ar[0].q, qClav);
+            put(armIdx[0], clavPos, qClav);
             put(armIdx[1], S, qUpF);
             put(armIdx[2], E, qFoF);
 
@@ -4328,6 +4386,17 @@ void draw_debug_ui() {
                 "This is a BODY-relative direction, so rolling your wrist can no\n"
                 "longer swing the elbow - that was the same frame bug the shoulder\n"
                 "had, one level down.");
+        float ew = g_elbowFollowWrist.load(std::memory_order_relaxed);
+        if (ImGui::SliderFloat("elbow follows wrist", &ew, 0.0f, 1.0f, "%.2f"))
+            g_elbowFollowWrist.store(ew, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "How much rolling your wrist swivels the elbow.\n\n"
+                "0.00 : none at all - the elbow ignores wrist roll entirely.\n"
+                "1.00 : the elbow follows the wrist fully, which swings it much\n"
+                "       further than a real arm does.\n\n"
+                "A real elbow does swivel a little when you roll your forearm,\n"
+                "which is why neither end of this slider looks right.");
         int es = static_cast<int>(g_elbowSmoothMs.load(std::memory_order_relaxed));
         if (ImGui::SliderInt("elbow smoothing (ms)", &es, 0, 300))
             g_elbowSmoothMs.store(static_cast<unsigned>(es < 0 ? 0 : es),
@@ -4339,7 +4408,15 @@ void draw_debug_ui() {
                 "VR viewmodel must not do.\n\n"
                 "The solve is exact and instant, so every jitter in the hand lands\n"
                 "on the elbow at full size. 0 = raw, 70 is the default.");
-        ImGui::Text("shoulder + elbow save to hands.ini with the other offsets");
+        // SAVE ON RELEASE. Persistence landed last commit but nothing CALLED the
+        // save, so hands.ini still held a file from two days earlier and the
+        // tester was asked a third time for numbers they had no reason to have
+        // memorised. A setting that only persists when something else happens to
+        // save is not persisted.
+        if (ImGui::IsItemDeactivatedAfterEdit()) hands::save_offsets();
+        if (ImGui::Button("save arm settings now")) hands::save_offsets();
+        ImGui::SameLine();
+        ImGui::Text("(sliders also save when released)");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "Where the arm is anchored to your body. The solver fixes the\n"
@@ -4362,12 +4439,16 @@ void draw_debug_ui() {
                 "  SHAPE - every other bone relative to it: fingers, grip, the\n"
                 "          cast pose. Never suppressed, so the animation plays.\n\n"
                 "Untick both to see the raw engine behaviour.");
-        bool app = g_animPinPos.load(std::memory_order_relaxed);
+        const int ph = g_lastHand.load(std::memory_order_relaxed) == 1 ? 1 : 0;
+        bool app = g_animPinPos[ph].load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Animation cannot MOVE the hand (keeps fingers)", &app))
-            g_animPinPos.store(app, std::memory_order_relaxed);
-        bool apr = g_animPinRot.load(std::memory_order_relaxed);
+            g_animPinPos[ph].store(app, std::memory_order_relaxed);
+        bool apr = g_animPinRot[ph].load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Animation cannot TURN the hand (keeps fingers)", &apr))
-            g_animPinRot.store(apr, std::memory_order_relaxed);
+            g_animPinRot[ph].store(apr, std::memory_order_relaxed);
+        ImGui::Text("these are PER HAND - editing the %s (plasmids default ON, "
+                    "weapons OFF so recoil still plays)",
+                    ph == 1 ? "RIGHT/weapon" : "LEFT/plasmid");
 
         ImGui::TextDisabled("EQUIP SETTLE - when the pose is captured after a switch");
         if (ImGui::IsItemHovered())

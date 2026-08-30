@@ -521,6 +521,7 @@ void save_config() {
     }
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
     fprintf(f, "elbowSmoothMs=%u\n", bones::elbow_smooth_ms());
+    fprintf(f, "elbowFollowWrist=%.3f\n", bones::elbow_follow_wrist());
     fclose(f);
     BVR_LOG("[hands] offsets saved to hands.ini");
 }
@@ -564,6 +565,7 @@ void load_config() {
         else if (store_hand_key(key, "viewRightCm", g_viewRightCm, v)) {}
         else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
+        else if (strcmp(key, "elbowFollowWrist") == 0) bones::set_elbow_follow_wrist(v);
         else if (strcmp(key, "elbowSmoothMs") == 0)
             bones::set_elbow_smooth_ms(static_cast<unsigned>(v < 0.0f ? 0.0f : v));
         else if (strncmp(key, "shoulder", 8) == 0) {
