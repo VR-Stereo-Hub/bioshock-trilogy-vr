@@ -1938,6 +1938,9 @@ void late_write() {
             }
         }
     }
+    // s71c: the actor is final from here, so this is the only honest place to ask
+    // where the free hand actually landed.
+    bones::free_hand_probe(g_lwLoc, g_lwRot);
     bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
     if (g_lateWriteLoc.load(std::memory_order_relaxed))
         ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, g_lwLoc) && ok;

@@ -147,6 +147,11 @@ bool g_freeRefValid[2] = {false, false};
 // s71: whether we last collapsed this hand's sleeve, so turning the arms back on
 // restores it rather than leaving it invisible forever.
 bool g_freeSleeveCollapsed[2] = {false, false};
+// s71c: what the free hand was ASKED for, so the probe can compare it against
+// where the anchor actually lands once the actor transform is final.
+float g_freeWantWorld[2][3] = {};
+int g_freeAnchorBone[2] = {-1, -1};
+bool g_freeWantValid[2] = {false, false};
 
 void free_ref_drop(const char* why) {
     if (g_freeRefValid[0] || g_freeRefValid[1])
@@ -4230,6 +4235,28 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
         g_freeSleeveCollapsed[hand] = collapseFree;
     }
 
+    // ---- s71c FREEPROBE: did the free hand land where we asked? ------------
+    //
+    // "still coupled... it just moves it positionally in a swivel depending on
+    // right hand rotation horizontally."
+    //
+    // An ORBIT is the signature of a cancellation that did not cancel. This
+    // hand's bones are written as inv(R_actor) * (worldTarget - actorLoc), so
+    // the actor transform divides out exactly - IF the actor the renderer uses
+    // is the one that was divided out. If it is not, the residual rotates
+    // (worldTarget - actorLoc) by the mismatch, which swings the hand in an arc
+    // about the actor. Arm's length is 50-100 UU, so even 10 deg of mismatch is
+    // 10-17 UU of visible swing.
+    //
+    // ACTORWATCH has already measured that mismatch at 27-60 deg of pitch and
+    // up to 80 of yaw, continuously - the engine rewriting the actor rotator
+    // every frame. This records whether that is what is moving the free hand,
+    // by stashing the world point we asked for so it can be compared against
+    // where the anchor actually ends up once the actor is final.
+    memcpy(g_freeWantWorld[hand], &gp.loc, 12);
+    g_freeAnchorBone[hand] = anchor;
+    g_freeWantValid[hand] = true;
+
     solve_arm(ctx, hand, ptc, qaInv, actorLoc, sc);
 
     g_clWritten[hand] = true;
@@ -4239,6 +4266,44 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     g_cacheSkelInst = g_skelInst;
     g_cacheMs = GetTickCount64();
     return true;
+}
+
+// s71c: called after the actor write, when the transform the frame will render
+// is finally in memory. Lifts the free hand's anchor to world through THAT actor
+// and reports how far it is from the point the drive asked for. A delta that
+// grows with the held hand's rotation is the actor mismatch; a constant one is an
+// offset bug; near zero means the free hand is landing correctly and the coupling
+// is somewhere else entirely.
+void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3]) {
+    for (int h = 0; h < 2; ++h) {
+        if (!g_freeWantValid[h]) continue;
+        g_freeWantValid[h] = false;
+        const int b = g_freeAnchorBone[h];
+        if (b < 0 || b >= g_boneCount || !g_bones) continue;
+        Qts live{};
+        if (!read_n(&g_bones[b], &live, sizeof live)) continue;
+        FRotator ar{actorRot[0], actorRot[1], actorRot[2]};
+        float qa[4], bw[3];
+        ue_rot_to_quat(ar, qa);
+        qts_rotate(qa, live.p, bw);
+        bw[0] += actorLoc[0];
+        bw[1] += actorLoc[1];
+        bw[2] += actorLoc[2];
+        const float d[3] = {bw[0] - g_freeWantWorld[h][0], bw[1] - g_freeWantWorld[h][1],
+                            bw[2] - g_freeWantWorld[h][2]};
+        const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        static uint64_t s_log[2] = {0, 0};
+        const uint64_t now = GetTickCount64();
+        if (m > 1.0f && now - s_log[h] >= 500) {
+            s_log[h] = now;
+            BVR_LOG("[bones] FREEPROBE: %s free hand asked for (%.1f %.1f %.1f), landed "
+                    "(%.1f %.1f %.1f) - off by %.1f UU (%+.1f %+.1f %+.1f). If this grows "
+                    "as the HELD hand turns, the actor the renderer used is not the one "
+                    "the drive cancelled.",
+                    h == 1 ? "RIGHT" : "LEFT", g_freeWantWorld[h][0], g_freeWantWorld[h][1],
+                    g_freeWantWorld[h][2], bw[0], bw[1], bw[2], m, d[0], d[1], d[2]);
+        }
+    }
 }
 
 void reapply() {
