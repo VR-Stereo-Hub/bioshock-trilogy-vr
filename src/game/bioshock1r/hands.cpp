@@ -1207,7 +1207,26 @@ static void drive_off_hand(const FrameContext& ctx, void* target, int heldHand,
 
     const float pos[3] = {hp.px, hp.py, hp.pz};
     const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
-    const GamePose gp = xr_pose_to_game(ctx, pos, quat);
+    // s71o: THE ROTATION TRIM COMPOSES IN THE CONTROLLER'S LOCAL FRAME, and this
+    // tree already learned that once. model_pose_from_xr() builds the trim as a
+    // quaternion and multiplies it onto the controller pose BEFORE the map, which
+    // is the only algebra that holds at every controller orientation; session 20
+    // measured the alternative - adding rotator angles in game space after the
+    // map - diverging by up to 28.21 deg at rolled poses, and unified the model
+    // and ray chains on this helper because of it.
+    //
+    // The free hand was written in s71 and did it the old way: Euler components
+    // added to the already-composed game rotator inside drive_free_hand(). Those
+    // add on the GAME's axes, not the hand's, and pitch/yaw/roll interact - so
+    // trimming yaw with any pitch dialled in tips the hand. Reported as "changing
+    // the offhand rotation causes it to rotate strangely", which is that exactly.
+    //
+    // BRVR does the same thing we now do: HandsOffsetQuat() builds the offset and
+    // QuatMul(gripQuat, qOff) applies it to the raw controller pose, before any
+    // conversion to a rotator.
+    float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
+    bones::off_hand_rot_deg(freeHand, &trimP, &trimY, &trimR);
+    const GamePose gp = model_pose_from_xr(ctx, pos, quat, trimP, trimY, trimR);
     bones::drive_free_hand(ctx, target, gp, freeHand, actorLoc, actorRot);
 }
 

@@ -159,6 +159,12 @@ std::atomic<float> g_offHandViewCm[2][3] = {};
 constexpr int kFreeClusterMax = 24;
 Qts g_freeRef[2][kFreeClusterMax];
 bool g_freeRefValid[2] = {false, false};
+// s71q: the free hand's ADOPTION state, per hand, as BRVR keeps lastBig[hand]
+// and rejPeak[hand] separately. See the adoption block in drive_free_hand().
+uint64_t g_freeLastBigMs[2] = {0, 0};
+float g_freeRejPeak[2] = {0.0f, 0.0f};
+uint64_t g_freeRejLogMs[2] = {0, 0};
+uint64_t g_freeAdoptLogMs[2] = {0, 0};
 // s71: whether we last collapsed this hand's sleeve, so turning the arms back on
 // restores it rather than leaving it invisible forever.
 bool g_freeSleeveCollapsed[2] = {false, false};
@@ -4091,6 +4097,32 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
 // so the A/B needs no hands and no commands; the flip is logged so the log can
 // be split afterwards, and so a "no difference" answer can be checked against
 // the mod actually having changed anything.
+// s71p: HAS THE SWITCH SETTLED? The free hand must not latch its authored
+// reference out of a mid-equip animation frame.
+//
+// The HELD hand has waited for this since s70 - "DO NOT SHOW THE EQUIP
+// ANIMATION", a settle window that ends when the anchor goes still or the ceiling
+// times out. The free hand, written in s71, captured on the very first frame the
+// engine owned the cluster after a switch, which is somewhere in the middle of
+// the equip animation and lands on a different pose every time.
+//
+// That is the "tele offhand position is different than the electro offhand
+// position for some reason" report. There is no per-plasmid difference in the
+// code; there is a race against whatever frame the equip animation happened to be
+// showing, and two plasmids with different equip animations lose it differently.
+static bool switch_settled() {
+    if (!g_settleStartMs) return true; // nothing pending
+    const uint64_t now = GetTickCount64();
+    const bool longEnough =
+        (now - g_settleStartMs) >= g_settleMinMs.load(std::memory_order_relaxed);
+    const bool still = longEnough && g_settleLastMoved &&
+                       (now - g_settleLastMoved) >=
+                           g_settleStillMs.load(std::memory_order_relaxed);
+    const bool timedOut =
+        (now - g_settleStartMs) >= g_settleCeilMs.load(std::memory_order_relaxed);
+    return still || timedOut;
+}
+
 bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
                      const float actorLocNow[3], const FRotator& actorRotNow) {
     if (!g_offHandTracked.load(std::memory_order_relaxed)) return false;
@@ -4154,6 +4186,10 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     // written it, the live array is our own output and capturing it would feed
     // that back (see the bank's banner).
     if (!g_freeRefValid[hand]) {
+        // Wait for the equip to settle before latching - see switch_settled().
+        // Refusing here simply retries next frame, which is the same shape the
+        // scale guard below uses.
+        if (!switch_settled()) return false;
         for (int i = 0; i < count; ++i)
             if (!read_n(&g_bones[first + i], &g_freeRef[hand][i], sizeof(Qts))) return false;
         // A collapsed hand reads back OUR zeroes, and a zero-scale reference
@@ -4165,6 +4201,96 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
         BVR_LOG("[bones] FREEHAND: captured the %s hand's authored pose, bones %d-%d - "
                 "tracking it from here.",
                 hand == 1 ? "RIGHT" : "LEFT", first, last);
+    }
+
+    // ---- s71q: ADOPTION. The free hand must play the engine's animations too --
+    //
+    // Ported from BRVR's CaptureClusterRef (Hands/ArmHide.cpp), which is the half
+    // of that function this tree never carried across. The held hand has had the
+    // same policy since s70; the free hand captured once and froze, so when a
+    // plasmid animation played the held hand adopted it and the free hand did
+    // not. They drift apart for exactly as long as the animation runs, which is
+    // the reported "small amount of pivot with the plasmids where it desyncs the
+    // main hand".
+    //
+    // EXACT COMPARE, NOT AN EPSILON, and BRVR's reason is the one that matters:
+    // "our own write is bit-identical to what we stored, so anything else is the
+    // engine by construction. An epsilon would swallow small authored motion,
+    // which is precisely the breathing this mode exists to preserve."
+    //
+    // SEPARATE SWAY FROM ANIMATION BY SIZE. Idle drift is small and constant;
+    // real animation is not. The thresholds are the HELD hand's, per hand and
+    // already tuned here - the left cluster is palm and fingers only, where a
+    // plasmid's whole animation measures 2.6-5.0 deg, so it carries its own
+    // lower threshold and must never be judged by the weapon hand's.
+    //
+    // AND HOLD, or an animation dies in its own middle: once the big opening
+    // frame is adopted the following frames are small deltas again, so a bare
+    // threshold snaps back to rigid halfway through. Same peak-hold shape as the
+    // held hand's, and BRVR's, for the same reason.
+    if (g_freeRefValid[hand] && g_hasWritten[hand]) {
+        Qts live{};
+        if (read_n(&g_bones[anchor], &live, sizeof live) &&
+            memcmp(&live, &g_lastWrittenAnchor[hand], sizeof live) != 0) {
+            // The engine restamped this cluster. How big was it?
+            const Qts& was = g_lastWrittenAnchor[hand];
+            const float dp[3] = {live.p[0] - was.p[0], live.p[1] - was.p[1],
+                                 live.p[2] - was.p[2]};
+            float dot = live.q[0] * was.q[0] + live.q[1] * was.q[1] +
+                        live.q[2] * was.q[2] + live.q[3] * was.q[3];
+            if (dot < 0.0f) dot = -dot;
+            if (dot > 1.0f) dot = 1.0f;
+            const float angDeg = 2.0f * acosf(dot) * kRadToDeg;
+            const float posUu = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+            const uint64_t nowA = GetTickCount64();
+            const float thresh = (hand == 0)
+                                     ? g_swayAngThreshLeftDeg.load(std::memory_order_relaxed)
+                                     : g_swayAngThreshDeg.load(std::memory_order_relaxed);
+            if (angDeg == angDeg &&
+                (posUu > g_swayPosThreshUu.load(std::memory_order_relaxed) ||
+                 angDeg > thresh))
+                g_freeLastBigMs[hand] = nowA;
+            const bool playing =
+                g_freeLastBigMs[hand] &&
+                (nowA - g_freeLastBigMs[hand]) <
+                    g_swaySettleMs.load(std::memory_order_relaxed);
+
+            if (playing) {
+                // Adopt, but never a collapsed pose: a zero-scale read would
+                // become a reference that draws nothing, which is the stranded
+                // -collapse trap the capture above already refuses.
+                Qts fresh[kFreeClusterMax];
+                bool ok = true;
+                for (int i = 0; i < count && ok; ++i)
+                    ok = read_n(&g_bones[first + i], &fresh[i], sizeof(Qts));
+                const float* fsc = ok ? fresh[anchor - first].s : nullptr;
+                if (ok && fsc && fsc[0] > 0.01f && fsc[1] > 0.01f && fsc[2] > 0.01f) {
+                    memcpy(g_freeRef[hand], fresh, sizeof(Qts) * static_cast<size_t>(count));
+                    if (nowA - g_freeAdoptLogMs[hand] >= 2000) {
+                        g_freeAdoptLogMs[hand] = nowA;
+                        BVR_LOG("[bones] FREEANIM: %s free hand is animating (%.1f deg, "
+                                "%.1f UU at the anchor; threshold %.1f) - adopting the "
+                                "engine's pose.",
+                                hand == 1 ? "RIGHT" : "LEFT", angDeg, posUu, thresh);
+                    }
+                }
+            } else {
+                // BRVR reports the largest thing it REJECTED, because a threshold
+                // picked from one distribution cannot be checked against another
+                // it never logs. Set the threshold just under whatever a missing
+                // animation turns out to produce.
+                if (angDeg == angDeg && angDeg > g_freeRejPeak[hand])
+                    g_freeRejPeak[hand] = angDeg;
+                if (nowA - g_freeRejLogMs[hand] >= 3000) {
+                    g_freeRejLogMs[hand] = nowA;
+                    BVR_LOG("[bones] FREEANIM: %s free hand rejected - largest movement "
+                            "%.1f deg in the last 3 s, threshold %.1f. Lower it to catch "
+                            "this.",
+                            hand == 1 ? "RIGHT" : "LEFT", g_freeRejPeak[hand], thresh);
+                    g_freeRejPeak[hand] = 0.0f;
+                }
+            }
+        }
     }
 
     // ---- s71b: THIS FRAME'S ACTOR TRANSFORM, PASSED IN, NOT READ ----------
@@ -4249,15 +4375,13 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     // The target, with this hand's own trim applied. Rotation first: the
     // position offset below is expressed in the frame it defines, which is the
     // same ordering BRVR's DriveFreeHand uses and the same reason.
+    // s71o: the trim is ALREADY in gp.rot - drive_off_hand() composes it as a
+    // quaternion in the controller's local frame via model_pose_from_xr(), which
+    // is the only chain that holds at every controller orientation. It used to be
+    // added here as Euler components on the composed game rotator; that applies
+    // them on the game's axes rather than the hand's and lets pitch/yaw/roll
+    // interact, which is the "rotates strangely" report. Do not put it back.
     FRotator want = gp.rot;
-    {
-        const float p = g_offHandRotDeg[hand][0].load(std::memory_order_relaxed);
-        const float y = g_offHandRotDeg[hand][1].load(std::memory_order_relaxed);
-        const float r = g_offHandRotDeg[hand][2].load(std::memory_order_relaxed);
-        want.pitch += static_cast<int32_t>(p * kRotUnitsPerDegree);
-        want.yaw += static_cast<int32_t>(y * kRotUnitsPerDegree);
-        want.roll += static_cast<int32_t>(r * kRotUnitsPerDegree);
-    }
     ue_rot_to_quat(want, qt);
     quat_mul(qaInv, qt, qtc); // target rotation, component space
 
