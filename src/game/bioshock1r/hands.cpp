@@ -108,6 +108,12 @@ std::atomic<float> g_viewFwdCm[2]{0.0f, 0.0f}, g_viewRightCm[2]{0.0f, 0.0f},
 // where camera.cpp already does its stale-FOV restore, for the same reason.
 void* g_lwObj = nullptr;
 int32_t g_lwRot[3] = {0, 0, 0};
+// s70q: AND THE LOCATION. late_write() replayed only the rotator, so the engine's
+// UpdateLocation - which puts the Hands actor on the CAMERA every frame - won
+// the position every frame. The camera includes the head offset, so the rendered
+// hand followed the headset off the controller. See late_write().
+float g_lwLoc[3] = {0.0f, 0.0f, 0.0f};
+std::atomic<bool> g_lateWriteLoc{true}; // A/B without a rebuild
 std::atomic<bool> g_lwValid{false};
 // s70e ACTORWATCH: the rotation we last asked the actor to hold, so the next
 // frame can see whether anything changed it. See the probe in the write path.
@@ -1440,6 +1446,12 @@ void on_calcview(const FrameContext& ctx) {
             }
         }
         bool wrote = write12(p + patterns::kActorLocOffset, loc);
+        // Publish the LOCATION for the late re-apply too, and outside the
+        // writeRot branch - the position is written unconditionally, so it must
+        // be replayable unconditionally.
+        g_lwObj = target;
+        memcpy(g_lwLoc, loc, sizeof g_lwLoc);
+        g_lwValid.store(true, std::memory_order_relaxed);
         if (g_writeRot.load(std::memory_order_relaxed)) {
             int32_t rot[3] = {gp.rot.pitch, gp.rot.yaw, gp.rot.roll};
             wrote = write12(p + patterns::kActorViewDirOffset, rot) || wrote;
@@ -1764,8 +1776,33 @@ void late_write() {
         g_lwValid.store(false, std::memory_order_relaxed);
         return;
     }
-    if (!write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot))
-        g_lwValid.store(false, std::memory_order_relaxed);
+    // ---- s70q: REPLAY THE LOCATION, NOT ONLY THE ROTATOR -------------------
+    //
+    // "moving the view in the headset causes the hand to desync from the
+    // position its supposed to. I dont know how far back this bug goes." It goes
+    // back to this function's original BRVR S60 port, which replayed the rotator
+    // and nothing else.
+    //
+    // Every frame runs: we write the actor's location and rotation -> the engine
+    // ticks and Hands.UpdateLocation puts the actor back ON THE CAMERA -> this
+    // function restores the ROTATION -> the frame renders. So the position that
+    // reached the renderer was always the engine's, and the engine's is the
+    // camera, and the camera carries the head offset. Move your head and the
+    // hand goes with it.
+    //
+    // It hid for so long because the rotation WAS replayed, so the hand kept
+    // pointing correctly and only its position drifted - and it drifts with the
+    // head, which is the one motion a player makes constantly and rarely holds
+    // still enough to blame. Every fix this session that reasoned about where
+    // the actor is (the shoulder anchor twice, the pole, the IK) was reading a
+    // transform the renderer never used.
+    //
+    // Separately toggleable so the before/after is one checkbox rather than a
+    // rebuild, because a claim this size should be falsifiable in the headset.
+    bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
+    if (g_lateWriteLoc.load(std::memory_order_relaxed))
+        ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, g_lwLoc) && ok;
+    if (!ok) g_lwValid.store(false, std::memory_order_relaxed);
 }
 
 void set_model_trim_deg(int hand, float pitchDeg, float yawDeg, float rollDeg) {
@@ -1813,6 +1850,20 @@ void draw_debug_ui() {
     bool on = g_enabled.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Viewmodel follows the controller", &on))
         g_pendingEnable.store(on ? 1 : 0, std::memory_order_relaxed);
+
+    bool lwl = g_lateWriteLoc.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Keep the hand's POSITION past the engine tick", &lwl))
+        g_lateWriteLoc.store(lwl, std::memory_order_relaxed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "The engine's UpdateLocation puts the hands actor back ON THE CAMERA\n"
+            "every frame, after we have placed it on your controller. The late\n"
+            "write has always restored the ROTATION and never the POSITION, so\n"
+            "what reached the renderer was the camera's position - and the camera\n"
+            "moves with your head.\n\n"
+            "ON  : the hand stays where your controller is.\n"
+            "off : the pre-s70q behaviour - the hand drifts with your headset.\n\n"
+            "Untick and move your head: if the hand follows it, that was the bug.");
 
     {
         // s67 drive-mode selector. It exists because the BRVR-vs-BONES question
