@@ -64,9 +64,74 @@ nothing across a whole session of the tester turning the pistol. Corrected in
 the angle between them plus the displacement it puts on the hand. **That reading
 has not been taken yet.** It is the next thing.
 
+### THE FREEPROBE READING IS IN: 61 bit-exact zeros, and ACTORWATCH disagrees
+
+Taken 2026-08-29 22:49 on `v0.8.2-127-g90485c0`. The tester held the off hand
+still and swept the held weapon through a wide yaw. Result: **61 FREEPROBE lines,
+every one `pitch +0.0 yaw +0.0 roll +0.0 deg, 0.0 UU`.** Not small - bit-exact,
+with no non-zero line anywhere in the run.
+
+**That reading cannot be taken at face value, because ACTORWATCH contradicts it
+in the same run over the same seconds.** Both probes claim to compare "the actor
+rotation we wrote" against "what is in memory". Over the identical window
+(22:49:13.47 -> 22:49:43.7) ACTORWATCH read yaw deltas of **-97.8 and -108.8 deg**
+while FREEPROBE read +0.0. They cannot both be right, and the difference is WHERE
+IN THE FRAME each one samples:
+
+| Probe | Reads at | Compares against | Window |
+|---|---|---|---|
+| ACTORWATCH | CalcView, before this frame's write (`hands.cpp:1539`) | `g_awWrote`, LAST frame's write | a FULL frame - spans the tick |
+| FREEPROBE | `late_write()` in scenedraw (`scenedraw.cpp:816`, depth 0) | `g_lwRot`, THIS frame's write | CalcView -> scenedraw only |
+
+So the honest reading is not "the actor is innocent". It is: **at the first
+scenedraw depth-0 after CalcView, the actor rotator is still bit-identical to
+what we wrote.** The engine's change lands in the part of the frame FREEPROBE
+never sees - after `late_write`, before the next CalcView.
+
+**Two consequences, both of which redirect the branch:**
+
+1. `late_write()`'s restore is a **no-op for the rotator** in this run - it
+   writes back a value already sitting there. That is why `c0983d1`, `4ff7bd7`,
+   `117f10c` and `2cdab5e` all changed nothing: every one of them operates at a
+   seam where the actor is *already correct*. This is direct evidence for
+   hypothesis 3 in the head-turn issue below - **`late_write` is not late
+   enough** - and it is the first measurement that discriminates it.
+2. The `s67` comment at `scenedraw.cpp:810` claims "the game tick runs between
+   CalcView and here and resets the hands rotator". For the ROTATOR, this run
+   says it does not. That comment is now suspect and should not be reasoned from.
+
+**BUT the reading is still ambiguous, and the probe could not tell the difference.**
+`liveLoc`/`liveRot` were seeded from our own write and then `read12`'s return was
+never checked, so a FAILED read produces exactly the same bit-exact zero as
+"nothing changed". Repaired in this commit: the reads are checked and a failure
+now announces itself. A failed read is judged unlikely - `late_write` reached its
+body 61 times, the vtable check passed, and the `write12` to those same offsets
+immediately afterwards succeeds - but "unlikely" is what the last two broken
+probes also looked like, and this branch has now shipped three instruments that
+read zero for three different reasons.
+
+**This is the THIRD tautology on this branch**, and the pattern is worth naming:
+the first was zero by algebra (measuring through the transform it had cancelled),
+this one is zero by timing (measuring a window in which nothing happens), and
+either could have been caught by asking the standing question before the run -
+*what would this print if the defect were present?*
+
 ### Next steps
 
-**Take the corrected `FREEPROBE` reading.** Hold the off hand still, turn the
+**Re-run FREEPROBE on the repaired build to close the ambiguity.** Same sweep.
+If no `actor read FAILED` line appears, the zeros are real and finding (1) above
+stands: stop trying to fix the actor at CalcView or at `late_write`, and go find
+the seam that changes it afterwards. If the failure line DOES appear, the whole
+reading is void and the probe needs a valid object before it measures anything.
+
+**The seam hunt cannot use a Present hook without breaking this branch.** The
+only Present seams are in `src/core/` (`openxr_runtime.h`'s
+`on_present_begin`/`on_present_end`), and `git diff 282fa51..HEAD -- src/core/`
+must stay EMPTY. Any later-than-scenedraw sample has to be reached from the
+bioshock1r adapter's own hooks, or the core change has to be purely additive and
+opted into from the adapter.
+
+**Superseded - do not do this:** Hold the off hand still, turn the
 held weapon through a wide yaw sweep, and read
 `grep -a FREEPROBE %LOCALAPPDATA%\BioshockVR\bioshockvr.log`. Non-zero degrees
 with a displacement that tracks the held hand confirms the actor mismatch and

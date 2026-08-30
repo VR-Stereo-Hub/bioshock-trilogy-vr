@@ -1944,11 +1944,31 @@ void late_write() {
     {
         // Read the actor as it stands BEFORE the restore - that is the engine's
         // value, and the one the renderer used if the restore is losing.
+        //
+        // s71e: CHECK THE READS. Seeding these from our own write and then not
+        // checking read12 makes a FAILED read indistinguishable from "nothing
+        // changed" - both print exactly zero. The first run printed 61 bit-exact
+        // zeros while ACTORWATCH, one seam later in the same frames, read yaw
+        // deltas near 100 deg. That pair is only interpretable once a failed
+        // read can announce itself.
         float liveLoc[3] = {g_lwLoc[0], g_lwLoc[1], g_lwLoc[2]};
         int32_t liveRot[3] = {g_lwRot[0], g_lwRot[1], g_lwRot[2]};
-        read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, liveLoc);
-        read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, liveRot);
-        bones::free_hand_probe(g_lwLoc, g_lwRot, liveLoc, liveRot);
+        const bool okLoc =
+            read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, liveLoc);
+        const bool okRot =
+            read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, liveRot);
+        if (!okLoc || !okRot) {
+            static uint64_t s_rdLog = 0;
+            const uint64_t nowRd = GetTickCount64();
+            if (nowRd - s_rdLog >= 1000) {
+                s_rdLog = nowRd;
+                BVR_LOG("[hands] FREEPROBE: actor read FAILED (loc %s, rot %s) - every zero "
+                        "this probe printed is a seed value, not a measurement.",
+                        okLoc ? "ok" : "FAILED", okRot ? "ok" : "FAILED");
+            }
+        } else {
+            bones::free_hand_probe(g_lwLoc, g_lwRot, liveLoc, liveRot);
+        }
     }
     bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
     if (g_lateWriteLoc.load(std::memory_order_relaxed))
