@@ -2110,6 +2110,53 @@ consumer of the thing the invariant is about - the diagnostics included.** The
 probes are what the next session reasons from, so a lying probe outlives the bug
 it was pointed at.
 
+## Session 71: the free hand retargets where the held hand replays
+
+Source: BRVR's `DriveFreeHand` (CameraHook.cpp:2537) -> `ArmHide_DriveFreeHand`
+(ArmHide.cpp:1565) -> `WriteCluster`. Cited here because BS1 had no off-hand
+concept at all; the other cluster was collapsed to zero scale and parked 5000
+units below the actor.
+
+**One WriteCluster, two shapes, and the difference is the whole design.**
+
+| | held hand | free hand |
+|---|---|---|
+| cluster | replayed VERBATIM (fed its own wrist, so the delta is identity) | RETARGETED to a controller-derived target |
+| carried by | the ACTOR | nothing - the actor is already carrying the held hand |
+
+So the free hand's bones are written as `inv(R_actor) * (worldTarget -
+actorLoc)`, which divides the actor out exactly.
+
+**That cancellation makes the free hand a far better INSTRUMENT than the held
+hand.** The held hand goes wherever the actor points and therefore cannot reveal
+an actor error - any mismatch just moves the whole rig, which reads as vague
+desync. The free hand is computed against a SPECIFIC actor, so a mismatch shows
+as an orbit about the actor position, with a magnitude of `|worldTarget -
+actorLoc| x mismatch`: at arm's length (50-100 UU) even 10 deg is 10-17 UU of
+visible swing. Rotation stays correct while position swings, because orientation
+is written per bone and lands, while position is what gets rotated.
+
+Two details from BRVR worth keeping:
+
+- **Grip pose, not aim.** *"The aim pose is where a weapon would shoot; on most controllers it is tilted tens of degrees off the hand. A bare hand wants the pose that describes the hand."*
+- **The actor transform is PASSED IN, never read.** `DriveFreeHand` takes `want` and `wx/wy/wz` as arguments, and its call site says why it runs last: *"Deliberately LAST, because it consumes `want` and wx/wy/wz - the actor rotation and location this function has just decided."*
+
+**The free hand needs its OWN authored reference bank.** `g_ref` is refreshed
+wholesale from the live bone array whenever the held hand adopts - and by then
+that array contains what we wrote to the free hand on the previous frame.
+Retargeting against it is retargeting against our own output. BRVR states the
+same rule for its grab point: *"latch it only on frames the ENGINE owns the
+cluster... CaptureClusterRef early-outs while driven and hands back OUR pose."*
+This is the same feedback loop that made the s70h graded arm blend a silent
+no-op, and it fails quietly rather than erroring.
+
+**Falsified here, do not re-try:** using this frame's intended actor transform in
+place of `last_actor_write()`'s frame-old one does NOT fix the free-hand orbit
+(`2cdab5e`; symptom bit-identical afterwards). Note also that `last_actor_write()`
+is the RIGHT answer for the arm solve (s70q) and the WRONG one for the free hand -
+same accessor, opposite requirement, so "use the intended transform" is not a
+general rule.
+
 ## Session 70: BRVR's viewmodel chain, traced end to end
 
 Source: the BRVR mirror - `Hands/HandsProbe.cpp`, `Hands/ArmHide.cpp`,

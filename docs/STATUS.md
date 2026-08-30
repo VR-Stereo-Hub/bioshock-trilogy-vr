@@ -2,6 +2,103 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-29 - s71: the off hand exists, and it is a better instrument than the held one
+
+**Branch `feat/bs1-off-hand`, cut from `fix/bs1-bathysphere-cine-quad` (NOT from
+`staging` - it needs `solve_arm`, which is only on that line). 5 commits.**
+`git diff 282fa51..HEAD -- src/core/` is EMPTY: this feature cannot reach BS2 or
+Infinite. The three `src/core/` commits the branch carries are inherited from
+`2e210cf`/`d4ea519`/`7e0d743`, already covered by PRs #58 and #59.
+
+### Current state
+
+**Both hands are drawn, for weapons and plasmids.** Tester: *"two floating
+hands"*. BS1 had only ever drawn one - the other was collapsed to zero scale and
+parked 5000 units below the actor.
+
+| Landed | Evidence |
+|---|---|
+| The free hand tracks its own controller | headset: two hands on screen |
+| Its sleeve collapses with the arms | headset: the stretched off-hand arm is gone |
+| Arms hidden by default again | s70j had turned them on to tune the shoulder; that is done |
+| Frame-scoped write cache | required before a second hand could exist at all |
+| Numpad modes 3/4 for the free hand | BRVR's own numbering, acting on whichever hand is free |
+
+**The design, and it is the part worth keeping.** The held hand is replayed
+VERBATIM and carried by the ACTOR. The free hand cannot be - the actor is already
+carrying the other one - so it is RETARGETED: `inv(R_actor) * (worldTarget -
+actorLoc)`. BRVR draws the same line with one `WriteCluster` serving both.
+
+**THE FREE HAND IS A SENSITIVE DETECTOR FOR THE ACTOR DEFECT, and that is the
+most useful thing this session produced.** The held hand simply goes wherever the
+actor points and cannot reveal an actor error. The free hand is computed to
+CANCEL a specific actor, so any mismatch shows up in full - as an orbit.
+
+### OPEN: the free hand orbits with the held hand's rotation
+
+Tester: *"Rotating the right hand causes the left one to move as well... it
+doesnt apply rotation to the left hand, but it just moves it positionally in a
+swivel depending on right hand rotation horizontally."*
+
+Rotation decoupled, position orbiting. That shape is diagnostic: an orbit about
+the actor is the residue of a cancellation that did not cancel. Orientation is
+written per bone and lands; position is the thing being rotated by a transform
+that should have vanished.
+
+**Very likely the SAME defect as the head-turn desync below.** `ACTORWATCH`
+measures the engine changing the actor rotation we wrote by pitch -11.3, yaw
+-12.8, roll +6.3 in sampled frames (and 27-60 / up to 80 earlier). At arm's
+length (50-100 UU) even 10 deg of mismatch is 10-17 UU of swing. If that is it,
+fixing it fixes both.
+
+**Tried and RULED OUT:** passing this frame's intended actor transform instead of
+`last_actor_write()`'s frame-old one (`2cdab5e`). Correct on its own terms - it
+WAS cancelling the previous frame's actor - but the tester reported the symptom
+bit-identical afterwards, so it is not the cause. Do not re-try it.
+
+**The probe that measured nothing was BROKEN, not clean.** `FREEPROBE`'s first
+cut (`dc93cd1`) lifted the free anchor to world through the very transform
+`drive_free_hand` had just cancelled - zero by construction, and it duly printed
+nothing across a whole session of the tester turning the pistol. Corrected in
+`90485c0` to take BOTH transforms (ours and the one live in the actor) and report
+the angle between them plus the displacement it puts on the hand. **That reading
+has not been taken yet.** It is the next thing.
+
+### Next steps
+
+**Take the corrected `FREEPROBE` reading.** Hold the off hand still, turn the
+held weapon through a wide yaw sweep, and read
+`grep -a FREEPROBE %LOCALAPPDATA%\BioshockVR\bioshockvr.log`. Non-zero degrees
+with a displacement that tracks the held hand confirms the actor mismatch and
+makes this the same bug as the head-turn desync - fix the actor, not the hand.
+Zero degrees clears the actor entirely and the coupling is somewhere not yet
+looked at.
+
+**Do not attempt another fix from reasoning first.** Three have been tried across
+s70/s71 (`117f10c`, `4ff7bd7`, `c0983d1`) plus `2cdab5e` here; every one was
+sound in its own terms and none moved the symptom, because each reasoned about
+where the actor IS rather than what reaches the renderer.
+
+### Session log 2026-08-29
+
+**Headset-verified by the tester:** both hands drawn at once; the off-hand
+sleeve no longer stretches; the earlier arm IK still *"pretty good overall"*.
+
+**Built but NOT verified:** the corrected `FREEPROBE` (`90485c0`) - installed,
+never run. Everything else on this branch has been through the headset.
+
+**Diagnostics ARMED in the shipping build**, all read-only, all always-on
+because the tester cannot type in the headset - strip or gate before release:
+`FREEPROBE`, `FREEHAND`, `LATEWRITE`, `ACTORWATCH`, `ARMIK`, `ANIMPIN`,
+`ANIMREJECT`, `ANIMDIR`, `CLUSTERTEST` (an F10 button), `ROLLCHECK`, `FOVPROBE`,
+`LEFTBONE`.
+
+**Method note worth more than the code.** The instrument was tautological and
+still read as a finding for one exchange. s68 recorded this exact failure
+("the instruments that lied") and it recurred anyway, in a probe added
+specifically to stop guessing. **Before believing a silent probe, ask what it
+would print if the defect were present.**
+
 ## KNOWN ISSUE: the viewmodel desyncs when the HEAD moves (open, s70)
 
 **Reported, reproducible, not fixed.** Moving the view in the headset pulls the

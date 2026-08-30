@@ -959,7 +959,8 @@ void poll_numpad_tuner() {
     if (!s_told) {
         s_told = true;
         BVR_LOG("[hands] numpad tuner armed - NumLock is %s. 8/2 fwd, 6/4 right, 0/5 up; "
-                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR. Both NumLock states work.",
+                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND POS/"
+                "FREE-HAND ROT. Both NumLock states work.",
                 (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF");
     }
 
