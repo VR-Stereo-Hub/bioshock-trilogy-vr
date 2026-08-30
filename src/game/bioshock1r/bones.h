@@ -172,6 +172,22 @@ void set_elbow_smooth_ms(unsigned v);
 float elbow_follow_wrist();
 void set_elbow_follow_wrist(float v);
 
+// ---- s71: the free hand -----------------------------------------------------
+// begin_write_frame() must be called ONCE per frame before any drive: the
+// reapply cache is shared by both hands now, so exactly one caller may zero it.
+// drive_free_hand() then retargets the non-held hand's cluster onto its own
+// controller - BRVR's ArmHide_DriveFreeHand, whose difference from the held hand
+// is that it retargets where the held hand is replayed verbatim under the actor.
+// Offsets are per HAND, not per weapon, which is BRVR's shape.
+void begin_write_frame();
+bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand);
+void set_off_hand_tracked(bool on);
+bool off_hand_tracked();
+void off_hand_cm(int hand, float* fwd, float* right, float* up);
+void set_off_hand_cm(int hand, float fwd, float right, float up);
+void off_hand_rot_deg(int hand, float* pitch, float* yaw, float* roll);
+void set_off_hand_rot_deg(int hand, float pitch, float yaw, float roll);
+
 void set_anim_allowed(bool on);
 bool anim_allowed();
 

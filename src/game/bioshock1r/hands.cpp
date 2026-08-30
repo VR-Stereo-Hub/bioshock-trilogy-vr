@@ -528,6 +528,20 @@ void save_config() {
     fprintf(f, "elbowOut=%.3f\n", bones::elbow_out());
     fprintf(f, "elbowSmoothMs=%u\n", bones::elbow_smooth_ms());
     fprintf(f, "elbowFollowWrist=%.3f\n", bones::elbow_follow_wrist());
+    // s71: the free hand's own trim, per hand, beside every other per-hand value.
+    for (int h = 0; h < 2; ++h) {
+        const char* sh = h == 0 ? "L" : "R";
+        float a = 0.0f, b = 0.0f, c = 0.0f;
+        bones::off_hand_cm(h, &a, &b, &c);
+        fprintf(f, "offHandFwdCm%s=%.2f\n", sh, a);
+        fprintf(f, "offHandRightCm%s=%.2f\n", sh, b);
+        fprintf(f, "offHandUpCm%s=%.2f\n", sh, c);
+        bones::off_hand_rot_deg(h, &a, &b, &c);
+        fprintf(f, "offHandPitchDeg%s=%.2f\n", sh, a);
+        fprintf(f, "offHandYawDeg%s=%.2f\n", sh, b);
+        fprintf(f, "offHandRollDeg%s=%.2f\n", sh, c);
+    }
+    fprintf(f, "offHandTracked=%d\n", bones::off_hand_tracked() ? 1 : 0);
     fclose(f);
     BVR_LOG("[hands] offsets saved to hands.ini");
 }
@@ -572,6 +586,22 @@ void load_config() {
         else if (store_hand_key(key, "viewUpCm", g_viewUpCm, v)) {}
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
         else if (strcmp(key, "elbowFollowWrist") == 0) bones::set_elbow_follow_wrist(v);
+        else if (strcmp(key, "offHandTracked") == 0) bones::set_off_hand_tracked(v != 0.0f);
+        else if (strncmp(key, "offHand", 7) == 0) {
+            // offHand<Axis><Unit><L|R>, read out of the key like the shoulder
+            // lane above rather than adding six more store_hand_key lanes.
+            const size_t n = strlen(key);
+            const int h = (n && key[n - 1] == 'R') ? 1 : 0;
+            const bool isRot = strstr(key, "Deg") != nullptr;
+            float a = 0.0f, b = 0.0f, c = 0.0f;
+            if (isRot) bones::off_hand_rot_deg(h, &a, &b, &c);
+            else bones::off_hand_cm(h, &a, &b, &c);
+            if (strncmp(key + 7, "Fwd", 3) == 0 || strncmp(key + 7, "Pitch", 5) == 0) a = v;
+            else if (strncmp(key + 7, "Right", 5) == 0 || strncmp(key + 7, "Yaw", 3) == 0) b = v;
+            else c = v;
+            if (isRot) bones::set_off_hand_rot_deg(h, a, b, c);
+            else bones::set_off_hand_cm(h, a, b, c);
+        }
         else if (strcmp(key, "elbowSmoothMs") == 0)
             bones::set_elbow_smooth_ms(static_cast<unsigned>(v < 0.0f ? 0.0f : v));
         else if (strncmp(key, "shoulder", 8) == 0) {
@@ -837,9 +867,19 @@ bool g_rigWasCollapsed = false;
 // values, it is the one knob that can put the orbit back, and every session
 // that nudged it in the headset lost time to exactly that. It stays reachable
 // from the F10 sliders and `vrhands pos` for anyone re-deriving it.
+// s71: two more, numbered as BRVR numbers them (its g_editMode 3 and 4 are the
+// free-hand offset and the free-hand rotation), so a value read off one mod's
+// log means the same thing in the other.
+//   kTuneModeOffPos  the FREE hand's position
+//   kTuneModeOffRot  the FREE hand's rotation
+// Both act on whichever hand is actually free, which flips when a plasmid is
+// equipped - never on a hardcoded index. That distinction has now been the bug
+// twice (s70b for the drive, s70n for the crosshair lane).
 constexpr int kTuneModePos = 0;
 constexpr int kTuneModeRot = 1;
 constexpr int kTuneModeCur = 2;
+constexpr int kTuneModeOffPos = 3;
+constexpr int kTuneModeOffRot = 4;
 int g_tuneMode = kTuneModePos;
 float g_tuneStep = 2.0f;
 
@@ -875,6 +915,17 @@ void tuner_log(const char* what) {
                 wk, th == 0 ? "L/plasmid" : "R/weapon", what, g_viewFwdCm[th].load(std::memory_order_relaxed),
                 g_viewRightCm[th].load(std::memory_order_relaxed),
                 g_viewUpCm[th].load(std::memory_order_relaxed), g_tuneStep);
+    else if (g_tuneMode == kTuneModeOffPos || g_tuneMode == kTuneModeOffRot) {
+        const int fh = 1 - (active_hand() == 1 ? 1 : 0);
+        float a = 0.0f, b = 0.0f, c = 0.0f;
+        if (g_tuneMode == kTuneModeOffPos) bones::off_hand_cm(fh, &a, &b, &c);
+        else bones::off_hand_rot_deg(fh, &a, &b, &c);
+        BVR_LOG("[hands] numpad: %s FREE HAND %s - the %s hand, %+.1f %+.1f %+.1f %s "
+                "(step %.1f). Per HAND, not per weapon; swaps side when a plasmid is up.",
+                what, g_tuneMode == kTuneModeOffPos ? "POSITION" : "ROTATION",
+                fh == 1 ? "RIGHT" : "LEFT", a, b, c,
+                g_tuneMode == kTuneModeOffPos ? "cm" : "deg", g_tuneStep);
+    }
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
         aim::aim_trim_deg(1, &cp, &cy);
@@ -931,9 +982,11 @@ void poll_numpad_tuner() {
     // Mode, then step - both edge-detected so a held key moves one notch.
     const bool modeDown = key_down(VK_NUMPAD9, VK_PRIOR);
     if (modeDown && !prevMode) {
-        g_tuneMode = (g_tuneMode == kTuneModePos)   ? kTuneModeRot
-                     : (g_tuneMode == kTuneModeRot) ? kTuneModeCur
-                                                    : kTuneModePos;
+        g_tuneMode = (g_tuneMode == kTuneModePos)      ? kTuneModeRot
+                     : (g_tuneMode == kTuneModeRot)    ? kTuneModeCur
+                     : (g_tuneMode == kTuneModeCur)    ? kTuneModeOffPos
+                     : (g_tuneMode == kTuneModeOffPos) ? kTuneModeOffRot
+                                                       : kTuneModePos;
         tuner_log("now editing");
     }
     prevMode = modeDown;
@@ -963,7 +1016,30 @@ void poll_numpad_tuner() {
             // the keys always mean what the tester sees. Placement is added in
             // every mode and needs no flip.
             const float d = kBinds[i].sign * g_tuneStep;
+            if (g_tuneMode == kTuneModeOffPos || g_tuneMode == kTuneModeOffRot) {
+                // THE FREE HAND - the one not holding anything, which flips when
+                // a plasmid is equipped. Same rule the drive uses.
+                const int fh = 1 - (active_hand() == 1 ? 1 : 0);
+                float a = 0.0f, b = 0.0f, c = 0.0f;
+                if (g_tuneMode == kTuneModeOffPos) {
+                    bones::off_hand_cm(fh, &a, &b, &c);
+                    if (kBinds[i].axis == 0) a += d;
+                    else if (kBinds[i].axis == 1) b += d;
+                    else c += d;
+                    bones::set_off_hand_cm(fh, a, b, c);
+                } else {
+                    bones::off_hand_rot_deg(fh, &a, &b, &c);
+                    if (kBinds[i].axis == 0) a += d;
+                    else if (kBinds[i].axis == 1) b += d;
+                    else c += d;
+                    bones::set_off_hand_rot_deg(fh, a, b, c);
+                }
+                moved = true;
+                prev[i] = down;
+                continue;
+            }
             if (g_tuneMode == kTuneModeCur) {
+
                 // CROSSHAIR: the aim ray's pitch/yaw. 8/2 pitch, 6/4 yaw. The
                 // ray carries no roll in this tree (the camera owns roll), so
                 // 0/5 has nothing to move - say so rather than silently ignore.
@@ -1028,8 +1104,40 @@ void poll_numpad_tuner() {
     aim::save_weapon_profiles();
 }
 
+// ---- s71: THE FREE HAND -----------------------------------------------------
+//
+// The hand that is NOT holding anything, driven to its own controller. BS1 has
+// only ever drawn one; the other was collapsed to zero scale and parked below
+// the actor. BRVR tracks both and the tester runs it that way
+// (OffHandTracked=2), so this is that half.
+//
+// GRIP POSE, NOT AIM, and BRVR says why in one line: "The aim pose is where a
+// weapon would shoot; on most controllers it is tilted tens of degrees off the
+// hand. A bare hand wants the pose that describes the hand." Passing the aim
+// pose here would tilt the empty hand as though it were holding a gun.
+//
+// WHICH hand is free follows what you are HOLDING, never input - `1 - hand`,
+// where `hand` is active_hand() and therefore already ability-mode-driven since
+// s70b. Deciding it any other way is the bug that had to be fixed twice: once
+// for the drive (s70b) and once for the numpad's crosshair lane (s70n).
+static void drive_off_hand(const FrameContext& ctx, void* target, int heldHand) {
+    if (!bones::off_hand_tracked()) return;
+    const int freeHand = 1 - (heldHand == 1 ? 1 : 0);
+
+    bvr::vr::HeadPose hp{};
+    if (!ctx.vrDriving || !bvr::vr::get_hand_pose(freeHand, /*aimPose=*/false, hp)) return;
+
+    const float pos[3] = {hp.px, hp.py, hp.pz};
+    const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
+    const GamePose gp = xr_pose_to_game(ctx, pos, quat);
+    bones::drive_free_hand(ctx, target, gp, freeHand);
+}
+
 void on_calcview(const FrameContext& ctx) {
     poll_numpad_tuner(); // in-headset grip/trim tuning - see its banner
+    // s71: the reapply cache is shared by both hands now, so exactly one caller
+    // may zero it and it has to happen before either drive.
+    bones::begin_write_frame();
     // Overlay request, applied from THIS thread (same rule as aim.cpp: the
     // render thread must never touch engine state directly).
     int pendMode = g_pendingMode.exchange(-1, std::memory_order_relaxed);
@@ -1392,6 +1500,7 @@ void on_calcview(const FrameContext& ctx) {
         // came back full size when the freeze landed.
         bones::wskel_drive();
         bones::drive(ctx, target, gp, hand);
+        drive_off_hand(ctx, target, hand);
     } else if (bones::freeze_only()) {
         bones::set_freeze_only(false);
     }
