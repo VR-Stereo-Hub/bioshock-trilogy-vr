@@ -1406,6 +1406,25 @@ void seed_default_profiles() {
     // carries animOn=0 and that file overrides these seeds. A stale 0 there was
     // the whole of "tele doesnt animate at all".
     g_weaponProfiles["Telekinesis"].animOn = 1.00f;
+
+    // ---- s70o: PLASMIDS DO NOT ADOPT ENGINE ANIMATION -----------------------
+    //
+    // "lets completely disable plasmid firing animations." A reversal of s70c,
+    // and a reasoned one: that change turned Telekinesis back on because the
+    // tester asked for the animations, and seeing them is what showed the cast
+    // travelling through the plasmid's heavily trimmed frame and ending up
+    // pointed wrong. The animation was never the thing they wanted; a hand that
+    // stays where they put it is.
+    //
+    // Set AFTER the Telekinesis line above rather than by editing it, so the
+    // history stays readable: that line records why it was turned on, this
+    // records why it went off again. animOn is per profile, so any single
+    // plasmid can be turned back on without touching the rest.
+    for (const char* k : {"ElectricBolt", "Telekinesis", "Incineration", "IcicleAssault",
+                          "InsectSwarm", "SecurityBeacon", "SpringBoardTrap",
+                          "SummonProtector", "AirBlast", "BerserkRage", "DecoyHuman",
+                          "Plasmid"})
+        g_weaponProfiles[k].animOn = 0.00f;
 }
 
 void weapons_ini_path(wchar_t* out, size_t count) {

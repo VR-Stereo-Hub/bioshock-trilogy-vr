@@ -164,7 +164,16 @@ std::atomic<float> g_swayAngThreshDeg{5.0f};    // s70: BRVR's HandAnimMinDeg
 // STILL TUNABLE (`vrbones sway`, F10), and ANIMREJECT reports the largest thing
 // rejected in the last 3 s so the number can be set from data rather than
 // guessed a fourth time.
-std::atomic<unsigned> g_swaySettleMs{1200};     // BRVR HandAnimHoldMs
+// s70o: 350, down from BRVR's 1200. The hold restarts on every big frame, so
+// this only ever governs the TAIL after an animation's last large movement - and
+// 1200 ms of tail is 1200 ms of adopting whatever comes next, which after a shot
+// is the start of the idle fidget. That is "the 1 cycle animation ... after every
+// shot" exactly: recoil, then a second of fidget adopted behind it.
+//
+// 350 ms still covers a recoil settling. BRVR can afford 1200 because its
+// threshold sits above this rig's fidget; here the two overlap, so the tail has
+// to be short enough not to swallow one.
+std::atomic<unsigned> g_swaySettleMs{350};
 uint64_t g_lastBigDeltaMs = 0;
 uint64_t g_lastBigDeltaHandMs[2] = {0, 0}; // s70c: per hand, as BRVR's lastBig[hand]
 
@@ -460,6 +469,9 @@ bool g_settleHaveFirst = false;
 // this window - it RELEASES the cluster and writes nothing, so the engine plays
 // the equip natively. See the release block in drive().
 bool g_settleOpen = false;
+// s70o: OFF - the rig holds its pose through the equip instead of playing it.
+// On restores BRVR's behaviour, where the engine's draw animation is visible.
+std::atomic<bool> g_showEquipAnim{false};
 
 // ---- s70e CLUSTERTEST: is the rig we drive the rig you SEE? ----------------
 //
@@ -2636,8 +2648,28 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 (nowS - g_settleStartMs) >= g_settleCeilMs.load(std::memory_order_relaxed);
 
             if (!still && !timedOut) {
-                adopt = true;        // keep the reference current...
-                g_settleOpen = true; // ...but write NOTHING this frame (see below)
+                // ---- s70o: DO NOT SHOW THE EQUIP ANIMATION ------------------
+                //
+                // "the 1 cycle animation issue is happening on weapon equip",
+                // reported across four sessions and still true, because every
+                // version of this has let the engine's draw reach the rig one
+                // way or another: s68 FOLLOWED it and froze at the end, s70e
+                // RELEASED the cluster so the engine played it natively. Both
+                // put an animation cycle on screen at every equip. That is
+                // BRVR's behaviour and it is deliberate there; it is not what
+                // this tester wants and never has been.
+                //
+                // So hold the pose we already have. adopt = false leaves g_ref
+                // alone and the write below keeps painting the previous frozen
+                // pose, so the equip plays out underneath a hand that does not
+                // move. When the settle lands, one adopt swaps in the new pose.
+                //
+                // The cost is honest and small: for the length of the window the
+                // hand holds the OUTGOING item's shape. Toggleable, because
+                // "brief wrong shape" versus "animation cycle" is a taste call
+                // and the headset is what settles it.
+                adopt = false;
+                g_settleOpen = g_showEquipAnim.load(std::memory_order_relaxed);
             } else {
                 adopt = true;         // this frame writes g_ref, then we are done
                 s_forceCapture = false;
@@ -3347,16 +3379,36 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                 quat_conj(qw, qaUse);
             }
         }
+        // ---- THE SHOULDER HANGS OFF THE BODY, NOT THE HEAD -----------------
+        //
+        // "If I keep my right arm in place and turn my head right and back to
+        // center it extends and contracts the arm." Of course it does: the
+        // shoulder was built from ctx.camYaw and ctx.cam[XYZ], which are the
+        // FINAL camera - body yaw PLUS the head's own rotation, and the camera
+        // position INCLUDING the head offset. So turning or leaning your head
+        // swung the shoulder around, and the arm stretched to keep reaching a
+        // hand that had not moved.
+        //
+        // Your shoulder does not rotate when you turn your head. FrameContext
+        // already separates the two and this simply had not used it:
+        //   driveYawOffsetRad - the yaw the HEAD drive added on top of the game
+        //   base[XYZ]         - the camera position BEFORE the head offset
+        // Subtract the one and use the other, and the shoulder is anchored to
+        // the body. Turning under a stick turn still carries it, because that
+        // rotates the body and it should.
         const float uuPerCm = ctx.worldScale / 100.0f;
         const float yawRad =
-            (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f);
+            (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f) -
+            ctx.driveYawOffsetRad;
         const float cy = cosf(yawRad), sy = sinf(yawRad);
         const float fCm = g_shoulderFwdCm[hand].load(std::memory_order_relaxed) * uuPerCm;
         const float rCm = g_shoulderRightCm[hand].load(std::memory_order_relaxed) * uuPerCm;
         const float uCm = g_shoulderUpCm[hand].load(std::memory_order_relaxed) * uuPerCm;
         // UE yaw-only basis: forward (cy, sy, 0), right (-sy, cy, 0), up (0,0,1).
-        const float sWorld[3] = {ctx.camX + cy * fCm - sy * rCm,
-                                 ctx.camY + sy * fCm + cy * rCm, ctx.camZ + uCm};
+        // base[XYZ], not cam[XYZ]: leaning your head must not drag the shoulder
+        // with it either. Same defect as the yaw, on the translation channel.
+        const float sWorld[3] = {ctx.baseX + cy * fCm - sy * rCm,
+                                 ctx.baseY + sy * fCm + cy * rCm, ctx.baseZ + uCm};
         float sRel[3] = {sWorld[0] - aLoc[0], sWorld[1] - aLoc[1], sWorld[2] - aLoc[2]};
         float S[3];
         qts_rotate(qaUse, sRel, S);
@@ -4521,6 +4573,18 @@ void draw_debug_ui() {
                     "weapons OFF so recoil still plays)",
                     ph == 1 ? "RIGHT/weapon" : "LEFT/plasmid");
 
+        bool sea = g_showEquipAnim.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Play the equip animation on screen", &sea))
+            g_showEquipAnim.store(sea, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "OFF: the hand holds its pose through the equip and swaps to the\n"
+                "     new one when the settle lands. No animation cycle on screen.\n"
+                "     For the length of the window the hand keeps the OUTGOING\n"
+                "     item's shape - brief, and the reason this is a toggle.\n\n"
+                "ON : the engine plays its draw animation, which is BRVR's\n"
+                "     behaviour and the source of the 'one cycle on every equip'\n"
+                "     report.");
         ImGui::TextDisabled("EQUIP SETTLE - when the pose is captured after a switch");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
