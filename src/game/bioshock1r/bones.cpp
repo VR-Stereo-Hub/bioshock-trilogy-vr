@@ -144,6 +144,9 @@ std::atomic<float> g_offHandRotDeg[2][3] = {};
 constexpr int kFreeClusterMax = 24;
 Qts g_freeRef[2][kFreeClusterMax];
 bool g_freeRefValid[2] = {false, false};
+// s71: whether we last collapsed this hand's sleeve, so turning the arms back on
+// restores it rather than leaving it invisible forever.
+bool g_freeSleeveCollapsed[2] = {false, false};
 
 void free_ref_drop(const char* why) {
     if (g_freeRefValid[0] || g_freeRefValid[1])
@@ -792,10 +795,11 @@ void* g_dsHoldable = nullptr; // the actor the lane is bound to
 float g_dsRaw = 1.0f;         // the authored field value, restored on release
 float g_dsWrote = 0.0f;       // what we last wrote (0 = nothing written yet)
 
-// s70j: ARMS VISIBLE BY DEFAULT while the arm solve is being tuned - the
-// tester cannot judge a shoulder anchor on an arm that is not drawn. The
-// F10 checkbox and the ARMS radio's 'hide' both still collapse it.
-std::atomic<bool> g_collapse{false}; // hide the driven arm's sleeve
+// s71: ARMS HIDDEN AGAIN BY DEFAULT. s70j turned them on so the shoulder anchor
+// could be judged, which it has been; with the free hand now drawn as well, two
+// arms is two more things moving while the off hand itself is what needs
+// testing. The F10 checkbox and the ARMS radio still turn them back on.
+std::atomic<bool> g_collapse{true}; // hide the driven arm's sleeve
 std::atomic<uint32_t> g_writes{0};
 std::atomic<uint32_t> g_reapplies{0};
 std::atomic<int> g_lastHand{-1};
@@ -4170,6 +4174,49 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
             cb.writeScale = false;
             cb.writeRot = true;
         }
+    }
+
+    // ---- s71: THE FREE HAND'S OWN SLEEVE ----------------------------------
+    //
+    // The collapse in drive() only ever covered the DRIVEN hand's sleeve -
+    // there was never a second hand for it to cover. So with the free hand
+    // drawn and the arms hidden, its sleeve was the one thing left to the
+    // engine: still at the body, still full scale, and now reaching across to
+    // wherever the free hand had moved. That is the stretched arm in the
+    // 2026-08-29 screenshot, and it is a limb the arm solve never touched
+    // because solve_arm() returns early while collapsed.
+    //
+    // Collapse it here, where this hand's target is known - drive() cannot do
+    // it, since it runs first and has no idea where the free hand will land.
+    // Pinned at ptc, which is what the retarget branch collapses to for exactly
+    // the same reason.
+    const bool collapseFree = g_collapse.load(std::memory_order_relaxed) ||
+                              g_armsMode.load(std::memory_order_relaxed) == 2;
+    {
+        const int* sl = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        const size_t slCount = hand == 1 ? _countof(patterns::kBoneRSleeve)
+                                         : _countof(patterns::kBoneLSleeve);
+        static const float kZeroS[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        for (size_t k = 0; k < slCount; ++k) {
+            const int idx = sl[k];
+            if (idx < 0 || idx >= g_boneCount) continue;
+            if (collapseFree) {
+                write_n(g_bones[idx].p, ptc, 12);
+                write_n(g_bones[idx].s, kZeroS, 12);
+                if (g_cacheSleeveCount < static_cast<int>(_countof(g_cacheSleeve))) {
+                    CachedSleeve& cs = g_cacheSleeve[g_cacheSleeveCount++];
+                    cs.idx = idx;
+                    memcpy(cs.p, ptc, 12);
+                    memcpy(cs.s, kZeroS, 12);
+                }
+            } else if (g_freeSleeveCollapsed[hand]) {
+                // Coming back from a collapse: a zero scale left behind never
+                // returns on its own (session 29's stranded-collapse bug).
+                write_n(g_bones[idx].p, g_ref[idx].p, 12);
+                write_n(g_bones[idx].s, g_ref[idx].s, 12);
+            }
+        }
+        g_freeSleeveCollapsed[hand] = collapseFree;
     }
 
     solve_arm(ctx, hand, ptc, qaInv, actorLoc, sc);
