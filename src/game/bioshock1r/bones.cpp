@@ -359,20 +359,10 @@ std::atomic<float> g_elbowOut{0.35f};
 std::atomic<unsigned> g_elbowSmoothMs{70};
 // s70m: 0 = the elbow ignores wrist roll entirely (v2), 1 = it follows it fully
 // (v1). The tester wants "somewhere in between".
-// s70p: BACK DOWN TO 0.20, and the swivel that was asked for now comes from the
-// forearm instead.
-//
-// Raising this to 0.60 is what produced "the forearm and biceps twist a lot...
-// the bicep and shoulder twist as well": this knob routes wrist roll through the
-// POLE, which moves the ELBOW, so asking for more swivel asked the whole limb to
-// swing. A small amount is still right - a real elbow does drift a little when
-// you pronate - but the bulk of the motion belongs in the forearm twist bones,
-// which is where it goes now.
-std::atomic<float> g_elbowFollowWrist{0.20f};
-// s70p: how much of the hand's roll the forearm twist bones absorb, distributed
-// along their length. 1.0 means the far twist matches the hand exactly, which is
-// what the bones are authored to do.
-std::atomic<float> g_forearmTwist{1.0f};
+// 0.60, up from 0.40: "Elbow still needs a little more swivel". Raised rather
+// than taken to 1.0, because 1.0 is v1 - the version where the elbow swung much
+// further than a real arm does.
+std::atomic<float> g_elbowFollowWrist{0.60f};
 float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
 bool g_elbowHavePrev[2] = {false, false};
 uint64_t g_elbowLastMs[2] = {0, 0};
@@ -3608,70 +3598,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                                      E[2] + (W[2] - E[2]) * t};
                 float qk[4];
                 quat_mul(qFo, ar[k].q, qk);
-                // ---- s70p: THE TWIST BONES ABSORB THE WRIST ROLL ------------
-                //
-                // "rotating the wrist with weapons horizontally left and right
-                // causes the forearm and biceps to twist a lot, but turning left
-                // enough causes the forearm to twist to a point where the bicep
-                // and shoulder twist as well."
-                //
-                // That is the model being wrong, not the numbers. Wrist roll was
-                // reaching the arm only through the POLE, which moves the elbow
-                // - so pronating the forearm swung the whole limb, and far
-                // enough round it dragged the upper arm with it. A real forearm
-                // rotates about its own axis and the elbow does not move at all.
-                //
-                // These bones exist for exactly this: they are the forearm TWIST
-                // helpers (patterns.h, "22/23 forearm twist helpers"), and their
-                // job in any rig is to distribute the hand's roll along the
-                // forearm so the skin does not shear at the wrist. So blend each
-                // one toward the HAND's orientation by how far along the forearm
-                // it sits - the near one barely, the far one nearly fully. The
-                // elbow and upper arm never see the roll.
-                float qHand[4];
-                quat_mul(qFix, g_ref[anchor].q, qHand);
-                const float hn = sqrtf(qHand[0] * qHand[0] + qHand[1] * qHand[1] +
-                                       qHand[2] * qHand[2] + qHand[3] * qHand[3]);
-                if (hn > 1e-4f) {
-                    for (int c = 0; c < 4; ++c) qHand[c] /= hn;
-                    float qt2[4];
-                    quat_nlerp(qk, qHand, t * g_forearmTwist.load(std::memory_order_relaxed),
-                               qt2);
-                    memcpy(qk, qt2, 16);
-                }
                 put(armIdx[k], tp, qk);
-            }
-
-            // ---- s70p ARMREACH: which end is moving when the head turns? -----
-            //
-            // "its still extending and contracting with head movement", after
-            // two goes at this. So stop guessing which term is head-coupled and
-            // print all of them: the shoulder in WORLD space, the hand in world
-            // space, the distance between them, and the two yaw terms the
-            // shoulder is built from. Turn the head with the hand held still and
-            // whichever number moves is the answer - if |W-S| moves while S
-            // holds, it is the HAND that is head-coupled and the shoulder was
-            // never the problem.
-            {
-                static uint64_t s_reachLog[2] = {0, 0};
-                const uint64_t nowR = GetTickCount64();
-                if (nowR - s_reachLog[hand] >= 500) {
-                    s_reachLog[hand] = nowR;
-                    // W back to world, through the same transform S came from.
-                    float qFwd[4] = {-qaUse[0], -qaUse[1], -qaUse[2], qaUse[3]};
-                    float wWorldRel[3];
-                    qts_rotate(qFwd, W, wWorldRel);
-                    const float wWorld[3] = {wWorldRel[0] + aLoc[0], wWorldRel[1] + aLoc[1],
-                                             wWorldRel[2] + aLoc[2]};
-                    BVR_LOG("[bones] ARMREACH %s: S=(%.1f %.1f %.1f) W=(%.1f %.1f %.1f) "
-                            "|W-S|=%.1f UU (arm is %.1f) | camYaw=%.1f deg driveYaw=%.1f "
-                            "deg | cam=(%.1f %.1f %.1f) base=(%.1f %.1f %.1f)",
-                            hand == 1 ? "R" : "L", sWorld[0], sWorld[1], sWorld[2], wWorld[0],
-                            wWorld[1], wWorld[2], dRaw, L1 + L2,
-                            static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree,
-                            ctx.driveYawOffsetRad * kRadToDeg, ctx.camX, ctx.camY, ctx.camZ,
-                            ctx.baseX, ctx.baseY, ctx.baseZ);
-                }
             }
 
             static uint64_t s_ikLog[2] = {0, 0};
