@@ -2,6 +2,50 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## KNOWN ISSUE: the viewmodel desyncs when the HEAD moves (open, s70)
+
+**Reported, reproducible, not fixed.** Moving the view in the headset pulls the
+hand off the position it should hold. Three properties, all from the tester:
+
+- it desyncs **opposite** to the direction the head turns;
+- it appears to affect the **wrench** and not the other weapons;
+- *"I dont know how far back this bug goes"* - and neither do we. It is older
+  than s70; every fix this session sat on top of it.
+
+**What is ruled out.** The bones are not the problem: `ROLLCHECK` reports our
+cluster writes holding 62 to 3. The XR->game conversion is not the problem
+either: `xr_pose_to_game()` builds the hand target on `base[XYZ]` (the camera
+BEFORE the head offset) from a recenter-relative controller offset, so the target
+is head-independent by construction.
+
+**What is suspected, and why.**
+
+1. `late_write()` replayed the actor's ROTATION and never its LOCATION, while
+   the engine's `Hands.UpdateLocation` puts the actor back on the CAMERA every
+   frame - and the camera carries the head offset. Fixed in `c0983d1`; the
+   symptom SURVIVED it, so either the replay is not landing or this is not the
+   whole cause. `LATEWRITE` (`e569735`) measures which.
+2. **A reversal is a frame error, not an offset.** Session 12 recorded this exact
+   signature - *"the user saw the gun move REVERSED, which is exactly
+   actor-frame rendering composed against the camera frame"* - and fixed it by
+   composing against the ACTOR fields. Something is still composed against the
+   camera somewhere.
+3. **"Only the wrench" is probably not about the wrench.** It is the one weapon
+   with `animOn=0`, so it never adopts, so `g_lastBigDeltaHandMs` never updates
+   for it - making it the only weapon whose anchor pin is engaged PERMANENTLY.
+   Every other weapon releases the pin whenever an animation fires. Read the clue
+   as *"only when the pin is continuously on"*.
+
+**Next step is a measurement, not a patch.** Equip the wrench, turn the head, and
+read `LATEWRITE`: no lines means the engine is not moving the actor and the cause
+is elsewhere; a large delta every frame means something writes it AFTER us and
+the seam is wrong rather than the write.
+
+**Do not attempt a fourth fix from reasoning alone.** Three have been tried
+(`117f10c`, `4ff7bd7`, `c0983d1`), each sound in its own terms, none sufficient -
+because each reasoned about where the actor *is* rather than checking what
+reaches the renderer.
+
 ## Session 2026-08-28 - s70: BRVR's chain, ported - the state mask was the root
 
 **Same branch `fix/bs1-bathysphere-cine-quad`, PR #54 still open against
