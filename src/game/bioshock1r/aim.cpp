@@ -2140,6 +2140,23 @@ void aim_trim_deg(int hand, float* pitchDeg, float* yawDeg) {
     if (yawDeg) *yawDeg = g_yawOffsetDeg[hand].load(std::memory_order_relaxed);
 }
 
+void set_aim_trim(int hand, float pitchDeg, float yawDeg) {
+    // s70n: THE HAND MATTERS, and the crosshair branch of the numpad tuner was
+    // the last place that had not learned it.
+    //
+    // set_aim_trim_all() below writes hand 1 unconditionally - correct when the
+    // only caller was tuning a weapon, wrong the moment a plasmid is up. The
+    // tuner READ hand 1's trim, added a step, and wrote it back to hand 1, so
+    // with a plasmid equipped the keys moved the WEAPON's crosshair and left the
+    // plasmid's untouched: "the numpad doesnt work for crosshair placement on
+    // plasmids". Exactly the defect s68 fixed for grip and rotation
+    // (bdfa400, "the numpad tuned a hardcoded hand"), in the one branch that
+    // was not part of that change.
+    const int h = hand == 0 ? 0 : 1;
+    g_pitchOffsetDeg[h].store(pitchDeg, std::memory_order_relaxed);
+    g_yawOffsetDeg[h].store(yawDeg, std::memory_order_relaxed);
+}
+
 void set_aim_trim_all(float pitchDeg, float yawDeg) {
     // PER WEAPON since s67. It was written to every profile at first, on the
     // hope that one crosshair would serve all eight; the tester could not get

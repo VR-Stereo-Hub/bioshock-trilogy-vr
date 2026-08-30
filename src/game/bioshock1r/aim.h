@@ -59,6 +59,9 @@ void on_calcview(const FrameContext& ctx);
 // choice while each stays individually settable.
 void aim_trim_deg(int hand, float* pitchDeg, float* yawDeg);
 void set_aim_trim_all(float pitchDeg, float yawDeg);
+// s70n: per hand. set_aim_trim_all writes hand 1 whatever you ask, which is why
+// the numpad's crosshair mode could never move a plasmid.
+void set_aim_trim(int hand, float pitchDeg, float yawDeg);
 
 // Seam command handler: args after the "vraim" verb (game thread).
 //   on | off | status

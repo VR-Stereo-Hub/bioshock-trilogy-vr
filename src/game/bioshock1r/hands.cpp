@@ -967,10 +967,14 @@ void poll_numpad_tuner() {
                     prev[i] = down;
                     continue;
                 }
+                // s70n: THE ACTIVE HAND, not a hardcoded 1. Reading and writing
+                // hand 1 meant that with a plasmid up these keys moved the
+                // WEAPON's crosshair and the plasmid's never budged.
+                const int ch = active_hand();
                 float cp = 0.0f, cy = 0.0f;
-                aim::aim_trim_deg(1, &cp, &cy);
+                aim::aim_trim_deg(ch, &cp, &cy);
                 if (kBinds[i].axis == 0) cp += d; else cy += d;
-                aim::set_aim_trim_all(cp, cy);
+                aim::set_aim_trim(ch, cp, cy);
                 moved = true;
                 prev[i] = down;
                 continue;

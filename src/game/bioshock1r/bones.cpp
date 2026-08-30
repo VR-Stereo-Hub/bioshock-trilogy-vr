@@ -209,7 +209,7 @@ bool g_pinValid[2] = {false, false};
 // hand every second, pinning back the exact motion the tester was looking for.
 //
 // [0] left/plasmids: suppressed. [1] right/weapons: free.
-std::atomic<bool> g_animPinRot[2] = {true, false};
+std::atomic<bool> g_animPinRot[2] = {true, true};
 // s70f: SUPPRESS THE ANIMATION'S ROOT MOTION, KEEP ITS ARTICULATION.
 //
 // The tester, with arms made visible and a screenshot to go with it: "the hand
@@ -237,7 +237,13 @@ std::atomic<bool> g_animPinRot[2] = {true, false};
 // Two toggles rather than one, because "movement" turned out to mean both halves
 // and the tester should be able to feel which is which: position and heading
 // suppress independently, live, no rebuild.
-std::atomic<bool> g_animPinPos[2] = {true, false};
+std::atomic<bool> g_animPinPos[2] = {true, true};
+// s70n: [0] plasmids pin ALWAYS - the cast must not travel. [1] weapons pin only
+// when NOT adopting, so recoil plays and the hand then returns to its captured
+// pose instead of freezing wherever the idle fidget left it.
+std::atomic<bool> g_pinWhenIdle[2] = {false, true};
+float g_pinBlend[2] = {1.0f, 1.0f};   // eased 0..1, never snapped
+uint64_t g_pinBlendMs[2] = {0, 0};
 
 // ---- s70g: ARMS MODE, ported from BS2 -------------------------------------
 //
@@ -328,9 +334,13 @@ bool g_armRefValid[2] = {false, false};
 // human shoulder - 18 cm out to the side, 15 cm below the eyes, slightly back -
 // because 0,0,0 puts the shoulder joint inside your eyeball, which is not a
 // neutral starting point, it is just a wrong one.
-std::atomic<float> g_shoulderFwdCm[2] = {-5.0f, -5.0f};
-std::atomic<float> g_shoulderRightCm[2] = {-18.0f, 18.0f};
-std::atomic<float> g_shoulderUpCm[2] = {-15.0f, -15.0f};
+// s70n: THE TESTER'S OWN TUNED VALUES, read out of their hands.ini rather than
+// asked for a fourth time. Note the two shoulders are NOT mirror images
+// (-35.6 left against +26.0 right, -28.6 up against -19.8) - a real tuning
+// never is, and guessing a symmetric default would have been wrong in both.
+std::atomic<float> g_shoulderFwdCm[2] = {-6.60f, 3.80f};
+std::atomic<float> g_shoulderRightCm[2] = {-35.60f, 26.00f};
+std::atomic<float> g_shoulderUpCm[2] = {-28.60f, -19.80f};
 // s70k: how far the elbow sits OUT from straight-down, 0 = hanging, 1 = level
 // with the shoulder. Human elbows rest down and a little outward.
 std::atomic<float> g_elbowOut{0.35f};
@@ -340,7 +350,10 @@ std::atomic<float> g_elbowOut{0.35f};
 std::atomic<unsigned> g_elbowSmoothMs{70};
 // s70m: 0 = the elbow ignores wrist roll entirely (v2), 1 = it follows it fully
 // (v1). The tester wants "somewhere in between".
-std::atomic<float> g_elbowFollowWrist{0.40f};
+// 0.60, up from 0.40: "Elbow still needs a little more swivel". Raised rather
+// than taken to 1.0, because 1.0 is v1 - the version where the elbow swung much
+// further than a real arm does.
+std::atomic<float> g_elbowFollowWrist{0.60f};
 float g_elbowPrev[2][3] = {{0, 0, 0}, {0, 0, 0}};
 bool g_elbowHavePrev[2] = {false, false};
 uint64_t g_elbowLastMs[2] = {0, 0};
@@ -3013,13 +3026,51 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // that turn.
     float qFix[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     bool pinRot = false;
+    // ---- s70n: THE WEAPON HAND PINS WHEN IDLE, NOT WHILE ANIMATING ---------
+    //
+    // "the 1 cycle animation issue is happening on weapon equip and after every
+    // shot." Both are the HOLD WINDOW. Adoption is triggered by a big frame and
+    // then keeps adopting for g_swaySettleMs afterwards, so a shot adopts the
+    // recoil and then carries on adopting whatever follows it - which is the
+    // start of the idle fidget. One cycle of it, after every shot, exactly as
+    // reported. Equip is the same shape: the capture lands, then the tail of the
+    // window plays the fidget into the rig.
+    //
+    // Two changes, and the pin is the second. Pinning the weapon hand outright
+    // removed recoil (last commit); never pinning it lets the fidget wander.
+    // So pin it WHEN IT IS NOT ADOPTING: recoil moves the hand freely, and the
+    // moment the animation's window closes the hand eases back to the pose
+    // captured at equip instead of freezing wherever the fidget left it.
+    //
+    // Eased, not snapped - the return is the same shape the s68 canonical rest
+    // used, without the canonical rest: the pose we ease to is the settle
+    // capture, which already exists and is already per holdable.
+    const bool adoptingNow =
+        (GetTickCount64() - g_lastBigDeltaHandMs[hand]) <
+        g_swaySettleMs.load(std::memory_order_relaxed);
+    const bool pinIdleOnly = g_pinWhenIdle[hand].load(std::memory_order_relaxed);
+    {
+        // Ease the pin in and out so neither the shot nor the return snaps.
+        const uint64_t nowPb = GetTickCount64();
+        const float want = (pinIdleOnly && adoptingNow) ? 0.0f : 1.0f;
+        float dtMs = g_pinBlendMs[hand] ? static_cast<float>(nowPb - g_pinBlendMs[hand]) : 0.0f;
+        if (dtMs < 0.0f) dtMs = 0.0f;
+        if (dtMs > 250.0f) dtMs = 250.0f;
+        g_pinBlendMs[hand] = nowPb;
+        const float tau = 120.0f;
+        const float alpha = 1.0f - expf(-dtMs / tau);
+        g_pinBlend[hand] += (want - g_pinBlend[hand]) * alpha;
+        if (g_pinBlend[hand] < 0.0f) g_pinBlend[hand] = 0.0f;
+        if (g_pinBlend[hand] > 1.0f) g_pinBlend[hand] = 1.0f;
+    }
+    const float pinAmt = g_pinBlend[hand];
     const bool pinPos = g_freezeOnly.load(std::memory_order_relaxed) &&
                         g_animPinPos[hand].load(std::memory_order_relaxed) &&
-                        g_pinValid[hand] && anchor < g_boneCount;
+                        g_pinValid[hand] && anchor < g_boneCount && pinAmt > 0.001f;
     if (g_freezeOnly.load(std::memory_order_relaxed) &&
         (g_animPinRot[hand].load(std::memory_order_relaxed) ||
          g_animPinPos[hand].load(std::memory_order_relaxed)) &&
-        g_pinValid[hand] && anchor < g_boneCount) {
+        g_pinValid[hand] && anchor < g_boneCount && pinAmt > 0.001f) {
         float qInv[4];
         quat_conj(g_ref[anchor].q, qInv);
         quat_mul(g_pinAnchorQ[hand], qInv, qFix);
@@ -3027,6 +3078,15 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                                qFix[3] * qFix[3]);
         if (fn > 1e-4f) {
             for (int k = 0; k < 4; ++k) qFix[k] /= fn;
+            // Scale the correction by how far the pin is eased in. At pinAmt 0
+            // this is identity and the animation moves the hand exactly as
+            // authored - which is what recoil needs.
+            if (pinAmt < 0.999f) {
+                static const float kIdent[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                float qb[4];
+                quat_nlerp(kIdent, qFix, pinAmt, qb);
+                memcpy(qFix, qb, 16);
+            }
             pinRot = g_animPinRot[hand].load(std::memory_order_relaxed);
             // ALWAYS ON, throttled: how far the animation had turned the anchor
             // IS the size of the defect this cancels, so it gets measured.
@@ -3111,7 +3171,12 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
             // animation's internal articulation; placing it at the CAPTURED
             // anchor is what drops the root motion that was carrying the hand
             // off through the trimmed frame.
-            const float* paOut = pinPos ? g_pinAnchorP[hand] : pa;
+            // Eased between the animated anchor and the captured one, so the
+            // weapon hand can travel with its recoil and then come back.
+            float paOut[3] = {pa[0], pa[1], pa[2]};
+            if (pinPos)
+                for (int c = 0; c < 3; ++c)
+                    paOut[c] = pa[c] + (g_pinAnchorP[hand][c] - pa[c]) * pinAmt;
             p[0] = paOut[0] + off[0];
             p[1] = paOut[1] + off[1];
             p[2] = paOut[2] + off[2];
@@ -3297,7 +3362,13 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         qts_rotate(qaUse, sRel, S);
 
         // The hand is wherever the cluster write just put the anchor.
-        const float* W = pinPos ? g_pinAnchorP[hand] : pa;
+        // The same eased anchor the cluster was written at, or the arm would
+        // solve to a wrist the hand is no longer at during a recoil.
+        float Wbuf[3] = {pa[0], pa[1], pa[2]};
+        if (pinPos)
+            for (int c = 0; c < 3; ++c)
+                Wbuf[c] = pa[c] + (g_pinAnchorP[hand][c] - pa[c]) * pinAmt;
+        const float* W = Wbuf;
 
         float dir[3];
         sub3(W, S, dir);
