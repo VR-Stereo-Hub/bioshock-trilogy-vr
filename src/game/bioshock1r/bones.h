@@ -180,7 +180,13 @@ void set_elbow_follow_wrist(float v);
 // is that it retargets where the held hand is replayed verbatim under the actor.
 // Offsets are per HAND, not per weapon, which is BRVR's shape.
 void begin_write_frame();
-bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand);
+// actorLocNow/actorRotNow are the transform hands.cpp is ABOUT TO WRITE this
+// frame, not a read of the live actor. BRVR passes the same pair for the same
+// reason: the free hand's target cancels the actor exactly, and only if it is
+// the same actor the renderer uses. A frame-old read leaks the held hand's
+// rotation into the free hand.
+bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+                     const float actorLocNow[3], const FRotator& actorRotNow);
 void set_off_hand_tracked(bool on);
 bool off_hand_tracked();
 void off_hand_cm(int hand, float* fwd, float* right, float* up);

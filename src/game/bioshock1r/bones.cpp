@@ -4053,7 +4053,8 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
 // not fight for it), the settle, the anchor pin, or g_animAllowed. Those all
 // belong to the held hand, and a free hand has no equip, no recoil and no
 // holdable to gate on.
-bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
+bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+                     const float actorLocNow[3], const FRotator& actorRotNow) {
     if (!g_offHandTracked.load(std::memory_order_relaxed)) return false;
     if (hand < 0 || hand > 1) return false;
     if (!handsActor || !locate(handsActor)) return false;
@@ -4082,19 +4083,29 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
                 hand == 1 ? "RIGHT" : "LEFT", first, last);
     }
 
-    // The ACTOR transform we INTEND, not the live one. drive() runs before the
-    // actor write and the engine rewrites that rotator every frame, so a live
-    // read here is the engine's value - up to 60 deg wrong (s70q, ACTORWATCH).
-    float actorLoc[3];
-    int32_t actorRotRaw[3];
-    if (!hands::last_actor_write(actorLoc, actorRotRaw)) {
-        if (!read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorLocOffset, actorLoc,
-                    12) ||
-            !read_n(static_cast<uint8_t*>(handsActor) + patterns::kActorViewDirOffset,
-                    actorRotRaw, 12))
-            return false;
-    }
-    FRotator actorRot{actorRotRaw[0], actorRotRaw[1], actorRotRaw[2]};
+    // ---- s71b: THIS FRAME'S ACTOR TRANSFORM, PASSED IN, NOT READ ----------
+    //
+    // "Rotating the right hand causes the left one to move as well. Turning the
+    // pistol left causes the left hand to swivel towards the right hand."
+    //
+    // The free hand's target is a WORLD point pushed into component space
+    // through the inverse actor transform, so the actor cancels out exactly -
+    // but only if it is the SAME actor transform the renderer ends up using. It
+    // was not. This read `hands::last_actor_write()`, which is the PREVIOUS
+    // frame's write, because drive() and this both run before the actor write
+    // (hands.cpp:1502 against :1421). So the cancellation was off by however far
+    // the actor turned between frames, and that residue is the held hand's
+    // rotation leaking straight into the free hand - hardest when the held hand
+    // turns fastest, which is exactly the report.
+    //
+    // BRVR does not read the actor at all here. DriveFreeHand takes `want` and
+    // wx/wy/wz as ARGUMENTS - the transform DriveHands has just decided this
+    // frame - and its comment says why it is called last: "Deliberately LAST,
+    // because it consumes `want` and wx/wy/wz - the actor rotation and location
+    // this function has just decided." Same here now: hands.cpp passes the loc
+    // and rot it is about to write, so the two frames cannot disagree.
+    float actorLoc[3] = {actorLocNow[0], actorLocNow[1], actorLocNow[2]};
+    FRotator actorRot = actorRotNow;
     float qa[4], qaInv[4], qt[4], qtc[4];
     ue_rot_to_quat(actorRot, qa);
     quat_conj(qa, qaInv);

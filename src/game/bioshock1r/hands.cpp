@@ -1120,7 +1120,8 @@ void poll_numpad_tuner() {
 // where `hand` is active_hand() and therefore already ability-mode-driven since
 // s70b. Deciding it any other way is the bug that had to be fixed twice: once
 // for the drive (s70b) and once for the numpad's crosshair lane (s70n).
-static void drive_off_hand(const FrameContext& ctx, void* target, int heldHand) {
+static void drive_off_hand(const FrameContext& ctx, void* target, int heldHand,
+                           const float actorLoc[3], const FRotator& actorRot) {
     if (!bones::off_hand_tracked()) return;
     const int freeHand = 1 - (heldHand == 1 ? 1 : 0);
 
@@ -1130,7 +1131,7 @@ static void drive_off_hand(const FrameContext& ctx, void* target, int heldHand) 
     const float pos[3] = {hp.px, hp.py, hp.pz};
     const float quat[4] = {hp.qx, hp.qy, hp.qz, hp.qw};
     const GamePose gp = xr_pose_to_game(ctx, pos, quat);
-    bones::drive_free_hand(ctx, target, gp, freeHand);
+    bones::drive_free_hand(ctx, target, gp, freeHand, actorLoc, actorRot);
 }
 
 void on_calcview(const FrameContext& ctx) {
@@ -1500,7 +1501,10 @@ void on_calcview(const FrameContext& ctx) {
         // came back full size when the freeze landed.
         bones::wskel_drive();
         bones::drive(ctx, target, gp, hand);
-        drive_off_hand(ctx, target, hand);
+        // s71b: pass the actor transform we are ABOUT to write, never a read of
+        // the live one - see drive_free_hand(). This is also why it is called
+        // after the held hand: `loc` and `gp.rot` are settled by here.
+        drive_off_hand(ctx, target, hand, loc, gp.rot);
     } else if (bones::freeze_only()) {
         bones::set_freeze_only(false);
     }
