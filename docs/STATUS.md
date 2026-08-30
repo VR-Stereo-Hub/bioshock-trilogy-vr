@@ -116,9 +116,68 @@ this one is zero by timing (measuring a window in which nothing happens), and
 either could have been caught by asking the standing question before the run -
 *what would this print if the defect were present?*
 
+### THE ACTOR IS CLEARED, AND BRVR HAD THIS EXACT BUG
+
+**Second run, repaired probe (2026-08-30 00:05, `v0.8.2-128-g1a449e7`): 54
+FREEPROBE lines, all zero, and ZERO `actor read FAILED` lines.** ACTORWATCH read
+yaw +68.2 / +62.7 in the same run, so the sweep did happen. `LATEWRITE` is also
+silent, so the LOCATION is unchanged at that seam too.
+
+**The ambiguity is closed and the zeros are real.** At the first scenedraw
+depth-0 after CalcView the actor is bit-identical to what we wrote, location and
+rotation both. `A` therefore cancels exactly, and the retarget algebra is sound.
+**Stop trying to fix the actor.** Four attempts (`117f10c`, `4ff7bd7`, `c0983d1`,
+`2cdab5e`) all acted at a seam where the actor was already correct.
+
+**BRVR hit this identical symptom and its note is a verbatim match.** From
+`BioshockVR/Camera/CameraHook.cpp`, `FreeHandModelPos()`, banner *"THE OFFSET
+MUST NOT LIVE IN THE ACTOR'S FRAME"*:
+
+> *"with the right hand still the left hand tracked almost perfectly, but MOVING
+> the right hand dragged the left one about. This offset used to be added in
+> actor-local space, and the actor is rotated by the RIGHT controller, so a tuned
+> 8 cm correction swung through 16 cm as the right wrist turned. Everything else
+> here cancels the actor out algebraically -- world = actorLoc + A * A^T * (P -
+> actorLoc) = P -- so the offset was the only term that COULD couple the two
+> hands, and it did."*
+
+Same conclusion in `docs/brvr-reference/docs/modules/hands.md`: *"A placement
+offset must not live in the actor's frame... It belongs in the frame it
+describes: the hand's own."*
+
+**BUT OUR PORT ALREADY HAS BRVR'S FIX, so this is an exclusion, not a cure.**
+`drive_free_hand` rotates the trim by `qtc` = `inv(A) * T`, which is `T * o` in
+world - the hand's own frame, exactly where BRVR moved it. The cluster
+reconstruction is in the same frame (`rel` rotated by `qtc`, added to `ptc`).
+Checked term by term this session; do not re-derive it.
+
+So BRVR's audit - *the offset is the only term that could couple them* - now cuts
+the other way: our offset is correct, the actor is intact, and therefore **the
+coupling is not in `drive_free_hand`'s algebra at all.**
+
 ### Next steps
 
-**Re-run FREEPROBE on the repaired build to close the ambiguity.** Same sweep.
+**Take the FREETARGET reading - it measures the one quantity nobody has looked
+at.** Built and installed this session (`bones.cpp`, always-on, 500 ms throttle).
+It prints the free hand's intended WORLD point, `gp.loc`, beside the HELD hand's
+rotator, and it discriminates the only two remaining possibilities:
+
+| Reading | Meaning |
+|---|---|
+| the wanted world point **swings** as the held yaw sweeps | the defect is **upstream** of the actor and the bones - it is in pose construction (`xr_pose_to_game`, the game yaw, the recenter base) |
+| the wanted world point is **steady** while the hand still swings | the defect is **downstream** of our write - the bone array is re-evaluated after us |
+
+Sweep the held weapon through a wide yaw with the off hand held still, then
+`grep -a FREETARGET "$LOCALAPPDATA/BioshockVR/bioshockvr.log"`.
+
+It cannot be tautological, and that was checked rather than hoped: `gp.loc` comes
+from the free controller's pose and the held rotator from the held hand's target;
+neither is derived from the other. That check is now mandatory before any probe
+on this branch ships - **three instruments have read zero here for three
+different reasons** (zero by algebra, zero by timing, and nearly zero by an
+unchecked read).
+
+**Superseded - the actor question is closed:** Same sweep.
 If no `actor read FAILED` line appears, the zeros are real and finding (1) above
 stands: stop trying to fix the actor at CalcView or at `late_write`, and go find
 the seam that changes it afterwards. If the failure line DOES appear, the whole

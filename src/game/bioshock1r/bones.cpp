@@ -4115,6 +4115,57 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     ue_rot_to_quat(actorRot, qa);
     quat_conj(qa, qaInv);
 
+    // ---- s71f FREETARGET: is the free hand's WORLD TARGET itself swinging? --
+    //
+    // FREEPROBE has closed the actor question. Across two runs, 115 lines, no
+    // failed reads: at late_write the actor is bit-identical to what we wrote,
+    // location AND rotation. So A cancels exactly and the algebra below is
+    // sound - which is also what the zeros were always going to mean once the
+    // window they measure was understood.
+    //
+    // BRVR audited this same shape after an IDENTICAL report ("with the right
+    // hand still the left hand tracked almost perfectly, but MOVING the right
+    // hand dragged the left one about") and concluded the placement offset was
+    // "the only term that COULD couple the two hands", because everything else
+    // cancels: world = actorLoc + A*A^T*(P - actorLoc) = P. Its fix was to move
+    // that offset out of the actor's frame into the hand's own. OURS IS ALREADY
+    // THERE - the trim below is rotated by qtc, i.e. inv(A)*T, which is T*o in
+    // world. So BRVR's cause is already excluded here, and the coupling is not
+    // in this function.
+    //
+    // That leaves the INPUT, which nobody has measured: gp.loc, the world point
+    // this hand is asked to reach. xr_pose_to_game builds it from the game yaw
+    // and the recenter base, neither of which should move when the OTHER wrist
+    // turns. Printed here beside the held hand's rotator so the two can be read
+    // against each other:
+    //   world point SWINGS as the held yaw sweeps -> the defect is UPSTREAM of
+    //     the actor and the bones entirely, in pose construction
+    //   world point STEADY while the hand still swings -> it is DOWNSTREAM of
+    //     our write, and the bone array is being re-evaluated after us
+    //
+    // It cannot be tautological, and that is checked rather than hoped: the two
+    // numbers come from independent sources - the free controller's pose and
+    // the held hand's rotator - and neither is derived from the other.
+    {
+        static uint64_t s_ftLog[2] = {0, 0};
+        const uint64_t nowFt = GetTickCount64();
+        if (nowFt - s_ftLog[hand] >= 500) {
+            s_ftLog[hand] = nowFt;
+            const float hy =
+                static_cast<float>(static_cast<int16_t>(actorRot.yaw & 0xFFFF)) /
+                kRotUnitsPerDegree;
+            const float hp =
+                static_cast<float>(static_cast<int16_t>(actorRot.pitch & 0xFFFF)) /
+                kRotUnitsPerDegree;
+            BVR_LOG("[bones] FREETARGET: %s free hand wants world (%.1f %.1f %.1f) | HELD "
+                    "actor yaw %+.1f pitch %+.1f deg at (%.1f %.1f %.1f). Sweep the HELD "
+                    "hand: if the wanted world point moves with that yaw, the coupling is "
+                    "upstream of the actor.",
+                    hand == 1 ? "RIGHT" : "LEFT", gp.loc.x, gp.loc.y, gp.loc.z, hy, hp,
+                    actorLoc[0], actorLoc[1], actorLoc[2]);
+        }
+    }
+
     // The target, with this hand's own trim applied. Rotation first: the
     // position offset below is expressed in the frame it defines, which is the
     // same ordering BRVR's DriveFreeHand uses and the same reason.
