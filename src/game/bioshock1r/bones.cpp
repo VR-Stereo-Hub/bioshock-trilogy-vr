@@ -4274,7 +4274,21 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
 // grows with the held hand's rotation is the actor mismatch; a constant one is an
 // offset bug; near zero means the free hand is landing correctly and the coupling
 // is somewhere else entirely.
-void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3]) {
+// s71d: TAKES BOTH TRANSFORMS, because the first cut of this measured nothing.
+//
+// It lifted the anchor to world through the very transform drive_free_hand had
+// just cancelled, so it could only ever report zero - a tautology, and it duly
+// reported nothing across a whole session of the tester turning the pistol. That
+// is the same failure as s68's "instruments that lied": an instrument that
+// cannot express the defect will always report health.
+//
+// `ours` is the transform the drive cancelled. `live` is what is actually in the
+// actor right now, before the restore - the engine's value, which is what the
+// renderer used if the restore is losing. The DIFFERENCE between the two world
+// points is the orbit: it is what the free hand's anchor moves by when the actor
+// the renderer applies is not the actor the drive divided out.
+void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3],
+                     const float liveLoc[3], const int32_t liveRot[3]) {
     for (int h = 0; h < 2; ++h) {
         if (!g_freeWantValid[h]) continue;
         g_freeWantValid[h] = false;
@@ -4282,26 +4296,35 @@ void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3]) {
         if (b < 0 || b >= g_boneCount || !g_bones) continue;
         Qts live{};
         if (!read_n(&g_bones[b], &live, sizeof live)) continue;
-        FRotator ar{actorRot[0], actorRot[1], actorRot[2]};
-        float qa[4], bw[3];
-        ue_rot_to_quat(ar, qa);
-        qts_rotate(qa, live.p, bw);
-        bw[0] += actorLoc[0];
-        bw[1] += actorLoc[1];
-        bw[2] += actorLoc[2];
-        const float d[3] = {bw[0] - g_freeWantWorld[h][0], bw[1] - g_freeWantWorld[h][1],
-                            bw[2] - g_freeWantWorld[h][2]};
+        auto lift = [&](const float loc[3], const int32_t rot[3], float out[3]) {
+            FRotator ar{rot[0], rot[1], rot[2]};
+            float qa[4];
+            ue_rot_to_quat(ar, qa);
+            qts_rotate(qa, live.p, out);
+            out[0] += loc[0];
+            out[1] += loc[1];
+            out[2] += loc[2];
+        };
+        float wOurs[3], wLive[3];
+        lift(actorLoc, actorRot, wOurs);
+        lift(liveLoc, liveRot, wLive);
+        const float d[3] = {wLive[0] - wOurs[0], wLive[1] - wOurs[1], wLive[2] - wOurs[2]};
         const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        auto degOf = [](int32_t a, int32_t b) {
+            return static_cast<float>(static_cast<int16_t>((a - b) & 0xFFFF)) /
+                   kRotUnitsPerDegree;
+        };
         static uint64_t s_log[2] = {0, 0};
         const uint64_t now = GetTickCount64();
-        if (m > 1.0f && now - s_log[h] >= 500) {
+        if (now - s_log[h] >= 500) {
             s_log[h] = now;
-            BVR_LOG("[bones] FREEPROBE: %s free hand asked for (%.1f %.1f %.1f), landed "
-                    "(%.1f %.1f %.1f) - off by %.1f UU (%+.1f %+.1f %+.1f). If this grows "
-                    "as the HELD hand turns, the actor the renderer used is not the one "
-                    "the drive cancelled.",
-                    h == 1 ? "RIGHT" : "LEFT", g_freeWantWorld[h][0], g_freeWantWorld[h][1],
-                    g_freeWantWorld[h][2], bw[0], bw[1], bw[2], m, d[0], d[1], d[2]);
+            BVR_LOG("[bones] FREEPROBE: %s free hand - the actor the drive cancelled and "
+                    "the actor in memory differ by pitch %+.1f yaw %+.1f roll %+.1f deg, "
+                    "which moves this hand %.1f UU (%+.1f %+.1f %+.1f). THAT displacement "
+                    "is the orbit. Zero deg here means the coupling is not the actor.",
+                    h == 1 ? "RIGHT" : "LEFT", degOf(liveRot[0], actorRot[0]),
+                    degOf(liveRot[1], actorRot[1]), degOf(liveRot[2], actorRot[2]), m, d[0],
+                    d[1], d[2]);
         }
     }
 }

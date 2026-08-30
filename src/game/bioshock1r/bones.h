@@ -183,7 +183,10 @@ void begin_write_frame();
 // s71c: call after the actor write, when the transform the frame will render is
 // finally in memory. Reports how far the free hand's anchor ended up from the
 // point the drive asked for.
-void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3]);
+// Pass BOTH: the transform the drive cancelled, and the one actually in the
+// actor right now. Their difference is what displaces the free hand.
+void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3],
+                     const float liveLoc[3], const int32_t liveRot[3]);
 // actorLocNow/actorRotNow are the transform hands.cpp is ABOUT TO WRITE this
 // frame, not a read of the live actor. BRVR passes the same pair for the same
 // reason: the free hand's target cancels the actor exactly, and only if it is

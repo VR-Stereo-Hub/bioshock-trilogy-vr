@@ -1940,7 +1940,15 @@ void late_write() {
     }
     // s71c: the actor is final from here, so this is the only honest place to ask
     // where the free hand actually landed.
-    bones::free_hand_probe(g_lwLoc, g_lwRot);
+    {
+        // Read the actor as it stands BEFORE the restore - that is the engine's
+        // value, and the one the renderer used if the restore is losing.
+        float liveLoc[3] = {g_lwLoc[0], g_lwLoc[1], g_lwLoc[2]};
+        int32_t liveRot[3] = {g_lwRot[0], g_lwRot[1], g_lwRot[2]};
+        read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, liveLoc);
+        read12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, liveRot);
+        bones::free_hand_probe(g_lwLoc, g_lwRot, liveLoc, liveRot);
+    }
     bool ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorViewDirOffset, g_lwRot);
     if (g_lateWriteLoc.load(std::memory_order_relaxed))
         ok = write12(static_cast<uint8_t*>(g_lwObj) + patterns::kActorLocOffset, g_lwLoc) && ok;
