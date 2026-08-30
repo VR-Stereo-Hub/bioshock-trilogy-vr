@@ -126,6 +126,21 @@ bool g_cacheFrameOpen = false;
 std::atomic<bool> g_offHandTracked{true};
 std::atomic<float> g_offHandPosCm[2][3] = {};
 std::atomic<float> g_offHandRotDeg[2][3] = {};
+// s71n: THE FREE HAND'S SECOND KNOB, and it exists for the reason the held hand's
+// does. g_offHandPosCm above is applied along the TARGET's own axes - inside the
+// hand's rotation - so it decides which mesh point stays still. That makes it a
+// PIVOT: tune it to move the hand and you have displaced the point the hand turns
+// about, which becomes an orbit the moment the wrist rotates. ENGINE_NOTES says
+// this of the weapon ("the grip offset IS the pivot - and that is why tuning it
+// could never work"; a 15 cm correction bought an 8 inch orbit) and the free hand
+// inherited the identical shape.
+//
+// This one is applied in the VIEW frame, to the WORLD target, before anything is
+// pushed into component space - so it translates the hand rigidly and cannot
+// create a lever. Two knobs, two jobs: POS = where it pivots, VIEW = where it
+// sits. The numpad drives THIS one, because "move the hand" is what a tester
+// means when they reach for it.
+std::atomic<float> g_offHandViewCm[2][3] = {};
 
 // The free hand's AUTHORED cluster pose - its own reference bank, and it must be
 // its own.
@@ -2428,6 +2443,20 @@ void off_hand_rot_deg(int hand, float* pitch, float* yaw, float* roll) {
     if (yaw) *yaw = g_offHandRotDeg[h][1].load(std::memory_order_relaxed);
     if (roll) *roll = g_offHandRotDeg[h][2].load(std::memory_order_relaxed);
 }
+void off_hand_view_cm(int hand, float* fwd, float* right, float* up) {
+    const int h = hand & 1;
+    if (fwd) *fwd = g_offHandViewCm[h][0].load(std::memory_order_relaxed);
+    if (right) *right = g_offHandViewCm[h][1].load(std::memory_order_relaxed);
+    if (up) *up = g_offHandViewCm[h][2].load(std::memory_order_relaxed);
+}
+
+void set_off_hand_view_cm(int hand, float fwd, float right, float up) {
+    const int h = hand & 1;
+    g_offHandViewCm[h][0].store(fwd, std::memory_order_relaxed);
+    g_offHandViewCm[h][1].store(right, std::memory_order_relaxed);
+    g_offHandViewCm[h][2].store(up, std::memory_order_relaxed);
+}
+
 void set_off_hand_rot_deg(int hand, float pitch, float yaw, float roll) {
     const int h = hand == 1 ? 1 : 0;
     g_offHandRotDeg[h][0].store(pitch, std::memory_order_relaxed);
@@ -4232,7 +4261,29 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     ue_rot_to_quat(want, qt);
     quat_mul(qaInv, qt, qtc); // target rotation, component space
 
-    float dWorld[3] = {gp.loc.x - actorLoc[0], gp.loc.y - actorLoc[1], gp.loc.z - actorLoc[2]};
+    // s71n: PLACEMENT FIRST, in the VIEW frame, on the WORLD target - see the
+    // g_offHandViewCm banner. Applied here, before the push into component
+    // space, it is a rigid translation of the hand: "up" means up in the headset
+    // and stays that way however the wrist is turned, and no amount of it can
+    // move the point the hand pivots about. Roll is dropped for the same reason
+    // the held hand drops it - the camera's own roll must not tip placement.
+    float wantLoc[3] = {gp.loc.x, gp.loc.y, gp.loc.z};
+    {
+        const float vf = g_offHandViewCm[hand][0].load(std::memory_order_relaxed);
+        const float vr = g_offHandViewCm[hand][1].load(std::memory_order_relaxed);
+        const float vu = g_offHandViewCm[hand][2].load(std::memory_order_relaxed);
+        if (vf != 0.0f || vr != 0.0f || vu != 0.0f) {
+            const float uuPerCm = ctx.worldScale / 100.0f;
+            FRotator camRot{ctx.camPitch, ctx.camYaw, 0};
+            float cf[3], cr[3], cu[3];
+            ue_rot_basis(camRot, cf, cr, cu);
+            const float f2 = vf * uuPerCm, r2 = vr * uuPerCm, u2 = vu * uuPerCm;
+            for (int i = 0; i < 3; ++i) wantLoc[i] += cf[i] * f2 + cr[i] * r2 + cu[i] * u2;
+        }
+    }
+
+    float dWorld[3] = {wantLoc[0] - actorLoc[0], wantLoc[1] - actorLoc[1],
+                       wantLoc[2] - actorLoc[2]};
     float ptc[3];
     qts_rotate(qaInv, dWorld, ptc); // target anchor position, component space
 

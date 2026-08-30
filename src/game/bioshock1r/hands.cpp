@@ -585,6 +585,10 @@ void save_config() {
         fprintf(f, "offHandFwdCm%s=%.2f\n", sh, a);
         fprintf(f, "offHandRightCm%s=%.2f\n", sh, b);
         fprintf(f, "offHandUpCm%s=%.2f\n", sh, c);
+        bones::off_hand_view_cm(h, &a, &b, &c);
+        fprintf(f, "offHandViewFwdCm%s=%.2f\n", sh, a);
+        fprintf(f, "offHandViewRightCm%s=%.2f\n", sh, b);
+        fprintf(f, "offHandViewUpCm%s=%.2f\n", sh, c);
         bones::off_hand_rot_deg(h, &a, &b, &c);
         fprintf(f, "offHandPitchDeg%s=%.2f\n", sh, a);
         fprintf(f, "offHandYawDeg%s=%.2f\n", sh, b);
@@ -636,6 +640,19 @@ void load_config() {
         else if (strcmp(key, "elbowOut") == 0) bones::set_elbow_out(v);
         else if (strcmp(key, "elbowFollowWrist") == 0) bones::set_elbow_follow_wrist(v);
         else if (strcmp(key, "offHandTracked") == 0) bones::set_off_hand_tracked(v != 0.0f);
+        else if (strncmp(key, "offHandView", 11) == 0) {
+            // BEFORE the generic offHand lane below, which indexes key+7 and
+            // would read "ViewFwdCm" as an unknown axis and silently store it
+            // as Up. s71n.
+            const size_t n = strlen(key);
+            const int h = (n && key[n - 1] == 'R') ? 1 : 0;
+            float a = 0.0f, b = 0.0f, c = 0.0f;
+            bones::off_hand_view_cm(h, &a, &b, &c);
+            if (strncmp(key + 11, "Fwd", 3) == 0) a = v;
+            else if (strncmp(key + 11, "Right", 5) == 0) b = v;
+            else c = v;
+            bones::set_off_hand_view_cm(h, a, b, c);
+        }
         else if (strncmp(key, "offHand", 7) == 0) {
             // offHand<Axis><Unit><L|R>, read out of the key like the shoulder
             // lane above rather than adding six more store_hand_key lanes.
@@ -1014,7 +1031,7 @@ void poll_numpad_tuner() {
     if (!s_told) {
         s_told = true;
         BVR_LOG("[hands] numpad tuner armed - NumLock is %s. 8/2 fwd, 6/4 right, 0/5 up; "
-                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND POS/"
+                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND PLACE/"
                 "FREE-HAND ROT. Both NumLock states work.",
                 (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF");
     }
@@ -1078,11 +1095,15 @@ void poll_numpad_tuner() {
                 const int fh = 1 - (active_hand() == 1 ? 1 : 0);
                 float a = 0.0f, b = 0.0f, c = 0.0f;
                 if (g_tuneMode == kTuneModeOffPos) {
-                    bones::off_hand_cm(fh, &a, &b, &c);
+                    // s71n: the VIEW-frame knob, not the pivot one. Nudging the
+                    // hand with off_hand_cm displaces the point it turns about,
+                    // and the tester duly found the weapon's old pivot problem
+                    // waiting on the off hand. This one cannot create a lever.
+                    bones::off_hand_view_cm(fh, &a, &b, &c);
                     if (kBinds[i].axis == 0) a += d;
                     else if (kBinds[i].axis == 1) b += d;
                     else c += d;
-                    bones::set_off_hand_cm(fh, a, b, c);
+                    bones::set_off_hand_view_cm(fh, a, b, c);
                 } else {
                     bones::off_hand_rot_deg(fh, &a, &b, &c);
                     if (kBinds[i].axis == 0) a += d;

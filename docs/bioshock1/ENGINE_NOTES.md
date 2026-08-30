@@ -5413,3 +5413,40 @@ that the stage it samples is the stage the defect lives in.
   engine's actor instead of ours is a measured no-op.
 - **The rig actor's DrawScale is NOT inert.** It does not size geometry; it does
   scale bone translations. Both halves are true and both matter.
+
+### The off hand needed the SAME two-knob split as the weapon (2026-08-30)
+
+Reported immediately after the DrawScale fix landed: *"they are decoupled, but now
+the offhand is having the pivot problem the weapons had when I adjust the
+position/rotation with the numpad."*
+
+`g_offHandPosCm` is applied along the TARGET's own axes - `ptc += qtc * o`, i.e.
+INSIDE the hand's own rotation - so in world the anchor sits at `want + T*o`. As
+the free hand's own rotation `T` changes, the anchor orbits `want` at radius
+`|o|`. **The knob is a pivot**, and tuning it to move the hand displaces the point
+the hand turns about. That is the weapon's grip-offset defect exactly, inherited
+by a hand that was written later:
+
+> *"The grip offset IS the pivot - and that is why tuning it could never work...
+> Using it to correct the gun's HEIGHT displaces the pivot by the same amount,
+> which becomes an orbit the moment the wrist rotates."* (15 cm bought an 8 inch
+> orbit.)
+
+The weapon's answer was **two knobs, two jobs: grip = where it pivots, view =
+where it sits**, with placement applied in the VIEW frame after the model
+transform where it cannot create a lever. The off hand now has the same pair:
+
+| knob | frame | job |
+|---|---|---|
+| `off_hand_cm` (`offHand*Cm*`) | the hand's own axes, inside the rotation | where it **pivots** |
+| `off_hand_view_cm` (`offHandView*Cm*`) | the camera basis, on the WORLD target before the push into component space | where it **sits** |
+
+The numpad's free-hand position mode drives the VIEW knob (help text: `FREE-HAND
+PLACE`), because "move the hand" is what a tester means when they reach for it;
+the pivot knob stays reachable through `hands.ini`. Roll is dropped from the
+camera basis for the same reason the weapon drops it - the camera's own roll must
+not tip placement.
+
+**The general rule, now paid for twice:** an offset applied inside a rotation is a
+pivot, not a placement. Any new knob that nudges a driven mesh has to say which of
+the two it is, or it will be tuned as one and behave as the other.

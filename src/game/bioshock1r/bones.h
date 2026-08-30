@@ -199,6 +199,11 @@ bool off_hand_tracked();
 void off_hand_cm(int hand, float* fwd, float* right, float* up);
 void set_off_hand_cm(int hand, float fwd, float right, float up);
 void off_hand_rot_deg(int hand, float* pitch, float* yaw, float* roll);
+// s71n: the free hand has TWO position knobs, and they are not interchangeable.
+// off_hand_cm is applied along the hand's own axes and therefore moves the PIVOT;
+// off_hand_view_cm is applied in the view frame and only moves where it SITS.
+void off_hand_view_cm(int hand, float* fwd, float* right, float* up);
+void set_off_hand_view_cm(int hand, float fwd, float right, float up);
 void set_off_hand_rot_deg(int hand, float pitch, float yaw, float roll);
 
 void set_anim_allowed(bool on);
