@@ -155,6 +155,58 @@ So BRVR's audit - *the offset is the only term that could couple them* - now cut
 the other way: our offset is correct, the actor is intact, and therefore **the
 coupling is not in `drive_free_hand`'s algebra at all.**
 
+### SOLVED: the off-hand swivel was the rig actor's DrawScale (2026-08-30)
+
+**Headset-confirmed.** `AHands` ships with **DrawScale = 0.8000**, and the
+foreground rig path multiplies every bone TRANSLATION we write by it. The free
+hand's target is built to cancel the actor exactly, so the scale breaks the
+cancellation and leaks a share of the ACTOR's own position into the off hand:
+
+```
+ptc   = inv(A) * (want - actorLoc)
+world = actorLoc + A * (k * ptc) = k*want + (1-k)*actorLoc      k = 0.8
+```
+
+`actorLoc` is the HELD hand's position plus its offsets rotated into the held
+hand's basis, so it swings through an arc when that wrist turns - and 20% of that
+arc landed on the off hand. The actor's location was measured swinging 103 UU in
+x across a 344 deg sweep, so the leak is ~20 UU. Position displaced, orientation
+untouched, proportional to held-hand rotation: the report exactly.
+
+**Why only the off hand:** the held hand's anchor sits essentially ON the actor,
+so `|want - actorLoc| ~ 0` and the leak lands on the same point. That asymmetry
+is the tell, and nothing else in the subsystem predicts it.
+
+**Fix:** `drive_free_hand()` divides its component-space target by the rig
+actor's DrawScale, read live (grep `FREESCALE` in `bones.cpp`). BRVR has always
+done this - `FreeHandModelPos()` divides by `handsScale`. The held hand is
+deliberately NOT changed: its anchor sits on the actor so the error is ~0 there,
+and every grip/placement offset shipped today was tuned against current
+behaviour. Revisiting it is a separate, opt-in job.
+
+Full derivation, the four probes that read clean and why, and the corrections
+below: `docs/bioshock1/ENGINE_NOTES.md`, session 71.
+
+### Corrections that outlive this session
+
+- **ACTORWATCH is not a defect meter.** Held still it reads a CONSTANT (84 of 88
+  samples bit-identical). It is the standing difference between the rotation we
+  write and the one the engine writes. Do not chase it to zero - a whole session
+  was spent doing exactly that.
+- **There is no actor race.** The actor holds our value at CalcView (0.1 deg) and
+  through scenedraw (115 samples). Cancelling the engine's actor is a no-op.
+- **The `SCRIPTSEAM` ProcessEvent hook is OFF by default** (`g_peSeam{false}`).
+  The derivation is sound and re-usable - `UObject::ProcessEvent` at RVA
+  0x375140, AHands vtable slot 3, `ret 0xC`, `UpdateHandValues` resolved lazily
+  because GNames holds ~1000 names at init and ~54000 in play - but it was built
+  to drive ACTORWATCH to zero, and it silently neuters any experiment that reads
+  the engine's actor. Do not switch it on while measuring.
+- **Session 16's DrawScale finding had two halves and the summary kept one.**
+  "Does not size geometry" was true; "consumes actor DrawScale for bone
+  translations" was the half that mattered and it was dropped. When a
+  measurement has two halves, the summary must carry both.
+
+---
 ### FREETARGET IS IN: THE INPUT IS CLEAN, SO THE DEFECT IS DOWNSTREAM
 
 Taken 2026-08-30 00:20, 45 samples. Over a 32-sample window with the off hand

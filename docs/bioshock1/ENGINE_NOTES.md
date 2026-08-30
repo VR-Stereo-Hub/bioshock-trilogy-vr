@@ -5311,3 +5311,105 @@ to the game as an ordinary look axis and can pitch the engine's view directly.
 If the prompt appears that way and not otherwise, the servo has stalled - it
 fails open to the plain kill, and a frozen engine pitch is invisible until
 something the engine owns aims with it.
+
+## Session 71 (2026-08-30) - THE OFF-HAND SWIVEL: the rig actor's DrawScale multiplies bone translations
+
+**SOLVED, headset-confirmed.** The reported bug: *"Rotating the right hand causes
+the left one to move as well. Turning the pistol left causes the left hand to
+swivel towards the right hand... it doesnt apply rotation to the left hand, but
+it just moves it positionally in a swivel depending on right hand rotation
+horizontally."*
+
+### The mechanism
+
+`AHands` (the rig actor) ships with **DrawScale = 0.8000**, and the foreground
+rig path **multiplies every bone TRANSLATION we write by it**. So a component-
+space position `p` that we write renders at `k*p`, with `k = 0.8`.
+
+The free hand's target is built to cancel the actor exactly:
+
+```
+ptc   = inv(A) * (want - actorLoc)          <- what we write
+world = actorLoc + A * (k * ptc)            <- what the engine renders
+      = k*want + (1-k)*actorLoc
+```
+
+With `k != 1` a share `(1-k)` of **actorLoc** leaks into the free hand's world
+position - and `actorLoc` is the HELD hand's position plus its placement offsets
+rotated into the held hand's own basis. Rotate that wrist and `actorLoc` swings
+through an arc; 20% of that arc lands on the off hand. Measured this session: the
+actor's location swung **103 UU in x and 96 UU in y** across a 344 deg sweep, so
+the leak is ~20 UU - a plainly visible swivel.
+
+Every part of the symptom falls out of that one term:
+
+| Observation | Why |
+|---|---|
+| position moves, orientation clean | a scalar on translations cannot touch a quaternion |
+| tracks the HELD hand's rotation | `actorLoc` carries the held hand's rotated offsets |
+| magnitude grows with distance from the actor | the leak is `(1-k) * actorLoc`, and the cancellation error scales with `\|want - actorLoc\|` |
+| **only the OFF hand, never the held one** | the held hand's anchor sits essentially ON the actor, so `\|want - actorLoc\| ~ 0` and the leak lands on the same point. The free hand is an arm's length away. **This asymmetry is the tell** - nothing else in the subsystem predicts "only the other hand moves" |
+
+### The fix
+
+`drive_free_hand()` divides its component-space target by the rig actor's
+DrawScale before writing (`bones.cpp`, grep `FREESCALE`):
+
+```cpp
+float k = 1.0f;
+if (ds_read(handsActor, &k) && k > 0.01f && fabsf(k - 1.0f) > 0.001f) {
+    ptc[0] /= k; ptc[1] /= k; ptc[2] /= k;
+}
+```
+
+Read live rather than hardcoded: 0.8 is what the shipped rig authors, not a
+constant of the engine, and a rig that ever authored something else would
+silently reintroduce the bug.
+
+**BRVR had this from the start** and we had the measurement and did not use it.
+`FreeHandModelPos()` in `Camera/CameraHook.cpp` divides by `handsScale` with the
+reason in one line: *"DrawScale scales the whole mesh, skeleton included, so a
+bone moved by N model units renders as N * scale centimetres."*
+
+### Why it took a whole session, and the lesson
+
+**Session 16 measured this exact behaviour and recorded it** (see "Rig-actor
+DrawScale + drive positions pre-divided by s" above): *"bone positions round-trip
+through the scale - written p renders at s\*p"*, and *"the fg rig path consumes
+actor DrawScale for bone translations but NOT for skin/attached-mesh size."*
+
+The headline that survived into the code was **"the rig actor's DrawScale does
+not size geometry"** - true about mesh SIZE, and it buried the half that mattered.
+The finding was never wrong; the summary of it was lossy, and the lossy version
+is what every later session read. **When a measurement has two halves, the
+summary must carry both, because the summary is what gets reused.**
+
+### The probes that read clean, and why they all could
+
+FREEPROBE, FREETARGET, FREEHOLD and ACTORWATCH all read clean or constant while
+the bug was live, because **every one of them measures the input or component
+space**. The multiply happens AFTER, in the engine's bone->world step, which
+nothing had ever measured. A probe that cannot see the stage where the defect
+lives will always report health.
+
+Four instruments read zero in this session for four different reasons - zero by
+algebra (measuring through the transform it had just cancelled), zero by timing
+(a window that closes before the engine acts), zero by an unchecked read (a
+failed read seeded from the value it was compared against), and zero by masking
+(`reapply()` restoring the value before the comparison). **Before believing a
+silent probe, ask what it would print if the defect were present** - and check
+that the stage it samples is the stage the defect lives in.
+
+### Corrections this session leaves behind
+
+- **ACTORWATCH is not a defect meter.** With the head and both controllers held
+  still it reads a CONSTANT (84 of 88 samples bit-identical at
+  `pitch +42.0 yaw +24.7 roll +2.1`). It is the standing difference between the
+  rotation we write (the controller's) and the one the engine writes (the view's),
+  so it can never be zero while the mod deliberately writes a different rotation.
+  Do not chase it to zero.
+- **There is no actor race.** The actor holds our value at CalcView (0.1 deg) and
+  through scenedraw (FREEPROBE, 115 samples, bit-identical). Cancelling the
+  engine's actor instead of ours is a measured no-op.
+- **The rig actor's DrawScale is NOT inert.** It does not size geometry; it does
+  scale bone translations. Both halves are true and both matter.

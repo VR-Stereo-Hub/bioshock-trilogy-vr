@@ -4058,6 +4058,10 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
 // not fight for it), the settle, the anchor pin, or g_animAllowed. Those all
 // belong to the held hand, and a free hand has no equip, no recoil and no
 // holdable to gate on.
+// s71k: which actor to cancel THIS frame. In auto mode it alternates on a timer
+// so the A/B needs no hands and no commands; the flip is logged so the log can
+// be split afterwards, and so a "no difference" answer can be checked against
+// the mod actually having changed anything.
 bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
                      const float actorLocNow[3], const FRotator& actorRotNow) {
     if (!g_offHandTracked.load(std::memory_order_relaxed)) return false;
@@ -4157,6 +4161,7 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     // and rot it is about to write, so the two frames cannot disagree.
     float actorLoc[3] = {actorLocNow[0], actorLocNow[1], actorLocNow[2]};
     FRotator actorRot = actorRotNow;
+
     float qa[4], qaInv[4], qt[4], qtc[4];
     ue_rot_to_quat(actorRot, qa);
     quat_conj(qa, qaInv);
@@ -4230,6 +4235,59 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     float dWorld[3] = {gp.loc.x - actorLoc[0], gp.loc.y - actorLoc[1], gp.loc.z - actorLoc[2]};
     float ptc[3];
     qts_rotate(qaInv, dWorld, ptc); // target anchor position, component space
+
+    // ---- s71m: THE RIG ACTOR'S DrawScale MULTIPLIES BONE TRANSLATIONS ------
+    //
+    // This is BRVR's, and we had the same measurement and drew half a conclusion
+    // from it. FreeHandModelPos() divides its target by handsScale, with the
+    // reason in one line: "DrawScale scales the whole mesh, skeleton included,
+    // so a bone moved by N model units renders as N * scale centimetres."
+    //
+    // Session 16 measured exactly that on the RIG actor and recorded it - "the
+    // fg rig path consumes actor DrawScale for BONE TRANSLATIONS but not for
+    // skin/attached-mesh size" - and then the headline became "the rig actor's
+    // DrawScale does not size geometry". True about mesh SIZE, and it buried the
+    // half that matters here. We have never divided.
+    //
+    // WHY IT IS AN ARC, AND WHY ONLY THE OFF HAND. With a scale k applied to our
+    // component-space write, the hand lands at
+    //     actorLoc + A * (k * inv(A) * (want - actorLoc))
+    //   = k * want + (1 - k) * actorLoc
+    // so a share (1-k) of the ACTOR's own position leaks into the free hand -
+    // and actorLoc is the HELD hand's position plus its offsets rotated into the
+    // held hand's basis, which swings through an arc when that wrist turns.
+    // Position displaced, orientation untouched (translation scaling cannot
+    // touch a quaternion), magnitude proportional to (1-k) and to how far the
+    // hand sits from the actor.
+    //
+    // THAT LAST FACTOR IS WHY THE HELD HAND IS CLEAN and the off hand is not:
+    // the held hand's anchor sits essentially ON the actor, so |want - actorLoc|
+    // is ~0 and the leak lands on the same point. The free hand is an arm's
+    // length away. It is the one asymmetry in this whole subsystem that predicts
+    // "only the other hand moves", which is the report.
+    //
+    // It also explains every clean probe: FREEPROBE, FREETARGET and FREEHOLD all
+    // measure the input or component space. The multiply happens AFTER, in the
+    // engine's bone->world step, which nothing has ever measured.
+    {
+        float k = 1.0f;
+        const bool haveK = ds_read(handsActor, &k) && k > 0.01f;
+        // Announced on CHANGE, not on a timer: the value is a property of the
+        // rig and a shifting one would mean the compensation is chasing it.
+        static float s_lastK = -1.0f;
+        if (fabsf(k - s_lastK) > 0.0005f) {
+            s_lastK = k;
+            BVR_LOG("[bones] FREESCALE: rig actor DrawScale = %s%.4f, dividing the free "
+                    "hand's target by it. Measured 0.8000 on the shipped rig, which "
+                    "leaked 20%% of the actor's position into the off hand.",
+                    haveK ? "" : "(unreadable) ", k);
+        }
+        if (haveK && fabsf(k - 1.0f) > 0.001f) {
+            ptc[0] /= k;
+            ptc[1] /= k;
+            ptc[2] /= k;
+        }
+    }
 
     // The position trim, along the TARGET's own axes so it reads as "out from
     // the palm" rather than as a world nudge.
