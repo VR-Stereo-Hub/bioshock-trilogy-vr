@@ -192,8 +192,12 @@ void free_hand_probe(const float actorLoc[3], const int32_t actorRot[3],
 // reason: the free hand's target cancels the actor exactly, and only if it is
 // the same actor the renderer uses. A frame-old read leaks the held hand's
 // rotation into the free hand.
+// s71y: gripFrameRot is the free controller's rotation WITHOUT the rotation
+// trim. The grip offset is expressed in it, so trimming the model's orientation
+// no longer drags the hand across the world - see the banner at its use.
 bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
-                     const float actorLocNow[3], const FRotator& actorRotNow);
+                     const float actorLocNow[3], const FRotator& actorRotNow,
+                     const FRotator& gripFrameRot);
 void set_off_hand_tracked(bool on);
 bool off_hand_tracked();
 void off_hand_cm(int hand, float* fwd, float* right, float* up);

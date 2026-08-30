@@ -617,6 +617,25 @@ bool store_hand_key(const char* key, const char* base, std::atomic<float> (&dst)
 }
 
 void load_config() {
+    // ---- s72b: THE FREE HAND'S SHIPPED DEFAULTS ----------------------------
+    //
+    // Seeded BEFORE the ini is read, so a file that predates these keys still
+    // gets them and anything in the file still wins. These are the values the
+    // tester signed off after the s72 rotation port, and they are BRVR's own
+    // shipped numbers for the same rig (LeftHandOffset / LeftHandRot):
+    //
+    //   grip   -6, 6, 0 cm      where the WRIST BONE sits relative to your grip.
+    //                           A pivot by design - keep it small, and do not
+    //                           use it to move the hand.
+    //   rot    -30, 31, -206    the -206 roll is the authored left wrist's half
+    //                           turn plus fine tuning; the cluster is retargeted
+    //                           from that wrist, so the flip is expected here.
+    //
+    // Placement (offHandView*) stays at zero: it is the knob for MOVING the
+    // hand, and where it sits is a per-player preference rather than a default.
+    bones::set_off_hand_cm(0, -6.0f, 6.0f, 0.0f);
+    bones::set_off_hand_rot_deg(0, -30.0f, 31.0f, -206.0f);
+
     wchar_t path[MAX_PATH];
     config_path(path, MAX_PATH);
     FILE* f = nullptr;
@@ -952,6 +971,10 @@ constexpr int kTuneModeRot = 1;
 constexpr int kTuneModeCur = 2;
 constexpr int kTuneModeOffPos = 3;
 constexpr int kTuneModeOffRot = 4;
+// s71x: TWO KNOBS, TWO JOBS - the free hand needs the same split the weapon
+// has. OffPos is the anatomical wrist-to-grip offset and IS a pivot by design;
+// OffPlace is rigid placement in the view frame and cannot become one.
+constexpr int kTuneModeOffPlace = 5;
 int g_tuneMode = kTuneModePos;
 float g_tuneStep = 2.0f;
 
@@ -990,13 +1013,17 @@ void tuner_log(const char* what) {
     else if (g_tuneMode == kTuneModeOffPos || g_tuneMode == kTuneModeOffRot) {
         const int fh = 1 - (active_hand() == 1 ? 1 : 0);
         float a = 0.0f, b = 0.0f, c = 0.0f;
-        if (g_tuneMode == kTuneModeOffPos) bones::off_hand_cm(fh, &a, &b, &c);
+        if (g_tuneMode == kTuneModeOffPos) bones::off_hand_view_cm(fh, &a, &b, &c);
+        else if (g_tuneMode == kTuneModeOffPlace) bones::off_hand_cm(fh, &a, &b, &c);
         else bones::off_hand_rot_deg(fh, &a, &b, &c);
         BVR_LOG("[hands] numpad: %s FREE HAND %s - the %s hand, %+.1f %+.1f %+.1f %s "
                 "(step %.1f). Per HAND, not per weapon; swaps side when a plasmid is up.",
-                what, g_tuneMode == kTuneModeOffPos ? "POSITION" : "ROTATION",
+                what,
+                g_tuneMode == kTuneModeOffPos     ? "POSITION (rigid - model and pivot move together)"
+                : g_tuneMode == kTuneModeOffPlace ? "GRIP (the wrist-to-grip pivot; keep it small)"
+                                                  : "ROTATION",
                 fh == 1 ? "RIGHT" : "LEFT", a, b, c,
-                g_tuneMode == kTuneModeOffPos ? "cm" : "deg", g_tuneStep);
+                g_tuneMode == kTuneModeOffRot ? "deg" : "cm", g_tuneStep);
     }
     else if (g_tuneMode == kTuneModeCur) {
         float cp = 0.0f, cy = 0.0f;
@@ -1031,8 +1058,8 @@ void poll_numpad_tuner() {
     if (!s_told) {
         s_told = true;
         BVR_LOG("[hands] numpad tuner armed - NumLock is %s. 8/2 fwd, 6/4 right, 0/5 up; "
-                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND PLACE/"
-                "FREE-HAND ROT. Both NumLock states work.",
+                "7 cycles step, 9 cycles PLACEMENT/ROTATION/CROSSHAIR/FREE-HAND POS/"
+                "FREE-HAND ROT/FREE-HAND GRIP. Both NumLock states work.",
                 (GetKeyState(VK_NUMLOCK) & 1) ? "ON" : "OFF");
     }
 
@@ -1059,6 +1086,7 @@ void poll_numpad_tuner() {
                      : (g_tuneMode == kTuneModeRot)    ? kTuneModeCur
                      : (g_tuneMode == kTuneModeCur)    ? kTuneModeOffPos
                      : (g_tuneMode == kTuneModeOffPos) ? kTuneModeOffRot
+                     : (g_tuneMode == kTuneModeOffRot) ? kTuneModeOffPlace
                                                        : kTuneModePos;
         tuner_log("now editing");
     }
@@ -1089,21 +1117,39 @@ void poll_numpad_tuner() {
             // the keys always mean what the tester sees. Placement is added in
             // every mode and needs no flip.
             const float d = kBinds[i].sign * g_tuneStep;
-            if (g_tuneMode == kTuneModeOffPos || g_tuneMode == kTuneModeOffRot) {
+            if (g_tuneMode == kTuneModeOffPos || g_tuneMode == kTuneModeOffRot ||
+                g_tuneMode == kTuneModeOffPlace) {
                 // THE FREE HAND - the one not holding anything, which flips when
                 // a plasmid is equipped. Same rule the drive uses.
                 const int fh = 1 - (active_hand() == 1 ? 1 : 0);
                 float a = 0.0f, b = 0.0f, c = 0.0f;
                 if (g_tuneMode == kTuneModeOffPos) {
-                    // s71n: the VIEW-frame knob, not the pivot one. Nudging the
-                    // hand with off_hand_cm displaces the point it turns about,
-                    // and the tester duly found the weapon's old pivot problem
-                    // waiting on the off hand. This one cannot create a lever.
+                    // s71t: BACK to the hand-frame knob, which is BRVR parity and
+                    // was my error to move. BRVR's numpad maps "LEFT HAND POS" to
+                    // LeftHandOffset, applied in the HAND's own frame - and it is
+                    // supposed to be a pivot, because the pivot belongs at your
+                    // GRIP and the anchor bone is the WRIST. Your palm holds the
+                    // controller; the wrist sits behind it. Without this offset the
+                    // model turns about the wrist while your hand turns about the
+                    // grip, so yawing overshoots further the further you turn.
+                    // The view-frame knob stays, ini-only, for placement that must
+                    // NOT move the pivot.
                     bones::off_hand_view_cm(fh, &a, &b, &c);
                     if (kBinds[i].axis == 0) a += d;
                     else if (kBinds[i].axis == 1) b += d;
                     else c += d;
                     bones::set_off_hand_view_cm(fh, a, b, c);
+                } else if (g_tuneMode == kTuneModeOffPlace) {
+                    // Rigid placement. Applied in the CAMERA basis to the world
+                    // target, so however far it is pushed it can never grow the
+                    // radius the hand rolls about - which is what OffPos does by
+                    // design, and what the tester measured: "raising the model
+                    // increases the radius of the pivot roll".
+                    bones::off_hand_cm(fh, &a, &b, &c);
+                    if (kBinds[i].axis == 0) a += d;
+                    else if (kBinds[i].axis == 1) b += d;
+                    else c += d;
+                    bones::set_off_hand_cm(fh, a, b, c);
                 } else {
                     bones::off_hand_rot_deg(fh, &a, &b, &c);
                     if (kBinds[i].axis == 0) a += d;
@@ -1227,7 +1273,10 @@ static void drive_off_hand(const FrameContext& ctx, void* target, int heldHand,
     float trimP = 0.0f, trimY = 0.0f, trimR = 0.0f;
     bones::off_hand_rot_deg(freeHand, &trimP, &trimY, &trimR);
     const GamePose gp = model_pose_from_xr(ctx, pos, quat, trimP, trimY, trimR);
-    bones::drive_free_hand(ctx, target, gp, freeHand, actorLoc, actorRot);
+    // s71y: the same controller pose WITHOUT the trim, for the grip offset's
+    // frame only. See the banner at its use in drive_free_hand().
+    const GamePose gpRaw = xr_pose_to_game(ctx, pos, quat);
+    bones::drive_free_hand(ctx, target, gp, freeHand, actorLoc, actorRot, gpRaw.rot);
 }
 
 void on_calcview(const FrameContext& ctx) {

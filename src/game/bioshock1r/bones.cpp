@@ -4160,6 +4160,14 @@ static void basis_to_quat(const float f[3], const float r[3], const float u[3], 
     out[3] = static_cast<float>(w);
 }
 
+// The inverse of into_basis: a vector given in a basis's LOCAL axes, out to
+// world. Used to right-multiply one basis by another, which is BRVR's
+// MulBasis and the whole point of ComposeHeadLocal.
+static void from_basis(const float f[3], const float r[3], const float u[3],
+                       const float v[3], float out[3]) {
+    for (int i = 0; i < 3; ++i) out[i] = v[0] * f[i] + v[1] * r[i] + v[2] * u[i];
+}
+
 // Express a world vector in a basis's own axes - BRVR's IntoBasis.
 static void into_basis(const float f[3], const float r[3], const float u[3],
                        const float v[3], float out[3]) {
@@ -4169,7 +4177,9 @@ static void into_basis(const float f[3], const float r[3], const float u[3],
 }
 
 bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
-                     const float actorLocNow[3], const FRotator& actorRotNow) {
+                     const float actorLocNow[3], const FRotator& actorRotNow,
+                     const FRotator& gripFrameRot)
+{
     if (!g_offHandTracked.load(std::memory_order_relaxed)) return false;
     if (hand < 0 || hand > 1) return false;
     if (!handsActor || !locate(handsActor)) return false;
@@ -4433,7 +4443,46 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     // convention and handed the result to bone quaternions that are not in it.
     float af[3], abr[3], au[3], tf[3], tbr[3], tu[3];
     ue_rot_basis(actorRot, af, abr, au);
-    ue_rot_basis(want, tf, tbr, tu);
+
+    // ---- s72: COMPOSE THE TARGET IN THE HEADING'S LOCAL FRAME ---------------
+    //
+    // BRVR's ComposeHeadLocal, and its banner is a description of the bug this
+    // tree still had - "THE WORLD MAP MUST NOT DEPEND ON THE HEAD":
+    //
+    //   "The legacy head-aim write ADDED euler components:
+    //        camera = Rz(yaw_base + yaw_head) . Ry(pitch_base + pitch_head)
+    //    Solve for M and you get Rz(yaw_head) . Ry(pitch_base) . Rz(-yaw_head) -
+    //    a tilt of size pitch_base whose AXIS ROTATES WITH HEAD YAW... Fix:
+    //    apply the whole head rotation in the base's LOCAL frame
+    //    (right-multiply) so M collapses to the mouse-only rotator."
+    //
+    // xr_pose_to_game builds exactly the legacy form: yaw is ADDED to the game
+    // yaw while pitch and roll are taken raw, so the assembled rotator's axes
+    // carry a yaw-dependent tilt proportional to pitch. The HELD hand never
+    // notices - it hands that rotator straight to the actor and the engine
+    // applies it, so the error is inside a round trip that closes. The FREE hand
+    // decomposes it into a basis and bakes it into bone quaternions, where the
+    // tilt does not cancel: the hand's orientation error then VARIES WITH HOW
+    // FAR THE CONTROLLER IS TURNED, which is the desync that survived every
+    // offset and trim change.
+    //
+    // So: M is the heading alone (roll zeroed - "M is the player's heading,
+    // never rolled"), H is the controller's own rotation, and the target is
+    // M . H rather than a rotator with the two added together.
+    {
+        const float gameYawRad =
+            static_cast<float>(ctx.camYaw) / kRotUnitsPerRadian - ctx.driveYawOffsetRad;
+        const int32_t gameYawUnits =
+            static_cast<int32_t>(gameYawRad * kRotUnitsPerRadian);
+        FRotator heading{0, gameYawUnits, 0};
+        FRotator local{want.pitch, want.yaw - gameYawUnits, want.roll};
+        float mf[3], mr[3], mu[3], hf[3], hr[3], hu[3];
+        ue_rot_basis(heading, mf, mr, mu);
+        ue_rot_basis(local, hf, hr, hu);
+        from_basis(mf, mr, mu, hf, tf);
+        from_basis(mf, mr, mu, hr, tbr);
+        from_basis(mf, mr, mu, hu, tu);
+    }
     float rf[3], rbr[3], ru[3];
     into_basis(af, abr, au, tf, rf);
     into_basis(af, abr, au, tbr, rbr);
@@ -4459,6 +4508,49 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
             ue_rot_basis(camRot, cf, cr, cu);
             const float f2 = vf * uuPerCm, r2 = vr * uuPerCm, u2 = vu * uuPerCm;
             for (int i = 0; i < 3; ++i) wantLoc[i] += cf[i] * f2 + cr[i] * r2 + cu[i] * u2;
+        }
+    }
+
+    // ---- s71u: THE GRIP OFFSET GOES ON THE WORLD POINT, BEFORE THE PROJECTION
+    //
+    // BRVR's order, and the order is the whole of it. FreeHandModelPos() adds
+    // LeftHandOffset to the WORLD hand point in the hand's own basis and only
+    // then projects into the actor's frame and divides by the scale:
+    //
+    //     lx += O.forward.x*o0 + O.right.x*o1 + O.up.x*o2;   // O = the hand basis
+    //     local = IntoBasis(A, lx - ax, ...);
+    //     al = local / s;
+    //
+    // Ours applied it in COMPONENT space, after the projection and after the
+    // DrawScale divide. The direction was right, but it missed the divide - so
+    // the offset rendered at k (0.8) of what was dialled while the anchor it was
+    // measured against rendered at 1.0. The pivot therefore landed 20% short of
+    // wherever it was tuned to, and could never be put ON the grip point: every
+    // wrist turn swung the hand about a pivot that was not where the tuning said.
+    // Nudging position with the numpad made it worse the further it was pushed,
+    // which is the report.
+    //
+    // On the world point it is exact by construction, and the same divide covers
+    // the anchor and the offset together because they are one vector by then.
+    // WHY THIS OFFSET IS A PIVOT ON PURPOSE: the anchor bone is the WRIST and
+    // your palm holds the controller. This is what moves the turning point from
+    // one to the other - see the numpad note in hands.cpp.
+    {
+        const float uuPerCm = ctx.worldScale / 100.0f;
+        const float o0 = g_offHandPosCm[hand][0].load(std::memory_order_relaxed) * uuPerCm;
+        const float o1 = g_offHandPosCm[hand][1].load(std::memory_order_relaxed) * uuPerCm;
+        const float o2 = g_offHandPosCm[hand][2].load(std::memory_order_relaxed) * uuPerCm;
+        if (o0 != 0.0f || o1 != 0.0f || o2 != 0.0f) {
+            // s71z: the TRIMMED frame, which is BRVR's offsetFrame = &T.
+            //
+            // s71y tried the untrimmed controller frame here, reasoning that the
+            // trim aligns the model rather than moving the player's wrist. That
+            // made the hand WAY off and reintroduced a large pivot, so the
+            // reasoning was wrong: the offset does not describe the player's
+            // anatomy, it describes where the MODEL's wrist bone sits relative to
+            // the grip - and the model's frame is the trimmed one, because the
+            // trim is what maps the controller onto the model. Reverted.
+            for (int i = 0; i < 3; ++i) wantLoc[i] += tf[i] * o0 + tbr[i] * o1 + tu[i] * o2;
         }
     }
 
@@ -4522,20 +4614,6 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
         }
     }
 
-    // The position trim, along the TARGET's own axes so it reads as "out from
-    // the palm" rather than as a world nudge.
-    {
-        const float uuPerCm = ctx.worldScale / 100.0f;
-        const float o[3] = {g_offHandPosCm[hand][0].load(std::memory_order_relaxed) * uuPerCm,
-                            g_offHandPosCm[hand][1].load(std::memory_order_relaxed) * uuPerCm,
-                            g_offHandPosCm[hand][2].load(std::memory_order_relaxed) * uuPerCm};
-        float ro[3];
-        qts_rotate(qtc, o, ro);
-        ptc[0] += ro[0];
-        ptc[1] += ro[1];
-        ptc[2] += ro[2];
-    }
-
     // Same sanity gate the retarget path has: a target further than ~10 m from
     // the actor is a mapping bug, not a pose, and writing it smears the mesh
     // across the map.
@@ -4548,26 +4626,34 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     const Qts* ref = g_freeRef[hand];
     const float* pa = ref[anchor - first].p;
 
-    // ---- s71r: THE CLUSTER IS WRITTEN AS A DELTA FROM THE REFERENCE WRIST ----
+    // ---- s71w: THE RETARGET AND THE GRIP OFFSET MUST SHARE A NORMALISATION --
     //
-    // Ported from BRVR's WriteCluster, and this is the term this tree never had.
-    // BRVR builds
-    //     qDelta = targetQuat * inv(ref_wrist.rotation)
-    // and rotates BOTH the bone offsets and the bone rotations by that delta. We
-    // rotated by the absolute target instead, which double-applies the reference
-    // wrist's own orientation to every bone in the cluster.
+    // Wrist-normalised, as BRVR's WriteCluster does it:
+    //     qDelta = target * inv(ref_wrist.rotation)
     //
-    // WHY IT READS AS A PIVOT. At the reference pose BRVR's qDelta is identity,
-    // so the cluster is written exactly as authored and the hand is undistorted.
-    // Ours rotated the whole hand about its anchor by the reference wrist's
-    // orientation, so the hand's visual centre sits somewhere the anchor is not -
-    // and as the target turns, that displacement swings. The hand appears to
-    // pivot about a point that is not its centre, which is a pivot no offset can
-    // tune out because it is not an offset.
+    // s71v reverted this to the actor-normalised form on the strength of BRVR's
+    // note that ours "is measured and signed off". That made the hand far WORSE,
+    // and the reason is the thing neither form states on its own: THE GRIP
+    // OFFSET AND THE CLUSTER WRITE HAVE TO AGREE ABOUT WHAT `target` MEANS.
     //
-    // The scale term stays where it was: BRVR has no per-cluster scale, and ours
-    // compresses bone translations toward the anchor, which is a separate lane
-    // from this rotation and must not be folded into it.
+    //   wrist-normalised: the wrist bone's world orientation IS the target, so
+    //     an offset applied along the target's axes is applied along the HAND's
+    //     actual axes. Offset and hand agree. This is BRVR.
+    //   actor-normalised: the wrist bone's world orientation is target *
+    //     ref_wrist, and the authored left wrist carries about 180 degrees - so
+    //     an offset applied along the target's axes pushes the wrist nearly
+    //     BACKWARDS relative to the hand you can see, and every rotation swings
+    //     it the wrong way. That is the "massive amount of pivot" the tester saw
+    //     the moment s71v landed.
+    //
+    // Both forms are rigid retargets and either can be made to work, but only if
+    // everything downstream uses the same one. BRVR's offset maths assumes the
+    // wrist-normalised form, so porting the offset without the normalisation was
+    // half a port - and half a port is worse than neither half.
+    //
+    // The mirror this reintroduces is expected and is not a bug: BRVR's shipped
+    // ini carries LeftHandRot=-30,31,-206, and that -206 roll IS the authored
+    // wrist's half turn plus fine tuning. It belongs with this form.
     float qDelta[4];
     {
         const float* rq = ref[anchor - first].q;
