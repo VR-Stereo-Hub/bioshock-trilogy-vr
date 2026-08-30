@@ -4123,6 +4123,51 @@ static bool switch_settled() {
     return still || timedOut;
 }
 
+// s71s: a rotation matrix straight to a quaternion, ported verbatim from BRVR's
+// BasisToQuat. Its own comment is why it exists, and why this tree needs it too:
+//
+//   "Deliberately NOT built out of HandsOffsetQuat: that composes in the XR axis
+//    convention, and these bones are mesh space. Going through the basis keeps
+//    one convention end to end."
+//
+// The free hand built its component-space target rotation with quaternion
+// algebra in the UE/XR convention (ue_rot_to_quat, conjugate, multiply) and then
+// wrote the result straight into bone quaternions, which are mesh space. Where
+// those conventions differ in handedness the hand comes out MIRRORED - which is
+// what the tester sees. Columns are the rotated axes, in the frame we want out.
+static void basis_to_quat(const float f[3], const float r[3], const float u[3], float out[4]) {
+    const double m00 = f[0], m01 = r[0], m02 = u[0];
+    const double m10 = f[1], m11 = r[1], m12 = u[1];
+    const double m20 = f[2], m21 = r[2], m22 = u[2];
+    const double tr = m00 + m11 + m22;
+    double x, y, z, w;
+    if (tr > 0.0) {
+        double d = sqrt(tr + 1.0) * 2.0;
+        w = 0.25 * d; x = (m21 - m12) / d; y = (m02 - m20) / d; z = (m10 - m01) / d;
+    } else if (m00 > m11 && m00 > m22) {
+        double d = sqrt(1.0 + m00 - m11 - m22) * 2.0;
+        w = (m21 - m12) / d; x = 0.25 * d; y = (m01 + m10) / d; z = (m02 + m20) / d;
+    } else if (m11 > m22) {
+        double d = sqrt(1.0 + m11 - m00 - m22) * 2.0;
+        w = (m02 - m20) / d; x = (m01 + m10) / d; y = 0.25 * d; z = (m12 + m21) / d;
+    } else {
+        double d = sqrt(1.0 + m22 - m00 - m11) * 2.0;
+        w = (m10 - m01) / d; x = (m02 + m20) / d; y = (m12 + m21) / d; z = 0.25 * d;
+    }
+    out[0] = static_cast<float>(x);
+    out[1] = static_cast<float>(y);
+    out[2] = static_cast<float>(z);
+    out[3] = static_cast<float>(w);
+}
+
+// Express a world vector in a basis's own axes - BRVR's IntoBasis.
+static void into_basis(const float f[3], const float r[3], const float u[3],
+                       const float v[3], float out[3]) {
+    out[0] = v[0] * f[0] + v[1] * f[1] + v[2] * f[2];
+    out[1] = v[0] * r[0] + v[1] * r[1] + v[2] * r[2];
+    out[2] = v[0] * u[0] + v[1] * u[1] + v[2] * u[2];
+}
+
 bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
                      const float actorLocNow[3], const FRotator& actorRotNow) {
     if (!g_offHandTracked.load(std::memory_order_relaxed)) return false;
@@ -4382,8 +4427,19 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     // them on the game's axes rather than the hand's and lets pitch/yaw/roll
     // interact, which is the "rotates strangely" report. Do not put it back.
     FRotator want = gp.rot;
-    ue_rot_to_quat(want, qt);
-    quat_mul(qaInv, qt, qtc); // target rotation, component space
+    // s71s: BRVR's path - the target's axes expressed in the ACTOR's basis, then
+    // matrix to quaternion, so the chain stays in mesh space end to end. The
+    // ue_rot_to_quat/conjugate/multiply route did the same algebra in the XR
+    // convention and handed the result to bone quaternions that are not in it.
+    float af[3], abr[3], au[3], tf[3], tbr[3], tu[3];
+    ue_rot_basis(actorRot, af, abr, au);
+    ue_rot_basis(want, tf, tbr, tu);
+    float rf[3], rbr[3], ru[3];
+    into_basis(af, abr, au, tf, rf);
+    into_basis(af, abr, au, tbr, rbr);
+    into_basis(af, abr, au, tu, ru);
+    basis_to_quat(rf, rbr, ru, qtc);
+    (void)qt;
 
     // s71n: PLACEMENT FIRST, in the VIEW frame, on the WORLD target - see the
     // g_offHandViewCm banner. Applied here, before the push into component
@@ -4409,7 +4465,9 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     float dWorld[3] = {wantLoc[0] - actorLoc[0], wantLoc[1] - actorLoc[1],
                        wantLoc[2] - actorLoc[2]};
     float ptc[3];
-    qts_rotate(qaInv, dWorld, ptc); // target anchor position, component space
+    // Same projection as the rotation above - BRVR uses IntoBasis for both,
+    // because "two independent conversions would be two chances to disagree".
+    into_basis(af, abr, au, dWorld, ptc);
 
     // ---- s71m: THE RIG ACTOR'S DrawScale MULTIPLIES BONE TRANSLATIONS ------
     //
@@ -4489,15 +4547,43 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     const float sc = g_scale[hand].load(std::memory_order_relaxed);
     const Qts* ref = g_freeRef[hand];
     const float* pa = ref[anchor - first].p;
+
+    // ---- s71r: THE CLUSTER IS WRITTEN AS A DELTA FROM THE REFERENCE WRIST ----
+    //
+    // Ported from BRVR's WriteCluster, and this is the term this tree never had.
+    // BRVR builds
+    //     qDelta = targetQuat * inv(ref_wrist.rotation)
+    // and rotates BOTH the bone offsets and the bone rotations by that delta. We
+    // rotated by the absolute target instead, which double-applies the reference
+    // wrist's own orientation to every bone in the cluster.
+    //
+    // WHY IT READS AS A PIVOT. At the reference pose BRVR's qDelta is identity,
+    // so the cluster is written exactly as authored and the hand is undistorted.
+    // Ours rotated the whole hand about its anchor by the reference wrist's
+    // orientation, so the hand's visual centre sits somewhere the anchor is not -
+    // and as the target turns, that displacement swings. The hand appears to
+    // pivot about a point that is not its centre, which is a pivot no offset can
+    // tune out because it is not an offset.
+    //
+    // The scale term stays where it was: BRVR has no per-cluster scale, and ours
+    // compresses bone translations toward the anchor, which is a separate lane
+    // from this rotation and must not be folded into it.
+    float qDelta[4];
+    {
+        const float* rq = ref[anchor - first].q;
+        const float invWrist[4] = {-rq[0], -rq[1], -rq[2], rq[3]};
+        quat_mul(qtc, invWrist, qDelta);
+    }
+
     for (int i = first; i <= last; ++i) {
         const Qts& rb = ref[i - first];
         float rel[3] = {(rb.p[0] - pa[0]) * sc, (rb.p[1] - pa[1]) * sc,
                         (rb.p[2] - pa[2]) * sc};
         float rot[3];
-        qts_rotate(qtc, rel, rot);
+        qts_rotate(qDelta, rel, rot);
         const float p[3] = {ptc[0] + rot[0], ptc[1] + rot[1], ptc[2] + rot[2]};
         float q[4];
-        quat_mul(qtc, rb.q, q);
+        quat_mul(qDelta, rb.q, q);
         const float qn = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
         if (qn > 1e-4f)
             for (int k = 0; k < 4; ++k) q[k] /= qn;
