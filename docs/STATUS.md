@@ -155,10 +155,74 @@ So BRVR's audit - *the offset is the only term that could couple them* - now cut
 the other way: our offset is correct, the actor is intact, and therefore **the
 coupling is not in `drive_free_hand`'s algebra at all.**
 
+### FREETARGET IS IN: THE INPUT IS CLEAN, SO THE DEFECT IS DOWNSTREAM
+
+Taken 2026-08-30 00:20, 45 samples. Over a 32-sample window with the off hand
+held still:
+
+| Quantity | Movement |
+|---|---|
+| HELD hand yaw swept | **344.7 deg** (-176.8 .. +167.9) |
+| ACTOR location swung | **103.0 UU** in x, **95.9 UU** in y |
+| FREE hand's WANTED world point | **0.4 / 2.1 / 2.7 UU** |
+
+The wanted world point is **steady to within hand tremor** while the actor swings
+a hundred units. So:
+
+- the **input** is clean - `xr_pose_to_game`, the game yaw and the recenter base
+  are not carrying the held hand into the free hand's target;
+- the **actor** is intact (FREEPROBE, two runs, 115 lines, all zero, no failed
+  reads);
+- the **algebra** is BRVR's own and was verified term by term last session.
+
+**Every world-space term cancels, and the hand still moves. The defect is
+DOWNSTREAM of the bone write** - the engine evaluating the cluster after us. That
+is the only place left, and it was reached by elimination from measurements
+rather than by argument.
+
+**Why it presents as a swivel.** If the engine wins the cluster, the bones revert
+toward their authored pose, which is fixed in COMPONENT space - and a fixed
+component-space point orbits in WORLD as the actor turns. Position displaced,
+orientation from the authored pose. That is the report, and it explains why every
+world-space probe read clean: they were all measuring terms that cancel.
+
+**BRVR's second finding is the candidate mechanism.**
+`docs/brvr-reference/docs/modules/hands.md`, *"The dirty byte has one owner"*:
+`SkeletonInstance+0x88` is **one byte for all 47 bones**, six passes wrote it with
+no coordination, and **the last writer in the frame won**. Its rule is explicit:
+
+> *"Any new per-bone writer inherits this: ask `SuppressionLive()`, do not add a
+> seventh writer."*
+
+`drive_free_hand` is exactly a new per-bone writer, added in s71 **without that
+guard**, and this tree has **24 `set_dirty` call sites** with no coordination at
+all. Audited this session: within `on_calcview` the free hand's `set_dirty(0)` is
+genuinely last (`keep_evaluating` pushes `1` but runs at `hands.cpp:1261`, well
+before the drive at `:1508`), so if the byte is the mechanism the writer is the
+ENGINE's own tick, not one of ours.
+
 ### Next steps
 
-**Take the FREETARGET reading - it measures the one quantity nobody has looked
-at.** Built and installed this session (`bones.cpp`, always-on, 500 ms throttle).
+**Take the FREEHOLD reading. It is built and installed** (`bones.cpp`, always-on,
+500 ms throttle). `drive()` has read the held hand's anchor back since s67 and
+calls the result `engineEvaluated`; the free hand has stored
+`g_lastWrittenAnchor[hand]` all along and **nothing has ever read it back**.
+FREEHOLD is that readback - last frame's write against a fresh read this frame.
+
+| Reading | Meaning |
+|---|---|
+| anchor moved **non-zero** model units | the **engine re-evaluated** the cluster after us - that is the orbit, and BRVR's dirty-byte finding is the place to fix it |
+| anchor moved **~0** | our write survives; the defect is in what RENDERS the cluster, not in the array |
+
+Same sweep, then
+`grep -a FREEHOLD "$LOCALAPPDATA/BioshockVR/bioshockvr.log"`.
+
+Checked before shipping, as is now mandatory here: it compares a value stored
+LAST frame against a fresh read THIS frame with only the engine's tick between
+them, and it is the same shape as `drive()`'s readback, which is known to report
+non-zero.
+
+**Superseded - the input question is closed:** Built and installed this session (`bones.cpp`, always-on, 500 ms throttle).
 It prints the free hand's intended WORLD point, `gp.loc`, beside the HELD hand's
 rotator, and it discriminates the only two remaining possibilities:
 

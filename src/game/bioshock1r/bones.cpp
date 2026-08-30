@@ -4070,6 +4070,52 @@ bool drive_free_hand(const FrameContext& ctx, void* handsActor, const GamePose& 
     const int count = last - first + 1;
     if (count > kFreeClusterMax) return false;
 
+    // ---- s71g FREEHOLD: does the free hand's cluster SURVIVE our write? -----
+    //
+    // FREETARGET settled the direction. Over a 344.7 deg sweep of the held hand,
+    // with the actor's own location swinging 103 UU, the free hand's WANTED
+    // world point moved 0.4 / 2.1 / 2.7 UU - hand tremor. So the input is
+    // steady, the actor is intact (FREEPROBE: two runs, 115 lines, all zero, no
+    // failed reads), and the retarget algebra is BRVR's own, verified term by
+    // term. The coupling is therefore DOWNSTREAM of the bone write, and the only
+    // thing downstream is the engine evaluating this cluster after us.
+    //
+    // drive() has measured exactly this for the HELD hand since s67 - it reads
+    // the anchor back and calls the result `engineEvaluated`. The free hand
+    // stores g_lastWrittenAnchor[hand] at the end of every drive and NOTHING has
+    // ever read it back. This is that readback.
+    //
+    // Why it would look like a swivel: if the engine wins, the cluster reverts
+    // toward its authored pose, which is fixed in COMPONENT space and therefore
+    // orbits in WORLD as the actor turns. That is the reported symptom exactly,
+    // and it is why every world-space probe could read clean while the hand
+    // still moved - they all measured terms that cancel, and this one does not.
+    //
+    // Not tautological, and this is checked rather than hoped: it compares a
+    // value stored LAST frame against a fresh read THIS frame, with the engine's
+    // tick the only thing running between them. Same shape as drive()'s own
+    // readback, which is known to report non-zero.
+    if (g_hasWritten[hand] && g_freeRefValid[hand]) {
+        Qts cur{};
+        if (read_n(&g_bones[anchor], &cur, sizeof cur)) {
+            const Qts& was = g_lastWrittenAnchor[hand];
+            const float d[3] = {cur.p[0] - was.p[0], cur.p[1] - was.p[1],
+                                cur.p[2] - was.p[2]};
+            const float m = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            static uint64_t s_fhLog[2] = {0, 0};
+            const uint64_t nowFh = GetTickCount64();
+            if (nowFh - s_fhLog[hand] >= 500) {
+                s_fhLog[hand] = nowFh;
+                BVR_LOG("[bones] FREEHOLD: %s free hand anchor moved %.2f model units "
+                        "(%+.2f %+.2f %+.2f) between our write and this frame. NON-ZERO "
+                        "means the ENGINE re-evaluated the cluster after us, and that is "
+                        "the orbit; ~0 means our write survives and the defect is in what "
+                        "renders it.",
+                        hand == 1 ? "RIGHT" : "LEFT", m, d[0], d[1], d[2]);
+            }
+        }
+    }
+
     // CAPTURE THE AUTHORED POSE FIRST, on a frame the engine still owns this
     // cluster - which is any frame before the first write below. Once we have
     // written it, the live array is our own output and capturing it would feed
