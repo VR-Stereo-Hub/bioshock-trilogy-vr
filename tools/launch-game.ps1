@@ -62,7 +62,11 @@ if (Get-Process $proc -ErrorAction SilentlyContinue) {
 # --- guard 2: stale command file ---------------------------------------------
 $cmd = Join-Path $dir "command.txt"
 if (Test-Path $cmd) {
-    $stale = (Get-Content $cmd -Raw).Trim()
+    # -Raw returns $null on a zero-byte file, and .Trim() on null throws
+    # "You cannot call a method on a null-valued expression", which fails the
+    # whole preflight and blocks the launch. An empty seam file is a normal
+    # state (anything that clears it by writing "" rather than deleting it).
+    $stale = ([string](Get-Content $cmd -Raw)).Trim()
     Remove-Item $cmd -Force
     if ($stale) { Write-Output "cleared a stale command.txt (would have re-applied at boot): $stale" }
 }

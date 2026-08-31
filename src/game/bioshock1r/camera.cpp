@@ -22,6 +22,7 @@
 #include "game/bioshock1r/patterns.h"
 #include "game/bioshock1r/recorder.h"
 #include "game/bioshock1r/scenedraw.h"
+#include "game/bioshock1r/startup_dialog.h"
 #include "game/shared/ue_math.h"
 
 #include <windows.h>
@@ -70,6 +71,10 @@ std::atomic<float> g_worldScale{100.0f};       // Unreal units per meter
 // anchor. Defaults 0 by the user's call (session 16 part 4) - they tune by
 // eye and persist their value via the VR preset ini.
 std::atomic<float> g_headOffUpUu{0.0f};
+// Whether the head anchor also moves the HAND anchor (see the FrameContext
+// publish). On by default because it is a no-op while the anchor is 0, which
+// is the shipped value; `headoff hands off` is the rollback.
+std::atomic<bool>  g_headAnchorHands{true};
 std::atomic<float> g_headOffFwdUu{0.0f};
 // VR preset 1 (session 16 part 3): one button/command arming the user's full
 // VR configuration - every switch they flipped by hand, in a safe order,
@@ -122,6 +127,45 @@ uint64_t g_lockOnAssertMs = 0;
 // heading instead.
 constexpr float kMoveYawSign = 1.0f;
 std::atomic<bool>  g_recenterRequested{true};  // auto-recenter on first drive
+// Opt-in (default OFF): recenter again on every menu/cutscene -> GAMEPLAY
+// transition. The preset already recenters once when it arms; doing it on the
+// transition too is what fixes heading drift after a load without asking the
+// player for an input. Off by default because it overrides a deliberate
+// mid-session recenter every time a cutscene ends.
+std::atomic<bool>  g_autoRecenterOnGameplay{false};
+// Opt-in (default OFF): arm VR PRESET 1 by itself, ONCE, the first time a
+// gameplay view appears. vrpreset.ini persists the tuned VALUES but nothing
+// persists the toggles - the preset has to be pressed in the F10 overlay every
+// launch, which is the one thing a player in a headset cannot reach. Firing it
+// on the first gameplay transition is exactly when a human presses it.
+std::atomic<bool>  g_autoPresetOnGameplay{false};
+// Seated play (default OFF): ignore the vertical component of the head offset,
+// pinning eye height to the game's own camera. See the note at its use site.
+std::atomic<bool>  g_heightLock{false};
+
+// World-scale measurement capture (`vrscale [seconds]`, default off).
+//
+// worldScale is UU per real metre, and almost every way of checking it is
+// circular: ask the mod how far your hand moved and it answers
+// metres * worldScale by construction. Gravity is not circular - it is the
+// ENGINE's own physics. Capture the engine's camera height at CalcView rate
+// through a jump or a fall, fit the acceleration in UU/s^2, and
+// UU-per-metre = accel / 9.81. (Unreal's default zone gravity of -950 UU/s^2
+// implies ~97 UU/m, which is the same ballpark as the ~100 upstream measured
+// by a different method - see docs/bioshock2/ENGINE_NOTES.md.)
+//
+// The timestamp has to be QPC: this samples at frame rate, and
+// GetTickCount64's ~15 ms granularity would swamp a 14 ms frame.
+std::atomic<uint64_t> g_scaleCaptureUntilMs{0};
+std::atomic<uint32_t> g_scaleSamples{0};
+
+double qpc_seconds() {
+    static LARGE_INTEGER freq{};
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return static_cast<double>(now.QuadPart) / static_cast<double>(freq.QuadPart);
+}
 std::atomic<bool>  g_vrDriving{false};         // telemetry for the UI
 std::atomic<bool>  g_forceHeadsetFov{false};   // session 4: now writes the REAL control (the
                                                // UShockUserSettings HorizontalFOV int that the
@@ -394,6 +438,98 @@ void apply_command(const char* cmd, const char* args) {
     } else if (strcmp(cmd, "recenter") == 0) {
         g_recenterRequested.store(true, std::memory_order_relaxed);
         BVR_LOG("[b1r] command: recenter");
+    } else if (strcmp(cmd, "vrpopup") == 0) {
+        startup_dialog::handle_command(args); // logs its own echo
+    } else if (strcmp(cmd, "worldscale") == 0) {
+        // Overlay-only until now, same trap headoff had. worldScale does TWO
+        // jobs: it converts head translation into camera translation, and it
+        // converts the IPD into world units (ipd/1000 * worldScale UU), which
+        // is what sets PERCEIVED world size. Too low a value makes the stereo
+        // baseline too small, the world reads as oversized, and the player
+        // feels short - which is the symptom that started this.
+        float v = 0.0f;
+        if (sscanf_s(args, "%f", &v) == 1 && v >= 10.0f && v <= 400.0f)
+            g_worldScale.store(v, std::memory_order_relaxed);
+        const float ws = g_worldScale.load(std::memory_order_relaxed);
+        BVR_LOG("[b1r] worldScale = %.1f UU/m (worldscale <10..400>) - eye "
+                "separation %.2f UU at ipd %.1f mm; 1 UU = %.1f mm. "
+                "'vrpreset save' to keep",
+                ws, g_ipdMm.load(std::memory_order_relaxed) / 1000.0f * ws,
+                g_ipdMm.load(std::memory_order_relaxed), 1000.0f / ws);
+    } else if (strcmp(cmd, "vrscale") == 0) {
+        unsigned secs = 0;
+        if (sscanf_s(args, "%u", &secs) != 1 || secs == 0) secs = 20;
+        if (secs > 1800) secs = 1800; // sampling is gated on vertical motion
+        g_scaleSamples.store(0, std::memory_order_relaxed);
+        g_scaleCaptureUntilMs.store(GetTickCount64() + secs * 1000ull,
+                                    std::memory_order_relaxed);
+        BVR_LOG("[vrscale] capture ARMED for %u s (%u min) - RUN, JUMP, and drop off "
+                "ledges; a long fall is the best signal. Sampling only while the "
+                "camera moves vertically. Gravity in UU/s^2 / 9.81 = UU per metre, "
+                "which is what worldScale (now %.0f) should be. Changes nothing.",
+                secs, secs / 60, g_worldScale.load(std::memory_order_relaxed));
+    } else if (strcmp(cmd, "headoff") == 0) {
+        // The head-anchor offsets were overlay-only sliders, which means they
+        // needed F10 and a keyboard - useless to a player already in the
+        // headset, and this is the control you reach for when the VR eye sits
+        // lower than the game's own camera implies. Same values, same
+        // vrpreset.ini keys, now reachable from the seam.
+        char which[8] = {};
+        char val[8] = {};
+        float v = 0.0f;
+        if (sscanf_s(args, "%7s %7s", which, static_cast<unsigned>(sizeof which), val,
+                     static_cast<unsigned>(sizeof val)) == 2 &&
+            strcmp(which, "hands") == 0) {
+            g_headAnchorHands.store(strncmp(val, "on", 2) == 0,
+                                    std::memory_order_relaxed);
+        } else if (sscanf_s(args, "%7s %f", which,
+                            static_cast<unsigned>(sizeof which), &v) == 2) {
+            if (strcmp(which, "up") == 0)
+                g_headOffUpUu.store(v, std::memory_order_relaxed);
+            else if (strcmp(which, "fwd") == 0)
+                g_headOffFwdUu.store(v, std::memory_order_relaxed);
+        }
+        BVR_LOG("[b1r] head anchor: up=%.1f fwd=%.1f UU, hands %s (headoff up <uu> | "
+                "fwd <uu> | hands on|off; worldScale %.0f UU/m, 1 UU = %.1f mm) - "
+                "'vrpreset save' to keep",
+                g_headOffUpUu.load(std::memory_order_relaxed),
+                g_headOffFwdUu.load(std::memory_order_relaxed),
+                g_headAnchorHands.load(std::memory_order_relaxed)
+                    ? "FOLLOW (gun stays on the controller axis)"
+                    : "detached (camera only - the old behaviour)",
+                g_worldScale.load(std::memory_order_relaxed),
+                1000.0f / g_worldScale.load(std::memory_order_relaxed));
+    } else if (strcmp(cmd, "heightlock") == 0) {
+        if (strncmp(args, "on", 2) == 0)
+            g_heightLock.store(true, std::memory_order_relaxed);
+        else if (strncmp(args, "off", 3) == 0)
+            g_heightLock.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b1r] height lock: %s (heightlock on|off) - %s",
+                g_heightLock.load(std::memory_order_relaxed) ? "ON" : "off",
+                g_heightLock.load(std::memory_order_relaxed)
+                    ? "eye height is pinned to the game camera; sitting or standing "
+                      "no longer changes it (lean still works)"
+                    : "eye height follows your real head, relative to the last recenter");
+    } else if (strcmp(cmd, "autopreset") == 0) {
+        if (strncmp(args, "on", 2) == 0)
+            g_autoPresetOnGameplay.store(true, std::memory_order_relaxed);
+        else if (strncmp(args, "off", 3) == 0)
+            g_autoPresetOnGameplay.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b1r] auto-preset on entering gameplay: %s (autopreset on|off) - "
+                "arms VR PRESET 1 once per session so the headset needs no "
+                "keyboard to get into VR",
+                g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? "ON" : "off");
+    } else if (strcmp(cmd, "autorecenter") == 0) {
+        if (strncmp(args, "on", 2) == 0)
+            g_autoRecenterOnGameplay.store(true, std::memory_order_relaxed);
+        else if (strncmp(args, "off", 3) == 0)
+            g_autoRecenterOnGameplay.store(false, std::memory_order_relaxed);
+        BVR_LOG("[b1r] auto-recenter on entering gameplay: %s "
+                "(autorecenter on|off) - recenters on every menu/cutscene -> "
+                "GAMEPLAY transition, which is where heading drift after a load "
+                "shows up",
+                g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? "ON"
+                                                                        : "off");
     } else if (strcmp(cmd, "offset") == 0) {
         if (sscanf_s(args, "%f %f %f", &x, &y, &z) == 3) {
             g_offsetX.store(x, std::memory_order_relaxed);
@@ -768,6 +904,8 @@ void save_vr_preset() {
     fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
     fprintf(f, "headUpUu=%.1f\n", g_headOffUpUu.load(std::memory_order_relaxed));
     fprintf(f, "headFwdUu=%.1f\n", g_headOffFwdUu.load(std::memory_order_relaxed));
+    fprintf(f, "headAnchorHands=%d\n",
+            g_headAnchorHands.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
     fprintf(f, "gameFovDeg=%.1f\n", g_gameFovDeg.load(std::memory_order_relaxed));
     fprintf(f, "aimTrimLPitch=%.1f\n", aim::trim_pitch_deg(0));
@@ -790,6 +928,12 @@ void save_vr_preset() {
     fprintf(f, "turnScale=%.2f\n", bvr::input::turn_scale());
     fprintf(f, "snapTurn=%d\n", bvr::input::snap_turn() ? 1 : 0);
     fprintf(f, "snapAngleDeg=%.0f\n", bvr::input::snap_angle_deg());
+    fprintf(f, "recenterBind=%d\n", static_cast<int>(bvr::input::recenter_bind()));
+    fprintf(f, "autoRecenterOnGameplay=%d\n",
+            g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "autoPresetOnGameplay=%d\n",
+            g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "heightLock=%d\n", g_heightLock.load(std::memory_order_relaxed) ? 1 : 0);
     fprintf(f, "swingOn=%d\n", bvr::input::swing::enabled() ? 1 : 0);
     fprintf(f, "swingThreshold=%.2f\n", bvr::input::swing::threshold_ms());
     fprintf(f, "swingRearm=%.2f\n", bvr::input::swing::rearm_ms());
@@ -827,6 +971,73 @@ void save_vr_preset() {
     aim::save_weapon_profiles();
 }
 
+// The three preferences that must be known BEFORE the preset is armed.
+//
+// load_vr_preset_values() only runs from apply_vr_preset(), which is exactly
+// the thing autoPresetOnGameplay is supposed to trigger - read the flag there
+// and it can never bootstrap itself (measured: the flag persisted correctly and
+// was never honoured on the next launch). recenterBind has the same shape: the
+// XR action layer consumes it whether or not the preset has been armed.
+//
+// Deliberately a SEPARATE, narrow reader rather than hoisting the whole value
+// load to init: applying every persisted slider at startup would change what
+// the mod does before the preset is pressed, which is not this change's job.
+void load_startup_prefs() {
+    wchar_t path[MAX_PATH];
+    vr_preset_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f) return; // no file = shipped defaults
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        char key[48] = {};
+        float v = 0.0f;
+        if (sscanf_s(line, "%47[^=]=%f", key, static_cast<unsigned>(sizeof key), &v) != 2)
+            continue;
+        if (strcmp(key, "autoPresetOnGameplay") == 0)
+            g_autoPresetOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "autoRecenterOnGameplay") == 0)
+            g_autoRecenterOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "recenterBind") == 0) {
+            const int rb = static_cast<int>(v);
+            if (rb >= 0 && rb <= 2)
+                bvr::input::set_recenter_bind(static_cast<bvr::input::RecenterBind>(rb));
+        }
+        // Must be read HERE and not with the preset values: the prompt it
+        // answers appears seconds into the launch, long before any preset is
+        // armed. The watcher polls, so setting it a few ms after its thread
+        // starts is still inside the window.
+        else if (strcmp(key, "popupDismiss") == 0)
+            startup_dialog::set_enabled(v != 0.0f);
+    }
+    fclose(f);
+    if (g_autoPresetOnGameplay.load(std::memory_order_relaxed) ||
+        g_autoRecenterOnGameplay.load(std::memory_order_relaxed))
+        BVR_LOG("[b1r] startup prefs: autopreset=%d autorecenter=%d recenterBind=%d",
+                g_autoPresetOnGameplay.load(std::memory_order_relaxed) ? 1 : 0,
+                g_autoRecenterOnGameplay.load(std::memory_order_relaxed) ? 1 : 0,
+                static_cast<int>(bvr::input::recenter_bind()));
+
+    // Arm the synthetic pad NOW, not with the preset.
+    //
+    // The pad's A button already works the title screen and the load - that is
+    // how the harness boots this game (`vrinput test press A` in boot.ps1). But
+    // synthetic input is OFF until the preset arms it, and the preset cannot arm
+    // until a gameplay view exists, which needs the menu you cannot press. That
+    // circle is the entire reason the main menu still needed a keyboard.
+    //
+    // It does NOT skip the startup Bink movies (measured) - those play out and
+    // then A activates Continue.
+    //
+    // Only under autopreset, so a player who has not opted into a hands-off
+    // launch sees no change at all.
+    if (g_autoPresetOnGameplay.load(std::memory_order_relaxed)) {
+        bvr::input::set_enabled(true);
+        BVR_LOG("[b1r] autopreset: synthetic pad armed at startup - the Touch A "
+                "button now drives the main menu and the save load, so no part of "
+                "the launch needs a keyboard");
+    }
+}
+
 void load_vr_preset_values() {
     wchar_t path[MAX_PATH];
     vr_preset_path(path, MAX_PATH);
@@ -849,6 +1060,8 @@ void load_vr_preset_values() {
         ++n;
         if (strcmp(key, "worldScale") == 0) g_worldScale.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "headUpUu") == 0) g_headOffUpUu.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "headAnchorHands") == 0)
+            g_headAnchorHands.store(v != 0.0f, std::memory_order_relaxed);
         else if (strcmp(key, "headFwdUu") == 0) g_headOffFwdUu.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "ipdMm") == 0) g_ipdMm.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "gameFovDeg") == 0) g_gameFovDeg.store(v, std::memory_order_relaxed);
@@ -872,6 +1085,17 @@ void load_vr_preset_values() {
         else if (strcmp(key, "turnScale") == 0) bvr::input::set_turn_scale(v);
         else if (strcmp(key, "snapTurn") == 0) bvr::input::set_snap_turn(v != 0.0f);
         else if (strcmp(key, "snapAngleDeg") == 0) bvr::input::set_snap_angle_deg(v);
+        else if (strcmp(key, "autoRecenterOnGameplay") == 0)
+            g_autoRecenterOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "autoPresetOnGameplay") == 0)
+            g_autoPresetOnGameplay.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "heightLock") == 0)
+            g_heightLock.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "recenterBind") == 0) {
+            const int rb = static_cast<int>(v);
+            if (rb >= 0 && rb <= 2)
+                bvr::input::set_recenter_bind(static_cast<bvr::input::RecenterBind>(rb));
+        }
         else if (strcmp(key, "swingOn") == 0) bvr::input::swing::set_enabled(v != 0.0f);
         else if (strcmp(key, "swingThreshold") == 0) bvr::input::swing::set_threshold_ms(v);
         else if (strcmp(key, "swingRearm") == 0) bvr::input::swing::set_rearm_ms(v);
@@ -1045,6 +1269,60 @@ void poll_command_file(uint64_t now) {
 }
 
 // XR -> Unreal conversion lives in ue_math.h (shared with the aim ray).
+// The black-bands warning, said once, in the one place that knows both numbers.
+//
+// The eye is essentially square (54 x 55 deg half-angles on a Quest 3), so a
+// 16:9 backbuffer has to render a MUCH wider horizontal FOV to fill it - the
+// core computes that requirement and logs it, and the adapter reads back what
+// the engine actually renders. When the two disagree the difference is not
+// subtle: it is black bars at the top and bottom of the headset image for the
+// whole session, and the fix is one integer in the game's own ini.
+//
+// Worth a loud line because the game's options menu REWRITES HorizontalFOV
+// whenever any video setting is touched, so this is not a one-time repair.
+constexpr float kFovMismatchWarnDeg = 5.0f;
+
+void warn_fov_mismatch_once(bool strictGameplay) {
+    static bool s_checked = false;
+    if (s_checked || !strictGameplay) return;
+
+    // Read what the scene is ACTUALLY rendered at, not the settings option.
+    // The option pointer is frequently unavailable (`fovaudit: option=-1` on a
+    // normal session, measured), and the only other candidate - the frame
+    // camera's fov - reads the engine default 100 on the title screen and
+    // during scripted cameras, so latching on either warns on correctly
+    // configured launches. The decoded scene tangent is the number that
+    // actually decides whether there are bars, and requiring it FRESH and in a
+    // gameplay view keeps scripted-camera lenses out of the comparison.
+    float tanH = 0.0f, tanV = 0.0f;
+    unsigned long long age = 0;
+    if (!bvr::hud::fov_watch(&tanH, &tanV, &age, 500) || tanH <= 0.0f) return;
+    const float want = bvr::vr::suggested_hfov_deg();
+    if (want <= 0.0f) return; // headset requirement not computed yet
+    const float actualHfovDeg = 2.0f * atanf(tanH) * kRadToDeg;
+    s_checked = true;
+    if (fabsf(want - actualHfovDeg) <= kFovMismatchWarnDeg) {
+        BVR_LOG("[b1r] fov check: the world renders %.0f deg and this headset wants "
+                "%.0f - no bars",
+                actualHfovDeg, want);
+        return;
+    }
+
+    const wchar_t* ini = game_ini::path();
+    BVR_LOG("[b1r] FOV MISMATCH: this headset needs hfov %.0f deg at the current "
+            "backbuffer, but the game renders %.0f - expect BLACK BARS top and "
+            "bottom for the whole session.",
+            want, actualHfovDeg);
+    BVR_LOG("[b1r]   fix: set HorizontalFOV=%.0f in [ShockGame.ShockUserSettings] of "
+            "%ls (the lock beside it is bHorizontalFOVLock; [Engine.RenderConfig] "
+            "carries its own HorizontalFOVLock)",
+            want, (ini && *ini) ? ini : L"%APPDATA%\\BioshockHD\\Bioshock\\Bioshock.ini");
+    BVR_LOG("[b1r]   the options menu rewrites HorizontalFOV whenever you touch a "
+            "video setting, so re-check it after visiting that screen. "
+            "'gfov %.0f' forces it for this session only.",
+            want);
+}
+
 UeAngles hmd_angles(const bvr::vr::HeadPose& hp) {
     return ue_angles_from_xr_quat(hp.qx, hp.qy, hp.qz, hp.qw);
 }
@@ -1104,6 +1382,38 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_lastLocX.store(loc->x, std::memory_order_relaxed);
         g_lastLocY.store(loc->y, std::memory_order_relaxed);
         g_lastLocZ.store(loc->z, std::memory_order_relaxed);
+
+        // World-scale capture. Deliberately HERE, on the incoming camera, before
+        // any VR head offset is added below - the head offset is computed FROM
+        // worldScale, so including it would feed the answer back into the
+        // measurement and guarantee agreement.
+        const uint64_t until = g_scaleCaptureUntilMs.load(std::memory_order_relaxed);
+        if (until) {
+            if (GetTickCount64() <= until) {
+                // Only log while the camera is actually moving vertically, plus a
+                // short tail. A capture long enough to go and FIND a ledge would
+                // otherwise be mostly the player standing still - 11 of the first
+                // 18 test seconds were a z pinned to one value - and the arcs are
+                // the only part that carries any signal.
+                static float s_lastZ = 0.0f;
+                static double s_activeUntil = 0.0;
+                const double tnow = qpc_seconds();
+                if (fabsf(loc->z - s_lastZ) > 0.02f) s_activeUntil = tnow + 0.5;
+                s_lastZ = loc->z;
+                if (tnow <= s_activeUntil) {
+                    BVR_LOG("[vrscale] t=%.6f z=%.3f x=%.1f y=%.1f", tnow, loc->z,
+                            loc->x, loc->y);
+                    g_scaleSamples.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
+                g_scaleCaptureUntilMs.store(0, std::memory_order_relaxed);
+                BVR_LOG("[vrscale] capture done - %u samples. Fit the free-fall "
+                        "segments: accel in UU/s^2 / 9.81 = UU per metre (worldScale "
+                        "is %.0f).",
+                        g_scaleSamples.load(std::memory_order_relaxed),
+                        g_worldScale.load(std::memory_order_relaxed));
+            }
+        }
     }
     if (rot) {
         g_lastPitch.store(rot->pitch, std::memory_order_relaxed);
@@ -1179,6 +1489,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // scripted cameras bypass CalcView entirely).
     bool strictGameplay = body::is_gameplay_view(viewActor ? *viewActor : nullptr);
     bvr::vr::publish_gameplay_view(strictGameplay);
+    warn_fov_mismatch_once(strictGameplay);
+
+    // Controller-bound recenter: the XR action layer raises a latch on the
+    // render thread when the bound gesture fires (core/input/xinput_bridge.h);
+    // draining it HERE turns it into exactly the same request the overlay
+    // button and the `recenter` command make, on the game thread, one frame
+    // before the drive lane below consumes it. The gameplay gate lives at the
+    // detector; this is only the seam between threads.
+    if (bvr::input::take_recenter_request()) {
+        g_recenterRequested.store(true, std::memory_order_relaxed);
+        BVR_LOG("[b1r] recenter requested by controller bind");
+    }
 
     // Session 29: the cinematic drive policy (vrcine drive off|authored|
     // authored+look). `cineHold` is the draw-based signal ORed with the pixel
@@ -1308,7 +1630,18 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         float cg = cosf(gameYawRad), sg = sinf(gameYawRad);
         float ox = (lx * cg - ly * sg) * scale;
         float oy = (lx * sg + ly * cg) * scale;
-        float oz = d[2] * scale;
+        // Height lock: drop the VERTICAL head offset entirely, so the eye sits
+        // at the game's OWN camera height no matter how high the player's real
+        // head is. Lean (x/y) is untouched - peeking round a corner still works.
+        //
+        // Without it, eye height is real-head-height relative to whatever pose
+        // the last recenter captured, and at the default worldScale of 100 UU/m
+        // that is brutal: sitting down after a standing recenter drops the head
+        // ~0.4 m = ~40 UU, against an in-game eye height of only ~60-70 UU. The
+        // player ends up at waist level. Recentering again fixes it, but only
+        // until the next posture change; this removes the coupling instead.
+        float oz = g_heightLock.load(std::memory_order_relaxed) ? 0.0f
+                                                                : d[2] * scale;
         loc->x += ox;
         loc->y += oy;
         loc->z += oz;
@@ -1447,6 +1780,36 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         fc.baseX = baseLoc.x;
         fc.baseY = baseLoc.y;
         fc.baseZ = baseLoc.z;
+
+        // Head anchor -> the SHARED base, so the hands ride it too.
+        //
+        // baseLoc is the engine's own camera, and the system is otherwise
+        // coherent: the camera adds its recenter-relative head offset to it,
+        // the hands add the controller's recenter-relative offset to it, and
+        // because both offsets are measured from the same recenter pose, head
+        // and hands move together for free.
+        //
+        // The head ANCHOR (headoff up/fwd) broke that. It was added to the
+        // camera further down and never to the base, so a lift raised the eye
+        // while the engine kept placing the hands at its own eye height - at
+        // 25 UU that is a 25 cm decoupling, and the gun visibly stops sitting
+        // on the controller's axis. Applying it here, in the frame both
+        // consumers read, is the whole fix.
+        //
+        // Same composition as the camera's own: fwd rides the FINAL view yaw,
+        // up is world-up. `headoff hands off` restores the old behaviour
+        // without a rebuild, and with the anchor at 0 this is a no-op either
+        // way.
+        if (g_headAnchorHands.load(std::memory_order_relaxed)) {
+            const float hoUp = g_headOffUpUu.load(std::memory_order_relaxed);
+            const float hoFwd = g_headOffFwdUu.load(std::memory_order_relaxed);
+            if (rot && (hoUp != 0.0f || hoFwd != 0.0f)) {
+                const float vyaw = static_cast<float>(rot->yaw) / kRotUnitsPerRadian;
+                fc.baseX += cosf(vyaw) * hoFwd;
+                fc.baseY += sinf(vyaw) * hoFwd;
+                fc.baseZ += hoUp;
+            }
+        }
         if (rot) {
             fc.camPitch = rot->pitch;
             fc.camYaw = rot->yaw;
@@ -1476,6 +1839,14 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         // exercise the whole decision path flat.
         bvr::input::swing::publish_gate(strictGameplay && aim::weapon_key_is("Wrench"));
 
+        // The recenter bind's "can I borrow the stick click?" signal. Derived
+        // independently of the swing gate above even though it reads the same
+        // today: they answer different questions ("may I swing" vs "does the
+        // ammo modifier have anything to select"), and one of them changing
+        // must not silently move the other.
+        bvr::input::publish_ammoless_weapon(strictGameplay &&
+                                            aim::weapon_key_is("Wrench"));
+
         static int s_lastViewState = -1;
         int viewState = strictGameplay ? 1 : 0;
         if (viewState != s_lastViewState) {
@@ -1487,6 +1858,30 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
             // event that plausibly created what they were looking for, so it is
             // the one place allowed to wake them.
             if (strictGameplay) {
+                // ONCE per session: re-applying the preset would re-run the
+                // whole vrstereo sequence on every cutscene exit.
+                static bool s_autoPresetDone = false;
+                if (!s_autoPresetDone &&
+                    g_autoPresetOnGameplay.load(std::memory_order_relaxed)) {
+                    s_autoPresetDone = true;
+                    g_vrPresetPending.store(true, std::memory_order_relaxed);
+                    // ...and take the seated reference HERE. The recenter
+                    // captures the full head pose, position included, so
+                    // whatever height the player is at this instant becomes the
+                    // game's own standing eye height - which is what makes one
+                    // keyboard-free launch work whether they sat down or stayed
+                    // standing. Without it the session inherits whatever
+                    // reference the runtime happened to hand out.
+                    g_recenterRequested.store(true, std::memory_order_relaxed);
+                    BVR_LOG("[b1r] auto-preset: arming VR PRESET 1 on the first "
+                            "gameplay view, and recentering onto your current "
+                            "seated/standing pose ('autopreset off' to disable)");
+                }
+                if (g_autoRecenterOnGameplay.load(std::memory_order_relaxed)) {
+                    g_recenterRequested.store(true, std::memory_order_relaxed);
+                    BVR_LOG("[b1r] auto-recenter: entered gameplay view "
+                            "('autorecenter off' to disable)");
+                }
                 patterns::hfov_scan_rearm("entered gameplay view");
                 aim::weapon_scan_rearm("entered gameplay view");
                 // Same event drives the engine-property re-assert, which used to
@@ -1859,6 +2254,7 @@ bool install(void* eventPlayerCalcView) {
     g_target = eventPlayerCalcView;
     g_hookLive.store(true, std::memory_order_relaxed);
     BVR_LOG("[b1r] calcview hook installed (target %p)", eventPlayerCalcView);
+    load_startup_prefs(); // must precede any auto-arm decision (see the reader)
     return true;
 }
 
@@ -2134,8 +2530,55 @@ void draw_debug_ui() {
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
+        bool anchorHands = g_headAnchorHands.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("  ^ head offset moves the hands too", &anchorHands))
+            g_headAnchorHands.store(anchorHands, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The offsets above move the CAMERA. The engine keeps placing the\n"
+                              "hands at its own eye height, so without this a lift decouples\n"
+                              "the two and the gun stops sitting on the controller's axis.\n"
+                              "No effect while both offsets are 0. Uncheck for the old behaviour.");
+        if (ImGui::Button("Measure world scale (20 s)"))
+            apply_command("vrscale", "20");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Logs the engine's camera height while you jump or fall, so\n"
+                              "gravity can be fitted: UU/s^2 / 9.81 = UU per metre, which is\n"
+                              "what World scale above should be. Non-circular - it measures\n"
+                              "the engine's physics, not the setting. tools/fit-worldscale.py\n"
+                              "does the fit. Changes nothing by itself.");
+        bool popup = startup_dialog::enabled();
+        if (ImGui::Checkbox("Auto-answer the post-crash 'revert Options?' prompt", &popup))
+            startup_dialog::set_enabled(popup);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("After an unclean exit the game asks whether to revert video\n"
+                              "options, and it blocks the first Present until answered -\n"
+                              "so in a headset you must find a mouse. This clicks No for you,\n"
+                              "only during a startup window, and only a button that says No.\n"
+                              "Set popupDismiss=1 in vrpreset.ini to have it armed at launch.");
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
             g_recenterRequested.store(true, std::memory_order_relaxed);
+        bool hLock = g_heightLock.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Lock eye height to the game camera (seated play)", &hLock))
+            g_heightLock.store(hLock, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Ignores how high your real head is, so sitting down does\n"
+                              "not sink you toward the floor and standing does not raise you.\n"
+                              "Leaning still works. At worldScale 100, sitting after a\n"
+                              "standing recenter costs ~40 UU against a ~65 UU eye height.");
+        bool autoPre = g_autoPresetOnGameplay.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Auto-arm VR PRESET 1 on entering gameplay", &autoPre))
+            g_autoPresetOnGameplay.store(autoPre, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Presses this preset for you, once per session, the first\n"
+                              "time a gameplay view appears - so getting into VR needs\n"
+                              "no keyboard. Tuned values already persist; the toggles did not.");
+        bool autoRc = g_autoRecenterOnGameplay.load(std::memory_order_relaxed);
+        if (ImGui::Checkbox("Auto-recenter on entering gameplay", &autoRc))
+            g_autoRecenterOnGameplay.store(autoRc, std::memory_order_relaxed);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Recenters on every menu/cutscene -> GAMEPLAY transition.\n"
+                              "Fixes heading drift after a load with no input from you;\n"
+                              "costs you any deliberate recenter made mid-session.");
         bool forceFov = g_forceHeadsetFov.load(std::memory_order_relaxed);
         if (ImGui::Checkbox("Force headset FOV (off = game FOV, narrower)", &forceFov))
             g_forceHeadsetFov.store(forceFov, std::memory_order_relaxed);

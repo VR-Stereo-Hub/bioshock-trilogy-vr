@@ -63,6 +63,19 @@ std::atomic<bool> g_pitchLiftOnBumpers{true};
 std::atomic<float> g_moveYawOffDeg{0.0f};
 std::atomic<uint64_t> g_moveYawOffMs{0};
 
+// Controller-bound recenter (see the header). The bind default is the
+// thumbrest chord; the request latch is raised on the render thread by the XR
+// action layer and drained on the game thread by the adapter.
+// Default OFF: this arms a NEW controller binding, and whether the mod
+// should claim two more inputs out of the box is the author's call, not
+// this patch's. `vrinput recenterbind thumbrest` (or the overlay combo)
+// opts in, and recenterBind persists with the other preset values.
+std::atomic<RecenterBind> g_recenterBind{RecenterBind::Off};
+std::atomic<bool> g_recenterRequest{false};
+std::atomic<bool> g_recenterArmed{false};
+std::atomic<bool> g_ammolessWeapon{false};
+std::atomic<uint64_t> g_ammolessWeaponMs{0};
+
 // ---- Session 30: the pitch SERVO, and why zeroing the stick was not enough ---
 //
 // Killing the stick's pitch stops it fighting the HMD, but it also means the
@@ -814,6 +827,41 @@ void set_pad_profile(PadProfile p) {
             was == 0 ? "bioshock1" : "infinite", v == 0 ? "bioshock1" : "infinite");
 }
 
+RecenterBind recenter_bind() {
+    return g_recenterBind.load(std::memory_order_relaxed);
+}
+void set_recenter_bind(RecenterBind m) {
+    g_recenterBind.store(m, std::memory_order_relaxed);
+}
+
+void request_recenter() {
+    g_recenterRequest.store(true, std::memory_order_relaxed);
+}
+bool take_recenter_request() {
+    return g_recenterRequest.exchange(false, std::memory_order_relaxed);
+}
+
+void publish_ammoless_weapon(bool on) {
+    g_ammolessWeapon.store(on, std::memory_order_relaxed);
+    g_ammolessWeaponMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+bool ammoless_weapon_active() {
+    if (!g_ammolessWeapon.load(std::memory_order_relaxed)) return false;
+    const uint64_t stamp = g_ammolessWeaponMs.load(std::memory_order_relaxed);
+    return stamp != 0 && GetTickCount64() - stamp <= kVrGameplayStaleMs;
+}
+
+void publish_recenter_armed(bool armed) {
+    g_recenterArmed.store(armed, std::memory_order_relaxed);
+}
+bool recenter_armed() { return g_recenterArmed.load(std::memory_order_relaxed); }
+
+bool vr_gameplay_active() {
+    if (!g_vrGameplay.load(std::memory_order_relaxed)) return false;
+    const uint64_t stamp = g_vrGameplayLastMs.load(std::memory_order_relaxed);
+    return stamp != 0 && GetTickCount64() - stamp <= kVrGameplayStaleMs;
+}
+
 float turn_scale() { return g_turnScale.load(std::memory_order_relaxed); }
 void set_turn_scale(float s) {
     if (s < 0.1f) s = 0.1f;
@@ -948,6 +996,19 @@ void handle_command(const char* args) {
                 m == AmmoMod::Click       ? "CLICK (hold right stick click)"
                 : m == AmmoMod::Thumbrest ? "THUMBREST (rest left thumb)"
                                           : "BOTH (either)");
+    } else if (strcmp(verb, "recenterbind") == 0) {
+        if (strncmp(rest, "thumbrest", 9) == 0) set_recenter_bind(RecenterBind::Thumbrest);
+        else if (strncmp(rest, "click", 5) == 0) set_recenter_bind(RecenterBind::Click);
+        else if (strncmp(rest, "off", 3) == 0) set_recenter_bind(RecenterBind::Off);
+        const RecenterBind b = recenter_bind();
+        BVR_LOG("input: recenter bind = %s (vrinput recenterbind thumbrest|click|off) - "
+                "gameplay view only; stands down while the ammo modifier owns the "
+                "right stick click",
+                b == RecenterBind::Thumbrest
+                    ? "THUMBREST (right thumbrest touch + right stick click)"
+                : b == RecenterBind::Click
+                    ? "CLICK (hold right stick click ~1 s)"
+                    : "OFF");
     } else if (strcmp(verb, "swing") == 0) {
         bvr::input::swing::handle_command(rest); // logs its own echoes
     } else if (strcmp(verb, "sticklog") == 0) {
@@ -1077,6 +1138,21 @@ void draw_debug_ui() {
                           "ammo slot.\nThe thumbrest is the pad above the buttons - it is "
                           "the LEFT one,\nbecause your right thumb cannot rest and push the "
                           "right stick at once.");
+
+    // Controller-bound recenter - the one control here a player in a headset
+    // cannot reach the keyboard to use, which is the whole point of it.
+    int rb = static_cast<int>(recenter_bind());
+    const char* rbNames[] = {"Off", "Right thumbrest + stick click", "Hold right-stick click"};
+    if (ImGui::Combo("Recenter bind", &rb, rbNames, 3))
+        set_recenter_bind(static_cast<RecenterBind>(rb));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Recenters the VR camera without the F10 overlay.\nFires only in "
+                          "gameplay view, with a %u ms cooldown.\nStands down while the "
+                          "ammo-select modifier owns the right stick click.",
+                          static_cast<unsigned>(kRecenterCooldownMs));
+    if (recenter_bind() != RecenterBind::Off && !recenter_armed())
+        ImGui::TextDisabled("  stood down - see the log (ammo modifier owns the click,"
+                            " or no XR session)");
 
     // Session 31 swing-to-attack (its own module; see core/input/swing.h).
     ImGui::Separator();

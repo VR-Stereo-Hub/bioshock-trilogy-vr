@@ -182,6 +182,14 @@ uint64_t g_flickPulseUntilMs = 0;
 uint64_t g_flickCooldownMs = 0;
 bool g_rsClickWasDown = false;
 
+// Controller-bound recenter state (render thread; see the block in input_sync).
+bool g_recenterArmed = false;
+bool g_recenterBorrowed = false;
+bool g_recenterChordDown = false;
+uint64_t g_recenterClickDownMs = 0;
+bool g_recenterFiredThisHold = false;
+uint64_t g_recenterCooldownUntilMs = 0;
+
 // M6 hand poses. Located on the render thread in input_sync; read from the
 // GAME thread by the adapter's aim path, so publish through atomics-guarded
 // snapshots (relaxed is fine: a group torn by one frame is invisible at
@@ -563,6 +571,12 @@ void input_on_session_teardown() {
     g_gripLatchedL = g_gripLatchedR = false;
     g_menuDownMs = 0;
     g_startPulseUntilMs = 0;
+    g_recenterArmed = false;
+    g_recenterBorrowed = false;
+    g_recenterChordDown = false;
+    g_recenterClickDownMs = 0;
+    g_recenterFiredThisHold = false;
+    bvr::input::publish_recenter_armed(false);
     bvr::input::publish_xr_state({}, false);
 }
 
@@ -809,6 +823,127 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
                     g_flourishChordEdges.fetch_add(1, std::memory_order_relaxed);
             }
             g_chordAWasDown = aDown;
+        }
+    }
+
+    // Controller-bound recenter. The overlay's Recenter button and the
+    // `recenter` seam command both need a keyboard, which is the one input a
+    // player wearing the headset does not have; the runtime's own recenter is
+    // actively wrong here, because it slides the LOCAL reference space out from
+    // under the adapter's cached recenter yaw and the world lands on a heading
+    // nobody asked for. So the gesture has to be read here, from actions this
+    // action set already suggests - no new binding, just a new consumer.
+    //
+    // The RIGHT thumbrest is the free input: the runtime reports it (the ammo
+    // modifier deliberately takes the LEFT one, because a right thumb cannot
+    // rest on the right pad and push the right stick at once) and nothing else
+    // consumes it. RS-click is free too - it never reaches the game. Pairing
+    // them mirrors the mod's own thumbrest-as-modifier idiom.
+    //
+    // Both binds spend the stick click, so both stand down whenever the ammo
+    // modifier is configured to take it - the guard re-derives the ammo block's
+    // OWN predicate above rather than approximating it, so the two can never
+    // disagree about who owns the button.
+    {
+        const bvr::input::RecenterBind bind = bvr::input::recenter_bind();
+        const bvr::input::AmmoMod ammo = bvr::input::ammo_mod();
+        const bool ammoOwnsClick =
+            ammo != bvr::input::AmmoMod::Thumbrest || !g_thumbrestSeen[0];
+        // ...except while the equipped weapon has no ammo types (the wrench).
+        // The modifier is still "held", but there is nothing for it to select,
+        // so the click is free and the bind can borrow it - which is what makes
+        // the bind work from the first second of a session, before any left
+        // thumbrest touch has taught the ammo lane to let go.
+        const bool borrow = ammoOwnsClick && bvr::input::ammoless_weapon_active();
+        // ...and stand down entirely where the pad map FORWARDS the stick click
+        // to the game. On BioShock 1 that bit is 0 and the click is free, which
+        // is what this bind relies on; Infinite forwards it as XToggleZoom, and
+        // one physical click must not both zoom and recenter. Read off the same
+        // map the composer uses rather than testing the profile enum, so the two
+        // cannot disagree about who owns the button.
+        const bool padForwardsClick = map.stickClickR != 0;
+        const bool armed = bind != bvr::input::RecenterBind::Off &&
+                           !padForwardsClick && (!ammoOwnsClick || borrow);
+
+        if (armed != g_recenterArmed || (armed && borrow != g_recenterBorrowed)) {
+            g_recenterArmed = armed;
+            g_recenterBorrowed = borrow;
+            if (armed)
+                BVR_LOG("xr-input: recenter bind ARMED (%s)%s - gameplay view only, "
+                        "%u ms cooldown",
+                        bind == bvr::input::RecenterBind::Thumbrest
+                            ? "right thumbrest + right stick click"
+                            : "hold right stick click",
+                        borrow ? " [borrowing the click: ammoless weapon]" : "",
+                        static_cast<unsigned>(bvr::input::kRecenterCooldownMs));
+            else if (bind == bvr::input::RecenterBind::Off)
+                BVR_LOG("xr-input: recenter bind off ('vrinput recenterbind "
+                        "thumbrest|click')");
+            else if (padForwardsClick)
+                BVR_LOG("xr-input: recenter bind STANDS DOWN - this game's pad map "
+                        "forwards the right stick click to the game, so the bind "
+                        "cannot claim it");
+            else
+                BVR_LOG("xr-input: recenter bind STANDS DOWN - the ammo modifier owns "
+                        "the right stick click (ammomod %s). Set 'vrinput ammomod "
+                        "thumbrest' to free it, or equip the wrench (no ammo types, "
+                        "so the bind borrows the click)",
+                        ammo == bvr::input::AmmoMod::Click       ? "click"
+                        : ammo == bvr::input::AmmoMod::Both      ? "both"
+                        : "thumbrest, but no left thumbrest touch seen yet");
+        }
+        bvr::input::publish_recenter_armed(armed);
+
+        if (!armed) {
+            g_recenterChordDown = false;
+            g_recenterClickDownMs = 0;
+            g_recenterFiredThisHold = false;
+        } else {
+            const bool rsClick = read_bool(session, g_stickClickR);
+            const bool restR = read_bool(session, g_thumbrestR);
+
+            // Thumbrest bind fires on the RISING edge of the chord; Click bind
+            // fires once per hold, the moment the hold matures.
+            bool fired = false;
+            if (bind == bvr::input::RecenterBind::Thumbrest) {
+                const bool chord = rsClick && restR;
+                if (chord && !g_recenterChordDown) fired = true;
+                g_recenterChordDown = chord;
+            } else {
+                if (rsClick) {
+                    if (g_recenterClickDownMs == 0) {
+                        g_recenterClickDownMs = now;
+                        g_recenterFiredThisHold = false;
+                    } else if (!g_recenterFiredThisHold &&
+                               now - g_recenterClickDownMs >=
+                                   bvr::input::kRecenterHoldMs) {
+                        fired = true;
+                        g_recenterFiredThisHold = true;
+                    }
+                } else {
+                    g_recenterClickDownMs = 0;
+                    g_recenterFiredThisHold = false;
+                }
+            }
+
+            if (fired) {
+                if (now < g_recenterCooldownUntilMs) {
+                    // Silent: recenter resets the body-follow probe, and a
+                    // fumbled double is exactly what the cooldown is for.
+                } else if (!bvr::input::vr_gameplay_active()) {
+                    // Menus and cutscenes drive an AUTHORED camera; recentering
+                    // under one is the case most likely to look broken.
+                    g_recenterCooldownUntilMs = now + bvr::input::kRecenterCooldownMs;
+                    BVR_LOG("xr-input: recenter gesture ignored - not in gameplay view");
+                } else {
+                    g_recenterCooldownUntilMs = now + bvr::input::kRecenterCooldownMs;
+                    bvr::input::request_recenter();
+                    BVR_LOG("xr-input: recenter gesture FIRED (%s)",
+                            bind == bvr::input::RecenterBind::Thumbrest
+                                ? "right thumbrest + right stick click"
+                                : "right stick click held");
+                }
+            }
         }
     }
 
