@@ -2,6 +2,152 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-30 - s72/s73: the off hand's ARM, decoupled and rotating
+
+**TWO branches and two draft PRs**, split at the point the arm work began:
+
+| branch | commits | PR | contents |
+|---|---|---|---|
+| `feat/bs1-off-hand` | 9 (`1a449e7..071693e`) | [#60](https://github.com/VR-Stereo-Hub/bioshock-trilogy-vr/pull/60) | the tracked off HAND - position, rotation, adoption |
+| `feat/bs1-off-hand-ik` | +5 (`3ab4b8d..bdbc905`) | [#62](https://github.com/VR-Stereo-Hub/bioshock-trilogy-vr/pull/62) | the off hand's ARM - IK, decoupling, twist |
+
+Both are DRAFT and target `staging`. #62 branches off #60's tip, so review #60
+first. `git diff 1a449e7..feat/bs1-off-hand-ik -- src/core/` is **EMPTY** - this
+work cannot reach BS2 or Infinite. The `src/core/` commits the branches carry
+are inherited from `2e210cf`/`d4ea519`/`7e0d743`, already covered by PRs #58/#59.
+
+### Current state
+
+**The off hand and its arm are fully decoupled from the held hand and signed off
+in the headset** - tester: *"it looks and feels amazing"*.
+
+| Landed | Evidence |
+|---|---|
+| The off hand no longer swivels with the held hand | headset; cause was the rig DrawScale (0.8) multiplying bone translations |
+| Placement and pivot are separate numpad knobs | headset: pushing PLACE no longer grows the roll radius |
+| Tele and Electro land in the same place | cause was latching the reference mid-equip; now settle-gated |
+| The free hand plays engine animations | BRVR's `CaptureClusterRef` adoption ported |
+| Orientation error no longer grows with rotation | composed `M . H` per BRVR's `ComposeHeadLocal` instead of adding euler components |
+| The off ARM solves independently | it had no arm reference of its own - it was equip-history dependent, not build dependent |
+| Both arms' visibility is independent | `g_collapse` had gated BOTH arms' IK from one checkbox |
+| The arm no longer rolls, drags, stretches or oscillates with the held hand | headset, each confirmed separately |
+| The forearm and bicep rotate with the wrist | twist driven explicitly from the hand, gradient shared across the elbow hinge |
+| Held arm unchanged after the partial unification | headset: *"feels the same as far as I can tell"* |
+
+**THE ONE-LINE MODEL, and it explains all fourteen faults.** The held arm is
+CARRIED by the actor. The free arm is not, so everything the actor was doing for
+it implicitly had to be reconstructed explicitly - and each thing that was not
+reconstructed showed up as a coupling, a lock, or a pinch.
+
+**THREE FRAMES, NOT TWO.** This cost three regressions on its own and is the most
+reusable thing here:
+
+| frame | moves with the HELD hand | moves with the PLAYER | failure when wrongly chosen |
+|---|---|---|---|
+| component (actor) | yes | yes | elbow dragged after the held hand |
+| world | no | no | arm STRETCHED when running forward |
+| **body** (`base[XYZ]` + body yaw) | no | yes | correct for almost everything |
+
+Full derivations, all fourteen faults and ten standing rules:
+`docs/bioshock1/ENGINE_NOTES.md` sessions 72 and 73.
+
+### Corrections that outlive this session
+
+- **ACTORWATCH is NOT a defect meter.** Held perfectly still it reads a CONSTANT
+  (84 of 88 samples bit-identical at `pitch +42.0 yaw +24.7 roll +2.1`). It is
+  the standing difference between the rotation we write and the one the engine
+  writes, so it can never be zero. **A whole session was spent chasing it to
+  zero.** Do not.
+- **There is no actor race.** The actor holds our value at CalcView (0.1 deg) and
+  through scenedraw (FREEPROBE, 115 samples, bit-identical, no failed reads).
+- **The `SCRIPTSEAM` ProcessEvent hook ships OFF** (`g_peSeam{false}`). The
+  derivation is sound and re-usable - `UObject::ProcessEvent` at RVA `0x375140`,
+  AHands vtable slot 3, `ret 0xC`, `UpdateHandValues` resolved LAZILY because
+  GNames holds ~1000 names at init and ~54000 in play - but it was built to drive
+  ACTORWATCH to zero, and it silently neuters any experiment that reads the
+  engine's actor. Do not switch it on while measuring.
+- **BS1 has no script-level IK surface.** `HavokSkeletalSystem.uc` is a 4-line
+  stub; the only IK class is `AnimNotify_FootIK`. The bone array is the only
+  lever - do not go looking again.
+- **Falsified and recorded so they are not retried:** the grip offset in the
+  untrimmed controller frame; the actor-normalised retarget once the grip offset
+  is BRVR's; and three whole-arm rotation corrections (`inv(A_now)*A_capture`,
+  its inverse, and rebuilding the orientation in world) which all made the
+  coupling WORSE. Three different shapes failing the same way means the
+  correction is aimed at the wrong thing - stop at the second and measure.
+
+### Next steps
+
+**Head rotation moves each arm's shoulder position.** Reported by the tester and
+not chased. The shoulder is built in `solve_arm()` from `ctx.baseX/Y/Z` plus the
+body yaw (`camYaw - driveYawOffsetRad`), which is deliberately the BODY and not
+the camera - s70i fixed exactly this once already for head *lean*. So either that
+subtraction is not removing all of the head's contribution, or something
+downstream of it re-introduces it. Start by logging the shoulder's WORLD position
+against `camYaw` with the head turning and the body still; if it moves, the
+`driveYawOffsetRad` subtraction is incomplete.
+
+**Before either PR merges:** eight probe families are armed and logging in the
+shipped build - `FREEPROBE`, `FREETARGET`, `FREEHOLD`, `FREEANIM`, `ARMHOLD`,
+`FOREARM`, `ARMIK`, `SCRIPTSEAM`. They are throttled and read-only, but they are
+diagnostics, not shipping behaviour, and should be stripped or default-gated in
+their own commit.
+
+**Deferred by the tester's decision, ready to port:** FRIK's shoulder reach
+offset (`norm(shoulderToHand) * adjust * armLength * 0.08` - ours anchors the
+shoulder rigidly) and its elbow constraints (law of cosines with
+hand-behind-body, chest-crossing and arm-lift limits). Both from
+`rollingrock/Fallout-4-VR-Body`, `src/skeleton/Skeleton.cpp`.
+
+**Also open:** `solve_arm()`'s remaining two forks are role DATA, not a second
+algorithm, and full unification is NOT possible - the held hand's solver input is
+the frozen cluster's authored anchor, a CONSTANT in component space, so every
+quantity the free path measures there is identically zero for it. The fork is
+CARRIED vs SOLVED and it is structural. Do not attempt it again.
+
+### Session log 2026-08-30
+
+**Verified in a headset** (tester ran every step): the off hand's swivel, pivot,
+per-plasmid landing, rotation-with-turn error, and every one of the arm's eight
+couplings, plus the held arm being unchanged after the bank/smoothing
+unification. Roughly thirty build-install-test cycles.
+
+**Built but NOT headset-verified:** nothing. Every change in both branches was
+tested before the next was written, which is why this took so long and why the
+findings hold.
+
+**The two probes that earned their runs.** `ARMHOLD` read all five arm bones back
+after the write: all held to `0.0 UU / 0.1 deg` across 41 samples while the held
+hand was twisted every way, which killed the entire "something re-evaluates the
+arm" class in ONE run. `FOREARM` lifted the free elbow and wrist into world: with
+the off hand held still, wrist steady to 0.4 UU and **elbow swinging 25 UU**,
+which isolated the only stateful term in the solve. Both answered in a single run
+what several code changes could not.
+
+**The method note, because it recurred all session.** Four instruments read zero
+here for four different reasons - zero by algebra (measuring through the transform
+it had just cancelled), zero by timing (a window that closes before the engine
+acts), zero by an unchecked read (a failed read seeded from the value it was
+compared against), and zero by masking (`reapply()` restoring the value before the
+comparison). Before believing a silent probe, ask what it would print if the
+defect were present, AND check that the stage it samples is the stage the defect
+lives in.
+
+**Seen and not chased:** head rotation moving the shoulders (now the next step);
+the held arm's own elbow smoothing was in component space for its entire life and
+was only fixed here as a side effect of unification - it read as lag, not
+coupling, which is why nobody reported it.
+
+**Tooling:** `tools/game-key.ps1` gained extended scancodes, so arrow keys work in
+menus at all - the harness had only non-extended codes and arrows silently did
+nothing. `tools/xrsim/offhand-swivel.xrs` is a scripted repro whose PRECONDITION
+block is the most useful part: the sim holding a pose does NOT mean the mod is
+reading it, and a run that skips that check photographs the scenery. That trap
+invalidated a run that had already been reported as a reproduction.
+
+
+---
+
 ## Session 2026-08-29 - s71: the off hand exists, and it is a better instrument than the held one
 
 **Branch `feat/bs1-off-hand`, cut from `fix/bs1-bathysphere-cine-quad` (NOT from
