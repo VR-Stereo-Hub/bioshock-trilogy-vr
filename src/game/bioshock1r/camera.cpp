@@ -907,6 +907,7 @@ void save_vr_preset() {
     fprintf(f, "scriptedRecentre=%d\n", scripted::scripted_recentre_mode());
     fprintf(f, "scriptedFreezeHands=%d\n", scripted::freeze_hands_in_scenes() ? 1 : 0);
     fprintf(f, "scriptedHideRig=%d\n", scripted::hide_rig_in_scenes() ? 1 : 0);
+    fprintf(f, "scriptedWorldFov=%d\n", scripted::world_fov_guard() ? 1 : 0);
     fprintf(f, "scriptedArmMotion=%.4f\n", scripted::arm_motion_threshold());
     fprintf(f, "scriptedArmHoldMs=%d\n", scripted::arm_hold_ms());
     fprintf(f, "effectsInFrame=%d\n", bvr::hud::effects_in_frame() ? 1 : 0);
@@ -1071,6 +1072,8 @@ void load_vr_preset_values() {
             scripted::set_freeze_hands_in_scenes(v != 0.0f);
         else if (strcmp(key, "scriptedHideRig") == 0)
             scripted::set_hide_rig_in_scenes(v != 0.0f);
+        else if (strcmp(key, "scriptedWorldFov") == 0)
+            scripted::set_world_fov_guard(v != 0.0f);
         else if (strcmp(key, "scriptedArmMotion") == 0)
             scripted::set_arm_motion_threshold(v);
         else if (strcmp(key, "scriptedArmHoldMs") == 0)

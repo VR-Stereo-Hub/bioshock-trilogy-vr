@@ -65,6 +65,11 @@ DXGI_FORMAT g_curFmt = DXGI_FORMAT_UNKNOWN;
 // Scene-RT vote: the resource hosting the most DSV-bound DrawIndexed calls.
 struct Vote { ID3D11Resource* res; unsigned n; };
 Vote g_votes[4] = {};
+// s65: the render target we were CONFIDENT about, latched by identity. See the
+// banner on scene_leader() - default off in core, BioShock 1 opts in.
+ID3D11Resource* g_worldRtLatched = nullptr;
+std::atomic<bool> g_sceneLeaderLatch{false};
+std::atomic<uint32_t> g_leaderRescues{0};
 ID3D11Resource* g_hudTarget = nullptr; // set when the tonemap is identified
 bool g_hudThisInterval = false;
 bool g_hadHudLastInterval = false;
@@ -854,14 +859,48 @@ void fov_watch_on_present(ID3D11DeviceContext* ctx) {
     }
 }
 
+// A COUNT CANNOT TELL A THIN WORLD FROM A MENU. IDENTITY CAN.
+//
+// The >= 32 rule asks "did some render target take enough DSV-bound draws to be
+// a scene", and it is right about menus - a hack screen, a loading screen or an
+// FMV draws no world at all. It is WRONG about a wall. Walk into one and the
+// view is a single near surface: the world is still rendered, it is just cheap,
+// and the count falls under the bar. screen_only() then trips and wantCine drops
+// the projection to the M2 quad, so the player gets the pause menu's anchored
+// square mid-gameplay with the hand frozen, toggling as they face the wall.
+//
+// MEASURED 2026-08-23, 19 transitions in one run, "swf draws 145" IDENTICAL on
+// both sides of every one - so the >= 20 swf floor contributes nothing here and
+// the verdict is scene_leader() == nullptr alone.
+//
+// No threshold fixes this: "how much geometry is on screen" is a property of the
+// LEVEL, not the mode, so every number has a wall behind it somewhere. The latch
+// does not lower the bar - it remembers WHICH target was the world while we were
+// confident and keeps calling that target the world while it still draws at all.
+// A menu is still caught, because on a menu that target draws NOTHING.
+//
+// Default off so BS2 and Infinite keep the pre-s65 rule exactly.
 ID3D11Resource* scene_leader() {
     Vote* best = nullptr;
     for (Vote& v : g_votes)
         if (v.res && (!best || v.n > best->n)) best = &v;
     // A handful of DSV-bound draws is not a scene (the fg rig pass has ~14);
     // the world pass has hundreds. 32 is comfortably between.
-    return (best && best->n >= 32) ? best->res : nullptr;
+    if (best && best->n >= 32) {
+        g_worldRtLatched = best->res; // confident: this IS the world target
+        return best->res;
+    }
+    if (g_sceneLeaderLatch.load(std::memory_order_relaxed) && g_worldRtLatched) {
+        for (Vote& v : g_votes) {
+            if (v.res != g_worldRtLatched || v.n == 0) continue;
+            // Same target, still drawing - a thin world, not a menu.
+            g_leaderRescues.fetch_add(1, std::memory_order_relaxed);
+            return v.res;
+        }
+    }
+    return nullptr;
 }
+
 
 bool ensure_rt(ID3D11DeviceContext* ctx, UINT w, UINT h, DXGI_FORMAT fmt) {
     if (g_tex && g_texW == w && g_texH == h) return true;
@@ -1658,6 +1697,21 @@ bool fov_mismatch() {
     return g_fovMismatchOn.load(std::memory_order_relaxed);
 }
 
+void set_scene_leader_latch(bool on) {
+    if (g_sceneLeaderLatch.exchange(on, std::memory_order_relaxed) == on) return;
+    if (!on) g_worldRtLatched = nullptr;
+    BVR_LOG("[hud] scene-leader identity latch %s - a target that was the world "
+            "stays the world while it still draws (stops a near wall reading as a "
+            "menu); rescues so far %u",
+            on ? "ON" : "off", g_leaderRescues.load(std::memory_order_relaxed));
+}
+
+bool scene_leader_latch() { return g_sceneLeaderLatch.load(std::memory_order_relaxed); }
+
+unsigned scene_leader_rescues() {
+    return g_leaderRescues.load(std::memory_order_relaxed);
+}
+
 bool screen_only() {
     return g_screenOnlyOn.load(std::memory_order_relaxed);
 }
@@ -1803,6 +1857,9 @@ void fix_blend_alpha(ID3D11DeviceContext* ctx) {
 }
 
 void release_resources() {
+    // The latch is a bare pointer used ONLY for comparison, never dereferenced -
+    // but a freed address can be reused by another target, so drop it here.
+    g_worldRtLatched = nullptr;
     if (g_srv) { g_srv->Release(); g_srv = nullptr; }
     if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
     if (g_tex) { g_tex->Release(); g_tex = nullptr; }

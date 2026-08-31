@@ -4401,3 +4401,196 @@ constant-vs-varying character of the maximum can.
 
 That is the first time the bone-collapse hide has been exercised end-to-end
 without freezing, which is what `DrawScale3D` could never do.
+
+## Session 65 (2026-08-23) - the world FOV is overridden BELOW CalcView
+
+### The bathysphere renders 80 deg while CalcView reports 100
+
+The "black square" on a bathysphere was never the cinematic quad. Falsified
+directly: `vrcine off` kills `g_cineActive` outright and the box survived it.
+
+What actually happens, measured on the frame the player presses A:
+
+```
+19:48:40.950  scripted: forced move BEGAN  (ctl+0x9E0 = 1)
+19:48:40.957  fov watch: WORLD tanH=0.839100 (hfov 80.00 deg, 12/12 votes)
+19:48:40.966  rendered-fov mismatch ON (rendered 80.0 deg vs option 100.0)
+19:48:40.969  xr: claim substituted from the live WORLD lens (hfov 80.00 deg)
+```
+
+**CalcView reports `fov=100.0` for the entire ride** - every sample, boarding to
+landing. The narrowing therefore happens DOWNSTREAM of CalcView, which is why
+nothing in the camera path could see it and why the fov watch is the only
+instrument that catches it.
+
+The mod's response was correct and was itself the visible defect: it re-claims
+the OpenXR layer at the measured 80 deg, so the image fills 80 deg of a wider
+headset - a correct, full-resolution picture sitting in a box with black around
+it. Reported as "renders in a square, but the resolution is the same".
+
+### The two fields, and they were already in this file
+
+`PC+0x45C` is the world lens and `PC+0x648` its mirror. **Both were already
+derived here for another purpose**: the foreground scene-node ctor is passed
+`float PC+0x45C` (default 75.0) beside `PC+0x460`, and the note on `PC+0x65C`
+records the "75/75/60 fov floats" at `PC+0x648..0x650`. Session 65 only needed
+to WRITE them.
+
+BRVR reached the same two fields independently (`ClampWorldFov`, its
+`WorldFovOffset`/`WorldFovOffset2`) and measured the narrow side as 75.0 -> 60.0.
+**The numbers do not transfer** - this build reads 100 -> 80 - but the offsets
+agreeing with a derivation already in this tree is the corroboration that
+matters.
+
+### Why the guard is gated, and why the gate is not `bathysphere()`
+
+The window is `forced_move() || bathysphere()`. The narrowing lands **1.2 s
+before** the ride flag, on the forced-move frame, so gating on the ride alone
+misses the start - which is precisely the moment the player sees the box appear.
+
+Two things depend on the guard staying narrow:
+
+1. **It would blind the cutscene detector.** One leg of `wantCine` fires when the
+   game renders a different fov than it claims. Clamping globally deletes exactly
+   that evidence - BRVR's own `CONSOLIDATION.md` names this as integration hazard
+   number one for this port.
+2. **Weapon zoom uses the same field.** `Hands::FadeFOV` drives it downward when
+   you scope. A global floor would fight it; you cannot scope on a bathysphere,
+   so the gate removes the conflict rather than special-casing it.
+
+The restored value is SAMPLED, not hardcoded: whatever the lens read while no
+scene owned the camera. That accounts for the user's own FOV option for free.
+
+## Session 65 (2026-08-23) - the turn jitter, and the wall that looks like a pause menu
+
+### The turn jitter: measured, NOT solved, and the attempt is reverted
+
+Reported as: walking a circle is smooth while the turn stick is barely over, and
+past an exact repeatable threshold it goes jittery. Predates every turn change
+this repo has made. **Six headset runs. The anomaly is real and located; whether
+it is what the player FEELS was never established, and the fix was reverted.**
+
+What is measured and can be relied on:
+
+- **It is not our input.** The composed pad the game actually consumed reads flat
+  to three decimals (`composedRx -0.428..-0.428`) across whole windows in which
+  the engine's yaw rate swings from 5 to 349 deg/s.
+- **It is not the body transfer.** `resid` stayed at 0.00-0.02 deg throughout,
+  the 180 deg/s slew cap never engaged, and the movement stick was never rotated
+  (0 STRADDLE events in 570 samples).
+- **It never stalls.** Zero frames where the yaw failed to advance, in any run.
+- **The engine advances its own yaw unevenly**: about seven normal steps then one
+  of ~2.5x, repeating every **125 ms (8 Hz)**. Confirmed across two different
+  clocks and two frame rates - 8 counted frames at 64/s and 15 at 120/s are both
+  125 ms - so it is time-periodic, not frame-counted.
+- **Frame time amplifies it**, at a fixed stick: 1.98x at 8 ms/frame, 2.11x at 9,
+  2.57x at 10, 3.67x at 12, **5.29x at 13**. So the lag spikes and the turn
+  jitter are the same subject; fixing pacing would reduce the jitter.
+- **There is a separate, real deadzone cliff**: mean turn rate jumps ~5x from
+  3.5 to 16.7 deg/s across |rx| 0.20 -> 0.25, straddling the game's 0.225
+  per-axis deadzone, and the response is nearly flat above it (16.7 at 0.25 to
+  24.6 at 0.45). Worth fixing on its own merits.
+
+**THREE PROBE REVISIONS WERE SPENT MEASURING THE INSTRUMENT.** Recorded because
+the next person will reach for the same clock:
+
+1. `GetTickCount64` has **15.625 ms** resolution and this path runs at ~245/s, so
+   most calls read `dt == 0`. Worse, the sampler updated `prevYaw` before the
+   `dt > 0` guard, so those frames' yaw was DISCARDED. The residue produced a
+   convincing "double step every 8 frames" - which is exactly 8 x 15.625 ms.
+   **Use QueryPerformanceCounter for anything sub-frame.**
+2. A 20 Hz sampler against a ~120 Hz frame cadence aliases: `dt` alternated
+   59/68 ms with the rate alternating against it, which is indistinguishable
+   from a real oscillation. **Accumulate every call; throttle only the summary.**
+3. A summary that resets its accumulators before reading them logs nothing. One
+   whole run produced 38 windows and zero sequences.
+
+**The attempted fix, and why it was abandoned rather than turned off.** A
+view-only spike clipper: clamp the excess of a step over its local average out of
+the yaw CalcView returns (through `yaw_adjust_units()`), and bleed it back over
+the next few frames. Deliberately NOT a field write, which is what kept
+graveyard entries 12, 13 and 16 out of scope entirely rather than merely handled.
+It built and shipped behind an F10 toggle; the player still felt the jitter, and
+the session ended before establishing whether the yaw anomaly is the percept at
+all. **The turn probe could never have answered that** - it reads the engine's
+yaw FIELD, and a view-only correction only changes CalcView's out-parameter, so
+the probe is blind to it by construction.
+
+**The open question, and it is the first thing to settle before any more work:**
+is the jitter the VIEW rotating unevenly, or the DIRECTION OF TRAVEL stepping?
+Everything above measures the view. Graveyard entry 14 is the movement-side
+candidate and is untested for this symptom.
+
+### Walking into a wall drops the view to the cinematic quad
+
+**The bug**: walk into a wall and the world renders in an anchored square exactly
+like the pause menu; the hand renders but cannot be moved; the game keeps
+running. It toggles on and off as the player walks into and away from the wall,
+and it persists if they quit while it is active. Several walls in one area.
+
+**The cause is a hard-coded draw-count threshold**, `hud_capture.cpp`:
+
+```
+ID3D11Resource* scene_leader() {
+    ...
+    // A handful of DSV-bound draws is not a scene (the fg rig pass has ~14);
+    // the world pass has hundreds. 32 is comfortably between.
+    return (best && best->n >= 32) ? best->res : nullptr;
+}
+```
+
+A view filled by one near wall draws too little geometry, the winning render
+target falls under 32 DSV-bound draws, `scene_leader()` returns null, and the
+screen-only verdict trips:
+
+```
+screenOnly = scene_leader() == nullptr && g_swfDrawsThisInterval >= 20
+```
+
+`screenOnly` is an unconditional term in core's `wantCine`, so the projection
+layer drops to the M2 quad - the same path menus use, which is why it looks like
+the pause menu and why the anchored placement is identical.
+
+**Measured 2026-08-23, 19 transitions in one run:**
+
+```
+22:19:19.661 screen-only interval off (swf draws 145, world pass present)
+22:19:19.710 screen-only interval ON  (swf draws 145, world pass absent)
+22:19:19.723 xr: cinematic quad ON (strict=1 stale=0 fovMismatch=0 screenOnly=1 uiPaused=0)
+```
+
+**THE SWF HALF OF THE PREDICATE IS DEAD.** `swf draws 145` is identical on both
+sides of every transition - ordinary gameplay is always far above the 20-draw
+floor, so the guard that was meant to stop single stray draws tripping the
+verdict contributes nothing. In practice `screenOnly == (scene_leader() == null)`.
+
+**`strict=1` throughout**, which is the useful discriminator: the strict gameplay
+verdict held the whole time the quad was up. A momentary world-pass loss while
+the gameplay verdict is TRUE is not a loading screen, and gating on that looks
+more promising than tuning 32 - a threshold has no correct value here, because
+"how much geometry is on screen" is a property of the level, not of the mode.
+
+The 3-interval hysteresis already present (`g_screenOnlyStreak >= 3`) is not
+enough: a wall is not momentary, it lasts as long as the player faces it.
+
+### NOT A BUG: the interact prompt aims with the HEAD, not the controller
+
+Reported 2026-08-23 as a soft lock - the flying turret wedged in the first
+Medical Pavilion door offered no hack prompt while vending machines, lootables
+and money on the ground all did. It was aim, not a defect: the player was not
+looking down far enough at it.
+
+Worth writing down because the false alarm is a good one. The use/interact trace
+is the ENGINE's, so it aims along the engine's view pitch - and in VR that value
+is driven only indirectly, by the session-30 pitch servo steering it toward the
+head through the game's own input path. **Pointing a controller at something
+does nothing for the prompt; you have to physically look at it.** Objects with
+generous use volumes (money, loot, a vending machine you walk into) hide this;
+a small device low in a doorway does not.
+
+If a prompt ever genuinely will not appear, the F10 input section's "Kill
+right-stick pitch under VR" is the A/B: unchecked, the right stick's Y goes back
+to the game as an ordinary look axis and can pitch the engine's view directly.
+If the prompt appears that way and not otherwise, the servo has stalled - it
+fails open to the plain kill, and a frozen engine pitch is invisible until
+something the engine owns aims with it.
