@@ -1520,9 +1520,14 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     }
     if (loc && rot && driveHead) {
         UeAngles a = hmd_angles(hp);
-        // Before the recenter block below can move g_recenterYawUnits, so this
-        // is the head against the reference the REST of this frame used.
-        headYawRelRad = a.yawRad - recenter_yaw_rad();
+        // RAW, not recenter-relative. Subtracting recenter_yaw_rad() here is
+        // what made s74c's verdict detector silent for an entire run: the
+        // transfer advances g_recenterYawUnits by whatever it took, so that
+        // difference is very nearly CONSTANT while the head sweeps - measured
+        // flat to within 5-10 deg across +-180 deg. The consumers all take
+        // differences over time, and any fixed offset cancels in a difference,
+        // so raw is both correct and the only version that cannot self-cancel.
+        headYawRelRad = a.yawRad;
         if (g_recenterRequested.exchange(false, std::memory_order_relaxed) || !g_haveRecenter) {
             g_recenterPose = hp;
             g_recenterYawUnits = static_cast<int32_t>(lroundf(a.yawRad * kRotUnitsPerRadian));

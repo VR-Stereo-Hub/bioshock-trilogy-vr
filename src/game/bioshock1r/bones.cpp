@@ -2709,10 +2709,55 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         // Subtract the one and use the other, and the shoulder is anchored to
         // the body. Turning under a stick turn still carries it, because that
         // rotates the body and it should.
+        // ---- s74d: AND THE BODY YAW IS NOT THE FRAME THE HANDS ARE IN ------
+        //
+        // MEASURED, 44 samples with the player standing still and only turning
+        // his head (2026-08-30). The shoulder swung 47.5 UU right / 45.0 UU left
+        // while both controllers were held still, shoulder-to-hand ranged
+        // 39.9..87.9 UU against a 66.2 UU reach, and it EXCEEDED the reach on 19
+        // of 44 samples - so the elbow clamped straight and the forearm
+        // over-extended. The two arms were 180 deg out of phase (right 86.0 while
+        // left 39.9), which is what two shoulders on opposite sides of a spine do
+        // when swung around a fixed pair of hands.
+        //
+        // The cause is NOT that the head leaks into the body yaw. It is that the
+        // shoulder and the hand were placed in two DIFFERENT frames:
+        //
+        //   hand     xr_pose_to_game: net yaw (gameYaw - recenterYaw)
+        //   shoulder here, before this fix:    gameYaw
+        //
+        // and those differ by a term that is NOT constant. camera.cpp advances
+        // g_recenterYawUnits by exactly what the body transfer took each frame
+        // ("if (moved) g_recenterYawUnits = wrap_rot(...)"), so as the body
+        // follows your head the recenter reference follows with it. Measured:
+        // camYaw - recenterYaw held to within 5-10 deg across a full +-180 deg
+        // head sweep while camYaw itself swept the lot.
+        //
+        // That is exactly right for the HAND - your real hand did not move in the
+        // room when you turned your head, so its world position must not rotate -
+        // and it was exactly wrong for the shoulder, which rotated the full sweep.
+        // Your shoulders did not turn either.
+        //
+        // THIS WAS DISMISSED IN s74a AND THE DISMISSAL WAS WRONG. The comment
+        // there recorded the same asymmetry and argued it "is constant under a
+        // head turn, so it cannot be this defect". That assumed recenterYaw was a
+        // fixed reference. It is not; it is advanced by the transfer, and it is
+        // the whole defect. Printing the number that the argument claimed was
+        // irrelevant is what caught it.
+        //
+        // So use the SAME net yaw xr_pose_to_game uses. Everything derived from
+        // cy/sy below inherits it - the shoulder, the elbow pole hint, and the
+        // body-frame round trip the elbow is smoothed in - which is correct,
+        // because all three are meant to be the frame that does NOT move when
+        // your head does.
+        //
+        // A stick turn still carries all of it: an artificial turn moves gameYaw
+        // without the transfer moving, so recenterYaw does not advance, the net
+        // yaw changes, and shoulder and hands rotate together as they should.
         const float uuPerCm = ctx.worldScale / 100.0f;
         const float yawRad =
             (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) * (3.14159265f / 180.0f) -
-            ctx.driveYawOffsetRad;
+            ctx.driveYawOffsetRad - ctx.recenterYawRad;
         const float cy = cosf(yawRad), sy = sinf(yawRad);
         // s72d: THE FREE HAND'S SHOULDER IS THE HELD HAND'S, MIRRORED.
         //
@@ -2834,14 +2879,20 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                     if (dg < 0.0f) dg += 360.0f;
                     return dg - 180.0f;
                 };
+                // headYaw is printed because s74c's verdict detector was built
+                // on it and stayed silent for a whole run, and the raw line had
+                // no way to say why. A probe that depends on a quantity it does
+                // not print cannot be debugged from its own output.
                 BVR_LOG("[bones] SHOULDER: %s %s world (%.1f %.1f %.1f) | base "
-                        "(%.1f %.1f %.1f) | camYaw %+.1f bodyYaw %+.1f driveYaw %+.1f "
-                        "recenterYaw %+.1f deg | sh->hand %.1f UU (reach %.1f). Stand "
-                        "STILL and turn your HEAD only: camYaw must move. If bodyYaw "
-                        "moves with it, the body-follow transfer is carrying the head; "
-                        "if sh->hand also moves, the arm is stretching.",
+                        "(%.1f %.1f %.1f) | headYaw %+.1f camYaw %+.1f netYaw %+.1f "
+                        "driveYaw %+.1f recenterYaw %+.1f deg | sh->hand %.1f UU "
+                        "(reach %.1f). Stand STILL and turn your HEAD only: headYaw and "
+                        "camYaw must move. netYaw is the frame the shoulder AND the "
+                        "hands now share - if it holds while camYaw sweeps, the fix is "
+                        "working; if sh->hand still moves, it is not.",
                         hand == 1 ? "RIGHT" : "LEFT", freeBank ? "FREE" : "HELD",
                         sWorld[0], sWorld[1], sWorld[2], ctx.baseX, ctx.baseY, ctx.baseZ,
+                        wrap180(ctx.headYawRad * kRadToDeg),
                         static_cast<float>(static_cast<int16_t>(ctx.camYaw & 0xFFFF)) /
                             kRotUnitsPerDegree,
                         wrap180(yawRad * kRadToDeg),
