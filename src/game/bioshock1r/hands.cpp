@@ -635,6 +635,13 @@ void load_config() {
     // hand, and where it sits is a per-player preference rather than a default.
     bones::set_off_hand_cm(0, -6.0f, 6.0f, 0.0f);
     bones::set_off_hand_rot_deg(0, -30.0f, 31.0f, -206.0f);
+    // s72y: the right hand keeps ZERO. s72v seeded a mirror of the left on the
+    // theory that the plasmid off hand was missing the left's -206 roll - but
+    // the tester reports the off hand's rotation ALREADY matches their
+    // controller untuned, on both hands. So the mismatch is not in the hand and
+    // no trim belongs here; it is the ARM's wrist end that does not meet it.
+    // Reverted rather than left in as a "harmless" default, because a trim that
+    // compensates for a downstream fault is how the next person loses a session.
 
     wchar_t path[MAX_PATH];
     config_path(path, MAX_PATH);
