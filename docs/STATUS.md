@@ -2,6 +2,126 @@
 
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
+## Session 2026-08-30 - s74: the shoulder anchor, instrumented; the probes, gated
+
+**Branch `feat/bs1-off-hand-ik`, draft PR [#62](https://github.com/VR-Stereo-Hub/bioshock-trilogy-vr/pull/62).**
+Three commits on top of s73. `git diff --stat -- src/core/` is EMPTY: this
+cannot reach BS2 or Infinite. Nothing has been merged.
+
+**Read past line 150 this once.** Prepending this section pushed the s72/s73
+*Corrections that outlive this session* below the usual session-start window,
+and all five still bind - ACTORWATCH is not a defect meter, there is no actor
+race, `SCRIPTSEAM` must stay off while measuring, BS1 has no script-level IK
+surface, and five approaches are recorded as falsified so they are not retried.
+`sed -n '160,215p' docs/STATUS.md`.
+
+### DO THIS FIRST - the run that answers the open question
+
+The build installed at HEAD is armed for it and nothing needs typing mid-run.
+Either route works; the simulator one needs no headset.
+
+**Simulator (preferred, no headset):**
+
+```
+.\tools\xrsim-launch.ps1 -Game bs1
+.\tools\xrsim-run.ps1 -Path .\tools\xrsim\shoulder-anchor.xrs
+grep -a SHOULDER %LOCALAPPDATA%\BioshockVR\bioshockvr.log
+```
+
+Equip a weapon first with both hands drawn - `solve_arm()` returns early
+otherwise, and an empty grep then means "no arm to measure", not "the shoulder
+held still".
+
+**Headset:** stand still, turn only your head left and right, then the same
+again with `vrbody off`. Same grep.
+
+**What the line says.** `SHOULDER` prints, per side and role: the shoulder in
+WORLD, `base[XYZ]`, `camYaw`, the derived `bodyYaw`, the drive residual,
+`recenterYaw`, and `sh->hand` against the arm's reach.
+
+| what the sweep shows | what it means |
+|---|---|
+| `bodyYaw` tracks `camYaw`, shoulder moves, and both stop under `vrbody off` | the body-follow transfer is carrying the head. **No arm bug - do not touch `solve_arm()`** |
+| `bodyYaw` holds, shoulder moves anyway | a real leak downstream of the yaw; `base[XYZ]` is next, and the same line shows whether it is the one moving |
+| `sh->hand` changes | the arm really is stretching, by exactly that many UU |
+| `sh->hand` holds | shoulder and hand orbit the same centre rigidly - a percept, not a geometry error |
+
+### Current state
+
+**The open question is instrumented but NOT answered - nothing here has been
+run.** Everything below is from reading the code, and it is a hypothesis.
+
+**The hypothesis, and it is worth stating before the run.** `solve_arm()`
+anchors the shoulder to `camYaw - driveYawOffsetRad`, meaning the BODY's yaw
+rather than the camera's. But the body-follows-head transfer ships at instant
+1:1 - `body.cpp` has `g_armed{true}`, `g_ratePerSec{0.0f}`, `g_deadzoneDeg{0.0f}`
+- so in steady state that residual is ~0 and **the body yaw simply IS the head
+yaw**. On that reading s70i's subtraction is real algebra against a term that is
+zero by configuration, the shoulder is faithfully following a body that snapped
+to the head, and the fix belongs in the transfer or in the frame the offsets are
+expressed in - NOT in the arm solve. `shoulder-anchor.xrs` is two phases
+precisely because one phase cannot separate that from a genuine leak.
+
+**What s70i did fix, and it is not in doubt:** head *lean*. `base[XYZ]` is the
+camera before the head positional offset (`camera.cpp` re-takes it after the
+head-bob substitution and before the offset is added), so leaning cannot drag
+the anchor. The turn case is the part that needs the run.
+
+**Found while tracing, and unrelated to the head:** the hand and the shoulder
+disagree about `recenterYaw`. `xr_pose_to_game()` places the hand at yaw
+`bodyYaw - recenterYaw`; the shoulder uses plain `bodyYaw`. That difference is
+constant under a head turn so it cannot be this defect, but **a recenter rotates
+the shoulder out from under the hands**, and the shoulder offsets were tuned in
+a headset with whatever `recenterYaw` held at the time baked in. Printed on the
+`SHOULDER` line so the next run measures it for free.
+
+**The probes now ship off.** One flag gates the throttle of all seven noisy
+families (`FREEPROBE`, `FREETARGET`, `FREEHOLD`, `FREEANIM`, `ARMHOLD`,
+`FOREARM`, `ARMIK`): `vrbones probes on`, or the F10 checkbox "Diagnostic probes
+(off-hand + arm) in the log". Not persisted to `vrpreset.ini`, the same choice
+`g_telemetry` makes. Gating the throttle and not the computation, so the change
+is provably behaviour-preserving. Three things stay outside the gate on purpose:
+`SCRIPTSEAM` needs nothing (`g_peSeam` already ships false and bails early);
+`FREEPROBE`'s *actor read FAILED* line, because hiding a failure warning behind
+a default-off flag re-opens the "zero by an unchecked read" trap; and `SHOULDER`,
+which is the live question and joins the gate once answered.
+
+**Consequence caught in the same commit:** `offhand-swivel.xrs` used `FREETARGET`
+as half its oracle, so the gate would have silently reduced it to "the captures
+differ" - which that file's own precondition block says is not a reproduction.
+It now arms the probes itself.
+
+### Next steps
+
+1. **Run `shoulder-anchor.xrs`** and read the table above. That decides whether
+   the next change is in `body.cpp`, in `solve_arm()`, or nowhere.
+2. **Fold `SHOULDER` into the probe gate** once it has answered.
+3. **The `recenterYaw` asymmetry** above - decide whether the shoulder should
+   carry `-recenterYaw` like the hand does, or whether the offsets should be
+   re-tuned in the body frame.
+4. Still deferred and still ready: FRIK's shoulder reach offset and elbow
+   constraints (see the s72/s73 entry below for the exact formulas).
+
+### Session log 2026-08-30 (s74)
+
+**Nothing was run.** No headset session, no simulator launch, no game launch.
+Three commits, two builds, both installed - the second after an escape mistake
+in the new F10 tooltip that the compiler caught as *newline in constant*.
+
+**Method note, carried from s73 and applied here.** The `SHOULDER` probe's
+comment writes down what it would print under each hypothesis BEFORE any run,
+including the case where it exonerates the arm entirely. The discriminator is
+`sh->hand`, not the shoulder's absolute motion: the shoulder moving in world
+proves nothing on its own, because the hand orbits the same centre and the whole
+rig is allowed to yaw with the body.
+
+**A gate is a change to every tool that read the log.** The probe gate was one
+flag and eight one-line edits, and the only interesting part was noticing that
+an existing `.xrs` file depended on one of the gated families. Grep the tools
+tree, not just the source tree, before defaulting a diagnostic off.
+
+---
+
 ## Session 2026-08-30 - s72/s73: the off hand's ARM, decoupled and rotating
 
 **TWO branches and two draft PRs**, split at the point the arm work began:
@@ -78,20 +198,9 @@ Full derivations, all fourteen faults and ten standing rules:
 
 ### Next steps
 
-**Head rotation moves each arm's shoulder position.** Reported by the tester and
-not chased. The shoulder is built in `solve_arm()` from `ctx.baseX/Y/Z` plus the
-body yaw (`camYaw - driveYawOffsetRad`), which is deliberately the BODY and not
-the camera - s70i fixed exactly this once already for head *lean*. So either that
-subtraction is not removing all of the head's contribution, or something
-downstream of it re-introduces it. Start by logging the shoulder's WORLD position
-against `camYaw` with the head turning and the body still; if it moves, the
-`driveYawOffsetRad` subtraction is incomplete.
-
-**Before either PR merges:** eight probe families are armed and logging in the
-shipped build - `FREEPROBE`, `FREETARGET`, `FREEHOLD`, `FREEANIM`, `ARMHOLD`,
-`FOREARM`, `ARMIK`, `SCRIPTSEAM`. They are throttled and read-only, but they are
-diagnostics, not shipping behaviour, and should be stripped or default-gated in
-their own commit.
+**Both of this section's first two items were taken up in s74** - the shoulder
+question is now instrumented and the probe families are gated. See the s74 entry
+above; what remains below still stands.
 
 **Deferred by the tester's decision, ready to port:** FRIK's shoulder reach
 offset (`norm(shoulderToHand) * adjust * armLength * 0.08` - ours anchors the
