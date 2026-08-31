@@ -2590,7 +2590,8 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
     // s72c: which arm bank. The free hand has its own, captured in its own
     // settle window - see g_freeArmRef. Solving it out of the held hand's bank
     // is what twisted both arms together.
-    const bool valid = freeBank ? g_freeArmRefValid[hand] : g_armRefValid[hand];
+    // s74: one bank for both roles - see the capture in drive().
+    const bool valid = g_freeArmRefValid[hand];
     if (!(g_armsMode.load(std::memory_order_relaxed) == 1) ||
         (freeBank ? g_collapseOff.load(std::memory_order_relaxed)
                   : g_collapse.load(std::memory_order_relaxed)) ||
@@ -2608,7 +2609,7 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
     // frame later and anything measured against it is measuring itself. That is
     // exactly why the graded blend that stood here "did nothing".
         const int* armIdx = hand == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
-        const Qts* ar = freeBank ? g_freeArmRef[hand] : g_armRef[hand];
+        const Qts* ar = g_freeArmRef[hand];
         auto sub3 = [](const float a[3], const float b[3], float o[3]) {
             o[0] = a[0] - b[0];
             o[1] = a[1] - b[1];
@@ -2631,7 +2632,7 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
         // cluster is so the arm cannot end up a different size from the hand.
         float aSE[3], aEW[3];
         sub3(ar[2].p, ar[1].p, aSE);
-        sub3(freeBank ? g_freeArmW0[hand] : g_armW0[hand], ar[2].p, aEW);
+        sub3(g_freeArmW0[hand], ar[2].p, aEW);
         float aSEn[3] = {aSE[0], aSE[1], aSE[2]};
         float aEWn[3] = {aEW[0], aEW[1], aEW[2]};
         const float L1 = norm3(aSEn) * s;
@@ -2937,7 +2938,13 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
             // lane: it is carried by the actor it is solved in, and it is the
             // signed-off half of this subsystem. The same latent error exists
             // there and is worth revisiting on its own.
-            if (freeBank && tau > 0) {
+            // s74: ONE SMOOTHING FRAME. The body frame is correct for BOTH
+            // roles - it moves with the player and not with either wrist - so
+            // this no longer forks. The held arm had the same latent fault the
+            // free one was fixed for in s72u: eased in component space, its
+            // elbow dragged after its OWN actor, which reads as lag rather than
+            // coupling and is why nobody reported it.
+            if (tau > 0) {
                 float aQ[4];
                 quat_conj(qaUse, aQ);
                 float Ew[3];
@@ -2987,16 +2994,6 @@ void solve_arm(const FrameContext& ctx, int hand, const float W[3],
                     E[2] /= rigScale;
                 }
             }
-            if (!freeBank && tau > 0 && g_elbowHavePrev[hand]) {
-                float dtMs = static_cast<float>(nowE - g_elbowLastMs[hand]);
-                if (dtMs < 0.0f) dtMs = 0.0f;
-                if (dtMs > 250.0f) dtMs = 250.0f; // a hitch must not snap the arm
-                const float alpha = 1.0f - expf(-dtMs / static_cast<float>(tau));
-                for (int c = 0; c < 3; ++c)
-                    E[c] = g_elbowPrev[hand][c] + (E[c] - g_elbowPrev[hand][c]) * alpha;
-            }
-            memcpy(g_elbowPrev[hand], E, sizeof g_elbowPrev[hand]);
-            g_elbowHavePrev[hand] = true;
             g_elbowLastMs[hand] = nowE;
 
             // Upper arm: authored shoulder->elbow swung onto the solved one.
@@ -3802,6 +3799,23 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
                             }
                             memcpy(g_armW0[hand], fresh[anchor].p, sizeof g_armW0[hand]);
                             g_armRefValid[hand] = ok;
+                            // s74: ONE BANK. This capture and the free hand's are
+                            // the same event - five sleeve bones plus the wrist,
+                            // taken on a settle-gated frame the ENGINE owns - so
+                            // they fill one bank and solve_arm reads one bank.
+                            // Two banks selected by a role flag was three of the
+                            // six forks, and it is what let s72 solve the free arm
+                            // out of the held arm's authored pose.
+                            memcpy(g_freeArmRef[hand], g_armRef[hand],
+                                   sizeof g_freeArmRef[hand]);
+                            memcpy(g_freeArmW0[hand], g_armW0[hand],
+                                   sizeof g_freeArmW0[hand]);
+                            ue_rot_to_quat(gp.rot, g_freeArmActorQ[hand]);
+                            g_freeArmYaw0[hand] =
+                                (static_cast<float>(ctx.camYaw) / kRotUnitsPerDegree) *
+                                    (3.14159265f / 180.0f) -
+                                ctx.driveYawOffsetRad;
+                            g_freeArmRefValid[hand] = ok;
                         }
                     } else {
                         g_pinValid[hand] = false;
